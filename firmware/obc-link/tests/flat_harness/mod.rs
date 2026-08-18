@@ -19,7 +19,9 @@ use obc_storage::flat::{
 /// `FLAT_Store_Format.md` §2: the fixed region is 2 MiB and the extent area starts on the block
 /// after it.
 pub const EXTENT_AREA: u64 = 4_096;
-/// §6: one extent is 1 MiB.
+/// §6: one extent, in blocks. A card this size is well under 64 GiB, so §8 gives it the 1 MiB
+/// minimum — the harness never has to know the size is card-scaled, because everything it drives is
+/// byte-addressed at the seam.
 pub const EXTENT_BLOCKS: u64 = 2_048;
 /// Extents the test card holds. Enough for several objects and small enough to be free.
 pub const EXTENTS: u32 = 64;

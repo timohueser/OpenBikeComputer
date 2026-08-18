@@ -69,6 +69,10 @@ pub enum Reason {
     Revisions,
     /// An extent range is empty, leaves the extent area, or does not cover the payload.
     Ranges,
+    /// The extent size the superblock records is not one §6 admits — below the 1 MiB minimum or above
+    /// the 2 GiB ceiling. A card whose geometry does not decode has no addresses, so this refuses the
+    /// superblock rather than mounting a store read-only.
+    Geometry,
 }
 
 /// A total decoder's refusal.

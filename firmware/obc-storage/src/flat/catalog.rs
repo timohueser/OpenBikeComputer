@@ -9,7 +9,7 @@
 //! bytes alone; only a body CRC that matches [`Gate::body_crc`] makes it **valid**.
 
 use super::error::{DecodeError, Reason, Record, Result};
-use super::layout::{Ranges, BLOCK, ENTRY_CAPACITY, ENTRY_STRIDE};
+use super::layout::{Geometry, Ranges, BLOCK, ENTRY_CAPACITY, ENTRY_STRIDE};
 use super::raw::{bytes16_at, crc32, is_zero, put_bytes, put_u16, put_u32, put_u64, u16_at, u32_at, u64_at};
 use super::seam::{DisplayName, EntryFlags, EntryMeta, ObjectId, ObjectKind, Revision, StoreId, NAME_CAPACITY};
 use super::FORMAT_VERSION;
@@ -135,10 +135,10 @@ impl Entry {
     }
 
     /// §5.3's rules about one entry in isolation: what its ranges must cover, and what `RESERVED`
-    /// forbids.
-    fn check(&self) -> Result<()> {
+    /// forbids. What an extent is worth is the card's, so the covering rule takes its geometry.
+    fn check(&self, geometry: Geometry) -> Result<()> {
         let err = |reason| DecodeError::new(Record::Entry, reason);
-        let needed = super::layout::extents_for(self.meta.payload_len);
+        let needed = geometry.extents_for(self.meta.payload_len);
         let owned = self.ranges.extents() as u64;
         if owned < needed || (owned > needed && !self.meta.flags.holds_slack()) {
             return Err(err(Reason::Ranges));
@@ -224,8 +224,10 @@ impl Gate {
 /// Ordering, the retained/head pair, kind agreement per `ObjectId` and the one `RECORDING` entry are
 /// all properties of a *sequence* of entries, so they cannot live in [`Entry::decode`]. Mount runs
 /// this while it streams the body, and a commit runs it over the entries it is about to write.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Structure {
+    /// The card's, because §5.3's covering rule is stated in extents and read in bytes.
+    geometry: Geometry,
     previous: Option<(ObjectId, Revision, ObjectKind, bool)>,
     /// Entries seen so far for the current `ObjectId`.
     revisions: u8,
@@ -234,10 +236,15 @@ pub struct Structure {
 }
 
 impl Structure {
+    /// A pass over the entry array of a card with this geometry.
+    pub fn new(geometry: Geometry) -> Self {
+        Structure { geometry, previous: None, revisions: 0, recording: 0, greatest_id: 0 }
+    }
+
     /// Accepts the next entry of the array.
     pub fn accept(&mut self, entry: &Entry) -> Result<()> {
         let err = |reason| DecodeError::new(Record::Entry, reason);
-        entry.check()?;
+        entry.check(self.geometry)?;
         let retained = entry.meta.flags.has(EntryFlags::RETAINED);
         if entry.meta.flags.has(EntryFlags::RECORDING) {
             self.recording += 1;
@@ -309,6 +316,12 @@ mod tests {
 
     const STORE: StoreId = StoreId([0x5A; 16]);
 
+    /// A fresh pass over a card of the default 1 MiB extents, which is what every case here but the
+    /// card-scaled one below runs on.
+    fn fresh() -> Structure {
+        Structure::new(Geometry::DEFAULT)
+    }
+
     #[test]
     fn header_entry_and_gate_round_trip() {
         let header = Header { store: STORE, sequence: 9, next_object: 4, entry_count: 3 };
@@ -361,34 +374,56 @@ mod tests {
         assert_eq!(Entry::decode(&bytes, 64).unwrap_err().reason, Reason::Zero);
     }
 
-    /// §5.3's covering rule: exactly `ceil(len / 1 MiB)` extents unless the entry is recording or
-    /// reserved, in which case it may hold slack.
+    /// §5.3's covering rule: exactly `ceil(len / extent size)` extents unless the entry is recording
+    /// or reserved, in which case it may hold slack.
     #[test]
     fn ranges_must_cover_the_payload_and_only_slack_flags_may_exceed_it() {
-        let mut structure = Structure::default();
-        assert!(structure.accept(&entry(1, 1, EntryFlags::NONE, super::super::layout::EXTENT_SIZE, 0, 1)).is_ok());
+        let extent = Geometry::DEFAULT.extent_size();
+        let mut structure = fresh();
+        assert!(structure.accept(&entry(1, 1, EntryFlags::NONE, extent, 0, 1)).is_ok());
 
         let over = entry(2, 1, EntryFlags::NONE, 10, 4, 2);
-        assert_eq!(Structure::default().accept(&over).unwrap_err().reason, Reason::Ranges);
+        assert_eq!(fresh().accept(&over).unwrap_err().reason, Reason::Ranges);
         let recording = entry(2, 1, EntryFlags::RECORDING, 10, 4, 2);
-        assert!(Structure::default().accept(&recording).is_ok());
+        assert!(fresh().accept(&recording).is_ok());
 
-        let under = entry(3, 1, EntryFlags::NONE, super::super::layout::EXTENT_SIZE + 1, 4, 1);
-        assert_eq!(Structure::default().accept(&under).unwrap_err().reason, Reason::Ranges);
+        let under = entry(3, 1, EntryFlags::NONE, extent + 1, 4, 1);
+        assert_eq!(fresh().accept(&under).unwrap_err().reason, Reason::Ranges);
 
         let mut reserve = entry(4, 1, EntryFlags::RESERVED, 1, 4, 1);
-        assert_eq!(Structure::default().accept(&reserve).unwrap_err().reason, Reason::Ranges);
+        assert_eq!(fresh().accept(&reserve).unwrap_err().reason, Reason::Ranges);
         reserve.meta.payload_len = 0;
-        assert!(Structure::default().accept(&reserve).is_ok());
+        assert!(fresh().accept(&reserve).is_ok());
+    }
+
+    /// The same rule on a card whose extents are 2 MiB: one entry's ranges cover twice the payload,
+    /// and an array from a 1 MiB card would fail on it. The covering rule reads the card's geometry, so
+    /// this is the one §5.3 check that card-scaled extents move.
+    #[test]
+    fn the_covering_rule_is_the_cards_own_extent_size() {
+        let doubled = Geometry::from_log2(21).unwrap();
+        let extent = doubled.extent_size();
+
+        // One 2 MiB extent covers a payload that would need two 1 MiB ones.
+        let wide = entry(1, 1, EntryFlags::NONE, extent, 0, 1);
+        assert!(Structure::new(doubled).accept(&wide).is_ok());
+        assert_eq!(fresh().accept(&wide).unwrap_err().reason, Reason::Ranges, "the 1 MiB card wants two");
+
+        // And an entry sized for the smaller card now carries slack it is not allowed.
+        let narrow = entry(1, 1, EntryFlags::NONE, 1 << 20, 0, 1);
+        assert!(fresh().accept(&narrow).is_ok());
+        assert!(Structure::new(doubled).accept(&narrow).is_ok(), "one extent still covers half of one");
+        let slack = entry(1, 1, EntryFlags::NONE, 1 << 20, 0, 2);
+        assert_eq!(Structure::new(doubled).accept(&slack).unwrap_err().reason, Reason::Ranges);
     }
 
     #[test]
     fn entries_are_strictly_ascending_by_object_and_revision() {
-        let mut structure = Structure::default();
+        let mut structure = fresh();
         structure.accept(&entry(2, 1, EntryFlags::RETAINED, 10, 0, 1)).unwrap();
         assert_eq!(structure.accept(&entry(2, 1, EntryFlags::NONE, 10, 1, 1)).unwrap_err().reason, Reason::Order);
 
-        let mut structure = Structure::default();
+        let mut structure = fresh();
         structure.accept(&entry(3, 1, EntryFlags::NONE, 10, 0, 1)).unwrap();
         assert_eq!(structure.accept(&entry(2, 9, EntryFlags::NONE, 10, 1, 1)).unwrap_err().reason, Reason::Order);
     }
@@ -399,18 +434,18 @@ mod tests {
     fn the_retained_head_pair_is_the_only_two_entry_shape() {
         let header = Header { store: STORE, sequence: 1, next_object: 99, entry_count: 2 };
 
-        let mut ok = Structure::default();
+        let mut ok = fresh();
         ok.accept(&entry(2, 4, EntryFlags::RETAINED, 10, 0, 1)).unwrap();
         ok.accept(&entry(2, 5, EntryFlags::NONE, 10, 1, 1)).unwrap();
         ok.finish(&header).unwrap();
 
         // Two heads, no retained.
-        let mut two_heads = Structure::default();
+        let mut two_heads = fresh();
         two_heads.accept(&entry(2, 4, EntryFlags::NONE, 10, 0, 1)).unwrap();
         assert_eq!(two_heads.accept(&entry(2, 5, EntryFlags::NONE, 10, 1, 1)).unwrap_err().reason, Reason::Revisions);
 
         // Retained after the head.
-        let mut wrong_order = Structure::default();
+        let mut wrong_order = fresh();
         wrong_order.accept(&entry(2, 4, EntryFlags::RETAINED, 10, 0, 1)).unwrap();
         assert_eq!(
             wrong_order.accept(&entry(2, 5, EntryFlags::RETAINED, 10, 1, 1)).unwrap_err().reason,
@@ -418,13 +453,13 @@ mod tests {
         );
 
         // Three revisions of one object.
-        let mut three = Structure::default();
+        let mut three = fresh();
         three.accept(&entry(2, 4, EntryFlags::RETAINED, 10, 0, 1)).unwrap();
         three.accept(&entry(2, 5, EntryFlags::NONE, 10, 1, 1)).unwrap();
         assert_eq!(three.accept(&entry(2, 6, EntryFlags::NONE, 10, 2, 1)).unwrap_err().reason, Reason::Revisions);
 
         // A lone retained entry has no head, whether the array ends there or moves to another id.
-        let mut lone = Structure::default();
+        let mut lone = fresh();
         lone.accept(&entry(2, 4, EntryFlags::RETAINED, 10, 0, 1)).unwrap();
         assert_eq!(lone.finish(&header).unwrap_err().reason, Reason::Revisions);
         assert_eq!(lone.accept(&entry(3, 1, EntryFlags::NONE, 10, 1, 1)).unwrap_err().reason, Reason::Revisions);
@@ -432,7 +467,7 @@ mod tests {
 
     #[test]
     fn one_object_id_has_one_kind() {
-        let mut structure = Structure::default();
+        let mut structure = fresh();
         structure.accept(&entry(2, 4, EntryFlags::RETAINED, 10, 0, 1)).unwrap();
         let mut head = entry(2, 5, EntryFlags::NONE, 10, 1, 1);
         head.meta.kind = ObjectKind::Trip;
@@ -441,7 +476,7 @@ mod tests {
 
     #[test]
     fn at_most_one_entry_is_recording() {
-        let mut structure = Structure::default();
+        let mut structure = fresh();
         structure.accept(&entry(2, 1, EntryFlags::RECORDING, 0, 0, 1)).unwrap();
         assert_eq!(
             structure.accept(&entry(3, 1, EntryFlags::RECORDING, 0, 1, 1)).unwrap_err().reason,
@@ -451,7 +486,7 @@ mod tests {
 
     #[test]
     fn the_next_object_cursor_is_strictly_greater_than_every_id() {
-        let mut structure = Structure::default();
+        let mut structure = fresh();
         structure.accept(&entry(7, 1, EntryFlags::NONE, 10, 0, 1)).unwrap();
         let header = Header { store: STORE, sequence: 1, next_object: 7, entry_count: 1 };
         assert_eq!(structure.finish(&header).unwrap_err().record, Record::CatalogHeader);

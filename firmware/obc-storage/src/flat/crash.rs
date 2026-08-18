@@ -30,7 +30,7 @@ use std::vec::Vec;
 
 use super::catalog::{Entry, Gate};
 use super::layout::{
-    catalog_gate, slot_block, Ranges, BLOCK, CATALOG, EXTENT_AREA, EXTENT_BLOCKS, PROGRAM_PAGE, SLOTS, SUPERBLOCK,
+    catalog_gate, slot_block, Geometry, Ranges, BLOCK, CATALOG, EXTENT_AREA, PROGRAM_PAGE, SLOTS, SUPERBLOCK,
 };
 use super::model::{self, Change, Model, Snapshot};
 use super::raw::crc32;
@@ -45,7 +45,7 @@ use super::superblock::Superblock;
 /// A card with 64 extents: enough for a 32 MiB ride reserve and small enough that several hundred of
 /// them cost nothing.
 const EXTENTS: u32 = 64;
-const TOTAL_BLOCKS: u64 = EXTENT_AREA + EXTENT_BLOCKS * EXTENTS as u64;
+const TOTAL_BLOCKS: u64 = EXTENT_AREA + Geometry::DEFAULT.extent_blocks() * EXTENTS as u64;
 const STORE: StoreId = StoreId([0x11; 16]);
 
 type Card<'a> = FlatStore<&'a SparseDisk>;
@@ -82,21 +82,39 @@ pub(super) fn payload(len: usize) -> Vec<u8> {
     (0..len).map(|index| (index * 7 + 11) as u8).collect()
 }
 
-/// Installs a card holding `model` in `copy`, without counting a media operation: the state a
-/// scenario starts from, not part of what it is cut inside.
-fn card(seed: u64, model: &Model, copy: usize) -> SparseDisk {
-    let disk = SparseDisk::blank(TOTAL_BLOCKS, seed);
-    let superblock = Superblock { store: model.store, total_blocks: TOTAL_BLOCKS }.encode();
+/// Installs a card of `blocks` holding `model` in `copy`, without counting a media operation: the
+/// state a scenario starts from, not part of what it is cut inside.
+fn card_of(seed: u64, blocks: u64, model: &Model, copy: usize) -> SparseDisk {
+    let disk = SparseDisk::blank(blocks, seed);
+    let superblock = Superblock::for_card(model.store, blocks).expect("an expressible card");
+    // The model is what places the payload bytes (`install_payload`) and what a `Snapshot` is compared
+    // against, so a model whose geometry is not the one §8 gives *this* card would install every
+    // payload at an address the store never reads — and the mismatch would show up as a payload CRC
+    // difference three layers away. Asserted rather than derived, because `extents` is the scenario's
+    // own number too: the two have to agree on purpose.
+    assert_eq!(model.geometry, superblock.geometry, "the model's extent size is not this card's");
+    assert_eq!(model.extents, superblock.extent_count(), "the model's extent count is not this card's");
+    let superblock = superblock.encode();
     disk.install(SUPERBLOCK[0], &superblock);
     disk.install(SUPERBLOCK[1], &superblock);
     install_catalog(&disk, model, copy);
     disk
 }
 
+/// The same on the card size the rest of this file uses.
+fn card(seed: u64, model: &Model, copy: usize) -> SparseDisk {
+    card_of(seed, TOTAL_BLOCKS, model, copy)
+}
+
 /// The card builder every matrix takes, so the same scenario can start from a card whose catalog is in
 /// copy A or in copy B — which is what decides whether the commit under test targets B or A.
 fn builder(model: &Model, copy: usize) -> impl Fn(u64) -> SparseDisk + '_ {
     move |seed| card(seed, model, copy)
+}
+
+/// The same, on a card of a stated size — which is how a matrix runs on a card-scaled geometry.
+fn builder_of(blocks: u64, model: &Model, copy: usize) -> impl Fn(u64) -> SparseDisk + '_ {
+    move |seed| card_of(seed, blocks, model, copy)
 }
 
 /// The catalog, its gate, and every entry's payload bytes. `pub(super)` because the sibling cost tests
@@ -119,15 +137,15 @@ pub(super) fn install_catalog(disk: &SparseDisk, model: &Model, copy: usize) {
         if entry.meta.flags.has(EntryFlags::RESERVED) {
             continue;
         }
-        install_payload(disk, entry, &payload(entry.meta.payload_len as usize));
+        install_payload(disk, model.geometry, entry, &payload(entry.meta.payload_len as usize));
     }
 }
 
 /// Writes `bytes` into an entry's extents, following its ranges exactly as §6.1 does.
-fn install_payload(disk: &SparseDisk, entry: &Entry, bytes: &[u8]) {
+fn install_payload(disk: &SparseDisk, geometry: Geometry, entry: &Entry, bytes: &[u8]) {
     let mut done = 0usize;
     while done < bytes.len() {
-        let located = entry.ranges.locate(done as u64).expect("the entry covers its payload");
+        let located = entry.ranges.locate(geometry, done as u64).expect("the entry covers its payload");
         let run = (bytes.len() - done).min(located.contiguous as usize);
         disk.install(located.block, &bytes[done..done + run]);
         done += run;
@@ -450,10 +468,10 @@ fn a_multi_page_catalog_body_recovers_the_old_or_the_new_state() {
 
     let removed = before.entries[1];
     let after = before.clone().apply(&[Change::Remove(removed.meta.key())]).clone();
-    let blocks = EXTENT_AREA + EXTENT_BLOCKS * BIG as u64;
+    let blocks = EXTENT_AREA + Geometry::DEFAULT.extent_blocks() * BIG as u64;
     let build = |seed: u64| {
         let disk = SparseDisk::blank(blocks, seed);
-        let superblock = Superblock { store: STORE, total_blocks: blocks }.encode();
+        let superblock = Superblock::for_card(STORE, blocks).expect("an expressible card").encode();
         disk.install(SUPERBLOCK[0], &superblock);
         disk.install(SUPERBLOCK[1], &superblock);
         install_catalog(&disk, &before, 0);
@@ -563,6 +581,230 @@ fn initialization_produces_no_store_or_a_complete_empty_one() {
 }
 
 // -------------------------------------------------------------------------------------------
+// §6 and §8 — the card-scaled extent size
+// -------------------------------------------------------------------------------------------
+
+/// A real "128 GB" card: 250,000,000 blocks, 128 billion bytes, 119.2 GiB. A fixed 1 MiB extent could
+/// not have addressed it at all — 122,068 extents against an index that names 65,536.
+///
+/// **A decimal size on purpose.** `128e9 / 65,536` is 1,953,125 bytes, which is not a power of two, so
+/// this card gets 2 MiB only *because* §8 rounds up; a rule that rounded down or truncated would give
+/// it 1 MiB, and a card the superblock decoder then refuses. A card of exactly 128 GiB — the tidy
+/// number — divides to 2 MiB on the nose and would let that mutation through, which is why the
+/// scenarios below use this one and §4.1's second vector uses the tidy one.
+///
+/// The card is virtual and [`SparseDisk`] is a map of the blocks somebody wrote, so it costs exactly
+/// what the 68 MiB one the rest of this file uses does.
+const BIG_CARD_BLOCKS: u64 = 250_000_000;
+/// The extents §6 recomputes from it at the 2 MiB §8 gives it.
+const BIG_CARD_EXTENTS: u32 = 61_034;
+
+/// Initialization on a card past the index's reach, and then the whole seam on the geometry it chose:
+/// an allocation, a payload written in awkward pieces across a range boundary, a commit, a read back,
+/// and a remount that agrees with all of it.
+///
+/// The payload deliberately spans two extents *at the recorded size*, so `locate` crosses a range
+/// boundary at 2 MiB and every LBA it computes is 2,048 blocks further along than the same index would
+/// have been on a 1 MiB card.
+#[test]
+fn a_card_the_index_cannot_reach_at_one_mib_gets_bigger_extents() {
+    let disk = SparseDisk::blank(BIG_CARD_BLOCKS, 3);
+    let mut store = FlatStore::initialize(&disk, STORE).expect("a 128 GB card formats");
+    let extent = 2 << 20;
+    assert_eq!(store.extent_size(), extent, "§8: 128e9 / 65,536 is 1,953,125, which rounds up to 2 MiB");
+    assert_eq!(store.free_extents(), BIG_CARD_EXTENTS, "§6's count at that size");
+    // The rounding is what makes this card representable at all: at the size a truncating rule would
+    // have picked, its own extent count is past the index and §4 refuses the superblock.
+    assert_eq!(
+        Superblock { store: STORE, total_blocks: BIG_CARD_BLOCKS, geometry: Geometry::DEFAULT }.extent_count(),
+        122_068,
+    );
+
+    // Extent 0 is taken first, so the object below starts at extent 1 and its second extent is 2.
+    let bytes = payload(extent as usize + 4_242);
+    let mut allocation = store.allocate(bytes.len() as u64).unwrap();
+    for chunk in bytes.chunks(777) {
+        store.write(&mut allocation, chunk).unwrap();
+    }
+    let published = entry(1, 1, ObjectKind::MapShard, EntryFlags::NONE, bytes.len() as u64, "shard", &[(0, 2)]);
+    store.commit(&[Mutation::Put { meta: published.meta, source: PutSource::Fresh(allocation) }]).unwrap();
+    assert_eq!(
+        store.free_extents(),
+        BIG_CARD_EXTENTS - 2,
+        "two 2 MiB extents cover a payload two 1 MiB ones would not",
+    );
+
+    // The second extent's first payload byte sits 2,048 blocks past the first's, which is the whole
+    // claim: the same extent index means twice as many blocks on this card.
+    let handle = store.open(ObjectId(1), None).unwrap();
+    let mut buf = [0u8; 1_000];
+    for offset in [0u64, 1, 511, 512, extent - 3, extent, extent + 4_000] {
+        let read = store.read(&handle, offset, &mut buf).unwrap();
+        assert_eq!(&buf[..read], &bytes[offset as usize..offset as usize + read], "offset {offset}");
+    }
+    assert_eq!(
+        disk.block(EXTENT_AREA + Geometry::from_log2(21).unwrap().extent_blocks())[..16],
+        bytes[extent as usize..extent as usize + 16],
+        "extent 1 does not begin where a 2 MiB stride puts it",
+    );
+    store.close(handle);
+
+    let resident = snapshot(&mut store);
+    disk.reboot();
+    let mut remounted = FlatStore::mount(&disk);
+    assert_eq!(remounted.extent_size(), extent, "the size came back off the card, not out of a constant");
+    assert_eq!(snapshot(&mut remounted), resident, "the remount disagrees with the store that wrote it");
+}
+
+/// The same, one doubling further out, and the ride path with it: a 512 GiB card gets 8 MiB extents, a
+/// 32 MiB reserve is four of them rather than thirty-two, and a checkpoint's 16 KiB payload page still
+/// lands page-aligned inside the first one (§6.1).
+#[test]
+fn a_ride_records_and_recovers_on_a_card_scaled_geometry() {
+    let disk = SparseDisk::blank((512 << 30) / BLOCK as u64, 11);
+    let mut store = FlatStore::initialize(&disk, STORE).expect("a 512 GiB card formats");
+    assert_eq!(store.extent_size(), 8 << 20, "§8: 512 GiB / 65,536 is 8 MiB");
+    assert_eq!(store.free_extents(), 65_535);
+
+    let reserve = 32 << 20;
+    let allocation = store.allocate(reserve).unwrap();
+    let ride = entry(1, 1, ObjectKind::Ride, EntryFlags::RECORDING, 0, "", &[(0, 4)]);
+    store.commit(&[Mutation::Put { meta: ride.meta, source: PutSource::Fresh(allocation) }]).unwrap();
+    assert_eq!(store.free_extents(), 65_531, "§7.2's 32 MiB reserve is four extents at this size");
+
+    // Two checkpoints, the second past a whole payload page, so §7.2 step 2 flushes one into the
+    // ride's own extents at an address derived from the 8 MiB stride.
+    let mut rider = Rider::new();
+    rider.grow(200);
+    assert!(rider.checkpoint(&mut store));
+    rider.grow(PROGRAM_PAGE + 300);
+    assert!(rider.checkpoint(&mut store));
+    assert_eq!(rider.flushed, PROGRAM_PAGE, "the checkpoint flushed no page");
+
+    disk.reboot();
+    let store = FlatStore::mount(&disk);
+    let (expected, tail) = rider.expect(2);
+    assert_eq!(store.recovered_ride(), Some(expected), "§7.3 recovered the wrong checkpoint");
+    let mut recovered = vec![0u8; tail.len()];
+    assert_eq!(store.recovered_tail(&mut recovered).unwrap(), tail.len());
+    assert_eq!(recovered, tail);
+    // And the flushed page is where §6.1 says it is: payload offset 0 of extent 0.
+    assert_eq!(disk.block(EXTENT_AREA)[..8], rider.payload[..8], "the flushed page missed the extent area");
+}
+
+/// A model of a card-scaled card: the geometry §8 gives [`BIG_CARD_BLOCKS`] and the count §6
+/// recomputes, which [`card_of`] then holds the card to.
+fn big_card_model(entries: &[Entry], sequence: u64) -> Model {
+    let mut model = Model::empty(STORE, BIG_CARD_EXTENTS);
+    model.geometry = Geometry::from_log2(21).expect("2 MiB");
+    model.entries = entries.to_vec();
+    model.next_object = entries.iter().map(|entry| entry.meta.id.0).max().unwrap_or(0) + 1;
+    model.sequence = sequence;
+    model.high_water = sequence;
+    model
+}
+
+/// §5.5's commit, cut everywhere, on a card whose extents are 2 MiB.
+///
+/// **This is where a cut is worth taking at a non-default geometry, and initialization is not.** §8
+/// writes the same blocks at every extent size — two superblocks, a gate, sixteen slot headers, a
+/// body — so an initialization matrix at 2 MiB re-runs the default one's cut points against
+/// byte-identical media traffic and pins nothing the geometry can break. A commit does depend on it:
+/// the payload's staged block goes to an address `locate` derived at the recorded stride, §5.3's
+/// covering rule trims the published entry against that stride, and the mount that follows every cut
+/// rebuilds the free map at this card's count and reads every payload back through it. A geometry the
+/// store dropped or halved anywhere in that chain surfaces here as a payload CRC or a free-extent
+/// count that no admissible state carries.
+#[test]
+fn a_commit_on_a_card_scaled_geometry_recovers_the_old_or_the_new_catalog() {
+    // The pre-state payload sits at extent **3**, not extent 0: extent 0 is the one address every
+    // stride agrees on, so a scenario whose only installed bytes live there would pass at a geometry
+    // the store had dropped. At extent 3 the harness installs 2 MiB × 3 along and a store reading at
+    // 1 MiB × 3 finds nothing. The commit's own object then takes extent 0, which first-fit hands it.
+    let first = entry(1, 1, ObjectKind::Route, EntryFlags::NONE, 3_000, "Grimsel Loop", &[(3, 1)]);
+    let second = entry(1, 2, ObjectKind::Route, EntryFlags::NONE, 5_000, "Grimsel Loop", &[(0, 1)]);
+    let before = big_card_model(&[first], 4);
+    let after = big_card_model(&[first], 4).apply(&[Change::Put(second), Change::Remove(first.meta.key())]).clone();
+    for copy in [0, 1] {
+        matrix(
+            "replace @ 2 MiB",
+            69,
+            &before,
+            &after,
+            builder_of(BIG_CARD_BLOCKS, &before, copy),
+            |store: &mut Card| {
+                let Ok(mut allocation) = store.allocate(5_000) else { return };
+                if store.write(&mut allocation, &payload(5_000)).is_err() {
+                    return;
+                }
+                let _ = store.commit(&[
+                    Mutation::Put { meta: second.meta, source: PutSource::Fresh(allocation) },
+                    Mutation::Remove { id: first.meta.id, revision: first.meta.revision },
+                ]);
+            },
+        );
+    }
+}
+
+/// A fill pass over a run wider than a device `usize`: 32,768 extents of 64 MiB, coalesced into one
+/// 2 TiB range, on a 4 TiB card.
+///
+/// What it holds is **progress** — that one `write` consumes every byte it was given, at a geometry
+/// where the block count of the contiguous run is exactly `2^32`. The arithmetic that produces it is
+/// [`Located::whole_blocks`], and this test cannot fail on a 64-bit host for the reason stated there;
+/// what it does cover on any target is a pass that writes fewer blocks than it should, or none, from
+/// any cause — an inverted bound, a byte/block mix-up, a `locate` that reports the wrong run.
+#[test]
+fn a_write_through_a_two_tebibyte_run_consumes_its_input() {
+    use super::device::BlockDevice as _;
+
+    let disk = SparseDisk::blank((4u64 << 40) / BLOCK as u64, 5);
+    let mut store = FlatStore::initialize(&disk, STORE).expect("a 4 TiB card formats");
+    assert_eq!(store.extent_size(), 64 << 20, "§8: 4 TiB / 65,536 is 64 MiB");
+    let free = store.free_extents();
+
+    let mut allocation = store.allocate(2 << 40).expect("half the card, in one first-fit run");
+    let bytes = payload(4 * BLOCK + 300);
+    store.write(&mut allocation, &bytes).expect("the write is refused, not short");
+    assert_eq!(allocation.written, bytes.len() as u64, "a fill pass consumed none of its input");
+
+    // The bytes are still in the card's volatile cache — a `write` promises nothing durable, and the
+    // commit that would sync them is not this test's subject — so the sync is the harness's.
+    (&disk).sync().unwrap();
+    assert_eq!(disk.block(EXTENT_AREA)[..16], bytes[..16], "the first block missed the extent area");
+    assert_eq!(disk.block(EXTENT_AREA + 3)[..16], bytes[3 * BLOCK..3 * BLOCK + 16], "a later block did not land");
+
+    store.cancel(allocation);
+    assert_eq!(store.free_extents(), free, "the cancel did not return the 32,768-extent run");
+}
+
+/// The two geometry refusals, on a whole card rather than on 512 bytes. Both are §5.6 step 1's "not a
+/// flat store" — the card's addresses are unreadable, so there is no store here to serve read-only
+/// either — and both are reachable only by forgery: §8 writes neither.
+#[test]
+fn a_superblock_whose_geometry_is_inadmissible_is_not_a_flat_store() {
+    // A 128 GiB card recorded with 1 MiB extents: 131,070 extents, which the entry's `u16` cannot name.
+    let understated = Superblock { store: STORE, total_blocks: BIG_CARD_BLOCKS, geometry: Geometry::DEFAULT }.encode();
+    // And a size below the 1 MiB minimum, re-stamped so the CRC still checks.
+    let mut too_small = Superblock::for_card(STORE, TOTAL_BLOCKS).expect("an expressible card").encode();
+    too_small[32] = 19;
+    let crc = crc32(&too_small[..504]);
+    too_small[504..508].copy_from_slice(&crc.to_le_bytes());
+
+    for (name, superblock, blocks) in [
+        ("an unnameable extent count", understated, BIG_CARD_BLOCKS),
+        ("a sub-minimum extent", too_small, TOTAL_BLOCKS),
+    ] {
+        let disk = SparseDisk::blank(blocks, 19);
+        // A real catalog underneath, so what the mount refuses is the geometry and nothing else.
+        FlatStore::initialize(&disk, STORE).expect("the card formats first");
+        disk.install(SUPERBLOCK[0], &superblock);
+        disk.install(SUPERBLOCK[1], &superblock);
+        assert_eq!(FlatStore::mount(&disk).mode(), Mode::Unformatted, "{name} was mounted");
+    }
+}
+
+// -------------------------------------------------------------------------------------------
 // §7 — the ride
 // -------------------------------------------------------------------------------------------
 
@@ -614,7 +856,7 @@ fn recording_card<'m>(
     move |seed| {
         let disk = card(seed, model, 0);
         // The pages §7.2 already flushed are in the ride's extents; the rest is in the newest slot.
-        install_payload(&disk, ride, &whole[..flushed as usize]);
+        install_payload(&disk, model.geometry, ride, &whole[..flushed as usize]);
         install_slot(&disk, ride, 1, flushed, &whole[flushed as usize..]);
         disk
     }
@@ -1071,7 +1313,7 @@ fn a_card_with_no_usable_catalog_mounts_read_only() {
 #[test]
 fn a_shrunken_card_is_refused() {
     let disk = SparseDisk::blank(TOTAL_BLOCKS / 2, 1);
-    let superblock = Superblock { store: STORE, total_blocks: TOTAL_BLOCKS }.encode();
+    let superblock = Superblock::for_card(STORE, TOTAL_BLOCKS).expect("an expressible card").encode();
     disk.install(SUPERBLOCK[0], &superblock);
     assert_eq!(FlatStore::mount(&disk).mode(), Mode::CardTooSmall);
 }
@@ -1317,7 +1559,9 @@ fn a_payload_round_trips_across_a_range_boundary() {
     let disk = card(28, &model, 0);
     let mut store = FlatStore::mount(&disk);
 
-    let bytes = payload(2 * (1 << 20) + 4_242);
+    // This card's extents are the 1 MiB minimum §8 gives it, and the payload spans two of them.
+    let extent = Geometry::DEFAULT.extent_size();
+    let bytes = payload(2 * extent as usize + 4_242);
     let published =
         entry(10, 1, ObjectKind::MapShard, EntryFlags::NONE, bytes.len() as u64, "shard", &[(0, 1), (2, 2)]);
     let mut allocation = store.allocate(bytes.len() as u64).unwrap();
@@ -1331,7 +1575,7 @@ fn a_payload_round_trips_across_a_range_boundary() {
     let mut whole = vec![0u8; bytes.len()];
     assert_eq!(store.read(&handle, 0, &mut whole).unwrap(), bytes.len());
     assert_eq!(whole, bytes);
-    for offset in [0u64, 1, 511, 512, (1 << 20) - 3, 1 << 20, 2 << 20] {
+    for offset in [0u64, 1, 511, 512, extent - 3, extent, 2 * extent] {
         let mut buf = [0u8; 1_000];
         let read = store.read(&handle, offset, &mut buf).unwrap();
         assert_eq!(&buf[..read], &bytes[offset as usize..offset as usize + read], "offset {offset}");
@@ -1482,9 +1726,9 @@ fn a_full_catalog_refuses_one_more_entry() {
     model.sequence = 4;
     model.high_water = 4;
 
-    let blocks = EXTENT_AREA + EXTENT_BLOCKS * BIG as u64;
+    let blocks = EXTENT_AREA + Geometry::DEFAULT.extent_blocks() * BIG as u64;
     let disk = SparseDisk::blank(blocks, 31);
-    let superblock = Superblock { store: STORE, total_blocks: blocks }.encode();
+    let superblock = Superblock::for_card(STORE, blocks).expect("an expressible card").encode();
     disk.install(SUPERBLOCK[0], &superblock);
     install_catalog(&disk, &model, 0);
 
@@ -1525,9 +1769,9 @@ fn a_commit_at_capacity_never_programs_the_gate_as_body() {
     model.sequence = 4;
     model.high_water = 4;
 
-    let blocks = EXTENT_AREA + EXTENT_BLOCKS * BIG as u64;
+    let blocks = EXTENT_AREA + Geometry::DEFAULT.extent_blocks() * BIG as u64;
     let disk = SparseDisk::blank(blocks, 61);
-    let superblock = Superblock { store: STORE, total_blocks: blocks }.encode();
+    let superblock = Superblock::for_card(STORE, blocks).expect("an expressible card").encode();
     disk.install(SUPERBLOCK[0], &superblock);
     disk.install(SUPERBLOCK[1], &superblock);
     install_catalog(&disk, &model, 0);
