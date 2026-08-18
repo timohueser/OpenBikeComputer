@@ -24,9 +24,8 @@ use super::device::BlockDevice;
 use super::error::StoreError;
 use super::journal::{self, Slot, TAIL_CAPACITY, ZERO_PAD};
 use super::layout::{
-    catalog_gate, extent_count, extents_for, slot_block, Ranges, BLOCK, CATALOG, ENTRIES_PER_BLOCK, ENTRY_CAPACITY,
-    ENTRY_STRIDE, MOUNT_STREAM_BLOCKS, MOUNT_STREAM_WINDOW, PROGRAM_PAGE, SLOTS, SLOT_BLOCKS, STREAM_WINDOW,
-    SUPERBLOCK,
+    catalog_gate, slot_block, Geometry, Ranges, BLOCK, CATALOG, ENTRIES_PER_BLOCK, ENTRY_CAPACITY, ENTRY_STRIDE,
+    MOUNT_STREAM_BLOCKS, MOUNT_STREAM_WINDOW, PROGRAM_PAGE, SLOTS, SLOT_BLOCKS, STREAM_WINDOW, SUPERBLOCK,
 };
 use super::seam::{
     Allocation, EntryFlags, EntryMeta, Mutation, ObjectId, PutSource, Revision, RideCheckpoint, Store, StoreId,
@@ -156,6 +155,9 @@ struct RideState {
 pub struct FlatStore<D> {
     dev: D,
     store: StoreId,
+    /// The card's own extent size, read from its superblock (§4) and the source of every address
+    /// below. A store that is serving nothing keeps the default, which addresses nothing either.
+    geometry: Geometry,
     extents: u32,
     mode: Mode,
     /// The copy the store is currently serving. §5.5's commit targets the other one.
@@ -193,10 +195,15 @@ fn sync<D: BlockDevice>(dev: &D) -> Result<(), StoreError> {
 /// Appends `input` to a reservation, one contiguous run per pass: whole blocks straight out of the
 /// caller's slice, and a partial one through the row's staging block. The cursor it advances belongs to
 /// the caller's [`Allocation`] too, which is why [`Store::write`] rewinds it when this fails.
-fn fill<D: BlockDevice>(dev: &D, row: &mut Reservation, mut input: &[u8]) -> Result<(), StoreError> {
+fn fill<D: BlockDevice>(
+    dev: &D,
+    geometry: Geometry,
+    row: &mut Reservation,
+    mut input: &[u8],
+) -> Result<(), StoreError> {
     while !input.is_empty() {
         let staged = (row.written % BLOCK as u64) as usize;
-        let located = row.ranges.locate(row.written - staged as u64).ok_or(StoreError::Invalid)?;
+        let located = row.ranges.locate(geometry, row.written - staged as u64).ok_or(StoreError::Invalid)?;
         if staged == 0 && input.len() >= BLOCK {
             let blocks = (input.len() / BLOCK).min((located.contiguous / BLOCK as u64) as usize);
             write_blocks(dev, located.block, &input[..blocks * BLOCK])?;
@@ -384,6 +391,7 @@ impl<D: BlockDevice> FlatStore<D> {
         let mut store = FlatStore {
             dev,
             store: StoreId([0; 16]),
+            geometry: Geometry::DEFAULT,
             extents: 0,
             mode: Mode::Unformatted,
             serving: 0,
@@ -406,8 +414,14 @@ impl<D: BlockDevice> FlatStore<D> {
     /// §8: explicit, destructive, and the only transition into this format. The superblocks are
     /// destroyed first and written last, so a valid superblock implies a valid catalog
     /// unconditionally.
+    ///
+    /// This is also where the card's extent size is decided — §8's `max(1 MiB, card / 65,536)` rounded
+    /// up to a power of two — and the superblock is the only place it is ever written. A card too large
+    /// to express in 65,536 extents of the largest size (128 TiB, past every SD standard) is refused
+    /// here rather than formatted into a store that would not mount.
     pub fn initialize(dev: D, store: StoreId) -> Result<Self, StoreError> {
         let total_blocks = dev.block_count().map_err(|_| StoreError::Media)?;
+        let superblock = Superblock::for_card(store, total_blocks).ok_or(StoreError::Invalid)?;
         for copy in SUPERBLOCK {
             write_blocks(&dev, copy, &INVALIDATED)?;
         }
@@ -429,7 +443,7 @@ impl<D: BlockDevice> FlatStore<D> {
         write_blocks(&dev, catalog_gate(0), &gate.encode())?;
         sync(&dev)?;
 
-        let superblock = Superblock { store, total_blocks }.encode();
+        let superblock = superblock.encode();
         for copy in SUPERBLOCK {
             write_blocks(&dev, copy, &superblock)?;
         }
@@ -484,9 +498,16 @@ impl<D: BlockDevice> FlatStore<D> {
         self.high_water
     }
 
-    /// Free extents, each 1 MiB.
+    /// Free extents, each of this card's recorded extent size (§4, §6).
     pub fn free_extents(&self) -> u32 {
         self.free.free()
+    }
+
+    /// That size, in bytes — the other half of what [`free_extents`](Self::free_extents) means. It is
+    /// the card's, decided at initialization by §8's card-scaled rule, and a caller that wants free
+    /// *bytes* rather than free extents needs both.
+    pub fn extent_size(&self) -> u64 {
+        self.geometry.extent_size()
     }
 
     /// The next `ObjectId` the cursor will hand out. A create names this in its `Put`; the commit
@@ -600,7 +621,10 @@ impl<D: BlockDevice> FlatStore<D> {
         }
         let Some(superblock) = superblock else { return };
         self.store = superblock.store;
-        self.extents = extent_count(superblock.total_blocks);
+        // §6's count, at the extent size *this card* records — the decode above is what guarantees it
+        // fits the entry's `u16` index, so nothing below has to clamp it.
+        self.geometry = superblock.geometry;
+        self.extents = superblock.extent_count();
         match self.dev.block_count() {
             Ok(observed) if observed >= superblock.total_blocks => {}
             Ok(_) => {
@@ -675,7 +699,7 @@ impl<D: BlockDevice> FlatStore<D> {
         let mut digest = Crc32::new();
         digest.update(&window[..BLOCK]);
 
-        let mut structure = Structure::default();
+        let mut structure = Structure::new(self.geometry);
         let mut loaded = Loaded { next_object: header.next_object, recording: None, exhausted: false };
         let mut done = 0usize;
         while done < header.entry_count as usize {
@@ -916,7 +940,7 @@ impl<D: BlockDevice> FlatStore<D> {
                         let freed = if meta.flags.holds_slack() {
                             Ranges::default()
                         } else {
-                            entry.ranges.trim_to(extents_for(meta.payload_len) as u32)
+                            entry.ranges.trim_to(self.geometry.extents_for(meta.payload_len) as u32)
                         };
                         if entry.ranges.is_empty() {
                             return Err(StoreError::Invalid);
@@ -955,7 +979,7 @@ impl<D: BlockDevice> FlatStore<D> {
                         let freed = if meta.flags.holds_slack() {
                             Ranges::default()
                         } else {
-                            entry.ranges.trim_to(extents_for(meta.payload_len) as u32)
+                            entry.ranges.trim_to(self.geometry.extents_for(meta.payload_len) as u32)
                         };
                         if entry.ranges.is_empty() {
                             return Err(StoreError::Invalid);
@@ -1007,7 +1031,7 @@ impl<D: BlockDevice> Store for FlatStore<D> {
         if bytes == 0 {
             return Err(StoreError::Invalid);
         }
-        let extents = extents_for(bytes);
+        let extents = self.geometry.extents_for(bytes);
         if u64::from(self.free.free()) < extents {
             return Err(StoreError::NoSpace { required: bytes });
         }
@@ -1032,6 +1056,7 @@ impl<D: BlockDevice> Store for FlatStore<D> {
             return Err(StoreError::Invalid);
         }
         let dev = &self.dev;
+        let geometry = self.geometry;
         let row = self.reservations[allocation.slot as usize].as_mut().expect("the row was just validated");
         // A fragmented allocation is several writes, so one of them can fail with the others already on
         // the card. The row's cursor goes back where it was: it is the reservation's identity as much as
@@ -1040,7 +1065,7 @@ impl<D: BlockDevice> Store for FlatStore<D> {
         // mount, `cancel` included. Rewinding costs nothing instead: the bytes already on the card are
         // the bytes the retry writes there.
         let start = row.written;
-        if let Err(error) = fill(dev, row, bytes) {
+        if let Err(error) = fill(dev, geometry, row, bytes) {
             row.written = start;
             return Err(error);
         }
@@ -1110,7 +1135,7 @@ impl<D: BlockDevice> Store for FlatStore<D> {
             next_object: self.next_object.max(greatest_id + 1),
             entry_count: count as u16,
         };
-        let mut structure = Structure::default();
+        let mut structure = Structure::new(self.geometry);
         // The commit's two windows, owned here and lent out: see [`EntryCursor`] for why they are not
         // owned by the reader and the writer that use them.
         let mut scan = [0u8; STREAM_WINDOW];
@@ -1125,13 +1150,14 @@ impl<D: BlockDevice> Store for FlatStore<D> {
         // The payload is durable before the commit begins: whatever a `write` left in a staging
         // block goes to the card now.
         let mut staged = false;
+        let geometry = self.geometry;
         for resolved in plan.iter() {
             let Some(slot) = resolved.reservation else { continue };
             let dev = &self.dev;
             let row = self.reservations[slot as usize].as_mut().expect("resolve validated the reservation");
             let partial = (row.written % BLOCK as u64) as usize;
             if partial > 0 {
-                let located = row.ranges.locate(row.written - partial as u64).ok_or(StoreError::Invalid)?;
+                let located = row.ranges.locate(geometry, row.written - partial as u64).ok_or(StoreError::Invalid)?;
                 row.staging[partial..].fill(0);
                 write_blocks(dev, located.block, &row.staging)?;
             }
@@ -1251,7 +1277,7 @@ impl<D: BlockDevice> Store for FlatStore<D> {
         let mut done = 0usize;
         let mut block = [0u8; BLOCK];
         while done < want {
-            let located = hold.ranges.locate(offset + done as u64).ok_or(StoreError::Invalid)?;
+            let located = hold.ranges.locate(self.geometry, offset + done as u64).ok_or(StoreError::Invalid)?;
             let run = ((want - done) as u64).min(located.contiguous) as usize;
             if located.offset == 0 && run >= BLOCK {
                 let blocks = run / BLOCK;
@@ -1301,7 +1327,7 @@ impl<D: BlockDevice> Store for FlatStore<D> {
         while tail.len() >= PROGRAM_PAGE {
             let located = ride
                 .ranges
-                .locate(ride.flushed)
+                .locate(self.geometry, ride.flushed)
                 .filter(|located| located.contiguous >= PROGRAM_PAGE as u64)
                 .ok_or(StoreError::NoSpace { required: ride.flushed + PROGRAM_PAGE as u64 })?;
             write_blocks(&self.dev, located.block, &tail[..PROGRAM_PAGE])?;
@@ -1414,7 +1440,7 @@ impl<D: BlockDevice> FlatStore<D> {
         let mut done = 0u64;
         while done < tail_len {
             read_blocks(&self.dev, base + done / BLOCK as u64, &mut block)?;
-            let located = ride.ranges.locate(ride.flushed + done).ok_or(StoreError::Invalid)?;
+            let located = ride.ranges.locate(self.geometry, ride.flushed + done).ok_or(StoreError::Invalid)?;
             // A whole block goes out even for a partial tail: the bytes past `payload_len` are slack
             // inside the ride's last extent, which nothing reads and no CRC covers.
             write_blocks(&self.dev, located.block, &block)?;

@@ -464,7 +464,10 @@ mod tests {
     use super::*;
 
     fn disk() -> SparseDisk {
-        SparseDisk::blank(4_096 + 64 * 2_048, 7)
+        SparseDisk::blank(
+            super::super::layout::EXTENT_AREA + 64 * super::super::layout::Geometry::DEFAULT.extent_blocks(),
+            7,
+        )
     }
 
     #[test]
