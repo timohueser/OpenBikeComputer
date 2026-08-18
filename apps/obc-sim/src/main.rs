@@ -94,10 +94,6 @@ enum WeatherFault {
 
 struct Args {
     map: String,
-    /// `--set MS<id>.OBS`: open an OBCA **volume set** (`specs/OBCA_Spec.md` §5) instead of a single
-    /// `.obcm` — the manifest plus every `MS<id>S<kk>.OBM` shard beside it, mounted as one map.
-    /// Mutually exclusive with the positional map path.
-    set: Option<String>,
     width: u32,
     height: u32,
     scale: u32,
@@ -230,7 +226,6 @@ impl Default for Args {
     fn default() -> Self {
         Args {
             map: String::new(),
-            set: None,
             width: obc_display::ls021::FRAME_W as u32,
             height: obc_display::ls021::FRAME_H as u32,
             scale: 1,
@@ -528,7 +523,6 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
                 a.width = w.parse().map_err(|_| "bad width")?;
                 a.height = h.parse().map_err(|_| "bad height")?;
             }
-            "--set" => a.set = Some(it.next().ok_or("--set needs a path to MS<id>.OBS")?),
             "--scale" => a.scale = it.next().and_then(|s| s.parse().ok()).ok_or("bad --scale")?,
             "--png" => a.png = Some(it.next().ok_or("--png needs a path")?),
             "--heading" => a.heading = Some(it.next().and_then(|s| s.parse().ok()).ok_or("bad --heading")?),
@@ -630,14 +624,9 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
             }
         }
     }
-    // `--set` names the whole map by its manifest, so a positional path alongside it is
-    // ambiguous — refuse rather than silently ignoring one of them.
-    if a.set.is_some() && !a.map.is_empty() {
-        return Err("--set and a positional map path are mutually exclusive".into());
-    }
     // `--palette` and `--import` need no map file.
-    if a.map.is_empty() && a.set.is_none() && !a.palette && a.import.is_none() {
-        return Err("missing map path (a single .obcm, or --set MS<id>.OBS for a volume set)".into());
+    if a.map.is_empty() && !a.palette && a.import.is_none() {
+        return Err("missing map path (one .obcm file)".into());
     }
     Ok(a)
 }
@@ -838,12 +827,10 @@ fn apply_script(app: &mut App, script: &str, hook: &mut dyn FnMut(&mut App, Scri
 const HELP: &str = r#"OpenBikeComputer desktop simulator
 
 Usage: obc-sim <MAP.obcm> [OPTIONS]
-       obc-sim --set <MS7.OBS> [OPTIONS]
        obc-sim --palette [--png OUT]
        obc-sim --import TRACK.gpx [--routes-dir DIR]
 
 Map and output:
-  --set PATH              Open an OBCA volume-set manifest instead of one map
   --size WxH              Frame size (default: device 240x320)
   --scale N               Integer PNG/window scale (default: 1)
   --png PATH              Render one device frame to PNG and exit
@@ -896,9 +883,8 @@ Weather (independent product controls):
 Other:
   -h, --help              Print this help
 
-`--set` and a positional map are mutually exclusive. `--png` always renders the
-device's RGB222/64-colour output. Housing colorways and display calibration remain
-available from the GUI control panel.
+`--png` always renders the device's RGB222/64-colour output. Housing colorways and
+display calibration remain available from the GUI control panel.
 "#;
 
 fn main() {
@@ -955,29 +941,20 @@ fn main() {
         return;
     }
 
-    // One file (`<map.obcm>`) or a whole volume set (`--set MS<id>.OBS`) — from here down the two
-    // are the same thing: a list of shard bytes plus, for a set, the manifest that mounts them.
-    let map = match &args.set {
-        Some(path) => map_set::MapSource::load_set(path),
-        None => map_set::MapSource::load_single(&args.map),
-    }
-    .unwrap_or_else(|e| {
+    // One map is one `.obcm` file, read whole.
+    let map = map_set::MapSource::load_single(&args.map).unwrap_or_else(|e| {
         eprintln!("{e}");
         std::process::exit(1);
     });
 
-    // Parse the core's tables and mount the set **once**, here, for the process lifetime — the
-    // shape the device uses (mount at boot, hold for the session), not a per-frame rebuild. §5.4
-    // admits no partial mount: a set that does not validate whole is refused before a single frame
-    // renders, and the sim exits non-zero saying which shard and why.
+    // Parse the tables **once**, here, for the process lifetime — the shape the device uses (parse
+    // at boot, hold for the session), not a per-frame rebuild. A file that does not parse is
+    // refused before a single frame renders and the sim exits non-zero saying why.
     let map = map_set::LoadedMap::open(map).unwrap_or_else(|e| {
         eprintln!("{e}");
         std::process::exit(1);
     });
     {
-        if let Some(set) = map.set() {
-            eprintln!("{}", map.source.describe_set(set));
-        }
         let reader = map.reader();
         eprintln!(
             "OBCM v{} | bbox {:?} | {} LODs | {} styles",
@@ -997,8 +974,8 @@ fn main() {
     // Headless mode: render one frame through the shared app, save PNG, exit.
     if let Some(path) = &args.png {
         let tables = map.tables();
-        // Nav, POI, hours and routing read the **core** shard and only it (§5.1) — never a
-        // geometry shard — so this is the reader the whole app path gets, set or not.
+        // One reader over the one map file — the map plane, nav, POI, hours and routing all read
+        // it, exactly as they do on the device.
         let reader = map.reader();
         let (mut cx, mut cy, mut zoom) = initial_camera(&reader, args.width);
         if let Some((lon, lat)) = args.center {
@@ -1172,7 +1149,6 @@ fn main() {
         // loaded map's name (filename stem) + OBCM version from the parsed header. The card-free scan
         // is answered after the script (below), mirroring the on-entry FAT scan seam.
         app.set_fw_version(env!("CARGO_PKG_VERSION"));
-        // A set lists as **one** map under its manifest's display name (§5.4), never as its shards.
         let map_name = map.source.display_name();
         app.set_map_info(&map_name, tables.version);
         // Load the routes folder so the Route menu has real entries and a picked route
@@ -1531,8 +1507,7 @@ fn main() {
         // Time the whole frame draw into `render_us` (the no_std renderer has no clock, so
         // the host fills it) — same field the live panel shows.
         let t0 = Instant::now();
-        let set = map.set();
-        let scene = map_set::Scene { set, reader: &reader, route: route.as_ref() };
+        let scene = map_set::Scene { reader: &reader, route: route.as_ref() };
         let mut scratch = Box::new(obc_render::RenderScratch::new());
         // `--weather` (WX10/WX11): the final frame renders through the production rain lease and
         // the production resident snapshot — the same adapter/feed pair the device and the GUI
@@ -1695,6 +1670,7 @@ mod cli_tests {
             "--boot-fault",
             "--open-climb",
             "--baro-drift",
+            "--set",
         ] {
             assert!(parse(&[flag]).is_err(), "{flag} must stay removed");
         }
@@ -1704,7 +1680,6 @@ mod cli_tests {
     fn help_lists_every_parser_flag_and_no_removed_flag() {
         let readme = include_str!("../README.md");
         for flag in [
-            "--set",
             "--size",
             "--scale",
             "--png",
@@ -1746,8 +1721,9 @@ mod cli_tests {
             assert!(HELP.contains(flag), "help is missing {flag}");
             assert!(readme.contains(flag), "README is missing {flag}");
         }
-        for removed in ["--true-color", "--colorway", "--calibrate", "--screenshot", "--boot-fault"] {
+        for removed in ["--true-color", "--colorway", "--calibrate", "--screenshot", "--boot-fault", "--set"] {
             assert!(!HELP.contains(removed), "help still advertises {removed}");
+            assert!(!readme.contains(removed), "README still advertises {removed}");
         }
     }
 }
