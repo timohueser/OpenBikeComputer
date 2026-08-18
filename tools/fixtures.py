@@ -133,9 +133,9 @@ class Catalog:
             for package_id in package_ids:
                 if package_id not in self.packages:
                     raise FixtureError(f"scenario {scenario_id!r} names unknown package {package_id!r}")
-            if ("map" in scenario) == ("map_set" in scenario):
-                raise FixtureError(f"scenario {scenario_id!r} requires exactly one of map or map_set")
-            for field in ("map", "map_set", "gpx", "weather", "routes_dir", "tracks_dir"):
+            if "map" not in scenario:
+                raise FixtureError(f"scenario {scenario_id!r} requires a map")
+            for field in ("map", "gpx", "weather", "routes_dir", "tracks_dir"):
                 if field in scenario:
                     self.resolve_ref_shape(scenario_id, package_ids, field, scenario[field])
             args = scenario.get("args", [])
@@ -531,7 +531,7 @@ def command_show(catalog: Catalog, store: Store, args: argparse.Namespace) -> No
             state = "ready" if store.package_ready(package_id) else "missing"
             print(f"  {package_id:<24} {_human_bytes(package['bytes']):>9}  {state:<7}  {package['summary']}")
         print("\ninputs:")
-        for field in ("map", "map_set", "gpx", "weather", "routes_dir", "tracks_dir"):
+        for field in ("map", "gpx", "weather", "routes_dir", "tracks_dir"):
             if field in scenario:
                 print(f"  {field:<12} {scenario[field]}")
         for value in scenario.get("args", []):
@@ -577,7 +577,7 @@ def command_resolve(catalog: Catalog, store: Store, args: argparse.Namespace) ->
     if not args.no_sync:
         for package_id in scenario["packages"]:
             store.sync(package_id)
-    for field in ("map", "map_set", "gpx", "weather", "routes_dir", "tracks_dir"):
+    for field in ("map", "gpx", "weather", "routes_dir", "tracks_dir"):
         if field in scenario:
             print(f"{field}\t{resolve_path(catalog, store, scenario[field], field)}")
     for value in scenario.get("args", []):

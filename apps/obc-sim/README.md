@@ -18,8 +18,6 @@ remaining option.
 
 ## Map and output
 
-- `--set PATH` opens an OBCA `MS<id>.OBS` volume-set manifest instead of a positional `.obcm`.
-  Supplying both is an error.
 - `--size WxH` changes the frame geometry from the device default (240×320).
 - `--scale N` applies an integer scale to the window or saved PNG (default 1).
 - `--png PATH` renders one device-gamut frame and exits. This is the screenshot-test interface.

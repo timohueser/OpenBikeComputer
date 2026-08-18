@@ -114,9 +114,8 @@ impl obc_ports::ClockSource for SimClock {
     }
 }
 
-/// Launch the simulator window. `map` is opened and, for a volume set, **mounted** once before
-/// this — for the process lifetime, as the device mounts once at boot — and the per-frame
-/// [`Reader`] is a cheap view over it.
+/// Launch the simulator window. `map` is opened once before this — for the process lifetime, as
+/// the device parses its map once at boot — and the per-frame [`Reader`] is a cheap view over it.
 pub fn run(map: LoadedMap, args: Args) -> Result<(), eframe::Error> {
     // The window wraps the whole device (housing + screen + a little backdrop) at `--scale`,
     // so the body has room around the framebuffer.
@@ -152,10 +151,10 @@ struct DeviceHit {
 }
 
 struct SimGui {
-    /// The opened map: one `.obcm`, or a volume set **already mounted** (see
-    /// [`LoadedMap`]) — the mount is held for the session, like the device's, and only the cheap
-    /// `Reader` view is rebuilt per frame. It carries the immutable tables (style table + LOD
-    /// pyramid, parsed once at startup as the device parses them once at boot) and the session-long
+    /// The opened map: one `.obcm` (see [`LoadedMap`]) — held for the session, like the device's,
+    /// and only the cheap `Reader` view is rebuilt per frame. It carries the immutable tables
+    /// (style table + LOD pyramid, parsed once at startup as the device parses them once at boot)
+    /// and the session-long
     /// chunk cache, whose cross-frame reuse lets a panned-into view warm to 100% hit so the
     /// "Map SD" stats track real device behaviour rather than a cold ≤75%.
     map: LoadedMap,
@@ -266,8 +265,7 @@ struct SimGui {
 
 impl SimGui {
     fn new(map: LoadedMap, args: Args) -> Self {
-        // For a set these are the **core** shard's tables (§5.1): the one style table the whole set
-        // shares (§4.7), and the tables every per-shard reader borrows.
+        // The map's style table + LOD pyramid, parsed once — the tables every reader borrows.
         let map_tables = map.tables();
         let (cx, cy, zoom) = crate::initial_camera(&map.reader(), args.width);
         let mut state = AppState::new(cx, cy, zoom);
@@ -360,7 +358,6 @@ impl SimGui {
         // sim's crate version) + the loaded map's name (filename stem) & OBCM version. The card-free
         // scan is answered per-frame in `update` when the screen posts its on-entry request.
         app.set_fw_version(env!("CARGO_PKG_VERSION"));
-        // A set lists as **one** map under its manifest's display name (§5.4), never as its shards.
         let map_name = map.source.display_name();
         app.set_map_info(&map_name, map_tables.version);
         // `--physical` only takes effect with a saved calibration; the panel opens calibration.
@@ -450,11 +447,9 @@ impl SimGui {
     /// Run the shared app for one frame into the backend's device-64 frame, present it through the
     /// seam, then upload the reconstructed texture.
     fn render_to_texture(&mut self, ctx: &egui::Context) {
-        // Reuse the session-long cache and the session-long **mount** (see the field docs): a set
-        // is mounted once at startup exactly as the device mounts once at boot, so a frame costs
-        // one cheap `Reader` view and no re-validation.
-        // Nav, POI, hours and routing read the **core** shard and only it (§5.1), never a geometry
-        // shard — so this is the reader the whole app path gets, set or not.
+        // Reuse the session-long tables and chunk cache (see the field docs): the map is parsed
+        // once at startup exactly as the device parses once at boot, so a frame costs one cheap
+        // `Reader` view. The map plane, nav, POI, hours and routing all read it.
         let reader = self.map.reader();
 
         // Feed the host→app BLE seam (epic #447): the control panel's injected link state, pushed
@@ -619,8 +614,7 @@ impl SimGui {
         let t0 = std::time::Instant::now();
         let (dev_w, dev_h) = (self.dev_w, self.dev_h);
         let mut fbdev = FbDevice64::new(&mut self.fb, dev_w, dev_h);
-        let set = self.map.set();
-        let scene = crate::map_set::Scene { set, reader: &reader, route: route.as_ref() };
+        let scene = crate::map_set::Scene { reader: &reader, route: route.as_ref() };
         // WX14 live mode: one pass of the §11 lifecycle before the frame. The scheduler decides;
         // when it raises, the companion fetches over HTTP (synchronously — the GUI stalls for the
         // second or two a real phone would spend with BLE off) and the upload is committed only

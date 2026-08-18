@@ -186,9 +186,9 @@ impl RainOverlaySource for WindowSource {
 
 /// A single `.obcm` opened for rendering.
 ///
-/// The simulator's own `map_set::LoadedMap` does this and much more (volume sets, terrain
-/// sidecars, mount diagnostics); none of it is wanted here, and pulling that module into a `bin`
-/// drags its `#[cfg(test)]` block along with it. One core file, one reader.
+/// The simulator's own `map_set::LoadedMap` does this and more (terrain sidecars, the session-long
+/// tables and cache); none of it is wanted here, and pulling that module into a `bin` drags its
+/// `#[cfg(test)]` block along with it. One file, one reader.
 struct Basemap {
     source: &'static SliceSource<'static>,
     tables: &'static MapTables,

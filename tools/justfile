@@ -51,12 +51,10 @@ fixtures *args:
 
 # Run a named fixture scenario or an explicit map (always --physical). With no
 # arguments this runs the canonical `grimsel` scenario.
-# Args: [SCENARIO|MAP.obcm|MS<id>.OBS] [TRACK.gpx] [-- sim flags].
+# Args: [SCENARIO|MAP.obcm] [TRACK.gpx] [-- sim flags].
 # Explicit MAP defaults to $OBC_MAP or the newest .obcm in the repo root; TRACK
 # to $OBC_GPX. Named scenarios are the reproducible path. Pass `none` as the
 # explicit track to run without GPS.
-# A MAP ending in .OBS is an OBCA volume set and rides the sim's --set flag; passing
-# --set through `--` also works and suppresses the default positional map.
 # Live weather needs no task of its own — it is a sim flag:
 #   obc sim -- --weather live            (real service + MET for the rider's position)
 #   obc sim -- --weather live --weather-offline   (and the WX14 failure controls)
@@ -68,7 +66,7 @@ sim *args:
     split_args "$@"
     scenario="${_POS[0]:-grimsel}"
     scenario_args=()
-    mapf="" setf="" gpxf=""
+    mapf="" gpxf=""
     if [[ -n "$scenario" ]] && python3 "$OBC_TOOLS/fixtures.py" exists "$scenario"; then
         (( ${#_POS[@]} <= 1 )) || {
             _err "a named scenario already supplies its track; pass simulator flags after --"
@@ -79,7 +77,6 @@ sim *args:
         while IFS=$'\t' read -r kind value; do
             case "$kind" in
               map)     mapf="$value" ;;
-              map_set) setf="$value" ;;
               gpx)     gpxf="$value" ;;
               weather) scenario_args+=(--weather "$value") ;;
               routes_dir) scenario_args+=(--routes-dir "$value") ;;
@@ -88,20 +85,11 @@ sim *args:
               *) _err "fixture resolver returned unknown field '$kind'"; exit 1 ;;
             esac
         done <<< "$resolved"
-        if [[ -n "$setf" ]]; then cmd=(cargo run --release -p obc-sim -- --set "$setf" --physical)
-        else cmd=(cargo run --release -p obc-sim -- "$mapf" --physical); fi
+        cmd=(cargo run --release -p obc-sim -- "$mapf" --physical)
     else
       gpxf="$(resolve_gpx "${_POS[1]:-}")"
-      if [[ " ${_EXTRA[*]:-} " == *" --set "* ]]; then
-        # An explicit --set names the whole map; injecting the default positional
-        # map alongside it would trip the sim's mutual-exclusion check.
-        cmd=(cargo run --release -p obc-sim -- --physical)
-      elif [[ "${_POS[0]:-}" == *.OBS || "${_POS[0]:-}" == *.obs ]]; then
-        cmd=(cargo run --release -p obc-sim -- --set "${_POS[0]}" --physical)
-      else
-        mapf="$(resolve_map "${_POS[0]:-}")" || exit 1
-        cmd=(cargo run --release -p obc-sim -- "$mapf" --physical)
-      fi
+      mapf="$(resolve_map "${_POS[0]:-}")" || exit 1
+      cmd=(cargo run --release -p obc-sim -- "$mapf" --physical)
     fi
     [[ -n "$gpxf" && "$gpxf" != none ]] && cmd+=(--gpx "$gpxf")
     (( ${#scenario_args[@]} )) && cmd+=("${scenario_args[@]}")
