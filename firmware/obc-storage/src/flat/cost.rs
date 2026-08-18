@@ -146,7 +146,7 @@ fn populated(entries: u16) -> SparseDisk {
 /// apart too.
 fn commit_census(entries: u16) -> Census {
     let disk = populated(entries);
-    let mut store = FlatStore::mount(&disk);
+    let store = FlatStore::mount(&disk);
     let mut allocation = store.allocate(3_000).unwrap();
     store.write(&mut allocation, &payload(3_000)).unwrap();
     let published =

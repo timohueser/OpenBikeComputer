@@ -136,7 +136,7 @@ fn fat_census(pass: &Pass) -> ReadCensus {
 fn flat_census(pass: &Pass) -> ReadCensus {
     let blocks = EXTENT_AREA + Geometry::DEFAULT.extent_blocks() * 8;
     let disk = SparseDisk::blank(blocks, 11);
-    let mut store = FlatStore::initialize(&disk, STORE).expect("an expressible card initializes");
+    let store = FlatStore::initialize(&disk, STORE).expect("an expressible card initializes");
 
     let id = store.next_object_id();
     let mut allocation = store.allocate(OBJECT_LEN as u64).expect("one extent is available");

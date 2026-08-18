@@ -244,6 +244,13 @@ pub struct RideCheckpoint<'a> {
 }
 
 /// The card, as everything above it sees it.
+///
+/// **Every operation takes `&self`, the mutators included** (#1256, the owner ruling of 2026-08-18).
+/// A store is shared, not owned: a mounted map set holds a source per shard for the life of the
+/// image while an upload commits and a ride journals, and `&mut` on the write half made that
+/// un-expressible. The resident state that moves lives behind cells — see
+/// [`store`](super::store)'s aliasing rules for which, and
+/// [`source`](super::source) for what the consumer side gives up in exchange.
 pub trait Store {
     type Handle;
 
@@ -251,14 +258,17 @@ pub trait Store {
     /// [`cancel`](super::store::FlatStore::cancel) and by the next mount, which rebuilds the free
     /// map from the catalog and cannot see it. **Dropping an `Allocation` releases nothing** — it is
     /// `Copy`, and the row it names lives in the store.
-    fn allocate(&mut self, bytes: u64) -> core::result::Result<Allocation, StoreError>;
+    fn allocate(&self, bytes: u64) -> core::result::Result<Allocation, StoreError>;
 
     /// Append to an allocation. Writes are sequential and the total may not exceed the reservation.
-    fn write(&mut self, allocation: &mut Allocation, bytes: &[u8]) -> core::result::Result<(), StoreError>;
+    ///
+    /// The `&mut` that is left is the caller's own token, not the store's: the cursor `Allocation`
+    /// carries has to advance with the row's.
+    fn write(&self, allocation: &mut Allocation, bytes: &[u8]) -> core::result::Result<(), StoreError>;
 
     /// Apply `mutations` atomically and return the new catalog commit sequence. The one durable
     /// transition: it makes new bytes visible and old bytes free in the same instant.
-    fn commit(&mut self, mutations: &[Mutation]) -> core::result::Result<u64, StoreError>;
+    fn commit(&self, mutations: &[Mutation]) -> core::result::Result<u64, StoreError>;
 
     /// Resolve an object. `revision` of `None` takes the head; `Some(r)` takes exactly that
     /// revision, which is how a retained previous revision is reached.
@@ -276,7 +286,7 @@ pub trait Store {
     /// The ride exception, and the only way bytes become durable without a commit. Performs both
     /// halves of `FLAT_Store_Format.md` §7.2: flush whole 16 KiB payload pages from the tail into
     /// the recording entry's own extents, then write one journal slot.
-    fn journal(&mut self, checkpoint: RideCheckpoint) -> core::result::Result<(), StoreError>;
+    fn journal(&self, checkpoint: RideCheckpoint) -> core::result::Result<(), StoreError>;
 }
 
 #[cfg(test)]
