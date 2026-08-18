@@ -11,8 +11,8 @@
 //! the scarcest resource in the design and nothing else may spend it.
 
 use obc_formats::obcm::{
-    HEADER_LEN, LOD_ENTRY_LEN, MAGIC, STYLE_DASHED_BIT, STYLE_FIXED_WIDTH_BIT, STYLE_HAS_COLOR2_BIT,
-    STYLE_PRIORITY_MASK, STYLE_RECORD_LEN, STYLE_TERRAIN_LAYER_BIT, VERSION,
+    OffsetScale, FILLER, HEADER_LEN, LOD_ENTRY_LEN, MAGIC, STYLE_DASHED_BIT, STYLE_FIXED_WIDTH_BIT,
+    STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK, STYLE_RECORD_LEN, STYLE_TERRAIN_LAYER_BIT, VERSION,
 };
 use sha2::{Digest, Sha256};
 
@@ -28,6 +28,56 @@ use crate::{Error, Result};
 /// The hard per-file ceiling: FAT32's `4 GiB − 1 B`, which is also `u32::MAX` and therefore also
 /// OBCM's own offset ceiling (§5).
 pub const FILE_CEILING: u64 = u32::MAX as u64;
+
+/// The `Offset Scale` every shard this engine writes carries (`OBCM_Spec.md` §1.1): `U = 16`, the
+/// same byte `obc-pack` writes, so a cell and the assembly it lands in count offsets in one unit.
+///
+/// It is also what the §4.1 agreement check refuses a disagreement on: an assembly holds many cell
+/// files and one output open at once, and a cell whose `Index Offset` counted a *different* unit
+/// would relocate into a plausible byte of the output rather than an obviously wrong one.
+pub const SCALE: OffsetScale = OffsetScale::DEFAULT;
+
+/// The byte offset of the style table in every shard this engine writes: the first unit boundary at
+/// or after the 49-byte header (§1.2), which at `U = 16` is `64` — so `Style Offset` is `4` and
+/// bytes `49..64` are [`FILLER`]. Byte-for-byte `obc-pack`'s own `STYLE_OFFSET`.
+pub const STYLE_OFFSET: u64 = 64;
+const _: () = assert!(STYLE_OFFSET >= HEADER_LEN as u64);
+
+/// The next unit boundary at or after `cursor` (§1.2's `align_up`). Every structure a header or
+/// directory offset reaches begins on one; the `0..U-1` bytes this rounds past are [`FILLER`].
+#[inline]
+pub fn align_up(cursor: u64) -> u64 {
+    SCALE.align_up(cursor).expect("a layout cursor never approaches u64::MAX")
+}
+
+/// The filler run [`align_up`] implies at `cursor` — `0..U-1` bytes of `0xFF`.
+#[inline]
+pub fn filler_len(cursor: u64) -> u64 {
+    align_up(cursor) - cursor
+}
+
+/// The `uint32` a scaled offset field stores for byte offset `at` (§1.1).
+///
+/// A scaled offset **cannot** name a byte that is not a multiple of `U`, so a non-boundary argument
+/// is a bug in the layout above it rather than a rounding request — but this is an engine that runs
+/// in a browser tab, so it is an [`Error::Capacity`] and not a panic. It is also where §1.1's
+/// producer rule bites in practice: a layout whose offsets do not fit `uint32` units is one this
+/// scale does not cover, and the producer is the only party positioned to notice.
+#[inline]
+pub fn scaled(at: u64) -> Result<u32> {
+    SCALE.scaled(at).map(|o| o.units()).ok_or_else(|| {
+        Error::Capacity(format!(
+            "byte {at} cannot be named by a scaled offset at `Offset Scale` {} — it is either off the {}-byte unit \
+             boundary or past the interior that scale covers (OBCM §1.1)",
+            SCALE.log2(),
+            SCALE.unit()
+        ))
+    })
+}
+
+/// A run of [`FILLER`] long enough for any single §1.2 gap this writer emits — one unit for the
+/// section boundaries, one 512-byte sector for §8.1's alignment runs. Sliced, never allocated.
+pub(crate) const FILLER_RUN: [u8; obc_formats::obcm::NAV_CHUNK_SIZE] = [FILLER; obc_formats::obcm::NAV_CHUNK_SIZE];
 
 /// Where a producer SHOULD warn about the core (§5.7): ≈ 3.5 GiB, naming the nav graph.
 pub const CORE_WARN: u64 = 3_758_096_384;
@@ -74,9 +124,21 @@ impl ShardPlan {
     /// Layout cursor: where each region starts, given the fixed prefix. `u64` throughout, never
     /// `usize`: the crate's `--lib` target is wasm32, where a projection accumulated in a 32-bit
     /// `usize` wraps past 4 GiB and hands §5.7's ceiling a small number it happily accepts.
+    ///
+    /// Since v14 the cursor also carries §1.2's filler. Four of this file's five region starts are
+    /// named by a **scaled** offset and so begin on a unit boundary — the style table behind the
+    /// 49-byte header, the LOD table behind the style table, the first LOD's index behind the LOD
+    /// table, and each section behind the last — so each is `align_up`'d here and the `0..U-1` bytes
+    /// it rounds past are written `0xFF` by [`write`]. The per-LOD and per-section interiors carry
+    /// their own gaps ([`LodPlan::region_bytes`], [`crate::poi::PoiSection::section_len`],
+    /// [`crate::nav::NavProjection::bytes_at`]), and each of those regions **ends** on a unit
+    /// boundary, which is what keeps this cursor aligned without a second rounding step per LOD.
     fn layout(&self, style_len: usize, poi_len: u64, nav: crate::nav::NavProjection) -> Result<Layout> {
-        let lod_table_offset = (HEADER_LEN + style_len) as u64;
-        let mut cursor = lod_table_offset + (self.lods.len() * LOD_ENTRY_LEN) as u64;
+        let style_end = STYLE_OFFSET + style_len as u64;
+        let lod_table_offset = align_up(style_end);
+        let table_end = lod_table_offset + (self.lods.len() * LOD_ENTRY_LEN) as u64;
+        let payload_start = align_up(table_end);
+        let mut cursor = payload_start;
         let mut lod_offsets = Vec::with_capacity(self.lods.len());
         for l in &self.lods {
             lod_offsets.push(cursor);
@@ -85,7 +147,17 @@ impl ShardPlan {
         let poi_offset = cursor;
         let nav_offset = poi_offset.checked_add(poi_len).ok_or_else(|| self.past_u64())?;
         let total = nav_offset.checked_add(nav.bytes_at(nav_offset)).ok_or_else(|| self.past_u64())?;
-        Ok(Layout { lod_table_offset, lod_offsets, poi_offset, nav_offset, total })
+        debug_assert_eq!(poi_offset, align_up(poi_offset), "every LOD region ends on a unit boundary");
+        debug_assert_eq!(nav_offset, align_up(nav_offset), "the POI section ends on a unit boundary");
+        Ok(Layout {
+            lod_table_offset,
+            style_gap: lod_table_offset - style_end,
+            table_gap: payload_start - table_end,
+            lod_offsets,
+            poi_offset,
+            nav_offset,
+            total,
+        })
     }
 
     fn past_u64(&self) -> Error {
@@ -95,6 +167,10 @@ impl ShardPlan {
 
 struct Layout {
     lod_table_offset: u64,
+    /// §1.2 filler between the style table and the LOD table.
+    style_gap: u64,
+    /// …and between the LOD table and the first LOD's index.
+    table_gap: u64,
     lod_offsets: Vec<u64>,
     poi_offset: u64,
     nav_offset: u64,
@@ -170,6 +246,19 @@ pub fn write(
             plan.index, l.total
         )));
     }
+    // `OBCM_Spec.md` §1.1's one producer rule: **the scale MUST cover the file it writes**. It
+    // cannot fail behind the ceiling above — 4 GiB is a sixteenth of what `U = 16` addresses — and
+    // that is the point of asserting it here rather than trusting the arithmetic: a reader that
+    // never resolves the last section never sees a thing wrong, so the producer is the only party
+    // positioned to notice, and the check must outlive whichever of the two numbers moves first.
+    if !SCALE.covers(l.total) {
+        return Err(Error::Capacity(format!(
+            "shard {} would be {} bytes, past the interior `Offset Scale` {} addresses (OBCM §1.1)",
+            plan.index,
+            l.total,
+            SCALE.log2()
+        )));
+    }
 
     let mut hasher = Sha256::new();
     let mut written: u64 = 0;
@@ -179,23 +268,20 @@ pub fn write(
         sink(buf)
     };
 
-    // 1. Header (bbox stored lat, lon, lat, lon — `OBCM_Spec.md` §1).
-    out(&header_bytes(
-        plan.box_,
-        plan.lods.len(),
-        marker_color,
-        l.lod_table_offset as u32,
-        l.poi_offset as u32,
-        l.nav_offset as u32,
-    ))?;
+    // 1. Header (bbox stored lat, lon, lat, lon — `OBCM_Spec.md` §1), then the §1.2 filler that
+    //    carries the 49-byte header to the style table's unit boundary.
+    out(&header_block(plan.box_, plan.lods.len(), marker_color, l.lod_table_offset, l.poi_offset, l.nav_offset)?)?;
 
-    // 2. Style table (the skin, §4.7) and 3. the LOD table.
+    // 2. Style table (the skin, §4.7) and 3. the LOD table, each followed by the filler that lands
+    //    the next scaled-offset-named structure on its boundary.
     out(&style_bytes)?;
+    out(&FILLER_RUN[..l.style_gap as usize])?;
     let mut table = Vec::with_capacity(plan.lods.len() * LOD_ENTRY_LEN);
     for (p, &offset) in plan.lods.iter().zip(&l.lod_offsets) {
-        push_lod_entry(&mut table, p.max_mpp, offset as u32, p.node_count, p.chunk_size, p.chunk_count);
+        push_lod_entry(&mut table, p.max_mpp, scaled(offset)?, p.node_count, p.chunk_size, p.chunk_count);
     }
     out(&table)?;
+    out(&FILLER_RUN[..l.table_gap as usize])?;
 
     // 4. Each LOD region: fresh upper tree, relocated cell blocks, offset table, chunk bytes.
     for p in &plan.lods {
@@ -203,7 +289,7 @@ pub fn write(
     }
 
     // 5/6. The POI and nav sections — the core's rebuilt ones, or a legal empty pair (§5.1).
-    out(&crate::poi::serialize(empty_poi.as_ref().unwrap_or(poi), l.poi_offset as usize))?;
+    out(&crate::poi::serialize(empty_poi.as_ref().unwrap_or(poi), l.poi_offset as usize)?)?;
     crate::nav::serialize(
         empty_nav.as_ref().unwrap_or(nav),
         profile_table,
@@ -225,17 +311,25 @@ pub fn write(
     Ok((written, hasher.finalize().into()))
 }
 
-/// The 40-byte OBCM header (`OBCM_Spec.md` §1), byte-for-byte the packer's `header_bytes`. Split out
-/// because it is a **restatement** of `obc-pack`'s serializer, and `tests/pinning.rs` compares the
-/// two outputs directly rather than trusting that two copies of a table stay in step.
+/// The 49-byte v14 OBCM header (`OBCM_Spec.md` §1), byte-for-byte the packer's `header_bytes`. Split
+/// out because it is a **restatement** of `obc-pack`'s serializer, and `tests/pinning.rs` compares
+/// the two outputs directly rather than trusting that two copies of a table stay in step.
+///
+/// The three offsets are given as **byte** offsets and scaled here, exactly as the packer's writer
+/// takes them: the shard planner works in bytes throughout (§5.7's ceiling is a byte count) and this
+/// is the one seam where they become units.
+///
+/// The terrain pair is `(0, 0)` — §1.3's unambiguous absence, and the right answer here for a reason
+/// the packer does not have: a set's raster is its **own file** (`OBCA_Spec.md` §5.5, `MS<id>.OBD`),
+/// so no OBCM shard of a set ever carries an embedded OBCT region.
 pub fn header_bytes(
     box_: AlignedBox,
     lod_count: usize,
     marker_color: u16,
-    lod_table_offset: u32,
-    poi_offset: u32,
-    nav_offset: u32,
-) -> Vec<u8> {
+    lod_table_offset: u64,
+    poi_offset: u64,
+    nav_offset: u64,
+) -> Result<Vec<u8>> {
     let (min_lon, min_lat, max_lon, max_lat) = box_.ubox();
     let mut head = Vec::with_capacity(HEADER_LEN);
     head.extend_from_slice(&MAGIC);
@@ -244,14 +338,31 @@ pub fn header_bytes(
     head.extend_from_slice(&(min_lon as i32).to_le_bytes());
     head.extend_from_slice(&(max_lat as i32).to_le_bytes());
     head.extend_from_slice(&(max_lon as i32).to_le_bytes());
-    head.extend_from_slice(&(HEADER_LEN as u32).to_le_bytes());
+    head.extend_from_slice(&scaled(STYLE_OFFSET)?.to_le_bytes());
     head.push(lod_count as u8);
-    head.extend_from_slice(&lod_table_offset.to_le_bytes());
+    head.extend_from_slice(&scaled(lod_table_offset)?.to_le_bytes());
     head.extend_from_slice(&marker_color.to_le_bytes());
-    head.extend_from_slice(&poi_offset.to_le_bytes());
-    head.extend_from_slice(&nav_offset.to_le_bytes());
+    head.extend_from_slice(&scaled(poi_offset)?.to_le_bytes());
+    head.extend_from_slice(&scaled(nav_offset)?.to_le_bytes());
+    head.push(SCALE.log2());
+    head.extend_from_slice(&0u32.to_le_bytes()); // terrain offset — the set's raster is its own file
+    head.extend_from_slice(&0u32.to_le_bytes()); // terrain length, `0` exactly when the offset is
     debug_assert_eq!(head.len(), HEADER_LEN);
-    head
+    Ok(head)
+}
+
+/// The header plus the §1.2 filler that carries it to the style table's unit boundary.
+fn header_block(
+    box_: AlignedBox,
+    lod_count: usize,
+    marker_color: u16,
+    lod_table_offset: u64,
+    poi_offset: u64,
+    nav_offset: u64,
+) -> Result<Vec<u8>> {
+    let mut out = header_bytes(box_, lod_count, marker_color, lod_table_offset, poi_offset, nav_offset)?;
+    out.resize(STYLE_OFFSET as usize, FILLER);
+    Ok(out)
 }
 
 /// Append one 18-byte LOD-table entry (`OBCM_Spec.md` §3), byte-for-byte the packer's
@@ -275,6 +386,24 @@ pub fn push_lod_entry(
 /// Byte offset of the header's `Style Offset` field (`OBCM_Spec.md` §1: magic 4, version 1, four
 /// `int32` bbox fields — `4 + 1 + 16`).
 pub const HEADER_STYLE_OFFSET_AT: usize = 21;
+
+/// Resolve a map's `Style Offset` to a **byte** offset, through the file's own `Offset Scale`
+/// (§1.1). `None` when the header is short, the scale byte is not one the format defines, or the
+/// resolved byte does not fit this host's address space.
+///
+/// The scale is read out of the image rather than assumed to be [`SCALE`]: this is the one function
+/// here that runs over bytes the engine did not write — `obc-bake`'s published thumbnails and the
+/// builder's skin editor both hand it a file from somewhere else.
+pub fn header_style_offset(map: &[u8]) -> Option<usize> {
+    if map.len() < HEADER_LEN {
+        return None;
+    }
+    let scale = OffsetScale::new(map[obc_formats::obcm::HEADER_OFFSET_SCALE_OFF]).ok()?;
+    let units = u32::from_le_bytes(
+        map[HEADER_STYLE_OFFSET_AT..HEADER_STYLE_OFFSET_AT + 4].try_into().expect("four bytes inside the header"),
+    );
+    usize::try_from(scale.offset(units).bytes()).ok()
+}
 
 /// Byte offset of the header's `Marker Color` field — the one other byte a skin owns.
 pub const HEADER_MARKER_COLOR_AT: usize = 30;
@@ -327,9 +456,7 @@ pub fn restamp_style_table(
     if map.len() < HEADER_LEN {
         return Err(RestampError::ShorterThanHeader);
     }
-    let style_offset = u32::from_le_bytes(
-        map[HEADER_STYLE_OFFSET_AT..HEADER_STYLE_OFFSET_AT + 4].try_into().expect("four bytes inside the header"),
-    ) as usize;
+    let style_offset = header_style_offset(map).ok_or(RestampError::BadStyleOffset)?;
     let count = *map.get(style_offset).ok_or(RestampError::BadStyleOffset)? as usize;
     let end = style_offset.checked_add(1 + count * STYLE_RECORD_LEN).ok_or(RestampError::TableOverflows)?;
     let slot = map.get_mut(style_offset..end).ok_or(RestampError::TableTruncated)?;
@@ -649,7 +776,13 @@ mod tests {
         let nav_len = nav_projection.bytes_at(0);
 
         let projected: u64 = projected_bytes(&p, 0, poi_len, nav_projection).expect("a u64 holds it");
-        assert_eq!(projected, 2 * 3_000_000_008 + (HEADER_LEN + 2 * LOD_ENTRY_LEN) as u64 + poi_len + nav_len);
+        // The fixed prefix is v14's: the 49-byte header rounded to the style table's boundary (an
+        // empty style table here), that rounded again past two 18-byte LOD entries — and each LOD
+        // region carries its own §1.2 gap between its four-byte index, its four-byte offset table
+        // and its chunks.
+        let prefix = align_up(align_up(STYLE_OFFSET) + 2 * LOD_ENTRY_LEN as u64);
+        assert_eq!(prefix, 112);
+        assert_eq!(projected, prefix + 2 * (3_000_000_000 + 4 + 4 + 8) + poi_len + nav_len);
         assert!(projected > FILE_CEILING);
 
         let mut sink = |_: &[u8]| -> Result<()> { panic!("a refused shard writes no bytes") };

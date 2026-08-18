@@ -154,10 +154,20 @@ pub fn verify_shard(
 }
 
 /// `OBCM_Spec.md` §5.1's offset-table invariants for every chunk of one LOD: `offsets[0] == 0`,
-/// monotone, ends in the region, and no pair spans more than `Chunk Size`.
+/// monotone, ends in the region, and no pair spans more than `Chunk Size` rounded to the unit.
+///
+/// The entries are **units** since v14, so every comparison here is made in that currency and only
+/// the two that leave it — the span bound and the region's end — multiply, always after widening
+/// (§1.1).
 fn check_offset_table(src: &dyn ByteSource, lod: &obc_reader::Lod, i: usize) -> Result<()> {
+    let unit = crate::shard::SCALE.unit();
     let table_start = lod.index_offset + lod.node_count * 4;
     let raw = crate::input::read_at(src, table_start, (lod.chunk_count + 1) * 4)?;
+    // §5.1's v14 restatement of "a chunk may not span more than `Chunk Size`": a chunk's *content*
+    // still may not exceed it, and its *span* is that content rounded up to a unit — so the tight
+    // bound is `align_up(Chunk Size, U)` and the looser `Chunk Size + U - 1` would admit spans no
+    // writer can produce.
+    let span_bound = crate::shard::align_up(lod.chunk_size as u64);
     let mut prev = 0u32;
     for (k, w) in raw.chunks_exact(4).enumerate() {
         let v = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
@@ -170,24 +180,26 @@ fn check_offset_table(src: &dyn ByteSource, lod: &obc_reader::Lod, i: usize) -> 
         if v < prev {
             return Err(Error::Verify(format!("LOD {i}: offset table runs backwards at chunk {}", k - 1)));
         }
-        if (v - prev) as usize > lod.chunk_size {
+        if (v - prev) as u64 * unit > span_bound {
             return Err(Error::Verify(format!(
-                "LOD {i}: chunk {} spans {} bytes, past the {} capacity bound",
+                "LOD {i}: chunk {} spans {} bytes, past the {} capacity bound ({span_bound} rounded to the unit)",
                 k - 1,
-                v - prev,
+                (v - prev) as u64 * unit,
                 lod.chunk_size
             )));
         }
         prev = v;
     }
-    if prev as usize != lod.chunk_bytes_total {
+    if prev != lod.chunk_units_total {
         return Err(Error::Verify(format!(
-            "LOD {i}: the offset table ends at {prev} but the LOD table says {} chunk bytes",
-            lod.chunk_bytes_total
+            "LOD {i}: the offset table ends at {prev} unit(s) but the LOD table says {}",
+            lod.chunk_units_total
         )));
     }
-    let end = table_start + raw.len() + lod.chunk_bytes_total;
-    if end > src.len() as usize {
+    // The chunks begin one rounding step past the table (§3), so the region's end is measured from
+    // there and not from the table's own last byte.
+    let end = crate::shard::align_up((table_start + raw.len()) as u64) + lod.chunk_units_total as u64 * unit;
+    if end > src.len() as u64 {
         return Err(Error::Verify(format!("LOD {i}: the chunk region runs past the end of the file")));
     }
     Ok(())
