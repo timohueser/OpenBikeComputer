@@ -9,7 +9,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import { DEFAULT_TIMEOUT_MS, DeviceError, ProtocolClient } from "./client";
+import { DeviceError, ProtocolClient } from "./client";
 import { Crc32 } from "./crc32";
 import { MockDevice, loopbackDevice, loopbackLink } from "./loopback";
 import { PipeError, type BytePipe } from "./pipe";
