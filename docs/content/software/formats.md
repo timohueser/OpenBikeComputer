@@ -73,10 +73,12 @@ Where they differ is *shape*: a map is a 2-D area indexed by a quadtree; a route
 > v13 added a [sparse exact-edge snap index](src:specs/OBCM_Spec.md) to the navigation section, and
 > **v14 scaled every global offset** — the header's section offsets, the LOD table's, the per-LOD
 > chunk offset tables and the POI/nav directories' all count 16-byte units instead of bytes, so a
-> map addresses 64 GiB of interior rather than 4 GiB — and **embedded the terrain raster** in the
-> header's own region. The header is 49 bytes at v14, not 40. Everything below about quadtrees,
-> anchors, deltas, chunks and records is unchanged by either; what moved is what an offset *means*
-> and where terrain lives. The [one map, several files](#one-map-several-files) section below is
+> map addresses 64 GiB of interior rather than 4 GiB — **embedded the terrain raster** in the
+> header's own region, and **re-addressed the edge pool**: an `Edge Id` is no longer the
+> pool-relative byte offset the navigation-graph diagram below still labels it, but a packed
+> `(chunk, ordinal)` pair reaching the same 64 GiB. The header is 49 bytes at v14, not 40.
+> Everything below about quadtrees, anchors, deltas, chunks and records is unchanged by any of it;
+> what moved is what an offset *means* and where terrain lives. The [one map, several files](#one-map-several-files) section below is
 > superseded outright.
 
 ### The file, front to back
