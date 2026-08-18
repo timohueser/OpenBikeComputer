@@ -702,9 +702,15 @@ const _: () = assert!(MAX_TOKEN_CHUNK_ID == 0x07FF_FFFF);
 // was already eight bytes, so nothing there grew.
 //
 // **+2,564 B of `.bss` at the full 32-shard `SetShards`** is the whole resident cost of the slice on
-// the board, and it is spent almost entirely on a table FS7.5b2 deletes with the set machinery. A
-// single-file mount pays 72 B (one `ShardTables`), which is the shape every real map takes once the
-// split path goes.
+// the board, and it is spent almost entirely on a table that dies with the set machinery. A
+// single-file mount pays 72 B (one `ShardTables`), which is the shape every real map takes.
+//
+// **That reclaim is FS7.5c's, not FS7.5b2's**, and the distinction is a dependency rather than a
+// preference. b2 deleted every *producer* of a set — the assembler's emitter, the builder's upload
+// flows, the simulator's loader — but the board still mounts one at boot from any card written
+// before the cut, so `MountedSet`, `SetShards` and this table have a live consumer until the board
+// cutover replaces it. Deleting them here would not free 2,564 B; it would fail to compile
+// `sd.rs`, `ride.rs` and `main.rs`, and strand every card already carrying a set.
 #[cfg(target_pointer_width = "32")]
 mod device_sizes {
     use super::{Mounted, MountedSet, SetShards, ShardTables};
