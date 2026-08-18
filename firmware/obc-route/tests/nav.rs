@@ -1897,22 +1897,23 @@ fn climb_weight_zero_over_real_ascents_is_the_pre_elevation_router() {
     assert_eq!(obcr, flat_obcr, "…and is the same route the terrain-free map plans");
 }
 
-/// **The registered-fixture pin.** `sim-grimsel:grimsel.obcm` is the canonical map revision whose
-/// ascent table this test freezes, so every `Ascent M` on it is `0` and the climb term
-/// vanishes whatever the profile's weight — even though the shipped table carries the stock
-/// Road 10 / Gravel 8 / MTB 6 / Touring 8. All four profiles' routes are therefore byte-frozen at
-/// the digests `develop` produced before EL6; if one moves, the "no terrain ⇒ no change" claim (and
-/// with it every committed UI snapshot) is broken.
-#[cfg_attr(miri, ignore)] // reads the 6.5 MB fixture from disk — Miri's isolation forbids it
+/// **The registered-fixture pin.** `sim-grimsel:grimsel.obcm` is the canonical map revision this
+/// test freezes the router against. It is *not* a terrain-free map: it is packed `--terrain`, and
+/// 4 357 of its 11 524 §8.3 adjacency entries — **37.8%** — carry a non-zero `Ascent M`, up to
+/// 951 m. So the stock Road 10 / Gravel 8 / MTB 6 / Touring 8 climb weights all bite, and the four
+/// profiles plan four *different* routes; each is byte-frozen at its **own** digest below. If any
+/// one moves, either the router changed or the registered revision did — and with it every
+/// committed UI snapshot.
+#[cfg_attr(miri, ignore)] // reads the multi-megabyte fixture from disk — Miri's isolation forbids it
 #[test]
 #[cfg(feature = "external-fixtures")]
-fn the_terrain_free_grimsel_fixture_routes_byte_identically_on_every_profile() {
+fn the_registered_grimsel_fixture_routes_byte_identically_on_every_profile() {
     let bytes = obc_fixtures::read("sim-grimsel", "grimsel.obcm").expect("full fixture suite requires map");
     let (from, to) = ((8_169_610, 46_694_536), (8_217_309, 46_706_261));
     for (idx, want) in GRIMSEL_PRE_EL6_DIGESTS.iter().enumerate() {
         let (res, obcr, _) = plan_p(&bytes, from, to, "Grimsel", idx as u8);
         res.unwrap_or_else(|e| panic!("profile {idx} plans on grimsel, got {e:?}"));
-        assert_eq!(digest(&obcr), *want, "profile {idx}'s route on the terrain-free fixture moved");
+        assert_eq!(digest(&obcr), *want, "profile {idx}'s route on the registered fixture moved");
     }
 }
 
