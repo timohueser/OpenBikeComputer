@@ -35,7 +35,7 @@ SURFACE_CLASSES = ["unknown", "paved", "compacted", "gravel", "dirt", "rough", "
 NAME_LEN = 12
 PROFILE_RECORD_LEN = 56  # 12 name + 32 highway + 8 surface + climb_weight + 3 reserved (v12)
 CLIMB_WEIGHT_OFF = 52
-OBCM_VERSION = 13
+OBCM_VERSION = 14
 
 
 def _pack_bin():
@@ -106,8 +106,15 @@ def _profile_table(data):
     """Locate and slice the §8.6 profile table out of a packed .obcm."""
     assert data[:4] == b"OBCM", "bad magic"
     assert data[4] == OBCM_VERSION, f"expected OBCM v{OBCM_VERSION}, got v{data[4]}"
-    (nav_off,) = struct.unpack_from("<I", data, 36)  # header: Nav Graph Offset @ 36
-    (table_off,) = struct.unpack_from("<I", data, nav_off + 22)  # dir: Profile Table Offset @ 22
+    # v14 (§1.1): every offset that addresses the *file* counts 2^scale-byte units, not bytes.
+    # Arithmetic *inside* a structure (the `nav_off + 22` below) stays in bytes.
+    scale = data[40]  # header: Offset Scale @ 40 (u8)
+    assert 0 <= scale <= 9, f"§1.1 restricts Offset Scale to 0..=9, got {scale}"
+    unit = 1 << scale
+    (nav_off,) = struct.unpack_from("<I", data, 36)  # header: Nav Graph Offset @ 36 (scaled)
+    nav_off *= unit
+    (table_off,) = struct.unpack_from("<I", data, nav_off + 22)  # dir: Profile Table Offset @ 22 (scaled)
+    table_off *= unit
     count = data[nav_off + 26]  # dir: Profile Count @ 26 (u8)
     assert 1 <= count <= 8, f"profile count {count} out of range"
     end = table_off + count * PROFILE_RECORD_LEN
