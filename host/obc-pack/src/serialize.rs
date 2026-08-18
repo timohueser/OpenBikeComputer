@@ -1651,11 +1651,15 @@ const _: () =
 /// `obc-pack` writes a map with no embedded terrain, so the terrain pair is `(0, 0)` — §1.3's
 /// unambiguous absence, since the header occupies byte `0` and no region can begin there.
 ///
-/// **Nothing in this tree writes a terrain region yet.** `obcm-assemble` does not either — it
-/// documents the raster as its own file — so the only producer of the bytes `MapTables::terrain()`
-/// reads is `obcm-testkit`'s `splice_terrain`, a test helper. §1.3's reader half is real and
-/// tested; the writer half lands with FS7.5b2's splice. (`--terrain` here is an `ElevationSource`
-/// for §8.3's `Ascent M`, which is a different thing wearing a similar name.)
+/// **The producer of a terrain region is `obcm-assemble`, and it is not this.** A packed map is a
+/// single region cut from OSM; a rider's elevation comes from the catalog's terrain cells, which
+/// only an *assembly* selects and splices. So the zero pair here is a fact about what this program
+/// makes, not a gap waiting to be filled — and it is what keeps the two writers' headers
+/// byte-identical everywhere else, which `the_header_matches_the_packers_byte_for_byte` pins.
+///
+/// (`--terrain` on this side is an `ElevationSource` for §8.3's `Ascent M` — the packer *samples* a
+/// raster to compute per-edge climb, and never carries one. A different thing wearing a similar
+/// name, and the reason this paragraph exists.)
 fn header_bytes(
     lod_count: usize,
     marker_color: u16,
