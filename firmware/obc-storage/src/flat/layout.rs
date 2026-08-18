@@ -346,9 +346,11 @@ impl Located {
     /// where it started: not a wrong answer but a silent hang, on the device only. Narrowing last
     /// cannot produce it — the result is at most `input_len / BLOCK`, which was a `usize` already.
     ///
-    /// No host test can tell the two orders apart, because a 64-bit `usize` holds `2^32` perfectly
-    /// well. What holds this is the argument above, the unit test that states it, and having one
-    /// implementation rather than one per call site.
+    /// No test *runner* tells the two orders apart today, because a 64-bit `usize` holds `2^32`
+    /// perfectly well — `a_run_wider_than_a_device_usize_still_advances` below discriminates them on a
+    /// 32-bit target, and nothing in CI is one. So what holds this is the argument above, that live
+    /// test waiting for a runner that can fail it, and having one implementation of the order rather
+    /// than one per call site.
     pub fn whole_blocks(&self, input_len: usize) -> usize {
         ((input_len / BLOCK) as u64).min(self.contiguous / BLOCK as u64) as usize
     }

@@ -717,8 +717,12 @@ fn big_card_model(entries: &[Entry], sequence: u64) -> Model {
 /// count that no admissible state carries.
 #[test]
 fn a_commit_on_a_card_scaled_geometry_recovers_the_old_or_the_new_catalog() {
-    let first = entry(1, 1, ObjectKind::Route, EntryFlags::NONE, 3_000, "Grimsel Loop", &[(0, 1)]);
-    let second = entry(1, 2, ObjectKind::Route, EntryFlags::NONE, 5_000, "Grimsel Loop", &[(1, 1)]);
+    // The pre-state payload sits at extent **3**, not extent 0: extent 0 is the one address every
+    // stride agrees on, so a scenario whose only installed bytes live there would pass at a geometry
+    // the store had dropped. At extent 3 the harness installs 2 MiB × 3 along and a store reading at
+    // 1 MiB × 3 finds nothing. The commit's own object then takes extent 0, which first-fit hands it.
+    let first = entry(1, 1, ObjectKind::Route, EntryFlags::NONE, 3_000, "Grimsel Loop", &[(3, 1)]);
+    let second = entry(1, 2, ObjectKind::Route, EntryFlags::NONE, 5_000, "Grimsel Loop", &[(0, 1)]);
     let before = big_card_model(&[first], 4);
     let after = big_card_model(&[first], 4).apply(&[Change::Put(second), Change::Remove(first.meta.key())]).clone();
     for copy in [0, 1] {
