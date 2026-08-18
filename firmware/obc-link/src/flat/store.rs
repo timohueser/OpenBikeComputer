@@ -92,6 +92,13 @@ pub enum Mutation<A> {
 }
 
 /// The card, as the engine sees it.
+///
+/// **Every method takes `&self`, the mutators included**, mirroring the store's own seam after
+/// #1256's owner ruling of 2026-08-18: a store is shared, not owned. A board holds a source per
+/// mounted shard for the life of the image, and a `&mut` write half made an engine that could commit
+/// while a map was mounted un-expressible. The store carries the interior mutability; the engine is
+/// simply a caller that no longer demands exclusivity, which is why [`Engine`](super::engine::Engine)
+/// takes `store: &S` everywhere it used to take `&mut S`.
 pub trait Store {
     /// An opaque reservation of extents, released by [`commit`](Store::commit) or
     /// [`cancel`](Store::cancel) and by nothing else.
@@ -114,27 +121,27 @@ pub trait Store {
     fn next_object_id(&self) -> ObjectId;
 
     /// Reserve space for `bytes`. RAM state until a commit names it.
-    fn allocate(&mut self, bytes: u64) -> Result<Self::Allocation, StoreError>;
+    fn allocate(&self, bytes: u64) -> Result<Self::Allocation, StoreError>;
 
     /// Append to an allocation. A `write` that returns `Err` has advanced it by nothing: the same
     /// bytes may be written again, or the transfer abandoned through [`cancel`](Store::cancel).
-    fn write(&mut self, allocation: &mut Self::Allocation, bytes: &[u8]) -> Result<(), StoreError>;
+    fn write(&self, allocation: &mut Self::Allocation, bytes: &[u8]) -> Result<(), StoreError>;
 
     /// Release a reservation without publishing it. Mandatory on every abandonment path.
-    fn cancel(&mut self, allocation: Self::Allocation);
+    fn cancel(&self, allocation: Self::Allocation);
 
     /// Apply `mutations` atomically and return the new catalog commit sequence. A `commit` that
     /// returns `Err` changed nothing.
-    fn commit(&mut self, mutations: &[Mutation<Self::Allocation>]) -> Result<u64, StoreError>;
+    fn commit(&self, mutations: &[Mutation<Self::Allocation>]) -> Result<u64, StoreError>;
 
     /// Resolve an object. `None` takes the head; `Some(r)` takes exactly that revision.
-    fn open(&mut self, id: ObjectId, revision: Option<Revision>) -> Result<Self::Handle, StoreError>;
+    fn open(&self, id: ObjectId, revision: Option<Revision>) -> Result<Self::Handle, StoreError>;
 
     /// Random access inside an open object. Returns bytes read, short only at end of payload.
     fn read(&self, handle: &Self::Handle, offset: u64, buf: &mut [u8]) -> Result<usize, StoreError>;
 
     /// Close an open object. Mandatory: a dropped handle leaks its row and its extents.
-    fn close(&mut self, handle: Self::Handle);
+    fn close(&self, handle: Self::Handle);
 
     /// The read-only catalog view, in the catalog's own `(ObjectId, Revision)` order.
     fn entries(&self) -> impl Iterator<Item = EntryMeta> + '_;

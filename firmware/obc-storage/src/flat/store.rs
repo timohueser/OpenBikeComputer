@@ -13,6 +13,43 @@
 //! changes a block address, a byte or an ordering: it is the same body in the same places before the
 //! same synchronization. Every buffer here is fixed and on the stack — no allocation, on the device or
 //! on the host.
+//!
+//! ## Aliasing: the whole seam is `&self`
+//!
+//! Every operation takes `&self`, mutators included, and the resident state that moves lives behind
+//! cells (#1256, the owner ruling of 2026-08-18; [`source`](super::source) has the argument for why).
+//! Three rules hold it together, and they are what the rest of this module is arranged to obey.
+//!
+//! **1. Four kinds of field, and the split is deliberate.**
+//!
+//! | Field | Shape | Why |
+//! |---|---|---|
+//! | `dev` | plain, no cell | [`BlockDevice`] is `&self` throughout, so **the card is reachable with no borrow at all** — which is what makes rule 2 possible |
+//! | `store`, `geometry`, `extents` | plain, no cell | settled by `bring_up` inside the constructor and never written again |
+//! | [`Served`], `nonce`, `ride`, `recovered`, `listing_failed` | [`Cell`] | small and `Copy`; a `Cell` has no borrow flag, so these can never block anything and can never panic |
+//! | `free`, `holds`, `reservations` | [`RefCell`] | 8 KiB and two tables of rows — too big to copy through a `Cell` |
+//!
+//! **2. Card commands run with the state unborrowed.** Every `RefCell` borrow in this module is
+//! taken, used and dropped inside a window that issues no card command — with exactly one exception,
+//! named in rule 3. A commit's ~36 write commands, a mount's scan, a journal's page flushes and every
+//! `read` therefore run holding **nothing**: the addresses they need are `Copy` values taken out of a
+//! cell first ([`Hold`], [`RideState`], [`Served`]), and the device is reached through a plain `&`.
+//! That is `FLAT_Store_Protocol.md`'s "per card command, never per commit" granularity, and it is the
+//! property a storage task needs in order to interleave a render read into a commit's gaps.
+//!
+//! **3. The one exception is `reservations`, and it is safe because no reader needs it.** A
+//! [`write`](Store::write) streams the caller's bytes through a row's staging block, and a commit
+//! flushes those blocks; both hold the reservations borrow across the card commands they issue, because
+//! releasing it between them would mean copying a 512-byte staging block onto a frame this module
+//! measures. Nothing on the read path — `open`, `read`, `entries`, `handle_len` — touches
+//! `reservations`, so that borrow can block only another writer, and writers serialize anyway.
+//!
+//! **Re-entrancy is structurally impossible, which is why the borrows are `borrow_mut` and not
+//! `try_borrow_mut`.** A borrow panic on the device is a hard fault, so the guarantee has to be
+//! structural rather than handled: no cell borrow here spans a call to another `&self` method of the
+//! store, and the one callback the module takes — [`merge`](FlatStore::merge)'s `emit` — is invoked with
+//! no borrow held and is passed only closures that touch the catalog `Structure` and the
+//! [`BodyWriter`], never the store. [`source`](super::source) carries the consumer-side half.
 
 use core::cell::{Cell, RefCell};
 
@@ -203,7 +240,29 @@ struct RideState {
     next_sequence: u64,
 }
 
+/// The catalog the store is serving, and the counters that move with it.
+///
+/// One `Copy` value in one [`Cell`] rather than six fields, because that is what they are: §5.5's
+/// gate write is the instant all six become true together, and a commit publishes them in one
+/// [`set`](Cell::set) on the far side of it. Six separate cells would have made the same transition
+/// six independently observable steps.
+#[derive(Debug, Clone, Copy)]
+struct Served {
+    mode: Mode,
+    /// The copy the store is currently serving. §5.5's commit targets the other one.
+    copy: usize,
+    sequence: u64,
+    /// The greatest commit sequence any **well-formed** gate carried, which is what a commit
+    /// continues from — not the sequence of the copy that happened to validate.
+    high_water: u64,
+    next_object: u64,
+    entry_count: u16,
+}
+
 /// The flat card store.
+///
+/// The field shapes are the module docs' table, and the rules that go with them are load bearing:
+/// read them before moving a borrow.
 pub struct FlatStore<D> {
     dev: D,
     store: StoreId,
@@ -211,21 +270,13 @@ pub struct FlatStore<D> {
     /// below. A store that is serving nothing keeps the default, which addresses nothing either.
     geometry: Geometry,
     extents: u32,
-    mode: Mode,
-    /// The copy the store is currently serving. §5.5's commit targets the other one.
-    serving: usize,
-    sequence: u64,
-    /// The greatest commit sequence any **well-formed** gate carried, which is what a commit
-    /// continues from — not the sequence of the copy that happened to validate.
-    high_water: u64,
-    next_object: u64,
-    entry_count: u16,
-    free: FreeMap,
+    served: Cell<Served>,
+    free: RefCell<FreeMap>,
     holds: RefCell<[Option<Hold>; MAX_OPEN_OBJECTS]>,
-    reservations: [Option<Reservation>; MAX_RESERVATIONS],
-    nonce: u32,
-    ride: Option<RideState>,
-    recovered: Option<RideRecovery>,
+    reservations: RefCell<[Option<Reservation>; MAX_RESERVATIONS]>,
+    nonce: Cell<u32>,
+    ride: Cell<Option<RideState>>,
+    recovered: Cell<Option<RideRecovery>>,
     /// Set when the [`Store::entries`] iterator hit a media failure. §2's listing returns a plain
     /// iterator with nowhere to put an error, so the failure is recorded here and
     /// [`entries_ok`](Self::entries_ok) is how a caller finds out its listing was short.
@@ -242,6 +293,18 @@ fn write_blocks<D: BlockDevice>(dev: &D, lba: u64, buf: &[u8]) -> Result<(), Sto
 
 fn sync<D: BlockDevice>(dev: &D) -> Result<(), StoreError> {
     dev.sync().map_err(|_| StoreError::Media)
+}
+
+/// The reservation an [`Allocation`] names, or `None` when the token names no live row: a stale slot,
+/// a row that has been cancelled and re-taken, or a cursor that has moved out from under the caller.
+///
+/// A free function over the borrowed table rather than a method, because the table now lives in a
+/// [`RefCell`] and a method could not lend a reference out of a borrow it had already dropped. Every
+/// caller therefore takes the borrow itself, which is also what makes each one's extent visible.
+fn row_of<'a>(rows: &'a [Option<Reservation>; MAX_RESERVATIONS], allocation: &Allocation) -> Option<&'a Reservation> {
+    rows.get(allocation.slot as usize)?.as_ref().filter(|row| {
+        (row.nonce, row.written, row.reserved) == (allocation.nonce, allocation.written, allocation.reserved)
+    })
 }
 
 /// Appends `input` to a reservation, one contiguous run per pass: whole blocks straight out of the
@@ -442,24 +505,35 @@ impl<D: BlockDevice> FlatStore<D> {
     ///
     /// A card this cannot bring up mounts read-only rather than failing to exist: the seam has to be
     /// able to answer `readOnly`, and initialization is the only transition into this format.
+    ///
+    /// **The three `const` blocks below are load bearing, and the plain spelling costs 6,208 B of this
+    /// frame.** `RefCell::new(x)` takes `x` *by value*, so `RefCell::new(FreeMap::BLANK)` materialises
+    /// 8 KiB in a stack temporary and then copies it into the store being built — measured, on this
+    /// symbol, as 14,016 B becoming 20,224 against a gate of 16,384. Wrapping each in `const { … }`
+    /// makes it a constant expression instead: the blank table lands in `.rodata` and is copied once,
+    /// straight into its field. `Default::default()` does *not* fix it — the temporary is inside the
+    /// impl. This is the same failure `resource_guard.py frames` was written for, one layer down from
+    /// #1359's return slots, and the reason `FreeMap::BLANK` exists at all.
     pub fn mount(dev: D) -> Self {
         let mut store = FlatStore {
             dev,
             store: StoreId([0; 16]),
             geometry: Geometry::DEFAULT,
             extents: 0,
-            mode: Mode::Unformatted,
-            serving: 0,
-            sequence: 0,
-            high_water: 0,
-            next_object: 0,
-            entry_count: 0,
-            free: FreeMap::default(),
-            holds: RefCell::new([None; MAX_OPEN_OBJECTS]),
-            reservations: [None; MAX_RESERVATIONS],
-            nonce: 0,
-            ride: None,
-            recovered: None,
+            served: Cell::new(Served {
+                mode: Mode::Unformatted,
+                copy: 0,
+                sequence: 0,
+                high_water: 0,
+                next_object: 0,
+                entry_count: 0,
+            }),
+            free: const { RefCell::new(FreeMap::BLANK) },
+            holds: const { RefCell::new([None; MAX_OPEN_OBJECTS]) },
+            reservations: const { RefCell::new([None; MAX_RESERVATIONS]) },
+            nonce: Cell::new(0),
+            ride: Cell::new(None),
+            recovered: Cell::new(None),
             listing_failed: Cell::new(false),
         };
         store.bring_up();
@@ -505,7 +579,7 @@ impl<D: BlockDevice> FlatStore<D> {
         sync(&dev)?;
 
         let store = Self::mount(dev);
-        if store.mode.writable() {
+        if store.mode().writable() {
             Ok(store)
         } else {
             Err(StoreError::Media)
@@ -514,7 +588,7 @@ impl<D: BlockDevice> FlatStore<D> {
 
     /// Why this store refuses writes, if it does.
     pub fn mode(&self) -> Mode {
-        self.mode
+        self.served.get().mode
     }
 
     /// The card's identity. A client that has not seen it must treat its whole cache as void.
@@ -524,12 +598,12 @@ impl<D: BlockDevice> FlatStore<D> {
 
     /// The catalog commit sequence — the staleness hint a client compares its listing against.
     pub fn sequence(&self) -> u64 {
-        self.sequence
+        self.served.get().sequence
     }
 
     /// Entries the catalog holds.
     pub fn entry_count(&self) -> u16 {
-        self.entry_count
+        self.served.get().entry_count
     }
 
     /// True when the last [`Store::entries`] listing ran to the end of the array. A listing that hit a
@@ -544,18 +618,18 @@ impl<D: BlockDevice> FlatStore<D> {
     /// A card-layout fact with no caller above the seam: the harness reads the copy the store selected.
     #[cfg(any(test, feature = "std"))]
     pub fn serving_copy(&self) -> usize {
-        self.serving
+        self.served.get().copy
     }
 
     /// The mark §5.5 step 2 continues from, which a fallback mount leaves above the served sequence.
     #[cfg(any(test, feature = "std"))]
     pub fn high_water(&self) -> u64 {
-        self.high_water
+        self.served.get().high_water
     }
 
     /// Free extents, each of this card's recorded extent size (§4, §6).
     pub fn free_extents(&self) -> u32 {
-        self.free.free()
+        self.free.borrow().free()
     }
 
     /// That size, in bytes — the other half of what [`free_extents`](Self::free_extents) means. It is
@@ -572,17 +646,17 @@ impl<D: BlockDevice> FlatStore<D> {
     /// same id, and the second one's commit is refused as a duplicate key — acceptable only because
     /// `FLAT_Store_Protocol.md` §1 serves one transfer at a time.
     pub fn next_object_id(&self) -> ObjectId {
-        ObjectId(self.next_object)
+        ObjectId(self.served.get().next_object)
     }
 
     /// What §7.3 recovered, if a ride was recording when the card lost power.
     pub fn recovered_ride(&self) -> Option<RideRecovery> {
-        self.recovered
+        self.recovered.get()
     }
 
     /// Copies the recovered tail into `buf`. The bytes are the ride's payload past `flushed`.
     pub fn recovered_tail(&self, buf: &mut [u8]) -> Result<usize, StoreError> {
-        let Some(recovered) = self.recovered else { return Err(StoreError::NotFound) };
+        let Some(recovered) = self.recovered.get() else { return Err(StoreError::NotFound) };
         let want = recovered.tail_len as usize;
         if buf.len() < want {
             return Err(StoreError::Invalid);
@@ -606,12 +680,14 @@ impl<D: BlockDevice> FlatStore<D> {
     /// this is called or the card is remounted, and there are only [`MAX_RESERVATIONS`] rows. Every
     /// path that abandons a transfer — a cancel, a refusal, a validator rejection, a lost link — has to
     /// come through here.
-    pub fn cancel(&mut self, allocation: Allocation) {
-        if let Some(row) = self.row(&allocation) {
-            let ranges = row.ranges;
-            self.reservations[allocation.slot as usize] = None;
-            self.free.release(&ranges);
-        }
+    pub fn cancel(&self, allocation: Allocation) {
+        // Two short borrows of two different cells and no card command between them — rule 2.
+        let mut rows = self.reservations.borrow_mut();
+        let Some(row) = row_of(&rows, &allocation) else { return };
+        let ranges = row.ranges;
+        rows[allocation.slot as usize] = None;
+        drop(rows);
+        self.free.borrow_mut().release(&ranges);
     }
 
     /// Closes an open object. When the last reader lets go, every extent it was holding that the
@@ -628,17 +704,22 @@ impl<D: BlockDevice> FlatStore<D> {
     /// names them is removed or the card is remounted. Like [`entries`](Store::entries), which reports a
     /// short listing through [`entries_ok`](Self::entries_ok), this is stated rather than hidden; unlike
     /// it, no caller has a decision to make on it, so there is no flag to ask.
-    pub fn close(&mut self, handle: Handle) {
+    pub fn close(&self, handle: Handle) {
         let mut holds = self.holds.borrow_mut();
         let Some(hold) = holds[handle.slot as usize] else { return };
         if (hold.id, hold.revision) != (handle.id, handle.revision) {
             return;
         }
+        // §2.1's teardown rule, and since the seam went `&self` it is the *only* thing standing
+        // between a live [`StoreSource`](super::source::StoreSource) and a `close` that would pull the
+        // extents out from under it: another reader still holds this row, so this close spends a
+        // refcount and nothing else. The row, its ranges and its length survive untouched.
         if hold.readers > 1 {
             holds[handle.slot as usize] = Some(Hold { readers: hold.readers - 1, ..hold });
             return;
         }
         holds[handle.slot as usize] = None;
+        // Dropped before the `find` below: rule 2 — no borrow across a card command.
         drop(holds);
         // What the entry still names, if it is still there at all. A media failure here leaves the
         // extents allocated until the next mount rebuilds the map from the catalog, which is the safe
@@ -647,10 +728,11 @@ impl<D: BlockDevice> FlatStore<D> {
         // next allocation overlap it, and an overlap is a rule only a mount checks.
         let Ok((retained, head)) = self.find(hold.id) else { return };
         let live = [retained, head].into_iter().flatten().find(|entry| entry.meta.revision == hold.revision);
+        let mut free = self.free.borrow_mut();
         for (first, count) in hold.ranges.iter() {
             for extent in first..first + count {
                 if !live.is_some_and(|entry| entry.ranges.names(extent)) {
-                    self.free.release_one(u32::from(extent));
+                    free.release_one(u32::from(extent));
                 }
             }
         }
@@ -676,6 +758,9 @@ impl<D: BlockDevice> FlatStore<D> {
         &self.dev
     }
 
+    /// The one method that takes `&mut self`, and the reason `store`, `geometry` and `extents` need
+    /// no cell: it runs inside [`mount`](Self::mount) on a store nothing else can reach yet, and those
+    /// three are never written again.
     fn bring_up(&mut self) {
         let mut block = [0u8; BLOCK];
         let mut superblock = None;
@@ -693,18 +778,21 @@ impl<D: BlockDevice> FlatStore<D> {
         // fits the entry's `u16` index, so nothing below has to clamp it.
         self.geometry = superblock.geometry;
         self.extents = superblock.extent_count();
+        let mut served = self.served.get();
         match self.dev.block_count() {
             Ok(observed) if observed >= superblock.total_blocks => {}
             Ok(_) => {
-                self.mode = Mode::CardTooSmall;
+                served.mode = Mode::CardTooSmall;
+                self.served.set(served);
                 return;
             }
             Err(_) => {
-                self.mode = Mode::CatalogUnreadable;
+                served.mode = Mode::CatalogUnreadable;
+                self.served.set(served);
                 return;
             }
         }
-        self.mode = Mode::CatalogUnreadable;
+        served.mode = Mode::CatalogUnreadable;
 
         // Two gate reads decide which copy to try and where the sequence continues from. Only
         // well-formed gates contribute, so garbage in a dead gate's sequence field cannot poison the
@@ -715,9 +803,12 @@ impl<D: BlockDevice> FlatStore<D> {
                 *gate = Gate::decode(&block, copy, &self.store).ok();
             }
         }
-        self.high_water = gates.iter().flatten().map(|gate| gate.sequence).max().unwrap_or(0);
+        served.high_water = gates.iter().flatten().map(|gate| gate.sequence).max().unwrap_or(0);
         let order: [usize; 2] = match (gates[0], gates[1]) {
-            (Some(a), Some(b)) if a.sequence == b.sequence => return,
+            (Some(a), Some(b)) if a.sequence == b.sequence => {
+                self.served.set(served);
+                return;
+            }
             (Some(a), Some(b)) if b.sequence > a.sequence => [1, 0],
             _ => [0, 1],
         };
@@ -725,35 +816,42 @@ impl<D: BlockDevice> FlatStore<D> {
         for copy in order {
             let Some(gate) = gates[copy] else { continue };
             if let Ok(loaded) = self.load(copy, &gate) {
-                self.serving = copy;
-                self.sequence = gate.sequence;
-                self.next_object = loaded.next_object;
-                self.entry_count = gate.entry_count;
+                served.copy = copy;
+                served.sequence = gate.sequence;
+                served.next_object = loaded.next_object;
+                served.entry_count = gate.entry_count;
                 // A counter that has run out mounts read-only rather than wrapping: a revision no
                 // commit can supersede (§3), or a gate sequence §5.5 step 2 cannot continue from.
-                self.mode = if loaded.exhausted {
+                served.mode = if loaded.exhausted {
                     Mode::RevisionSpaceExhausted
-                } else if self.high_water == u64::MAX {
+                } else if served.high_water == u64::MAX {
                     Mode::SequenceSpaceExhausted
                 } else {
                     Mode::ReadWrite
                 };
+                self.served.set(served);
                 if let Some(recording) = loaded.recording {
                     self.recover_ride(&recording);
                 }
                 return;
             }
         }
+        self.served.set(served);
         // No copy is being served, so the free map describes nothing: a failed [`load`] leaves its own
         // attempt's bitmap behind, and `free_extents()` is public.
-        self.free.reset(0);
+        self.free.borrow_mut().reset(0);
     }
 
     /// §5.6 step 3 and 4 for one copy: the body CRC, every structural rule of §5.3, and the free
     /// bitmap built from the ranges as they go past. A failure leaves the caller free to try the
     /// next candidate — the bitmap is rebuilt from scratch each attempt.
-    fn load(&mut self, copy: usize, gate: &Gate) -> Result<Loaded, StoreError> {
-        self.free.reset(self.extents);
+    ///
+    /// The free map is borrowed for the whole scan rather than per window, which looks like rule 2's
+    /// exception and is not one: this runs inside [`mount`](Self::mount), before the store exists for
+    /// anyone else to reach, so there is no borrow to contend with.
+    fn load(&self, copy: usize, gate: &Gate) -> Result<Loaded, StoreError> {
+        let mut free = self.free.borrow_mut();
+        free.reset(self.extents);
         // One window serves the header block and then the array, and it is the boot path's whole
         // buffer: a full catalog is the header plus 120 windows, where it used to be 480 single-block
         // reads. It is [`MOUNT_STREAM_WINDOW`] rather than [`STREAM_WINDOW`] because this frame is also
@@ -789,7 +887,7 @@ impl<D: BlockDevice> FlatStore<D> {
                 let entry =
                     Entry::decode(&window[at..at + ENTRY_STRIDE], self.extents).map_err(|_| StoreError::Invalid)?;
                 structure.accept(&entry).map_err(|_| StoreError::Invalid)?;
-                self.free.claim(&entry.ranges).map_err(|_| StoreError::Invalid)?;
+                free.claim(&entry.ranges).map_err(|_| StoreError::Invalid)?;
                 if entry.meta.flags.has(EntryFlags::RECORDING) {
                     loaded.recording = Some(entry);
                 }
@@ -810,7 +908,7 @@ impl<D: BlockDevice> FlatStore<D> {
     ///
     /// A recording entry with no valid slot is the state a ride start leaves before its first
     /// checkpoint: the ride resumes at sequence 1 with nothing flushed.
-    fn recover_ride(&mut self, entry: &Entry) {
+    fn recover_ride(&self, entry: &Entry) {
         let mut candidates: [Option<Slot>; SLOTS] = [None; SLOTS];
         let mut block = [0u8; BLOCK];
         for (slot, candidate) in candidates.iter_mut().enumerate() {
@@ -840,7 +938,7 @@ impl<D: BlockDevice> FlatStore<D> {
             }
             ride.flushed = slot.flushed;
             ride.next_sequence = slot.sequence + 1;
-            self.recovered = Some(RideRecovery {
+            self.recovered.set(Some(RideRecovery {
                 id: slot.id,
                 revision: slot.revision,
                 checkpoint_sequence: slot.sequence,
@@ -848,10 +946,10 @@ impl<D: BlockDevice> FlatStore<D> {
                 tail_len: slot.tail_len,
                 payload_crc: slot.payload_crc,
                 slot: slot.slot,
-            });
+            }));
             break;
         }
-        self.ride = Some(ride);
+        self.ride.set(Some(ride));
     }
 
     /// The other half of a slot's candidacy: the slot CRC over all 32,768 bytes. The 63 tail blocks are
@@ -877,10 +975,11 @@ impl<D: BlockDevice> FlatStore<D> {
     fn find(&self, id: ObjectId) -> Result<(Option<Entry>, Option<Entry>), StoreError> {
         // One block, not a window: a binary search's probes are scattered, so a wide window would read
         // 4 KiB to look at 128 bytes of it.
-        let mut cursor = EntryCursor::new(self.serving, self.extents, self.entry_count);
+        let served = self.served.get();
+        let mut cursor = EntryCursor::new(served.copy, self.extents, served.entry_count);
         let mut probe = [0u8; BLOCK];
         let mut low = 0u16;
-        let mut high = self.entry_count;
+        let mut high = served.entry_count;
         while low < high {
             let mid = low + (high - low) / 2;
             if cursor.get(&self.dev, &mut probe, mid)?.meta.id < id {
@@ -891,7 +990,7 @@ impl<D: BlockDevice> FlatStore<D> {
         }
         let mut retained = None;
         let mut head = None;
-        for index in low..self.entry_count.min(low.saturating_add(2)) {
+        for index in low..served.entry_count.min(low.saturating_add(2)) {
             let entry = cursor.get(&self.dev, &mut probe, index)?;
             if entry.meta.id != id {
                 break;
@@ -903,12 +1002,6 @@ impl<D: BlockDevice> FlatStore<D> {
             }
         }
         Ok((retained, head))
-    }
-
-    fn row(&self, allocation: &Allocation) -> Option<&Reservation> {
-        self.reservations.get(allocation.slot as usize)?.as_ref().filter(|row| {
-            (row.nonce, row.written, row.reserved) == (allocation.nonce, allocation.written, allocation.reserved)
-        })
     }
 
     /// Walks the new entry array in key order: the serving copy's entries with the batch applied.
@@ -936,7 +1029,10 @@ impl<D: BlockDevice> FlatStore<D> {
 
         let mut next = 0usize;
         let mut written = 0u16;
-        for index in 0..self.entry_count {
+        // No borrow is held across this loop, and `emit` is called from inside it: rule 2 and the
+        // re-entrancy argument both live here. The closures the two passes pass in touch `Structure`
+        // and `BodyWriter` and never the store.
+        for index in 0..self.served.get().entry_count {
             let entry = cursor.get(&self.dev, window, index)?;
             while next < order.len() && plan[order[next] as usize].key < entry.meta.key() {
                 if let Some(fresh) = plan[order[next] as usize].entry.as_ref() {
@@ -1022,7 +1118,7 @@ impl<D: BlockDevice> FlatStore<D> {
                         // is `1` again — and the hold table keys on `(ObjectId, Revision)`: a key
                         // re-created over different extents would serve a removed object's bytes to a
                         // reader that opened the live one. A create names `next_object_id()`.
-                        if retained.is_none() && head.is_none() && meta.id.0 < self.next_object {
+                        if retained.is_none() && head.is_none() && meta.id.0 < self.served.get().next_object {
                             return Err(StoreError::Invalid);
                         }
                         // A revision that already exists is caught by the compare-and-swap below
@@ -1039,11 +1135,16 @@ impl<D: BlockDevice> FlatStore<D> {
                                 return Err(StoreError::Invalid);
                             }
                         }
-                        let row = self.row(allocation).ok_or(StoreError::Invalid)?;
-                        if !meta.flags.holds_slack() && meta.payload_len != row.written {
+                        // The two facts this needs out of the row, copied out and the borrow dropped —
+                        // the `find` above is already done, and nothing below touches the card.
+                        let rows = self.reservations.borrow();
+                        let row = row_of(&rows, allocation).ok_or(StoreError::Invalid)?;
+                        let (ranges, written) = (row.ranges, row.written);
+                        drop(rows);
+                        if !meta.flags.holds_slack() && meta.payload_len != written {
                             return Err(StoreError::Invalid);
                         }
-                        let mut entry = Entry { meta: *meta, ranges: row.ranges };
+                        let mut entry = Entry { meta: *meta, ranges };
                         let freed = if meta.flags.holds_slack() {
                             Ranges::default()
                         } else {
@@ -1068,15 +1169,19 @@ impl<D: BlockDevice> FlatStore<D> {
     /// Marks the extents `plan` gives back free, unless a reader still holds the entry that named
     /// them — a RAM-only hold that needs no durable record, because after a reboot the extents are
     /// free and there is no reader left to be surprised.
-    fn release(&mut self, plan: &[Resolved]) {
+    fn release(&self, plan: &[Resolved]) {
+        // Two cells at once and no card command between them: the only place in this module that holds
+        // a second borrow while it has one, which is admissible because neither is `holds`' or `free`'s
+        // own method calling back into the store.
         let holds = self.holds.borrow();
+        let mut free = self.free.borrow_mut();
         for resolved in plan {
             // Both branches ask, because both take extents away from a reader: a removal takes the
             // whole entry, and an amend that trims a reserve takes its tail. `close` works out which
             // of a hold's extents the catalog has stopped naming and frees exactly those.
             let held = holds.iter().flatten().any(|hold| (hold.id, hold.revision) == resolved.key);
             if !held {
-                self.free.release(&resolved.freed);
+                free.release(&resolved.freed);
             }
         }
     }
@@ -1092,32 +1197,42 @@ struct Loaded {
 impl<D: BlockDevice> Store for FlatStore<D> {
     type Handle = Handle;
 
-    fn allocate(&mut self, bytes: u64) -> Result<Allocation, StoreError> {
-        if !self.mode.writable() {
+    /// Reserves extents and takes a row. No card command runs here at all, so both borrows are the
+    /// short kind — and they are two, in order, because the free map and the reservation table are
+    /// separate cells.
+    fn allocate(&self, bytes: u64) -> Result<Allocation, StoreError> {
+        if !self.mode().writable() {
             return Err(StoreError::ReadOnly);
         }
         if bytes == 0 {
             return Err(StoreError::Invalid);
         }
         let extents = self.geometry.extents_for(bytes);
-        if u64::from(self.free.free()) < extents {
+        let mut free = self.free.borrow_mut();
+        if u64::from(free.free()) < extents {
             return Err(StoreError::NoSpace { required: bytes });
         }
-        let ranges = self.free.first_fit(extents as u32).ok_or(StoreError::TooFragmented)?;
-        // As with the hold table: no free row is `busy` on the wire, not `invalidRequest`.
-        let slot = self.reservations.iter().position(Option::is_none).ok_or(StoreError::Invalid)?;
-        self.free.claim(&ranges).map_err(|_| StoreError::Invalid)?;
-        self.nonce = self.nonce.wrapping_add(1);
-        self.reservations[slot] =
-            Some(Reservation { nonce: self.nonce, ranges, reserved: bytes, written: 0, staging: [0; BLOCK] });
-        Ok(Allocation { slot: slot as u8, nonce: self.nonce, reserved: bytes, written: 0 })
+        let ranges = free.first_fit(extents as u32).ok_or(StoreError::TooFragmented)?;
+        // As with the hold table: no free row is `busy` on the wire, not `invalidRequest`. Taken
+        // *before* the claim, so a refusal here gives the map back nothing to undo.
+        let mut rows = self.reservations.borrow_mut();
+        let slot = rows.iter().position(Option::is_none).ok_or(StoreError::Invalid)?;
+        free.claim(&ranges).map_err(|_| StoreError::Invalid)?;
+        let nonce = self.nonce.get().wrapping_add(1);
+        self.nonce.set(nonce);
+        rows[slot] = Some(Reservation { nonce, ranges, reserved: bytes, written: 0, staging: [0; BLOCK] });
+        Ok(Allocation { slot: slot as u8, nonce, reserved: bytes, written: 0 })
     }
 
-    fn write(&mut self, allocation: &mut Allocation, bytes: &[u8]) -> Result<(), StoreError> {
-        if !self.mode.writable() {
+    /// Rule 3's first half: the reservation borrow is held across the card commands `fill` issues,
+    /// because the row's staging block is what those commands write out of. Nothing on the read path
+    /// wants this cell.
+    fn write(&self, allocation: &mut Allocation, bytes: &[u8]) -> Result<(), StoreError> {
+        if !self.mode().writable() {
             return Err(StoreError::ReadOnly);
         }
-        if self.row(allocation).is_none() {
+        let mut rows = self.reservations.borrow_mut();
+        if row_of(&rows, allocation).is_none() {
             return Err(StoreError::Invalid);
         }
         if allocation.written + bytes.len() as u64 > allocation.reserved {
@@ -1125,7 +1240,7 @@ impl<D: BlockDevice> Store for FlatStore<D> {
         }
         let dev = &self.dev;
         let geometry = self.geometry;
-        let row = self.reservations[allocation.slot as usize].as_mut().expect("the row was just validated");
+        let row = rows[allocation.slot as usize].as_mut().expect("the row was just validated");
         // A fragmented allocation is several writes, so one of them can fail with the others already on
         // the card. The row's cursor goes back where it was: it is the reservation's identity as much as
         // its position — `row` matches an `Allocation` on it — so a cursor left ahead of the caller's
@@ -1144,8 +1259,13 @@ impl<D: BlockDevice> Store for FlatStore<D> {
     /// §5.5, and the only durable state transition an object ever undergoes. Payload bytes are
     /// written and synchronized before it begins, so a cut at any point before the gate leaves those
     /// bytes anonymous and their extents free at the next mount.
-    fn commit(&mut self, mutations: &[Mutation]) -> Result<u64, StoreError> {
-        if !self.mode.writable() {
+    /// The granularity claim, made concrete: the ~36 card commands below — the two merge passes, the
+    /// gate invalidation, the body stream, the gate write and their syncs — run with **no cell
+    /// borrowed**. `served` is read out once as a `Copy` value, and the only borrows are the short
+    /// no-I/O windows in `resolve` and `release` plus rule 3's staging flush.
+    fn commit(&self, mutations: &[Mutation]) -> Result<u64, StoreError> {
+        let served = self.served.get();
+        if !served.mode.writable() {
             return Err(StoreError::ReadOnly);
         }
         if mutations.is_empty() || mutations.len() > MAX_BATCH {
@@ -1158,7 +1278,7 @@ impl<D: BlockDevice> Store for FlatStore<D> {
             freed: Ranges::default(),
             reservation: None,
         }; MAX_BATCH];
-        let mut count = self.entry_count as i32;
+        let mut count = served.entry_count as i32;
         let mut greatest_id = 0u64;
         for (index, mutation) in mutations.iter().enumerate() {
             if mutations[..index].iter().any(|earlier| earlier.key() == mutation.key()) {
@@ -1196,18 +1316,18 @@ impl<D: BlockDevice> Store for FlatStore<D> {
         // continue to. A mount at that mark refuses writes outright (`Mode::SequenceSpaceExhausted`),
         // and so does the store from the commit that reaches it — but the arithmetic is checked here
         // too, because a refusal is the only admissible answer and a panic is not one.
-        let sequence = self.high_water.checked_add(1).ok_or(StoreError::ReadOnly)?;
+        let sequence = served.high_water.checked_add(1).ok_or(StoreError::ReadOnly)?;
         let header = Header {
             store: self.store,
             sequence,
-            next_object: self.next_object.max(greatest_id + 1),
+            next_object: served.next_object.max(greatest_id + 1),
             entry_count: count as u16,
         };
         let mut structure = Structure::new(self.geometry);
         // The commit's two windows, owned here and lent out: see [`EntryCursor`] for why they are not
         // owned by the reader and the writer that use them.
         let mut scan = [0u8; STREAM_WINDOW];
-        let mut cursor = EntryCursor::new(self.serving, self.extents, self.entry_count);
+        let mut cursor = EntryCursor::new(served.copy, self.extents, served.entry_count);
         let written =
             self.merge(&mut cursor, &mut scan, plan, |entry| structure.accept(entry).map_err(|_| StoreError::Invalid))?;
         structure.finish(&header).map_err(|_| StoreError::Invalid)?;
@@ -1217,19 +1337,26 @@ impl<D: BlockDevice> Store for FlatStore<D> {
 
         // The payload is durable before the commit begins: whatever a `write` left in a staging
         // block goes to the card now.
+        // Rule 3's second half, and the borrow is scoped to exactly this loop: at most four rows, one
+        // card command each, and no reader wants this cell. Releasing it between the commands would
+        // mean lifting a 512-byte staging block onto the frame this module measures.
         let mut staged = false;
         let geometry = self.geometry;
-        for resolved in plan.iter() {
-            let Some(slot) = resolved.reservation else { continue };
-            let dev = &self.dev;
-            let row = self.reservations[slot as usize].as_mut().expect("resolve validated the reservation");
-            let partial = (row.written % BLOCK as u64) as usize;
-            if partial > 0 {
-                let located = row.ranges.locate(geometry, row.written - partial as u64).ok_or(StoreError::Invalid)?;
-                row.staging[partial..].fill(0);
-                write_blocks(dev, located.block, &row.staging)?;
+        {
+            let mut rows = self.reservations.borrow_mut();
+            for resolved in plan.iter() {
+                let Some(slot) = resolved.reservation else { continue };
+                let dev = &self.dev;
+                let row = rows[slot as usize].as_mut().expect("resolve validated the reservation");
+                let partial = (row.written % BLOCK as u64) as usize;
+                if partial > 0 {
+                    let located =
+                        row.ranges.locate(geometry, row.written - partial as u64).ok_or(StoreError::Invalid)?;
+                    row.staging[partial..].fill(0);
+                    write_blocks(dev, located.block, &row.staging)?;
+                }
+                staged = true;
             }
-            staged = true;
         }
         // §7.2's ride end: the last checkpoint's tail is on the card in a journal slot, not in the
         // ride's extents, and this is the commit that gives those bytes a length and a CRC. So the
@@ -1240,7 +1367,7 @@ impl<D: BlockDevice> Store for FlatStore<D> {
             sync(&self.dev)?;
         }
 
-        let target = 1 - self.serving;
+        let target = 1 - served.copy;
         write_blocks(&self.dev, catalog_gate(target), &INVALIDATED)?;
         sync(&self.dev)?;
 
@@ -1264,30 +1391,36 @@ impl<D: BlockDevice> Store for FlatStore<D> {
         write_blocks(&self.dev, catalog_gate(target), &gate.encode())?;
         sync(&self.dev)?;
 
-        // The gate landed: `target` is the truth, and everything the batch displaced is free.
-        self.serving = target;
-        self.sequence = header.sequence;
-        self.high_water = header.sequence;
-        self.next_object = header.next_object;
-        self.entry_count = header.entry_count;
-        // The counter that ran out mid-session, from the same rule §5.6 applies at mount: a store whose
-        // high-water mark has reached `u64::MAX` has no sequence for the next commit, so this is the
-        // last one this card accepts. Read-only from here, reads still served.
-        if self.high_water == u64::MAX {
-            self.mode = Mode::SequenceSpaceExhausted;
-        }
+        // The gate landed: `target` is the truth, and everything the batch displaced is free. One
+        // `set` of the whole `Served` value, which is the resident mirror of the atomic transition the
+        // gate write just made on the card.
+        //
+        // The counter that ran out mid-session comes with it, from the same rule §5.6 applies at
+        // mount: a store whose high-water mark has reached `u64::MAX` has no sequence for the next
+        // commit, so this is the last one this card accepts. Read-only from here, reads still served.
+        self.served.set(Served {
+            mode: if header.sequence == u64::MAX { Mode::SequenceSpaceExhausted } else { served.mode },
+            copy: target,
+            sequence: header.sequence,
+            high_water: header.sequence,
+            next_object: header.next_object,
+            entry_count: header.entry_count,
+        });
         self.release(plan);
-        for resolved in plan.iter() {
-            if let Some(slot) = resolved.reservation {
-                self.reservations[slot as usize] = None;
+        {
+            let mut rows = self.reservations.borrow_mut();
+            for resolved in plan.iter() {
+                if let Some(slot) = resolved.reservation {
+                    rows[slot as usize] = None;
+                }
             }
         }
         self.settle_ride(plan);
-        Ok(self.sequence)
+        Ok(header.sequence)
     }
 
     fn open(&self, id: ObjectId, revision: Option<Revision>) -> Result<Handle, StoreError> {
-        if !self.mode.readable() {
+        if !self.mode().readable() {
             return Err(StoreError::ReadOnly);
         }
         let (retained, head) = self.find(id)?;
@@ -1364,14 +1497,21 @@ impl<D: BlockDevice> Store for FlatStore<D> {
         Ok(done)
     }
 
+    /// The listing snapshots the copy and the count it was built against, and holds no cell borrow —
+    /// which is what lets an iterator coexist with a commit now that both take `&self`. What it costs
+    /// is stated rather than hidden: an iterator held **across** a commit keeps walking the copy the
+    /// store was serving when it was made. That copy is intact until the commit *after* the one that
+    /// displaced it, so the listing stays well-formed and simply reads one commit stale. Every caller
+    /// in the tree drains its listing inside the request that asked for it.
     fn entries(&self) -> impl Iterator<Item = EntryMeta> + '_ {
         self.listing_failed.set(false);
+        let served = self.served.get();
         Entries {
             dev: &self.dev,
-            cursor: EntryCursor::new(self.serving, self.extents, self.entry_count),
+            cursor: EntryCursor::new(served.copy, self.extents, served.entry_count),
             buf: [0; BLOCK],
             index: 0,
-            count: self.entry_count,
+            count: served.entry_count,
             failed: &self.listing_failed,
         }
     }
@@ -1379,11 +1519,14 @@ impl<D: BlockDevice> Store for FlatStore<D> {
     /// §7.2 steps 2 and 3: flush whole payload pages out of the front of the tail into the recording
     /// entry's own extents, then write one slot. A payload page is written only when every byte in it
     /// is already in a slot on the card, and once written it is never touched again.
-    fn journal(&mut self, checkpoint: RideCheckpoint) -> Result<(), StoreError> {
-        if !self.mode.writable() {
+    ///
+    /// The ride state is a `Cell`, so the page flushes and the slot write below hold no borrow at all
+    /// — rule 2 — and the local `ride` this advances is the same local it always was.
+    fn journal(&self, checkpoint: RideCheckpoint) -> Result<(), StoreError> {
+        if !self.mode().writable() {
             return Err(StoreError::ReadOnly);
         }
-        let Some(mut ride) = self.ride else { return Err(StoreError::Invalid) };
+        let Some(mut ride) = self.ride.get() else { return Err(StoreError::Invalid) };
         if (checkpoint.id, checkpoint.revision) != (ride.id, ride.revision) {
             return Err(StoreError::Invalid);
         }
@@ -1446,7 +1589,7 @@ impl<D: BlockDevice> Store for FlatStore<D> {
         sync(&self.dev)?;
 
         ride.next_sequence += 1;
-        self.ride = Some(ride);
+        self.ride.set(Some(ride));
         Ok(())
     }
 }
@@ -1456,7 +1599,7 @@ impl<D: BlockDevice> FlatStore<D> {
     /// key and clears `RECORDING`. A `Remove` of that key is not one — the object is going away, and
     /// so are its bytes.
     fn finalising(&self, plan: &[Resolved]) -> Option<(RideState, Entry)> {
-        let ride = self.ride?;
+        let ride = self.ride.get()?;
         let entry = plan
             .iter()
             .filter_map(|resolved| resolved.entry)
@@ -1526,26 +1669,26 @@ impl<D: BlockDevice> FlatStore<D> {
     /// here cannot be reported: the commit already happened and `commit` promises that an `Err`
     /// changed nothing. §7.2 covers the cost of losing it — a cut during that zeroing is harmless,
     /// because no entry carries `RECORDING` and §5.6 never reads the slots.
-    fn settle_ride(&mut self, plan: &[Resolved]) {
+    fn settle_ride(&self, plan: &[Resolved]) {
         let started =
             plan.iter().filter_map(|resolved| resolved.entry).find(|entry| entry.meta.flags.has(EntryFlags::RECORDING));
         if let Some(entry) = started {
-            let same = self.ride.filter(|ride| (ride.id, ride.revision) == (entry.meta.id, entry.meta.revision));
-            self.ride = Some(RideState {
+            let same = self.ride.get().filter(|ride| (ride.id, ride.revision) == (entry.meta.id, entry.meta.revision));
+            self.ride.set(Some(RideState {
                 id: entry.meta.id,
                 revision: entry.meta.revision,
                 ranges: entry.ranges,
                 flushed: same.map_or(0, |ride| ride.flushed),
                 next_sequence: same.map_or(1, |ride| ride.next_sequence),
-            });
+            }));
             return;
         }
-        let Some(ride) = self.ride else { return };
+        let Some(ride) = self.ride.get() else { return };
         if !plan.iter().any(|resolved| resolved.key == (ride.id, ride.revision)) {
             return;
         }
-        self.ride = None;
-        self.recovered = None;
+        self.ride.set(None);
+        self.recovered.set(None);
         for slot in 0..SLOTS {
             if write_blocks(&self.dev, slot_block(slot), &INVALIDATED).is_err() {
                 return;
