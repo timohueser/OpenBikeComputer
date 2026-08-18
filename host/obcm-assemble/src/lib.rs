@@ -173,11 +173,11 @@ pub trait ShardStore {
 pub struct MemorySource(pub Vec<u8>);
 
 impl ByteSource for MemorySource {
-    fn read_at(&self, offset: u32, buf: &mut [u8]) -> std::result::Result<(), obc_formats::io::Error> {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::result::Result<(), obc_formats::io::Error> {
         obc_formats::io::SliceSource(&self.0).read_at(offset, buf)
     }
-    fn len(&self) -> u32 {
-        self.0.len() as u32
+    fn len(&self) -> u64 {
+        self.0.len() as u64
     }
 }
 
@@ -648,7 +648,7 @@ pub fn assemble_full(
             None
         } else {
             let src = store.source(plan.index)?;
-            if src.len() as u64 != bytes {
+            if src.len() != bytes {
                 return Err(Error::Verify(format!(
                     "shard {} was written as {bytes} bytes but reads back as {} (OBCA §5.3)",
                     plan.index,
@@ -815,6 +815,7 @@ fn plan_set(
     if !opts.force_split {
         let all_lods: Vec<usize> = (0..schema.lods.len()).collect();
         let mut single = build_shard(schema, cells, assembly, chunk_size, &all_lods, 0, BandRole::Core, true)?;
+        single.single_file = true;
         single.bytes = shard::projected_bytes(&single, style_len, poi_len, nav_projection)?;
         if single.bytes <= FILE_CEILING {
             return Ok(vec![single]);
@@ -825,10 +826,12 @@ fn plan_set(
     // does (§5.1).
     let mut plans = vec![build_shard(schema, cells, assembly, chunk_size, &[], 0, BandRole::Core, true)?];
     let core_bytes = shard::projected_bytes(&plans[0], style_len, poi_len, nav_projection)?;
-    if core_bytes > FILE_CEILING {
+    if core_bytes > shard::SET_SHARD_CEILING {
         return Err(Error::Capacity(format!(
-            "the core file projects to {core_bytes} bytes, past the {FILE_CEILING}-byte ceiling. The **navigation \
-             graph** is what fills it — reduce the coverage (OBCA §5.7).",
+            "the core file projects to {core_bytes} bytes, past the {}-byte ceiling a set's member has to fit \
+             (OBCA §5.2's `Bytes` is a uint32). The **navigation graph** is what fills it — reduce the coverage \
+             (OBCA §5.7).",
+            shard::SET_SHARD_CEILING
         )));
     }
     plans[0].bytes = core_bytes;
@@ -850,7 +853,7 @@ fn plan_set(
     let mut push = |plans: &mut Vec<ShardPlan>, box_: AlignedBox, lods: &[usize], role: BandRole| -> Result<()> {
         let mut plan = build_shard(schema, cells, box_, chunk_size, lods, index, role, false)?;
         plan.bytes = shard::projected_bytes(&plan, style_len, empty_poi_len, empty_nav_projection)?;
-        if plan.bytes > FILE_CEILING {
+        if plan.bytes > shard::SET_SHARD_CEILING {
             return Err(Error::Capacity(format!(
                 "a {} shard projects to {} bytes, past the ceiling — lower the target shard size",
                 role.as_str(),
@@ -964,7 +967,7 @@ fn build_shard(
             .collect();
         plans.push(graft::plan_lod(i, entry.max_mpp, chunk_size, box_, band.cell_log2, &present, cells)?);
     }
-    Ok(ShardPlan { index, role, box_, lods: plans, core, bytes: 0, sha256: [0; 32] })
+    Ok(ShardPlan { index, role, box_, lods: plans, core, single_file: false, bytes: 0, sha256: [0; 32] })
 }
 
 /// §4.8.6's set invariants, checked once the shards are written: exactly one core whose bbox is the
@@ -979,7 +982,9 @@ fn check_set_invariants(plans: &[ShardPlan], assembly: AlignedBox) -> Result<()>
         return Err(Error::Verify("the core shard's bbox is not the assembly bbox (OBCA §5.3)".into()));
     }
     for p in plans {
-        if p.bytes > FILE_CEILING {
+        // `check_set_invariants` runs only on the split path, so every plan here is a set member and
+        // answers to §5.2's narrower wall.
+        if p.bytes > shard::SET_SHARD_CEILING {
             return Err(Error::Verify(format!("shard {} is {} bytes, past the ceiling", p.index, p.bytes)));
         }
     }

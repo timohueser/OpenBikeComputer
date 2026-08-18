@@ -329,7 +329,7 @@ pub fn emit_lod(plan: &LodPlan, cells: &[Cell<'_>], out: &mut dyn FnMut(&[u8]) -
         }
         let cell = &cells[g.cell];
         let l = cell.lod(plan.lod)?;
-        let table_start = l.index_offset + l.node_count * 4;
+        let table_start = l.index_offset + (l.node_count * 4) as u64;
         let raw = cell.read(table_start, (g.chunk_count as usize + 1) * 4)?;
         let mut prev = 0u32;
         for (k, w) in raw.chunks_exact(4).enumerate() {
@@ -376,8 +376,8 @@ pub fn emit_lod(plan: &LodPlan, cells: &[Cell<'_>], out: &mut dyn FnMut(&[u8]) -
         }
         let cell = &cells[g.cell];
         let l = cell.lod(plan.lod)?;
-        let data_start = align_up((l.index_offset + l.node_count * 4 + (l.chunk_count + 1) * 4) as u64);
-        cell.copy(data_start as usize, g.chunk_bytes() as usize, out)?;
+        let data_start = align_up(l.index_offset + (l.node_count * 4 + (l.chunk_count + 1) * 4) as u64);
+        cell.copy(data_start, g.chunk_bytes() as usize, out)?;
     }
     Ok(())
 }

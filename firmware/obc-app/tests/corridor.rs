@@ -103,10 +103,10 @@ fn render_without_route(app: &mut App, map: &[u8]) {
 struct FailingSource<'a>(SliceSource<'a>);
 
 impl obc_formats::io::ByteSource for FailingSource<'_> {
-    fn read_at(&self, _off: u32, _buf: &mut [u8]) -> Result<(), obc_formats::io::Error> {
+    fn read_at(&self, _off: u64, _buf: &mut [u8]) -> Result<(), obc_formats::io::Error> {
         Err(obc_formats::io::Error::Io)
     }
-    fn len(&self) -> u32 {
+    fn len(&self) -> u64 {
         self.0.len()
     }
 }

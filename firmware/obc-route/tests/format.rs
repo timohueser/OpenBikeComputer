@@ -24,11 +24,11 @@ struct CountingSource<'a> {
 }
 
 impl ByteSource for CountingSource<'_> {
-    fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), Error> {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), Error> {
         self.reads.set(self.reads.get() + 1);
         self.inner.read_at(offset, buf)
     }
-    fn len(&self) -> u32 {
+    fn len(&self) -> u64 {
         self.inner.len()
     }
 }
@@ -43,7 +43,7 @@ struct ReentrantSource<'a> {
 }
 
 impl ByteSource for ReentrantSource<'_> {
-    fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), Error> {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), Error> {
         self.reads.set(self.reads.get() + 1);
         let result = self.inner.read_at(offset, buf);
         if !self.triggered.replace(true) {
@@ -51,7 +51,7 @@ impl ByteSource for ReentrantSource<'_> {
         }
         result
     }
-    fn len(&self) -> u32 {
+    fn len(&self) -> u64 {
         self.inner.len()
     }
 }

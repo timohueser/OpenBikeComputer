@@ -107,7 +107,7 @@ impl<'a> Cell<'a> {
             nav,
             profile_table,
             style_ids,
-            bytes: src.len() as u64,
+            bytes: src.len(),
         })
     }
 
@@ -118,32 +118,33 @@ impl<'a> Cell<'a> {
         })
     }
 
-    /// Read `len` bytes at `offset`.
-    pub fn read(&self, offset: usize, len: usize) -> Result<Vec<u8>> {
+    /// Read `len` bytes at `offset`. The offset is a position in a **file** (`u64` since the read
+    /// seam widened); the length is a buffer this engine allocates, so it stays `usize` — a
+    /// distinction that matters here because this engine also runs in a browser tab, where `usize`
+    /// is 32 bits and the address space, not the format, is what bounds an allocation.
+    pub fn read(&self, offset: u64, len: usize) -> Result<Vec<u8>> {
         read_at(self.src, offset, len)
     }
 
     /// Read `buf.len()` bytes at `offset` into a buffer the caller owns — [`Cell::read`] without the
     /// allocation, for a loop that runs once per record (§4.6.6's pool emission) and must not turn
     /// each one into a `Vec`.
-    pub fn read_into(&self, offset: usize, buf: &mut [u8]) -> Result<()> {
+    pub fn read_into(&self, offset: u64, buf: &mut [u8]) -> Result<()> {
         if buf.is_empty() {
             return Ok(());
         }
-        let at = u32::try_from(offset).map_err(|_| Error::Io(obc_formats::io::Error::BadOffset))?;
-        self.src.read_at(at, buf).map_err(Error::Io)
+        self.src.read_at(offset, buf).map_err(Error::Io)
     }
 
     /// Stream `len` bytes at `offset` through `sink` in [`COPY_BLOCK`] pieces — the verbatim copy of
     /// §2.3, which never materialises a whole cell region.
-    pub fn copy(&self, offset: usize, len: usize, sink: &mut dyn FnMut(&[u8]) -> Result<()>) -> Result<()> {
+    pub fn copy(&self, offset: u64, len: usize, sink: &mut dyn FnMut(&[u8]) -> Result<()>) -> Result<()> {
         let mut buf = vec![0u8; COPY_BLOCK.min(len.max(1))];
         let mut done = 0usize;
         while done < len {
             let take = COPY_BLOCK.min(len - done);
             let part = &mut buf[..take];
-            let at = u32::try_from(offset + done).map_err(|_| Error::Io(obc_formats::io::Error::BadOffset))?;
-            self.src.read_at(at, part).map_err(Error::Io)?;
+            self.src.read_at(offset + done as u64, part).map_err(Error::Io)?;
             sink(part)?;
             done += take;
         }
@@ -152,13 +153,12 @@ impl<'a> Cell<'a> {
 }
 
 /// Read a byte range from any source, with the offset arithmetic checked.
-pub fn read_at(src: &dyn ByteSource, offset: usize, len: usize) -> Result<Vec<u8>> {
+pub fn read_at(src: &dyn ByteSource, offset: u64, len: usize) -> Result<Vec<u8>> {
     let mut out = vec![0u8; len];
     if len == 0 {
         return Ok(out);
     }
-    let at = u32::try_from(offset).map_err(|_| Error::Io(obc_formats::io::Error::BadOffset))?;
-    src.read_at(at, &mut out).map_err(Error::Io)?;
+    src.read_at(offset, &mut out).map_err(Error::Io)?;
     Ok(out)
 }
 

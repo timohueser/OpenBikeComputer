@@ -160,9 +160,11 @@ struct MagicOverlay<'a, S: ByteSource + ?Sized> {
 }
 
 impl<S: ByteSource + ?Sized> ByteSource for MagicOverlay<'_, S> {
-    fn read_at(&self, offset: u32, out: &mut [u8]) -> Result<(), SourceError> {
+    fn read_at(&self, offset: u64, out: &mut [u8]) -> Result<(), SourceError> {
         self.source.read_at(offset, out)?;
-        let start = offset as usize;
+        // The overlay patches the first four bytes only, so it works entirely in the low end of the
+        // address space; anything past `usize` is trivially past the magic and needs no patching.
+        let Ok(start) = usize::try_from(offset) else { return Ok(()) };
         let end = start.checked_add(out.len()).ok_or(SourceError::BadOffset)?;
         let overlay_start = start.min(4);
         let overlay_end = end.min(4);
@@ -174,7 +176,7 @@ impl<S: ByteSource + ?Sized> ByteSource for MagicOverlay<'_, S> {
         Ok(())
     }
 
-    fn len(&self) -> u32 {
+    fn len(&self) -> u64 {
         self.source.len()
     }
 }

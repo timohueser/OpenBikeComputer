@@ -450,7 +450,7 @@ impl ByteSource for MapSource<'_> {
     // arms' machinery) out of those frames' locals, whatever the inliner decides later; a call
     // per multi-ms SD read is free. See the matching note on `ExtentSource::read_at`.
     #[inline(never)]
-    fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), obc_formats::io::Error> {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), obc_formats::io::Error> {
         match self {
             MapSource::Extent(s) => s.read_at(offset, buf),
             MapSource::Seek(s) => s.read_at(offset, buf),
@@ -458,7 +458,7 @@ impl ByteSource for MapSource<'_> {
         }
     }
 
-    fn len(&self) -> u32 {
+    fn len(&self) -> u64 {
         match self {
             MapSource::Extent(s) => s.len(),
             MapSource::Seek(s) => s.len(),
@@ -2818,6 +2818,7 @@ impl Storage {
         let mut b = [0u8; 64];
         for off in [0, len.saturating_sub(a.len() as u32)] {
             let n = a.len().min(len as usize);
+            let off = u64::from(off);
             if slow.read_at(off, &mut a[..n]).is_err() || fast.read_at(off, &mut b[..n]).is_err() || a[..n] != b[..n] {
                 return false;
             }
@@ -4369,7 +4370,7 @@ impl Storage {
         let mut offset = 0u32;
         while offset < len {
             let n = ((len - offset) as usize).min(buf.len());
-            ByteSource::read_at(&src, offset, &mut buf[..n]).ok()?;
+            ByteSource::read_at(&src, offset.into(), &mut buf[..n]).ok()?;
             crc.update(&buf[..n]);
             offset += n as u32;
         }
@@ -4776,7 +4777,9 @@ impl StageIo for SdStage<'_> {
     }
 
     fn read_stage(&mut self, offset: u32, buf: &mut [u8]) -> Result<(), obc_dfu::engine::IoError> {
-        SdByteSource::new(self.vmgr, self.file, self.len).read_at(offset, buf).map_err(|_| obc_dfu::engine::IoError)
+        SdByteSource::new(self.vmgr, self.file, self.len)
+            .read_at(offset.into(), buf)
+            .map_err(|_| obc_dfu::engine::IoError)
     }
 
     fn stage_extents(&mut self, out: &mut [obc_dfu::Extent; obc_dfu::MAX_EXTENTS]) -> Result<usize, ExtentsError> {

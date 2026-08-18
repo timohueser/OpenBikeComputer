@@ -176,7 +176,27 @@ const INDEX_META_VALID: u8 = 0x80;
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub(in crate::reader) struct IndexBlock {
-    pub(in crate::reader) off: u32,
+    /// Which window of the file this holds, as a **block number** — `byte_offset / INDEX_BLOCK` —
+    /// rather than the byte offset itself. Exact, never a rounding: every fill is block-aligned by
+    /// construction, because [`MapCacheInner::index_read`] rounds the request down to a block
+    /// boundary before it asks for one.
+    ///
+    /// **It is a `u32`, and that is a measurement rather than a preference.** FS7.5-seam widened
+    /// file offsets to `u64`, and spelling this field as one costs nothing in *size* (the struct
+    /// has four spare bytes) but changes the whole cache's **alignment** from 4 to 8 — after which
+    /// LLVM stopped folding [`MapCacheInner::new`]'s `zeroed()` into a `.bss` memset at the board's
+    /// placement site and materialised the ~37 KB cache as a stack temporary instead. Measured on
+    /// the nRF54LM20 image: the boot task's frame went **7,456 → 74,240 B against a 49 KB residual
+    /// stack** — a boot overflow, and the exact failure mode of #1084/#1108. Storing the block
+    /// number keeps this 4-aligned and the fold intact.
+    ///
+    /// Nothing is given up. A `u32` block number addresses `INDEX_BLOCK × 2^32` = **2 TiB**, which
+    /// is thirty-two times §1.1's interior at the scale every producer writes (`U = 16`, 64 GiB)
+    /// and — at the largest scale §1.1 permits — reaches its last byte **exactly**. So this
+    /// narrowing is never the wall that binds; the const assert below is that sentence as
+    /// arithmetic. `index_block` still refuses rather than wraps if it is ever handed one past
+    /// `u32`.
+    pub(in crate::reader) block: u32,
     pub(in crate::reader) len: u16,
     pub(in crate::reader) meta: u8,
     /// Keep `buf` word-aligned so a full-sector extent read bypasses the board's alignment bounce.
@@ -184,12 +204,20 @@ pub(in crate::reader) struct IndexBlock {
     pub(in crate::reader) buf: [u8; INDEX_BLOCK],
 }
 
-// On-device each compact tagged window is 520 bytes including alignment.
+// On-device each compact tagged window is 520 bytes including alignment — unmoved by the u64 read
+// seam, which is the point of the block-number tag above.
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(core::mem::size_of::<IndexBlock>() == INDEX_BLOCK + 8);
+// The last byte of the largest interior §1.1 permits — `2^32` units at the largest legal
+// `Offset Scale` — must still have a block number a `u32` can hold, or `IndexBlock::block` would be
+// the wall instead of the format. It fits, and at that extreme it fits exactly.
+const _: () = assert!(
+    ((1u64 << 32) * (1u64 << obc_formats::obcm::OFFSET_SCALE_MAX) - 1) / INDEX_BLOCK as u64 <= u32::MAX as u64,
+    "a block number must reach every byte an `Offset Scale` can cover"
+);
 
 impl IndexBlock {
-    pub(in crate::reader) const EMPTY: Self = Self { off: 0, len: 0, meta: 0, _align: 0, buf: [0; INDEX_BLOCK] };
+    pub(in crate::reader) const EMPTY: Self = Self { block: 0, len: 0, meta: 0, _align: 0, buf: [0; INDEX_BLOCK] };
 
     #[inline]
     pub(in crate::reader) fn valid(&self) -> bool {
@@ -449,7 +477,7 @@ impl MapCacheInner {
         file: u8,
         lod: u8,
         cid: u32,
-        start: u32,
+        start: u64,
         len: usize,
         node: &BBox,
     ) -> Result<ChunkLoc, IoError> {
@@ -522,13 +550,13 @@ impl MapCacheInner {
         &mut self,
         src: &dyn ByteSource,
         file: u8,
-        off: u32,
+        off: u64,
         out: &mut [u8],
     ) -> Result<(), IoError> {
         let mut filled = 0usize;
         while filled < out.len() {
-            let cur = off + filled as u32;
-            let block_off = cur - cur % INDEX_BLOCK as u32;
+            let cur = off + filled as u64;
+            let block_off = cur - cur % INDEX_BLOCK as u64;
             let slot = self.index_block(src, file, block_off)?;
             let within = (cur - block_off) as usize;
             let blen = self.index[slot].len as usize;
@@ -547,13 +575,22 @@ impl MapCacheInner {
         &mut self,
         src: &dyn ByteSource,
         file: u8,
-        block_off: u32,
+        block_off: u64,
     ) -> Result<usize, IoError> {
-        if let Some(i) = self.index.iter().position(|b| b.valid() && b.file() == file && b.off == block_off) {
+        // Checked, not cast: the const assert on [`IndexBlock::block`] proves no *legal* file
+        // reaches a block number past `u32`, but `block_off` is derived from directory bytes and a
+        // corrupt one is not legal. A wrap here would alias two different windows of the file and
+        // serve one for the other, which is the one failure a cache must never have.
+        let tag = u32::try_from(block_off / INDEX_BLOCK as u64).map_err(|_| IoError::BadOffset)?;
+        if let Some(i) = self.index.iter().position(|b| b.valid() && b.file() == file && b.block == tag) {
             self.index[i].set_rrpv(0);
             return Ok(i);
         }
-        let want = ((src.len() - block_off) as usize).min(INDEX_BLOCK);
+        // Checked rather than `-`: `block_off` is derived from file data, so a corrupt directory can
+        // name a block past the source's end. It used to be a `u32` subtraction that wrapped into a
+        // vast `want` and was clamped back down by the `min`; in `u64` the same wrap would be a
+        // panic in debug and an absurd length in release, so it refuses instead.
+        let want = src.len().saturating_sub(block_off).min(INDEX_BLOCK as u64) as usize;
         if want == 0 {
             return Err(IoError::BadOffset);
         }
@@ -563,7 +600,7 @@ impl MapCacheInner {
         // poisoned slot still keyed to the old block offset.
         self.index[i].meta = 0;
         src.read_at(block_off, &mut self.index[i].buf[..want])?;
-        self.index[i].off = block_off;
+        self.index[i].block = tag;
         self.index[i].len = want as u16;
         // Bimodal RRIP insertion: an initial fill gets a normal prediction so all slots seed;
         // thereafter seven of eight source misses enter as immediate probation (3), while the

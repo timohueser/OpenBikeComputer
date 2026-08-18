@@ -194,7 +194,7 @@ pub trait CellReads {
     ///
     /// `Err(message)` fails the run as [`ErrorCode::Io`], with the message quoted after the cell's
     /// own name. A short read is a failure: the buffer must be filled or the call must refuse.
-    fn read(&self, slot: usize, offset: u32, buf: &mut [u8]) -> Result<(), String>;
+    fn read(&self, slot: usize, offset: u64, buf: &mut [u8]) -> Result<(), String>;
 }
 
 /// How a host takes the bytes of a shard — and gives them back (#1116 D1).
@@ -222,7 +222,7 @@ pub trait ShardWrites {
     /// Fill `into` with `into.len()` bytes at `offset` of the **sealed** shard in `slot`, for the
     /// §4.8 read-back. Served through a [`BlockCache`], so this is called on the order of once per
     /// [`DEFAULT_READ_BLOCK`] rather than once per engine read.
-    fn read_at(&self, slot: usize, offset: u32, into: &mut [u8]) -> Result<(), String>;
+    fn read_at(&self, slot: usize, offset: u64, into: &mut [u8]) -> Result<(), String>;
     /// No more bytes are coming for `slot`. A host that buffers must flush here: the very next thing
     /// that happens is §4.8 reading the shard back.
     fn seal(&self, slot: usize) -> Result<(), String>;
@@ -555,7 +555,10 @@ struct CachedBlock {
     /// Which source, and which block of it. `slot == usize::MAX` marks a slot that has never been
     /// filled, which no real source can collide with.
     slot: usize,
-    index: usize,
+    /// Which block of it — a **file**-relative index, so `u64`: a 64 GiB single file has more
+    /// blocks than a wasm32 `usize` would be embarrassed by, but the arithmetic that produces it is
+    /// a file offset divided by the block size and it stays in the file's width throughout.
+    index: u64,
     /// The block's bytes. Exactly `len` of them are valid — the last block of a cell is short.
     data: Vec<u8>,
     len: usize,
@@ -569,14 +572,14 @@ struct CachedBlock {
 /// of [`ShardWrites`] for the output shards (#1116 D1) — so one [`BlockCache`] serves either, and
 /// the argument for the cache (module header) is made once rather than twice.
 trait SlotReads {
-    fn read_slot(&self, slot: usize, offset: u32, buf: &mut [u8]) -> Result<(), String>;
+    fn read_slot(&self, slot: usize, offset: u64, buf: &mut [u8]) -> Result<(), String>;
 }
 
 /// The input cells, as a cache reads them.
 struct CellSlots<'r>(&'r dyn CellReads);
 
 impl SlotReads for CellSlots<'_> {
-    fn read_slot(&self, slot: usize, offset: u32, buf: &mut [u8]) -> Result<(), String> {
+    fn read_slot(&self, slot: usize, offset: u64, buf: &mut [u8]) -> Result<(), String> {
         self.0.read(slot, offset, buf)
     }
 }
@@ -586,7 +589,7 @@ impl SlotReads for CellSlots<'_> {
 struct SinkSlots<'w>(&'w dyn ShardWrites);
 
 impl SlotReads for SinkSlots<'_> {
-    fn read_slot(&self, slot: usize, offset: u32, buf: &mut [u8]) -> Result<(), String> {
+    fn read_slot(&self, slot: usize, offset: u64, buf: &mut [u8]) -> Result<(), String> {
         self.0.read_at(slot, offset, buf)
     }
 }
@@ -652,7 +655,7 @@ impl<'r> BlockCache<'r> {
     }
 
     /// Record the host's own message and answer the engine in the only vocabulary the seam has.
-    fn fail(&self, slot: usize, at: usize, message: String) -> obc_formats::io::Error {
+    fn fail(&self, slot: usize, at: u64, message: String) -> obc_formats::io::Error {
         let named = {
             let labels = self.labels.borrow();
             labels.get(slot).filter(|l| !l.is_empty()).cloned()
@@ -666,13 +669,16 @@ impl<'r> BlockCache<'r> {
     }
 
     /// One host read, straight into `buf`.
-    fn fetch(&self, slot: usize, at: usize, buf: &mut [u8]) -> Result<(), obc_formats::io::Error> {
-        let offset = u32::try_from(at).map_err(|_| obc_formats::io::Error::BadOffset)?;
-        self.reads.read_slot(slot, offset, buf).map_err(|e| self.fail(slot, at, e))
+    ///
+    /// The `u32::try_from` that used to stand here is gone with the u32 read seam: a sunk shard is a
+    /// **file** in the host's storage, which since FS7.5-seam may be larger than this address space.
+    /// The buffer is still `usize`-bounded, and correctly so — it lives in wasm memory.
+    fn fetch(&self, slot: usize, at: u64, buf: &mut [u8]) -> Result<(), obc_formats::io::Error> {
+        self.reads.read_slot(slot, at, buf).map_err(|e| self.fail(slot, at, e))
     }
 
     /// The index of the cache slot holding block `index` of `slot`, filling it if it is not there.
-    fn block_of(&self, slot: usize, index: usize, source_len: usize) -> Result<usize, obc_formats::io::Error> {
+    fn block_of(&self, slot: usize, index: u64, source_len: u64) -> Result<usize, obc_formats::io::Error> {
         let now = self.clock.get().wrapping_add(1);
         self.clock.set(now);
         {
@@ -684,8 +690,8 @@ impl<'r> BlockCache<'r> {
         }
         // Fill outside the borrow: the host call is arbitrary code, and holding a `RefCell` across
         // it would turn a re-entrant caller into a panic instead of a refusal.
-        let start = index * self.block;
-        let len = self.block.min(source_len.saturating_sub(start));
+        let start = index * self.block as u64;
+        let len = (self.block as u64).min(source_len.saturating_sub(start)) as usize;
         if len == 0 {
             return Err(obc_formats::io::Error::BadOffset);
         }
@@ -706,29 +712,30 @@ impl<'r> BlockCache<'r> {
 
     /// [`ByteSource::read_at`] for one source cell: whole blocks through the LRU, big reads around
     /// it.
-    fn read_at(&self, slot: usize, offset: u32, source_len: u32, buf: &mut [u8]) -> Result<(), obc_formats::io::Error> {
-        let at = offset as usize;
-        let end = at.checked_add(buf.len()).ok_or(obc_formats::io::Error::BadOffset)?;
+    fn read_at(&self, slot: usize, offset: u64, source_len: u64, buf: &mut [u8]) -> Result<(), obc_formats::io::Error> {
+        let end = offset.checked_add(buf.len() as u64).ok_or(obc_formats::io::Error::BadOffset)?;
         // Checked here rather than left to the host: a read past a cell's declared end is a defect
         // in the engine or a wrong length in the catalog, and it must read as one — not as whatever
         // a short host read happens to leave in the buffer.
-        if end > source_len as usize {
+        if end > source_len {
             return Err(obc_formats::io::Error::BadOffset);
         }
         if buf.is_empty() {
             return Ok(());
         }
         if buf.len() >= self.block {
-            return self.fetch(slot, at, buf);
+            return self.fetch(slot, offset, buf);
         }
         let mut done = 0usize;
         while done < buf.len() {
-            let cursor = at + done;
-            let index = cursor / self.block;
-            let k = self.block_of(slot, index, source_len as usize)?;
+            let cursor = offset + done as u64;
+            let index = cursor / self.block as u64;
+            let k = self.block_of(slot, index, source_len)?;
             let slots = self.slots.borrow();
             let b = &slots[k];
-            let within = cursor - index * self.block;
+            // Inside one block, so the narrowing is against `self.block` rather than against the
+            // file — a block is resident, and residency is what `usize` measures.
+            let within = (cursor - index * self.block as u64) as usize;
             let n = (b.len - within).min(buf.len() - done);
             if n == 0 {
                 return Err(obc_formats::io::Error::BadOffset);
@@ -746,7 +753,7 @@ impl<'r> BlockCache<'r> {
 struct NoReads;
 
 impl SlotReads for NoReads {
-    fn read_slot(&self, slot: usize, _offset: u32, _buf: &mut [u8]) -> Result<(), String> {
+    fn read_slot(&self, slot: usize, _offset: u64, _buf: &mut [u8]) -> Result<(), String> {
         Err(format!("slot {slot} has no reader — this assembly was wired without one"))
     }
 }
@@ -755,16 +762,16 @@ impl SlotReads for NoReads {
 /// cache. No bytes — that is the entire point.
 struct KeyedSource<'a, 'r> {
     slot: usize,
-    len: u32,
+    len: u64,
     cache: &'a BlockCache<'r>,
 }
 
 impl ByteSource for KeyedSource<'_, '_> {
-    fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), obc_formats::io::Error> {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), obc_formats::io::Error> {
         self.cache.read_at(self.slot, offset, self.len, buf)
     }
 
-    fn len(&self) -> u32 {
+    fn len(&self) -> u64 {
         self.len
     }
 }
@@ -1077,14 +1084,15 @@ enum ShardBody<'a> {
 }
 
 impl ShardBody<'_> {
-    /// The shard's length. A shard is `<= u32::MAX` by OBCA §5.7 — and this is the very seam that
-    /// makes it so, since `ByteSource::len` is a `u32` and `FILE_CEILING` is the `min` that respects
-    /// it. The engine refuses an over-size shard long before here; the clamp is so a defect reads as
-    /// a truncated file rather than a wrapped one.
-    fn len(&self) -> u32 {
+    /// The shard's length, exactly. It used to clamp at `u32::MAX`, because this seam was the very
+    /// thing that bounded a shard: `ByteSource::len` was a `u32` and `FILE_CEILING` was the `min`
+    /// that respected it. With the seam at `u64` there is nothing to clamp against — a **buffered**
+    /// shard is still bounded by this address space, and a **sunk** one is a host file that may be
+    /// larger than it, which is the case the widening exists for.
+    fn len(&self) -> u64 {
         match self {
-            ShardBody::Buffered(bytes) => bytes.len() as u32,
-            ShardBody::Sunk { len, .. } => u32::try_from(*len).unwrap_or(u32::MAX),
+            ShardBody::Buffered(bytes) => bytes.len() as u64,
+            ShardBody::Sunk { len, .. } => *len,
         }
     }
 }
@@ -1107,7 +1115,7 @@ struct VerifySource<'a, 'h> {
 }
 
 impl ByteSource for VerifySource<'_, '_> {
-    fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), obc_formats::io::Error> {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), obc_formats::io::Error> {
         {
             let mut p = self.p.borrow_mut();
             p.verified += buf.len() as u64;
@@ -1125,13 +1133,11 @@ impl ByteSource for VerifySource<'_, '_> {
         }
         match &self.body {
             ShardBody::Buffered(bytes) => SliceSource(bytes).read_at(offset, buf),
-            ShardBody::Sunk { slot, len, cache } => {
-                cache.read_at(*slot, offset, u32::try_from(*len).unwrap_or(u32::MAX), buf)
-            }
+            ShardBody::Sunk { slot, len, cache } => cache.read_at(*slot, offset, *len, buf),
         }
     }
 
-    fn len(&self) -> u32 {
+    fn len(&self) -> u64 {
         self.body.len()
     }
 }
@@ -1594,7 +1600,7 @@ pub fn assemble(
     let keyed: Vec<KeyedSource<'_, '_>> = keyed_ids
         .iter()
         .enumerate()
-        .map(|(slot, (_, _, _, len))| KeyedSource { slot, len: *len, cache: &cache })
+        .map(|(slot, (_, _, _, len))| KeyedSource { slot, len: u64::from(*len), cache: &cache })
         .collect();
     let inputs: Vec<CellInput<'_>> = ids
         .iter()

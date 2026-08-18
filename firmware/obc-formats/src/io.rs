@@ -33,11 +33,24 @@ pub enum DecodeError {
 }
 
 /// A random-access, read-only byte source.
+///
+/// **Offsets and lengths are `u64`, and that is a deliberate widening rather than generosity.**
+/// This trait is the whole tree's read interface: every format parser — OBCM, OBCR, OBCT, OBCW —
+/// reaches its bytes through it and through nothing else, so whatever width it speaks *is* the
+/// largest file anything here can open. It spoke `u32` until FS7.5-seam, which put the practical
+/// wall at 4 GiB no matter what a format's own offsets could express (OBCM v14's interior is
+/// `2^32 × U` = 64 GiB at the default scale). A `u64` here is what makes DACH-scale single files
+/// addressable.
+///
+/// A **medium** may still be narrower than the seam and must say so through [`Error`] rather than
+/// by truncating: an in-memory [`SliceSource`] cannot exceed the host's address space (32-bit on
+/// wasm32 and on the MCU), and a store's object may end before an offset the caller asks for.
+/// Both refuse; neither wraps.
 pub trait ByteSource {
     /// Fill `buf` from `offset`.
-    fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), Error>;
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), Error>;
     /// Total length in bytes.
-    fn len(&self) -> u32;
+    fn len(&self) -> u64;
     /// Whether the source is empty.
     fn is_empty(&self) -> bool {
         self.len() == 0
@@ -45,6 +58,13 @@ pub trait ByteSource {
 }
 
 /// A sequential byte sink with a single random patch for streamed writers.
+///
+/// The offset here is **still `u32`, and stays so on purpose.** Unlike [`ByteSource`], this sink
+/// is not a general read interface — its only users are the OBCR route/track/trip writers, whose
+/// format addresses its own structures with `uint32` fields (`OBCR_Spec.md`). A patch offset past
+/// 4 GiB would be one no route file can name, so widening it would buy a width nothing can spend.
+/// Map bytes are never written through this seam: the packer and the assembler write files
+/// directly, in `u64` throughout.
 pub trait ByteSink {
     /// Append `buf` at the current write position.
     fn write(&mut self, buf: &[u8]) -> Result<(), Error>;
@@ -56,18 +76,21 @@ pub trait ByteSink {
 pub struct SliceSource<'a>(pub &'a [u8]);
 
 impl ByteSource for SliceSource<'_> {
-    fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), Error> {
-        let start = offset as usize;
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), Error> {
+        // The narrowing is the *host's*, not the seam's: a slice lives in the address space, so on
+        // wasm32 and on the MCU an offset past `usize` names a byte no in-memory source can hold.
+        // Refuse it; a wrapping cast would read some other byte and call it a success.
+        let start = usize::try_from(offset).map_err(|_| Error::BadOffset)?;
         let end = start.checked_add(buf.len()).ok_or(Error::BadOffset)?;
         let bytes = self.0.get(start..end).ok_or(Error::BadOffset)?;
         buf.copy_from_slice(bytes);
         Ok(())
     }
 
-    fn len(&self) -> u32 {
-        // Saturate rather than wrap: a ≥4 GiB slice reporting a truncated total would let
-        // downstream bounds checks pass against the wrong length. `u32::MAX` fails closed.
-        self.0.len().min(u32::MAX as usize) as u32
+    fn len(&self) -> u64 {
+        // Exact, with no saturation to fail closed against: `u64` covers every `usize` this can be
+        // built from. The `min(u32::MAX)` clamp that used to live here died with the u32 seam.
+        self.0.len() as u64
     }
 }
 
@@ -247,7 +270,8 @@ mod tests {
         source.read_at(2, &mut out).unwrap();
         assert_eq!(&out, b"cde");
         assert_eq!(source.read_at(5, &mut out), Err(Error::BadOffset));
-        assert_eq!(source.read_at(u32::MAX, &mut out), Err(Error::BadOffset));
-        assert_eq!(source.len(), 6, "a sub-4-GiB slice reports its exact length");
+        assert_eq!(source.read_at(u32::MAX as u64, &mut out), Err(Error::BadOffset));
+        assert_eq!(source.read_at(u64::MAX, &mut out), Err(Error::BadOffset), "past the address space, not past a u32");
+        assert_eq!(source.len(), 6, "a slice reports its exact length, with nothing to saturate against");
     }
 }

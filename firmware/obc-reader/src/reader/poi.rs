@@ -52,7 +52,7 @@ pub struct PoiCatEntry {
     /// Canonical category id (1..=6; spec §7.4).
     pub category_id: u8,
     /// Byte offset to this category's quadtree index.
-    pub index_offset: usize,
+    pub index_offset: u64,
     /// Number of `uint32` nodes in the index; `0` ⇒ the category is empty in this map.
     pub node_count: usize,
     /// Number of POI data chunks in this category.
@@ -70,10 +70,10 @@ impl PoiCatEntry {
     }
 
     /// Byte offset where this category's data chunks begin (right after its index),
-    /// or `None` if the arithmetic overflows `usize` (a corrupt directory on the
-    /// 32-bit MCU) — the shared §7.1 convention, see `index_end`.
+    /// or `None` if the arithmetic overflows `u64` (a corrupt directory) — the
+    /// shared §7.1 convention, see `index_end`.
     #[inline]
-    pub fn data_start(&self) -> Option<usize> {
+    pub fn data_start(&self) -> Option<u64> {
         aligned_index_end(self.scale, self.index_offset, self.node_count)
     }
 
@@ -81,7 +81,7 @@ impl PoiCatEntry {
     /// (the §7.1 chunk size is directory-wide, not per-entry, so it's passed in). See
     /// [`fixed_chunk_range`].
     #[inline]
-    fn chunk_range(&self, chunk_id: u32, chunk_size: usize) -> Option<(usize, usize)> {
+    fn chunk_range(&self, chunk_id: u32, chunk_size: usize) -> Option<(u64, u64)> {
         fixed_chunk_range(self.data_start(), self.chunk_count, chunk_size, chunk_id)
     }
 }
@@ -120,7 +120,7 @@ pub struct PoiDirectory {
     /// Absolute byte offset of the hours-pool section (spec §7.5): a `count u16` then `count ×
     /// 29-byte` blobs. Blob `i` (a record's `hours_ref`) lives at `hours_pool_offset + 2 + i*29`.
     /// Meaningful only when `hours_pool_count > 0`.
-    pub hours_pool_offset: usize,
+    pub hours_pool_offset: u64,
     /// Number of 29-byte blobs in the hours pool (spec §7.5); `0` ⇒ no hours in this map. Equals the
     /// `count u16` written at `hours_pool_offset`, validated equal at parse.
     pub hours_pool_count: usize,
@@ -140,7 +140,7 @@ impl PoiDirectory {
 
 impl QuadIndex for PoiCatEntry {
     #[inline]
-    fn index_offset(&self) -> usize {
+    fn index_offset(&self) -> u64 {
         self.index_offset
     }
     #[inline]
@@ -191,12 +191,12 @@ impl<'a> Reader<'a> {
             return None;
         }
         // Byte offset of blob `hours_ref`: hours_pool_offset + 2 + hours_ref*29. All checked so a
-        // corrupt directory can't wrap `u32` or address past the file.
-        let blob_off = (hours_ref as u32)
-            .checked_mul(POI_HOURS_BLOB_LEN as u32)?
+        // corrupt directory can't wrap `u64` or address past the file.
+        let blob_off = (hours_ref as u64)
+            .checked_mul(POI_HOURS_BLOB_LEN as u64)?
             .checked_add(2)?
-            .checked_add(u32::try_from(dir.hours_pool_offset).ok()?)?;
-        let end = blob_off.checked_add(POI_HOURS_BLOB_LEN as u32)?;
+            .checked_add(dir.hours_pool_offset)?;
+        let end = blob_off.checked_add(POI_HOURS_BLOB_LEN as u64)?;
         if end > self.src.len() {
             return None;
         }
@@ -335,7 +335,7 @@ impl<'a> Reader<'a> {
         entry: &PoiCatEntry,
         chunk_size: usize,
         search: &BBox,
-        mut scan: impl FnMut(u32, usize) -> Result<(), IoError>,
+        mut scan: impl FnMut(u64, usize) -> Result<(), IoError>,
     ) -> Result<(), Error> {
         // The whole chunk's record count. A chunk with no sentinel room (records × 32 == chunk_size)
         // is bounded by this count instead (mirrors `for_each_feature_filtered`).
@@ -349,10 +349,10 @@ impl<'a> Reader<'a> {
                 Some(r) => r,
                 None => return,
             };
-            if end > self.src.len() as usize {
+            if end > self.src.len() {
                 return;
             }
-            if let Err(error) = scan(start as u32, records_per_chunk) {
+            if let Err(error) = scan(start, records_per_chunk) {
                 read_error = Some(error);
             }
         })
@@ -373,7 +373,7 @@ impl<'a> Reader<'a> {
     /// sentinel or after `record_cap` records (a sentinel-less full chunk).
     fn stream_poi_records(
         &self,
-        start: u32,
+        start: u64,
         record_cap: usize,
         mut visit: impl FnMut(&[u8], usize, i32, i32, u8),
     ) -> Result<(), IoError> {
@@ -383,7 +383,7 @@ impl<'a> Reader<'a> {
         while done < record_cap {
             let take = (record_cap - done).min(RECS_PER_WINDOW);
             let win = &mut scratch[..take * POI_RECORD_LEN];
-            self.src.read_at(start + (done * POI_RECORD_LEN) as u32, win)?;
+            self.src.read_at(start + (done * POI_RECORD_LEN) as u64, win)?;
             for r in 0..take {
                 let off = r * POI_RECORD_LEN;
                 let subtype = win[off + 8];
@@ -676,31 +676,31 @@ fn decode_poi_name(buf: &[u8], off: usize) -> heapless::String<POI_NAME_LEN> {
 /// hours-pool region is a corrupt header ⇒ [`Error::BadOffset`].
 ///
 /// Every offset/length product is checked (32-bit target): a corrupt `node_count`/`chunk_count`/
-/// `hours_pool_count` can wrap `usize`, so the region-end could land below `total` and admit a
+/// `hours_pool_count` can wrap `u64`, so the region-end could land below `total` and admit a
 /// category (or a pool blob) indexing out of the file — the same overflow guard style as
 /// [`super::parse_lod_table`]/[`Reader::chunk_range`].
 pub(super) fn parse_poi_directory(
     src: &dyn ByteSource,
     scale: OffsetScale,
-    offset: usize,
-    total: usize,
+    offset: u64,
+    total: u64,
 ) -> Result<PoiDirectory, Error> {
     // The lowest byte a scaled offset in this file can name past the header (§1.2).
-    let floor = super::resolve_bytes(scale.align_up(HEADER_LEN as u64).ok_or(Error::BadOffset)?)?;
+    let floor = scale.align_up(HEADER_LEN as u64).ok_or(Error::BadOffset)?;
     // The directory header is 3 bytes (count + chunk_size u16); it must fit the file.
     if offset < floor || offset.checked_add(3).is_none_or(|end| end > total) {
         return Err(Error::BadOffset);
     }
     let mut hdr = [0u8; 3];
-    src.read_at(offset as u32, &mut hdr).map_err(Error::Source)?;
+    src.read_at(offset, &mut hdr).map_err(Error::Source)?;
     let category_count = hdr[0] as usize;
     let chunk_size = rd_u16(&hdr, 1) as usize;
     if category_count > POI_MAX_CATEGORIES || chunk_size > POI_MAX_CHUNK_BYTES {
         return Err(Error::BadOffset);
     }
     // The whole directory (header + entries + the two v7 pool fields) must lie within the file.
-    let pool_fields_off = category_count
-        .checked_mul(POI_CAT_ENTRY_LEN)
+    let pool_fields_off = (category_count as u64)
+        .checked_mul(POI_CAT_ENTRY_LEN as u64)
         .and_then(|len| offset.checked_add(3)?.checked_add(len))
         .ok_or(Error::BadOffset)?;
     // 4 (hours_pool_offset u32) + 2 (hours_pool_count u16) trail the per-category entries.
@@ -712,11 +712,11 @@ pub(super) fn parse_poi_directory(
     let mut entries = Vec::new();
     let mut e = [0u8; POI_CAT_ENTRY_LEN];
     for k in 0..category_count {
-        let o = offset + 3 + k * POI_CAT_ENTRY_LEN;
-        src.read_at(o as u32, &mut e).map_err(Error::Source)?;
+        let o = offset + 3 + (k * POI_CAT_ENTRY_LEN) as u64;
+        src.read_at(o, &mut e).map_err(Error::Source)?;
         let entry = PoiCatEntry {
             category_id: e[0],
-            index_offset: resolve(scale.offset(rd_u32(&e, 1)))?,
+            index_offset: resolve(scale.offset(rd_u32(&e, 1))),
             node_count: rd_u32(&e, 5) as usize,
             chunk_count: rd_u32(&e, 9) as usize,
             scale,
@@ -728,7 +728,9 @@ pub(super) fn parse_poi_directory(
         if entry.node_count > 0 {
             let region_end = entry
                 .data_start()
-                .and_then(|start| entry.chunk_count.checked_mul(chunk_size).and_then(|len| start.checked_add(len)))
+                .and_then(|start| {
+                    (entry.chunk_count as u64).checked_mul(chunk_size as u64).and_then(|len| start.checked_add(len))
+                })
                 .ok_or(Error::BadOffset)?;
             if entry.index_offset < floor || region_end > total {
                 return Err(Error::BadOffset);
@@ -741,17 +743,17 @@ pub(super) fn parse_poi_directory(
 
     // The two v7 hours-pool directory fields (spec §7.5): the section's absolute offset + blob
     // count. When the count is non-zero, the whole pool region (`count u16` + `count × 29-byte`
-    // blobs) must lie in-file — checked, so a corrupt count can't wrap `usize` past `total`. An
+    // blobs) must lie in-file — checked, so a corrupt count can't wrap `u64` past `total`. An
     // empty pool (count 0) still validates its 2-byte `count` header lies in-file.
     let mut pf = [0u8; 6];
-    src.read_at(pool_fields_off as u32, &mut pf).map_err(Error::Source)?;
-    let hours_pool_offset = resolve(scale.offset(rd_u32(&pf, 0)))?;
+    src.read_at(pool_fields_off, &mut pf).map_err(Error::Source)?;
+    let hours_pool_offset = resolve(scale.offset(rd_u32(&pf, 0)));
     let hours_pool_count = rd_u16(&pf, 4) as usize;
     if hours_pool_offset < floor {
         return Err(Error::BadOffset);
     }
-    let pool_end = hours_pool_count
-        .checked_mul(POI_HOURS_BLOB_LEN)
+    let pool_end = (hours_pool_count as u64)
+        .checked_mul(POI_HOURS_BLOB_LEN as u64)
         .and_then(|blobs| hours_pool_offset.checked_add(2)?.checked_add(blobs))
         .ok_or(Error::BadOffset)?;
     if pool_end > total {

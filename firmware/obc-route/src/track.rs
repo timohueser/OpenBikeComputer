@@ -52,7 +52,7 @@ pub fn track_to_gpx(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) -
     while done < total {
         let n = (total - done).min(BLOCK_RECORDS);
         let bytes = &mut buf[..n * TRACK_RECORD_LEN];
-        src.read_at((done * TRACK_RECORD_LEN) as u32, bytes)?;
+        src.read_at((done * TRACK_RECORD_LEN) as u64, bytes)?;
         for i in 0..n {
             let mut rec = [0u8; TRACK_RECORD_LEN];
             rec.copy_from_slice(&bytes[i * TRACK_RECORD_LEN..(i + 1) * TRACK_RECORD_LEN]);

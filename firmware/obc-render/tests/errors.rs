@@ -108,17 +108,17 @@ fn truncated_feature_is_dropped_whole_with_malformed_stat() {
 /// scaled offsets, so they start at `align_up(table_end, U)` and the `0..U-1` bytes in between are
 /// §1.2 filler. The failure fixtures below arm on that offset, so they must not confuse the table,
 /// or the gap behind it, with the data.
-fn chunk_data_offset(lod: &obc_reader::Lod) -> u32 {
-    align_up(lod.index_offset + lod.node_count * 4 + (lod.chunk_count + 1) * 4) as u32
+fn chunk_data_offset(lod: &obc_reader::Lod) -> u64 {
+    align_up(lod.index_offset as usize + lod.node_count * 4 + (lod.chunk_count + 1) * 4) as u64
 }
 
 struct FailAfterParse<'a> {
     bytes: &'a [u8],
-    fail_at: Cell<Option<u32>>,
+    fail_at: Cell<Option<u64>>,
 }
 
 impl ByteSource for FailAfterParse<'_> {
-    fn read_at(&self, offset: u32, out: &mut [u8]) -> Result<(), IoError> {
+    fn read_at(&self, offset: u64, out: &mut [u8]) -> Result<(), IoError> {
         if self.fail_at.get() == Some(offset) {
             return Err(IoError::Io);
         }
@@ -128,8 +128,8 @@ impl ByteSource for FailAfterParse<'_> {
         Ok(())
     }
 
-    fn len(&self) -> u32 {
-        self.bytes.len() as u32
+    fn len(&self) -> u64 {
+        self.bytes.len() as u64
     }
 }
 
@@ -150,13 +150,13 @@ fn medium_failure_is_distinct_from_decode_failures() {
 
 struct FailNthReadAt<'a> {
     bytes: &'a [u8],
-    offset: u32,
+    offset: u64,
     fail_on: u8,
     reads: Cell<u8>,
 }
 
 impl ByteSource for FailNthReadAt<'_> {
-    fn read_at(&self, offset: u32, out: &mut [u8]) -> Result<(), IoError> {
+    fn read_at(&self, offset: u64, out: &mut [u8]) -> Result<(), IoError> {
         if offset == self.offset {
             let reads = self.reads.get().saturating_add(1);
             self.reads.set(reads);
@@ -170,8 +170,8 @@ impl ByteSource for FailNthReadAt<'_> {
         Ok(())
     }
 
-    fn len(&self) -> u32 {
-        self.bytes.len() as u32
+    fn len(&self) -> u64 {
+        self.bytes.len() as u64
     }
 }
 
@@ -219,13 +219,13 @@ fn unsaturated_cased_feature_needs_no_failure_prone_refetch() {
 
 struct FailSecondIndexWalk<'a> {
     bytes: &'a [u8],
-    arm_after: u32,
-    fail_block: u32,
+    arm_after: u64,
+    fail_block: u64,
     armed: Cell<bool>,
 }
 
 impl ByteSource for FailSecondIndexWalk<'_> {
-    fn read_at(&self, offset: u32, out: &mut [u8]) -> Result<(), IoError> {
+    fn read_at(&self, offset: u64, out: &mut [u8]) -> Result<(), IoError> {
         if self.armed.get() && offset == self.fail_block {
             return Err(IoError::Io);
         }
@@ -241,8 +241,8 @@ impl ByteSource for FailSecondIndexWalk<'_> {
         Ok(())
     }
 
-    fn len(&self) -> u32 {
-        self.bytes.len() as u32
+    fn len(&self) -> u64 {
+        self.bytes.len() as u64
     }
 }
 
@@ -278,9 +278,9 @@ fn resident_winner_skips_the_second_index_walk() {
     let layout_cache = MapCache::new();
     let layout_reader = Reader::new(&layout_src, &layout, &layout_cache);
     let lod = layout_reader.lods()[0];
-    let index_offset = lod.index_offset as u32;
+    let index_offset = lod.index_offset;
     let chunk_offset = chunk_data_offset(&lod);
-    let block = |offset: u32| offset - offset % 512;
+    let block = |offset: u64| offset - offset % 512;
     let src = FailSecondIndexWalk {
         bytes: &bytes,
         arm_after: chunk_offset,
@@ -323,9 +323,9 @@ fn cached_leaf_list_skips_second_index_walk_for_uncached_geometry() {
     let layout_cache = MapCache::new();
     let layout_reader = Reader::new(&layout_src, &layout, &layout_cache);
     let lod = layout_reader.lods()[0];
-    let index_offset = lod.index_offset as u32;
+    let index_offset = lod.index_offset;
     let chunk_offset = chunk_data_offset(&lod);
-    let block = |offset: u32| offset - offset % 512;
+    let block = |offset: u64| offset - offset % 512;
     let src = FailSecondIndexWalk {
         bytes: &bytes,
         arm_after: chunk_offset,

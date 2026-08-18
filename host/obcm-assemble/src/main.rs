@@ -57,34 +57,27 @@ use obcm_assemble::{
 /// than about the geometry.
 struct FileSource {
     file: RefCell<File>,
-    len: u32,
+    len: u64,
 }
 
 impl FileSource {
     fn open(path: &Path) -> std::io::Result<FileSource> {
         let file = File::open(path)?;
+        // No narrowing: the read seam is `u64`, so a file's length is simply its length. This used
+        // to refuse anything past 4 GiB − 1, because a `uint32` offset could not name the bytes and
+        // a truncating cast would have presented the low 32 bits as the whole file.
         let len = file.metadata()?.len();
-        // OBCM addresses bytes with `uint32`, so a file past `4 GiB − 1` cannot be read at all —
-        // and a truncating cast would present its low 32 bits as the whole file, which reads as a
-        // valid-looking map made of the wrong bytes.
-        let len = u32::try_from(len).map_err(|_| {
-            std::io::Error::other(format!(
-                "{} is {len} bytes; OBCM offsets are uint32, so nothing past {} is addressable (OBCA §5)",
-                path.display(),
-                u32::MAX
-            ))
-        })?;
         Ok(FileSource { file: RefCell::new(file), len })
     }
 }
 
 impl ByteSource for FileSource {
-    fn read_at(&self, offset: u32, buf: &mut [u8]) -> std::result::Result<(), IoError> {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::result::Result<(), IoError> {
         let mut f = self.file.borrow_mut();
-        f.seek(SeekFrom::Start(offset as u64)).map_err(|_| IoError::Io)?;
+        f.seek(SeekFrom::Start(offset)).map_err(|_| IoError::Io)?;
         f.read_exact(buf).map_err(|_| IoError::Io)
     }
-    fn len(&self) -> u32 {
+    fn len(&self) -> u64 {
         self.len
     }
 }

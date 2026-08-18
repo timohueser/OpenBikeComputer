@@ -72,11 +72,12 @@
 //!
 //! ## Addressing
 //!
-//! [`ByteSource`] is `u32`-addressed and every format that rides it — OBCM, OBCR, OBCT, OBCW — has
-//! `u32` offsets, so 4 GiB − 1 is the whole addressable space on this side of the seam. An object
-//! longer than that serves its addressable prefix and refuses everything past it with
-//! [`Error::BadOffset`]; see [`StoreSource::len`]. It cannot serve wrong bytes, which is the only
-//! property that matters here — a map that big is not a map this firmware can read anyway.
+//! [`ByteSource`] is `u64`-addressed since FS7.5-seam, and the store's own lengths always were — so
+//! this adapter no longer converts between two address spaces, it just hands one through. The
+//! saturation that used to live here (`payload_len.min(u32::MAX)`, plus a `len()` that reported an
+//! *addressable prefix* rather than the object) is **gone**, and with it the one case in this module
+//! where a source told the truth about bytes it would then refuse to serve. An object is as long as
+//! it is; a read past its end is [`Error::BadOffset`], exactly as it was for a 4 KiB object.
 
 use obc_formats::io::{ByteSource, Error};
 
@@ -95,9 +96,9 @@ pub struct StoreSource<'a, D: BlockDevice> {
     /// consume the handle out of a type that also has a `Drop` impl; the branch it costs per read is
     /// a predictable one against a multi-millisecond card read.
     handle: Option<Handle>,
-    /// The addressable length: the payload's, saturated at [`u32::MAX`]. Captured once — the handle
-    /// serves one revision, whose length does not move under it.
-    len: u32,
+    /// The payload's length. Captured once — the handle serves one revision, whose length does not
+    /// move under it.
+    len: u64,
 }
 
 impl<'a, D: BlockDevice> StoreSource<'a, D> {
@@ -121,10 +122,10 @@ impl<'a, D: BlockDevice> StoreSource<'a, D> {
         }
     }
 
-    /// The common tail of [`over`](Self::over) and [`FlatStore::source`], where the one saturation in
-    /// this module lives.
+    /// The common tail of [`over`](Self::over) and [`FlatStore::source`]. It used to be where this
+    /// module's one saturation lived; with the seam at `u64` it is a move.
     fn with_len(store: &'a FlatStore<D>, handle: Handle, payload_len: u64) -> Self {
-        StoreSource { store, handle: Some(handle), len: payload_len.min(u32::MAX as u64) as u32 }
+        StoreSource { store, handle: Some(handle), len: payload_len }
     }
 
     /// Surrender the handle so the store can close it. **This is the only way out** — see the module
@@ -175,13 +176,12 @@ impl<D: BlockDevice> Drop for StoreSource<'_, D> {
 }
 
 impl<D: BlockDevice> ByteSource for StoreSource<'_, D> {
-    fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), Error> {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), Error> {
         // Range first, medium second — the same order, and for the same reason, as every other
         // `ByteSource` in the tree: a caller asking past the end is a bad offset, and only a genuine
         // media failure is `Io`. Callers distinguish them (the weather A/B publisher refuses to
         // truncate a slot it could not read, rather than one it read as short).
-        let count = u32::try_from(buf.len()).map_err(|_| Error::BadOffset)?;
-        let end = offset.checked_add(count).ok_or(Error::BadOffset)?;
+        let end = offset.checked_add(buf.len() as u64).ok_or(Error::BadOffset)?;
         if end > self.len {
             return Err(Error::BadOffset);
         }
@@ -193,7 +193,7 @@ impl<D: BlockDevice> ByteSource for StoreSource<'_, D> {
             // the length, which is an I/O-class fault rather than a caller error. Loop anyway: the
             // seam's contract is "bytes read", and depending on it returning everything in one turn
             // would be depending on an implementation detail.
-            match self.store.read(handle, u64::from(offset) + done as u64, &mut buf[done..]) {
+            match self.store.read(handle, offset + done as u64, &mut buf[done..]) {
                 Ok(0) => return Err(Error::Io),
                 Ok(n) => done += n,
                 Err(_) => return Err(Error::Io),
@@ -202,10 +202,9 @@ impl<D: BlockDevice> ByteSource for StoreSource<'_, D> {
         Ok(())
     }
 
-    /// The addressable length — the payload's, saturated at [`u32::MAX`]. See the module docs on
-    /// addressing: past 4 GiB − 1 there is no `u32` offset to name the bytes with, so the source
-    /// reports what it can serve and [`read_at`](Self::read_at) refuses the rest.
-    fn len(&self) -> u32 {
+    /// The payload's length, exactly — nothing to saturate against now that the seam and the store
+    /// count bytes in the same width. See the module docs on addressing.
+    fn len(&self) -> u64 {
         self.len
     }
 }
@@ -307,15 +306,15 @@ mod tests {
         let (disk, ids) = fixture(1);
         let store = FlatStore::mount(&disk);
         let source = store.source(ids[0], None).expect("the object opens");
-        assert_eq!(source.len(), LEN as u32);
+        assert_eq!(source.len(), LEN as u64);
         assert_eq!(source.id(), ids[0]);
         assert_eq!(source.revision(), Revision(1));
 
-        for (offset, len) in [(0u32, LEN), (0, 1), (511, 2), (1_000, 512), (LEN as u32 - 1, 1)] {
+        for (offset, len) in [(0u64, LEN), (0, 1), (511, 2), (1_000, 512), (LEN as u64 - 1, 1)] {
             let mut through_seam = vec::from_elem(0u8, len);
             source.read_at(offset, &mut through_seam).expect("inside the object");
             let mut direct = vec::from_elem(0u8, len);
-            let got = store.read(source.handle(), u64::from(offset), &mut direct).expect("the store reads");
+            let got = store.read(source.handle(), offset, &mut direct).expect("the store reads");
             assert_eq!(got, len, "the store filled the window");
             assert_eq!(through_seam, direct, "the adapter changed bytes at ({offset}, {len})");
             assert_eq!(through_seam, payload()[offset as usize..offset as usize + len], "and both differ from truth");
@@ -334,14 +333,18 @@ mod tests {
         store
             .with_source(ids[0], None, |source| {
                 let mut buf = [0u8; 16];
-                assert_eq!(source.read_at(LEN as u32, &mut buf).unwrap_err(), Error::BadOffset, "starting at the end");
+                assert_eq!(source.read_at(LEN as u64, &mut buf).unwrap_err(), Error::BadOffset, "starting at the end");
                 assert_eq!(
-                    source.read_at(LEN as u32 - 8, &mut buf).unwrap_err(),
+                    source.read_at(LEN as u64 - 8, &mut buf).unwrap_err(),
                     Error::BadOffset,
                     "straddling the end"
                 );
-                assert_eq!(source.read_at(u32::MAX, &mut buf).unwrap_err(), Error::BadOffset, "an offset that wraps");
-                source.read_at(LEN as u32 - 16, &mut buf).expect("the last full window is fine");
+                assert_eq!(
+                    source.read_at(u64::MAX, &mut buf).unwrap_err(),
+                    Error::BadOffset,
+                    "an offset that wraps — now at the top of the *seam's* width, not a u32's"
+                );
+                source.read_at(LEN as u64 - 16, &mut buf).expect("the last full window is fine");
             })
             .expect("the object opens");
     }
@@ -363,7 +366,7 @@ mod tests {
             let len = store.with_source(*id, None, |source| source.len()).unwrap_or_else(|error| {
                 panic!("object {index} of {objects} could not open ({error:?}) — a scope leaked its row")
             });
-            assert_eq!(len, LEN as u32);
+            assert_eq!(len, LEN as u64);
         }
     }
 
@@ -384,25 +387,32 @@ mod tests {
         other.close(returned);
 
         // The local one still works, so the refusal was about the handle and not the store.
-        store.with_source(ids[0], None, |source| assert_eq!(source.len(), LEN as u32)).expect("the local object opens");
+        store.with_source(ids[0], None, |source| assert_eq!(source.len(), LEN as u64)).expect("the local object opens");
     }
 
-    /// The saturation at the top of the address space. A real 4 GiB object is not constructible in a
-    /// test, so this pins the arithmetic where it lives.
+    /// **What used to be the saturation test, inverted.** It pinned a source over a payload past
+    /// `u32::MAX` reporting an *addressable prefix*; since FS7.5-seam there is no prefix, because
+    /// there is no narrower address space to project onto. A real 4 GiB object is not constructible
+    /// in a test, so this still pins the arithmetic where it lives.
     #[test]
-    fn a_payload_past_the_u32_ceiling_reports_the_addressable_prefix() {
+    fn a_payload_past_the_old_u32_ceiling_reports_its_whole_length() {
         let (disk, ids) = fixture(1);
         let store = FlatStore::mount(&disk);
         let handle = Store::open(&store, ids[0], None).expect("the object opens");
 
-        let huge = StoreSource::with_len(&store, handle, u64::from(u32::MAX) + 4_096);
-        assert_eq!(huge.len(), u32::MAX, "the reported length saturates rather than wrapping");
-        // Inside the *reported* length but far past the bytes that exist: the range check passes and
-        // the store's short read is what refuses it. `u32::MAX - 4` rather than `- 3` because the
-        // window has to end exactly at the ceiling, not one past it — a wrapping window is the other
-        // test's case.
+        let big = u64::from(u32::MAX) + 4_096;
+        let huge = StoreSource::with_len(&store, handle, big);
+        assert_eq!(huge.len(), big, "the length is the payload's, with nothing clamping it");
+        // Inside the reported length but far past the bytes that exist: the range check passes and
+        // the store's short read is what refuses it. The window is one the old `u32` source could
+        // not even *name*, which is the point.
         let mut buf = [0u8; 4];
-        assert_eq!(huge.read_at(u32::MAX - 4, &mut buf).unwrap_err(), Error::Io, "past the payload is not silent");
+        assert_eq!(huge.read_at(big - 4, &mut buf).unwrap_err(), Error::Io, "past the payload is not silent");
+        assert_eq!(
+            huge.read_at(big, &mut buf).unwrap_err(),
+            Error::BadOffset,
+            "and past the reported length is still a caller error"
+        );
 
         let handle = huge.release();
         store.close(handle);
@@ -432,7 +442,7 @@ mod tests {
         let mut after = vec::from_elem(0u8, LEN);
         live.read_at(0, &mut after).expect("the live source still resolves its row");
         assert_eq!(after, payload(), "the surviving reader reads the revision it opened");
-        assert_eq!(live.len(), LEN as u32);
+        assert_eq!(live.len(), LEN as u64);
         assert_eq!(store.free_extents(), free_before, "a spent refcount frees no extent");
 
         // And the last close is the one that does the work.
@@ -442,7 +452,7 @@ mod tests {
         // The row really did come back: reopening resolves, which a row still counted as held by a
         // reader that no longer exists would also do — so this is checked by exhaustion instead, in
         // `with_source_returns_its_row_to_the_table`. Here it is only that the object is still whole.
-        store.with_source(ids[0], None, |source| assert_eq!(source.len(), LEN as u32)).expect("it opens again");
+        store.with_source(ids[0], None, |source| assert_eq!(source.len(), LEN as u64)).expect("it opens again");
     }
 
     /// **A later joiner may not shorten what an earlier reader is already serving.** The one real bug
@@ -461,7 +471,7 @@ mod tests {
         let store = FlatStore::mount(&disk);
 
         let live = store.source(ids[0], None).expect("the object opens");
-        assert_eq!(live.len(), LEN as u32);
+        assert_eq!(live.len(), LEN as u64);
 
         // An amend that trims the entry to a third of its length, beside the live source. `Amend`
         // keeps the extents the entry already holds and rewrites only the metadata.
@@ -483,9 +493,9 @@ mod tests {
         let joiner = Store::open(&store, ids[0], None).expect("a second reader joins the row");
 
         // The original source still reports, and still serves, the whole revision it resolved.
-        assert_eq!(live.len(), LEN as u32, "the source's own length is captured at open and cannot move");
+        assert_eq!(live.len(), LEN as u64, "the source's own length is captured at open and cannot move");
         let mut tail = [0u8; 64];
-        live.read_at(LEN as u32 - 64, &mut tail).expect("past the amended end is still inside the resolved revision");
+        live.read_at(LEN as u64 - 64, &mut tail).expect("past the amended end is still inside the resolved revision");
         assert_eq!(tail[..], payload()[LEN - 64..], "and the bytes are the object's own");
 
         // A fresh read through the joiner's handle is bounded by the row, which now holds the wider

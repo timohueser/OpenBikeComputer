@@ -6,8 +6,14 @@
 //! `uint32` offsets — so sets are the shape from day one and a small map is a **set of one** (§5.5).
 //!
 //! Both of those are gone: the flat store replaced FAT, and v14 scales offsets to a 64 GiB
-//! interior. What binds now is neither — it is the **read seam**, `ByteSource`'s `u32` offsets, and
-//! it lands on the same 4 GiB by coincidence rather than by inheritance. See [`FILE_CEILING`].
+//! interior. A third wall stood behind them — the read seam's `u32` offsets, landing on the same
+//! 4 GiB by coincidence rather than by inheritance — and FS7.5-seam removed that one too, so the
+//! per-file wall is now §1.1's interior at 64 GiB. See [`FILE_CEILING`].
+//!
+//! **What still splits a country-scale selection is the manifest, not the file.** §5.2's `Bytes` is
+//! a `uint32`, so a *member of a set* stops at 4 GiB even though a lone file does not — see
+//! [`SET_SHARD_CEILING`]. A selection that fits one file takes §5.5's fast path and has no manifest
+//! wall to clear; only a selection that needs several files meets one.
 //!
 //! The split obeys one ordering principle and obeys it everywhere: **the core file holds only what
 //! cannot be split by bbox, and everything that can be is moved out of it.** The core is the one
@@ -35,33 +41,66 @@ use crate::{Error, Result};
 ///    `2^32 units × U`, which at `U = 16` is `2^36` B = 64 GiB. Derived rather than written down,
 ///    because §1.1 states the producer rule in exactly these terms and [`OffsetScale::covers`] is
 ///    that sentence as a predicate.
-/// 2. **The readable wall** — `u32::MAX`, because [`obc_formats::io::ByteSource`] *is* the tree's
-///    read interface and it is `read_at(offset: u32)` / `len() -> u32`. Every implementor and every
-///    cache behind it is u32-addressed, and `obc-reader` fail-closes past that by design.
+/// 2. **The readable wall** — how far [`obc_formats::io::ByteSource`], the tree's one read
+///    interface, can address. It was `u32::MAX`, which is why this had to be a `min` at all: v14
+///    raised the format wall sixteen-fold and left the seam at 4 GiB, so a file between the two was
+///    one this pipeline would lay out and nothing in this tree could open.
 ///
-/// **Today the readable wall binds**, at 4 GiB. v14 raised the format wall sixteen-fold and did not
-/// touch the read seam, so a file between the two is one this pipeline could lay out and *nothing
-/// in this tree could open* — the fast path would plan it, the assembler would write it, and the
-/// first `read_at` past 4 GiB would fail. §5.5 makes that worse rather than better: the single file
-/// is still manifest-listed, and OBCA §5.2's `Bytes` is a `uint32` of **bytes**, so a 5 GiB file
-/// would be *recorded* as ≈0.7 GiB rather than refused.
+/// **FS7.5-seam widened the seam to `u64`, so the readable wall stopped binding and the format wall
+/// took over at 64 GiB.** Every implementor and every cache behind the seam counts file offsets in
+/// 64 bits now — including the device's, which is the point: the wall this constant expresses has
+/// to be one the *reader on the card* can clear, not merely one a 64-bit host can.
 ///
-/// So the ceiling is the `min`, and it moves on its own when the read seam widens (u32 → u64 or
-/// scaled offsets through `ByteSource` and its implementors) — a slice of #1420 in its own right,
-/// and the prerequisite for DACH-scale single files. §8's edge pool is already built for the far
-/// wall: `NAV_EDGE_MAX_CHUNKS × NAV_CHUNK_SIZE == 1 << 36` is pinned in `obc-formats` as "the pool
+/// The `min` stays as structure rather than collapsing to the format wall, because two walls is the
+/// permanent shape of this: a written file must clear whatever the format can express **and**
+/// whatever a reader can reach, and the day either moves this constant follows without anyone
+/// re-deriving it. §8's edge pool was already built for the far wall —
+/// `NAV_EDGE_MAX_CHUNKS × NAV_CHUNK_SIZE == 1 << 36` is pinned in `obc-formats` as "the pool
 /// reaches the interior".
+///
+/// A **member of a volume set** has a third wall this one does not express, because it is a
+/// property of the manifest rather than of the file: see [`SET_SHARD_CEILING`].
 pub const FILE_CEILING: u64 = {
     let format = (1u64 << 32) * SCALE.unit();
-    let readable = u32::MAX as u64;
+    let readable = READABLE_CEILING;
     if format < readable {
         format
     } else {
         readable
     }
 };
-const _: () = assert!(FILE_CEILING <= u32::MAX as u64, "no reader in this tree addresses past a u32");
+
+/// How far a byte offset handed to [`obc_formats::io::ByteSource::read_at`] can reach: the whole
+/// `u64`, since FS7.5-seam. Named rather than written as `u64::MAX` inline so [`FILE_CEILING`]'s
+/// `min` keeps saying *which* wall each side is.
+const READABLE_CEILING: u64 = u64::MAX;
+const _: () = assert!(FILE_CEILING == 1u64 << 36, "at U = 16 the format's interior is 64 GiB, and it is what binds");
 const _: () = assert!(SCALE.covers(FILE_CEILING), "and the scale still covers whatever the min lands on");
+
+/// The ceiling on one **member of a volume set** — [`FILE_CEILING`] narrowed by the one wall a
+/// manifest imposes and a lone file does not.
+///
+/// OBCA §5.2's `Bytes` is a `uint32` of *bytes*, not units, so a manifest cannot record a shard
+/// past 4 GiB − 1 whatever the file format or the read seam can do. That was invisible while
+/// `FILE_CEILING` was itself 4 GiB — the manifest's wall and the reader's were the same number.
+/// Widening the seam separated them, and the honest response is to name the narrower one where the
+/// split path uses it rather than to widen a field that is scheduled to die: §5's set-emit
+/// machinery is deleted in FS7.5b2, taking `Bytes` with it, and the single file §5.5 plans first
+/// carries no manifest record at all and so gets the full [`FILE_CEILING`].
+///
+/// The refusal is real rather than defensive: `push_record` already returns `Err` for a shard it
+/// cannot record, so without this the split path would plan a 6 GiB shard, write it, and then fail
+/// at manifest time with the bytes already on disk. Refusing at plan time is the same rule applied
+/// where it costs nothing.
+pub const SET_SHARD_CEILING: u64 = {
+    let manifest = u32::MAX as u64;
+    if FILE_CEILING < manifest {
+        FILE_CEILING
+    } else {
+        manifest
+    }
+};
+const _: () = assert!(SET_SHARD_CEILING <= u32::MAX as u64, "a set's member must fit §5.2's `Bytes`");
 
 /// The `Offset Scale` every shard this engine writes carries (`OBCM_Spec.md` §1.1): `U = 16`, the
 /// same byte `obc-pack` writes, so a cell and the assembly it lands in count offsets in one unit.
@@ -117,8 +156,9 @@ pub(crate) const FILLER_RUN: [u8; obc_formats::obcm::NAV_CHUNK_SIZE] = [FILLER; 
 ///
 /// §5.7 wrote this as "≈ 3.5 GiB" against a `4 GiB − 1 B` ceiling — seven eighths of the wall, i.e.
 /// "you are close". Written as the **proportion** rather than the number, so it keeps meaning
-/// "close" wherever [`FILE_CEILING`] lands: while the readable wall binds this is ≈3.5 GiB, exactly
-/// what §5.7 wrote, and it follows the ceiling up on its own when the read seam widens.
+/// "close" wherever [`FILE_CEILING`] lands. It followed the ceiling up when FS7.5-seam widened the
+/// read seam, and is now ≈56 GiB: the literal would have warned about a map with 60 GiB of
+/// headroom, which is exactly the staleness the proportion exists to prevent.
 pub const CORE_WARN: u64 = FILE_CEILING / 8 * 7;
 const _: () = assert!(CORE_WARN < FILE_CEILING, "a warning above the wall would never fire");
 
@@ -154,6 +194,12 @@ pub struct ShardPlan {
     pub lods: Vec<LodPlan>,
     /// Whether this shard carries the nav graph and the POIs — true for exactly one shard, the core.
     pub core: bool,
+    /// Whether this file is the **whole map** (§5.5's fast path) rather than a member of a set.
+    ///
+    /// It is not the same question as `core`: a set's core is also `core`, and it is a set member.
+    /// The distinction is which ceiling the file answers to — a lone file has no manifest record to
+    /// fit, so it gets [`FILE_CEILING`] where a set member gets [`SET_SHARD_CEILING`].
+    pub single_file: bool,
     /// Total bytes, computable before the write and re-checked after it (§5.7).
     pub bytes: u64,
     /// Filled by [`write`].
@@ -291,13 +337,16 @@ pub fn write(
     let poi_bytes_len = empty_poi.as_ref().map_or_else(|| poi.section_len(), |p| p.section_len());
     let nav_projection = empty_nav.as_ref().map_or(nav, |n| n).projection(profile_table);
     let l = plan.layout(style_bytes.len(), poi_bytes_len, nav_projection)?;
-    if l.total > FILE_CEILING {
+    // A shard that is the sole file of a §5.5 single-file map answers to the format's interior; a
+    // member of a real set additionally has to fit §5.2's `uint32` `Bytes`.
+    let ceiling = if plan.single_file { FILE_CEILING } else { SET_SHARD_CEILING };
+    if l.total > ceiling {
         return Err(Error::Capacity(format!(
-            "shard {} would be {} bytes, past the {FILE_CEILING}-byte interior `Offset Scale` {} covers \
-             (OBCM §1.1) — reduce the coverage (OBCA §5.7)",
+            "shard {} would be {} bytes, past the {ceiling}-byte ceiling for a {} — reduce the coverage \
+             (OBCM §1.1, OBCA §5.2/§5.7)",
             plan.index,
             l.total,
-            SCALE.log2()
+            if plan.single_file { "single file" } else { "set member" }
         )));
     }
     // `OBCM_Spec.md` §1.1's one producer rule: **the scale MUST cover the file it writes**. The
@@ -449,7 +498,7 @@ pub const HEADER_STYLE_OFFSET_AT: usize = 21;
 /// The scale is read out of the image rather than assumed to be [`SCALE`]: this is the one function
 /// here that runs over bytes the engine did not write — `obc-bake`'s published thumbnails and the
 /// builder's skin editor both hand it a file from somewhere else.
-pub fn header_style_offset(map: &[u8]) -> Option<usize> {
+pub fn header_style_offset(map: &[u8]) -> Option<u64> {
     if map.len() < HEADER_LEN {
         return None;
     }
@@ -457,7 +506,7 @@ pub fn header_style_offset(map: &[u8]) -> Option<usize> {
     let units = u32::from_le_bytes(
         map[HEADER_STYLE_OFFSET_AT..HEADER_STYLE_OFFSET_AT + 4].try_into().expect("four bytes inside the header"),
     );
-    usize::try_from(scale.offset(units).bytes()).ok()
+    Some(scale.offset(units).bytes())
 }
 
 /// Byte offset of the header's `Marker Color` field — the one other byte a skin owns.
@@ -511,7 +560,11 @@ pub fn restamp_style_table(
     if map.len() < HEADER_LEN {
         return Err(RestampError::ShorterThanHeader);
     }
-    let style_offset = header_style_offset(map).ok_or(RestampError::BadStyleOffset)?;
+    // The table is restamped in a `map` that is already resident, so this is one of the places
+    // where the file offset legitimately becomes a `usize` — the narrowing is against RAM, not
+    // against the seam, and it fails closed for a resident buffer that cannot hold the offset.
+    let style_offset =
+        header_style_offset(map).and_then(|at| usize::try_from(at).ok()).ok_or(RestampError::BadStyleOffset)?;
     let count = *map.get(style_offset).ok_or(RestampError::BadStyleOffset)? as usize;
     let end = style_offset.checked_add(1 + count * STYLE_RECORD_LEN).ok_or(RestampError::TableOverflows)?;
     let slot = map.get_mut(style_offset..end).ok_or(RestampError::TableTruncated)?;
@@ -733,6 +786,7 @@ mod tests {
 
     fn plan(index: usize, role: BandRole, core: bool) -> ShardPlan {
         ShardPlan {
+            single_file: false,
             index,
             role,
             box_: AlignedBox { min_lat: 47_185_920, min_lon: 7_340_032, span_log2: 20 },

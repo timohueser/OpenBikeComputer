@@ -246,8 +246,10 @@ mod web {
             JsSink::taken(self.write.call2(&JsValue::NULL, &JsValue::from_f64(slot as f64), &src), "write")
         }
 
-        fn read_at(&self, slot: usize, offset: u32, into: &mut [u8]) -> Result<(), String> {
+        fn read_at(&self, slot: usize, offset: u64, into: &mut [u8]) -> Result<(), String> {
             // SAFETY: as in `JsReads::read` — a per-call view, filled and dropped inside the call.
+            // A sunk shard's offset can pass 4 GiB since the read seam widened; `f64` carries it
+            // exactly to 2^53, far past the 64 GiB §1.1 lets a file reach.
             let dest = unsafe { js_sys::Uint8Array::view_mut_raw(into.as_mut_ptr(), into.len()) };
             JsSink::taken(
                 self.read_at.call3(
@@ -373,7 +375,7 @@ mod web {
     }
 
     impl CellReads for JsReads {
-        fn read(&self, slot: usize, offset: u32, buf: &mut [u8]) -> Result<(), String> {
+        fn read(&self, slot: usize, offset: u64, buf: &mut [u8]) -> Result<(), String> {
             // SAFETY: `view_mut_raw` aliases linear memory and is invalidated by anything that grows
             // it. This one is made, passed, and dropped inside a single synchronous JS call that
             // does nothing but fill it — no Rust allocation can run in between, and the callback is

@@ -85,7 +85,7 @@ struct ReadCensus {
 }
 
 /// The windows a pass reads, as `(offset, length)`.
-type Pass = Vec<(u32, usize)>;
+type Pass = Vec<(u64, usize)>;
 
 /// A\* expanding a frontier: 64 nav chunks at scattered ids. The ids are a fixed low-discrepancy walk
 /// (an odd stride over a power-of-two chunk count, so it visits each once without repeating) rather
@@ -95,7 +95,7 @@ fn route_plan_pass() -> Pass {
     (0..64)
         .map(|step: u32| {
             let id = (step.wrapping_mul(181) % chunks as u32) as usize;
-            (NAV_DATA_START + (id * NAV_CHUNK) as u32, NAV_CHUNK)
+            (u64::from(NAV_DATA_START) + (id * NAV_CHUNK) as u64, NAV_CHUNK)
         })
         .collect()
 }
@@ -104,7 +104,7 @@ fn route_plan_pass() -> Pass {
 /// step — panning is not monotonic, and a backward seek is exactly what #500 punished.
 fn render_pass() -> Pass {
     let order = [0usize, 1, 2, 3, 2, 4, 5, 6];
-    order.iter().map(|&id| (GEO_DATA_START + (id * GEO_CHUNK) as u32, GEO_CHUNK)).collect()
+    order.iter().map(|&id| (u64::from(GEO_DATA_START) + (id * GEO_CHUNK) as u64, GEO_CHUNK)).collect()
 }
 
 /// Run `pass` against `source` and check every byte against the ground-truth pattern, so a census
@@ -214,8 +214,8 @@ fn a_read_costs_the_same_at_the_back_of_an_object_as_at_the_front() {
     let back_offset = OBJECT_LEN as u32 - 1_024 + NAV_DATA_START % 512;
     assert_eq!(back_offset % 512, NAV_DATA_START % 512, "the two probes must share an alignment");
 
-    let front = flat_census(&vec![(NAV_DATA_START, NAV_CHUNK)]);
-    let back = flat_census(&vec![(back_offset, NAV_CHUNK)]);
+    let front = flat_census(&vec![(u64::from(NAV_DATA_START), NAV_CHUNK)]);
+    let back = flat_census(&vec![(u64::from(back_offset), NAV_CHUNK)]);
     assert_eq!(front, back, "a read's cost must not depend on how far into the object it is (#500)");
     assert_eq!(front, ReadCensus { commands: 2, blocks: 2 }, "an unaligned 512 B chunk spans two blocks");
 }

@@ -199,7 +199,8 @@ fn a_restamp_writes_the_style_table_and_the_marker_and_nothing_else() {
     // Found through the header's own scaled `Style Offset`, which is exactly what a restamp has to
     // do since v14: the table no longer begins where the header ends.
     let at = shard::header_style_offset(&bytes).expect("the packer's map states its style offset");
-    assert_eq!(at, shard::STYLE_OFFSET as usize);
+    assert_eq!(at, shard::STYLE_OFFSET);
+    let at = at as usize;
 
     // A real restyle: the same ids (a skin may not renumber), different presentation values.
     let restyled: Vec<StyleRecord> =

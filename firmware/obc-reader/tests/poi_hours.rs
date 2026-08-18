@@ -165,7 +165,7 @@ struct ShortBackedSource {
 }
 
 impl obc_reader::ByteSource for ShortBackedSource {
-    fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), obc_formats::io::Error> {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), obc_formats::io::Error> {
         let start = offset as usize;
         let end = start.checked_add(buf.len()).ok_or(obc_formats::io::Error::BadOffset)?;
         if end > self.bytes.len() {
@@ -174,8 +174,8 @@ impl obc_reader::ByteSource for ShortBackedSource {
         buf.copy_from_slice(&self.bytes[start..end]);
         Ok(())
     }
-    fn len(&self) -> u32 {
-        self.reported_len
+    fn len(&self) -> u64 {
+        self.reported_len.into()
     }
 }
 
