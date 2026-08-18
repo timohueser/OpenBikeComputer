@@ -39,8 +39,60 @@ pub const MAX_BATCH: usize = 4;
 /// Reservations live at once: one transfer (`FLAT_Store_Protocol.md` §1) plus the ride reserve a
 /// start allocates while one is in flight.
 pub const MAX_RESERVATIONS: usize = 2;
-/// Open objects at once: the eleven map shards a rendered set mounts, plus one transfer.
-pub const MAX_OPEN_OBJECTS: usize = 12;
+
+/// Who holds an open object, and how many. The table is the whole argument for
+/// [`MAX_OPEN_OBJECTS`]; the constant is just its sum.
+///
+/// **The rule: every session-long open needs a named row here.** A consumer that opens an object and
+/// keeps it open across a render or a ride adds its row and raises [`MAX_OPEN_OBJECTS`] to match, or
+/// the `const` assertion below fails the build. That is the point — the previous constant was `12`,
+/// derived as "eleven shards plus one transfer", and it was short by three because terrain, the
+/// active route and the weather bundle each hold one too and none of them was written down. A table
+/// that has to be edited is harder to be wrong about than a sentence in a doc comment.
+///
+/// Rows are the *worst concurrent* case, not the typical one: a rider following a route across a
+/// fully sharded set, with terrain and weather mounted, while an upload runs.
+///
+/// **The recording ride is deliberately not a row.** It is not an open object at all: it lives in
+/// [`RideState`], reached through [`journal`](Store::journal) and its own reservation (see
+/// [`MAX_RESERVATIONS`]), and it never takes a hold. A `RIDE` row here would be double-counting.
+pub mod open_objects {
+    /// The map shards a rendered set mounts. This is the board's ceiling, not the format's —
+    /// `OBCA_Spec.md` §5.2 allows `1..=32`, and `obc-fw-nrf54l`'s `SD_SET_MAX_SHARDS` is 11 because
+    /// that is what its FAT handle budget allowed (`SD_MAX_FILES - SD_RIDE_PEAK_FILES`). The flat
+    /// store inherits the number as this row's value only; nothing here derives it, and a board that
+    /// raises its own ceiling raises this row with it.
+    pub const SET_SHARDS: usize = 11;
+    /// The terrain sidecar, mounted beside the set and held for the session. It is a separate object
+    /// from the shards — `SetManifest::shards()` excludes it — so it is a separate row.
+    pub const TERRAIN: usize = 1;
+    /// The active route's geometry, held from load until the ride ends.
+    pub const ROUTE: usize = 1;
+    /// The weather bundle, held for the session once mounted.
+    pub const WEATHER: usize = 1;
+    /// The one transfer `FLAT_Store_Protocol.md` §1 admits at a time, which may run mid-ride.
+    pub const TRANSFER: usize = 1;
+    /// One row that belongs to nobody, so a short-lived open — a menu reading a trip's header, a
+    /// `STATUS` resolving an object — never has to wait for a session-long holder to let go.
+    pub const SPARE: usize = 1;
+
+    /// The sum every row above owes.
+    pub const ACCOUNTED: usize = SET_SHARDS + TERRAIN + ROUTE + WEATHER + TRANSFER + SPARE;
+}
+
+/// Open objects at once — the sum of [`open_objects`]'s rows, and nothing else.
+pub const MAX_OPEN_OBJECTS: usize = 16;
+
+// Deliberately an anonymous module-level `const`, not an associated one: an associated `const` is
+// evaluated lazily, only when something names it, so a table that stopped adding up would compile
+// silently until a test happened to touch it. This one is evaluated whenever the crate is.
+const _: () = assert!(
+    open_objects::ACCOUNTED == MAX_OPEN_OBJECTS,
+    "MAX_OPEN_OBJECTS must equal the sum of `open_objects`'s rows: add a named row for the new \
+     session-long open and raise the constant to match",
+);
+// `Handle::slot` is a `u8` and the holds array is indexed by it.
+const _: () = assert!(MAX_OPEN_OBJECTS <= u8::MAX as usize);
 
 /// Why a mounted store refuses writes. The wire's `readOnly` details (`FLAT_Store_Protocol.md` §3.9)
 /// are these, and a store that mounted read-only never becomes writable without initialization.
@@ -602,6 +654,19 @@ impl<D: BlockDevice> FlatStore<D> {
                 }
             }
         }
+    }
+
+    /// The payload length `handle` resolved, or `None` when it names a row that is no longer its own
+    /// (a closed handle, or one whose slot has been reused).
+    ///
+    /// This is the length the handle keeps reading, not the entry's current one: §2.1 promises a
+    /// handle serves the revision it opened, and an amend that trimmed the entry since does not
+    /// shorten a reader that is already past it.
+    pub fn handle_len(&self, handle: &Handle) -> Option<u64> {
+        let holds = self.holds.borrow();
+        holds[handle.slot as usize]
+            .filter(|hold| (hold.id, hold.revision) == (handle.id, handle.revision))
+            .map(|hold| hold.payload_len)
     }
 
     /// The device, for a bench or a harness that needs the card underneath. Nothing above the seam has
@@ -1253,7 +1318,7 @@ impl<D: BlockDevice> Store for FlatStore<D> {
             hold.payload_len = entry.meta.payload_len;
             return Ok(Handle { slot: slot as u8, id: entry.meta.id, revision: entry.meta.revision });
         }
-        // A full table is transient: some other reader is holding all twelve rows, and the answer is
+        // A full table is transient: some other reader is holding every row, and the answer is
         // to ask again rather than to reject the request. The wire face is `busy`, not
         // `invalidRequest` — `StoreError` has no variant of its own for it.
         let slot = holds.iter().position(Option::is_none).ok_or(StoreError::Invalid)?;
