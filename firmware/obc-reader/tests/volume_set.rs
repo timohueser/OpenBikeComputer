@@ -7,7 +7,9 @@
 use obc_formats::io::ByteSource;
 use obc_formats::obcs::{self, ManifestError, Role};
 use obc_map_scene::BBox;
-use obc_reader::{FullSetShards, MapCache, MapTables, MountError, MountedSet, SetShards, ShardTables, SliceSource};
+use obc_reader::{
+    FullSetShards, MapCache, MapTables, MountError, MountedSet, Reader, SetShards, ShardTables, SliceSource,
+};
 use obcm_testkit::set::{build_set, empty_lod, matched_pair, quadrants, ShardSpec};
 use obcm_testkit::{pack_line, seal, LodSpec, Style};
 
@@ -30,6 +32,27 @@ fn fine_chunks() -> [Vec<u8>; 4] {
 
 fn coarse_chunk() -> Vec<u8> {
     seal(pack_line(1, 200, 200, &[(100, 100), (100, -100)]), 4096)
+}
+
+/// A second whole-assembly chunk, drawing the same shape somewhere else — so a read that came from
+/// the wrong file is a wrong *coordinate*, not an absence.
+fn core_chunk() -> Vec<u8> {
+    seal(pack_line(1, 600, 600, &[(100, 100), (100, -100)]), 4096)
+}
+
+/// The last exterior point of the single feature in `lod` 0's single chunk: the cheapest way to
+/// tell two shards' geometry apart.
+fn last_point(reader: &Reader<'_>) -> (i32, i32) {
+    let mut points = heapless::Vec::<(i32, i32), 8>::new();
+    let mut ring_lens = heapless::Vec::<usize, 2>::new();
+    let node = reader.bbox;
+    let mut last = None;
+    reader
+        .for_each_feature(0, 0, &node, &mut points, &mut ring_lens, |f| {
+            last = f.exterior().last().copied();
+        })
+        .expect("the chunk decodes");
+    last.expect("the chunk holds one line feature")
 }
 
 fn pair() -> (Vec<u8>, obcm_testkit::set::SetFixture) {
@@ -527,6 +550,54 @@ fn nav_and_poi_always_go_to_the_core() {
     // testkit-built file writes; the contract under test is *which file* answers.
     assert_eq!(reader.poi_directory().entries.len(), obc_formats::obcm::POI_CATEGORY_COUNT as usize);
     assert!(reader.nav_directory().is_empty());
+}
+
+/// The same contract on a set whose core is **not** shard 0 — a shape `OBCA_Spec.md` §5.3 permits
+/// (it pins `Core Shard < Shard Count`, nothing more) and the assembler happens not to write today.
+///
+/// A set shares **one** `MapCache` across its shards and every cache key carries the shard index,
+/// so the core's index is also its cache namespace: read the core tagged `0` — what a plain
+/// `Reader::new` over the core's bytes would do — and its chunks land in shard 0's slots. This
+/// fixture makes that collision observable: the core and shard 0 both carry LOD 0's chunk 0, with
+/// different geometry in it, so each read must come back with its own file's feature whatever
+/// order the shared cache saw them in.
+#[test]
+fn a_core_that_is_not_shard_zero_reads_in_its_own_cache_namespace() {
+    let lod0 = |chunk: Vec<u8>| LodSpec { max_mpp: COARSE_MPP, index: vec![0], chunks: vec![chunk], chunk_size: 4096 };
+    let fixture = build_set(
+        ASSEMBLY,
+        STYLES,
+        1,
+        &[
+            ShardSpec { role: Role::Coarse, bbox: ASSEMBLY, lods: vec![lod0(coarse_chunk()), empty_lod(FINE_MPP)] },
+            ShardSpec { role: Role::Core, bbox: ASSEMBLY, lods: vec![lod0(core_chunk()), empty_lod(FINE_MPP)] },
+            ShardSpec {
+                role: Role::Geometry,
+                bbox: ASSEMBLY,
+                lods: vec![
+                    empty_lod(COARSE_MPP),
+                    LodSpec {
+                        max_mpp: FINE_MPP,
+                        index: vec![0],
+                        chunks: vec![fine_chunks()[0].clone()],
+                        chunk_size: 4096,
+                    },
+                ],
+            },
+        ],
+    );
+    with_set(&fixture, |set| {
+        assert_eq!(set.role_of(1), Some(Role::Core), "the fixture's core is shard 1");
+        assert_eq!(set.core_reader().file(), 1, "…so the core's cache namespace is 1, not 0");
+        assert_eq!(set.shard_reader(0).expect("shard 0").file(), 0, "which is shard 0's");
+
+        // The core first, leaving its chunk resident under `(lod 0, chunk 0)`…
+        assert_eq!(last_point(&set.core_reader()), (800, 600), "the core's own geometry");
+        // …then shard 0 over that same cache, which must read its own bytes rather than hit…
+        assert_eq!(last_point(&set.shard_reader(0).expect("shard 0")), (400, 200), "the coarse shard's own geometry");
+        // …and the core once more, now that shard 0 has filled the identical (lod, chunk) key.
+        assert_eq!(last_point(&set.core_reader()), (800, 600), "still the core's, not the coarse shard's");
+    });
 }
 
 /// The other half of §5.1, and the one a doc comment used to be the only guard for: a **shard**
