@@ -37,8 +37,8 @@ use obc_pack::catalog::{feature_type_ids, Catalog};
 use obc_pack::config::Config;
 use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader};
 use obc_render::{zoom_for_mpp, RenderConfig, RenderScratch, Viewport};
-use obcm_assemble::schema::{Schema, Skin};
 use obcm_assemble::emit::{restamp_style_table, RestampError};
+use obcm_assemble::schema::{Schema, Skin};
 
 /// Published beside `cells/`, `regions/`, and `skins/`.
 pub const PREVIEWS_DIR: &str = "previews";

@@ -23,9 +23,9 @@ use obc_pack::progress::Progress;
 use obc_pack::quadtree::build_lod_with;
 use obc_pack::serialize::{pack_style_dict, NavProfile, Style};
 use obc_pack::{serialize_lods, LodLayer};
+use obcm_assemble::emit;
 use obcm_assemble::grid::AlignedBox;
 use obcm_assemble::schema::StyleRecord;
-use obcm_assemble::emit;
 
 /// A grid-aligned power-of-two box, because the engine's header writer takes one (§2.1) — the
 /// worked example's `2^19` square, so the values are the ones OBCA §7 already prints.
@@ -136,8 +136,8 @@ fn the_header_matches_the_packers_byte_for_byte() {
     let unit = emit::SCALE.unit();
     let at = |field: usize| u32::from_le_bytes(want[field..field + 4].try_into().unwrap()) as u64 * unit;
     let (lod_table_offset, poi_offset, nav_offset) = (at(26), at(32), at(36));
-    let got = emit::header_bytes(BOX, 3, marker_color, lod_table_offset, poi_offset, nav_offset, 0, 0)
-        .expect("in range");
+    let got =
+        emit::header_bytes(BOX, 3, marker_color, lod_table_offset, poi_offset, nav_offset, 0, 0).expect("in range");
     assert_eq!(got, want, "the restated OBCM header diverged from obc-pack's");
     // …and the field the offsets were read from is the one the engine writes there: v14's style
     // table does not begin where the 49-byte header ends, it begins at the first unit boundary at

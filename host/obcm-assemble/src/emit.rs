@@ -296,12 +296,7 @@ struct Layout {
 
 /// Compute a shard's total size without writing it — §5.7's projection, applied to the assembler's
 /// own output so an over-size file is refused rather than emitted.
-pub fn projected_bytes(
-    plan: &MapPlan,
-    style_len: usize,
-    poi_len: u64,
-    nav: crate::nav::NavProjection,
-) -> Result<u64> {
+pub fn projected_bytes(plan: &MapPlan, style_len: usize, poi_len: u64, nav: crate::nav::NavProjection) -> Result<u64> {
     Ok(plan.layout(style_len, poi_len, nav)?.total)
 }
 
@@ -750,8 +745,7 @@ mod tests {
         assert!(fits_ceiling(projected, "the map").is_ok(), "…and inside the format's interior");
         // Nothing wrapped: the total is the sum of its parts computed in u64.
         let prefix = align_up(align_up(STYLE_OFFSET) + 2 * LOD_ENTRY_LEN as u64);
-        let expected =
-            prefix + 2 * (3_000_000_000 + 4 + 4 + 8) + poi.section_len() + nav_projection.bytes_at(0);
+        let expected = prefix + 2 * (3_000_000_000 + 4 + 4 + 8) + poi.section_len() + nav_projection.bytes_at(0);
         assert_eq!(projected, expected);
 
         // The nav section starts past 4 GiB, and the header field that names it is a `uint32` of

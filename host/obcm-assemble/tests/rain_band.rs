@@ -5,8 +5,8 @@
 //! the two enforcement points (skin resolve, image restamp).
 
 use obc_map_scene::{RAIN_BAND_GAP_HIGH, RAIN_BAND_GAP_LOW, RAIN_BELOW_Z};
-use obcm_assemble::schema::{Schema, Skin, SkinStyle, StyleId, StyleRecord};
 use obcm_assemble::emit::{pack_style_table, restamp_style_table, RestampError};
+use obcm_assemble::schema::{Schema, Skin, SkinStyle, StyleId, StyleRecord};
 use serde_json::Value;
 
 const SCHEMA_JSON: &str = include_str!("../../../builder/presets/schema.json");

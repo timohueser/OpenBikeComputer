@@ -90,10 +90,10 @@ pub struct KnownEmptyInput {
     pub id: CellId,
     pub band: String,
 }
+pub use emit::{MapPlan, FILE_CEILING};
 pub use nav::NavStats;
 pub use schema::{Band, BandRole, Schema, Skin, StyleRecord};
 pub use scratch::{MemoryScratch, ScratchId, ScratchStore};
-pub use emit::{MapPlan, FILE_CEILING};
 pub use verify::VerifyReport;
 
 use grid::{AlignedBox, CellId};
@@ -651,9 +651,8 @@ pub fn assemble_full(
     let verify_us = clock.now_us() - t1;
     merged_nav.release(scratch);
 
-    let terrain_summary = terrain_region
-        .as_ref()
-        .map(|r| TerrainSummary { bytes: r.bytes(), cells: r.cells(), slots: r.slots() });
+    let terrain_summary =
+        terrain_region.as_ref().map(|r| TerrainSummary { bytes: r.bytes(), cells: r.cells(), slots: r.slots() });
 
     stats.write_us = write_us;
     stats.verify_us = verify_us;

@@ -6,8 +6,8 @@ use obc_host_core::RgbaFrame;
 use obc_map_scene::BBox;
 use obc_reader::{rgb565_to_device64, Error as ReadError, MapCache, MapTables, Reader};
 use obc_render::{zoom_for_mpp, RenderConfig, RenderScratch, RenderStats, Viewport};
-use obcm_assemble::schema::{Schema, Skin};
 use obcm_assemble::emit::{restamp_style_table, RestampError};
+use obcm_assemble::schema::{Schema, Skin};
 
 pub const FRAME_W: u32 = 240;
 pub const FRAME_H: u32 = 240;
