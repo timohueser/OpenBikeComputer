@@ -32,13 +32,21 @@ pub const NAV_MAX_CHUNK_BYTES: usize = NAV_CHUNK_SIZE;
 /// frame spends about two thirds of the task's stack to hold a 512-byte read. It shipped that way
 /// in the v14 rewrite and #1422's review caught it.
 ///
-/// The assertions below are the guard: this budget is one chunk, and it is nowhere near the cache.
-/// A future edit that swaps the buffer back for a working set fails the second one.
+/// **What the assertions below do, and what they do not.** They pin *this constant* — that the
+/// budget is one chunk and stays an order of magnitude under a `NavTileCache`. That catches the
+/// budget drifting upward until it is a cache by another name.
+///
+/// They cannot see inside [`Reader::nav_edge`]. Adding a `NavTileCache::new()` to that function
+/// while leaving this constant at 512 passes both, because a `const` assertion is not a frame-size
+/// analysis and Rust gives us no way to write one here. The real guard against *that* is the
+/// board's measured `residual_stack` in `firmware/tools/resource_baseline.json`, which is a
+/// whole-task figure rather than a per-function one — so this constant is a drift pin, and the
+/// review of the function body is what keeps the body honest.
 pub const NAV_EDGE_STACK_BUDGET: usize = NAV_CHUNK_SIZE;
 const _: () = assert!(NAV_EDGE_STACK_BUDGET == NAV_CHUNK_SIZE, "nav_edge holds exactly one §8.4 chunk");
 const _: () = assert!(
     NAV_EDGE_STACK_BUDGET * 8 < core::mem::size_of::<cache::NavTileCache>(),
-    "nav_edge's stack buffer must stay an order of magnitude under a NavTileCache, or it has become one"
+    "nav_edge's stack budget must stay an order of magnitude under a NavTileCache, or it has become one"
 );
 
 /// The parsed nav directory (spec §8.1) — the graph's **entire resident state** (the quadtree and

@@ -763,9 +763,14 @@ mod web {
     /// See [`crate::estimate::Residency`].
     ///
     /// This complements OBCA §5.7's file-size ledger rather than repeating it: §5.7 prices the
-    /// *output* against the format's 4 GiB per-file ceiling, this prices the *run* against wasm32's
-    /// 4 GiB address space. A selection can pass one and fail the other. See [`crate::estimate`] for
-    /// the model and where its constants were measured.
+    /// *output* against the per-file wall, this prices the *run* against wasm32's 4 GiB address
+    /// space. A selection can pass one and fail the other. See [`crate::estimate`] for the model
+    /// and where its constants were measured.
+    ///
+    /// The two numbers are both 4 GiB today and that is a **coincidence**, not a shared cause. The
+    /// address space is wasm32's. The file wall is `min(the interior the scale covers, what the
+    /// read seam addresses)` — 64 GiB and `u32::MAX` respectively since v14, so the read seam binds
+    /// (`obcm_assemble::FILE_CEILING`). Widening the seam moves one and not the other.
     ///
     /// `budget_bytes` overrides the number `fits` is judged against. The default is a **desktop**
     /// judgement ([`crate::PRACTICAL_BUDGET`], 3 GiB); a caller that knows it is on a phone should
