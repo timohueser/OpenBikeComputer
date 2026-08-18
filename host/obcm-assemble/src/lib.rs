@@ -686,7 +686,12 @@ pub fn assemble_full(
             // cell), so there is no reason to learn it from a file already on disk. Checking
             // `written.bytes` afterwards was both the wrong number and the wrong moment.
             let projected = plan.projected_bytes(job.cells.len() as u64);
-            shard::fits_ceiling(projected, "the terrain shard")?;
+            shard::fits_ceiling(
+                projected,
+                "the terrain shard",
+                "terrain is one file per set in v1, so the only thing that reduces it is reducing the coverage \
+                 (OBCA §5.7)",
+            )?;
             let written = terrain::write_shard(plan, &job.cells, job.sink)?;
             debug_assert!(written.bytes <= projected, "the projection is an upper bound on what was written");
             verify_us += clock.now_us() - t0;
@@ -817,12 +822,17 @@ fn plan_set(
         let all_lods: Vec<usize> = (0..schema.lods.len()).collect();
         let mut single = build_shard(schema, cells, assembly, chunk_size, &all_lods, 0, BandRole::Core, true)?;
         single.bytes = shard::projected_bytes(&single, style_len, poi_len, nav_projection)?;
-        // `SET_SHARD_CEILING`, not `FILE_CEILING`: this fast path emits a set of one, so its file
-        // carries a §5.2 record and answers to the manifest's `uint32` like every other shard. The
-        // widened read seam does not move this — it moves what a *reader* can open. Gating on the
-        // larger number here would plan a 5 GiB map, write every byte of it, and only then fail at
-        // manifest emit (and on the browser's OPFS path, burn the whole assembly doing it).
-        if single.bytes <= shard::SET_SHARD_CEILING {
+        // **The gate is the refusal**, not a comparison that happens to agree with it: taking this
+        // path means "this file fits", and what a file has to fit is `shard::fits_ceiling` and
+        // nothing else. Open-coding `<= SET_SHARD_CEILING` here read identically and was how the
+        // original bug survived — the site said `FILE_CEILING` and no caller could tell.
+        //
+        // Which matters because this fast path emits a set of one, so its file carries a §5.2
+        // record like every other shard. The widened read seam does not move this; it moves what a
+        // *reader* can open. Gating on the larger number would lay out a 5 GiB map, write every
+        // byte, and only then fail at manifest emit — on the browser's OPFS path, after burning the
+        // whole assembly.
+        if shard::fits_ceiling(single.bytes, "the single file", shard::CORE_REMEDY).is_ok() {
             return Ok(vec![single]);
         }
     }
@@ -831,7 +841,7 @@ fn plan_set(
     // does (§5.1).
     let mut plans = vec![build_shard(schema, cells, assembly, chunk_size, &[], 0, BandRole::Core, true)?];
     let core_bytes = shard::projected_bytes(&plans[0], style_len, poi_len, nav_projection)?;
-    shard::fits_ceiling(core_bytes, "the core file")?;
+    shard::fits_ceiling(core_bytes, "the core file", shard::CORE_REMEDY)?;
     plans[0].bytes = core_bytes;
 
     // §5.3, checked before a byte is written: a multi-shard set with a whole role missing does not
@@ -851,13 +861,7 @@ fn plan_set(
     let mut push = |plans: &mut Vec<ShardPlan>, box_: AlignedBox, lods: &[usize], role: BandRole| -> Result<()> {
         let mut plan = build_shard(schema, cells, box_, chunk_size, lods, index, role, false)?;
         plan.bytes = shard::projected_bytes(&plan, style_len, empty_poi_len, empty_nav_projection)?;
-        if plan.bytes > shard::SET_SHARD_CEILING {
-            return Err(Error::Capacity(format!(
-                "a {} shard projects to {} bytes, past the ceiling — lower the target shard size",
-                role.as_str(),
-                plan.bytes
-            )));
-        }
+        shard::fits_ceiling(plan.bytes, &format!("a {} shard", role.as_str()), "lower the target shard size")?;
         plans.push(plan);
         index += 1;
         Ok(())
@@ -982,7 +986,7 @@ fn check_set_invariants(plans: &[ShardPlan], assembly: AlignedBox) -> Result<()>
     for p in plans {
         // This runs on **both** paths — §5.5's single file reaches here as a one-plan set — which is
         // exactly right: every file this engine writes gets a §5.2 record. See `SET_SHARD_CEILING`.
-        shard::fits_ceiling(p.bytes, &format!("shard {}", p.index))?;
+        shard::fits_ceiling(p.bytes, &format!("shard {}", p.index), "lower the target shard size")?;
     }
     for role in [BandRole::Coarse, BandRole::Geometry] {
         let boxes: Vec<AlignedBox> = plans.iter().filter(|p| !p.core && p.role == role).map(|p| p.box_).collect();
