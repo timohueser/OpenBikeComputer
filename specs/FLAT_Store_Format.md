@@ -79,9 +79,11 @@ the extent area is everything after it.
 | `4096 .. ` | — | rest of card | extent area, extents of the recorded size (§6) |
 
 Every one of those boundaries is a multiple of 16,384 bytes, so no two regions share a program page
-and the reserved tail places the extent area on a **2 MiB** boundary — a multiple of the 16,384-byte
-program page and of the 1 MiB smallest extent, which is what makes §6's address arithmetic exact and
-§6.1's page-alignment property hold at every size §8 can pick, not only at the smallest.
+and the reserved tail places the extent area on a **2 MiB** boundary. What that boundary has to be a
+multiple of is the 16,384-byte **program page**, and that is what makes §6's address arithmetic exact
+and §6.1's page-alignment property hold at every size §8 can pick. It is not a claim that an extent
+begins on a multiple of its own size: at 8 MiB extents, extent 0 still begins at absolute 2 MiB, and
+nothing in this format needs otherwise.
 
 **Block 0 is deliberately not an MBR.** Its bytes `510..511` are zero (§4 puts the superblock CRC at
 `504..508` for exactly this reason), so a host that inspects the card sees an unformatted device
