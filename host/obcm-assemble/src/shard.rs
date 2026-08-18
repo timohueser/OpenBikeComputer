@@ -113,22 +113,30 @@ pub const SET_SHARD_CEILING: u64 = {
 };
 const _: () = assert!(SET_SHARD_CEILING <= u32::MAX as u64, "every file this engine writes must fit §5.2's `Bytes`");
 
+/// The remedy for an over-size **core**, which is the only file the nav graph can fill (§5.1).
+pub const CORE_REMEDY: &str = "the **navigation graph** is what fills it — reduce the coverage (OBCA §5.7)";
+
 /// Does a file of `bytes` fit the wall every file this engine writes has to clear?
 ///
-/// One function rather than the same comparison at three sites (the fast-path gate, the split
-/// path's core check, and the pre-write re-check in [`write`]), because the failure this guards is
-/// **a site that disagrees with the others**: the `single_file` exemption that FS7.5-seam's review
-/// caught was exactly one call site quietly using a larger ceiling, and it survived precisely
-/// because there was nothing that had to be edited in one place to change the rule.
+/// **This is the only place that comparison exists**, and every site that needs it — the §5.5
+/// fast-path gate included, where "does it fit" is the *same question* as "may it be written" —
+/// asks here rather than open-coding it. That is structural, not stylistic: the `single_file`
+/// exemption FS7.5-seam's review caught was one call site quietly using a larger ceiling, and it
+/// survived because an open-coded `<= CEILING` reads correct whichever constant it names. Routing
+/// the gate through the refusal makes the two impossible to disagree.
 ///
-/// `what` names the file in the message — a rider reading it needs to know which of a set's files
-/// to blame, and after §5.1's split "the core" and "a geometry shard" have very different remedies.
-pub fn fits_ceiling(bytes: u64, what: &str) -> Result<()> {
+/// What it does *not* do is stop someone writing a fresh comparison somewhere else; no unit test
+/// can. What it does is leave exactly one line to review, and put it under test.
+///
+/// `what` names the file and `remedy` says what to do about it, both from the caller — the advice
+/// is not interchangeable. A core shrinks by reducing coverage, a geometry shard by lowering the
+/// target shard size, and a raster by neither (it is one file per set in v1). A single message that
+/// gave core advice for a terrain refusal would send a rider to the wrong control.
+pub fn fits_ceiling(bytes: u64, what: &str, remedy: &str) -> Result<()> {
     if bytes > SET_SHARD_CEILING {
         return Err(Error::Capacity(format!(
             "{what} projects to {bytes} bytes, past the {SET_SHARD_CEILING}-byte ceiling every file this engine \
-             writes has to fit (OBCA §5.2's `Bytes` is a uint32). The **navigation graph** is what fills a core — \
-             reduce the coverage (OBCA §5.7)."
+             writes has to fit (OBCA §5.2's `Bytes` is a uint32) — {remedy}."
         )));
     }
     Ok(())
@@ -365,7 +373,7 @@ pub fn write(
     let l = plan.layout(style_bytes.len(), poi_bytes_len, nav_projection)?;
     // Every file this engine writes is described by a §5.2 record — §5.5's single file included,
     // because that fast path is a set of one. See [`SET_SHARD_CEILING`].
-    fits_ceiling(l.total, &format!("shard {}", plan.index))?;
+    fits_ceiling(l.total, &format!("shard {}", plan.index), "lower the target shard size")?;
     // `OBCM_Spec.md` §1.1's one producer rule: **the scale MUST cover the file it writes**. The
     // ceiling above is now *derived from* this rule rather than independent of it, so the two can
     // no longer disagree — which is why this stays: it is the rule stated where the bytes are, and
@@ -828,39 +836,51 @@ mod tests {
         const { assert!(SET_SHARD_CEILING < FILE_CEILING, "and the manifest is the narrower of the two") };
     }
 
-    /// The plan-time refusal: an over-size core is rejected **before a byte is written**, and the
-    /// message names the navigation graph, because after §5.1's split nothing else fills a core.
+    /// The plan-time refusal: one byte past the wall is rejected **before anything is written**,
+    /// and the message carries the caller's remedy rather than a single generic one.
     #[test]
-    fn an_over_size_core_is_refused_at_plan_time() {
-        assert!(fits_ceiling(SET_SHARD_CEILING, "the core file").is_ok(), "the wall itself fits");
-        let err = fits_ceiling(SET_SHARD_CEILING + 1, "the core file").expect_err("one byte past must refuse");
+    fn one_byte_past_the_wall_is_refused_with_the_callers_remedy() {
+        assert!(fits_ceiling(SET_SHARD_CEILING, "the core file", CORE_REMEDY).is_ok(), "the wall itself fits");
+        let err =
+            fits_ceiling(SET_SHARD_CEILING + 1, "the core file", CORE_REMEDY).expect_err("one byte past must refuse");
         match err {
             Error::Capacity(m) => {
                 assert!(m.contains("the core file"), "the refusal names which file: {m}");
-                assert!(m.contains("navigation graph"), "and what fills it (OBCA §5.7): {m}");
+                assert!(m.contains("navigation graph"), "and the core's remedy (OBCA §5.7): {m}");
                 assert!(m.contains("uint32"), "and which field is the wall: {m}");
             }
             other => panic!("an over-size plan is a capacity refusal, got {other:?}"),
         }
+        // A raster is not fixed by reducing a nav graph it does not have. The remedy travels with
+        // the caller precisely so this message cannot inherit the core's.
+        let terrain = fits_ceiling(SET_SHARD_CEILING + 1, "the terrain shard", "one file per set in v1")
+            .expect_err("the same wall");
+        let Error::Capacity(m) = terrain else { panic!("capacity") };
+        assert!(m.contains("one file per set"), "terrain gets terrain's remedy: {m}");
+        assert!(!m.contains("navigation graph"), "and not the core's: {m}");
     }
 
-    /// §5.5's fast path is a **set of one**, so its file answers to the manifest's ceiling like any
-    /// other — the single-file gate and the set-member gate are the *same* number.
+    /// §5.5's single file and a set's member answer to **one** wall, and `fits_ceiling` is where
+    /// that is decided for both — the fast-path gate calls it rather than comparing for itself.
     ///
-    /// This is the pin that would have caught the `single_file` exemption: it let a 4–64 GiB map
-    /// pass planning, be written in full, and only then die at manifest emit. **FS7.5b2 is what
-    /// changes this**: deleting §5's set machinery deletes `Bytes`, and only then may a written file
-    /// pass 4 GiB. Until then a divergence here is a bug, not a capability.
+    /// **What this test protects, precisely:** that the shared rule answers the same for a lone
+    /// file and a member, and that no per-plan exemption exists to make it answer differently (a
+    /// `ShardPlan` carries no "this one is a lone file" flag — the field that did was deleted).
+    /// It does **not** prove `plan_set` calls the rule; nothing at this level can, and an earlier
+    /// version of this test claimed it did while a mutation reverting the gate to `FILE_CEILING`
+    /// left the whole crate green. The protection there is structural: the gate *is* the call.
+    ///
+    /// **FS7.5b2 is what may separate the two numbers** — deleting §5's set machinery deletes
+    /// `Bytes`, and only then may a written file pass 4 GiB. Until then a divergence is a bug.
     #[test]
     fn the_single_file_path_and_a_set_member_answer_to_one_ceiling_until_b2() {
-        let single = plan(0, BandRole::Core, true);
-        let member = plan(1, BandRole::Coarse, false);
-        for p in [&single, &member] {
-            assert!(p.bytes <= SET_SHARD_CEILING, "shard {} is judged against the manifest's wall", p.index);
+        for (bytes, verdict) in [(SET_SHARD_CEILING, true), (SET_SHARD_CEILING + 1, false)] {
+            let lone = fits_ceiling(bytes, "the single file", CORE_REMEDY).is_ok();
+            let member = fits_ceiling(bytes, "shard 1", "lower the target shard size").is_ok();
+            assert_eq!(lone, verdict, "the lone file's verdict at {bytes}");
+            assert_eq!(lone, member, "and a member's is the same verdict at {bytes}");
         }
-        // No per-plan exemption exists to diverge them: a plan carries no "this one is a lone file"
-        // flag, which is the structural half of the guarantee.
-        assert_eq!(SET_SHARD_CEILING, u32::MAX as u64, "one number, both paths");
+        assert_eq!(SET_SHARD_CEILING, u32::MAX as u64, "one number, both paths, until b2");
     }
 
     /// The refusal `SET_SHARD_CEILING` exists to make unreachable: §5.2's `Bytes` cannot *spell* an
