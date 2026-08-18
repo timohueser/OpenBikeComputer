@@ -1122,16 +1122,22 @@ and it is safe by construction: the whole map already fits one file, so there is
 Nothing else in §5 changes; the device's dispatch loop simply runs over one shard, and §5.6's
 empty-LOD cache finds nothing empty.
 
-v14 moved the *format's* half of that wall from 4 GiB to 64 GiB, and widening the read seam to
-64 bits removed the other half — so this path's threshold is now **64 GiB**, and it covers every
-selection the builder offers. The measured figures below are the ones that used to decide it and are
-kept as the record of what a country costs; they no longer describe a boundary.
+v14 moved the *format's* half of §5.7's wall from 4 GiB to 64 GiB, and widening the read seam to
+64 bits removed the other half — so a **reader** now reaches 64 GiB.
 
-**The split path survives the widening for one reason**, and it is not the file's size: a *member*
-of a set is recorded in §5.2's `Bytes`, a `uint32`, so a set cannot describe a shard past
-`4 GiB − 1`. A selection that takes this path meets no such field and is bound only by §5.7's two
-walls. So the fast path is very nearly every case, the split machinery is the exception it was
-always meant to be, and what keeps the exception alive is the manifest rather than the map.
+**That does not move this path's threshold, and the reason is that this path is a set of one.** The
+file it writes gets a §5.2 record like any other shard, and `Bytes` there is a `uint32` — so the
+threshold for taking this path is `4 GiB − 1`, the same wall a set's member clears, and a producer
+MUST apply it here rather than §5.7's larger one. A producer that gated this path on the reader's
+wall would lay out a 5 GiB map, write every byte of it, and only then discover that its own manifest
+cannot describe what it just wrote.
+
+So the widened seam is, for now, a **reading** capability: this format can describe and a reader can
+open a single file far past 4 GiB, and the OBCS manifest is the only thing that stops one being
+written. That is a property of §5's set machinery rather than of the map, and it lifts when that
+machinery is removed — at which point this path's threshold becomes §5.7's wall and the split
+machinery goes with it. The measured figures below are what a country costs; they described the old
+boundary and still describe the current one, because the number did not move.
 
 If the selection has terrain, the raster rides beside it as the `terrain` record — `Shard Count = 2`,
 `map.obcm`-plus-sidecar in every respect that matters — and the fast path is unaffected, because
@@ -1198,17 +1204,24 @@ Therefore:
   coincidence rather than inheritance — and widening it was its own slice of work, the prerequisite
   for single files past 4 GiB.
 
-  A **member of a set** has a third wall, and it is narrower than both: §5.2's `Bytes` is a
-  `uint32` of bytes, so a manifest cannot record a shard past `4 GiB − 1`. A producer emitting a
-  set MUST apply that bound to every member, and MUST refuse rather than record a truncated size.
-  The single file of §5.5 carries no manifest record and is bound only by the two walls above.
+  **A third wall is narrower than both, and it binds every file this format can currently produce.**
+  §5.2's `Bytes` is a `uint32` of bytes, so a manifest cannot record a shard past `4 GiB − 1`. Every
+  OBCM file an assembler writes carries such a record — §5.5's single file included, because that
+  fast path emits a *set of one* — so a producer **MUST** apply `4 GiB − 1` to every file it writes,
+  MUST apply it **before writing any bytes**, and MUST refuse rather than record a truncated size.
+
+  The two walls above are therefore **reading** walls today and the third is the writing wall. The
+  distinction is not pedantry: it says a conforming reader must handle a 64 GiB file it will not yet
+  encounter from this producer, and it says exactly what has to change for one to exist — §5.2's
+  field, and with it §5's set machinery.
 - For the **core** specifically it SHOULD warn above **seven eighths of that wall**, and both the
   refusal and the warning MUST name the **navigation graph** as the reason and the coverage as the
   thing to reduce — because after this section's split the core is nav plus POIs and nothing else,
   so no other explanation is true. The warning is a *proportion* — "you are close" — rather than a
-  size, for the same reason the refusal is a reference. (A set's core answers to §5.2's narrower
-  wall, so in practice the warning a *set* produces is ⅞ of `4 GiB − 1`, ≈ 3.5 GiB — the figure
-  this section always wrote.)
+  size, for the same reason the refusal is a reference. Since the writing wall is §5.2's, the
+  warning a producer emits today is ⅞ of `4 GiB − 1`, ≈ 3.5 GiB — the figure this section always
+  wrote. Stating it as a proportion is what lets it follow the wall up when §5.2 goes, without a
+  rewrite.
 - A consumer MUST apply the schema's own cell-bake budget (§1.5's +5–15 %, measured headroom rather
   than an expected cost) on the *pessimistic* side of that comparison, so the projection is an upper
   bound rather than a hope.
@@ -1230,20 +1243,25 @@ Therefore:
 > where a file stopped — because nothing could read past it rather than because nothing could
 > address or store it.
 >
-> **That third wall is now gone too**, and the number finally moved. `ByteSource` addresses 64 bits,
-> so the smaller of the two walls in the rule above is §1.1's interior and a lone file stops at
-> 64 GiB. The core warn was stated as the ⅞ proportion rather than as "≈ 3.5 GiB" for exactly this
-> day: it followed the wall up without being rewritten.
+> **That third wall is now gone too**, so the *reading* wall finally moved: `ByteSource` addresses
+> 64 bits, the smaller of the two walls in the rule above is §1.1's interior, and a reader reaches
+> 64 GiB.
 >
-> **What still splits a country-scale selection is §5.2's `Bytes`**, which is a `uint32` of bytes in
-> the OBCS manifest and did not widen with anything. It bounds a *member of a set* at `4 GiB − 1`
-> and bounds a single file not at all — so §5.5's fast path reaches the format's wall while the
-> split path it falls back to is held at the old number. That is a property of the manifest, and it
-> dies with the manifest.
+> **The writing wall did not move, and a fourth cause is why.** §5.2's `Bytes` is a `uint32` of
+> bytes in the OBCS manifest and widened with nothing. Every file this format produces carries such
+> a record — §5.5's single file included, since that path emits a set of one — so `4 GiB − 1` is
+> still where a *written* file stops. It was tempting to read the third wall's removal as freeing
+> the single file, and that is exactly the error: the fast path has a manifest too.
+>
+> So the count today is **four walls, three causes retired, one live**: FAT is gone, the format's
+> own `uint32` is gone, the read seam is gone, and the manifest remains. The core warn was written
+> as the ⅞ proportion rather than as "≈ 3.5 GiB" for the day the last one goes; it has not had to
+> move yet.
 >
 > Statements elsewhere in this document that name `4 GiB − 1` describe the **pre-v14** design and
-> the reasoning that produced the split; they are history, not the current per-file wall, and §5.7
-> is the normative statement. The exception is §5.2's `Bytes` field, above.
+> the reasoning that produced the split. As *history* they are stale; as a *number* they still
+> happen to be right, for a reason none of them gives. §5.7 is the normative statement, and §5.2's
+> `Bytes` is the field that currently makes it so.
 
 **The terrain shard is the easiest file of the set to project, and it is projected the same way.**
 Its size is `32 + 4 · rows · cols + present · T² · 512` — a header, a directory over the assembly
