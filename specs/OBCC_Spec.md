@@ -455,8 +455,9 @@ A consumer MAY stream assembler output directly to a connected device instead
 of first saving it. It MUST verify the emitted file's announced length and SHA-256 before transfer.
 Cancellation or failure MUST abandon the incomplete transfer and MUST NOT leave anything selectable
 as a map. (Before OBCM v14 / #1420 this rule sequenced several files and committed a volume-set
-manifest last; with one file the store's own commit is the sequencing, and FS7.5b/c is where the
-multi-file client path is deleted — `FLAT_Store_Protocol.md`.)
+manifest last; with one file the store's own commit is the sequencing. The host and browser halves
+of the multi-file client path were deleted in FS7.5b2; the board's own set mount goes in FS7.5c —
+`FLAT_Store_Protocol.md`.)
 
 ## 13. Terrain artifacts
 
