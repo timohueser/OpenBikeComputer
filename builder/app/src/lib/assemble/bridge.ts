@@ -1,8 +1,14 @@
 /**
- * Lazy wasm bridge to the shared Rust assembler. Assembly is one synchronous
- * wasm call and must run in a Worker; UI cancellation terminates that worker.
- * Progress posts between engine phases, and completed files should cross back
- * as transferable buffers. All failures use {@link AssembleError}.
+ * Lazy wasm bridge to the shared Rust assembler. Assembly is one synchronous wasm
+ * call and must run in a Worker; UI cancellation terminates that worker. Progress
+ * posts between engine phases. All failures use {@link AssembleError}.
+ *
+ * **A map is one file.** The engine takes cells in and writes one `.obcm` — terrain
+ * spliced into its tail — and that is the whole output: no manifest, no shards, no
+ * roles. It also names nothing. What crosses this seam is a digest, a length and
+ * (when the run buffered it) the bytes; whether that becomes `MAP.OBCM` on a card or
+ * a save dialog's suggestion is the caller's decision, because the caller is the only
+ * party that knows.
  */
 
 import type { InitInput } from "./pkg/obc_web_assemble.js";
@@ -28,7 +34,7 @@ export const ASSEMBLE_ERROR_CODES = ["input", "format", "capacity", "verify", "a
  *   something that is not a cell.
  * - `capacity` — OBCA §5.7: a per-file ceiling. **Coverage must be reduced**, and the engine will
  *   never "solve" it by dropping any.
- * - `verify` — the §4.8 read-back rejected the output: the assembler wrote a set the real reader
+ * - `verify` — the §4.8 read-back rejected the output: the assembler wrote a map the real reader
  *   cannot read. A **defect**, never a retry: nothing was handed on, and nothing should be.
  * - `aborted` — the caller's own progress callback asked to stop.
  * - `io` — the byte source or sink failed.
@@ -56,7 +62,7 @@ export class AssembleError extends Error {
  * where the split went scale-free: both measured regions agree to half a point) — so a bar
  * that names the phase is worth having.
  */
-export type AssemblePhase = "open" | "poi" | "nav" | "plan" | "write" | "verify" | "manifest" | "done";
+export type AssemblePhase = "open" | "poi" | "nav" | "plan" | "write" | "verify" | "done";
 
 /**
  * Progress sink. `fraction` is **overall** completion (0..1), weighted by the measured per-phase
@@ -134,7 +140,7 @@ export interface AssembleKnownEmpty {
 
 /**
  * The terrain store's lattice, verbatim from the catalog's `terrain` block
- * (`OBCC_Spec.md` §13.1). Passing it is what makes the set carry a `terrain` role at all.
+ * (`OBCC_Spec.md` §13.1). Passing it is what gives the map a §1.3 terrain region at all.
  *
  * A catalog with no terrain block simply does not pass one, and the map assembles exactly as it did
  * before terrain existed — flat profiles, zero baked ascent, nothing missing (§13).
@@ -149,9 +155,8 @@ export interface AssembleTerrain {
  * published, and the whole `.obcd` object.
  *
  * A **canonically void** square (open ocean, outside the dataset's coverage) is simply not passed —
- * it has no object at all (§13.6), and in the shard an absent cell and an all-`NODATA` one answer
- * identically (`OBCT_Spec.md` §4.3). That is why terrain needs no equivalent of
- * {@link AssembleKnownEmpty}.
+ * it has no object at all (§13.6), and an absent cell reads identically to an all-`NODATA` one
+ * (`OBCT_Spec.md` §4.3). That is why terrain needs no equivalent of {@link AssembleKnownEmpty}.
  */
 export interface AssembleTerrainCell {
     readonly id: string;
@@ -163,19 +168,10 @@ export interface AssembleTerrainCell {
 
 /** What an assembly can be told to do differently. Every field optional. */
 export interface AssembleOptions {
-    /** The set's display name, 24 bytes on the wire (OBCA §5.2). */
-    readonly name?: string;
-    /** The id the derived filenames use, 0..=999 (default 1). */
-    readonly cardId?: number;
-    /** Split a geometry shard wherever it exceeds this (default 1 GiB). */
-    readonly targetShardBytes?: number;
     /** Proceed although a selected cell is missing (OBCA §4.1). */
     readonly acceptHoles?: boolean;
     /** Proceed although a cell is `partial` (OBCA §3.7). */
     readonly acceptPartial?: boolean;
-    /** Write a role-partitioned set even when the map would fit one file — smaller files are better
-     *  resumable upload units. */
-    readonly forceSplit?: boolean;
     /** How much of a source cell one {@link AssembleRead} brings back (default 64 KiB, clamped to
      *  4 MiB). The cache holds sixteen of these, so it is also the input's whole residency ÷ 16.
      *
@@ -185,106 +181,69 @@ export interface AssembleOptions {
     /** The most memory the §4.6 nav merge's sorted passes may hold (default 64 MiB, floor 64 KiB).
      *
      *  It bounds what the merge *holds*, never what it writes — the same selection assembles to the
-     *  same bytes at any budget. In this build the spill it bounds still lives in wasm memory, so
-     *  lowering it trades the sort's buffer for scratch of the same size; it starts paying once the
-     *  browser's scratch is OPFS-backed (#1116 phase D). */
+     *  same bytes at any budget. With an {@link AssembleScratchStore} wired, what it bounds is the
+     *  buffer over an OPFS-backed spill, so lowering it genuinely lowers residency; without one the
+     *  spill is in wasm memory and lowering it only moves the same bytes around. */
     readonly mergeBudgetBytes?: number;
 }
 
 /**
- * One shard, handed over the moment its §4.8 read-back passed — mid-assembly, from inside the
- * blocking call (#1116 B1).
- *
- * Its bytes are **already out of wasm memory** when this arrives: the wasm-side buffer is freed
- * before the callback runs, which is the entire point. What it costs is that the sink has to be
- * synchronous. See {@link AssembleFileSink}.
+ * The finished map, as the {@link AssembleMapSink} is told about it: an identity with no bytes,
+ * because the sink already wrote them and this side never held them.
  */
-export interface AssembleStreamedFile {
-    /** The derived 8.3 filename (`MS<id>S<kk>.OBM`). */
-    readonly name: string;
-    /** Always a shard role — the terrain shard and the OBCS manifest are not streamed. */
-    readonly role: "core" | "coarse" | "geometry";
-    /** Lowercase-hex SHA-256, the same digest the manifest will record for it. */
-    readonly sha256: string;
-    readonly bytes: Uint8Array;
-}
-
-/**
- * Where streamed shards go. Passing one is what turns streaming on, and it changes what the result
- * contains: a shard the sink took is **not** in {@link AssembleResult.files} — only the terrain
- * shard and the manifest are left there.
- *
- * The contract is narrow, because this runs *inside* the synchronous assembly:
- *
- * - **Do not block.** The assembly is stopped behind it and nothing can be awaited. Post the buffer
- *   on (transfer it) or park it; do the slow part after the run.
- * - **Do not throw.** A throw fails the run as `io` — by then the bytes have already left wasm, and
- *   a set with a hole in it must never be reported as finished.
- * - **A run that fails or is cancelled may already have called it.** Cleaning up what was handed
- *   over is the caller's job. Nothing half-usable can reach a device either way: the OBCS manifest
- *   is written last (OBCA §5.4), so a set without one is not a map.
- */
-export type AssembleFileSink = (file: AssembleStreamedFile) => void;
-
-/**
- * One shard the caller wrote itself, once the §4.8 read-back has passed it (#1116 D1) — the
- * {@link AssembleShardSink}'s version of {@link AssembleStreamedFile}, carrying an identity because
- * there are no bytes to carry: the sink already has them.
- */
-export interface AssembleSealedShard {
-    /** The slot it was written to — the `create`/`write`/`seal` argument. */
-    readonly slot: number;
-    /** The derived 8.3 filename (`MS<id>S<kk>.OBM`) the set calls it, which is what the file should
-     *  be *saved* as. A sink is free to have written it under any name of its own. */
-    readonly name: string;
-    readonly role: "core" | "coarse" | "geometry";
-    /** Lowercase-hex SHA-256, the same digest the manifest records for it. */
+export interface AssembleSealedMap {
+    /** Lowercase-hex SHA-256 of the whole file, the spliced raster included. */
     readonly sha256: string;
     /** How many bytes the sink was handed — what its file must be long. */
     readonly byteLength: number;
 }
 
 /**
- * Where the shards themselves go, when the caller would rather wasm memory did not hold them
- * (#1116 D1). The write-side twin of {@link AssembleSources}, and the thing that decides whether a
- * country-scale map can be assembled in a tab at all: the **core shard cannot be split** — one nav
- * graph, one file — so at DACH scale it is a single ~3 GiB buffer in a 4 GiB address space.
+ * Where the map itself goes, when the caller would rather wasm memory did not hold it (#1116 D1).
+ * The write-side twin of {@link AssembleSources}, and the thing that decides whether a
+ * country-scale map can be assembled in a tab at all.
  *
- * In the browser this is one OPFS `FileSystemSyncAccessHandle` per shard, opened in the assembly
- * worker before the run (see `../cells/store.ts`'s `openShardSink`). Everything below is called
- * from **inside** the synchronous assembly, so it must be synchronous itself — the same reason
- * {@link AssembleRead} is.
+ * That was already the argument when a map was a set of shards, because the core shard could not be
+ * split — one nav graph, one file. One file outright makes it bind harder rather than softer: a
+ * DACH map is a single ~9 GiB object, which is not merely awkward in a 4 GiB wasm32 address space
+ * but larger than the whole of it. At that scale a sink is not an optimisation; it is the only shape
+ * in which the selection exists.
  *
- * Passing one changes what the result contains, exactly as {@link AssembleFileSink} does: a sunk
- * shard is **not** in {@link AssembleResult.files}, and is reported to {@link
- * AssembleShardSink.sealed} instead. Only the terrain shard and the manifest are left.
+ * In the browser this is one OPFS `FileSystemSyncAccessHandle`, opened in the assembly worker before
+ * the run (see `../cells/store.ts`'s `openMapSink`). Everything below is called from **inside** the
+ * synchronous assembly, so it must be synchronous itself — the same reason {@link AssembleRead} is.
+ *
+ * Passing one changes what the result carries: the bytes are the host's, so
+ * {@link AssembleResult.resident} is `false` and {@link AssembleResult.take} throws. The identity
+ * still crosses — through {@link AssembleMapSink.sealed}, and on the result itself.
  *
  * The contract, in four lines:
  *
- * - **Return `true`.** Anything falsy, or a throw, fails the run as `io` naming the shard. A short
- *   write or a short read is a failure, not a partial success.
+ * - **Return `true`.** Anything falsy, or a throw, fails the run as `io`. A short write or a short
+ *   read is a failure, not a partial success.
  * - **`bytes` and `into` are views onto wasm's linear memory**, valid only for the duration of the
  *   call. Fill or drain them and return; do not keep them, do not hand them to anything
  *   asynchronous, and do not call back into the assembler.
- * - **`seal` must flush.** The very next thing the engine does is read the shard back.
- * - **A run that fails or is cancelled may have written several shards.** Cleaning them up is the
- *   caller's job; §5.4 makes them harmless meanwhile (no manifest, no map).
+ * - **`seal` must flush.** The very next thing the engine does is read the map back.
+ * - **A run that fails or is cancelled may have written most of a file.** Cleaning it up is the
+ *   caller's job, and it is harmless meanwhile: a partial `.obcm` fails its own header checks, and
+ *   nothing hands it on — `assembleCells` throws rather than return.
  */
-export interface AssembleShardSink {
-    /** Begin shard `slot`, which the set will call `name`. Anything already at that slot is
-     *  superseded — a sink reusing a file must truncate it here. */
-    create(slot: number, name: string): boolean;
-    /** Append `bytes` to shard `slot`. */
-    write(slot: number, bytes: Uint8Array): boolean;
-    /** Fill `into` with `into.byteLength` bytes at `offset` of the **sealed** shard in `slot`, for
-     *  the §4.8 read-back. Served through the wasm side's block cache, so this is called on the
-     *  order of once per 64 KiB rather than once per engine read. */
-    readAt(slot: number, offset: number, into: Uint8Array): boolean;
-    /** No more bytes are coming for `slot`. Flush. */
-    seal(slot: number): boolean;
-    /** Shard `slot` has passed §4.8 — here is what you have. Throwing fails the run as `io`: the
-     *  file exists, and a caller that does not know its name cannot finish a set. */
-    sealed(shard: AssembleSealedShard): void;
+export interface AssembleMapSink {
+    /** Begin the map. Anything already there is superseded — a sink reusing a file must truncate
+     *  it here. */
+    create(): boolean;
+    /** Append `bytes` to the map. */
+    write(bytes: Uint8Array): boolean;
+    /** Fill `into` with `into.byteLength` bytes at `offset` of the **sealed** map, for the §4.8
+     *  read-back. Served through the wasm side's block cache, so this is called on the order of
+     *  once per 64 KiB rather than once per engine read. */
+    readAt(offset: number, into: Uint8Array): boolean;
+    /** No more bytes are coming. Flush. */
+    seal(): boolean;
+    /** The map has passed §4.8 — here is what you have. Throwing fails the run as `io`: the file
+     *  exists, and a caller that cannot record which bytes are in it must not report success. */
+    sealed(map: AssembleSealedMap): void;
 }
 
 /**
@@ -311,46 +270,41 @@ export interface AssembleScratchStore {
     remove(id: number): boolean;
 }
 
-/**
- * One finished file. `take()` moves its bytes out of wasm memory and frees the wasm-side copy, so
- * call it once, and one file at a time: an assembled set can be gigabytes.
- */
-export interface AssembledFile {
-    /** The derived 8.3 filename (`MS<id>S<kk>.OBM`, `MS<id>.OBD`, `MS<id>.OBS`). */
-    readonly name: string;
-    readonly role: "core" | "coarse" | "geometry" | "terrain" | "manifest";
-    /** Lowercase-hex SHA-256 as the manifest records it; empty for the manifest itself. */
+/** What an assembly produced: one map, plus what the engine wants said about it. */
+export interface AssembleResult {
+    /** Lowercase-hex SHA-256 of the whole file — the map's identity, whether the bytes are here or
+     *  a sink wrote them. */
     readonly sha256: string;
-    /** The size at the moment the assembly finished — a transfer can be planned before it is paid
-     *  for. It does not change when the file is taken; the bytes do. */
+    /** The file's length. Readable without moving a byte, so a transfer can be planned before it is
+     *  paid for, and it stays true after {@link AssembleResult.take} has emptied the buffer. */
     readonly byteLength: number;
+    /** Whether the bytes are here to {@link AssembleResult.take}. `false` after a run with an
+     *  {@link AssembleMapSink}: the file exists, it is simply the host's and not this module's to
+     *  hand over. */
+    readonly resident: boolean;
     /**
-     * Move the bytes to JS and free the wasm copy. **Once.** A second call throws `internal` rather
-     * than hand back an empty array: the natural retry shape (take, upload, catch, take again) would
-     * otherwise write a 0-byte shard to a card and call it a map. Keep what the first call returned.
+     * Move the map's bytes to JS and free the wasm copy. **Once.** A second call throws `internal`
+     * rather than hand back an empty array: the natural retry shape (take, save, catch, take again)
+     * would otherwise write a 0-byte file to a card and call it a map. Keep what the first call
+     * returned.
      *
-     * Also throws after {@link AssembleResult.release}.
+     * Throws for a sunk run too ({@link AssembleResult.resident} is `false`), and after
+     * {@link AssembleResult.release}.
      */
     take(): Uint8Array;
-}
-
-/** What an assembly produced. Files come shards-first with the OBCS manifest **last** (OBCA §5.4). */
-export interface AssembleResult {
-    /** Everything an {@link AssembleFileSink} did not already take. With no sink, the whole set. */
-    readonly files: readonly AssembledFile[];
     /** Everything OBCA says a producer SHOULD report rather than refuse. Ignoring these ships the
      *  same bytes; showing them tells the rider what the spec wanted them told. */
     readonly warnings: readonly string[];
     /** The engine's summary, in the shape `obcm-assemble --json` prints. */
     readonly summary: AssembleSummary;
     /**
-     * Free everything still held in wasm memory: the assembler and any file whose bytes were not
-     * taken. **Call this when you are done** — a set can be gigabytes, and wasm-bindgen objects are
-     * not collected with their JS handles. `take()` on a released file throws.
+     * Free whatever is still held in wasm memory: the assembler, and the map's bytes if they were
+     * never taken. **Call this when you are done** — a map can be gigabytes, and wasm-bindgen
+     * objects are not collected with their JS handles. `take()` after it throws.
      *
      * Idempotent. A result that is dropped without it is eventually freed by a
      * `FinalizationRegistry` net (with a `console.warn`), but "eventually" is the garbage
-     * collector's word, not a plan: until then the set is still resident, and the next assembly is
+     * collector's word, not a plan: until then the map is still resident, and the next assembly is
      * competing with it for the same 4 GiB.
      */
     release(): void;
@@ -360,15 +314,8 @@ export interface AssembleResult {
 export interface AssembleSummary {
     readonly cells: number;
     readonly bytes: number;
-    readonly manifest: string;
-    readonly shards: readonly {
-        readonly index: number;
-        readonly role: string;
-        readonly file: string;
-        readonly bytes: number;
-        readonly sha256: string;
-        readonly verified: { chunks: number; features: number; nav_nodes: number } | null;
-    }[];
+    readonly sha256: string;
+    readonly verified: { chunks: number; features: number; nav_nodes: number } | null;
     readonly [key: string]: unknown;
 }
 
@@ -392,12 +339,11 @@ export interface AssembleSummary {
  * near-budget verdict as a warning with the number, not as a green light — and never as a guarantee
  * to the user.
  *
- * **Where the limit sits.** With #1116 phase B's two escapes on — cells streaming from OPFS,
- * shards handed out after their verify — the resident terms are constants and the projection is
- * engine-bound: it refuses at roughly twice BW on the download path. The device path keeps the
- * whole set until `planned` and binds earlier, at ~1.4× BW; a browser with no usable OPFS runs the
- * pre-B shape and binds earlier still. The {@link Residency} passed in states which of these this
- * run will be, and the verdicts genuinely differ — compute one per destination, never one for all.
+ * **Where the limit sits.** With both escapes on — cells streaming from OPFS, the map written
+ * through a sink — the resident terms are constants and the projection is engine-bound: it refuses
+ * at roughly twice BW. A browser with no usable OPFS runs neither escape, holds the selection *and*
+ * the finished file in linear memory, and binds far earlier. The {@link Residency} passed in states
+ * which of the two this run will be, and the verdicts genuinely differ.
  */
 export interface MemoryEstimate {
     /** The engine's working set — dominated by the nav rewrite. Measured 4.7 bytes resident per
@@ -406,8 +352,8 @@ export interface MemoryEstimate {
     /** The **resident** input: every band plus terrain, or the read cache plus terrain when the
      *  cells stay in OPFS (#1116 B2). */
     readonly inputBytes: number;
-    /** The **resident** output: the whole set (§4.8 needs written bytes addressable, and the device
-     *  path keeps them), or one shard plus the terrain sink when shards stream out (#1116 B1). */
+    /** The **resident** output: the whole map (§4.8 needs the written bytes addressable), or the
+     *  sink's write and read-back caches when it goes to disk instead (#1116 D1). */
     readonly outputBytes: number;
     /** The sum of the three. An estimate, not a measurement — see the interface docs. */
     readonly peakBytes: number;
@@ -483,10 +429,10 @@ let assembling = false;
 /**
  * The safety net under a forgotten {@link AssembleResult.release}. It holds the wasm handle (never
  * the result object — that would keep it alive forever and defeat the point), so when a result is
- * collected with files still in wasm memory, they are freed and the omission is reported once.
+ * collected with the map still in wasm memory, it is freed and the omission is reported once.
  *
  * A net, not a mechanism: collection happens whenever the engine feels like it, and until then a
- * multi-gigabyte set is still resident. `release()` is still the contract.
+ * multi-gigabyte map is still resident. `release()` is still the contract.
  */
 const abandoned =
     typeof FinalizationRegistry === "undefined"
@@ -494,7 +440,7 @@ const abandoned =
         : new FinalizationRegistry<{ free: () => void; name: string }>((held) => {
               console.warn(
                   `obc-web-assemble: an AssembleResult (${held.name}) was dropped without release(). Freeing it now — ` +
-                      "but call release() when you are done with a set, or its bytes stay in wasm memory until a GC " +
+                      "but call release() when you are done with a map, or its bytes stay in wasm memory until a GC " +
                       "that may never come.",
               );
               try {
@@ -505,7 +451,7 @@ const abandoned =
           });
 
 /**
- * Assemble `cells` into one `.obcm` or a volume set.
+ * Assemble `cells` into one `.obcm`.
  *
  * **Run this in a Web Worker** — the call blocks for the whole assembly. See the threading contract
  * in this module's header, including why the UI's cancel button is `worker.terminate()`.
@@ -514,19 +460,14 @@ const abandoned =
  * immediately. Or they do not cross at all: pass `sources` and the cells named there are read a
  * block at a time, from wherever the caller keeps them, for the length of the run (#1116 B2). The
  * two forms may be mixed, and a caller uses whichever it has. The §4.8 verify pass runs before this
- * resolves either way, so a result is a set the real reader has already read back; there is
+ * resolves either way, so a result is a map the real reader has already read back; there is
  * deliberately no way to skip it.
  *
- * The result keeps its files in wasm memory until each is `take()`n; call {@link
- * AssembleResult.release} when done, or the set stays resident. Pass `onFile` and that stops being
- * true of the shards: each one leaves wasm as soon as it is verified, so the output's contribution
- * to the peak is one shard rather than the whole set (#1116 B1). Read {@link AssembleFileSink}
- * before you do — the sink runs inside the blocking call and may neither block nor throw.
- *
- * Pass `shardSink` and the shards never enter wasm memory at all (#1116 D1): the engine's bytes go
- * straight to the caller's storage and the §4.8 read-back comes back out of it. That is not the same
- * saving by a different route — `onFile` still holds one whole shard, and the core shard cannot be
- * split, so a country's is one ~3 GiB buffer. See {@link AssembleShardSink}.
+ * The result holds the map in wasm memory until {@link AssembleResult.take}; call
+ * {@link AssembleResult.release} when done, or it stays resident. Pass `sink` and it is never in
+ * wasm memory at all (#1116 D1): the engine's bytes go straight to the caller's storage and the
+ * §4.8 read-back comes back out of it. At country scale that is not an optimisation — the file is
+ * larger than this address space. See {@link AssembleMapSink}.
  *
  * Only one assembly may be in flight at a time; a second overlapping call throws `internal`.
  *
@@ -540,9 +481,8 @@ export async function assembleCells(
     onProgress?: AssembleProgress,
     knownEmpty: readonly AssembleKnownEmpty[] = [],
     terrain?: { readonly lattice: AssembleTerrain; readonly cells: readonly AssembleTerrainCell[] },
-    onFile?: AssembleFileSink,
     sources?: AssembleSources,
-    shardSink?: AssembleShardSink,
+    sink?: AssembleMapSink,
     scratch?: AssembleScratchStore,
 ): Promise<AssembleResult> {
     if (assembling) {
@@ -578,49 +518,35 @@ export async function assembleCells(
             assembler.setTerrain(terrain.lattice.postingLog2, terrain.lattice.cellLog2);
             for (const cell of terrain.cells) assembler.addTerrainCell(cell.id, cell.sha256, cell.bytes);
         }
-        // The wasm side calls this once per shard, synchronously, with the bytes already out of its
-        // linear memory. It is adapted rather than passed through so the sink sees one object and
-        // the four-argument wasm-bindgen shape stays an implementation detail.
-        const sink = onFile
-            ? (name: string, role: string, sha256: string, bytes: Uint8Array) =>
-                  onFile({ name, role: role as AssembleStreamedFile["role"], sha256, bytes })
-            : undefined;
-        // The shard sink crosses as one plain object with five methods — the wasm side reads them
-        // off once, before the run — and `sealed` is adapted from wasm-bindgen's positional shape
-        // to the one object a caller sees, the same way `onFile` is.
-        if (shardSink) {
+        // The map sink crosses as one plain object with five methods — the wasm side reads them off
+        // once, before the run — and `sealed` is adapted from wasm-bindgen's positional shape to the
+        // one object a caller sees.
+        if (sink) {
             // Checked here, before a byte is written, because the alternative is discovering it at
             // the first §4.8 read — a half-wired sink is a defect in the caller (`internal`), not a
             // storage failure (`io`), and telling the two apart matters more than usual when the
             // difference is "your code is wrong" versus "your disk is full".
             for (const name of ["create", "write", "readAt", "seal", "sealed"] as const) {
-                if (typeof shardSink[name] !== "function") {
+                if (typeof sink[name] !== "function") {
                     throw new AssembleError(
                         "internal",
-                        `the shard sink has no ${name}() — a sink must provide create, write, readAt, seal and sealed.`,
+                        `the map sink has no ${name}() — a sink must provide create, write, readAt, seal and sealed.`,
                     );
                 }
             }
         }
-        const shards = shardSink
+        const writes = sink
             ? {
-                  create: (slot: number, name: string) => shardSink.create(slot, name),
-                  write: (slot: number, bytes: Uint8Array) => shardSink.write(slot, bytes),
-                  readAt: (slot: number, offset: number, into: Uint8Array) => shardSink.readAt(slot, offset, into),
-                  seal: (slot: number) => shardSink.seal(slot),
-                  sealed: (slot: number, name: string, role: string, sha256: string, byteLength: number) =>
-                      shardSink.sealed({
-                          slot,
-                          name,
-                          role: role as AssembleSealedShard["role"],
-                          sha256,
-                          byteLength,
-                      }),
+                  create: () => sink.create(),
+                  write: (bytes: Uint8Array) => sink.write(bytes),
+                  readAt: (offset: number, into: Uint8Array) => sink.readAt(offset, into),
+                  seal: () => sink.seal(),
+                  sealed: (sha256: string, byteLength: number) => sink.sealed({ sha256, byteLength }),
               }
             : undefined;
-        // The scratch store crosses the same way the shard sink does: one plain object, methods
-        // read off once before the run. Checked here for the same reason the sink is — a half-wired
-        // store is the caller's defect (`internal`), not a storage failure (`io`).
+        // The scratch store crosses the same way the sink does: one plain object, methods read off
+        // once before the run. Checked here for the same reason — a half-wired store is the caller's
+        // defect (`internal`), not a storage failure (`io`).
         if (scratch) {
             for (const name of ["create", "append", "readAt", "len", "remove"] as const) {
                 if (typeof scratch[name] !== "function") {
@@ -641,33 +567,30 @@ export async function assembleCells(
                   remove: (id: number) => scratch.remove(id),
               }
             : undefined;
-        const summary = JSON.parse(assembler.run(onProgress, sink, sources?.read, shards, spill)) as AssembleSummary;
+        const summary = JSON.parse(assembler.run(onProgress, sources?.read, writes, spill)) as AssembleSummary;
         const warnings = assembler.warnings().map((w) => String(w));
         // Bound to the live assembler on purpose: `take()` is what frees the wasm-side copy, so the
-        // caller decides when each file's bytes stop being wasm's problem and start being the JS
+        // caller decides when the map's bytes stop being wasm's problem and start being the JS
         // heap's. Nothing is copied until then.
         const owner = assembler;
-        const files: AssembledFile[] = [];
-        for (let i = 0; i < owner.fileCount; i++) {
-            files.push({
-                name: owner.fileName(i),
-                role: owner.fileRole(i) as AssembledFile["role"],
-                sha256: owner.fileSha256(i),
-                // Snapshotted here, so it keeps reporting the file's real size after `take()` has
-                // moved the bytes out and the wasm-side length has become 0.
-                byteLength: owner.fileByteLength(i),
-                take: () => {
-                    try {
-                        return owner.takeFile(i);
-                    } catch (cause) {
-                        throw asAssembleError(cause);
-                    }
-                },
-            });
-        }
+        // Snapshotted here so they keep answering after `take()` has moved the bytes out, and
+        // because `resident` is a fact about the run rather than a live reading: a taken map and a
+        // sunk one both report `false` from wasm, and only one of them was ever this module's.
+        const sha256 = owner.fileSha256;
+        const byteLength = owner.fileByteLength;
+        const resident = owner.hasFile;
         let freed = false;
         const result: AssembleResult = {
-            files,
+            sha256,
+            byteLength,
+            resident,
+            take: () => {
+                try {
+                    return owner.takeFile();
+                } catch (cause) {
+                    throw asAssembleError(cause);
+                }
+            },
             warnings,
             summary,
             release: () => {
@@ -677,11 +600,11 @@ export async function assembleCells(
                 owner.free();
             },
         };
-        abandoned?.register(result, { free: () => owner.free(), name: summary.manifest }, result);
+        abandoned?.register(result, { free: () => owner.free(), name: sha256.slice(0, 12) }, result);
         return result;
     } catch (cause) {
         // Only on the failure path: a successful assembly's `Assembler` stays alive because the
-        // returned `take()` closures read from it.
+        // returned `take()` closure reads from it.
         assembler?.free();
         throw asAssembleError(cause);
     } finally {
@@ -698,9 +621,10 @@ export interface Residency {
      *  sync-read probe. Resident input becomes the read cache plus terrain instead of the
      *  selection. Only the worker can assert the probe half — see `assemble.worker.ts`. */
     readonly inputOnDisk: boolean;
-    /** `> 0`: shards are taken mid-run at this split size (#1116 B1) — the download path. `0`: the
-     *  set is kept until the run ends — the device path, which needs `planned`'s counts first. */
-    readonly streamedShardBytes: number;
+    /** An {@link AssembleMapSink} will be wired into the run (#1116 D1), so the finished file is
+     *  never in wasm memory. Same caveat as `inputOnDisk`: it needs the worker's sync-handle probe,
+     *  not just a browser that has OPFS. */
+    readonly outputSunk: boolean;
 }
 
 /**
@@ -739,7 +663,7 @@ export async function estimateMemory(
         terrainBytes,
         mergeBudgetBytes,
         residency.inputOnDisk,
-        residency.streamedShardBytes,
+        residency.outputSunk,
         budgetBytes,
     ) as unknown as MemoryEstimate;
 }

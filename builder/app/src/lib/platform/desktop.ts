@@ -55,8 +55,9 @@ async function openMapOutput(name: string): Promise<MapOutputSession> {
     const opened = await desktop.mapOutputBegin(name);
     return {
         path: opened.path,
-        // The IPC takes contiguous bytes; a Blob is read back here, which is
-        // one shard resident — exactly the residency this host had before.
+        // The IPC takes contiguous bytes; a Blob is read back here, which is the
+        // whole map resident — the residency this host has always had, and the
+        // reason the assembly's own sink is the saving that matters.
         write: async (filename, body) =>
             desktop.mapOutputWrite(
                 opened.id,

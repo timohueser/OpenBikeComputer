@@ -26,6 +26,11 @@ function est(fits: boolean) {
     };
 }
 
+/** A structurally complete summary, since the validator only checks the object's presence. */
+function summary() {
+    return { cells: 1, bytes: 2, sha256: "e".repeat(64), verified: null };
+}
+
 describe("requestTransferList", () => {
     it("moves every cell's buffer, once each", () => {
         const a = new Uint8Array([1, 2, 3]);
@@ -59,8 +64,7 @@ describe("requestTransferList", () => {
                 networkBandBytes: 1,
                 totalCellBytes: 2,
                 terrainBytes: 0,
-                inputOnDisk: true,
-                streamedShardBytes: 256 * 1024 * 1024,
+                onDisk: true,
                 mergeBudgetBytes: 256 * 1024 * 1024,
             }),
         ).toEqual([]);
@@ -74,12 +78,10 @@ describe("requestTransferList", () => {
 });
 
 describe("responseTransferList", () => {
-    it("moves a file's buffer and nothing else", () => {
+    it("moves the map's buffer and nothing else", () => {
         const bytes = new Uint8Array([9]);
         const file: AssembleWorkerResponse = {
             type: "file",
-            name: "MS1S00.OBM",
-            role: "core",
             sha256: "0".repeat(64),
             byteLength: 1,
             bytes,
@@ -88,20 +90,16 @@ describe("responseTransferList", () => {
         expect(responseTransferList({ type: "progress", phase: "nav", fraction: 0.5 })).toEqual([]);
     });
 
-    /** A streamed shard was evicted from wasm memory to keep the peak down;
-     *  copying it across the port would put it straight back. */
-    it("moves a streamed shard's buffer too", () => {
-        const bytes = new Uint8Array([7]);
+    /** Nothing crosses the port for a sunk map — the bytes are in OPFS, which is the whole point.
+     *  A transfer list that invented one would throw at `postMessage`. */
+    it("transfers nothing for a map that stayed on disk", () => {
         expect(
             responseTransferList({
-                type: "shard",
-                name: "MS1S00.OBM",
-                role: "core",
-                sha256: "0".repeat(64),
-                byteLength: 1,
-                bytes,
+                type: "stored-map",
+                sha256: "d".repeat(64),
+                byteLength: 2_800_000_000,
             }),
-        ).toEqual([bytes.buffer]);
+        ).toEqual([]);
     });
 });
 
@@ -109,45 +107,14 @@ describe("isWorkerResponse", () => {
     it("accepts every message the worker actually sends", () => {
         const messages: AssembleWorkerResponse[] = [
             { type: "progress", phase: "verify", fraction: 0.9 },
-            {
-                type: "planned",
-                totalBytes: 129,
-                shardCount: 1,
-                warnings: [],
-                summary: { cells: 1, bytes: 1, manifest: "MS1.OBS", shards: [] },
-            },
-            {
-                type: "file",
-                name: "MS1.OBS",
-                role: "manifest",
-                sha256: "",
-                byteLength: 128,
-                bytes: new Uint8Array(1),
-            },
-            {
-                type: "shard",
-                name: "MS1S00.OBM",
-                role: "core",
-                sha256: "a".repeat(64),
-                byteLength: 4,
-                bytes: new Uint8Array(4),
-            },
+            { type: "file", sha256: "a".repeat(64), byteLength: 128, bytes: new Uint8Array(1) },
             { type: "reading", mode: "streamed", cells: 412 },
             { type: "writing", mode: "disk" },
-            {
-                type: "stored-shard",
-                name: "MS1S00.OBM",
-                role: "core",
-                sha256: "b".repeat(64),
-                byteLength: 2_800_000_000,
-                entry: "s00.part",
-            },
-            { type: "done", warnings: [], summary: { cells: 1, bytes: 2, manifest: "MS1.OBS", shards: [] } },
-            {
-                type: "estimate-result",
-                estimate: est(true),
-                deviceEstimate: est(false),
-            },
+            // Past 2 GiB on purpose: a sunk map is the case this message exists for, and it is
+            // routinely larger than anything that could have crossed the port.
+            { type: "stored-map", sha256: "b".repeat(64), byteLength: 8_800_000_000 },
+            { type: "done", warnings: [], summary: summary() },
+            { type: "estimate-result", estimate: est(true) },
             { type: "error", code: "capacity", message: "too big" },
         ];
         for (const msg of messages) expect(isWorkerResponse(msg)).toBe(true);
@@ -168,70 +135,44 @@ describe("isWorkerResponse", () => {
         expect(isWorkerResponse(null)).toBe(false);
         expect(isWorkerResponse({})).toBe(false);
         expect(isWorkerResponse({ type: "progress", phase: "warp", fraction: 0.1 })).toBe(false);
+        // `manifest` was a phase when a map was a set; a worker still sending it is a stale build.
+        expect(isWorkerResponse({ type: "progress", phase: "manifest", fraction: 0.1 })).toBe(false);
         expect(isWorkerResponse({ type: "reading", mode: "telepathy", cells: 1 })).toBe(false);
         expect(isWorkerResponse({ type: "writing", mode: "telepathy" })).toBe(false);
-        // Both verdicts or neither: a one-estimate answer is a stale worker build, and letting it
-        // through would leave the device gate reading `null` as "fits".
-        expect(isWorkerResponse({ type: "estimate-result", estimate: est(true) })).toBe(false);
+        expect(isWorkerResponse({ type: "estimate-result", estimate: null })).toBe(false);
         expect(isWorkerResponse({ type: "error", code: "not-a-code", message: "x" })).toBe(false);
-        expect(isWorkerResponse({ type: "file", name: "x", role: "core", sha256: "", byteLength: 1, bytes: [1] })).toBe(
+        // A `file` whose bytes are not bytes: the one field the download screen dereferences.
+        expect(isWorkerResponse({ type: "file", sha256: "a".repeat(64), byteLength: 1, bytes: [1] })).toBe(false);
+        // The message variants a set-era worker would send. There is no shard, no manifest and no
+        // plan any more, and a build still speaking them must be dropped rather than half-understood.
+        expect(
+            isWorkerResponse({ type: "shard", name: "MS1S00.OBM", role: "core", sha256: "", byteLength: 1 }),
+        ).toBe(false);
+        expect(isWorkerResponse({ type: "stored-shard", role: "core", sha256: "", byteLength: 1, entry: "s00.part" })).toBe(
             false,
         );
-        // Only OBCM shards are streamed: the terrain shard and the manifest are
-        // never evicted, so a `shard` claiming to be one is not this protocol.
-        expect(
-            isWorkerResponse({
-                type: "shard",
-                name: "MS1.OBS",
-                role: "manifest",
-                sha256: "",
-                byteLength: 1,
-                bytes: new Uint8Array(1),
-            }),
-        ).toBe(false);
+        expect(isWorkerResponse({ type: "planned", totalBytes: 1, shardCount: 1, warnings: [], summary: summary() })).toBe(
+            false,
+        );
     });
 
     /**
-     * A `stored-shard` names a file the **page then opens**, so its `entry` is the one field in this
-     * protocol that is resolved against a directory rather than displayed. A stray carrying `../`,
-     * an absolute path or an empty name has to be dropped like any other stray — the guard is the
-     * only thing between a message this screen did not send and a file it did not mean to read.
+     * The map's identity is what both output messages are *for*, so a half-built one must be
+     * dropped rather than shown. An empty digest or a fractional/negative length is a stale or
+     * broken producer, and the screen would otherwise report a map that nothing can identify.
      */
-    it("rejects a stored shard that names anything but a plain entry", () => {
-        const stored = {
-            type: "stored-shard",
-            name: "MS1S00.OBM",
-            role: "core" as const,
-            sha256: "c".repeat(64),
-            byteLength: 4,
-            entry: "s00.part",
-        };
+    it("rejects an output message whose identity is not one", () => {
+        const stored = { type: "stored-map", sha256: "c".repeat(64), byteLength: 4 };
         expect(isWorkerResponse(stored)).toBe(true);
-        for (const entry of ["", "../obc-cells/" + "a".repeat(64), "/etc/passwd", "a/b", "s00.part\0", "x".repeat(65)]) {
-            expect(isWorkerResponse({ ...stored, entry }), `entry ${JSON.stringify(entry)}`).toBe(false);
-        }
-        // …and the rest of the shape, which a half-built message would get wrong first.
-        expect(isWorkerResponse({ ...stored, entry: undefined })).toBe(false);
-        expect(isWorkerResponse({ ...stored, name: "" })).toBe(false);
-        // A sunk file is always an OBCM shard: terrain goes through the engine's own sink and the
-        // manifest is a few hundred bytes, so both arrive as `file`s with their bytes.
-        expect(isWorkerResponse({ ...stored, role: "manifest" })).toBe(false);
+        expect(isWorkerResponse({ ...stored, sha256: "" })).toBe(false);
+        expect(isWorkerResponse({ ...stored, sha256: undefined })).toBe(false);
         expect(isWorkerResponse({ ...stored, byteLength: -1 })).toBe(false);
         expect(isWorkerResponse({ ...stored, byteLength: 1.5 })).toBe(false);
-    });
-
-    /** Nothing crosses the port for a sunk shard — the bytes are in OPFS, which is the whole point.
-     *  A transfer list that invented one would throw at `postMessage`. */
-    it("transfers nothing for a shard that stayed on disk", () => {
-        expect(
-            responseTransferList({
-                type: "stored-shard",
-                name: "MS1S00.OBM",
-                role: "core",
-                sha256: "d".repeat(64),
-                byteLength: 4,
-                entry: "s00.part",
-            }),
-        ).toEqual([]);
+        expect(isWorkerResponse({ ...stored, byteLength: undefined })).toBe(false);
+        // …and the same shape rules bind the buffered arm, which carries it too.
+        const file = { type: "file", sha256: "c".repeat(64), byteLength: 4, bytes: new Uint8Array(4) };
+        expect(isWorkerResponse(file)).toBe(true);
+        expect(isWorkerResponse({ ...file, sha256: "" })).toBe(false);
+        expect(isWorkerResponse({ ...file, byteLength: -1 })).toBe(false);
     });
 });

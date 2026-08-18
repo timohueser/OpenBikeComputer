@@ -2,7 +2,7 @@
  * The drift guard between the **browser** assembly path and the native one.
  *
  * These are not "does the wrapper work" tests. They exist so that a change to `obcm-assemble` — the
- * graft's relocation constants, the nav renumbering, the shard planner — cannot ship a browser build
+ * graft's relocation constants, the nav renumbering, the raster splice — cannot ship a browser build
  * that quietly disagrees with the CLI. The inputs are the checked-in cell tree in
  * `apps/obc-web-assemble/tests/fixture/` and the expected outputs are what
  * `cargo run -p obcm-assemble` wrote from them; `apps/obc-web-assemble/tests/fixture.rs` documents
@@ -20,7 +20,7 @@
  * *deliberate* change; `cargo test -p obc-web-assemble` holds the native side to the same bytes.
  */
 
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it, vi } from "vitest";
@@ -86,17 +86,14 @@ function terrain(): { lattice: AssembleTerrain; cells: AssembleTerrainCell[] } {
 }
 
 /**
- * What the native CLI left in `tests/fixture/<dir>/`, in the order the bridge must hand it on:
- * OBCM shards ascending, then the terrain shard, then the OBCS manifest last (OBCA §5.4). None of
- * that is the alphabet's order — `MS1.OBD` sorts before `MS1S00.OBM` — so the key is spelled out.
+ * What the native CLI wrote from the same cells. Two variants, and the difference between them is
+ * the whole of EL4: `map.obcm` carries the spliced §1.3 raster, `flat.obcm` is the same selection
+ * with an empty terrain region.
  */
-function expected(dir: string): { name: string; bytes: Uint8Array }[] {
-    const root = join(FIXTURE, dir);
-    const files = readdirSync(root).map((name) => ({ name, bytes: new Uint8Array(readFileSync(join(root, name))) }));
-    const rank = (name: string) => (name.endsWith(".OBS") ? 2 : name.endsWith(".OBD") ? 1 : 0);
-    files.sort((a, b) => rank(a.name) - rank(b.name) || a.name.localeCompare(b.name));
-    expect(files.length, `${root} is empty — see apps/obc-web-assemble/tests/fixture.rs`).toBeGreaterThan(0);
-    return files;
+function expectedMap(variant: "map" | "flat"): Uint8Array {
+    const path = join(FIXTURE, "expected", `${variant}.obcm`);
+    expect(existsSync(path), `${path} is missing — see apps/obc-web-assemble/tests/fixture.rs`).toBe(true);
+    return new Uint8Array(readFileSync(path));
 }
 
 /**
@@ -116,7 +113,7 @@ function expectSameBytes(actual: Uint8Array, want: Uint8Array, what: string): vo
     expect(actual.length, `${what}: length`).toBe(want.length);
 }
 
-const OPTIONS = { name: "Bridge Fixture", acceptPartial: true };
+const OPTIONS = { acceptPartial: true };
 
 /**
  * The fixture's cells as the browser has them after #1116 B2: identities and lengths on this side of
@@ -170,18 +167,15 @@ beforeAll(async () => {
 });
 
 describe("assembleCells", () => {
-    it("reproduces the native CLI's bytes for a single-file assembly", async () => {
+    it("reproduces the native CLI's bytes", async () => {
         const result = await assembleCells(cells(), sidecar, skin, OPTIONS, undefined, [], terrain());
-        const want = expected("expected");
-        expect(result.files.map((f) => f.name)).toEqual(want.map((f) => f.name));
-        for (const [i, file] of result.files.entries()) {
-            expectSameBytes(file.take(), want[i].bytes, file.name);
-        }
-        expect(result.files.at(-1)?.role).toBe("manifest");
+        expect(result.resident).toBe(true);
+        const want = expectedMap("map");
+        expect(result.byteLength).toBe(want.length);
+        expect(result.sha256).toMatch(/^[0-9a-f]{64}$/);
+        expectSameBytes(result.take(), want, "the assembled map");
         expect(result.warnings).toEqual([]);
         result.release();
-        // Released means released: a set can be gigabytes, so the handle must genuinely be dead.
-        expect(() => result.files[0].take()).toThrow();
     });
 
     it("keeps known-empty edge cells in bbox and coverage arithmetic without buffers", async () => {
@@ -209,73 +203,6 @@ describe("assembleCells", () => {
         ).rejects.toMatchObject({ code: "input" });
     });
 
-    it("reproduces the native CLI's bytes for a volume set, manifest last", async () => {
-        const result = await assembleCells(cells(), sidecar, skin, { ...OPTIONS, forceSplit: true }, undefined, [], terrain());
-        const want = expected("expected-split");
-        expect(result.files.map((f) => f.role)).toEqual(["core", "coarse", "geometry", "terrain", "manifest"]);
-        expect(result.files.map((f) => f.name)).toEqual(want.map((f) => f.name));
-        for (const [i, file] of result.files.entries()) {
-            expectSameBytes(file.take(), want[i].bytes, file.name);
-        }
-    });
-
-    /**
-     * **The eviction pin** (#1116 B1). With a file sink, each shard crosses to JS the moment its
-     * §4.8 read-back passes and its wasm-side buffer is freed there and then — so the set's
-     * contribution to a tab's peak is one shard instead of all of it.
-     *
-     * What has to hold for that to be a saving rather than a bug: the stream, followed by whatever
-     * is left at the end, is the *same set* the CLI wrote — same files, same order, same bytes — and
-     * the wasm side really is holding nothing for the shards afterwards.
-     */
-    it("streams each shard out as it is verified and keeps nothing of it", async () => {
-        const streamed: { name: string; role: string; sha256: string; bytes: Uint8Array }[] = [];
-        const result = await assembleCells(
-            cells(),
-            sidecar,
-            skin,
-            { ...OPTIONS, forceSplit: true },
-            undefined,
-            [],
-            terrain(),
-            (file) => streamed.push(file),
-        );
-        expect(streamed.map((f) => f.role)).toEqual(["core", "coarse", "geometry"]);
-        // Only the raster and the manifest were still in wasm memory at the end — the three shards
-        // are gone from it, while the summary still knows all three.
-        expect(result.files.map((f) => f.role)).toEqual(["terrain", "manifest"]);
-        expect(result.summary.shards.length).toBe(3);
-
-        const want = expected("expected-split");
-        const delivered = [
-            ...streamed.map((f) => ({ name: f.name, bytes: f.bytes })),
-            ...result.files.map((f) => ({ name: f.name, bytes: f.take() })),
-        ];
-        expect(delivered.map((f) => f.name)).toEqual(want.map((f) => f.name));
-        for (const [i, file] of delivered.entries()) expectSameBytes(file.bytes, want[i].bytes, file.name);
-
-        // The digest a shard was handed over with is the one the manifest records for it — the
-        // identity a caller writes down next to a file it has already saved.
-        for (const [i, file] of streamed.entries()) {
-            expect(file.sha256).toBe(result.summary.shards[i].sha256);
-            expect(file.name).toBe(result.summary.shards[i].file);
-        }
-        result.release();
-    });
-
-    /** A sink that throws is not survivable: the bytes have already left wasm, so the run fails as
-     *  `io` rather than finish a set with a hole in it. */
-    it("fails the run when the file sink throws, instead of finishing a set with a hole in it", async () => {
-        const seen: string[] = [];
-        await expect(
-            assembleCells(cells(), sidecar, skin, { ...OPTIONS, forceSplit: true }, undefined, [], undefined, (file) => {
-                seen.push(file.name);
-                throw new Error("the card is full");
-            }),
-        ).rejects.toMatchObject({ code: "io" });
-        expect(seen).toHaveLength(1);
-    });
-
     /**
      * **The B2 determinism pin.** The same fixture, with the cells never copied into wasm memory —
      * handed over as identities and read a block at a time through a callback, the way the browser
@@ -295,36 +222,12 @@ describe("assembleCells", () => {
             undefined,
             [],
             terrain(),
-            undefined,
             store.sources(),
         );
-        const want = expected("expected");
-        expect(result.files.map((f) => f.name)).toEqual(want.map((f) => f.name));
-        for (const [i, file] of result.files.entries()) expectSameBytes(file.take(), want[i].bytes, file.name);
+        expectSameBytes(result.take(), expectedMap("map"), "the assembled map, streamed in");
         // Every cell really came through the callback — a path that quietly found the bytes some
         // other way would pass the comparison above and prove nothing.
         expect(new Set(store.calls.map((c) => c.slot)).size).toBe(cells().length);
-        result.release();
-    });
-
-    /** …and the volume set, where §2.3's 256 KiB verbatim copies (which bypass the cache) run beside
-     *  §4.6.6's per-record emission (which is why it exists). */
-    it("reproduces the native CLI's volume set from outside wasm memory too", async () => {
-        const store = new Reads();
-        const result = await assembleCells(
-            [],
-            sidecar,
-            skin,
-            { ...OPTIONS, forceSplit: true },
-            undefined,
-            [],
-            terrain(),
-            undefined,
-            store.sources(),
-        );
-        const want = expected("expected-split");
-        expect(result.files.map((f) => f.name)).toEqual(want.map((f) => f.name));
-        for (const [i, file] of result.files.entries()) expectSameBytes(file.take(), want[i].bytes, file.name);
         result.release();
     });
 
@@ -349,18 +252,15 @@ describe("assembleCells", () => {
                 undefined,
                 [],
                 undefined,
-                undefined,
                 store.sources(),
             );
-            const files = result.files.map((f) => ({ name: f.name, bytes: f.take() }));
+            const bytes = result.take();
             result.release();
-            return { files, calls: store.calls.length };
+            return { bytes, calls: store.calls.length };
         };
         const uncached = await run(1);
         const cached = await run(64 * 1024);
-        for (const [i, file] of uncached.files.entries()) {
-            expectSameBytes(file.bytes, cached.files[i].bytes, `${file.name} with the read cache off`);
-        }
+        expectSameBytes(uncached.bytes, cached.bytes, "the map with the read cache off");
         expect(cached.calls * 10).toBeLessThan(uncached.calls);
         // …and the reads it does make are whole blocks, not the engine's 30-byte records.
         expect(cached.calls).toBeGreaterThan(0);
@@ -372,10 +272,10 @@ describe("assembleCells", () => {
         const store = new Reads();
         store.refuse = 1;
         await expect(
-            assembleCells([], sidecar, skin, OPTIONS, undefined, [], undefined, undefined, store.sources()),
+            assembleCells([], sidecar, skin, OPTIONS, undefined, [], undefined, store.sources()),
         ).rejects.toMatchObject({ code: "io" });
         await expect(
-            assembleCells([], sidecar, skin, OPTIONS, undefined, [], undefined, undefined, store.sources()),
+            assembleCells([], sidecar, skin, OPTIONS, undefined, [], undefined, store.sources()),
         ).rejects.toThrow(new RegExp(cells()[1].id.replace(/\//g, "/")));
     });
 
@@ -385,7 +285,7 @@ describe("assembleCells", () => {
         const store = new Reads();
         store.throwAt = 0;
         await expect(
-            assembleCells([], sidecar, skin, OPTIONS, undefined, [], undefined, undefined, store.sources()),
+            assembleCells([], sidecar, skin, OPTIONS, undefined, [], undefined, store.sources()),
         ).rejects.toMatchObject({ code: "io" });
     });
 
@@ -407,50 +307,57 @@ describe("assembleCells", () => {
                 undefined,
                 [],
                 undefined,
-                undefined,
                 store.sources(),
             );
-            const files = result.files.map((f) => ({ name: f.name, bytes: f.take() }));
+            const bytes = result.take();
             result.release();
-            return files;
+            return bytes;
         };
         const first = await once();
         const second = await once();
-        expect(second.map((f) => f.name)).toEqual(first.map((f) => f.name));
-        for (const [i, file] of second.entries()) expectSameBytes(file.bytes, first[i].bytes, `${file.name}, run two`);
+        expectSameBytes(second, first, "the map, run two");
     });
 
     it("reports the §4.8 verify pass it already ran", async () => {
-        const { summary } = await assembleCells(cells(), sidecar, skin, OPTIONS);
-        expect(summary.cells).toBe(5);
-        expect(summary.manifest).toBe("MS1.OBS");
+        const result = await assembleCells(cells(), sidecar, skin, OPTIONS);
+        expect(result.summary.cells).toBe(5);
         // A result the caller can hand to a device *because* the read-back happened in the tab.
-        expect(summary.shards[0].verified?.chunks).toBeGreaterThan(0);
-        expect(summary.shards[0].verified?.features).toBeGreaterThan(0);
-        expect(summary.shards[0].sha256).toMatch(/^[0-9a-f]{64}$/);
-    });
-
-    /** EL4: the raster reaches the browser's output as its own file with the §5.2 derived name,
-     *  and the §5.7 projection is the bytes actually written. */
-    it("writes the terrain shard as its own file and prices it exactly", async () => {
-        const result = await assembleCells(cells(), sidecar, skin, OPTIONS, undefined, [], terrain());
-        const shard = result.files.find((f) => f.role === "terrain");
-        expect(shard?.name).toBe("MS1.OBD");
-        const bytes = shard!.take();
-        expect(new TextDecoder().decode(bytes.subarray(0, 4))).toBe("OBCT");
-        // 32-byte header + a 2 × 2 directory + three of four squares present.
-        expect(bytes.length).toBe(32 + 16 + 3 * 2048);
-        const t = result.summary.terrain as { bytes: number; cells: number; slots: number };
-        expect(t.bytes).toBe(bytes.length);
-        expect([t.cells, t.slots]).toEqual([3, 4]);
+        expect(result.summary.verified?.chunks).toBeGreaterThan(0);
+        expect(result.summary.verified?.features).toBeGreaterThan(0);
+        // The summary's digest and the result's are one identity, not two readings of it.
+        expect(result.summary.sha256).toMatch(/^[0-9a-f]{64}$/);
+        expect(result.sha256).toBe(result.summary.sha256);
+        expect(result.byteLength).toBe(result.summary.bytes);
         result.release();
     });
 
-    /** …and a selection with no raster is exactly the map it was before terrain existed (§13). */
-    it("writes no terrain shard when the catalog publishes none", async () => {
+    /** EL4: the raster is **spliced into the map's tail** rather than written beside it, and the
+     *  §5.7 projection is the bytes actually added. */
+    it("splices the raster into the map and prices it exactly", async () => {
+        const withRaster = await assembleCells(cells(), sidecar, skin, OPTIONS, undefined, [], terrain());
+        const t = withRaster.summary.terrain as { bytes: number; cells: number; slots: number };
+        // 32-byte header + a 2 × 2 directory + three of four squares present.
+        expect(t.bytes).toBe(32 + 16 + 3 * 2048);
+        expect([t.cells, t.slots]).toEqual([3, 4]);
+        const bytes = withRaster.take();
+        withRaster.release();
+
+        // The region really is inside this one file, and the flat map really is the same map
+        // without it — which is what makes `expected/flat.obcm` a control rather than a second map.
+        const flat = await assembleCells(cells(), sidecar, skin, OPTIONS);
+        const flatBytes = flat.take();
+        flat.release();
+        expect(bytes.length - flatBytes.length).toBeGreaterThanOrEqual(t.bytes);
+        const tail = new TextDecoder("latin1").decode(bytes.subarray(flatBytes.length - 1));
+        expect(tail).toContain("OBCT");
+    });
+
+    /** …and a selection with no raster is exactly the map it was before terrain existed (§13): an
+     *  empty §1.3 region, not a missing one. */
+    it("writes an empty terrain region when the catalog publishes no raster", async () => {
         const result = await assembleCells(cells(), sidecar, skin, OPTIONS);
-        expect(result.files.some((f) => f.role === "terrain")).toBe(false);
         expect(result.summary.terrain).toBeNull();
+        expectSameBytes(result.take(), expectedMap("flat"), "the flat map");
         result.release();
     });
 
@@ -460,7 +367,7 @@ describe("assembleCells", () => {
             seen.push({ phase, fraction });
         });
         const order = seen.filter((s, i) => i === 0 || seen[i - 1].phase !== s.phase).map((s) => s.phase);
-        expect(order).toEqual(["open", "poi", "nav", "plan", "write", "verify", "manifest", "done"]);
+        expect(order).toEqual(["open", "poi", "nav", "plan", "write", "verify", "done"]);
         for (let i = 1; i < seen.length; i++) {
             expect(seen[i].fraction).toBeGreaterThanOrEqual(seen[i - 1].fraction);
         }
@@ -526,7 +433,7 @@ describe("assembleCells", () => {
                 throw new Error("the progress bar is broken");
             });
             expect(calls).toBeGreaterThan(5); // it kept being called
-            expect(result.files.at(-1)?.role).toBe("manifest"); // …and the assembly still finished
+            expect(result.byteLength).toBeGreaterThan(0); // …and the assembly still finished
             expect(warn).toHaveBeenCalledTimes(1);
             expect(warn.mock.calls[0][0]).toMatch(/progress callback threw/);
             result.release();
@@ -536,52 +443,55 @@ describe("assembleCells", () => {
     });
 
     /**
-     * OBCA §4.8 makes the read-back a precondition of writing a set, and this bridge exists to hand
+     * OBCA §4.8 makes the read-back a precondition of writing a map, and this bridge exists to hand
      * bytes to a device — so there is no way to ask for an unverified one. The Rust side pins that
      * the option is *parsed* leniently; this pins the behaviour a caller who tries it actually gets:
      * the key is ignored, not honoured, and the verify report is there in the summary.
      */
     it("ignores a skipVerify that a caller smuggles in", async () => {
         const sneaky = { ...OPTIONS, skipVerify: true, skip_verify: true } as Parameters<typeof assembleCells>[3];
-        const { summary } = await assembleCells(cells(), sidecar, skin, sneaky);
-        expect(summary.shards[0].verified?.chunks).toBeGreaterThan(0);
+        const result = await assembleCells(cells(), sidecar, skin, sneaky);
+        expect(result.summary.verified?.chunks).toBeGreaterThan(0);
+        result.release();
     });
 
     /**
-     * The retry shape this refuses: take, upload, fail, take again. Returning an empty array the
-     * second time writes a 0-byte shard to a card and reports success — a corrupt map that looks
+     * The retry shape this refuses: take, save, fail, take again. Returning an empty array the
+     * second time writes a 0-byte file to a card and reports success — a corrupt map that looks
      * like a working one.
      */
     it("refuses a second take() instead of handing back an empty file", async () => {
         const result = await assembleCells(cells(), sidecar, skin, OPTIONS);
-        const file = result.files[0];
-        expect(file.take().length).toBe(file.byteLength);
-        expect(() => file.take()).toThrow(AssembleError);
+        expect(result.take().length).toBe(result.byteLength);
+        expect(() => result.take()).toThrow(AssembleError);
         try {
-            file.take();
+            result.take();
         } catch (e) {
             expect((e as AssembleError).code).toBe("internal");
             expect((e as AssembleError).message).toMatch(/already taken/);
         }
-        // …and the size it reported before the take still reads true, so a caller planning a
-        // transfer is not told the file is empty.
-        expect(file.byteLength).toBeGreaterThan(0);
+        // …and the size and digest it reported before the take still read true, so a caller
+        // planning a transfer is not told the file is empty.
+        expect(result.byteLength).toBeGreaterThan(0);
+        expect(result.sha256).toMatch(/^[0-9a-f]{64}$/);
         result.release();
     });
 
-    /** `release()` mid-iteration is the abandon path: the rest of the set stops being takeable, and
-     *  releasing twice is not an error (a `finally` block may well do both). */
-    it("makes the remaining files unavailable after a release mid-iteration", async () => {
-        const result = await assembleCells(cells(), sidecar, skin, { ...OPTIONS, forceSplit: true });
-        expect(result.files.length).toBe(4);
-        result.files[0].take();
+    /** `release()` is the abandon path: the map stops being takeable, and releasing twice is not an
+     *  error (a `finally` block may well do both). */
+    it("makes the map unavailable after a release", async () => {
+        const result = await assembleCells(cells(), sidecar, skin, OPTIONS);
         result.release();
-        for (const file of result.files.slice(1)) expect(() => file.take()).toThrow(AssembleError);
+        expect(() => result.take()).toThrow(AssembleError);
         expect(() => result.release()).not.toThrow();
+        // The identity survives the release — it is a snapshot, not a live reading, so a caller
+        // that recorded a finished map can still say which one it was.
+        expect(result.sha256).toMatch(/^[0-9a-f]{64}$/);
+        expect(result.byteLength).toBeGreaterThan(0);
     });
 
     /**
-     * Two assemblies at once do not fit: each holds its inputs *and* its outputs in the same 4 GiB,
+     * Two assemblies at once do not fit: each holds its inputs *and* its output in the same 4 GiB,
      * and one country-scale run already projects three quarters of it. The failure would not be a
      * catchable exception but the module aborting, so the second caller is refused up front —
      * synchronously, before the first `await`, or the guard would never see the overlap.
@@ -598,7 +508,7 @@ describe("assembleCells", () => {
 
     it("keeps the engine's refusal classes apart", async () => {
         // §4.1: the coarse cell is `partial`, and the caller has to say so rather than discover it.
-        await expect(assembleCells(cells(), sidecar, skin, { name: "x" })).rejects.toMatchObject({ code: "input" });
+        await expect(assembleCells(cells(), sidecar, skin, {})).rejects.toMatchObject({ code: "input" });
 
         // A corrupt download is a *format* problem, not a selection problem.
         const corrupt = cells();
@@ -607,7 +517,7 @@ describe("assembleCells", () => {
     });
 
     it("surfaces the engine's own message, not a rewritten one", async () => {
-        await expect(assembleCells(cells(), sidecar, skin, { name: "x" })).rejects.toThrow(/partial/);
+        await expect(assembleCells(cells(), sidecar, skin, {})).rejects.toThrow(/partial/);
     });
 });
 
@@ -629,42 +539,60 @@ describe("the wire contract with driver.rs", () => {
 
 describe("estimateMemory", () => {
     const MB = 1_000_000;
-    /** The builder's split and sort budget (`DownloadStep.svelte`). */
-    const SHARD = 256 * 1024 * 1024;
+    /** The builder's sort budget (`DownloadStep.svelte`). */
     const SORT = 256 * 1024 * 1024;
-    const STREAMED = { inputOnDisk: true, streamedShardBytes: SHARD };
-    const DEVICE = { inputOnDisk: true, streamedShardBytes: 0 };
+    /** An OPFS host with both escapes: cells streamed in, the map sunk straight out. */
+    const ON_DISK = { inputOnDisk: true, outputSunk: true };
+    /** …and one that has neither, which is what a browser without sync access handles runs. */
+    const IN_MEMORY = { inputOnDisk: false, outputSunk: false };
 
-    /** The epic's closing assertion, held from the wasm build too: DACH fits the download path. */
-    it("passes DACH on the download path and refuses it on the device path", async () => {
-        const dach = await estimateMemory(3000 * MB, 8500 * MB, 450 * MB, SORT, STREAMED);
+    /** The epic's closing assertion, held from the wasm build too: DACH fits the sunk path, and
+     *  does not fit a run that has to hold the same map in linear memory. */
+    it("passes DACH sunk and refuses it resident", async () => {
+        const dach = await estimateMemory(3000 * MB, 8500 * MB, 450 * MB, SORT, ON_DISK);
         expect(dach.fits).toBe(true);
         expect(dach.headroomBytes).toBeGreaterThan(0);
 
-        const device = await estimateMemory(3000 * MB, 8500 * MB, 450 * MB, SORT, DEVICE);
-        expect(device.fits).toBe(false);
-        expect(device.peakBytes).toBeGreaterThan(device.ceilingBytes);
+        const resident = await estimateMemory(3000 * MB, 8500 * MB, 450 * MB, SORT, IN_MEMORY);
+        expect(resident.fits).toBe(false);
+        expect(resident.peakBytes).toBeGreaterThan(resident.ceilingBytes);
     });
 
     /** The engine term is the budget, not the map — the model's whole post-D claim. */
     it("prices the engine by the sort budget, not the selection", async () => {
-        const small = await estimateMemory(20 * MB, 60 * MB, 0, SORT, STREAMED);
-        const dach = await estimateMemory(3000 * MB, 8500 * MB, 0, SORT, STREAMED);
+        const small = await estimateMemory(20 * MB, 60 * MB, 0, SORT, ON_DISK);
+        const dach = await estimateMemory(3000 * MB, 8500 * MB, 0, SORT, ON_DISK);
         expect(dach.engineBytes).toBe(small.engineBytes);
-        const tighter = await estimateMemory(3000 * MB, 8500 * MB, 0, 64 * 1024 * 1024, STREAMED);
+        const tighter = await estimateMemory(3000 * MB, 8500 * MB, 0, 64 * 1024 * 1024, ON_DISK);
         expect(tighter.engineBytes).toBeLessThan(dach.engineBytes);
     });
 
     /** The no-OPFS fallback pays for its spill in wasm and honestly refuses a country. */
     it("charges the fallback for cells and spill, and refuses DACH there", async () => {
         const cells = 717 * MB;
-        const buffered = await estimateMemory(271 * MB, cells, 0, SORT, { inputOnDisk: false, streamedShardBytes: SHARD });
+        const buffered = await estimateMemory(271 * MB, cells, 0, SORT, { inputOnDisk: false, outputSunk: true });
         expect(buffered.inputBytes).toBe(cells);
         const dach = await estimateMemory(3000 * MB, 8500 * MB, 450 * MB, SORT, {
             inputOnDisk: false,
-            streamedShardBytes: SHARD,
+            outputSunk: true,
         });
         expect(dach.fits).toBe(false);
+    });
+
+    /**
+     * The two escapes are independent, and the output one is what a single file made decisive: a
+     * sunk map costs nothing resident, a kept one costs the whole file. Held separately because a
+     * host can have one without the other, and the verdicts genuinely differ.
+     */
+    it("charges the whole map to a run that keeps it, and nothing to one that sinks it", async () => {
+        const sunk = await estimateMemory(271 * MB, 717 * MB, 0, SORT, ON_DISK);
+        const kept = await estimateMemory(271 * MB, 717 * MB, 0, SORT, { inputOnDisk: true, outputSunk: false });
+        expect(sunk.outputBytes).toBe(0);
+        expect(kept.outputBytes).toBeGreaterThan(0);
+        expect(kept.peakBytes - sunk.peakBytes).toBe(kept.outputBytes);
+        // Same run otherwise: the escape moves the output term and nothing else.
+        expect(kept.engineBytes).toBe(sunk.engineBytes);
+        expect(kept.inputBytes).toBe(sunk.inputBytes);
     });
 
     /**
@@ -673,12 +601,12 @@ describe("estimateMemory", () => {
      * is the caller's to lower. Nothing else moves: the projection is about the selection.
      */
     it("lets a caller lower the budget the verdict is measured against", async () => {
-        const desktop = await estimateMemory(271 * MB, 717 * MB, 0, SORT, DEVICE);
-        const phone = await estimateMemory(271 * MB, 717 * MB, 0, SORT, DEVICE, 1024 * 1024 * 1024);
+        const desktop = await estimateMemory(271 * MB, 717 * MB, 0, SORT, { inputOnDisk: true, outputSunk: false });
+        const phone = await estimateMemory(271 * MB, 717 * MB, 0, SORT, { inputOnDisk: true, outputSunk: false }, 1024 ** 3);
         expect(desktop.fits).toBe(true);
         expect(phone.fits).toBe(false);
         expect(phone.peakBytes).toBe(desktop.peakBytes);
-        expect(phone.budgetBytes).toBe(1024 * 1024 * 1024);
+        expect(phone.budgetBytes).toBe(1024 ** 3);
         expect(phone.ceilingBytes).toBe(desktop.ceilingBytes);
     });
 });
@@ -686,159 +614,143 @@ describe("estimateMemory", () => {
 /**
  * The host's own storage, as the wasm sink seam sees it (#1116 D1).
  *
- * In the browser these five methods are one OPFS `FileSystemSyncAccessHandle` per shard; Node has
- * neither, and that is exactly why the seam takes functions. Backing them with buffers here makes
- * the sunk path testable, and — because the *engine's* path is identical either way — makes a
- * byte-comparison against the CLI's files mean something.
+ * In the browser these five methods are one OPFS `FileSystemSyncAccessHandle`; Node has neither, and
+ * that is exactly why the seam takes functions. Backing them with buffers here makes the sunk path
+ * testable, and — because the *engine's* path is identical either way — makes a byte-comparison
+ * against the CLI's file mean something.
  */
 class Sink {
-    readonly files: { name: string; bytes: Uint8Array; sealed: boolean }[] = [];
-    readonly sealed: { slot: number; name: string; role: string; sha256: string; byteLength: number }[] = [];
-    /** Flip one byte of a slot at `seal`, behind the assembler's back. */
-    corrupt: { slot: number; at: number } | null = null;
-    /** Refuse every `readAt` of this slot, as a closed handle does. */
-    refuseReads: number | null = null;
+    bytes = new Uint8Array(0);
+    isSealed = false;
+    readonly sealed: { sha256: string; byteLength: number }[] = [];
+    /** Flip one byte at `seal`, behind the assembler's back. */
+    corrupt: number | null = null;
+    /** Refuse every `readAt`, as a closed handle does. */
+    refuseReads = false;
     /** How many times the host was asked for bytes, so the read-back's cache can be counted. */
     reads = 0;
 
-    create(slot: number, name: string): boolean {
-        this.files[slot] = { name, bytes: new Uint8Array(0), sealed: false };
+    create(): boolean {
+        this.bytes = new Uint8Array(0);
+        this.isSealed = false;
         return true;
     }
 
-    write(slot: number, bytes: Uint8Array): boolean {
-        const file = this.files[slot];
-        if (!file || file.sealed) return false;
-        const grown = new Uint8Array(file.bytes.length + bytes.byteLength);
-        grown.set(file.bytes);
-        grown.set(bytes, file.bytes.length);
-        file.bytes = grown;
+    write(bytes: Uint8Array): boolean {
+        if (this.isSealed) return false;
+        const grown = new Uint8Array(this.bytes.length + bytes.byteLength);
+        grown.set(this.bytes);
+        grown.set(bytes, this.bytes.length);
+        this.bytes = grown;
         return true;
     }
 
-    readAt(slot: number, offset: number, into: Uint8Array): boolean {
+    readAt(offset: number, into: Uint8Array): boolean {
         this.reads++;
-        if (slot === this.refuseReads) return false;
-        const file = this.files[slot];
-        if (!file || !file.sealed || offset + into.byteLength > file.bytes.length) return false;
-        into.set(file.bytes.subarray(offset, offset + into.byteLength));
+        if (this.refuseReads) return false;
+        if (!this.isSealed || offset + into.byteLength > this.bytes.length) return false;
+        into.set(this.bytes.subarray(offset, offset + into.byteLength));
         return true;
     }
 
-    seal(slot: number): boolean {
-        const file = this.files[slot];
-        if (!file) return false;
-        file.sealed = true;
-        if (this.corrupt?.slot === slot) file.bytes[this.corrupt.at] ^= 0xff;
+    seal(): boolean {
+        this.isSealed = true;
+        if (this.corrupt !== null) this.bytes[this.corrupt] ^= 0xff;
         return true;
-    }
-
-    sealed_(shard: { slot: number; name: string; role: string; sha256: string; byteLength: number }): void {
-        this.sealed.push(shard);
     }
 
     /** The seam as `assembleCells` takes it. */
     seam() {
         return {
-            create: (slot: number, name: string) => this.create(slot, name),
-            write: (slot: number, bytes: Uint8Array) => this.write(slot, bytes),
-            readAt: (slot: number, offset: number, into: Uint8Array) => this.readAt(slot, offset, into),
-            seal: (slot: number) => this.seal(slot),
-            sealed: (shard: { slot: number; name: string; role: string; sha256: string; byteLength: number }) =>
-                this.sealed_(shard),
+            create: () => this.create(),
+            write: (bytes: Uint8Array) => this.write(bytes),
+            readAt: (offset: number, into: Uint8Array) => this.readAt(offset, into),
+            seal: () => this.seal(),
+            sealed: (map: { sha256: string; byteLength: number }) => void this.sealed.push(map),
         };
     }
 }
 
-describe("the shard sink (#1116 D1)", () => {
+describe("the map sink (#1116 D1)", () => {
     /**
-     * **The D1 determinism pin.** The same fixture, with the shards never entering wasm memory —
+     * **The D1 determinism pin.** The same fixture, with the map never entering wasm memory —
      * written straight through the sink and read back through it for §4.8, the way the browser
-     * writes them into OPFS through a `FileSystemSyncAccessHandle`.
+     * writes it into OPFS through a `FileSystemSyncAccessHandle`.
      *
      * If this produces the CLI's bytes, the sunk path is not a different assembler. It is the claim
-     * the whole phase rests on: the core shard cannot be split (one nav graph, one file), so at
-     * country scale "one shard resident" is still a multi-gigabyte allocation in a 4 GiB address
-     * space, and the only answer is that it is not an allocation at all.
+     * the whole phase rests on, and one file made it larger rather than smaller: a DACH map is a
+     * single ~9 GiB object, so "the output is not wasm's" is not an optimisation but the only shape
+     * in which the selection exists at all.
      */
-    it("writes the native CLI's volume set without a shard ever entering wasm memory", async () => {
+    it("writes the native CLI's map without it ever entering wasm memory", async () => {
         const sink = new Sink();
         const result = await assembleCells(
             cells(),
             sidecar,
             skin,
-            { ...OPTIONS, forceSplit: true },
+            OPTIONS,
             undefined,
             [],
             terrain(),
             undefined,
-            undefined,
             sink.seam(),
         );
-        // Only the raster and the manifest came back — the three shards are on the host's side.
-        expect(result.files.map((f) => f.role)).toEqual(["terrain", "manifest"]);
-        expect(sink.sealed.map((s) => s.role)).toEqual(["core", "coarse", "geometry"]);
-        expect(result.summary.shards.length).toBe(3);
+        // Nothing came back — the bytes are the host's, and asking for them says so rather than
+        // handing back an empty file.
+        expect(result.resident).toBe(false);
+        expect(() => result.take()).toThrow(AssembleError);
 
-        const want = expected("expected-split");
-        const delivered = [
-            ...sink.files.map((f) => ({ name: f.name, bytes: f.bytes })),
-            ...result.files.map((f) => ({ name: f.name, bytes: f.take() })),
-        ];
-        expect(delivered.map((f) => f.name)).toEqual(want.map((f) => f.name));
-        for (const [i, file] of delivered.entries()) expectSameBytes(file.bytes, want[i].bytes, file.name);
+        expectSameBytes(sink.bytes, expectedMap("map"), "the sunk map");
 
-        // What the caller was *told* it now has is what the manifest records — the host wrote these
+        // What the caller was *told* it now has is what the result records — the host wrote these
         // bytes without ever seeing them, so this is the only thing between a mislabelled file and a
         // card.
-        for (const [i, shard] of sink.sealed.entries()) {
-            expect(shard.slot).toBe(i);
-            expect(shard.name).toBe(result.summary.shards[i].file);
-            expect(shard.sha256).toBe(result.summary.shards[i].sha256);
-            expect(shard.byteLength).toBe(want[i].bytes.length);
-        }
+        expect(sink.sealed).toHaveLength(1);
+        expect(sink.sealed[0].sha256).toBe(result.sha256);
+        expect(sink.sealed[0].byteLength).toBe(result.byteLength);
+        expect(sink.sealed[0].byteLength).toBe(sink.bytes.length);
         result.release();
     });
 
     /**
-     * **The proof that §4.8 reads the file.** Flip one byte of a sealed shard behind the
-     * assembler's back and the verify pass must reject the set.
+     * **The proof that §4.8 reads the file.** Flip one byte of the sealed map behind the
+     * assembler's back and the verify pass must reject it.
      *
-     * With the bytes in a `Vec`, "read the shard back" and "look at the shard" are the same
-     * operation, so §4.8 can only prove the encoder agrees with the decoder. With a sink the medium
-     * is the thing that can lie — and a read-back quietly answering out of an in-memory copy would
-     * ship a corrupt map with a clean verdict.
+     * With the bytes in a `Vec`, "read the map back" and "look at the map" are the same operation,
+     * so §4.8 can only prove the encoder agrees with the decoder. With a sink the medium is the
+     * thing that can lie — and a read-back quietly answering out of an in-memory copy would ship a
+     * corrupt map with a clean verdict.
      */
     it("fails verify when the sink corrupts a byte on the way to disk", async () => {
         const sink = new Sink();
-        sink.corrupt = { slot: 0, at: 0 }; // the OBCM magic, so what refuses is unmistakably the reader
+        sink.corrupt = 0; // the OBCM magic, so what refuses is unmistakably the reader
         await expect(
-            assembleCells(cells(), sidecar, skin, OPTIONS, undefined, [], undefined, undefined, undefined, sink.seam()),
+            assembleCells(cells(), sidecar, skin, OPTIONS, undefined, [], undefined, undefined, sink.seam()),
         ).rejects.toMatchObject({ code: "verify" });
         expect(sink.reads).toBeGreaterThan(0);
-        // Nothing was reported as finished: §4.8 is a precondition of the manifest, so the corrupt
-        // shard never became part of a map (OBCA §5.4).
+        // Nothing was reported as finished: §4.8 is a precondition, so the corrupt file was never
+        // announced to the caller and nothing hands it on.
         expect(sink.sealed).toEqual([]);
     });
 
     /** A sink that cannot give the bytes back is `io`, although §4.8 is where it surfaces — a full
      *  or unplugged disk is not a defect in the assembler, and `verify` is the one verdict a caller
      *  is told never to retry past. */
-    it("reports a sink that cannot read a shard back as io, not as a verify defect", async () => {
+    it("reports a sink that cannot read the map back as io, not as a verify defect", async () => {
         const sink = new Sink();
-        sink.refuseReads = 0;
+        sink.refuseReads = true;
         await expect(
-            assembleCells(cells(), sidecar, skin, OPTIONS, undefined, [], undefined, undefined, undefined, sink.seam()),
+            assembleCells(cells(), sidecar, skin, OPTIONS, undefined, [], undefined, undefined, sink.seam()),
         ).rejects.toMatchObject({ code: "io" });
     });
 
-    /** A caller that cannot record a finished shard stops the run: the file exists and its name is
-     *  the only thing that could find it again. */
+    /** A caller that cannot record a finished map stops the run: the file exists and nobody knows
+     *  which bytes are in it. */
     it("fails the run when the sealed report throws", async () => {
         const sink = new Sink();
         const seam = { ...sink.seam(), sealed: () => { throw new Error("the browser's storage went away"); } };
         await expect(
-            assembleCells(cells(), sidecar, skin, OPTIONS, undefined, [], undefined, undefined, undefined, seam),
+            assembleCells(cells(), sidecar, skin, OPTIONS, undefined, [], undefined, undefined, seam),
         ).rejects.toMatchObject({ code: "io" });
     });
 
@@ -857,8 +769,7 @@ describe("the shard sink (#1116 D1)", () => {
                 [],
                 undefined,
                 undefined,
-                undefined,
-                missing as unknown as Parameters<typeof assembleCells>[9],
+                missing as unknown as Parameters<typeof assembleCells>[8],
             ),
         ).rejects.toMatchObject({ code: "internal" });
     });
@@ -876,7 +787,6 @@ describe("the shard sink (#1116 D1)", () => {
                 OPTIONS,
                 (phase) => phase === "verify" && ++seen >= 1,
                 [],
-                undefined,
                 undefined,
                 undefined,
                 sink.seam(),
@@ -942,17 +852,11 @@ describe("the scratch store (#1116 D2)", () => {
             terrain(),
             undefined,
             undefined,
-            undefined,
             scratch.seam(),
         );
         expect(scratch.created).toBeGreaterThan(0); // the seam was genuinely exercised
         expect([...scratch.files.keys()]).toEqual([]); // …and the engine cleaned up after itself
-        const want = expected("expected");
-        expect(result.files.length).toBe(want.length);
-        for (const [i, file] of result.files.entries()) {
-            expect(file.name).toBe(want[i].name);
-            expectSameBytes(file.take(), want[i].bytes, file.name);
-        }
+        expectSameBytes(result.take(), expectedMap("map"), "the map, spilled through the pool");
         result.release();
     });
 
@@ -962,15 +866,15 @@ describe("the scratch store (#1116 D2)", () => {
         const scratch = new Scratch();
         scratch.failAppendAfter = 0;
         await expect(
-            assembleCells(cells(), sidecar, skin, OPTIONS, undefined, [], undefined, undefined, undefined, undefined, scratch.seam()),
+            assembleCells(cells(), sidecar, skin, OPTIONS, undefined, [], undefined, undefined, undefined, scratch.seam()),
         ).rejects.toMatchObject({ code: "io" });
     });
 
     /** A half-wired store is the caller's defect, refused before a byte is written. */
     it("refuses a scratch store missing a method as internal, up front", async () => {
-        const half = { create: () => 0 } as unknown as Parameters<typeof assembleCells>[10];
+        const half = { create: () => 0 } as unknown as Parameters<typeof assembleCells>[9];
         await expect(
-            assembleCells(cells(), sidecar, skin, OPTIONS, undefined, [], undefined, undefined, undefined, undefined, half),
+            assembleCells(cells(), sidecar, skin, OPTIONS, undefined, [], undefined, undefined, undefined, half),
         ).rejects.toMatchObject({ code: "internal" });
     });
 });
