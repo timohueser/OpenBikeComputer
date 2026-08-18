@@ -16,10 +16,10 @@ use obc_formats::obcm::{
     POI_HOURS_REF_NONE, POI_RECORD_LEN,
 };
 
+use crate::emit::{align_up, filler_len, scaled, FILLER_RUN};
 use crate::grid::UBox;
 use crate::input::Cell;
 use crate::qtree::{self, Point};
-use crate::emit::{align_up, filler_len, scaled, FILLER_RUN};
 use crate::{Error, Result};
 
 /// Directory length: count byte + shared chunk size + one entry per category + the v7 pool fields.

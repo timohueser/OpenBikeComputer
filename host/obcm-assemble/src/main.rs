@@ -48,8 +48,8 @@ use obc_formats::io::{ByteSource, Error as IoError};
 use obcm_assemble::grid::CellId;
 use obcm_assemble::schema::{Schema, Skin};
 use obcm_assemble::{
-    assemble_full, CellInput, Clock, Error, MapStore, Options, Result, ScratchId, ScratchStore,
-    TerrainCellInput, TerrainJob, TerrainParams,
+    assemble_full, CellInput, Clock, Error, MapStore, Options, Result, ScratchId, ScratchStore, TerrainCellInput,
+    TerrainJob, TerrainParams,
 };
 
 /// A cell artifact read on demand. Cell regions are copied in 256 KB blocks, so the whole tree never

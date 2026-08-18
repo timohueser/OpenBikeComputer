@@ -440,6 +440,5 @@ fn a_header_scale_that_is_not_the_writers_is_refused() {
     let mut past = bytes.clone();
     past[HEADER_OFFSET_SCALE_OFF] = 10;
     let scratch = MemoryScratch::new();
-    verify_map(&MemorySource(past), BOX, &scratch, DEFAULT_MERGE_BUDGET)
-        .expect_err("scale 10 is not a legal unit");
+    verify_map(&MemorySource(past), BOX, &scratch, DEFAULT_MERGE_BUDGET).expect_err("scale 10 is not a legal unit");
 }

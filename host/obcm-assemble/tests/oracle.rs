@@ -95,7 +95,6 @@ const BANDS: &str = r#"{"bands": [
     {"id": "network", "cell_log2": 18, "lods": [],     "sections": ["nav", "poi"], "role": "core"}
 ]}"#;
 
-
 fn config() -> Config {
     Config::parse(CONFIG).expect("test config parses")
 }
@@ -1089,7 +1088,11 @@ fn a_spliced_raster_is_readable_through_the_headers_window() {
 
     let t = with.terrain.expect("the summary reports the region");
     assert_eq!(t.cells, 1);
-    assert_eq!(t.slots, 1u64 << (2 * (plain.assembly_box.span_log2 - u32::from(cell_log2))), "the rectangle tiles the box");
+    assert_eq!(
+        t.slots,
+        1u64 << (2 * (plain.assembly_box.span_log2 - u32::from(cell_log2))),
+        "the rectangle tiles the box"
+    );
 
     // The header names a region, and the region is where the map ends.
     let src = SliceSource(&with_bytes);

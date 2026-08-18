@@ -134,7 +134,8 @@ impl TerrainPlan {
         // lattice so far is smaller than every band's cell — which is exactly why it was worth
         // making a refusal rather than leaving it to hold by luck. It was a `debug_assert` in the
         // caller until an end-to-end test tripped it, i.e. it was a release-build silent mis-place.
-        if !crate::grid::on_grid_line(assembly.min_lat, cell_log2) || !crate::grid::on_grid_line(assembly.min_lon, cell_log2)
+        if !crate::grid::on_grid_line(assembly.min_lat, cell_log2)
+            || !crate::grid::on_grid_line(assembly.min_lon, cell_log2)
         {
             return Err(Error::Input(format!(
                 "the assembly corner ({}, {}) is not on the 2^{cell_log2} µdeg terrain grid: the box is snapped to the \
