@@ -125,9 +125,8 @@ within the stored polyline geometry. The guarantee assumes the producer reports 
 shipping pack jobs treat any quadtree split-floor capacity warning as a failed coverage audit rather
 than silently claiming complete lookup coverage.
 
-**Version 14** (issue #1420) makes **a map one file**. Two changes, both to the header and to what
-the offsets in it mean; the interior of every §5 chunk, §7 record and §8 record is byte-identical to
-v13.
+**Version 14** (issue #1420) makes **a map one file**. Three changes, all of them to how something
+is *addressed*; the interior of every §5 chunk, §7 record and §8 record is byte-identical to v13.
 
 1. **Global offsets are scaled.** Every offset that addresses the *file* — the header's section
    offsets, the LOD table's `Index Offset`, each LOD's per-chunk offset table (§5.1), and the POI
@@ -141,6 +140,13 @@ v13.
    elevation. `obc-dem` still bakes OBCT and the OBCT interior is unchanged — the assembler splices
    the bytes in, and a reader hands the terrain consumer a window onto them rather than parsing
    them.
+3. **An edge is addressed by chunk and ordinal** (§8.4). `Edge Id` was the record's pool-relative
+   **byte** offset, the one place scaling would have cost more than it bought — a 19-byte minimum
+   record cannot afford a 16-byte grain. It becomes a packed `(chunk_index, ordinal)` pair instead:
+   27 bits naming the 512-byte chunk, 5 bits naming the record's position inside it. The pool's
+   reach goes from `2^32` bytes to `2^36`, which is exactly the interior, in exchange for a walk of
+   at most 25 steps over a buffer the reader has already read. The edge record itself does not move
+   a byte.
 
 Together they retire the reason a logical map used to be a **set**: a manifest plus several physical
 files, split so that no file's `uint32` offsets overflowed and no FAT32 file limit was crossed. The
@@ -148,8 +154,9 @@ flat store ([`FLAT_Store_Format.md`](FLAT_Store_Format.md)) removed the filesyst
 ceiling and this version removes the format half. There are no shards, no roles, no sectioning and
 no set manifest: **one map is one OBCM object.** Its navigation section may span the whole 64 GiB
 interior instead of having to fit whatever one shard could hold, which is what made the map-size
-ceiling a statement about the nav graph alone. One `uint32` byte offset survives — `Edge Id` (§8.4)
-— and it is bounded where it lives, not here.
+ceiling a statement about the nav graph alone. **No sub-region ceiling sits under that number**:
+change 3 is there so that the last `uint32` byte offset in the format did not quietly become the new
+limit the moment the old one lifted.
 
 **v14 is the only supported version**; earlier maps get repacked.
 
@@ -948,7 +955,7 @@ Only the directory and the profile table (≤ `8 × 56 = 448` B) are resident.
 | 4 | Index Node Count | 4 | `uint32` | Number of `uint32` nodes in the index; `0` ⇒ **empty graph** |
 | 8 | Node Chunk Count | 4 | `uint32` | Number of node data chunks (§8.3) |
 | 12 | Edge Pool Offset | 4 | `uint32` | **Scaled** offset to the edge pool (§8.4) |
-| 16 | Edge Chunk Count | 4 | `uint32` | Number of `Chunk Size`-byte chunks in the edge pool |
+| 16 | Edge Chunk Count | 4 | `uint32` | Number of `Chunk Size`-byte chunks in the edge pool; **at most `2^27`** since v14, the reach of an `Edge Id`'s chunk field (§8.4) |
 | 20 | Chunk Size | 2 | `uint16` | Fixed capacity of every nav chunk — **must be `512`** (the reader rejects any other value) |
 | 22 | Profile Table Offset | 4 | `uint32` | **Scaled** offset of the §8.6 profile table |
 | 26 | Profile Count | 1 | `uint8` | Number of 56-byte profile records; **`1..=8`** (reader rejects `0` or `> 8`) |
@@ -1096,45 +1103,105 @@ Rules:
 
 ### 8.4 Edge pool
 
-*(Byte-identical to v9/v11. The v12 climb lives in the adjacency entry, not here: v13 reads the
-pool during endpoint projection, but A\* relaxation still must not have to touch it.)*
+*(The **record** is byte-identical to v9/v11; v14 changes only what an `Edge Id` means. The v12
+climb lives in the adjacency entry, not here: v13 reads the pool during endpoint projection, but
+A\* relaxation still must not have to touch it.)*
 
 Deduplicated edge geometry, fetched at route emit (stitching the A\*
 came-from chain into the output polyline) and by v13's endpoint projection; also the sum of `Length M` over the
 chain is the route's **displayed** distance — the weighted `g` is no longer a
-distance). The pool is a run of `Edge Chunk Count` × 512-byte chunks; records are
+distance). The pool is a run of `Edge Chunk Count` × 512-byte chunks beginning at
+`Edge Pool Offset * U`; records are
 packed back-to-back, and a record that would cross a chunk boundary is pushed to
-the next chunk start (`0xFF` padding fills the gap), so **no record straddles a
-chunk** — one chunk-granular read always covers one edge.
+the next chunk start (`0xFF` filler fills the gap), so **no record straddles a
+chunk** — one chunk-granular read always covers one edge. Since v14 that rule carries a second
+weight: it is what makes "the *n*th record of a chunk" a well-defined thing to name.
 
-**Addressing: `Edge Id` is the record's pool-relative byte offset.** The reader
-derives `chunk = Edge Id / 512`, `offset = Edge Id % 512` — zero resident index
-bytes, which is why this packing was chosen over a separate edge-id table. Ids are
-opaque to consumers (assigned at pack time, meaningless across files). The pool itself begins at a
-unit boundary, because `Edge Pool Offset` is scaled like every other directory offset; the id is
-relative to that start and is counted in **bytes**.
+**Addressing: `Edge Id` is a packed `(chunk, ordinal)` pair** (v14). The `uint32` splits at bit 5:
 
-> **The edge pool's `4 GiB − 1` ceiling is the one v14 does not lift, and this is where it lives.**
-> `Edge Id` stays a byte offset because scaling it would force every edge record onto a unit
-> boundary, and an edge record is `15 + 4 × (Pt Count − 1)` bytes — around 30 for a typical
-> three-to-five-vertex edge — so a 16-byte unit would spend roughly a quarter of the pool on filler
-> to buy reach the pool does not need. It is now the only `uint32` **byte** offset left in the
-> format; every other offset scales. A DACH-shaped selection's whole nav-plus-POI content measures
-> 2.8–3.0 GiB (`OBCA_Spec.md` §1.5), of which the pool is the larger part, so a `4 GiB` pool is
-> comfortably past DACH and is no longer the first limit a growing map meets — but it is a limit on
-> a **sub-region**, not on the file, which is the difference this version was for. Lifting it is one
-> specific future change: address an edge by its chunk and its ordinal *within* that chunk rather
-> than by its byte (a 512-byte chunk holds at most 34 records, so the walk is over a buffer the
-> reader has already read), which multiplies the reach by 15 and touches this subsection and the
-> meaning of §8.3's `Edge Id` and nothing else. It is deliberately not v14: the ruling's blast
-> radius was the offset tables, and the pool's addressing is interior.
+```
+chunk_index = Edge Id >> 5             # 27 bits
+ordinal     = Edge Id & 0x1F           #  5 bits
+chunk_start = Edge Pool Offset * U + chunk_index * 512
+```
+
+`ordinal` is the record's **position within its chunk**, counting from `0` — not a byte offset into
+it. Ids stay opaque to consumers (assigned at pack time, meaningless across files) and the pool
+still carries **zero resident index bytes**, which is the property that chose this packing over an
+edge-id table in the first place and the property v14 had to preserve.
+
+**Resolving one.** A reader reads the single 512-byte chunk at `chunk_start` and walks `ordinal`
+records from its first byte, taking each record's length from its own `Pt Count`:
+
+```
+p = 0
+repeat ordinal times:
+    if 512 - p < 19 or u16_at(p + 4) == 0xFFFF:   refuse          # no record starts here
+    p += 15 + 4 * (u16_at(p + 4) - 1)
+if 512 - p < 19 or u16_at(p + 4) == 0xFFFF:       refuse          # ordinal past the last record
+if p + 15 + 4 * (u16_at(p + 4) - 1) > 512:        refuse          # record runs off the chunk
+```
+
+Three refusal rules, and a reader MUST apply all three, because an `Edge Id` reaches it from an
+adjacency entry or a snap record and is arbitrary in a corrupt map: `chunk_index < Edge Chunk
+Count`; the walk MUST NOT pass the chunk's last record (an `ordinal` past it is invalid, never a
+neighbouring record); and no record may claim bytes past its chunk. A refused id is a malformed
+map, not an absent edge.
+
+**`Pt Count == 0xFFFF` is the end-of-chunk sentinel**, and it costs a writer nothing: chunks are
+already `0xFF`-filled, so the two bytes at `p + 4` of a gap already spell it. `Pt Count` is at least
+`2` in every real record, so `0xFFFF` is impossible content — the same shape as the style-id
+sentinel (§5.1), the POI subtype sentinel (§7.3) and the nav degree sentinel (§8.3). A gap shorter
+than six bytes cannot be read for it, which is what the `512 - p < 19` test covers: no record fits
+there either way.
+
+**Why five bits, and what they buy.** An edge record is `15 + 4 × (Pt Count − 1)` bytes with
+`Pt Count ≥ 2`, so the smallest record this format can express is **19 bytes** and a 512-byte chunk
+holds at most `floor(512 / 19) = 26` of them. Five bits name `0..=31`, which covers 26 with room to
+spare, and leave **27** for the chunk index. A producer MUST NOT put more than 32 records in one
+chunk — a bound no record size this format allows can reach, stated so the encoding stays sound if a
+future record ever shrinks. Six bits of ordinal would have left 26 for the chunk and capped the pool
+at 32 GiB, *below* the interior; five is the split where the two ceilings meet:
+
+```
+pool ceiling = 2^27 chunks × 512 B/chunk = 2^36 B = 64 GiB
+interior     = 2^32 units × 16 B/unit    = 2^36 B = 64 GiB      (§1.1, at the default scale 4)
+```
+
+> **The edge pool's `4 GiB − 1` ceiling is gone, not raised.** A byte offset reached `2^32` bytes;
+> `(chunk, ordinal)` reaches `2^36`, **16× further**, which is exactly the interior a scale-4 file
+> addresses. At the default scale the pool therefore cannot be the binding limit on anything: a pool
+> that big *is* the whole map, and the file's own interior stops it first. The navigation section's
+> practical limit is now that shared **64 GiB** interior — no sub-region ceiling sits under it — and
+> for scale, a DACH-shaped selection's entire nav-plus-POI content is 2.8–3.0 GiB
+> (`OBCA_Spec.md` §1.5), so the figure is about twenty times it.
+>
+> One honest residual: at a scale **above** `4` the interior grows past 64 GiB while the pool does
+> not, so a map past 64 GiB would have interior room its edge pool could not use. That is a limit
+> worth naming and not one any map approaches; lifting it would be another bit of chunk index traded
+> against an ordinal that has six to give.
+>
+> `Edge Chunk Count` MUST therefore be at most `2^27`, and a reader MUST refuse a directory that
+> exceeds it — no `Edge Id` could name the chunks past that point, so the tail would be bytes the
+> directory claims and no id reaches. (That is the same posture `FLAT_Store_Format.md` §6 takes
+> toward an extent count its index cannot name.)
+
+**What the walk costs.** At most 25 steps — a `u16` read and an add each — over a 512-byte buffer
+the reader has already fetched, against the byte offset's one division. No extra I/O: the chunk that
+holds the record is the chunk that holds every record before it, which is the whole reason the
+ordinal is *within a chunk* and not within the pool. The `A*` relaxation path is untouched either
+way, because it never fetches geometry (§8's design intent); the walk is paid at endpoint projection
+and route emit, where a 512-byte read already dominates it.
+
+**`0xFFFFFFFF` remains an impossible id**, which is what keeps §8.7's sentinel working: it names
+ordinal `31` of chunk `2^27 − 1`, and no chunk holds 32 records.
 
 Edge record (`15 + 4 × (Pt Count - 1)` bytes):
 
 | Offset | Field | Size | Type | Description |
 | :-- | :-- | :-- | :-- | :-- |
 | 0 | Length M | 4 | `uint32` | Ground length in meters (equals the adjacency entries' `Cost M`) |
-| 4 | Pt Count | 2 | `uint16` | Polyline vertex count (≥ 2) |
+| 4 | Pt Count | 2 | `uint16` | Polyline vertex count (≥ 2); `0xFFFF` is the **end-of-chunk sentinel** (v14), never a real count |
 | 6 | Way Kind | 1 | `uint8` | The edge's packed class byte (§8.6), same value as the adjacency entries' |
 | 7 | Anchor Lat | 4 | `int32` | First vertex latitude, **absolute** microdegrees |
 | 11 | Anchor Lon | 4 | `int32` | First vertex longitude |
@@ -1145,8 +1212,12 @@ coord, last = `b`'s); a consumer walking the edge from `b` reverses it. Deltas a
 **lat-first** like every §7/§8 record (the geometry sections §5 are lon-first —
 anchors there are viewport-space `x, y`).
 
+`Pt Count ≥ 2` is what makes the 19-byte minimum record — and therefore the 26-record chunk and the
+5-bit ordinal (above) — a property of the format rather than an observation about real maps.
+
 Packer guarantees that make the fixed `int16` deltas, the `int16` neighbor deltas
-(§8.3), the `uint16` cost, and the no-straddle rule all hold **by construction**:
+(§8.3), the `uint16` cost, the no-straddle rule and the ordinal's 5-bit field all hold **by
+construction**:
 
 - **Densification.** Any segment whose lat **or** lon delta exceeds `30000`
   microdegrees is subdivided with interpolated vertices — the same threshold as
@@ -1157,7 +1228,8 @@ Packer guarantees that make the fixed `int16` deltas, the `int16` neighbor delta
   **synthetic degree-2 junctions** (new dense ids past the real ones). The
   serializer additionally splits any piece whose densified record would exceed one
   chunk (`Pt Count > (512 − 15) / 4 + 1`, i.e. 125 points) or whose endpoint span
-  would exceed the `int16` bound after densification. Routing-neutral: each piece's
+  would exceed the `int16` bound after densification. Because the smallest record is 19 bytes, a
+  chunk that survives those splits holds `1..=26` records, inside the ordinal's `0..=31` (v14). Routing-neutral: each piece's
   `Length M` is re-measured over its sub-polyline, so costs still sum to the
   original.
 
@@ -1204,10 +1276,10 @@ S+512  Node Chunk 0 (512 B):
                       way_kind=0x2A, ascent_m=42 }                           (30 B)
          0xFF × 452                                (padding = sentinel)
 S+1024 Edge Pool chunk 0 (512 B):
-         edge 0 (at pool offset 0 ⇒ edge_id = 0):
+         edge 0 (chunk 0, ordinal 0 ⇒ edge_id = (0 << 5) | 0 = 0):
            length_m=1234  pt_count=3  way_kind=0x2A  anchor=(lat 100, lon 200)
            deltas: (+400,+300) (+400,+300)          → (500,500), (900,800)   (23 B)
-         0xFF × 489                                 (padding)
+         0xFF × 489                    (filler; its pt_count reads 0xFFFF = end of records)
 S+1536 Alignment Filler (496 B, 0xFF)
 S+2032 Snap Quadtree (4 B): [0x00000000]            single leaf → snap chunk 0
 S+2036 Filler (12 B, 0xFF)                          align_up(S+2036, 16) = S+2048
@@ -1230,7 +1302,10 @@ worth checking by hand, because they are the two the scaling actually constrains
   once, for **every** node count, and it costs `0..15` bytes once per region.
 
 Node `A` reconstructs neighbor `B` as `(100 + 800, 200 + 600) = (900, 800)` — no
-edge fetch needed for `h`. Both directions of the edge carry `edge_id = 0`,
+edge fetch needed for `h`. `edge_id = 0` means the same record it meant in v13, by arithmetic rather
+than by coincidence: the only edge is the first record of the first chunk, and `(0 << 5) | 0` is `0`
+just as pool byte offset `0` was. A second edge behind it would be `edge_id = 1` under v14 where
+v13 called it `23`. Both directions of the edge carry `edge_id = 0`,
 `cost_m = 1234` and `way_kind = 0x2A`; only `ascent_m` differs, and that is the
 v12 exception above — the same road costs 300 m of climb uphill and 42 m down.
 Under "`Road`" the uphill arc weighs `(1234 × 16) >> 4 + 300 × 10 = 4234` and the
@@ -1357,7 +1432,8 @@ Each record is 12 bytes:
 | 4 | Lon | 4 | `int32` | Anchor longitude, absolute microdegrees |
 | 8 | Edge Id | 4 | `uint32` | Pool-relative id of the §8.4 edge geometry to project |
 
-Unused chunk tails are `0xFF`; `Edge Id == 0xFFFFFFFF` is the sentinel. A final serialized edge
+Unused chunk tails are `0xFF`; `Edge Id == 0xFFFFFFFF` is the sentinel, which §8.4 shows stays
+impossible as a real id under v14's `(chunk, ordinal)` packing. A final serialized edge
 piece contributes no record when its measured geometry is at most 300 m. Otherwise the producer
 chooses `ceil(length / 300)` equal-length intervals along the polyline and writes the `intervals − 1`
 interior boundaries. Thus endpoint/anchor gaps are no more than 300 m without adding routable graph

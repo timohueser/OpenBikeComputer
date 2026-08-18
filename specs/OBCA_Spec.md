@@ -669,8 +669,9 @@ This is the most involved rebuild, and its order matters.
    assemblers of the same cells disagree about which islet reached the map.
 5. **Renumber** the surviving nodes densely from 0, in a deterministic order (`(lat, lon)`
    ascending is sufficient and content-derived).
-6. **Rebuild the edge pool.** `Edge Id` is a pool byte offset (`OBCM_Spec.md` §8.4), so every edge
-   record is re-emitted and every `Edge Id` re-derived. Edge polyline bytes MAY be copied from the
+6. **Rebuild the edge pool.** `Edge Id` names a record by its chunk and its position within that
+   chunk (`OBCM_Spec.md` §8.4 — it was a pool byte offset before OBCM v14, and either way it is a
+   property of *placement*), so every edge record is re-emitted and every `Edge Id` re-derived. Edge polyline bytes MAY be copied from the
    source record (they are self-contained: absolute anchor plus deltas), but their *placement* is
    new, and the no-straddle rule must be re-applied at the 512-byte chunk granularity.
 7. **Re-check the wire limits** (§4.8) and rebuild the node quadtree over the assembly bbox, with
