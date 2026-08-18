@@ -913,7 +913,7 @@ allocation — the `OBCU_Spec.md` §1.1 conventions. It is `72 + 64 × Shard Cou
 | 8 | Min Lon | 4 | `int32` | |
 | 12 | Max Lat | 4 | `int32` | |
 | 16 | Max Lon | 4 | `int32` | |
-| 20 | Bytes | 4 | `uint32` | Shard size in bytes. `uint32` is exactly right: the FAT32 ceiling is `4 GiB − 1 = u32::MAX` |
+| 20 | Bytes | 4 | `uint32` | Shard size in bytes. **This field counts bytes, not units** — so since v14 it is *narrower than §5.7's wall*, capping a manifest-listed shard at `u32::MAX` where the OBCM file itself may reach `2^32 × U`. Left alone rather than widened speculatively: a set is the split path, and its shards are sized far below either number. The old note here said `uint32` was "exactly right" because the FAT32 ceiling was `4 GiB − 1 = u32::MAX`; that coincidence is what ended |
 | 24 | SHA-256 | 32 | `uint8[32]` | Digest of the shard's bytes |
 | 56 | Member Id | 8 | `uint64` | This member's `ObjectId` (`FLAT_Store_Format.md` §3), or `0` while the manifest is **unbound** — see below |
 
@@ -1114,12 +1114,18 @@ touched all become possible later without a manifest change.
 
 ### 5.5 Single-file fast path
 
-When the whole assembly fits one OBCM file under `4 GiB − 1 B`, the assembler writes a set of
-**one**: one OBCM shard with `Core Shard = 0`, `Role = 0` and its bbox equal to the assembly bbox,
+When the whole assembly fits one OBCM file — §5.7's wall, the interior its `Offset Scale` covers —
+the assembler writes a set of **one**: one OBCM shard with `Core Shard = 0`, `Role = 0` and its
+bbox equal to the assembly bbox,
 carrying every LOD, the nav graph, and the POIs. It is the one case where geometry lives in the core,
 and it is safe by construction: the whole map already fits one file, so there is nothing to move out.
 Nothing else in §5 changes; the device's dispatch loop simply runs over one shard, and §5.6's
 empty-LOD cache finds nothing empty.
+
+Since v14 that wall is 64 GiB rather than 4 GiB, so this path is no longer the *small* case — it is
+very nearly every case. The measured figures below were written when a country-scale bake was the
+threshold for splitting; against `2^32 × U` they say instead that **no selection this schema
+supports comes close**, and multi-shard sets are reached by nothing a rider can currently ask for.
 
 If the selection has terrain, the raster rides beside it as the `terrain` record — `Shard Count = 2`,
 `map.obcm`-plus-sidecar in every respect that matters — and the fast path is unaffected, because
@@ -1168,12 +1174,17 @@ A consumer computing that sum is not estimating; it is adding up numbers the cat
 Therefore:
 
 - A consumer **MUST** project every file of the set — core, coarse shards, geometry shards — before
-  the download, and **MUST refuse the selection** if any projected file exceeds `4 GiB − 1 B`. It
-  MUST NOT begin fetching a set it cannot legally write.
-- For the **core** specifically it SHOULD warn above ≈ 3.5 GiB, and both the refusal and the warning
-  MUST name the **navigation graph** as the reason and the coverage as the thing to reduce — because
-  after this section's split the core is nav plus POIs and nothing else, so no other explanation is
-  true.
+  the download, and **MUST refuse the selection** if any projected file exceeds **the interior its
+  `Offset Scale` covers** ([`OBCM_Spec.md` §1.1](OBCM_Spec.md)): `2^32 × U`, which is 64 GiB at the
+  scale every producer in this tree writes. It MUST NOT begin fetching a set it cannot legally
+  write. The wall is stated **by reference** and not as a literal here on purpose — it is a property
+  of the file's own scale byte, so a file written at another scale carries another wall, and a
+  number copied into this section would be wrong for it.
+- For the **core** specifically it SHOULD warn above **seven eighths of that wall**, and both the
+  refusal and the warning MUST name the **navigation graph** as the reason and the coverage as the
+  thing to reduce — because after this section's split the core is nav plus POIs and nothing else,
+  so no other explanation is true. The warning is a *proportion* — "you are close" — rather than a
+  size, for the same reason the refusal is a reference.
 - A consumer MUST apply the schema's own cell-bake budget (§1.5's +5–15 %, measured headroom rather
   than an expected cost) on the *pessimistic* side of that comparison, so the projection is an upper
   bound rather than a hope.
@@ -1182,6 +1193,22 @@ Therefore:
   coarse or geometry shard further, since that is what those roles are for.
 - §4.8's verify then re-checks every file's actual size against the ceiling, so the pre-download
   projection is bounded on both ends: refused before the fetch, and re-asserted before the write.
+
+> **The two figures above were `4 GiB − 1 B` and `≈ 3.5 GiB` before OBCM v14.** They were not
+> arbitrary: a byte offset was a bare `uint32`, so a file stopped at 4 GiB, and FAT32 — the card
+> format the firmware's FAT stack wrote — capped a file at exactly the same number. Two independent
+> walls landing on one value is why sets exist at all (§5.5), and why so much of this section reads
+> as though 4 GiB were a law of nature.
+>
+> Both are gone. v14 scales offsets (§1.1), moving the format's own wall to `2^32 × U`, and the flat
+> store replaced FAT. The core warn was ⅞ of the old wall, which is what "≈ 3.5 GiB" was; keeping
+> the *number* rather than the *proportion* would now fire on a map with sixty gigabytes of headroom
+> left, so the proportion is what this section states.
+>
+> Statements elsewhere in this document that name `4 GiB − 1` describe the **pre-v14** design and
+> the reasoning that produced the split; they are history, not the current wall, and §5.7 is the
+> normative statement. The one exception is §5.2's `Bytes` field, which is genuinely a `uint32` of
+> bytes in the OBCS manifest and is called out there.
 
 **The terrain shard is the easiest file of the set to project, and it is projected the same way.**
 Its size is `32 + 4 · rows · cols + present · T² · 512` — a header, a directory over the assembly
