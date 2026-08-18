@@ -7,17 +7,24 @@ carried **beside** the map rather than inside it. It defines four things:
    `int16` metre heights and one reserved "no data" value.
 2. **The tile and the terrain cell** (§2, §3) — a 512-byte tile of 16 × 16 samples, and the grid
    cell that is a square block of them.
-3. **The container** (§4) — one file format for both published artifacts: a **cell** is a shard
-   whose cell rectangle is 1 × 1. A fixed header, a row-major offset directory over that rectangle,
+3. **The container** (§4) — one file format for both published artifacts: a **cell** is a
+   container whose cell rectangle is 1 × 1, an **assembly raster** one covering a whole selection. A fixed header, a row-major offset directory over that rectangle,
    then the cell blocks. Every lookup is grid arithmetic; nothing is searched.
 4. **Sampling** (§5) — the normative bilinear rules, including what happens at a cell seam, at a
    coverage edge and around a `NODATA` sample. This is the raster analogue of OBCA §3.4's seam rule:
    **two independent implementations MUST produce bit-identical heights for the same `(lat, lon)`.**
 
-OBCT introduces **no new OBCM version and changes no OBCM semantics**. `obc-reader`, `obcm_diff`,
-the assembler's graft path and the set manifest's existing roles are untouched; terrain is a new
-artifact class with its own revision track, which is the whole reason it is not an OBCM section
-(§0.1).
+OBCT introduces **no new OBCM version and changes no OBCM semantics**. `obc-reader`, `obcm_diff`
+and the assembler's graft path are untouched; terrain is a new artifact class with its own revision
+track, which is the whole reason it is not an OBCM section (§0.1).
+
+> **Where the bytes live changed in OBCM v14 (#1420); what they are did not.** An assembly's raster
+> is now spliced into the map file's terrain region ([`OBCM_Spec.md` §1.3](OBCM_Spec.md)) instead of
+> riding beside it as a volume-set role or a sidecar. The container is embedded **verbatim** and the
+> map reader hands it over as a window rather than parsing it, so every argument in §0.1 for keeping
+> terrain out of OBCM's *parse* survives intact — an OBCM consumer still learns no terrain section,
+> and a terrain re-bake still touches no map semantics. One file, two formats, one of them opaque to
+> the other.
 
 This document is normative. The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are to be
 interpreted as in RFC 2119.
@@ -27,8 +34,8 @@ arithmetic is [`firmware/obc-formats/src/obct.rs`](../firmware/obc-formats/src/o
 and consumers import those facts directly rather than transcribing them. The reference reader,
 sampler and tile cache are [`firmware/obc-elevation`](../firmware/obc-elevation).
 
-Related contracts: [`OBCA_Spec.md`](OBCA_Spec.md) §1 defines the grid this raster sits on and §5
-the volume set a shard can ship in; [`OBCC_Spec.md`](OBCC_Spec.md) §13 publishes terrain cells as a
+Related contracts: [`OBCA_Spec.md`](OBCA_Spec.md) §1 defines the grid this raster sits on (its §5
+volume sets are superseded — an assembly raster now ships inside the map); [`OBCC_Spec.md`](OBCC_Spec.md) §13 publishes terrain cells as a
 catalog artifact class with its own revision track; [`OBCM_Spec.md`](OBCM_Spec.md) is the map beside which terrain is carried,
 and whose §8 nav graph stores the ascent integrated *from* these samples.
 
@@ -52,9 +59,10 @@ and whose §8 nav graph stores the ascent integrated *from* these samples.
    *tile* is not: 16 × 16 samples = 512 B is the device's I/O quantum (one SD block, the size of an
    OBCM §8 nav chunk), and changing it would change the fetch unit every consumer is budgeted
    around.
-5. **One container for both artifacts.** A published cell and an assembled shard differ only in how
-   many cells they carry, so they are one format (§4). An assembler that concatenates cells writes
-   the same bytes a baker writes; a reader that samples a shard samples a cell with no branch.
+5. **One container for both artifacts.** A published cell and an assembly's raster differ only in
+   how many cells they carry, so they are one format (§4). An assembler that concatenates cells
+   writes the same bytes a baker writes; a reader that samples an assembly raster samples a cell
+   with no branch.
 6. **A hole is silence, never a guess.** Terrain is `None` outside coverage and `None` wherever the
    source DEM had no data — and one missing corner voids the whole sample (§5.4). Elevation degrades
    to "not known here"; it never degrades to a plausible-looking number, because every consumer of
@@ -73,8 +81,10 @@ on four counts, all of which are properties of *terrain*, not preferences:
   schema revision. Terrain would inherit that and be re-published on every unrelated bump.
 - **Blast radius.** Every existing consumer of OBCM would have to learn a section it never reads.
   As a separate artifact, `obc-reader`, `obcm_diff` and `obcm-testkit` are untouched.
-- **Splittability.** A raster shards by bbox trivially, so it never spends the core file's headroom
-  — the scarcest resource in a set (OBCA principle 7).
+- **Splittability.** A raster splits by bbox trivially, so it never spent the core file's headroom
+  when that was the scarcest resource in a set (OBCA principle 7, superseded with OBCA §5). The
+  property still holds and is still worth having; it is simply no longer paying for anything, since
+  OBCM v14's interior has room for the raster and the map together.
 - **Independence.** A rider who does not want terrain does not download it, and a terrain re-bake at
   a new posting does not touch the map.
 
@@ -346,9 +356,11 @@ recorded ride log already uses `.obct`
 one extension on one card is a bug waiting for a directory scan. The magic stays `OBCT` — it names
 the format, and it is never ambiguous, because a ride log has no header at all.
 
-How a terrain file is named *within* a volume set (its manifest role, its 8.3 name, whether it is a
-sidecar beside a single-file map) is [`OBCA_Spec.md` §5](OBCA_Spec.md)'s business and is specified
-there, not here.
+How an assembly's raster reaches a rider is not this document's business: since OBCM v14 it is
+spliced into the map file's terrain region and is not a file on the card at all
+([`OBCM_Spec.md` §1.3](OBCM_Spec.md)). The naming rules OBCA §5 used to state for a terrain shard —
+its manifest role, its 8.3 short name, its sidecar convention — are superseded with that section.
+A **published cell** is still an object of its own, named by the catalog.
 
 ---
 

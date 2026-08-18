@@ -148,9 +148,13 @@ and never otherwise.
 `obcm-testkit` and the assembler's graft path never learn a raster exists. The format
 surface every existing consumer parses is unchanged.
 
-**Splittability.** A raster shards by bounding box trivially, so it never spends the
+**Splittability.** A raster splits by bounding box trivially, so it never spent the
 [core file's headroom](../formats/#one-map-several-files) — the scarcest resource in a
-volume set, because the nav graph is the one component that *cannot* be split by box.
+volume set, because the nav graph was the one component that *could not* be split by box. (Volume
+sets are superseded by OBCM v14,
+[#1420](https://github.com/timohueser/OpenBikeComputer/issues/1420): a map is one file, and an
+assembly's raster is spliced **into** it rather than carried beside it. The property still holds; it
+is no longer paying for anything.)
 
 **Independence.** A terrain re-bake at a new posting does not touch the map; a map
 re-bake does not touch the raster.
