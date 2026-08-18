@@ -46,10 +46,13 @@ use heapless::Vec;
 use crate::Error;
 use obc_formats::io::{rd_i32, rd_u16, rd_u32, ByteSource};
 use obc_formats::obcm::{
+    OffsetScale, ScaledOffset, HEADER_LEN, HEADER_OFFSET_SCALE_OFF, HEADER_TERRAIN_LENGTH_OFF,
+    HEADER_TERRAIN_OFFSET_OFF, LOD_ENTRY_LEN, NAV_MAX_PROFILES,
+};
+use obc_formats::obcm::{
     BRANCH_BIT, EMPTY_LEAF, STYLE_DASHED_BIT, STYLE_FIXED_WIDTH_BIT, STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK,
     STYLE_TERRAIN_LAYER_BIT,
 };
-use obc_formats::obcm::{HEADER_LEN, LOD_ENTRY_LEN, NAV_MAX_PROFILES};
 use obc_formats::obcm::{MAGIC, STYLE_RECORD_LEN, VERSION};
 use obc_map_scene::{BBox, Style, StyleFlags};
 
@@ -80,6 +83,39 @@ trait QuadIndex {
 #[inline]
 fn index_end(index_offset: usize, node_count: usize) -> Option<usize> {
     node_count.checked_mul(4)?.checked_add(index_offset)
+}
+
+/// The same convention for a section whose **chunks** are addressed by a scaled offset (§3, §7.1,
+/// §8.1): they begin at `align_up(index_offset + node_count * 4, U)`, one rounding step past the
+/// index. The index and the offset table themselves are read by 4-byte indexing from a start the
+/// directory names, so neither needs a boundary of its own — the chunks do.
+#[inline]
+fn aligned_index_end(scale: OffsetScale, index_offset: usize, node_count: usize) -> Option<usize> {
+    let end = index_end(index_offset, node_count)?;
+    let aligned = scale.align_up(end as u64)?;
+    resolve_bytes(aligned).ok()
+}
+
+/// Narrow a resolved byte offset into this reader's address space.
+///
+/// §1.1's widening happens in [`ScaledOffset::bytes`], which is `u64` and has no narrower
+/// spelling. The narrowing here is a property of *this reader*, not of the format: a
+/// [`ByteSource`] addresses 4 GiB, so a file whose interior reaches past that is refused at parse
+/// rather than mis-addressed. Fail-closed, the same posture `SliceSource::len` takes.
+#[inline]
+fn resolve_bytes(bytes: u64) -> Result<usize, Error> {
+    if bytes > u32::MAX as u64 {
+        return Err(Error::BadOffset);
+    }
+    Ok(bytes as usize)
+}
+
+/// Resolve one stored scaled offset field. The scale rides inside [`ScaledOffset`], so an offset
+/// read from one file cannot be resolved against another's unit — the mistake a mounted map with
+/// several open files could otherwise make silently.
+#[inline]
+pub(crate) fn resolve(offset: ScaledOffset) -> Result<usize, Error> {
+    resolve_bytes(offset.bytes())
 }
 
 /// Byte range `[start, end)` of chunk `chunk_id` in a section whose chunks are a **fixed**
@@ -113,11 +149,37 @@ pub(crate) struct MapHeader {
     pub bbox: BBox,
     /// User-position marker color (RGB565); see [`Reader::marker_color`].
     pub marker_color: u16,
+    /// The file's offset unit (§1.1). Every scaled field in the file resolves against **this**
+    /// value and no other's.
+    pub scale: OffsetScale,
+    /// The §1.3 embedded terrain region, or `None` for a map with no elevation.
+    pub terrain: Option<TerrainRegion>,
 }
 
-/// Decode + validate the fixed 40-byte OBCM header (magic, version, bbox, marker color).
-/// Shared by [`MapTables::parse`] and the volume-set shard parse so the byte layout lives in one
-/// place. Offsets follow `obc-pack`'s header pack (see OBCM_Spec.md).
+/// The §1.3 terrain region: a byte window at the file tail holding one OBCT container verbatim.
+///
+/// A reader **hands this over; it does not parse it.** The container carries its own magic,
+/// version, header and offset directory, and every offset inside it is relative to its own first
+/// byte — which is what makes a window sufficient and a copy unnecessary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TerrainRegion {
+    /// Byte offset of the region's first byte, which is the container's byte `0`.
+    pub offset: usize,
+    /// The region's length. `Terrain Length` counts **units**, so this is the container's byte
+    /// length rounded up, and the tail is §1.2 filler: a consumer MUST bound its reads by the
+    /// container's own structure and MUST NOT derive the payload length from this.
+    pub len: usize,
+}
+
+/// Decode + validate the fixed 49-byte v14 OBCM header (magic, version, bbox, marker color, the
+/// offset scale, and the terrain region). Offsets follow `obc-pack`'s header pack (see
+/// OBCM_Spec.md).
+///
+/// **The version byte is the hard cut, and it cuts in both directions**: this refuses anything
+/// other than [`VERSION`], whether older or newer, because a v13 file's offsets mean bytes and a
+/// v14 file's do not — the same mis-parse seen from the two sides. The refusal is the file's, not
+/// the section's: nothing is partially readable across the cut, because a section offset that means
+/// the wrong unit lands somewhere plausible rather than somewhere obviously wrong.
 pub(crate) fn parse_header(h: &[u8; HEADER_LEN]) -> Result<MapHeader, Error> {
     if h[0..4] != MAGIC {
         return Err(Error::BadMagic);
@@ -132,7 +194,20 @@ pub(crate) fn parse_header(h: &[u8; HEADER_LEN]) -> Result<MapHeader, Error> {
     let max_lat = rd_i32(h, 13);
     let max_lon = rd_i32(h, 17);
     let marker_color = rd_u16(h, 30);
-    Ok(MapHeader { version, bbox: BBox { min_lon, min_lat, max_lon, max_lat }, marker_color })
+    let scale = OffsetScale::new(h[HEADER_OFFSET_SCALE_OFF]).map_err(|_| Error::BadScale)?;
+    // §1.3: `0` means the map carries no elevation, and `Terrain Length` must then be `0` too — a
+    // file setting one without the other is refused rather than half-believed.
+    let terrain_offset = scale.offset(rd_u32(h, HEADER_TERRAIN_OFFSET_OFF));
+    let terrain_len = scale.offset(rd_u32(h, HEADER_TERRAIN_LENGTH_OFF));
+    if terrain_offset.is_zero() != terrain_len.is_zero() {
+        return Err(Error::BadOffset);
+    }
+    let terrain = if terrain_offset.is_zero() {
+        None
+    } else {
+        Some(TerrainRegion { offset: resolve(terrain_offset)?, len: resolve(terrain_len)? })
+    };
+    Ok(MapHeader { version, bbox: BBox { min_lon, min_lat, max_lon, max_lat }, marker_color, scale, terrain })
 }
 
 /// The prefix **every** OBCM parse begins with, decoded and bounds-checked once: the fixed 40-byte
@@ -162,9 +237,17 @@ pub(crate) fn parse_prologue(src: &dyn ByteSource) -> Result<HeaderPrologue, Err
     src.read_at(0, &mut header).map_err(Error::Source)?;
     let map = parse_header(&header)?;
     let lod_count = header[25] as usize;
-    let lod_table_offset = rd_u32(&header, 26) as usize;
+    let lod_table_offset = resolve(map.scale.offset(rd_u32(&header, 26)))?;
     if lod_count == 0 {
         return Err(Error::BadOffset);
+    }
+    if let Some(region) = map.terrain {
+        // The window has to be inside the file it is a window onto; what is *in* it is the terrain
+        // consumer's problem, not this parse's (§1.3 — an unreadable raster is not a broken map).
+        let end = region.offset.checked_add(region.len).ok_or(Error::BadOffset)?;
+        if end > total {
+            return Err(Error::BadOffset);
+        }
     }
     // Checked: `lod_table_offset` is an arbitrary header u32, so on the 32-bit
     // target the table-end can wrap `usize` and slip past the guard below.
@@ -189,6 +272,11 @@ pub struct MapTables {
     /// User-position marker color (RGB565), a global header property; resolved to a device pixel
     /// by the host's color policy like style colors.
     pub marker_color: u16,
+    /// The file's offset unit (§1.1), retained so a lazily-read §5.1 offset-table entry resolves
+    /// against **this** file's scale and no other's.
+    scale: OffsetScale,
+    /// The §1.3 embedded terrain region, or `None` for a map with no elevation.
+    terrain: Option<TerrainRegion>,
     /// LOD layers ordered coarsest (0) → finest (N-1). Always at least one.
     lods: Vec<Lod, 16>,
     /// The parsed POI directory (spec §7). Always present (six categories, some possibly
@@ -223,20 +311,27 @@ impl MapTables {
     /// POI/nav section offsets are decoded here.
     pub fn parse(src: &dyn ByteSource) -> Result<MapTables, Error> {
         let HeaderPrologue { header, map, lod_count, lod_table_offset, total } = parse_prologue(src)?;
-        let MapHeader { version, bbox, marker_color } = map;
-        let style_offset = rd_u32(&header, 21) as usize;
-        let poi_section_offset = rd_u32(&header, 32) as usize;
-        let nav_section_offset = rd_u32(&header, 36) as usize;
+        let MapHeader { version, bbox, marker_color, scale, terrain } = map;
+        let style_offset = resolve(scale.offset(rd_u32(&header, 21)))?;
+        let poi_section_offset = resolve(scale.offset(rd_u32(&header, 32)))?;
+        let nav_section_offset = resolve(scale.offset(rd_u32(&header, 36)))?;
 
-        if style_offset < HEADER_LEN || style_offset > total {
+        // The style table cannot start inside the header, but since v14 it does not start *at* it
+        // either: 49 bytes is not a whole number of units at any scale above `0`, so the table
+        // begins at the first unit boundary at or after the header and the gap is §1.2 filler. The
+        // floor is therefore the aligned header end, not `HEADER_LEN` — reading the field rather
+        // than assuming the table follows the header is what it was always for, and v14 is simply
+        // the first version where the two differ.
+        let style_floor = resolve_bytes(scale.align_up(HEADER_LEN as u64).ok_or(Error::BadOffset)?)?;
+        if style_offset < style_floor || style_offset > total {
             return Err(Error::BadOffset);
         }
 
         let mut styles = [None; 256];
         parse_styles(src, style_offset, total, &mut styles)?;
-        let lods = parse_lod_table(src, lod_table_offset, lod_count, total)?;
-        let pois = parse_poi_directory(src, poi_section_offset, total)?;
-        let nav = parse_nav_directory(src, nav_section_offset, total)?;
+        let lods = parse_lod_table(src, scale, lod_table_offset, lod_count, total)?;
+        let pois = parse_poi_directory(src, scale, poi_section_offset, total)?;
+        let nav = parse_nav_directory(src, scale, nav_section_offset, total)?;
         let profiles = parse_nav_profiles(src, &nav)?;
         // Resolve the backdrop (lowest `z_index`, ties broken by lowest id) once here; the table is
         // immutable after parse, so `Reader::backdrop_style` never has to re-scan the 256 slots.
@@ -246,7 +341,37 @@ impl MapTables {
         // suffices: the counter is the only shared state and only uniqueness matters.
         static GEN: AtomicU32 = AtomicU32::new(0);
         let generation = GEN.fetch_add(1, Ordering::Relaxed) + 1;
-        Ok(MapTables { version, bbox, marker_color, lods, pois, nav, profiles, styles, backdrop, generation })
+        Ok(MapTables {
+            version,
+            bbox,
+            marker_color,
+            scale,
+            terrain,
+            lods,
+            pois,
+            nav,
+            profiles,
+            styles,
+            backdrop,
+            generation,
+        })
+    }
+
+    /// This file's offset unit (§1.1) — the value every scaled field in it resolves against.
+    #[inline]
+    pub fn scale(&self) -> OffsetScale {
+        self.scale
+    }
+
+    /// The §1.3 embedded terrain region, or `None` for a map with no elevation.
+    ///
+    /// The reader forms a window and hands it over; it never parses the container. A consumer whose
+    /// OBCT parse fails MUST fall back to no elevation and MUST still mount, render and route —
+    /// exactly the clemency a missing terrain sidecar already got, unchanged by the move inside the
+    /// file. A rider whose raster is unreadable has the map they would have had without one.
+    #[inline]
+    pub fn terrain(&self) -> Option<TerrainRegion> {
+        self.terrain
     }
 
     /// Whether LOD `lod` is written **empty** in this file's LOD table (`Index Node Count == 0`).

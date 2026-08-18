@@ -1,6 +1,6 @@
 //! POI directories, hours lookup, nearest/corridor queries, and streaming decode.
 
-use super::{fixed_chunk_range, index_end, QuadIndex, Reader};
+use super::{aligned_index_end, fixed_chunk_range, resolve, QuadIndex, Reader};
 use crate::corridor::{
     inflate_bbox, project_onto_chunk, CorridorPoi, PoiCategorySet, RoutePath, CORRIDOR_HALF_WIDTH_M,
     MAX_CORRIDOR_RESULTS,
@@ -9,8 +9,8 @@ use crate::Error;
 use heapless::Vec;
 use obc_formats::io::{rd_i32, rd_u16, rd_u32, ByteSource, Error as IoError};
 use obc_formats::obcm::{
-    PoiCategory, CHUNK_END, HEADER_LEN, POI_CAT_ENTRY_LEN, POI_HOURS_BLOB_LEN, POI_HOURS_REF_NONE, POI_NAME_LEN,
-    POI_RECORD_LEN,
+    OffsetScale, PoiCategory, CHUNK_END, HEADER_LEN, POI_CAT_ENTRY_LEN, POI_HOURS_BLOB_LEN, POI_HOURS_REF_NONE,
+    POI_NAME_LEN, POI_RECORD_LEN,
 };
 use obc_map_scene::{cos_lat, ground_dist_m_cl, BBox, M_PER_DEG};
 
@@ -57,6 +57,9 @@ pub struct PoiCatEntry {
     pub node_count: usize,
     /// Number of POI data chunks in this category.
     pub chunk_count: usize,
+    /// This file's offset unit (§1.1), carried so the category's chunk start is rounded with the
+    /// scale of the file the entry was read from.
+    pub scale: OffsetScale,
 }
 
 impl PoiCatEntry {
@@ -71,7 +74,7 @@ impl PoiCatEntry {
     /// 32-bit MCU) — the shared §7.1 convention, see `index_end`.
     #[inline]
     pub fn data_start(&self) -> Option<usize> {
-        index_end(self.index_offset, self.node_count)
+        aligned_index_end(self.scale, self.index_offset, self.node_count)
     }
 
     /// Byte range `[start, end)` of POI chunk `chunk_id` given the directory's shared `chunk_size`
@@ -676,9 +679,16 @@ fn decode_poi_name(buf: &[u8], off: usize) -> heapless::String<POI_NAME_LEN> {
 /// `hours_pool_count` can wrap `usize`, so the region-end could land below `total` and admit a
 /// category (or a pool blob) indexing out of the file — the same overflow guard style as
 /// [`super::parse_lod_table`]/[`Reader::chunk_range`].
-pub(super) fn parse_poi_directory(src: &dyn ByteSource, offset: usize, total: usize) -> Result<PoiDirectory, Error> {
+pub(super) fn parse_poi_directory(
+    src: &dyn ByteSource,
+    scale: OffsetScale,
+    offset: usize,
+    total: usize,
+) -> Result<PoiDirectory, Error> {
+    // The lowest byte a scaled offset in this file can name past the header (§1.2).
+    let floor = super::resolve_bytes(scale.align_up(HEADER_LEN as u64).ok_or(Error::BadOffset)?)?;
     // The directory header is 3 bytes (count + chunk_size u16); it must fit the file.
-    if offset < HEADER_LEN || offset.checked_add(3).is_none_or(|end| end > total) {
+    if offset < floor || offset.checked_add(3).is_none_or(|end| end > total) {
         return Err(Error::BadOffset);
     }
     let mut hdr = [0u8; 3];
@@ -706,9 +716,10 @@ pub(super) fn parse_poi_directory(src: &dyn ByteSource, offset: usize, total: us
         src.read_at(o as u32, &mut e).map_err(Error::Source)?;
         let entry = PoiCatEntry {
             category_id: e[0],
-            index_offset: rd_u32(&e, 1) as usize,
+            index_offset: resolve(scale.offset(rd_u32(&e, 1)))?,
             node_count: rd_u32(&e, 5) as usize,
             chunk_count: rd_u32(&e, 9) as usize,
+            scale,
         };
         // An empty category (node_count 0) still carries an entry; its index/chunk region is
         // zero-length, so only the offset itself needs to be in-file. A populated one must have its
@@ -719,7 +730,7 @@ pub(super) fn parse_poi_directory(src: &dyn ByteSource, offset: usize, total: us
                 .data_start()
                 .and_then(|start| entry.chunk_count.checked_mul(chunk_size).and_then(|len| start.checked_add(len)))
                 .ok_or(Error::BadOffset)?;
-            if entry.index_offset < HEADER_LEN || region_end > total {
+            if entry.index_offset < floor || region_end > total {
                 return Err(Error::BadOffset);
             }
         } else if entry.index_offset > total {
@@ -734,9 +745,9 @@ pub(super) fn parse_poi_directory(src: &dyn ByteSource, offset: usize, total: us
     // empty pool (count 0) still validates its 2-byte `count` header lies in-file.
     let mut pf = [0u8; 6];
     src.read_at(pool_fields_off as u32, &mut pf).map_err(Error::Source)?;
-    let hours_pool_offset = rd_u32(&pf, 0) as usize;
+    let hours_pool_offset = resolve(scale.offset(rd_u32(&pf, 0)))?;
     let hours_pool_count = rd_u16(&pf, 4) as usize;
-    if hours_pool_offset < HEADER_LEN {
+    if hours_pool_offset < floor {
         return Err(Error::BadOffset);
     }
     let pool_end = hours_pool_count
