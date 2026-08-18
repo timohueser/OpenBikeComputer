@@ -1830,7 +1830,11 @@ mod tests {
         let env: Value = serde_json::from_str(&schema_envelope()).expect("envelope is valid JSON");
         assert_eq!(env["schema_version"].as_u64(), Some(CONFIG_SCHEMA_VERSION as u64));
         assert_eq!(env["format_version"].as_u64(), Some(OBCM_VERSION as u64));
-        assert_eq!(env["format_version"].as_u64(), Some(13), "exact-edge anchors bump OBCM to v13");
+        assert_eq!(
+            env["format_version"].as_u64(),
+            Some(14),
+            "scaled offsets, an embedded terrain region and (chunk, ordinal) edge ids bump OBCM to v14"
+        );
         assert!(env["schema"]["$defs"]["style"].is_object(), "envelope embeds the schema");
     }
 

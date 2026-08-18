@@ -418,10 +418,19 @@ fn style_tables_match(
 }
 
 /// `(offset, length)` of a file's style region: the count byte plus its `count × 8` records.
+///
+/// `Style Offset` is **scaled** (§1.1), and it is resolved through the scale byte in *this* file's
+/// own header rather than through a scale carried in from anywhere else — which matters precisely
+/// here, because this function's whole job is to compare two files. Read as a byte offset it
+/// resolves to `4` at the default scale, which is inside the bbox, so the comparison would run over
+/// fields that legitimately differ per file and refuse every mount.
 fn style_region(src: &dyn ByteSource, at: u8) -> Result<(usize, usize), MountError> {
     let mut header = [0u8; obc_formats::obcm::HEADER_LEN];
     src.read_at(0, &mut header).map_err(|_| MountError::Styles(at))?;
-    let offset = obc_formats::io::rd_u32(&header, 21) as usize;
+    let scale = obc_formats::obcm::OffsetScale::new(header[obc_formats::obcm::HEADER_OFFSET_SCALE_OFF])
+        .map_err(|_| MountError::Styles(at))?;
+    let offset = crate::reader::resolve(scale.offset(obc_formats::io::rd_u32(&header, 21)))
+        .map_err(|_| MountError::Styles(at))?;
     let mut count = [0u8; 1];
     src.read_at(offset as u32, &mut count).map_err(|_| MountError::Styles(at))?;
     Ok((offset, 1 + count[0] as usize * obc_formats::obcm::STYLE_RECORD_LEN))

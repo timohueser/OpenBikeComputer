@@ -116,7 +116,7 @@ describe("cellIndex", () => {
 
     it("rejects a satellite whose bytes are not the ones the root hashed", async () => {
         // A byte the digest did not cover — the failure §9 exists to catch.
-        const tampered = EXAMPLE_CELL_INDEX.replace('"bytes": 552', '"bytes": 553');
+        const tampered = EXAMPLE_CELL_INDEX.replace('"bytes": 561', '"bytes": 562');
         const { impl } = serving(allBodies({ [FINE_INDEX_URL]: tampered }));
         const client = await CatalogClient.load(ROOT_URL, { fetchImpl: impl });
         await expect(client.cellIndex("fine")).rejects.toThrow(BytesVerificationError);
