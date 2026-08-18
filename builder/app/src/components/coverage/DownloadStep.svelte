@@ -1,7 +1,12 @@
 <script lang="ts">
-    // Final coverage proof and verified download/assembly. File and wasm-memory
-    // limits are checked before transfer. Synchronous wasm runs in a Worker;
-    // files return one at a time for browser, desktop, or device output.
+    // Final coverage proof, then the download: cells fetched and verified against
+    // the catalog, assembled into ONE `.obcm` by wasm in a Worker, and saved.
+    //
+    // A map is one file, which decides the shape of this screen's second half. There
+    // is nothing to order, nothing to package and nothing to acknowledge: the run
+    // produces a single object, and the only question left is where it lands —
+    // straight into a directory the rider picked (the card, ideally), or in the
+    // Downloads folder for them to move.
 
     import { onDestroy, onMount } from "svelte";
     import type { AssemblePhase, MemoryEstimate } from "../../lib/assemble/bridge";
@@ -10,11 +15,9 @@
         requestTransferList,
         type AssembleWorkerRequest,
         type CellReadMode,
-        type ShardWriteMode,
+        type MapWriteMode,
         type WorkerCell,
-        type WorkerFile,
         type WorkerSourceCell,
-        type WorkerStoredShard,
         type WorkerTerrainCell,
     } from "../../lib/assemble/workerProtocol";
     import {
@@ -25,11 +28,10 @@
         discardCellStore,
         hasRoomFor,
         openCellStore,
-        readShardOutput,
+        readMapOutput,
         type CellStore,
     } from "../../lib/cells/store";
     import { saveBlob } from "../../lib/download";
-    import { storeZip } from "../../lib/zip";
     import { platform } from "../../lib/platform";
     import type { MapOutputSession } from "../../lib/platform/types";
     import {
@@ -43,9 +45,6 @@
     import { detailBandId, mergeMixedCellRects, parseCells, patchCount } from "../../lib/coverage/shape";
     import type { CoverageStore } from "../../lib/coverage/store.svelte";
     import { formatBytes, truncateUtf8 } from "../../lib/format";
-    import type { JobContext } from "../../lib/device/progress";
-    import type { SetSendState } from "../../lib/device/write";
-    import type { ProtocolClient, UploadResult } from "../../lib/usb/client";
 
     let { store }: { store: CoverageStore } = $props();
 
@@ -59,12 +58,6 @@
         }
     }
 
-    /** Where a geometry shard is split (OBCA §5). 256 MB, against the engine's
-     *  1 GiB default: it is the largest piece this screen is willing to have
-     *  resident in wasm memory at once, and the smallest that does not turn a
-     *  country into dozens of files (§5's ceiling is 32 shards per set). */
-    const TARGET_SHARD_BYTES = 256 * 1024 * 1024;
-
     /** The engine's sort budget (#1116 phase D), which after the external merge **is** the wasm
      *  engine term. 256 MB: big enough that a DACH-scale sort is ~a dozen runs (well inside the
      *  scratch pool), small enough that engine + caches + terrain stays a fraction of a tab's
@@ -73,11 +66,12 @@
     const SORT_BUDGET_BYTES = 256 * 1024 * 1024;
 
     /** What a run of this ledger needs from OPFS, all three tenants together: the cells (minus
-     *  terrain, which never goes to disk), the assembled set the sink writes (≈ the cells, measured
+     *  terrain, which never goes to disk), the assembled map the sink writes (≈ the cells, measured
      *  1.00), and the merge's spill (edge + adjacency + claim streams; ≤ 2.5× the network band,
      *  the estimate model's own coefficient). Used by the estimate effect and by `begin`, so the
      *  projection and the run decide OPFS-or-fallback by the same arithmetic — a run that can
-     *  store its cells but not its shards would otherwise fail at shard one, after the download. */
+     *  store its cells but not its output would otherwise fail at the first write, after the
+     *  download. */
     function runDiskNeed(l: { totalBytes: number; core: { bytes: number }; terrain: { bytes: number } | null }) {
         const terrain = l.terrain?.bytes ?? 0;
         return l.totalBytes - terrain + l.totalBytes + 2.5 * l.core.bytes;
@@ -123,13 +117,9 @@
     }
 
     onDestroy(() => {
-        if (output?.kind === "device") {
-            void failRun(new DOMException("The builder was closed.", "AbortError"));
-        } else {
-            worker?.terminate();
-            void closeDownloadOutput(true);
-            void cleanupTransientCells();
-        }
+        worker?.terminate();
+        void closeDownloadOutput(true);
+        void cleanupTransientCells();
     });
 
     // Releases before the opt-in retained cells automatically. The first visit to this step after
@@ -145,39 +135,25 @@
     let dlProgress = $state<CellDownloadProgress | null>(null);
     let asmPhase = $state<AssemblePhase>("open");
     let asmFraction = $state(0);
-    let savedFiles = $state<{ name: string; role: string; byteLength: number; path?: string }[]>([]);
-    /** Files actually on disk. Not `savedFiles.length`: a browser host *stages*
-     *  everything and only saves at the end, so a run that failed halfway left
-     *  the list populated and the disk untouched — and "discard the 3 files you
-     *  downloaded" about files nobody downloaded is the wrong instruction. */
-    let persistedFiles = $state(0);
-    /** The no-picker browser host's staging area (#1116 B1). Shards arrive
-     *  *during* the assembly, and saving each one as it lands would drop half a
-     *  map into someone's Downloads folder the moment they pressed cancel. They
-     *  are held as Blobs — the big ones are OPFS-backed Files, so no heap is
-     *  pinned — and delivered together once the set is complete, as ONE zip
-     *  download: a save per file is how Firefox ends up with a stack of dialogs
-     *  and orphaned `.part` files. */
-    let staged: { name: string; blob: Blob }[] = [];
-    /** True while the staged set is being packaged into its archive — the CRC
-     *  pass reads every staged byte once, which at country scale is seconds. */
-    let packaging = $state(false);
-    let packFraction = $state(0);
-    /** How the finished set reached the disk, for the done message: files in a
-     *  picked folder, or one archive in the downloads. */
-    let deliveredAs = $state<"folder" | "zip" | null>(null);
-    /** Files arrive with no acknowledgement now, so two can be in flight at
-     *  once; every sink write chains onto this instead of racing. */
-    let sink: Promise<void> = Promise.resolve();
-    /** Set by `failRun`: whatever is still queued must not be written into an
+    /** The map, once there is one: what it is called, how big it is, and where it
+     *  went if the host had somewhere to put it. */
+    let savedFile = $state<{ name: string; byteLength: number; path?: string } | null>(null);
+    /** Whether the file actually reached the disk. Not `savedFile !== null`: it is
+     *  set the moment the map is delivered, and a cancel that raced the delivery
+     *  must not tell someone to go and discard a file nobody has. */
+    let persisted = $state(false);
+    /** The one delivery, so `done` can wait for a save that is still running rather
+     *  than declare the map finished behind it. */
+    let delivery: Promise<void> = Promise.resolve();
+    /** Set by `failRun`: a delivery that has not started must not write into an
      *  output that is being discarded. */
     let sinkClosed = false;
     /** How this run's cells reached the assembler (#1116 B2), as the worker
      *  reports it before the assembly starts. Shown, because a bug report about a
      *  failed country-scale run has to say which path ran. */
     let readMode = $state<CellReadMode | null>(null);
-    /** …and where its shards went (#1116 D1), for the same reason. */
-    let writeMode = $state<ShardWriteMode | null>(null);
+    /** …and where its map went (#1116 D1), for the same reason. */
+    let writeMode = $state<MapWriteMode | null>(null);
     /** Cells this run did not have to fetch, because a previous one already put
      *  them in OPFS under the same digest. */
     let cachedCells = $state(0);
@@ -194,40 +170,19 @@
     let abortCtl: AbortController | null = null;
     let downloadOutput: MapOutputSession | null = null;
     let outputCleanupFailed = $state(false);
-    let runMapName = "OBC map";
-
-    interface DeviceOutput {
-        kind: "device";
-        client: ProtocolClient;
-        ctx: JobContext;
-        state: SetSendState | null;
-        resolve: (result: UploadResult) => void;
-        reject: (cause: unknown) => void;
-        settled: boolean;
-        failing: boolean;
-        removeAbort: () => void;
-    }
-    type Output = { kind: "download" } | DeviceOutput;
-    let output = $state<Output | null>(null);
-    let lastRunKind = $state<Output["kind"]>("download");
+    /** The name this run's file will be saved under, fixed when the run starts. Read
+     *  once rather than at save time, so editing the selection mid-download cannot
+     *  rename the map that is already being built from the old one. */
+    let runFileName = "OBC map.obcm";
 
     const ASM_PHASE_LABEL: Record<AssemblePhase, string> = {
         open: "reading cells",
         poi: "merging places",
         nav: "stitching the road network",
-        plan: "planning files",
+        plan: "planning the file",
         write: "writing",
         verify: "checking the result",
-        manifest: "sealing the set",
         done: "done",
-    };
-
-    const ROLE_LABEL: Record<string, string> = {
-        core: "routing + places",
-        coarse: "zoomed-out overview",
-        geometry: "map detail",
-        terrain: "elevation",
-        manifest: "set manifest",
     };
 
     async function onWorkerMessage(e: MessageEvent) {
@@ -236,7 +191,6 @@
         switch (msg.type) {
             case "estimate-result":
                 estimate = msg.estimate;
-                deviceEstimate = msg.deviceEstimate;
                 estimatePending = false;
                 estimateError = null;
                 break;
@@ -250,85 +204,34 @@
             case "writing":
                 writeMode = msg.mode;
                 break;
-            case "planned":
-                runWarnings = msg.warnings;
-                if (output?.kind === "device") {
-                    output.state = {
-                        shardCount: msg.shardCount,
-                        totalBytes: msg.totalBytes,
-                        committedBytes: 0,
-                        nextShard: 0,
-                        terrainSent: false,
-                        setId: null,
-                    };
-                    output.ctx.phase("sending", msg.totalBytes);
-                }
-                break;
-            case "shard":
-                // Evicted from wasm memory mid-run and posted with no ack — the
-                // assembly cannot wait for one (worker protocol header). So the
-                // write is queued rather than awaited here, and its failure has
-                // nobody to return to: it fails the run itself.
-                void queueSave(() => saveAssembledFile(msg)).catch((cause) => failRun(cause));
-                break;
-            case "stored-shard":
-                // The shard never crossed the port: it is in OPFS, the worker has
-                // let go of it, and this is where it becomes a file someone has.
-                // Acknowledged like a `file`, so the next one waits.
-                try {
-                    await queueSave(() => saveStoredShard(msg));
-                    worker?.postMessage({ type: "file-ack" } satisfies AssembleWorkerRequest);
-                } catch (cause) {
-                    await failRun(cause);
-                }
+            case "stored-map":
+                // The map never crossed the port: it is in OPFS, the worker has let
+                // go of it, and this is where it becomes a file someone has. The
+                // save is started here and awaited by `done`, because a multi-
+                // gigabyte write outlives this handler.
+                delivery = saveStoredMap(msg.byteLength);
+                void delivery.catch(() => {});
                 break;
             case "file":
-                try {
-                    if (output?.kind === "device") {
-                        if (!output.state) throw new Error("The assembler sent a file before its set plan.");
-                        const { sendAssembledSetFile } = await import("../../lib/device/write");
-                        await sendAssembledSetFile(output.client, output.state, msg, output.ctx);
-                        savedFiles.push({ name: msg.name, role: msg.role, byteLength: msg.byteLength });
-                    } else {
-                        // The worker waits for this ack, so the next file never
-                        // competes for memory or arrives before this write ends.
-                        await queueSave(() => saveAssembledFile(msg));
-                    }
-                    worker?.postMessage({ type: "file-ack" } satisfies AssembleWorkerRequest);
-                } catch (cause) {
-                    await failRun(cause);
-                }
+                // No sink was available, so the bytes came across instead. Same
+                // delivery, one wrap earlier.
+                delivery = saveMap(new Blob([msg.bytes as unknown as BlobPart]), msg.byteLength, msg.bytes);
+                void delivery.catch(() => {});
                 break;
             case "done":
                 // The worker's OPFS ledger, for anyone profiling an assembly
                 // from DevTools — a worker's own console does not surface.
                 if (msg.io) console.debug("[assemble] opfs i/o", msg.io);
                 runWarnings = msg.warnings;
-                if (output?.kind === "device") {
-                    phase = "done";
-                    const state = output.state;
-                    if (!state || state.setId === null) {
-                        await failRun(new Error("The device did not commit the assembled map's manifest."));
-                    } else {
-                        settleDevice({ objectId: state.setId, committedOffset: state.totalBytes });
-                    }
-                } else {
-                    try {
-                        // Streamed shards were queued, not awaited: drain before
-                        // calling the map finished.
-                        await sink;
-                        // …and only now, with a complete set, does the browser
-                        // host actually hand anything to the downloader.
-                        await packageStaged();
-                        await closeDownloadOutput(false);
-                    } catch (cause) {
-                        await failRun(cause);
-                        break;
-                    }
-                    phase = "done";
+                try {
+                    await delivery;
+                    await closeDownloadOutput(false);
+                } catch (cause) {
+                    await failRun(cause);
+                    break;
                 }
+                phase = "done";
                 await cleanupTransientCells();
-                output = null;
                 break;
             case "error":
                 // Two conversations share this worker, and their failures are
@@ -349,105 +252,44 @@
     }
 
     /**
-     * Put one finished file where this host keeps them, one at a time.
-     *
-     * Serialized through `sink` because streamed shards arrive unacknowledged:
-     * two `onmessage` handlers can be in flight at once, and `openMapOutput` is
-     * a lazily-opened folder that must not be opened twice.
-     */
-    function queueSave(save: () => Promise<void>): Promise<void> {
-        const done = sink.then(save);
-        // The chain itself must survive a failure — `failRun` closes the sink,
-        // so what follows is a no-op rather than a write into a discarded
-        // output — while the caller still sees the rejection.
-        sink = done.catch(() => {});
-        return done;
-    }
-
-    async function saveAssembledFile(file: WorkerFile) {
-        await savePart(file, () => new Blob([file.bytes as unknown as BlobPart]), file.bytes);
-    }
-
-    /**
-     * One shard the assembly wrote into OPFS (#1116 D1): its bytes were never in
-     * wasm memory and never crossed the worker port, and on the browser host they
-     * never enter the tab's heap either — a `Blob` on an OPFS file is a handle, and
-     * that is what the downloader is given.
+     * The map the assembly wrote into OPFS (#1116 D1): its bytes were never in wasm
+     * memory and never crossed the worker port, and on the browser host they never
+     * enter the tab's heap either — a `Blob` on an OPFS file is a handle, and that is
+     * what the save is given.
      *
      * The desktop host does read it back, because its output session takes bytes to
-     * write into a real folder. That is one shard resident, which is exactly what it
-     * was before this existed — the saving D1 is here for is on the *assembly*, and
-     * it is unaffected.
+     * write into a real folder. That is one map resident, which is the residency this
+     * host always had; the saving D1 is here for is on the *assembly*, and it is
+     * unaffected.
      */
-    async function saveStoredShard(shard: WorkerStoredShard) {
-        const blob = await readShardOutput(shard.entry);
-        if (blob.size !== shard.byteLength) {
+    async function saveStoredMap(byteLength: number) {
+        const blob = await readMapOutput();
+        if (blob.size !== byteLength) {
             throw new Error(
-                `The assembled shard ${shard.name} is ${blob.size} bytes in this browser's storage, not the ` +
-                    `${shard.byteLength} the assembler wrote. Free some disk space and try again.`,
+                `The assembled map is ${blob.size} bytes in this browser's storage, not the ${byteLength} the ` +
+                    `assembler wrote. Free some disk space and try again.`,
             );
         }
-        await savePart(shard, () => blob, null);
+        await saveMap(blob, byteLength, null);
     }
 
     /** The two hosts' save, shared: a Blob for the browser, bytes for the desktop. */
-    async function savePart(
-        part: { name: string; role: string; byteLength: number },
-        blob: () => Blob,
-        bytes: Uint8Array | null,
-    ) {
+    async function saveMap(blob: Blob, byteLength: number, bytes: Uint8Array | null) {
         if (sinkClosed) return;
+        const name = runFileName;
         if (downloadOutput) {
-            // A grouped output (desktop folder, or the picked directory of a
-            // browser with the File System Access API) takes every part as it
-            // lands. The session streams a Blob without buffering it; only a
-            // host that needs contiguous bytes converts, on its side.
-            const path = await downloadOutput.write(part.name, bytes ?? blob());
-            savedFiles.push({ name: part.name, role: part.role, byteLength: part.byteLength, path });
-            persistedFiles += 1;
+            // A picked directory (or the desktop's native folder) takes the map
+            // where the rider wants it — the card itself, when that is what they
+            // picked. The session streams a Blob without buffering it; only a host
+            // that needs contiguous bytes converts, on its side.
+            const path = await downloadOutput.write(name, bytes ?? blob);
+            savedFile = { name, byteLength, path };
         } else {
-            // The no-picker browser stages and delivers at the end — see `staged`.
-            staged.push({ name: part.name, blob: blob() });
-            savedFiles.push({ name: part.name, role: part.role, byteLength: part.byteLength });
+            // No picker here: one file, one ordinary download, one prompt.
+            saveBlob(blob, name);
+            savedFile = { name, byteLength };
         }
-    }
-
-    /**
-     * The no-picker browser's delivery moment: the set is complete, so it may
-     * exist — as **one** download. A save per file is ten simultaneous
-     * downloads for a country, which Firefox presents as a stack of modal
-     * dialogs whose losers die as `.part` files. One archive is one prompt.
-     */
-    async function packageStaged() {
-        if (staged.length === 0 || sinkClosed) return;
-        if (staged.length === 1) {
-            // Nothing to bundle — a single file saves as itself.
-            saveBlob(staged[0].blob, staged[0].name);
-        } else {
-            packaging = true;
-            packFraction = 0;
-            try {
-                const archive = await storeZip(
-                    staged.map((f) => ({ name: f.name, blob: f.blob })),
-                    (done, total) => (packFraction = total > 0 ? done / total : 0),
-                );
-                // A cancel that raced the CRC pass closed the sink: the archive
-                // is dropped, not handed to a downloader nobody asked for.
-                if (sinkClosed) return;
-                saveBlob(archive, `${zipStem(runMapName)}.zip`);
-            } finally {
-                packaging = false;
-            }
-            deliveredAs = "zip";
-        }
-        persistedFiles += 1;
-        staged = [];
-    }
-
-    /** The map's name as a filename: what the OS forbids becomes a dash. */
-    function zipStem(name: string): string {
-        const stem = name.replace(/[\\/:*?"<>|]/g, "-").trim();
-        return stem.length > 0 ? stem : "OBC map";
+        persisted = true;
     }
 
     async function closeDownloadOutput(discard: boolean) {
@@ -497,49 +339,20 @@
         }
     }
 
-    function settleDevice(result: UploadResult | unknown, failed = false) {
-        if (output?.kind !== "device" || output.settled) return;
-        output.settled = true;
-        output.removeAbort();
-        if (failed) output.reject(result);
-        else output.resolve(result as UploadResult);
-    }
-
     async function failRun(cause: unknown) {
-        if (output?.kind === "device") {
-            if (output.failing || output.settled) return;
-            output.failing = true;
-        }
-        const cancelled =
-            (output?.kind === "device" && output.ctx.signal.aborted) ||
-            (cause instanceof DOMException && cause.name === "AbortError");
+        const cancelled = cause instanceof DOMException && cause.name === "AbortError";
         abortCtl?.abort();
         worker?.terminate();
         worker = null;
-        // Shards handed over mid-run are the caller's to clean up (bridge
-        // docs). On the browser host that is simply dropping the staged Blobs —
-        // nothing was ever handed to the downloader; on the desktop it is the
-        // `discard()` below, which removes the whole output folder. Either way
-        // §5.4 already guarantees the device side: the OBCS manifest is written
-        // last, so a half-written set is not a map.
+        // A delivery that has not begun is now a no-op, but one may already be in
+        // flight — let it land before the output is discarded, or the discard races
+        // the write into the folder it removes. It is bounded by one file's write.
         sinkClosed = true;
-        staged = [];
-        // Everything still queued is now a no-op, but one write may already be
-        // in flight — let it land before the output is discarded, or the
-        // discard races a file being written into the folder it removes. It is
-        // bounded by a single shard's write.
-        await sink.catch(() => {});
-        if (output?.kind === "device" && output.state) {
-            const { abandonAssembledSet } = await import("../../lib/device/write");
-            await abandonAssembledSet(output.client, output.state);
-        } else {
-            await closeDownloadOutput(true).catch(() => (outputCleanupFailed = true));
-        }
+        await delivery.catch(() => {});
+        await closeDownloadOutput(true).catch(() => (outputCleanupFailed = true));
         await cleanupTransientCells();
         errorMessage = cause instanceof Error ? cause.message : String(cause);
         phase = cancelled ? "cancelled" : "error";
-        settleDevice(cause, true);
-        output = null;
     }
 
     /**
@@ -577,54 +390,56 @@
         return { ...plan, items: wanted, totalBytes: bytes };
     }
 
+    /** What the selection is called, for the folder picker and the filename. */
     function mapName(): string {
         const parts = store.selection.parts;
         const base = parts.length === 0 ? "OBC map" : parts[0].name;
         const name = parts.length > 1 ? `${base} +${parts.length - 1}` : base;
-        return truncateUtf8(name, 24);
+        return truncateUtf8(name, 48);
     }
 
-    async function begin(out: Output) {
+    /**
+     * The map's filename. **JS owns this**: the assembler names nothing — what
+     * crosses its seam is a digest and a length — so the name is chosen here, where
+     * the selection is known.
+     *
+     * `.obcm` because that is what the device scans a card for, and what its own
+     * file picker accepts. What an OS forbids in a name becomes a dash.
+     */
+    function mapFileName(): string {
+        const stem = mapName().replace(/[\\/:*?"<>|]/g, "-").trim();
+        return `${stem.length > 0 ? stem : "OBC map"}.obcm`;
+    }
+
+    async function begin() {
         const resolution = store.resolution;
         const indices = store.indices;
         const l = ledger;
-        if (
-            !resolution ||
-            !indices ||
-            !l ||
-            phase === "downloading" ||
-            phase === "assembling" ||
-            (out.kind === "device" && !ready)
-        ) {
+        if (!resolution || !indices || !l || running) {
             throw new Error("This map is not ready to assemble yet.");
         }
-        // A grouped output opens under the click that started the run: the
+        // The output directory opens under the click that started the run: the
         // browser's implementation is a directory picker, and a picker without
         // a fresh user activation is refused (the platform contract). A
         // dismissed picker is "changed my mind" — the run never starts, and
         // the screen stays exactly as it was.
-        let grouped: MapOutputSession | null = null;
-        if (out.kind === "download" && platform.openMapOutput) {
+        let picked: MapOutputSession | null = null;
+        if (platform.openMapOutput) {
             try {
-                grouped = await platform.openMapOutput(mapName());
+                picked = await platform.openMapOutput(mapName());
             } catch (cause) {
                 if (cause instanceof DOMException && cause.name === "AbortError") return;
                 throw cause;
             }
         }
-        output = out;
-        lastRunKind = out.kind;
+        runFileName = mapFileName();
         errorMessage = null;
-        savedFiles = [];
-        persistedFiles = 0;
-        staged = [];
-        packaging = false;
-        packFraction = 0;
-        deliveredAs = grouped ? "folder" : null;
-        sink = Promise.resolve();
+        savedFile = null;
+        persisted = false;
+        delivery = Promise.resolve();
         sinkClosed = false;
-        outputPath = grouped?.path ?? null;
-        downloadOutput = grouped;
+        outputPath = picked?.path ?? null;
+        downloadOutput = picked;
         outputCleanupFailed = false;
         runWarnings = [];
         dlProgress = null;
@@ -659,11 +474,11 @@
         if (cellStore) {
             fetchPlan = await skipCached(plan, cellStore);
             // Asked once, before a byte is fetched, and asked about the WHOLE
-            // run — cells, the sink's output, the merge's spill — because after
-            // phase D all three live in OPFS: a store with room for the cells
-            // but not the shards would fail at shard one, after the download.
-            // Falling back now costs disk-backed input and any selected reuse, but avoids a
-            // quota failure after the download.
+            // run — cells, the map the sink writes, the merge's spill — because
+            // after phase D all three live in OPFS: a store with room for the
+            // cells but not the output would fail at the first write, after the
+            // download. Falling back now costs disk-backed input and any selected
+            // reuse, but avoids a quota failure after the download.
             if (!(await hasRoomFor(runDiskNeed(l))))  {
                 cellStore = null;
                 fetchPlan = plan;
@@ -671,7 +486,6 @@
                 cachedBytes = 0;
             }
         }
-        if (out.kind === "device") out.ctx.phase("downloading", fetchPlan.totalBytes);
 
         try {
             await downloadCells(fetchPlan, {
@@ -705,7 +519,6 @@
                 },
                 onProgress: (p) => {
                     dlProgress = p;
-                    if (out.kind === "device") out.ctx.progress(p.receivedBytes, p.totalBytes);
                 },
                 signal: abortCtl.signal,
             });
@@ -730,9 +543,7 @@
         }
 
         phase = "assembling";
-        runMapName = mapName();
         asmPhase = "open";
-        if (out.kind === "device") out.ctx.phase("assembling", 0);
         const req: AssembleWorkerRequest = {
             type: "assemble",
             cells,
@@ -746,38 +557,18 @@
             knownEmpty: plan.knownEmpty,
             // Terrain travels as its own pair: the lattice the catalog states
             // and the objects that were downloaded. A catalog with no terrain
-            // block sends neither, and the set is written without a `terrain`
-            // role — a complete map with flat profiles (§13).
+            // block sends neither, and the map is written with an empty §1.3
+            // region — a complete map with flat profiles (§13).
             terrain: store.terrain
                 ? { postingLog2: store.terrain.posting_log2, cellLog2: store.terrain.cell_log2 }
                 : undefined,
             terrainCells: store.terrain ? terrainCells : undefined,
             schemaJson: store.rootBody,
             skinJson: JSON.stringify(store.skin),
-            // Only the download path takes files mid-run. The device upload is
-            // built on the set plan — `planned` gives it the shard count and the
-            // byte total it opens the transfer with — and that plan does not
-            // exist until the run ends, so a device run keeps every shard in
-            // wasm memory and takes them afterwards, exactly as before (#1116).
-            streamShards: out.kind === "download",
-            // …and better still where the browser allows it: the shards go
-            // straight into OPFS, so not even one is in wasm memory (#1116 D1).
-            // The core shard cannot be split, so at country scale "one shard
-            // resident" is still a multi-gigabyte allocation. The device path
-            // opts out with `streamShards` and for the same reason — it needs the
-            // bytes in hand to push them over USB.
-            shardSink: out.kind === "download",
             options: {
-                name: runMapName,
-                // Split always, at 256 MB. Both halves are about handing the map
-                // on in pieces: a shard leaves wasm memory as soon as it is
-                // verified, so the assembly's output residency is one shard
-                // rather than the whole set — and a 256 MB piece is a plausible
-                // unit to resume a card write or an upload at, where a 1 GiB one
-                // (the engine's default) is a quarter of a browser's whole
-                // memory budget riding on one uninterrupted write.
-                forceSplit: true,
-                targetShardBytes: TARGET_SHARD_BYTES,
+                // The same budget the estimate was given, so the projection prices
+                // the run that actually happens rather than the engine's default.
+                mergeBudgetBytes: SORT_BUDGET_BYTES,
                 // Both were shown before this button unlocked. `acceptHoles`
                 // is derived from the *shown* set, not the ledger's raw count
                 // (#1041 A5): `store.holeCells()` is every band's holes — the
@@ -793,43 +584,7 @@
     }
 
     function run() {
-        void begin({ kind: "download" }).catch((cause) => failRun(cause));
-    }
-
-    /** Assemble the current selection and stream its files directly to a connected device. */
-    export function sendToDevice(client: ProtocolClient, ctx: JobContext): Promise<UploadResult> {
-        return new Promise((resolve, reject) => {
-            // The device path keeps the whole set in wasm memory until `planned` (#1116 B1's
-            // opt-out), so it can refuse a selection the download button honestly accepts.
-            // Checked before a byte is fetched — failing here costs a click; failing at the
-            // engine's peak costs the download, the rewrite, and the tab.
-            if (deviceEstimate && !deviceEstimate.fits) {
-                reject(
-                    new Error(
-                        `Sending straight to the device holds the whole assembled map in browser memory — about ` +
-                            `${formatBytes(deviceEstimate.peakBytes)}, more than a tab can be trusted with ` +
-                            `(${formatBytes(deviceEstimate.budgetBytes)}). Download the map and copy it to the ` +
-                            `card instead, or reduce the coverage area.`,
-                    ),
-                );
-                return;
-            }
-            const out: DeviceOutput = {
-                kind: "device",
-                client,
-                ctx,
-                state: null,
-                resolve,
-                reject,
-                settled: false,
-                failing: false,
-                removeAbort: () => {},
-            };
-            const abort = () => void failRun(ctx.signal.reason ?? new DOMException("cancelled", "AbortError"));
-            out.removeAbort = () => ctx.signal.removeEventListener("abort", abort);
-            ctx.signal.addEventListener("abort", abort, { once: true });
-            void begin(out).catch((cause) => failRun(cause));
-        });
+        void begin().catch((cause) => failRun(cause));
     }
 
     function cancel() {
@@ -838,7 +593,9 @@
         } else if (phase === "assembling") {
             // The worker is blocked inside one synchronous wasm call and cannot
             // read a message — terminate IS the cancel (bridge threading
-            // contract). Nothing is half-written: the set manifest goes last.
+            // contract). Nothing usable is left behind: a partial `.obcm` fails
+            // its own header checks, and the file is only saved once the run says
+            // it finished.
             void failRun(new DOMException("cancelled", "AbortError"));
         }
     }
@@ -846,10 +603,6 @@
     // --- the memory projection, before the download -----------------------
 
     let estimate = $state<MemoryEstimate | null>(null);
-    /** The same selection priced as the device path runs it — set kept until
-     *  `planned` (#1116 B1's opt-out) — so it binds earlier than `estimate`.
-     *  Gates {@link sendToDevice}; the download button never reads it. */
-    let deviceEstimate = $state<MemoryEstimate | null>(null);
     let estimatePending = $state(false);
     /** The estimate's own failure channel (#1041 A3) — never mixed into the
      *  run's. Cleared by the next request; retried by bumping the nonce. */
@@ -871,7 +624,6 @@
             // empties or a run that starts must not leave "waiting for an
             // estimate" latched with nothing left to answer it.
             estimate = null;
-            deviceEstimate = null;
             estimatePending = false;
             return;
         }
@@ -884,21 +636,20 @@
         // Debounced: a slider mid-drag changes the figures every frame, and the
         // projection only matters once the selection settles.
         const timer = setTimeout(() => {
-            // The main thread's half of the input mode, decided by the same two
-            // checks `begin` runs before a byte is fetched: a store this browser
-            // will write, with room for the WHOLE run (`runDiskNeed` — cells,
-            // output, spill; terrain never goes to disk). The worker ANDs in its
-            // own sync-read probe. Responses arrive in request order, so a stale
-            // answer is overwritten, never kept.
+            // The main thread's half of both residency escapes, decided by the
+            // same two checks `begin` runs before a byte is fetched: a store this
+            // browser will write, with room for the WHOLE run (`runDiskNeed` —
+            // cells, output, spill; terrain never goes to disk). The worker ANDs
+            // in its own sync-handle probe. Responses arrive in request order, so
+            // a stale answer is overwritten, never kept.
             void (async () => {
-                const inputOnDisk = (await cellStoreWritable()) && (await hasRoomFor(diskNeed));
+                const onDisk = (await cellStoreWritable()) && (await hasRoomFor(diskNeed));
                 ensureWorker().postMessage({
                     type: "estimate",
                     networkBandBytes,
                     totalCellBytes,
                     terrainBytes,
-                    inputOnDisk,
-                    streamedShardBytes: TARGET_SHARD_BYTES,
+                    onDisk,
                     mergeBudgetBytes: SORT_BUDGET_BYTES,
                     budgetBytes: isMobileUa ? MOBILE_BUDGET : undefined,
                 } satisfies AssembleWorkerRequest);
@@ -912,22 +663,10 @@
         return (
             `Assembling this selection needs about ${formatBytes(estimate.peakBytes)} of browser memory — more than ` +
             `${isMobileUa ? "a phone's tab" : "a browser tab"} can be trusted with ` +
-            // A card carries **one** map — several files of one volume set, never
-            // several maps, because the device has no way to choose between them.
-            // So "split it in two" is not a remedy that exists here, and the only
-            // honest instruction is to cover less ground.
+            // A card carries **one** map, because the device has no way to choose
+            // between two. So "split it in two" is not a remedy that exists here,
+            // and the only honest instruction is to cover less ground.
             `(${formatBytes(estimate.budgetBytes)}). Reduce the coverage area.`
-        );
-    });
-
-    /** Said here, on the coverage screen, rather than first discovered when a device send
-     *  refuses: the selection downloads fine but will not fit a direct device send. */
-    const deviceCaution = $derived.by(() => {
-        if (!estimate?.fits || !deviceEstimate || deviceEstimate.fits) return null;
-        return (
-            `This map downloads fine, but sending it straight to a device would need about ` +
-            `${formatBytes(deviceEstimate.peakBytes)} of browser memory ` +
-            `(${formatBytes(deviceEstimate.budgetBytes)} available) — download it and copy it to the card instead.`
         );
     });
 
@@ -1062,12 +801,12 @@
             estimateError === null
         );
     });
-    /** Whether a failed run left files behind that someone has to delete. Counted
-     *  from what actually reached the disk, not from what the assembler handed
-     *  over: the browser host stages a cancelled run's shards and never saves
-     *  them, so there is nothing to discard. */
-    const incompleteFilesRemain = $derived(
-        lastRunKind === "download" && persistedFiles > 0 && (!platform.openMapOutput || outputCleanupFailed),
+    /** Whether a failed run left a file behind that someone has to delete. Counted
+     *  from what actually reached the disk, and only where nothing cleaned it up:
+     *  a picked directory's session removes what it wrote, so there is something to
+     *  discard only when there was no session or its removal refused. */
+    const incompleteFileRemains = $derived(
+        persisted && (!platform.openMapOutput || outputCleanupFailed),
     );
 
     const dlPct = $derived(
@@ -1148,8 +887,6 @@
                 </p>
             {:else if memoryCaution}
                 <p class="line caution small">{memoryCaution}</p>
-            {:else if deviceCaution}
-                <p class="line caution small">{deviceCaution}</p>
             {/if}
 
             <div class="cell-storage small">
@@ -1185,9 +922,7 @@
                 </button>
             {:else}
                 <div class="runrow">
-                    {#if output?.kind === "download"}
-                        <button type="button" class="btn" onclick={cancel}>Cancel</button>
-                    {/if}
+                    <button type="button" class="btn" onclick={cancel}>Cancel</button>
                     {#if phase === "downloading" && dlProgress}
                         <span class="small muted">
                             downloading cells — {dlProgress.completedCells}/{dlProgress.totalCells} ·
@@ -1198,12 +933,8 @@
                         </span>
                     {:else if phase === "assembling"}
                         <span class="small muted">
-                            {#if packaging}
-                                packaging the download — {Math.round(packFraction * 100)}%
-                            {:else}
-                                assembling — {ASM_PHASE_LABEL[asmPhase]} · {Math.round(asmFraction * 100)}%{#if readMode}
-                                    · cells {readMode}{/if}
-                            {/if}
+                            assembling — {ASM_PHASE_LABEL[asmPhase]} · {Math.round(asmFraction * 100)}%{#if readMode}
+                                · cells {readMode}{/if}
                         </span>
                     {/if}
                 </div>
@@ -1217,38 +948,23 @@
 
             {#if phase === "done"}
                 <div class="done">
-                    {#if lastRunKind === "download"}
-                        <p class="line small">
-                            {#if outputPath}
-                                Saved {savedFiles.length}
-                                {savedFiles.length === 1 ? "file" : "files"} in
-                                <span class="mono">{outputPath}</span> — if that folder isn't the device's
-                                card, copy {savedFiles.length === 1 ? "it" : "them"} to its top level.
-                            {:else if deliveredAs === "zip"}
-                                Saved the whole set as one archive — unzip it and put the files at the top
-                                level of the device's card.
-                            {:else}
-                                Saved {savedFiles.length}
-                                {savedFiles.length === 1 ? "file" : "files"} — copy
-                                {savedFiles.length === 1 ? "it" : "all of them"} to the top level of the
-                                device's card.
-                            {/if}
-                        </p>
+                    <p class="line small">
+                        {#if outputPath}
+                            Saved <span class="mono">{savedFile?.name}</span> in
+                            <span class="mono">{outputPath}</span> — if that folder isn't the device's
+                            card, copy it to the card's top level.
+                        {:else}
+                            Saved <span class="mono">{savedFile?.name}</span> — copy it to the top level
+                            of the device's card.
+                        {/if}
+                    </p>
+                    {#if savedFile}
+                        <p class="line faint small mono">{formatBytes(savedFile.byteLength)}</p>
                     {/if}
-                    <ul class="files mono small">
-                        {#each savedFiles as f (f.name)}
-                            <li>
-                                {f.name}
-                                <span class="faint">
-                                    · {ROLE_LABEL[f.role] ?? f.role} · {formatBytes(f.byteLength)}</span
-                                >
-                            </li>
-                        {/each}
-                    </ul>
                     {#if readMode}
                         <p class="line faint small mono">
                             cells {readMode}{#if writeMode}
-                                · shards {writeMode}{/if}{#if cachedCells > 0}
+                                · map {writeMode}{/if}{#if cachedCells > 0}
                                 · {cachedCells} reused from this computer ({formatBytes(cachedBytes)} not
                                 downloaded){/if}
                         </p>
@@ -1259,18 +975,16 @@
                 </div>
             {:else if phase === "error"}
                 <p class="line warn small">
-                    {#if incompleteFilesRemain}
-                        The map was not completed. Discard the {persistedFiles} downloaded
-                        {persistedFiles === 1 ? "file" : "files"}: {errorMessage}
+                    {#if incompleteFileRemains}
+                        The map was not completed. Discard the file it left behind: {errorMessage}
                     {:else}
                         Nothing was saved: {errorMessage}
                     {/if}
                 </p>
             {:else if phase === "cancelled"}
                 <p class="line faint small">
-                    {#if incompleteFilesRemain}
-                        Cancelled — discard the {persistedFiles} incomplete
-                        {persistedFiles === 1 ? "file" : "files"} already downloaded.
+                    {#if incompleteFileRemains}
+                        Cancelled — discard the incomplete file it left behind.
                     {:else}
                         Cancelled — nothing was saved.
                     {/if}
@@ -1437,11 +1151,5 @@
         display: flex;
         flex-direction: column;
         gap: 6px;
-    }
-
-    .files {
-        list-style: none;
-        margin: 0;
-        padding: 0;
     }
 </style>

@@ -86,7 +86,7 @@ class FakeDir {
         const entry = file;
         return {
             // A real `getFile()` answers with a `File`, which is a `Blob` — the
-            // property `readShardOutput` rests on, since it is what lets the page
+            // property `readMapOutput` rests on, since it is what lets the page
             // hand a gigabyte-scale shard to a download without reading it.
             async getFile() {
                 return new Blob([entry.bytes.slice() as unknown as BlobPart]);
@@ -391,26 +391,29 @@ describe("the read side", () => {
     });
 });
 
-describe("the shard sink", () => {
+describe("the map sink", () => {
     /** What `obc-out/` holds. */
     function outIn(root: FakeDir): FakeDir {
         return root.dirs.get("obc-out")!;
     }
 
-    it("takes a shard by slot and reads it back through the same handle", async () => {
+    /** The one entry the sink writes through, which both sides know as a constant. */
+    const ENTRY = "map.part";
+
+    it("takes the map and reads it back through the same handle", async () => {
         const root = opfs();
-        const { openShardSink } = await withOpfs(root);
-        const sink = (await openShardSink(2))!;
+        const { openMapSink } = await withOpfs(root);
+        const sink = (await openMapSink())!;
         expect(sink).not.toBeNull();
         try {
-            expect(sink.create(0, "MS1S00.OBM")).toBe(true);
-            expect(sink.write(0, new Uint8Array([1, 2, 3, 4]))).toBe(true);
-            expect(sink.write(0, new Uint8Array([5, 6]))).toBe(true);
-            expect(sink.seal(0)).toBe(true);
+            expect(sink.create()).toBe(true);
+            expect(sink.write(new Uint8Array([1, 2, 3, 4]))).toBe(true);
+            expect(sink.write(new Uint8Array([5, 6]))).toBe(true);
+            expect(sink.seal()).toBe(true);
             const into = new Uint8Array(3);
-            expect(sink.readAt(0, 2, into)).toBe(true);
+            expect(sink.readAt(2, into)).toBe(true);
             expect(into).toEqual(new Uint8Array([3, 4, 5]));
-            expect(outIn(root).files.get(sink.entry(0))!.bytes).toEqual(new Uint8Array([1, 2, 3, 4, 5, 6]));
+            expect(outIn(root).files.get(ENTRY)!.bytes).toEqual(new Uint8Array([1, 2, 3, 4, 5, 6]));
         } finally {
             sink.close();
         }
@@ -418,89 +421,86 @@ describe("the shard sink", () => {
 
     /** A short read is a failure, not a partial success — here it is §4.8 that would be misled, and
      *  a verify pass that accepts half a read is not a verify pass. */
-    it("refuses a read that runs off the end of a shard", async () => {
-        const { openShardSink } = await withOpfs(opfs());
-        const sink = (await openShardSink(1))!;
+    it("refuses a read that runs off the end of the map", async () => {
+        const { openMapSink } = await withOpfs(opfs());
+        const sink = (await openMapSink())!;
         try {
-            sink.create(0, "MS1S00.OBM");
-            sink.write(0, new Uint8Array([1, 2]));
-            sink.seal(0);
-            expect(sink.readAt(0, 1, new Uint8Array(4))).toBe(false);
+            sink.create();
+            sink.write(new Uint8Array([1, 2]));
+            sink.seal();
+            expect(sink.readAt(1, new Uint8Array(4))).toBe(false);
         } finally {
             sink.close();
         }
     });
 
-    /** OBCA §5 caps a set at 32 shards (`S<kk>`, `kk` in `00..31`), and the pool is opened before the
-     *  set is planned — so a slot past it has to be a refusal the run can name, not a crash. */
-    it("refuses a slot the pool does not have", async () => {
-        const { openShardSink } = await withOpfs(opfs());
-        const sink = (await openShardSink(2))!;
-        try {
-            expect(sink.create(1, "MS1S01.OBM")).toBe(true);
-            expect(sink.create(2, "MS1S02.OBM")).toBe(false);
-            expect(sink.write(2, new Uint8Array(1))).toBe(false);
-            expect(sink.readAt(2, 0, new Uint8Array(1))).toBe(false);
-            expect(sink.seal(2)).toBe(false);
-        } finally {
-            sink.close();
-        }
+    /** Every method answers `false` rather than throwing once the handle is gone, so a run that
+     *  raced a close fails as `io` instead of trapping the worker. */
+    it("refuses every operation on a closed sink", async () => {
+        const { openMapSink } = await withOpfs(opfs());
+        const sink = (await openMapSink())!;
+        sink.close();
+        expect(sink.open).toBe(false);
+        expect(sink.create()).toBe(false);
+        expect(sink.write(new Uint8Array(1))).toBe(false);
+        expect(sink.readAt(0, new Uint8Array(1))).toBe(false);
+        expect(sink.seal()).toBe(false);
     });
 
     /**
-     * **The stale-partial sweep.** A cancelled or crashed run leaves its shards on disk. They are
-     * invisible as a map — the OBCS manifest is written last (OBCA §5.4), so a set without one is
-     * not a map — but they are not invisible to the quota, and a country's worth of them would stop
-     * the *next* run from having room to download anything. Opening the sink is the one moment
-     * nothing is reading them.
+     * **The stale-partial sweep.** A cancelled or crashed run leaves most of a map on disk. It is
+     * nothing to anyone — a partial `.obcm` fails its own header checks, and the file is only saved
+     * once the run says it finished — but it is not nothing to the quota, and a country's worth of
+     * it would stop the *next* run from having room to download anything. Opening the sink is the
+     * one moment nothing is reading it.
      */
     it("sweeps what a cancelled run left before opening the next one", async () => {
         const root = opfs();
-        const { openShardSink } = await withOpfs(root);
-        const cancelled = (await openShardSink(2))!;
-        cancelled.create(0, "MS1S00.OBM");
-        cancelled.write(0, new Uint8Array([9, 9, 9, 9]));
-        // No seal, no manifest: the shape a `worker.terminate()` leaves behind.
+        const { openMapSink } = await withOpfs(root);
+        const cancelled = (await openMapSink())!;
+        cancelled.create();
+        cancelled.write(new Uint8Array([9, 9, 9, 9]));
+        // No seal: the shape a `worker.terminate()` leaves behind.
         cancelled.close();
-        expect(outIn(root).files.get("s00.part")!.bytes).toHaveLength(4);
+        expect(outIn(root).files.get(ENTRY)!.bytes).toHaveLength(4);
 
-        const fresh = (await openShardSink(2))!;
+        const fresh = (await openMapSink())!;
         try {
-            expect(outIn(root).files.get("s00.part")!.bytes).toHaveLength(0);
+            expect(outIn(root).files.get(ENTRY)!.bytes).toHaveLength(0);
         } finally {
             fresh.close();
         }
     });
 
-    /** …and a file left by something else entirely goes with them: the directory belongs to one run
+    /** …and a file left by something else entirely goes with it: the directory belongs to one run
      *  at a time, so anything in it when a run starts is dead. */
-    it("sweeps entries the pool does not even use", async () => {
+    it("sweeps entries the sink does not even use", async () => {
         const root = opfs();
-        const { openShardSink } = await withOpfs(root);
+        const { openMapSink } = await withOpfs(root);
         const home = await root.getDirectoryHandle("obc-out", { create: true });
-        await home.getFileHandle("MS1S00.OBM", { create: true });
-        const sink = (await openShardSink(1))!;
+        await home.getFileHandle("s00.part", { create: true });
+        const sink = (await openMapSink())!;
         try {
-            expect([...outIn(root).files.keys()]).toEqual(["s00.part"]);
+            expect([...outIn(root).files.keys()]).toEqual([ENTRY]);
         } finally {
             sink.close();
         }
     });
 
-    /** Beginning a shard truncates its slot: a set whose second shard is shorter than the first must
-     *  not leave the first one's tail past the end of it. */
-    it("truncates a slot when a shard begins, and again when it is sealed", async () => {
+    /** Beginning the map truncates the entry, and sealing truncates it again: a run following a
+     *  longer one must not leave the previous map's tail past the end of this one. */
+    it("truncates the entry when the map begins, and again when it is sealed", async () => {
         const root = opfs();
-        const { openShardSink } = await withOpfs(root);
-        const sink = (await openShardSink(1))!;
+        const { openMapSink } = await withOpfs(root);
+        const sink = (await openMapSink())!;
         try {
-            sink.create(0, "MS1S00.OBM");
-            sink.write(0, new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]));
-            sink.seal(0);
-            sink.create(0, "MS1S00.OBM");
-            sink.write(0, new Uint8Array([7, 7]));
-            sink.seal(0);
-            expect(outIn(root).files.get("s00.part")!.bytes).toEqual(new Uint8Array([7, 7]));
+            sink.create();
+            sink.write(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]));
+            sink.seal();
+            sink.create();
+            sink.write(new Uint8Array([7, 7]));
+            sink.seal();
+            expect(outIn(root).files.get(ENTRY)!.bytes).toEqual(new Uint8Array([7, 7]));
         } finally {
             sink.close();
         }
@@ -508,58 +508,57 @@ describe("the shard sink", () => {
 
     /**
      * **The handle-release pin, and the page's half of it.** A sync access handle is an exclusive
-     * lock: one left open makes the next run fail to open the pool *and* stops the page from ever
-     * reading the shard it is holding. Both endings are the same `close()`.
+     * lock: one left open makes the next run fail to open the sink *and* stops the page from ever
+     * reading the map it is holding. Both endings are the same `close()`.
      */
-    it("releases every handle, so the next run opens the same pool", async () => {
-        const { openShardSink } = await withOpfs(opfs());
+    it("releases the handle, so the next run opens the same entry", async () => {
+        const { openMapSink } = await withOpfs(opfs());
         for (let run = 0; run < 2; run++) {
-            const sink = (await openShardSink(3))!;
-            expect(sink.open).toBe(3);
+            const sink = (await openMapSink())!;
+            expect(sink.open).toBe(true);
             sink.close();
-            expect(sink.open).toBe(0);
+            expect(sink.open).toBe(false);
             expect(() => sink.close()).not.toThrow();
         }
         expect(FakeDir.handles.filter((h) => !h.closed)).toEqual([]);
     });
 
     /**
-     * The page's side: a `Blob` of exactly what the assembler wrote, opened by entry name once the
-     * worker has let go. Nothing is read to produce it — that is the point, and it is what keeps a
-     * gigabyte-scale shard out of the tab's heap on its way to a download.
+     * The page's side: a `Blob` of exactly what the assembler wrote, opened once the worker has let
+     * go. Nothing is read to produce it — that is the point, and it is what keeps a multi-gigabyte
+     * map out of the tab's heap on its way to a download.
      */
     it("hands the page a Blob of exactly what was written", async () => {
         const root = opfs();
-        const { openShardSink, readShardOutput } = await withOpfs(root);
-        const sink = (await openShardSink(1))!;
-        sink.create(0, "MS1S00.OBM");
-        sink.write(0, new Uint8Array([1, 2, 3, 4, 5]));
-        sink.seal(0);
-        const entry = sink.entry(0);
+        const { openMapSink, readMapOutput } = await withOpfs(root);
+        const sink = (await openMapSink())!;
+        sink.create();
+        sink.write(new Uint8Array([1, 2, 3, 4, 5]));
+        sink.seal();
         sink.close();
 
-        const blob = await readShardOutput(entry);
+        const blob = await readMapOutput();
         expect(blob.size).toBe(5);
         expect(new Uint8Array(await blob.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3, 4, 5]));
     });
 
-    it("reports no sink where the browser has no OPFS, so the run keeps its shards in memory", async () => {
-        const { openShardSink } = await withOpfs(null);
-        expect(await openShardSink(2)).toBeNull();
+    it("reports no sink where the browser has no OPFS, so the run keeps the map in memory", async () => {
+        const { openMapSink } = await withOpfs(null);
+        expect(await openMapSink()).toBeNull();
     });
 
-    /** A pool that cannot be opened in full is not a sink: handing back a half-open one would fail
-     *  the run at shard 7 instead of falling back to memory before it starts. */
-    it("refuses a pool it could only half open, and strands no lock doing it", async () => {
+    /** A sink whose handle cannot be opened is no sink: handing one back would fail the run at the
+     *  first write instead of falling back to memory before it starts. */
+    it("refuses a sink it could not open, and strands no lock doing it", async () => {
         const root = opfs();
-        const { openShardSink } = await withOpfs(root);
+        const { openMapSink } = await withOpfs(root);
         const home = await root.getDirectoryHandle("obc-out", { create: true });
-        const blocked = await home.getFileHandle("s01.part", { create: true });
+        const blocked = await home.getFileHandle(ENTRY, { create: true });
         const held = await blocked.createSyncAccessHandle();
         try {
-            expect(await openShardSink(3)).toBeNull();
-            // Everything this attempt opened was released — only the lock the test itself holds is
-            // left, or the retry would fail on a lock this failure created.
+            expect(await openMapSink()).toBeNull();
+            // Nothing this attempt opened was left behind — only the lock the test itself holds, or
+            // the retry would fail on a lock this failure created.
             expect(FakeDir.handles.filter((h) => !h.closed)).toEqual([held]);
         } finally {
             held.close();

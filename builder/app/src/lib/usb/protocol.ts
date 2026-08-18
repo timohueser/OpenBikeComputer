@@ -108,6 +108,22 @@ export const OBCT_HEADER_LEN = 32;
 export const OBCT_MAGIC = "OBCT";
 export const OBCT_VERSION = 1;
 
+/**
+ * The volume-set corner of this codec — `OBCS_*`, {@link manifestLen}, {@link setPartId} and the
+ * {@link ObjectType.MapShard} / {@link ObjectType.MapSet} / {@link ObjectType.TerrainShard} kinds.
+ *
+ * **Nothing in this app sends one any more, and they stay anyway.** A map is one OBCM object since
+ * OBCM v14 (#1420), so the flows that spoke this are deleted — but the *firmware* still accepts
+ * these kinds from a card written before the cut, and this file is the transcription of the wire
+ * contract rather than of any particular flow. It is exactly the boundary `obc_formats::obcs` sits
+ * on for the same reason and until the same slice.
+ *
+ * What keeps it honest is `vectors.test.ts`, which round-trips `specs/vectors/transfer-set-*.bin` —
+ * the same three checked-in vectors `obc-vectors` and `obc-ble`'s own tests decode on the Rust side.
+ * So this is a codec under test against shared bytes, not stranded code with no caller.
+ *
+ * It goes when the board cutover retires the kinds (FS7.5c), together with the vectors.
+ */
 /** The OBCS set manifest's fixed header width (`OBCA_Spec.md` §5.2). Unmoved by v3. */
 export const OBCS_HEADER_LEN = 72;
 /** The OBCS manifest's fixed per-record width (§5.2) — `64` since v3 appended the member id. */

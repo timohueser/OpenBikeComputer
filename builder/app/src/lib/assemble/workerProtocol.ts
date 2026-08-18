@@ -2,39 +2,31 @@
 //
 // `bridge.ts`'s header is the contract this implements: the assembly is one
 // synchronous wasm call, so it runs in a dedicated Worker; the UI's cancel is
-// `worker.terminate()`; progress crosses by `postMessage`; finished files are
-// transferred one at a time and acknowledged before the next. This module is
-// the *words* of that conversation —
-// types, guards, and transfer-list builders — kept apart from the worker's entry
-// point so the protocol is testable in Node, where `Worker` does not exist.
+// `worker.terminate()`; progress crosses by `postMessage`. This module is the
+// *words* of that conversation — types, guards, and transfer-list builders — kept
+// apart from the worker's entry point so the protocol is testable in Node, where
+// `Worker` does not exist.
 //
-// Two shapes of message discipline are load-bearing:
+// **A run produces exactly one map, and says so exactly once.** Which of the two
+// ways it says it is the whole shape of this protocol:
 //
-//   * **Files stream before `done`.** A volume set can be gigabytes, and holding
-//     every shard on both sides of the boundary until one big result message
-//     would double the set's residency at its peak. Each `file` is posted with
-//     its buffer in the transfer list, so the bytes *move* rather than copy and
-//     the worker's copy is gone the moment the message is queued. The worker
-//     then waits for `file-ack`, so the message port cannot become a second
-//     gigabyte-sized queue when the consumer is an SD card.
-//   * **`shard` is the same idea one step earlier, and it has no ack** (#1116
-//     B1). A request with `streamShards` makes the wasm side hand each shard
-//     over the moment its §4.8 verify passes, which frees it from wasm memory
-//     mid-run instead of at the end — the assembly's output residency becomes
-//     one shard. The catch is where the callback runs: *inside* the synchronous
-//     assembly, on this thread, with no way to await anything. So a `shard`
-//     posts and the run carries straight on, and these messages arrive **before
-//     `planned`**, unlike every `file`. A consumer that needs the set plan first
-//     (the device upload does) must not ask for them.
-//   * **…and so can the shards, in the other direction** (#1116 D1). With
-//     `shardSink`, the assembly writes each shard straight into OPFS and the
-//     worker posts a `stored-shard` — a name, a digest, a length and the OPFS
-//     entry to find it in — *after* it has closed its handles, because a sync
-//     access handle is an exclusive lock and the page cannot open the file
-//     while the worker holds one. Gigabytes stop crossing this port entirely:
-//     the page opens a `Blob` on the file and saves it. Unlike `shard`, these
-//     arrive **after `planned`** and **are acknowledged**, exactly like a
-//     `file` — the run is over by then, so there is nothing to block.
+//   * **`stored-map`** — the assembly wrote the file straight into OPFS through a
+//     sync access handle (#1116 D1), so it was never in wasm memory and never
+//     crossed this port. What arrives is an identity: a digest and a length. The
+//     worker posts it only after closing its handle, because a sync access handle
+//     is an exclusive lock and the page cannot open the file while the worker holds
+//     one. The page then opens a `Blob` on it and saves it. This is the path that
+//     matters: a DACH map is a single ~9 GiB object, larger than the wasm32 address
+//     space it would otherwise have to fit in.
+//   * **`file`** — the browser could not serve a sink, so the map was buffered and
+//     its bytes ride the port with the buffer in the transfer list. They *move*
+//     rather than copy, so the worker's copy is gone the moment the message is
+//     queued.
+//
+// There is no acknowledgement in either direction and nothing to order: with one
+// file there is no next file to hold back, so the handshake the shard era needed is
+// simply gone.
+//
 //   * **Cells can travel as names instead of bytes** (#1116 B2). `sourceCells`
 //     carries an identity, a length and an OPFS filename per cell, and *nothing*
 //     is transferred: the download already put them on disk, and the worker is
@@ -107,13 +99,11 @@ export type AssembleWorkerRequest =
           /** The terrain squares' share of the total — resident whatever the
            *  mode, because they are never stored in OPFS (#1116 B2). */
           terrainBytes: number;
-          /** The main thread's half of the input mode: a writable cell store
-           *  with room for the selection. The worker ANDs it with its own
-           *  sync-read probe — only the worker can assert that half. */
-          inputOnDisk: boolean;
-          /** The split the download path will stream shards at. The worker
-           *  answers for **both** output modes; this sizes the streamed one. */
-          streamedShardBytes: number;
+          /** The main thread's half of both residency escapes: a writable cell
+           *  store with room for the whole run — cells, map and spill. The worker
+           *  ANDs it with its own sync-read probe, which is the half only the
+           *  worker can assert. */
+          onDisk: boolean;
           /** The engine's sort budget (`mergeBudgetBytes` in the options), which
            *  after phase D **is** the engine term on an OPFS host. */
           mergeBudgetBytes: number;
@@ -137,52 +127,25 @@ export type AssembleWorkerRequest =
           skinJson: string;
           options: AssembleOptions;
           /** The raster (EL4). Absent for a terrain-less catalog, in which case
-           *  the set is written without a `terrain` role. */
+           *  the map is written with an empty §1.3 region. */
           terrain?: WorkerTerrain;
           terrainCells?: WorkerTerrainCell[];
-          /** Hand each shard back as `shard` the moment it is verified, instead
-           *  of holding the whole set in wasm memory until the run ends (#1116
-           *  B1). Off by default, and it must stay off for a consumer that
-           *  cannot take a file before `planned` — see this module's header. */
-          streamShards?: boolean;
-          /** Write the shards into OPFS instead of wasm memory (#1116 D1), if
-           *  this worker can. The core shard cannot be split, so this is the
-           *  only thing that keeps a country-scale one out of a 4 GiB address
-           *  space. Falls back to `streamShards` where the storage is not
-           *  there. Off for a consumer that needs the bytes in hand. */
-          shardSink?: boolean;
-      }
-    | { type: "file-ack" };
+      };
 
-/** One finished file, bytes transferred. Mirrors `AssembledFile` minus `take()`,
- *  which has already happened on the worker side. */
+/** The assembled map, bytes transferred, for a run that had to buffer it. */
 export interface WorkerFile {
-    name: string;
-    role: "core" | "coarse" | "geometry" | "terrain" | "manifest";
     sha256: string;
     byteLength: number;
     bytes: Uint8Array;
 }
 
-/** One shard, evicted from wasm memory the moment §4.8 passed on it. Same
- *  fields as a `file`; a different tag because it arrives **mid-run, before
- *  `planned`, and is never acknowledged** (module header). */
-export interface WorkerShard extends WorkerFile {
-    role: "core" | "coarse" | "geometry";
-}
-
-/** One shard the assembly wrote **into OPFS** (#1116 D1): everything a `file`
- *  carries except the bytes, plus the entry they are in. The page opens a Blob on
- *  that entry and saves it under `name`; nothing shard-sized crosses the port. */
-export interface WorkerStoredShard {
-    name: string;
-    role: "core" | "coarse" | "geometry";
+/** The assembled map, written **into OPFS** (#1116 D1): its identity, and nothing
+ *  else. The page reads it back with `readMapOutput()` and saves it under a name it
+ *  chose itself; the entry it lives in is a constant both sides already know, so
+ *  nothing map-sized — and no path-shaped string — crosses this port. */
+export interface WorkerStoredMap {
     sha256: string;
     byteLength: number;
-    /** The OPFS filename under `obc-out/`, which is a scratch name and not `name`:
-     *  the handles are pooled and opened before the set is planned. Validated as a
-     *  plain entry name, because the page resolves it against a directory. */
-    entry: string;
 }
 
 /**
@@ -201,37 +164,25 @@ export interface WorkerStoredShard {
 export type CellReadMode = "streamed" | "buffered" | "memory";
 
 /**
- * …and where this run's shards go (#1116 D1), posted for the same reason: the run
+ * …and where this run's map went (#1116 D1), posted for the same reason: the run
  * that matters most is the one that fails, and its bug report has to say which path
  * it took.
  *
- * - `disk` — straight into OPFS through sync access handles. No shard is ever in
- *   wasm memory, which is what a country-scale core shard needs.
- * - `memory` — held in wasm memory, evicted per shard (#1116 B1) or kept until the
- *   run ends. What a browser without usable storage gets, and what the device path
- *   asks for.
+ * - `disk` — straight into OPFS through a sync access handle. The map is never in
+ *   wasm memory, which at country scale is the only way it exists at all.
+ * - `memory` — buffered in wasm memory and handed over at the end. What a browser
+ *   without usable storage gets, and what binds the size of map it can build.
  */
-export type ShardWriteMode = "disk" | "memory";
+export type MapWriteMode = "disk" | "memory";
 
 export type AssembleWorkerResponse =
     | { type: "progress"; phase: AssemblePhase; fraction: number }
     | { type: "reading"; mode: CellReadMode; cells: number }
-    | { type: "writing"; mode: ShardWriteMode }
-    | { type: "planned"; totalBytes: number; shardCount: number; warnings: string[]; summary: AssembleSummary }
-    | ({ type: "shard" } & WorkerShard)
-    | ({ type: "stored-shard" } & WorkerStoredShard)
+    | { type: "writing"; mode: MapWriteMode }
+    | ({ type: "stored-map" } & WorkerStoredMap)
     | ({ type: "file" } & WorkerFile)
     | { type: "done"; warnings: string[]; summary: AssembleSummary; io?: IoStats }
-    | {
-          type: "estimate-result";
-          /** The download path's verdict: shards stream out at the requested
-           *  split. What the screen's own refusal/caution lines show. */
-          estimate: MemoryEstimate;
-          /** The device path's verdict for the same selection: the set is kept
-           *  until `planned` (#1116 B1's opt-out), so it binds earlier. Gates
-           *  `sendToDevice` — the two genuinely differ from ~1.4× BW up. */
-          deviceEstimate: MemoryEstimate;
-      }
+    | { type: "estimate-result"; estimate: MemoryEstimate }
     | { type: "error"; code: AssembleErrorCode; message: string };
 
 /** The transfer list for an `assemble` request: every cell's buffer moves into
@@ -242,12 +193,11 @@ export function requestTransferList(req: AssembleWorkerRequest): Transferable[] 
     return dedupedBuffers([...req.cells.map((c) => c.bytes), ...(req.terrainCells ?? []).map((c) => c.bytes)]);
 }
 
-/** The transfer list for a `file` or `shard` response: the bytes *move*, so the
- *  worker's copy is gone the moment the message is queued. For a `shard` that
- *  matters twice over — it was evicted from wasm memory to keep the peak down,
- *  and copying it here would put it straight back. */
+/** The transfer list for a `file` response: the bytes *move*, so the worker's copy
+ *  is gone the moment the message is queued. Nothing else in the protocol carries
+ *  bytes — a sunk map is announced as an identity and read off disk by the page. */
 export function responseTransferList(res: AssembleWorkerResponse): Transferable[] {
-    if (res.type !== "file" && res.type !== "shard") return [];
+    if (res.type !== "file") return [];
     return dedupedBuffers([res.bytes]);
 }
 
@@ -262,29 +212,20 @@ function dedupedBuffers(views: Uint8Array[]): ArrayBuffer[] {
     return [...seen];
 }
 
-const PHASES: ReadonlySet<string> = new Set([
-    "open",
-    "poi",
-    "nav",
-    "plan",
-    "write",
-    "verify",
-    "manifest",
-    "done",
-]);
+const PHASES: ReadonlySet<string> = new Set(["open", "poi", "nav", "plan", "write", "verify", "done"]);
 const READ_MODES: ReadonlySet<string> = new Set(["streamed", "buffered", "memory"]);
 const WRITE_MODES: ReadonlySet<string> = new Set(["disk", "memory"]);
-const SHARD_ROLES: ReadonlySet<string> = new Set(["core", "coarse", "geometry"]);
-const ROLES: ReadonlySet<string> = new Set([...SHARD_ROLES, "terrain", "manifest"]);
 const CODES: ReadonlySet<string> = new Set(ASSEMBLE_ERROR_CODES);
 
-/**
- * What an OPFS entry name may look like. Deliberately strict: the page resolves this
- * against a directory handle and opens whatever it names, so a message carrying
- * `../` — or an empty string, or a `/` — must be dropped like any other stray rather
- * than followed. The worker only ever sends `s00.part`…`s31.part`.
- */
-const ENTRY_NAME = /^[A-Za-z0-9._-]{1,64}$/;
+/** A map's identity, as both output messages carry it. */
+function isMapIdentity(m: Record<string, unknown>): boolean {
+    return (
+        typeof m.sha256 === "string" &&
+        m.sha256.length > 0 &&
+        Number.isSafeInteger(m.byteLength) &&
+        (m.byteLength as number) >= 0
+    );
+}
 
 /**
  * Whether a value that arrived over `onmessage` is a response this protocol
@@ -302,51 +243,14 @@ export function isWorkerResponse(v: unknown): v is AssembleWorkerResponse {
             return typeof m.mode === "string" && READ_MODES.has(m.mode) && Number.isInteger(m.cells);
         case "writing":
             return typeof m.mode === "string" && WRITE_MODES.has(m.mode);
-        case "stored-shard":
-            return (
-                typeof m.name === "string" &&
-                m.name.length > 0 &&
-                typeof m.role === "string" &&
-                // Only OBCM shards are sunk: the terrain shard goes through the
-                // engine's own sink and the manifest is a few hundred bytes.
-                SHARD_ROLES.has(m.role) &&
-                typeof m.sha256 === "string" &&
-                Number.isSafeInteger(m.byteLength) &&
-                (m.byteLength as number) >= 0 &&
-                typeof m.entry === "string" &&
-                ENTRY_NAME.test(m.entry)
-            );
-        case "planned":
-            return (
-                Number.isSafeInteger(m.totalBytes) &&
-                (m.totalBytes as number) >= 0 &&
-                Number.isInteger(m.shardCount) &&
-                (m.shardCount as number) >= 1 &&
-                Array.isArray(m.warnings) &&
-                typeof m.summary === "object" &&
-                m.summary !== null
-            );
-        case "shard":
+        case "stored-map":
+            return isMapIdentity(m);
         case "file":
-            return (
-                typeof m.name === "string" &&
-                typeof m.role === "string" &&
-                // A streamed one is always an OBCM shard: the terrain shard and
-                // the manifest are not evicted, they arrive as `file`s.
-                (m.type === "shard" ? SHARD_ROLES : ROLES).has(m.role) &&
-                typeof m.sha256 === "string" &&
-                typeof m.byteLength === "number" &&
-                m.bytes instanceof Uint8Array
-            );
+            return isMapIdentity(m) && m.bytes instanceof Uint8Array;
         case "done":
             return Array.isArray(m.warnings) && typeof m.summary === "object" && m.summary !== null;
         case "estimate-result":
-            return (
-                typeof m.estimate === "object" &&
-                m.estimate !== null &&
-                typeof m.deviceEstimate === "object" &&
-                m.deviceEstimate !== null
-            );
+            return typeof m.estimate === "object" && m.estimate !== null;
         case "error":
             return typeof m.code === "string" && CODES.has(m.code) && typeof m.message === "string";
         default:
