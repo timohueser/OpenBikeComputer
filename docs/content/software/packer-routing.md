@@ -746,7 +746,7 @@ downloading it again. Cancelling terminates the worker; there is no verification
 bypass. The gate on a big selection is therefore **disk quota, checked before the
 download starts**, not the memory the run would have needed.
 
-**A dropped connection costs one cell, not the run.** A set is hundreds of
+**A dropped connection costs one cell, not the run.** A selection is hundreds of
 objects and a CDN edge occasionally closes one part-way through, which arrives as
 a body that ends clean and short. Each object is therefore fetched up to four
 times with a widening backoff before its failure becomes the run's — and the
@@ -768,15 +768,14 @@ carries its own notice instead of leaving a stale string behind. There is delibe
 no toggle: elevation is roughly five per cent of a download, and a switch would ask a
 rider to decide something they have no way to decide well.
 
-An assembled map — even a one-shard one — names its raster in the manifest and writes
-it as `MS<id>.OBD`. A map that never went through the assembler, such as one packed
-straight from an extract for the simulator, gets the same file as a plain **sidecar**
-next to the `.obcm`, under the same stem. Those are deliberately the same convention
-seen from two sides: `MS<id>.OBD` *is* the sidecar of `MS<id>.OBS`, so a host that
-resolves terrain by looking beside the map and one that reads the manifest role open
-the same file. What the manifest adds is the two things a filename cannot say — that
-this set claims a raster, and how many bytes of one — which is what stops a leftover
-`.OBD` from a replaced set being read as this map's terrain.
+An assembled map carries that raster **inside it**, in the map file's own terrain
+region, so there is nothing beside the `.obcm` to lose, mismatch, or leave behind when
+the map is replaced. A map that never went through the assembler — one packed straight
+from an extract for the simulator — has no such region, and its heights live in a plain
+`.obcd` **sidecar** next to the `.obcm` under the same stem, which is what the committed
+fixtures use. The packer never embeds one, and the reason is the same distinction the
+`--terrain` flag hides: on that side a raster is an input the packer *samples* for
+per-edge ascent, not an artifact it carries.
 
 The same digest appears in each referenced object's published key. Cells,
 per-band indexes, region cell lists, and previews are therefore immutable below
@@ -827,7 +826,7 @@ or assembly algorithms.
 | Regions, boxes, lassos, GPX corridors | yes | yes | yes |
 | Shared wasm assembly | yes | yes | yes |
 | Product skin editor | yes | yes | yes |
-| Output | picked folder, or one zip | grouped local folder | one zip download |
+| Output | picked folder, or one download | grouped local folder | one download |
 | Advanced schema editor | no | no | yes |
 | Native fixed-crop schema preview | no | no | yes |
 | Product PBF build | no | no | no |
@@ -840,15 +839,12 @@ policy. The desktop writes the assembled map into a unique
 folder under `Documents/OpenBikeComputer`, using a temporary file and atomic
 rename. It closes the folder only after the assembler emits and
 verifies the file; cancellation or failure discards the incomplete folder.
-(This described a multi-file *volume set* and a manifest written last until
-[OBCM v14](src:specs/OBCM_Spec.md) made a map one file — the per-part machinery is deleted in the
-slices that implement it.)
 A browser with the File System Access API does the equivalent through a
-directory the user picks when the run starts — ideally the card itself — with
-files streamed in as they are verified and removed again if the run fails. A
-browser without the picker is handed the finished set as **one** stored-zip
-download at the very end: one save prompt for a map of any size, and a failed or
-cancelled run has handed the download manager nothing at all. Saving changes
+directory the user picks when the run starts — ideally the card itself — with the
+map streamed in as it is verified and removed again if the run fails. A
+browser without the picker is handed the finished map as **one** download at the
+very end: one save prompt for a map of any size, and a failed or cancelled run
+has handed the download manager nothing at all. Saving changes
 where bytes land, never what the assembler emitted.
 
 The local Python server remains useful while developing the one hosted schema.
@@ -887,10 +883,11 @@ compile.
 
 ### Device and ride surfaces
 
-The assembled multi-file set can either be saved or streamed directly to a
-connected device. Direct send keeps one verified shard in flight, waits for the
-device before releasing it, and commits the manifest last; cancellation abandons
-an incomplete set. Manual single-file upload remains for maps obtained elsewhere.
+The assembled map can either be saved or streamed directly to a connected device.
+Direct send is a single object: the page verifies the finished file's digest,
+announces its length before the first byte, and the device commits it whole or
+not at all — a cancelled or interrupted send leaves nothing a reader will open.
+Manual upload remains for maps obtained elsewhere.
 There is no old whole-region catalog fallback hiding behind that button.
 
 Routes and firmware still use the shared object protocol. The cable also runs in
