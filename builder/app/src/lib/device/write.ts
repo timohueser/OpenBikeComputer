@@ -1,13 +1,18 @@
 /**
- * The three things the builder writes to a device: a map file, a route, a firmware image.
+ * The three things the builder writes to a device: a map, a route, a firmware image.
  *
- * All three are the same six lines underneath — announce, stream, whole-object CRC, commit — which
- * is the point of the object model and the reason this file is short. What differs is what has to
- * be true *before* the first byte moves, and that is where the substance is:
+ * **A map is one object.** There is no multi-file map upload here — no manifest, no shards, no
+ * separate terrain file to order against them — so every write in this file is a single
+ * announce/stream/commit against one `.obcm`, `.obcr` or `UPDATE.BIN`, and there is no state that
+ * outlives a transfer.
+ *
+ * All three are therefore the same six lines underneath — announce, stream, whole-object CRC,
+ * commit — which is the point of the object model and the reason this file is short. What differs
+ * is what has to be true *before* the first byte moves, and that is where the substance is:
  *
  * | | Where the bytes come from | Checked before sending |
  * | :-- | :-- | :-- |
- * | Map (file) | a file the rider picked | nothing to check it against; the device's CRC is the guarantee |
+ * | Map | a `.obcm` the rider picked | nothing to check it against; the device's CRC is the guarantee |
  * | Route | a dropped GPX, converted by wasm | the OBCR header is read back and shown before sending |
  * | Firmware | an `UPDATE.BIN` | the whole OBCU container: header CRC, image CRC, slot ceiling |
  *
@@ -26,160 +31,16 @@
  * `flows.test.ts` retries on the same link and expects it to just work.
  */
 
-import { DeviceError, bytesSource, type ProtocolClient, type UploadResult } from "../usb/client";
-import { blobSource } from "../usb/client";
-import { NEW_OBJECT_ID, ObjectType, SINGLETON_OBJECT_ID, setPartId } from "../usb/protocol";
+import { blobSource, type ProtocolClient, type UploadResult } from "../usb/client";
+import { NEW_OBJECT_ID, ObjectType, SINGLETON_OBJECT_ID } from "../usb/protocol";
 import { readUpdateImage, type UpdateImage } from "../firmware/obcu";
 import type { JobContext } from "./progress";
 import type { PreparedRoute } from "./route";
-import { Sha256 } from "./sha256";
 
 // The chunk size is deliberately **not** overridden here any more. It used to be a local 32 KiB —
 // half the client's own default since the upload retune, so a map (the one object where the number
 // matters) was quietly getting the *smaller* chunk. There is one throughput dial and it lives with
 // the transport that pays for it: `DEFAULT_CHUNK_SIZE` / `UPLOAD_WINDOW` in `../usb/client`.
-
-/** One file streamed out of the assembler worker, in `OBCA_Spec.md` §5.4's order: every OBCM shard,
- *  then the terrain raster if the set has one, then the manifest that makes them a map. */
-export interface AssembledSetFile {
-    readonly name: string;
-    readonly role: "core" | "coarse" | "geometry" | "terrain" | "manifest";
-    readonly sha256: string;
-    readonly byteLength: number;
-    readonly bytes: Uint8Array;
-}
-
-/** State kept across the independent whole-file transfers that form one set. */
-export interface SetSendState {
-    readonly shardCount: number;
-    readonly totalBytes: number;
-    committedBytes: number;
-    nextShard: number;
-    /** Whether the set's terrain shard has been sent (#1044). The manifest is one 56-byte record
-     *  longer when it has, which is exactly what the device checks at the manifest's announce. */
-    terrainSent: boolean;
-    setId: number | null;
-}
-
-/** The coverage assembler's device sink, passed across the step-3/step-4 component seam. */
-export type SendAssembledMap = (client: ProtocolClient, ctx: JobContext) => Promise<UploadResult>;
-
-export function setSendState(shardCount: number, totalBytes: number): SetSendState {
-    if (!Number.isInteger(shardCount) || shardCount < 1 || shardCount > 32) {
-        throw new Error(`The assembled map contains ${shardCount} shards; a set must contain 1–32.`);
-    }
-    return { shardCount, totalBytes, committedBytes: 0, nextShard: 0, terrainSent: false, setId: null };
-}
-
-/**
- * Verify and send one worker-produced file, retrying one whole-file CRC refusal.
- *
- * **The one rule that is not local to a file** (#1044): the manifest's announced length is
- * `72 + 56 × Shard Count`, and `OBCA_Spec.md` §5.2's `Shard Count` counts every **record** — the
- * terrain one included. A device therefore derives the length it expects from what it has actually
- * received, so the raster must reach it *before* the manifest or the whole set is refused at its
- * last transfer. The assembler already emits shards → terrain → manifest; this asserts that order
- * rather than assuming it, because getting it wrong costs a multi-gigabyte upload.
- */
-export async function sendAssembledSetFile(
-    client: ProtocolClient,
-    state: SetSendState,
-    file: AssembledSetFile,
-    ctx: JobContext,
-): Promise<void> {
-    if (file.bytes.byteLength !== file.byteLength) {
-        throw new Error(
-            `${file.name} arrived as ${file.bytes.byteLength} bytes; the assembler announced ${file.byteLength}.`,
-        );
-    }
-    const manifest = file.role === "manifest";
-    const terrain = file.role === "terrain";
-    // Everything but the manifest is content-addressed by the assembler, so its digest is checked
-    // here — before the bytes cost minutes on the wire — rather than trusted.
-    if (!manifest) {
-        const digest = new Sha256().update(file.bytes).hex();
-        if (digest !== file.sha256.toLowerCase()) {
-            throw new Error(`${file.name} failed its SHA-256 check before it reached the device.`);
-        }
-    }
-    if (terrain) {
-        // The raster goes out under its own object type (#1044). It is **not** a shard: a shard's
-        // object id is a `(count, index)` pair naming one of the OBCM files the manifest's leading
-        // records describe, and sending the raster as one would consume an index the manifest never
-        // names. Its place in the order is fixed by the device's manifest-length check — every
-        // shard first, then this, then the manifest — which is also the order the assembler emits.
-        if (state.nextShard !== state.shardCount) {
-            throw new Error(
-                `The terrain shard arrived after ${state.nextShard} of ${state.shardCount} shards; ` +
-                    "a set's raster follows every shard and precedes the manifest.",
-            );
-        }
-        if (state.terrainSent) throw new Error("The assembler produced a second terrain shard; a set carries one.");
-        ctx.part?.(state.shardCount, state.shardCount, "elevation");
-    } else if (!manifest) {
-        if (state.nextShard >= state.shardCount) {
-            throw new Error("The assembler produced more shards than its summary.");
-        }
-        ctx.part?.(state.nextShard + 1, state.shardCount);
-    } else {
-        if (state.nextShard !== state.shardCount) {
-            throw new Error(`The set manifest arrived after ${state.nextShard} of ${state.shardCount} shards.`);
-        }
-        ctx.part?.(state.shardCount, state.shardCount, "sealing map");
-    }
-
-    const type = manifest ? ObjectType.MapSet : terrain ? ObjectType.TerrainShard : ObjectType.MapShard;
-    const objectId = manifest || terrain ? NEW_OBJECT_ID : setPartId(state.shardCount, state.nextShard);
-    let result: UploadResult | null = null;
-    for (let attempt = 0; attempt < 2; attempt++) {
-        try {
-            // The manifest's first attempt leaves the phase at `committing`; a CRC refusal means the
-            // bytes go again, so put the label back before they do. Without this the retry streams
-            // under "Finishing on the device", which is the one phase that promises nothing is
-            // moving.
-            if (attempt > 0) ctx.phase("sending", state.totalBytes);
-            result = await client.upload(type, objectId, bytesSource(file.bytes), {
-                signal: ctx.signal,
-                onProgress: (done) => ctx.progress(state.committedBytes + done, state.totalBytes),
-                // **The manifest is the set's commit point, and it is tiny.** Committing it re-opens
-                // and cross-checks every shard header already on the card, so its wait has to be
-                // budgeted against the set rather than against the ~2 KB that just moved.
-                //
-                // Timing it out no longer *destroys* the set — the abort that follows a failed
-                // exchange is a quiesce now, and quiesces delete nothing (`sendQuiesceAbort`). What
-                // it still costs is the truth: the device may be seconds into a commit that will
-                // succeed, and giving up on it reports a failure for a map that landed, then re-sends
-                // a manifest over a set that already has one. Budgeting it properly is how the
-                // rider's answer stays the device's answer.
-                //
-                // A **shard** deliberately does not get this: its commit is a header check like any
-                // other upload's, so it keeps the ordinary timeout and stays quick to fail.
-                commitBytes: manifest ? state.totalBytes : undefined,
-                onSent: manifest ? () => ctx.phase("committing") : undefined,
-            });
-            break;
-        } catch (cause) {
-            if (!(cause instanceof DeviceError) || cause.code !== "crc-mismatch" || attempt === 1) throw cause;
-        }
-    }
-    if (!result) throw new Error(`${file.name} did not receive a transfer result.`);
-    state.committedBytes += file.byteLength;
-    ctx.progress(state.committedBytes, state.totalBytes);
-    if (manifest) state.setId = result.objectId;
-    else if (terrain) state.terrainSent = true;
-    else state.nextShard += 1;
-}
-
-/** Delete every shard staged for an incomplete set. Safe after active-transfer cancellation too. */
-export async function abandonAssembledSet(client: ProtocolClient, state: SetSendState): Promise<void> {
-    if (state.nextShard === 0 || state.setId !== null) return;
-    try {
-        await client.abandonMapSet();
-    } catch {
-        // Best effort: preserve the original assembly/transport failure. A disconnect also makes
-        // firmware delete the staged set when its USB plane tears down.
-    }
-}
 
 /**
  * Send a `.obcm` the rider already has.

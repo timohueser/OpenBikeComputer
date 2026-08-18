@@ -16,7 +16,6 @@
     import type { ProtocolClient } from "../../lib/usb/client";
     import type { VersionRead } from "../../lib/usb/protocol";
     import type { DeviceInfo } from "../../lib/usb/transport";
-    import type { SendAssembledMap } from "../../lib/device/write";
     import type { Ledger } from "../../lib/catalog/ledger";
     import { rideAccess, rideScope } from "../../lib/device/rides";
     import FirmwareCard from "./FirmwareCard.svelte";
@@ -29,13 +28,11 @@
         info,
         identity = null,
         ledger = null,
-        sendAssembled = null,
     }: {
         client: ProtocolClient;
         info: DeviceInfo | null;
         identity?: VersionRead | null;
         ledger?: Ledger | null;
-        sendAssembled?: SendAssembledMap | null;
     } = $props();
 
     const rides = $derived(rideAccess(client));
@@ -44,7 +41,7 @@
     const scope = $derived(rideScope(info, identity));
 </script>
 
-<MapSend {client} {ledger} {sendAssembled} />
+<MapSend {client} {ledger} />
 <RouteDrop {client} />
 <RideExport {rides} {scope} />
 <FirmwareCard {client} {info} />

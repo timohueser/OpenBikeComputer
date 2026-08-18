@@ -32,9 +32,6 @@
         <div class="line small">
             <span class="muted">{heading}</span>
             <span class="faint">
-                {job.partTotal
-                    ? `${job.partLabel ?? `shard ${job.partCurrent} of ${job.partTotal}`} · ${job.pct}% · `
-                    : ""}
                 {formatBytes(job.done)}{job.total ? ` of ${formatBytes(job.total)}` : ""}{job.rate
                     ? ` · ${formatRate(job.rate)}`
                     : ""}{eta ? ` · about ${formatDuration(eta)} left` : ""}
