@@ -251,7 +251,7 @@ addressed to the sender is not a guarantee. So the device enforces it:
   every piece, raster included, so its length depends on whether the raster
   arrived — and the device checks that length at the announce, against what this
   upload actually delivered. Send the manifest for a set with elevation and skip
-  the elevation, and the two ends disagree by one 56-byte record, which is enough
+  the elevation, and the two ends disagree by exactly one record, which is enough
   to lose the whole upload at its final transfer.
 - **An interrupted set leaves nothing to explain.** The device writes the
   manifest's name as a four-zero-byte placeholder before the first shard and fills
