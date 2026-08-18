@@ -553,7 +553,7 @@ an implicit metadata source.
 An **assembly** is **one** OBCM file built from catalog cells for one selection and one skin,
 carrying its terrain raster in `OBCM_Spec.md` §1.3's region when the selection has elevation. This
 section defines what an assembler does. (It used to say "or a volume set of them"; §5 is superseded
-by OBCM v14, and the emitter that splits an assembly into several files goes in FS7.5b.)
+by OBCM v14, and the emitter that split an assembly into several files is deleted.)
 
 ### 4.1 Inputs and preconditions
 
@@ -729,14 +729,21 @@ uses — and MUST cover, per file of the set:
 5. **Nav reachability, as a report.** Emit the merged component histogram. An assembler SHOULD
    surface a selection whose largest component covers an implausibly small share of the graph,
    because that is what a broken seam looks like; it MUST NOT silently repair it.
-6. ~~**Set invariants** (§5)~~ — **superseded** with §5 (OBCM v14, #1420). One file has no roles
-   to check and no tiling to verify; what replaces this step is the header's own `Offset Scale`
-   covering the file's length (`OBCM_Spec.md` §1.1) and the file's size equalling what the
-   pre-download projection said it would be. FS7.5b writes the replacement rule; until then this
-   item describes an emitter that is on its way out.
-7. **Digests.** SHA-256 of the assembled file. (It was per file, recorded in the §5.2 manifest;
-   with one file there is one digest and nowhere in-band to record it — the catalog and the
-   transfer's own CRC carry it instead.)
+6. **The file answers for itself.** One file has no roles to check and no tiling to verify, so
+   what stands where §5's set invariants stood is two properties of the file alone: its header's
+   `Offset Scale` MUST cover its length (`OBCM_Spec.md` §1.1), and its length MUST equal what the
+   pre-download projection said it would be. An assembler MUST refuse rather than emit a file past
+   the interior that scale addresses, and MUST apply that refusal **at plan time** — every byte of
+   an assembly is computable before any of it is written, so a producer that learns its file is too
+   large from the file itself has already spent the write.
+7. **Digests.** SHA-256 of the assembled file, and of nothing inside it. (It was per file, recorded
+   in the §5.2 manifest; with one file there is one digest and nowhere in-band to record it — the
+   catalog and the transfer's own CRC carry it instead.) In particular the **terrain region has no
+   digest of its own**: it is a run of bytes inside the map, the map has one identity, and a second
+   hash over a subrange of it would be a second answer to a question that now has one. What the
+   `terrain` record's SHA-256 actually bought — *these are the bytes the catalog served* — is bought
+   instead by step 8's read-back, which compares each present block against its source object rather
+   than checking a hash of the assembler's output against itself.
 8. **The terrain region** — the raster, spliced into `OBCM_Spec.md` §1.3 rather than shipped as
    §5.1's `terrain` shard. Every input is checked
    **before its bytes are copied**, because a bad cell must not reach the shard even to be caught on
@@ -762,10 +769,12 @@ trick; it now rests on the flat store's commit, which is the atomicity the trick
 
 > **Superseded** by [OBCM v14](OBCM_Spec.md) / issue #1420. A map is one OBCM object; there are no
 > shards, no roles, no manifest and no set. Nothing in this section is normative any more, and
-> nothing in it may be extended. It is kept until the code that reads it is deleted in FS7.5b/c:
-> `obc-formats/src/obcs.rs`, `obcm-assemble`'s shard emitter, the board's set mount, the builder's
-> `parseSetManifest`, and the `mapShard` / `mapSet` / `terrainShard` object types of the wire
-> contract.
+> nothing in it may be extended. **The producers are gone**: `obcm-assemble`'s shard emitter and
+> the builder's `parseSetManifest` and set upload flows were deleted in FS7.5b2, so nothing in this
+> tree writes a manifest or a shard any more. What is kept until the board cutover (FS7.5c) is the
+> *reading* half, and only because cards written before the cut still carry it:
+> `obc-formats/src/obcs.rs` (the codec and its three wire vectors), the board's set mount, and the
+> `mapShard` / `mapSet` / `terrainShard` object types of the wire contract.
 >
 > **What replaced each part.** The two 4 GiB ceilings §5 opens with are both gone: OBCM v14's scaled
 > offsets (`OBCM_Spec.md` §1.1) address 64 GiB of interior, and the flat store
