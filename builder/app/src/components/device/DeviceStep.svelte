@@ -13,15 +13,12 @@
     import Gated from "../Gated.svelte";
     import { platform } from "../../lib/platform";
     import { deviceHolder } from "../../lib/device/session.svelte";
-    import type { SendAssembledMap } from "../../lib/device/write";
     import type { Ledger } from "../../lib/catalog/ledger";
 
     let {
         ledger = null,
-        sendAssembled = null,
     }: {
         ledger?: Ledger | null;
-        sendAssembled?: SendAssembledMap | null;
     } = $props();
     // The write surfaces reach the protocol client, the codecs and the transport — the ~24 kB C3
     // code-split out of the entry bundle. Loading them on connect keeps that split: a visitor who
@@ -78,7 +75,6 @@
                     info={session.info}
                     identity={session.identity}
                     {ledger}
-                    {sendAssembled}
                 />
             {:catch}
                 <p class="note error small" role="alert">

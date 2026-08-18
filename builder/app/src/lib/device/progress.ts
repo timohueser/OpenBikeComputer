@@ -43,6 +43,4 @@ export interface JobContext {
     /** Move to a phase, optionally starting a fresh byte count for it. */
     phase(phase: JobPhase, total?: number): void;
     progress(done: number, total: number): void;
-    /** Name the current file inside a multi-file transfer (one-based). */
-    part?(current: number, total: number, label?: string): void;
 }

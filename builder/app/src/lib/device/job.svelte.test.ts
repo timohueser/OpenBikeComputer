@@ -23,11 +23,9 @@ describe("DeviceJob", () => {
         const running = job.run(async (ctx) => {
             seen.push("reading");
             ctx.phase("sending", 1000);
-            ctx.part?.(3, 8);
             ctx.progress(500, 1000);
             expect(job.running).toBe(true);
             expect(job.pct).toBe(50);
-            expect([job.partCurrent, job.partTotal]).toEqual([3, 8]);
             return 7;
         }, (value) => `did ${value}`);
         expect(job.running, "the slot is held synchronously, before the first await").toBe(true);
