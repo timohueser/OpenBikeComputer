@@ -437,7 +437,7 @@ fn read_block<D: BlockDevice>(dev: &D, lba: u32, block: &mut Block) -> Result<()
 // bytes. Fragmentation is produced the honest way: two files appended in alternation, so the FAT
 // allocator interleaves their clusters.
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     extern crate std;
 
     use std::boxed::Box;
@@ -449,7 +449,7 @@ mod tests {
 
     use super::*;
 
-    struct RamDisk(RefCell<Vec<u8>>);
+    pub(crate) struct RamDisk(pub(crate) RefCell<Vec<u8>>);
 
     impl BlockDevice for RamDisk {
         type Error = ();
@@ -477,9 +477,9 @@ mod tests {
     /// A transparent test wrapper that records each raw read as `(start LBA, block count)`. The
     /// byte-differential matrix proves correctness; this pins the performance contract so a
     /// future rewrite cannot silently fall back to CMD17 per block while keeping the bytes right.
-    struct RecordingDevice<'a> {
-        disk: &'a RamDisk,
-        reads: RefCell<Vec<(u32, usize)>>,
+    pub(crate) struct RecordingDevice<'a> {
+        pub(crate) disk: &'a RamDisk,
+        pub(crate) reads: RefCell<Vec<(u32, usize)>>,
     }
 
     impl BlockDevice for RecordingDevice<'_> {
@@ -517,7 +517,7 @@ mod tests {
 
     /// An empty FAT32 volume: 1-block clusters (so single-block appends fragment maximally),
     /// 65,600 clusters (the FAT32 floor is 65,525), one FAT.
-    fn mkfs_fat32() -> RamDisk {
+    pub(crate) fn mkfs_fat32() -> RamDisk {
         let (reserved, fat_size, clusters) = (2u32, 513u32, 65_600u32);
         let total = reserved + fat_size + clusters;
         let mut img = vec![0u8; ((PART_START + total) * 512) as usize];
@@ -587,15 +587,15 @@ mod tests {
 
     /// A recognisable position-dependent byte pattern, so any block-mapping slip shows up as a
     /// content mismatch (not just a length one).
-    fn pattern(file_tag: u8, off: usize, len: usize) -> Vec<u8> {
+    pub(crate) fn pattern(file_tag: u8, off: usize, len: usize) -> Vec<u8> {
         (off..off + len).map(|i| (i as u8) ^ file_tag).collect()
     }
 
     /// A mounted test volume: the raw disk (the board's `&SdCard` twin), the manager over its
     /// shared reference, and the open root — held for the whole test (the manager refuses a
     /// second `open_raw_volume`, so every helper works off this one handle).
-    struct Fs {
-        disk: &'static RamDisk,
+    pub(crate) struct Fs {
+        pub(crate) disk: &'static RamDisk,
         vmgr: TestMgr,
         root: embedded_sdmmc::RawDirectory,
     }
@@ -603,7 +603,7 @@ mod tests {
     /// Mount `disk`, create `names` in the root, and append `appends` × 512 bytes to each in
     /// round-robin order — alternation is what makes the FAT allocator interleave (fragment)
     /// their clusters; a single name allocates contiguously.
-    fn setup(disk: RamDisk, names: &[&str], appends: usize) -> Fs {
+    pub(crate) fn setup(disk: RamDisk, names: &[&str], appends: usize) -> Fs {
         let disk: &'static RamDisk = Box::leak(Box::new(disk));
         let vmgr: TestMgr = VolumeManager::new_with_limits(SharedBlockDevice(disk), Epoch, 5000);
         let volume = vmgr.open_raw_volume(VolumeIdx(0)).unwrap();
@@ -624,7 +624,7 @@ mod tests {
     impl Fs {
         /// `name`'s `(entry_block, entry_offset, byte length)` from a root-dir iteration — the
         /// same public facts the board's map-open scan captures.
-        fn entry_facts(&self, name: &str) -> (BlockIdx, u32, u32) {
+        pub(crate) fn entry_facts(&self, name: &str) -> (BlockIdx, u32, u32) {
             let want = embedded_sdmmc::ShortFileName::create_from_str(name).unwrap();
             let mut found = None;
             self.vmgr
