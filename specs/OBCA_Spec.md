@@ -892,13 +892,26 @@ exactly two legal states:
 - **Unbound** — every member id is `0`, the reserved id that names no object. This is what an
   assembler MUST write. It is a complete, §5.3-valid manifest; it simply names no objects yet.
 - **Bound** — every member id is non-zero, and no two records carry the same one. A client reaches
-  this by committing each member, learning the id the store assigned it, and patching that id into
-  the manifest bytes before the manifest itself is committed — which §5.4 already made the last
-  write of a set.
+  this by committing each member, learning the id the store assigned it, and writing that id into
+  the manifest bytes it is still assembling — which §5.4 already made the last write of a set.
+
+**Binding MUST complete before the manifest is committed, and a committed manifest MUST NOT be
+patched.** Binding is an edit of a *staging* buffer — bytes the client holds, that no reader can
+reach — and it MUST stay one. This is the one rule in §5 that cannot be enforced by a validator, and
+that is exactly why it is normative: an interrupted 8-byte id write leaves a value that is neither
+`0` nor a duplicate, and **no validation rule can distinguish it from a correctly bound id**. Such a
+manifest passes §5.3, reads as bound, and resolves a member to an `ObjectId` that names either
+nothing or the wrong object. Contrast §5.4's magic-last-write, whose torn shape *is* recognisable —
+all zeros, or a strict prefix of `OBCS` — which is what makes that trick safe and this one not.
 
 A **half-bound** manifest — some ids named, some `0` — MUST be rejected (§5.3). It is the shape a
-client that died mid-binding leaves, and it is the dangerous one: it looks resolvable, and a reader
-that trusted it would open the members that were patched and silently lose the rest.
+client that died mid-binding leaves, and it is the dangerous one only in the sense that it looks
+resolvable: a reader that trusted it would open the members that were patched and silently lose the
+rest. **A half-bound manifest means the set never existed.** A reader MUST treat it exactly as
+§5.4 treats a failed validation — not a map, no partial acceptance — and a client that finds one MUST
+discard the whole set and send it again rather than repair it, which is the same posture
+`FLAT_Store_Protocol.md` §1 takes toward every broken transfer. The members it named are then
+ordinary objects no manifest references, and §5.4's orphan rule reclaims them.
 
 Member ids are **not** required to ascend. Ids come from a never-reused monotonic cursor, but a set
 that shares a member with one already on the card reuses that object rather than storing its bytes
@@ -956,8 +969,10 @@ file*; the `.OBS` manifest is the only thing that says those files are **one** m
 (§5.4).
 
 `Set Id` is a content identity, not a random one: two assemblies of the same cells with the same
-skin produce the same id. It is what a device registry keys a set on, and what lets an upload
-notice the set is already present.
+skin produce the same id. It is what a device registry keys a set on, and what lets an upload notice
+the set is already present **and bound** — since v3, matching the id says the same bytes are here,
+not that they are reachable, because the ids that make them reachable are deliberately not in the
+chain.
 
 ### 5.3 Validation
 
