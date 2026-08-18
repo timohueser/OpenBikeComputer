@@ -133,10 +133,10 @@ impl RideInfo {
         let tail_len = ride_header_len(version) - 3;
         let mut tail = [0u8; RIDE_HEADER_LEN_V2 - 3];
         let tail = &mut tail[..tail_len];
-        src.read_at(3 + name_len as u32, tail).map_err(|_| Error::BadOffset)?;
+        src.read_at(3 + name_len as u64, tail).map_err(|_| Error::BadOffset)?;
         let point_count = u32::from_le_bytes([tail[16], tail[17], tail[18], tail[19]]);
         let object_len = checked_ride_object_len(version, name_len, point_count).map_err(|_| Error::BadOffset)?;
-        if src.len() != object_len {
+        if src.len() != u64::from(object_len) {
             return Err(Error::BadOffset);
         }
         // v2 sensor summary (tail offset 20..28); v1 has no such bytes → all absent.
@@ -269,7 +269,7 @@ pub fn track_to_ride(
     while done < total {
         let n = (total - done).min(BLOCK_RECORDS);
         let bytes = &mut buf[..n * TRACK_RECORD_LEN];
-        src.read_at((done * TRACK_RECORD_LEN) as u32, bytes)?;
+        src.read_at((done * TRACK_RECORD_LEN) as u64, bytes)?;
         for i in 0..n {
             let mut rec = [0u8; TRACK_RECORD_LEN];
             rec.copy_from_slice(&bytes[i * TRACK_RECORD_LEN..(i + 1) * TRACK_RECORD_LEN]);

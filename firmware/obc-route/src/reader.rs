@@ -133,7 +133,7 @@ impl RouteObjectInfo {
         let h = read_header(src)?;
         let waypoint_count = {
             let mut ext = [0u8; HEADER_FULL_LEN - HEADER_LEN];
-            src.read_at(HEADER_LEN as u32, &mut ext).map_err(|_| Error::BadOffset)?;
+            src.read_at(HEADER_LEN as u64, &mut ext).map_err(|_| Error::BadOffset)?;
             rd_u16(&ext, 4)
         };
         Ok(RouteObjectInfo {
@@ -273,7 +273,7 @@ impl RouteIndex {
                 .checked_mul(CHUNK_META_LEN as u32)
                 .and_then(|rel| h.index_offset.checked_add(rel))
                 .ok_or(Error::BadOffset)?;
-            src.read_at(off, &mut meta)?;
+            src.read_at(off.into(), &mut meta)?;
             let cm = parse_chunk_meta(&meta, src.len())?;
             // Running segment prefix sum, built alongside the index so the matcher never
             // re-walks the chunk list per fix.
@@ -695,7 +695,7 @@ pub(crate) fn decode_route_points_between(
 /// inside `src_len`). Factored out of [`RouteIndex::fill_from`] so a **streaming** consumer —
 /// one that walks chunks without ever materialising the whole index — parses metas through the
 /// exact same code path; see [`elevation_sparkline`](crate::elevation_sparkline).
-pub(crate) fn parse_chunk_meta(meta: &[u8; CHUNK_META_LEN], src_len: u32) -> Result<ChunkMeta, Error> {
+pub(crate) fn parse_chunk_meta(meta: &[u8; CHUNK_META_LEN], src_len: u64) -> Result<ChunkMeta, Error> {
     let point_count = rd_u16(meta, 26);
     if point_count as usize > MAX_POINTS_PER_CHUNK {
         return Err(Error::TooLarge);
@@ -716,8 +716,10 @@ pub(crate) fn parse_chunk_meta(meta: &[u8; CHUNK_META_LEN], src_len: u32) -> Res
         byte_offset: rd_u32(meta, 36),
         byte_len: rd_u32(meta, 40),
     };
-    // Bounds-check the chunk's data region up front (no per-decode checks).
-    let end = cm.byte_offset.checked_add(cm.byte_len).ok_or(Error::BadOffset)?;
+    // Bounds-check the chunk's data region up front (no per-decode checks). OBCR's own offsets are
+    // `uint32` — the format's width, not the seam's — so the sum is widened for the comparison
+    // rather than the source's length narrowed to meet it.
+    let end = u64::from(cm.byte_offset) + u64::from(cm.byte_len);
     if end > src_len {
         return Err(Error::BadOffset);
     }
@@ -744,7 +746,7 @@ pub(crate) fn decode_chunk_from(
     let mut buf = [0u8; (MAX_POINTS_PER_CHUNK - 1) * POINT_RECORD_LEN];
     let bytes = buf.get_mut(..want).ok_or(Error::TooLarge)?;
     if want > 0 {
-        src.read_at(m.byte_offset, bytes)?;
+        src.read_at(m.byte_offset.into(), bytes)?;
     }
 
     let (mut lon, mut lat) = (m.anchor_lon, m.anchor_lat);
@@ -1095,7 +1097,7 @@ pub fn for_each_waypoint<F: FnMut(&Waypoint)>(src: &dyn ByteSource, mut f: F) ->
     // here can be an old 40-byte one.
     read_header(src)?;
     let mut ext = [0u8; HEADER_FULL_LEN - HEADER_LEN];
-    src.read_at(HEADER_LEN as u32, &mut ext)?;
+    src.read_at(HEADER_LEN as u64, &mut ext)?;
     let offset = rd_u32(&ext, 0);
     let count = rd_u16(&ext, 4);
 
@@ -1108,7 +1110,7 @@ pub fn for_each_waypoint<F: FnMut(&Waypoint)>(src: &dyn ByteSource, mut f: F) ->
             .checked_mul(WAYPOINT_LEN as u32)
             .and_then(|rel| offset.checked_add(rel))
             .ok_or(Error::BadOffset)?;
-        src.read_at(at, &mut rec)?;
+        src.read_at(at.into(), &mut rec)?;
         let name_len = (rec[15] as usize).min(WAYPOINT_NAME_CAP);
         let mut name = String::new();
         if let Ok(s) = core::str::from_utf8(&rec[WAYPOINT_NAME_OFF..WAYPOINT_NAME_OFF + name_len]) {

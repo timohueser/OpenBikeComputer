@@ -345,12 +345,12 @@ impl<'a> CountingSource<'a> {
 }
 
 impl ByteSource for CountingSource<'_> {
-    fn read_at(&self, off: u32, buf: &mut [u8]) -> Result<(), obc_formats::io::Error> {
+    fn read_at(&self, off: u64, buf: &mut [u8]) -> Result<(), obc_formats::io::Error> {
         self.reads.set(self.reads.get() + 1);
         self.bytes.set(self.bytes.get() + buf.len() as u64);
         self.inner.read_at(off, buf)
     }
-    fn len(&self) -> u32 {
+    fn len(&self) -> u64 {
         self.inner.len()
     }
 }

@@ -717,7 +717,7 @@ pub fn merge(
         let mut minted: Vec<(i32, i32)> = Vec::new();
         let mut chunks: Vec<Vec<u8>> = Vec::with_capacity(dir.chunk_count);
         for k in 0..dir.chunk_count {
-            let chunk = cell.read(data_start + k * dir.chunk_size, dir.chunk_size)?;
+            let chunk = cell.read(data_start + (k * dir.chunk_size) as u64, dir.chunk_size)?;
             let mut at = 0usize;
             while at + NAV_NODE_FIXED_LEN <= chunk.len() {
                 let degree = chunk[at + 12];
@@ -991,7 +991,7 @@ pub fn merge(
             .get(r.cell as usize)
             .ok_or_else(|| Error::Format(format!("a merged edge names missing source cell {}", r.cell)))?;
         let source = &mut source_edge[..r.len as usize];
-        cell.read_into(cell.nav.edge_pool_offset + r.off as usize, source)?;
+        cell.read_into(cell.nav.edge_pool_offset + u64::from(r.off), source)?;
         stats.snap_anchors +=
             append_snap_anchors(source, edge_id, global_bbox, &mut snap_recs, &mut snap_points, &mut snap_ord)?;
 
@@ -1785,7 +1785,7 @@ pub fn serialize(
             ))
         })?;
         let buf = &mut rec[..len];
-        cell.read_into(cell.nav.edge_pool_offset + r.off as usize, buf)?;
+        cell.read_into(cell.nav.edge_pool_offset + u64::from(r.off), buf)?;
         out(buf)?;
         at += len as u64;
     }
@@ -2095,14 +2095,14 @@ mod tests {
             lods: Vec::new(),
             pois: obc_reader::PoiDirectory::EMPTY,
             nav: obc_reader::NavDirectory {
-                edge_pool_offset: SRC_POOL_AT,
+                edge_pool_offset: SRC_POOL_AT as u64,
                 edge_chunk_count: chunks,
                 chunk_size: NAV_CHUNK_SIZE,
                 ..obc_reader::NavDirectory::EMPTY
             },
             profile_table: Vec::new(),
             style_ids: Vec::new(),
-            bytes: src.len() as u64,
+            bytes: src.len(),
         }
     }
 
@@ -2293,7 +2293,7 @@ mod tests {
             index_offset: 0,
             node_count: INDEX_LEN / 4,
             chunk_count: chunks.len(),
-            edge_pool_offset: pool_at,
+            edge_pool_offset: pool_at as u64,
             edge_chunk_count: pool.len() / NAV_CHUNK_SIZE,
             chunk_size: NAV_CHUNK_SIZE,
             ..obc_reader::NavDirectory::EMPTY
@@ -2313,7 +2313,7 @@ mod tests {
             nav,
             profile_table: Vec::new(),
             style_ids: Vec::new(),
-            bytes: src.len() as u64,
+            bytes: src.len(),
         }
     }
 

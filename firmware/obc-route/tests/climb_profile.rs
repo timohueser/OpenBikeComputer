@@ -91,11 +91,11 @@ impl<'a> CountingSource<'a> {
 }
 
 impl ByteSource for CountingSource<'_> {
-    fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), Error> {
-        self.reads.borrow_mut().push((offset, buf.len() as u32));
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), Error> {
+        self.reads.borrow_mut().push((offset as u32, buf.len() as u32));
         self.inner.read_at(offset, buf)
     }
-    fn len(&self) -> u32 {
+    fn len(&self) -> u64 {
         self.inner.len()
     }
 }

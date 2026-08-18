@@ -1019,8 +1019,8 @@ impl Stored {
 }
 
 impl CellReads for Stored {
-    fn read(&self, slot: usize, offset: u32, buf: &mut [u8]) -> Result<(), String> {
-        self.reads.borrow_mut().push((slot, offset, buf.len()));
+    fn read(&self, slot: usize, offset: u64, buf: &mut [u8]) -> Result<(), String> {
+        self.reads.borrow_mut().push((slot, offset as u32, buf.len()));
         if let Some((s, at)) = self.fail_at {
             if slot == s && offset as usize + buf.len() > at as usize {
                 return Err("the storage handle is closed".into());
@@ -1211,7 +1211,7 @@ impl ShardWrites for Disk {
         Ok(())
     }
 
-    fn read_at(&self, slot: usize, offset: u32, into: &mut [u8]) -> Result<(), String> {
+    fn read_at(&self, slot: usize, offset: u64, into: &mut [u8]) -> Result<(), String> {
         self.reads.set(self.reads.get() + 1);
         if self.refuse_reads == Some(slot) {
             return Err("the storage handle is closed".into());

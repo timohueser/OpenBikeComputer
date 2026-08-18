@@ -1373,7 +1373,7 @@ fn a_malformed_cell_is_a_format_error() {
     // 3. A leaf index word naming a chunk the cell does not have. Relocated blindly it would point
     //    into the *next* cell's chunks — geometry from somewhere else, drawn without complaint.
     let err = broken(&|b, lod| {
-        let Some(word) = (0..lod.node_count).map(|k| lod.index_offset + k * 4).find(|&at| {
+        let Some(word) = (0..lod.node_count).map(|k| lod.index_offset as usize + k * 4).find(|&at| {
             let v = u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
             v & obc_formats::obcm::BRANCH_BIT == 0 && v != obc_formats::obcm::EMPTY_LEAF
         }) else {
@@ -1387,7 +1387,7 @@ fn a_malformed_cell_is_a_format_error() {
     // 4. A branch whose children fall outside the cell's index.
     let err = broken(&|b, lod| {
         let Some(word) = (0..lod.node_count)
-            .map(|k| lod.index_offset + k * 4)
+            .map(|k| lod.index_offset as usize + k * 4)
             .find(|&at| u32::from_le_bytes(b[at..at + 4].try_into().unwrap()) & obc_formats::obcm::BRANCH_BIT != 0)
         else {
             return false;
@@ -1406,7 +1406,7 @@ fn a_malformed_cell_is_a_format_error() {
         if lod.chunk_count < 2 {
             return false;
         }
-        let table = lod.index_offset + lod.node_count * 4;
+        let table = lod.index_offset as usize + lod.node_count * 4;
         b[table + 4..table + 8].copy_from_slice(&(lod.chunk_size as u32 + 1).to_le_bytes());
         true
     });
@@ -1414,7 +1414,7 @@ fn a_malformed_cell_is_a_format_error() {
 
     // 6. …and `offsets[0]`, which the format fixes at 0.
     let err = broken(&|b, lod| {
-        let table = lod.index_offset + lod.node_count * 4;
+        let table = lod.index_offset as usize + lod.node_count * 4;
         b[table..table + 4].copy_from_slice(&9u32.to_le_bytes());
         true
     });
@@ -1429,7 +1429,8 @@ fn the_skin_is_stamped_onto_the_output() {
     let table = |map: &[u8]| -> Vec<u8> {
         // Through the file's own `Offset Scale` (§1.1): since v14 `Style Offset` counts units, and
         // reading it as bytes lands inside the header rather than obviously outside the file.
-        let style_offset = obcm_assemble::shard::header_style_offset(map).expect("the map states its style offset");
+        let style_offset =
+            obcm_assemble::shard::header_style_offset(map).expect("the map states its style offset") as usize;
         let count = map[style_offset] as usize;
         map[style_offset..style_offset + 1 + count * obc_formats::obcm::STYLE_RECORD_LEN].to_vec()
     };

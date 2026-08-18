@@ -570,17 +570,17 @@ impl FileSource {
 }
 
 impl ByteSource for FileSource {
-    fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), IoError> {
-        let end = (offset as u64).checked_add(buf.len() as u64).ok_or(IoError::BadOffset)?;
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), IoError> {
+        let end = offset.checked_add(buf.len() as u64).ok_or(IoError::BadOffset)?;
         if end > u64::from(self.len) {
             return Err(IoError::BadOffset);
         }
         let mut file = self.file.try_borrow_mut().map_err(|_| IoError::Io)?;
-        file.seek(SeekFrom::Start(u64::from(offset))).map_err(|_| IoError::Io)?;
+        file.seek(SeekFrom::Start(offset)).map_err(|_| IoError::Io)?;
         file.read_exact(buf).map_err(|_| IoError::Io)
     }
 
-    fn len(&self) -> u32 {
-        self.len
+    fn len(&self) -> u64 {
+        self.len.into()
     }
 }

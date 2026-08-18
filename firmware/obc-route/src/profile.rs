@@ -368,7 +368,7 @@ pub fn ride_elevation_profile(src: &dyn ByteSource) -> Result<Profile, Error> {
     while done < info.point_count {
         let n = ((info.point_count - done) as usize).min(BLOCK);
         let bytes = &mut buf[..n * point_len];
-        src.read_at(points_at + done * point_len as u32, bytes)?;
+        src.read_at(u64::from(points_at + done * point_len as u32), bytes)?;
         for rec in bytes.chunks_exact(point_len) {
             let lat = i32::from_le_bytes([rec[4], rec[5], rec[6], rec[7]]);
             let lon = i32::from_le_bytes([rec[8], rec[9], rec[10], rec[11]]);
@@ -449,7 +449,7 @@ pub fn ride_preview_polyline<const N: usize>(src: &dyn ByteSource) -> Result<Vec
     while done < info.point_count {
         let n = ((info.point_count - done) as usize).min(BLOCK);
         let bytes = &mut buf[..n * point_len];
-        src.read_at(points_at + done * point_len as u32, bytes)?;
+        src.read_at(u64::from(points_at + done * point_len as u32), bytes)?;
         for (i, rec) in bytes.chunks_exact(point_len).enumerate() {
             if done as usize + i != next {
                 continue;
@@ -509,7 +509,7 @@ pub fn elevation_sparkline(src: &dyn ByteSource) -> Option<[u8; SPARKLINE_BUCKET
     let src_len = src.len();
     for k in 0..h.chunk_count {
         let off = h.index_offset + k * CHUNK_META_LEN as u32;
-        if src.read_at(off, &mut meta_bytes).is_err() {
+        if src.read_at(off.into(), &mut meta_bytes).is_err() {
             continue;
         }
         let Ok(m) = parse_chunk_meta(&meta_bytes, src_len) else { continue };

@@ -29,7 +29,7 @@ struct CountingSource<'a> {
 }
 
 impl ByteSource for CountingSource<'_> {
-    fn read_at(&self, offset: u32, out: &mut [u8]) -> Result<(), SourceError> {
+    fn read_at(&self, offset: u64, out: &mut [u8]) -> Result<(), SourceError> {
         let start = offset as usize;
         let end = start.checked_add(out.len()).ok_or(SourceError::BadOffset)?;
         out.copy_from_slice(self.bytes.get(start..end).ok_or(SourceError::BadOffset)?);
@@ -37,8 +37,8 @@ impl ByteSource for CountingSource<'_> {
         Ok(())
     }
 
-    fn len(&self) -> u32 {
-        self.bytes.len() as u32
+    fn len(&self) -> u64 {
+        self.bytes.len() as u64
     }
 }
 

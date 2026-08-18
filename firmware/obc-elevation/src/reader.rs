@@ -135,7 +135,7 @@ impl<'a> TerrainReader<'a> {
         }
 
         // The directory: fully present, after the header, and not overlapping the cell blocks.
-        let total = src.len() as u64;
+        let total = src.len();
         let entries = header.cell_rows as u64 * header.cell_cols as u64;
         let dir_start = header.directory_offset as u64;
         let dir_end = dir_start + entries * DIR_ENTRY_LEN as u64;
@@ -157,7 +157,7 @@ impl<'a> TerrainReader<'a> {
         while done < entries {
             let n = ((entries - done) as usize).min(DIR_SCAN_ENTRIES);
             let bytes = &mut buf[..n * DIR_ENTRY_LEN];
-            self.src.read_at((dir_start + done * DIR_ENTRY_LEN as u64) as u32, bytes)?;
+            self.src.read_at(dir_start + done * DIR_ENTRY_LEN as u64, bytes)?;
             for entry in bytes.chunks_exact(DIR_ENTRY_LEN) {
                 let offset = u32::from_le_bytes([entry[0], entry[1], entry[2], entry[3]]);
                 if offset == DIR_ABSENT {
@@ -270,7 +270,7 @@ impl<'a> TerrainReader<'a> {
             return Some(i16::from_le_bytes([resident[at], resident[at + 1]]));
         }
         let (slot, buf) = cache.reserve(tile);
-        if self.src.read_at(tile, buf).is_err() {
+        if self.src.read_at(tile.into(), buf).is_err() {
             cache.invalidate(slot);
             return None;
         }
@@ -306,7 +306,7 @@ impl<'a> TerrainReader<'a> {
         let slot = di as u64 * self.header.cell_cols as u64 + dj as u64;
         let at = self.header.directory_offset as u64 + slot * DIR_ENTRY_LEN as u64;
         let mut entry = [0u8; DIR_ENTRY_LEN];
-        self.src.read_at(at as u32, &mut entry)?;
+        self.src.read_at(at, &mut entry)?;
         let offset = u32::from_le_bytes(entry);
         if offset == DIR_ABSENT {
             return Ok(None);
