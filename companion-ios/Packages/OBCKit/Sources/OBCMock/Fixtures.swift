@@ -222,7 +222,7 @@ extension FixtureSet {
     /// overrides it (E1 / #911) — what the reference firmware's reader reads
     /// (`obc_formats::obcm::VERSION`). A mock device is a device, so it states
     /// one rather than serving the pre-E1 short read by default.
-    public static let defaultObcmVersion: UInt8 = 13
+    public static let defaultObcmVersion: UInt8 = 14
 
     /// The optional contracts a mock device announces unless a fixture overrides them (WX3 §11):
     /// current firmware implements weather, so the mock does too — otherwise every mock run would
