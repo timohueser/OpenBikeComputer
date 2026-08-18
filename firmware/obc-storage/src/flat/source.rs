@@ -445,6 +445,63 @@ mod tests {
         store.with_source(ids[0], None, |source| assert_eq!(source.len(), LEN as u32)).expect("it opens again");
     }
 
+    /// **A later joiner may not shorten what an earlier reader is already serving.** The one real bug
+    /// the aliasing rework introduced, caught in review, and the sequence is only expressible *because*
+    /// of the rework: `source` → an amend that trims the entry → a second `open` on the same key. The
+    /// second open joins the row by refcount and used to overwrite its length with the trimmed one,
+    /// which handed the original source `Err(Io)` at offsets below the `len()` it had just reported —
+    /// a silent truncation, which is the one outcome `source`'s docs promise the runtime refusal never
+    /// degrades to.
+    ///
+    /// The read past the *new* end is the whole point: it is inside the first reader's revision, and
+    /// §2.1 says a handle keeps reading the revision it resolved.
+    #[test]
+    fn a_second_open_cannot_shorten_a_reader_already_serving_the_row() {
+        let (disk, ids) = fixture(1);
+        let store = FlatStore::mount(&disk);
+
+        let live = store.source(ids[0], None).expect("the object opens");
+        assert_eq!(live.len(), LEN as u32);
+
+        // An amend that trims the entry to a third of its length, beside the live source. `Amend`
+        // keeps the extents the entry already holds and rewrites only the metadata.
+        const SHORT: u64 = 1_000;
+        let trimmed = EntryMeta {
+            id: ids[0],
+            revision: Revision(1),
+            kind: ObjectKind::MapShard,
+            flags: EntryFlags::NONE,
+            payload_len: SHORT,
+            payload_crc: 0,
+            name: DisplayName::new("trimmed").expect("a short name"),
+        };
+        store
+            .commit(&[Mutation::Put { meta: trimmed, source: PutSource::Amend }])
+            .expect("the amend lands beside the open source");
+
+        // The second reader joins the *same* row — same `(id, revision)`, so same hold.
+        let joiner = Store::open(&store, ids[0], None).expect("a second reader joins the row");
+
+        // The original source still reports, and still serves, the whole revision it resolved.
+        assert_eq!(live.len(), LEN as u32, "the source's own length is captured at open and cannot move");
+        let mut tail = [0u8; 64];
+        live.read_at(LEN as u32 - 64, &mut tail).expect("past the amended end is still inside the resolved revision");
+        assert_eq!(tail[..], payload()[LEN - 64..], "and the bytes are the object's own");
+
+        // A fresh read through the joiner's handle is bounded by the row, which now holds the wider
+        // of the two lengths — the join adopts a longer amend and refuses a shorter one.
+        let mut whole = vec::from_elem(0u8, LEN);
+        assert_eq!(
+            store.read(&joiner, 0, &mut whole).expect("the joined handle reads"),
+            LEN,
+            "the row kept the longer length"
+        );
+
+        store.close(joiner);
+        let handle = live.release();
+        store.close(handle);
+    }
+
     /// The other half of the same trade: a source and a writer coexisting at all. It is the board's
     /// shape — a mounted shard read while an upload commits — and before the ruling it did not
     /// compile, which is why it is worth a test of its own rather than a comment.
@@ -481,6 +538,36 @@ mod tests {
 
         let handle = live.release();
         store.close(handle);
+    }
+
+    /// **A listing that outlives its catalog stops, and says so.** The other case the `&self` seam made
+    /// reachable: an `entries()` iterator can now be held across a commit, and two commits later the
+    /// copy it is walking has been rewritten underneath its cursor. Serving those bytes as if they
+    /// were the listing's own — with `entries_ok()` still `true` — would splice two catalogs together
+    /// and call the result complete.
+    #[test]
+    fn a_listing_that_outlives_its_commit_stops_short_and_reports_it() {
+        let (disk, ids) = fixture(3);
+        let store = FlatStore::mount(&disk);
+
+        // Drained inside its own moment: the whole catalog, and the flag agrees.
+        assert_eq!(Store::entries(&store).count(), 3);
+        assert!(store.entries_ok());
+
+        // Now hold one open across a commit. The first entry is served — it was read before anything
+        // moved — and the walk stops at the commit rather than crossing it.
+        let mut listing = Store::entries(&store);
+        assert!(listing.next().is_some(), "the first entry comes from the catalog the listing was made against");
+        store
+            .commit(&[Mutation::Remove { id: ids[2], revision: Revision(1) }])
+            .expect("a commit lands while the listing is alive");
+        assert!(listing.next().is_none(), "the listing does not cross the commit");
+        drop(listing);
+        assert!(!store.entries_ok(), "and a short listing is never silent");
+
+        // The store itself is unharmed: a fresh listing is complete again, and one entry shorter.
+        assert_eq!(Store::entries(&store).count(), 2);
+        assert!(store.entries_ok());
     }
 
     /// The leak detector itself. Dropping a source that still holds its handle is the mistake it
