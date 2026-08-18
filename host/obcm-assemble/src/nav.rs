@@ -146,7 +146,7 @@ use crate::grid::{on_grid_boundary, UBox};
 use crate::input::Cell;
 use crate::qtree;
 use crate::scratch::{ScratchId, ScratchStore};
-use crate::shard::{align_up, filler_len, scaled, FILLER_RUN, SCALE};
+use crate::emit::{align_up, filler_len, scaled, FILLER_RUN, SCALE};
 use crate::{prune, Error, Result};
 
 /// Largest neighbour delta the `int16` fields hold (§8.3). The packer's own split bound is 32 000;

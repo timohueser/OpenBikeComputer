@@ -95,18 +95,6 @@ const BANDS: &str = r#"{"bands": [
     {"id": "network", "cell_log2": 18, "lods": [],     "sections": ["nav", "poi"], "role": "core"}
 ]}"#;
 
-/// The **v1 table's actual shape**: `mid` and `fine` are two bands at two cell sizes that share the
-/// one `geometry` role, which is the configuration the single-geometry-band table above cannot
-/// exercise. Kept permanently, because the set planner is defined by *role* and a per-band tiling
-/// looks correct until a schema names two bands of one role — at which point it emits two
-/// overlapping antichains of `Role == 1` shards and §5.3 refuses the set after every byte is
-/// written.
-const BANDS_TWO_GEOMETRY: &str = r#"{"bands": [
-    {"id": "coarse",  "cell_log2": 20, "lods": [0], "role": "coarse"},
-    {"id": "mid",     "cell_log2": 19, "lods": [1], "role": "geometry"},
-    {"id": "fine",    "cell_log2": 18, "lods": [2], "role": "geometry"},
-    {"id": "network", "cell_log2": 18, "lods": [],  "sections": ["nav", "poi"], "role": "core"}
-]}"#;
 
 fn config() -> Config {
     Config::parse(CONFIG).expect("test config parses")
@@ -417,10 +405,9 @@ fn skin(cfg: &Config) -> Skin {
 
 /// `assemble(cut(X))`: graft every cell the cutter wrote back into one map.
 fn assembled(dir: &Path, cfg: &Config, summary: &CutSummary) -> (Vec<u8>, MemoryStore) {
-    let opts = Options { name: "Oracle".into(), accept_partial: true, ..Default::default() };
-    let (out, store) = assemble_with(dir, cfg, summary, &opts).expect("the assembly runs");
-    assert_eq!(out.shards.len(), 1, "a fixture-scale map takes the single-file fast path (OBCA §5.5)");
-    let bytes = store.shards[0].0.clone();
+    let opts = Options { accept_partial: true, ..Default::default() };
+    let (_out, store) = assemble_with(dir, cfg, summary, &opts).expect("the assembly runs");
+    let bytes = store.map.0.clone();
     (bytes, store)
 }
 
@@ -796,42 +783,13 @@ fn boundary_junctions_unify_into_one_node() {
     assert!(on_seam.iter().any(|n| n.3 >= 2), "the unified seam junction must join both sides: {on_seam:?}");
 }
 
-/// The set the assembler wrote is a legal OBCS set: one core shard spanning the assembly bbox, the
-/// manifest last, and the digests matching the bytes (OBCA §5.2/§5.3).
-#[test]
-fn the_output_is_a_legal_single_file_set() {
-    let (_, grafted, store, bbox) = both("set");
-    let m = &store.manifest;
-    assert_eq!(&m[0..4], b"OBCS");
-    assert_eq!(m[4], obc_formats::obcs::VERSION, "manifest version");
-    assert_eq!(m[5], obc_formats::obcm::VERSION);
-    assert_eq!(m[6], 1, "the single-file fast path is a set of one (§5.5)");
-    assert_eq!(m[7], 0, "…and that shard is the core");
-    assert_eq!(m.len(), 72 + 64, "72 + 64 × shard count");
-    assert_eq!(m[72], 0, "role core");
-    assert_eq!(u32::from_le_bytes(m[92..96].try_into().unwrap()) as usize, grafted.len(), "recorded size");
-    // The shard bbox in the manifest is the header bbox, verbatim, and both are the assembly bbox.
-    let (min_lon, min_lat, max_lon, max_lat) = bbox;
-    assert_eq!(i32::from_le_bytes(m[76..80].try_into().unwrap()) as i64, min_lat);
-    assert_eq!(i32::from_le_bytes(m[80..84].try_into().unwrap()) as i64, min_lon);
-    assert_eq!(i32::from_le_bytes(m[84..88].try_into().unwrap()) as i64, max_lat);
-    assert_eq!(i32::from_le_bytes(m[88..92].try_into().unwrap()) as i64, max_lon);
-    let digest: [u8; 32] = m[96..128].try_into().unwrap();
-    assert_eq!(digest.to_vec(), sha256(&grafted), "the manifest's digest is the shard's own");
-    // …and the member id is unbound: an assembly names no objects until a client uploads it (§5.2).
-    assert_eq!(&m[128..136], &[0u8; 8], "an assembled set is unbound");
-}
-
 /// **The scratch is returned.** Since #1116 D4 the merged graph outlives the merge — the §8.2 index,
 /// the §8.3 records, the placement plan and the edge-pool plan stay on the scratch seam until the
 /// last shard that could name them has been written *and* verified, which is what lets the section be
 /// streamed instead of buffered. That makes "who deletes them" a real question with exactly one right
 /// answer, and a wrong one is invisible in the output: the map is correct and the working area fills.
 ///
-/// So this runs a whole assembly through an observable store and asserts it ends empty. The split
-/// variant is the one that matters — it writes several shards from the *same* streams, so a release
-/// that fired after the first one would have produced a broken second shard, and a release that never
-/// fires at all shows up only here.
+/// So this runs a whole assembly through an observable store and asserts it ends empty.
 #[test]
 fn an_assembly_hands_its_whole_scratch_back() {
     use obcm_assemble::{assemble_full, MemoryScratch};
@@ -846,45 +804,34 @@ fn an_assembly_hands_its_whole_scratch_back() {
         .map(|c| MemorySource(std::fs::read(dir.join(&c.path)).expect("a cell artifact")))
         .collect();
 
-    for force_split in [false, true] {
-        let inputs: Vec<CellInput<'_>> = summary
-            .cells
-            .iter()
-            .zip(&sources)
-            .map(|(c, src)| CellInput { id: to_engine_cell(c.id), band: c.band.clone(), src, partial: c.partial })
-            .collect();
-        let opts = Options {
-            name: "ScratchReturned".into(),
-            accept_partial: true,
-            force_split,
-            target_shard_bytes: 1,
-            ..Default::default()
-        };
-        let store_scratch = MemoryScratch::new();
-        let mut store = MemoryStore::default();
-        let out = assemble_full(
-            inputs,
-            Vec::new(),
-            None,
-            &schema_with(&cfg, BANDS),
-            &skin(&cfg),
-            &opts,
-            &mut store,
-            &NoClock,
-            &store_scratch,
-        )
-        .expect("the assembly runs");
-        assert!(!out.shards.is_empty());
-        if force_split {
-            assert!(out.shards.len() > 1, "the split variant has to actually split to be the test it claims");
-        }
-        assert_eq!(
-            store_scratch.resident_bytes(),
-            0,
-            "force_split={force_split}: the assembly left {} scratch byte(s) behind",
-            store_scratch.resident_bytes()
-        );
-    }
+    let inputs: Vec<CellInput<'_>> = summary
+        .cells
+        .iter()
+        .zip(&sources)
+        .map(|(c, src)| CellInput { id: to_engine_cell(c.id), band: c.band.clone(), src, partial: c.partial })
+        .collect();
+    let opts = Options { accept_partial: true, ..Default::default() };
+    let store_scratch = MemoryScratch::new();
+    let mut store = MemoryStore::default();
+    let out = assemble_full(
+        inputs,
+        Vec::new(),
+        None,
+        &schema_with(&cfg, BANDS),
+        &skin(&cfg),
+        &opts,
+        &mut store,
+        &NoClock,
+        &store_scratch,
+    )
+    .expect("the assembly runs");
+    assert!(out.bytes > 0);
+    assert_eq!(
+        store_scratch.resident_bytes(),
+        0,
+        "the assembly left {} scratch byte(s) behind",
+        store_scratch.resident_bytes()
+    );
 }
 
 fn sha256(bytes: &[u8]) -> Vec<u8> {
@@ -1035,176 +982,145 @@ fn the_engine_and_the_packer_agree_on_the_grid() {
     }
 }
 
-// --- volume sets (OBCA §5) --------------------------------------------------------------------
+// --- the spliced terrain region (OBCM §1.3) ----------------------------------------------------
 
-/// Forcing the split path: with a one-byte shard target, the fixture becomes a **multi-file set**,
-/// and every §5.1/§5.3 invariant has to hold — one core spanning the assembly bbox and carrying no
-/// geometry, one coarse shard spanning it too, geometry shards tiling it without overlap, every file
-/// listing the full ladder, and nav + POIs only in the core.
+/// **`MapTables::terrain()` finally has a producer, and this is it end to end.**
 ///
-/// The same graft bytes go out either way, so the test also pins the property that makes sharding
-/// safe: **the set's geometry is exactly the single file's**, chunk for chunk.
+/// Assemble the fixture *with* a raster, then read an elevation back the way a device does: parse
+/// the map's header, take the §1.3 window it names, hand that to the real `TerrainReader`, and
+/// sample it. Nothing here reaches into the assembler's internals — the only input to the read side
+/// is the finished file, which is the whole point of a region pointer.
+///
+/// The reader half of §1.3 has been real and tested since v14 landed, but its only producer was
+/// `obcm-testkit`'s `splice_terrain`, a test helper writing bytes by hand. A format whose writer is
+/// a test fixture is a format with one opinion about itself; this closes that.
 #[test]
-fn a_forced_split_produces_a_legal_volume_set() {
+fn a_spliced_raster_is_readable_through_the_headers_window() {
+    use obc_elevation::{TerrainReader, TileCache};
+    use obc_formats::io::SliceSource;
+    use obcm_assemble::grid::GRID_ORIGIN;
+    use obcm_assemble::{assemble_full, MemoryScratch, TerrainCellInput, TerrainJob, TerrainParams};
+
     let cfg = config();
     let (ing, ways) = fixture(&cfg);
-    let dir = scratch("set-split");
-    let cut_summary = cut(&dir, &cfg, &ing, &ways);
-
-    let single = Options { name: "Single".into(), accept_partial: true, ..Default::default() };
-    let (one, _) = assemble_with(&dir, &cfg, &cut_summary, &single).expect("the single-file assembly runs");
-    assert_eq!(one.shards.len(), 1);
-
-    let split = Options { target_shard_bytes: 1, force_split: true, ..single.clone() };
-    let (set, store) = assemble_with(&dir, &cfg, &cut_summary, &split).expect("the split assembly runs");
-    assert!(set.shards.len() > 2, "a one-byte target must split into core + coarse + geometry shards");
-    assert_eq!(store.shards.len(), set.shards.len());
-
-    let cores: Vec<_> = set.shards.iter().filter(|s| s.role == obcm_assemble::BandRole::Core).collect();
-    assert_eq!(cores.len(), 1, "exactly one core shard (§5.3)");
-    assert_eq!(cores[0].bbox, set.assembly_box, "the core spans the assembly bbox");
-    assert_eq!(cores[0].index, 0, "the core is shard 0 here, and the manifest says which");
-    assert_eq!(store.manifest[7] as usize, cores[0].index);
-    assert_eq!(store.manifest[6] as usize, set.shards.len(), "shard count");
-    assert!(set.shards.iter().any(|s| s.role == obcm_assemble::BandRole::Coarse), "a coarse shard exists");
-    assert!(set.shards.iter().any(|s| s.role == obcm_assemble::BandRole::Geometry), "geometry shards exist");
-
-    // Every shard verified (the engine ran §4.8 on each) and lists the full ladder; sections live
-    // only in the core.
-    let mut totals = vec![0u64; cfg.lods.len()];
-    for s in &set.shards {
-        let report = s.verify.as_ref().expect("every shard is verified before the manifest");
-        let src = SliceSource(&store.shards[s.index].0);
-        let tables = MapTables::parse(&src).expect("each shard is a valid OBCM file on its own");
-        let cache = MapCache::new_boxed();
-        let reader = Reader::new(&src, &tables, &cache);
-        assert_eq!(reader.lods().len(), cfg.lods.len(), "every shard lists the full ladder (§5.1)");
-        assert!(!reader.nav_profiles().is_empty(), "every shard carries the profile table");
-        let core = s.role == obcm_assemble::BandRole::Core;
-        assert_eq!(reader.nav_directory().is_empty(), !core, "the nav graph lives only in the core (§5.1)");
-        assert_eq!(report.nav_nodes > 0, core);
-        for (i, l) in reader.lods().iter().enumerate() {
-            totals[i] += l.chunk_count as u64;
-        }
-        // A geometry/coarse shard's bbox is a node of the assembly quadtree, inside it.
-        assert!(s.bbox.span_log2 <= set.assembly_box.span_log2);
-    }
-
-    // The set carries exactly the geometry the single file does.
-    let single_bytes = {
-        let (bytes, _) = assembled(&dir, &cfg, &cut_summary);
-        bytes
+    let dir = scratch("terrain-splice");
+    let summary = cut(&dir, &cfg, &ing, &ways);
+    let sources: Vec<MemorySource> = summary
+        .cells
+        .iter()
+        .map(|c| MemorySource(std::fs::read(dir.join(&c.path)).expect("a cell artifact")))
+        .collect();
+    let inputs = || -> Vec<CellInput<'_>> {
+        summary
+            .cells
+            .iter()
+            .zip(&sources)
+            .map(|(c, src)| CellInput { id: to_engine_cell(c.id), band: c.band.clone(), src, partial: c.partial })
+            .collect()
     };
-    let src = SliceSource(&single_bytes);
-    let tables = MapTables::parse(&src).expect("parses");
-    let cache = MapCache::new_boxed();
-    let reader = Reader::new(&src, &tables, &cache);
-    let expected: Vec<u64> = reader.lods().iter().map(|l| l.chunk_count as u64).collect();
-    assert_eq!(totals, expected, "the shards' chunks must add up to the single file's, level by level");
-}
-
-/// **Two geometry bands, one tiling** — the shape of the real v1 schema, and the case a per-band
-/// split gets wrong.
-///
-/// §5.1 partitions a set by **role**, not by band: "geometry shards carry the `mid`- and
-/// `fine`-band LODs and nothing else", and "the shards of one role tile the assembly bbox". At the
-/// v1 table `mid` (`2^19`) and `fine` (`2^18`) are two bands of one role, so a planner that tiles
-/// per band emits two overlapping antichains of `Role == 1` shards whose areas sum to twice the
-/// assembly — which §5.3 rejects, *after* every shard has been written, leaving a directory of
-/// orphans and no manifest.
-///
-/// This test therefore asserts the property directly: with a one-byte target and two geometry bands,
-/// the `Role == 1` shards must be **one** antichain — pairwise disjoint, covering the assembly bbox
-/// exactly once — and each of them must carry both bands' LODs, with the whole set's chunk counts
-/// still adding up to the single file's level by level.
-#[test]
-fn two_geometry_bands_share_one_tiling() {
-    let cfg = config();
-    let (ing, ways) = fixture(&cfg);
-    let dir = scratch("two-geometry-bands");
-    let cut_summary = cut_with(&dir, &cfg, &ing, &ways, BANDS_TWO_GEOMETRY);
-    assert!(
-        cut_summary.cells.iter().any(|c| c.band == "mid") && cut_summary.cells.iter().any(|c| c.band == "fine"),
-        "the cutter must have written both geometry bands"
-    );
-
-    let base = Options { name: "TwoBands".into(), accept_partial: true, ..Default::default() };
-    let (one, _) = assemble_bands(&dir, &cfg, &cut_summary, &base, BANDS_TWO_GEOMETRY).expect("single file");
-    assert_eq!(one.shards.len(), 1, "the fixture still fits one file");
-
-    let split = Options { target_shard_bytes: 1, force_split: true, ..base };
-    let (set, store) =
-        assemble_bands(&dir, &cfg, &cut_summary, &split, BANDS_TWO_GEOMETRY).expect("the split assembly runs");
-
-    let geometry: Vec<&obcm_assemble::ShardSummary> =
-        set.shards.iter().filter(|s| s.role == obcm_assemble::BandRole::Geometry).collect();
-    assert!(geometry.len() > 1, "a one-byte target must split the geometry role into several shards");
-    // One antichain: the squares are pairwise disjoint and their areas add up to the assembly's
-    // exactly once. Two tilings would double the sum — the bug this test exists for.
-    let area = |b: obcm_assemble::grid::AlignedBox| 1u128 << (2 * b.span_log2);
-    assert_eq!(
-        geometry.iter().map(|s| area(s.bbox)).sum::<u128>(),
-        area(set.assembly_box),
-        "the geometry shards must tile the assembly bbox exactly once"
-    );
-    for (i, a) in geometry.iter().enumerate() {
-        for b in &geometry[i + 1..] {
-            let (a0, a1, a2, a3) = a.bbox.ubox();
-            let (b0, b1, b2, b3) = b.bbox.ubox();
-            assert!(!(a0 < b2 && b0 < a2 && a1 < b3 && b1 < a3), "geometry shards {} and {} overlap", a.index, b.index);
-        }
-    }
-
-    // Each geometry shard carries the **union** of the two bands' LODs (§5.1), and no shard of any
-    // other role carries either — checked through the reader, on the bytes.
-    let lods_present = |index: usize| -> Vec<usize> {
-        let src = SliceSource(&store.shards[index].0);
-        let tables = MapTables::parse(&src).expect("a shard parses");
-        let cache = MapCache::new_boxed();
-        let reader = Reader::new(&src, &tables, &cache);
-        assert_eq!(reader.lods().len(), cfg.lods.len(), "every shard lists the full ladder (§5.1)");
-        reader.lods().iter().enumerate().filter(|(_, l)| l.node_count > 0).map(|(i, _)| i).collect()
-    };
-    let carried: Vec<usize> = geometry.iter().flat_map(|s| lods_present(s.index)).collect();
-    assert!(carried.contains(&1) && carried.contains(&2), "the geometry shards carry both mid (LOD 1) and fine (2)");
-    for s in set.shards.iter().filter(|s| s.role != obcm_assemble::BandRole::Geometry) {
-        let other = lods_present(s.index);
-        assert!(!other.contains(&1) && !other.contains(&2), "shard {} carries geometry-role LODs", s.index);
-    }
-
-    // …and the split moved bytes, it did not invent or lose them.
-    let mut totals = vec![0u64; cfg.lods.len()];
-    for s in &set.shards {
-        s.verify.as_ref().expect("every shard is verified before the manifest");
-        let src = SliceSource(&store.shards[s.index].0);
-        let tables = MapTables::parse(&src).expect("parses");
-        let cache = MapCache::new_boxed();
-        let reader = Reader::new(&src, &tables, &cache);
-        for (i, l) in reader.lods().iter().enumerate() {
-            totals[i] += l.chunk_count as u64;
-        }
-    }
-    let single = {
-        let src = SliceSource(&store.shards[0].0);
-        let _ = &src;
-        let (single, single_store) = assemble_bands(
-            &dir,
-            &cfg,
-            &cut_summary,
-            &Options { accept_partial: true, ..Default::default() },
-            BANDS_TWO_GEOMETRY,
+    let opts = Options { accept_partial: true, ..Default::default() };
+    let run = |inputs: Vec<CellInput<'_>>, terrain: Option<TerrainJob<'_>>| {
+        let mut store = MemoryStore::default();
+        let out = assemble_full(
+            inputs,
+            Vec::new(),
+            terrain,
+            &schema_with(&cfg, BANDS),
+            &skin(&cfg),
+            &opts,
+            &mut store,
+            &NoClock,
+            &MemoryScratch::new(),
         )
-        .expect("single file");
-        assert_eq!(single.shards.len(), 1);
-        single_store.shards[0].0.clone()
+        .expect("the assembly runs");
+        (out, store.map.0)
     };
-    let src = SliceSource(&single);
-    let tables = MapTables::parse(&src).expect("parses");
-    let cache = MapCache::new_boxed();
-    let reader = Reader::new(&src, &tables, &cache);
-    let expected: Vec<u64> = reader.lods().iter().map(|l| l.chunk_count as u64).collect();
-    assert_eq!(totals, expected, "the set's chunks must add up to the single file's, level by level");
-    assert_eq!(store.manifest[6] as usize, set.shards.len(), "the manifest was written, so the set validated");
+
+    // --- without a raster: §1.3's unambiguous absence. ---
+    let (plain, plain_bytes) = run(inputs(), None);
+    assert!(plain.terrain.is_none(), "no raster was handed over");
+    let src = SliceSource(&plain_bytes);
+    assert_eq!(
+        MapTables::parse(&src).expect("the map parses").terrain(),
+        None,
+        "a map with no elevation carries the (0, 0) pair, and the reader reports None"
+    );
+    assert_eq!(&plain_bytes[41..49], &[0u8; 8], "…which is both header fields written zero");
+
+    // --- with one: build a published cell covering the assembly square, at a lattice that tiles it
+    //     exactly (a `2^(cell-5)` posting is 32 samples an edge, OBCT §4.5). ---
+    // A cell no larger than the schema's `S_MAX`, which is what the assembly corner is snapped to
+    // (§4.2) — the terrain grid is a second lattice, and only cells at or below `S_MAX` tile the box.
+    let cell_log2 = 19u8;
+    assert!(u32::from(cell_log2) <= plain.assembly_box.span_log2);
+    let params = TerrainParams { posting_log2: cell_log2 - 5, cell_log2 };
+    let side = 1i64 << cell_log2;
+    let (ci, cj) = (
+        ((plain.assembly_box.min_lat - GRID_ORIGIN) / side) as u32,
+        ((plain.assembly_box.min_lon - GRID_ORIGIN) / side) as u32,
+    );
+    // A ramp rather than a constant: a block copied to the wrong offset, or a window off by a unit,
+    // reads as *some* elevation either way — only varying data can tell the difference.
+    let block_len = obc_formats::obct::cell_block_len(params.posting_log2, params.cell_log2).expect("a legal pairing");
+    let mut raster = vec![0u8; block_len as usize];
+    for (k, sample) in raster.chunks_exact_mut(2).enumerate() {
+        sample.copy_from_slice(&(1000i16 + (k % 500) as i16).to_le_bytes());
+    }
+    let mut w = obc_dem::container::ShardWriter::new(
+        std::io::Cursor::new(Vec::new()),
+        params.posting_log2,
+        params.cell_log2,
+        obc_dem::container::CellRect { min_i: ci, min_j: cj, rows: 1, cols: 1 },
+    )
+    .expect("a legal 1 × 1 container");
+    w.push(Some(&raster)).expect("the block is the right length");
+    let cell_bytes = w.finish().expect("finish").into_inner();
+    let cell_src = MemorySource(cell_bytes.clone());
+
+    let job = TerrainJob {
+        params,
+        cells: vec![TerrainCellInput {
+            id: obcm_assemble::grid::CellId::new(u32::from(cell_log2), ci as i64, cj as i64).expect("on the grid"),
+            src: &cell_src,
+            sha256: Some(sha256(&cell_bytes).try_into().expect("32 bytes")),
+        }],
+    };
+    let (with, with_bytes) = run(inputs(), Some(job));
+
+    let t = with.terrain.expect("the summary reports the region");
+    assert_eq!(t.cells, 1);
+    assert_eq!(t.slots, 1u64 << (2 * (plain.assembly_box.span_log2 - u32::from(cell_log2))), "the rectangle tiles the box");
+
+    // The header names a region, and the region is where the map ends.
+    let src = SliceSource(&with_bytes);
+    let tables = MapTables::parse(&src).expect("the map parses");
+    let region = tables.terrain().expect("the header names a §1.3 region");
+    assert_eq!(region.offset + region.len, with_bytes.len() as u64, "terrain sits last (§1.3)");
+    assert!(region.offset > 0, "…and byte 0 is the header, so a real region never starts there");
+    // `Terrain Length` counts units, so the window is the container rounded up — never shorter.
+    assert!(region.len >= t.bytes && region.len - t.bytes < 16, "the window is the container plus §1.2 filler");
+
+    // The whole point: the window parses as an ordinary OBCT container and samples like one.
+    let window = SliceSource(&with_bytes[region.offset as usize..(region.offset + region.len) as usize]);
+    let reader = TerrainReader::parse(&window).expect("the spliced region is a container");
+    let per_axis = 1u16 << (plain.assembly_box.span_log2 - u32::from(cell_log2));
+    assert_eq!((reader.header().cell_rows, reader.header().cell_cols), (per_axis, per_axis));
+    assert_eq!((reader.header().cell_min_i, reader.header().cell_min_j), (ci, cj));
+    // Sample inside the one square that actually has a block — the corner cell. The rest of the
+    // rectangle is directory `0`, which is how a selection wider than its coverage is published.
+    let mut cache: TileCache<4> = TileCache::new();
+    let (lat, lon) = (plain.assembly_box.min_lat + side / 2, plain.assembly_box.min_lon + side / 2);
+    let sampled = reader.sample(&mut cache, lat as i32, lon as i32).expect("a sample inside the present cell");
+    assert!((1000..1500).contains(&sampled), "the ramp we baked, read back through the window: {sampled}");
+
+    // Splicing moved no other offset (§1.3's reason for putting terrain last): the map with a raster
+    // is the map without one, byte for byte, up to the nav section's end.
+    assert_eq!(
+        &with_bytes[obc_formats::obcm::HEADER_LEN..plain_bytes.len()],
+        &plain_bytes[obc_formats::obcm::HEADER_LEN..],
+        "only the header's terrain pair and the appended region differ"
+    );
+    assert_eq!(&with_bytes[..41], &plain_bytes[..41], "and every header field before the pair is unmoved");
 }
 
 // --- input refusals and the degenerate selections (§4.1) ---------------------------------------
@@ -1261,7 +1177,7 @@ fn the_degenerate_selections_behave() {
     let summary = cut(&dir, &cfg, &ing, &ways);
     let loaded = load(&dir, &summary);
     let all: Vec<usize> = (0..loaded.cells.len()).collect();
-    let opts = Options { name: "Degenerate".into(), accept_partial: true, accept_holes: true, ..Default::default() };
+    let opts = Options { accept_partial: true, accept_holes: true, ..Default::default() };
 
     // A cell listed twice. Geometry would survive it (the graft keys cells by grid slot), but the
     // nav merge mints fresh ids per copy, so the interior graph would silently double — and §4.8
@@ -1275,7 +1191,6 @@ fn the_degenerate_selections_behave() {
     // the single `2^18` cell sits in one corner and every other leaf is empty.
     let one = loaded.index_of("network");
     let (single, _) = loaded.assemble(&cfg, &[one], &opts).expect("a one-cell assembly is legal");
-    assert_eq!(single.shards.len(), 1);
     assert_eq!(single.assembly_box.span_log2, 20, "the box snaps to S_MAX even for one 2^18 cell (§4.2)");
     assert!(single.assembly_box.contains_cell(loaded.cells[one].0));
 
@@ -1297,7 +1212,7 @@ fn the_degenerate_selections_behave() {
         let with_roads = loaded.index_of("network");
         let pick = if k == with_roads { vec![k] } else { vec![k, with_roads] };
         let (out, _) = loaded.assemble(&cfg, &pick, &opts).expect("an empty-nav cell assembles");
-        assert!(out.shards[0].verify.is_some(), "…and verifies");
+        assert!(out.verify.is_some(), "…and verifies");
     }
 
     // A band the schema does not name: refused before a byte is read, because the band is what
@@ -1430,7 +1345,7 @@ fn the_skin_is_stamped_onto_the_output() {
         // Through the file's own `Offset Scale` (§1.1): since v14 `Style Offset` counts units, and
         // reading it as bytes lands inside the header rather than obviously outside the file.
         let style_offset =
-            obcm_assemble::shard::header_style_offset(map).expect("the map states its style offset") as usize;
+            obcm_assemble::emit::header_style_offset(map).expect("the map states its style offset") as usize;
         let count = map[style_offset] as usize;
         map[style_offset..style_offset + 1 + count * obc_formats::obcm::STYLE_RECORD_LEN].to_vec()
     };
@@ -1483,7 +1398,7 @@ fn the_merge_reports_the_seams_it_unified_and_the_islands_it_pruned() {
     assert!(nav.largest_component_permille > 850, "the through network dominates the merged graph: {nav:?}");
     // …and the shard that was actually written is one connected component, which is what a rider
     // gets. A broken seam would show up as a much smaller number in exactly this field.
-    assert_eq!(out.shards[0].verify.as_ref().expect("verified").largest_component_permille, 1000);
+    assert_eq!(out.verify.as_ref().expect("verified").largest_component_permille, 1000);
     assert_eq!((nav.degree_truncated, nav.dropped_nodes), (0, 0), "nothing hit a cap in a fixture this small");
     assert_eq!(out.warnings, Vec::<String>::new(), "…so there is nothing to warn about either");
 }
@@ -1526,12 +1441,12 @@ fn a_hole_becomes_an_empty_leaf_and_the_rest_still_grafts() {
         let reader = Reader::new(&src, &tables, &cache);
         reader.lods().iter().map(|l| l.chunk_count).collect()
     };
-    let (with, without) = (counts(&whole_store.shards[0].0), counts(&store.shards[0].0));
+    let (with, without) = (counts(&whole_store.map.0), counts(&store.map.0));
     assert_eq!(with.len(), without.len(), "the ladder is unchanged");
     assert!(with.iter().zip(&without).any(|(a, b)| a > b), "the dropped cell's chunks are gone: {with:?} {without:?}");
     assert!(with.iter().zip(&without).all(|(a, b)| a >= b), "…and nothing else was invented: {with:?} {without:?}");
     // The §4.8 verify ran over the holed map and decoded every remaining feature.
-    assert!(out.shards[0].verify.as_ref().expect("verified").features > 0);
+    assert!(out.verify.as_ref().expect("verified").features > 0);
 }
 
 /// The §4.1 refusals. Each one is a case where proceeding quietly would ship a map that looks fine
@@ -1547,7 +1462,7 @@ fn the_assembler_refuses_what_the_spec_says_it_must() {
     // `partial`: the fixture's declared source box does not cover every cell square, so the cutter
     // marked some cells partial — and the assembler must not accept them silently.
     assert!(full.cells.iter().any(|c| c.partial), "the fixture must produce at least one partial cell");
-    let strict = Options { name: "Strict".into(), accept_partial: false, ..Default::default() };
+    let strict = Options { accept_partial: false, ..Default::default() };
     let err = assemble_with(&dir, &cfg, &full, &strict).expect_err("a partial cell must be refused");
     assert!(format!("{err}").contains("partial"), "got: {err}");
 

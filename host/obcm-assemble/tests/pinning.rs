@@ -25,7 +25,7 @@ use obc_pack::serialize::{pack_style_dict, NavProfile, Style};
 use obc_pack::{serialize_lods, LodLayer};
 use obcm_assemble::grid::AlignedBox;
 use obcm_assemble::schema::StyleRecord;
-use obcm_assemble::shard;
+use obcm_assemble::emit;
 
 /// A grid-aligned power-of-two box, because the engine's header writer takes one (§2.1) — the
 /// worked example's `2^19` square, so the values are the ones OBCA §7 already prints.
@@ -133,22 +133,27 @@ fn the_header_matches_the_packers_byte_for_byte() {
     // The packer's own choices for the three offsets, read back out of what it wrote and resolved
     // through its own unit — so the comparison is over identical inputs rather than over two
     // guesses at a layout.
-    let unit = shard::SCALE.unit();
+    let unit = emit::SCALE.unit();
     let at = |field: usize| u32::from_le_bytes(want[field..field + 4].try_into().unwrap()) as u64 * unit;
     let (lod_table_offset, poi_offset, nav_offset) = (at(26), at(32), at(36));
-    let got = shard::header_bytes(BOX, 3, marker_color, lod_table_offset, poi_offset, nav_offset).expect("in range");
+    let got = emit::header_bytes(BOX, 3, marker_color, lod_table_offset, poi_offset, nav_offset, 0, 0)
+        .expect("in range");
     assert_eq!(got, want, "the restated OBCM header diverged from obc-pack's");
     // …and the field the offsets were read from is the one the engine writes there: v14's style
     // table does not begin where the 49-byte header ends, it begins at the first unit boundary at
     // or after it, and the LOD table follows the style table by the same rule.
-    assert_eq!(at(21), shard::STYLE_OFFSET, "the style table is at align_up(HEADER_LEN)");
-    assert_eq!(shard::STYLE_OFFSET, 64, "…which at U = 16 is 64, so `Style Offset` reads 4");
+    assert_eq!(at(21), emit::STYLE_OFFSET, "the style table is at align_up(HEADER_LEN)");
+    assert_eq!(emit::STYLE_OFFSET, 64, "…which at U = 16 is 64, so `Style Offset` reads 4");
     assert_eq!(
         lod_table_offset,
-        shard::align_up(shard::STYLE_OFFSET + (1 + engine_styles.len() * STYLE_RECORD_LEN) as u64)
+        emit::align_up(emit::STYLE_OFFSET + (1 + engine_styles.len() * STYLE_RECORD_LEN) as u64)
     );
     // The two v14 tail fields: the scale byte both writers pin at `4`, and §1.3's absence.
-    assert_eq!(want[40], shard::SCALE.log2());
+    assert_eq!(want[40], emit::SCALE.log2());
+    // The packer never splices a raster, so its pair is §1.3's absence — and that is exactly the
+    // pair the engine is asked for here. An assembly *with* terrain is where the two writers now
+    // legitimately differ, which is why the header comparison passes the absence explicitly rather
+    // than letting it be a default.
     assert_eq!(&want[41..49], &[0u8; 8], "no embedded terrain region, offset and length both 0");
 }
 
@@ -159,18 +164,18 @@ fn the_header_matches_the_packers_byte_for_byte() {
 #[test]
 fn the_gap_behind_the_header_is_filler_and_the_packer_agrees() {
     let (bytes, _, engine_styles, marker_color) = packed();
-    let unit = shard::SCALE.unit();
+    let unit = emit::SCALE.unit();
     let at = |field: usize| u32::from_le_bytes(bytes[field..field + 4].try_into().unwrap()) as u64 * unit;
-    let block = shard::header_bytes(BOX, 3, marker_color, at(26), at(32), at(36)).expect("in range");
+    let block = emit::header_bytes(BOX, 3, marker_color, at(26), at(32), at(36), 0, 0).expect("in range");
     assert_eq!(block.len(), HEADER_LEN, "the header itself is 49 bytes, filler excluded");
-    let gap = shard::STYLE_OFFSET as usize - HEADER_LEN;
+    let gap = emit::STYLE_OFFSET as usize - HEADER_LEN;
     assert_eq!(gap, 15);
     assert_eq!(&bytes[HEADER_LEN..HEADER_LEN + gap], &vec![obc_formats::obcm::FILLER; gap][..], "§1.2's fill byte");
 
     // …and the same again behind the style table, where the LOD table's own boundary is bought.
-    let style_end = shard::STYLE_OFFSET as usize + 1 + engine_styles.len() * STYLE_RECORD_LEN;
+    let style_end = emit::STYLE_OFFSET as usize + 1 + engine_styles.len() * STYLE_RECORD_LEN;
     let style_gap = at(26) as usize - style_end;
-    assert_eq!(style_gap, shard::filler_len(style_end as u64) as usize);
+    assert_eq!(style_gap, emit::filler_len(style_end as u64) as usize);
     assert_eq!(&bytes[style_end..style_end + style_gap], &vec![obc_formats::obcm::FILLER; style_gap][..]);
     assert!(style_gap > 0, "a seven-style table ends mid-unit, so the fixture really exercises the run");
 }
@@ -182,10 +187,10 @@ fn the_gap_behind_the_header_is_filler_and_the_packer_agrees() {
 fn the_style_table_matches_the_packers_byte_for_byte() {
     let (bytes, pack_styles, engine_styles, _) = packed();
     let len = 1 + pack_styles.len() * STYLE_RECORD_LEN;
-    let at = shard::STYLE_OFFSET as usize;
-    assert_eq!(shard::pack_style_table(&engine_styles), &bytes[at..at + len]);
+    let at = emit::STYLE_OFFSET as usize;
+    assert_eq!(emit::pack_style_table(&engine_styles), &bytes[at..at + len]);
     // The independent spelling, in case the packed file ever stops carrying the table verbatim.
-    assert_eq!(shard::pack_style_table(&engine_styles), pack_style_dict(&pack_styles));
+    assert_eq!(emit::pack_style_table(&engine_styles), pack_style_dict(&pack_styles));
 }
 
 /// Restamping a skin is the *same* table, written back into a map the packer produced — the
@@ -198,17 +203,17 @@ fn a_restamp_writes_the_style_table_and_the_marker_and_nothing_else() {
     let len = 1 + pack_styles.len() * STYLE_RECORD_LEN;
     // Found through the header's own scaled `Style Offset`, which is exactly what a restamp has to
     // do since v14: the table no longer begins where the header ends.
-    let at = shard::header_style_offset(&bytes).expect("the packer's map states its style offset");
-    assert_eq!(at, shard::STYLE_OFFSET);
+    let at = emit::header_style_offset(&bytes).expect("the packer's map states its style offset");
+    assert_eq!(at, emit::STYLE_OFFSET);
     let at = at as usize;
 
     // A real restyle: the same ids (a skin may not renumber), different presentation values.
     let restyled: Vec<StyleRecord> =
         engine_styles.iter().map(|s| StyleRecord { color: !s.color, weight: 7, dashed: !s.dashed, ..*s }).collect();
     let mut map = bytes.clone();
-    shard::restamp_style_table(&mut map, &restyled, 0x1234).expect("the packer's own map restamps");
+    emit::restamp_style_table(&mut map, &restyled, 0x1234).expect("the packer's own map restamps");
 
-    assert_eq!(&map[at..at + len], shard::pack_style_table(&restyled), "the restamped table");
+    assert_eq!(&map[at..at + len], emit::pack_style_table(&restyled), "the restamped table");
     assert_eq!(&map[30..32], &0x1234u16.to_le_bytes(), "the header's marker colour");
     // Everything else is the file the packer wrote, byte for byte — the §1.2 filler between the
     // header and the table included, which a restamp that assumed the old adjacency would overrun.
@@ -222,16 +227,16 @@ fn a_restamp_writes_the_style_table_and_the_marker_and_nothing_else() {
     let mut renumbered = restyled.clone();
     renumbered[0].id = 200;
     assert!(matches!(
-        shard::restamp_style_table(&mut bytes.clone(), &renumbered, 0),
-        Err(shard::RestampError::IdMismatch { .. })
+        emit::restamp_style_table(&mut bytes.clone(), &renumbered, 0),
+        Err(emit::RestampError::IdMismatch { .. })
     ));
     assert!(matches!(
-        shard::restamp_style_table(&mut bytes.clone(), &restyled[..1], 0),
-        Err(shard::RestampError::TooFewStyles { .. })
+        emit::restamp_style_table(&mut bytes.clone(), &restyled[..1], 0),
+        Err(emit::RestampError::TooFewStyles { .. })
     ));
     assert!(matches!(
-        shard::restamp_style_table(&mut bytes[..HEADER_LEN - 1].to_vec(), &restyled, 0),
-        Err(shard::RestampError::ShorterThanHeader)
+        emit::restamp_style_table(&mut bytes[..HEADER_LEN - 1].to_vec(), &restyled, 0),
+        Err(emit::RestampError::ShorterThanHeader)
     ));
 }
 
@@ -241,13 +246,13 @@ fn a_restamp_writes_the_style_table_and_the_marker_and_nothing_else() {
 fn the_lod_table_matches_the_packers_byte_for_byte() {
     let (bytes, pack_styles, _, _) = packed();
     let lod_table_offset =
-        shard::align_up(shard::STYLE_OFFSET + (1 + pack_styles.len() * STYLE_RECORD_LEN) as u64) as usize;
+        emit::align_up(emit::STYLE_OFFSET + (1 + pack_styles.len() * STYLE_RECORD_LEN) as u64) as usize;
     let want = &bytes[lod_table_offset..lod_table_offset + 3 * LOD_ENTRY_LEN];
     // Re-read each entry's own fields, then ask the engine's writer to reproduce it.
     let mut got = Vec::new();
     for (i, max_mpp) in [None, Some(20.0), Some(4.0)].into_iter().enumerate() {
         let e = &want[i * LOD_ENTRY_LEN..][..LOD_ENTRY_LEN];
-        shard::push_lod_entry(
+        emit::push_lod_entry(
             &mut got,
             max_mpp,
             u32::from_le_bytes(e[4..8].try_into().unwrap()),
