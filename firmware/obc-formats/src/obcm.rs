@@ -663,6 +663,40 @@ mod tests {
         assert_eq!(nav_edge_step(&chunk[..NAV_CHUNK_SIZE - 1], 0), None);
     }
 
+    /// The refusals above are all taken at **ordinal 0**, where the refused record *is* the target.
+    /// That leaves the doc comment's actual claim — "applied `ordinal + 1` times", so an
+    /// intermediate record is bounds-checked exactly as the target is — resting on nothing a test
+    /// disagrees with.
+    ///
+    /// It is a live mutation, not a hypothetical: drop the `?` in
+    /// [`nav_edge_record_range`]'s loop for `unwrap_or(NAV_EDGE_MIN_LEN)`, or hoist the walk to
+    /// start at the target's own byte, and every assertion in the test above still passes. What
+    /// fails is only this: a chunk whose **record 0 is malformed** but which has a perfectly valid
+    /// record behind it must not resolve that later record. A walk that steps over a record it
+    /// could not parse is guessing where the next one starts, and on a §8.4 chunk it is guessing
+    /// inside attacker-shaped bytes.
+    #[test]
+    fn a_malformed_intermediate_record_refuses_the_ordinals_behind_it() {
+        // Record 0 is `Pt Count = 0` — refused by the `n < 2` guard. Byte 19 then holds a record
+        // that is valid in isolation, exactly where a 2-point record 0 would have ended.
+        let mut chunk = std::vec![FILLER; NAV_CHUNK_SIZE];
+        chunk[..NAV_EDGE_MIN_LEN].fill(0);
+        chunk[4..6].copy_from_slice(&0u16.to_le_bytes());
+        chunk[NAV_EDGE_MIN_LEN..NAV_EDGE_MIN_LEN + NAV_EDGE_MIN_LEN].fill(0);
+        chunk[NAV_EDGE_MIN_LEN + 4..NAV_EDGE_MIN_LEN + 6].copy_from_slice(&2u16.to_le_bytes());
+
+        // In isolation the record at 19 is well-formed — so the walk is the only thing that can
+        // refuse it, and this assertion is what makes the test non-vacuous.
+        assert_eq!(nav_edge_step(&chunk, NAV_EDGE_MIN_LEN), Some(NAV_EDGE_MIN_LEN));
+
+        // The target itself is refused, as before …
+        assert_eq!(nav_edge_record_range(&chunk, 0), None);
+        // … and so is every ordinal *behind* the malformed record, which is the new claim.
+        assert_eq!(nav_edge_record_range(&chunk, 1), None);
+        assert_eq!(nav_edge_record_range(&chunk, 2), None);
+        assert_eq!(nav_edge_record_range(&chunk, NAV_EDGE_ORDINAL_MASK), None);
+    }
+
     #[test]
     fn record_widths_pin_spec_arithmetic() {
         assert_eq!(STYLE_RECORD_LEN, 1 + 1 + 2 + 1 + 1 + 2);
