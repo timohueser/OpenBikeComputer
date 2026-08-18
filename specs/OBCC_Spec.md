@@ -183,7 +183,10 @@ to exactly one band. Roles obey these rules:
 - at most one `coarse` band carries LODs and no sections;
 - every other band is `geometry`, carries LODs, and has no sections.
 
-These roles determine volume-set placement as specified by OBCA §5. A consumer
+These roles named volume-set placement, which OBCA §5 specified and OBCM v14 (#1420) superseded —
+one map is one file, so a band's role no longer decides which file its content lands in. The roles
+survive as what they always also were: the **partition** of the schema's content, which is why the
+rule below is the one that matters and is unchanged. A consumer
 MUST reject a band partition that loses or duplicates content.
 
 Style ids are schema data because cell feature headers contain them. A schema

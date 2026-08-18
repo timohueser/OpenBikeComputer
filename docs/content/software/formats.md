@@ -1509,9 +1509,10 @@ The grid, cell cutter, catalog, schema/skin split, native assembler, browser was
 bridge, and coverage-selection UI are the current map-building path. Both the
 website and desktop app use them: regions, drawn boxes, and corridors buffered
 around GPX routes all become cell sets, and the same worker assembles identical
-volume-set bytes. The desktop host differs only at the edge, where it fetches
-through a native same-origin HTTPS transport and saves the files atomically into
-one local folder.
+bytes. The desktop host differs only at the edge, where it fetches
+through a native same-origin HTTPS transport and saves atomically into
+one local folder. (Those bytes were a *volume set* until OBCM v14 made a map one file — see
+[one map, several files](#one-map-several-files).)
 
 The device's reader and direct send consume that same assembled output. (Until
 [#1420](https://github.com/timohueser/OpenBikeComputer/issues/1420) that was a multi-file *set*,

@@ -456,7 +456,9 @@ Giving up on a set deletes every file of it; quiescing after one refused shard
 must delete nothing at all, because the caller is about to re-send that shard and
 the rest of the set has to still be there. So abandonment names the *set*, and
 everything else is a quiesce. Getting that wrong is not a slow retry, it is a map
-that seals a manifest over no files.
+that seals a manifest over no files. (Retired with the set — see the marker above: with one map in
+one object there is no multi-file staging to abandon, and the distinction collapses into the single
+transfer's own abort.)
 
 ### What actually limits an upload
 
