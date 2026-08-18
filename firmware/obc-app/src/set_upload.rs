@@ -561,7 +561,7 @@ mod tests {
         assert_eq!(session.shard_count(), 3, "…and neither is the shard count");
 
         let with = session.manifest_len();
-        assert_eq!(with, without + obcs::SHARD_RECORD_LEN as u32, "exactly one more 56-byte record");
+        assert_eq!(with, without + obcs::SHARD_RECORD_LEN as u32, "exactly one more record");
         assert_eq!(with, obcs::manifest_len(4) as u32);
         assert_eq!(manifest_announce(Some(&session), with), Ok(()));
         assert_eq!(

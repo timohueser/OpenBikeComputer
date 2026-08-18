@@ -76,12 +76,23 @@ fn set_bbox(bbox: Bbox) -> SetBBox {
 ///
 /// Digests are written as zeros: §5.3 lets a device defer the SHA-256 check, and nothing on the
 /// read path looks at them. A host writing a real set MUST fill them in.
+///
+/// Member ids are `1..=N` in record order, so the fixture is a **bound** manifest (§5.2) — the shape
+/// a card actually holds. Nothing here resolves through them: these shards are in-memory buffers the
+/// reader takes by index. They are filled in so that a fixture is never accidentally the unbound
+/// shape a mount is supposed to refuse.
 pub fn build_set(assembly: Bbox, styles: &[Style], core: usize, shards: &[ShardSpec]) -> SetFixture {
     let files: Vec<Vec<u8>> = shards.iter().map(|shard| build_file(shard.bbox, styles, &shard.lods)).collect();
     let records: Vec<Shard> = shards
         .iter()
         .zip(&files)
-        .map(|(shard, bytes)| Shard { role: shard.role, bbox: set_bbox(shard.bbox), bytes: bytes.len() as u32 })
+        .enumerate()
+        .map(|(index, (shard, bytes))| Shard {
+            role: shard.role,
+            bbox: set_bbox(shard.bbox),
+            bytes: bytes.len() as u32,
+            object_id: index as u64 + 1,
+        })
         .collect();
     let manifest = obcs::build(
         obc_formats::obcm::VERSION,

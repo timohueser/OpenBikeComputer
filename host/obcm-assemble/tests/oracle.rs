@@ -807,7 +807,7 @@ fn the_output_is_a_legal_single_file_set() {
     assert_eq!(m[5], obc_formats::obcm::VERSION);
     assert_eq!(m[6], 1, "the single-file fast path is a set of one (§5.5)");
     assert_eq!(m[7], 0, "…and that shard is the core");
-    assert_eq!(m.len(), 72 + 56, "72 + 56 × shard count");
+    assert_eq!(m.len(), 72 + 64, "72 + 64 × shard count");
     assert_eq!(m[72], 0, "role core");
     assert_eq!(u32::from_le_bytes(m[92..96].try_into().unwrap()) as usize, grafted.len(), "recorded size");
     // The shard bbox in the manifest is the header bbox, verbatim, and both are the assembly bbox.
@@ -818,6 +818,8 @@ fn the_output_is_a_legal_single_file_set() {
     assert_eq!(i32::from_le_bytes(m[88..92].try_into().unwrap()) as i64, max_lon);
     let digest: [u8; 32] = m[96..128].try_into().unwrap();
     assert_eq!(digest.to_vec(), sha256(&grafted), "the manifest's digest is the shard's own");
+    // …and the member id is unbound: an assembly names no objects until a client uploads it (§5.2).
+    assert_eq!(&m[128..136], &[0u8; 8], "an assembled set is unbound");
 }
 
 /// **The scratch is returned.** Since #1116 D4 the merged graph outlives the merge — the §8.2 index,

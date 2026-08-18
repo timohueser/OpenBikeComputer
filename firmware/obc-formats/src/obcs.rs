@@ -1,10 +1,49 @@
 //! OBCS volume-set manifest codec from `OBCA_Spec.md` §5.2 / §5.3.
 //!
-//! One *logical* map is a **set**: this small manifest plus `1..=32` physical files (§5). The
+//! One *logical* map is a **set**: this small manifest plus `1..=32` physical members (§5). The
 //! manifest is parsed on the device, so the layout is fixed, little-endian, and needs no
 //! allocation — a parsed [`SetManifest`] is a plain value with a fixed-capacity shard array
-//! (24 B per shard resident; the 32-byte digests stay in the caller's byte buffer and are
+//! (32 B per shard resident; the 32-byte digests stay in the caller's byte buffer and are
 //! reached through [`shard_digest`], because a device defers hashing).
+//!
+//! ## A member is named by identity, not by name (manifest v3, FS7)
+//!
+//! Every record carries its member's **`ObjectId`** — the flat store's store-global, never-reused
+//! object identity (`FLAT_Store_Format.md` §3) — the terrain record included. That is what a mount
+//! resolves a set through: it opens eight ids, not eight filenames it computed from a set number and
+//! an ordinal. The derived `MS<id>S<kk>.OBM` names of §5.2 remain, because the FAT card the board
+//! still reads has nothing else, but they are no longer the only way to reach a member and they are
+//! not the way the flat store reaches one.
+//!
+//! An id is not known when a set is *assembled* — the store mints ids, and an assembler has never
+//! spoken to one — so a manifest has two states and the format says which it is in:
+//!
+//! - **Unbound**: every member id is `0`, the reserved id that names no object. This is what an
+//!   assembler writes. It is a complete, §5.3-valid manifest; it simply names no objects yet.
+//! - **Bound**: every member id is non-zero and no two records share one. A client reaches this by
+//!   committing each member, learning the id the store assigned, and writing it into the buffer it
+//!   is still assembling with [`bind_member`] — all of it before the manifest itself is committed,
+//!   which §5.4 already required to be the last write of a set.
+//!
+//! **Binding edits a staging buffer, and only a staging buffer.** §5.2 makes that normative:
+//! binding MUST complete before the manifest is committed, and a committed manifest MUST NOT be
+//! patched. The reason is that this is the one rule here a validator cannot enforce — an interrupted
+//! 8-byte id write leaves a value that is neither `0` nor a duplicate, so [`validate`] accepts it,
+//! [`SetManifest::is_bound`] answers `true`, and the mount resolves a member to an `ObjectId` naming
+//! nothing or the wrong object. §5.4's magic-last-write is safe precisely because its torn shape *is*
+//! recognisable; an id's is not.
+//!
+//! A half-bound manifest is refused ([`ManifestError::Members`]): it would name some members and
+//! silently lose the rest. Per §5.2 it means **the set never existed** — a reader treats it as §5.4
+//! treats any failed validation (not a map, no partial acceptance), and a client discards the whole
+//! set and sends it again rather than repairing it. Which of the two *legal* states a mount will
+//! accept is the mount's rule, not the codec's, and it depends on how that reader resolves members —
+//! see [`SetManifest::is_bound`].
+//!
+//! Member ids are deliberately **not** in the `Set Id` digest chain. `Set Id` is a *content*
+//! identity (§5.2: the same cells and skin produce the same id), and ids are properties of one
+//! card's store. Keeping them out is also what lets [`bind_member`] write eight bytes into a staging
+//! buffer instead of forcing a re-serialization.
 //!
 //! ## Two kinds of record, one array (manifest v2, EL4)
 //!
@@ -32,14 +71,25 @@ use crate::io::{checked_put_i32, checked_put_u32, checked_rd_i32, checked_rd_u32
 pub const MAGIC: [u8; 4] = *b"OBCS";
 /// The one accepted manifest version; readers reject any other value (§5.2).
 ///
-/// `2` since EL4 (#1072) added [`Role::Terrain`]. A **hard cut**, per the pre-release rule: a v1
-/// manifest is not read, because a v1 reader shown a v2 manifest would treat the terrain record as
-/// an unknown role and refuse the whole set anyway, and the version byte says *why*.
-pub const VERSION: u8 = 2;
-/// Fixed manifest header width (§5.2).
+/// `3` since FS7 (#1389) gave every record its member's `ObjectId`. A **hard cut**, per the
+/// pre-release rule and exactly as the v1 → v2 cut was: the record width changed, so a v2 reader
+/// handed v3 bytes would not merely miss the new field — it would read every record but the first at
+/// the wrong offset. The version byte refuses the file instead, in both directions.
+pub const VERSION: u8 = 3;
+/// Fixed manifest header width (§5.2). Unchanged by v3: the new field is per member.
 pub const HEADER_LEN: usize = 72;
 /// Fixed per-shard record width (§5.2).
-pub const SHARD_RECORD_LEN: usize = 56;
+///
+/// `64` since v3 appended the 8-byte member id. Appended rather than fitted into the three reserved
+/// bytes because eight will not fit in three, and appended rather than inserted so that every field
+/// v2 defined keeps the offset it had — the whole byte-level diff is "eight more bytes at the end of
+/// each record". The width is also a power of two over an 8-aligned header, so a member id is
+/// 8-aligned in any buffer that is.
+pub const SHARD_RECORD_LEN: usize = 64;
+/// Offset of the member `ObjectId` inside a record (§5.2), for a caller binding a staged manifest.
+pub const MEMBER_ID_OFFSET: usize = 56;
+/// The reserved member id that names no object (`FLAT_Store_Format.md` §3) — an **unbound** record.
+pub const MEMBER_ID_NONE: u64 = 0;
 /// `1..=32` shards per set (§5.2); readers reject `0` or `> 32`.
 pub const MAX_SHARDS: usize = 32;
 /// Display-name field width, `0xFF`-padded like an OBCM name (§5.2).
@@ -155,7 +205,7 @@ impl SetBBox {
     }
 }
 
-/// One shard as the device keeps it resident: role, bbox, size. The 32-byte digest is
+/// One shard as the device keeps it resident: role, bbox, size, member id. The 32-byte digest is
 /// deliberately *not* here — §5.3 lets a device defer the SHA-256 check, so keeping it would
 /// be 1 KiB of RAM nothing reads. Hosts reach it with [`shard_digest`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,17 +214,25 @@ pub struct Shard {
     pub bbox: SetBBox,
     /// Shard size in bytes. `uint32` is exactly right: the FAT32 ceiling is `4 GiB − 1`.
     pub bytes: u32,
+    /// The member's `ObjectId` in the flat store, or [`MEMBER_ID_NONE`] while the manifest is
+    /// unbound (see the module header).
+    ///
+    /// A bare `u64` and not the store's `ObjectId` newtype on purpose: obc-formats is the
+    /// dependency-free format floor and the store is a platform adapter above it, so the dependency
+    /// runs the wrong way to import the type — the same reasoning that makes `obc-link` declare its
+    /// own. The floor carries the *number*, and each layer wraps it in the identity type it owns.
+    pub object_id: u64,
 }
 
 impl Default for Shard {
     fn default() -> Self {
-        Shard { role: Role::Core, bbox: SetBBox::default(), bytes: 0 }
+        Shard { role: Role::Core, bbox: SetBBox::default(), bytes: 0, object_id: MEMBER_ID_NONE }
     }
 }
 
 /// A parsed, §5.3-validated set manifest.
 ///
-/// Resident cost is `72 + 24 × 32 ≈ 840 B` at full capacity — the fixed array avoids both an
+/// Resident cost is `72 + 32 × 32 ≈ 1,096 B` at full capacity — the fixed array avoids both an
 /// allocator and a `heapless` dependency in the format floor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SetManifest {
@@ -243,6 +301,37 @@ impl SetManifest {
         self.core_shard as usize
     }
 
+    /// Whether every member id names an object (§5.2). `false` means every id is
+    /// [`MEMBER_ID_NONE`] — the manifest is **unbound**; a half-bound one never parses.
+    ///
+    /// This is the precondition of resolving a set *by identity*, and therefore the one thing a
+    /// flat-store mount must check that a §5.3 validation does not: an unbound manifest is a valid
+    /// manifest that simply names no objects, and opening it would mean opening id `0` eight times.
+    /// A reader that resolves members by their derived §5.2 filenames instead — the FAT path the
+    /// board still runs — needs no id and is unaffected either way.
+    #[inline]
+    pub fn is_bound(&self) -> bool {
+        self.records().iter().all(|record| record.object_id != MEMBER_ID_NONE)
+    }
+
+    /// The **OBCM** shards' member ids, in index order — the ids a mount opens as map files.
+    ///
+    /// This and [`terrain_id`](Self::terrain_id) are the whole set-resolution seam: they are pure,
+    /// they read only an already-validated value, and between them they say which ids a mount needs
+    /// *with the raster held separately*, so a caller cannot hand it to an OBCM parser by looping
+    /// over one list. Both are `MEMBER_ID_NONE` throughout on an unbound manifest, which
+    /// [`is_bound`](Self::is_bound) is there to ask about first.
+    #[inline]
+    pub fn shard_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.shards().iter().map(|shard| shard.object_id)
+    }
+
+    /// The terrain shard's member id, or `None` when the set carries no raster.
+    #[inline]
+    pub fn terrain_id(&self) -> Option<u64> {
+        self.terrain().map(|shard| shard.object_id)
+    }
+
     /// The core shard's record (§5.1) — nav and POI queries always go here.
     ///
     /// Total by construction *and* by code: `core_shard` is private and both constructors reject
@@ -301,7 +390,7 @@ pub enum ManifestError {
     Layout,
     /// Unsupported `Version` byte.
     Version,
-    /// Length is not exactly `72 + 56 × Shard Count`.
+    /// Length is not exactly `72 + 64 × Shard Count`.
     Length,
     /// `Shard Count` outside `1..=32`, or `Core Shard` out of range.
     ShardCount,
@@ -311,6 +400,9 @@ pub enum ManifestError {
     /// A bbox with `min > max`, a shard outside the assembly, a core whose bbox is not the
     /// assembly bbox, or a role whose shards do not tile the assembly bbox.
     Geometry,
+    /// The member ids are neither all `0` nor all distinct and non-zero (§5.2/§5.3) — a manifest
+    /// that is half-bound, or one that names a single object twice.
+    Members,
 }
 
 impl From<DecodeError> for ManifestError {
@@ -397,7 +489,12 @@ pub fn parse(bytes: &[u8]) -> Result<SetManifest, ManifestError> {
         if array_at::<3>(bytes, base + 1)? != [0, 0, 0] {
             return Err(ManifestError::Layout);
         }
-        *shard = Shard { role, bbox: read_bbox(bytes, base + 4)?, bytes: checked_rd_u32(bytes, base + 20)? };
+        *shard = Shard {
+            role,
+            bbox: read_bbox(bytes, base + 4)?,
+            bytes: checked_rd_u32(bytes, base + 20)?,
+            object_id: u64::from_le_bytes(array_at::<8>(bytes, base + MEMBER_ID_OFFSET)?),
+        };
     }
 
     let manifest = SetManifest {
@@ -423,6 +520,25 @@ pub fn validate(manifest: &SetManifest) -> Result<(), ManifestError> {
     // checked here, once, rather than trusted everywhere else.
     if records.iter().rev().skip(1).any(|shard| shard.role == Role::Terrain) {
         return Err(ManifestError::Roles);
+    }
+    // Bound or unbound, never in between (§5.2). A half-bound manifest is the shape a client that
+    // died mid-`bind_member` leaves, and it is the one shape that is actively dangerous: it looks
+    // resolvable, and a mount that trusted it would open the members that were patched and silently
+    // lose the ones that were not.
+    let named = records.iter().filter(|record| record.object_id != MEMBER_ID_NONE).count();
+    if named != 0 && named != records.len() {
+        return Err(ManifestError::Members);
+    }
+    // Distinct, once bound. Two records sharing an id is one object claiming two roles, which no
+    // store can make true — the ids come from a never-reused monotonic cursor. They are *not*
+    // required to ascend: a set that shares a shard with one already on the card reuses that
+    // object, so an older id beside a newer one is the dedup working, not a fault.
+    for (index, record) in records.iter().enumerate() {
+        if record.object_id != MEMBER_ID_NONE
+            && records[index + 1..].iter().any(|other| other.object_id == record.object_id)
+        {
+            return Err(ManifestError::Members);
+        }
     }
     let shards = manifest.shards();
     let core_index = manifest.core_shard as usize;
@@ -535,8 +651,43 @@ pub fn serialize(manifest: &SetManifest, digests: &[[u8; DIGEST_LEN]], out: &mut
         write_bbox(out, base + 4, &shard.bbox)?;
         checked_put_u32(out, base + 20, shard.bytes)?;
         out[base + 24..base + 24 + DIGEST_LEN].copy_from_slice(digest);
+        out[base + MEMBER_ID_OFFSET..base + SHARD_RECORD_LEN].copy_from_slice(&shard.object_id.to_le_bytes());
     }
     Ok(len)
+}
+
+/// Write record `index`'s member id into a **staging** manifest buffer (§5.2).
+///
+/// This is how a client binds a set: it commits each member, learns the id the store assigned, and
+/// writes it here — one 8-byte field, without re-serializing and without disturbing `Set Id`, which
+/// covers the digests and never the ids. `id` must name an object; passing [`MEMBER_ID_NONE`] would
+/// *un*bind a record, which is the half-bound shape [`validate`] exists to refuse, so it is rejected
+/// here rather than left to be discovered at the next parse.
+///
+/// **`bytes` MUST be a buffer the client still owns, never a committed manifest.** §5.2 makes that
+/// normative and it is not a style preference: a committed manifest is bytes a reader may resolve a
+/// set through, and an id write interrupted halfway leaves a value neither `0` nor duplicated —
+/// which [`validate`] accepts, [`SetManifest::is_bound`] calls bound, and a mount follows to an
+/// object that is not there. Bind every record first; commit once, afterwards.
+///
+/// The bytes are otherwise unexamined — this reads `Shard Count` to bound the index and nothing
+/// else. Whether the result is a valid, fully bound manifest is [`parse`]'s answer, and a client
+/// SHOULD ask it before the manifest is committed.
+pub fn bind_member(bytes: &mut [u8], index: usize, id: u64) -> Result<(), ManifestError> {
+    if id == MEMBER_ID_NONE {
+        return Err(ManifestError::Members);
+    }
+    validate_prefix(bytes, &MAGIC, VERSION, VERSION)?;
+    let record_count = byte_at(bytes, 6)? as usize;
+    if record_count == 0 || record_count > MAX_SHARDS || index >= record_count {
+        return Err(ManifestError::ShardCount);
+    }
+    if bytes.len() != manifest_len(record_count) {
+        return Err(ManifestError::Length);
+    }
+    let base = HEADER_LEN + index * SHARD_RECORD_LEN + MEMBER_ID_OFFSET;
+    bytes.get_mut(base..base + 8).ok_or(ManifestError::Layout)?.copy_from_slice(&id.to_le_bytes());
+    Ok(())
 }
 
 /// Build a manifest value from its parts, validating §5.3 before it can be observed.
@@ -743,8 +894,13 @@ pub fn parse_shard_name(name: &[u8]) -> Option<(u16, usize)> {
 }
 
 const _: () = assert!(HEADER_LEN == 4 + 1 + 1 + 1 + 1 + 4 + 4 + 16 + SET_ID_LEN + NAME_LEN);
-const _: () = assert!(SHARD_RECORD_LEN == 1 + 1 + 2 + 16 + 4 + DIGEST_LEN);
-const _: () = assert!(MAX_MANIFEST_LEN == 1864);
+const _: () = assert!(SHARD_RECORD_LEN == 1 + 1 + 2 + 16 + 4 + DIGEST_LEN + 8);
+const _: () = assert!(MEMBER_ID_OFFSET == 1 + 1 + 2 + 16 + 4 + DIGEST_LEN);
+const _: () = assert!(MAX_MANIFEST_LEN == 2120);
+// The member id is 8-aligned inside an 8-aligned buffer, which is what makes the record width a
+// power of two worth having rather than a coincidence.
+const _: () = assert!(HEADER_LEN.is_multiple_of(8) && SHARD_RECORD_LEN.is_multiple_of(8));
+const _: () = assert!(MEMBER_ID_OFFSET.is_multiple_of(8));
 
 #[cfg(test)]
 mod tests {
@@ -758,11 +914,18 @@ mod tests {
         out
     }
 
+    /// A record of `role`, unbound — the shape an assembler writes. Tests that care about member
+    /// ids set `object_id` explicitly.
+    fn part(role: Role, bbox: SetBBox, bytes: u32) -> Shard {
+        Shard { role, bbox, bytes, object_id: MEMBER_ID_NONE }
+    }
+
     fn core(bbox: SetBBox, bytes: u32) -> Shard {
-        Shard { role: Role::Core, bbox, bytes }
+        part(Role::Core, bbox, bytes)
     }
 
     /// A three-shard set: core + coarse over the whole box, two geometry halves that tile it.
+    /// Bound, with the ids deliberately *not* ascending — see [`validate`].
     fn split_set() -> SetManifest {
         let mid = (WORLD.min_lon + WORLD.max_lon) / 2;
         let west = SetBBox { max_lon: mid, ..WORLD };
@@ -775,10 +938,10 @@ mod tests {
             [0xA5; SET_ID_LEN],
             name_field("Alpen"),
             &[
-                core(WORLD, 1_000),
-                Shard { role: Role::Coarse, bbox: WORLD, bytes: 2_000 },
-                Shard { role: Role::Geometry, bbox: west, bytes: 3_000 },
-                Shard { role: Role::Geometry, bbox: east, bytes: 4_000 },
+                Shard { object_id: 90, ..core(WORLD, 1_000) },
+                Shard { object_id: 12, ..part(Role::Coarse, WORLD, 2_000) },
+                Shard { object_id: 91, ..part(Role::Geometry, west, 3_000) },
+                Shard { object_id: 92, ..part(Role::Geometry, east, 4_000) },
             ],
         )
         .unwrap()
@@ -795,15 +958,17 @@ mod tests {
     #[test]
     fn record_widths_pin_spec_arithmetic() {
         assert_eq!(HEADER_LEN, 72);
-        assert_eq!(SHARD_RECORD_LEN, 56);
-        assert_eq!(manifest_len(1), 128);
+        assert_eq!(SHARD_RECORD_LEN, 64);
+        assert_eq!(MEMBER_ID_OFFSET, 56);
+        assert_eq!(manifest_len(1), 136);
         assert_eq!(manifest_len(32), MAX_MANIFEST_LEN);
+        assert_eq!(MAX_MANIFEST_LEN, 2120);
         assert_eq!(Role::Core.id(), 0);
         assert_eq!(Role::Geometry.id(), 1);
         assert_eq!(Role::Coarse.id(), 2);
         assert_eq!(Role::Terrain.id(), 3);
         assert_eq!(Role::from_id(4), None);
-        assert_eq!(VERSION, 2, "EL4 (#1072) is a hard cut, not a compatible extension");
+        assert_eq!(VERSION, 3, "FS7 (#1389) is a hard cut, not a compatible extension");
     }
 
     /// The terrain record is the last one, it is not an OBCM shard, and it changes neither the
@@ -818,7 +983,7 @@ mod tests {
             WORLD,
             [0; SET_ID_LEN],
             name_field("Grimsel"),
-            &[core(WORLD, 42), Shard { role: Role::Terrain, bbox: WORLD, bytes: 6_192 }],
+            &[core(WORLD, 42), part(Role::Terrain, WORLD, 6_192)],
         )
         .expect("core + terrain is the single-file fast path with a raster beside it");
         assert_eq!(solo.shard_count(), 1, "one OBCM shard");
@@ -830,7 +995,7 @@ mod tests {
         assert_eq!(solo.total_bytes(), 42 + 6_192, "the card pays for the raster too");
 
         let bytes = encode(&solo);
-        assert_eq!(bytes[4], 2, "manifest Version");
+        assert_eq!(bytes[4], VERSION, "manifest Version");
         assert_eq!(bytes[6], 2, "wire Shard Count counts every record");
         assert_eq!(bytes[HEADER_LEN + SHARD_RECORD_LEN], Role::Terrain.id());
         assert_eq!(parse(&bytes[..solo.encoded_len()]).unwrap(), solo);
@@ -845,7 +1010,7 @@ mod tests {
     /// otherwise hand a raster to an OBCM parser.
     #[test]
     fn a_terrain_record_that_is_not_last_is_refused() {
-        let terrain = Shard { role: Role::Terrain, bbox: WORLD, bytes: 1 };
+        let terrain = part(Role::Terrain, WORLD, 1);
         assert_eq!(
             build(11, 1, 1, WORLD, [0; SET_ID_LEN], name_field("x"), &[terrain, core(WORLD, 1)]),
             Err(ManifestError::Roles),
@@ -865,15 +1030,7 @@ mod tests {
         // …and it spans the whole assembly, like the core.
         let half = SetBBox { max_lon: (WORLD.min_lon + WORLD.max_lon) / 2, ..WORLD };
         assert_eq!(
-            build(
-                11,
-                0,
-                1,
-                WORLD,
-                [0; SET_ID_LEN],
-                name_field("x"),
-                &[core(WORLD, 1), Shard { role: Role::Terrain, bbox: half, bytes: 1 }]
-            ),
+            build(11, 0, 1, WORLD, [0; SET_ID_LEN], name_field("x"), &[core(WORLD, 1), part(Role::Terrain, half, 1)]),
             Err(ManifestError::Geometry)
         );
     }
@@ -892,10 +1049,10 @@ mod tests {
             name_field("Alpen"),
             &[
                 core(WORLD, 1_000),
-                Shard { role: Role::Coarse, bbox: WORLD, bytes: 2_000 },
-                Shard { role: Role::Geometry, bbox: SetBBox { max_lon: mid, ..WORLD }, bytes: 3_000 },
-                Shard { role: Role::Geometry, bbox: SetBBox { min_lon: mid, ..WORLD }, bytes: 4_000 },
-                Shard { role: Role::Terrain, bbox: WORLD, bytes: 5_000 },
+                part(Role::Coarse, WORLD, 2_000),
+                part(Role::Geometry, SetBBox { max_lon: mid, ..WORLD }, 3_000),
+                part(Role::Geometry, SetBBox { min_lon: mid, ..WORLD }, 4_000),
+                part(Role::Terrain, WORLD, 5_000),
             ],
         )
         .expect("a split set with terrain");
@@ -909,7 +1066,7 @@ mod tests {
         let manifest = split_set();
         let bytes = encode(&manifest);
         assert_eq!(&bytes[0..4], b"OBCS");
-        assert_eq!(bytes[4], 2); // Version
+        assert_eq!(bytes[4], 3); // Version
         assert_eq!(bytes[5], crate::obcm::VERSION); // OBCM Version
         assert_eq!(bytes[6], 4); // Shard Count
         assert_eq!(bytes[7], 0); // Core Shard
@@ -936,6 +1093,91 @@ mod tests {
         assert_eq!(checked_rd_u32(&bytes, base + 20).unwrap(), 3_000);
         assert_eq!(shard_digest(&bytes, 2).unwrap(), &[0x11u8; DIGEST_LEN]);
         assert_eq!(shard_digest(&bytes[..manifest.encoded_len()], 4), None);
+        // v3's field, at the end of the record and nowhere else — every v2 offset above is
+        // unmoved, which is the whole reason it was appended rather than inserted.
+        assert_eq!(&bytes[base + MEMBER_ID_OFFSET..base + SHARD_RECORD_LEN], &91u64.to_le_bytes());
+    }
+
+    /// The v3 contract end to end: ids survive a round trip, the mount seam hands them back with
+    /// the raster held separately, and neither of them is in `Set Id`.
+    #[test]
+    fn member_ids_round_trip_and_the_mount_seam_separates_the_raster() {
+        let mut parts =
+            [Shard { object_id: 5, ..core(WORLD, 1) }, Shard { object_id: 6, ..part(Role::Terrain, WORLD, 2) }];
+        let bound = build(11, 0, 1, WORLD, [0; SET_ID_LEN], name_field("Grimsel"), &parts).unwrap();
+        assert!(bound.is_bound());
+        assert!(bound.shard_ids().eq([5u64]), "one OBCM shard, named by its id");
+        assert_eq!(bound.terrain_id(), Some(6), "the raster is reached separately, never as a shard");
+
+        let bytes = encode(&bound);
+        assert_eq!(parse(&bytes[..bound.encoded_len()]).unwrap(), bound);
+
+        // The same set, unbound: still valid, still the same bytes everywhere but the id fields.
+        parts[0].object_id = MEMBER_ID_NONE;
+        parts[1].object_id = MEMBER_ID_NONE;
+        let unbound = build(11, 0, 1, WORLD, [0; SET_ID_LEN], name_field("Grimsel"), &parts).unwrap();
+        assert!(!unbound.is_bound(), "what an assembler writes");
+        assert_eq!(unbound.terrain_id(), Some(MEMBER_ID_NONE));
+        let mut raw = encode(&unbound);
+        let len = unbound.encoded_len();
+        assert_eq!(&raw[32..48], &bytes[32..48], "Set Id does not depend on the member ids");
+
+        // Binding writes 8 bytes per record into the staged buffer and moves nothing else.
+        bind_member(&mut raw[..len], 0, 5).unwrap();
+        bind_member(&mut raw[..len], 1, 6).unwrap();
+        assert_eq!(&raw[..len], &bytes[..len], "binding reproduces the manifest byte for byte");
+        assert_eq!(parse(&raw[..len]).unwrap(), bound);
+    }
+
+    /// Bound or unbound, never in between, and never two records naming one object.
+    #[test]
+    fn half_bound_and_duplicate_member_ids_are_refused() {
+        let half = [Shard { object_id: 7, ..core(WORLD, 1) }, part(Role::Terrain, WORLD, 2)];
+        assert_eq!(
+            build(11, 0, 1, WORLD, [0; SET_ID_LEN], name_field("x"), &half),
+            Err(ManifestError::Members),
+            "a client that died mid-bind must not leave a mountable set"
+        );
+        let twice = [Shard { object_id: 7, ..core(WORLD, 1) }, Shard { object_id: 7, ..part(Role::Terrain, WORLD, 2) }];
+        assert_eq!(build(11, 0, 1, WORLD, [0; SET_ID_LEN], name_field("x"), &twice), Err(ManifestError::Members));
+
+        // …and both are caught on the wire, not only through `build`.
+        let manifest = split_set();
+        let len = manifest.encoded_len();
+        let mut bad = encode(&manifest);
+        bad[HEADER_LEN + MEMBER_ID_OFFSET..HEADER_LEN + SHARD_RECORD_LEN].copy_from_slice(&0u64.to_le_bytes());
+        assert_eq!(parse(&bad[..len]), Err(ManifestError::Members));
+        let mut bad = encode(&manifest);
+        let second = HEADER_LEN + SHARD_RECORD_LEN + MEMBER_ID_OFFSET;
+        bad[second..second + 8].copy_from_slice(&90u64.to_le_bytes()); // the core's id, again
+        assert_eq!(parse(&bad[..len]), Err(ManifestError::Members));
+
+        // Non-ascending ids are legal: a set that reuses a shard already on the card carries an
+        // older id beside newer ones, which is the dedup working.
+        assert!(split_set().shard_ids().eq([90u64, 12, 91, 92]));
+    }
+
+    /// `bind_member` refuses everything that would leave bytes a parse must then reject.
+    #[test]
+    fn binding_is_range_checked_and_never_unbinds() {
+        let manifest = split_set();
+        let len = manifest.encoded_len();
+        let mut bytes = encode(&manifest);
+        let raw = &mut bytes[..len];
+        assert_eq!(bind_member(raw, 0, MEMBER_ID_NONE), Err(ManifestError::Members), "unbinding is not binding");
+        assert_eq!(bind_member(raw, 4, 1), Err(ManifestError::ShardCount), "index == Shard Count");
+        assert_eq!(bind_member(raw, 255, 1), Err(ManifestError::ShardCount));
+        assert_eq!(bind_member(&mut [], 0, 1), Err(ManifestError::Layout));
+
+        let mut short = [0u8; HEADER_LEN];
+        short[..4].copy_from_slice(&MAGIC);
+        short[4] = VERSION;
+        short[6] = 1;
+        assert_eq!(bind_member(&mut short, 0, 1), Err(ManifestError::Length), "a header with no record");
+
+        let mut v2 = bytes;
+        v2[4] = 2;
+        assert_eq!(bind_member(&mut v2[..len], 0, 1), Err(ManifestError::Version));
     }
 
     #[test]
@@ -971,18 +1213,20 @@ mod tests {
         bad[0] = b'X';
         assert_eq!(parse(&bad[..len]), Err(ManifestError::Layout));
 
-        let mut bad = good;
-        bad[4] = 1; // the retired v1 layout
-        assert_eq!(parse(&bad[..len]), Err(ManifestError::Version));
-        let mut bad = good;
-        bad[4] = 3;
-        assert_eq!(parse(&bad[..len]), Err(ManifestError::Version));
+        // Every retired layout and every future one, refused by the version byte alone. `2` is the
+        // one that matters: its records are 56 bytes, so a reader that guessed would find the
+        // second record's role eight bytes early and the last record past the end.
+        for retired in [1u8, 2, 4, 255] {
+            let mut bad = good;
+            bad[4] = retired;
+            assert_eq!(parse(&bad[..len]), Err(ManifestError::Version), "version {retired}");
+        }
 
         let mut bad = good;
         bad[12] = 1; // non-zero reserved Flags
         assert_eq!(parse(&bad[..len]), Err(ManifestError::Layout));
 
-        // Length must be exactly `72 + 56 × Shard Count`.
+        // Length must be exactly `72 + 64 × Shard Count`.
         assert_eq!(parse(&good[..len - 1]), Err(ManifestError::Length));
         assert_eq!(parse(&good[..len + 1]), Err(ManifestError::Length));
     }
@@ -1067,9 +1311,9 @@ mod tests {
                 name_field("x"),
                 &[
                     core(WORLD, 1),
-                    Shard { role: Role::Coarse, bbox: WORLD, bytes: 1 },
-                    Shard { role: Role::Geometry, bbox: WORLD, bytes: 1 },
-                    Shard { role: Role::Geometry, bbox: line, bytes: 1 },
+                    part(Role::Coarse, WORLD, 1),
+                    part(Role::Geometry, WORLD, 1),
+                    part(Role::Geometry, line, 1),
                 ],
             ),
             Err(ManifestError::Geometry)
@@ -1143,8 +1387,8 @@ mod tests {
                 name_field("No coarse"),
                 &[
                     core(WORLD, 1),
-                    Shard { role: Role::Geometry, bbox: SetBBox { max_lon: mid, ..WORLD }, bytes: 1 },
-                    Shard { role: Role::Geometry, bbox: SetBBox { min_lon: mid, ..WORLD }, bytes: 1 },
+                    part(Role::Geometry, SetBBox { max_lon: mid, ..WORLD }, 1),
+                    part(Role::Geometry, SetBBox { min_lon: mid, ..WORLD }, 1),
                 ],
             ),
             Err(ManifestError::Roles)
@@ -1156,44 +1400,24 @@ mod tests {
         let mid = (WORLD.min_lon + WORLD.max_lon) / 2;
         let west = SetBBox { max_lon: mid, ..WORLD };
         let east = SetBBox { min_lon: mid, ..WORLD };
-        let coarse = Shard { role: Role::Coarse, bbox: WORLD, bytes: 1 };
+        let coarse = part(Role::Coarse, WORLD, 1);
         let make = |parts: &[Shard]| build(11, 0, 1, WORLD, [0; SET_ID_LEN], name_field("x"), parts);
 
         // Core bbox must equal the assembly bbox.
-        assert_eq!(
-            make(&[core(west, 1), coarse, Shard { role: Role::Geometry, bbox: WORLD, bytes: 1 }]),
-            Err(ManifestError::Geometry)
-        );
+        assert_eq!(make(&[core(west, 1), coarse, part(Role::Geometry, WORLD, 1)]), Err(ManifestError::Geometry));
         // A shard outside the assembly bbox.
         let outside = SetBBox { max_lon: WORLD.max_lon + 1, ..WORLD };
-        assert_eq!(
-            make(&[core(WORLD, 1), coarse, Shard { role: Role::Geometry, bbox: outside, bytes: 1 }]),
-            Err(ManifestError::Geometry)
-        );
+        assert_eq!(make(&[core(WORLD, 1), coarse, part(Role::Geometry, outside, 1)]), Err(ManifestError::Geometry));
         // Overlapping geometry shards.
         let wide = SetBBox { max_lon: mid + 1, ..WORLD };
         assert_eq!(
-            make(&[
-                core(WORLD, 1),
-                coarse,
-                Shard { role: Role::Geometry, bbox: wide, bytes: 1 },
-                Shard { role: Role::Geometry, bbox: east, bytes: 1 },
-            ]),
+            make(&[core(WORLD, 1), coarse, part(Role::Geometry, wide, 1), part(Role::Geometry, east, 1),]),
             Err(ManifestError::Geometry)
         );
         // A gap: the two halves do not cover the assembly.
-        assert_eq!(
-            make(&[core(WORLD, 1), coarse, Shard { role: Role::Geometry, bbox: west, bytes: 1 }]),
-            Err(ManifestError::Geometry)
-        );
+        assert_eq!(make(&[core(WORLD, 1), coarse, part(Role::Geometry, west, 1)]), Err(ManifestError::Geometry));
         // Abutting halves are legal — an antichain shares edges, not interiors.
-        assert!(make(&[
-            core(WORLD, 1),
-            coarse,
-            Shard { role: Role::Geometry, bbox: west, bytes: 1 },
-            Shard { role: Role::Geometry, bbox: east, bytes: 1 },
-        ])
-        .is_ok());
+        assert!(make(&[core(WORLD, 1), coarse, part(Role::Geometry, west, 1), part(Role::Geometry, east, 1),]).is_ok());
         // An inverted assembly bbox.
         let flipped = SetBBox { min_lat: WORLD.max_lat, max_lat: WORLD.min_lat, ..WORLD };
         assert_eq!(
