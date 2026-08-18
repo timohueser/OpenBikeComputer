@@ -83,7 +83,11 @@ impl PreviewFailure {
 
 fn read_failure(err: ReadError) -> PreviewFailure {
     match err {
-        ReadError::BadMagic | ReadError::BadVersion | ReadError::TooShort | ReadError::BadOffset => PreviewFailure {
+        ReadError::BadMagic
+        | ReadError::BadVersion
+        | ReadError::BadScale
+        | ReadError::TooShort
+        | ReadError::BadOffset => PreviewFailure {
             code: PreviewErrorCode::NotAMap,
             message: "The Teningen preview map is missing, stale, or truncated.".into(),
         },
@@ -594,30 +598,52 @@ mod tests {
     #[test]
     fn reports_the_production_lod_at_every_exact_threshold() {
         let mut preview = opened();
-        let thresholds = [(31.0, 0), (30.0, 1), (16.0, 2), (10.0, 3), (5.0, 4), (3.0, 5), (1.2, 6), (0.5, 6)];
-        // The committed fixture was packed at the 7-rung ladder and has not been repacked since
-        // the schema gained its two far-zoom tiers, so these are the fixture's own ranges, not the
-        // current preset's. What is under test is the dispatch policy, which reads the map's table.
-        assert_eq!(preview.tables.lods().len(), 7, "the fixture's authored ladder");
+        // The fixture's own ranges — which since FS7.5b's repack are the **current** preset's, all
+        // fourteen rungs: it had been lagging the schema's two far-zoom tiers, and repacking it for
+        // OBCM v14 necessarily picked up the ladder as well. What is under test is the dispatch
+        // policy, which reads the map's table, so the list follows the fixture rather than leading it.
+        let thresholds = [
+            (401.0, 0),
+            (400.0, 1),
+            (260.0, 2),
+            (180.0, 3),
+            (110.0, 4),
+            (80.0, 5),
+            (50.0, 6),
+            (35.0, 7),
+            (20.0, 8),
+            (16.0, 9),
+            (10.0, 10),
+            (5.0, 11),
+            (3.0, 12),
+            (1.2, 13),
+            (0.5, 13),
+        ];
+        assert_eq!(preview.tables.lods().len(), 14, "the fixture's authored ladder");
         for (mpp, expected) in thresholds {
             preview.camera.meters_per_pixel = mpp;
             assert_eq!(preview.stats().lod_index, expected, "wrong LOD at {mpp} m/px");
         }
-        preview.camera.meters_per_pixel = f32::from_bits(30.0_f32.to_bits() + 1);
-        assert_eq!(preview.stats().lod_index, 0, "one float above the 30 m/px ceiling must fall back coarse");
+        preview.camera.meters_per_pixel = f32::from_bits(400.0_f32.to_bits() + 1);
+        assert_eq!(preview.stats().lod_index, 0, "one float above the 400 m/px ceiling must fall back coarse");
     }
 
     #[test]
     fn wheel_scale_can_reach_every_lod_but_never_expose_blank_coverage() {
         let mut preview = opened();
+        // Zooming fully out is bounded by the map's own extent, not by the ladder: the camera
+        // stops where the frame would leave the file's coverage. Since the FS7.5b repack the
+        // fixture carries all fourteen current rungs, and the six above rung 7 describe ground
+        // scales a 2.4 km crop of the Rhine plain can never fill — so the widest *reachable* rung
+        // is the one the extent selects, and asserting rung 0 would be asserting a blank frame.
         preview.zoom_at(1.0e-6, FRAME_W as f32 / 2.0, FRAME_H as f32 / 2.0);
-        assert!(preview.stats().meters_per_pixel > 30.0, "fixture is already wide enough for the coarsest LOD");
-        assert_eq!(preview.stats().lod_index, 0);
+        let widest = preview.stats().lod_index;
+        assert_eq!(widest, 7, "the coarsest rung this fixture's extent can reach without blank coverage");
         assert_view_inside_map(&preview);
 
         preview.zoom_at(1.0e6, FRAME_W as f32 / 2.0, FRAME_H as f32 / 2.0);
         assert_eq!(preview.stats().meters_per_pixel, MIN_METERS_PER_PIXEL);
-        assert_eq!(preview.stats().lod_index, 6);
+        assert_eq!(preview.stats().lod_index, 13);
         assert_view_inside_map(&preview);
     }
 
@@ -657,9 +683,11 @@ mod tests {
         let pixels = preview.frame().to_vec();
         let stats = preview.stats();
         let colored = non_modal_pixels(&pixels);
-        assert_eq!(stats.lod_index, 0);
-        assert!(stats.features_drawn >= 3, "coarsest rung must retain useful Teningen context: {stats:?}");
-        assert!(colored >= 1_000, "coarsest rung is effectively blank: only {colored} non-modal pixels");
+        // The widest view the extent allows (see the wheel-scale test above for why that is rung 7
+        // and not rung 0 since the fixture picked up the current fourteen-rung ladder).
+        assert_eq!(stats.lod_index, 7);
+        assert!(stats.features_drawn >= 3, "widest rung must retain useful Teningen context: {stats:?}");
+        assert!(colored >= 1_000, "widest rung is effectively blank: only {colored} non-modal pixels");
     }
 
     #[test]
@@ -729,10 +757,10 @@ mod tests {
         let mut preview = SchemaMapPreview::open(MAP.to_vec()).expect("packed map opens without restamping");
         assert_eq!((SCHEMA_FRAME_W, SCHEMA_FRAME_H), (240, 320));
 
-        // These are representative m/px values for the fixture's seven authored ranges (it predates
-        // the schema's two far-zoom tiers). Selection is the production Reader policy, not a UI
-        // formula.
-        for (mpp, expected) in [(40.0, 0), (30.0, 1), (16.0, 2), (10.0, 3), (5.0, 4), (3.0, 5), (1.2, 6)] {
+        // Representative m/px values for the fixture's authored ranges — all fourteen of the
+        // current preset's since FS7.5b repacked it. Selection is the production Reader policy, not
+        // a UI formula.
+        for (mpp, expected) in [(500.0, 0), (400.0, 1), (110.0, 4), (35.0, 7), (16.0, 9), (5.0, 11), (1.2, 13)] {
             preview.set_meters_per_pixel(mpp);
             assert_eq!(preview.lod_index(), expected, "{mpp} m/px");
         }
@@ -742,7 +770,7 @@ mod tests {
         assert_eq!(pixels.len(), (240 * 320 * 4) as usize);
         assert!(pixels.chunks_exact(4).all(|pixel| pixel[3] == 0xff));
         let stats = preview.stats();
-        assert_eq!(stats.lod, 4);
+        assert_eq!(stats.lod, 11);
         assert!(stats.features_drawn <= obc_render::MAX_SPANS);
         assert!(stats.points_drawn <= obc_render::MAX_FRAME_POINTS);
         assert!(stats.line_rings + stats.poly_rings <= obc_render::MAX_FRAME_RINGS);

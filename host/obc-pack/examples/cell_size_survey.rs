@@ -219,7 +219,7 @@ fn survey(path: &str, opts: &Options) -> Result<(), String> {
     for (i, l) in r.lods().iter().enumerate() {
         let index_b = (l.node_count * 4) as f64;
         let table_b = ((l.chunk_count + 1) * 4) as f64;
-        let chunk_b = l.chunk_bytes_total as f64;
+        let chunk_b = l.scale.offset(l.chunk_units_total).bytes() as f64;
         let total = index_b + table_b + chunk_b;
         lod_totals.push(total);
         geom_total += total;

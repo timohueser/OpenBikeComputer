@@ -466,7 +466,7 @@ fn every_cell_round_trips_through_the_reader() {
             if !band.lods.contains(&i) {
                 assert_eq!(lod.node_count, 0, "{}: out-of-band LOD {i} has no index", artifact.path);
                 assert_eq!(lod.chunk_count, 0, "{}: out-of-band LOD {i} has no chunk", artifact.path);
-                assert_eq!(lod.chunk_bytes_total, 0, "{}: …and no chunk bytes", artifact.path);
+                assert_eq!(lod.chunk_units_total, 0, "{}: …and no chunk bytes", artifact.path);
                 let mut seen = 0;
                 r.for_each_chunk(i, &r.bbox, |_, _| seen += 1).expect("an empty LOD walks");
                 assert_eq!(seen, 0, "{}: walking an empty LOD yields nothing", artifact.path);

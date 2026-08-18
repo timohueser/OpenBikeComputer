@@ -11,7 +11,15 @@ use obc_elevation::{ElevationSource, NullElevation};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use obc_formats::obcm::{NAV_CHUNK_SIZE, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_PROFILE_LEN};
+use obc_formats::obcm::{
+    OffsetScale, FILLER, NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_PROFILE_LEN,
+};
+
+/// The nav section's byte offset, resolved out of the header's own scaled field (§1.1).
+fn nav_section_offset(bytes: &[u8]) -> usize {
+    let scale = OffsetScale::new(bytes[obc_formats::obcm::HEADER_OFFSET_SCALE_OFF]).expect("a legal scale");
+    scale.offset(u32::from_le_bytes(bytes[36..40].try_into().unwrap())).bytes() as usize
+}
 use obc_pack::config::default_profiles;
 use obc_pack::nav::{Edge, NavGraph, Node};
 use obc_pack::terrain::TerrainSet;
@@ -197,7 +205,18 @@ fn populated_nav_chunk_regions_are_sector_aligned() {
     let index_start = nav.index_offset as usize;
 
     assert_ne!(nav.node_count, 0);
-    assert!(bytes[profile_end..index_start].iter().all(|&byte| byte == 0), "alignment padding is zero-filled");
+    // **All of §8's filler is `0xFF` since v14**, where v13 wrote zeros for this alignment run and
+    // `0xFF` for the padding inside a chunk. One fill byte, one rule (§1.2): a gap is `0xFF` and a
+    // reserved field is `0`. The alignment run is a gap no offset reaches, so it takes the gap's
+    // byte. Both runs are checked — the one behind the 40-byte directory, which v14 introduced
+    // because 40 is not a unit multiple, and the sector run behind the profile table.
+    let section = nav_section_offset(&bytes);
+    let dir_gap = &bytes[section + NAV_DIR_LEN..nav.profile_table_offset];
+    assert_eq!(dir_gap.len(), 8, "the 40-byte directory ends mid-unit at U = 16");
+    assert!(dir_gap.iter().all(|&byte| byte == FILLER), "the directory's gap is 0xFF, not zero");
+    let run = &bytes[profile_end..index_start];
+    assert!(!run.is_empty(), "a populated graph pads to its sector");
+    assert!(run.iter().all(|&byte| byte == FILLER), "the alignment run is 0xFF, not zero");
     assert_eq!(nav.data_start().unwrap() % NAV_CHUNK_SIZE, 0, "node chunks start on a sector boundary");
     assert_eq!(nav.edge_pool_offset % NAV_CHUNK_SIZE, 0, "edge chunks start on a sector boundary");
 }

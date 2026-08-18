@@ -149,6 +149,24 @@ fn a_closed_line_keeps_its_final_vertex() {
     assert_eq!(data[2], 3, "line loops are explicit stroke paths, not implicit polygon rings");
 }
 
+/// v14 §1.1/§1.2 helpers, spelled out here rather than imported from the writer so these pins stay
+/// an independent restatement of the layout rule.
+const UNIT: usize = 16;
+const FILLER: u8 = obc_formats::obcm::FILLER;
+
+fn align_up(at: usize) -> usize {
+    at.next_multiple_of(UNIT)
+}
+
+fn unit_bytes(units: u32) -> usize {
+    units as usize * UNIT
+}
+
+/// Read the scaled `uint32` at `at` and resolve it to a byte offset.
+fn scaled_at(bin: &[u8], at: usize) -> usize {
+    unit_bytes(u32::from_le_bytes(bin[at..at + 4].try_into().unwrap()))
+}
+
 #[test]
 fn integer_collinear_vertices_are_not_serialized() {
     let f = line(10, &[(0.0, 0.0), (0.00005, 0.0), (0.0001, 0.0)]);
@@ -176,54 +194,62 @@ fn serialize_lods_header_single_empty_leaf() {
     );
     assert_eq!(dropped, 0);
 
-    // header(40) + style count(1) + 1 LOD entry(18) + index(4) + the chunkless LOD's one-entry
-    // offset table(4) = 67, then the empty POI directory
-    // — count(1) + chunk_size(2) + 6 entries × 13 + the two v7 pool fields (offset u32 + count u16 =
-    // 6) = 87 bytes — the empty hours pool (a bare `count u16` = 2 bytes), and the empty nav
-    // section (40-byte directory + the always-present profile table) at the tail.
+    // v14 §1.2: every structure a header or directory offset reaches begins on a unit boundary, so
+    // the layout is the v13 one with each region start rounded up and the gap `0xFF`-filled.
+    //   header 49 → style table at 64 (the `49..64` gap is filler)
+    //   style count byte 1 → LOD table at 80
+    //   one 18-byte LOD entry → LOD 0's index at 112
+    //   index 4 + the chunkless LOD's one-entry offset table 4 → the region ends at 128
+    // then the empty POI directory — count(1) + chunk_size(2) + 6 entries × 13 + the two v7 pool
+    // fields (offset u32 + count u16 = 6) = 87 bytes, rounded to 96 — the empty hours pool (a bare
+    // `count u16`, rounded to a unit), and the empty nav section at the tail.
     let poi_dir_len = 1 + 2 + 6 * 13 + 6;
-    let hours_pool_len = 2; // an empty pool is just its count
-                            // Empty graph: the 40-byte directory + the four default profiles (56 B
-                            // each in v12), always present.
+    let hours_pool_len = align_up(2); // an empty pool is just its count, padded to a boundary
+                                      // Empty graph: the 40-byte directory, the filler that carries
+                                      // it to the profile table's boundary, and the four default
+                                      // profiles (56 B each), always present.
     let profile_table_len = 4 * obc_formats::obcm::NAV_PROFILE_LEN;
-    let nav_section_len = obc_formats::obcm::NAV_DIR_LEN + profile_table_len;
-    assert_eq!(bin.len(), 67 + poi_dir_len + hours_pool_len + nav_section_len);
+    let nav_section_len = align_up(align_up(obc_formats::obcm::NAV_DIR_LEN) + profile_table_len);
+    assert_eq!(bin.len(), 128 + align_up(poi_dir_len) + hours_pool_len + nav_section_len);
     assert_eq!(&bin[0..4], b"OBCM");
     assert_eq!(bin[4], obc_formats::obcm::VERSION); // version
-    assert_eq!(u32::from_le_bytes([bin[21], bin[22], bin[23], bin[24]]), 40); // style offset (40 since v8)
+    assert_eq!(scaled_at(&bin, 21), 64, "the style table is at the first unit boundary past the 49-byte header");
+    assert!(bin[obc_formats::obcm::HEADER_LEN..64].iter().all(|&b| b == FILLER), "and the gap behind it is 0xFF");
+    assert_eq!(bin[40], 4, "producers write Offset Scale 4 (U = 16)");
+    assert_eq!(u32::from_le_bytes(bin[41..45].try_into().unwrap()), 0, "obc-pack embeds no terrain");
+    assert_eq!(u32::from_le_bytes(bin[45..49].try_into().unwrap()), 0, "…and its length is 0 exactly when it is");
     assert_eq!(bin[25], 1); // lod count
-    let lod_tbl = u32::from_le_bytes([bin[26], bin[27], bin[28], bin[29]]) as usize;
-    assert_eq!(lod_tbl, 41); // 40 header + 1 style-count byte
+    let lod_tbl = scaled_at(&bin, 26);
+    assert_eq!(lod_tbl, 80); // 64 style table + 1 style-count byte, rounded up
 
-    // The POI section offset (header byte 32) points just past the LOD payload: the
-    // section is 67 bytes in (header 40 + style 1 + LOD entry 18 + index 4 + offset table 4).
-    let poi_off = u32::from_le_bytes([bin[32], bin[33], bin[34], bin[35]]) as usize;
-    assert_eq!(poi_off, 67);
+    // The POI section offset (header byte 32) points just past the LOD payload.
+    let poi_off = scaled_at(&bin, 32);
+    assert_eq!(poi_off, 128);
     assert_eq!(bin[poi_off], 6, "empty POI directory still declares 6 categories");
     assert_eq!(u16::from_le_bytes([bin[poi_off + 1], bin[poi_off + 2]]), 512); // shared chunk_size
 
     // The v7 hours-pool fields trail the six 13-byte entries: offset u32 + count u16. Count is 0 (no
     // hours), and the pool region (its bare `count u16`) begins right after the directory.
     let pool_fields_off = poi_off + 3 + 6 * 13;
-    let hours_pool_off = u32::from_le_bytes(bin[pool_fields_off..pool_fields_off + 4].try_into().unwrap()) as usize;
+    let hours_pool_off = scaled_at(&bin, pool_fields_off);
     let hours_pool_count = u16::from_le_bytes(bin[pool_fields_off + 4..pool_fields_off + 6].try_into().unwrap());
     assert_eq!(hours_pool_count, 0, "no hours in this map");
-    assert_eq!(hours_pool_off, poi_off + poi_dir_len, "pool follows the directory (no categories)");
+    assert_eq!(hours_pool_off, poi_off + align_up(poi_dir_len), "pool follows the directory (no categories)");
     assert_eq!(u16::from_le_bytes(bin[hours_pool_off..hours_pool_off + 2].try_into().unwrap()), 0, "empty pool count");
 
     // The nav section offset (header byte 36) points just past the hours pool; an empty graph is the
     // 40-byte directory followed by the always-present profile table — zero index nodes / chunks /
     // edges, chunk_size pinned to 512, profile_count 4, profile table right after the directory.
-    let nav_off = u32::from_le_bytes(bin[36..40].try_into().unwrap()) as usize;
+    let nav_off = scaled_at(&bin, 36);
     assert_eq!(nav_off, hours_pool_off + hours_pool_len, "nav section at the file tail");
     assert_eq!(u32::from_le_bytes(bin[nav_off + 4..nav_off + 8].try_into().unwrap()), 0, "index_node_count 0");
     assert_eq!(u32::from_le_bytes(bin[nav_off + 8..nav_off + 12].try_into().unwrap()), 0, "node_chunk_count 0");
     assert_eq!(u32::from_le_bytes(bin[nav_off + 16..nav_off + 20].try_into().unwrap()), 0, "edge_chunk_count 0");
     assert_eq!(u16::from_le_bytes(bin[nav_off + 20..nav_off + 22].try_into().unwrap()), 512, "nav chunk_size pinned");
     assert_eq!(
-        u32::from_le_bytes(bin[nav_off + 22..nav_off + 26].try_into().unwrap()) as usize,
-        nav_off + obc_formats::obcm::NAV_DIR_LEN,
-        "profile table sits immediately after the 40-byte directory"
+        scaled_at(&bin, nav_off + 22),
+        nav_off + align_up(obc_formats::obcm::NAV_DIR_LEN),
+        "the profile table sits at the first unit boundary past the 40-byte directory"
     );
     assert_eq!(bin[nav_off + 26], 4, "profile_count = the 4 default profiles");
     assert_eq!(bin[nav_off + 27], 0, "reserved byte is 0");
@@ -232,18 +258,21 @@ fn serialize_lods_header_single_empty_leaf() {
 
     let mpp = f32::from_le_bytes([bin[lod_tbl], bin[lod_tbl + 1], bin[lod_tbl + 2], bin[lod_tbl + 3]]);
     assert!(mpp.is_infinite()); // coarsest layer
-    let idx_off = u32::from_le_bytes([bin[lod_tbl + 4], bin[lod_tbl + 5], bin[lod_tbl + 6], bin[lod_tbl + 7]]);
+    let idx_off = scaled_at(&bin, lod_tbl + 4);
     let node_count = u32::from_le_bytes([bin[lod_tbl + 8], bin[lod_tbl + 9], bin[lod_tbl + 10], bin[lod_tbl + 11]]);
     let c_size = u16::from_le_bytes([bin[lod_tbl + 12], bin[lod_tbl + 13]]);
     let chunk_count = u32::from_le_bytes([bin[lod_tbl + 14], bin[lod_tbl + 15], bin[lod_tbl + 16], bin[lod_tbl + 17]]);
-    assert_eq!(idx_off as usize, lod_tbl + 18);
+    assert_eq!(idx_off, align_up(lod_tbl + 18), "the index starts on a unit boundary past the LOD table");
     assert_eq!(node_count, 1);
     assert_eq!(c_size, 2048);
     assert_eq!(chunk_count, 0);
-    // A chunkless LOD still writes its offset table: the single `0` entry, and nothing after it.
-    let table_off = idx_off as usize + node_count as usize * 4;
+    // A chunkless LOD still writes its offset table: the single `0` entry, then the §1.2 filler
+    // that carries the region to the boundary `data_start` would have landed on — which is what
+    // lets the section behind it be named.
+    let table_off = idx_off + node_count as usize * 4;
     assert_eq!(u32::from_le_bytes(bin[table_off..table_off + 4].try_into().unwrap()), 0);
-    assert_eq!(table_off + 4, poi_off, "table of one entry, then the POI section");
+    assert_eq!(align_up(table_off + 4), poi_off, "table of one entry, its filler, then the POI section");
+    assert!(bin[table_off + 4..poi_off].iter().all(|&b| b == FILLER));
 }
 
 // === 16-bit delta path — byte-pinned ========================================
@@ -462,8 +491,8 @@ fn serialize_keeps_chunk_index_consistent_when_a_feature_overflows() {
     assert_eq!(dropped, 1, "the overflowing feature is reported dropped");
 
     // Locate the LOD table and read its node/chunk counts + index offset.
-    let lod_tbl = u32::from_le_bytes([bin[26], bin[27], bin[28], bin[29]]) as usize;
-    let idx_off = u32::from_le_bytes([bin[lod_tbl + 4], bin[lod_tbl + 5], bin[lod_tbl + 6], bin[lod_tbl + 7]]) as usize;
+    let lod_tbl = scaled_at(&bin, 26);
+    let idx_off = scaled_at(&bin, lod_tbl + 4);
     let node_count = u32::from_le_bytes([bin[lod_tbl + 8], bin[lod_tbl + 9], bin[lod_tbl + 10], bin[lod_tbl + 11]]);
     let chunk_count = u32::from_le_bytes([bin[lod_tbl + 14], bin[lod_tbl + 15], bin[lod_tbl + 16], bin[lod_tbl + 17]]);
     assert_eq!(node_count, 1, "single leaf ⇒ one node");
@@ -478,12 +507,14 @@ fn serialize_keeps_chunk_index_consistent_when_a_feature_overflows() {
     // after the index *and* the (chunk_count + 1)-entry offset table, and its extent is the table's
     // first two entries.
     let table_off = idx_off + node_count as usize * 4;
-    let chunk_off = table_off + (chunk_count as usize + 1) * 4;
-    let end = u32::from_le_bytes(bin[table_off + 4..table_off + 8].try_into().unwrap()) as usize;
+    let chunk_off = align_up(table_off + (chunk_count as usize + 1) * 4);
+    let end = unit_bytes(u32::from_le_bytes(bin[table_off + 4..table_off + 8].try_into().unwrap()));
     assert_eq!(u32::from_le_bytes(bin[table_off..table_off + 4].try_into().unwrap()), 0, "offsets[0] is 0");
-    assert_eq!(end, 10, "the tight chunk is the 9-byte feature plus its sentinel");
+    // The 9-byte feature plus its sentinel is 10 bytes of *content*; its **span** is that rounded up
+    // to a unit, which is what v14's offset table names.
+    assert_eq!(end, align_up(10), "the chunk's span is its 10 content bytes rounded to a unit");
     assert_eq!(bin[chunk_off], 10, "chunk starts with the kept feature");
-    assert!(!bin[chunk_off..chunk_off + end].contains(&11), "the overflowing feature is absent from the chunk");
+    assert!(!bin[chunk_off..chunk_off + 10].contains(&11), "the overflowing feature is absent from the chunk");
 }
 
 // === v11 chunk offset table (§5, issue #1009) ================================
@@ -509,19 +540,31 @@ fn serialize_tree_writes_a_monotonic_offset_table() {
     assert_eq!((node_count, chunk_count, dropped), (5, 2, 0));
     assert_eq!(index.len(), 5 * 4);
 
+    // Since v14 the entries count **units**, and `data_start` is `align_up` of the table's end —
+    // which `serialize_tree` can compute itself, because the index it follows is on a boundary.
     let table_len = (chunk_count as usize + 1) * 4;
-    let offsets: Vec<u32> =
-        (0..=chunk_count as usize).map(|k| u32::from_le_bytes(data[k * 4..k * 4 + 4].try_into().unwrap())).collect();
+    let data_start = align_up(index.len() + table_len) - index.len();
+    let offsets: Vec<usize> = (0..=chunk_count as usize)
+        .map(|k| unit_bytes(u32::from_le_bytes(data[k * 4..k * 4 + 4].try_into().unwrap())))
+        .collect();
     assert_eq!(offsets[0], 0, "offsets are relative to the first chunk byte");
     assert!(offsets.windows(2).all(|w| w[0] <= w[1]), "monotonic: {offsets:?}");
-    assert_eq!(offsets[chunk_count as usize] as usize, data.len() - table_len, "last entry is the region total");
+    assert_eq!(offsets[chunk_count as usize], data.len() - data_start, "last entry is the region total");
+    assert!(data[table_len..data_start].iter().all(|&b| b == FILLER), "the table's gap is 0xFF");
 
-    // Each pair delimits exactly that chunk: the style byte it starts with, and its one sentinel.
+    // Each pair delimits exactly that chunk's **span**: the style byte it starts with, its one
+    // sentinel, and then `0..U-1` bytes of filler up to the next boundary. The content is the
+    // shorter run ending at the sentinel; the span is what the offsets name.
     for (k, style) in [(0usize, 10u8), (1, 11)] {
-        let chunk = &data[table_len + offsets[k] as usize..table_len + offsets[k + 1] as usize];
-        assert_eq!(chunk[0], style, "chunk {k} starts with its feature");
-        assert_eq!(*chunk.last().unwrap(), 0xFF, "and ends on exactly one sentinel");
-        assert!(!chunk[..chunk.len() - 1].ends_with(&[0xFF]), "no padding before it");
+        let span = &data[data_start + offsets[k]..data_start + offsets[k + 1]];
+        assert_eq!(span.len() % UNIT, 0, "a chunk's span is a whole number of units");
+        assert_eq!(span[0], style, "chunk {k} starts with its feature");
+        // The span ends in a `0xFF` run whose *first* byte is the chunk's one sentinel and whose
+        // rest is filler — so the run is `1..=U` bytes. Counting the trailing run rather than
+        // searching for the first `0xFF` is the point: a feature's own bytes may legitimately be
+        // `0xFF`, which is why the sentinel is positional and not a scan target.
+        let run = span.iter().rev().take_while(|&&b| b == FILLER).count();
+        assert!((1..=UNIT).contains(&run), "chunk {k}: one sentinel plus 0..U-1 filler, got a run of {run}");
     }
 }
 
@@ -530,9 +573,13 @@ fn serialize_tree_writes_a_monotonic_offset_table() {
 #[test]
 fn serialize_tree_writes_the_table_even_with_no_chunks() {
     let root = Node::Leaf { bbox: (0, 0, 1_000_000, 1_000_000), features: vec![] };
-    let (_, node_count, data, chunk_count, dropped) = serialize_tree(&root, 4096);
+    let (index, node_count, data, chunk_count, dropped) = serialize_tree(&root, 4096);
     assert_eq!((node_count, chunk_count, dropped), (1, 0, 0));
-    assert_eq!(data, vec![0, 0, 0, 0], "one zero entry, nothing after it");
+    // The single `0` entry, then the §1.2 filler that carries the region to a unit boundary — so
+    // whatever follows this LOD can still be named by a scaled offset.
+    let mut want = vec![0u8, 0, 0, 0];
+    want.resize(align_up(index.len() + 4) - index.len(), FILLER);
+    assert_eq!(data, want, "one zero entry and its filler, nothing else");
 }
 
 // === v11 compact-vs-wide header selection (§5, issue #1009) ==================
