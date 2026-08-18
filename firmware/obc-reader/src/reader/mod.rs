@@ -1036,7 +1036,9 @@ mod tests {
                 chunk_size: 64,
             }],
         );
-        let style_off = u32::from_le_bytes(bytes[21..25].try_into().unwrap());
+        // `Style Offset` is scaled (§1.1), so the byte to arm the failing read at is the field
+        // resolved through the file's unit — not the field itself, which is `4`.
+        let style_off = obcm_testkit::resolve_offset(&bytes, 21) as u32;
         // The count-byte read (at style_off), then the record-block read (at style_off + 1).
         for fail_at in [style_off, style_off + 1] {
             let src = FlakySource { data: &bytes, fail_at, partial: 0 };
