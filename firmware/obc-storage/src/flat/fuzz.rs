@@ -83,7 +83,7 @@ fn sample_slot() -> Slot {
 #[test]
 fn no_byte_flip_of_any_record_panics_or_is_accepted_as_itself() {
     let mut rng = Rng(0x0F0F_0F0F_0F0F_0F0F);
-    let superblock = Superblock { store: STORE, total_blocks: 62_914_560 }.encode();
+    let superblock = Superblock::for_card(STORE, 62_914_560).expect("an expressible card").encode();
     let header = Header { store: STORE, sequence: 9, next_object: 12, entry_count: 40 }.encode();
     let entry = sample_entry().encode();
     let gate = Gate { copy: 1, store: STORE, sequence: 9, entry_count: 40, body_crc: 0xDEAD_BEEF }.encode();
@@ -150,7 +150,7 @@ fn field_mutations_reach_the_entrys_structural_rules() {
 /// the card ends up holding, a remount reproduces the store's resident state exactly.
 #[test]
 fn the_seam_never_panics_on_hostile_arguments() {
-    let total_blocks = super::layout::EXTENT_AREA + super::layout::EXTENT_BLOCKS * EXTENTS as u64;
+    let total_blocks = super::layout::EXTENT_AREA + super::layout::Geometry::DEFAULT.extent_blocks() * EXTENTS as u64;
     let disk = SparseDisk::blank(total_blocks, 5);
     let store = FlatStore::initialize(&disk, STORE).expect("a fresh card initializes");
     let mut store = store;
@@ -261,9 +261,10 @@ fn a_structurally_invalid_entry_array_is_never_served() {
     ];
 
     for (index, entries) in arrays.into_iter().enumerate() {
-        let total_blocks = super::layout::EXTENT_AREA + super::layout::EXTENT_BLOCKS * EXTENTS as u64;
+        let total_blocks =
+            super::layout::EXTENT_AREA + super::layout::Geometry::DEFAULT.extent_blocks() * EXTENTS as u64;
         let disk = SparseDisk::blank(total_blocks, index as u64 + 1);
-        let superblock = Superblock { store: STORE, total_blocks }.encode();
+        let superblock = Superblock::for_card(STORE, total_blocks).expect("an expressible card").encode();
         disk.install(super::layout::SUPERBLOCK[0], &superblock);
 
         let header = Header { store: STORE, sequence: 4, next_object: 99, entry_count: entries.len() as u16 };
@@ -294,7 +295,7 @@ fn a_structurally_invalid_entry_array_is_never_served() {
 #[test]
 fn random_cards_never_mount_writable() {
     let mut rng = Rng(0xDEAD_BEEF_CAFE_F00D);
-    let total_blocks = super::layout::EXTENT_AREA + super::layout::EXTENT_BLOCKS * EXTENTS as u64;
+    let total_blocks = super::layout::EXTENT_AREA + super::layout::Geometry::DEFAULT.extent_blocks() * EXTENTS as u64;
     let mut modes: Vec<super::store::Mode> = Vec::new();
     for round in 0..200u64 {
         let disk = SparseDisk::blank(total_blocks, round + 1);
@@ -319,10 +320,10 @@ fn random_cards_never_mount_writable() {
 #[test]
 fn a_valid_superblock_over_a_random_catalog_is_read_only() {
     let mut rng = Rng(0x1234_5678_9ABC_DEF0);
-    let total_blocks = super::layout::EXTENT_AREA + super::layout::EXTENT_BLOCKS * EXTENTS as u64;
+    let total_blocks = super::layout::EXTENT_AREA + super::layout::Geometry::DEFAULT.extent_blocks() * EXTENTS as u64;
     for round in 0..200u64 {
         let disk = SparseDisk::blank(total_blocks, round + 1);
-        let superblock = Superblock { store: STORE, total_blocks }.encode();
+        let superblock = Superblock::for_card(STORE, total_blocks).expect("an expressible card").encode();
         disk.install(super::layout::SUPERBLOCK[0], &superblock);
         for lba in [64u64, 65, 544, 576, 577, 1_056] {
             let mut block = [0u8; BLOCK];

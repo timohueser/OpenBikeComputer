@@ -13,7 +13,7 @@ use std::vec::Vec;
 
 use super::catalog::{Entry, Header};
 use super::device::BlockDevice;
-use super::layout::{body_len, BLOCK};
+use super::layout::{body_len, Geometry, BLOCK};
 use super::seam::{EntryFlags, EntryMeta, ObjectId, Revision, StoreId};
 use super::store::FlatStore;
 
@@ -36,6 +36,9 @@ pub struct Model {
     pub next_object: u64,
     pub entries: Vec<Entry>,
     pub extents: u32,
+    /// The card's extent size (§4). §8 gives every card of 64 GiB or less the 1 MiB default, so a
+    /// scenario only sets this when it is modelling a bigger one.
+    pub geometry: Geometry,
     /// What §7.3 must recover: the ride's flushed length and its length at the newest slot. `None`
     /// when no entry is recording.
     pub ride: Option<(u64, u64)>,
@@ -63,7 +66,16 @@ pub struct Snapshot {
 impl Model {
     /// The card §8 leaves behind: commit sequence `1`, next `ObjectId` `1`, no entries.
     pub fn empty(store: StoreId, extents: u32) -> Self {
-        Model { store, sequence: 1, high_water: 1, next_object: 1, entries: Vec::new(), extents, ride: None }
+        Model {
+            store,
+            sequence: 1,
+            high_water: 1,
+            next_object: 1,
+            entries: Vec::new(),
+            extents,
+            geometry: Geometry::DEFAULT,
+            ride: None,
+        }
     }
 
     /// §5.5: one batch, applied atomically. The entry array stays sorted by `(ObjectId, Revision)`,

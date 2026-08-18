@@ -91,18 +91,35 @@ fn body() -> Vec<u8> {
     body
 }
 
-/// §4.1.
+/// §4.1, both cards: the 32 GB one §8 gives 1 MiB extents, and the 128 GiB one it gives 2 MiB — the
+/// card the old fixed-size format could not address at all.
 #[test]
 fn superblock_vector() {
-    let bytes = super::superblock::Superblock { store: STORE, total_blocks: TOTAL_BLOCKS }.encode();
+    let bytes = super::superblock::Superblock::for_card(STORE, TOTAL_BLOCKS).expect("§4.1's card").encode();
     assert_prefix_then_zero(
         &bytes[..504],
         "46 53 53 42 01 00 00 00 8F 2C 41 D9 6B 07 4E A3
-         B1 55 9C 20 7D E8 34 66 00 00 C0 03 00 00 00 00",
+         B1 55 9C 20 7D E8 34 66 00 00 C0 03 00 00 00 00
+         14",
     );
-    assert_eq!(u32_at(&bytes, 504), 0x1D51_5CCC, "§4.1's CRC-32 over bytes 0..504");
+    assert_eq!(u32_at(&bytes, 504), 0x5374_4CB7, "§4.1's CRC-32 over bytes 0..504");
     assert!(bytes[508..].iter().all(|&byte| byte == 0));
-    assert_eq!(super::layout::extent_count(TOTAL_BLOCKS), EXTENTS, "§4.1: 30,718 extents");
+    let superblock = super::superblock::Superblock::decode(&bytes).expect("§4.1's superblock decodes");
+    assert_eq!(superblock.geometry.extent_size(), 1 << 20, "§4.1: a 32 GB card gets the 1 MiB minimum");
+    assert_eq!(superblock.extent_count(), EXTENTS, "§4.1: 30,718 extents");
+
+    // §4.1's second card: 268,435,456 blocks — 128 GiB — whose geometry byte is 21 rather than 20.
+    let bytes = super::superblock::Superblock::for_card(STORE, 268_435_456).expect("§4.1's larger card").encode();
+    assert_prefix_then_zero(
+        &bytes[..504],
+        "46 53 53 42 01 00 00 00 8F 2C 41 D9 6B 07 4E A3
+         B1 55 9C 20 7D E8 34 66 00 00 00 10 00 00 00 00
+         15",
+    );
+    assert_eq!(u32_at(&bytes, 504), 0xE337_E72D, "§4.1's CRC-32 for the 128 GiB card");
+    let superblock = super::superblock::Superblock::decode(&bytes).expect("the larger superblock decodes");
+    assert_eq!(superblock.geometry.extent_size(), 2 << 20, "§8: 128 GiB / 65,536 is 2 MiB");
+    assert_eq!(superblock.extent_count(), 65_535, "§6: the extent area is one extent short of the index");
 }
 
 /// §5.7, the header block.
@@ -211,12 +228,16 @@ fn ride_journal_slot_vector() {
 /// §9's capacities, gathered: each is normative where it is defined, and this is the table.
 #[test]
 fn capacity_table() {
-    use super::layout::{EXTENT_AREA, EXTENT_SIZE, MAX_EXTENTS, MAX_RANGES, PROGRAM_PAGE, SLOTS};
+    use super::layout::{Geometry, EXTENT_AREA, MAX_EXTENTS, MAX_RANGES, MIN_EXTENT_SIZE, PROGRAM_PAGE, SLOTS};
     assert_eq!(PROGRAM_PAGE, 16_384);
-    assert_eq!(EXTENT_SIZE, 1 << 20);
+    assert_eq!(MIN_EXTENT_SIZE, 1 << 20, "§9's extent size, at the minimum §8 never goes below");
+    assert_eq!(Geometry::DEFAULT.extent_size(), MIN_EXTENT_SIZE);
     assert_eq!(EXTENT_AREA, 4_096);
     assert_eq!(MAX_EXTENTS, 65_536);
     assert_eq!(MAX_EXTENTS as usize / 8, 8_192, "the resident free bitmap");
+    // §9's extent area: 64 GiB at the 1 MiB minimum, and 65,536 extents at every size above it.
+    assert_eq!(MAX_EXTENTS as u64 * MIN_EXTENT_SIZE, 64 << 30);
+    assert_eq!(MAX_EXTENTS as u64 * Geometry::from_log2(31).unwrap().extent_size(), 128 << 40);
     assert_eq!(super::layout::CATALOG_BLOCKS as usize * BLOCK, 262_144, "one catalog copy");
     assert_eq!(super::layout::ENTRY_CAPACITY, 1_916);
     assert_eq!(ENTRY_STRIDE, 128);
@@ -297,7 +318,7 @@ fn the_wire_vectors_carry_the_formats_own_values() {
     assert_eq!(offset, 40_960);
     assert_eq!(u16_at(&stream, 12), 1_024);
     assert_eq!(
-        entry.ranges.locate(offset).unwrap(),
+        entry.ranges.locate(super::layout::Geometry::DEFAULT, offset).unwrap(),
         super::layout::Located { block: 28_752, offset: 0, contiguous: (1 << 20) - 40_960 },
         "§6.1: that offset is LBA 28,752 of extent 12",
     );
@@ -323,7 +344,7 @@ fn the_wire_vectors_carry_the_formats_own_values() {
 #[test]
 fn a_card_built_from_the_vectors_mounts_to_the_vectors() {
     let disk = SparseDisk::blank(TOTAL_BLOCKS, 1);
-    let superblock = super::superblock::Superblock { store: STORE, total_blocks: TOTAL_BLOCKS }.encode();
+    let superblock = super::superblock::Superblock::for_card(STORE, TOTAL_BLOCKS).expect("§4.1's card").encode();
     disk.install(super::layout::SUPERBLOCK[0], &superblock);
     disk.install(super::layout::SUPERBLOCK[1], &superblock);
     disk.install(super::layout::CATALOG[0], &body());

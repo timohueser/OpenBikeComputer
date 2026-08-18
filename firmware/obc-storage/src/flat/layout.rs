@@ -1,8 +1,10 @@
 //! Card geometry (`FLAT_Store_Format.md` §2), the extent area (§6) and the address arithmetic that
 //! is the whole read path (§6.1).
 //!
-//! Every address the store computes is arithmetic on these constants. There is no partition table,
-//! no filesystem, no indirection block and no chain walk.
+//! Every address the store computes is arithmetic on these constants and on the one value that is
+//! *not* a constant: the extent size, which §8 scales to the card and §4 records. [`Geometry`] is
+//! that value, and every byte, block and count derived from it goes through it. There is no partition
+//! table, no filesystem, no indirection block and no chain walk.
 
 use super::error::{DecodeError, Reason, Record, Result};
 
@@ -79,14 +81,90 @@ pub const SLOTS: usize = 16;
 
 /// The extent area begins here (§6).
 pub const EXTENT_AREA: u64 = 4_096;
-/// One extent: 1 MiB.
-pub const EXTENT_SIZE: u64 = 1 << 20;
-/// Blocks in one extent.
-pub const EXTENT_BLOCKS: u64 = EXTENT_SIZE / BLOCK as u64;
-/// Extents a `u16` extent index can address (§6).
+/// Extents a `u16` extent index can address (§6), and therefore the 8 KiB the resident free bitmap
+/// costs — the one figure card-scaled extents exist to keep fixed.
 pub const MAX_EXTENTS: u32 = 65_536;
 /// Extent ranges one object may have (§5.3).
 pub const MAX_RANGES: usize = 8;
+
+/// The smallest extent, and the one every card of 64 GiB or less gets (§6).
+pub const MIN_EXTENT_SIZE: u64 = 1 << 20;
+/// §4 records the extent size as a base-2 logarithm, which is what makes "a power of two" a property
+/// of the *encoding* rather than a rule a decoder has to enforce. Only the range needs checking.
+const MIN_EXTENT_LOG2: u8 = MIN_EXTENT_SIZE.trailing_zeros() as u8;
+/// 2 GiB. `65,536 × 2 GiB` is 128 TiB, the SDUC address ceiling — so every card that can exist is
+/// expressible, and the arithmetic below stays far inside a `u64`: the widest product this format
+/// can form is `65,536 × 2 GiB`.
+const MAX_EXTENT_LOG2: u8 = 31;
+
+/// The extent size this card was initialized with (§4), and every address derived from it (§6).
+///
+/// The size is **not** a constant of the format: the entry's `u16` extent index names 65,536 extents,
+/// so a fixed 1 MiB would have capped the card at 64 GiB — a ceiling the bench card already sat at 95%
+/// of. §8 scales the size to the card instead and records it, and this type is the one place the
+/// recorded value turns into bytes, blocks and counts. The trade is granularity: past 64 GiB an object
+/// wastes up to one larger extent at its tail, and there is no sub-extent allocator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Geometry {
+    log2: u8,
+}
+
+impl Geometry {
+    /// 1 MiB: what §8's rule picks for every card of 64 GiB or less, which is every card the product
+    /// has shipped against.
+    pub const DEFAULT: Geometry = Geometry { log2: MIN_EXTENT_LOG2 };
+
+    /// §8's rule: `max(1 MiB, card bytes / 65,536)`, rounded up to a power of two.
+    ///
+    /// `None` for a card past 128 TiB, which no SD standard defines: the alternative is a superblock
+    /// whose own extent count exceeds the index, and initialization refusing outright beats writing one
+    /// that will not mount.
+    pub fn for_card(total_blocks: u64) -> Option<Geometry> {
+        let want = total_blocks.saturating_mul(BLOCK as u64).div_ceil(MAX_EXTENTS as u64);
+        let mut log2 = MIN_EXTENT_LOG2;
+        while (1u64 << log2) < want {
+            log2 += 1;
+            if log2 > MAX_EXTENT_LOG2 {
+                return None;
+            }
+        }
+        Some(Geometry { log2 })
+    }
+
+    /// §4's recorded field. `None` outside `20..=31`, which is the whole of what a decoder checks.
+    pub const fn from_log2(log2: u8) -> Option<Geometry> {
+        if log2 < MIN_EXTENT_LOG2 || log2 > MAX_EXTENT_LOG2 {
+            return None;
+        }
+        Some(Geometry { log2 })
+    }
+
+    /// The byte §4 stores.
+    pub const fn log2(self) -> u8 {
+        self.log2
+    }
+
+    /// One extent, in bytes.
+    pub const fn extent_size(self) -> u64 {
+        1 << self.log2
+    }
+
+    /// Blocks in one extent.
+    pub const fn extent_blocks(self) -> u64 {
+        1 << (self.log2 - BLOCK.trailing_zeros() as u8)
+    }
+
+    /// §6's extent count, from the card's block count — uncapped, because whether it fits the index is
+    /// exactly what [`Superblock::decode`](super::superblock::Superblock::decode) refuses on.
+    pub fn extent_count(self, total_blocks: u64) -> u64 {
+        total_blocks.saturating_sub(EXTENT_AREA) / self.extent_blocks()
+    }
+
+    /// Extents a payload of `bytes` needs.
+    pub fn extents_for(self, bytes: u64) -> u64 {
+        bytes.div_ceil(self.extent_size())
+    }
+}
 
 /// The first block of catalog copy `copy`'s gate.
 pub fn catalog_gate(copy: usize) -> u64 {
@@ -104,20 +182,6 @@ pub fn slot_block(slot: usize) -> u64 {
 #[cfg(any(test, feature = "std"))]
 pub fn body_len(entries: u16) -> usize {
     BLOCK + entries as usize * ENTRY_STRIDE
-}
-
-/// §6's extent count, from the card's block count.
-pub fn extent_count(total_blocks: u64) -> u32 {
-    if total_blocks <= EXTENT_AREA {
-        return 0;
-    }
-    let extents = (total_blocks - EXTENT_AREA) / EXTENT_BLOCKS;
-    extents.min(MAX_EXTENTS as u64) as u32
-}
-
-/// Extents a payload of `bytes` needs.
-pub fn extents_for(bytes: u64) -> u64 {
-    bytes.div_ceil(EXTENT_SIZE)
 }
 
 /// One object's extents, in payload order: range `i` carries the payload bytes that follow range
@@ -198,14 +262,18 @@ impl Ranges {
 
     /// §6.1: the block holding payload offset `offset`, the byte inside it, and how many payload
     /// bytes remain contiguous on the card from there.
-    pub fn locate(&self, offset: u64) -> Option<Located> {
+    ///
+    /// The geometry is the caller's because it is the **card's**, recorded in its superblock: a
+    /// `Ranges` is extent indices and nothing else, and what an index is worth is not a property of
+    /// the entry that carries it.
+    pub fn locate(&self, geometry: Geometry, offset: u64) -> Option<Located> {
         let mut start = 0u64;
         for (first, count) in self.iter() {
-            let span = count as u64 * EXTENT_SIZE;
+            let span = count as u64 * geometry.extent_size();
             if offset < start + span {
                 let inner = offset - start;
                 return Some(Located {
-                    block: EXTENT_AREA + EXTENT_BLOCKS * first as u64 + inner / BLOCK as u64,
+                    block: EXTENT_AREA + geometry.extent_blocks() * first as u64 + inner / BLOCK as u64,
                     offset: (inner % BLOCK as u64) as usize,
                     contiguous: span - inner,
                 });
@@ -281,7 +349,10 @@ mod tests {
         assert_eq!(JOURNAL, CATALOG[1] + CATALOG_BLOCKS);
         assert_eq!(SLOT_BLOCKS * SLOTS as u64, 1_024);
         assert_eq!(EXTENT_AREA - (JOURNAL + SLOT_BLOCKS * SLOTS as u64), 1_984);
-        assert_eq!(EXTENT_AREA * BLOCK as u64 % EXTENT_SIZE, 0);
+        // The extent area starts at 2 MiB, which is a multiple of the smallest extent and of the
+        // program page — so §6's addressing is exact and §6.1's page-alignment property holds at every
+        // size §8 can pick, not only at the default one.
+        assert_eq!(EXTENT_AREA * BLOCK as u64 % MIN_EXTENT_SIZE, 0);
         assert_eq!(catalog_gate(0), 544);
         assert_eq!(catalog_gate(1), 1_056);
         assert_eq!(slot_block(3), 1_280);
@@ -319,38 +390,93 @@ mod tests {
         assert_eq!(ENTRY_BLOCKS / STREAM_BLOCKS, 60);
     }
 
-    /// §4.1's card: 62,914,560 blocks recompute to 30,718 extents. And §6's cap holds above 64 GiB.
+    /// §4.1's card: 62,914,560 blocks recompute to 30,718 extents, at the 1 MiB §8 gives it.
     #[test]
     fn extent_count_is_section_6s_formula() {
-        assert_eq!(extent_count(62_914_560), 30_718);
-        assert_eq!(extent_count(EXTENT_AREA), 0);
-        assert_eq!(extent_count(EXTENT_AREA + EXTENT_BLOCKS - 1), 0);
-        assert_eq!(extent_count(EXTENT_AREA + EXTENT_BLOCKS), 1);
-        assert_eq!(extent_count(u64::MAX), MAX_EXTENTS);
+        let default = Geometry::DEFAULT;
+        assert_eq!(default.extent_count(62_914_560), 30_718);
+        assert_eq!(default.extent_count(EXTENT_AREA), 0);
+        assert_eq!(default.extent_count(EXTENT_AREA + default.extent_blocks() - 1), 0);
+        assert_eq!(default.extent_count(EXTENT_AREA + default.extent_blocks()), 1);
     }
 
-    /// §6.1's worked example: the route entry's range `(12, 1)`, payload offset 40,960.
+    /// §8's rule, over the cards it has to answer for: 1 MiB up to 64 GiB, then one doubling per
+    /// doubling of the card, and never more extents than the `u16` index can name.
+    #[test]
+    fn the_extent_size_is_scaled_to_the_card() {
+        // (card blocks, the extent size §8 picks)
+        let cases: [(u64, u64); 8] = [
+            ((32 << 30) / 512, 1 << 20),      // a 32 GiB card: the ceiling is not in sight
+            ((64 << 30) / 512, 1 << 20),      // exactly 65,536 × 1 MiB, which still fits
+            ((64 << 30) / 512 + 1, 2 << 20),  // one block past it doubles
+            (128_000_000_000 / 512, 2 << 20), // a "128 GB" card, which is 119.2 GiB
+            ((128 << 30) / 512, 2 << 20),     // and a 128 GiB one, exactly 65,536 × 2 MiB
+            ((512 << 30) / 512, 8 << 20),     // half a terabyte
+            ((2 << 40) / 512, 32 << 20),      // SDXC's ceiling
+            ((128 << 40) / 512, 2 << 30),     // SDUC's, the largest card this format expresses
+        ];
+        for (blocks, size) in cases {
+            let geometry = Geometry::for_card(blocks).expect("an expressible card");
+            assert_eq!(geometry.extent_size(), size, "the wrong extent size for a {blocks}-block card");
+            assert!(geometry.extent_size().is_power_of_two());
+            assert_eq!(geometry.extent_blocks() * BLOCK as u64, geometry.extent_size());
+            assert!(
+                geometry.extent_count(blocks) <= MAX_EXTENTS as u64,
+                "a {blocks}-block card needs more extents than the index names",
+            );
+            assert_eq!(Geometry::from_log2(geometry.log2()), Some(geometry), "the recorded byte round-trips");
+        }
+        assert_eq!(Geometry::for_card(0), Some(Geometry::DEFAULT), "an empty card still has a geometry");
+        assert_eq!(Geometry::for_card(u64::MAX), None, "a card past 128 TiB is not expressible");
+    }
+
+    /// §4's field is a log2, so "a power of two" is unrepresentable-otherwise and only the range is a
+    /// rule. Below 1 MiB and above 2 GiB are the two refusals.
+    #[test]
+    fn only_the_recorded_range_is_a_rule() {
+        assert_eq!(Geometry::from_log2(19), None);
+        assert_eq!(Geometry::from_log2(32), None);
+        assert_eq!(Geometry::from_log2(0), None);
+        assert_eq!(Geometry::from_log2(20).unwrap().extent_size(), 1 << 20);
+        assert_eq!(Geometry::from_log2(31).unwrap().extent_size(), 1 << 31);
+        assert_eq!(Geometry::DEFAULT.extent_size(), MIN_EXTENT_SIZE);
+    }
+
+    /// §6.1's worked example: the route entry's range `(12, 1)`, payload offset 40,960, on a card of
+    /// 1 MiB extents.
     #[test]
     fn addressing_matches_the_section_6_1_example() {
+        let default = Geometry::DEFAULT;
         let mut ranges = Ranges::default();
         ranges.push(12, 1).unwrap();
-        let located = ranges.locate(40_960).unwrap();
+        let located = ranges.locate(default, 40_960).unwrap();
         assert_eq!(located.block, 28_752);
         assert_eq!(located.offset, 0);
-        assert_eq!(located.contiguous, EXTENT_SIZE - 40_960);
-        assert!(ranges.locate(EXTENT_SIZE).is_none());
+        assert_eq!(located.contiguous, MIN_EXTENT_SIZE - 40_960);
+        assert!(ranges.locate(default, MIN_EXTENT_SIZE).is_none());
+
+        // The same range on a card of 2 MiB extents: the same index, twice the stride, twice the run.
+        let doubled = Geometry::from_log2(21).unwrap();
+        let located = ranges.locate(doubled, 40_960).unwrap();
+        assert_eq!(located.block, EXTENT_AREA + 4_096 * 12 + 80);
+        assert_eq!(located.contiguous, (2 << 20) - 40_960);
+        assert!(ranges.locate(doubled, 2 << 20).is_none());
     }
 
     /// §6.1: any payload offset that is a multiple of 16,384 maps to a page-aligned block, which is
-    /// what §7.2's payload-page flush relies on.
+    /// what §7.2's payload-page flush relies on — at every extent size §8 can pick, since each one is
+    /// a multiple of the program page and the extent area starts on one.
     #[test]
     fn page_aligned_payload_offsets_map_to_page_aligned_blocks() {
-        let mut ranges = Ranges::default();
-        ranges.push(13, 32).unwrap();
-        for page in 0..(32 * EXTENT_SIZE / PROGRAM_PAGE as u64) {
-            let located = ranges.locate(page * PROGRAM_PAGE as u64).unwrap();
-            assert_eq!(located.offset, 0);
-            assert_eq!(located.block % PAGE_BLOCKS, 0, "payload page {page} is not page aligned");
+        for log2 in 20..=31u8 {
+            let geometry = Geometry::from_log2(log2).unwrap();
+            let mut ranges = Ranges::default();
+            ranges.push(13, 2).unwrap();
+            for page in 0..(2 * geometry.extent_size() / PROGRAM_PAGE as u64).min(4_096) {
+                let located = ranges.locate(geometry, page * PROGRAM_PAGE as u64).unwrap();
+                assert_eq!(located.offset, 0);
+                assert_eq!(located.block % PAGE_BLOCKS, 0, "payload page {page} at 2^{log2} is not page aligned");
+            }
         }
     }
 
@@ -365,9 +491,10 @@ mod tests {
         assert_eq!(ranges.extents(), 4);
 
         // The second range carries the payload bytes that follow the first.
-        let located = ranges.locate(3 * EXTENT_SIZE).unwrap();
-        assert_eq!(located.block, EXTENT_AREA + EXTENT_BLOCKS * 9);
-        assert_eq!(located.contiguous, EXTENT_SIZE);
+        let default = Geometry::DEFAULT;
+        let located = ranges.locate(default, 3 * default.extent_size()).unwrap();
+        assert_eq!(located.block, EXTENT_AREA + default.extent_blocks() * 9);
+        assert_eq!(located.contiguous, default.extent_size());
     }
 
     #[test]

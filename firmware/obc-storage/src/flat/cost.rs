@@ -30,7 +30,7 @@
 use std::vec::Vec;
 
 use super::crash::{entry, install_catalog, payload};
-use super::layout::{EXTENT_AREA, EXTENT_BLOCKS, SUPERBLOCK};
+use super::layout::{Geometry, EXTENT_AREA, SUPERBLOCK};
 use super::model::Model;
 use super::seam::{EntryFlags, Mutation, ObjectKind, PutSource, Store, StoreId};
 use super::sim::{MediaOp, SparseDisk};
@@ -122,7 +122,9 @@ impl Census {
 /// so a fake catalog would not mount and the census would be of nothing.
 fn populated(entries: u16) -> SparseDisk {
     let extents = entries as u32 + 8;
-    let blocks = EXTENT_AREA + EXTENT_BLOCKS * extents as u64;
+    // The census is the *default* geometry's, deliberately: §8 gives a card this size 1 MiB extents,
+    // and a census taken at another size would not be comparable with the bench's.
+    let blocks = EXTENT_AREA + Geometry::DEFAULT.extent_blocks() * extents as u64;
     let mut model = Model::empty(STORE, extents);
     for id in 1..=entries as u64 {
         model.entries.push(entry(id, 1, ObjectKind::Trip, EntryFlags::NONE, 600, "", &[(id as u16 - 1, 1)]));
@@ -132,7 +134,7 @@ fn populated(entries: u16) -> SparseDisk {
     model.high_water = 4;
 
     let disk = SparseDisk::blank(blocks, 7);
-    let superblock = Superblock { store: STORE, total_blocks: blocks }.encode();
+    let superblock = Superblock::for_card(STORE, blocks).expect("an expressible card").encode();
     disk.install(SUPERBLOCK[0], &superblock);
     disk.install(SUPERBLOCK[1], &superblock);
     install_catalog(&disk, &model, 0);
