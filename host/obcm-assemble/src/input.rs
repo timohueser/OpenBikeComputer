@@ -69,12 +69,12 @@ impl<'a> Cell<'a> {
         // an entry read at `U = 1` and re-emitted at `U = 16` addresses a plausible place sixteen
         // times too far in. Everything in this tree writes `4`, so this is a refusal a real catalog
         // never meets — and it is exactly the check that keeps it that way.
-        if tables.scale() != crate::shard::SCALE {
+        if tables.scale() != crate::emit::SCALE {
             return Err(Error::Format(format!(
                 "cell {}: its offsets count {}-byte units but this assembly writes {}-byte ones (OBCM §1.1)",
                 input.id,
                 tables.scale().unit(),
-                crate::shard::SCALE.unit()
+                crate::emit::SCALE.unit()
             )));
         }
         // The header bbox MUST be exactly the grid square (§3.1) — the one place the packer's usual
@@ -168,7 +168,7 @@ fn read_style_ids(src: &dyn ByteSource) -> Result<Vec<u8>> {
     let header = read_at(src, 0, HEADER_LEN)?;
     // Through the file's own `Offset Scale` (§1.1) — the header is 49 bytes, so since v14 the table
     // does not start where the header ends and the field is the only thing that says where it does.
-    let style_offset = crate::shard::header_style_offset(&header)
+    let style_offset = crate::emit::header_style_offset(&header)
         .ok_or_else(|| Error::Format("the cell's `Style Offset` does not resolve (OBCM §1.1)".into()))?;
     let count = read_at(src, style_offset, 1)?[0] as usize;
     let table = read_at(src, style_offset + 1, count * STYLE_RECORD_LEN)?;

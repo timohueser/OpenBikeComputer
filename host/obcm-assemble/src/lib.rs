@@ -1,5 +1,4 @@
-//! `obcm-assemble` — the **cell assembly engine**: baked OBCA grid cells in, one `.obcm` or an OBCA
-//! volume set out.
+//! `obcm-assemble` — the **cell assembly engine**: baked OBCA grid cells in, **one** `.obcm` out.
 //!
 //! The contract this crate implements is [`OBCA_Spec.md`](../../../specs/OBCA_Spec.md), and the
 //! spec's §4 is the acceptance bar rather than a design sketch. In one paragraph: because the cell
@@ -12,7 +11,7 @@
 //! # Shape of the crate
 //!
 //! - The **engine is GEOS-free and target-neutral**. It reads through
-//!   [`obc_formats::io::ByteSource`] and writes through a [`ShardStore`], so it has no filesystem,
+//!   [`obc_formats::io::ByteSource`] and writes through a [`MapStore`], so it has no filesystem,
 //!   no native dependency, and nothing that stops it compiling for `wasm32-unknown-unknown` — which
 //!   CI guards, because P4 runs exactly this code in a browser tab.
 //! - The **CLI** (`src/main.rs`) is a thin native driver: it opens files, implements the store over
@@ -27,8 +26,20 @@
 //! 2. Snap the assembly bbox (§4.2) — never shrink it afterwards.
 //! 3. Rebuild the POI section (§4.5) and the nav graph (§4.6). Both are sized here, which is what
 //!    lets every later offset be computed instead of back-patched.
-//! 4. Plan the set: one file if it fits (§5.5), else core + coarse + geometry shards (§5.1).
-//! 5. Write each shard, verify it through the reader (§4.8), and write the manifest **last** (§5.4).
+//! 4. Prepare the raster, if the catalog published one — every terrain cell checked and placed, and
+//!    the §1.3 region's length settled, because the header states it and the header goes out first.
+//! 5. Plan the map: one file, the full ladder, the two rebuilt sections and the spliced raster.
+//! 6. Write it, then verify it through the real reader (§4.8) — including the terrain region, read
+//!    back through the §1.3 window the header now names.
+//!
+//! # One file
+//!
+//! It used to be a *set*: an OBCS manifest plus 1..N OBCM shards partitioned by band role, because
+//! FAT32 capped a file at `4 GiB − 1` and OBCM's own offsets were `uint32`. Both walls are gone (the
+//! flat store, and v14's scaled offsets), so the roles, the tiling, the manifest, the binding and
+//! the half-bound refusal are all gone with them, and the raster that used to be a fourth file is
+//! spliced into the map's tail (`OBCM_Spec.md` §1.3). What survives from §5 is the *projection*:
+//! every byte is computable before it is written, which is what the ceiling is applied to.
 //!
 //! # Which half of §5.7 lives here
 //!
@@ -36,17 +47,16 @@
 //! and the split is worth stating because half of that section reads like an obligation this code is
 //! shirking:
 //!
-//! - **The consumer** MUST project every file of the set *before the download*, from the catalog's
-//!   published per-cell and per-band `bytes`, apply the schema's pessimistic per-cell overhead
-//!   budget, refuse a selection whose projection exceeds `4 GiB − 1 B`, and warn above ≈ 3.5 GiB for
-//!   the core. **None of that can happen here.** The assembler is handed cells that have already
-//!   been fetched; by the time it can compute anything, the download it was supposed to prevent has
-//!   happened. Those MUSTs belong to whatever holds the catalog — the builder, #1028.
-//! - **The assembler** MUST fail rather than emit an over-size file, MUST NOT "solve" an over-size
-//!   core by splitting the nav graph or dropping coverage, and SHOULD surface the core warning. That
-//!   is `plan_set`'s ceiling refusals (which name the navigation graph, because after §5.1's split
-//!   no other explanation is true), [`shard::write`]'s own re-check, [`Summary::warnings`], and
-//!   §4.8's re-assertion of every file's actual size.
+//! - **The consumer** MUST project the map *before the download*, from the catalog's published
+//!   per-cell and per-band `bytes`, apply the schema's pessimistic per-cell overhead budget, and
+//!   refuse a selection it cannot store. **None of that can happen here.** The assembler is handed
+//!   cells that have already been fetched; by the time it can compute anything, the download it was
+//!   supposed to prevent has happened. Those MUSTs belong to whatever holds the catalog — the
+//!   builder, #1028. What changed with the set is that the consumer now checks **one** number
+//!   against the card's free space rather than several against a ceiling.
+//! - **The assembler** MUST fail rather than emit an over-size file and MUST NOT "solve" one by
+//!   dropping coverage. That is [`emit::fits_ceiling`], reached from the plan and again from the
+//!   write, [`Summary::warnings`], and §4.8's re-assertion of the file's actual size.
 //!
 //! So the projection is bounded at both ends, by two programs: refused before the fetch by the
 //! catalog consumer, and re-asserted before the write here.
@@ -55,6 +65,7 @@ use std::collections::HashMap;
 
 use obc_formats::io::ByteSource;
 
+pub mod emit;
 pub mod extsort;
 pub mod graft;
 pub mod grid;
@@ -65,12 +76,11 @@ pub mod prune;
 pub mod qtree;
 pub mod schema;
 pub mod scratch;
-pub mod shard;
 pub mod terrain;
 pub mod verify;
 
 pub use input::CellInput;
-pub use terrain::{TerrainCellInput, TerrainParams, TerrainPlan, TerrainShard, TerrainSink};
+pub use terrain::{TerrainCellInput, TerrainParams, TerrainPlan, TerrainRegion};
 
 /// One selected cell whose canonical band content is empty, as asserted by the
 /// pinned catalog. It contributes coverage and therefore participates in bbox
@@ -83,7 +93,7 @@ pub struct KnownEmptyInput {
 pub use nav::NavStats;
 pub use schema::{Band, BandRole, Schema, Skin, StyleRecord};
 pub use scratch::{MemoryScratch, ScratchId, ScratchStore};
-pub use shard::{ShardPlan, FILE_CEILING};
+pub use emit::{MapPlan, FILE_CEILING};
 pub use verify::VerifyReport;
 
 use grid::{AlignedBox, CellId};
@@ -98,10 +108,11 @@ pub enum Error {
     Input(String),
     /// A cell that does not honour the format or the cell contract.
     Format(String),
-    /// A ceiling: the 4 GiB per-file limit, the `HoursRef` pool, the `uint32` index space (§5.7).
+    /// A ceiling: the per-file interior [`FILE_CEILING`], the `HoursRef` pool, the `uint32` index
+    /// space (§5.7).
     Capacity(String),
     /// The §4.8 verify pass rejected the output. A failure here aborts the whole assembly — a
-    /// partially written set is not a degraded map, it is an unmountable one.
+    /// partially written map is not a degraded one, it is an unmountable one.
     Verify(String),
     /// The byte source or sink failed.
     Io(obc_formats::io::Error),
@@ -151,20 +162,22 @@ impl Clock for NoClock {
 /// engine's memory budget.
 const SINK_COMBINE: usize = 1024 * 1024;
 
-/// Where a set's bytes go. The engine writes shards sequentially and hands each sealed shard back
-/// for the §4.8 verify, then writes the manifest **last** (§5.4) — a half-written set therefore has
-/// no manifest and is invisible as a map.
-pub trait ShardStore {
-    /// Open shard `plan.index` for streaming writes.
-    fn begin(&mut self, plan: &ShardPlan) -> Result<()>;
-    /// Append to the shard opened by [`ShardStore::begin`].
+/// Where the map's bytes go: opened once, streamed into, sealed, then read back for the §4.8
+/// verify.
+///
+/// It used to be a *set* store, with a shard index threaded through every method and a manifest
+/// written last as the atomicity token. There is one file now, so there is no index to thread, and
+/// the atomicity that trick was faking belongs to whatever the host commits into — the flat store's
+/// commit, or a browser save the rider either completes or does not.
+pub trait MapStore {
+    /// Open the map for streaming writes.
+    fn begin(&mut self) -> Result<()>;
+    /// Append to the map opened by [`MapStore::begin`].
     fn write(&mut self, buf: &[u8]) -> Result<()>;
-    /// Seal the open shard so it can be read back.
+    /// Seal the map so it can be read back.
     fn seal(&mut self) -> Result<()>;
-    /// A read-only view of a sealed shard, for the verify pass.
-    fn source(&self, index: usize) -> Result<&dyn ByteSource>;
-    /// The OBCS manifest. Called once, after every shard is written and verified.
-    fn manifest(&mut self, bytes: &[u8]) -> Result<()>;
+    /// A read-only view of the sealed map, for the verify pass.
+    fn source(&self) -> Result<&dyn ByteSource>;
 }
 
 /// An owned byte buffer as a random-access source, so an in-memory shard verifies through exactly
@@ -181,62 +194,40 @@ impl ByteSource for MemorySource {
     }
 }
 
-/// A [`ShardStore`] that keeps the set in memory — the wasm path, and what the tests use.
+/// A [`MapStore`] that keeps the map in memory — what the tests use, and the wasm path for a map
+/// small enough to hold.
 #[derive(Default, Debug)]
 pub struct MemoryStore {
-    pub shards: Vec<MemorySource>,
-    pub manifest: Vec<u8>,
+    pub map: MemorySource,
 }
 
-impl ShardStore for MemoryStore {
-    fn begin(&mut self, plan: &ShardPlan) -> Result<()> {
-        debug_assert_eq!(plan.index, self.shards.len());
-        self.shards.push(MemorySource::default());
+impl MapStore for MemoryStore {
+    fn begin(&mut self) -> Result<()> {
+        self.map.0.clear();
         Ok(())
     }
     fn write(&mut self, buf: &[u8]) -> Result<()> {
-        self.shards.last_mut().expect("a shard is open").0.extend_from_slice(buf);
+        self.map.0.extend_from_slice(buf);
         Ok(())
     }
     fn seal(&mut self) -> Result<()> {
         Ok(())
     }
-    fn source(&self, index: usize) -> Result<&dyn ByteSource> {
-        self.shards.get(index).map(|s| s as &dyn ByteSource).ok_or(Error::Io(obc_formats::io::Error::BadOffset))
-    }
-    fn manifest(&mut self, bytes: &[u8]) -> Result<()> {
-        self.manifest = bytes.to_vec();
-        Ok(())
+    fn source(&self) -> Result<&dyn ByteSource> {
+        Ok(&self.map)
     }
 }
 
 /// What an assembly can be told to do differently.
 #[derive(Clone, Debug)]
 pub struct Options {
-    /// The set's display name (24 bytes on the wire, §5.2).
-    pub name: String,
-    /// The card id the derived filenames use (`MS<id>S<kk>.OBM`).
-    pub card_id: u16,
-    /// Target size for a splittable shard. The default keeps a set's file count small while staying
-    /// well under the ceiling; a shard is split only when it exceeds this.
-    pub target_shard_bytes: u64,
     /// Proceed although a selected cell is missing — the resulting hole is legal (empty leaves), but
     /// never silent (§4.1).
     pub accept_holes: bool,
     /// Proceed although a cell is `partial` (§3.7).
     pub accept_partial: bool,
-    /// Split into a role-partitioned set **even when the whole assembly would fit one file**, which
-    /// §5.5's fast path would otherwise take. Three callers want it: a test that has to exercise the
-    /// shard planner at fixture scale, an operator reaching for `--force-split` to see what a set of
-    /// this selection looks like, and (later) an upload path that prefers several resumable files to
-    /// one big one. It changes which files are written, never what they contain.
-    ///
-    /// It is also the only way to reach the multi-shard planner below the 4 GiB threshold, which is
-    /// why it is on the CLI: [`Options::target_shard_bytes`] alone does nothing until the map needs
-    /// a set at all.
-    pub force_split: bool,
-    /// Skip the §4.8 verify pass. The spec makes verification a **precondition of writing a set**,
-    /// so this exists only to measure the phase split in a benchmark; a set written with it must not
+    /// Skip the §4.8 verify pass. The spec makes verification a **precondition of writing a map**,
+    /// so this exists only to measure the phase split in a benchmark; a map written with it must not
     /// be handed to a device.
     pub skip_verify: bool,
     /// The most memory the §4.6 merge's sorted passes may hold at once, in bytes (#1116 D2).
@@ -263,12 +254,8 @@ pub const DEFAULT_MERGE_BUDGET: usize = 64 << 20;
 impl Default for Options {
     fn default() -> Self {
         Options {
-            name: String::from("Map"),
-            card_id: 1,
-            target_shard_bytes: 1 << 30,
             accept_holes: false,
             accept_partial: false,
-            force_split: false,
             skip_verify: false,
             merge_budget_bytes: DEFAULT_MERGE_BUDGET,
         }
@@ -301,61 +288,49 @@ pub struct Stats {
     pub poi_section_bytes: u64,
 }
 
-/// The terrain half of an assembly (EL4): the store's lattice, the downloaded cells, and the
-/// seekable sink the shard is written to.
+/// The terrain half of an assembly (EL4): the store's lattice and the downloaded cells.
 ///
-/// It is a separate argument rather than another [`ShardStore`] method because terrain is a
-/// separate *file* by rule (`OBCA_Spec.md` §5.5) written by a separate writer with a different
-/// contract — [`obc_dem::container::ShardWriter`] back-patches its directory, so its sink seeks,
-/// while an OBCM shard streams. Bolting a seek onto the OBCM sink to share one trait would make
-/// every host implement a capability only the raster needs.
+/// It is a separate argument rather than another [`MapStore`] method because the raster is not a
+/// *stage* of the map's emission that a host could interleave — it is an input, checked and placed
+/// before the header is written, and then streamed into the tail like any other region
+/// (`OBCM_Spec.md` §1.3). The sink it used to carry died with the file it used to be.
 pub struct TerrainJob<'a> {
     /// `OBCC_Spec.md` §13.1's `posting_log2` / `cell_log2`, verbatim from the catalog.
     pub params: TerrainParams,
     /// The downloaded cells. Known-empty squares are simply absent — an absent cell and an
     /// all-`NODATA` one answer identically (`OBCT_Spec.md` §4.3), which is §13.6's whole point.
     pub cells: Vec<TerrainCellInput<'a>>,
-    /// Where the shard's bytes go.
-    pub sink: &'a mut dyn TerrainSink,
 }
 
-/// The terrain shard, as the caller sees it.
-#[derive(Clone, Debug)]
+/// The spliced raster, as the caller sees it.
+///
+/// There is no digest here and that is deliberate: the raster is a run of bytes inside the map, and
+/// the map has one identity ([`Summary::sha256`]). See [`terrain`]'s module header for why the
+/// separate `terrain` record's SHA-256 was not replaced by a subrange digest.
+#[derive(Clone, Copy, Debug)]
 pub struct TerrainSummary {
+    /// The OBCT container's exact length, before §1.3's round-up to a unit boundary.
     pub bytes: u64,
-    pub sha256: [u8; 32],
-    pub filename: String,
-    /// Cells with a block in the shard.
+    /// Cells with a block in the region.
     pub cells: usize,
     /// Squares in the rectangle, present or not.
     pub slots: u64,
 }
 
-/// One shard, as the caller sees it.
-#[derive(Clone, Debug)]
-pub struct ShardSummary {
-    pub index: usize,
-    pub role: BandRole,
-    pub bbox: AlignedBox,
-    pub bytes: u64,
-    pub sha256: [u8; 32],
-    pub filename: String,
-    pub verify: Option<VerifyReport>,
-}
-
-/// What an assembly produced.
+/// What an assembly produced: one file.
 #[derive(Clone, Debug)]
 pub struct Summary {
     pub assembly_box: AlignedBox,
-    pub shards: Vec<ShardSummary>,
-    /// The set's terrain shard, or `None` when the assembly carries no raster — an ordinary,
+    /// The whole file, raster included.
+    pub bytes: u64,
+    pub sha256: [u8; 32],
+    /// The §4.8 report, or `None` under [`Options::skip_verify`].
+    pub verify: Option<VerifyReport>,
+    /// The map's terrain region, or `None` when the assembly carries no raster — an ordinary,
     /// complete map whose profiles are flat (`OBCC_Spec.md` §13).
     pub terrain: Option<TerrainSummary>,
-    pub manifest_filename: String,
-    /// Every file of the set, terrain included.
-    pub bytes: u64,
     pub stats: Stats,
-    /// Everything the spec says a producer SHOULD *report* rather than refuse: §5.7's core-headroom
+    /// Everything the spec says a producer SHOULD *report* rather than refuse: §5.7's headroom
     /// warning, §4.5.2's dropped duplicate POIs, `OBCM_Spec.md` §8.3's degree-cap truncations, and a
     /// chunk-capacity drop from either quadtree.
     ///
@@ -365,13 +340,13 @@ pub struct Summary {
     pub warnings: Vec<String>,
 }
 
-/// Assemble `cells` into a volume set (§4, §5).
+/// Assemble `cells` into one map file (§4).
 pub fn assemble(
     cells: Vec<CellInput<'_>>,
     schema: &Schema,
     skin: &Skin,
     opts: &Options,
-    store: &mut dyn ShardStore,
+    store: &mut dyn MapStore,
     clock: &dyn Clock,
 ) -> Result<Summary> {
     assemble_with_known_empty(cells, Vec::new(), schema, skin, opts, store, clock)
@@ -391,7 +366,7 @@ fn assemble_with_default_scratch(
     schema: &Schema,
     skin: &Skin,
     opts: &Options,
-    store: &mut dyn ShardStore,
+    store: &mut dyn MapStore,
     clock: &dyn Clock,
 ) -> Result<Summary> {
     let scratch = MemoryScratch::new();
@@ -409,24 +384,25 @@ pub fn assemble_with_known_empty(
     schema: &Schema,
     skin: &Skin,
     opts: &Options,
-    store: &mut dyn ShardStore,
+    store: &mut dyn MapStore,
     clock: &dyn Clock,
 ) -> Result<Summary> {
     assemble_with_default_scratch(cells, known_empty, None, schema, skin, opts, store, clock)
 }
 
-/// Assemble a set, with the raster if there is one (EL4, #1072).
+/// Assemble the map, with the raster spliced in if there is one (EL4 #1072, `OBCM_Spec.md` §1.3).
 ///
-/// The terrain shard is written **after** every OBCM shard is written and verified and **before**
-/// the manifest, which is the only order §5.4 admits: the manifest is the atomicity token, so
-/// nothing it names may be missing when it lands, and a terrain failure must leave the set
-/// unmountable rather than half-elevated.
+/// The raster is **prepared before the layout and emitted inside the write**, which is the only
+/// order §1.3 admits: the region's offset and length live in the header, and the header is the first
+/// thing written. A terrain failure therefore aborts before a byte goes out rather than leaving a
+/// half-elevated file behind.
+///
 /// `scratch` is where the §4.6 merge spills the passes it may not hold in memory (#1116 D2) — the
 /// third host seam, alongside the store and the clock, and the reason the engine can sort a
 /// country-scale graph without a filesystem of its own. [`assemble`] and
 /// [`assemble_with_known_empty`] supply a [`MemoryScratch`] for callers that have nowhere to put it.
 // One assembly is exactly these nine things; a struct would restate the signature (see
-// `build_shard` for the same call).
+// `build_map` for the same call).
 #[allow(clippy::too_many_arguments)]
 pub fn assemble_full(
     cells: Vec<CellInput<'_>>,
@@ -435,13 +411,12 @@ pub fn assemble_full(
     schema: &Schema,
     skin: &Skin,
     opts: &Options,
-    store: &mut dyn ShardStore,
+    store: &mut dyn MapStore,
     clock: &dyn Clock,
     scratch: &dyn ScratchStore,
 ) -> Result<Summary> {
     let t_start = clock.now_us();
     schema.validate().map_err(Error::Input)?;
-    shard::check_card_id(opts.card_id)?;
     let styles = skin.resolve(schema).map_err(Error::Input)?;
     let mut warnings: Vec<String> = Vec::new();
 
@@ -518,25 +493,41 @@ pub fn assemble_full(
     )?;
     let t_nav = clock.now_us();
 
-    // --- 4. Plan the set. ---
-    let style_len = shard::pack_style_table(&styles).len();
+    // --- 4. The raster, prepared before anything is laid out. ---
+    //
+    // §1.3's region pointer is a **header** field, so the map cannot be laid out until the raster's
+    // length is known, and the length is not known until every cell has been checked and placed.
+    // That ordering is why this runs here rather than beside the write: a bad terrain cell must
+    // abort the assembly before the header commits to a region that will not be there.
+    let terrain_region = match &terrain {
+        None => None,
+        Some(job) => {
+            let plan = terrain::TerrainPlan::over(job.params, assembly)?;
+            debug_assert_eq!(plan.ubox(), assembly.ubox(), "the rectangle is the assembly bbox by construction");
+            Some(terrain::TerrainRegion::prepare(plan, &job.cells)?)
+        }
+    };
+    // The raster answers to the same wall as everything else now, and is refused at plan time for
+    // the same reason: a region this engine cannot address is one it must not start writing.
+    if let Some(region) = &terrain_region {
+        emit::fits_ceiling(region.bytes(), "the terrain region")?;
+    }
+
+    // --- 5. Plan the map. ---
+    let style_len = emit::pack_style_table(&styles).len();
     let poi_len = poi_section.section_len();
     let nav_projection = merged_nav.projection(&profile_table);
-    let empty_poi_len = poi::empty_layout(assembly.ubox()).section_len();
-    let empty_nav_projection = nav::MergedNav::empty(Default::default()).projection(&profile_table);
-    let mut plans = plan_set(
+    let mut plan = plan_map(
         schema,
         &cells,
         assembly,
         chunk_size,
-        opts,
-        (style_len, poi_len, nav_projection, empty_poi_len, empty_nav_projection),
+        terrain_region.as_ref().map_or(0, |r| r.bytes()),
+        (style_len, poi_len, nav_projection),
     )?;
     let t_plan = clock.now_us();
 
-    // --- 5. Write, verify, then the manifest — in that order, always (§5.4). ---
-    let core_plan = plans.iter().find(|p| p.core).expect("the set plan always has one core");
-    let nav_len = shard::projected_nav_bytes(core_plan, style_len, poi_len, nav_projection)?;
+    let nav_len = emit::projected_nav_bytes(&plan, style_len, poi_len, nav_projection)?;
     let mut stats = Stats {
         cells: coverage.len(),
         open_us: t_open - t_start,
@@ -577,146 +568,101 @@ pub fn assemble_full(
              co-located records past the quadtree's recursion floor."
         ));
     }
-    if let Some(core) = plans.iter().find(|p| p.core) {
-        if core.bytes >= shard::CORE_WARN {
-            warnings.push(format!(
-                "the core shard is {} bytes, past the ~3.5 GiB mark where OBCA §5.7 says to warn. The **navigation \
-                 graph** is what fills it — the core is nav plus POIs and nothing else, so the only thing that \
-                 reduces it is reducing the coverage. The hard ceiling is {FILE_CEILING} bytes.",
-                core.bytes
-            ));
-        }
+    if plan.bytes >= emit::SIZE_WARN {
+        warnings.push(format!(
+            "the map projects to {} bytes, past the seven-eighths mark where OBCA §5.7 says to warn. One file holds \
+             the whole selection now, so the only thing that reduces it is reducing the coverage. The hard ceiling \
+             is {FILE_CEILING} bytes.",
+            plan.bytes
+        ));
     }
-    let mut summaries = Vec::with_capacity(plans.len());
-    let mut verify_us = 0u64;
-    let mut write_us = 0u64;
-    for plan in &mut plans {
-        let t0 = clock.now_us();
-        store.begin(plan)?;
-        let (bytes, digest) = {
-            // Write-combining, because the emitters hand this sink records of
-            // tens of bytes — §8.2 chunks, pool records, pad runs — millions of
-            // times at country scale. A native file absorbs that at a
-            // microsecond a call; the wasm host's every call is an OPFS
-            // crossing at tens of them, which turned a measured 25 s native
-            // Switzerland into a projected hour in a tab. Combining *here*
-            // keeps every ShardStore dumb and the byte stream identical; the
-            // flush sits before `seal` because the wasm sink's append cursor is
-            // the truncation point seal pins the shard's length to.
-            let mut pending: Vec<u8> = Vec::with_capacity(SINK_COMBINE);
-            let mut sink = |buf: &[u8]| -> Result<()> {
-                if buf.len() >= SINK_COMBINE {
-                    // Already big — flush what waits (order!) and pass through.
-                    if !pending.is_empty() {
-                        store.write(&pending)?;
-                        pending.clear();
-                    }
-                    return store.write(buf);
-                }
-                if pending.len() + buf.len() > SINK_COMBINE {
+    // --- 6. Write the one file, then read it back through the real reader (§4.8). ---
+    let t0 = clock.now_us();
+    store.begin()?;
+    let (bytes, digest) = {
+        // Write-combining, because the emitters hand this sink records of tens of bytes — §8.2
+        // chunks, pool records, pad runs — millions of times at country scale. A native file absorbs
+        // that at a microsecond a call; the wasm host's every call is an OPFS crossing at tens of
+        // them, which turned a measured 25 s native Switzerland into a projected hour in a tab.
+        // Combining *here* keeps every MapStore dumb and the byte stream identical; the flush sits
+        // before `seal` because the wasm sink's append cursor is the truncation point seal pins the
+        // file's length to.
+        let mut pending: Vec<u8> = Vec::with_capacity(SINK_COMBINE);
+        let mut sink = |buf: &[u8]| -> Result<()> {
+            if buf.len() >= SINK_COMBINE {
+                // Already big — flush what waits (order!) and pass through.
+                if !pending.is_empty() {
                     store.write(&pending)?;
                     pending.clear();
                 }
-                pending.extend_from_slice(buf);
-                Ok(())
-            };
-            let written = shard::write(
-                plan,
-                &cells,
-                &core_cells,
-                &styles,
-                skin.marker_color,
-                &poi_section,
-                &merged_nav,
-                &profile_table,
-                scratch,
-                &mut sink,
-            )?;
-            if !pending.is_empty() {
+                return store.write(buf);
+            }
+            if pending.len() + buf.len() > SINK_COMBINE {
                 store.write(&pending)?;
+                pending.clear();
             }
-            written
+            pending.extend_from_slice(buf);
+            Ok(())
         };
-        store.seal()?;
-        plan.bytes = bytes;
-        plan.sha256 = digest;
-        stats.geometry_bytes += plan.lods.iter().map(|l| l.chunk_bytes).sum::<u64>();
-        write_us += clock.now_us() - t0;
+        let written = emit::write(
+            &plan,
+            &cells,
+            &core_cells,
+            &styles,
+            skin.marker_color,
+            &poi_section,
+            &merged_nav,
+            &profile_table,
+            terrain_region.as_ref(),
+            scratch,
+            &mut sink,
+        )?;
+        if !pending.is_empty() {
+            store.write(&pending)?;
+        }
+        written
+    };
+    store.seal()?;
+    plan.bytes = bytes;
+    plan.sha256 = digest;
+    stats.geometry_bytes = plan.lods.iter().map(|l| l.chunk_bytes).sum::<u64>();
+    let write_us = clock.now_us() - t0;
 
-        let t1 = clock.now_us();
-        let report = if opts.skip_verify {
-            None
-        } else {
-            let src = store.source(plan.index)?;
-            if src.len() != bytes {
-                return Err(Error::Verify(format!(
-                    "shard {} was written as {bytes} bytes but reads back as {} (OBCA §5.3)",
-                    plan.index,
-                    src.len()
-                )));
-            }
-            Some(verify::verify_shard(src, plan.box_, plan.core, scratch, opts.merge_budget_bytes)?)
-        };
-        verify_us += clock.now_us() - t1;
-        summaries.push(ShardSummary {
-            index: plan.index,
-            role: plan.role,
-            bbox: plan.box_,
-            bytes,
-            sha256: digest,
-            filename: shard::shard_filename(opts.card_id, plan.index),
-            verify: report,
-        });
-    }
-    check_set_invariants(&plans, assembly)?;
-    // Every shard that could name the merged graph's scratch streams has been written and verified,
-    // so the terrain raster below gets the whole scratch area rather than sharing it (#1116 D4).
+    let t1 = clock.now_us();
+    let report = if opts.skip_verify {
+        None
+    } else {
+        let src = store.source()?;
+        if src.len() != bytes {
+            return Err(Error::Verify(format!(
+                "the map was written as {bytes} bytes but reads back as {} (OBCA §4.8)",
+                src.len()
+            )));
+        }
+        let report = verify::verify_map(src, plan.box_, scratch, opts.merge_budget_bytes)?;
+        // §4.8 on the raster, through the §1.3 window the header now names — so what is checked is
+        // the region a *device* will resolve, not a file the assembler happens to still have open.
+        if let Some(region) = &terrain_region {
+            let window = verify::terrain_window(src)?;
+            region.verify(&window)?;
+        }
+        Some(report)
+    };
+    let verify_us = clock.now_us() - t1;
     merged_nav.release(scratch);
 
-    // The raster, between the last verified shard and the manifest (§5.4).
-    let terrain_summary = match terrain {
-        None => None,
-        Some(job) => {
-            let t0 = clock.now_us();
-            let plan = terrain::TerrainPlan::over(job.params, assembly)?;
-            debug_assert_eq!(plan.ubox(), assembly.ubox(), "the rectangle is the assembly bbox by construction");
-            // **Projected before the write, and against the manifest's ceiling.** The raster gets a
-            // §5.2 record like every shard, so `SET_SHARD_CEILING` is its wall too — and it is fully
-            // computable up front (§5.7: header + one directory entry a slot + one block per present
-            // cell), so there is no reason to learn it from a file already on disk. Checking
-            // `written.bytes` afterwards was both the wrong number and the wrong moment.
-            let projected = plan.projected_bytes(job.cells.len() as u64);
-            shard::fits_ceiling(
-                projected,
-                "the terrain shard",
-                "terrain is one file per set in v1, so the only thing that reduces it is reducing the coverage \
-                 (OBCA §5.7)",
-            )?;
-            let written = terrain::write_shard(plan, &job.cells, job.sink)?;
-            debug_assert!(written.bytes <= projected, "the projection is an upper bound on what was written");
-            verify_us += clock.now_us() - t0;
-            Some(TerrainSummary {
-                bytes: written.bytes,
-                sha256: written.sha256,
-                filename: shard::terrain_filename(opts.card_id),
-                cells: written.cells,
-                slots: written.slots,
-            })
-        }
-    };
-
-    let terrain_record = terrain_summary.as_ref().map(|t| shard::TerrainRecord { bytes: t.bytes, sha256: t.sha256 });
-    let manifest = shard::manifest(&plans, terrain_record, assembly, schema.revision, &opts.name)?;
-    store.manifest(&manifest)?;
+    let terrain_summary = terrain_region
+        .as_ref()
+        .map(|r| TerrainSummary { bytes: r.bytes(), cells: r.cells(), slots: r.slots() });
 
     stats.write_us = write_us;
     stats.verify_us = verify_us;
     stats.total_us = clock.now_us() - t_start;
     Ok(Summary {
         assembly_box: assembly,
-        bytes: summaries.iter().map(|s| s.bytes).sum::<u64>() + terrain_summary.as_ref().map_or(0, |t| t.bytes),
-        manifest_filename: shard::manifest_filename(opts.card_id),
-        shards: summaries,
+        bytes,
+        sha256: digest,
+        verify: report,
         terrain: terrain_summary,
         stats,
         warnings,
@@ -794,166 +740,46 @@ fn check_no_holes(schema: &Schema, coverage: &[(String, CellId)]) -> Result<()> 
     Ok(())
 }
 
-/// Plan the volume set (§5.1/§5.5): one file when everything fits, else a core shard, one coarse
-/// shard, and as many bbox-partitioned geometry shards as the target size needs.
+/// Plan the map: the full ladder in one file, sized from the graft plans and the three rebuilt
+/// pieces.
 ///
-/// # One tiling per role, not per band
-///
-/// §5.1 defines the split by **role**, and it says so in the plural: "geometry shards carry the
-/// `mid`- and `fine`-band LODs and nothing else", and "the shards of one role **tile** the assembly
-/// bbox". A tiling per *band* is therefore not a finer-grained version of the same thing — at the v1
-/// table, where `mid` and `fine` are both `role = geometry`, it emits two overlapping antichains of
-/// `Role == 1` shards whose areas sum to twice the assembly, which §5.3's own validation rejects.
-/// So the geometry role is planned **once**, over the combined bytes of every geometry band, and
-/// each shard it produces carries the union of those bands' LODs.
-fn plan_set(
+/// This used to be a *set* planner — a single-file fast path, and behind it a core shard carrying
+/// the nav graph and POIs, one coarse shard spanning the assembly, and a recursive quadtree split of
+/// the geometry role into as many shards as a target size demanded, with a role-completeness check
+/// and a 32-shard cap. All of it existed to work around two 4 GiB ceilings. Both are gone, so what
+/// is left is the thing the fast path already did: build one plan, over every LOD.
+fn plan_map(
     schema: &Schema,
     cells: &[Cell<'_>],
     assembly: AlignedBox,
     chunk_size: usize,
-    opts: &Options,
-    lens: (usize, u64, nav::NavProjection, u64, nav::NavProjection),
-) -> Result<Vec<ShardPlan>> {
-    let (style_len, poi_len, nav_projection, empty_poi_len, empty_nav_projection) = lens;
-
-    // The single-file fast path: try the whole map as one core shard (§5.5). Skipped outright under
-    // `force_split`, which would otherwise plan the whole map twice to throw the first one away.
-    if !opts.force_split {
-        let all_lods: Vec<usize> = (0..schema.lods.len()).collect();
-        let mut single = build_shard(schema, cells, assembly, chunk_size, &all_lods, 0, BandRole::Core, true)?;
-        single.bytes = shard::projected_bytes(&single, style_len, poi_len, nav_projection)?;
-        // **The gate is the refusal**, not a comparison that happens to agree with it: taking this
-        // path means "this file fits", and what a file has to fit is `shard::fits_ceiling` and
-        // nothing else. Open-coding `<= SET_SHARD_CEILING` here read identically and was how the
-        // original bug survived — the site said `FILE_CEILING` and no caller could tell.
-        //
-        // Which matters because this fast path emits a set of one, so its file carries a §5.2
-        // record like every other shard. The widened read seam does not move this; it moves what a
-        // *reader* can open. Gating on the larger number would lay out a 5 GiB map, write every
-        // byte, and only then fail at manifest emit — on the browser's OPFS path, after burning the
-        // whole assembly.
-        if shard::fits_ceiling(single.bytes, "the single file", shard::CORE_REMEDY).is_ok() {
-            return Ok(vec![single]);
-        }
-    }
-
-    // Otherwise: the core carries no geometry at all, so every byte that can scale horizontally
-    // does (§5.1).
-    let mut plans = vec![build_shard(schema, cells, assembly, chunk_size, &[], 0, BandRole::Core, true)?];
-    let core_bytes = shard::projected_bytes(&plans[0], style_len, poi_len, nav_projection)?;
-    shard::fits_ceiling(core_bytes, "the core file", shard::CORE_REMEDY)?;
-    plans[0].bytes = core_bytes;
-
-    // §5.3, checked before a byte is written: a multi-shard set with a whole role missing does not
-    // mount, and the schema is the only place that can be wrong about it.
-    for role in [BandRole::Coarse, BandRole::Geometry] {
-        if !schema.bands.iter().any(|b| b.role == role) {
-            return Err(Error::Input(format!(
-                "the selection needs a volume set, but the schema's band table names no {} band — a set with no {} \
-                 shard is one no reader mounts (OBCA §5.3)",
-                role.as_str(),
-                role.as_str()
-            )));
-        }
-    }
-
-    let mut index = 1usize;
-    let mut push = |plans: &mut Vec<ShardPlan>, box_: AlignedBox, lods: &[usize], role: BandRole| -> Result<()> {
-        let mut plan = build_shard(schema, cells, box_, chunk_size, lods, index, role, false)?;
-        plan.bytes = shard::projected_bytes(&plan, style_len, empty_poi_len, empty_nav_projection)?;
-        shard::fits_ceiling(plan.bytes, &format!("a {} shard", role.as_str()), "lower the target shard size")?;
-        plans.push(plan);
-        index += 1;
-        Ok(())
-    };
-
-    // The coarse role: exactly one shard spanning the whole assembly, so a zoomed-out viewport is a
-    // single-file read (§5.1). At most one band may claim it (the schema validates that).
-    for band in schema.bands.iter().filter(|b| b.role == BandRole::Coarse) {
-        push(&mut plans, assembly, &band.lods, BandRole::Coarse)?;
-    }
-
-    // The geometry role: one tiling over every geometry band at once (see the note above).
-    let geometry: Vec<&Band> = schema.bands.iter().filter(|b| b.role == BandRole::Geometry).collect();
-    if !geometry.is_empty() {
-        let mut lods: Vec<usize> = geometry.iter().flat_map(|b| b.lods.iter().copied()).collect();
-        lods.sort_unstable();
-        // A box below the *coarsest* geometry band's cell size would straddle one of its cells, so
-        // the recursion floor is that band's, not each band's own.
-        let floor = geometry.iter().map(|b| b.cell_log2).max().expect("non-empty");
-        for b in split_boxes(cells, assembly, &geometry, floor, opts.target_shard_bytes)? {
-            push(&mut plans, b, &lods, BandRole::Geometry)?;
-        }
-    }
-
-    if plans.len() > shard::MAX_SHARDS {
-        return Err(Error::Capacity(format!(
-            "the selection needs {} shards; a set holds at most {} (OBCA §5.2) — raise the target shard size",
-            plans.len(),
-            shard::MAX_SHARDS
-        )));
-    }
-    Ok(plans)
+    terrain_bytes: u64,
+    lens: (usize, u64, nav::NavProjection),
+) -> Result<MapPlan> {
+    let (style_len, poi_len, nav_projection) = lens;
+    let all_lods: Vec<usize> = (0..schema.lods.len()).collect();
+    let mut plan = build_map(schema, cells, assembly, chunk_size, &all_lods, terrain_bytes)?;
+    plan.bytes = emit::projected_bytes(&plan, style_len, poi_len, nav_projection)?;
+    // **The gate is the refusal.** Taking this path means "this file may be written", and what a
+    // file has to clear is `emit::fits_ceiling` and nothing else. Open-coding the comparison here
+    // read identically and was how FS7.5-seam's `single_file` bug survived review: a site that said
+    // `FILE_CEILING` while the writable wall was smaller. There is one wall now, which removes the
+    // *class* of that bug rather than merely its instance — but the routing stays, because the
+    // property worth keeping is "one comparison in the crate", not "the two constants happen to be
+    // equal today".
+    emit::fits_ceiling(plan.bytes, "the map")?;
+    Ok(plan)
 }
 
-/// Recursive quadtree split of the geometry role's ground until each node holds at most
-/// `target_bytes`, never below `floor_log2` (a smaller box would straddle a cell of the coarsest
-/// band being tiled).
-fn split_boxes(
-    cells: &[Cell<'_>],
-    box_: AlignedBox,
-    bands: &[&Band],
-    floor_log2: u32,
-    target_bytes: u64,
-) -> Result<Vec<AlignedBox>> {
-    if bands_bytes_in(cells, box_, bands)? <= target_bytes || box_.span_log2 <= floor_log2 {
-        return Ok(vec![box_]);
-    }
-    let mut out = Vec::new();
-    for child in box_.children() {
-        out.extend(split_boxes(cells, child, bands, floor_log2, target_bytes)?);
-    }
-    Ok(out)
-}
-
-/// The bytes `bands` together contribute inside `box_` — index nodes, offset table and chunks of the
-/// LODs they carry. Exactly the sum §5.7 says a consumer can compute before fetching anything.
-///
-/// `Chunk Units Total` is `OBCM_Spec.md` §5.1's last offset-table entry, so the chunk term already
-/// carries the `~0.47 %` of §1.2 filler each cell's own chunks were padded with — it is copied
-/// verbatim into the assembly and is neither added nor removed here. What this deliberately leaves
-/// out is the couple of dozen *region* gaps, at most `U - 1` bytes each: they are a property of the
-/// output's structure rather than of the cells, and a few hundred bytes cannot move a split whose
-/// unit is the target shard size.
-fn bands_bytes_in(cells: &[Cell<'_>], box_: AlignedBox, bands: &[&Band]) -> Result<u64> {
-    let mut total = 0u64;
-    for band in bands {
-        for c in cells.iter().filter(|c| c.band == band.id && box_.contains_cell(c.id)) {
-            for &lod in &band.lods {
-                let l = c.lod(lod)?;
-                total += l.node_count as u64 * 4
-                    + (l.chunk_count as u64 + 1) * 4
-                    + l.chunk_units_total as u64 * shard::SCALE.unit();
-            }
-        }
-    }
-    Ok(total)
-}
-
-/// Build one shard's plan: a graft plan per ladder level, empty for the levels this shard's role
-/// does not carry (§5.1) — every shard lists the full ladder (§3.1).
-// One shard is defined by exactly these eight facts; a struct would restate the signature.
-#[allow(clippy::too_many_arguments)]
-fn build_shard(
+/// Build the map's plan: a graft plan per ladder level (§3.1).
+fn build_map(
     schema: &Schema,
     cells: &[Cell<'_>],
     box_: AlignedBox,
     chunk_size: usize,
     lods: &[usize],
-    index: usize,
-    role: BandRole,
-    core: bool,
-) -> Result<ShardPlan> {
+    terrain_bytes: u64,
+) -> Result<MapPlan> {
     let mut plans = Vec::with_capacity(schema.lods.len());
     for (i, entry) in schema.lods.iter().enumerate() {
         if !lods.contains(&i) {
@@ -969,48 +795,5 @@ fn build_shard(
             .collect();
         plans.push(graft::plan_lod(i, entry.max_mpp, chunk_size, box_, band.cell_log2, &present, cells)?);
     }
-    Ok(ShardPlan { index, role, box_, lods: plans, core, bytes: 0, sha256: [0; 32] })
-}
-
-/// §4.8.6's set invariants, checked once the shards are written: exactly one core whose bbox is the
-/// assembly bbox, every file under the ceiling, and each non-core role tiling the assembly bbox
-/// without overlap.
-fn check_set_invariants(plans: &[ShardPlan], assembly: AlignedBox) -> Result<()> {
-    let cores: Vec<&ShardPlan> = plans.iter().filter(|p| p.core).collect();
-    if cores.len() != 1 {
-        return Err(Error::Verify(format!("a set has exactly one core shard, found {}", cores.len())));
-    }
-    if cores[0].box_ != assembly {
-        return Err(Error::Verify("the core shard's bbox is not the assembly bbox (OBCA §5.3)".into()));
-    }
-    for p in plans {
-        // This runs on **both** paths — §5.5's single file reaches here as a one-plan set — which is
-        // exactly right: every file this engine writes gets a §5.2 record. See `SET_SHARD_CEILING`.
-        shard::fits_ceiling(p.bytes, &format!("shard {}", p.index), "lower the target shard size")?;
-    }
-    for role in [BandRole::Coarse, BandRole::Geometry] {
-        let boxes: Vec<AlignedBox> = plans.iter().filter(|p| !p.core && p.role == role).map(|p| p.box_).collect();
-        if boxes.is_empty() {
-            continue;
-        }
-        let area: u128 = boxes.iter().map(|b| 1u128 << (2 * b.span_log2)).sum();
-        if area != 1u128 << (2 * assembly.span_log2) {
-            return Err(Error::Verify(format!(
-                "the {} shards do not tile the assembly bbox (OBCA §5.1)",
-                role.as_str()
-            )));
-        }
-        for (i, a) in boxes.iter().enumerate() {
-            for b in &boxes[i + 1..] {
-                let (a_min_lon, a_min_lat, a_max_lon, a_max_lat) = a.ubox();
-                let (b_min_lon, b_min_lat, b_max_lon, b_max_lat) = b.ubox();
-                let overlaps =
-                    a_min_lon < b_max_lon && b_min_lon < a_max_lon && a_min_lat < b_max_lat && b_min_lat < a_max_lat;
-                if overlaps {
-                    return Err(Error::Verify(format!("two {} shards overlap", role.as_str())));
-                }
-            }
-        }
-    }
-    Ok(())
+    Ok(MapPlan { box_, lods: plans, terrain_bytes, bytes: 0, sha256: [0; 32] })
 }
