@@ -27,7 +27,7 @@ describe("parseRoot", () => {
         expect(catalog.schema.revision).toBe(7);
         // The generated example is self-sourced from `obc_formats::obcm::VERSION`, so this pin is
         // what makes an OBCM bump walk past the site's own catalog reader (OBCC §10 filters on it).
-        expect(catalog.schema.obcm_version).toBe(13);
+        expect(catalog.schema.obcm_version).toBe(14);
         expect(catalog.schema.bands.map((b) => b.id)).toEqual(["coarse", "mid", "fine", "network"]);
         expect(catalog.skins.map((s) => s.id)).toEqual(["contrast", "default"]);
         expect(catalog.skins[0].preview).toBeNull();
