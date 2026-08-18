@@ -117,7 +117,8 @@ impl ShardTables {
     /// then the table itself. A shard carries no style, POI or nav section to read past it.
     pub fn parse(src: &dyn ByteSource) -> Result<ShardTables, Error> {
         let prologue = parse_prologue(src)?;
-        let lods = parse_lod_table(src, prologue.lod_table_offset, prologue.lod_count, prologue.total)?;
+        let lods =
+            parse_lod_table(src, prologue.map.scale, prologue.lod_table_offset, prologue.lod_count, prologue.total)?;
         Ok(ShardTables { bbox: prologue.map.bbox, version: prologue.map.version, lods })
     }
 
