@@ -67,23 +67,33 @@ Where they differ is *shape*: a map is a 2-D area indexed by a quadtree; a route
 
 ## OBCM — the map
 
-> **This tour describes OBCM v12/v13 layout; the spec is at v14.** Two changes are normative in
-> [`OBCM_Spec.md`](src:specs/OBCM_Spec.md) and not yet redrawn here, because the code that produces
-> them lands in the next slice ([#1420](https://github.com/timohueser/OpenBikeComputer/issues/1420)):
-> v13 added a [sparse exact-edge snap index](src:specs/OBCM_Spec.md) to the navigation section, and
-> **v14 scaled every global offset** — the header's section offsets, the LOD table's, the per-LOD
-> chunk offset tables and the POI/nav directories' all count 16-byte units instead of bytes, so a
-> map addresses 64 GiB of interior rather than 4 GiB — **embedded the terrain raster** in the
-> header's own region, and **re-addressed the edge pool**: an `Edge Id` is no longer the
-> pool-relative byte offset the navigation-graph diagram below still labels it, but a packed
-> `(chunk, ordinal)` pair reaching the same 64 GiB. The header is 49 bytes at v14, not 40.
-> Everything below about quadtrees, anchors, deltas, chunks and records is unchanged by any of it;
-> what moved is what an offset *means* and where terrain lives. The [one map, several files](#one-map-several-files) section below is
-> superseded outright.
+> **The pipeline now writes OBCM v14; the diagrams below still draw v13's addressing.** Three
+> changes are normative in [`OBCM_Spec.md`](src:specs/OBCM_Spec.md) and implemented in
+> `obc-formats`, `obc-pack`, `obc-reader` and the assembler
+> ([#1420](https://github.com/timohueser/OpenBikeComputer/issues/1420)), and they are not yet
+> redrawn here:
+>
+> - **Every global offset is scaled.** The header's section offsets, the LOD table's, the per-LOD
+>   chunk offset tables and the POI/nav directories' all count 16-byte units instead of bytes, so a
+>   map addresses 64 GiB of interior rather than 4 GiB. Every structure an offset reaches therefore
+>   begins on a 16-byte boundary, with `0xFF` filler in the gaps — about half a percent of geometry
+>   bytes at the measured average chunk, against the 53–65% of padding v11 removed.
+> - **The terrain raster is embedded**, in a region the header points at, instead of riding beside
+>   the map as a sidecar. The header is 49 bytes at v14, not the 40 the byte ruler below draws.
+> - **The edge pool is re-addressed.** An `Edge Id` is no longer the pool-relative byte offset the
+>   navigation-graph diagram below still labels it, but a packed `(chunk, ordinal)` pair reaching
+>   the same 64 GiB — so the last `uint32` byte offset in the format did not quietly become the new
+>   ceiling the moment the old one lifted.
+>
+> Everything below about quadtrees, anchors, deltas, chunks and records is unchanged by any of it:
+> the interior of every geometry chunk, POI record and navigation record is byte-identical to v13.
+> What moved is what an offset *means* and where terrain lives. The
+> [one map, several files](#one-map-several-files) section below is superseded outright; the
+> machinery behind it is deleted with the board's set support.
 
 ### The file, front to back
 
-An OBCM file (current version **12**) opens with a fixed 40-byte header, then a global style table and a level-of-detail (LOD) table, then the LOD layers themselves — coarsest first. Each LOD layer is wholly self-contained: its own quadtree index immediately followed by its own geometry chunks. After the finest layer come three more sections — the [POIs](#pois-a-nearest-list-not-a-map-layer), their shared [hours pool](#opening-hours-a-pooled-weekly-schedule), and, at the very tail, the [navigation graph](#the-navigation-graph-a-routable-network) the device routes over — each reached, like everything else, by an offset stored earlier in the file.
+An OBCM file opens with a fixed header (40 bytes through v13, 49 at v14), then a global style table and a level-of-detail (LOD) table, then the LOD layers themselves — coarsest first. Each LOD layer is wholly self-contained: its own quadtree index immediately followed by its own geometry chunks. After the finest layer come three more sections — the [POIs](#pois-a-nearest-list-not-a-map-layer), their shared [hours pool](#opening-hours-a-pooled-weekly-schedule), and, at the very tail, the [navigation graph](#the-navigation-graph-a-routable-network) the device routes over — each reached, like everything else, by an offset stored earlier in the file.
 
 <figure class="fig">
 <svg viewBox="0 0 720 210" role="img" aria-label="The OBCM file as a horizontal ribbon: a 40-byte header, a global style table, an LOD table, LOD layer 0 (coarsest) through LOD layer N minus 1 (finest), then a POI section and a navigation-graph section at the tail. Detail increases left to right across the LOD layers. One LOD layer is exploded below to show it is a quadtree index followed by data chunks.">
@@ -227,7 +237,7 @@ The 40-byte header is the one fixed-size, always-present part of the file. Every
 
   <text class="d-sub" x="44" y="150" style="font-size:11px">A short read here is the only "is this even a map?" check the reader needs.</text>
 </svg>
-<figcaption>Fixed offsets, no surprises. A few details a reader notices: the bbox is stored <b>lat, lon</b> (a packer ordering quirk); the <b>marker colour</b> — the you-are-here chevron — rides in the header because the marker isn't an OpenStreetMap feature; and the <b>POI</b> (coral) and <b>navigation-graph</b> (teal) offsets at the tail are the growth that carried the header from 32 → 36 → 40 bytes. Earlier fields never move — a v7 reader that stops at byte 36 still parses everything it knew — and v9, v10, v11 and v12 changed section internals, the style record, the chunk layout and the navigation graph without touching the header, only ticking the version byte (now <code>12</code>).</figcaption>
+<figcaption>Fixed offsets, no surprises. A few details a reader notices: the bbox is stored <b>lat, lon</b> (a packer ordering quirk); the <b>marker colour</b> — the you-are-here chevron — rides in the header because the marker isn't an OpenStreetMap feature; and the <b>POI</b> (coral) and <b>navigation-graph</b> (teal) offsets at the tail are the growth that carried the header from 32 → 36 → 40 bytes. Earlier fields never move — a v7 reader that stops at byte 36 still parses everything it knew — and v9, v10, v11 and v12 changed section internals, the style record, the chunk layout and the navigation graph without touching the header, only ticking the version byte. v14 is the first version since v8 to grow the header again — to 49 bytes, for the offset scale and the terrain region — and it is a hard cut in both directions rather than an append, because every offset behind it changed meaning.</figcaption>
 </figure>
 
 The **style table** that follows maps small numeric ids to how a feature looks. Each record is eight bytes (v10 grew it from six):
@@ -645,7 +655,7 @@ Its shape is set by one hard fact: the device has **no room for a node-id → of
   <rect class="d-muted" x="24" y="142" width="150" height="46" rx="9" stroke="#3c6b39" stroke-width="1.2" />
   <text class="d-label" x="38" y="162" style="font-size:10.5px">edge pool</text>
   <text class="d-sub" x="38" y="178" style="font-size:9px">polylines · own offset</text>
-  <text class="d-sub" x="184" y="158" style="font-size:8.5px;fill:#a9501c">edge id = pool-relative byte offset</text>
+  <text class="d-sub" x="184" y="158" style="font-size:8.5px;fill:#a9501c">edge id = (chunk, ordinal) since v14</text>
   <text class="d-sub" x="184" y="171" style="font-size:8.5px">(chunk = id / 512) — zero index bytes</text>
   <text class="d-sub" x="184" y="184" style="font-size:8.5px">fetched for exact projection + route emit</text>
 
@@ -659,7 +669,7 @@ Its shape is set by one hard fact: the device has **no room for a node-id → of
   <text class="d-sub" x="420" y="218" style="font-size:8.5px" font-family="var(--mono)">nbr id · nbr lat,lon · edge id · cost m · way-kind · ascent m</text>
   <text class="d-sub" x="420" y="234" style="font-size:8px;fill:#a9501c">coord, way-kind + ascent inline — a settle relaxes with no extra fetch</text>
 </svg>
-<figcaption>The section's resident cost is a <b>40-byte directory</b>: offsets, counts, the pinned 512 B chunk size, the profile table's location, and the sparse snap index's location. The <b>node quadtree</b> is byte-for-byte the same flat-<code>u32</code> encoding as an <a href="#the-quadtree-index">LOD index</a>, built over the same header bbox, so the reader walks it with the identical leaf-walk. Its leaves point at <b>junction records</b>, bin-packed first-fit into 512-byte chunks — distinct leaves may share a chunk, so the walk is written to decode a shared chunk idempotently. Each record stores its own coordinate and dense id, then one <b>17-byte</b> entry per neighbour with the neighbour's <b>coordinate inline</b>, the connecting edge's id, its cost in metres, its <b>way-kind</b> byte, and the <b>ascent</b> of riding that edge <i>toward that neighbour</i> — the one field the two sides of an edge disagree on, because uphill and downhill are not the same ride. The <b>edge pool</b> holds the actual polylines and an edge is addressed by byte offset into it, so there is still no edge-id table to keep resident.</figcaption>
+<figcaption>The section's resident cost is a <b>40-byte directory</b>: offsets, counts, the pinned 512 B chunk size, the profile table's location, and the sparse snap index's location. The <b>node quadtree</b> is byte-for-byte the same flat-<code>u32</code> encoding as an <a href="#the-quadtree-index">LOD index</a>, built over the same header bbox, so the reader walks it with the identical leaf-walk. Its leaves point at <b>junction records</b>, bin-packed first-fit into 512-byte chunks — distinct leaves may share a chunk, so the walk is written to decode a shared chunk idempotently. Each record stores its own coordinate and dense id, then one <b>17-byte</b> entry per neighbour with the neighbour's <b>coordinate inline</b>, the connecting edge's id, its cost in metres, its <b>way-kind</b> byte, and the <b>ascent</b> of riding that edge <i>toward that neighbour</i> — the one field the two sides of an edge disagree on, because uphill and downhill are not the same ride. The <b>edge pool</b> holds the actual polylines, and an edge is named by the 512-byte chunk it sits in plus its position within that chunk — so there is still no edge-id table to keep resident, which is the property that chose the packing in the first place.</figcaption>
 </figure>
 
 The v13 snap index is deliberately not a second graph. An edge longer than 300 m gets interior 12-byte records placed so consecutive endpoints/anchors are at most 300 m apart; each record stores only an absolute coordinate and the edge-pool id. That makes every point on the road at most 150 m along the polyline from a lookup record. By the triangle inequality, a 251 m node/anchor query discovers every road within the router's 100 m acceptance envelope, regardless of curvature. The reader then projects the requested coordinate onto every named full polyline and keeps the exact nearest point. Anchors choose candidates; they never become route points or A\* nodes.

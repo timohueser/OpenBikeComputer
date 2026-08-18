@@ -11,7 +11,6 @@ use obc_formats::obcm::{HEADER_LEN, NAV_PROFILE_LEN, STYLE_RECORD_LEN};
 use obc_reader::{Lod, MapCache, MapTables, NavDirectory, PoiDirectory, Reader};
 
 use crate::grid::CellId;
-use crate::shard::HEADER_STYLE_OFFSET_AT;
 use crate::{Error, Result};
 
 /// Block size for a verbatim region copy. Big enough that a cell's chunk region moves in a handful
@@ -62,6 +61,22 @@ impl<'a> Cell<'a> {
                 obc_formats::obcm::VERSION
             ))
         })?;
+        // `OBCM_Spec.md` §1.1's unit, checked once at the door and then relied on everywhere.
+        //
+        // The graft copies a cell's §5.1 offset-table entries with a constant added (§4.3), and
+        // those entries count **units**, not bytes — so a cell whose unit is not the assembly's
+        // would relocate onto a byte the output's own scale cannot name, or, worse, onto one it can:
+        // an entry read at `U = 1` and re-emitted at `U = 16` addresses a plausible place sixteen
+        // times too far in. Everything in this tree writes `4`, so this is a refusal a real catalog
+        // never meets — and it is exactly the check that keeps it that way.
+        if tables.scale() != crate::shard::SCALE {
+            return Err(Error::Format(format!(
+                "cell {}: its offsets count {}-byte units but this assembly writes {}-byte ones (OBCM §1.1)",
+                input.id,
+                tables.scale().unit(),
+                crate::shard::SCALE.unit()
+            )));
+        }
         // The header bbox MUST be exactly the grid square (§3.1) — the one place the packer's usual
         // "bbox is what the content covers" rule is inverted, and the fact the whole graft rests on.
         let (min_lon, min_lat, max_lon, max_lat) = input.id.square();
@@ -151,9 +166,10 @@ pub fn read_at(src: &dyn ByteSource, offset: usize, len: usize) -> Result<Vec<u8
 /// **id set** is part of the §4.1 agreement, because the skin replaces everything else.
 fn read_style_ids(src: &dyn ByteSource) -> Result<Vec<u8>> {
     let header = read_at(src, 0, HEADER_LEN)?;
-    let style_offset = u32::from_le_bytes(
-        header[HEADER_STYLE_OFFSET_AT..HEADER_STYLE_OFFSET_AT + 4].try_into().expect("4 bytes inside the header"),
-    ) as usize;
+    // Through the file's own `Offset Scale` (§1.1) — the header is 49 bytes, so since v14 the table
+    // does not start where the header ends and the field is the only thing that says where it does.
+    let style_offset = crate::shard::header_style_offset(&header)
+        .ok_or_else(|| Error::Format("the cell's `Style Offset` does not resolve (OBCM §1.1)".into()))?;
     let count = read_at(src, style_offset, 1)?[0] as usize;
     let table = read_at(src, style_offset + 1, count * STYLE_RECORD_LEN)?;
     Ok(table.chunks_exact(STYLE_RECORD_LEN).map(|r| r[0]).collect())

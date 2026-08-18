@@ -153,13 +153,17 @@ fn refuses(what: &str, wants: &str, break_it: impl Fn(&mut Vec<u8>)) {
 }
 
 /// Where the §8.2 node chunks begin, and how many there are.
+///
+/// Through the directory's own `data_start`, which is `align_up(index_offset + node_count × 4, U)`
+/// since v14 — spelling it out as the bare sum here would land this suite a few bytes before the
+/// first chunk, find no record at all, and turn every mutation below into a silent no-op.
 fn node_chunks(bytes: &[u8]) -> (usize, usize, usize) {
     let src = MemorySource(bytes.to_vec());
     let tables = MapTables::parse(&src).expect("the fixture parses");
     let cache = MapCache::new_boxed();
     let reader = Reader::new(&src, &tables, &cache);
     let dir = *reader.nav_directory();
-    (dir.index_offset + dir.node_count * 4, dir.chunk_count, dir.chunk_size)
+    (dir.data_start().expect("the fixture's nav directory resolves"), dir.chunk_count, dir.chunk_size)
 }
 
 /// Absolute file offsets of every §8.3 record, in chunk order — the addresses a mutation names.
@@ -401,4 +405,41 @@ fn a_header_bbox_that_is_not_the_planned_box_is_refused() {
     let err = verify_shard(&MemorySource(bytes), wrong, true, &scratch, DEFAULT_MERGE_BUDGET)
         .expect_err("the header states the box it was packed over");
     assert!(format!("{err:?}").contains("is not its planned box"), "{err:?}");
+}
+
+/// §1.1: the offset unit travels **in the file**, at byte 40, so a verifier that resolves a shard's
+/// offsets against its own compiled-in `SCALE` agrees with itself no matter what the header says.
+///
+/// Flipping the scale byte alone re-points every scaled offset in the file — at scale 5 each one
+/// names twice the byte it did — so a pass that reads the header's unit finds the LOD regions
+/// somewhere else and refuses. One that ignores it sails straight through, which is what this pins.
+///
+/// The refusal is deliberately *not* a version error: §1.1 requires a scale a reader cannot resolve
+/// to be distinct from an old file, and a scale it *can* resolve but which does not describe these
+/// bytes is a corrupt map either way.
+#[test]
+fn a_header_scale_that_is_not_the_writers_is_refused() {
+    const HEADER_OFFSET_SCALE_OFF: usize = 40;
+    let bytes = map();
+    assert_eq!(
+        bytes[HEADER_OFFSET_SCALE_OFF], 4,
+        "the fixture is written at the default scale, so flipping the byte is a real change"
+    );
+    for scale in [3u8, 5, 9] {
+        let mut broken = bytes.clone();
+        broken[HEADER_OFFSET_SCALE_OFF] = scale;
+        let scratch = MemoryScratch::new();
+        let err = verify_shard(&MemorySource(broken), BOX, true, &scratch, DEFAULT_MERGE_BUDGET)
+            .expect_err("scale {scale} does not describe these bytes");
+        assert!(
+            !format!("{err:?}").contains("Version"),
+            "scale {scale}: a resolvable-but-wrong unit is not a version problem — {err:?}"
+        );
+    }
+    // …and an out-of-range scale is refused by the parse itself (§1.1 caps it at 9).
+    let mut past = bytes.clone();
+    past[HEADER_OFFSET_SCALE_OFF] = 10;
+    let scratch = MemoryScratch::new();
+    verify_shard(&MemorySource(past), BOX, true, &scratch, DEFAULT_MERGE_BUDGET)
+        .expect_err("scale 10 is not a legal unit");
 }

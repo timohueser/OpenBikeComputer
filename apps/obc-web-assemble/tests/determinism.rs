@@ -489,6 +489,217 @@ fn two_runs_produce_identical_bytes() {
     assert_eq!(a.files[0].sha256, b.files[0].sha256);
 }
 
+// --- the §1.2 gaps ------------------------------------------------------------------------------
+//
+// Everything above compares the bridge's bytes against the CLI's, which is what a *drift* guard is
+// for — and it is exactly why it cannot see a filler mistake. Both sides are the same engine, so a
+// run that wrote its gaps as zeros, or left one out and slid every structure behind it down, would
+// agree with itself and with a freshly regenerated fixture, and every offset in the file would still
+// resolve. `OBCM_Spec.md` §1.2 says the gaps are part of the file and two bakes agree on them or
+// they do not agree at all, so they get a pin of their own: an independent walk of the finished
+// shard that names each gap the layout implies and reads its bytes.
+
+/// The unit every offset in a shard this engine writes counts (§1.1), and the fill byte (§1.2).
+const UNIT: usize = 16;
+const FILLER: u8 = 0xFF;
+
+/// `align_up(x, U)`.
+fn align_up(x: usize) -> usize {
+    x.next_multiple_of(UNIT)
+}
+
+fn le32(bytes: &[u8], at: usize) -> usize {
+    u32::from_le_bytes(bytes[at..at + 4].try_into().expect("4 bytes")) as usize
+}
+
+/// A scaled offset field, resolved (§1.1: widen, then multiply).
+fn offset(bytes: &[u8], at: usize) -> usize {
+    le32(bytes, at) * UNIT
+}
+
+/// Assert `bytes[from..to]` is `0xFF`, and say which gap it was when it is not.
+#[track_caller]
+fn assert_filler(bytes: &[u8], from: usize, to: usize, what: &str) {
+    assert!(from <= to && to <= bytes.len(), "{what}: the gap {from}..{to} is not inside a {}-byte file", bytes.len());
+    for (i, &b) in bytes[from..to].iter().enumerate() {
+        assert_eq!(b, FILLER, "{what}: byte {} of the gap is 0x{b:02x}, not §1.2's 0xFF", from + i);
+    }
+}
+
+/// Every gap `OBCM_Spec.md` §1.2 puts in one shard, walked from the file's own directories.
+///
+/// Two kinds of mistake this catches that a byte-for-byte comparison against the CLI cannot: a gap
+/// written with the wrong fill (the reader never looks at these bytes, so nothing else notices), and
+/// a gap that is not there at all (every offset behind it simply moves, and the file stays
+/// self-consistent). The counters at the end are what stop the walk being vacuous — a fixture whose
+/// structures happened to land on unit boundaries would exercise nothing.
+fn assert_section_gaps(shard: &[u8]) -> (usize, usize) {
+    let mut gaps = 0usize; // region and section boundaries actually filled
+    let mut padded_chunks = 0usize; // §5.1 chunks whose content ended mid-unit
+    let mut gap = |from: usize, to: usize, what: &str| {
+        assert_filler(shard, from, to, what);
+        gaps += (to > from) as usize;
+    };
+
+    // §1: the 49-byte header, then the run to the style table's boundary.
+    assert_eq!(shard[4], 14, "the version byte this walk is written against");
+    assert_eq!(shard[40], 4, "`Offset Scale`, so U = 16");
+    assert_eq!(&shard[41..49], &[0u8; 8], "a set's raster is its own file, so §1.3's pair is (0, 0)");
+    let style_at = offset(shard, 21);
+    assert_eq!(style_at, 64, "the style table starts at align_up(49)");
+    gap(49, style_at, "header → style table");
+
+    // §2 → §3: the style table's own tail, and the LOD table's.
+    let lod_table_at = offset(shard, 26);
+    let style_end = style_at + 1 + shard[style_at] as usize * 8;
+    gap(style_end, lod_table_at, "style table → LOD table");
+    let lod_count = shard[25] as usize;
+    let lod_table_end = lod_table_at + lod_count * 18;
+
+    // §3/§5.1: per LOD, the rounding step between the offset table and `data_start`, and the run
+    // behind every chunk's `0xFF` sentinel.
+    let mut previous_end = lod_table_end;
+    for i in 0..lod_count {
+        let entry = lod_table_at + i * 18;
+        let index_at = offset(shard, entry + 4);
+        assert_eq!(index_at % UNIT, 0, "LOD {i}: a scaled `Index Offset` cannot name a non-boundary");
+        gap(previous_end, index_at, &format!("→ LOD {i}'s index"));
+        let (node_count, chunk_count) = (le32(shard, entry + 8), le32(shard, entry + 14));
+        let chunk_size = u16::from_le_bytes(shard[entry + 12..entry + 14].try_into().unwrap()) as usize;
+        let table_at = index_at + node_count * 4;
+        let table_end = table_at + (chunk_count + 1) * 4;
+        let data_start = align_up(table_end);
+        gap(table_end, data_start, &format!("LOD {i}: offset table → data_start"));
+        for k in 0..chunk_count {
+            let (from, to) = (offset(shard, table_at + k * 4), offset(shard, table_at + (k + 1) * 4));
+            assert!(to - from <= align_up(chunk_size), "LOD {i} chunk {k}: span past §5.1's bound");
+            // The chunk's content ends at its one sentinel; from there to the unit boundary is
+            // filler, so the run of `0xFF` at the end is `1 + (0..U-1)`. A writer that padded with
+            // zeros leaves a run of exactly one, and the last byte of the span is not `0xFF`.
+            let end = data_start + to;
+            let run = shard[data_start + from..end].iter().rev().take_while(|&&b| b == FILLER).count();
+            assert!(run >= 1, "LOD {i} chunk {k}: no `0xFF` sentinel at the end of the span");
+            assert!(run <= UNIT, "LOD {i} chunk {k}: {run} trailing 0xFF, more than a sentinel plus one unit");
+            padded_chunks += (run > 1) as usize;
+        }
+        previous_end = data_start + offset(shard, table_at + chunk_count * 4);
+    }
+
+    // §7.1: the directory's tail, each category's index → chunks step, and the section's own end.
+    let poi_at = offset(shard, 32);
+    gap(previous_end, poi_at, "last LOD → POI section");
+    let categories = shard[poi_at] as usize;
+    let poi_chunk_size = u16::from_le_bytes(shard[poi_at + 1..poi_at + 3].try_into().unwrap()) as usize;
+    let dir_end = poi_at + 1 + 2 + categories * 13 + 4 + 2;
+    gap(dir_end, align_up(dir_end), "POI directory → first category");
+    for c in 0..categories {
+        let entry = poi_at + 3 + c * 13;
+        let index_at = offset(shard, entry + 1);
+        let (node_count, chunk_count) = (le32(shard, entry + 5), le32(shard, entry + 9));
+        let index_end = index_at + node_count * 4;
+        gap(index_end, align_up(index_end), &format!("POI category {}: index → chunks", c + 1));
+        // 512 is a multiple of `U` at every legal scale, so a category's chunk run carries none.
+        assert_eq!(align_up(index_end) % UNIT, 0);
+        assert_eq!(poi_chunk_size % UNIT, 0, "the fixed POI stride needs no filler inside the run");
+        let _ = chunk_count;
+    }
+    let pool_at = offset(shard, dir_end - 6);
+    let pool_end = pool_at + 2 + u16::from_le_bytes(shard[dir_end - 2..dir_end].try_into().unwrap()) as usize * 29;
+    let nav_at = offset(shard, 36);
+    gap(pool_end, nav_at, "hours pool → nav section");
+
+    // §8.1: the eight bytes behind the 40-byte directory, the alignment run that lands the node
+    // chunks on a sector, and the rounding step between the index and those chunks. **All of it is
+    // `0xFF` since v14** — v13 wrote zeros for the alignment runs, which is precisely the change no
+    // offset in this file can see.
+    gap(nav_at + 40, nav_at + 48, "nav directory → profile table");
+    let profile_end = nav_at + 48 + shard[nav_at + 26] as usize * 56;
+    let index_at = offset(shard, nav_at);
+    let node_count = le32(shard, nav_at + 4);
+    gap(profile_end, index_at, "profile table → node index (§8.1's alignment run)");
+    let index_end = index_at + node_count * 4;
+    let chunks_at = align_up(index_end);
+    gap(index_end, chunks_at, "node index → node chunks");
+    if node_count > 0 {
+        // §8.1's sector landing is a producer guarantee for a **populated** graph; the empty
+        // section a non-core shard carries has no chunks to land, and its three zero-length regions
+        // simply point at the first unit boundary past the profile table.
+        assert_eq!(chunks_at % 512, 0, "…and the run put them on a sector, which is the point of it");
+    } else {
+        assert_eq!(index_at, align_up(profile_end), "an empty graph's regions are still nameable");
+    }
+    let pool_at = offset(shard, nav_at + 12);
+    assert_eq!(pool_at, chunks_at + le32(shard, nav_at + 8) * 512);
+    let snap_at = offset(shard, nav_at + 28);
+    let snap_nodes = le32(shard, nav_at + 32);
+    gap(pool_at + le32(shard, nav_at + 16) * 512, snap_at, "edge pool → snap index");
+    gap(snap_at + snap_nodes * 4, align_up(snap_at + snap_nodes * 4), "snap index → snap chunks");
+    (gaps, padded_chunks)
+}
+
+/// The gap walk over the fixture's own core shard.
+#[test]
+fn every_section_boundary_of_the_assembled_shard_is_filler() {
+    let out = assemble_cells(cells(), &sidecar(), &skin(), &options(), &mut NoHooks).expect("the assembly runs");
+    let core = &out.files.iter().find(|f| f.role == "core").expect("a core shard").bytes;
+    let (gaps, padded_chunks) = assert_section_gaps(core);
+    // The fixture must actually *have* gaps, or the walk above asserts nothing. Both counters are
+    // the two costs §1.2 quantifies separately: the per-region ones, and the per-chunk ones.
+    assert!(gaps >= 8, "only {gaps} non-empty region gaps — this fixture no longer exercises §1.2");
+    assert!(padded_chunks > 0, "no §5.1 chunk ended mid-unit, so the per-chunk filler is untested");
+}
+
+/// …and over every shard of the volume set, where a non-core shard's *empty* POI and nav sections
+/// are the shape whose filler is easiest to forget: the regions are zero-length, so nothing but the
+/// gaps is there at all.
+#[test]
+fn every_shard_of_a_volume_set_is_filled_the_same_way() {
+    let opts = BridgeOptions { force_split: true, ..options() };
+    let out = assemble_fixture(&opts, &mut NoHooks);
+    for file in out.files.iter().filter(|f| f.name.ends_with(".OBM")) {
+        let (gaps, _) = assert_section_gaps(&file.bytes);
+        assert!(gaps >= 4, "{}: only {gaps} non-empty region gaps", file.name);
+    }
+}
+
+/// **`Edge Id` is a `(chunk, ordinal)` pair, not a byte offset** (§8.4). The two agree on the first
+/// record of the first chunk and nowhere else, so a fixture with several edges in one chunk is what
+/// tells them apart: under v14 the ids of a nine-edge single-chunk pool are `0..=8`, where the v13
+/// byte offsets ran to the hundreds.
+#[test]
+fn the_edge_ids_the_merge_mints_are_chunks_and_ordinals() {
+    let out = assemble_cells(cells(), &sidecar(), &skin(), &options(), &mut NoHooks).expect("the assembly runs");
+    let core = &out.files.iter().find(|f| f.role == "core").expect("a core shard").bytes;
+    let nav_at = offset(core, 36);
+    assert_eq!(le32(core, nav_at + 16), 1, "the fixture's whole edge pool is one 512-byte chunk");
+
+    // Every `Edge Id` in the §8.3 adjacency, read off the node chunks.
+    let chunks_at = align_up(offset(core, nav_at) + le32(core, nav_at + 4) * 4);
+    let mut ids: Vec<u32> = Vec::new();
+    for k in 0..le32(core, nav_at + 8) {
+        let chunk = &core[chunks_at + k * 512..][..512];
+        let mut at = 0usize;
+        while at + 13 <= 512 && chunk[at + 12] != 0xFF {
+            let degree = chunk[at + 12] as usize;
+            for n in 0..degree {
+                ids.push(u32::from_le_bytes(chunk[at + 13 + n * 17 + 8..][..4].try_into().unwrap()));
+            }
+            at += 13 + degree * 17;
+        }
+    }
+    assert!(!ids.is_empty(), "the fixture's graph has adjacency to read");
+    ids.sort_unstable();
+    ids.dedup();
+    // Chunk 0, so the id *is* the ordinal — dense from zero, one per record. A byte-offset id would
+    // start at 0 and then jump by the record widths (19 bytes and up).
+    assert_eq!(ids, (0..ids.len() as u32).collect::<Vec<u32>>(), "the ids are ordinals, not byte offsets");
+    assert!(ids.len() > 1, "one edge would not tell an ordinal from an offset");
+    for id in &ids {
+        assert_eq!(id >> 5, 0, "chunk half");
+        assert!((id & 0x1F) < 31, "§8.4 caps a chunk at 31 records so 0xFFFFFFFF stays impossible");
+    }
+}
+
 /// …and the cells' *arrival order* must not reach the bytes either. The builder downloads cells
 /// concurrently, so the order they are handed over is whatever the network decided.
 #[test]

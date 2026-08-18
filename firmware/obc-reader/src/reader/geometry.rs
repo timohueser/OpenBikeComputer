@@ -9,8 +9,8 @@ use crate::Error;
 use heapless::Vec;
 use obc_formats::io::{rd_f32, rd_i16, rd_i32, rd_u16, rd_u32, ByteSource};
 use obc_formats::obcm::{
-    BRANCH_BIT, CHUNK_END, EMPTY_LEAF, FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON, FEATURE_FLAG_WIDE,
-    FEATURE_HEADER_COMPACT_LEN, FEATURE_HEADER_WIDE_LEN, HEADER_LEN, LOD_ENTRY_LEN,
+    OffsetScale, BRANCH_BIT, CHUNK_END, EMPTY_LEAF, FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON,
+    FEATURE_FLAG_WIDE, FEATURE_HEADER_COMPACT_LEN, FEATURE_HEADER_WIDE_LEN, HEADER_LEN, LOD_ENTRY_LEN,
 };
 use obc_map_scene::{BBox, Kind};
 
@@ -46,10 +46,16 @@ pub struct Lod {
     /// addressed through the offset table.
     pub chunk_size: usize,
     pub chunk_count: usize,
-    /// Total bytes of this level's chunk-data region — `offsets[chunk_count]`, the last entry of
-    /// the offset table, read once in `parse_lod_table`. Resident so a per-chunk fetch can
-    /// bound its offset pair without a second read.
-    pub chunk_bytes_total: usize,
+    /// Total **units** of this level's chunk-data region — `offsets[chunk_count]`, the last entry
+    /// of the offset table, read once in `parse_lod_table`. Resident so a per-chunk fetch can bound
+    /// its offset pair without a second read. Kept in units, not bytes, so the comparison against a
+    /// freshly-read offset pair is one the file's own arithmetic makes directly.
+    pub chunk_units_total: u32,
+    /// This file's offset unit (§1.1), carried so that an offset-table entry read lazily at render
+    /// time resolves against the scale of the file it came out of. A mounted map can have more than
+    /// one file open; pairing the two at the point of decode is what makes the wrong combination
+    /// unspellable.
+    pub scale: OffsetScale,
 }
 
 impl QuadIndex for Lod {
@@ -72,12 +78,23 @@ impl Lod {
         index_end(self.index_offset, self.node_count)
     }
 
-    /// Byte offset where this level's chunk **data** begins: after the index *and* the offset
-    /// table. `None` on `usize` overflow (see [`Lod::offset_table`]).
+    /// Byte offset just past this level's offset table — where the chunk data would begin without
+    /// v14's rounding step. `None` on `usize` overflow (see [`Lod::offset_table`]).
     #[inline]
-    fn data_start(&self) -> Option<usize> {
+    fn table_end(&self) -> Option<usize> {
         let table_len = self.chunk_count.checked_add(1)?.checked_mul(4)?;
         self.offset_table()?.checked_add(table_len)
+    }
+
+    /// Byte offset where this level's chunk **data** begins: `align_up(table_end, U)` (§3). The
+    /// index and the offset table are read by 4-byte indexing from a start the LOD table names, so
+    /// neither needs a unit boundary of its own — the chunks are addressed by scaled offsets, so
+    /// they do, and the `0..U-1` bytes this rounds past are §1.2 filler. At `Offset Scale = 0` this
+    /// is v13's arithmetic unchanged. `None` on overflow (see [`Lod::offset_table`]).
+    #[inline]
+    fn data_start(&self) -> Option<usize> {
+        let aligned = self.scale.align_up(self.table_end()? as u64)?;
+        usize::try_from(aligned).ok().filter(|&start| start as u64 == aligned)
     }
 
     /// Byte offset of chunk `chunk_id`'s entry in the offset table, or `None` if `chunk_id` is out
@@ -219,16 +236,25 @@ impl<'a> Reader<'a> {
             .map_err(MapReadError::Cache)?
             .index_read(self.src, self.file, entry, &mut b)
             .map_err(MapReadError::Source)?;
-        let (off0, off1) = (rd_u32(&b, 0) as usize, rd_u32(&b, 4) as usize);
-        if off1 < off0 || off1 > l.chunk_bytes_total {
+        // §5.1's four validity rules on the pair, restated for v14's units. The last one is the
+        // interesting one: a chunk's *content* still may not exceed `Chunk Size`, but its **span**
+        // is that content rounded up to a unit, so `align_up(Chunk Size, U)` is the tight bound —
+        // the looser `Chunk Size + U - 1` would admit spans no writer can produce.
+        let (off0, off1) = (rd_u32(&b, 0), rd_u32(&b, 4));
+        if off1 < off0 || off1 > l.chunk_units_total {
             return Err(MapReadError::Malformed);
         }
-        let len = off1 - off0;
-        if len > l.chunk_size || len > MAX_CHUNK_BYTES {
+        let span = l.scale.offset(off1 - off0).bytes();
+        let span_bound = l.scale.align_up(l.chunk_size as u64).ok_or(MapReadError::Malformed)?;
+        if span > span_bound || span > MAX_CHUNK_BYTES as u64 {
             return Err(MapReadError::Malformed);
         }
-        let start = l.data_start().and_then(|d| d.checked_add(off0)).ok_or(MapReadError::Malformed)?;
-        let end = start.checked_add(len).ok_or(MapReadError::Malformed)?;
+        let span = span as usize;
+        let start = l
+            .data_start()
+            .and_then(|d| usize::try_from(l.scale.offset(off0).bytes()).ok().and_then(|o| d.checked_add(o)))
+            .ok_or(MapReadError::Malformed)?;
+        let end = start.checked_add(span).ok_or(MapReadError::Malformed)?;
         if end > self.src.len() as usize {
             return Err(MapReadError::Malformed);
         }
@@ -877,28 +903,32 @@ fn read_ring<const P: usize>(
 /// later per-chunk offset pair in [`Reader::chunk_range`] with no further reads.
 pub(crate) fn parse_lod_table(
     src: &dyn ByteSource,
+    scale: OffsetScale,
     offset: usize,
     lod_count: usize,
     total: usize,
 ) -> Result<Vec<Lod, 16>, Error> {
     let mut lods = Vec::new();
     let mut e = [0u8; LOD_ENTRY_LEN];
+    // The lowest byte a scaled offset in this file can name past the header (§1.2).
+    let floor = super::resolve_bytes(scale.align_up(HEADER_LEN as u64).ok_or(Error::BadOffset)?)?;
     for k in 0..lod_count {
         let o = offset + k * LOD_ENTRY_LEN;
         src.read_at(o as u32, &mut e).map_err(Error::Source)?;
         let mut lod = Lod {
             max_mpp: rd_f32(&e, 0),
-            index_offset: rd_u32(&e, 4) as usize,
+            index_offset: super::resolve(scale.offset(rd_u32(&e, 4)))?,
             node_count: rd_u32(&e, 8) as usize,
             chunk_size: rd_u16(&e, 12) as usize,
             chunk_count: rd_u32(&e, 14) as usize,
-            chunk_bytes_total: 0,
+            chunk_units_total: 0,
+            scale,
         };
         // Checked: a corrupt entry's `node_count`/`chunk_count` products can wrap `usize` on the
         // 32-bit target, so an unchecked `data_start` could land below `total` and admit a layer
         // indexing out of the file.
         let data_start = lod.data_start().ok_or(Error::BadOffset)?;
-        if lod.index_offset < HEADER_LEN || data_start > total {
+        if lod.index_offset < floor || data_start > total {
             return Err(Error::BadOffset);
         }
         // A chunk decodes into the resident scratch, so reject a `chunk_size` over
@@ -906,13 +936,16 @@ pub(crate) fn parse_lod_table(
         if lod.chunk_size > MAX_CHUNK_BYTES {
             return Err(Error::BadOffset);
         }
-        // `offsets[chunk_count]` sits in the last 4 bytes before the chunk data — in range by the
-        // `data_start` guard above, since the table always carries at least this one entry.
-        let last = data_start.checked_sub(4).ok_or(Error::BadOffset)?;
+        // `offsets[chunk_count]` is the table's last entry — since v14 that is *not* the four bytes
+        // below `data_start`, because the rounding step may have put filler between the two. The
+        // table always carries at least this one entry, and it lies inside the region the
+        // `data_start` guard above bounded.
+        let last = lod.table_end().and_then(|end| end.checked_sub(4)).ok_or(Error::BadOffset)?;
         let mut t = [0u8; 4];
         src.read_at(last as u32, &mut t).map_err(Error::Source)?;
-        lod.chunk_bytes_total = rd_u32(&t, 0) as usize;
-        if data_start.checked_add(lod.chunk_bytes_total).is_none_or(|end| end > total) {
+        lod.chunk_units_total = rd_u32(&t, 0);
+        let region = scale.offset(lod.chunk_units_total).bytes();
+        if u64::try_from(data_start).ok().and_then(|s| s.checked_add(region)).is_none_or(|end| end > total as u64) {
             return Err(Error::BadOffset);
         }
         let _ = lods.push(lod);

@@ -8,7 +8,10 @@
 
 use obc_map_scene::BBox;
 use obc_reader::{Error, MapCache, MapTables, Reader, SliceSource, MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS};
-use obcm_testkit::{build_file, pack_line, pack_line_decl, pack_poly_decl, pack_poly_holes, seal, LodSpec, Style};
+use obcm_testkit::{
+    build_file, pack_line, pack_line_decl, pack_poly_decl, pack_poly_holes, resolve_offset, scaled, seal, LodSpec,
+    Style, STYLE_OFFSET, UNIT,
+};
 
 const STYLES: &[Style] = &[(1, 3, 0xF800, 2, 3, false, None), (2, -1, 0x07E0, 1, 3, false, None)];
 const GLOBAL: (i32, i32, i32, i32) = (0, 0, 1000, 1000);
@@ -321,9 +324,13 @@ fn filtered_malformed_skip_clears_prior_feature_scratch() {
 #[test]
 fn header_straddling_chunk_end_is_a_malformed_drop() {
     let mut chunk = pack_line(1, 100, 200, &[(10, 0), (0, 10)]);
-    chunk.extend_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
-    // Hand `build_file` the chunk unsealed — no trailing sentinel, the runt tail sits flush at the end.
+    chunk.extend_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05]);
+    // Hand `build_file` the chunk unsealed — no trailing sentinel, the runt tail sits flush at the
+    // end. Since v14 that flushness is load-bearing: the filler behind a short chunk is `0xFF`, so
+    // a runt with filler behind it would find enough bytes to complete a header and decode as a
+    // second (bogus) feature. Filling the span exactly is what keeps this the straddle it names.
     let cs = chunk.len();
+    assert_eq!(cs, UNIT, "the runt has to end flush with the chunk's span, not run into filler");
     let bytes = build_file(
         GLOBAL,
         STYLES,
@@ -350,10 +357,10 @@ fn header_straddling_chunk_end_is_a_malformed_drop() {
 #[test]
 fn truncated_style_table_parses_only_present_records() {
     let bytes = single_leaf(GLOBAL, pack_line(1, 10, 10, &[(1, 1)]), 64);
-    // style_offset is fixed at HEADER_LEN (40) by the builder; the count byte is the first byte
-    // of the style table.
-    let style_off = u32::from_le_bytes(bytes[21..25].try_into().unwrap()) as usize;
-    assert_eq!(style_off, obc_formats::obcm::HEADER_LEN);
+    // `Style Offset` is scaled (§1.1) and names the first unit boundary past the 49-byte header,
+    // which is 64 at `U = 16`; the count byte is the first byte of the style table.
+    let style_off = resolve_offset(&bytes, 21);
+    assert_eq!(style_off, STYLE_OFFSET);
     let mut forged = bytes.clone();
     forged[style_off] = 8; // claim 8 styles; only 2 records (16 bytes) follow before the LOD table
 
@@ -379,9 +386,10 @@ fn truncated_style_table_parses_only_present_records() {
 #[test]
 fn style_offset_at_eof_is_rejected() {
     let bytes = single_leaf(GLOBAL, pack_line(1, 10, 10, &[(1, 1)]), 64);
-    let total = bytes.len() as u32;
     let mut forged = bytes.clone();
-    forged[21..25].copy_from_slice(&total.to_le_bytes()); // style_offset = file length
+    // The file ends on a unit boundary, so `== total` is a value the scaled field can express —
+    // which is what keeps this the "at EOF" boundary rather than an offset merely past it.
+    forged[21..25].copy_from_slice(&scaled(bytes.len()).to_le_bytes()); // style_offset = file length
 
     assert!(
         matches!(MapTables::parse(&SliceSource(&forged)), Err(Error::BadOffset)),

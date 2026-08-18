@@ -4,12 +4,13 @@ mod cache;
 
 pub use cache::{NavCacheStats, NavTileCache};
 
-use super::{fixed_chunk_range, index_end, MapReadError, QuadIndex, Reader, MAX_QUADTREE_DEPTH};
+use super::{aligned_index_end, fixed_chunk_range, resolve, MapReadError, QuadIndex, Reader, MAX_QUADTREE_DEPTH};
 use crate::Error;
 use heapless::Vec;
 use obc_formats::io::{rd_i16, rd_i32, rd_u16, rd_u32, ByteSource, Error as IoError};
 use obc_formats::obcm::{
-    BRANCH_BIT, CHUNK_END, EMPTY_LEAF, HEADER_LEN, NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_EDGE_FIXED_LEN, NAV_MAX_PROFILES,
+    nav_edge_id_chunk, nav_edge_id_ordinal, nav_edge_record_range, OffsetScale, BRANCH_BIT, CHUNK_END, EMPTY_LEAF,
+    HEADER_LEN, NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_EDGE_FIXED_LEN, NAV_EDGE_MAX_CHUNKS, NAV_MAX_PROFILES,
     NAV_NEIGHBOR_ASCENT_OFF, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_PROFILE_CLIMB_WEIGHT_OFF, NAV_PROFILE_LEN,
     NAV_PROFILE_NAME_LEN, NAV_SNAP_RECORD_LEN,
 };
@@ -21,10 +22,32 @@ use obc_map_scene::{cos_lat, ground_dist_m_cl, BBox, M_PER_DEG};
 /// no larger chunk is ever routed through a slot.
 pub const NAV_MAX_CHUNK_BYTES: usize = NAV_CHUNK_SIZE;
 
-/// The per-read window of [`Reader::nav_edge`]'s delta stream, bytes (a multiple of the 4-byte
-/// delta pair, so a pair never straddles two reads). Edge polylines are fetched once per route
-/// emit, so a small fixed stack window is plenty.
-const NAV_EDGE_WINDOW: usize = 128;
+/// Every byte [`Reader::nav_edge`] is allowed to put on the stack: **one** §8.4 chunk.
+///
+/// This is a budget rather than an alias so that a regression has to argue with a name. `nav_edge`
+/// is the one edge-resolve site with no caller-owned [`NavTileCache`] — it resolves a single id,
+/// once, from a `&self` that any task may hold — and that is exactly what makes reaching for a
+/// cache there so easy and so expensive: `NavTileCache` is 24,852 B (pinned in
+/// `nav/cache.rs`) against a device stack of roughly 36 KB, so one `NavTileCache::new()` in this
+/// frame spends about two thirds of the task's stack to hold a 512-byte read. It shipped that way
+/// in the v14 rewrite and #1422's review caught it.
+///
+/// **What the assertions below do, and what they do not.** They pin *this constant* — that the
+/// budget is one chunk and stays an order of magnitude under a `NavTileCache`. That catches the
+/// budget drifting upward until it is a cache by another name.
+///
+/// They cannot see inside [`Reader::nav_edge`]. Adding a `NavTileCache::new()` to that function
+/// while leaving this constant at 512 passes both, because a `const` assertion is not a frame-size
+/// analysis and Rust gives us no way to write one here. The real guard against *that* is the
+/// board's measured `residual_stack` in `firmware/tools/resource_baseline.json`, which is a
+/// whole-task figure rather than a per-function one — so this constant is a drift pin, and the
+/// review of the function body is what keeps the body honest.
+pub const NAV_EDGE_STACK_BUDGET: usize = NAV_CHUNK_SIZE;
+const _: () = assert!(NAV_EDGE_STACK_BUDGET == NAV_CHUNK_SIZE, "nav_edge holds exactly one §8.4 chunk");
+const _: () = assert!(
+    NAV_EDGE_STACK_BUDGET * 8 < core::mem::size_of::<cache::NavTileCache>(),
+    "nav_edge's stack budget must stay an order of magnitude under a NavTileCache, or it has become one"
+);
 
 /// The parsed nav directory (spec §8.1) — the graph's **entire resident state** (the quadtree and
 /// every record stream on demand). Empty graph (`node_count == 0`) ⇒ no walk, exactly like an
@@ -56,6 +79,9 @@ pub struct NavDirectory {
     pub snap_node_count: usize,
     /// Number of fixed-size snap-anchor data chunks following that index.
     pub snap_chunk_count: usize,
+    /// This file's offset unit (§1.1), retained for the `align_up` step that places the node and
+    /// snap chunks behind their indexes.
+    pub scale: OffsetScale,
 }
 
 impl NavDirectory {
@@ -75,6 +101,7 @@ impl NavDirectory {
         snap_index_offset: 0,
         snap_node_count: 0,
         snap_chunk_count: 0,
+        scale: OffsetScale::DEFAULT,
     };
 
     /// The map carries no routable graph (no quadtree, no chunks, no edges).
@@ -87,7 +114,7 @@ impl NavDirectory {
     /// `usize` overflow (a corrupt directory on the 32-bit MCU) — see `index_end`.
     #[inline]
     pub fn data_start(&self) -> Option<usize> {
-        index_end(self.index_offset, self.node_count)
+        aligned_index_end(self.scale, self.index_offset, self.node_count)
     }
 
     /// Byte range `[start, end)` of node chunk `chunk_id`, or `None` if out of range / on
@@ -100,7 +127,7 @@ impl NavDirectory {
     /// Byte offset where v13's snap-anchor chunks begin (right after their quadtree index).
     #[inline]
     pub fn snap_data_start(&self) -> Option<usize> {
-        index_end(self.snap_index_offset, self.snap_node_count)
+        aligned_index_end(self.scale, self.snap_index_offset, self.snap_node_count)
     }
 
     /// Byte range of one v13 snap-anchor chunk.
@@ -405,74 +432,104 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
-    /// Fetch one §8.4 edge polyline by its `edge_id` (a pool-relative byte offset — chunk
-    /// `id / chunk_size`, offset `id % chunk_size`, spec §8.4), decoding anchor + deltas into
-    /// `points` as the crate's `(lon, lat)` µdeg pairs. Returns the edge's `length_m`. R3 calls
-    /// this only at OBCR emit, stitching the came-from chain's geometry.
+    /// Resolve a §8.4 `Edge Id` — a packed `(chunk_index, ordinal)` pair since v14 — to the
+    /// 512-byte chunk holding the record and the record's byte position inside it.
     ///
-    /// `None` for an empty graph, an out-of-pool or non-record-aligned id, a record that would
-    /// straddle its chunk (the packer never writes one), a read failure, or a polyline exceeding
-    /// `P` — a corrupt id degrades to "no geometry", never a panic. The deltas stream through a
-    /// small fixed stack window; no cache is touched, so (like [`Reader::poi_hours`]) this is safe
-    /// to call from anywhere.
-    pub fn nav_edge<const P: usize>(&self, edge_id: u32, points: &mut Vec<(i32, i32), P>) -> Option<u32> {
-        points.clear();
+    /// The `ordinal` is the record's **position** within its chunk, not a byte offset into it, so
+    /// this reads the one chunk and walks `ordinal` records from its first byte, taking each
+    /// record's length from its own `Pt Count`. That walk is
+    /// [`nav_edge_record_range`](obc_formats::obcm::nav_edge_record_range), transcribed from the
+    /// spec and applied `ordinal + 1` times, so the intermediate records are bounds-checked exactly
+    /// as the target is. There is **no extra I/O**: the chunk that holds the record is the chunk
+    /// that holds every record before it, which is the whole reason the ordinal is *within a chunk*
+    /// and not within the pool.
+    ///
+    /// A refused id is a malformed map, not an absent edge — but this is a reader on a card that
+    /// ages, so every caller degrades to "no geometry" rather than panicking.
+    fn nav_edge_record<'t>(&self, tiles: &'t mut NavTileCache, edge_id: u32) -> Option<(&'t [u8], usize)> {
+        let chunk_start = self.nav_edge_chunk_start(edge_id)?;
+        let chunk = tiles.chunk(self.src, chunk_start, NAV_CHUNK_SIZE)?;
+        let (start, _end) = nav_edge_record_range(chunk, nav_edge_id_ordinal(edge_id))?;
+        Some((chunk, start))
+    }
+
+    /// The absolute file offset of the chunk holding `edge_id`'s record — the half of the §8.4
+    /// resolve that does not care *how* the chunk is read.
+    ///
+    /// Split out so the two readers below can differ in exactly one line: the router's sites
+    /// already own a [`NavTileCache`] and go through its working set, while [`Reader::nav_edge`]
+    /// reads into 512 bytes of its own stack.
+    fn nav_edge_chunk_start(&self, edge_id: u32) -> Option<u32> {
         // A volume-set shard carries no edge pool (see `is_set_shard`).
         let dir = self.nav_directory();
         let cs = dir.chunk_size;
-        if dir.edge_chunk_count == 0 || cs == 0 {
+        if dir.edge_chunk_count == 0 || cs != NAV_CHUNK_SIZE {
             return None;
         }
-        // Pool bounds + intra-chunk bounds for the fixed head. All checked: `edge_id` is
-        // unvalidated input (a corrupt map, or R3 handed a stale id).
-        let pool_len = dir.edge_chunk_count.checked_mul(cs)?;
-        let id = edge_id as usize;
-        let within = id % cs;
-        if within + NAV_EDGE_FIXED_LEN > cs || id.checked_add(NAV_EDGE_FIXED_LEN)? > pool_len {
+        let chunk_index = nav_edge_id_chunk(edge_id) as usize;
+        if chunk_index >= dir.edge_chunk_count {
             return None;
         }
-        let start = dir.edge_pool_offset.checked_add(id)?;
-        let mut head = [0u8; NAV_EDGE_FIXED_LEN];
-        let head_off = u32::try_from(start).ok()?;
-        if start.checked_add(NAV_EDGE_FIXED_LEN)? > self.src.len() as usize {
+        let chunk_start = dir.edge_pool_offset.checked_add(chunk_index.checked_mul(cs)?)?;
+        if chunk_start.checked_add(cs)? > self.src.len() as usize {
             return None;
         }
-        self.src.read_at(head_off, &mut head).ok()?;
-        let length_m = rd_u32(&head, 0);
-        let pt_count = rd_u16(&head, 4) as usize;
+        u32::try_from(chunk_start).ok()
+    }
+
+    /// [`Reader::nav_edge_record`] with the chunk read straight into a caller-owned 512-byte
+    /// buffer instead of through a [`NavTileCache`] working set.
+    ///
+    /// This exists because the cache is **24,852 bytes** and `nav_edge` has no business owning
+    /// one: it reads exactly one chunk, once, and never comes back for a neighbour. Materialising
+    /// a cache to hold a single 512-byte read put two thirds of the device's ~36 KB stack into one
+    /// frame — see the pin below.
+    fn nav_edge_record_uncached<'b>(
+        &self,
+        buf: &'b mut [u8; NAV_CHUNK_SIZE],
+        edge_id: u32,
+    ) -> Option<(&'b [u8], usize)> {
+        let chunk_start = self.nav_edge_chunk_start(edge_id)?;
+        self.src.read_at(chunk_start, &mut buf[..]).ok()?;
+        let (start, _end) = nav_edge_record_range(&buf[..], nav_edge_id_ordinal(edge_id))?;
+        Some((&buf[..], start))
+    }
+
+    /// Fetch one §8.4 edge polyline by its `edge_id` (a packed `(chunk, ordinal)` pair since v14),
+    /// decoding anchor + deltas into `points` as the crate's `(lon, lat)` µdeg pairs. Returns the
+    /// edge's `length_m`. R3 calls this only at OBCR emit, stitching the came-from chain's geometry.
+    ///
+    /// `None` for an empty graph, an id whose chunk or ordinal the §8.4 walk refuses, a read
+    /// failure, or a polyline exceeding `P` — a corrupt id degrades to "no geometry", never a
+    /// panic. No cache is touched, so (like [`Reader::poi_hours`]) this is safe to call from
+    /// anywhere; it holds one 512-byte chunk on the stack, which is both what the ordinal walk
+    /// needs and *fewer* source reads than v13's windowed delta stream, since the deltas were
+    /// always inside the chunk the head came from.
+    ///
+    /// The sentence above is now true. Between the v14 rewrite and #1422's review it was not: the
+    /// body built a [`NavTileCache`] to perform that one read, so the frame was
+    /// [`NAV_EDGE_STACK_BUDGET`] + 24,852 B on a device with about 36 KB of stack — 174× v13's
+    /// frame, in a `no_std` crate, for a single 512-byte chunk.
+    pub fn nav_edge<const P: usize>(&self, edge_id: u32, points: &mut Vec<(i32, i32), P>) -> Option<u32> {
+        points.clear();
+        let mut chunk_buf = [0u8; NAV_EDGE_STACK_BUDGET];
+        let (chunk, within) = self.nav_edge_record_uncached(&mut chunk_buf, edge_id)?;
+        let length_m = rd_u32(chunk, within);
+        let pt_count = rd_u16(chunk, within + 4) as usize;
         // byte 6 is `way_kind` (§8.4); the anchor sits behind it, at 7 (lat) / 11 (lon).
-        let anchor_lat = rd_i32(&head, 7);
-        let anchor_lon = rd_i32(&head, 11);
-        if pt_count == 0 {
-            return None;
-        }
-        // The whole record must lie inside its chunk (the §8.4 no-straddle contract) and the file.
-        let rec_len = NAV_EDGE_FIXED_LEN.checked_add((pt_count - 1).checked_mul(4)?)?;
-        if within + rec_len > cs
-            || id.checked_add(rec_len)? > pool_len
-            || start.checked_add(rec_len)? > self.src.len() as usize
-        {
-            return None;
-        }
+        let anchor_lat = rd_i32(chunk, within + 7);
+        let anchor_lon = rd_i32(chunk, within + 11);
+        // The walk already refused `Pt Count < 2` and any record claiming bytes past its chunk.
+        let rec_len = NAV_EDGE_FIXED_LEN + (pt_count - 1) * 4;
         if pt_count > P {
             return None; // caller's buffer can't hold the polyline — corrupt or mis-sized
         }
         points.push((anchor_lon, anchor_lat)).ok()?;
-        // Stream the (dlat, dlon) pairs through a fixed window, accumulating absolutes.
         let (mut lat, mut lon) = (anchor_lat, anchor_lon);
-        let mut win = [0u8; NAV_EDGE_WINDOW];
-        let mut done = 0usize; // delta pairs decoded
-        while done < pt_count - 1 {
-            let take = (pt_count - 1 - done).min(NAV_EDGE_WINDOW / 4);
-            let buf = &mut win[..take * 4];
-            let off = start + NAV_EDGE_FIXED_LEN + done * 4;
-            self.src.read_at(off as u32, buf).ok()?;
-            for pair in buf.chunks_exact(4) {
-                lat = lat.wrapping_add(rd_i16(pair, 0) as i32);
-                lon = lon.wrapping_add(rd_i16(pair, 2) as i32);
-                points.push((lon, lat)).ok()?;
-            }
-            done += take;
+        for pair in chunk[within + NAV_EDGE_FIXED_LEN..within + rec_len].chunks_exact(4) {
+            lat = lat.wrapping_add(rd_i16(pair, 0) as i32);
+            lon = lon.wrapping_add(rd_i16(pair, 2) as i32);
+            points.push((lon, lat)).ok()?;
         }
         Some(length_m)
     }
@@ -691,16 +748,7 @@ impl<'a> Reader<'a> {
         if dir.edge_chunk_count == 0 || cs == 0 {
             return None;
         }
-        let id = edge_id as usize;
-        let within = id % cs;
-        if id / cs >= dir.edge_chunk_count || within + NAV_EDGE_FIXED_LEN > cs {
-            return None;
-        }
-        let chunk_start = dir.edge_pool_offset.checked_add(id - within)?;
-        if chunk_start.checked_add(cs)? > self.src.len() as usize {
-            return None;
-        }
-        let chunk = tiles.chunk(self.src, u32::try_from(chunk_start).ok()?, cs)?;
+        let (chunk, within) = self.nav_edge_record(tiles, edge_id)?;
         let length_m = rd_u32(chunk, within);
         let pt_count = rd_u16(chunk, within + 4) as usize;
         if pt_count < 2 || from.segment as usize + 1 >= pt_count || to.segment as usize + 1 >= pt_count {
@@ -762,16 +810,7 @@ impl<'a> Reader<'a> {
         if dir.edge_chunk_count == 0 || cs == 0 {
             return None;
         }
-        let id = edge_id as usize;
-        let within = id % cs;
-        if id / cs >= dir.edge_chunk_count || within + NAV_EDGE_FIXED_LEN > cs {
-            return None;
-        }
-        let chunk_start = dir.edge_pool_offset.checked_add(id - within)?;
-        if chunk_start.checked_add(cs)? > self.src.len() as usize {
-            return None;
-        }
-        let chunk = tiles.chunk(self.src, u32::try_from(chunk_start).ok()?, cs)?;
+        let (chunk, within) = self.nav_edge_record(tiles, edge_id)?;
         let length_m = rd_u32(chunk, within);
         let pt_count = rd_u16(chunk, within + 4) as usize;
         if pt_count < 2 || pt_count - 1 > u16::MAX as usize {
@@ -903,17 +942,7 @@ impl<'a> Reader<'a> {
         if dir.edge_chunk_count == 0 || cs == 0 {
             return None;
         }
-        // Pool + intra-chunk bounds, checked exactly as `nav_edge` (`edge_id` is unvalidated).
-        let id = edge_id as usize;
-        let within = id % cs;
-        if id / cs >= dir.edge_chunk_count || within + NAV_EDGE_FIXED_LEN > cs {
-            return None;
-        }
-        let chunk_start = dir.edge_pool_offset.checked_add(id - within)?;
-        if chunk_start.checked_add(cs)? > self.src.len() as usize {
-            return None;
-        }
-        let chunk = tiles.chunk(self.src, u32::try_from(chunk_start).ok()?, cs)?;
+        let (chunk, within) = self.nav_edge_record(tiles, edge_id)?;
         let length_m = rd_u32(chunk, within);
         let pt_count = rd_u16(chunk, within + 4) as usize;
         // byte within+6 is `way_kind` (§8.4); the anchor sits behind it, at +7 (lat) / +11 (lon).
@@ -999,24 +1028,32 @@ fn decode_nav_chunk(chunk: &[u8], visit: &mut impl FnMut(NavNodeRef)) {
 /// at/past EOF, a `chunk_size` other than the pinned 512, a `profile_count` outside `1..=8`, or any
 /// out-of-file region is a corrupt/old file ⇒ [`Error::BadOffset`] (distinct from the v8 file's
 /// [`Error::BadVersion`]). Every offset/length product is checked (32-bit target).
-pub(super) fn parse_nav_directory(src: &dyn ByteSource, offset: usize, total: usize) -> Result<NavDirectory, Error> {
-    if offset < HEADER_LEN || offset.checked_add(NAV_DIR_LEN).is_none_or(|end| end > total) {
+pub(super) fn parse_nav_directory(
+    src: &dyn ByteSource,
+    scale: OffsetScale,
+    offset: usize,
+    total: usize,
+) -> Result<NavDirectory, Error> {
+    // The lowest byte a scaled offset in this file can name past the header (§1.2).
+    let floor = super::resolve_bytes(scale.align_up(HEADER_LEN as u64).ok_or(Error::BadOffset)?)?;
+    if offset < floor || offset.checked_add(NAV_DIR_LEN).is_none_or(|end| end > total) {
         return Err(Error::BadOffset);
     }
     let mut d = [0u8; NAV_DIR_LEN];
     src.read_at(offset as u32, &mut d).map_err(Error::Source)?;
     let dir = NavDirectory {
-        index_offset: rd_u32(&d, 0) as usize,
+        index_offset: resolve(scale.offset(rd_u32(&d, 0)))?,
         node_count: rd_u32(&d, 4) as usize,
         chunk_count: rd_u32(&d, 8) as usize,
-        edge_pool_offset: rd_u32(&d, 12) as usize,
+        edge_pool_offset: resolve(scale.offset(rd_u32(&d, 12)))?,
         edge_chunk_count: rd_u32(&d, 16) as usize,
         chunk_size: rd_u16(&d, 20) as usize,
-        profile_table_offset: rd_u32(&d, 22) as usize,
+        profile_table_offset: resolve(scale.offset(rd_u32(&d, 22)))?,
         profile_count: d[26] as usize,
-        snap_index_offset: rd_u32(&d, 28) as usize,
+        snap_index_offset: resolve(scale.offset(rd_u32(&d, 28)))?,
         snap_node_count: rd_u32(&d, 32) as usize,
         snap_chunk_count: rd_u32(&d, 36) as usize,
+        scale,
     };
     // The nav chunk size is pinned to 512 (§8.1) — a v8 file, or any other value, is rejected. This
     // is a distinct error from the header's version check, so an old file and a mis-sized current
@@ -1030,7 +1067,7 @@ pub(super) fn parse_nav_directory(src: &dyn ByteSource, offset: usize, total: us
         return Err(Error::BadOffset);
     }
     // Profile-table region (56 B × count) at `profile_table_offset` must lie in-file.
-    if dir.profile_table_offset < HEADER_LEN {
+    if dir.profile_table_offset < floor {
         return Err(Error::BadOffset);
     }
     let profile_end = dir
@@ -1048,14 +1085,17 @@ pub(super) fn parse_nav_directory(src: &dyn ByteSource, offset: usize, total: us
             .data_start()
             .and_then(|start| dir.chunk_count.checked_mul(dir.chunk_size).and_then(|len| start.checked_add(len)))
             .ok_or(Error::BadOffset)?;
-        if dir.index_offset < HEADER_LEN || region_end > total {
+        if dir.index_offset < floor || region_end > total {
             return Err(Error::BadOffset);
         }
     } else if dir.index_offset > total {
         return Err(Error::BadOffset);
     }
-    // Edge pool region.
-    if dir.edge_pool_offset < HEADER_LEN {
+    // Edge pool region. `Edge Chunk Count` is capped at `2^27` since v14 (§8.1/§8.4): past that
+    // no `Edge Id` could name the chunks, so the tail would be bytes the directory claims and no
+    // id reaches — the same posture the flat store takes toward an extent count its index cannot
+    // name.
+    if dir.edge_pool_offset < floor || dir.edge_chunk_count as u64 > NAV_EDGE_MAX_CHUNKS {
         return Err(Error::BadOffset);
     }
     let pool_end = dir
@@ -1073,7 +1113,7 @@ pub(super) fn parse_nav_directory(src: &dyn ByteSource, offset: usize, total: us
             .snap_data_start()
             .and_then(|start| dir.snap_chunk_count.checked_mul(dir.chunk_size).and_then(|len| start.checked_add(len)))
             .ok_or(Error::BadOffset)?;
-        if dir.snap_index_offset < HEADER_LEN || region_end > total {
+        if dir.snap_index_offset < floor || region_end > total {
             return Err(Error::BadOffset);
         }
     } else if dir.snap_index_offset > total || dir.snap_chunk_count != 0 {

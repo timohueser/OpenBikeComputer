@@ -19,6 +19,7 @@ use obc_formats::obcm::{
 use crate::grid::UBox;
 use crate::input::Cell;
 use crate::qtree::{self, Point};
+use crate::shard::{align_up, filler_len, scaled, FILLER_RUN};
 use crate::{Error, Result};
 
 /// Directory length: count byte + shared chunk size + one entry per category + the v7 pool fields.
@@ -214,29 +215,59 @@ pub fn layout(merged: &MergedPois, global_bbox: UBox) -> PoiSection {
         dropped += lost;
         blocks.push(Block { cat_id, index, node_count, chunks, chunk_count });
     }
-    let len = POI_DIR_LEN
-        + blocks.iter().map(|b| b.index.len() + b.chunks.len()).sum::<usize>()
-        + 2
-        + merged.pool.len() * POI_HOURS_BLOB_LEN;
-    PoiSection { blocks, pool: merged.pool.clone(), len, dropped }
+    PoiSection { len: section_len(&blocks, merged.pool.len()), blocks, pool: merged.pool.clone(), dropped }
+}
+
+/// The section's byte length, §1.2 filler included — computable without an absolute offset, and
+/// that is a property of the layout rather than a convenience.
+///
+/// The section itself begins on a unit boundary (`POI Section Offset` is scaled, so nothing else is
+/// expressible), and every structure inside it is placed at `align_up` of the one before, so each
+/// gap is a function of a *length* alone. The 512-byte chunk runs need none at all: 512 is a
+/// multiple of `U` at every legal scale (§1.1), so a category's chunks carry no filler between them
+/// and leave the cursor aligned for the next category.
+fn section_len(blocks: &[Block], pool_blobs: usize) -> usize {
+    let mut len = align_up(POI_DIR_LEN as u64);
+    for b in blocks {
+        len += b.index.len() as u64 + filler_len(b.index.len() as u64) + b.chunks.len() as u64;
+    }
+    // The hours pool, then the run that leaves the nav directory behind it nameable.
+    (len + align_up((2 + pool_blobs * POI_HOURS_BLOB_LEN) as u64)) as usize
 }
 
 /// Write the section at absolute byte `section_offset`: directory, then each category's index +
-/// chunks, then the hours pool.
+/// chunks, then the hours pool — with §1.2's `0xFF` filler wherever a scaled offset has to name what
+/// comes next.
 ///
 /// Every category gets a directory entry, empty or not — a map with no POIs writes six empty entries
-/// and never a zero offset, which is also what a non-core shard writes (§5.1).
-pub fn serialize(section: &PoiSection, section_offset: usize) -> Vec<u8> {
-    let mut cursor = section_offset + POI_DIR_LEN;
-    let mut payload = Vec::new();
+/// and never a zero offset, which is also what a non-core shard writes (§5.1). An empty category's
+/// `Index Offset` still points at where its zero-length index would start, so it is a boundary too.
+pub fn serialize(section: &PoiSection, section_offset: usize) -> Result<Vec<u8>> {
+    debug_assert_eq!(section_offset as u64, align_up(section_offset as u64), "the POI section starts on a boundary");
+    // The 87-byte directory does not end on a unit boundary, so the first category's index begins at
+    // the first one past it and the bytes between are filler.
+    let dir_gap = filler_len((section_offset + POI_DIR_LEN) as u64) as usize;
+    let mut cursor = section_offset + POI_DIR_LEN + dir_gap;
+    let mut payload = vec![obc_formats::obcm::FILLER; dir_gap];
     let mut entries = Vec::with_capacity(POI_CATEGORY_COUNT as usize);
     for b in &section.blocks {
-        entries.push((b.cat_id, cursor as u32, b.node_count, b.chunk_count));
+        entries.push((b.cat_id, scaled(cursor as u64)?, b.node_count, b.chunk_count));
         payload.extend_from_slice(&b.index);
+        cursor += b.index.len();
+        // §7.1's one rounding step: a category's chunks begin at
+        // `align_up(Index Offset * U + Index Node Count * 4, U)`.
+        let gap = filler_len(cursor as u64) as usize;
+        payload.extend_from_slice(&FILLER_RUN[..gap]);
+        cursor += gap;
         payload.extend_from_slice(&b.chunks);
-        cursor += b.index.len() + b.chunks.len();
+        cursor += b.chunks.len();
     }
-    let hours_pool_offset = cursor;
+    // The chunk runs are whole 512-byte strides from an aligned start, so `cursor` is already a
+    // boundary here and this gap is empty in practice — written from the rule rather than from that
+    // observation, because the rule is what the reader resolves.
+    let pool_gap = filler_len(cursor as u64) as usize;
+    payload.extend_from_slice(&FILLER_RUN[..pool_gap]);
+    let hours_pool_offset = cursor + pool_gap;
     payload.extend_from_slice(&(section.pool.len() as u16).to_le_bytes());
     for blob in &section.pool {
         payload.extend_from_slice(blob);
@@ -251,12 +282,14 @@ pub fn serialize(section: &PoiSection, section_offset: usize) -> Vec<u8> {
         out.extend_from_slice(&node_count.to_le_bytes());
         out.extend_from_slice(&chunk_count.to_le_bytes());
     }
-    out.extend_from_slice(&(hours_pool_offset as u32).to_le_bytes());
+    out.extend_from_slice(&scaled(hours_pool_offset as u64)?.to_le_bytes());
     out.extend_from_slice(&(section.pool.len() as u16).to_le_bytes());
     debug_assert_eq!(out.len(), POI_DIR_LEN);
     out.extend_from_slice(&payload);
+    // The section ends on a unit boundary so the nav directory behind it can be named.
+    out.resize(align_up((section_offset + out.len()) as u64) as usize - section_offset, obc_formats::obcm::FILLER);
     debug_assert_eq!(out.len(), section.len);
-    out
+    Ok(out)
 }
 
 /// The 36-byte §7.3 record. Name bytes travel verbatim from the source record; only `HoursRef` is
@@ -280,19 +313,44 @@ pub fn empty_layout(global_bbox: UBox) -> PoiSection {
 mod tests {
     use super::*;
 
+    /// The section a shard with no POIs writes, at a unit-aligned offset — the six empty entries,
+    /// and v14's filler.
+    ///
+    /// The **gap** assertions are the point of the second half. Every directory field here would
+    /// read correctly with the `0xFF` run written as zeros, or written one byte short and the
+    /// hours pool one byte early — the offsets are self-consistent either way — so the pin has to
+    /// name the fill byte and the run's exact length, or it passes on a file no reader agrees with.
     #[test]
-    fn an_empty_section_is_a_full_directory() {
-        let bytes = serialize(&empty_layout((0, 0, 1_000_000, 1_000_000)), 100);
+    fn an_empty_section_is_a_full_directory_with_its_filler() {
+        const AT: usize = 96; // a unit boundary, which is all a section offset may be
+        let bytes = serialize(&empty_layout((0, 0, 1_000_000, 1_000_000)), AT).expect("the section serialises");
         assert_eq!(bytes[0], POI_CATEGORY_COUNT);
         assert_eq!(u16::from_le_bytes([bytes[1], bytes[2]]) as usize, POI_CHUNK_SIZE);
-        // Every category present, every one empty, and the pool offset just past the directory.
+        let unit = crate::shard::SCALE.unit() as usize;
+        // Every category present, every one empty, and every `Index Offset` on a unit boundary just
+        // past the directory's own filler — an empty category still has to be nameable.
+        let dir_end = crate::shard::align_up((AT + POI_DIR_LEN) as u64) as usize;
         for c in 0..POI_CATEGORY_COUNT as usize {
             let at = 3 + c * POI_CAT_ENTRY_LEN;
             assert_eq!(bytes[at], c as u8 + 1);
+            let index_offset = u32::from_le_bytes(bytes[at + 1..at + 5].try_into().unwrap()) as usize;
+            assert_eq!(index_offset * unit, dir_end, "category {} names the first boundary past the directory", c + 1);
             assert_eq!(u32::from_le_bytes(bytes[at + 5..at + 9].try_into().unwrap()), 0, "node count");
         }
-        let pool_off = u32::from_le_bytes(bytes[POI_DIR_LEN - 6..POI_DIR_LEN - 2].try_into().unwrap()) as usize;
-        assert_eq!(pool_off, 100 + POI_DIR_LEN);
+        let pool_off = u32::from_le_bytes(bytes[POI_DIR_LEN - 6..POI_DIR_LEN - 2].try_into().unwrap()) as usize * unit;
+        assert_eq!(pool_off, dir_end);
         assert_eq!(u16::from_le_bytes(bytes[POI_DIR_LEN - 2..POI_DIR_LEN].try_into().unwrap()), 0);
+
+        // --- the gaps, as bytes ---
+        // 87 bytes of directory, then filler to the boundary the offsets above name.
+        assert_eq!(POI_DIR_LEN, 87, "the §7.1 directory is the width every gap here is measured from");
+        let dir_gap = dir_end - AT - POI_DIR_LEN;
+        assert_eq!(dir_gap, 9, "87 → 96 at U = 16");
+        assert_eq!(&bytes[POI_DIR_LEN..POI_DIR_LEN + dir_gap], &[obc_formats::obcm::FILLER; 9], "§1.2's fill byte");
+        // The pool's own two `count` bytes, then the run that leaves the nav directory nameable.
+        assert_eq!(&bytes[dir_gap + POI_DIR_LEN..][..2], &0u16.to_le_bytes(), "an empty pool is a bare count");
+        assert_eq!(&bytes[dir_gap + POI_DIR_LEN + 2..], &[obc_formats::obcm::FILLER; 14], "the tail run");
+        assert_eq!(bytes.len(), 112, "96 (directory + filler) + 16 (the pool, rounded up)");
+        assert_eq!(bytes.len() as u64, empty_layout((0, 0, 1_000_000, 1_000_000)).section_len());
     }
 }

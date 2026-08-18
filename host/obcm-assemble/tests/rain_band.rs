@@ -126,14 +126,16 @@ fn restamp_refuses_boundary_crossings() {
         terrain_layer: false,
     };
     // A minimal image: header up to the style offset, then a two-style table (ground z 10, road
-    // z 30). Only the header fields restamp reads need to be real.
+    // z 30). Only the header fields restamp reads need to be real — and since v14 that includes the
+    // `Offset Scale` byte, because `Style Offset` is a **unit** count and means nothing without it.
     let baked = [record(1, 10), record(2, 30)];
     let table = pack_style_table(&baked);
-    let style_offset = 40u32; // straight after the v13 header
-    let mut image = vec![0u8; 40 + table.len()];
+    let at = obcm_assemble::shard::STYLE_OFFSET as usize;
+    let mut image = vec![0u8; at + table.len()];
     image[obcm_assemble::shard::HEADER_STYLE_OFFSET_AT..obcm_assemble::shard::HEADER_STYLE_OFFSET_AT + 4]
-        .copy_from_slice(&style_offset.to_le_bytes());
-    image[40..].copy_from_slice(&table);
+        .copy_from_slice(&obcm_assemble::shard::scaled(at as u64).expect("a unit boundary").to_le_bytes());
+    image[obc_formats::obcm::HEADER_OFFSET_SCALE_OFF] = obcm_assemble::shard::SCALE.log2();
+    image[at..].copy_from_slice(&table);
 
     // Same-side restyle (colors, weights, even z shifts inside each side): accepted.
     let restyle = [record(1, 4), record(2, 60)];

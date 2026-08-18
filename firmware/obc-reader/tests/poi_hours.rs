@@ -10,8 +10,8 @@
 use obc_formats::obcm::{POI_HOURS_BLOB_LEN, POI_HOURS_FLAG_TRUNCATED as HOURS_FLAG_TRUNCATED};
 use obc_reader::{Interval, MapCache, MapTables, PoiCategory, Reader, SliceSource, WeeklySchedule};
 use obcm_testkit::{
-    build_file, empty_nav_directory, hours_pool, pack_poi_chunk, pack_poi_record, poi_dir_len, poi_directory, seal,
-    LodSpec, PoiCat, Style,
+    align_up, build_file, empty_nav_directory, filler_len, hours_pool, pack_poi_chunk, pack_poi_record, poi_dir_len,
+    poi_directory, resolve_offset, scaled, seal, LodSpec, PoiCat, Style, FILLER,
 };
 
 const CS: usize = 64;
@@ -47,7 +47,7 @@ fn build_map_with_pool(blobs: &[[u8; POI_HOURS_BLOB_LEN]], ref_a: u16, ref_b: u1
         STYLES,
         &[LodSpec { max_mpp: f32::INFINITY, index: vec![0], chunks: vec![seal(vec![], CS)], chunk_size: CS }],
     );
-    let poi_off = u32::from_le_bytes(base[32..36].try_into().unwrap()) as usize;
+    let poi_off = resolve_offset(&base, 32);
 
     // Two hotels (subtype 7) near the map centre so nearest_pois returns both.
     let rec_a = pack_poi_record(50_000_000, 50_000_000, 7, "Hotel A", ref_a);
@@ -55,28 +55,36 @@ fn build_map_with_pool(blobs: &[[u8; POI_HOURS_BLOB_LEN]], ref_a: u16, ref_b: u1
     let chunk = pack_poi_chunk(&[rec_a, rec_b], 512);
     let pool = hours_pool(blobs);
 
-    let cat3_index_off = poi_off + poi_dir_len();
-    let cat3_chunk_off = cat3_index_off + 4; // one u32 node
+    // v14: every offset the directory names is a unit boundary (§1.1), so the index sits at the
+    // first one past the 87-byte directory and its chunks at `align_up(index + node_count * 4, U)`
+    // — §7.1's one rounding step. The 512-byte chunk then leaves the cursor aligned for the pool.
+    let dir_gap = filler_len(poi_off + poi_dir_len());
+    let cat3_index_off = poi_off + poi_dir_len() + dir_gap;
+    let cat3_chunk_off = align_up(cat3_index_off + 4); // one u32 node
+    let index_gap = cat3_chunk_off - (cat3_index_off + 4);
     let pool_off = cat3_chunk_off + chunk.len();
     let cats: Vec<PoiCat> = (1..=6u8)
         .map(|id| {
             if id == 3 {
-                PoiCat { category_id: 3, index_offset: cat3_index_off as u32, node_count: 1, chunk_count: 1 }
+                PoiCat { category_id: 3, index_offset: cat3_index_off, node_count: 1, chunk_count: 1 }
             } else {
-                PoiCat { category_id: id, index_offset: pool_off as u32, node_count: 0, chunk_count: 0 }
+                PoiCat { category_id: id, index_offset: pool_off, node_count: 0, chunk_count: 0 }
             }
         })
         .collect();
 
     let mut bytes = base[..poi_off].to_vec();
-    bytes.extend_from_slice(&poi_directory(512, &cats, pool_off as u32, blobs.len() as u16));
+    bytes.extend_from_slice(&poi_directory(512, &cats, pool_off, blobs.len() as u16));
+    bytes.resize(bytes.len() + dir_gap, FILLER);
     bytes.extend_from_slice(&0u32.to_le_bytes()); // cat 3's single leaf → chunk 0
+    bytes.resize(bytes.len() + index_gap, FILLER);
     bytes.extend_from_slice(&chunk);
     bytes.extend_from_slice(&pool);
-    // The populated POI section displaced base's tail nav section: re-append an empty one and
-    // patch the header's nav offset (byte 36).
+    // The populated POI section displaced base's tail nav section: re-append an empty one at the
+    // next unit boundary and patch the header's (scaled) nav offset at byte 36.
+    bytes.resize(align_up(bytes.len()), FILLER);
     let nav_off = bytes.len();
-    bytes[36..40].copy_from_slice(&(nav_off as u32).to_le_bytes());
+    bytes[36..40].copy_from_slice(&scaled(nav_off).to_le_bytes());
     bytes.extend_from_slice(&empty_nav_directory(nav_off));
     bytes
 }
@@ -181,10 +189,10 @@ fn poi_hours_corrupt_count_past_eof_is_none() {
     let mut bytes = build_map_with_pool(&[blob0], 0, 0);
 
     let real_len = bytes.len();
-    let poi_off = u32::from_le_bytes(bytes[32..36].try_into().unwrap()) as usize;
+    let poi_off = resolve_offset(&bytes, 32);
     let count_field = poi_off + 3 + 6 * 13 + 4;
-    let off_field = poi_off + 3 + 6 * 13; // hours_pool_offset u32
-    let pool_off = u32::from_le_bytes(bytes[off_field..off_field + 4].try_into().unwrap()) as usize;
+    let off_field = poi_off + 3 + 6 * 13; // hours_pool_offset u32 (scaled)
+    let pool_off = resolve_offset(&bytes, off_field);
     // Forge just enough blobs that the LAST one's read runs one blob past the real bytes (blob 0 is
     // still fully present). Derived from the real length so it's robust to the trailing nav section's
     // size (the §8.6 profile table pushed the file out in v9).

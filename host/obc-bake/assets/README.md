@@ -103,3 +103,34 @@ stamped (`previews.rs`). A schema that stops covering an id this file carries
 still fails. `features.contour.*` (#1094) was the first type to ride that rule,
 and rode it until the #1105 re-pack, so the fixture now carries ids 51/52 like any
 other.
+
+## Repacked at OBCM v14 (FS7.5b, #1420)
+
+`teningen-preview.obcm` is now a **v14** file. The pinned `2026-08-03`
+`freiburg-regbez` snapshot is no longer hosted by Geofabrik (it serves roughly
+the last 90 days), so this repack necessarily used the current one:
+
+Provenance is therefore Geofabrik `europe/germany/baden-wuerttemberg/freiburg-regbez`,
+snapshot **`2026-08-17`**, same bbox and same `builder/presets/schema.json`
+invocation as above. No golden preview PNG is pinned — the tests assert the
+skins render distinctly and deterministically, not to fixed pixels — so a
+two-week content delta in a 2.4 km crop of the Rhine plain is absorbed rather
+than reviewed pixel by pixel.
+
+**The ladder came with it, and that is the more visible change.** The fixture had
+been packed against the 7-tier Bikepacking v6 preset and had not been repacked
+since the schema gained its far-zoom tiers, a lag the `obc-skin-preview` tests
+called out in a comment. Repacking against today's `builder/presets/schema.json`
+picks up all **fourteen** rungs. Six of them describe ground scales a 2.4 km crop
+can never fill, so the widest view the preview's own extent allows now selects
+rung 7 rather than rung 0 — the tests say so directly, because asserting rung 0
+would be asserting a blank frame.
+
+Size log, continued: 481 533 B at v12 → **483 328 B at v14**, and the reader
+should be told that this is a **coincidence rather than a null result**:
+303 216 of the file's bytes changed. Two independent movements happen to land
+within a couple of kilobytes of each other — v14's §1.2 unit filler adds roughly
+half a percent of the geometry bytes plus a gap at each region boundary, and the
+fortnight of OSM edits moved content the other way. A repack that produced a
+*byte-identical* file would be the surprising outcome; an equally-sized one is
+not, and the version byte (`0x0D` → `0x0E`) is what to check.

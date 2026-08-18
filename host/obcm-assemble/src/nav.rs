@@ -134,9 +134,10 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use obc_formats::obcm::{
-    nav_index_padding, CHUNK_END, NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_EDGE_FIXED_LEN, NAV_MAX_DEGREE,
-    NAV_NEIGHBOR_ASCENT_OFF, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_SNAP_ANCHOR_GAP_M, NAV_SNAP_EDGE_MIN_M,
-    NAV_SNAP_RECORD_LEN,
+    nav_edge_id, nav_edge_id_chunk, nav_edge_id_ordinal, nav_edge_record_range, nav_index_padding, CHUNK_END,
+    NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_EDGE_FIXED_LEN, NAV_EDGE_MAX_CHUNKS, NAV_EDGE_MAX_RECORDS_PER_CHUNK,
+    NAV_MAX_DEGREE, NAV_NEIGHBOR_ASCENT_OFF, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_SNAP_ANCHOR_GAP_M,
+    NAV_SNAP_EDGE_MIN_M, NAV_SNAP_RECORD_LEN,
 };
 use obc_map_scene::ground_dist_m;
 
@@ -145,6 +146,7 @@ use crate::grid::{on_grid_boundary, UBox};
 use crate::input::Cell;
 use crate::qtree;
 use crate::scratch::{ScratchId, ScratchStore};
+use crate::shard::{align_up, filler_len, scaled, FILLER_RUN, SCALE};
 use crate::{prune, Error, Result};
 
 /// Largest neighbour delta the `int16` fields hold (§8.3). The packer's own split bound is 32 000;
@@ -189,7 +191,12 @@ const NO_SEAM: u32 = u32::MAX;
 struct EdgeRef {
     /// Index into the `network` cells [`merge`] read — the same slice [`serialize`] streams from.
     cell: u32,
-    /// The record's offset inside that cell's edge pool: §8.4's `Edge Id`, verbatim.
+    /// The record's **byte** offset inside that cell's edge pool.
+    ///
+    /// Since v14 that is no longer the cell's `Edge Id`: an id is a `(chunk, ordinal)` pair, and
+    /// resolving it means walking the chunk it names. The walk happens once, while the cell's pool
+    /// is the buffer in hand, and what survives is the address — so [`serialize`] still reads the
+    /// record with one seek and the resolve never runs twice.
     off: u32,
     /// The record's length. §8.4 forbids a record straddling a 512-byte chunk, so it is at most one
     /// chunk and a `u16` holds it by construction — which is also why one chunk-sized buffer is
@@ -566,12 +573,18 @@ pub struct NavProjection {
 
 impl NavProjection {
     pub fn bytes_at(self, section_offset: u64) -> u64 {
-        // Only the position inside a sector matters. Reducing before adding keeps even a deliberately
-        // absurd projection total from wrapping here; `ShardPlan::layout` remains the checked owner
-        // of the full-file arithmetic.
+        // Only the section's position inside a sector matters, because `nav_index_padding`'s answer
+        // is a function of `(unpadded + align_up(index_len)) mod 512` alone. Reducing before adding
+        // keeps even a deliberately absurd projection total from wrapping here; `ShardPlan::layout`
+        // remains the checked owner of the full-file arithmetic.
         let sector = NAV_CHUNK_SIZE as u64;
-        let relative_data_end = self.prefix_len % sector + self.index_len % sector;
-        let pad = if self.populated { nav_index_padding(section_offset % sector, relative_data_end) as u64 } else { 0 };
+        let unpadded = section_offset % sector + self.prefix_len;
+        let pad = if self.populated {
+            nav_index_padding(SCALE, unpadded, self.index_len).expect("a nav index length never approaches u64::MAX")
+                as u64
+        } else {
+            0
+        };
         self.base_len + pad
     }
 }
@@ -582,24 +595,45 @@ impl MergedNav {
     }
 
     /// Exact section-size projection. Every data chunk is padded to `NAV_CHUNK_SIZE`; the only
-    /// offset-dependent term is the compatibility gap before a populated index that aligns the node
-    /// chunk run.
+    /// offset-dependent term is the §8.1 alignment run before a populated index, which lands the
+    /// node chunks on a sector.
+    ///
+    /// The v14 terms it now also carries are all §1.2 gaps whose length is a function of a *length*
+    /// rather than of a position, so they belong in `base_len` rather than in [`NavProjection::
+    /// bytes_at`]: the eight bytes behind the 40-byte directory, the rounding step between an index
+    /// and the chunks behind it, and — for an empty graph — the run that carries the profile table's
+    /// tail to a boundary the zero-length regions can be *named* at.
     pub fn projection(&self, profile_table: &[u8]) -> NavProjection {
-        let prefix_len = (NAV_DIR_LEN + profile_table.len()) as u64;
+        // The section starts on a unit boundary, and 40 is not a multiple of one, so the profile
+        // table sits eight bytes behind the directory at `U = 16` (§8.1's worked example).
+        let dir_gap = filler_len(NAV_DIR_LEN as u64);
+        let prefix_len = NAV_DIR_LEN as u64 + dir_gap + profile_table.len() as u64;
+        if self.files.is_none() {
+            // An empty graph is the directory, the always-present profile table, and the filler that
+            // puts the first unit boundary past it — where all three zero-length regions point.
+            return NavProjection { base_len: align_up(prefix_len), prefix_len, index_len: 0, populated: false };
+        }
         // Node chunks start sector-aligned. Their run and the edge pool are whole sectors, so the
         // snap index starts aligned too and its padding depends only on its own width.
-        let snap_pad = if self.snap_node_count > 0 { nav_index_padding(0, self.snap_index_len) as u64 } else { 0 };
+        let snap_pad = if self.snap_node_count > 0 {
+            nav_index_padding(SCALE, 0, self.snap_index_len).expect("a snap index length never approaches u64::MAX")
+                as u64
+        } else {
+            0
+        };
         NavProjection {
             base_len: prefix_len
                 + self.index_len
+                + filler_len(self.index_len)
                 + self.chunk_count as u64 * NAV_CHUNK_SIZE as u64
                 + self.pool_len
                 + snap_pad
                 + self.snap_index_len
+                + filler_len(self.snap_index_len)
                 + self.snap_chunk_count as u64 * NAV_CHUNK_SIZE as u64,
             prefix_len,
             index_len: self.index_len,
-            populated: self.files.is_some(),
+            populated: true,
         }
     }
 
@@ -781,7 +815,7 @@ pub fn merge(
                 // Everything this pass needs from the record's bytes is taken here, while the cell's
                 // pool is still the buffer in hand: the orientation, the content hash, and the
                 // length. What survives the loop is the ten-byte address, not the record.
-                let rec = edge_record(&pool, edge_id, cell)?;
+                let (rec_at, rec) = edge_record(&pool, edge_id, cell)?;
                 // The record's anchor is endpoint `a`'s coordinate, so a record whose anchor is not
                 // this node's coordinate belongs to the other direction — keep the orientation the
                 // record itself states.
@@ -790,7 +824,7 @@ pub fn merge(
                 let own_is_anchor = (anchor_lat, anchor_lon) == (lat, lon);
                 let (a, b) = if own_is_anchor { (a, b) } else { (b, a) };
                 let hash = fnv(rec);
-                let rec = EdgeRef { cell: ci, off: edge_id, len: rec.len() as u16 };
+                let rec = EdgeRef { cell: ci, off: rec_at, len: rec.len() as u16 };
                 // This entry rides from the record's own node, so it books a→b when that node is
                 // `a`. The opposite direction arrives with the neighbour's own entry above; if it
                 // never does (a degree-capped arc, or a self-loop, which §8.3 writes once) the
@@ -913,20 +947,41 @@ pub fn merge(
     let mut snap_ord = 0u32;
     let mut source_edge = [0u8; NAV_CHUNK_SIZE];
     let mut at = 0u64;
+    let mut chunk_index = 0u64;
+    let mut ordinal = 0u32;
     let mut seq: u32 = 0;
     for rec in by_emit.finish()? {
         let rec = rec?;
         let r = dense_ref(&rec);
         let len = r.len as u64;
-        at = place(at, len);
-        // `u64`, not `usize`: on wasm32 `u32::MAX as usize` is `usize::MAX`, which made this
-        // guard dead code and let the cursor wrap — the same B1 wrap, one level below the layout.
-        if at > u32::MAX as u64 {
-            return Err(Error::Capacity(
-                "the merged edge pool passes 4 GiB: `Edge Id` is a uint32 pool byte offset (OBCA §5.7)".into(),
-            ));
+        let start = place(at, len);
+        // §8.4's `(chunk, ordinal)` id, minted at the moment the record is placed. The no-straddle
+        // rule the layout already obeyed carries a second weight since v14: it is what makes "the
+        // *n*th record of a chunk" a well-defined thing to name, so the ordinal is simply the
+        // per-chunk record counter and nothing has to know a byte position any more.
+        let here = start / NAV_CHUNK_SIZE as u64;
+        if here != chunk_index {
+            chunk_index = here;
+            ordinal = 0;
         }
-        let edge_id = at as u32;
+        at = start;
+        // The two halves of §8.4's field, each refused rather than wrapped. The 19-byte minimum
+        // record puts the real per-chunk maximum at 26, so the ordinal cap never binds today; it is
+        // checked so that it stays true if a future record shrinks, and because it is what keeps
+        // `0xFFFFFFFF` an impossible id *unconditionally*.
+        if chunk_index >= NAV_EDGE_MAX_CHUNKS {
+            return Err(Error::Capacity(format!(
+                "the merged edge pool needs more than the {NAV_EDGE_MAX_CHUNKS} chunks an `Edge Id`'s 27-bit chunk \
+                 field can name (OBCM §8.4) — reduce the coverage"
+            )));
+        }
+        if ordinal as usize >= NAV_EDGE_MAX_RECORDS_PER_CHUNK {
+            return Err(Error::Format(format!(
+                "an edge chunk would hold more than the {NAV_EDGE_MAX_RECORDS_PER_CHUNK} records §8.4 permits"
+            )));
+        }
+        let edge_id = nav_edge_id(chunk_index as u32, ordinal).expect("both halves checked against their fields");
+        ordinal += 1;
         pool_out.push(pool_record(&r))?;
         at += len;
 
@@ -1547,25 +1602,33 @@ fn place(at: u64, len: u64) -> u64 {
     }
 }
 
-/// One §8.4 edge record, located inside its cell's pool at `edge_id` (a pool-relative byte offset)
-/// and checked there: in the pool, a polyline of at least two vertices, and not straddling its
-/// chunk. The slice is borrowed from the pool buffer the caller has open — the merge reads what it
-/// needs from it and keeps only the address.
-fn edge_record<'p>(pool: &'p [u8], edge_id: u32, cell: &Cell<'_>) -> Result<&'p [u8]> {
-    let at = edge_id as usize;
+/// One §8.4 edge record, resolved inside its cell's pool from `edge_id` — since v14 a packed
+/// `(chunk, ordinal)` pair rather than a byte offset — and returned with the **byte offset** it was
+/// found at, which is the address [`serialize`] later reads it back from.
+///
+/// The resolve is `obc_formats`' own walk, applied to the one 512-byte chunk the id names: it takes
+/// each record's length from its own `Pt Count` and bounds-checks every intermediate record exactly
+/// as it does the target. An id a cell's adjacency states is an input, not this engine's output, so
+/// a refused id is a [`Error::Format`] and not an absent edge.
+///
+/// The slice is borrowed from the pool buffer the caller has open — the merge reads what it needs
+/// from it and keeps only the address.
+fn edge_record<'p>(pool: &'p [u8], edge_id: u32, cell: &Cell<'_>) -> Result<(u32, &'p [u8])> {
     let bad = |what: &str| Error::Format(format!("cell {}: edge id {edge_id} {what}", cell.id));
-    if at % NAV_CHUNK_SIZE + NAV_EDGE_FIXED_LEN > NAV_CHUNK_SIZE || at + NAV_EDGE_FIXED_LEN > pool.len() {
-        return Err(bad("is out of the edge pool"));
-    }
-    let pt_count = u16::from_le_bytes(pool[at + 4..at + 6].try_into().expect("2 bytes")) as usize;
-    if pt_count < 2 {
-        return Err(bad("decodes to a polyline with fewer than two vertices"));
-    }
-    let rec_len = NAV_EDGE_FIXED_LEN + (pt_count - 1) * 4;
-    if at % NAV_CHUNK_SIZE + rec_len > NAV_CHUNK_SIZE || at + rec_len > pool.len() {
-        return Err(bad("straddles its chunk"));
-    }
-    Ok(&pool[at..at + rec_len])
+    let chunk_index = nav_edge_id_chunk(edge_id) as usize;
+    let chunk_at = chunk_index.checked_mul(NAV_CHUNK_SIZE).ok_or_else(|| bad("names a chunk past any pool"))?;
+    let chunk = pool
+        .get(chunk_at..chunk_at + NAV_CHUNK_SIZE)
+        .ok_or_else(|| bad("names a chunk outside the cell's edge pool"))?;
+    let (start, end) = nav_edge_record_range(chunk, nav_edge_id_ordinal(edge_id))
+        .ok_or_else(|| bad("does not resolve to a record in its chunk (OBCM §8.4)"))?;
+    // Additively, and checked: `chunk_at` is already bounded by the pool, but a `usize` add is a
+    // `usize` add and this crate builds for wasm32, where one wraps at 4 GiB.
+    let at = chunk_at
+        .checked_add(start)
+        .and_then(|a| u32::try_from(a).ok())
+        .ok_or_else(|| bad("resolves past the 4 GiB a pool address fits"))?;
+    Ok((at, &chunk[start..end]))
 }
 
 /// FNV-1a 64 over a record's bytes — the identity half of the §4.6.3 duplicate key. Content, not
@@ -1580,8 +1643,13 @@ fn fnv(bytes: &[u8]) -> u64 {
 }
 
 /// Write the whole §8 section at absolute byte `section_offset` through `sink`:
-/// `[directory][profile table][0-padding][node index][node chunks][edge pool]
-/// [0-padding][snap index][snap chunks]`.
+/// `[directory][filler][profile table][alignment run][node index][filler][node chunks][edge pool]
+/// [alignment run][snap index][filler][snap chunks]`.
+///
+/// **Every one of those gaps is `0xFF` since v14**, where v13 wrote zeros for the 512-byte alignment
+/// runs and `0xFF` only inside a chunk. One fill byte, one rule (`OBCM_Spec.md` §1.2): a gap is
+/// `0xFF` and a reserved field is `0`. An alignment run is a gap no offset reaches, so it takes the
+/// gap's byte.
 ///
 /// Every offset in the directory is known before the first byte goes out — that is what
 /// [`MergedNav::projection`] already proves — so nothing is back-patched and nothing is staged.
@@ -1605,22 +1673,38 @@ pub fn serialize(
     sink: &mut dyn FnMut(&[u8]) -> Result<()>,
 ) -> Result<()> {
     let profile_count = profile_table.len() / obc_formats::obcm::NAV_PROFILE_LEN;
-    let profile_table_offset = section_offset + NAV_DIR_LEN;
+    // 40 is not a multiple of `U`, so the profile table cannot be *named* at the directory's last
+    // byte: it starts at the first unit boundary past it, and the eight bytes between them are §1.2
+    // filler. That is the whole cost of scaling in this section (§8.1).
+    let dir_gap = filler_len(NAV_DIR_LEN as u64) as usize;
+    let profile_table_offset = section_offset + NAV_DIR_LEN + dir_gap;
     let unpadded_index_offset = profile_table_offset + profile_table.len();
-    let index_pad =
-        if nav.files.is_some() { nav_index_padding(unpadded_index_offset as u64, nav.index_len) } else { 0 };
-    let index_offset = unpadded_index_offset + index_pad;
-    // Post-ceiling, every section offset and length fits `u32`, so the `usize` narrowing here is
-    // exact on every host.
-    let edge_pool_offset = index_offset + nav.index_len as usize + nav.chunk_count as usize * NAV_CHUNK_SIZE;
-    let edge_chunk_count = (nav.pool_len / NAV_CHUNK_SIZE as u64) as u32;
-    let unpadded_snap_index_offset = edge_pool_offset + nav.pool_len as usize;
-    let snap_index_pad = if nav.snap_node_count > 0 {
-        nav_index_padding(unpadded_snap_index_offset as u64, nav.snap_index_len)
+    // `nav_index_padding` reconciles §8.1's two alignments — the index on a unit boundary (or no
+    // scaled offset could name it) and the fixed 512-byte chunks behind it on a sector — and the
+    // rounding step in `align_up(index_offset × U + node_count × 4, U)` is the slack that lets both
+    // hold for every node count.
+    let index_pad = if nav.files.is_some() {
+        nav_index_padding(SCALE, unpadded_index_offset as u64, nav.index_len)
+            .ok_or_else(|| Error::Capacity("the nav index length does not fit the §8.1 alignment".into()))?
     } else {
         0
     };
+    let index_offset = unpadded_index_offset + index_pad;
+    // Post-ceiling, every section offset and length fits `u32`, so the `usize` narrowing here is
+    // exact on every host.
+    let index_gap = filler_len(nav.index_len) as usize;
+    let node_chunks_offset = index_offset + nav.index_len as usize + index_gap;
+    let edge_pool_offset = node_chunks_offset + nav.chunk_count as usize * NAV_CHUNK_SIZE;
+    let edge_chunk_count = (nav.pool_len / NAV_CHUNK_SIZE as u64) as u32;
+    let unpadded_snap_index_offset = edge_pool_offset + nav.pool_len as usize;
+    let snap_index_pad = if nav.snap_node_count > 0 {
+        nav_index_padding(SCALE, unpadded_snap_index_offset as u64, nav.snap_index_len)
+            .ok_or_else(|| Error::Capacity("the snap index length does not fit the §8.1 alignment".into()))?
+    } else {
+        filler_len(unpadded_snap_index_offset as u64) as usize
+    };
     let snap_index_offset = unpadded_snap_index_offset + snap_index_pad;
+    let snap_gap = filler_len(nav.snap_index_len) as usize;
 
     let mut written = 0usize;
     let mut out = |buf: &[u8]| -> Result<()> {
@@ -1628,34 +1712,39 @@ pub fn serialize(
         sink(buf)
     };
 
+    // A zero-length region still has to be **nameable**, so an empty graph points all three of its
+    // offsets at the first unit boundary past the profile table rather than at its last byte.
+    let empty_at = align_up(unpadded_index_offset as u64) as usize;
+    let (index_at, edge_at, snap_at) = match nav.files {
+        Some(_) => (index_offset, edge_pool_offset, snap_index_offset),
+        None => (empty_at, empty_at, empty_at),
+    };
     let mut dir = Vec::with_capacity(NAV_DIR_LEN);
-    dir.extend_from_slice(&(index_offset as u32).to_le_bytes());
+    dir.extend_from_slice(&scaled(index_at as u64)?.to_le_bytes());
     dir.extend_from_slice(&nav.node_count.to_le_bytes());
     dir.extend_from_slice(&nav.chunk_count.to_le_bytes());
-    dir.extend_from_slice(&(edge_pool_offset as u32).to_le_bytes());
+    dir.extend_from_slice(&scaled(edge_at as u64)?.to_le_bytes());
     dir.extend_from_slice(&edge_chunk_count.to_le_bytes());
     dir.extend_from_slice(&(NAV_CHUNK_SIZE as u16).to_le_bytes());
-    dir.extend_from_slice(&(profile_table_offset as u32).to_le_bytes());
+    dir.extend_from_slice(&scaled(profile_table_offset as u64)?.to_le_bytes());
     dir.push(profile_count as u8);
-    dir.push(0); // reserved
-    dir.extend_from_slice(&(snap_index_offset as u32).to_le_bytes());
+    dir.push(0); // reserved — a field, so `0`, unlike a gap
+    dir.extend_from_slice(&scaled(snap_at as u64)?.to_le_bytes());
     dir.extend_from_slice(&nav.snap_node_count.to_le_bytes());
     dir.extend_from_slice(&nav.snap_chunk_count.to_le_bytes());
     debug_assert_eq!(dir.len(), NAV_DIR_LEN);
     out(&dir)?;
+    out(&FILLER_RUN[..dir_gap])?;
     out(profile_table)?;
     let Some(files) = &nav.files else {
         // The empty pair a non-core shard carries (§5.1): the directory and the profile table are
-        // the whole section, and the projection agrees by arithmetic (both data regions are zero).
-        debug_assert_eq!(
-            (NAV_DIR_LEN + profile_table.len()) as u64,
-            nav.projection(profile_table).bytes_at(section_offset as u64)
-        );
+        // the whole section, plus the filler that carries it to the boundary the three zero-length
+        // regions are named at.
+        out(&FILLER_RUN[..empty_at - unpadded_index_offset])?;
+        debug_assert_eq!(written as u64, nav.projection(profile_table).bytes_at(section_offset as u64));
         return Ok(());
     };
-    if index_pad != 0 {
-        out(&[0; NAV_CHUNK_SIZE][..index_pad])?;
-    }
+    out(&FILLER_RUN[..index_pad])?;
     // The §8.2 index is already in wire form on the seam, so it is a copy through one block buffer.
     let mut block = vec![0u8; nav.read_budget.clamp(NAV_CHUNK_SIZE, 1 << 20)];
     let mut at = 0u64;
@@ -1666,6 +1755,7 @@ pub fn serialize(
         out(&block[..want])?;
         at += want as u64;
     }
+    out(&FILLER_RUN[..index_gap])?;
     emit_tree_chunks(nav.chunk_count, nav.read_budget, files.places, files.points, files.recs, scratch, &mut out)?;
 
     // The pool, record by record. `pad` is §8.3's `0xFF` sentinel run — the bytes a record's chunk
@@ -1704,10 +1794,8 @@ pub fn serialize(
         // `pad` is `[0xFF; 512]`; the remainder is at most one chunk by construction.
         out(&pad[..(nav.pool_len - at) as usize])?;
     }
+    out(&FILLER_RUN[..snap_index_pad])?;
     if let Some(snap) = &files.snap {
-        if snap_index_pad != 0 {
-            out(&[0; NAV_CHUNK_SIZE][..snap_index_pad])?;
-        }
         let mut at = 0u64;
         while at < nav.snap_index_len {
             let want = block.len().min((nav.snap_index_len - at) as usize);
@@ -1715,6 +1803,7 @@ pub fn serialize(
             out(&block[..want])?;
             at += want as u64;
         }
+        out(&FILLER_RUN[..snap_gap])?;
         emit_tree_chunks(
             nav.snap_chunk_count,
             nav.read_budget,
@@ -1803,13 +1892,24 @@ mod tests {
     use super::*;
     use crate::scratch::MemoryScratch;
 
+    /// §8.1's alignment run is the section's one offset-dependent term, and it depends on the
+    /// offset only through its position inside a sector.
+    ///
+    /// The v14 arithmetic reserves `align_up(index_len, U)` rather than `index_len` — that rounding
+    /// slack is what lets the index start on a **unit** boundary while the chunks behind it start on
+    /// a **sector** one — so a four-byte index at prefix 84 now takes 412 bytes of run where v13
+    /// took 424, and lands the index twelve bytes below the sector instead of exactly on it.
     #[test]
     fn projection_alignment_depends_only_on_the_sector_remainder() {
         let projection = NavProjection { base_len: 1_000, prefix_len: 84, index_len: 4, populated: true };
-        assert_eq!(projection.bytes_at(0), 1_424);
-        assert_eq!(projection.bytes_at(512), 1_424);
-        assert_eq!(projection.bytes_at(u64::MAX - 511), 1_424);
+        assert_eq!(projection.bytes_at(0), 1_412);
+        assert_eq!(projection.bytes_at(512), 1_412);
+        assert_eq!(projection.bytes_at(u64::MAX - 511), 1_412);
         assert_eq!(NavProjection { populated: false, ..projection }.bytes_at(u64::MAX), 1_000);
+        // The two properties the run buys, at the offset the numbers above are stated for.
+        let index_at = 84 + 412;
+        assert_eq!(index_at % SCALE.unit(), 0, "the index starts on a unit boundary");
+        assert_eq!(align_up(index_at + 4) % NAV_CHUNK_SIZE as u64, 0, "…and its chunks on a sector");
     }
 
     /// **The budget sweep.** Every whole-merge fixture goes through here rather than calling
@@ -1853,10 +1953,12 @@ mod tests {
 
     impl Merged {
         /// The §8.2 chunk region, located through the directory the write just emitted — so the
-        /// tests below read the junction records back the way a reader would.
+        /// tests below read the junction records back the way a reader would, including §8.1's one
+        /// rounding step between the index and the chunks.
         fn chunks(&self) -> &[u8] {
-            let word = |at: usize| u32::from_le_bytes(self.section[at..at + 4].try_into().unwrap()) as usize;
-            &self.section[word(0) + word(4) * 4..][..word(8) * NAV_CHUNK_SIZE]
+            let word = |at: usize| u32::from_le_bytes(self.section[at..at + 4].try_into().unwrap()) as u64;
+            let data_start = align_up(word(0) * SCALE.unit() + word(4) * 4) as usize;
+            &self.section[data_start..][..word(8) as usize * NAV_CHUNK_SIZE]
         }
     }
 
@@ -1906,16 +2008,40 @@ mod tests {
         }
     }
 
+    /// The empty section a non-core shard carries, and the three §1.2 gaps v14 puts in it: the
+    /// eight bytes behind the 40-byte directory, and the run that carries the profile table's tail
+    /// to the boundary the three zero-length regions are *named* at.
+    ///
+    /// Both gap assertions are load-bearing. Every directory field below reads correctly whatever
+    /// those bytes are, and the section would still parse if the tail run were missing entirely —
+    /// it would simply leave the next section starting mid-unit, which is unnameable rather than
+    /// wrong-looking. So the fill byte and the exact length are pinned, not just the offsets.
     #[test]
-    fn an_empty_section_still_carries_its_profiles() {
+    fn an_empty_section_still_carries_its_profiles_and_its_filler() {
+        const AT: usize = 512; // a section offset is always a unit boundary
         let profiles = vec![0u8; obc_formats::obcm::NAV_PROFILE_LEN];
         let scratch = MemoryScratch::new();
-        let bytes = serialized(&MergedNav::empty(NavStats::default()), &profiles, 500, &[], &scratch);
+        let bytes = serialized(&MergedNav::empty(NavStats::default()), &profiles, AT, &[], &scratch);
+        let unit = SCALE.unit() as usize;
         assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 0, "empty graph ⇒ no index nodes");
         assert_eq!(u16::from_le_bytes(bytes[20..22].try_into().unwrap()) as usize, NAV_CHUNK_SIZE, "pinned 512");
-        assert_eq!(u32::from_le_bytes(bytes[22..26].try_into().unwrap()) as usize, 500 + NAV_DIR_LEN);
+        // §8.1: 40 is not a multiple of 16, so the table starts at the directory's byte 48.
+        assert_eq!(u32::from_le_bytes(bytes[22..26].try_into().unwrap()) as usize * unit, AT + NAV_DIR_LEN + 8);
         assert_eq!(bytes[26], 1, "one profile");
-        assert_eq!(bytes.len(), NAV_DIR_LEN + profiles.len());
+        // The three zero-length regions point at the first boundary past the profile table, not at
+        // its last byte — a scaled offset cannot name byte 616.
+        let past = AT + 48 + profiles.len();
+        for (field, what) in [(0usize, "node index"), (12, "edge pool"), (28, "snap index")] {
+            let at = u32::from_le_bytes(bytes[field..field + 4].try_into().unwrap()) as usize * unit;
+            assert_eq!(at, align_up(past as u64) as usize, "the {what}'s zero-length region is still nameable");
+        }
+
+        // --- the gaps, as bytes ---
+        assert_eq!(&bytes[NAV_DIR_LEN..NAV_DIR_LEN + 8], &[CHUNK_END; 8], "§1.2's fill byte behind the directory");
+        assert_eq!(past - AT, 104, "48 + one 56-byte profile record");
+        assert_eq!(&bytes[104..], &[CHUNK_END; 8], "…and the run that carries 104 to 112");
+        assert_eq!(bytes.len(), 112);
+        assert_eq!(bytes.len() as u64, MergedNav::empty(NavStats::default()).projection(&profiles).bytes_at(AT as u64));
     }
 
     /// The country-scale path derives anchors from one bounded final edge record at a time. Pin the
@@ -2019,12 +2145,20 @@ mod tests {
 
         let scratch = MemoryScratch::new();
         let nav = pool_nav(&scratch, &pool, pool_len, 3);
-        const SECTION_OFFSET: usize = 123;
+        // A unit boundary, because that is the only thing a scaled `Nav Graph Offset` can name.
+        const SECTION_OFFSET: usize = 128;
         let bytes = serialized(&nav, &[], SECTION_OFFSET, &[&cell], &scratch);
-        let pool_offset = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let pool_offset = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize * SCALE.unit() as usize;
         assert_eq!(&bytes[pool_offset - SECTION_OFFSET..], &want[..], "the streamed pool is not the laid-out pool");
         assert_eq!(pool_offset % NAV_CHUNK_SIZE, 0, "edge pool is sector-aligned");
         assert_eq!(u32::from_le_bytes(bytes[16..20].try_into().unwrap()), 2, "edge chunk count");
+        // **The alignment run is `0xFF` since v14**, where v13 filled it with zeros — and no offset
+        // in the directory reaches a byte of it, so nothing else in this file would notice. The run
+        // here is everything between the 40-byte directory and the edge pool: the eight bytes behind
+        // the directory, and the §8.1 run that lands the (empty) index and its chunks on a sector.
+        let run = &bytes[NAV_DIR_LEN..pool_offset - SECTION_OFFSET];
+        assert_eq!(run.len(), 512 - 128 - NAV_DIR_LEN, "the fixture really has a run to fill");
+        assert!(run.iter().all(|&b| b == CHUNK_END), "a §1.2 gap is 0xFF, never 0");
         assert_eq!(
             bytes.len() as u64,
             nav.projection(&[]).bytes_at(SECTION_OFFSET as u64),
@@ -2079,18 +2213,36 @@ mod tests {
         nbrs: Vec<SrcNbr>,
     }
 
-    /// The `Edge Id`s a packed cell would mint for a run of records — §8.4's placement rule, which
-    /// is [`place`], applied from a zero cursor.
-    fn pool_layout(recs: &[Vec<u8>]) -> Vec<u32> {
+    /// Where a packed cell would put a run of §8.4 records — [`place`] from a zero cursor — as
+    /// `(byte offset, Edge Id)` pairs.
+    ///
+    /// The two are no longer the same number. Since v14 an `Edge Id` is the packed `(chunk,
+    /// ordinal)` pair, so laying the fixture's pool out still needs the byte offset while the
+    /// adjacency entries that name those records need the id — and a fixture that confused the two
+    /// would be exactly the map this slice exists to stop being written.
+    fn pool_layout(recs: &[Vec<u8>]) -> Vec<(u32, u32)> {
         let mut at = 0u64;
+        let mut chunk = 0u64;
+        let mut ordinal = 0u32;
         recs.iter()
             .map(|r| {
                 at = place(at, r.len() as u64);
-                let id = at as u32;
+                let here = at / NAV_CHUNK_SIZE as u64;
+                if here != chunk {
+                    chunk = here;
+                    ordinal = 0;
+                }
+                let placed = (at as u32, nav_edge_id(chunk as u32, ordinal).expect("a fixture stays in field"));
+                ordinal += 1;
                 at += r.len() as u64;
-                id
+                placed
             })
             .collect()
+    }
+
+    /// Just the ids, for a fixture's adjacency entries.
+    fn pool_ids(recs: &[Vec<u8>]) -> Vec<u32> {
+        pool_layout(recs).into_iter().map(|(_, id)| id).collect()
     }
 
     /// A synthetic `network` cell's §8 section: a node index (never read — [`merge`] walks the chunk
@@ -2132,7 +2284,7 @@ mod tests {
         }
         let pool_at = bytes.len();
         let mut pool: Vec<u8> = Vec::new();
-        for (r, &off) in recs.iter().zip(&pool_layout(recs)) {
+        for (r, &(off, _)) in recs.iter().zip(&pool_layout(recs)) {
             pool.resize(off as usize, CHUNK_END);
             pool.extend_from_slice(r);
         }
@@ -2212,7 +2364,7 @@ mod tests {
     fn a_duplicated_edge_keeps_the_first_cells_copy_and_its_ascents() {
         let (lat_p, lat_q) = (6_000_000i32, 6_001_000i32);
         let rec = obcm_testkit::pack_nav_edge_record(1000, 3, &[(lat_p, SEAM_LON), (lat_q, SEAM_LON)]);
-        let e = pool_layout(std::slice::from_ref(&rec))[0];
+        let e = pool_ids(std::slice::from_ref(&rec))[0];
         let cell = |ids: (u32, u32), asc: (u16, u16)| {
             let nbr = |id: u32, ascent: u16| SrcNbr { id, edge_id: e, cost: 1000, kind: 3, ascent };
             vec![
@@ -2260,7 +2412,7 @@ mod tests {
             .collect();
         let half = |from: usize, to: usize| {
             let own: Vec<Vec<u8>> = recs[from..to].to_vec();
-            let ids = pool_layout(&own);
+            let ids = pool_ids(&own);
             let mut nodes = vec![SrcNode { id: 0, lat: hub_lat, lon: SEAM_LON, nbrs: Vec::new() }];
             for (n, k) in (from..to).enumerate() {
                 let nbr = |id: u32, ascent: u16| SrcNbr { id, edge_id: ids[n], cost: 100 + k as u16, kind: 3, ascent };
@@ -2295,5 +2447,90 @@ mod tests {
             assert_eq!(n.3.len(), 1, "every spoke keeps its own arc back to the hub");
             assert_eq!(n.3[0].0, 0, "node {dense}'s neighbour is the hub");
         }
+    }
+
+    /// **The ordinal reset, at merge level.** Every other fixture in this file lays its edges out in
+    /// a single 512-byte chunk, so `Edge Chunk Count == 1` throughout and the `if here !=
+    /// chunk_index { ordinal = 0 }` branch in [`merge`]'s minting loop has never executed under
+    /// test. The branch that mints duplicate ids when it is wrong is the branch nothing runs.
+    ///
+    /// This drives the merged pool past 512 bytes twice, once through each way a chunk can end —
+    /// and they are genuinely different code paths, which is what the bug in this PR's own history
+    /// was about:
+    ///
+    /// - **pushed**: a record that does not fit the space left is moved to the next boundary, so
+    ///   the chunk ends with filler behind its last record;
+    /// - **flush**: a record whose length divides the space left *exactly* ends on the boundary, so
+    ///   the next chunk opens with no filler and no push. This is the case the original writer got
+    ///   wrong — it reset the ordinal when a record was pushed, and a flush run carried the counter
+    ///   straight over into the next chunk and minted a duplicate id.
+    ///
+    /// Both assert the ids as `(chunk, ordinal)` pairs rather than as raw `u32`s, because the whole
+    /// point of the field is that those two halves are separable.
+    #[test]
+    fn a_merged_pool_that_spans_two_chunks_restarts_the_ordinal_in_each() {
+        const MIN_REC: usize = NAV_EDGE_FIXED_LEN + 4; // a 2-point record: 19 bytes
+
+        /// `edges[k] = point count of edge k`, laid out as disjoint two-node edges whose latitude
+        /// increases with `k` — dense renumbering is by latitude, so emission order is `k` order
+        /// and the fixture controls exactly where each record lands.
+        fn ids_of(points: &[usize]) -> Vec<(u32, u32)> {
+            let lat_of = |k: usize| 6_000_000i32 + 1_000 * k as i32;
+            let recs: Vec<Vec<u8>> = points
+                .iter()
+                .enumerate()
+                .map(|(k, &n)| {
+                    let pts: Vec<(i32, i32)> = (0..n).map(|i| (lat_of(k), SEAM_LON + i as i32)).collect();
+                    obcm_testkit::pack_nav_edge_record(100 + k as u32, 3, &pts)
+                })
+                .collect();
+            let ids = pool_ids(&recs);
+            let mut nodes = Vec::new();
+            for (k, _) in points.iter().enumerate() {
+                let (a, b) = (2 * k as u32, 2 * k as u32 + 1);
+                let nbr = |id: u32| SrcNbr { id, edge_id: ids[k], cost: 100 + k as u16, kind: 3, ascent: 7 };
+                nodes.push(SrcNode { id: a, lat: lat_of(k), lon: SEAM_LON, nbrs: vec![nbr(b)] });
+                nodes.push(SrcNode { id: b, lat: lat_of(k), lon: SEAM_LON + points[k] as i32 - 1, nbrs: vec![nbr(a)] });
+            }
+            let (bytes, dir) = nav_bytes(&nodes, &recs);
+            let src = obc_formats::io::SliceSource(&bytes);
+            let cell = nav_cell(&src, dir);
+            let bbox =
+                (SEAM_LON as i64 - 10, lat_of(0) as i64 - 10, SEAM_LON as i64 + 100, lat_of(points.len()) as i64 + 10);
+            let nav = merged(&[&cell], 20, 0, bbox);
+            assert_eq!(nav.stats.edges, points.len(), "every disjoint edge survives the merge");
+            let mut seen: Vec<(u32, u32)> = merged_nodes(&nav)
+                .iter()
+                .flat_map(|n| n.3.iter().map(|e| (nav_edge_id_chunk(e.1), nav_edge_id_ordinal(e.1))))
+                .collect();
+            seen.sort_unstable();
+            seen.dedup();
+            seen
+        }
+
+        // --- pushed ------------------------------------------------------------------------
+        // 26 x 19 = 494 bytes; the 27th needs 19 more and 494 + 19 = 513 > 512, so it is pushed
+        // to the boundary and opens chunk 1.
+        assert_eq!(26 * MIN_REC, 494);
+        const { assert!(494 + MIN_REC > NAV_CHUNK_SIZE, "the 27th record cannot fit — it is pushed") };
+        let pushed = ids_of(&[2; 27]);
+        let mut want: Vec<(u32, u32)> = (0..26).map(|o| (0, o)).collect();
+        want.push((1, 0));
+        assert_eq!(pushed, want, "26 ordinals in chunk 0, then the ordinal restarts at 0 in chunk 1");
+
+        // --- flush -------------------------------------------------------------------------
+        // Record lengths are `15 + 4*(n-1)`, so every one is 3 mod 4 and a run can only land on
+        // 512 with a multiple of four records. 23 x 19 + 75 = 512 exactly: a 16-point record
+        // closes chunk 0 on its last byte, with no filler and nothing pushed.
+        let big = NAV_EDGE_FIXED_LEN + 4 * (16 - 1);
+        assert_eq!(big, 75);
+        assert_eq!(23 * MIN_REC + big, NAV_CHUNK_SIZE, "chunk 0 ends flush on its boundary");
+        let mut shape = vec![2usize; 23];
+        shape.push(16); // the record that ends flush at 512
+        shape.push(2); // and the one that must therefore be (1, 0)
+        let flush = ids_of(&shape);
+        let mut want: Vec<(u32, u32)> = (0..24).map(|o| (0, o)).collect();
+        want.push((1, 0));
+        assert_eq!(flush, want, "a flush chunk end restarts the ordinal just as a pushed one does");
     }
 }
