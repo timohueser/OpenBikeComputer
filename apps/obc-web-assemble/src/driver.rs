@@ -886,9 +886,10 @@ pub enum ErrorCode {
     /// A cell does not honour the format or the cell contract. The download is corrupt or the
     /// catalog is serving something that is not a cell.
     Format,
-    /// OBCA §5.7's per-file wall — `min(the interior the `Offset Scale` covers, what the read seam
-    /// addresses)`, so 4 GiB while `ByteSource` is u32 — plus the `HoursRef` pool and the `uint32`
-    /// index space.
+    /// A ceiling. Since FS7.5-seam the one this bridge actually hits is the **manifest's**: OBCA
+    /// §5.2's `Bytes` is a `uint32`, so no file the engine writes may pass 4 GiB − 1
+    /// (`obcm_assemble::shard::SET_SHARD_CEILING`) even though §5.7's *readable* wall is now 64 GiB.
+    /// Plus the `HoursRef` pool and the `uint32` index space.
     /// **Coverage must be reduced** — and per §5.7 this bridge never "solves" it by dropping any.
     Capacity,
     /// The §4.8 verify pass rejected the output: the engine wrote a set the real reader cannot read.

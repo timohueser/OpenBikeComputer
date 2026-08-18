@@ -680,14 +680,15 @@ pub fn assemble_full(
             let t0 = clock.now_us();
             let plan = terrain::TerrainPlan::over(job.params, assembly)?;
             debug_assert_eq!(plan.ubox(), assembly.ubox(), "the rectangle is the assembly bbox by construction");
+            // **Projected before the write, and against the manifest's ceiling.** The raster gets a
+            // §5.2 record like every shard, so `SET_SHARD_CEILING` is its wall too — and it is fully
+            // computable up front (§5.7: header + one directory entry a slot + one block per present
+            // cell), so there is no reason to learn it from a file already on disk. Checking
+            // `written.bytes` afterwards was both the wrong number and the wrong moment.
+            let projected = plan.projected_bytes(job.cells.len() as u64);
+            shard::fits_ceiling(projected, "the terrain shard")?;
             let written = terrain::write_shard(plan, &job.cells, job.sink)?;
-            if written.bytes > FILE_CEILING {
-                return Err(Error::Capacity(format!(
-                    "the terrain shard is {} bytes, past the {FILE_CEILING}-byte ceiling. Terrain is one file per set \
-                     in v1, so the only thing that reduces it is reducing the coverage (OBCA §5.7).",
-                    written.bytes
-                )));
-            }
+            debug_assert!(written.bytes <= projected, "the projection is an upper bound on what was written");
             verify_us += clock.now_us() - t0;
             Some(TerrainSummary {
                 bytes: written.bytes,
@@ -815,9 +816,13 @@ fn plan_set(
     if !opts.force_split {
         let all_lods: Vec<usize> = (0..schema.lods.len()).collect();
         let mut single = build_shard(schema, cells, assembly, chunk_size, &all_lods, 0, BandRole::Core, true)?;
-        single.single_file = true;
         single.bytes = shard::projected_bytes(&single, style_len, poi_len, nav_projection)?;
-        if single.bytes <= FILE_CEILING {
+        // `SET_SHARD_CEILING`, not `FILE_CEILING`: this fast path emits a set of one, so its file
+        // carries a §5.2 record and answers to the manifest's `uint32` like every other shard. The
+        // widened read seam does not move this — it moves what a *reader* can open. Gating on the
+        // larger number here would plan a 5 GiB map, write every byte of it, and only then fail at
+        // manifest emit (and on the browser's OPFS path, burn the whole assembly doing it).
+        if single.bytes <= shard::SET_SHARD_CEILING {
             return Ok(vec![single]);
         }
     }
@@ -826,14 +831,7 @@ fn plan_set(
     // does (§5.1).
     let mut plans = vec![build_shard(schema, cells, assembly, chunk_size, &[], 0, BandRole::Core, true)?];
     let core_bytes = shard::projected_bytes(&plans[0], style_len, poi_len, nav_projection)?;
-    if core_bytes > shard::SET_SHARD_CEILING {
-        return Err(Error::Capacity(format!(
-            "the core file projects to {core_bytes} bytes, past the {}-byte ceiling a set's member has to fit \
-             (OBCA §5.2's `Bytes` is a uint32). The **navigation graph** is what fills it — reduce the coverage \
-             (OBCA §5.7).",
-            shard::SET_SHARD_CEILING
-        )));
-    }
+    shard::fits_ceiling(core_bytes, "the core file")?;
     plans[0].bytes = core_bytes;
 
     // §5.3, checked before a byte is written: a multi-shard set with a whole role missing does not
@@ -967,7 +965,7 @@ fn build_shard(
             .collect();
         plans.push(graft::plan_lod(i, entry.max_mpp, chunk_size, box_, band.cell_log2, &present, cells)?);
     }
-    Ok(ShardPlan { index, role, box_, lods: plans, core, single_file: false, bytes: 0, sha256: [0; 32] })
+    Ok(ShardPlan { index, role, box_, lods: plans, core, bytes: 0, sha256: [0; 32] })
 }
 
 /// §4.8.6's set invariants, checked once the shards are written: exactly one core whose bbox is the
@@ -982,11 +980,9 @@ fn check_set_invariants(plans: &[ShardPlan], assembly: AlignedBox) -> Result<()>
         return Err(Error::Verify("the core shard's bbox is not the assembly bbox (OBCA §5.3)".into()));
     }
     for p in plans {
-        // `check_set_invariants` runs only on the split path, so every plan here is a set member and
-        // answers to §5.2's narrower wall.
-        if p.bytes > shard::SET_SHARD_CEILING {
-            return Err(Error::Verify(format!("shard {} is {} bytes, past the ceiling", p.index, p.bytes)));
-        }
+        // This runs on **both** paths — §5.5's single file reaches here as a one-plan set — which is
+        // exactly right: every file this engine writes gets a §5.2 record. See `SET_SHARD_CEILING`.
+        shard::fits_ceiling(p.bytes, &format!("shard {}", p.index))?;
     }
     for role in [BandRole::Coarse, BandRole::Geometry] {
         let boxes: Vec<AlignedBox> = plans.iter().filter(|p| !p.core && p.role == role).map(|p| p.box_).collect();

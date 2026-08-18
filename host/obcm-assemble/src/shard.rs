@@ -11,9 +11,10 @@
 //! per-file wall is now §1.1's interior at 64 GiB. See [`FILE_CEILING`].
 //!
 //! **What still splits a country-scale selection is the manifest, not the file.** §5.2's `Bytes` is
-//! a `uint32`, so a *member of a set* stops at 4 GiB even though a lone file does not — see
-//! [`SET_SHARD_CEILING`]. A selection that fits one file takes §5.5's fast path and has no manifest
-//! wall to clear; only a selection that needs several files meets one.
+//! a `uint32`, so no file this engine *writes* may pass 4 GiB − 1 — see [`SET_SHARD_CEILING`]. That
+//! binds §5.5's single file as much as a set's member, because the fast path is a set of one and
+//! carries a §5.2 record like any other. The widened seam is a **reader** capability until the
+//! manifest dies in FS7.5b2: this engine can now read a 64 GiB map it still cannot write.
 //!
 //! The split obeys one ordering principle and obeys it everywhere: **the core file holds only what
 //! cannot be split by bbox, and everything that can be is moved out of it.** The core is the one
@@ -77,21 +78,31 @@ const READABLE_CEILING: u64 = u64::MAX;
 const _: () = assert!(FILE_CEILING == 1u64 << 36, "at U = 16 the format's interior is 64 GiB, and it is what binds");
 const _: () = assert!(SCALE.covers(FILE_CEILING), "and the scale still covers whatever the min lands on");
 
-/// The ceiling on one **member of a volume set** — [`FILE_CEILING`] narrowed by the one wall a
-/// manifest imposes and a lone file does not.
+/// The ceiling on **any file this engine writes** — [`FILE_CEILING`] narrowed by the one wall the
+/// OBCS manifest imposes.
 ///
 /// OBCA §5.2's `Bytes` is a `uint32` of *bytes*, not units, so a manifest cannot record a shard
 /// past 4 GiB − 1 whatever the file format or the read seam can do. That was invisible while
 /// `FILE_CEILING` was itself 4 GiB — the manifest's wall and the reader's were the same number.
-/// Widening the seam separated them, and the honest response is to name the narrower one where the
-/// split path uses it rather than to widen a field that is scheduled to die: §5's set-emit
-/// machinery is deleted in FS7.5b2, taking `Bytes` with it, and the single file §5.5 plans first
-/// carries no manifest record at all and so gets the full [`FILE_CEILING`].
+/// Widening the read seam separated them.
+///
+/// **This applies to §5.5's single file too, and that is the whole point of the name being wrong
+/// if it said "set member".** §5.5's fast path is a *set of one*: it emits an OBCS manifest with
+/// `Shard Count == 1` and one §5.2 record, so its file is described by the same `uint32` every
+/// other shard is. A single file large enough to need the widened seam would therefore pass
+/// planning, be written to disk in full, and *then* die at manifest emit — the exact write-then-
+/// fail this constant exists to prevent, and on the browser's OPFS path it burns the entire
+/// assembly first.
+///
+/// So the writable wall is 4 GiB − 1 for every file, and it is **not** the seam's wall. The seam
+/// widened and the *reader* reaches [`FILE_CEILING`] — `far_offsets.rs` demonstrates a map parsed
+/// and decoded past 5 GiB. What still stops this engine writing one is the manifest, and the
+/// manifest alone. It is deliberately not widened: §5's set-emit machinery is deleted in FS7.5b2,
+/// taking `Bytes` with it, and that is when a writable file passes 4 GiB — not before.
 ///
 /// The refusal is real rather than defensive: `push_record` already returns `Err` for a shard it
-/// cannot record, so without this the split path would plan a 6 GiB shard, write it, and then fail
-/// at manifest time with the bytes already on disk. Refusing at plan time is the same rule applied
-/// where it costs nothing.
+/// cannot record, so without this an over-size plan would be written and only then refused.
+/// Refusing at plan time is the same rule applied where it costs nothing.
 pub const SET_SHARD_CEILING: u64 = {
     let manifest = u32::MAX as u64;
     if FILE_CEILING < manifest {
@@ -100,7 +111,28 @@ pub const SET_SHARD_CEILING: u64 = {
         manifest
     }
 };
-const _: () = assert!(SET_SHARD_CEILING <= u32::MAX as u64, "a set's member must fit §5.2's `Bytes`");
+const _: () = assert!(SET_SHARD_CEILING <= u32::MAX as u64, "every file this engine writes must fit §5.2's `Bytes`");
+
+/// Does a file of `bytes` fit the wall every file this engine writes has to clear?
+///
+/// One function rather than the same comparison at three sites (the fast-path gate, the split
+/// path's core check, and the pre-write re-check in [`write`]), because the failure this guards is
+/// **a site that disagrees with the others**: the `single_file` exemption that FS7.5-seam's review
+/// caught was exactly one call site quietly using a larger ceiling, and it survived precisely
+/// because there was nothing that had to be edited in one place to change the rule.
+///
+/// `what` names the file in the message — a rider reading it needs to know which of a set's files
+/// to blame, and after §5.1's split "the core" and "a geometry shard" have very different remedies.
+pub fn fits_ceiling(bytes: u64, what: &str) -> Result<()> {
+    if bytes > SET_SHARD_CEILING {
+        return Err(Error::Capacity(format!(
+            "{what} projects to {bytes} bytes, past the {SET_SHARD_CEILING}-byte ceiling every file this engine \
+             writes has to fit (OBCA §5.2's `Bytes` is a uint32). The **navigation graph** is what fills a core — \
+             reduce the coverage (OBCA §5.7)."
+        )));
+    }
+    Ok(())
+}
 
 /// The `Offset Scale` every shard this engine writes carries (`OBCM_Spec.md` §1.1): `U = 16`, the
 /// same byte `obc-pack` writes, so a cell and the assembly it lands in count offsets in one unit.
@@ -194,12 +226,6 @@ pub struct ShardPlan {
     pub lods: Vec<LodPlan>,
     /// Whether this shard carries the nav graph and the POIs — true for exactly one shard, the core.
     pub core: bool,
-    /// Whether this file is the **whole map** (§5.5's fast path) rather than a member of a set.
-    ///
-    /// It is not the same question as `core`: a set's core is also `core`, and it is a set member.
-    /// The distinction is which ceiling the file answers to — a lone file has no manifest record to
-    /// fit, so it gets [`FILE_CEILING`] where a set member gets [`SET_SHARD_CEILING`].
-    pub single_file: bool,
     /// Total bytes, computable before the write and re-checked after it (§5.7).
     pub bytes: u64,
     /// Filled by [`write`].
@@ -337,18 +363,9 @@ pub fn write(
     let poi_bytes_len = empty_poi.as_ref().map_or_else(|| poi.section_len(), |p| p.section_len());
     let nav_projection = empty_nav.as_ref().map_or(nav, |n| n).projection(profile_table);
     let l = plan.layout(style_bytes.len(), poi_bytes_len, nav_projection)?;
-    // A shard that is the sole file of a §5.5 single-file map answers to the format's interior; a
-    // member of a real set additionally has to fit §5.2's `uint32` `Bytes`.
-    let ceiling = if plan.single_file { FILE_CEILING } else { SET_SHARD_CEILING };
-    if l.total > ceiling {
-        return Err(Error::Capacity(format!(
-            "shard {} would be {} bytes, past the {ceiling}-byte ceiling for a {} — reduce the coverage \
-             (OBCM §1.1, OBCA §5.2/§5.7)",
-            plan.index,
-            l.total,
-            if plan.single_file { "single file" } else { "set member" }
-        )));
-    }
+    // Every file this engine writes is described by a §5.2 record — §5.5's single file included,
+    // because that fast path is a set of one. See [`SET_SHARD_CEILING`].
+    fits_ceiling(l.total, &format!("shard {}", plan.index))?;
     // `OBCM_Spec.md` §1.1's one producer rule: **the scale MUST cover the file it writes**. The
     // ceiling above is now *derived from* this rule rather than independent of it, so the two can
     // no longer disagree — which is why this stays: it is the rule stated where the bytes are, and
@@ -707,7 +724,7 @@ pub fn manifest(
     // it did *not* widen in v14, and it is the narrowest wall a set's member has to clear. A bare
     // `as u32` here does not refuse an over-size shard, it *misreports* one: a 5 GiB file records as
     // ≈0.7 GiB, and every consumer that trusts the manifest to size a download then trusts a number
-    // the file contradicts. `FILE_CEILING` makes it unreachable; this makes it unspellable.
+    // the file contradicts. `SET_SHARD_CEILING` makes it unreachable; this makes it unspellable.
     let push_record = |out: &mut Vec<u8>, role: u8, box_: AlignedBox, bytes: u64, sha256: &[u8; 32]| -> Result<()> {
         let (min_lon, min_lat, max_lon, max_lat) = box_.ubox();
         out.push(role);
@@ -786,7 +803,6 @@ mod tests {
 
     fn plan(index: usize, role: BandRole, core: bool) -> ShardPlan {
         ShardPlan {
-            single_file: false,
             index,
             role,
             box_: AlignedBox { min_lat: 47_185_920, min_lon: 7_340_032, span_log2: 20 },
@@ -794,6 +810,75 @@ mod tests {
             core,
             bytes: 1234,
             sha256: [index as u8; 32],
+        }
+    }
+
+    /// **The two walls are different numbers now, and this pins which is which.**
+    ///
+    /// Before FS7.5-seam they were both 4 GiB and no test could tell them apart. The seam widened
+    /// the *readable* one to 64 GiB and left the *writable* one where §5.2's `uint32` puts it, so
+    /// the relationship is now assertable — and worth asserting, because the tempting mistake is to
+    /// let a file that a reader can open be a file this engine may write.
+    #[test]
+    fn the_writable_wall_is_the_manifests_and_the_readable_wall_is_the_formats() {
+        // `const` blocks: these are relationships between two constants, so a compile error is the
+        // right failure and a test run is merely where it gets read.
+        const { assert!(FILE_CEILING == 1 << 36, "the readable/format wall: §1.1's interior at U = 16") };
+        const { assert!(SET_SHARD_CEILING == u32::MAX as u64, "the writable wall: §5.2's `Bytes`") };
+        const { assert!(SET_SHARD_CEILING < FILE_CEILING, "and the manifest is the narrower of the two") };
+    }
+
+    /// The plan-time refusal: an over-size core is rejected **before a byte is written**, and the
+    /// message names the navigation graph, because after §5.1's split nothing else fills a core.
+    #[test]
+    fn an_over_size_core_is_refused_at_plan_time() {
+        assert!(fits_ceiling(SET_SHARD_CEILING, "the core file").is_ok(), "the wall itself fits");
+        let err = fits_ceiling(SET_SHARD_CEILING + 1, "the core file").expect_err("one byte past must refuse");
+        match err {
+            Error::Capacity(m) => {
+                assert!(m.contains("the core file"), "the refusal names which file: {m}");
+                assert!(m.contains("navigation graph"), "and what fills it (OBCA §5.7): {m}");
+                assert!(m.contains("uint32"), "and which field is the wall: {m}");
+            }
+            other => panic!("an over-size plan is a capacity refusal, got {other:?}"),
+        }
+    }
+
+    /// §5.5's fast path is a **set of one**, so its file answers to the manifest's ceiling like any
+    /// other — the single-file gate and the set-member gate are the *same* number.
+    ///
+    /// This is the pin that would have caught the `single_file` exemption: it let a 4–64 GiB map
+    /// pass planning, be written in full, and only then die at manifest emit. **FS7.5b2 is what
+    /// changes this**: deleting §5's set machinery deletes `Bytes`, and only then may a written file
+    /// pass 4 GiB. Until then a divergence here is a bug, not a capability.
+    #[test]
+    fn the_single_file_path_and_a_set_member_answer_to_one_ceiling_until_b2() {
+        let single = plan(0, BandRole::Core, true);
+        let member = plan(1, BandRole::Coarse, false);
+        for p in [&single, &member] {
+            assert!(p.bytes <= SET_SHARD_CEILING, "shard {} is judged against the manifest's wall", p.index);
+        }
+        // No per-plan exemption exists to diverge them: a plan carries no "this one is a lone file"
+        // flag, which is the structural half of the guarantee.
+        assert_eq!(SET_SHARD_CEILING, u32::MAX as u64, "one number, both paths");
+    }
+
+    /// The refusal `SET_SHARD_CEILING` exists to make unreachable: §5.2's `Bytes` cannot *spell* an
+    /// over-size shard, so if a plan ever slips past the gate the manifest still refuses rather than
+    /// misreporting. A 5 GiB shard recorded `as u32` would state ≈0.7 GiB and every consumer sizing
+    /// a download from the manifest would trust a number the file contradicts.
+    #[test]
+    fn a_shard_past_the_manifests_wall_cannot_be_recorded() {
+        let mut over = plan(0, BandRole::Core, true);
+        over.bytes = SET_SHARD_CEILING + 1;
+        let bx = AlignedBox { min_lat: 47_185_920, min_lon: 7_340_032, span_log2: 20 };
+        let err = manifest(&[over], None, bx, 7, "Too Big").expect_err("the manifest must refuse it");
+        match err {
+            Error::Capacity(m) => {
+                assert!(m.contains("uint32"), "the refusal names the field that cannot hold it: {m}");
+                assert!(m.contains(&format!("{}", SET_SHARD_CEILING + 1)), "and the size it refused: {m}");
+            }
+            other => panic!("an over-size record is a capacity refusal, got {other:?}"),
         }
     }
 

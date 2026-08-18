@@ -292,8 +292,9 @@ mod tests {
     }
 
     /// **The assertion epic #1116 exists for, closed.** DACH — a core within a breath of the
-    /// per-file wall (4 GiB while the read seam is u32; see `obcm_assemble::FILE_CEILING`), 8.5 GB
-    /// of cells — projects at ~1.3 GB on the download path of
+    /// writable per-file wall (4 GiB − 1: OBCA §5.2's `uint32` `Bytes`, see
+    /// `obcm_assemble::shard::SET_SHARD_CEILING`; the *readable* wall is 64 GiB since FS7.5-seam),
+    /// 8.5 GB of cells — projects at ~1.3 GB on the download path of
     /// an OPFS host: the budget-bounded engine, two block caches, and the raster in and out. It
     /// fits a 3 GiB tab with more headroom than BW had before this epic started.
     #[test]
