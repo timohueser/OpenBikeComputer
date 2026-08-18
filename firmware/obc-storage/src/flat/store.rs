@@ -205,7 +205,10 @@ fn fill<D: BlockDevice>(
         let staged = (row.written % BLOCK as u64) as usize;
         let located = row.ranges.locate(geometry, row.written - staged as u64).ok_or(StoreError::Invalid)?;
         if staged == 0 && input.len() >= BLOCK {
-            let blocks = (input.len() / BLOCK).min((located.contiguous / BLOCK as u64) as usize);
+            // Bounded in `u64` and narrowed after — see [`Located::whole_blocks`], which is the one
+            // place that order is decided. Narrowing first is a hang on the device and nothing at all
+            // on a host.
+            let blocks = located.whole_blocks(input.len());
             write_blocks(dev, located.block, &input[..blocks * BLOCK])?;
             row.written += (blocks * BLOCK) as u64;
             input = &input[blocks * BLOCK..];
@@ -1278,6 +1281,9 @@ impl<D: BlockDevice> Store for FlatStore<D> {
         let mut block = [0u8; BLOCK];
         while done < want {
             let located = hold.ranges.locate(self.geometry, offset + done as u64).ok_or(StoreError::Invalid)?;
+            // The same narrowing rule as [`Located::whole_blocks`], one unit up: the bound is taken in
+            // `u64` against a byte count that can exceed a device `usize`, and the result — never more
+            // than what the caller asked for — is what narrows.
             let run = ((want - done) as u64).min(located.contiguous) as usize;
             if located.offset == 0 && run >= BLOCK {
                 let blocks = run / BLOCK;

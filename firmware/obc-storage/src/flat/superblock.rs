@@ -19,6 +19,12 @@ const CRC_OFFSET: usize = 504;
 const EXTENT_LOG2_OFFSET: usize = 32;
 
 /// The superblock body: block 0 of the copy.
+///
+/// The fields are public and [`encode`](Self::encode) checks nothing, so a caller can build and
+/// encode a record that [`decode`](Self::decode) will refuse — a size that does not cover its own
+/// card is the interesting one. That is deliberate and test-only: the tests that pin both geometry
+/// refusals need a way to write the card §8 never writes. **Production has one constructor**,
+/// [`for_card`](Self::for_card), which cannot produce either.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Superblock {
     pub store: StoreId,

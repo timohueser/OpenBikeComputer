@@ -333,6 +333,27 @@ pub struct Located {
     pub contiguous: u64,
 }
 
+impl Located {
+    /// Whole blocks one pass may move from here: what the caller still holds, bounded by the run the
+    /// card has contiguous from this block.
+    ///
+    /// **The bound is taken in `u64` and only the result narrows**, and that order is the whole point
+    /// of this function existing rather than being spelled at the call site. `contiguous` is a byte
+    /// count on the card, and card-scaled extents let it exceed a `usize` on the device, whose
+    /// pointers are 32 bits: a coalesced range of 2 TiB — 32,768 extents at the 64 MiB size §8 gives a
+    /// card of 4 TiB — is exactly `2^32` blocks, which narrows to **zero**. A zero-block write writes
+    /// an empty slice, consumes no input and advances no cursor, so the loop that called it is exactly
+    /// where it started: not a wrong answer but a silent hang, on the device only. Narrowing last
+    /// cannot produce it — the result is at most `input_len / BLOCK`, which was a `usize` already.
+    ///
+    /// No host test can tell the two orders apart, because a 64-bit `usize` holds `2^32` perfectly
+    /// well. What holds this is the argument above, the unit test that states it, and having one
+    /// implementation rather than one per call site.
+    pub fn whole_blocks(&self, input_len: usize) -> usize {
+        ((input_len / BLOCK) as u64).min(self.contiguous / BLOCK as u64) as usize
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,10 +370,11 @@ mod tests {
         assert_eq!(JOURNAL, CATALOG[1] + CATALOG_BLOCKS);
         assert_eq!(SLOT_BLOCKS * SLOTS as u64, 1_024);
         assert_eq!(EXTENT_AREA - (JOURNAL + SLOT_BLOCKS * SLOTS as u64), 1_984);
-        // The extent area starts at 2 MiB, which is a multiple of the smallest extent and of the
-        // program page — so §6's addressing is exact and §6.1's page-alignment property holds at every
-        // size §8 can pick, not only at the default one.
-        assert_eq!(EXTENT_AREA * BLOCK as u64 % MIN_EXTENT_SIZE, 0);
+        // The extent area starts at 2 MiB, and what that has to be a multiple of is the **program
+        // page**: that is what makes §6.1's page-alignment property hold at every size §8 can pick.
+        // It is not a claim that an extent is aligned to its own size — at 8 MiB extents, extent 0
+        // still starts at absolute 2 MiB — and nothing needs it to be.
+        assert_eq!(EXTENT_AREA * BLOCK as u64 % PROGRAM_PAGE as u64, 0);
         assert_eq!(catalog_gate(0), 544);
         assert_eq!(catalog_gate(1), 1_056);
         assert_eq!(slot_block(3), 1_280);
@@ -427,7 +449,11 @@ mod tests {
             assert_eq!(Geometry::from_log2(geometry.log2()), Some(geometry), "the recorded byte round-trips");
         }
         assert_eq!(Geometry::for_card(0), Some(Geometry::DEFAULT), "an empty card still has a geometry");
-        assert_eq!(Geometry::for_card(u64::MAX), None, "a card past 128 TiB is not expressible");
+        // The sharp edge, not the trivial one: 128 TiB exactly is the last card that fits, and one
+        // block more needs a 33rd doubling. (`u64::MAX` only proves `saturating_mul` does not panic.)
+        assert_eq!(Geometry::for_card(274_877_906_944).map(Geometry::log2), Some(31));
+        assert_eq!(Geometry::for_card(274_877_906_945), None, "one block past 128 TiB is not expressible");
+        assert_eq!(Geometry::for_card(u64::MAX), None);
     }
 
     /// §4's field is a log2, so "a power of two" is unrepresentable-otherwise and only the range is a
@@ -478,6 +504,38 @@ mod tests {
                 assert_eq!(located.block % PAGE_BLOCKS, 0, "payload page {page} at 2^{log2} is not page aligned");
             }
         }
+    }
+
+    /// [`Located::whole_blocks`] bounds in `u64` and narrows the result, which is the difference
+    /// between a write that advances and one that does not — on the device, where a `usize` is 32 bits.
+    ///
+    /// **This test cannot fail on a 64-bit host**, and saying so is the point: the value that wraps
+    /// fits a host `usize` perfectly. What it pins is the shape — the wrapped quantity is spelled out
+    /// below, so a reader of this file can see that `contiguous / BLOCK` is a number the device cannot
+    /// hold, and a future call site that narrows first has this test's argument to answer.
+    #[test]
+    fn a_run_wider_than_a_device_usize_still_advances() {
+        // 32,768 extents of the 64 MiB size §8 gives a 4 TiB card: one coalesced range of 2 TiB.
+        let geometry = Geometry::for_card((4u64 << 40) / BLOCK as u64).unwrap();
+        assert_eq!(geometry.extent_size(), 64 << 20);
+        let mut ranges = Ranges::default();
+        for extent in 0..32_768u16 {
+            ranges.push(extent, 1).unwrap();
+        }
+        assert_eq!(ranges.len(), 1, "the range did not coalesce, so this is not the case under test");
+
+        let located = ranges.locate(geometry, 0).unwrap();
+        assert_eq!(located.contiguous, 2 << 40);
+        // The quantity the old expression narrowed: exactly 2^32 blocks, which is zero in a 32-bit
+        // `usize` — and a zero-block write consumes nothing and loops forever.
+        assert_eq!(located.contiguous / BLOCK as u64, 1 << 32);
+        assert_eq!((located.contiguous / BLOCK as u64) as u32, 0);
+
+        assert_eq!(located.whole_blocks(4 * BLOCK), 4, "the caller's own bound must win");
+        assert!(located.whole_blocks(BLOCK) > 0, "a pass that writes no block never terminates");
+        // And the other direction still binds: a run shorter than the caller's input.
+        let short = ranges.locate(geometry, (2u64 << 40) - 1_024).unwrap();
+        assert_eq!(short.whole_blocks(8 * BLOCK), 2);
     }
 
     #[test]
