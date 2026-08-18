@@ -472,12 +472,12 @@ fn volume_set_descriptors_pin_the_part_packing() {
     assert_eq!(manifest[1], 18, "type = mapSet");
     assert_eq!(u16::from_le_bytes([manifest[2], manifest[3]]), 0xFFFF, "the manifest is new-only");
     let total_len = u32::from_le_bytes([manifest[4], manifest[5], manifest[6], manifest[7]]);
-    assert_eq!(total_len, 72 + 56 * 9, "eight OBCM shards plus the terrain record (OBCA §5.2)");
+    assert_eq!(total_len, 72 + 64 * 9, "eight OBCM shards plus the terrain record (OBCA §5.2)");
     assert_eq!(total_len, obc_formats::obcs::manifest_len(9) as u32, "…as the format authority computes it");
     assert_eq!(
         total_len - obc_formats::obcs::manifest_len(8) as u32,
         obc_formats::obcs::SHARD_RECORD_LEN as u32,
-        "the raster costs exactly one 56-byte record — the #1044 mismatch, pinned"
+        "the raster costs exactly one record — the #1044 mismatch, pinned"
     );
 }
 

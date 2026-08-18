@@ -23,6 +23,10 @@ import { DeviceError, type ProtocolClient } from "../usb/client";
 import { loopbackDevice } from "../usb/loopback";
 import {
     NEW_OBJECT_ID,
+    OBCS_HEADER_LEN,
+    OBCS_MEMBER_ID_OFFSET,
+    OBCS_RECORD_LEN,
+    OBCS_VERSION,
     OBCT_HEADER_LEN,
     ObjectType,
     SINGLETON_OBJECT_ID,
@@ -1038,28 +1042,30 @@ function obctRaster(total: number): Uint8Array<ArrayBuffer> {
  * `terrain` record of `terrain` bytes as the **last** one.
  *
  * Only the fields the device's cross-check reads are filled: magic, version, `Shard Count` (which
- * counts every record), `Core Shard`, and each record's role + `Bytes`. That is the point of the
- * builder — it makes "a manifest that describes these files" and "a manifest that does not" two
- * calls apart, where before every test handed over anonymous bytes nothing could disagree with.
+ * counts every record), `Core Shard`, each record's role + `Bytes`, and the member `ObjectId` v3
+ * gave every record. That is the point of the builder — it makes "a manifest that describes these
+ * files" and "a manifest that does not" two calls apart, where before every test handed over
+ * anonymous bytes nothing could disagree with.
+ *
+ * The ids are `1..=N`, i.e. a **bound** manifest (§5.2). A client sends bound bytes: it committed
+ * each member and patched the id it was given in before announcing the manifest.
  */
 function obcsManifest(shards: number[], terrain?: number): Uint8Array<ArrayBuffer> {
     const records = shards.length + (terrain === undefined ? 0 : 1);
     const bytes = new Uint8Array(manifestLen(records));
     const view = new DataView(bytes.buffer);
     bytes.set([0x4f, 0x42, 0x43, 0x53], 0); // "OBCS"
-    bytes[4] = 2; // manifest version
+    bytes[4] = OBCS_VERSION; // manifest version
     bytes[5] = 12; // OBCM version of every shard
     bytes[6] = records; // Shard Count — every record, terrain included
     bytes[7] = 0; // Core Shard
-    shards.forEach((size, index) => {
-        const at = 72 + index * 56;
-        bytes[at] = index === 0 ? 0 : 1; // role: core, then geometry
+    const record = (index: number, role: number, size: number) => {
+        const at = OBCS_HEADER_LEN + index * OBCS_RECORD_LEN;
+        bytes[at] = role;
         view.setUint32(at + 20, size, true);
-    });
-    if (terrain !== undefined) {
-        const at = 72 + shards.length * 56;
-        bytes[at] = 3; // role: terrain, and it is the last record
-        view.setUint32(at + 20, terrain, true);
-    }
+        view.setBigUint64(at + OBCS_MEMBER_ID_OFFSET, BigInt(index + 1), true);
+    };
+    shards.forEach((size, index) => record(index, index === 0 ? 0 : 1, size)); // core, then geometry
+    if (terrain !== undefined) record(shards.length, 3, terrain); // the terrain role is last
     return bytes;
 }

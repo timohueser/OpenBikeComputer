@@ -981,7 +981,7 @@ fn set_part_packs_the_shard_count_and_index() {
     assert_eq!(
         manifest.total_len,
         obc_formats::obcs::manifest_len(8) as u32 + obc_formats::obcs::SHARD_RECORD_LEN as u32,
-        "exactly one 56-byte record more than the same set without a raster"
+        "exactly one record more than the same set without a raster"
     );
 }
 
