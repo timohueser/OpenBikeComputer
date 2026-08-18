@@ -145,36 +145,6 @@ export const UPLOAD_WINDOW = 4;
 export const DEFAULT_TIMEOUT_MS = 15_000;
 
 /**
- * The base budget for a commit the caller has told us is **expensive**, via
- * {@link TransferOptions.commitBytes}.
- *
- * **This is opt-in, and deliberately so.** Every commit this client sends today is cheap and
- * bounded: a map's is a close, an open, a 40-byte header read, a 4-byte write and a flush
- * (`Storage::map_upload_commit`), and a route's is smaller still — {@link DEFAULT_TIMEOUT_MS} is
- * already generous for those, and raising it globally would only mean a genuinely wedged device
- * takes four times longer to say so.
- *
- * The shape it exists for is a commit whose cost is unrelated to the object that just moved — a
- * small file whose acceptance makes the device re-read work it already holds. Nothing sends one on
- * this transport now, so **no caller sets it**; the budget stays because getting it wrong on such
- * an object is not a slow spinner but data loss, and because the alternative is rediscovering that
- * the next time one appears.
- */
-const COMMIT_TIMEOUT_BASE_MS = 60_000;
-
-/**
- * Extra commit budget per megabyte the device has to re-read, capped by
- * {@link COMMIT_TIMEOUT_MAX_MS}.
- *
- * Deliberately loose: this bound exists to stop an infinite spinner, not to police the device's
- * timing.
- */
-const COMMIT_TIMEOUT_PER_MB_MS = 200;
-
-/** Ceiling on the commit wait, so a mis-announced length cannot produce an unbounded spinner. */
-const COMMIT_TIMEOUT_MAX_MS = 10 * 60_000;
-
-/**
  * The two checks the upload loop makes between chunks, handed to a source that does its own I/O.
  *
  * A {@link ObjectSource.sendTo} implementation is *replacing* that loop, so it inherits the loop's
@@ -279,16 +249,6 @@ export interface TransferOptions {
     /** Override {@link DEFAULT_CHUNK_SIZE} for one upload. */
     chunkSize?: number;
     /**
-     * How many bytes the device has to **re-read** to commit this object — set this *only* where the
-     * commit is more than a header check, because it is what buys the terminal wait a much larger
-     * budget than {@link DEFAULT_TIMEOUT_MS}.
-     *
-     * **No caller sets it today** — every object this client writes commits with a header check —
-     * so an upload waits the ordinary timeout, which is what keeps a wedged device quick to
-     * surface. See {@link COMMIT_TIMEOUT_BASE_MS} for the shape that would need it.
-     */
-    commitBytes?: number;
-    /**
      * Called once the last byte has been handed to the transport, before the wait for the device's
      * verdict.
      *
@@ -296,16 +256,6 @@ export interface TransferOptions {
      * and nothing is moving — so a caller that shows progress wants to say what is happening.
      */
     onSent?: () => void;
-}
-
-/**
- * The wait budget for the terminal `transferResult` of an upload whose commit was declared expensive
- * ({@link TransferOptions.commitBytes}). Ordinary uploads do not come here — see
- * {@link COMMIT_TIMEOUT_BASE_MS} for why the scaling is opt-in.
- */
-export function commitTimeoutMs(commitBytes: number): number {
-    const megabytes = Math.ceil(Math.max(commitBytes, 0) / (1024 * 1024));
-    return Math.min(COMMIT_TIMEOUT_BASE_MS + megabytes * COMMIT_TIMEOUT_PER_MB_MS, COMMIT_TIMEOUT_MAX_MS);
 }
 
 /** What an upload committed to. */
@@ -475,11 +425,7 @@ export class ProtocolClient {
             } catch (cause) {
                 console.warn("obc: an upload's onSent hook threw; ignoring it", cause);
             }
-            // Only a caller that declared an expensive commit gets the scaled budget; everything else
-            // keeps the ordinary one, so a wedged device still surfaces in seconds.
-            const commitWaitMs =
-                options.commitBytes === undefined ? undefined : commitTimeoutMs(options.commitBytes);
-            const result = await this.awaitTransferResult(signal, "upload", commitWaitMs);
+            const result = await this.awaitTransferResult(signal, "upload");
             if (result.status !== TransferStatus.Committed) throw this.transferFailure(result, "upload");
             // A fresh upload's result carries the assigned id, so correlation is only meaningful for
             // a named one — but a *named* upload answered about some other object is a stale or
