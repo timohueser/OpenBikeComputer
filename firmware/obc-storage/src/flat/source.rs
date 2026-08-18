@@ -9,9 +9,10 @@
 //! ## The lifecycle, and why it is shaped like this
 //!
 //! `close` is mandatory — a dropped [`Handle`] leaks its row, and its extents, until the next mount
-//! (`FLAT_Store_Format.md` §6.2). The obvious fix, closing in `Drop`, is **impossible**:
-//! [`FlatStore::close`] needs `&mut` on the store (it returns extents to the free map) and a source
-//! that is serving reads is holding `&`. A `Drop` impl has no way to get the one from the other.
+//! (`FLAT_Store_Format.md` §6.2). The obvious fix, closing in `Drop`, is still **impossible**, though
+//! no longer for the reason it used to be: a `Drop` impl could reach `close` now that the whole seam
+//! is `&self`, but it has no handle to pass it — [`release`](StoreSource::release) is what takes the
+//! handle out, and a `Drop` that could take it too would be a second way to spend the same row.
 //!
 //! So the seam makes the pairing structural instead, in two shapes, and a consumer picks by how long
 //! it holds the object:
@@ -26,45 +27,48 @@
 //!   still holds a handle trips a `debug_assert` — so a leak fails loudly in every test and every
 //!   host build rather than showing up as a card that will not mount a set after the third try.
 //!
-//! ## What a live source costs: the store is immutable while one exists
+//! ## What a live source costs: a refcount, and no longer the store's mutability
 //!
-//! A `StoreSource` holds `&'a FlatStore`, and **every** mutator is `&mut self` — `allocate`, `write`,
-//! `commit`, `journal`, `cancel` and `close`. So while any source is alive, none of them is callable.
-//! The pleasant half of that is real: no object can be closed while a source is alive, so tearing
-//! down a mounted set is all-or-nothing at the type level. The unpleasant half is the same fact.
+//! A `StoreSource` holds `&'a FlatStore`, and since #1256's owner ruling of 2026-08-18 **every seam
+//! operation takes `&self`** — `allocate`, `write`, `commit`, `journal`, `cancel` and `close`
+//! included. So sources and writers coexist: a mounted set can hold eleven `&'static` shard sources
+//! plus terrain for the life of the image while an upload commits and a ride journals. That is the
+//! board's actual shape, and it is the whole point of the ruling. (`obc_reader::MountedSet` borrows
+//! `&'a dyn ByteSource`, so a `&'static` borrow of the store is what a mount *is*; under the old
+//! `&mut` write half it pinned the store immutable forever, and `obc-link`'s mirror trait compounded
+//! it by taking `&mut self` even to `open` the next shard.) The two alternatives were rejected by
+//! name — per-call store passing, because it cannot fit under `ByteSource::read_at(&self)` without
+//! threading context through the very consumers FS6 promised not to touch; and unsafe board-side
+//! aliasing, because it discards the guarantee exactly where it matters most.
 //!
-//! **The session-long board shape is not yet expressible in safe Rust.** A mounted set holds eleven
-//! `&'static` shard sources plus terrain for the life of the image (`obc_reader::MountedSet` borrows
-//! `&'a dyn ByteSource`), and a `&'static` borrow of the store pins it immutable *forever* — no
-//! upload could commit, no ride could journal, for as long as a map is mounted. `obc-link`'s mirror
-//! trait compounds it: its `open` takes `&mut self`, so even opening the next shard conflicts with
-//! holding the last one.
+//! **What was given up is one compile-time guarantee, and it is the one the type system was making
+//! for free: an object could not be closed while a source read it, because a `close` needed `&mut`
+//! and the source held `&`.** That property is now enforced at runtime instead, by the reader
+//! refcount the hold table already keeps, and the downgrade is from *impossible* to *refused* — never
+//! to *silent*:
 //!
-//! **This is settled, and FS7 implements it** (#1256, owner ruling of 2026-08-18, from this
-//! module's review): **the store's write half moves to `&self` with interior mutability**, as FS7's
-//! first implementation step alongside OBCS v3. The hold table is already a `RefCell`, so the free
-//! map and the reservations join the house style, and `obc-link`'s mirror trait drops its `&mut`s.
-//! The two alternatives were rejected by name — per-call store passing, because it cannot fit under
-//! `ByteSource::read_at(&self)` without threading context through the very consumers FS6 promised
-//! not to touch; and unsafe board-side aliasing, because it discards the guarantee exactly where it
-//! matters most.
+//! - A `StoreSource` **owns** its handle and surrenders it only through `release`, so the only close
+//!   that can name a live source's row is a close of some *other* handle on the same object.
+//! - [`FlatStore::close`] on a row with more than one reader spends a refcount and returns. The row,
+//!   its ranges and its length are untouched, and the source keeps reading exactly the revision it
+//!   resolved. `a_close_beside_a_live_source_is_refused_by_the_refcount` is where that is a fact
+//!   rather than a claim.
+//! - Extents a commit takes away from a held revision stay out of the allocator until the **last**
+//!   reader closes — `FlatStore::release` asks the hold table before it frees anything, which is
+//!   §6.2's rule and is what makes the refusal safe rather than merely polite.
 //!
-//! Three requirements come with it, recorded here because they constrain what this adapter may
-//! become:
+//! The other half of the ruling is granularity, and it is the store's to keep rather than this
+//! adapter's: **the state borrow is per card command, never per commit.** [`store`](super::store)'s
+//! module docs carry the three rules and the re-entrancy argument; what matters here is the
+//! consequence — a source's `read_at` can be served in the gaps of a running commit, because that
+//! commit's ~36 card commands hold no borrow this path needs.
 //!
-//! - **Topology is hybrid.** Reads stay direct — short borrows inside one seam call, since
-//!   `ByteSource` is synchronous and latency-bound. Writes serialize through a single storage task,
-//!   with callers sending async messages and blocking only if they await confirmation.
-//! - **Lock granularity is per card command, never per commit.** A 1,024-entry commit is ~36 write
-//!   commands over ~250 ms; locking per command lets render reads interleave into the gaps, so the
-//!   worst render stall is one command (10–20 ms) instead of the whole commit. Never hold the state
-//!   borrow across an `await` or another seam call.
-//! - **`close` with live sources becomes a runtime refusal**, decided by the reader refcount the
-//!   hold table already keeps. The property downgrades from *impossible* to *refused* — never to
-//!   *silent*.
-//!
-//! Until that lands, this adapter is usable for scoped reads and for a host or a test; it is not yet
-//! usable for the board's mount.
+//! What is still *not* here is the board's cross-task layer: one storage task owning the writes, with
+//! callers sending it messages, so that a commit's card commands and a render's reads interleave on a
+//! real scheduler rather than merely being able to. That is FS7 slice 3's. Nothing in this module
+//! precludes it — a `Cell`/`RefCell` store is the single-context shape of exactly that design — but
+//! nothing in this module provides it either, and a `FlatStore` must not be shared between execution
+//! contexts until it does.
 //!
 //! ## Addressing
 //!
@@ -236,18 +240,15 @@ impl<D: BlockDevice> FlatStore<D> {
     /// on the device), and a host that panics is a test that has already failed. There is no early
     /// return between the open and the close either; the close is simply the next statement.
     pub fn with_source<R>(
-        &mut self,
+        &self,
         id: ObjectId,
         revision: Option<Revision>,
         body: impl FnOnce(&StoreSource<'_, D>) -> R,
     ) -> Result<R, StoreError> {
-        let handle = Store::open(&*self, id, revision)?;
-        // The source borrows `*self` immutably; `release` consumes it, which ends that borrow and
-        // lets the `&mut` close through. Sequencing, not cleverness — but it is why `body` cannot
-        // stash the source somewhere it would outlive the close.
+        let handle = Store::open(self, id, revision)?;
         // Unreachable for the same reason as in `source`, and dropping the returned handle is the
         // same acknowledged exception — see there.
-        let source = StoreSource::over(&*self, handle).map_err(|_returned| {
+        let source = StoreSource::over(self, handle).map_err(|_returned| {
             debug_assert!(false, "the row `open` just wrote did not resolve; its handle is being dropped");
             StoreError::Invalid
         })?;
@@ -278,7 +279,7 @@ mod tests {
     /// A card holding `count` committed objects, and their ids.
     fn fixture(count: usize) -> (SparseDisk, vec::Vec<ObjectId>) {
         let disk = SparseDisk::blank(EXTENT_AREA + Geometry::DEFAULT.extent_blocks() * (count as u64 + 4), 3);
-        let mut store = FlatStore::initialize(&disk, STORE).expect("an expressible card");
+        let store = FlatStore::initialize(&disk, STORE).expect("an expressible card");
         let mut ids = vec::Vec::new();
         for index in 0..count {
             let id = store.next_object_id();
@@ -304,7 +305,7 @@ mod tests {
     #[test]
     fn a_source_reads_byte_identically_to_the_store_underneath_it() {
         let (disk, ids) = fixture(1);
-        let mut store = FlatStore::mount(&disk);
+        let store = FlatStore::mount(&disk);
         let source = store.source(ids[0], None).expect("the object opens");
         assert_eq!(source.len(), LEN as u32);
         assert_eq!(source.id(), ids[0]);
@@ -329,7 +330,7 @@ mod tests {
     #[test]
     fn reads_past_the_end_are_refused_as_bad_offsets() {
         let (disk, ids) = fixture(1);
-        let mut store = FlatStore::mount(&disk);
+        let store = FlatStore::mount(&disk);
         store
             .with_source(ids[0], None, |source| {
                 let mut buf = [0u8; 16];
@@ -350,14 +351,13 @@ mod tests {
     /// would run the table dry and fail partway.
     ///
     /// Distinct objects matter — repeating one would share a row by refcount and pass whether or not
-    /// the close happened. Sequential scopes matter too, and not only for tidiness: holding sources
-    /// while calling a `&mut` method does not compile, which is the module docs' point made by the
-    /// borrow checker.
+    /// the close happened. Sequential scopes matter for the same reason they always did, and it is
+    /// now the *only* reason: since the seam went `&self`, nesting them would compile.
     #[test]
     fn with_source_returns_its_row_to_the_table() {
         let objects = MAX_OPEN_OBJECTS + 4;
         let (disk, ids) = fixture(objects);
-        let mut store = FlatStore::mount(&disk);
+        let store = FlatStore::mount(&disk);
 
         for (index, id) in ids.iter().enumerate() {
             let len = store.with_source(*id, None, |source| source.len()).unwrap_or_else(|error| {
@@ -373,8 +373,8 @@ mod tests {
     fn a_handle_that_does_not_resolve_is_handed_back() {
         let (disk, ids) = fixture(1);
         let (other_disk, other_ids) = fixture(1);
-        let mut store = FlatStore::mount(&disk);
-        let mut other = FlatStore::mount(&other_disk);
+        let store = FlatStore::mount(&disk);
+        let other = FlatStore::mount(&other_disk);
 
         let foreign = other.source(other_ids[0], None).expect("the other card's object opens").release();
         let returned = StoreSource::over(&store, foreign).err().expect("a foreign handle must be refused");
@@ -392,7 +392,7 @@ mod tests {
     #[test]
     fn a_payload_past_the_u32_ceiling_reports_the_addressable_prefix() {
         let (disk, ids) = fixture(1);
-        let mut store = FlatStore::mount(&disk);
+        let store = FlatStore::mount(&disk);
         let handle = Store::open(&store, ids[0], None).expect("the object opens");
 
         let huge = StoreSource::with_len(&store, handle, u64::from(u32::MAX) + 4_096);
@@ -406,6 +406,168 @@ mod tests {
 
         let handle = huge.release();
         store.close(handle);
+    }
+
+    /// **The runtime refusal the ruling traded the compile-time one for.** Under the old `&mut` write
+    /// half this test could not be written: a live source held `&` and `close` wanted `&mut`, so the
+    /// borrow checker refused it. Now it compiles, so the hold table's refcount has to be the thing
+    /// that holds — and it is what §6.2's "extents come back when the last reader lets go" was always
+    /// resting on.
+    ///
+    /// Two readers on one object, the second closed while the first is mid-session: the survivor must
+    /// keep reading the same bytes, and the store must not have taken the row apart underneath it.
+    #[test]
+    fn a_close_beside_a_live_source_is_refused_by_the_refcount() {
+        let (disk, ids) = fixture(1);
+        let store = FlatStore::mount(&disk);
+        let free_before = store.free_extents();
+
+        let live = store.source(ids[0], None).expect("the object opens");
+        // A second handle on the same `(id, revision)`: the same row, refcount 2.
+        let second = Store::open(&store, ids[0], None).expect("a second reader joins the row");
+        store.close(second);
+
+        // The row survived the close, which is the whole claim — a torn-down row would make this
+        // read `Err(Io)` rather than the payload.
+        let mut after = vec::from_elem(0u8, LEN);
+        live.read_at(0, &mut after).expect("the live source still resolves its row");
+        assert_eq!(after, payload(), "the surviving reader reads the revision it opened");
+        assert_eq!(live.len(), LEN as u32);
+        assert_eq!(store.free_extents(), free_before, "a spent refcount frees no extent");
+
+        // And the last close is the one that does the work.
+        let handle = live.release();
+        store.close(handle);
+        assert_eq!(store.free_extents(), free_before, "the entry still names them, so nothing moved");
+        // The row really did come back: reopening resolves, which a row still counted as held by a
+        // reader that no longer exists would also do — so this is checked by exhaustion instead, in
+        // `with_source_returns_its_row_to_the_table`. Here it is only that the object is still whole.
+        store.with_source(ids[0], None, |source| assert_eq!(source.len(), LEN as u32)).expect("it opens again");
+    }
+
+    /// **A later joiner may not shorten what an earlier reader is already serving.** The one real bug
+    /// the aliasing rework introduced, caught in review, and the sequence is only expressible *because*
+    /// of the rework: `source` → an amend that trims the entry → a second `open` on the same key. The
+    /// second open joins the row by refcount and used to overwrite its length with the trimmed one,
+    /// which handed the original source `Err(Io)` at offsets below the `len()` it had just reported —
+    /// a silent truncation, which is the one outcome `source`'s docs promise the runtime refusal never
+    /// degrades to.
+    ///
+    /// The read past the *new* end is the whole point: it is inside the first reader's revision, and
+    /// §2.1 says a handle keeps reading the revision it resolved.
+    #[test]
+    fn a_second_open_cannot_shorten_a_reader_already_serving_the_row() {
+        let (disk, ids) = fixture(1);
+        let store = FlatStore::mount(&disk);
+
+        let live = store.source(ids[0], None).expect("the object opens");
+        assert_eq!(live.len(), LEN as u32);
+
+        // An amend that trims the entry to a third of its length, beside the live source. `Amend`
+        // keeps the extents the entry already holds and rewrites only the metadata.
+        const SHORT: u64 = 1_000;
+        let trimmed = EntryMeta {
+            id: ids[0],
+            revision: Revision(1),
+            kind: ObjectKind::MapShard,
+            flags: EntryFlags::NONE,
+            payload_len: SHORT,
+            payload_crc: 0,
+            name: DisplayName::new("trimmed").expect("a short name"),
+        };
+        store
+            .commit(&[Mutation::Put { meta: trimmed, source: PutSource::Amend }])
+            .expect("the amend lands beside the open source");
+
+        // The second reader joins the *same* row — same `(id, revision)`, so same hold.
+        let joiner = Store::open(&store, ids[0], None).expect("a second reader joins the row");
+
+        // The original source still reports, and still serves, the whole revision it resolved.
+        assert_eq!(live.len(), LEN as u32, "the source's own length is captured at open and cannot move");
+        let mut tail = [0u8; 64];
+        live.read_at(LEN as u32 - 64, &mut tail).expect("past the amended end is still inside the resolved revision");
+        assert_eq!(tail[..], payload()[LEN - 64..], "and the bytes are the object's own");
+
+        // A fresh read through the joiner's handle is bounded by the row, which now holds the wider
+        // of the two lengths — the join adopts a longer amend and refuses a shorter one.
+        let mut whole = vec::from_elem(0u8, LEN);
+        assert_eq!(
+            store.read(&joiner, 0, &mut whole).expect("the joined handle reads"),
+            LEN,
+            "the row kept the longer length"
+        );
+
+        store.close(joiner);
+        let handle = live.release();
+        store.close(handle);
+    }
+
+    /// The other half of the same trade: a source and a writer coexisting at all. It is the board's
+    /// shape — a mounted shard read while an upload commits — and before the ruling it did not
+    /// compile, which is why it is worth a test of its own rather than a comment.
+    #[test]
+    fn a_commit_runs_while_a_source_is_open_and_the_source_is_unmoved() {
+        let (disk, ids) = fixture(1);
+        let store = FlatStore::mount(&disk);
+
+        let live = store.source(ids[0], None).expect("the shard opens");
+        let sequence = store.sequence();
+
+        // A whole unrelated object published while the source is alive: allocate, write, commit.
+        let id = store.next_object_id();
+        let mut allocation = store.allocate(LEN as u64).expect("an extent is free");
+        store.write(&mut allocation, &payload()).expect("the payload fits");
+        let meta = EntryMeta {
+            id,
+            revision: Revision(1),
+            kind: ObjectKind::MapShard,
+            flags: EntryFlags::NONE,
+            payload_len: LEN as u64,
+            payload_crc: 0,
+            name: DisplayName::new("uploaded mid-mount").expect("a short name"),
+        };
+        let after = store
+            .commit(&[Mutation::Put { meta, source: PutSource::Fresh(allocation) }])
+            .expect("the commit lands beside the open source");
+        assert_eq!(after, sequence + 1, "the commit really happened");
+
+        // The source is pinned to the revision it resolved and reads it after the catalog moved.
+        let mut bytes = vec::from_elem(0u8, LEN);
+        live.read_at(0, &mut bytes).expect("the source outlived the commit");
+        assert_eq!(bytes, payload());
+
+        let handle = live.release();
+        store.close(handle);
+    }
+
+    /// **A listing that outlives its catalog stops, and says so.** The other case the `&self` seam made
+    /// reachable: an `entries()` iterator can now be held across a commit, and two commits later the
+    /// copy it is walking has been rewritten underneath its cursor. Serving those bytes as if they
+    /// were the listing's own — with `entries_ok()` still `true` — would splice two catalogs together
+    /// and call the result complete.
+    #[test]
+    fn a_listing_that_outlives_its_commit_stops_short_and_reports_it() {
+        let (disk, ids) = fixture(3);
+        let store = FlatStore::mount(&disk);
+
+        // Drained inside its own moment: the whole catalog, and the flag agrees.
+        assert_eq!(Store::entries(&store).count(), 3);
+        assert!(store.entries_ok());
+
+        // Now hold one open across a commit. The first entry is served — it was read before anything
+        // moved — and the walk stops at the commit rather than crossing it.
+        let mut listing = Store::entries(&store);
+        assert!(listing.next().is_some(), "the first entry comes from the catalog the listing was made against");
+        store
+            .commit(&[Mutation::Remove { id: ids[2], revision: Revision(1) }])
+            .expect("a commit lands while the listing is alive");
+        assert!(listing.next().is_none(), "the listing does not cross the commit");
+        drop(listing);
+        assert!(!store.entries_ok(), "and a short listing is never silent");
+
+        // The store itself is unharmed: a fresh listing is complete again, and one entry shorter.
+        assert_eq!(Store::entries(&store).count(), 2);
+        assert!(store.entries_ok());
     }
 
     /// The leak detector itself. Dropping a source that still holds its handle is the mistake it

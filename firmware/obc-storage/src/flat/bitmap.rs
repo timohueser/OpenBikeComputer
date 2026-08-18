@@ -22,13 +22,21 @@ pub struct FreeMap {
 
 impl Default for FreeMap {
     fn default() -> Self {
-        // A card of no extents, none of them free — which is what a store that is serving no catalog
-        // has to answer, rather than the whole address space.
-        FreeMap { words: [u64::MAX; WORDS], extents: 0 }
+        FreeMap::BLANK
     }
 }
 
 impl FreeMap {
+    /// A card of no extents, none of them free — which is what a store that is serving no catalog has
+    /// to answer, rather than the whole address space.
+    ///
+    /// A `const` and not only a [`Default`], because the difference is 8 KiB of somebody's frame: a
+    /// constant expression is copied straight into the store being built, while `FreeMap::default()`
+    /// is a call returning 8 KiB by value, which
+    /// [`FlatStore::mount`](super::store::FlatStore::mount) then has to copy out of a stack temporary.
+    /// The #1386 frame gate measures exactly that symbol.
+    pub const BLANK: FreeMap = FreeMap { words: [u64::MAX; WORDS], extents: 0 };
+
     /// Every extent of a card with `extents` extents free, and every address above it unavailable.
     pub fn reset(&mut self, extents: u32) {
         self.extents = extents;

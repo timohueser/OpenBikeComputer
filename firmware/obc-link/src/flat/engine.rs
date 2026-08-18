@@ -199,7 +199,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
     }
 
     /// One whole control record arrived.
-    pub fn on_control<P: Policy>(&mut self, store: &mut S, policy: &mut P, record: &[u8], out: &mut [u8]) -> Reaction {
+    pub fn on_control<P: Policy>(&mut self, store: &S, policy: &mut P, record: &[u8], out: &mut [u8]) -> Reaction {
         let (header, request) = match decode_request(record) {
             Ok(decoded) => decoded,
             // §3.1: a zero `RequestId` is unanswerable, and so is a record too short to carry one.
@@ -223,7 +223,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
     }
 
     /// One whole stream record arrived: §3.8's 16-byte frame followed by exactly its payload.
-    pub fn on_stream<P: Policy>(&mut self, store: &mut S, policy: &mut P, record: &[u8], out: &mut [u8]) -> Reaction {
+    pub fn on_stream<P: Policy>(&mut self, store: &S, policy: &mut P, record: &[u8], out: &mut [u8]) -> Reaction {
         let Some((frame, payload)) = StreamFrame::split(record) else {
             // A record that does not split names no transfer this can be sure of. §3.8 makes a
             // malformed stream record terminate the transfer, and there is exactly one to terminate.
@@ -266,7 +266,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
     /// Pumps the engine: a live download's next record, or an error owed to a dropped transfer.
     ///
     /// A driver calls this until it answers [`Reaction::Idle`].
-    pub fn poll(&mut self, store: &mut S, out: &mut [u8]) -> Reaction {
+    pub fn poll(&mut self, store: &S, out: &mut [u8]) -> Reaction {
         if let Some(owed) = self.owed.take() {
             return self.emit_error(out, owed.opcode, owed.request, owed.refusal);
         }
@@ -313,7 +313,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
     ///
     /// Nothing is answered, because there is nobody left to answer: an error owed to a transfer the
     /// peer can no longer hear is dropped with it.
-    pub fn on_link_lost(&mut self, store: &mut S) {
+    pub fn on_link_lost(&mut self, store: &S) {
         self.abandon(store);
         self.owed = None;
     }
@@ -326,7 +326,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
     /// [`poll`](Engine::poll) — the caller is a device-local decision (a ride starting, a battery
     /// below the install threshold, a stream channel that died under a control channel that did
     /// not), not a wire request, so there is no second response to pair it with.
-    pub fn cancel_live(&mut self, store: &mut S, cause: CancelCause) -> bool {
+    pub fn cancel_live(&mut self, store: &S, cause: CancelCause) -> bool {
         let Some(request) = self.live_transfer() else { return false };
         let opcode = if matches!(self.live, Live::Upload(_)) { Opcode::Put } else { Opcode::Get };
         self.abandon(store);
@@ -336,7 +336,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
 
     // -- the opcodes -----------------------------------------------------------------------------
 
-    fn on_list(&mut self, store: &mut S, request: RequestId, list: ListRequest, out: &mut [u8]) -> Reaction {
+    fn on_list(&mut self, store: &S, request: RequestId, list: ListRequest, out: &mut [u8]) -> Reaction {
         if let Some(refusal) = read_refusal(store.mode()) {
             return self.emit_error(out, Opcode::List, request, refusal);
         }
@@ -376,7 +376,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         }
     }
 
-    fn on_status(&mut self, store: &mut S, request: RequestId, status: StatusRequest, out: &mut [u8]) -> Reaction {
+    fn on_status(&mut self, store: &S, request: RequestId, status: StatusRequest, out: &mut [u8]) -> Reaction {
         if let Some(refusal) = read_refusal(store.mode()) {
             return self.emit_error(out, Opcode::Status, request, refusal);
         }
@@ -400,7 +400,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         }
     }
 
-    fn on_get(&mut self, store: &mut S, request: RequestId, get: GetRequest, out: &mut [u8]) -> Reaction {
+    fn on_get(&mut self, store: &S, request: RequestId, get: GetRequest, out: &mut [u8]) -> Reaction {
         if let Some(refusal) = self.busy_refusal() {
             return self.emit_error(out, Opcode::Get, request, refusal);
         }
@@ -448,7 +448,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         self.poll(store, out)
     }
 
-    fn on_put(&mut self, store: &mut S, request: RequestId, put: PutRequest, out: &mut [u8]) -> Reaction {
+    fn on_put(&mut self, store: &S, request: RequestId, put: PutRequest, out: &mut [u8]) -> Reaction {
         match self.admit_put(store, request, put) {
             Ok(()) => Reaction::Idle,
             Err(refusal) => self.emit_error(out, Opcode::Put, request, refusal),
@@ -456,7 +456,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
     }
 
     /// §3.6's admission: every check that must pass before a byte is allocated for.
-    fn admit_put(&mut self, store: &mut S, request: RequestId, put: PutRequest) -> Result<(), Refusal> {
+    fn admit_put(&mut self, store: &S, request: RequestId, put: PutRequest) -> Result<(), Refusal> {
         if let Some(refusal) = self.busy_refusal() {
             return Err(refusal);
         }
@@ -529,7 +529,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         Ok(())
     }
 
-    fn on_remove(&mut self, store: &mut S, request: RequestId, remove: RemoveRequest, out: &mut [u8]) -> Reaction {
+    fn on_remove(&mut self, store: &S, request: RequestId, remove: RemoveRequest, out: &mut [u8]) -> Reaction {
         match self.apply_remove(store, remove) {
             Ok(sequence) => match encode_remove(out, request, sequence) {
                 Some(len) => Reaction::Send { channel: Channel::Control, len },
@@ -539,7 +539,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         }
     }
 
-    fn apply_remove(&mut self, store: &mut S, remove: RemoveRequest) -> Result<u64, Refusal> {
+    fn apply_remove(&mut self, store: &S, remove: RemoveRequest) -> Result<u64, Refusal> {
         if let Some(refusal) = write_refusal(store.mode()) {
             return Err(refusal);
         }
@@ -572,7 +572,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         sequence.map_err(|error| commit_refusal(error, 0))
     }
 
-    fn on_cancel(&mut self, store: &mut S, request: RequestId, transfer: RequestId, out: &mut [u8]) -> Reaction {
+    fn on_cancel(&mut self, store: &S, request: RequestId, transfer: RequestId, out: &mut [u8]) -> Reaction {
         let live = self.live_transfer();
         let cancelled = live == Some(transfer);
         if cancelled {
@@ -594,7 +594,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
 
     fn on_arm<P: Policy>(
         &mut self,
-        store: &mut S,
+        store: &S,
         policy: &mut P,
         request: RequestId,
         arm: ArmRequest,
@@ -610,12 +610,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         }
     }
 
-    fn apply_arm<P: Policy>(
-        &mut self,
-        store: &mut S,
-        policy: &mut P,
-        arm: ArmRequest,
-    ) -> Result<(ObjectId, u64), Refusal> {
+    fn apply_arm<P: Policy>(&mut self, store: &S, policy: &mut P, arm: ArmRequest) -> Result<(ObjectId, u64), Refusal> {
         if let Some(refusal) = self.busy_refusal() {
             return Err(refusal);
         }
@@ -684,7 +679,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
 
     /// Folds one stream payload into the running CRC and the staging buffer, writing whole stages
     /// through to the card.
-    fn absorb(&mut self, store: &mut S, payload: &[u8]) -> Result<(), StoreError> {
+    fn absorb(&mut self, store: &S, payload: &[u8]) -> Result<(), StoreError> {
         let Live::Upload(upload) = &mut self.live else { return Err(StoreError::Invalid) };
         upload.crc.update(payload);
         upload.received += payload.len() as u64;
@@ -712,7 +707,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
 
     /// §3.6's last byte: verify the length and the whole-payload CRC, run the kind's validator, and
     /// commit.
-    fn finish_upload<P: Policy>(&mut self, store: &mut S, policy: &mut P, out: &mut [u8]) -> Reaction {
+    fn finish_upload<P: Policy>(&mut self, store: &S, policy: &mut P, out: &mut [u8]) -> Reaction {
         let Live::Upload(upload) = &self.live else { return Reaction::Idle };
         let (kind, declared_len, declared_crc) = (upload.kind, upload.declared_len, upload.declared_crc);
         let computed = upload.crc.finalize();
@@ -748,7 +743,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
     }
 
     /// Writes whatever the staging buffer still holds.
-    fn flush(&mut self, store: &mut S) -> Result<(), StoreError> {
+    fn flush(&mut self, store: &S) -> Result<(), StoreError> {
         let Live::Upload(upload) = &mut self.live else { return Ok(()) };
         if upload.staged == 0 {
             return Ok(());
@@ -766,7 +761,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
     }
 
     /// The one commit a `PUT` makes: publish the new head, and settle what it displaced.
-    fn publish(&mut self, store: &mut S) -> Result<(ObjectId, Revision, u64, u32), Refusal> {
+    fn publish(&mut self, store: &S) -> Result<(ObjectId, Revision, u64, u32), Refusal> {
         let Live::Upload(upload) = &self.live else { return Err(Refusal::plain(ErrorCode::Internal)) };
         // A create takes its id here rather than at admission: the cursor only moves forward, so
         // reading it at the commit cannot collide with a device-local commit that ran meanwhile.
@@ -820,7 +815,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
     // -- unwinding -------------------------------------------------------------------------------
 
     /// Drops the live transfer and releases what it holds. The one path every abandonment takes.
-    fn abandon(&mut self, store: &mut S) {
+    fn abandon(&mut self, store: &S) {
         match core::mem::replace(&mut self.live, Live::Idle) {
             Live::Idle => {}
             Live::Upload(upload) => store.cancel(upload.allocation),
@@ -830,14 +825,14 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
 
     /// Ends the live upload with a refusal: the allocation is released, the written bytes are
     /// anonymous, and the catalog is untouched.
-    fn fail_upload(&mut self, store: &mut S, refusal: Refusal, out: &mut [u8]) -> Reaction {
+    fn fail_upload(&mut self, store: &S, refusal: Refusal, out: &mut [u8]) -> Reaction {
         let request = self.owed_request();
         self.abandon(store);
         self.emit_error(out, Opcode::Put, request, refusal)
     }
 
     /// The same for a download, whose only hold is the open handle.
-    fn fail_download(&mut self, store: &mut S, refusal: Refusal, out: &mut [u8]) -> Reaction {
+    fn fail_download(&mut self, store: &S, refusal: Refusal, out: &mut [u8]) -> Reaction {
         let request = self.owed_request();
         self.abandon(store);
         self.emit_error(out, Opcode::Get, request, refusal)

@@ -58,14 +58,14 @@ pub trait Store {
 
     /// Reserve space for `bytes`. RAM state until a commit names it; released by `cancel` and by
     /// the next mount, which rebuilds the free map from the catalog and cannot see it.
-    fn allocate(&mut self, bytes: u64) -> Result<Allocation, StoreError>;
+    fn allocate(&self, bytes: u64) -> Result<Allocation, StoreError>;
 
     /// Append to an allocation. Writes are sequential and the total may not exceed the reservation.
-    fn write(&mut self, allocation: &mut Allocation, bytes: &[u8]) -> Result<(), StoreError>;
+    fn write(&self, allocation: &mut Allocation, bytes: &[u8]) -> Result<(), StoreError>;
 
     /// Apply `mutations` atomically and return the new catalog commit sequence. The one durable
     /// transition: it makes new bytes visible and old bytes free in the same instant.
-    fn commit(&mut self, mutations: &[Mutation]) -> Result<u64, StoreError>;
+    fn commit(&self, mutations: &[Mutation]) -> Result<u64, StoreError>;
 
     /// Resolve an object. `revision` of `None` takes the head; `Some(r)` takes exactly that
     /// revision, which is how a retained previous revision is reached.
@@ -79,12 +79,12 @@ pub trait Store {
     /// Release a reservation without publishing it. **Mandatory** on every path that abandons a
     /// transfer — a cancel, a refusal, a validator rejection, a lost link — because dropping an
     /// `Allocation` releases nothing.
-    fn cancel(&mut self, allocation: Allocation);
+    fn cancel(&self, allocation: Allocation);
 
     /// Close an open object, releasing its hold. **Mandatory** for the same reason: dropping a
     /// `Handle` leaks its row and the extents it is holding until the next mount, so `open` and
     /// `close` are a pair.
-    fn close(&mut self, handle: Self::Handle);
+    fn close(&self, handle: Self::Handle);
 
     /// Read-only catalog view. LIST, every menu, and the free-space answer come from here.
     /// It mutates nothing and names nothing below the seam, so it is not a sixth verb.
@@ -113,7 +113,7 @@ pub trait Store {
     /// The ride exception, and the only way bytes become durable without a commit. Performs both
     /// halves of `FLAT_Store_Format.md` §7.2: flush whole 16 KiB payload pages from the tail into
     /// the recording entry's own extents, then write one journal slot.
-    fn journal(&mut self, checkpoint: RideCheckpoint) -> Result<(), StoreError>;
+    fn journal(&self, checkpoint: RideCheckpoint) -> Result<(), StoreError>;
 }
 
 pub enum Mutation {
@@ -177,6 +177,32 @@ a `PUT` admission is built from them. `journal` is the ride exception the epic g
 
 A binding may of course name them differently or fold the four facts into one; what is normative is
 that each is reachable and that nothing else is.
+
+**Every operation takes a shared reference to the store, the mutators included.** A store is shared,
+not owned: a mounted map set holds an open object per shard for the life of the image while an upload
+commits and a ride journals, and an exclusive write half makes that shape un-expressible rather than
+merely awkward. An implementation carries whatever interior mutability that needs, under two rules.
+
+1. **Granularity is per card command for the state a reader needs.** A 1,024-entry commit is ~36 write
+   commands over ~250 ms; releasing between them lets a read interleave into the gaps, so the worst
+   stall a reader sees is one command rather than a whole commit. Concretely: the catalog, the free
+   map and whatever table records open objects must be unheld at every card command a write path
+   issues, so that `open`, `read`, `entries`, `entries_ok` and the free-space answer are all
+   serviceable throughout a `commit`.
+
+   Writer-private state — a reservation's staging buffer, which no read operation names — may be held
+   across the commands that drain it, because the alternative is copying that buffer per command and
+   §1 serves one transfer at a time anyway. An implementation taking this carve-out states which state
+   it covers and for how many commands. State must never be held across an `await`, across a callback,
+   or across another seam call, carve-out or not.
+2. **`close` on an object another reader still holds is a runtime refusal, not a teardown.** The
+   reader refcount §6.2 already requires is what decides it: such a `close` spends a count and returns,
+   and the extents come back only when the last reader lets go. What the exclusive write half used to
+   guarantee at compile time is therefore still guaranteed — *refused*, never *silent*.
+
+The `&mut` on `write`'s allocation is the caller's own token and stays: an `Allocation` carries a
+cursor that has to advance with the store's row. Mount and initialization are constructors and are
+exempt — nothing else can reach the store while one runs.
 
 `EntryMeta` is the metadata half of a catalog entry — kind, flags, `ObjectId`, `Revision`, payload
 length, payload CRC, display name — and nothing else. `Allocation` is opaque: it exposes its reserved
