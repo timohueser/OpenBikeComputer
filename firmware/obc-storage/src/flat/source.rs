@@ -40,13 +40,31 @@
 //! trait compounds it: its `open` takes `&mut self`, so even opening the next shard conflicts with
 //! holding the last one.
 //!
-//! The two ways out are an interior-mutability write half (the store already keeps `holds` in a
-//! `RefCell`; the free map and the reservations would have to join it) or passing the store to every
-//! read instead of borrowing it once (`read(&self, store, offset, buf)`, which costs the
-//! `ByteSource` seam its shape). **That is an architecture decision, not an implementation one**, and
-//! it is recorded on #1256 as an FS7 blocker rather than settled here. Until it is settled, this
-//! adapter is usable for scoped reads and for a host or a test; it is not yet usable for the board's
-//! mount.
+//! **This is settled, and FS7 implements it** (#1256, owner ruling of 2026-08-18, from this
+//! module's review): **the store's write half moves to `&self` with interior mutability**, as FS7's
+//! first implementation step alongside OBCS v3. The hold table is already a `RefCell`, so the free
+//! map and the reservations join the house style, and `obc-link`'s mirror trait drops its `&mut`s.
+//! The two alternatives were rejected by name — per-call store passing, because it cannot fit under
+//! `ByteSource::read_at(&self)` without threading context through the very consumers FS6 promised
+//! not to touch; and unsafe board-side aliasing, because it discards the guarantee exactly where it
+//! matters most.
+//!
+//! Three requirements come with it, recorded here because they constrain what this adapter may
+//! become:
+//!
+//! - **Topology is hybrid.** Reads stay direct — short borrows inside one seam call, since
+//!   `ByteSource` is synchronous and latency-bound. Writes serialize through a single storage task,
+//!   with callers sending async messages and blocking only if they await confirmation.
+//! - **Lock granularity is per card command, never per commit.** A 1,024-entry commit is ~36 write
+//!   commands over ~250 ms; locking per command lets render reads interleave into the gaps, so the
+//!   worst render stall is one command (10–20 ms) instead of the whole commit. Never hold the state
+//!   borrow across an `await` or another seam call.
+//! - **`close` with live sources becomes a runtime refusal**, decided by the reader refcount the
+//!   hold table already keeps. The property downgrades from *impossible* to *refused* — never to
+//!   *silent*.
+//!
+//! Until that lands, this adapter is usable for scoped reads and for a host or a test; it is not yet
+//! usable for the board's mount.
 //!
 //! ## Addressing
 //!
@@ -195,10 +213,15 @@ impl<D: BlockDevice> FlatStore<D> {
     /// `revision` of `None` takes the head, exactly as [`Store::open`] does.
     pub fn source(&self, id: ObjectId, revision: Option<Revision>) -> Result<StoreSource<'_, D>, StoreError> {
         let handle = Store::open(self, id, revision)?;
-        // `open` just wrote the row, so it resolves. The `map_err` is the total-function tail rather
-        // than a reachable path — hence a typed error and not an `expect`, which on the device would
-        // be a hard fault for something that cannot happen.
-        StoreSource::over(self, handle).map_err(|_| StoreError::Invalid)
+        // `open` just wrote the row, so it resolves. This tail exists to keep the function total —
+        // hence a typed error rather than an `expect`, which on the device would be a hard fault for
+        // something that cannot happen. It *does* drop the handle `over` hands back, which is the
+        // swallow this module refuses everywhere else; the `debug_assert` is what keeps that
+        // exception honest, by failing loudly on the host if the unreachable ever becomes reachable.
+        StoreSource::over(self, handle).map_err(|_returned| {
+            debug_assert!(false, "the row `open` just wrote did not resolve; its handle is being dropped");
+            StoreError::Invalid
+        })
     }
 
     /// Open `id`, run `body` against it, and close it.
@@ -222,7 +245,12 @@ impl<D: BlockDevice> FlatStore<D> {
         // The source borrows `*self` immutably; `release` consumes it, which ends that borrow and
         // lets the `&mut` close through. Sequencing, not cleverness — but it is why `body` cannot
         // stash the source somewhere it would outlive the close.
-        let source = StoreSource::over(&*self, handle).map_err(|_| StoreError::Invalid)?;
+        // Unreachable for the same reason as in `source`, and dropping the returned handle is the
+        // same acknowledged exception — see there.
+        let source = StoreSource::over(&*self, handle).map_err(|_returned| {
+            debug_assert!(false, "the row `open` just wrote did not resolve; its handle is being dropped");
+            StoreError::Invalid
+        })?;
         let out = body(&source);
         let handle = source.release();
         self.close(handle);
