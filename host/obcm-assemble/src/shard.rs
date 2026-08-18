@@ -32,9 +32,11 @@ pub const FILE_CEILING: u64 = u32::MAX as u64;
 /// Where a producer SHOULD warn about the core (§5.7): ≈ 3.5 GiB, naming the nav graph.
 pub const CORE_WARN: u64 = 3_758_096_384;
 
-/// Manifest sizes (§5.2).
-pub const MANIFEST_HEADER_LEN: usize = 72;
-pub const MANIFEST_SHARD_LEN: usize = 56;
+/// Manifest sizes (§5.2), taken from the format authority rather than restated. They were literals
+/// here until v3 moved the record width, at which point two of the three numbers this file computes
+/// with would have gone stale silently.
+pub const MANIFEST_HEADER_LEN: usize = obc_formats::obcs::HEADER_LEN;
+pub const MANIFEST_SHARD_LEN: usize = obc_formats::obcs::SHARD_RECORD_LEN;
 /// A set holds `1..=32` shards; readers reject `0` or more (§5.2/§5.3).
 pub const MAX_SHARDS: usize = 32;
 /// Largest card id the §5.2 filenames hold: `MS<id>S<kk>.OBM` is 8.3-safe only while `<id>` is at
@@ -395,11 +397,14 @@ pub struct TerrainRecord {
     pub sha256: [u8; 32],
 }
 
-/// The OBCS set manifest (§5.2): `72 + 56 × Shard Count` bytes, fixed-layout and little-endian, so a
+/// The OBCS set manifest (§5.2): `72 + 64 × Shard Count` bytes, fixed-layout and little-endian, so a
 /// device parses it with no allocation.
 ///
 /// `terrain` is the optional `Role == 3` record, and it is written **last** — the invariant that
 /// lets every reader treat the leading records as the OBCM shards without a role filter.
+///
+/// The manifest is **unbound**: every member `ObjectId` is `0`, because an assembly has no store to
+/// have been given ids by. Binding is the uploading client's step (§5.2).
 pub fn manifest(
     shards: &[ShardPlan],
     terrain: Option<TerrainRecord>,
@@ -474,6 +479,12 @@ pub fn manifest(
         out.extend_from_slice(&(max_lon as i32).to_le_bytes());
         out.extend_from_slice(&(bytes as u32).to_le_bytes());
         out.extend_from_slice(sha256);
+        // v3's member `ObjectId`, written **unbound** (§5.2). An assembler cannot do better: the id
+        // is minted by the store on the card the set is eventually sent to, and this set has not met
+        // one — it may be sent to several, or to none. The client that uploads it patches each id in
+        // with `obc_formats::obcs::bind_member` as the members commit, before the manifest itself is
+        // committed, which §5.4 already made the last write of a set.
+        out.extend_from_slice(&obc_formats::obcs::MEMBER_ID_NONE.to_le_bytes());
     };
     for s in shards {
         push_record(&mut out, s.role.wire(), s.box_, s.bytes, &s.sha256);
@@ -545,7 +556,7 @@ mod tests {
         let m = manifest(&shards, None, bx, 7, "Switzerland").expect("manifest");
         assert_eq!(m.len(), MANIFEST_HEADER_LEN + 3 * MANIFEST_SHARD_LEN);
         assert_eq!(&m[0..4], b"OBCS");
-        assert_eq!(m[4], 2, "manifest v2 — the terrain role is a hard cut");
+        assert_eq!(m[4], 3, "manifest v3 — member ObjectIds are a hard cut");
         assert_eq!(m[5], VERSION);
         assert_eq!(m[6], 3, "shard count");
         assert_eq!(m[7], 0, "core shard index");
@@ -559,6 +570,14 @@ mod tests {
         assert_eq!(m[72 + MANIFEST_SHARD_LEN], 2, "coarse role");
         assert_eq!(u32::from_le_bytes(m[92..96].try_into().unwrap()), 1234);
         assert_eq!(m[96], 0, "the first shard's digest");
+        // v3: every member id is `0` — an assembly has no store to have been given ids by, so the
+        // manifest an assembler writes is unbound and the uploading client binds it.
+        let parsed = obc_formats::obcs::parse(&m).expect("the assembler's own manifest parses");
+        assert!(!parsed.is_bound(), "an assembled set is unbound (OBCA §5.2)");
+        for record in 0..3 {
+            let at = MANIFEST_HEADER_LEN + record * MANIFEST_SHARD_LEN + obc_formats::obcs::MEMBER_ID_OFFSET;
+            assert_eq!(&m[at..at + 8], &[0u8; 8], "record {record}'s member id");
+        }
     }
 
     #[test]

@@ -2436,8 +2436,9 @@ impl Storage {
     /// hashing gigabytes off an SD card is minutes of work at boot.
     ///
     /// `#[inline(never)]` and called only from the boot-time scan: the manifest buffer is
-    /// [`obc_formats::obcs::MAX_MANIFEST_LEN`] = 1864 B of stack, which is fine here and would not
-    /// be anywhere near the render path (the ~36 KB stack rule).
+    /// [`obc_formats::obcs::MAX_MANIFEST_LEN`] = 2,120 B of stack (1,864 B before manifest v3 gave
+    /// every record an 8-byte member id), which is fine here and would not be anywhere near the
+    /// render path (the ~36 KB stack rule).
     #[inline(never)]
     fn set_identity(&self, manifest: &ShortFileName, id: u16) -> Option<SetIdentity> {
         let parsed = self.read_set_manifest(manifest)?;
@@ -2465,8 +2466,12 @@ impl Storage {
         Some(identity)
     }
 
-    /// Read and parse one manifest. Kept out of the mount frame: the maximum 1,864-byte buffer is
+    /// Read and parse one manifest. Kept out of the mount frame: the maximum 2,120-byte buffer is
     /// a boot/scan cost only and never reaches the render loop.
+    ///
+    /// This path resolves a set's members by their derived `OBCA_Spec.md` §5.2 filenames and reads
+    /// no member id, so it accepts the **unbound** manifest a host writes to a FAT card as readily
+    /// as a bound one — §5.2's two states, and the reason the v3 cut costs this reader nothing.
     #[inline(never)]
     fn read_set_manifest(&self, manifest: &ShortFileName) -> Option<obc_formats::obcs::SetManifest> {
         let mut buf = [0u8; obc_formats::obcs::MAX_MANIFEST_LEN];
