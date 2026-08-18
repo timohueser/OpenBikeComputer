@@ -2,8 +2,12 @@
 //! ([`OBCA_Spec.md`](../../../specs/OBCA_Spec.md) §5).
 //!
 //! One *logical* map is a small manifest plus 1..N physical OBCM files. Two independent 4 GiB
-//! ceilings make that necessary — FAT32's per-file cap and OBCM's own `uint32` offsets — so sets are
-//! the shape from day one and a small map is a **set of one** (§5.5).
+//! ceilings made that necessary when this was written — FAT32's per-file cap and OBCM's own
+//! `uint32` offsets — so sets are the shape from day one and a small map is a **set of one** (§5.5).
+//!
+//! Both of those are gone: the flat store replaced FAT, and v14 scales offsets to a 64 GiB
+//! interior. What binds now is neither — it is the **read seam**, `ByteSource`'s `u32` offsets, and
+//! it lands on the same 4 GiB by coincidence rather than by inheritance. See [`FILE_CEILING`].
 //!
 //! The split obeys one ordering principle and obeys it everywhere: **the core file holds only what
 //! cannot be split by bbox, and everything that can be is moved out of it.** The core is the one
@@ -25,24 +29,39 @@ use crate::schema::{BandRole, StyleRecord};
 use crate::scratch::ScratchStore;
 use crate::{Error, Result};
 
-/// The hard per-file ceiling: **`OBCM_Spec.md` §1.1's addressable interior at this engine's
-/// [`SCALE`]** — `2^32 units × U`, which at `U = 16` is `2^36` B = 64 GiB.
+/// The hard per-file ceiling: **the smaller of the two walls a written file has to clear.**
 ///
-/// It is derived rather than written down, because §1.1 states the producer rule in exactly these
-/// terms: "the scale MUST cover the file it writes — `2^32 × U` MUST be at least the file's total
-/// length", the largest legal file being exactly that many bytes. [`OffsetScale::covers`] is the
-/// same sentence as a predicate, and this constant is its boundary.
+/// 1. **The format wall** — `OBCM_Spec.md` §1.1's addressable interior at this engine's [`SCALE`],
+///    `2^32 units × U`, which at `U = 16` is `2^36` B = 64 GiB. Derived rather than written down,
+///    because §1.1 states the producer rule in exactly these terms and [`OffsetScale::covers`] is
+///    that sentence as a predicate.
+/// 2. **The readable wall** — `u32::MAX`, because [`obc_formats::io::ByteSource`] *is* the tree's
+///    read interface and it is `read_at(offset: u32)` / `len() -> u32`. Every implementor and every
+///    cache behind it is u32-addressed, and `obc-reader` fail-closes past that by design.
 ///
-/// **It was `u32::MAX` through v13**, where a byte offset was a bare `uint32` and a file therefore
-/// stopped at 4 GiB — the same number FAT32's per-file cap happened to land on, which is why the
-/// old comment here named both and why sets exist at all (§5.5). v14 scales the offsets and the
-/// flat store replaced FAT, so *both* of those 4 GiB walls are gone and the interior is sixteen
-/// times what it was. §8's edge pool was already built for this number:
-/// `NAV_EDGE_MAX_CHUNKS × NAV_CHUNK_SIZE == 1 << 36` is pinned in `obc-formats` as "the pool
+/// **Today the readable wall binds**, at 4 GiB. v14 raised the format wall sixteen-fold and did not
+/// touch the read seam, so a file between the two is one this pipeline could lay out and *nothing
+/// in this tree could open* — the fast path would plan it, the assembler would write it, and the
+/// first `read_at` past 4 GiB would fail. §5.5 makes that worse rather than better: the single file
+/// is still manifest-listed, and OBCA §5.2's `Bytes` is a `uint32` of **bytes**, so a 5 GiB file
+/// would be *recorded* as ≈0.7 GiB rather than refused.
+///
+/// So the ceiling is the `min`, and it moves on its own when the read seam widens (u32 → u64 or
+/// scaled offsets through `ByteSource` and its implementors) — a slice of #1420 in its own right,
+/// and the prerequisite for DACH-scale single files. §8's edge pool is already built for the far
+/// wall: `NAV_EDGE_MAX_CHUNKS × NAV_CHUNK_SIZE == 1 << 36` is pinned in `obc-formats` as "the pool
 /// reaches the interior".
-pub const FILE_CEILING: u64 = (1u64 << 32) * SCALE.unit();
-const _: () = assert!(SCALE.covers(FILE_CEILING), "the ceiling is the largest file the scale covers");
-const _: () = assert!(!SCALE.covers(FILE_CEILING + 1), "and one byte past it is not covered");
+pub const FILE_CEILING: u64 = {
+    let format = (1u64 << 32) * SCALE.unit();
+    let readable = u32::MAX as u64;
+    if format < readable {
+        format
+    } else {
+        readable
+    }
+};
+const _: () = assert!(FILE_CEILING <= u32::MAX as u64, "no reader in this tree addresses past a u32");
+const _: () = assert!(SCALE.covers(FILE_CEILING), "and the scale still covers whatever the min lands on");
 
 /// The `Offset Scale` every shard this engine writes carries (`OBCM_Spec.md` §1.1): `U = 16`, the
 /// same byte `obc-pack` writes, so a cell and the assembly it lands in count offsets in one unit.
@@ -97,11 +116,11 @@ pub(crate) const FILLER_RUN: [u8; obc_formats::obcm::NAV_CHUNK_SIZE] = [FILLER; 
 /// Where a producer SHOULD warn about the core (OBCA §5.7), naming the nav graph.
 ///
 /// §5.7 wrote this as "≈ 3.5 GiB" against a `4 GiB − 1 B` ceiling — seven eighths of the wall, i.e.
-/// "you are close". [`FILE_CEILING`] moved sixteen-fold in v14, so the *number* 3.5 GiB stopped
-/// meaning "close" and started meaning "a twentieth of the way there"; keeping it would have made
-/// the warning fire on maps with 60 GiB of headroom left. The **proportion** is what §5.7 was
-/// expressing, so that is what is preserved: seven eighths of the ceiling, 56 GiB at `U = 16`.
+/// "you are close". Written as the **proportion** rather than the number, so it keeps meaning
+/// "close" wherever [`FILE_CEILING`] lands: while the readable wall binds this is ≈3.5 GiB, exactly
+/// what §5.7 wrote, and it follows the ceiling up on its own when the read seam widens.
 pub const CORE_WARN: u64 = FILE_CEILING / 8 * 7;
+const _: () = assert!(CORE_WARN < FILE_CEILING, "a warning above the wall would never fire");
 
 /// Manifest sizes (§5.2), taken from the format authority rather than restated. They were literals
 /// here until v3 moved the record width, at which point two of the three numbers this file computes
@@ -183,6 +202,18 @@ impl ShardPlan {
 
     fn past_u64(&self) -> Error {
         Error::Capacity(format!("shard {}'s layout does not fit a u64 of bytes (OBCA §5.7)", self.index))
+    }
+
+    /// A section base that does not fit the host's `usize` — 32-bit in the wasm32 build this engine
+    /// ships in. Unreachable behind [`FILE_CEILING`]; an error rather than a cast so that it stays
+    /// unreachable if the ceiling ever moves.
+    fn past_usize(&self, what: &str, at: u64) -> Error {
+        Error::Capacity(format!(
+            "shard {}'s {what} section starts at byte {at}, past the {} bytes this host can address \
+             (OBCA §5.7)",
+            self.index,
+            usize::MAX
+        ))
     }
 }
 
@@ -313,15 +344,15 @@ pub fn write(
     }
 
     // 5/6. The POI and nav sections — the core's rebuilt ones, or a legal empty pair (§5.1).
-    out(&crate::poi::serialize(empty_poi.as_ref().unwrap_or(poi), l.poi_offset as usize)?)?;
-    crate::nav::serialize(
-        empty_nav.as_ref().unwrap_or(nav),
-        profile_table,
-        l.nav_offset as usize,
-        nav_cells,
-        scratch,
-        &mut out,
-    )?;
+    //
+    // Both section writers take a `usize` base. That is a 32-bit type in the wasm32 `--lib` build
+    // this engine actually ships in, so these conversions are checked rather than cast: a layout
+    // past `usize` would otherwise wrap and address a section that is not there. `FILE_CEILING`
+    // keeps them unreachable today, but a ceiling is a policy and a cast is forever.
+    let poi_base = usize::try_from(l.poi_offset).map_err(|_| plan.past_usize("POI", l.poi_offset))?;
+    let nav_base = usize::try_from(l.nav_offset).map_err(|_| plan.past_usize("nav", l.nav_offset))?;
+    out(&crate::poi::serialize(empty_poi.as_ref().unwrap_or(poi), poi_base)?)?;
+    crate::nav::serialize(empty_nav.as_ref().unwrap_or(nav), profile_table, nav_base, nav_cells, scratch, &mut out)?;
 
     // §4.8.6: the write must land exactly where §5.7's projection said it would. A `debug_assert`
     // would leave a release build emitting a file whose recorded `Bytes` and header offsets are a
@@ -619,7 +650,12 @@ pub fn manifest(
     out.extend_from_slice(&fold_name(name));
     debug_assert_eq!(out.len(), MANIFEST_HEADER_LEN);
 
-    let push_record = |out: &mut Vec<u8>, role: u8, box_: AlignedBox, bytes: u64, sha256: &[u8; 32]| {
+    // §5.2's `Bytes` is a `uint32` of **bytes**, not units — so unlike every offset in an OBCM file
+    // it did *not* widen in v14, and it is the narrowest wall a set's member has to clear. A bare
+    // `as u32` here does not refuse an over-size shard, it *misreports* one: a 5 GiB file records as
+    // ≈0.7 GiB, and every consumer that trusts the manifest to size a download then trusts a number
+    // the file contradicts. `FILE_CEILING` makes it unreachable; this makes it unspellable.
+    let push_record = |out: &mut Vec<u8>, role: u8, box_: AlignedBox, bytes: u64, sha256: &[u8; 32]| -> Result<()> {
         let (min_lon, min_lat, max_lon, max_lat) = box_.ubox();
         out.push(role);
         out.push(0); // flags
@@ -628,7 +664,14 @@ pub fn manifest(
         out.extend_from_slice(&(min_lon as i32).to_le_bytes());
         out.extend_from_slice(&(max_lat as i32).to_le_bytes());
         out.extend_from_slice(&(max_lon as i32).to_le_bytes());
-        out.extend_from_slice(&(bytes as u32).to_le_bytes());
+        let recorded = u32::try_from(bytes).map_err(|_| {
+            Error::Capacity(format!(
+                "a shard of {bytes} bytes cannot be recorded in OBCA §5.2's `uint32` Bytes field — \
+                 the manifest would state {} instead",
+                bytes as u32
+            ))
+        })?;
+        out.extend_from_slice(&recorded.to_le_bytes());
         out.extend_from_slice(sha256);
         // v3's member `ObjectId`, written **unbound** (§5.2). An assembler cannot do better: the id
         // is minted by the store on the card the set is eventually sent to, and this set has not met
@@ -636,15 +679,16 @@ pub fn manifest(
         // with `obc_formats::obcs::bind_member` as the members commit, before the manifest itself is
         // committed, which §5.4 already made the last write of a set.
         out.extend_from_slice(&obc_formats::obcs::MEMBER_ID_NONE.to_le_bytes());
+        Ok(())
     };
     for s in shards {
-        push_record(&mut out, s.role.wire(), s.box_, s.bytes, &s.sha256);
+        push_record(&mut out, s.role.wire(), s.box_, s.bytes, &s.sha256)?;
     }
     // §5.2: the terrain record last, spanning the assembly bbox. Last is not a convention — a
     // reader takes the leading records as the OBCM shards and their index as the `S<kk>` in a
     // derived filename, so a raster anywhere else would rename every shard after it.
     if let Some(t) = &terrain {
-        push_record(&mut out, obc_formats::obcs::Role::Terrain.id(), assembly, t.bytes, &t.sha256);
+        push_record(&mut out, obc_formats::obcs::Role::Terrain.id(), assembly, t.bytes, &t.sha256)?;
     }
     debug_assert_eq!(out.len(), MANIFEST_HEADER_LEN + records * MANIFEST_SHARD_LEN);
     // The set is about to be written; the format authority is what decides whether it is one

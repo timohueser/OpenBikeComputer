@@ -1649,8 +1649,13 @@ const _: () =
 /// `Terrain Length` pair. Every offset field here is **scaled** (§1.1). Shared by both serializers.
 ///
 /// `obc-pack` writes a map with no embedded terrain, so the terrain pair is `(0, 0)` — §1.3's
-/// unambiguous absence, since the header occupies byte `0` and no region can begin there. Splicing
-/// a baked OBCT container into the tail is the assembler's step.
+/// unambiguous absence, since the header occupies byte `0` and no region can begin there.
+///
+/// **Nothing in this tree writes a terrain region yet.** `obcm-assemble` does not either — it
+/// documents the raster as its own file — so the only producer of the bytes `MapTables::terrain()`
+/// reads is `obcm-testkit`'s `splice_terrain`, a test helper. §1.3's reader half is real and
+/// tested; the writer half lands with FS7.5b2's splice. (`--terrain` here is an `ElevationSource`
+/// for §8.3's `Ascent M`, which is a different thing wearing a similar name.)
 fn header_bytes(
     lod_count: usize,
     marker_color: u16,

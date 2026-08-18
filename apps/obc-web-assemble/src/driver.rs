@@ -879,7 +879,9 @@ pub enum ErrorCode {
     /// A cell does not honour the format or the cell contract. The download is corrupt or the
     /// catalog is serving something that is not a cell.
     Format,
-    /// OBCA §5.7: the 4 GiB per-file ceiling, the `HoursRef` pool, the `uint32` index space.
+    /// OBCA §5.7's per-file wall — `min(the interior the `Offset Scale` covers, what the read seam
+    /// addresses)`, so 4 GiB while `ByteSource` is u32 — plus the `HoursRef` pool and the `uint32`
+    /// index space.
     /// **Coverage must be reduced** — and per §5.7 this bridge never "solves" it by dropping any.
     Capacity,
     /// The §4.8 verify pass rejected the output: the engine wrote a set the real reader cannot read.
@@ -1075,8 +1077,10 @@ enum ShardBody<'a> {
 }
 
 impl ShardBody<'_> {
-    /// The shard's length. A shard is `< 4 GiB` by OBCA §5.7, which the engine refuses past long
-    /// before here; the clamp is so a defect reads as a truncated file rather than a wrapped one.
+    /// The shard's length. A shard is `<= u32::MAX` by OBCA §5.7 — and this is the very seam that
+    /// makes it so, since `ByteSource::len` is a `u32` and `FILE_CEILING` is the `min` that respects
+    /// it. The engine refuses an over-size shard long before here; the clamp is so a defect reads as
+    /// a truncated file rather than a wrapped one.
     fn len(&self) -> u32 {
         match self {
             ShardBody::Buffered(bytes) => bytes.len() as u32,
