@@ -117,6 +117,7 @@ fn superblock_vector() {
          15",
     );
     assert_eq!(u32_at(&bytes, 504), 0xE337_E72D, "§4.1's CRC-32 for the 128 GiB card");
+    assert!(bytes[508..].iter().all(|&byte| byte == 0));
     let superblock = super::superblock::Superblock::decode(&bytes).expect("the larger superblock decodes");
     assert_eq!(superblock.geometry.extent_size(), 2 << 20, "§8: 128 GiB / 65,536 is 2 MiB");
     assert_eq!(superblock.extent_count(), 65_535, "§6: the extent area is one extent short of the index");
