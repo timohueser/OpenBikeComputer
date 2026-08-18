@@ -490,9 +490,15 @@ fn mark(bits: &mut [u64], id: u32) -> bool {
 /// so which junction ends up as a representative (this is union by size; the old one was
 /// last-wins) cannot move `largest_component_permille` by a single per mille.
 ///
-/// The bit is free: §8.3 ids are `uint32` and the id ceiling derived below is at most
-/// `FILE_CEILING / NAV_NODE_FIXED_LEN` ≈ 330 M, so no legal graph reaches 2³¹ junctions —
-/// [`verify_nav`] refuses one that claims to rather than aliasing the flag.
+/// The bit **was** free by arithmetic: §8.3 ids are `uint32`, and while the file ceiling was
+/// `u32::MAX` the id ceiling was at most `FILE_CEILING / NAV_NODE_FIXED_LEN` ≈ 330 M, so no legal
+/// graph could reach 2³¹ junctions.
+///
+/// **v14's 64 GiB interior ends that argument** — `FILE_CEILING / NAV_NODE_FIXED_LEN` is now ≈ 5.3 G,
+/// comfortably past 2³¹ — so the bound is no longer implied by the layout and is instead *enforced*:
+/// [`verify_nav`]'s explicit refusal below is now load-bearing rather than defensive. A graph that
+/// claims 2³¹ or more junctions is refused with a message that says so; it is never silently
+/// aliased against this flag.
 const ROOT: u32 = 1 << 31;
 
 /// Union-find root of `x`, with path halving. `parent` is indexed by `Node Id` **directly** — the
