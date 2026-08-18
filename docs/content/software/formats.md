@@ -1604,12 +1604,16 @@ So a logical map is a **volume set**: a tiny fixed-layout manifest plus 1..N ord
 - **A small map is a set of one**, which is nearly every selection: a country is under a gigabyte, a 300 km corridor around a trip's routes projects to about a quarter of one.
 - **One terrain shard**, when the selection has elevation, carries the whole map's raster — a single [OBCT](src:specs/OBCT_Spec.md) container rather than an OBCM file, so the manifest's fourth role is the one that names something a map reader never opens. It spans the whole assembly, and it is always its own file: at DACH scale it is ≈ 430 MiB against the same 4 GiB ceiling, an order of magnitude of headroom, so splitting it would buy a file-count problem in exchange for nothing.
 
-The manifest itself is 72 bytes plus one 56-byte record per file, and terrain's
-arrival moved its version byte to **`0x02`** — a hard cut, because a v1 reader shown a
-v2 manifest would reject the unknown role and refuse the whole set anyway; the version
-byte at least says *why*. The terrain record is an ordinary shard record — role, bbox,
-byte count, SHA-256 — with three rules stacked on top, and each one exists to stop
-something specific:
+The manifest itself is 72 bytes plus one 64-byte record per file. Its version byte has
+moved twice, both times as a hard cut with no compatibility path: terrain's arrival took
+it to `0x02`, and **`0x03`** gave every record the eight-byte `ObjectId` of the object
+that holds its bytes — so a set is resolved through object identity rather than through
+filenames the reader computes from a card id and an ordinal. The ids are written `0` by
+the assembler, which has no store to have been given ids by, and patched in by the client
+that uploads the set as each member commits; a manifest that is *half* patched is refused,
+because it would look resolvable while silently losing the members that were never named.
+The terrain record is an ordinary shard record — role, bbox, byte count, SHA-256, member
+id — with three rules stacked on top, and each one exists to stop something specific:
 
 - **At most one, and it is the last record.** Readers take the leading records as the
   OBCM shards and a record's *index* as the `S<kk>` in its derived filename, so a
