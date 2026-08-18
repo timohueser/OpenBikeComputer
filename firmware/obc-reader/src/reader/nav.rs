@@ -22,6 +22,25 @@ use obc_map_scene::{cos_lat, ground_dist_m_cl, BBox, M_PER_DEG};
 /// no larger chunk is ever routed through a slot.
 pub const NAV_MAX_CHUNK_BYTES: usize = NAV_CHUNK_SIZE;
 
+/// Every byte [`Reader::nav_edge`] is allowed to put on the stack: **one** §8.4 chunk.
+///
+/// This is a budget rather than an alias so that a regression has to argue with a name. `nav_edge`
+/// is the one edge-resolve site with no caller-owned [`NavTileCache`] — it resolves a single id,
+/// once, from a `&self` that any task may hold — and that is exactly what makes reaching for a
+/// cache there so easy and so expensive: `NavTileCache` is 24,852 B (pinned in
+/// `nav/cache.rs`) against a device stack of roughly 36 KB, so one `NavTileCache::new()` in this
+/// frame spends about two thirds of the task's stack to hold a 512-byte read. It shipped that way
+/// in the v14 rewrite and #1422's review caught it.
+///
+/// The assertions below are the guard: this budget is one chunk, and it is nowhere near the cache.
+/// A future edit that swaps the buffer back for a working set fails the second one.
+pub const NAV_EDGE_STACK_BUDGET: usize = NAV_CHUNK_SIZE;
+const _: () = assert!(NAV_EDGE_STACK_BUDGET == NAV_CHUNK_SIZE, "nav_edge holds exactly one §8.4 chunk");
+const _: () = assert!(
+    NAV_EDGE_STACK_BUDGET * 8 < core::mem::size_of::<cache::NavTileCache>(),
+    "nav_edge's stack buffer must stay an order of magnitude under a NavTileCache, or it has become one"
+);
+
 /// The parsed nav directory (spec §8.1) — the graph's **entire resident state** (the quadtree and
 /// every record stream on demand). Empty graph (`node_count == 0`) ⇒ no walk, exactly like an
 /// empty POI category. Parse-only in R2: [`Reader::for_each_nav_node`] walks the node quadtree and
@@ -420,6 +439,19 @@ impl<'a> Reader<'a> {
     /// A refused id is a malformed map, not an absent edge — but this is a reader on a card that
     /// ages, so every caller degrades to "no geometry" rather than panicking.
     fn nav_edge_record<'t>(&self, tiles: &'t mut NavTileCache, edge_id: u32) -> Option<(&'t [u8], usize)> {
+        let chunk_start = self.nav_edge_chunk_start(edge_id)?;
+        let chunk = tiles.chunk(self.src, chunk_start, NAV_CHUNK_SIZE)?;
+        let (start, _end) = nav_edge_record_range(chunk, nav_edge_id_ordinal(edge_id))?;
+        Some((chunk, start))
+    }
+
+    /// The absolute file offset of the chunk holding `edge_id`'s record — the half of the §8.4
+    /// resolve that does not care *how* the chunk is read.
+    ///
+    /// Split out so the two readers below can differ in exactly one line: the router's sites
+    /// already own a [`NavTileCache`] and go through its working set, while [`Reader::nav_edge`]
+    /// reads into 512 bytes of its own stack.
+    fn nav_edge_chunk_start(&self, edge_id: u32) -> Option<u32> {
         // A volume-set shard carries no edge pool (see `is_set_shard`).
         let dir = self.nav_directory();
         let cs = dir.chunk_size;
@@ -434,9 +466,25 @@ impl<'a> Reader<'a> {
         if chunk_start.checked_add(cs)? > self.src.len() as usize {
             return None;
         }
-        let chunk = tiles.chunk(self.src, u32::try_from(chunk_start).ok()?, cs)?;
-        let (start, _end) = nav_edge_record_range(chunk, nav_edge_id_ordinal(edge_id))?;
-        Some((chunk, start))
+        u32::try_from(chunk_start).ok()
+    }
+
+    /// [`Reader::nav_edge_record`] with the chunk read straight into a caller-owned 512-byte
+    /// buffer instead of through a [`NavTileCache`] working set.
+    ///
+    /// This exists because the cache is **24,852 bytes** and `nav_edge` has no business owning
+    /// one: it reads exactly one chunk, once, and never comes back for a neighbour. Materialising
+    /// a cache to hold a single 512-byte read put two thirds of the device's ~36 KB stack into one
+    /// frame — see the pin below.
+    fn nav_edge_record_uncached<'b>(
+        &self,
+        buf: &'b mut [u8; NAV_CHUNK_SIZE],
+        edge_id: u32,
+    ) -> Option<(&'b [u8], usize)> {
+        let chunk_start = self.nav_edge_chunk_start(edge_id)?;
+        self.src.read_at(chunk_start, &mut buf[..]).ok()?;
+        let (start, _end) = nav_edge_record_range(&buf[..], nav_edge_id_ordinal(edge_id))?;
+        Some((&buf[..], start))
     }
 
     /// Fetch one §8.4 edge polyline by its `edge_id` (a packed `(chunk, ordinal)` pair since v14),
@@ -449,10 +497,15 @@ impl<'a> Reader<'a> {
     /// anywhere; it holds one 512-byte chunk on the stack, which is both what the ordinal walk
     /// needs and *fewer* source reads than v13's windowed delta stream, since the deltas were
     /// always inside the chunk the head came from.
+    ///
+    /// The sentence above is now true. Between the v14 rewrite and #1422's review it was not: the
+    /// body built a [`NavTileCache`] to perform that one read, so the frame was
+    /// [`NAV_EDGE_STACK_BUDGET`] + 24,852 B on a device with about 36 KB of stack — 174× v13's
+    /// frame, in a `no_std` crate, for a single 512-byte chunk.
     pub fn nav_edge<const P: usize>(&self, edge_id: u32, points: &mut Vec<(i32, i32), P>) -> Option<u32> {
         points.clear();
-        let mut tiles = NavTileCache::new();
-        let (chunk, within) = self.nav_edge_record(&mut tiles, edge_id)?;
+        let mut chunk_buf = [0u8; NAV_EDGE_STACK_BUDGET];
+        let (chunk, within) = self.nav_edge_record_uncached(&mut chunk_buf, edge_id)?;
         let length_m = rd_u32(chunk, within);
         let pt_count = rd_u16(chunk, within + 4) as usize;
         // byte 6 is `way_kind` (§8.4); the anchor sits behind it, at 7 (lat) / 11 (lon).
