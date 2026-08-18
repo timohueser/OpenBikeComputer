@@ -7,7 +7,7 @@
 
 use obc_map_scene::{cos_lat, ground_dist_m_cl};
 use obc_reader::{MapCache, MapTables, Poi, PoiCategory, Reader, SliceSource, MAX_POI_RESULTS};
-use obcm_testkit::{build_poi_map, PoiSpec};
+use obcm_testkit::{align_up, build_poi_map, resolve_offset, PoiSpec};
 
 /// Ground distance (m) from `pos` (lon, lat µdeg) to a POI, the same equirectangular metric the
 /// reader uses — so the brute-force truth and the query agree to the µm before the `u32` round.
@@ -312,7 +312,7 @@ fn names_and_fields_round_trip() {
 fn corrupt_zero_chunk_size_is_safe() {
     let pois = vec![PoiSpec { lat: 43_500_000, lon: 7_500_000, subtype: 1, name: "W".into(), hours_ref: 0xFFFF }];
     let mut bytes = build_poi_map(BBOX, CS, &[(1, pois)]);
-    let poi_off = u32::from_le_bytes(bytes[32..36].try_into().unwrap()) as usize;
+    let poi_off = resolve_offset(&bytes, 32);
     // Forge the shared chunk_size (u16 at poi_off+1) to 0. `MapTables::parse` accepts a 0 chunk_size
     // (it only rejects > cap); the query must handle it without panicking.
     bytes[poi_off + 1..poi_off + 3].copy_from_slice(&0u16.to_le_bytes());
@@ -331,12 +331,13 @@ fn corrupt_out_of_range_subtype_is_skipped() {
     let mut bytes = build_poi_map(BBOX, CS, &[(1, pois)]);
     // Find the Water category's first chunk and clobber the SECOND record's subtype byte to 99
     // (past the 18-entry table). Locate the chunk via the directory.
-    let poi_off = u32::from_le_bytes(bytes[32..36].try_into().unwrap()) as usize;
+    let poi_off = resolve_offset(&bytes, 32);
     // Directory: count(1) chunk_size(2), then 13-byte entries. Category 1 is the first entry.
     let e1 = poi_off + 3;
-    let idx_off = u32::from_le_bytes(bytes[e1 + 1..e1 + 5].try_into().unwrap()) as usize;
+    let idx_off = resolve_offset(&bytes, e1 + 1);
     let node_count = u32::from_le_bytes(bytes[e1 + 5..e1 + 9].try_into().unwrap()) as usize;
-    let data_start = idx_off + node_count * 4;
+    // §7.1: a category's chunks begin one rounding step past its index, not flush behind it.
+    let data_start = align_up(idx_off + node_count * 4);
     // Second record's subtype byte is at data_start + 36 + 8 (36-byte v7 record stride).
     bytes[data_start + 36 + 8] = 99;
     let got = query(&bytes, PoiCategory::Water, (7_500_000, 43_500_000));
@@ -354,11 +355,12 @@ fn corrupt_missing_sentinel_stops_at_chunk_end() {
     // forged "record" (all-0xFF coords, name) is either skipped or bounded, never a panic.
     let pois = vec![PoiSpec { lat: 43_500_000, lon: 7_500_000, subtype: 1, name: "One".into(), hours_ref: 0xFFFF }];
     let mut bytes = build_poi_map(BBOX, CS, &[(1, pois)]);
-    let poi_off = u32::from_le_bytes(bytes[32..36].try_into().unwrap()) as usize;
+    let poi_off = resolve_offset(&bytes, 32);
     let e1 = poi_off + 3;
-    let idx_off = u32::from_le_bytes(bytes[e1 + 1..e1 + 5].try_into().unwrap()) as usize;
+    let idx_off = resolve_offset(&bytes, e1 + 1);
     let node_count = u32::from_le_bytes(bytes[e1 + 5..e1 + 9].try_into().unwrap()) as usize;
-    let data_start = idx_off + node_count * 4;
+    // §7.1: a category's chunks begin one rounding step past its index, not flush behind it.
+    let data_start = align_up(idx_off + node_count * 4);
     // Sentinel subtype byte is at the 2nd record slot: data_start + 36 + 8 (36-byte stride). Forge to 1.
     bytes[data_start + 36 + 8] = 1;
     // This must not panic and must not read past the chunk; result is well-formed (≤ records/chunk).

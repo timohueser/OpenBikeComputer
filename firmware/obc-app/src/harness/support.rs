@@ -110,8 +110,20 @@ pub fn build_min_obcm(marker: u16) -> Vec<u8> {
 /// [`build_min_obcm`] with a caller-chosen §8.6 profile table (1..=8 names, every multiplier the
 /// neutral 1.0×) — for the N5 bike-type tests, which need a map carrying several named profiles.
 pub fn build_min_obcm_profiles(marker: u16, profiles: &[&str]) -> Vec<u8> {
-    // v8 header is 40 bytes; the style table follows immediately.
-    let style_off: u32 = 40;
+    // v14 (§1.1/§1.2): every offset a header or directory carries is a count of `U = 16`-byte
+    // units, so every structure one reaches starts on a unit boundary and the `0..U-1` bytes
+    // between them are `0xFF` filler. The 49-byte header is not a unit multiple, so the style
+    // table begins at 64.
+    use obc_formats::obcm::{OffsetScale, FILLER};
+    const SCALE: OffsetScale = OffsetScale::DEFAULT;
+    let unit = SCALE.unit() as usize;
+    let align_up = |at: usize| -> usize { at.next_multiple_of(unit) };
+    let scaled = |at: usize| -> u32 {
+        assert_eq!(at % unit, 0, "byte {at} is not on a unit boundary");
+        (at / unit) as u32
+    };
+
+    let style_off: usize = align_up(obc_formats::obcm::HEADER_LEN);
     // Style table (8-byte style record): count=1, then (id=1, z=0, color=0x001F blue sea, weight=1,
     // flags=0, color2=0x0000 — solid, no secondary color).
     let mut styles = vec![1u8];
@@ -122,22 +134,24 @@ pub fn build_min_obcm_profiles(marker: u16, profiles: &[&str]) -> Vec<u8> {
     styles.push(0); // flags byte
     styles.extend_from_slice(&0x0000u16.to_le_bytes()); // color2 (absent ⇒ 0x0000)
 
-    let lod_tab_off = style_off as usize + styles.len();
-    let index_off = lod_tab_off + 18; // one 18-byte LOD entry
+    let lod_tab_off = align_up(style_off + styles.len());
+    let index_off = align_up(lod_tab_off + 18); // one 18-byte LOD entry
 
-    // LOD entry: max_mpp=+inf, index_off, node_count=1, chunk_size=16, chunk_count=0.
+    // LOD entry: max_mpp=+inf, index_off (scaled), node_count=1, chunk_size=16, chunk_count=0.
     let mut table = Vec::new();
     table.extend_from_slice(&f32::INFINITY.to_le_bytes());
-    table.extend_from_slice(&(index_off as u32).to_le_bytes());
+    table.extend_from_slice(&scaled(index_off).to_le_bytes());
     table.extend_from_slice(&1u32.to_le_bytes());
     table.extend_from_slice(&16u16.to_le_bytes());
     table.extend_from_slice(&0u32.to_le_bytes());
 
-    // Index: a single empty leaf (no chunk), then the v11 offset table — always written, here the
-    // one `chunk_count + 1` entry a chunkless LOD carries.
+    // Index: a single empty leaf (no chunk), then the offset table — always written, here the one
+    // `chunk_count + 1` entry a chunkless LOD carries — then filler to the boundary `data_start`
+    // would land on, so the section behind it can be named.
     let mut index = Vec::new();
     index.extend_from_slice(&0x7FFF_FFFFu32.to_le_bytes());
     index.extend_from_slice(&0u32.to_le_bytes());
+    index.resize(align_up(index_off + index.len()) - index_off, FILLER);
 
     // POI section starts right after the index + offset table (no LOD chunks here). Empty directory:
     // count=6, chunk_size=512, six 13-byte entries (all node_count/chunk_count 0), then the two
@@ -145,24 +159,30 @@ pub fn build_min_obcm_profiles(marker: u16, profiles: &[&str]) -> Vec<u8> {
     // (a bare `count 0`). The directory length is 3 + 6*13 + 6 = 87.
     let poi_section_off = index_off + index.len();
     let dir_len = 3 + 6 * 13 + 6;
-    let after_dir = (poi_section_off + dir_len) as u32; // where the empty pool's `count` sits
+    // Every zero-length region still has to be *nameable*, so it points at the first unit boundary
+    // past the directory rather than at the directory's last byte.
+    let after_dir = align_up(poi_section_off + dir_len);
     let mut poi_dir = vec![6u8]; // category_count
     poi_dir.extend_from_slice(&512u16.to_le_bytes()); // shared chunk_size
     for id in 1u8..=6 {
         poi_dir.push(id);
-        poi_dir.extend_from_slice(&after_dir.to_le_bytes()); // index_offset (zero-length here)
+        poi_dir.extend_from_slice(&scaled(after_dir).to_le_bytes()); // index_offset (zero-length)
         poi_dir.extend_from_slice(&0u32.to_le_bytes()); // node_count
         poi_dir.extend_from_slice(&0u32.to_le_bytes()); // chunk_count
     }
-    poi_dir.extend_from_slice(&after_dir.to_le_bytes()); // hours_pool_offset
+    poi_dir.extend_from_slice(&scaled(after_dir).to_le_bytes()); // hours_pool_offset
     poi_dir.extend_from_slice(&0u16.to_le_bytes()); // hours_pool_count = 0
+    poi_dir.resize(after_dir - poi_section_off, FILLER); // §1.2 filler to the pool's boundary
     poi_dir.extend_from_slice(&0u16.to_le_bytes()); // the empty pool's own `count u16` = 0
+    poi_dir.resize(align_up(poi_section_off + poi_dir.len()) - poi_section_off, FILLER);
 
     // Empty nav section at the tail: the 40-byte directory + the always-present §8.6 profile
     // table (the caller's names, every multiplier 16 = 1.0×, climb-blind — this fixture has no
     // graph to climb). Zero-length index + edge pool "start" just past the profile table.
     let nav_section_off = poi_section_off + poi_dir.len();
-    let profile_table_off = (nav_section_off + obc_formats::obcm::NAV_DIR_LEN) as u32;
+    // The 40-byte directory is not a unit multiple, so the profile table starts at the section's
+    // byte 48 with eight bytes of filler behind the directory — §8.5's worked case exactly.
+    let profile_table_off = align_up(nav_section_off + obc_formats::obcm::NAV_DIR_LEN);
     let mut profile_table = Vec::new();
     for name in profiles {
         let base = profile_table.len();
@@ -173,21 +193,23 @@ pub fn build_min_obcm_profiles(marker: u16, profiles: &[&str]) -> Vec<u8> {
         profile_table.push(0); // v12 climb_weight
         profile_table.resize(base + 56, 0); // three reserved bytes, zero
     }
-    let after_nav = profile_table_off + profile_table.len() as u32;
+    let after_nav = align_up(profile_table_off + profile_table.len());
     let mut nav_dir = Vec::new();
-    nav_dir.extend_from_slice(&after_nav.to_le_bytes()); // index_offset (zero-length)
+    nav_dir.extend_from_slice(&scaled(after_nav).to_le_bytes()); // index_offset (zero-length)
     nav_dir.extend_from_slice(&0u32.to_le_bytes()); // index_node_count
     nav_dir.extend_from_slice(&0u32.to_le_bytes()); // node_chunk_count
-    nav_dir.extend_from_slice(&after_nav.to_le_bytes()); // edge_pool_offset (zero-length)
+    nav_dir.extend_from_slice(&scaled(after_nav).to_le_bytes()); // edge_pool_offset (zero-length)
     nav_dir.extend_from_slice(&0u32.to_le_bytes()); // edge_chunk_count
     nav_dir.extend_from_slice(&512u16.to_le_bytes()); // chunk_size (pinned)
-    nav_dir.extend_from_slice(&profile_table_off.to_le_bytes()); // profile_table_offset
+    nav_dir.extend_from_slice(&scaled(profile_table_off).to_le_bytes()); // profile_table_offset
     nav_dir.push(profiles.len() as u8); // profile_count
-    nav_dir.push(0); // reserved
-    nav_dir.extend_from_slice(&after_nav.to_le_bytes()); // snap_index_offset (zero-length)
+    nav_dir.push(0); // reserved — a field, so `0`, unlike a gap
+    nav_dir.extend_from_slice(&scaled(after_nav).to_le_bytes()); // snap_index_offset (zero-length)
     nav_dir.extend_from_slice(&0u32.to_le_bytes()); // snap_index_node_count
     nav_dir.extend_from_slice(&0u32.to_le_bytes()); // snap_chunk_count
+    nav_dir.resize(profile_table_off - nav_section_off, FILLER);
     nav_dir.extend_from_slice(&profile_table);
+    nav_dir.resize(after_nav - nav_section_off, FILLER);
 
     let mut f = Vec::new();
     f.extend_from_slice(b"OBCM");
@@ -195,14 +217,21 @@ pub fn build_min_obcm_profiles(marker: u16, profiles: &[&str]) -> Vec<u8> {
     for v in [-1000i32, -1000, 1000, 1000] {
         f.extend_from_slice(&v.to_le_bytes()); // bbox: min_lat, min_lon, max_lat, max_lon
     }
-    f.extend_from_slice(&style_off.to_le_bytes());
+    f.extend_from_slice(&scaled(style_off).to_le_bytes());
     f.push(1); // lod count
-    f.extend_from_slice(&(lod_tab_off as u32).to_le_bytes());
+    f.extend_from_slice(&scaled(lod_tab_off).to_le_bytes());
     f.extend_from_slice(&marker.to_le_bytes());
-    f.extend_from_slice(&(poi_section_off as u32).to_le_bytes());
-    f.extend_from_slice(&(nav_section_off as u32).to_le_bytes());
+    f.extend_from_slice(&scaled(poi_section_off).to_le_bytes());
+    f.extend_from_slice(&scaled(nav_section_off).to_le_bytes());
+    f.push(SCALE.log2()); // §1.1 offset scale
+    f.extend_from_slice(&0u32.to_le_bytes()); // §1.3 terrain offset — this fixture has no raster
+    f.extend_from_slice(&0u32.to_le_bytes()); // …and its length is `0` exactly when the offset is
+    debug_assert_eq!(f.len(), obc_formats::obcm::HEADER_LEN);
+    f.resize(style_off, FILLER);
     f.extend_from_slice(&styles);
+    f.resize(lod_tab_off, FILLER);
     f.extend_from_slice(&table);
+    f.resize(index_off, FILLER);
     f.extend_from_slice(&index);
     f.extend_from_slice(&poi_dir);
     f.extend_from_slice(&nav_dir);
