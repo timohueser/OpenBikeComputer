@@ -158,7 +158,7 @@ final class ProtocolVectorTests: XCTestCase {
         let decodedFull = decode(full)
         XCTAssertEqual(decodedFull.version, OBCProtocol.version)
         XCTAssertEqual(decodedFull.epoch, 0xA1B2_C3D4)
-        XCTAssertEqual(decodedFull.obcm, 13)
+        XCTAssertEqual(decodedFull.obcm, 14)
 
         // 6 bytes: a firmware predating the field. The epoch is present, so the ack gate is open;
         // the map version is simply unknown.
@@ -181,7 +181,7 @@ final class ProtocolVectorTests: XCTestCase {
         let future = full + Data([0xEE, 0xEE])
         let decodedFuture = decode(future)
         XCTAssertEqual(decodedFuture.epoch, 0xA1B2_C3D4)
-        XCTAssertEqual(decodedFuture.obcm, 13)
+        XCTAssertEqual(decodedFuture.obcm, 14)
     }
 
     /// The widened identity read (WX3 / #1188): the capability word is an **append**, so the same
