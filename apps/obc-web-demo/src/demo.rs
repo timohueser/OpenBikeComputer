@@ -473,6 +473,24 @@ mod tests {
         assert_eq!(demo.state(), expected, "`{command}` should reach {expected}");
     }
 
+    /// The shipped payload is a map **this build's reader accepts**.
+    ///
+    /// Everything else in this module drives `Demo`, which mounts the map behind several layers of
+    /// app state — so a payload the reader refuses shows up as a blank canvas in a browser rather
+    /// than as a failing assertion with the reason in it. That is exactly what a format bump does:
+    /// `grimsel-demo.obcm` was repacked to v14 in #1420's FS7.5b because a v14 reader refuses a v13
+    /// file outright, and nothing in the tree would have caught it if the repack had been missed
+    /// (`include_bytes!` is happy with any bytes at all).
+    ///
+    /// `MapTables::parse` *is* the version gate — it refuses any version but this build's — so
+    /// three lines here fail at the payload on the next bump instead of on the landing page.
+    #[test]
+    fn the_shipped_demo_map_parses_at_this_builds_obcm_version() {
+        let src = SliceSource(DEMO_MAP);
+        let tables = MapTables::parse(&src).expect("the shipped demo payload parses at this build's OBCM version");
+        assert!(tables.bbox.max_lat > tables.bbox.min_lat, "and it carries a real bbox, not a stub");
+    }
+
     /// The page-opening contract: the first tick renders (ready), the demo opens on the live Map,
     /// and the frame is exactly the putImageData layout.
     #[test]

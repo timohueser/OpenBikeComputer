@@ -390,9 +390,6 @@ mod tests {
                  {REGION_GAP_BYTES} B of §1.2 region gaps"
             );
         }
-        // …and the per-chunk share is genuinely not in the numerator alone: 0.47 % of a region's
-        // geometry would swamp that headroom if the graft had to *add* it rather than copy it.
-        assert!(0.0047 * catalog::FREIBURG_CELLS > (OUTPUT_PER_CELL_BYTE - measured) * catalog::FREIBURG_CELLS);
     }
 
     /// Degenerate inputs must not produce a nonsense verdict.

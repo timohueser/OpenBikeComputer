@@ -1632,7 +1632,16 @@ pub fn serialize_nav_section(
 /// `4` and bytes `49..64` are [`FILLER`]. Reading the field rather than assuming the table follows
 /// the header is what it was always for; v14 is simply the first version where the two differ.
 const STYLE_OFFSET: usize = 64;
-const _: () = assert!(STYLE_OFFSET >= HEADER_LEN);
+// Not just "past the header": §1.2 puts the style table on the *first unit boundary at or after*
+// it, so 64 is a derivation with two halves and both are asserted. A scale change that moved the
+// boundary used to leave this literal silently one gap behind.
+const _: () = assert!(STYLE_OFFSET >= HEADER_LEN, "the style table cannot start inside the header");
+const _: () = assert!(
+    (STYLE_OFFSET as u64).is_multiple_of(SCALE.unit()),
+    "and it must be a unit boundary a scaled offset can name"
+);
+const _: () =
+    assert!(((STYLE_OFFSET - HEADER_LEN) as u64) < SCALE.unit(), "…the *first* such boundary, so the gap is one unit");
 
 /// The 49-byte v14 OBCM header `<4sBiiiiIBIHIIBII>`: magic, version ([`OBCM_VERSION`]), bbox stored
 /// as lat,lon,lat,lon, style offset, lod count, lod-table offset, marker color, the POI section

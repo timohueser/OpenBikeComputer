@@ -1622,7 +1622,12 @@ fn edge_record<'p>(pool: &'p [u8], edge_id: u32, cell: &Cell<'_>) -> Result<(u32
         .ok_or_else(|| bad("names a chunk outside the cell's edge pool"))?;
     let (start, end) = nav_edge_record_range(chunk, nav_edge_id_ordinal(edge_id))
         .ok_or_else(|| bad("does not resolve to a record in its chunk (OBCM §8.4)"))?;
-    let at = u32::try_from(chunk_at + start).map_err(|_| bad("resolves past the 4 GiB a pool address fits"))?;
+    // Additively, and checked: `chunk_at` is already bounded by the pool, but a `usize` add is a
+    // `usize` add and this crate builds for wasm32, where one wraps at 4 GiB.
+    let at = chunk_at
+        .checked_add(start)
+        .and_then(|a| u32::try_from(a).ok())
+        .ok_or_else(|| bad("resolves past the 4 GiB a pool address fits"))?;
     Ok((at, &chunk[start..end]))
 }
 
@@ -2507,7 +2512,7 @@ mod tests {
         // 26 x 19 = 494 bytes; the 27th needs 19 more and 494 + 19 = 513 > 512, so it is pushed
         // to the boundary and opens chunk 1.
         assert_eq!(26 * MIN_REC, 494);
-        assert!(494 + MIN_REC > NAV_CHUNK_SIZE, "the 27th record cannot fit — it is pushed");
+        const { assert!(494 + MIN_REC > NAV_CHUNK_SIZE, "the 27th record cannot fit — it is pushed") };
         let pushed = ids_of(&[2; 27]);
         let mut want: Vec<(u32, u32)> = (0..26).map(|o| (0, o)).collect();
         want.push((1, 0));

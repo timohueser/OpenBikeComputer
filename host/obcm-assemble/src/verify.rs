@@ -93,7 +93,11 @@ pub fn verify_shard(
         )));
     }
     if src.len() as u64 > crate::shard::FILE_CEILING {
-        return Err(Error::Verify(format!("the shard is {} bytes, past the 4 GiB − 1 ceiling", src.len())));
+        return Err(Error::Verify(format!(
+            "the shard is {} bytes, past the {}-byte interior its `Offset Scale` covers (OBCM §1.1)",
+            src.len(),
+            crate::shard::FILE_CEILING
+        )));
     }
 
     let cache = MapCache::new_boxed();
@@ -112,7 +116,7 @@ pub fn verify_shard(
             }
             continue;
         }
-        check_offset_table(src, lod, i)?;
+        check_offset_table(src, lod, i, tables.scale())?;
         // The leaf walk borrows the reader's index cache for its duration, so the chunk list is
         // collected first and decoded after — a nested streaming call would legally fail.
         let mut chunks: Vec<(u32, BBox)> = Vec::new();
@@ -159,15 +163,26 @@ pub fn verify_shard(
 /// The entries are **units** since v14, so every comparison here is made in that currency and only
 /// the two that leave it — the span bound and the region's end — multiply, always after widening
 /// (§1.1).
-fn check_offset_table(src: &dyn ByteSource, lod: &obc_reader::Lod, i: usize) -> Result<()> {
-    let unit = crate::shard::SCALE.unit();
+fn check_offset_table(
+    src: &dyn ByteSource,
+    lod: &obc_reader::Lod,
+    i: usize,
+    scale: obc_formats::obcm::OffsetScale,
+) -> Result<()> {
+    // **The file's own scale, not this crate's.** `crate::shard::SCALE` is what the assembler
+    // *writes*; this pass reads a file back, and a verifier that resolves offsets against its own
+    // constant agrees with itself no matter what byte 40 says. §1.1's whole point is that the unit
+    // travels in the file.
+    let unit = scale.unit();
     let table_start = lod.index_offset + lod.node_count * 4;
     let raw = crate::input::read_at(src, table_start, (lod.chunk_count + 1) * 4)?;
     // §5.1's v14 restatement of "a chunk may not span more than `Chunk Size`": a chunk's *content*
     // still may not exceed it, and its *span* is that content rounded up to a unit — so the tight
     // bound is `align_up(Chunk Size, U)` and the looser `Chunk Size + U - 1` would admit spans no
     // writer can produce.
-    let span_bound = crate::shard::align_up(lod.chunk_size as u64);
+    let span_bound = scale.align_up(lod.chunk_size as u64).ok_or_else(|| {
+        Error::Verify(format!("LOD {i}: chunk size {} does not round to a unit boundary", lod.chunk_size))
+    })?;
     let mut prev = 0u32;
     for (k, w) in raw.chunks_exact(4).enumerate() {
         let v = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
