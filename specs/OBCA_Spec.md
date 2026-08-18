@@ -212,7 +212,15 @@ German average — the Rhine plain carries more road and more building than the 
 | `network` — nav + POI | 6.30 | 3.80 | 7.06 | 3.7 / 5.3 / 19.5 MiB |
 | **whole map** | **16.7** | **13.4** | **20.3** | |
 
-> **Why these boundaries.** **No ladder LOD lives in the core file.** The core carries the nav
+> **Why these boundaries.** ⚠️ **Half of this justification is superseded** (OBCM v14, #1420): the
+> `4 GiB − 1` file ceiling every "must fit one file" clause below appeals to is gone, and with it
+> the core-versus-shard split those clauses were protecting. **What survives is fetch-unit
+> uniformity**, which is about the size of one *download*, not one file — that is the property the
+> band boundaries are actually set by, and it is unaffected. Read the rest as the reasoning that
+> produced the v1 table rather than as a live constraint; the table itself stands, because the sizes
+> it names are still the sizes.
+>
+> **No ladder LOD lives in the core file.** The core carries the nav
 > graph, the POIs and the style table and nothing else (§5.1), because it is the one file of a set
 > that cannot be split by bbox — so every byte that *can* scale horizontally is kept out of it. The
 > band boundaries are therefore set by two properties that really are about geometry: the size of

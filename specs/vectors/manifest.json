@@ -488,7 +488,7 @@
       "store_epoch": "0xA1B2C3D4",
       "obcm_version": 13,
       "feature_bits": null,
-      "_note": "obcm_version is the OBCM map-format version the reader reads (obc_formats::obcm::VERSION), NOT the protocol version beside it. The builder self-sources it, so an OBCM bump re-cuts this fixture and this number on purpose \u2014 and one is pending: OBCM_Spec.md is v14 since #1420, obc_formats::obcm::VERSION follows in FS7.5b, and this file REGENERATES WITH FS7.5b as obcm_version 14. The 13 here is correct for the constant as it stands Since WX3 (#1188) this is the read a device WITHOUT the weather contract serves \u2014 the capability word is absent, so has_weather is false; version-read-features.bin is the widened form."
+      "_note": "obcm_version is the OBCM map-format version the reader reads (obc_formats::obcm::VERSION), NOT the protocol version beside it. The builder self-sources it, so an OBCM bump re-cuts this fixture and this number on purpose \u2014 and one is pending: OBCM_Spec.md is v14 since #1420, obc_formats::obcm::VERSION follows in FS7.5b, and this file REGENERATES WITH FS7.5b as obcm_version 14. The 13 here is correct for the constant as it stands. Since WX3 (#1188) this is the read a device WITHOUT the weather contract serves \u2014 the capability word is absent, so has_weather is false; version-read-features.bin is the widened form."
     },
     "version-read-features.bin": {
       "format": "protocolVersion read (spec 1), WX3 #1188 \u2014 version u16 \u00b7 store_epoch u32 \u00b7 obcm_version u8 \u00b7 feature_bits u32",

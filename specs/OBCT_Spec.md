@@ -22,9 +22,11 @@ track, which is the whole reason it is not an OBCM section (§0.1).
 > is now spliced into the map file's terrain region ([`OBCM_Spec.md` §1.3](OBCM_Spec.md)) instead of
 > riding beside it as a volume-set role or a sidecar. The container is embedded **verbatim** and the
 > map reader hands it over as a window rather than parsing it, so every argument in §0.1 for keeping
-> terrain out of OBCM's *parse* survives intact — an OBCM consumer still learns no terrain section,
-> and a terrain re-bake still touches no map semantics. One file, two formats, one of them opaque to
-> the other.
+> terrain out of OBCM's **parse** survives intact — an OBCM consumer still learns no terrain
+> section. The arguments about *carriage* do not all survive, and §0.1 marks the two that do not:
+> a rider can no longer decline the raster at download, and a re-bake re-emits the map — terrain is
+> part of the map, and partial updates are not an operation this system offers. One file, two
+> formats, one of them opaque to the other.
 
 This document is normative. The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are to be
 interpreted as in RFC 2119.
@@ -74,19 +76,33 @@ and whose §8 nav graph stores the ascent integrated *from* these samples.
 
 ### 0.1 Why not an OBCM section
 
-The alternative — a raster section inside OBCM, like POIs (§7) or the nav graph (§8) — was rejected
-on four counts, all of which are properties of *terrain*, not preferences:
+The alternative — a raster **section** inside OBCM, like POIs (§7) or the nav graph (§8) — was
+rejected on four counts, all of which are properties of *terrain*, not preferences. **OBCM v14
+(#1420) does not overturn that**: an assembly's raster now travels inside the map *file*, but as an
+opaque region the map reader hands over as a window (`OBCM_Spec.md` §1.3), never as a section it
+parses. Two of the four counts survive untouched and two are weakened by the move — marked below,
+because a rationale that quietly stopped being true is worse than one that was never written:
 
 - **Revision lockstep.** OBCA principle 5 makes every cell in an assembly share one OBCM version and
   schema revision. Terrain would inherit that and be re-published on every unrelated bump.
-- **Blast radius.** Every existing consumer of OBCM would have to learn a section it never reads.
-  As a separate artifact, `obc-reader`, `obcm_diff` and `obcm-testkit` are untouched.
+- **Blast radius.** ⚠️ **Weakened by v14, and it was the more fragile of the two.** The point stands
+  where it counts — no OBCM consumer parses a terrain *section*, so `obcm_diff` and `obcm-testkit`
+  learn nothing about rasters and the graft path is unchanged. But "untouched" is no longer true of
+  `obc-reader`: v14 changes what every header offset *means*, so the reader moves regardless, and it
+  gains the one job of cutting the §1.3 window and handing it to `obc-elevation`. That is a seam,
+  not a parse, and the distinction is the whole of what this section still buys.
 - **Splittability.** A raster splits by bbox trivially, so it never spent the core file's headroom
   when that was the scarcest resource in a set (OBCA principle 7, superseded with OBCA §5). The
   property still holds and is still worth having; it is simply no longer paying for anything, since
   OBCM v14's interior has room for the raster and the map together.
-- **Independence.** A rider who does not want terrain does not download it, and a terrain re-bake at
-  a new posting does not touch the map.
+- **Independence.** ⚠️ **Overturned by v14 for an assembly; intact for a published cell.** With the
+  raster inside the map object, a rider cannot decline it at download, and a re-bake at a new
+  posting re-emits the map. `OBCM_Spec.md` §1.3 states that positively rather than as a regret —
+  terrain is part of the map and partial updates are not a supported operation — and the separable
+  raster it declines was never once used in its life. What survives is the half that is about the
+  *catalog*: terrain is still published on its own revision track, so a terrain re-bake does not
+  re-bake a single cell of map content, and a map bump does not re-bake a single raster. The
+  independence is now upstream of the assembler instead of on the card.
 
 ---
 

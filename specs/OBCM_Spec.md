@@ -291,10 +291,19 @@ map is from a future firmware when the byte is simply corrupt is the wrong answe
 
 The two ends of that range are the two things a unit sits between. At `0` a unit is one byte and the
 arithmetic is v13's exactly, which is what makes this an encoding change rather than a new
-addressing scheme. At `9` a unit is 512 bytes — one card block, the smallest thing the medium itself
-addresses — and a coarser unit would round every structure past the grain any read could use while
-still charging the filler for it; `9` addresses 2 TiB, which is past any card the store can hold an
-object on.
+addressing scheme.
+
+At `9` a unit is 512 bytes, and the reason the range stops there is arithmetic rather than taste:
+**`9` is the largest scale at which `512 % U == 0`.** 512 is both the card block and this format's
+own fixed chunk size — §7's POI chunks and §8's node, edge and snap chunks are all 512-byte strides
+from their region's start — so while `U` divides 512, every one of those chunk starts falls on a
+unit boundary that the region start already established, and those runs carry no filler anywhere
+inside them. At scale `10` a 1,024-byte unit no longer divides the stride: chunk `1` of every such
+run lands mid-unit, and the format would begin paying alignment cost inside runs that are already
+aligned to the medium. The secondary cost points the same way — §5's geometry chunks average about
+1,600 bytes (§5.1), so a 512-byte unit already spends about a sixth of one on filler and a larger
+unit spends more than the chunk. `9` addresses 2 TiB, past any card the store can hold an object
+on, so nothing is given up by stopping there.
 
 Recording it as a **logarithm** is what makes "a power of two" a property of the encoding rather
 than a rule someone has to check: no byte in this field names a unit that is not one, and no offset
@@ -302,8 +311,10 @@ in the file can name a boundary that is not a multiple of it. It is the same tri
 reason, that `FLAT_Store_Format.md` §4 plays with the card's extent size — a grain that has to scale
 with the medium, written once as an exponent, so that outgrowing it is a value and not a format.
 
-One rule binds a producer: **the scale MUST cover the file it writes** — `2^32 × U` MUST exceed the
-file's total length. A file whose own bytes reach past what its scale can address is malformed, and
+One rule binds a producer: **the scale MUST cover the file it writes** — `2^32 × U` MUST be at
+least the file's total length. ("At least", not "exceed": the largest legal file is exactly
+`2^32 × U` bytes, whose last structure starts no later than `(2^32 - 1) × U` and is therefore still
+expressible.) A file whose own bytes reach past what its scale can address is malformed, and
 the producer that laid it out is the only party positioned to notice; a reader that never resolves
 the last section never sees a thing wrong. Everything in this tree writes `4` today, which is also a
 byte-determinism pin: two bakes of the same input agree byte-for-byte, and a map past 64 GiB becomes
@@ -329,35 +340,69 @@ Three kinds of gap follow, and none of them is content:
 A reader never sees any of it. A chunk's content ends at its sentinel, a record's at its own length,
 and no offset in the file names a filler byte. `0xFF` is the fill because it is already this
 format's "nothing here" byte in every chunked section — the style-id sentinel (§5.1), the POI
-subtype sentinel (§7.3), the nav degree sentinel (§8.3) — so filler that *did* leak into a decode
-path meets a stop rather than a plausible record. Reserved **fields** are still written `0`: a field
-is content that means nothing yet, and a gap is not content at all.
+subtype sentinel (§7.3), the nav degree sentinel (§8.3), the edge `Pt Count` sentinel (§8.4) — so
+filler that *did* leak into a decode path meets a stop rather than a plausible record. Reserved
+**fields** are still written `0`: a field is content that means nothing yet, and a gap is not
+content at all.
 
-**What it costs.** Only §5's offset-table-addressed geometry chunks pay per chunk. §7's POI chunks
-and §8's node, edge and snap chunks are fixed 512-byte chunks addressed as `k × 512` from a region
-start that is already aligned, and 512 is a multiple of `U` at every legal scale, so they pay
-nothing at all — the alignment falls out of a stride they already had. A geometry chunk's gap is
-`0..U-1` bytes, averaging `U/2` across the residues:
+A walk through a chunk ends at that stop **or at the chunk's end, whichever comes first**, and both
+halves are needed. §8.7's snap chunk is the case that shows why: 512 bytes hold at most
+`floor(512 / 12) = 42` twelve-byte anchors, leaving an eight-byte tail too short for a reader to
+read a sentinel *out* of — a record starting there would put its `Edge Id` field at bytes `512..516`.
+So the byte count bounds that walk and the sentinel bounds the others, and a reader that relies on
+only one of the two is wrong in one section each way.
+
+**What it costs, and it is two costs, not one.**
+
+*Per chunk*, only §5's offset-table-addressed geometry chunks pay. §7's POI chunks and §8's node,
+edge and snap chunks are fixed 512-byte strides from an already-aligned region start, and `U`
+divides 512 at every legal scale (§1.1), so every one of those chunk starts is a unit boundary
+already and the runs carry no filler inside them. A geometry chunk's gap is `0..U-1` bytes, and the
+gap `(U - len mod U) mod U` averages **`(U-1)/2 = 7.5`** bytes across the sixteen residues:
 
 | chunk length | average gap at `U = 16` | worst gap |
 | --: | --: | --: |
-| 512 B | 8 B — **1.6 %** | 15 B — 2.9 % |
-| ~1,600 B (§5.1's measured average chunk) | 8 B — **0.5 %** | 15 B — 0.9 % |
-| 4,096 B | 8 B — 0.2 % | 15 B — 0.4 % |
+| 512 B | 7.5 B — **1.5 %** | 15 B — 2.9 % |
+| ~1,600 B (§5.1's measured average chunk) | 7.5 B — **0.47 %** | 15 B — 0.9 % |
+| 4,096 B | 7.5 B — 0.18 % | 15 B — 0.4 % |
 
 `Chunk Size` is capped at `4101` by §5.2's vertex bound, so those three rows are the whole
-expressible range for this format: **0.2–1.6 % of geometry bytes, ~0.5 % at the measured average**,
-and 0 % of everything else. (A 16 KiB chunk would pay 0.05 %, which is where that figure comes from;
-OBCM cannot express one.) Set against v11, which removed the 53–65 % of a file that was chunk
-padding, this version gives back under one part in a hundred of that win — and it is the same
-trade in the same direction: a few bytes per chunk to stop a fixed stride from dictating the file's
-reach.
+expressible range: **0.18–1.5 % of geometry bytes, ~0.47 % at the measured average**. (A 16 KiB
+chunk would pay 0.05 %, which is where that figure comes from; OBCM cannot express one.) Set against
+v11, which removed the 53–65 % of a file that was chunk padding, this gives back under one part in a
+hundred of that win, and it is the same trade in the same direction: a few bytes per chunk to stop a
+fixed stride from dictating the file's reach.
+
+*Per region and per section boundary*, **everything pays** — one gap of `0..U-1` bytes each,
+including the sections that pay nothing per chunk. §8.5's worked example is the honest illustration:
+its nav section carries `8 + 12 + 12 = 32` bytes of unit-alignment gap in 2,560 bytes, **1.25 %**,
+because a 2,560-byte section is almost all boundary. That ratio is an artefact of the example's
+size, not a rate: the count of gaps is a property of the file's *structure* — two per LOD (its index
+and its `data_start`) plus a couple of dozen fixed ones across the header, the style and LOD tables,
+the six POI categories, the hours pool, the nav section's six and the terrain region — so about 50
+in a full-ladder map, a few hundred bytes in total, vanishing against any real map. It is not zero, though, and it is not per-byte, which is the shape a
+producer's byte-determinism pin has to encode: the gaps are part of the file, and two bakes agree
+on them or they do not agree at all.
 
 ### 1.3 The terrain region
 
 `Terrain Offset` and `Terrain Length` are a scaled pointer to a region at the file tail holding one
 [OBCT](OBCT_Spec.md) container, byte-for-byte the bytes `obc-dem` bakes and the assembler splices.
 Terrain sits last precisely so that splicing it moves no other offset.
+
+> **Terrain is part of the map** (owner, 2026-08-18). **Partial updates are not a supported
+> operation**: a terrain re-bake re-emits the map, the same as any other content change. There is no
+> terrain-only update path, no separable raster object, and no client obligation to reconcile one —
+> a rider taking a new raster is taking a new map, and that is the whole of the contract.
+>
+> This is stated as a design statement rather than discovered as a limitation, because the
+> capability it declines — replace the raster alone, leave the map — existed under the volume-set
+> roles for its entire life and was exercised **zero times**. Keeping it would mean carrying a
+> second object, its identity, its version pairing and its reconciliation for a hypothetical
+> operation, which is the exact complexity class this version deletes. Supporting context, not
+> justification: a new Copernicus posting is a yearly event at most, and a full re-send lands inside
+> the transfer worst case the no-resume rule already accepts — about twenty minutes over USB
+> ([`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md) §1).
 
 `Terrain Offset == 0` means **the map carries no elevation**, and `Terrain Length` MUST then be `0`;
 a reader MUST refuse a file that sets one without the other. `0` is unambiguous as an absence
@@ -930,12 +975,18 @@ Count == 0`) — but still carries its profile table (§8.6), never a zero offse
 Layout, in file order:
 
 ```
-[Nav Directory]     (28 bytes — the graph's resident header, §8.1)
+[Nav Directory]     (40 bytes — the graph's resident header, §8.1)
+[Filler]            (0..U-1 bytes of 0xFF — the directory is 40 bytes, §1.2)
 [Profile Table]     (§8.6 — 1..=8 bike profiles, always present)
-[Alignment Padding] (0..511 zero bytes in populated files)
+[Filler]            (0..511 bytes of 0xFF in populated files — the producer's 512-byte alignment)
 [Node Quadtree]     (§4 encoding over the header global bbox)
+[Filler]            (0..U-1 bytes of 0xFF — align_up to the first node chunk, §8.1)
 [Node Chunks]       (variable-length junction records, bin-packed, §8.3)
-[Edge Pool]         (chunked edge records addressed by byte offset, §8.4)
+[Edge Pool]         (512-byte chunks; a record is named by (chunk, ordinal), §8.4)
+[Filler]            (0..511 bytes of 0xFF)
+[Snap Index]        (§8.7 — the sparse exact-edge anchor quadtree, v13)
+[Filler]            (0..U-1 bytes of 0xFF)
+[Snap Chunks]       (fixed 512-byte anchor chunks, §8.7)
 ```
 
 Design intent: the device is too RAM-tight for any id → offset table (a real
@@ -1131,22 +1182,40 @@ still carries **zero resident index bytes**, which is the property that chose th
 edge-id table in the first place and the property v14 had to preserve.
 
 **Resolving one.** A reader reads the single 512-byte chunk at `chunk_start` and walks `ordinal`
-records from its first byte, taking each record's length from its own `Pt Count`:
+records from its first byte, taking each record's length from its own `Pt Count`. Every record the
+walk touches — the intermediate ones and the target alike — gets the **same four checks**, so the
+walk is written once and applied `ordinal + 1` times:
 
 ```
+# `p` is a byte position in 0..=512. Every bound below is written ADDITIVELY on `p`.
+step(p):
+    if p + 19 > 512:            refuse   # no record fits: 19 B is the format's smallest
+    n = u16_at(p + 4)                    # Pt Count
+    if n == 0xFFFF:             refuse   # end-of-chunk sentinel: no record here
+    if n < 2:                   refuse   # impossible count; also what stops 4*(n-1) underflowing
+    len = 15 + 4 * (n - 1)
+    if p + len > 512:           refuse   # record claims bytes past its chunk
+    return len
+
 p = 0
 repeat ordinal times:
-    if 512 - p < 19 or u16_at(p + 4) == 0xFFFF:   refuse          # no record starts here
-    p += 15 + 4 * (u16_at(p + 4) - 1)
-if 512 - p < 19 or u16_at(p + 4) == 0xFFFF:       refuse          # ordinal past the last record
-if p + 15 + 4 * (u16_at(p + 4) - 1) > 512:        refuse          # record runs off the chunk
+    p += step(p)                         # every intermediate record is bounds-checked too
+step(p)                                  # the target record, same four checks
 ```
 
-Three refusal rules, and a reader MUST apply all three, because an `Edge Id` reaches it from an
+**`512 - p` MUST NOT appear anywhere in that walk, in any width.** Written as `512 - p < 19` the
+guard is a bug in every unsigned language this spec is implemented in: once `p` passes `512` — which
+a corrupt `Pt Count` does in a single step — the subtraction wraps to a huge value, the guard passes,
+and `u16_at(p + 4)` reads outside the chunk. This is the same class of mistake as the `u32 * U`
+narrowing §1.1 warns about, and it is spelled out here because this block is the one a reader
+transcribes verbatim.
+
+Four refusal rules, and a reader MUST apply all of them, because an `Edge Id` reaches it from an
 adjacency entry or a snap record and is arbitrary in a corrupt map: `chunk_index < Edge Chunk
-Count`; the walk MUST NOT pass the chunk's last record (an `ordinal` past it is invalid, never a
-neighbouring record); and no record may claim bytes past its chunk. A refused id is a malformed
-map, not an absent edge.
+Count`; no record may start where one cannot fit; the walk MUST NOT pass the chunk's last record (an
+`ordinal` past it is invalid, never a neighbouring record — and not a record of the *next* chunk,
+which is why the bound is `512` and not the pool's end); and no record may claim bytes past its
+chunk. A refused id is a malformed map, not an absent edge.
 
 **`Pt Count == 0xFFFF` is the end-of-chunk sentinel**, and it costs a writer nothing: chunks are
 already `0xFF`-filled, so the two bytes at `p + 4` of a gap already spell it. `Pt Count` is at least
@@ -1158,10 +1227,8 @@ there either way.
 **Why five bits, and what they buy.** An edge record is `15 + 4 × (Pt Count − 1)` bytes with
 `Pt Count ≥ 2`, so the smallest record this format can express is **19 bytes** and a 512-byte chunk
 holds at most `floor(512 / 19) = 26` of them. Five bits name `0..=31`, which covers 26 with room to
-spare, and leave **27** for the chunk index. A producer MUST NOT put more than 32 records in one
-chunk — a bound no record size this format allows can reach, stated so the encoding stays sound if a
-future record ever shrinks. Six bits of ordinal would have left 26 for the chunk and capped the pool
-at 32 GiB, *below* the interior; five is the split where the two ceilings meet:
+spare, and leave **27** for the chunk index. Six bits of ordinal would have left 26 for the chunk
+and capped the pool at 32 GiB, *below* the interior; five is the split where the two ceilings meet:
 
 ```
 pool ceiling = 2^27 chunks × 512 B/chunk = 2^36 B = 64 GiB
@@ -1186,6 +1253,16 @@ interior     = 2^32 units × 16 B/unit    = 2^36 B = 64 GiB      (§1.1, at the 
 > directory claims and no id reaches. (That is the same posture `FLAT_Store_Format.md` §6 takes
 > toward an extent count its index cannot name.)
 
+**A chunk holds at most 31 records** — a producer MUST NOT write a 32nd, so `ordinal` is never more
+than `30`. Today's 19-byte minimum record puts the real maximum at 26, so the cap gives up nothing;
+it exists so that the encoding stays sound if a future record ever shrinks. **31 and not 32, and the
+one-off matters**, because it is what makes `0xFFFFFFFF` impossible *unconditionally* rather than
+conditionally: `0xFFFFFFFF` is ordinal `31` of chunk `2^27 − 1`, and both halves of that are
+otherwise legal — `Edge Chunk Count` may be `2^27`, so the last chunk exists, and a 32-record cap
+would permit ordinal `31` in it the moment a record shrank to 16 bytes (`floor(512 / 16) = 32`),
+which is precisely the case the cap is written for. A cap of 31 removes the ordinal half outright,
+so the sentinel's soundness rests on one premise instead of two.
+
 **What the walk costs.** At most 25 steps — a `u16` read and an add each — over a 512-byte buffer
 the reader has already fetched, against the byte offset's one division. No extra I/O: the chunk that
 holds the record is the chunk that holds every record before it, which is the whole reason the
@@ -1194,7 +1271,8 @@ way, because it never fetches geometry (§8's design intent); the walk is paid a
 and route emit, where a 512-byte read already dominates it.
 
 **`0xFFFFFFFF` remains an impossible id**, which is what keeps §8.7's sentinel working: it names
-ordinal `31` of chunk `2^27 − 1`, and no chunk holds 32 records.
+ordinal `31`, and the 31-record cap above puts every real ordinal at `30` or below — whatever the
+chunk index, whatever a future record's size.
 
 Edge record (`15 + 4 × (Pt Count - 1)` bytes):
 
@@ -1229,7 +1307,8 @@ construction**:
   serializer additionally splits any piece whose densified record would exceed one
   chunk (`Pt Count > (512 − 15) / 4 + 1`, i.e. 125 points) or whose endpoint span
   would exceed the `int16` bound after densification. Because the smallest record is 19 bytes, a
-  chunk that survives those splits holds `1..=26` records, inside the ordinal's `0..=31` (v14). Routing-neutral: each piece's
+  chunk that survives those splits holds `1..=26` records — inside v14's 31-record cap, and so
+  inside the ordinal's `0..=30`. Routing-neutral: each piece's
   `Length M` is re-measured over its sub-polyline, so costs still sum to the
   original.
 
