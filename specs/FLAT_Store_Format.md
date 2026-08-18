@@ -116,8 +116,8 @@ same numbers and defines no others.
 | 2 | trip | ordered route membership |
 | 3 | ride | produced by the device; the one growing object (§7) |
 | 4 | weather bundle | OBCW payload; at most one retained previous revision |
-| 5 | map shard | OBCM or OBCT payload |
-| 6 | map set manifest | names shards by `ObjectId`; a set activates when its manifest commits |
+| 5 | map shard | OBCM or OBCT payload. **Since OBCM v14 (#1420) a map is one object** carrying its terrain inside it (`OBCM_Spec.md` §1.3), so this kind is simply *map*; the name and the value stay until FS7.5c renames it |
+| 6 | map set manifest | ~~names shards by `ObjectId`; a set activates when its manifest commits~~ — **retired with `OBCA_Spec.md` §5** (#1420). No producer writes this kind after FS7.5b; the value is not reissued |
 | 7 | update package | OBCU image |
 | 8 | firmware rollback reserve | extents owned by the store, payload written by the bootloader (§5.3) |
 

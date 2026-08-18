@@ -21,7 +21,7 @@ what still works when a card carries no terrain at all.
 ## The pipeline, end to end
 
 <figure class="fig">
-<svg viewBox="0 0 720 420" role="img" aria-label="The terrain pipeline in three bands. Top band, left to right: Copernicus GLO-30 float32 GeoTIFF tiles are resampled by the host tool obc-dem into terrain cells of 2 to the 19 microdegrees, published as .obcd objects on their own revision track; a selection's cells are then placed by the assembler into one terrain shard carried on the card, either as MS-id.OBD inside a volume set or as an .obcd sidecar beside a single-file map. Middle band, spanning the full width: obc-elevation, the single implementation of the OBCT section 5 sampling rules — integer bilinear over a four-slot 512-byte tile cache. Bottom band, three consumers fed from that one sampler: the packer integrating per-edge ascent into the OBCM section 8.3 nav graph at bake time; the device's route emit filling each OBCR point's height when it plans a route; and the live altimeter fusion that turns the barometer's relative reading into an absolute elevation. A footer states that with no terrain file every one of those three answers no height here, and nothing else changes.">
+<svg viewBox="0 0 720 420" role="img" aria-label="The terrain pipeline in three bands. Top band, left to right: Copernicus GLO-30 float32 GeoTIFF tiles are resampled by the host tool obc-dem into terrain cells of 2 to the 19 microdegrees, published as .obcd objects on their own revision track; a selection's cells are then placed by the assembler into one terrain shard carried on the card, spliced into the map file's own terrain region since OBCM v14 (previously MS-id.OBD inside a volume set, or an .obcd sidecar beside a single-file map). Middle band, spanning the full width: obc-elevation, the single implementation of the OBCT section 5 sampling rules — integer bilinear over a four-slot 512-byte tile cache. Bottom band, three consumers fed from that one sampler: the packer integrating per-edge ascent into the OBCM section 8.3 nav graph at bake time; the device's route emit filling each OBCR point's height when it plans a route; and the live altimeter fusion that turns the barometer's relative reading into an absolute elevation. A footer states that with no terrain file every one of those three answers no height here, and nothing else changes.">
   <defs>
     <marker id="aT1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
     <marker id="aT2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
@@ -148,9 +148,13 @@ and never otherwise.
 `obcm-testkit` and the assembler's graft path never learn a raster exists. The format
 surface every existing consumer parses is unchanged.
 
-**Splittability.** A raster shards by bounding box trivially, so it never spends the
+**Splittability.** A raster splits by bounding box trivially, so it never spent the
 [core file's headroom](../formats/#one-map-several-files) — the scarcest resource in a
-volume set, because the nav graph is the one component that *cannot* be split by box.
+volume set, because the nav graph was the one component that *could not* be split by box. (Volume
+sets are superseded by OBCM v14,
+[#1420](https://github.com/timohueser/OpenBikeComputer/issues/1420): a map is one file, and an
+assembly's raster is spliced **into** it rather than carried beside it. The property still holds; it
+is no longer paying for anything.)
 
 **Independence.** A terrain re-bake at a new posting does not touch the map; a map
 re-bake does not touch the raster.
@@ -199,6 +203,15 @@ The one number that moved a *hard* limit is the nav graph's: two bytes per adjac
 entry pull the graph-alone 4 GiB ceiling from roughly 640–700 thousand km² down to
 630–690 thousand — still comfortably past DACH, and the documented escape hatch
 (sharding the nav graph) is unchanged and still unused.
+
+> **That ceiling is gone.** [OBCM v14](src:specs/OBCM_Spec.md)
+> ([#1420](https://github.com/timohueser/OpenBikeComputer/issues/1420)) scales every global offset
+> to 16-byte units and re-addresses the edge pool by `(chunk, ordinal)`, so a map — nav graph
+> included — reaches **64 GiB** rather than 4 GiB, and the flat store replaced the FAT32 file cap
+> underneath it. The two bytes per adjacency entry still cost what they cost; what they no longer
+> eat into is a limit at country scale. Sharding the nav graph was the escape hatch from a 4 GiB
+> file and is now unnecessary rather than merely unused: geometry, POIs and the graph share one
+> 64 GiB interior with no sub-region ceiling under it.
 
 ## What the router does with it
 

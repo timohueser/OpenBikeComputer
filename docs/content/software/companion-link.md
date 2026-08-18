@@ -216,6 +216,16 @@ Four more rules fall out of the same size:
 
 ### A big map arrives in pieces, and the last one is the one that counts
 
+> **Superseded — a map is one file and one transfer again.** OBCM v14
+> ([#1420](https://github.com/timohueser/OpenBikeComputer/issues/1420)) scaled the map format's
+> offsets to 16-byte units (64 GiB of interior) and moved the terrain raster inside the map file,
+> and the flat store replaced FAT32 and its 4 GiB cap. So the set, the packed shard counter, the
+> manifest written last and the torn-set cleanup below all retire together, and a map upload becomes
+> an ordinary single-object transfer. The accepted cost is stated plainly: a late break in a
+> multi-gigabyte send restarts from zero, inside the same twenty-minute worst case the
+> no-resume rule already accepted. Kept for the reasoning; the code goes in the slices that
+> implement v14.
+
 Past roughly Germany scale a map stops being a file. FAT32 caps one file at 4 GiB
 and the map format's own offsets are 32-bit, so a logical map becomes a **volume
 set**: a small manifest plus up to thirty-two other files — ordinary map files,
@@ -446,7 +456,9 @@ Giving up on a set deletes every file of it; quiescing after one refused shard
 must delete nothing at all, because the caller is about to re-send that shard and
 the rest of the set has to still be there. So abandonment names the *set*, and
 everything else is a quiesce. Getting that wrong is not a slow retry, it is a map
-that seals a manifest over no files.
+that seals a manifest over no files. (Retired with the set — see the marker above: with one map in
+one object there is no multi-file staging to abandon, and the distinction collapses into the single
+transfer's own abort.)
 
 ### What actually limits an upload
 
@@ -1187,6 +1199,9 @@ the current one. Shards go in index order and the manifest goes last, so an
 interrupted set is never visible as a map; Cancel sends the set-abandon edge
 even when it lands between two whole-file transfers. The progress line stays
 set-wide (`shard 3 of 8 · 62%`) rather than jumping back to zero per file.
+(Retired with the set — see the marker above: under OBCM v14 the assembler hands over one file, so
+the sequencing, the per-shard verify gate and the set-wide progress line all collapse into one
+transfer's own progress.)
 
 Everything else about the link is unchanged by the choice of wire: the same
 objects, the same restart-don't-resume rule, the same change signal, the same
