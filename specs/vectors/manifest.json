@@ -312,7 +312,7 @@
       "shard_index": 2,
       "total_len": 308,
       "crc32": "0x1BFB6E3C",
-      "note": "mapShard: object_id is NOT an object id \u2014 it is (shard_count << 8) | index, so 0x0802 is shard 2 of 8 (OBCA 5.1). The count rides every shard, not just the first, so a device refuses an over-large set at shard 0"
+      "note": "RETIRED by OBCM v14 (#1420): a map is one object, OBCA \u00a75 is superseded, and this fixture is DELETED WITH THE SET MACHINERY IN FS7.5b/c rather than regenerated. mapShard: object_id is NOT an object id \u2014 it is (shard_count << 8) | index, so 0x0802 is shard 2 of 8 (OBCA 5.1). The count rides every shard, not just the first, so a device refuses an over-large set at shard 0"
     },
     "transfer-set-terrain.bin": {
       "format": "transferControl (spec 4.2) \u2014 12 bytes, protocol v2",
@@ -321,7 +321,7 @@
       "object_id": 65535,
       "total_len": 6192,
       "crc32": "0xD86F2651",
-      "note": "terrainShard: the set's OBCT raster, MS<id>.OBD (OBCA 5.1's terrain role). New-only like the manifest \u2014 at most one per set, so there is nothing for an id to select. total_len/crc32 are terrain-shard.obcd's own, and it is sent after every mapShard and before the mapSet"
+      "note": "RETIRED by OBCM v14 (#1420): the raster now lives inside the map file (OBCM \u00a71.3), so this transfer no longer exists; DELETED IN FS7.5b/c rather than regenerated. terrainShard: the set's OBCT raster, MS<id>.OBD (OBCA 5.1's terrain role). New-only like the manifest \u2014 at most one per set, so there is nothing for an id to select. total_len/crc32 are terrain-shard.obcd's own, and it is sent after every mapShard and before the mapSet"
     },
     "transfer-set-manifest.bin": {
       "format": "transferControl (spec 4.2) \u2014 12 bytes, protocol v2",
@@ -330,7 +330,7 @@
       "object_id": 65535,
       "total_len": 648,
       "crc32": "0x8B2C4E17",
-      "note": "mapSet: the OBCS manifest, new-only and written last (OBCA 5.4). total_len is fixed by the RECORD count, not the shard count: 72 + 64 x 9 = the eight OBCM shards plus the terrain record, because OBCA 5.2's Shard Count counts every record (#1044). The record width is 64 since manifest v3 (#1389) gave every record its member ObjectId"
+      "note": "RETIRED by OBCM v14 (#1420): there is no set and no manifest; DELETED IN FS7.5b/c together with obc-formats/src/obcs.rs rather than regenerated. mapSet: the OBCS manifest, new-only and written last (OBCA 5.4). total_len is fixed by the RECORD count, not the shard count: 72 + 64 x 9 = the eight OBCM shards plus the terrain record, because OBCA 5.2's Shard Count counts every record (#1044). The record width is 64 since manifest v3 (#1389) gave every record its member ObjectId"
     },
     "transfer-download-request.bin": {
       "format": "transferControl (spec 4.2) \u2014 12 bytes, protocol v2",
@@ -488,7 +488,7 @@
       "store_epoch": "0xA1B2C3D4",
       "obcm_version": 13,
       "feature_bits": null,
-      "_note": "obcm_version is the OBCM map-format version the reader reads (obc_formats::obcm::VERSION), NOT the protocol version beside it. The builder self-sources it, so an OBCM bump re-cuts this fixture and this number on purpose. Since WX3 (#1188) this is the read a device WITHOUT the weather contract serves \u2014 the capability word is absent, so has_weather is false; version-read-features.bin is the widened form."
+      "_note": "obcm_version is the OBCM map-format version the reader reads (obc_formats::obcm::VERSION), NOT the protocol version beside it. The builder self-sources it, so an OBCM bump re-cuts this fixture and this number on purpose \u2014 and one is pending: OBCM_Spec.md is v14 since #1420, obc_formats::obcm::VERSION follows in FS7.5b, and this file REGENERATES WITH FS7.5b as obcm_version 14. The 13 here is correct for the constant as it stands. Since WX3 (#1188) this is the read a device WITHOUT the weather contract serves \u2014 the capability word is absent, so has_weather is false; version-read-features.bin is the widened form."
     },
     "version-read-features.bin": {
       "format": "protocolVersion read (spec 1), WX3 #1188 \u2014 version u16 \u00b7 store_epoch u32 \u00b7 obcm_version u8 \u00b7 feature_bits u32",
@@ -500,7 +500,7 @@
       "features": [
         "weather"
       ],
-      "_note": "The only read that entitles a phone to look for the Weather Request service. The capability word is an APPEND \u2014 the protocol version underneath it does not move \u2014 and the epoch deliberately differs from the 0xA1B2C3D4 the three older identity reads share, so a consumer that opens the wrong file fails on the epoch rather than passing everything except the feature word. obcm_version is self-sourced like its siblings'. A read of 8, 9 or 10 bytes is a broken u32, not a smaller capability set: it decodes as feature_bits absent."
+      "_note": "The only read that entitles a phone to look for the Weather Request service. The capability word is an APPEND \u2014 the protocol version underneath it does not move \u2014 and the epoch deliberately differs from the 0xA1B2C3D4 the three older identity reads share, so a consumer that opens the wrong file fails on the epoch rather than passing everything except the feature word. obcm_version is self-sourced like its siblings', and REGENERATES WITH FS7.5b as 14 (OBCM v14, #1420). A read of 8, 9 or 10 bytes is a broken u32, not a smaller capability set: it decodes as feature_bits absent."
     },
     "version-read-noobcm.bin": {
       "format": "protocolVersion read (spec 1), pre-#911 \u2014 version u16 \u00b7 store_epoch u32",

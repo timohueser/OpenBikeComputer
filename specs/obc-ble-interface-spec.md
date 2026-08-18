@@ -446,10 +446,19 @@ Every bulk payload is a typed **object**:
 | `10` | `tripList` | device → app | list object, §7.4 |
 | `11`–`15` | — | — | reserved (sensors, M4) |
 | `16` | `map` | host → device (upload) | an `.obcm` map — **USB only** (§10), see below |
-| `17` | `mapShard` | host → device (upload) | one OBCM shard of a volume set ([`OBCA_Spec.md` §5.1](OBCA_Spec.md)) — **USB only** |
-| `18` | `mapSet` | host → device (upload) | the OBCS set manifest ([`OBCA_Spec.md` §5.2](OBCA_Spec.md)) — **USB only** |
-| `19` | `terrainShard` | host → device (upload) | the set's OBCT terrain shard ([`OBCA_Spec.md` §5.1](OBCA_Spec.md)'s `terrain` role) — **USB only** |
+| `17` | `mapShard` | host → device (upload) | one OBCM shard of a volume set ([`OBCA_Spec.md` §5.1](OBCA_Spec.md)) — **USB only**; **retired**, see below |
+| `18` | `mapSet` | host → device (upload) | the OBCS set manifest ([`OBCA_Spec.md` §5.2](OBCA_Spec.md)) — **USB only**; **retired**, see below |
+| `19` | `terrainShard` | host → device (upload) | the set's OBCT terrain shard ([`OBCA_Spec.md` §5.1](OBCA_Spec.md)'s `terrain` role) — **USB only**; **retired**, see below |
 | `20` | `weatherBundle` | app → device (upload) | one OBCW v1 weather bundle ([`OBCW_Spec.md`](OBCW_Spec.md)), singleton at `object_id = 0` — §11.5 |
+
+> **Types `17`–`19` are retired by OBCM v14 / issue #1420, and FS7.5b/c is where they leave the
+> tree.** A map is one OBCM object with its terrain raster inside it
+> ([`OBCM_Spec.md` §1.3](OBCM_Spec.md)), so a map transfer is an ordinary single-object `PUT` of
+> kind *map* under protocol major **4** — [`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md) is the
+> normative contract for that, and it needs no map-shaped opcode at all. Nothing about the wire is
+> redesigned here: this note marks what dies. The three numbers stay spent (they are not reissued to
+> anything else), the "Volume sets" section below stops being normative with them, and type `16`
+> `map` is the shape the single transfer already had.
 
 `map` is the one type BLE could never have carried: a map is hundreds of
 megabytes, so the type would have been dead weight until a USB bulk endpoint
@@ -462,7 +471,9 @@ the payload is opaque bytes.
 join `map` in the USB-only band without a new one: a DACH-shaped **volume set**
 is 7.6–8.9 GiB across ~8 files ([`OBCA_Spec.md` §5.1](OBCA_Spec.md)).
 `terrainShard` (#1044) is the fourth: it is one more file of that same set. A
-device MUST answer any of the four with `error` on the radio.
+device MUST answer any of the four with `error` on the radio. (Retired with the set, above: a
+DACH-shaped map is those same 7.6–8.9 GiB as **one** object, the argument for the USB-only band is
+unchanged by that, and only `map` is left to make it.)
 
 `weatherBundle` (`20`, WX3 #1188) continues that numbering thread rather than
 quietly breaking it: `11`–`15` are still the sensors' (M4), `16`–`19` are now the
@@ -519,6 +530,14 @@ only object whose transfer is measured in minutes rather than frames.
    no device-assigned id, and the rule is one *uploaded* map, not one file.
 
 ### Volume sets: several transfers, one map (#1039)
+
+> **Superseded** by OBCM v14 / issue #1420, together with `OBCA_Spec.md` §5. A map is one object, so
+> none of the eight sequence rules below has anything left to sequence: no packed
+> `(shard_count, index)`, no manifest sent last, no set-wide ceiling, no torn-set cleanup. The
+> replacement is a single-object `PUT` under protocol major 4
+> ([`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md)), whose commit is the atomicity the
+> magic-last-write below was faking on FAT. Kept for history until FS7.5b/c deletes the code; do not
+> implement against it.
 
 A **volume set** ([`OBCA_Spec.md` §5](OBCA_Spec.md)) is one logical map spread
 over OBCM shards, optionally one OBCT **terrain shard**, and an OBCS manifest, so
@@ -912,7 +931,8 @@ two drains above discards them.
 
 Such an abort is a **pure quiesce**: apart from discarding an in-flight partial
 it MUST change no stored state — see §5 rule 6 for the one descriptor that is
-also an instruction (`mapSet`).
+also an instruction (`mapSet`). That exception retires with the set (`mapSet` is gone under OBCM
+v14), leaving the quiesce rule with no exception at all.
 
 A descriptor that names an unknown type/id or arrives mid-transfer is answered
 with a `transferResult` carrying `error` / `notFound` / `busy` (§4.3) and does not
@@ -1278,7 +1298,9 @@ It is mandatory for BLE uploads, every download receiver, `route`, `trip`,
 otherwise.
 
 The one exception is an upload of the USB-only map-shaped types `map`,
-`mapShard`, `terrainShard`, and `mapSet`. A device **MAY** omit the second serial
+`mapShard`, `terrainShard`, and `mapSet` — of which only `map` survives OBCM v14, and it survives
+carrying the terrain bytes the other two used to carry, so the exception's *reason* (these objects
+are gigabytes) applies more strongly rather than less. A device **MAY** omit the second serial
 whole-object calculation for those types while retaining the descriptor and its
 real `crc32`. Such a device MUST instead rely on the USB packet CRC/retry, the
 storage transport's block CRC/ECC, the exact announced byte count, the

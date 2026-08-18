@@ -11,23 +11,28 @@ carries. It defines four things:
 3. **The artifacts** — what a baked **cell** is (§3) and what an **assembly** built from cells
    must do (§4), including the navigation-graph seam rules that make routing correct across cell
    boundaries by construction.
-4. **Volume sets** (§5) — how one logical map becomes a set manifest plus 1..N physical OBCM
-   files, each inside the 4 GiB ceilings that FAT32 and OBCM's `uint32` offsets both impose, and
-   optionally the one [OBCT](OBCT_Spec.md) terrain shard that carries the map's elevation.
+4. ~~**Volume sets** (§5)~~ — **superseded**, see the marker below and §5.
 
-OBCA introduces **no new OBCM version and changes no OBCM semantics**. Every cell and every
-shard is an ordinary [OBCM v13](OBCM_Spec.md) file that today's reader parses unchanged; the only
-new bytes on the card are the small [set manifest](#5-volume-sets) of §5.2 and, where a selection
-has elevation, the terrain shard §5.1 names. What OBCA adds is a set of *constraints* on how those
-files are produced, plus the discipline that makes assembling them cheap enough to run in a browser.
+OBCA introduces **no new OBCM version and changes no OBCM semantics**. Every cell is an ordinary
+[OBCM](OBCM_Spec.md) file that today's reader parses unchanged. What OBCA adds is a set of
+*constraints* on how those files are produced, plus the discipline that makes assembling them cheap
+enough to run in a browser.
 
-> **Manifest v3** (FS7, #1389). The set manifest's `Version` byte is `3`: every record in §5.2 now
-> carries its member's **`ObjectId`** (`FLAT_Store_Format.md` §3), so a set resolves through object
-> identity rather than through the filenames §5.2 derives. The record grew 56 → 64 bytes, which makes
-> it a **hard cut** in the strongest sense — a v2 reader handed v3 bytes would find every record but
-> the first at the wrong offset — so the version byte refuses the file in both directions. (v2 was
-> EL4, #1072: it added the `terrain` role and made §5.3's role and tiling rules count OBCM shards
-> rather than records. Both cuts follow the pre-release rule: no migration, no compatibility path.)
+> **§5 (volume sets) and the OBCS manifest are superseded** by [OBCM v14](OBCM_Spec.md) / issue
+> #1420. A map is one OBCM object: v14's scaled offsets removed the format's 4 GiB ceiling and the
+> flat store removed FAT32's, so there is nothing left for a set to work around. Do not extend §5,
+> do not implement against it, and do not add a role, a record or a validation rule to it. The
+> section's text is kept for history until the code that reads it is deleted; `obc-formats`'
+> `obcs.rs`, the assembler's shard emitter, and the wire's `mapShard`/`mapSet`/`terrainShard` object
+> types all go in **FS7.5b/c**. §4's assembly contract is **not** superseded — an assembler still
+> grafts cells into one file; it simply emits that one file rather than a set of them, and splices
+> the terrain raster into `OBCM_Spec.md` §1.3's region rather than shipping it beside the map.
+>
+> (For history: manifest **v3** was FS7 #1389 — every record carried its member's `ObjectId` so a
+> set resolved through object identity rather than derived filenames, growing the record 56 → 64
+> bytes. **v2** was EL4 #1072 — it added the `terrain` role and made §5.3's role and tiling rules
+> count OBCM shards rather than records. Both were hard cuts under the pre-release rule; v3 shipped
+> a week before the re-scope that retired the whole idea.)
 
 This document is normative. The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are to be
 interpreted as in RFC 2119.
@@ -35,8 +40,8 @@ interpreted as in RFC 2119.
 Related contracts: [`OBCM_Spec.md`](OBCM_Spec.md) is the byte format of every cell, shard, and
 assembly; [`OBCC_Spec.md`](OBCC_Spec.md) is the catalog manifest that publishes cells and names
 the selectable regions; [`OBCT_Spec.md`](OBCT_Spec.md) is the terrain raster, a second artifact
-class on **this same grid** (§1) with its own revision track, carried beside a map rather than
-inside one; [`OBCU_Spec.md`](OBCU_Spec.md) is unrelated (firmware updates) and is cited only for
+class on **this same grid** (§1) with its own revision track, carried **inside** the assembled map
+since OBCM v14 (`OBCM_Spec.md` §1.3) rather than beside it; [`OBCU_Spec.md`](OBCU_Spec.md) is unrelated (firmware updates) and is cited only for
 the fixed-layout header conventions §5.2 follows.
 
 ## Design principles
@@ -67,13 +72,13 @@ the fixed-layout header conventions §5.2 follows.
 6. **Nothing self-made reaches a device unverified.** A catalog artifact was verified by the
    bakery; an assembly was made on the rider's own machine, outside the manifest. §4.8 therefore
    makes a full reader-based verify a *precondition* of writing a set, not an optional extra.
-7. **The core file's headroom is the scarcest resource, so nothing else may spend it.** A set's
-   geometry scales horizontally — more ground is more shards — but the core holds one unified nav
-   graph and is one file until the router learns sharded graphs. Its margin under `4 GiB − 1` is
-   therefore the design's hard limit, and every byte that *can* live in a splittable file does
-   (§5.1). The corollary is a robustness property, not a size optimisation: every file's size is
-   computable from the catalog before any download, so density growth degrades to a refusal in a
-   builder rather than to a malformed artifact (§5.7).
+7. ~~**The core file's headroom is the scarcest resource, so nothing else may spend it.**~~
+   **Superseded** with §5 (OBCM v14, #1420): there is no core file and no `4 GiB − 1` margin to
+   spend, because a map is one object whose interior scales to 64 GiB. What survives is the
+   corollary, and it survives unchanged: every file's size is computable from the catalog before any
+   download, so density growth degrades to a refusal in a builder rather than to a malformed
+   artifact — it is now **one** number checked against the card's free space rather than several
+   against a ceiling.
 
 ---
 
@@ -179,7 +184,7 @@ These values are the measured recommendation of epic #1016 D1, taken over whole-
 catalog states them (§6), a producer reads them from the catalog, and retuning them is a re-bake
 rather than a change to this document.
 
-| Band | Cell size | ≈ at 47°N | Carries | Assembly role (§5.1) |
+| Band | Cell size | ≈ at 47°N | Carries | Assembly role (§5.1 — superseded, see §5) |
 | :-- | :-- | :-- | :-- | :-- |
 | `coarse` | `2^20` µdeg (1.048576°) | 117 × 80 km | ladder LOD 0, 1, 2, 3, 4 | **coarse shard** |
 | `mid` | `2^19` µdeg (0.524288°) | 58 × 40 km | ladder LOD 5, 6, 7, 8 (semantic through 20 m/px) | geometry shard |
@@ -207,7 +212,15 @@ German average — the Rhine plain carries more road and more building than the 
 | `network` — nav + POI | 6.30 | 3.80 | 7.06 | 3.7 / 5.3 / 19.5 MiB |
 | **whole map** | **16.7** | **13.4** | **20.3** | |
 
-> **Why these boundaries.** **No ladder LOD lives in the core file.** The core carries the nav
+> **Why these boundaries.** ⚠️ **Half of this justification is superseded** (OBCM v14, #1420): the
+> `4 GiB − 1` file ceiling every "must fit one file" clause below appeals to is gone, and with it
+> the core-versus-shard split those clauses were protecting. **What survives is fetch-unit
+> uniformity**, which is about the size of one *download*, not one file — that is the property the
+> band boundaries are actually set by, and it is unaffected. Read the rest as the reasoning that
+> produced the v1 table rather than as a live constraint; the table itself stands, because the sizes
+> it names are still the sizes.
+>
+> **No ladder LOD lives in the core file.** The core carries the nav
 > graph, the POIs and the style table and nothing else (§5.1), because it is the one file of a set
 > that cannot be split by bbox — so every byte that *can* scale horizontally is kept out of it. The
 > band boundaries are therefore set by two properties that really are about geometry: the size of
@@ -537,8 +550,10 @@ an implicit metadata source.
 
 ## 4. The assembly contract
 
-An **assembly** is an OBCM file — or a volume set of them (§5) — built from catalog cells for one
-selection and one skin. This section defines what an assembler does.
+An **assembly** is **one** OBCM file built from catalog cells for one selection and one skin,
+carrying its terrain raster in `OBCM_Spec.md` §1.3's region when the selection has elevation. This
+section defines what an assembler does. (It used to say "or a volume set of them"; §5 is superseded
+by OBCM v14, and the emitter that splits an assembly into several files goes in FS7.5b.)
 
 ### 4.1 Inputs and preconditions
 
@@ -662,8 +677,9 @@ This is the most involved rebuild, and its order matters.
    assemblers of the same cells disagree about which islet reached the map.
 5. **Renumber** the surviving nodes densely from 0, in a deterministic order (`(lat, lon)`
    ascending is sufficient and content-derived).
-6. **Rebuild the edge pool.** `Edge Id` is a pool byte offset (`OBCM_Spec.md` §8.4), so every edge
-   record is re-emitted and every `Edge Id` re-derived. Edge polyline bytes MAY be copied from the
+6. **Rebuild the edge pool.** `Edge Id` names a record by its chunk and its position within that
+   chunk (`OBCM_Spec.md` §8.4 — it was a pool byte offset before OBCM v14, and either way it is a
+   property of *placement*), so every edge record is re-emitted and every `Edge Id` re-derived. Edge polyline bytes MAY be copied from the
    source record (they are self-contained: absolute anchor plus deltas), but their *placement* is
    new, and the no-straddle rule must be re-applied at the 512-byte chunk granularity.
 7. **Re-check the wire limits** (§4.8) and rebuild the node quadtree over the assembly bbox, with
@@ -713,14 +729,16 @@ uses — and MUST cover, per file of the set:
 5. **Nav reachability, as a report.** Emit the merged component histogram. An assembler SHOULD
    surface a selection whose largest component covers an implausibly small share of the graph,
    because that is what a broken seam looks like; it MUST NOT silently repair it.
-6. **Set invariants** (§5): exactly one core shard, and its bbox is the assembly bbox; each file
-   ≤ `4 GiB − 1 B` (and, per §5.7, each file's size equals what the pre-download projection said it
-   would be, within the stated budget); the coarse shards' bboxes tile the assembly bbox without
-   overlap and so do the geometry shards'; every file's LOD table lists the full ladder; nav and POI
-   sections non-empty **only** in the core; each band's LODs non-empty **only** in shards of that
-   band's role — in particular the core carries **no** geometry outside the single-file fast path.
-7. **Digests.** SHA-256 per file, recorded in the manifest (§5.2).
-8. **The terrain shard**, if the set has one (§5.1's `terrain` role). Every input is checked
+6. ~~**Set invariants** (§5)~~ — **superseded** with §5 (OBCM v14, #1420). One file has no roles
+   to check and no tiling to verify; what replaces this step is the header's own `Offset Scale`
+   covering the file's length (`OBCM_Spec.md` §1.1) and the file's size equalling what the
+   pre-download projection said it would be. FS7.5b writes the replacement rule; until then this
+   item describes an emitter that is on its way out.
+7. **Digests.** SHA-256 of the assembled file. (It was per file, recorded in the §5.2 manifest;
+   with one file there is one digest and nowhere in-band to record it — the catalog and the
+   transfer's own CRC carry it instead.)
+8. **The terrain region** — the raster, spliced into `OBCM_Spec.md` §1.3 rather than shipped as
+   §5.1's `terrain` shard. Every input is checked
    **before its bytes are copied**, because a bad cell must not reach the shard even to be caught on
    the way out: each downloaded object parses as an OBCT container through the real reader
    (`OBCT_Spec.md` §4.5 — magic, version, flags, the posting/cell pairing, the rectangle against the
@@ -728,16 +746,38 @@ uses — and MUST cover, per file of the set:
    truncated download and an out-of-bounds offset); its header's `Posting Log2` and `Cell Log2` equal
    the catalog's terrain block ([`OBCC_Spec.md` §13.1](OBCC_Spec.md)); it is the `1 × 1` container at
    exactly its own id that §13.1 requires of a *published cell*; and its SHA-256 equals the one the
-   pinned terrain index published. The written shard is then read back through the same reader, and
+   pinned terrain index published. The written region is then read back through the same reader —
+   through `OBCM_Spec.md` §1.3's window, once the raster lives inside the map — and
    every present cell's block MUST equal the block of the object it came from, with every square the
    assembly did not receive at directory `0`.
 
-A failure at any step MUST abort the whole assembly. A partially written set is not a degraded map;
-it is an unmountable one (§5.4), which is the correct outcome.
+A failure at any step MUST abort the whole assembly. A partially written map is not a degraded map;
+it is an unmountable one, which is the correct outcome. (That used to rest on §5.4's manifest-last
+trick; it now rests on the flat store's commit, which is the atomicity the trick was faking —
+`FLAT_Store_Format.md` §5.)
 
 ---
 
 ## 5. Volume sets
+
+> **Superseded** by [OBCM v14](OBCM_Spec.md) / issue #1420. A map is one OBCM object; there are no
+> shards, no roles, no manifest and no set. Nothing in this section is normative any more, and
+> nothing in it may be extended. It is kept until the code that reads it is deleted in FS7.5b/c:
+> `obc-formats/src/obcs.rs`, `obcm-assemble`'s shard emitter, the board's set mount, the builder's
+> `parseSetManifest`, and the `mapShard` / `mapSet` / `terrainShard` object types of the wire
+> contract.
+>
+> **What replaced each part.** The two 4 GiB ceilings §5 opens with are both gone: OBCM v14's scaled
+> offsets (`OBCM_Spec.md` §1.1) address 64 GiB of interior, and the flat store
+> (`FLAT_Store_Format.md`) is not FAT32 and has no file-size limit of its own. §5.1's roles and
+> tiling become one file. §5.2's manifest becomes the OBCM header. §5.3's validation becomes
+> OBCM's own header validation. §5.4's manifest-last atomicity becomes the flat store's commit,
+> which is the atomicity that trick was faking. §5.5's single-file fast path becomes the only path.
+> §5.6's empty-LOD cache is unnecessary when there is one file to dispatch to. §5.7's per-file size
+> projection survives in substance — a consumer still computes a selection's bytes from the catalog
+> before downloading — but it projects **one** number against the card's free space rather than
+> several against a ceiling, and the "refuse a selection whose core exceeds 4 GiB" rule goes with the
+> ceiling it names. The `terrain` role becomes `OBCM_Spec.md` §1.3's embedded region.
 
 One *logical* map is a **set**: a small manifest plus 1..N physical OBCM files. This is not an
 optimisation — two independent 4 GiB ceilings make it necessary, and the headline selection

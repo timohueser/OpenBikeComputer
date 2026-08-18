@@ -183,7 +183,10 @@ to exactly one band. Roles obey these rules:
 - at most one `coarse` band carries LODs and no sections;
 - every other band is `geometry`, carries LODs, and has no sections.
 
-These roles determine volume-set placement as specified by OBCA §5. A consumer
+These roles named volume-set placement, which OBCA §5 specified and OBCM v14 (#1420) superseded —
+one map is one file, so a band's role no longer decides which file its content lands in. The roles
+survive as what they always also were: the **partition** of the schema's content, which is why the
+rule below is the one that matters and is unchanged. A consumer
 MUST reject a band partition that loses or duplicates content.
 
 Style ids are schema data because cell feature headers contain them. A schema
@@ -440,19 +443,20 @@ The displayed byte estimate MUST sum the real `bytes` values of the deduplicated
 artifact entries; known-empty cells contribute zero. After digest verification,
 artifact bytes, selected known-empty identities, and the selected skin are
 passed to the OBCA assembler. Island pruning happens at assembly, seams unify only
-exact serialized coordinates, and the resulting mounted volume set follows
-[OBCA_Spec.md](OBCA_Spec.md).
+exact serialized coordinates, and the resulting mounted map follows
+[OBCA_Spec.md](OBCA_Spec.md) §4. (It read "volume set" before OBCM v14 / #1420 made a map one
+file; OBCA §5 is superseded.)
 
 The website and desktop app MUST use the same selection arithmetic, verified
 cell bytes, skin, and assembler. Host-specific file saving MUST NOT alter the
 assembled bytes.
 
 A consumer MAY stream assembler output directly to a connected device instead
-of first saving it. It MUST accept at most one emitted file at a time, verify
-that file's announced length and SHA-256 before transfer, preserve assembler
-order, and commit the volume-set manifest last. Cancellation or failure after
-one or more shards have been staged MUST abandon the incomplete set; it MUST NOT
-leave those shards selectable as a map.
+of first saving it. It MUST verify the emitted file's announced length and SHA-256 before transfer.
+Cancellation or failure MUST abandon the incomplete transfer and MUST NOT leave anything selectable
+as a map. (Before OBCM v14 / #1420 this rule sequenced several files and committed a volume-set
+manifest last; with one file the store's own commit is the sequencing, and FS7.5b/c is where the
+multi-file client path is deleted — `FLAT_Store_Protocol.md`.)
 
 ## 13. Terrain artifacts
 
@@ -545,7 +549,7 @@ A producer MUST verify each artifact's own OBCT header against its id before
 publishing it (OBCT §4.2): `Posting Log2` and `Cell Log2` MUST equal the block's,
 `Cell Rows` and `Cell Cols` MUST both be `1`, and `Cell Min I`/`Cell Min J` MUST equal
 the id's `i`/`j`. A published terrain cell is a container whose rectangle is `1 × 1`
-(OBCT §4.1); a wider rectangle is a shard and MUST NOT be published as a cell.
+(OBCT §4.1); a wider rectangle is an assembly raster and MUST NOT be published as a cell.
 
 ### 13.2 The terrain lockstep — the whole rule
 
