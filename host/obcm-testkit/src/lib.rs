@@ -19,10 +19,14 @@
 //! directory + profile table, 17-byte neighbor entries, pinned 512-byte nav chunks).
 //! **v10** grows the style record 6 → 8 bytes: a `dashed` flag bit + an optional
 //! `color2` u16 (spec §2, epic #556). **v11** packs geometry chunks tight behind a
-//! per-LOD offset table ([`chunk_region`], [`seal`]) and reorders the feature header
+//! per-LOD offset table (`chunk_region`, [`seal`]) and reorders the feature header
 //! — `flags` to byte 1, then either the 7-byte compact or 12-byte wide layout
 //! (issue #1009). **v12** adds directional ascent and profile climb weight. **v13** grows the nav
-//! directory to 40 bytes for the sparse exact-edge snap index. [`build_file`]/[`build_priority_tree`]
+//! directory to 40 bytes for the sparse exact-edge snap index. **v14** grows the header to 49 bytes
+//! (`Offset Scale` plus the `Terrain Offset` / `Terrain Length` pair) and makes every offset field a
+//! count of `U = 1 << Offset Scale` byte **units** (§1.1): every structure an offset reaches begins
+//! on a unit boundary and the `0..U-1` bytes before it are `0xFF` filler (§1.2) — see [`align_up`],
+//! [`filler_len`], [`scaled`] and [`splice_terrain`]. [`build_file`]/[`build_priority_tree`]
 //! write **empty** POI + nav sections so the reader accepts them; the directory,
 //! record, and pool builders ([`poi_directory`], [`pack_poi_record`], [`hours_pool`],
 //! [`nav_directory`], [`pack_nav_record`], [`pack_nav_edge_record`]) let the
@@ -39,8 +43,8 @@
 //!
 //! Style records are `(id, z_index, color_rgb565, weight, priority, dashed, color2)`; feature
 //! encoders ([`pack_line`], [`pack_line16`], [`pack_poly`], [`pack_poly_hole`]) return one
-//! packed feature, [`seal`] closes a chunk with its single `0xFF` sentinel, and [`chunk_region`]
-//! lays sealed chunks out behind their offset table.
+//! packed feature, [`seal`] closes a chunk with its single `0xFF` sentinel, and the file builders'
+//! `chunk_region` lays sealed chunks out behind their offset table.
 
 /// Hand-split OBCA volume-set fixtures (`OBCA_Spec.md` §5) — a monolithic file and the byte-level
 /// split of the same data into a manifest plus shards, so a differential render can assert the two
@@ -60,17 +64,59 @@ pub type Style = (u8, i8, u16, u8, u8, bool, Option<u16>);
 // Normative constants only: byte assembly below remains hand-written and never calls a production
 // serializer/parser, preserving the testkit as an independent oracle.
 pub use obc_formats::obcm::{
-    BRANCH_BIT, EMPTY_LEAF, HEADER_LEN, LOD_ENTRY_LEN, NAV_CHUNK_SIZE, NAV_DIR_LEN, NAV_EDGE_FIXED_LEN,
-    NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN, POI_CATEGORY_COUNT, POI_CAT_ENTRY_LEN,
-    POI_CHUNK_SIZE, POI_DIR_POOL_FIELDS_LEN, POI_HOURS_BLOB_LEN, POI_NAME_LEN, POI_RECORD_LEN,
+    nav_edge_id, BRANCH_BIT, EMPTY_LEAF, FILLER, HEADER_LEN, LOD_ENTRY_LEN, NAV_CHUNK_SIZE, NAV_DIR_LEN,
+    NAV_EDGE_FIXED_LEN, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN,
+    POI_CATEGORY_COUNT, POI_CAT_ENTRY_LEN, POI_CHUNK_SIZE, POI_DIR_POOL_FIELDS_LEN, POI_HOURS_BLOB_LEN, POI_NAME_LEN,
+    POI_RECORD_LEN,
 };
 use obc_formats::obcm::{
-    CHUNK_END, FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON, FEATURE_FLAG_WIDE, MAGIC,
-    STYLE_DASHED_BIT, STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK, VERSION,
+    CHUNK_END, FEATURE_FLAG_16BIT, FEATURE_FLAG_HOLES, FEATURE_FLAG_POLYGON, FEATURE_FLAG_WIDE,
+    HEADER_TERRAIN_LENGTH_OFF, HEADER_TERRAIN_OFFSET_OFF, MAGIC, OFFSET_SCALE_DEFAULT, STYLE_DASHED_BIT,
+    STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK, VERSION,
 };
 /// Distinctive (non-default) marker color baked into [`build_file`]'s header, so the
 /// reader's round-trip test is meaningful.
 pub const MARKER: u16 = 0xABCD;
+
+// --- §1.1/§1.2 scaled offsets ------------------------------------------------
+//
+// The three helpers below are the whole of v14's addressing, transcribed from the spec rather than
+// imported from `serialize.rs` — the packer's `align_up`/`filler_len`/`scaled` are the bytes this
+// kit is the independent oracle *for*.
+
+/// The `Offset Scale` byte every file this kit builds carries (§1.1): the base-2 logarithm of the
+/// offset unit, `4` ⇒ `U = 16`, the value every producer in this tree writes.
+pub const OFFSET_SCALE: u8 = OFFSET_SCALE_DEFAULT;
+
+/// `U`, the offset unit in bytes — `1 << OFFSET_SCALE`. A scaled offset counts these, not bytes.
+pub const UNIT: usize = 1usize << OFFSET_SCALE;
+
+/// The next unit boundary at or after `at` (§1.2's `align_up`). Every structure a header or
+/// directory offset reaches begins on one.
+pub const fn align_up(at: usize) -> usize {
+    (at + UNIT - 1) & !(UNIT - 1)
+}
+
+/// The `0..U-1` bytes of [`FILLER`] that [`align_up`] implies at `at`.
+pub const fn filler_len(at: usize) -> usize {
+    align_up(at) - at
+}
+
+/// The `uint32` a scaled offset field stores for byte offset `at`.
+///
+/// A scaled offset **cannot** name a byte that is not a multiple of `U`, so a non-boundary argument
+/// is a bug in the layout above it, not a rounding request — hence the panic. Every builder here
+/// aligns the cursor it passes, and a test handing this a bad offset fails loudly instead of
+/// silently writing a file the reader then rejects for the wrong reason.
+pub fn scaled(at: usize) -> u32 {
+    assert_eq!(at % UNIT, 0, "byte {at} is not on a {UNIT}-byte unit boundary (§1.1)");
+    (at / UNIT) as u32
+}
+
+/// Byte offset of the style table in every file this kit builds: the first unit boundary at or
+/// after the 49-byte header (§1.2), which at the default `U = 16` is `64` — so `Style Offset` is
+/// `4` and bytes `49..64` are [`FILLER`].
+pub const STYLE_OFFSET: usize = align_up(HEADER_LEN);
 
 /// One LOD layer: its quadtree index (flat u32 nodes) and its data chunks. Each chunk is the tight
 /// v11 byte string [`seal`] produces — `chunk_size` bounds it, it no longer pads to it.
@@ -105,13 +151,19 @@ fn style_table(styles: &[Style]) -> Vec<u8> {
     style_bytes
 }
 
-/// The 40-byte OBCM header (§1), shared by both file builders. The version byte is `VERSION`,
+/// The 49-byte v14 OBCM header (§1), shared by both file builders. The version byte is `VERSION`,
 /// so this builds whatever the reader currently reads — the length is asserted against
 /// `HEADER_LEN` below rather than trusted to this comment.
 ///
-/// `<4sBiiiiIBIHII`: magic, ver, min_lat, min_lon, max_lat, max_lon, style_off, lod_count,
-/// lod_table_off, marker_color, poi_section_off, nav_section_off. `bbox` is
-/// `(min_lon, min_lat, max_lon, max_lat)`.
+/// `<4sBiiiiIBIHIIBII`: magic, ver, min_lat, min_lon, max_lat, max_lon, style_off, lod_count,
+/// lod_table_off, marker_color, poi_section_off, nav_section_off, offset_scale, terrain_off,
+/// terrain_len. `bbox` is `(min_lon, min_lat, max_lon, max_lat)`.
+///
+/// Every offset argument is a **byte** offset and is [`scaled`] here, so a caller passing one that
+/// is not on a unit boundary panics at the point of the mistake rather than producing a file the
+/// reader refuses for some downstream reason. `terrain` is the §1.3 region as
+/// `(byte offset, byte length)`, both unit-aligned; `None` writes the `(0, 0)` pair that means
+/// "this map carries no elevation" — and `Terrain Length` is `0` exactly when the offset is.
 #[allow(clippy::too_many_arguments)]
 fn obcm_header(
     bbox: (i32, i32, i32, i32),
@@ -121,6 +173,7 @@ fn obcm_header(
     marker: u16,
     poi_section_off: usize,
     nav_section_off: usize,
+    terrain: Option<(usize, usize)>,
 ) -> Vec<u8> {
     let mut f = Vec::new();
     f.extend_from_slice(&MAGIC);
@@ -129,40 +182,95 @@ fn obcm_header(
     f.extend_from_slice(&bbox.0.to_le_bytes()); // min_lon
     f.extend_from_slice(&bbox.3.to_le_bytes()); // max_lat
     f.extend_from_slice(&bbox.2.to_le_bytes()); // max_lon
-    f.extend_from_slice(&(style_off as u32).to_le_bytes());
+    f.extend_from_slice(&scaled(style_off).to_le_bytes());
     f.push(lod_count);
-    f.extend_from_slice(&(lod_tab_off as u32).to_le_bytes());
+    f.extend_from_slice(&scaled(lod_tab_off).to_le_bytes());
     f.extend_from_slice(&marker.to_le_bytes());
-    f.extend_from_slice(&(poi_section_off as u32).to_le_bytes());
-    f.extend_from_slice(&(nav_section_off as u32).to_le_bytes());
+    f.extend_from_slice(&scaled(poi_section_off).to_le_bytes());
+    f.extend_from_slice(&scaled(nav_section_off).to_le_bytes());
+    f.push(OFFSET_SCALE);
+    let (terrain_off, terrain_len) = terrain.unwrap_or((0, 0));
+    f.extend_from_slice(&scaled(terrain_off).to_le_bytes());
+    f.extend_from_slice(&scaled(terrain_len).to_le_bytes());
     assert_eq!(f.len(), HEADER_LEN, "header length follows the normative constant");
+    f
+}
+
+/// The header plus the §1.2 filler that carries it to the style table's unit boundary — the first
+/// [`STYLE_OFFSET`] bytes of every file this kit builds.
+#[allow(clippy::too_many_arguments)]
+fn header_block(
+    bbox: (i32, i32, i32, i32),
+    lod_count: u8,
+    lod_tab_off: usize,
+    marker: u16,
+    poi_section_off: usize,
+    nav_section_off: usize,
+) -> Vec<u8> {
+    let mut f = obcm_header(bbox, STYLE_OFFSET, lod_count, lod_tab_off, marker, poi_section_off, nav_section_off, None);
+    f.resize(STYLE_OFFSET, FILLER);
+    f
+}
+
+/// A recognisable, deterministic stand-in for a baked OBCT container: `len` bytes of position-
+/// derived noise that is *not* a parseable terrain file.
+///
+/// §1.3's whole point is that a reader hands the region over without parsing it, so the fixture's
+/// job is to be distinguishable at the byte level (an off-by-one in the window's offset or length
+/// shows up immediately) and nothing else.
+pub fn terrain_stub(len: usize) -> Vec<u8> {
+    (0..len).map(|k| (k as u8).wrapping_mul(37).wrapping_add(0x5A)).collect()
+}
+
+/// Splice a §1.3 terrain region into a finished map: `region`'s bytes land at the first unit
+/// boundary at or after the file's current tail, `0xFF`-filled up to the next boundary, and the
+/// header's `Terrain Offset` / `Terrain Length` pair is patched to name them.
+///
+/// Terrain sits **last** precisely so that splicing it moves no other offset, which is why this is
+/// a post-pass over an already-built file rather than a parameter of every builder. `Terrain
+/// Length` counts units, so the window this hands a reader is up to `U - 1` bytes longer than
+/// `region` — the tail is filler, and the container's own header is what bounds its content.
+pub fn splice_terrain(map: &[u8], region: &[u8]) -> Vec<u8> {
+    assert!(!region.is_empty(), "an absent terrain region is the header's `0` pair, not a zero-length one");
+    let mut f = map.to_vec();
+    f.resize(align_up(f.len()), FILLER);
+    let offset = f.len();
+    f.extend_from_slice(region);
+    f.resize(align_up(f.len()), FILLER);
+    let len = f.len() - offset;
+    f[HEADER_TERRAIN_OFFSET_OFF..HEADER_TERRAIN_OFFSET_OFF + 4].copy_from_slice(&scaled(offset).to_le_bytes());
+    f[HEADER_TERRAIN_LENGTH_OFF..HEADER_TERRAIN_LENGTH_OFF + 4].copy_from_slice(&scaled(len).to_le_bytes());
     f
 }
 
 /// One POI-directory category entry (spec §7.1): `category_id, index_offset, index_node_count,
 /// chunk_count`. Used by [`poi_directory`] and the reader's POI contract tests.
+///
+/// `index_offset` is the index's **byte** offset; [`poi_directory`] scales it (§1.1), so a category
+/// pointed at a byte that is no unit boundary fails at the point of the mistake.
 pub struct PoiCat {
     pub category_id: u8,
-    pub index_offset: u32,
+    pub index_offset: usize,
     pub node_count: u32,
     pub chunk_count: u32,
 }
 
 /// Build a v7 POI directory (spec §7.1): the count byte, the shared `chunk_size`, one 13-byte entry
 /// per category, then the `hours_pool_offset u32` + `hours_pool_count u16`. The caller supplies the
-/// (already-computed) per-category offsets/counts and the pool offset/count — this only lays out the
-/// directory bytes, not the indexes/chunks/pool that follow.
-pub fn poi_directory(chunk_size: u16, cats: &[PoiCat], hours_pool_offset: u32, hours_pool_count: u16) -> Vec<u8> {
+/// (already-computed) per-category **byte** offsets/counts and the pool's byte offset/count — this
+/// only lays out the directory bytes, not the indexes/chunks/pool that follow. Both offset fields
+/// are scaled here (§1.1).
+pub fn poi_directory(chunk_size: u16, cats: &[PoiCat], hours_pool_offset: usize, hours_pool_count: u16) -> Vec<u8> {
     let mut d = Vec::with_capacity(3 + cats.len() * POI_CAT_ENTRY_LEN + POI_DIR_POOL_FIELDS_LEN);
     d.push(cats.len() as u8);
     d.extend_from_slice(&chunk_size.to_le_bytes());
     for c in cats {
         d.push(c.category_id);
-        d.extend_from_slice(&c.index_offset.to_le_bytes());
+        d.extend_from_slice(&scaled(c.index_offset).to_le_bytes());
         d.extend_from_slice(&c.node_count.to_le_bytes());
         d.extend_from_slice(&c.chunk_count.to_le_bytes());
     }
-    d.extend_from_slice(&hours_pool_offset.to_le_bytes());
+    d.extend_from_slice(&scaled(hours_pool_offset).to_le_bytes());
     d.extend_from_slice(&hours_pool_count.to_le_bytes());
     d
 }
@@ -184,51 +292,63 @@ pub fn hours_pool(blobs: &[[u8; POI_HOURS_BLOB_LEN]]) -> Vec<u8> {
     out
 }
 
-/// An **empty** v7 POI directory + empty hours pool (spec §7.1/§7.5): six categories, all with
-/// `node_count 0` and `chunk_count 0`, their `index_offset` pointing just past the directory (where a
-/// zero-length index would begin); the hours pool (a bare `count 0`) sits right after, at the same
-/// offset. `section_off` is the directory's absolute byte offset. This is what a map with no POIs
-/// carries, and what [`build_file`]/[`build_priority_tree`] append so the reader accepts them.
+/// An **empty** v7 POI section (spec §7.1/§7.5): the directory's six categories all carry
+/// `node_count 0` and `chunk_count 0`, and the hours pool is a bare `count 0`. `section_off` is the
+/// directory's absolute byte offset, which must itself be a unit boundary. This is what a map with
+/// no POIs carries, and what [`build_file`]/[`build_priority_tree`] append so the reader accepts
+/// them.
+///
+/// A zero-length region still has to be **nameable**, so every one of those offsets points at the
+/// first unit boundary past the 87-byte directory rather than at the byte behind it — nine bytes
+/// further on at the default `U = 16`, with that gap written as §1.2 filler. The returned section
+/// ends on a unit boundary too, so the nav directory behind it can be named without the caller
+/// aligning anything.
 pub fn empty_poi_directory(section_off: usize) -> Vec<u8> {
-    let after_dir = (section_off + poi_dir_len()) as u32;
+    let dir_gap = filler_len(section_off + poi_dir_len());
+    let after_dir = section_off + poi_dir_len() + dir_gap;
     let cats: Vec<PoiCat> = (1..=POI_CATEGORY_COUNT)
         .map(|id| PoiCat { category_id: id, index_offset: after_dir, node_count: 0, chunk_count: 0 })
         .collect();
-    // No categories ⇒ no chunks: the (empty) hours pool follows the directory immediately.
+    // No categories ⇒ no chunks: the (empty) hours pool sits at that same aligned offset.
     let mut d = poi_directory(POI_CHUNK_SIZE as u16, &cats, after_dir, 0);
+    d.resize(d.len() + dir_gap, FILLER);
     d.extend_from_slice(&hours_pool(&[]));
+    d.resize(align_up(section_off + d.len()) - section_off, FILLER);
     d
 }
 
 /// Build a current nav directory (spec §8.1). The caller supplies the (already-computed) absolute
-/// offsets/counts — this only lays out the 40 directory bytes, not the profile table / index /
-/// chunks / pool that follow. `chunk_size` must be 512 (the reader rejects anything else).
+/// **byte** offsets/counts — this only lays out the 40 directory bytes, not the profile table /
+/// index / chunks / pool that follow. Each offset is [`scaled`] here (§1.1), so one that is not on
+/// a unit boundary panics rather than becoming a file the reader rejects for a different reason.
+/// `chunk_size` must be 512 (the reader rejects anything else).
 #[allow(clippy::too_many_arguments)]
 pub fn nav_directory(
-    index_offset: u32,
+    index_offset: usize,
     index_node_count: u32,
     node_chunk_count: u32,
-    edge_pool_offset: u32,
+    edge_pool_offset: usize,
     edge_chunk_count: u32,
     chunk_size: u16,
-    profile_table_offset: u32,
+    profile_table_offset: usize,
     profile_count: u8,
 ) -> Vec<u8> {
     let mut d = Vec::with_capacity(NAV_DIR_LEN);
-    d.extend_from_slice(&index_offset.to_le_bytes());
+    d.extend_from_slice(&scaled(index_offset).to_le_bytes());
     d.extend_from_slice(&index_node_count.to_le_bytes());
     d.extend_from_slice(&node_chunk_count.to_le_bytes());
-    d.extend_from_slice(&edge_pool_offset.to_le_bytes());
+    d.extend_from_slice(&scaled(edge_pool_offset).to_le_bytes());
     d.extend_from_slice(&edge_chunk_count.to_le_bytes());
     d.extend_from_slice(&chunk_size.to_le_bytes());
-    d.extend_from_slice(&profile_table_offset.to_le_bytes());
+    d.extend_from_slice(&scaled(profile_table_offset).to_le_bytes());
     d.push(profile_count);
-    d.push(0); // reserved
+    d.push(0); // reserved — a field, so `0`, unlike a gap
 
     // Testkit graphs carry no long-edge lookup anchors. Point the empty §8.7 region just past the
-    // edge pool, matching the production writer's empty-index convention.
-    let snap_offset = edge_pool_offset + edge_chunk_count * u32::from(chunk_size);
-    d.extend_from_slice(&snap_offset.to_le_bytes());
+    // edge pool, matching the production writer's empty-index convention. 512 is a multiple of `U`
+    // at every legal scale, so a whole number of chunks past an aligned pool is aligned too.
+    let snap_offset = edge_pool_offset + edge_chunk_count as usize * usize::from(chunk_size);
+    d.extend_from_slice(&scaled(snap_offset).to_le_bytes());
     d.extend_from_slice(&0u32.to_le_bytes());
     d.extend_from_slice(&0u32.to_le_bytes());
     assert_eq!(d.len(), NAV_DIR_LEN);
@@ -258,16 +378,26 @@ pub fn default_nav_profile_table() -> Vec<u8> {
     nav_profile_record("Default", [16; 32], [16; 8], 0)
 }
 
-/// An **empty** current nav directory + its (always-present) profile table: no quadtree, no chunks, no
-/// edges — what a map with no routable ways carries, and what [`build_file`]/[`build_priority_tree`]
-/// append so the current reader accepts them. The profile table sits right after the 40-byte
-/// directory; the zero-length index and edge pool "start" just past it.
+/// An **empty** current nav section: the directory, its §1.2 filler, and the (always-present)
+/// profile table — no quadtree, no chunks, no edges. This is what a map with no routable ways
+/// carries, and what [`build_file`]/[`build_priority_tree`] append so the current reader accepts
+/// them. `section_off` must be a unit boundary.
+///
+/// §8.5 works this exact case through: the directory is 40 bytes, which is no multiple of `U`, so
+/// the profile table sits at `align_up(section_off + 40, U)` — `section_off + 48` at the default
+/// `U = 16`, with eight bytes of filler behind the directory. The zero-length index and edge pool
+/// then "start" at the first unit boundary past the table, because a zero-length region still has
+/// to be nameable.
 pub fn empty_nav_directory(section_off: usize) -> Vec<u8> {
     let table = default_nav_profile_table();
-    let profile_table_offset = (section_off + NAV_DIR_LEN) as u32;
-    let after = profile_table_offset + table.len() as u32; // zero-length index + edge pool start here
+    let dir_gap = filler_len(section_off + NAV_DIR_LEN);
+    let profile_table_offset = section_off + NAV_DIR_LEN + dir_gap;
+    // Zero-length index + edge pool start here, on the first boundary past the table.
+    let after = align_up(profile_table_offset + table.len());
     let mut out = nav_directory(after, 0, 0, after, 0, NAV_CHUNK_SIZE as u16, profile_table_offset, 1);
+    out.resize(out.len() + dir_gap, FILLER);
     out.extend_from_slice(&table);
+    out.resize(after - section_off, FILLER);
     out
 }
 
@@ -312,9 +442,13 @@ pub fn pack_nav_chunk(records: &[Vec<u8>], chunk_size: usize) -> Vec<u8> {
     c
 }
 
-/// Pack one v9 §8.4 edge record: `length_m u32, pt_count u16, way_kind u8, anchor_lat i32,
+/// Pack one §8.4 edge record: `length_m u32, pt_count u16, way_kind u8, anchor_lat i32,
 /// anchor_lon i32`, then `pt_count - 1` × `(dlat i16, dlon i16)`. The polyline is absolute µdeg
 /// `(lat, lon)` pairs (lat first, the §8 record convention); the caller keeps deltas within `i16`.
+///
+/// **Byte-identical in v14** — the record did not move a byte. What changed is the *id* that names
+/// it: an `Edge Id` is now the packed `(chunk, ordinal)` pair, so a caller writing one into an
+/// adjacency entry or a snap anchor builds it with [`nav_edge_id`] rather than from a byte offset.
 pub fn pack_nav_edge_record(length_m: u32, way_kind: u8, polyline: &[(i32, i32)]) -> Vec<u8> {
     let mut rec = Vec::with_capacity(NAV_EDGE_FIXED_LEN + (polyline.len() - 1) * 4);
     rec.extend_from_slice(&length_m.to_le_bytes());
@@ -488,40 +622,59 @@ pub fn build_poi_map_with_hours(
             chunk_size: 64,
         }],
     );
-    let poi_off = u32::from_le_bytes(base[32..36].try_into().unwrap()) as usize;
+    let poi_off = resolve_offset(&base, 32);
 
-    // Lay out: [directory][cat index+chunks]*[hours pool] — categories in id order 1..=6, populated
-    // ones first getting their index right after the directory. Compute each category's offsets.
+    // Lay out: [directory][filler][cat index][filler][chunks]*[hours pool] — categories in id order
+    // 1..=6. Every `Index Offset` is scaled, so each index starts on a unit boundary, and a
+    // category's chunks begin at `align_up(Index Offset * U + Index Node Count * 4, U)` — §7.1's
+    // one rounding step. 512 is a multiple of `U`, so whole chunks leave the cursor aligned.
     let mut payload = Vec::new(); // everything after the directory
     let mut cats: Vec<PoiCat> = Vec::new();
-    let mut cursor = poi_off + poi_dir_len(); // absolute offset of the next category's index
+    let dir_gap = filler_len(poi_off + poi_dir_len());
+    payload.resize(dir_gap, FILLER);
+    let mut cursor = poi_off + poi_dir_len() + dir_gap; // absolute offset of the next category's index
     for id in 1..=POI_CATEGORY_COUNT {
         let pois = pois_by_cat.iter().find(|(c, _)| *c == id).map(|(_, v)| v.as_slice()).unwrap_or(&[]);
         if pois.is_empty() {
             // Empty category: its (zero-length) index "starts" at the cursor, no chunks.
-            cats.push(PoiCat { category_id: id, index_offset: cursor as u32, node_count: 0, chunk_count: 0 });
+            cats.push(PoiCat { category_id: id, index_offset: cursor, node_count: 0, chunk_count: 0 });
             continue;
         }
         let (index_bytes, node_count, chunk_bytes, chunk_count) = serialize_poi_category(pois, bbox, chunk_size);
-        cats.push(PoiCat { category_id: id, index_offset: cursor as u32, node_count, chunk_count });
-        cursor += index_bytes.len() + chunk_bytes.len();
+        cats.push(PoiCat { category_id: id, index_offset: cursor, node_count, chunk_count });
         payload.extend_from_slice(&index_bytes);
+        cursor += index_bytes.len();
+        let gap = filler_len(cursor);
+        payload.resize(payload.len() + gap, FILLER);
+        cursor += gap;
         payload.extend_from_slice(&chunk_bytes);
+        cursor += chunk_bytes.len();
     }
 
-    // The hours pool follows the last category's chunks (`cursor`); the directory points at it.
-    let hours_pool_offset = cursor as u32;
+    // The hours pool begins at the first unit boundary at or after the last category's chunks;
+    // those are whole `chunk_size` strides, so in practice `cursor` is already one.
+    let gap = filler_len(cursor);
+    payload.resize(payload.len() + gap, FILLER);
+    let hours_pool_offset = cursor + gap;
     payload.extend_from_slice(&hours_pool(hours_blobs));
 
     let mut f = base[..poi_off].to_vec();
     f.extend_from_slice(&poi_directory(chunk_size as u16, &cats, hours_pool_offset, hours_blobs.len() as u16));
     f.extend_from_slice(&payload);
     // The populated POI section displaced `base`'s tail sections, so re-append the empty nav
-    // section at the new tail and patch the header's nav offset (byte 36) to match.
+    // section at the new (aligned) tail and patch the header's nav offset (byte 36) to match.
+    f.resize(align_up(f.len()), FILLER);
     let nav_section_off = f.len();
-    f[36..40].copy_from_slice(&(nav_section_off as u32).to_le_bytes());
+    f[36..40].copy_from_slice(&scaled(nav_section_off).to_le_bytes());
     f.extend_from_slice(&empty_nav_directory(nav_section_off));
     f
+}
+
+/// Resolve the scaled `uint32` at byte `at` back to a byte offset: `u32(field) * U`, widened before
+/// the multiply (§1.1). The read-back twin of [`scaled`] — what a builder or a test uses to find a
+/// section in a file it (or [`build_file`]) just wrote.
+pub fn resolve_offset(bytes: &[u8], at: usize) -> usize {
+    u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) as usize * UNIT
 }
 
 /// Start a feature record (OBCM v11 §5): `style_id`, `flags`, then either the **compact** fields
@@ -572,12 +725,16 @@ fn push_deltas16(v: &mut Vec<u8>, deltas: &[(i16, i16)]) {
 /// with its own quadtree index and padded chunks. The header carries [`MARKER`] as the
 /// marker color.
 pub fn build_file(bbox: (i32, i32, i32, i32), styles: &[Style], lods: &[LodSpec]) -> Vec<u8> {
-    let style_off = HEADER_LEN;
-
     let style_bytes = style_table(styles);
 
-    let lod_tab_off = style_off + style_bytes.len();
-    let mut cursor = lod_tab_off + lods.len() * LOD_ENTRY_LEN;
+    // Every offset field names a unit boundary (§1.2), so the style table sits at `STYLE_OFFSET`
+    // and each following structure starts at the first boundary past the one before it.
+    let lod_tab_off = align_up(STYLE_OFFSET + style_bytes.len());
+    let style_gap = lod_tab_off - (STYLE_OFFSET + style_bytes.len());
+    let payload_start = align_up(lod_tab_off + lods.len() * LOD_ENTRY_LEN);
+    let table_gap = payload_start - (lod_tab_off + lods.len() * LOD_ENTRY_LEN);
+
+    let mut cursor = payload_start;
     let mut table = Vec::new();
     let mut payload = Vec::new();
     for lod in lods {
@@ -589,9 +746,9 @@ pub fn build_file(bbox: (i32, i32, i32, i32), styles: &[Style], lods: &[LodSpec]
         for c in &lod.chunks {
             assert!(c.len() <= lod.chunk_size, "chunk {} exceeds chunk_size {}", c.len(), lod.chunk_size);
         }
-        let chunk_bytes = chunk_region(&lod.chunks);
+        let chunk_bytes = chunk_region(&lod.chunks, idx_bytes.len());
         table.extend_from_slice(&lod.max_mpp.to_le_bytes());
-        table.extend_from_slice(&(idx_off as u32).to_le_bytes());
+        table.extend_from_slice(&scaled(idx_off).to_le_bytes());
         table.extend_from_slice(&(lod.index.len() as u32).to_le_bytes());
         table.extend_from_slice(&(lod.chunk_size as u16).to_le_bytes());
         table.extend_from_slice(&(lod.chunks.len() as u32).to_le_bytes());
@@ -600,15 +757,17 @@ pub fn build_file(bbox: (i32, i32, i32, i32), styles: &[Style], lods: &[LodSpec]
         payload.extend_from_slice(&chunk_bytes);
     }
 
-    // The POI section begins right after the LOD payload (`cursor` now points there); the empty
-    // nav section follows it at the file tail.
+    // The POI section begins right after the LOD payload (`cursor` now points there, on a boundary
+    // — `chunk_region` ends aligned); the empty nav section follows it at the file tail.
     let poi_section_off = cursor;
     let poi_dir = empty_poi_directory(poi_section_off);
     let nav_section_off = poi_section_off + poi_dir.len();
 
-    let mut f = obcm_header(bbox, style_off, lods.len() as u8, lod_tab_off, MARKER, poi_section_off, nav_section_off);
+    let mut f = header_block(bbox, lods.len() as u8, lod_tab_off, MARKER, poi_section_off, nav_section_off);
     f.extend_from_slice(&style_bytes);
+    f.resize(f.len() + style_gap, FILLER);
     f.extend_from_slice(&table);
+    f.resize(f.len() + table_gap, FILLER);
     f.extend_from_slice(&payload);
     f.extend_from_slice(&poi_dir);
     f.extend_from_slice(&empty_nav_directory(nav_section_off));
@@ -628,11 +787,12 @@ pub fn build_priority_tree(
     nw_chunks: [Vec<u8>; 4],
     ne_chunk: Vec<u8>,
 ) -> Vec<u8> {
-    let style_off = HEADER_LEN;
     let style_bytes = style_table(styles);
 
-    let lod_tab_off = style_off + style_bytes.len();
-    let index_off = lod_tab_off + LOD_ENTRY_LEN; // one LOD entry
+    let lod_tab_off = align_up(STYLE_OFFSET + style_bytes.len());
+    let style_gap = lod_tab_off - (STYLE_OFFSET + style_bytes.len());
+    let index_off = align_up(lod_tab_off + LOD_ENTRY_LEN); // one LOD entry
+    let table_gap = index_off - (lod_tab_off + LOD_ENTRY_LEN);
 
     // Quadtree (9 nodes). Root branch -> [NW=branch@5, NE=chunk 4, SW/SE empty]; NW's four
     // children (idx 5..8) -> chunks 0,1,2,3. Walk order NW(→0,1,2,3) then NE(→4): the four
@@ -646,12 +806,12 @@ pub fn build_priority_tree(
     // table, the v11 §5 region.
     let [nw0, nw1, nw2, nw3] = nw_chunks;
     let chunks: Vec<Vec<u8>> = [nw0, nw1, nw2, nw3, ne_chunk].into_iter().map(|c| seal(c, chunk_size)).collect();
-    let chunk_bytes = chunk_region(&chunks);
+    let chunk_bytes = chunk_region(&chunks, idx_bytes.len());
 
     // LOD entry: max_mpp=+inf, index_off, node_count, chunk_size, chunk_count.
     let mut table = Vec::new();
     table.extend_from_slice(&f32::INFINITY.to_le_bytes());
-    table.extend_from_slice(&(index_off as u32).to_le_bytes());
+    table.extend_from_slice(&scaled(index_off).to_le_bytes());
     table.extend_from_slice(&(index.len() as u32).to_le_bytes());
     table.extend_from_slice(&(chunk_size as u16).to_le_bytes());
     table.extend_from_slice(&(chunks.len() as u32).to_le_bytes());
@@ -662,9 +822,11 @@ pub fn build_priority_tree(
     let poi_dir = empty_poi_directory(poi_section_off);
     let nav_section_off = poi_section_off + poi_dir.len();
     // marker unused here → 0
-    let mut f = obcm_header(bbox, style_off, 1, lod_tab_off, 0, poi_section_off, nav_section_off);
+    let mut f = header_block(bbox, 1, lod_tab_off, 0, poi_section_off, nav_section_off);
     f.extend_from_slice(&style_bytes);
+    f.resize(f.len() + style_gap, FILLER);
     f.extend_from_slice(&table);
+    f.resize(f.len() + table_gap, FILLER);
     f.extend_from_slice(&idx_bytes);
     f.extend_from_slice(&chunk_bytes);
     f.extend_from_slice(&poi_dir);
@@ -695,20 +857,35 @@ pub fn pad(mut chunk: Vec<u8>, size: usize) -> Vec<u8> {
     chunk
 }
 
-/// The v11 §5 chunk-data region for one LOD: the `chunks.len() + 1` entry `uint32` offset table
-/// (relative to the first chunk's byte, so `[0] == 0` and the last entry is the total chunk bytes)
-/// followed by the chunks back to back. Hand-assembled here exactly as the spec reads it, so the
-/// testkit stays an oracle independent of `serialize.rs`.
-pub fn chunk_region(chunks: &[Vec<u8>]) -> Vec<u8> {
+/// The §5 chunk-data region for one LOD: the `chunks.len() + 1` entry `uint32` offset table, the
+/// §1.2 filler that carries it to a unit boundary, then the chunks — each `0xFF`-padded to the next
+/// boundary. Hand-assembled here exactly as the spec reads it, so the testkit stays an oracle
+/// independent of `serialize.rs`.
+///
+/// v14 makes the offsets **scaled** (§5.1): entry `e` names byte `data_start + e * U`, where
+/// `data_start = align_up(index_start + node_count * 4 + (chunk_count + 1) * 4, U)`. That rounding
+/// step is the only thing between the table and the chunks, and it is computable here **because
+/// `index_start` is itself a unit boundary** — which is why `index_len` (the preceding index's byte
+/// length) is an argument: the gap depends on the two lengths alone.
+///
+/// The table is written even for a chunkless LOD, where it is the single `0` entry, and the region
+/// ends on a unit boundary so the next LOD's index starts on one with no work from the caller.
+fn chunk_region(chunks: &[Vec<u8>], index_len: usize) -> Vec<u8> {
+    let table_len = (chunks.len() + 1) * 4;
+    let gap = filler_len(index_len + table_len);
+    let spans: Vec<usize> = chunks.iter().map(|c| align_up(c.len())).collect();
     let mut region = Vec::new();
-    let mut offset = 0u32;
-    region.extend_from_slice(&offset.to_le_bytes());
-    for c in chunks {
-        offset += c.len() as u32;
-        region.extend_from_slice(&offset.to_le_bytes());
+    let mut offset = 0usize;
+    region.extend_from_slice(&scaled(offset).to_le_bytes());
+    for span in &spans {
+        offset += span;
+        region.extend_from_slice(&scaled(offset).to_le_bytes());
     }
-    for c in chunks {
+    region.resize(region.len() + gap, FILLER);
+    for (c, span) in chunks.iter().zip(&spans) {
+        let end = region.len() + span;
         region.extend_from_slice(c);
+        region.resize(end, FILLER);
     }
     region
 }

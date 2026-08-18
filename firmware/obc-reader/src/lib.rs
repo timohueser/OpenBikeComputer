@@ -69,6 +69,11 @@ pub enum Error {
     TooShort,
     BadMagic,
     BadVersion,
+    /// The header's `Offset Scale` byte is outside `0..=9` (§1.1). Deliberately **distinct** from
+    /// [`Error::BadVersion`]: a scale this reader cannot resolve is an unreadable file, not an old
+    /// one, and telling a rider the map is from a future firmware when the byte is simply corrupt
+    /// is the wrong answer.
+    BadScale,
     BadOffset,
     /// The requested bytes were validly addressed, but the backing medium failed.
     Source(obc_formats::io::Error),

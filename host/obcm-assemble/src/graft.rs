@@ -21,6 +21,7 @@ use obc_formats::obcm::{BRANCH_BIT, EMPTY_LEAF};
 
 use crate::grid::{quad_children, AlignedBox, CellId, UBox};
 use crate::input::Cell;
+use crate::shard::{align_up, filler_len, scaled, FILLER_RUN, SCALE};
 use crate::{Error, Result};
 
 /// One cell's contribution to one LOD region, with the two relocation constants of §4.3.
@@ -34,12 +35,26 @@ pub struct GraftCell {
     pub block_base: u32,
     /// Added to every copied leaf's chunk id.
     pub chunk_id_base: u32,
-    /// Added to every copied offset-table entry.
-    pub chunk_byte_base: u64,
+    /// Added to every copied offset-table entry. **Units, not bytes** since v14 (`OBCM_Spec.md`
+    /// §5.1): the entries a cell wrote count `U`-byte units and the ones the assembly writes count
+    /// the same units, so the relocation constant is one addition in that currency and no
+    /// arithmetic crosses between the two.
+    pub chunk_unit_base: u64,
     /// Nodes in the cell's own index for this LOD (`0` ⇒ the level is empty in this cell).
     pub node_count: u32,
     pub chunk_count: u32,
-    pub chunk_bytes: u64,
+    /// The cell's chunk-data region, in units — `offsets[Chunk Count]`, verbatim. It is a whole
+    /// number of units because every §5.1 chunk is padded to one, which is what lets the region be
+    /// copied byte-for-byte and the next cell's block start on a boundary of its own.
+    pub chunk_units: u64,
+}
+
+impl GraftCell {
+    /// The cell's chunk-data region in bytes — what the verbatim copy moves (§2.3).
+    #[inline]
+    pub fn chunk_bytes(&self) -> u64 {
+        self.chunk_units * SCALE.unit()
+    }
 }
 
 /// Everything needed to emit one LOD region, computed before a single byte is written — which is
@@ -55,6 +70,8 @@ pub struct LodPlan {
     pub cells: Vec<GraftCell>,
     pub node_count: u32,
     pub chunk_count: u32,
+    /// The region's chunk data, in bytes — every cell's contribution, each already a whole number of
+    /// §1.2 units.
     pub chunk_bytes: u64,
 }
 
@@ -75,12 +92,29 @@ impl LodPlan {
         }
     }
 
-    /// Total bytes of the region: index + offset table + chunks.
+    /// The §1.2 filler between this region's offset table and its chunk data — the one rounding step
+    /// §3 puts between `table_end` and `data_start`.
+    ///
+    /// The region's index starts on a unit boundary (its `Index Offset` is scaled, so nothing else
+    /// is expressible), and the index and the offset table are both read by 4-byte indexing from
+    /// there — so the gap is a function of the two counts alone and needs no absolute offset.
+    pub fn data_gap(&self) -> u64 {
+        filler_len(self.node_count as u64 * 4 + (self.chunk_count as u64 + 1) * 4)
+    }
+
+    /// Total bytes of the region: index + offset table + §1.2 filler + chunks.
+    ///
+    /// A region always **ends** on a unit boundary — the chunk data is a whole number of units, and
+    /// an empty region's four-byte table is padded to one — so the next LOD's index, and the POI
+    /// section behind the last of them, start on one without the caller aligning anything.
     pub fn region_bytes(&self) -> u64 {
         if self.node_count == 0 {
-            return 4; // the mandatory single-`0` offset table
+            // The mandatory single-`0` offset table, plus the filler that carries the region to the
+            // next boundary.
+            return align_up(4);
         }
-        self.node_count as u64 * 4 + (self.chunk_count as u64 + 1) * 4 + self.chunk_bytes
+        let head = self.node_count as u64 * 4 + (self.chunk_count as u64 + 1) * 4;
+        head + filler_len(head) + self.chunk_bytes
     }
 }
 
@@ -148,7 +182,7 @@ pub fn plan_lod(
     let mut plan_cells: Vec<GraftCell> = Vec::with_capacity(slots.len());
     let mut node_base = upper.len() as u64;
     let mut chunk_id_base: u64 = 0;
-    let mut chunk_byte_base: u64 = 0;
+    let mut chunk_unit_base: u64 = 0;
     for (slot, c) in slots {
         let l = cells[c].lod(lod)?;
         if l.chunk_size > chunk_size {
@@ -179,13 +213,13 @@ pub fn plan_lod(
             slot,
             block_base: block_base as u32,
             chunk_id_base: chunk_id_base as u32,
-            chunk_byte_base,
+            chunk_unit_base,
             node_count,
             chunk_count: l.chunk_count as u32,
-            chunk_bytes: l.chunk_bytes_total as u64,
+            chunk_units: l.chunk_units_total as u64,
         });
         chunk_id_base += l.chunk_count as u64;
-        chunk_byte_base += l.chunk_bytes_total as u64;
+        chunk_unit_base += l.chunk_units_total as u64;
     }
 
     // Inline each present cell's relocated **root** into its depth-`d` slot (§4.4.2 / §7).
@@ -200,7 +234,7 @@ pub fn plan_lod(
         };
     }
 
-    let chunk_bytes = chunk_byte_base;
+    let chunk_bytes = chunk_unit_base * SCALE.unit();
     let chunk_count = chunk_id_base as u32;
     Ok(LodPlan {
         lod,
@@ -248,11 +282,18 @@ fn relocate(value: u32, g: &GraftCell, cell: CellId, lod: usize) -> Result<u32> 
     }
 }
 
-/// Emit a planned LOD region: `[index][offset table][chunks]`, in the format's own order
+/// Emit a planned LOD region: `[index][offset table][filler][chunks]`, in the format's own order
 /// (`OBCM_Spec.md` §3). Nothing is decoded and no chunk byte is touched.
+///
+/// The filler run is v14's one rounding step: the chunks are addressed by **scaled** offsets, so
+/// `data_start` has to be a unit boundary while the index and the table behind it — read by 4-byte
+/// indexing — do not. Its bytes are `0xFF` like every other §1.2 gap.
 pub fn emit_lod(plan: &LodPlan, cells: &[Cell<'_>], out: &mut dyn FnMut(&[u8]) -> Result<()>) -> Result<()> {
     if plan.node_count == 0 {
-        return out(&0u32.to_le_bytes()); // the mandatory single-`0` offset table of §5.1
+        // The mandatory single-`0` offset table of §5.1, plus the filler that leaves the next
+        // region's index on a boundary.
+        out(&0u32.to_le_bytes())?;
+        return out(&FILLER_RUN[..(align_up(4) - 4) as usize]);
     }
 
     // 1. The fresh upper tree, then each cell's relocated block (its nodes `1..`).
@@ -276,9 +317,10 @@ pub fn emit_lod(plan: &LodPlan, cells: &[Cell<'_>], out: &mut dyn FnMut(&[u8]) -
         out(&block)?;
     }
 
-    // 2. The offset table: `chunk_count + 1` entries, each cell's shifted by its byte base. Every
-    // copied pair is re-checked against the capacity bound — a cell that violated it would poison
-    // the assembly (§4.4.4).
+    // 2. The offset table: `chunk_count + 1` entries **in units** (§5.1), each cell's shifted by its
+    // unit base. Every copied pair is re-checked against the capacity bound — a cell that violated
+    // it would poison the assembly (§4.4.4).
+    let span_bound = align_up(plan.chunk_size as u64);
     let mut table: Vec<u8> = Vec::with_capacity((plan.chunk_count as usize + 1) * 4);
     table.extend_from_slice(&0u32.to_le_bytes());
     for g in &plan.cells {
@@ -298,37 +340,44 @@ pub fn emit_lod(plan: &LodPlan, cells: &[Cell<'_>], out: &mut dyn FnMut(&[u8]) -
                 }
                 continue;
             }
-            if v < prev || (v - prev) as usize > plan.chunk_size {
+            // §5.1's v14 bound: a chunk's *content* may not exceed `Chunk Size`, so its *span* is
+            // that content rounded up to a unit. The looser `Chunk Size + U - 1` would admit spans
+            // no writer can produce.
+            if v < prev || (v - prev) as u64 * SCALE.unit() > span_bound {
                 return Err(Error::Format(format!(
-                    "cell {}: LOD {} chunk {} spans {} bytes (capacity {}) or runs backwards",
+                    "cell {}: LOD {} chunk {} spans {} bytes (capacity {}, {span_bound} rounded to the unit) or runs \
+                     backwards",
                     cell.id,
                     plan.lod,
                     k - 1,
-                    v.saturating_sub(prev),
+                    v.saturating_sub(prev) as u64 * SCALE.unit(),
                     plan.chunk_size
                 )));
             }
             prev = v;
-            table.extend_from_slice(&((g.chunk_byte_base + v as u64) as u32).to_le_bytes());
+            table.extend_from_slice(&scaled((g.chunk_unit_base + v as u64) * SCALE.unit())?.to_le_bytes());
         }
-        if prev as u64 != g.chunk_bytes {
+        if prev as u64 != g.chunk_units {
             return Err(Error::Format(format!(
-                "cell {}: LOD {} offset table ends at {prev} but the region holds {} bytes",
-                cell.id, plan.lod, g.chunk_bytes
+                "cell {}: LOD {} offset table ends at {prev} unit(s) but the region holds {}",
+                cell.id, plan.lod, g.chunk_units
             )));
         }
     }
     out(&table)?;
 
-    // 3. The chunk bytes, verbatim (§2.3). One streaming copy per cell.
+    // 3. The §1.2 filler that carries the region to `data_start`, then the chunk bytes, verbatim
+    // (§2.3). One streaming copy per cell, and the copy needs no per-chunk repadding: the cell's
+    // own chunks are already unit-aligned, so its whole region moves as one run of bytes.
+    out(&FILLER_RUN[..plan.data_gap() as usize])?;
     for g in &plan.cells {
-        if g.chunk_bytes == 0 {
+        if g.chunk_units == 0 {
             continue;
         }
         let cell = &cells[g.cell];
         let l = cell.lod(plan.lod)?;
-        let data_start = l.index_offset + l.node_count * 4 + (l.chunk_count + 1) * 4;
-        cell.copy(data_start, g.chunk_bytes as usize, out)?;
+        let data_start = align_up((l.index_offset + l.node_count * 4 + (l.chunk_count + 1) * 4) as u64);
+        cell.copy(data_start as usize, g.chunk_bytes() as usize, out)?;
     }
     Ok(())
 }
@@ -343,10 +392,10 @@ mod tests {
             slot: 0,
             block_base,
             chunk_id_base,
-            chunk_byte_base: 0,
+            chunk_unit_base: 0,
             node_count,
             chunk_count,
-            chunk_bytes: 0,
+            chunk_units: 0,
         }
     }
 

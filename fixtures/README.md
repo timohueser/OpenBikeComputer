@@ -71,13 +71,14 @@ demo assets stay with the app that ships them. Shared authored inputs live in
 terrain, provider captures, and realistic ride bundles belong in R2. Generated design-review
 screenshots belong in PRs or project documentation, not a runtime asset folder.
 
-## Initial package provenance
+## Package provenance
 
-- `sim-grimsel`: the v13 OBCM described by the former simulator-assets log,
-  packed from the 2026-08-08 Switzerland snapshot; its OBCT terrain is derived
-  from Copernicus GLO-30 tile `N46_00_E008_00`. The GPX/OBCR/OBT inputs are
-  project-authored.
-- `sim-monaco`: the v13 OBCM from the 2026-08-08 Monaco snapshot plus the
+- `sim-grimsel`: an **OBCM v14** file packed from the 2026-08-17 Switzerland
+  snapshot; its OBCT terrain is derived from Copernicus GLO-30 tile
+  `N46_00_E008_00` and is unchanged (OBCT is a separate format and did not move).
+  The GPX/OBCR/OBT inputs are project-authored and byte-identical to their
+  `tracked_sources` originals.
+- `sim-monaco`: an **OBCM v14** file from the 2026-08-17 Monaco snapshot plus the
   project-authored up-ahead GPX.
 - `weather-dwd-icon`: the exact DWD captures formerly documented under
   `host/obc-wx-bake/tests/fixtures`.
@@ -89,6 +90,38 @@ screenshots belong in PRs or project documentation, not a runtime asset folder.
   MRMS/HRRR event packs. Their small `event.json` manifests remain tracked and
   are matched byte-for-byte through `tracked_sources`; upstream, baked, and
   truth bytes live only in the immutable packages.
+
+### Revision log: repacked at OBCM v14 (FS7.5b, #1420)
+
+`sim-grimsel` and `sim-monaco` moved to a new immutable revision because a v14
+reader refuses a v13 file outright. Both were regenerated through the sanctioned
+path, `fixtures/build-map-package.sh`, on the canonical bboxes and the current
+`builder/presets/schema.json`.
+
+The pinned `2026-08-08` snapshots are no longer hosted — Geofabrik serves
+roughly the last 90 days — so this repack necessarily used the current
+`2026-08-17` one, and a fortnight of OSM edits rides along with the format bump.
+That is a deliberate refresh, not a drift: the extract bboxes in
+`build-map-package.sh` are unchanged and were **not** self-sourced from the old
+headers.
+
+Grimsel's OBCT sidecar is byte-identical (786 560 B) — terrain has its own
+revision track and did not move. The maps did:
+
+| file | v13 | v14 |
+| --- | --- | --- |
+| `grimsel.obcm` | 3 664 384 B | 3 804 160 B (+3.8%) |
+| `monaco.obcm` | 710 144 B | 718 336 B (+1.2%) |
+
+Most of that is v14's §1.2 unit filler — roughly half a percent of the geometry
+chunk bytes plus a gap at each region boundary — with the content delta on top.
+
+What did **not** move is the routing pin: all four stock profiles' frozen
+Innertkirchen→Grimsel digests
+(`obc-route`'s `the_registered_grimsel_fixture_routes_byte_identically_on_every_profile`)
+still hold across both the format bump and the snapshot refresh, so the
+addressing change is byte-neutral to the router and the fortnight of edits
+missed that corridor.
 
 ## Storage contract
 
