@@ -141,7 +141,9 @@ mod tests {
         let terrain_path = dir.join("MS7.OBD");
 
         let bbox = obcs::SetBBox { min_lat: 47_000_000, min_lon: 7_000_000, max_lat: 48_000_000, max_lon: 9_000_000 };
-        let core = obcs::Shard { role: obcs::Role::Core, bbox, bytes: 128 };
+        // Bound (§5.2): this resolver reaches the raster by the sidecar name, not by id, but a
+        // manifest an assembler has not bound is a shape a card never holds.
+        let core = obcs::Shard { role: obcs::Role::Core, bbox, bytes: 128, object_id: 1 };
         let write = |parts: &[obcs::Shard]| {
             let m = obcs::build(obc_formats::obcm::VERSION, 0, 1, bbox, [0; 16], [0xFF; 24], parts).expect("manifest");
             let digests = vec![[0u8; 32]; parts.len()];
@@ -156,7 +158,7 @@ mod tests {
         assert_eq!(resolve(&manifest_path).sample(47_000_000, 8_000_000), None);
 
         // …and one it does claim, at the wrong length: also not mounted, and never a fault.
-        write(&[core, obcs::Shard { role: obcs::Role::Terrain, bbox, bytes: 999_999 }]);
+        write(&[core, obcs::Shard { role: obcs::Role::Terrain, bbox, bytes: 999_999, object_id: 2 }]);
         assert_eq!(resolve(&manifest_path).sample(47_000_000, 8_000_000), None);
 
         let _ = std::fs::remove_dir_all(&dir);

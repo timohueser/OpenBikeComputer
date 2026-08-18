@@ -328,9 +328,9 @@
       "op": 1,
       "type": 18,
       "object_id": 65535,
-      "total_len": 576,
+      "total_len": 648,
       "crc32": "0x8B2C4E17",
-      "note": "mapSet: the OBCS manifest, new-only and written last (OBCA 5.4). total_len is fixed by the RECORD count, not the shard count: 72 + 56 x 9 = the eight OBCM shards plus the terrain record, because OBCA 5.2's Shard Count counts every record (#1044)"
+      "note": "mapSet: the OBCS manifest, new-only and written last (OBCA 5.4). total_len is fixed by the RECORD count, not the shard count: 72 + 64 x 9 = the eight OBCM shards plus the terrain record, because OBCA 5.2's Shard Count counts every record (#1044). The record width is 64 since manifest v3 (#1389) gave every record its member ObjectId"
     },
     "transfer-download-request.bin": {
       "format": "transferControl (spec 4.2) \u2014 12 bytes, protocol v2",

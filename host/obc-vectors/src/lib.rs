@@ -810,10 +810,15 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         ("transfer-set-terrain.bin", transfer_control(1, 19, 0xFFFF, terrain_len, terrain_crc)),
         // op=1 upload, type=18 mapSet: the manifest that makes those shards one map, and the last
         // file of the set (§5.4). New-only, so `object_id` is 0xFFFF; `total_len` is the length the
-        // set's **record** count fixes — `72 + 56 × 9`, the eight OBCM shards *plus* the terrain
+        // set's **record** count fixes — `72 + 64 × 9`, the eight OBCM shards *plus* the terrain
         // record, because §5.2's `Shard Count` counts every record (#1044). A device checks it at
-        // the announce, against the shards **and** the raster it actually received.
-        ("transfer-set-manifest.bin", transfer_control(1, 18, 0xFFFF, 72 + 56 * 9, 0x8B2C_4E17)),
+        // the announce, against the shards **and** the raster it actually received. The record width
+        // is the format authority's, not a literal: it moved 56 → 64 at manifest v3 (#1389), and a
+        // stale number here is a set refused at its very last transfer.
+        (
+            "transfer-set-manifest.bin",
+            transfer_control(1, 18, 0xFFFF, (obc_formats::obcs::manifest_len(9)) as u32, 0x8B2C_4E17),
+        ),
         // op=2 download request: type=7 rideList, id 0, len/crc unknown.
         ("transfer-download-request.bin", transfer_control(2, 7, 0, 0, 0)),
         // op=3 abort of the active route upload.

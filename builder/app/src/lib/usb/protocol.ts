@@ -108,20 +108,24 @@ export const OBCT_HEADER_LEN = 32;
 export const OBCT_MAGIC = "OBCT";
 export const OBCT_VERSION = 1;
 
-/** The OBCS set manifest's fixed header width (`OBCA_Spec.md` §5.2). */
+/** The OBCS set manifest's fixed header width (`OBCA_Spec.md` §5.2). Unmoved by v3. */
 export const OBCS_HEADER_LEN = 72;
-/** The OBCS manifest's fixed per-record width (§5.2). */
-export const OBCS_RECORD_LEN = 56;
-/** The one manifest version a reader accepts — `2` since the `terrain` role (§5.2). */
-export const OBCS_VERSION = 2;
+/** The OBCS manifest's fixed per-record width (§5.2) — `64` since v3 appended the member id. */
+export const OBCS_RECORD_LEN = 64;
+/** The one manifest version a reader accepts — `3` since every record carries its member's
+ *  `ObjectId` (§5.2, #1389). A hard cut: v2's records are 56 bytes, so a reader that guessed would
+ *  find every record but the first at the wrong offset. */
+export const OBCS_VERSION = 3;
+/** Offset of the member `ObjectId` inside a record (§5.2). */
+export const OBCS_MEMBER_ID_OFFSET = 56;
 
 /**
- * The exact byte length of a set manifest carrying `records` records — `72 + 56 × Shard Count`.
+ * The exact byte length of a set manifest carrying `records` records — `72 + 64 × Shard Count`.
  *
  * **`records` is not the shard count** (#1044). §5.2's `Shard Count` field counts *every* record,
  * and a set with elevation carries one more: the `terrain` role's. A device refuses a `mapSet`
  * announce whose `total_len` is anything else, before a byte streams — so a host that sends every
- * OBCM shard and skips the raster announces a manifest 56 bytes longer than the device can expect,
+ * OBCM shard and skips the raster announces a manifest one record longer than the device can expect,
  * and loses the whole upload at its last transfer.
  */
 export function manifestLen(records: number): number {

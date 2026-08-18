@@ -217,7 +217,7 @@ fn a_selection_with_no_terrain_writes_no_terrain_shard() {
     // …and the manifest is back to one record.
     let manifest = &out.files.last().expect("a manifest").bytes;
     assert_eq!(manifest[6], 1, "Shard Count");
-    assert_eq!(manifest.len(), 72 + 56);
+    assert_eq!(manifest.len(), obc_formats::obcs::manifest_len(1));
 }
 
 /// A digest the catalog does not confirm is refused, and the whole set is refused with it — the

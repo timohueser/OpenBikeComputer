@@ -42,6 +42,7 @@ import {
     MAX_RETENTION,
     NEW_OBJECT_ID,
     OBCS_HEADER_LEN,
+    OBCS_MEMBER_ID_OFFSET,
     OBCS_RECORD_LEN,
     OBCS_VERSION,
     OBCT_HEADER_LEN,
@@ -1385,19 +1386,26 @@ export function loopbackDevice(
 /** `OBCA_Spec.md` §5.2's `Role == 3`: the set's terrain record, and always the last one. */
 const SET_ROLE_TERRAIN = 3;
 
-/** One record of a parsed OBCS manifest — the two fields a cross-check needs. */
+/** One record of a parsed OBCS manifest — the three fields a cross-check needs. */
 interface SetManifestRecord {
     readonly role: number;
     readonly bytes: number;
+    /** The member's `ObjectId` (§5.2), or `0n` while the manifest is unbound. */
+    readonly memberId: bigint;
 }
 
 /**
  * Parse an OBCS set manifest (`OBCA_Spec.md` §5.2), or `null` when it is not one.
  *
- * Deliberately partial: magic, version, `Shard Count`, the exact length that count fixes, and each
- * record's role + `Bytes`. Everything else (bboxes, the set id, digests) is checked by the device
- * against files this mock does not model, and inventing checks it cannot really make would be worse
- * than having none.
+ * Deliberately partial: magic, version, `Shard Count`, the exact length that count fixes, each
+ * record's role + `Bytes`, and the member ids' binding rule. Everything else (bboxes, the set id,
+ * digests) is checked by the device against files this mock does not model, and inventing checks it
+ * cannot really make would be worse than having none.
+ *
+ * The member ids are the one v3 field that *is* fully checkable from the bytes alone, so they are
+ * checked here rather than left to the device: `obc_formats::obcs::validate` refuses a manifest that
+ * is half-bound or names one object twice, and a mock that accepted either would let a client's
+ * tests pass on bytes the real firmware rejects.
  */
 function parseSetManifest(bytes: Uint8Array): { readonly records: SetManifestRecord[] } | null {
     if (bytes.length < OBCS_HEADER_LEN) return null;
@@ -1411,8 +1419,13 @@ function parseSetManifest(bytes: Uint8Array): { readonly records: SetManifestRec
     const records: SetManifestRecord[] = [];
     for (let i = 0; i < count; i++) {
         const at = OBCS_HEADER_LEN + i * OBCS_RECORD_LEN;
-        records.push({ role: bytes[at], bytes: view.getUint32(at + 20, true) });
+        const memberId = view.getBigUint64(at + OBCS_MEMBER_ID_OFFSET, true);
+        records.push({ role: bytes[at], bytes: view.getUint32(at + 20, true), memberId });
     }
+    // Bound (every id names an object, no two the same) or unbound (every id `0`), never between.
+    const named = records.filter((r) => r.memberId !== 0n);
+    if (named.length !== 0 && named.length !== records.length) return null;
+    if (new Set(named.map((r) => r.memberId)).size !== named.length) return null;
     return { records };
 }
 

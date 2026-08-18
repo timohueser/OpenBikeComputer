@@ -23,6 +23,10 @@ import { DeviceError, type ProtocolClient } from "../usb/client";
 import { loopbackDevice } from "../usb/loopback";
 import {
     NEW_OBJECT_ID,
+    OBCS_HEADER_LEN,
+    OBCS_MEMBER_ID_OFFSET,
+    OBCS_RECORD_LEN,
+    OBCS_VERSION,
     OBCT_HEADER_LEN,
     ObjectType,
     SINGLETON_OBJECT_ID,
@@ -828,6 +832,66 @@ describe("volume-set rules the device enforces", () => {
         }
     });
 
+    /**
+     * The manifests above are **unbound**, which is what this transport carries (§4.1 rule 2): it
+     * writes to a FAT card with no object identities to mint. A **bound** one — every member id
+     * naming an object, the shape a flat-store client sends — must commit here too. Binding is a
+     * mount-time property of how a reader resolves members, not a wire rule, so a device on this
+     * protocol has no business caring which it was handed.
+     */
+    it("takes a bound manifest as readily as the unbound one this transport sends", async () => {
+        const { client, device, close } = loopbackDevice();
+        try {
+            await stageOneShard(client, syntheticBytes(1024));
+            const result = await upload(
+                client,
+                ObjectType.MapSet,
+                NEW_OBJECT_ID,
+                obcsManifest([1024], undefined, true),
+            );
+            expect(result.objectId).toBe(1);
+            expect(device.stored(ObjectType.MapSet, 1)).toBeDefined();
+        } finally {
+            await close();
+        }
+    });
+
+    /**
+     * The two member-id shapes `obc_formats::obcs::validate` refuses, refused here too (#1389).
+     * They are the one v3 rule fully decidable from the manifest's own bytes, so the mock owes the
+     * same answer as the firmware — a client whose tests pass on bytes the device rejects is worse
+     * than one with no mock at all. Both are driven through a real upload, because
+     * `parseSetManifest` is private and its *effect* is what a client can observe.
+     */
+    it("refuses a half-bound manifest and one naming a single object twice", async () => {
+        // The control: the *same* two-record set, correctly bound, commits. Without it a refusal
+        // here would prove only that something upstream — a length, a role, a raster that does not
+        // match — went wrong, which is exactly the trap the first draft of this test fell into.
+        for (const [what, id] of [
+            ["correctly bound", 2n],
+            ["half-bound", 0n],
+            ["a duplicate id", 1n],
+        ] as const) {
+            const { client, close } = loopbackDevice();
+            try {
+                await stageOneShard(client, syntheticBytes(1024));
+                const raster = obctRaster(2048);
+                await upload(client, ObjectType.TerrainShard, NEW_OBJECT_ID, raster);
+                // One shard + the raster it actually received: two records, so record 1 can be
+                // unbound or a repeat of record 0's id. Everything else describes the set exactly.
+                const manifest = obcsManifest([1024], raster.length, true);
+                setMemberId(manifest, 1, id);
+                const sent = upload(client, ObjectType.MapSet, NEW_OBJECT_ID, manifest);
+                if (id === 2n) {
+                    expect((await sent).objectId, "the control must commit").toBe(1);
+                } else {
+                    await expect(sent, `${what} must not commit`).rejects.toThrow();
+                }
+            } finally {
+                await close();
+            }
+        }
+    });
 });
 
 describe("map upload from a file", () => {
@@ -1038,28 +1102,39 @@ function obctRaster(total: number): Uint8Array<ArrayBuffer> {
  * `terrain` record of `terrain` bytes as the **last** one.
  *
  * Only the fields the device's cross-check reads are filled: magic, version, `Shard Count` (which
- * counts every record), `Core Shard`, and each record's role + `Bytes`. That is the point of the
- * builder — it makes "a manifest that describes these files" and "a manifest that does not" two
- * calls apart, where before every test handed over anonymous bytes nothing could disagree with.
+ * counts every record), `Core Shard`, each record's role + `Bytes`, and the member `ObjectId` v3
+ * gave every record. That is the point of the builder — it makes "a manifest that describes these
+ * files" and "a manifest that does not" two calls apart, where before every test handed over
+ * anonymous bytes nothing could disagree with.
+ *
+ * **Unbound by default** — every member id `0` — because that is what a client sends on *this*
+ * transport. These uploads write files to a FAT card, which has no object identities to mint, and
+ * the device resolves the set by the derived §5.2 filenames (`obc-ble-interface-spec.md` §4.1
+ * rule 2). Pass `bound` to get the `1..=N` ids a flat-store client would bind in; the mock accepts
+ * both, since a manifest's binding state is a mount-time question and not a wire one.
  */
-function obcsManifest(shards: number[], terrain?: number): Uint8Array<ArrayBuffer> {
+function obcsManifest(shards: number[], terrain?: number, bound = false): Uint8Array<ArrayBuffer> {
     const records = shards.length + (terrain === undefined ? 0 : 1);
     const bytes = new Uint8Array(manifestLen(records));
     const view = new DataView(bytes.buffer);
     bytes.set([0x4f, 0x42, 0x43, 0x53], 0); // "OBCS"
-    bytes[4] = 2; // manifest version
+    bytes[4] = OBCS_VERSION; // manifest version
     bytes[5] = 12; // OBCM version of every shard
     bytes[6] = records; // Shard Count — every record, terrain included
     bytes[7] = 0; // Core Shard
-    shards.forEach((size, index) => {
-        const at = 72 + index * 56;
-        bytes[at] = index === 0 ? 0 : 1; // role: core, then geometry
+    const record = (index: number, role: number, size: number) => {
+        const at = OBCS_HEADER_LEN + index * OBCS_RECORD_LEN;
+        bytes[at] = role;
         view.setUint32(at + 20, size, true);
-    });
-    if (terrain !== undefined) {
-        const at = 72 + shards.length * 56;
-        bytes[at] = 3; // role: terrain, and it is the last record
-        view.setUint32(at + 20, terrain, true);
-    }
+        view.setBigUint64(at + OBCS_MEMBER_ID_OFFSET, bound ? BigInt(index + 1) : 0n, true);
+    };
+    shards.forEach((size, index) => record(index, index === 0 ? 0 : 1, size)); // core, then geometry
+    if (terrain !== undefined) record(shards.length, 3, terrain); // the terrain role is last
     return bytes;
+}
+
+/** Overwrite record `index`'s member id in place — how a test builds the shapes §5.3 refuses. */
+function setMemberId(manifest: Uint8Array, index: number, id: bigint): void {
+    const view = new DataView(manifest.buffer, manifest.byteOffset, manifest.byteLength);
+    view.setBigUint64(OBCS_HEADER_LEN + index * OBCS_RECORD_LEN + OBCS_MEMBER_ID_OFFSET, id, true);
 }
