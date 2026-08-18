@@ -505,6 +505,20 @@ rain-radar *args:
 
 # ── Host workspace chores ────────────────────────────────────────────────────
 
+# Count tracked source code by product area. With no argument, show the overview;
+# pass firmware|ios|web|pipeline|tools|all for stable component-level detail.
+# Show source LOC by product area. Args: [firmware|ios|web|pipeline|tools|all]
+loc *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    command -v tokei >/dev/null 2>&1 || {
+      _err "tokei is required for source statistics"
+      _hint "install it once: cargo install tokei --locked"
+      exit 1
+    }
+    cd "$OBC_ROOT"; _run python3 "$OBC_TOOLS/loc_report.py" "$@"
+
 # Build the host workspace (simulator + shared crates + packer).
 build:
     #!/usr/bin/env bash
