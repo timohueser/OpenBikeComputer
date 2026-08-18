@@ -30,6 +30,13 @@
 //!
 //! ## What the numbers mean
 //!
+//! **What these pins do not cover: the cost of *getting* to a read.** Both columns start counting
+//! after the object is open — after `FlatStore::open`'s catalog binary search on one side, and after
+//! `ExtentTable::build`'s FAT chain walk on the other. That is the right boundary for comparing read
+//! paths, and it means an open-cost regression is **invisible here**: a store whose `open` grew a
+//! chain walk would pass every assertion in this file. `cost.rs` pins the mount and the commit; the
+//! open is pinned by neither, and should be, when the board mount lands.
+//!
 //! `commands` is what the card charges a per-command handshake for and `blocks` is what it charges
 //! transfer time for; `cost.rs` fits both to glass measurements. The two paths do not have to be
 //! *equal* — the flat store issues fewer, wider commands, because

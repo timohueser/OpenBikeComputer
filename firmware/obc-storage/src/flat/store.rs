@@ -52,6 +52,10 @@ pub const MAX_RESERVATIONS: usize = 2;
 ///
 /// Rows are the *worst concurrent* case, not the typical one: a rider following a route across a
 /// fully sharded set, with terrain and weather mounted, while an upload runs.
+///
+/// **The recording ride is deliberately not a row.** It is not an open object at all: it lives in
+/// [`RideState`], reached through [`journal`](Store::journal) and its own reservation (see
+/// [`MAX_RESERVATIONS`]), and it never takes a hold. A `RIDE` row here would be double-counting.
 pub mod open_objects {
     /// The map shards a rendered set mounts. This is the board's ceiling, not the format's —
     /// `OBCA_Spec.md` §5.2 allows `1..=32`, and `obc-fw-nrf54l`'s `SD_SET_MAX_SHARDS` is 11 because
