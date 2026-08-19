@@ -549,7 +549,7 @@ bytes to spare per error has better uses for the frame.
 | 6 | `noSpace` | bytes required | extents `1`, catalogFull `2`, tooFragmented `3` |
 | 7 | `checksumFailure` | declared payload CRC | payload `1` |
 | 8 | `mediaIo` | — | read `1`, write `2`, sync `3` |
-| 9 | `busy` | `RequestId` of the live transfer | transfer `1` |
+| 9 | `busy` | `RequestId` of the live transfer, when there is one | transfer `1`, holds `2` |
 | 10 | `cancelled` | — | byClient `1`, byDevice `2`, linkLost `3` |
 | 11 | `rejected` | kind-specific | the kind's validator owns the detail space |
 | 12 | `internal` | — | — |
@@ -558,6 +558,14 @@ bytes to spare per error has better uses for the frame.
 
 Code `0` is invalid and is treated as a malformed body. A receiver reads a code it does not know as a
 failure it cannot classify; it never treats an unknown code as success.
+
+`busy` has **two** details because a device has two transient reasons to say *ask again*, and a
+client's retry policy is the same for both. `transfer 1` is §1's one-at-a-time rule: another `PUT`
+or `GET` is live, and its `RequestId` is the context. `holds 2` is the store's open-object table
+being full — every row taken by a reader that has not closed yet — which names no request and
+carries no context. Neither is `invalidRequest`: the request is well formed and would succeed
+against the same device a moment later, so a client that gave up on it would be giving up on a
+queue.
 
 `readOnly` is the wire face of a store that cannot be written: no usable catalog, an exhausted
 revision space, or a card §5.6 step 1 classified as **not a flat store**
