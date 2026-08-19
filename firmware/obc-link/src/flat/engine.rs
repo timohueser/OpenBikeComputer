@@ -107,8 +107,13 @@ pub struct Ceilings {
 
 impl Ceilings {
     /// The two ceilings, or `None` for a link below the protocol floor.
-    pub fn new(control: usize, stream: usize) -> Option<Self> {
-        (control >= CONTROL_FLOOR && stream > STREAM_HEADER_LEN).then_some(Ceilings { control, stream })
+    pub const fn new(control: usize, stream: usize) -> Option<Self> {
+        // `then_some` is not `const`; the `if` is the same statement and is.
+        if control >= CONTROL_FLOOR && stream > STREAM_HEADER_LEN {
+            Some(Ceilings { control, stream })
+        } else {
+            None
+        }
     }
 
     /// §5.1's ceilings for a BLE link, from what the link negotiated and what the adapter can hold.
@@ -134,13 +139,32 @@ impl Ceilings {
         Ceilings::new(control, stream)
     }
 
+    /// §5.2's ceilings for a USB link — the adapter's record buffer, on both channels.
+    ///
+    /// **There is nothing to negotiate and therefore nothing to derive.** §5.1 reads BLE's two
+    /// numbers off a link that fixed them at connection time; USB fixes neither, because a bulk
+    /// endpoint's max packet is a *packet* size and §5.2's records span packets by design. So the
+    /// ceiling is a constant of the binding, and the constant is the buffer the adapter frames into
+    /// — which is the same clamp `for_ble` applies last, arrived at directly instead of after two
+    /// link facts that do not exist here.
+    ///
+    /// One number for both channels, because one buffer serves both: the engine frames a `LIST`
+    /// page and a `GET`'s stream records into the same reaction buffer, so a control ceiling above
+    /// the stream one (or the reverse) would describe bytes the adapter does not have.
+    ///
+    /// `None` is §5.1's refusal, unchanged: a buffer too small for a single-entry page cannot carry
+    /// this protocol, and truncating it is not on the table.
+    pub const fn for_usb(record: usize) -> Option<Self> {
+        Ceilings::new(record, record)
+    }
+
     /// The largest control record this link carries.
-    pub fn control(&self) -> usize {
+    pub const fn control(&self) -> usize {
         self.control
     }
 
     /// The largest stream record this link carries.
-    pub fn stream(&self) -> usize {
+    pub const fn stream(&self) -> usize {
         self.stream
     }
 }
@@ -206,8 +230,87 @@ impl Admission {
     }
 }
 
+/// **What a live upload has landed so far** — the one thing a *device* needs from the engine that no
+/// client ever asks for.
+///
+/// A map is hundreds of megabytes and lands over twenty minutes, and a rider watching a progress
+/// bar is not a client of this protocol: the wire's answer to "how is it going" is the transfer's
+/// one response, twenty minutes later. So the device reads the engine directly, and reads it where
+/// the engine already is — no round trip, no second counter, nothing on the wire.
+///
+/// It is a report, not a hook. The engine calls nothing back and knows nothing about screens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UploadProgress {
+    /// The transfer's identifier (§3.1), so a reader can tell one upload from the next.
+    pub request: RequestId,
+    /// What is being uploaded — the only input a device needs to decide whether it has a screen
+    /// for this.
+    pub kind: ObjectKind,
+    /// Payload bytes absorbed so far.
+    pub received: u64,
+    /// What the `PUT` declared (§3.6).
+    pub declared: u64,
+}
+
+/// **How the last upload ended**, latched once and taken once.
+///
+/// Latched rather than reported live for the same reason the progress above is read rather than
+/// pushed: the terminal fact exists for exactly one instant — the call that commits or refuses — and
+/// a device that only looks between calls would otherwise see an upload vanish with no verdict. A
+/// caller that never looks costs one stale enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UploadEnd {
+    /// §3.6's commit landed. The catalog is the result.
+    Committed,
+    /// The transfer was refused, with the code its error response carried (§3.9). The detail is
+    /// deliberately not here: a device turns this into one of a handful of screens, and every
+    /// narrower fact belongs to the client that asked.
+    Refused(ErrorCode),
+}
+
+/// **Which wire a call arrived on.**
+///
+/// The engine is one value serving two links at once — a phone in a pocket and a cable in J3 — and
+/// almost nothing it does needs to know which. §1's "one engine, one owner" and §1's one-transfer
+/// rule are *why* it is one value: a second `PUT` is `busy` whichever wire asked, and that falls out
+/// of there being one `live` rather than out of any arbitration.
+///
+/// Three things do need to know, and each is a fact about a *link* rather than about the store:
+///
+/// - **Ceilings are per link** (§5.1 vs §5.2): 245 bytes of CoC SDU against 4,112 bytes of USB
+///   record. One shared number would have each link framing against the other's.
+/// - **A link coming up may not disturb the other one's transfer.** It is a new peer on one wire,
+///   not a new state of the device.
+/// - **A link going away releases only what that link held** (§3.8's third form of cancel answers
+///   "the transfer whose link went away", not "the transfer").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Link {
+    /// The radio (§5.1).
+    Ble,
+    /// The cable (§5.2).
+    Usb,
+}
+
+impl Link {
+    /// Index into the per-link tables. `usize` rather than a map because there are two links and
+    /// there will not be a third — a third *transport* would be a new binding section in the spec.
+    const fn index(self) -> usize {
+        match self {
+            Link::Ble => 0,
+            Link::Usb => 1,
+        }
+    }
+}
+
 /// The live upload, if one owns the engine.
 struct Upload<A> {
+    /// The link that admitted it. Only this link may stream into it, pump it, or lose it.
+    link: Link,
+    /// **The ceilings this transfer was admitted under**, captured once at admission rather than
+    /// read per record. A `GET` frames every one of its stream records against the link it is being
+    /// served to, and that link's numbers must not be able to change under it — which is exactly
+    /// what a shared `Engine::ceilings` allowed the *other* link to do.
+    ceilings: Ceilings,
     request: RequestId,
     /// The object being replaced, or [`ObjectId::NONE`] for a create — whose id the commit assigns,
     /// because `next_object_id` reserves nothing and a device-local commit may take it meanwhile.
@@ -228,6 +331,10 @@ struct Upload<A> {
 
 /// The live download, if one owns the engine.
 struct Download<H> {
+    /// As [`Upload::link`].
+    link: Link,
+    /// As [`Upload::ceilings`].
+    ceilings: Ceilings,
     request: RequestId,
     revision: Revision,
     payload_len: u64,
@@ -246,6 +353,8 @@ enum Live<S: Store> {
 /// `GET` receives its own error response, and the `CANCEL` receives a different one).
 #[derive(Debug, Clone, Copy)]
 struct Owed {
+    /// The link the answer is owed *to*. A response cannot be pumped out of the other one.
+    link: Link,
     opcode: Opcode,
     request: RequestId,
     refusal: Refusal,
@@ -253,19 +362,45 @@ struct Owed {
 
 /// The one transfer engine.
 pub struct Engine<S: Store, const STAGE: usize = DEFAULT_STAGE> {
-    ceilings: Ceilings,
+    /// What each link negotiated, indexed by [`Link::index`]. `None` until that link comes up, and
+    /// `None` again when it goes away — a link with no ceilings cannot be served, which is the
+    /// honest state of a wire nobody is on.
+    ceilings: [Option<Ceilings>; 2],
     live: Live<S>,
     owed: Option<Owed>,
+    /// The verdict on the last upload, for a device with a screen. See [`UploadEnd`].
+    upload_end: Option<(ObjectKind, UploadEnd)>,
     staging: [u8; STAGE],
 }
 
+impl<S: Store, const STAGE: usize> Default for Engine<S, STAGE> {
+    fn default() -> Self {
+        Engine::new()
+    }
+}
+
 impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
-    /// An idle engine on a link with these ceilings.
-    pub fn new(ceilings: Ceilings) -> Self {
+    /// An idle engine with **no link up**. Each link announces itself with
+    /// [`on_link_up`](Engine::on_link_up) and is served only while it has.
+    pub fn new() -> Self {
         const {
             assert!(STAGE >= 512 && STAGE.is_multiple_of(512), "the stage is whole 512-byte blocks");
         }
-        Engine { ceilings, live: Live::Idle, owed: None, staging: [0; STAGE] }
+        Engine { ceilings: [None, None], live: Live::Idle, owed: None, upload_end: None, staging: [0; STAGE] }
+    }
+
+    /// What `link` negotiated, or `None` while it is down.
+    fn link_ceilings(&self, link: Link) -> Option<Ceilings> {
+        self.ceilings[link.index()]
+    }
+
+    /// The link that owns the live transfer, if one does.
+    fn live_link(&self) -> Option<Link> {
+        match &self.live {
+            Live::Idle => None,
+            Live::Upload(upload) => Some(upload.link),
+            Live::Download(download) => Some(download.link),
+        }
     }
 
     /// The `RequestId` of the live transfer, if one owns the engine.
@@ -277,13 +412,43 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         }
     }
 
+    /// What the live upload has landed so far, or `None` when none is live. See [`UploadProgress`].
+    pub fn live_upload(&self) -> Option<UploadProgress> {
+        match &self.live {
+            Live::Upload(upload) => Some(UploadProgress {
+                request: upload.request,
+                kind: upload.kind,
+                received: upload.received,
+                declared: upload.declared_len,
+            }),
+            _ => None,
+        }
+    }
+
+    /// **Take the verdict on the last upload**, clearing it. See [`UploadEnd`].
+    ///
+    /// A link that goes away leaves nothing here: §3.8's third form of cancel answers nobody, and a
+    /// device whose cable was pulled needs no card explaining that back to the rider who pulled it.
+    pub fn take_upload_end(&mut self) -> Option<(ObjectKind, UploadEnd)> {
+        self.upload_end.take()
+    }
+
     /// True while nothing is owed and nothing is live: what an adapter checks before it sleeps.
     pub fn is_quiet(&self) -> bool {
         self.owed.is_none() && matches!(self.live, Live::Idle)
     }
 
     /// One whole control record arrived.
-    pub fn on_control<P: Policy>(&mut self, store: &S, policy: &mut P, record: &[u8], out: &mut [u8]) -> Reaction {
+    pub fn on_control<P: Policy>(
+        &mut self,
+        link: Link,
+        store: &S,
+        policy: &mut P,
+        record: &[u8],
+        out: &mut [u8],
+    ) -> Reaction {
+        // A link with no ceilings is a wire nobody is on; it cannot be framed to.
+        let Some(ceilings) = self.link_ceilings(link) else { return Reaction::Idle };
         let (header, request) = match decode_request(record) {
             Ok(decoded) => decoded,
             // §3.1: a zero `RequestId` is unanswerable, and so is a record too short to carry one.
@@ -296,18 +461,30 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
             }
         };
         match request {
-            Request::List(list) => self.on_list(store, header.request, list, out),
+            Request::List(list) => self.on_list(store, ceilings, header.request, list, out),
             Request::Status(status) => self.on_status(store, header.request, status, out),
-            Request::Get(get) => self.on_get(store, header.request, get, out),
-            Request::Put(put) => self.on_put(store, header.request, put, out),
+            Request::Get(get) => self.on_get(store, link, ceilings, header.request, get, out),
+            Request::Put(put) => self.on_put(store, link, ceilings, header.request, put, out),
             Request::Remove(remove) => self.on_remove(store, header.request, remove, out),
-            Request::Cancel(cancel) => self.on_cancel(store, header.request, cancel.transfer, out),
+            Request::Cancel(cancel) => self.on_cancel(store, link, header.request, cancel.transfer, out),
             Request::Arm(arm) => self.on_arm(store, policy, header.request, arm, out),
         }
     }
 
     /// One whole stream record arrived: §3.8's 16-byte frame followed by exactly its payload.
-    pub fn on_stream<P: Policy>(&mut self, store: &S, policy: &mut P, record: &[u8], out: &mut [u8]) -> Reaction {
+    pub fn on_stream<P: Policy>(
+        &mut self,
+        link: Link,
+        store: &S,
+        policy: &mut P,
+        record: &[u8],
+        out: &mut [u8],
+    ) -> Reaction {
+        // §3.8's silent discard, one step earlier: bytes on a wire that owns no transfer belong to
+        // no transfer this can be sure of, and that includes bytes on the *other* link's wire.
+        if self.live_link() != Some(link) {
+            return Reaction::Idle;
+        }
         let Some((frame, payload)) = StreamFrame::split(record) else {
             // A record that does not split names no transfer this can be sure of. §3.8 makes a
             // malformed stream record terminate the transfer, and there is exactly one to terminate.
@@ -329,7 +506,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
             return Reaction::Idle;
         }
         let (offset, declared) = (upload.received, upload.declared_len);
-        if frame.len as usize > self.ceilings.stream - STREAM_HEADER_LEN {
+        if frame.len as usize > upload.ceilings.stream - STREAM_HEADER_LEN {
             return self.fail_upload(store, Refusal::new(ErrorCode::InvalidFrame, detail::invalid_frame::LENGTH), out);
         }
         // "Frames are contiguous and ascending; the offset equals the receiver's next expected
@@ -350,13 +527,25 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
     /// Pumps the engine: a live download's next record, or an error owed to a dropped transfer.
     ///
     /// A driver calls this until it answers [`Reaction::Idle`].
-    pub fn poll(&mut self, store: &S, out: &mut [u8]) -> Reaction {
-        if let Some(owed) = self.owed.take() {
+    pub fn poll(&mut self, link: Link, store: &S, out: &mut [u8]) -> Reaction {
+        if self.owed.is_some_and(|owed| owed.link == link) {
+            let owed = self.owed.take().expect("just checked");
             return self.emit_error(out, owed.opcode, owed.request, owed.refusal);
         }
         let Live::Download(download) = &self.live else { return Reaction::Idle };
-        let (request, revision, payload_len, payload_crc, offset) =
-            (download.request, download.revision, download.payload_len, download.payload_crc, download.sent);
+        // Only the link being served pumps its own download. The other one asking is not an error —
+        // an adapter pumps until it is told there is nothing to do — it simply has nothing here.
+        if download.link != link {
+            return Reaction::Idle;
+        }
+        let (request, revision, payload_len, payload_crc, offset, stream_ceiling) = (
+            download.request,
+            download.revision,
+            download.payload_len,
+            download.payload_crc,
+            download.sent,
+            download.ceilings.stream,
+        );
         if offset >= payload_len {
             // Every byte has been handed to the transport, so §3.5's answer to the request goes out
             // and the hold is released.
@@ -372,7 +561,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         if out.len() <= STREAM_HEADER_LEN {
             return self.fail_download(store, Refusal::plain(ErrorCode::Internal), out);
         }
-        let room = out.len().min(self.ceilings.stream) - STREAM_HEADER_LEN;
+        let room = out.len().min(stream_ceiling) - STREAM_HEADER_LEN;
         let want = room.min((payload_len - offset) as usize);
         let read = store.read(&download.handle, offset, &mut out[STREAM_HEADER_LEN..STREAM_HEADER_LEN + want]);
         match read {
@@ -392,14 +581,44 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         }
     }
 
-    /// The link went away (§3.8's third form of cancel). The live transfer is dropped, its
-    /// allocation released, its handle closed, and no record of it exists.
+    /// **A link came up with these ceilings** (§5.1, §5.2).
+    ///
+    /// It touches `link` and nothing else, and that is the fix this method exists for. It used to
+    /// release the live transfer and rebuild the whole engine — which was correct while one link
+    /// existed and became a bug the moment two did: a phone reconnecting destroyed a cable's
+    /// twenty-minute map upload, with no answer to the client that was sending it, and re-pinned the
+    /// stream ceiling to the radio's 245 bytes so the cable's next 4,112-byte record terminated
+    /// over-ceiling. Neither peer had done anything wrong.
+    ///
+    /// So: a link coming up is a **new peer on one wire**, not a new state of the device. If this
+    /// link owned the live transfer, that transfer's peer is gone and it is released (nobody is left
+    /// to answer, exactly as §3.8's third form of cancel says). If the *other* link owned it, it is
+    /// left completely alone, and the newcomer's own `PUT` or `GET` meets §1's one-at-a-time rule in
+    /// the ordinary way: `busy`, with the live `RequestId` as context, whichever wire asked.
+    pub fn on_link_up(&mut self, link: Link, store: &S, ceilings: Ceilings) {
+        if self.live_link() == Some(link) {
+            self.abandon(store);
+        }
+        if self.owed.is_some_and(|owed| owed.link == link) {
+            self.owed = None;
+        }
+        self.ceilings[link.index()] = Some(ceilings);
+    }
+
+    /// **The link went away** (§3.8's third form of cancel), scoped to the link that went.
     ///
     /// Nothing is answered, because there is nobody left to answer: an error owed to a transfer the
-    /// peer can no longer hear is dropped with it.
-    pub fn on_link_lost(&mut self, store: &S) {
-        self.abandon(store);
-        self.owed = None;
+    /// peer can no longer hear is dropped with it. What is *not* dropped is the other link's
+    /// transfer — a cable being unplugged is not a reason to kill a phone's download, and the
+    /// unscoped version of this method was how it became one.
+    pub fn on_link_lost(&mut self, link: Link, store: &S) {
+        if self.live_link() == Some(link) {
+            self.abandon(store);
+        }
+        if self.owed.is_some_and(|owed| owed.link == link) {
+            self.owed = None;
+        }
+        self.ceilings[link.index()] = None;
     }
 
     /// The **device's** half of §3.8's bilateral cancel: "The device cancels by answering the
@@ -413,14 +632,25 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
     pub fn cancel_live(&mut self, store: &S, cause: CancelCause) -> bool {
         let Some(request) = self.live_transfer() else { return false };
         let opcode = if matches!(self.live, Live::Upload(_)) { Opcode::Put } else { Opcode::Get };
+        // The owning link, read **before** the abandon that forgets it: the answer is owed to the
+        // wire the transfer was on, and pumping it out of the other one would hand a client an error
+        // for a `RequestId` it never sent.
+        let link = self.live_link().expect("live_transfer just answered Some");
         self.abandon(store);
-        self.owed = Some(Owed { opcode, request, refusal: Refusal::new(ErrorCode::Cancelled, cause.detail()) });
+        self.owed = Some(Owed { link, opcode, request, refusal: Refusal::new(ErrorCode::Cancelled, cause.detail()) });
         true
     }
 
     // -- the opcodes -----------------------------------------------------------------------------
 
-    fn on_list(&mut self, store: &S, request: RequestId, list: ListRequest, out: &mut [u8]) -> Reaction {
+    fn on_list(
+        &mut self,
+        store: &S,
+        ceilings: Ceilings,
+        request: RequestId,
+        list: ListRequest,
+        out: &mut [u8],
+    ) -> Reaction {
         if let Some(refusal) = read_refusal(store.mode()) {
             return self.emit_error(out, Opcode::List, request, refusal);
         }
@@ -432,7 +662,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
                 return self.emit_error(out, Opcode::List, request, refusal);
             }
         }
-        let ceiling = self.ceilings.control;
+        let ceiling = ceilings.control;
         let Some(mut writer) = ListWriter::start(out, ceiling, store.store_id(), sequence) else {
             return self.emit_error(out, Opcode::List, request, Refusal::plain(ErrorCode::Internal));
         };
@@ -484,7 +714,15 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         }
     }
 
-    fn on_get(&mut self, store: &S, request: RequestId, get: GetRequest, out: &mut [u8]) -> Reaction {
+    fn on_get(
+        &mut self,
+        store: &S,
+        link: Link,
+        ceilings: Ceilings,
+        request: RequestId,
+        get: GetRequest,
+        out: &mut [u8],
+    ) -> Reaction {
         if let Some(refusal) = self.busy_refusal() {
             return self.emit_error(out, Opcode::Get, request, refusal);
         }
@@ -520,6 +758,8 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
             }
         };
         self.live = Live::Download(Download {
+            link,
+            ceilings,
             request,
             revision: meta.revision,
             payload_len: meta.payload_len,
@@ -529,18 +769,33 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         });
         // The first record of the payload, so that `Idle` keeps meaning "nothing to do" and a
         // driver that stops pumping on it cannot stall a download.
-        self.poll(store, out)
+        self.poll(link, store, out)
     }
 
-    fn on_put(&mut self, store: &S, request: RequestId, put: PutRequest, out: &mut [u8]) -> Reaction {
-        match self.admit_put(store, request, put) {
+    fn on_put(
+        &mut self,
+        store: &S,
+        link: Link,
+        ceilings: Ceilings,
+        request: RequestId,
+        put: PutRequest,
+        out: &mut [u8],
+    ) -> Reaction {
+        match self.admit_put(store, link, ceilings, request, put) {
             Ok(()) => Reaction::Idle,
             Err(refusal) => self.emit_error(out, Opcode::Put, request, refusal),
         }
     }
 
     /// §3.6's admission: every check that must pass before a byte is allocated for.
-    fn admit_put(&mut self, store: &S, request: RequestId, put: PutRequest) -> Result<(), Refusal> {
+    fn admit_put(
+        &mut self,
+        store: &S,
+        link: Link,
+        ceilings: Ceilings,
+        request: RequestId,
+        put: PutRequest,
+    ) -> Result<(), Refusal> {
         if let Some(refusal) = self.busy_refusal() {
             return Err(refusal);
         }
@@ -595,6 +850,8 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         };
         let allocation = store.allocate(put.payload_len).map_err(|error| allocate_refusal(error, put.payload_len))?;
         self.live = Live::Upload(Upload {
+            link,
+            ceilings,
             request,
             id,
             revision,
@@ -656,15 +913,33 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         sequence.map_err(|error| commit_refusal(error, 0))
     }
 
-    fn on_cancel(&mut self, store: &S, request: RequestId, transfer: RequestId, out: &mut [u8]) -> Reaction {
+    fn on_cancel(
+        &mut self,
+        store: &S,
+        link: Link,
+        request: RequestId,
+        transfer: RequestId,
+        out: &mut [u8],
+    ) -> Reaction {
+        // **Both halves: the identifier *and* the wire.** `RequestId` spaces are per client — §3.1
+        // makes the client choose them and nothing coordinates two clients — so a phone and a cable
+        // picking the same small number is ordinary, not adversarial. Matching on the identifier
+        // alone let a `CANCEL` from one link destroy the other link's transfer *and* mint the
+        // cancelled error to the asking link, so the victim was killed silently and its peer was
+        // never told. This was the one entry point that missed the link identity when the rest of
+        // the lifecycle gained it.
+        //
+        // A `CANCEL` naming a transfer the asking link does not own answers `cancelled = false`,
+        // which is §3.8's own honest answer: there is no such transfer *of yours*.
         let live = self.live_transfer();
-        let cancelled = live == Some(transfer);
+        let cancelled = live == Some(transfer) && self.live_link() == Some(link);
         if cancelled {
             let opcode = if matches!(self.live, Live::Upload(_)) { Opcode::Put } else { Opcode::Get };
             self.abandon(store);
             // §3.8: the cancelled transfer receives its own error response, and the `CANCEL`
             // receives a different one. The transfer's goes out on the next pump.
             self.owed = Some(Owed {
+                link,
                 opcode,
                 request: transfer,
                 refusal: Refusal::new(ErrorCode::Cancelled, detail::cancelled::BY_CLIENT),
@@ -771,8 +1046,15 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         while !input.is_empty() {
             // A record at or above one stage goes straight to the card: the copy through staging
             // would buy nothing, and this is the path a bulk USB record takes.
+            //
+            // **The whole aligned prefix, in one call.** Splitting at exactly `STAGE` would hand a
+            // 4,096-byte USB record to the card as eight separate 512-byte writes, and on this card
+            // a write command costs about the same whether it carries one block or a hundred
+            // (`FLAT_Store_Format.md` §5.5) — so the split, not the copy, was the cost. §5.2's
+            // ceiling is chosen to make a full USB stream record exactly 4,096 payload bytes for
+            // this reason, and the remainder below is the transfer's last, short record.
             if upload.staged == 0 && input.len() >= STAGE {
-                let (chunk, rest) = input.split_at(STAGE);
+                let (chunk, rest) = input.split_at(input.len() - input.len() % STAGE);
                 store.write(&mut upload.allocation, chunk)?;
                 input = rest;
                 continue;
@@ -816,6 +1098,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
                 // The commit consumed the allocation and the catalog is the result. Nothing is live
                 // from here, whatever the response does.
                 self.live = Live::Idle;
+                self.upload_end = Some((kind, UploadEnd::Committed));
                 match encode_put(out, request, id, revision, len, crc) {
                     Some(len) => Reaction::Send { channel: Channel::Control, len },
                     // §3.4 is what a client does with a response it never saw.
@@ -911,6 +1194,10 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
     /// anonymous, and the catalog is untouched.
     fn fail_upload(&mut self, store: &S, refusal: Refusal, out: &mut [u8]) -> Reaction {
         let request = self.owed_request();
+        // Read the kind before the abandon, which is the statement that forgets it.
+        if let Live::Upload(upload) = &self.live {
+            self.upload_end = Some((upload.kind, UploadEnd::Refused(refusal.code)));
+        }
         self.abandon(store);
         self.emit_error(out, Opcode::Put, request, refusal)
     }

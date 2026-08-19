@@ -25,13 +25,17 @@
 
 pub mod engine;
 pub mod ids;
+pub mod records;
 pub mod store;
 pub mod wire;
 
 #[cfg(any(test, feature = "std"))]
 pub mod vectors;
 
-pub use engine::{Admission, CancelCause, Ceilings, Channel, Engine, Reaction, DEFAULT_STAGE};
+pub use engine::{
+    Admission, CancelCause, Ceilings, Channel, Engine, Link, Reaction, UploadEnd, UploadProgress, DEFAULT_STAGE,
+};
 pub use ids::{DisplayName, EntryFlags, EntryMeta, ObjectId, ObjectKind, Revision, StoreId};
+pub use records::{buffer_len as record_buffer_len, Reassembler, RecordFault, PREFIX_LEN as RECORD_PREFIX_LEN};
 pub use store::{Mode, Mutation, OpenPolicy, Policy, PutSource, Store, StoreError};
 pub use wire::{ErrorCode, Opcode, Refusal, RequestId, WIRE_MAJOR};

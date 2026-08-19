@@ -3,43 +3,33 @@
  *
  * This is the hosted tier's **only** ride feature, and it is deliberately a dead end: a file lands
  * in a Downloads folder and nothing else happens anywhere. The managed library — a folder, a list,
- * a record of what has been kept — is the desktop app's (E2 #912), and the difference is not a
- * feature gap. It is what decides whether this path is allowed to ack.
+ * a record of what has been kept — is the desktop app's (E2 #912).
  *
- * ## The one rule: the browser never acks
+ * ## The surface this path is given
  *
- * `synced` on the device does not mean "the phone has it". Read where it is used — the delete
- * guard, the warning cue on the Rides list, and the auto-expiry anchor (#638) — and it means
- * **"a durable copy of this ride exists off the device"**. It is a durability predicate. Setting it
- * writes a `synced_at` stamp into `/tracks/SYNCED.SET`, and that stamp is the moment a countdown
- * starts against the only copy of a ride.
+ * {@link RideSource} is the whole of it, and it holds exactly two reads: list the catalog, download
+ * one ride. There is no delete and no arm — not as discipline, but because the object
+ * {@link rideAccess} hands over does not have those properties at compile time *or* at runtime. A
+ * future edit that wants to write to the device has to widen a type first, which is a change
+ * somebody reviews.
  *
- * A browser download is not durable. The rider can cancel at the save dialog, the disk can be full,
- * the tab can close between the transfer and the write. #894 therefore locks three sinks at three
- * levels of trust — the phone acks and heals from its own library, the desktop app acks *after
- * fsync*, and **the browser never acks, on any path, under any circumstance**. That rule is now
- * normative rather than epic folklore: `obc-ble-interface-spec.md` §4.4, "What `synced` means, and
- * who is allowed to say it" (E1, #911), which also spells out why two acking sinks need no
- * coordination — the ack is add-only and idempotent, so a desktop ack and a phone heal merge to the
- * same flags in either order.
+ * The ride acknowledgement this file used to be organised around is **gone from the cable**.
+ * `FLAT_Store_Protocol.md` §5.2.2 retires the v1 `command` selector: a possession ack has no store
+ * meaning — it changes no object — so it keeps the BLE control surface it already had and USB does
+ * not carry it. What that changes here is one thing and no more: nothing on this path tells the
+ * device anything, which was already true of the browser tier and is now true of every USB peer.
  *
- * So this file does not merely omit the call. {@link RideSource} is the entire surface the export
- * path is given, and it holds exactly two reads: list the catalog, download one ride. There is no
- * `ackRides`, no `deleteObject`, no generic `command` — not as discipline, but because the object
- * handed in by {@link rideAccess} does not have those properties at compile time *or* at runtime.
- * A future edit that wants to write to the device has to widen a type first, which is a change
- * somebody reviews. `rides.test.ts` pins the behaviour from the other side: a full list-and-export
- * session leaves the device's command log empty and its synced sidecar byte-identical.
+ * ## The rule that survives
  *
- * ## Two more rules inherited from the epic
+ * **Identity is `(serial, era, ObjectId)`, never a bare id.** An `ObjectId` is store-global and
+ * never reused *within* one card (`FLAT_Store_Format.md` §3), but a re-initialized card mints a new
+ * `StoreId` and starts its ids again — so anything this page remembers about a ride is keyed by
+ * {@link rideKey} and thrown away when the scope changes. Nothing is persisted; the scope exists so
+ * that what the page holds *within* one visit cannot survive a card swap.
  *
- * - **Never consult the device's `synced` flag when deciding what to fetch.** It cannot be consulted
- *   even by accident here: the `rideList` entry (spec §7.4, 72 bytes) carries no synced field at
- *   all. Reconciliation only ever travels host → device. The full catalog is listed, always.
- * - **Identity is `(serial, epoch, id)`, never a bare id.** Object ids are recycled after a store
- *   epoch bump — a reformatted card, a factory reset — so anything this page remembers about a ride
- *   is keyed by {@link rideKey} and thrown away when the scope changes. Nothing is persisted; the
- *   scope exists so that what the page holds *within* one visit cannot survive a card swap.
+ * A ride the device is still recording carries `RECORDING` in its `LIST` entry, and §3.5 refuses a
+ * `GET` of one — its length and CRC are zero until the commit that ends it. {@link recordedRides}
+ * is where that filter lives, so no call site has to remember it.
  *
  * ## Why this buffers where the map path streams
  *
@@ -55,73 +45,110 @@
  */
 
 import { trackToGpx } from "../convert/bridge";
-import type { ProtocolClient, TransferOptions } from "../usb/client";
-import { decodeRideObject, type RideListEntry, type RideObject } from "../usb/objects";
-import { ObjectType } from "../usb/protocol";
-import type { VersionRead } from "../usb/protocol";
-import type { DeviceInfo } from "../usb/transport";
+import type { FlatStoreClient, TransferOptions } from "../usb/client";
+import { decodeRideObject, type RideObject } from "../usb/objects";
+import { EntryFlags, ObjectKind, type CatalogEntry } from "../usb/protocol";
+import type { DeviceInfo } from "../usb/records";
+import type { StoreIdentity } from "../usb/session";
 import type { JobContext } from "./progress";
 
-export type { RideListEntry, RideObject };
+export type { CatalogEntry, RideObject };
 
 // --- the narrowed device surface ----------------------------------------------
 
-/** A ride catalog as the device reports it, with the truncation flag intact (§7.4). */
-export interface RideCatalog {
-    readonly entries: readonly RideListEntry[];
-    /** The device dropped `total - count` older entries at its cap. Surfaced, never hidden. */
-    readonly truncated: boolean;
-}
-
 /**
- * Everything the browser's ride export may do to a device: two reads, and nothing else.
+ * Everything the ride export may do to a device: two reads, and nothing else.
  *
- * This is the structural half of "never acks" (see the file header). Code written against this type
- * cannot reach `ackRides`, `deleteObject`, `setClock` or the generic `command`, because they are
- * not members — widening it is the only way to write to the device from here, and that is a change
+ * Code written against this type cannot reach `remove`, `put` or `arm`, because they are not
+ * members — widening it is the only way to write to the device from here, and that is a change
  * somebody reviews rather than an autocomplete accident.
  *
- * A `ProtocolClient` is deliberately **not** one of these: `downloadRide` narrows `download` to the
- * ride namespace and exists nowhere else, so {@link rideAccess} is the only way to obtain a
- * `RideSource`. There is no "just pass the client in" shortcut for a call site to reach for.
+ * A `FlatStoreClient` is deliberately **not** one of these: `downloadRide` narrows `get` to the ride
+ * kind and exists nowhere else, so {@link rideAccess} is the only way to obtain a `RideSource`.
  */
 export interface RideSource {
-    listRides(options?: TransferOptions): Promise<RideCatalog>;
-    downloadRide(objectId: number, options?: TransferOptions): Promise<Uint8Array>;
+    /** Every ride entry in the catalog, the whole listing, paged by the client (§3.3). */
+    listRides(signal?: AbortSignal): Promise<readonly CatalogEntry[]>;
+    downloadRide(entry: CatalogEntry, options?: TransferOptions): Promise<Uint8Array>;
 }
 
 /**
  * The read-only view of a client that the export path is handed.
  *
  * The narrowing is real at runtime as well as in the type: the returned object owns two bound
- * functions and nothing else, so `(source as ProtocolClient).ackRides(...)` throws rather than
+ * functions and nothing else, so `(source as FlatStoreClient).remove(...)` throws rather than
  * quietly working the day someone reaches for a cast. Frozen so it cannot be grown in place either.
  */
-export function rideAccess(client: ProtocolClient): RideSource {
+export function rideAccess(client: FlatStoreClient): RideSource {
     return Object.freeze({
-        listRides: (options?: TransferOptions) => client.listRides(options),
-        downloadRide: (objectId: number, options?: TransferOptions) =>
-            client.download(ObjectType.Ride, objectId, options),
+        listRides: async (signal?: AbortSignal) =>
+            (await client.list({ kind: ObjectKind.Ride, signal })).entries,
+        // The entry's own `(ObjectId, Revision)` pair rather than the head, so a listing and the
+        // download that follows it name the same bytes even if the card moved in between — a
+        // revision the device no longer holds is `notFound`, which is the honest answer.
+        //
+        // The entry's length rides along as the progress bar's denominator: §3.5 only states one in
+        // the answer, and a ride arriving with no total would report nothing until it was over.
+        downloadRide: async (entry: CatalogEntry, options?: TransferOptions) =>
+            (
+                await client.get(
+                    { objectId: entry.objectId, revision: entry.revision },
+                    { ...options, expectedLength: Number(entry.payloadLength) },
+                )
+            ).bytes,
     });
+}
+
+/**
+ * The rides a client may actually fetch: everything the catalog holds except what is being recorded.
+ *
+ * §3.5 refuses a `GET` of an entry carrying `RECORDING`, because the store has not committed its
+ * length or CRC yet — serving one would report success over an empty payload. A client syncs a ride
+ * once that flag has cleared from its `LIST` entry, so filtering here is not politeness, it is the
+ * only listing a caller can act on.
+ */
+export function recordedRides(entries: readonly CatalogEntry[]): CatalogEntry[] {
+    return entries.filter((entry) => (entry.flags & EntryFlags.Recording) === 0);
 }
 
 // --- ride identity -------------------------------------------------------------
 
 /**
- * The id era a ride id is meaningful in: the device's serial and its store epoch.
+ * The id era a ride id is meaningful in: the device's serial and a fingerprint of the card.
  *
- * `epoch` is `null` on a device with no mounted card, which serves the short identity read — that
- * is "no epoch", never epoch `0`, because `0` is a legal era. A null epoch means ids cannot be
- * trusted to mean anything across a replug, so it gets its own key rather than collapsing to `0`.
+ * `epoch` is `null` where the host could not read a `StoreId` — no card, or a listing that failed.
+ * That is "no era", never `0`, because `0` is a legal fingerprint: a client that cannot name the era
+ * must fail closed rather than share one bucket with every other cardless device.
  */
 export interface RideScope {
     readonly serial: string;
+    /** {@link storeEra} of the card's `StoreId`, or `null`. */
     readonly epoch: number | null;
 }
 
-/** The scope of the currently connected device, from the two reads every connection already does. */
-export function rideScope(info: DeviceInfo | null, identity: VersionRead | null): RideScope {
-    return { serial: info?.serialNumber ?? "", epoch: identity?.storeEpoch ?? null };
+/**
+ * The card's 128-bit `StoreId` narrowed to the 32 bits the ride index has a column for.
+ *
+ * The era on the wire is the whole `StoreId` (§3.3), and this throws 96 bits of it away. That is a
+ * **cache key and nothing else**: it decides whether a ride the library already holds is the same
+ * ride, it authorises nothing, and it is never sent anywhere. Two different cards colliding costs
+ * one confused dedupe and has a probability of 2^-32 per pair, against a fleet of one device per
+ * rider.
+ *
+ * The narrowing exists because `apps/obc-desktop/src/rides.rs` stores the era as a `u32` and
+ * widening that column is a Rust change this slice does not make. The alternative — keeping the full
+ * hex here and letting the desktop index key on something else — would give the two libraries two
+ * different answers to "is this the same ride", which is the exact failure the 2026-07-12 incident
+ * was.
+ */
+export function storeEra(storeId: string): number {
+    return Number.parseInt(storeId.slice(0, 8), 16) >>> 0;
+}
+
+/** The scope of the connected device, from the two reads every connection already does: §5.2.1's
+ *  strings and the first `LIST` page's identity prefix. */
+export function rideScope(info: DeviceInfo | null, store: StoreIdentity | null): RideScope {
+    return { serial: info?.serialNumber ?? "", epoch: store ? storeEra(store.storeId) : null };
 }
 
 /** A scope's own key — compare two of these to know whether every remembered id just became
@@ -130,9 +157,16 @@ export function scopeKey(scope: RideScope): string {
     return `${scope.serial}:${scope.epoch ?? "no-store"}`;
 }
 
-/** `(serial, epoch, id)` — the epic's ride identity. A bare id is wrong: ids are recycled after a
- *  store-epoch bump, so two different rides can share one. */
-export function rideKey(scope: RideScope, objectId: number): string {
+/**
+ * `(serial, era, ObjectId)` — the ride identity. A bare id is wrong: a re-initialized card
+ * starts its ids again, so two different rides can share one across that boundary.
+ *
+ * `bigint | number` because the two sides that key against each other hold the id differently: a
+ * `LIST` entry carries the wire's `u64` and the ride library's index carries a JSON number. They
+ * stringify identically, which is the whole reason one key function can serve both — stated here so
+ * nobody "fixes" the union by narrowing it and silently splitting the keyspace in two.
+ */
+export function rideKey(scope: RideScope, objectId: bigint | number): string {
     return `${scopeKey(scope)}:${objectId}`;
 }
 
@@ -179,13 +213,14 @@ interface ExportedRide {
 /**
  * Pull one ride and convert it to GPX. The device is not touched in any other way.
  *
- * The CRC is not this function's job to check and is checked all the same: `download` folds the
- * whole-object CRC-32 as slices arrive and rejects the object before returning, so there is no path
- * from a corrupt transfer to a file offered to the rider. "Exported" means the bytes were intact.
+ * The CRC is not this function's job to check and is checked all the same: §3.5 has the device
+ * declare the whole-payload CRC in its answer and the client verify it before returning, so there is
+ * no path from a corrupt transfer to a file offered to the rider. "Exported" means the bytes were
+ * intact.
  */
-export async function exportRide(source: RideSource, entry: RideListEntry, ctx: JobContext): Promise<ExportedRide> {
-    ctx.phase("downloading", entry.byteLen);
-    const bytes = await source.downloadRide(entry.objectId, {
+export async function exportRide(source: RideSource, entry: CatalogEntry, ctx: JobContext): Promise<ExportedRide> {
+    ctx.phase("downloading", Number(entry.payloadLength));
+    const bytes = await source.downloadRide(entry, {
         signal: ctx.signal,
         onProgress: (done, total) => ctx.progress(done, total),
     });
@@ -293,9 +328,12 @@ export function rideToTrackLog(ride: RideObject): Uint8Array {
  * locally would put a late evening ride on the wrong day for anyone west of Greenwich. A device
  * that has never had a trusted clock reports `0` and gets no date at all rather than 1970.
  */
-export function rideFilename(entry: RideListEntry, ride?: RideObject): string {
-    const name = slug(ride?.name || entry.name) || `ride-${entry.objectId}`;
-    const date = rideDate(entry.startTime);
+export function rideFilename(entry: CatalogEntry, ride?: RideObject): string {
+    const name = slug(ride?.name || entry.displayName) || `ride-${entry.objectId}`;
+    // The start date comes from the ride **payload**, because a `LIST` entry does not carry one:
+    // §3.3's 88 bytes are id, revision, length, CRC, kind, flags and display name. A caller naming a
+    // file before it has downloaded the ride gets the name alone, which is the honest half.
+    const date = rideDate(ride?.startTime ?? 0);
     return `${date ? `${date}-` : ""}${name}.gpx`;
 }
 

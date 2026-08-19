@@ -77,9 +77,9 @@
                 <h3>{available("deviceDashboard") ? "Send to device" : "Device"}</h3>
             </div>
             {#if available("deviceDashboard")}
-                <MapSendStep ledger={store.ledger} />
+                <MapSendStep />
             {:else}
-                <DeviceStep ledger={store.ledger} />
+                <DeviceStep />
             {/if}
         </section>
     </div>

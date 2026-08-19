@@ -1,254 +1,41 @@
 /**
- * The bulk-channel object layouts of the interface spec: the list objects (§7.4), the ride object
- * (§7.2) and the trip object (§7.7).
+ * Object **payload** layouts: the ride object and the trip object.
  *
- * A port of `firmware/obc-ble/src/list.rs` and the ride/trip layouts, pinned to the same
- * `specs/vectors/` fixtures (see `vectors.test.ts`). Routes and firmware images are absent on
- * purpose: an `.obcr` route and an `UPDATE.BIN` cross the wire as *opaque bytes* the device writes
- * verbatim (§7.1, §7.6), so the transfer layer stays format-blind and there is nothing here to
- * decode. The browser's OBCR encoding is the wasm bridge's job (A2 #896).
+ * Not the wire. Protocol v4 carries an object as opaque bytes with a kind, a display name and a
+ * whole-payload CRC (`FLAT_Store_Protocol.md` §3), so nothing in this file crosses a frame boundary
+ * or has a §3 offset — it is what the bytes *inside* one object mean, and only for the two kinds
+ * this app has to look inside.
  *
- * **Read entries by the header's `entry_len`, never by a constant.** The three list types have
- * different entry sizes (route 84, ride 72, trip 76) and `routeList` has already grown once — the
- * auto-expiry tail was appended after the content CRC without a protocol bump. Stepping by the
- * announced length and decoding the prefix you know is the format's designed forward path; a
- * hard-coded stride turns the next additive change into a silent misparse.
+ * Routes, maps and firmware images are absent on purpose: an `.obcr`, an `.obcm` and an `UPDATE.BIN`
+ * are written verbatim and read back verbatim, so there is nothing here to decode. The browser's
+ * OBCR encoding is the wasm bridge's job, and `device/route.ts` reads its header.
+ *
+ * The **list objects are gone with the v1 wire**. There is no `routeList`, `rideList` or `tripList`
+ * any more: `LIST` is a control response carrying 88-byte catalog entries (§3.3), and what a client
+ * can know about an object without downloading it is exactly what that entry holds — id, revision,
+ * length, CRC, kind, flags and display name. The richer per-kind metadata those objects used to
+ * carry (a route's distance and ascent, a ride's start time and moving time) lives in the payload,
+ * and a client that wants it reads the payload.
  */
 
-import { DecodeError, viewOf } from "./protocol";
-
-// --- the shared list header (§7.4) --------------------------------------------
-
-export const LIST_HEADER_LEN = 6;
-export const LIST_VERSION = 2;
-
-/** Entry sizes as of protocol v2 + auto-expiry. Encoders use them; decoders read `entryLen`. */
-export const ROUTE_ENTRY_LEN = 84;
-export const RIDE_ENTRY_LEN = 72;
-export const TRIP_ENTRY_LEN = 76;
-
-/** The smallest entry any list type uses — the header decoder's floor sanity check. */
-const MIN_ENTRY_LEN = RIDE_ENTRY_LEN;
+import { viewOf } from "./protocol";
 
 /**
- * ```text
- *   version    u8   = 2
- *   entry_len  u8   the entry size; readers step by it
- *   count      u16  entries actually in this object (after the device's cap)
- *   total      u16  full catalog size BEFORE the cap
- * ```
+ * A payload this build cannot read.
  *
- * `total > count` is the wire's way of saying the device dropped entries at its cap — surfaced as
- * a one-line warning rather than a silent "up to date".
+ * Object payloads are not the wire. §3 carries an object as opaque bytes with a kind, a name and a
+ * CRC, so nothing below is a protocol failure the device could have answered differently — a ride
+ * this page cannot decode is a page behind its device, and it needs its own error rather than one of
+ * §3.9's codes.
  */
-export interface ListHeader {
-    count: number;
-    total: number;
-    entryLen: number;
-}
-
-export function encodeListHeader(h: ListHeader): Uint8Array {
-    const out = new Uint8Array(LIST_HEADER_LEN);
-    const view = new DataView(out.buffer);
-    out[0] = LIST_VERSION;
-    out[1] = h.entryLen;
-    view.setUint16(2, h.count, true);
-    view.setUint16(4, h.total, true);
-    return out;
-}
-
-export function decodeListHeader(data: Uint8Array): ListHeader {
-    if (data.length < LIST_HEADER_LEN) {
-        throw new DecodeError("truncated", `list object is ${data.length} bytes, shorter than its 6-byte header.`);
+export class ObjectDecodeError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = "ObjectDecodeError";
     }
-    if (data[0] !== LIST_VERSION) {
-        throw new DecodeError("unknown-status", `list object version ${data[0]}, this client speaks ${LIST_VERSION}.`);
-    }
-    const entryLen = data[1];
-    if (entryLen < MIN_ENTRY_LEN) {
-        throw new DecodeError("unknown-status", `list entry_len ${entryLen} is below the ${MIN_ENTRY_LEN}-byte floor.`);
-    }
-    const view = viewOf(data);
-    return { entryLen, count: view.getUint16(2, true), total: view.getUint16(4, true) };
 }
 
-/**
- * Walk a list object, decoding each entry with `decodeEntry`.
- *
- * The stride is the header's `entryLen`, so a future firmware whose entries carry more fields
- * still walks correctly and each entry decodes the prefix this client understands.
- */
-function decodeList<T>(data: Uint8Array, minEntryLen: number, what: string, decodeEntry: (slot: Uint8Array) => T) {
-    const header = decodeListHeader(data);
-    if (header.entryLen < minEntryLen) {
-        throw new DecodeError("truncated", `${what} entries are ${header.entryLen} bytes, this client needs ${minEntryLen}.`);
-    }
-    const entries: T[] = [];
-    for (let k = 0; k < header.count; k++) {
-        const start = LIST_HEADER_LEN + k * header.entryLen;
-        const slot = data.subarray(start, start + header.entryLen);
-        if (slot.length < header.entryLen) {
-            throw new DecodeError("truncated", `${what} claims ${header.count} entries but ends inside entry ${k}.`);
-        }
-        entries.push(decodeEntry(slot));
-    }
-    return { header, entries };
-}
-
-// --- routeList (§7.4) ---------------------------------------------------------
-
-/**
- * One stored route, as the catalog reports it.
- *
- * `crc32` is the fingerprint of the stored OBCR bytes, computed by the device at upload commit —
- * `0` means "unknown" (a side-loaded file not yet fingerprinted). `expiresAt` and `retention` sit
- * *after* it and are deliberately outside its coverage: they are device-computed volatile state, so
- * a route whose countdown merely ticked must never read as "content changed".
- */
-export interface RouteListEntry {
-    objectId: number;
-    byteLen: number;
-    distanceM: number;
-    ascentM: number;
-    pointCount: number;
-    waypointCount: number;
-    name: string;
-    crc32: number;
-    /** Unix seconds the route auto-deletes at; `0` = never, or the clock has not started. */
-    expiresAt: number;
-    /** `0` never · `1` 1 day · `2` 1 week · `3` 2 weeks · `4` 1 month · `5` 2 months. */
-    retention: number;
-}
-
-function decodeRouteListEntry(slot: Uint8Array): RouteListEntry {
-    const view = viewOf(slot);
-    return {
-        objectId: view.getUint16(0, true),
-        byteLen: view.getUint32(4, true),
-        distanceM: view.getUint32(8, true),
-        ascentM: view.getUint32(12, true),
-        pointCount: view.getUint32(16, true),
-        waypointCount: view.getUint16(20, true),
-        name: paddedName(slot, 22, 23, 48),
-        crc32: view.getUint32(72, true),
-        expiresAt: view.getUint32(76, true),
-        retention: slot[80],
-    };
-}
-
-export function encodeRouteListEntry(e: RouteListEntry): Uint8Array {
-    const out = new Uint8Array(ROUTE_ENTRY_LEN);
-    const view = new DataView(out.buffer);
-    view.setUint16(0, e.objectId, true);
-    view.setUint32(4, e.byteLen, true);
-    view.setUint32(8, e.distanceM, true);
-    view.setUint32(12, e.ascentM, true);
-    view.setUint32(16, e.pointCount, true);
-    view.setUint16(20, e.waypointCount, true);
-    writePaddedName(out, 22, 23, 48, e.name);
-    view.setUint32(72, e.crc32, true);
-    view.setUint32(76, e.expiresAt, true);
-    out[80] = e.retention;
-    return out;
-}
-
-export function decodeRouteList(data: Uint8Array) {
-    return decodeList(data, ROUTE_ENTRY_LEN, "routeList", decodeRouteListEntry);
-}
-
-// --- rideList (§7.4) ----------------------------------------------------------
-
-/** One recorded ride, as the catalog reports it. Unchanged since protocol v1 — which is exactly
- *  why entry length is carried per-list rather than shared. */
-export interface RideListEntry {
-    objectId: number;
-    byteLen: number;
-    startTime: number;
-    distanceM: number;
-    movingTimeS: number;
-    avgSpeedCms: number;
-    climbM: number;
-    name: string;
-}
-
-function decodeRideListEntry(slot: Uint8Array): RideListEntry {
-    const view = viewOf(slot);
-    return {
-        objectId: view.getUint16(0, true),
-        byteLen: view.getUint32(4, true),
-        startTime: view.getUint32(8, true),
-        distanceM: view.getUint32(12, true),
-        movingTimeS: view.getUint32(16, true),
-        avgSpeedCms: view.getUint16(20, true),
-        climbM: view.getUint16(22, true),
-        name: paddedName(slot, 24, 25, 47),
-    };
-}
-
-export function encodeRideListEntry(e: RideListEntry): Uint8Array {
-    const out = new Uint8Array(RIDE_ENTRY_LEN);
-    const view = new DataView(out.buffer);
-    view.setUint16(0, e.objectId, true);
-    view.setUint32(4, e.byteLen, true);
-    view.setUint32(8, e.startTime, true);
-    view.setUint32(12, e.distanceM, true);
-    view.setUint32(16, e.movingTimeS, true);
-    view.setUint16(20, e.avgSpeedCms, true);
-    view.setUint16(22, e.climbM, true);
-    writePaddedName(out, 24, 25, 47, e.name);
-    return out;
-}
-
-export function decodeRideList(data: Uint8Array) {
-    return decodeList(data, RIDE_ENTRY_LEN, "rideList", decodeRideListEntry);
-}
-
-// --- tripList (§7.4) ----------------------------------------------------------
-
-/** One trip, as the catalog reports it. `stageCount` counts every stored stage including dangling
- *  refs, while the totals sum only the stages the device could resolve — so they legitimately
- *  disagree. */
-export interface TripListEntry {
-    objectId: number;
-    byteLen: number;
-    totalDistanceM: number;
-    totalAscentM: number;
-    stageCount: number;
-    name: string;
-    crc32: number;
-}
-
-function decodeTripListEntry(slot: Uint8Array): TripListEntry {
-    const view = viewOf(slot);
-    return {
-        objectId: view.getUint16(0, true),
-        byteLen: view.getUint32(4, true),
-        totalDistanceM: view.getUint32(8, true),
-        totalAscentM: view.getUint32(12, true),
-        stageCount: view.getUint16(16, true),
-        name: paddedName(slot, 20, 21, 48),
-        crc32: view.getUint32(72, true),
-    };
-}
-
-export function encodeTripListEntry(e: TripListEntry): Uint8Array {
-    const out = new Uint8Array(TRIP_ENTRY_LEN);
-    const view = new DataView(out.buffer);
-    view.setUint16(0, e.objectId, true);
-    view.setUint32(4, e.byteLen, true);
-    view.setUint32(8, e.totalDistanceM, true);
-    view.setUint32(12, e.totalAscentM, true);
-    view.setUint16(16, e.stageCount, true);
-    writePaddedName(out, 20, 21, 48, e.name);
-    view.setUint32(72, e.crc32, true);
-    return out;
-}
-
-export function decodeTripList(data: Uint8Array) {
-    return decodeList(data, TRIP_ENTRY_LEN, "tripList", decodeTripListEntry);
-}
-
-// --- the ride object (§7.2) ---------------------------------------------------
+// --- the ride object ---------------------------------------------------
 
 /** Absent-value sentinels for the v2 sensor fields. */
 const NO_U8 = 0xff;
@@ -295,17 +82,17 @@ export interface RideObject {
  * explicitly.
  */
 export function decodeRideObject(data: Uint8Array): RideObject {
-    if (data.length < 3) throw new DecodeError("truncated", `ride object is ${data.length} bytes.`);
+    if (data.length < 3) throw new ObjectDecodeError(`ride object is ${data.length} bytes.`);
     const version = data[0];
     if (version !== 1 && version !== 2) {
-        throw new DecodeError("unknown-status", `ride object version ${version}; this client decodes 1 and 2.`);
+        throw new ObjectDecodeError(`ride object version ${version}; this client decodes 1 and 2.`);
     }
     const view = viewOf(data);
     const nameLen = view.getUint16(1, true);
     const fixed = version === 1 ? 23 : 31;
     const pointLen = version === 1 ? 14 : 18;
     if (data.length < fixed + nameLen) {
-        throw new DecodeError("truncated", `ride object header needs ${fixed + nameLen} bytes, got ${data.length}.`);
+        throw new ObjectDecodeError(`ride object header needs ${fixed + nameLen} bytes, got ${data.length}.`);
     }
     // The name sits between `name_len` and the rest of the header, so every field after it is
     // relative to where the name ended.
@@ -313,8 +100,7 @@ export function decodeRideObject(data: Uint8Array): RideObject {
     const pointCount = view.getUint32(at + 16, true);
     const expected = fixed + nameLen + pointLen * pointCount;
     if (data.length !== expected) {
-        throw new DecodeError(
-            "truncated",
+        throw new ObjectDecodeError(
             `ride object v${version} with ${pointCount} points should be ${expected} bytes, got ${data.length}.`,
         );
     }
@@ -394,7 +180,7 @@ export function encodeRideObject(r: RideObject): Uint8Array {
     return out;
 }
 
-// --- the trip object (§7.7) ---------------------------------------------------
+// --- the trip object ---------------------------------------------------
 
 export const TRIP_HEADER_LEN = 56;
 
@@ -412,16 +198,16 @@ export interface TripObject {
 
 export function decodeTripObject(data: Uint8Array): TripObject {
     if (data.length < TRIP_HEADER_LEN) {
-        throw new DecodeError("truncated", `trip object is ${data.length} bytes, shorter than its 56-byte header.`);
+        throw new ObjectDecodeError(`trip object is ${data.length} bytes, shorter than its 56-byte header.`);
     }
     if (data[0] !== 1) {
-        throw new DecodeError("unknown-status", `trip object version ${data[0]}; this client decodes 1.`);
+        throw new ObjectDecodeError(`trip object version ${data[0]}; this client decodes 1.`);
     }
     const view = viewOf(data);
     const stageCount = view.getUint16(2, true);
     const expected = TRIP_HEADER_LEN + 2 * stageCount;
     if (data.length !== expected) {
-        throw new DecodeError("truncated", `trip with ${stageCount} stages should be ${expected} bytes, got ${data.length}.`);
+        throw new ObjectDecodeError(`trip with ${stageCount} stages should be ${expected} bytes, got ${data.length}.`);
     }
     const stages: number[] = [];
     for (let i = 0; i < stageCount; i++) stages.push(view.getUint16(TRIP_HEADER_LEN + i * 2, true));
@@ -429,6 +215,14 @@ export function decodeTripObject(data: Uint8Array): TripObject {
 }
 
 export function encodeTripObject(t: TripObject): Uint8Array {
+    // **Refused here, not left to call-site discipline.** `setUint16` wraps silently, so a trip with
+    // 65,536 stages would encode as one with zero and the device would commit a trip that is not the
+    // trip it was given — a wrong object rather than a rejected one, which is the failure direction
+    // worth spending a branch on. Every caller today is far under the cap; that is exactly why the
+    // check belongs in the encoder, where it stays true when a caller stops being careful.
+    if (t.stages.length > 0xffff) {
+        throw new RangeError(`a trip carries at most 65535 stages; this one has ${t.stages.length}`);
+    }
     const out = new Uint8Array(TRIP_HEADER_LEN + 2 * t.stages.length);
     const view = new DataView(out.buffer);
     out[0] = 1;

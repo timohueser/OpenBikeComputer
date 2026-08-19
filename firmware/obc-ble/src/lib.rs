@@ -28,8 +28,8 @@ pub mod weather_request;
 pub use crc32::Crc32;
 pub use descriptor::{
     install_fw_reply, AckRides, CommandResult, CommandStatus, Config, DescriptorError, ObjectType, Op, SetClock,
-    SetPart, SetRouteRetention, StatusMessage, StoreChanged, TransferControl, TransferResult, TransferStatus,
-    VersionRead, WeatherUnchanged, CMD_ACK_RIDES, CMD_DELETE_OBJECT, CMD_FORGET_BOND, CMD_INSTALL_FW, CMD_SET_CLOCK,
+    SetRouteRetention, StatusMessage, StoreChanged, TransferControl, TransferResult, TransferStatus, VersionRead,
+    WeatherUnchanged, CMD_ACK_RIDES, CMD_DELETE_OBJECT, CMD_FORGET_BOND, CMD_INSTALL_FW, CMD_SET_CLOCK,
     CMD_SET_ROUTE_RETENTION, CMD_WEATHER_UNCHANGED, FEATURE_WEATHER, SET_CLOCK_MAX_OFFSET_MIN, SET_CLOCK_MIN_UTC,
     SET_ROUTE_RETENTION_MAX, WEATHER_UNCHANGED_MAX_RETRY_S,
 };

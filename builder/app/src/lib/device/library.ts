@@ -11,59 +11,49 @@
  * other implementation is the fake in `library.test.ts`. That split is what lets the four rules
  * below be tested as *behaviour* rather than as a mocked call sequence.
  *
- * ## The four rules, and what each one is protecting
+ * ## The two rules, and what each one is protecting
  *
- * **1. Always pull the full ride list and dedupe locally.** The device's `synced` flag is a
- * durability cue, not a fetch filter — and it is not even on the wire (`rideList`'s 72-byte entry,
- * §7.4, carries no synced field, so consulting it is impossible rather than merely forbidden). What
- * decides whether a ride is fetched is whether *this library* already holds it. Pulling twice is
- * then a no-op by construction rather than by remembering to check.
+ * **1. Always pull the full ride list and dedupe locally.** What decides whether a ride is fetched
+ * is whether *this library* already holds it — never anything the device says about it. Pulling
+ * twice is then a no-op by construction rather than by remembering to check. `LIST` makes that
+ * cheap: a catalog page is metadata, and nothing is downloaded to decide what to download.
  *
- * **2. The key is `(serial, epoch, id)`.** Object ids are recycled after a store-epoch bump — a
- * reformatted card, a factory reset — so a bare id names two different rides on either side of one.
- * The iOS companion learned this the hard way (`LibraryScopingE2ETests` replays the 2026-07-12
- * incident: an old synced set filtered out the new era's rides and "sync" answered *up to date*
- * forever). Same key here, same meaning, so the two libraries agree about what "the same ride" is.
+ * **2. The key is `(serial, era, ObjectId)`.** An `ObjectId` is never reused within one card,
+ * but a re-initialized card mints a new `StoreId` and starts its ids again, so a bare id names two
+ * different rides on either side of one. The iOS companion learned this the hard way
+ * (`LibraryScopingE2ETests` replays the 2026-07-12 incident: an old synced set filtered out the new
+ * era's rides and "sync" answered *up to date* forever). Same key here, same meaning, so the two
+ * libraries agree about what "the same ride" is.
  *
- * **3. Ack after fsync, never on transfer completion.** {@link RideLibrary.import} resolves only
- * once the bytes are durable, and {@link pullRides} sends its ack after that — see below for why
- * even *that* is not quite the rule.
+ * ## What the acknowledgement was, and why it is gone
  *
- * **4. `synced` is monotonic and `synced_at` is first-ack-wins.** Nothing here un-flags anything;
- * the ack is add-only, so this app's acks and a phone's heals merge in either order (§4.4, and
- * `obc-app`'s `SyncedRides::ack` tests).
+ * This module used to end every pull by telling the device which rides it now held durably, so the
+ * device could start an expiry countdown against a ride that had a copy elsewhere. That command is
+ * **not on the cable any more**: `FLAT_Store_Protocol.md` §5.2.2 retires the v1 `command` selector
+ * outright, because a possession ack changes no object and therefore has no store meaning. It keeps
+ * the BLE control surface it already had, so the phone still acks; USB does not.
  *
- * ## Why the ack list is re-read from the disk
- *
- * The obvious implementation acks the rides it just imported. This one asks the library which rides
- * are **on the disk right now** ({@link RideLibrary.durableIds}, answered in Rust by stat-ing every
- * file) and acks that. The difference shows up in three real cases: an import that failed halfway
- * through a batch, a ride whose file the rider deleted in the file manager, and a power cut between
- * `write()` and `fsync()`. In all three the optimistic list contains a ride that is not there. The
- * pessimistic one cannot, because it is a description of the filesystem rather than of this
- * session's intentions.
- *
- * It also heals: re-sending the whole list every pull is what repairs a device whose
- * `/tracks/SYNCED.SET` was lost with a reflashed card, exactly as the phone's re-send does. An ack
- * is add-only and unknown ids are answered `ok`, so there is no cost to saying everything.
+ * The consequence is worth stating rather than discovering: a rider who syncs only over the cable
+ * gets their rides copied and the device is not told. Nothing here pretends otherwise — there is no
+ * report field claiming an ack, and the ordering discipline the ack needed (import resolves only
+ * after fsync) is kept anyway, because it is what makes {@link PullReport} true.
  */
 
 import { trackToGpx } from "../convert/bridge";
 import { Crc32 } from "../usb/crc32";
-import type { ProtocolClient, TransferOptions } from "../usb/client";
-import { decodeRideObject, type RideListEntry, type RideObject } from "../usb/objects";
-import { ObjectType } from "../usb/protocol";
+import { decodeRideObject, type RideObject } from "../usb/objects";
+import type { CatalogEntry } from "../usb/protocol";
 import {
     RideExportError,
+    recordedRides,
     rideKey,
     rideToTrackLog,
-    type RideCatalog,
     type RideScope,
     type RideSource,
 } from "./rides";
 import type { JobContext } from "./progress";
 
-export type { RideListEntry, RideObject, RideScope };
+export type { CatalogEntry, RideObject, RideScope };
 
 // --- what the library holds ----------------------------------------------------
 
@@ -80,6 +70,7 @@ export type { RideListEntry, RideObject, RideScope };
 export interface LibraryRide {
     readonly key: string;
     readonly serial: string;
+    /** `rides.ts`'s `storeEra` of the card's `StoreId` — the era an `ObjectId` is meaningful in. */
     readonly epoch: number;
     readonly objectId: number;
     readonly name: string;
@@ -114,7 +105,7 @@ export interface RideImport {
     readonly points: number;
     readonly crc32: number;
     readonly track: readonly (readonly [number, number])[];
-    /** The §7.2 ride object exactly as it came off the wire — the lossless archive. */
+    /** The ride object exactly as it came off the wire — the lossless archive. */
     readonly object: Uint8Array;
     readonly gpx: string;
 }
@@ -141,8 +132,6 @@ export interface RideLibrary {
      * already held writes nothing and does not move its `importedAt`.
      */
     import(ride: RideImport): Promise<{ ride: LibraryRide; imported: boolean }>;
-    /** The ride ids of `(serial, epoch)` whose bytes are on the disk right now. The ack list. */
-    durableIds(scope: RideScope): Promise<number[]>;
     /** The stored ride object of one key — what a GPX re-export decodes. */
     readObject(key: string): Promise<Uint8Array>;
     /** (Re-)write one ride's GPX. Resolves to where it went. */
@@ -154,37 +143,18 @@ export interface RideLibrary {
 }
 
 // --- the device surface the library is given ------------------------------------
-
-/**
- * What the library path may do to a device: the two reads the hosted tier gets, plus the one write
- * this tier has earned.
- *
- * Narrowed for the same reason `rideAccess` is (see `rides.ts`): a `ProtocolClient` also carries
- * `deleteObject`, `writeConfig` and the generic `command`, and none of those belong to a flow whose
- * job is to copy rides off a device. `ackRides` is here and nowhere else on this path — which is
- * also what makes "the browser never acks" checkable: the hosted tier's object does not have it.
- */
-export interface RideSyncSource extends RideSource {
-    /** Flag rides as durably held off the device. Called **once**, after every import has fsynced. */
-    ackRides(rideIds: readonly number[], signal?: AbortSignal): Promise<number>;
-}
-
-/** The narrowed, frozen view of a client the pull is handed. */
-export function rideSyncAccess(client: ProtocolClient): RideSyncSource {
-    return Object.freeze({
-        listRides: (options?: TransferOptions) => client.listRides(options),
-        downloadRide: (objectId: number, options?: TransferOptions) =>
-            client.download(ObjectType.Ride, objectId, options),
-        ackRides: (rideIds: readonly number[], signal?: AbortSignal) => client.ackRides(rideIds, signal),
-    });
-}
+//
+// The two reads of `rides.ts`'s `RideSource`, and nothing beside them. There used to be a third —
+// the acknowledgement — and the type that carried it is gone with the command: a `RideSyncSource`
+// that differed from a `RideSource` by a method neither the wire nor any implementation has would
+// be a distinction with nothing behind it.
 
 // --- failures ------------------------------------------------------------------
 
 /**
- * - `no-scope` — the device reported no serial, or no store epoch (the 2-byte identity read a
- *   card-less device serves). Ids from it cannot be keyed, so nothing is imported and **nothing is
- *   acked**: the same fail-closed posture as the phone's `libraryScope == nil` (#769).
+ * - `no-scope` — the device reported no serial, or no `StoreId`. Ids from it cannot be keyed to an
+ *   era, so nothing is imported: the same fail-closed posture as the phone's `libraryScope == nil`
+ *   (#769).
  */
 export type RideLibraryErrorCode = "no-scope";
 
@@ -221,50 +191,35 @@ export interface PullReport {
     /** Rides the library already held whole, so nothing was downloaded. */
     readonly alreadyHeld: number;
     readonly failed: readonly RideFailure[];
-    /** The ride ids sent in the ack — the set durably on disk for this device and era. */
-    readonly acked: readonly number[];
-    /** How many of those the device had not already flagged. Zero on a second pull. */
-    readonly newlyFlagged: number;
-    /** The device dropped older entries at its list cap. Surfaced, never hidden. */
-    readonly truncated: boolean;
+    /** Rides the device is still recording, which §3.5 refuses to serve. Named, never silent. */
+    readonly recording: number;
 }
 
 /**
- * Pull every ride the device does not already have a durable copy of here, then ack what is durable.
+ * Pull every ride the device does not already hold a durable copy of here.
  *
  * The order is the contract and it is worth reading as a sequence:
  *
- * 1. **list** — the whole catalog, unconditionally;
- * 2. **dedupe locally** by `(serial, epoch, id)` against the library's own index;
- * 3. **download → decode → GPX → import** each missing ride, one at a time (the device serves one
- *    transfer at a time anyway, §4.1), each import resolving only after its fsync;
- * 4. **ask the disk** what is durably there, and ack exactly that.
+ * 1. **list** — the whole ride catalog, unconditionally, minus what is still recording (§3.5);
+ * 2. **dedupe locally** by `(serial, era, ObjectId)` against the library's own index;
+ * 3. **download → decode → GPX → import** each missing ride, one at a time (§1 serves one transfer
+ *    at a time anyway), each import resolving only after its fsync.
  *
- * A ride that fails at step 3 is reported and skipped; the others still land, and the ack at step 4
- * is unaffected because it never mentions a ride that is not on the disk. If *every* ride fails,
- * the ack still runs — it is what heals a device that lost its synced set, and it can only add
- * flags for rides this library really holds.
+ * A ride that fails at step 3 is reported and skipped; the others still land.
  */
 export async function pullRides(
-    source: RideSyncSource,
+    source: RideSource,
     library: RideLibrary,
     scope: RideScope,
     ctx: JobContext,
 ): Promise<PullReport> {
-    if (!scope.serial || scope.epoch === null) {
-        throw new RideLibraryError(
-            "no-scope",
-            "This device did not report both a serial number and a store epoch, so its ride ids " +
-                "cannot be told apart from another device's. Nothing was copied and the device was " +
-                "not told anything.",
-        );
-    }
+    requireScope(scope);
 
     ctx.phase("reading");
     // Rule 1: the full catalog, every time. There is no "what's new" query and there must not be
-    // one — the device does not know what this library holds, and its `synced` flag is a statement
-    // about durability elsewhere, not a fetch filter.
-    const catalog: RideCatalog = await source.listRides({ signal: ctx.signal });
+    // one — the device does not know what this library holds.
+    const listed = await source.listRides(ctx.signal);
+    const available = recordedRides(listed);
 
     // Rule 2: dedupe here, by the composite key. `present` is part of the test on purpose — a
     // record whose ride object the rider deleted is not a durable copy, so it is fetched again.
@@ -274,8 +229,11 @@ export async function pullRides(
     // regenerated locally would be a transfer nobody needed. The logbook's quiet auto-repair does
     // that instead ({@link reexportGpx}, run on open and after every pull).
     const held = new Map((await library.view()).rides.map((ride) => [ride.key, ride]));
-    const wanted = [...catalog.entries]
-        .sort((a, b) => a.startTime - b.startTime || a.objectId - b.objectId)
+    const wanted = [...available]
+        // Oldest first, by `ObjectId`. A `LIST` entry carries no start time (§3.3), and the id is a
+        // monotonic allocation cursor (`FLAT_Store_Format.md` §3) — so on one card, id order *is*
+        // recording order. It is a proxy, and it is the only one the catalog offers.
+        .sort((a, b) => (a.objectId < b.objectId ? -1 : a.objectId > b.objectId ? 1 : 0))
         .filter((entry) => !held.get(rideKey(scope, entry.objectId))?.present);
 
     const imported: LibraryRide[] = [];
@@ -291,50 +249,53 @@ export async function pullRides(
         } catch (cause) {
             if (ctx.signal.aborted) throw cause;
             failed.push({
-                objectId: entry.objectId,
-                name: entry.name || `Ride ${entry.objectId}`,
+                objectId: Number(entry.objectId),
+                name: entry.displayName || `Ride ${entry.objectId}`,
                 message: cause instanceof Error ? cause.message : String(cause),
             });
         }
     }
 
-    // Rule 3, the part that is easy to get subtly wrong: the ack is computed from the *disk*, not
-    // from `imported`. Every await above has returned by now, so every byte this list mentions has
-    // been fsynced.
-    const acked = await library.durableIds(scope);
-    const newlyFlagged = acked.length > 0 ? await source.ackRides(acked, ctx.signal) : 0;
-
     ctx.phase("done");
     return {
-        listed: catalog.entries.length,
+        listed: available.length,
         imported,
         repaired,
-        alreadyHeld: catalog.entries.length - wanted.length,
+        alreadyHeld: available.length - wanted.length,
         failed,
-        acked,
-        newlyFlagged,
-        truncated: catalog.truncated,
+        recording: listed.length - available.length,
     };
+}
+
+/** Both halves of the era, or nothing is copied. */
+function requireScope(scope: RideScope): asserts scope is RideScope & { epoch: number } {
+    if (!scope.serial || scope.epoch === null) {
+        throw new RideLibraryError(
+            "no-scope",
+            "This device did not report both a serial number and a card identity, so its ride ids " +
+                "cannot be told apart from another device's. Nothing was copied.",
+        );
+    }
 }
 
 /** Pull one ride and land it. Split out so a single-ride retry is the same code path. */
 async function importRide(
-    source: RideSyncSource,
+    source: RideSource,
     library: RideLibrary,
-    scope: RideScope,
-    entry: RideListEntry,
+    scope: RideScope & { epoch: number },
+    entry: CatalogEntry,
     ctx: JobContext,
 ): Promise<{ ride: LibraryRide; imported: boolean }> {
-    ctx.phase("downloading", entry.byteLen);
-    const object = await source.downloadRide(entry.objectId, {
+    ctx.phase("downloading", Number(entry.payloadLength));
+    const object = await source.downloadRide(entry, {
         signal: ctx.signal,
-        onProgress: (done, total) => ctx.progress(done, total),
+        onProgress: (done: number, total: number) => ctx.progress(done, total),
     });
 
     ctx.phase("converting", object.length);
-    // `download` already folded the whole-object CRC-32 and rejected a mismatch, so a decode
-    // failure here is a *format* disagreement — firmware newer than this build — and needs the
-    // other sentence.
+    // §3.5 has the device declare the whole-payload CRC and the client verify it before returning,
+    // so a decode failure here is a *format* disagreement — firmware newer than this build — and
+    // needs the other sentence.
     let ride: RideObject;
     try {
         ride = decodeRideObject(object);
@@ -355,20 +316,25 @@ async function importRide(
 
     const gpx = await gpxOf(ride);
     ctx.phase("verifying");
-    // Everything after this line is the durable write; the ack is the caller's, after it returns.
+    // Everything below this line is the durable write.
+    //
+    // Every field but the id and the name now comes from the **payload**, and that is the shape of
+    // the change rather than an oversight: a `LIST` entry carries id, revision, length, CRC, kind,
+    // flags and a display name (§3.3), so the distance, the duration and the start time exist only
+    // inside the ride object. Since this path downloads the object anyway, nothing is lost — what is
+    // gone is the ability to show those figures *before* downloading.
     return library.import({
         serial: scope.serial,
-        // Checked by the caller — `pullRides` refuses a null epoch before it lists anything.
-        epoch: scope.epoch as number,
-        objectId: entry.objectId,
-        name: ride.name || entry.name,
-        startTime: ride.startTime || entry.startTime,
-        distanceM: ride.distanceM || entry.distanceM,
-        movingTimeS: ride.movingTimeS || entry.movingTimeS,
-        climbM: ride.climbM || entry.climbM,
+        epoch: scope.epoch,
+        objectId: Number(entry.objectId),
+        name: ride.name || entry.displayName,
+        startTime: ride.startTime,
+        distanceM: ride.distanceM,
+        movingTimeS: ride.movingTimeS,
+        climbM: ride.climbM,
         points: ride.points.length,
-        // The device's own CRC-32 over the same bytes (`obc_ble::Crc32`, which `usb/crc32.ts` was
-        // ported from), kept in the index so the archive can be re-checked without the device.
+        // The device's own CRC-32 over the same bytes, kept in the index so the archive can be
+        // re-checked without the device. It is also what §3.4 reconciles a lost create against.
         crc32: Crc32.of(object),
         track: previewTrack(ride),
         object,
@@ -376,33 +342,16 @@ async function importRide(
     });
 }
 
-/**
- * Pull one ride: import it durably, then ack — the per-row pull, same code path as the bulk one.
- *
- * The ack follows the same rule `pullRides` holds: only after `library.import` has fsynced, and
- * always via `durableIds`, so what is acked is what is provably on disk rather than what this
- * call believes it just wrote. Acking is monotonic on the device, so re-acking ids a previous
- * pull already flagged is a no-op, not a hazard.
- */
+/** Pull one ride: the per-row pull, same code path as the bulk one. */
 export async function pullRide(
-    source: RideSyncSource,
+    source: RideSource,
     library: RideLibrary,
     scope: RideScope,
-    entry: RideListEntry,
+    entry: CatalogEntry,
     ctx: JobContext,
 ): Promise<{ ride: LibraryRide; imported: boolean }> {
-    if (!scope.serial || scope.epoch === null) {
-        throw new RideLibraryError(
-            "no-scope",
-            "This device did not report both a serial number and a store epoch, so its ride ids " +
-                "cannot be told apart from another device's. Nothing was copied and the device was " +
-                "not told anything.",
-        );
-    }
+    requireScope(scope);
     const result = await importRide(source, library, scope, entry, ctx);
-    ctx.phase("verifying");
-    const acked = await library.durableIds(scope);
-    if (acked.length > 0) await source.ackRides(acked, ctx.signal);
     ctx.phase("done");
     return result;
 }

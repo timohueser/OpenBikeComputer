@@ -267,28 +267,6 @@ impl Library {
         IndexView { folder: self.root.display().to_string(), is_default, rides: self.entries() }
     }
 
-    /// The ride ids of `(serial, epoch)` whose object is **in the archive right now** — the exact
-    /// set this app is entitled to ack.
-    ///
-    /// This is the one function that answers "what is durably here", and the frontend acks its
-    /// result rather than the set of rides it thinks it just wrote. That is deliberate: a ride whose
-    /// import failed, whose archive file is gone, or whose write was interrupted by a power cut is
-    /// absent from this list and therefore never flagged on the device. Re-sending the whole list
-    /// every pull is also what heals a device that lost its `/tracks/SYNCED.SET` (§4.4: an ack is
-    /// add-only, and unknown ids are ignored).
-    pub fn durable_ids(&self, serial: &str, epoch: u32) -> Vec<u16> {
-        let _guard = lock();
-        let mut ids: Vec<u16> = self
-            .entries()
-            .into_iter()
-            .filter(|e| e.present && e.ride.serial == serial && e.ride.epoch == epoch)
-            .map(|e| e.ride.object_id)
-            .collect();
-        ids.sort_unstable();
-        ids.dedup();
-        ids
-    }
-
     /// Land one pulled ride durably. Idempotent on its `(serial, epoch, id)` key.
     ///
     /// Returns only after the ride object, the GPX and the index have each been fsynced. The caller
@@ -670,6 +648,31 @@ pub fn relocate(from: &Path, to: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    /// **The ack set, as a test helper rather than as production surface.**
+    ///
+    /// `Library::durable_ids` used to be a method, and the `rides_ack_set` command was its one
+    /// caller. FS7.5-c3b deleted that command with the rest of the cable's non-object surface
+    /// (`FLAT_Store_Protocol.md` §5.2.2: `ackRides` keeps the BLE control surface it already had),
+    /// which left the method dead — and a dead method kept alive by an `allow(dead_code)` is the
+    /// legacy shim this repo's rules exist to refuse.
+    ///
+    /// What it computed is not dead, though: *which rides are durably on this disk* is the property
+    /// the eight tests below are about, and it is a filter over `view()`'s entries, which is public
+    /// and has real callers. So the filter moves here, the assertions are unchanged, and FS8's ride
+    /// sync (#1390) re-promotes it to production the day something calls it again.
+    fn durable_ids(lib: &Library, serial: &str, epoch: u32) -> Vec<u16> {
+        let mut ids: Vec<u16> = lib
+            .view(false)
+            .rides
+            .into_iter()
+            .filter(|e| e.present && e.ride.serial == serial && e.ride.epoch == epoch)
+            .map(|e| e.ride.object_id)
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    }
+
     use super::*;
 
     fn temp(tag: &str) -> PathBuf {
@@ -736,7 +739,7 @@ mod tests {
             "the ride file was not rewritten"
         );
         assert_eq!(lib.load().rides.len(), 1, "one record, not two");
-        assert_eq!(lib.durable_ids("OBC-24-000317", 0xa1b2c3d4), vec![7]);
+        assert_eq!(durable_ids(&lib, "OBC-24-000317", 0xa1b2c3d4), vec![7]);
 
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -782,7 +785,7 @@ mod tests {
         // app would read.
         let restarted = library(&base);
         assert_eq!(
-            restarted.durable_ids("OBC-24-000317", 7),
+            durable_ids(&restarted, "OBC-24-000317", 7),
             vec![1],
             "only the fsynced ride is ackable; the interrupted one is not"
         );
@@ -794,7 +797,7 @@ mod tests {
 
         // …and the next pull, with the power on, lands it and only then makes it ackable.
         library(&base).import(&lost).expect("the retry lands");
-        assert_eq!(library(&base).durable_ids("OBC-24-000317", 7), vec![1, 2]);
+        assert_eq!(durable_ids(&library(&base), "OBC-24-000317", 7), vec![1, 2]);
 
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -811,7 +814,7 @@ mod tests {
             .import(&req)
             .expect_err("crash");
         let restarted = library(&base);
-        assert!(restarted.durable_ids("OBC-24-000317", 7).is_empty(), "an uncommitted index acks nothing");
+        assert!(durable_ids(&restarted, "OBC-24-000317", 7).is_empty(), "an uncommitted index acks nothing");
         assert!(base.join("archive").join(format!("2025-12-01-Half landed.{RIDE_EXT}")).exists(), "the bytes did land");
 
         let retry = restarted.import(&req).expect("the retry commits");
@@ -841,10 +844,10 @@ mod tests {
 
         // Each era acks only its own ids. The old era's record is archival — it names a ride the
         // device no longer has, and nothing in the new era may claim it.
-        assert_eq!(lib.durable_ids(serial, 0x1111_1111), vec![1]);
-        assert_eq!(lib.durable_ids(serial, 0x2222_2222), vec![1]);
+        assert_eq!(durable_ids(&lib, serial, 0x1111_1111), vec![1]);
+        assert_eq!(durable_ids(&lib, serial, 0x2222_2222), vec![1]);
         // A different device with the same id is a third ride again.
-        assert!(lib.durable_ids("OBC-24-000999", 0x2222_2222).is_empty());
+        assert!(durable_ids(&lib, "OBC-24-000999", 0x2222_2222).is_empty());
 
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -859,12 +862,12 @@ mod tests {
         for id in [4u16, 5, 6] {
             lib.import(&request(serial, 9, id, &format!("Ride {id}"))).expect("import");
         }
-        assert_eq!(lib.durable_ids(serial, 9), vec![4, 5, 6]);
+        assert_eq!(durable_ids(&lib, serial, 9), vec![4, 5, 6]);
 
         let gone = lib.load().rides.iter().find(|r| r.object_id == 5).expect("ride 5").ride_file.clone();
         std::fs::remove_file(base.join("archive").join(&gone)).expect("delete the archive file");
 
-        assert_eq!(lib.durable_ids(serial, 9), vec![4, 6], "a deleted ride is not durable and is not acked");
+        assert_eq!(durable_ids(&lib, serial, 9), vec![4, 6], "a deleted ride is not durable and is not acked");
         let listed = lib.entries();
         assert_eq!(listed.len(), 3, "the record survives so the UI can say the file is missing");
         assert!(!listed.iter().find(|r| r.object_id == 5).unwrap().present);
@@ -900,7 +903,7 @@ mod tests {
         std::fs::write(base.join("archive").join(INDEX_FILE), b"{ this is not json").expect("corrupt it");
 
         assert!(lib.load().rides.is_empty(), "an unreadable index is an empty library");
-        assert!(lib.durable_ids("S", 1).is_empty(), "and acks nothing — the safe direction");
+        assert!(durable_ids(&lib, "S", 1).is_empty(), "and acks nothing — the safe direction");
         // The files are still there; the next pull re-imports over them.
         assert!(lib.import(&request("S", 1, 1, "A ride")).expect("re-import").imported);
 
@@ -975,18 +978,18 @@ mod tests {
         let base = temp("truncated");
         let lib = library(&base);
         let landed = lib.import(&request("S", 1, 4, "Torn")).expect("import");
-        assert_eq!(lib.durable_ids("S", 1), vec![4]);
+        assert_eq!(durable_ids(&lib, "S", 1), vec![4]);
 
         let path = base.join("archive").join(&landed.ride.ride_file);
         let whole = std::fs::read(&path).expect("read");
         std::fs::write(&path, &whole[..whole.len() / 2]).expect("truncate");
 
-        assert!(lib.durable_ids("S", 1).is_empty(), "a torn file acks nothing");
+        assert!(durable_ids(&lib, "S", 1).is_empty(), "a torn file acks nothing");
         assert!(!lib.entries()[0].present, "…and the UI sees it as missing");
 
         let repaired = lib.import(&request("S", 1, 4, "Torn")).expect("the next pull repairs it");
         assert!(!repaired.imported, "the same ride arriving again, not a new one");
-        assert_eq!(lib.durable_ids("S", 1), vec![4]);
+        assert_eq!(durable_ids(&lib, "S", 1), vec![4]);
         assert_eq!(std::fs::read(&path).expect("whole again"), whole);
 
         let _ = std::fs::remove_dir_all(&base);
@@ -1007,7 +1010,7 @@ mod tests {
 
         relocate(&from, &to).expect("relocate");
         let moved = Library::new(to.clone(), base.join("archive"));
-        assert_eq!(moved.durable_ids("S", 1), vec![1], "the archive did not move, so nothing was lost");
+        assert_eq!(durable_ids(&moved, "S", 1), vec![1], "the archive did not move, so nothing was lost");
         assert!(to.join(&landed.ride.gpx_file).is_file());
         assert!(moved.entries()[0].gpx_present);
         assert!(!from.exists(), "the old folder is gone once it is empty");

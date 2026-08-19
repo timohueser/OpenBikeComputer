@@ -392,12 +392,6 @@ jobs:
           # the pinned toolchain). Keep the documented explicit invocation as genuinely separate
           # clippy/build/resource legs; deleting it would drop a distinct artifact contract.
           - { name: "clippy (ble)", cmd: "cargo clippy --locked --no-default-features --features ble -- -D warnings" }
-          # flat-exercise = default + the FS7.5-c1 on-glass write-path harness (`src/flat_store.rs`).
-          # Never shipped and never resource-gated — it writes to the card in the slot — but it is the
-          # *only* vehicle for the interleaving measurement the storage task's design rests on, and an
-          # off-by-default feature that nothing builds is one that has already rotted. Lint-only for that
-          # reason: the image it produces is a bench, not an artifact.
-          - { name: "clippy (flat-exercise)", cmd: "cargo clippy --locked --features flat-exercise -- -D warnings" }
           - { name: "build (ble, release)", cmd: "cargo build --release --locked --no-default-features --features ble" }
     steps:
       - uses: actions/checkout@v4

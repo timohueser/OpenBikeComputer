@@ -22,9 +22,26 @@
 > - **`command` (`…0001`), `status` (`…0002`) and `config` (`…0004`) are unchanged** and this
 >   document remains their authority. They were never part of the object surface.
 >
-> **USB still speaks everything below**, descriptors included: the cable's cutover is gated on an
-> owner decision recorded on #1420. So this document is now *the cable, plus the control
-> characteristics both links share* — not the radio's object wire.
+> ⚠️ **And the cable no longer speaks it either** (FS7.5-c3b, epic #1256). USB is protocol v4 too,
+> bound by [`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md) §5.2, so **§10 of this document is
+> retired in full** — see the note at its head for what each of its clauses became. The two clauses
+> a client implementer will otherwise trust:
+>
+> - **The `selector u8` envelope is gone.** Both bulk endpoint pairs carry §3 frames, each record
+>   framed as `record_length u16` + frame bytes, and a record spans packets freely. §10's "one frame
+>   is one USB transfer" rule and its seven-selector table describe nothing that exists.
+> - **The identity read (selector 4) and the device-information read (selector 5) are not
+>   replaced by frames.** The version is settled by descriptor matching (`bInterfaceProtocol = 4`,
+>   `bcdDevice = 0x0400`) before a record moves, and the three device-information strings are one EP0
+>   vendor request (§5.2.1 of that document). There is **no** identity read on this link any more.
+> - **Object types `17`–`19` (`mapShard` / `mapSet` / `terrainShard`) are deleted from the tree**,
+>   reader side included, and their values are not reissued. The "Volume sets" section of §4.1 is
+>   history rather than a contract; a map is one OBCM object.
+>
+> So this document is now *the radio, minus its object surface*: §2 (advertising), §3 (the GATT
+> table), §5 (the CoC), §8 (pairing) and the `command` / `status` / `config` characteristics of §4.
+> Everything it says about USB, and everything it says about how an object crosses a wire, has a
+> successor elsewhere.
 
 The legacy wire contract between the OpenBikeComputer device (nRF54L
 firmware, BLE peripheral) and the companion app (iOS, BLE central): advertising,
@@ -56,7 +73,10 @@ historical source the firmware Track-A issues (epic #267) implemented.
 > `ackRides` and what `synced` means (§4.4) — apply to **every** transport unless
 > they say otherwise. The file has not been renamed because the URL is load-bearing
 > across the firmware, the app and the web builder; §10 is the map of what is
-> radio-specific. **§11 (Weather Request) straddles that line on purpose**: its
+> radio-specific. (**Since FS7.5-c3b that split no longer describes anything
+> shipping**: the transport-free half is `FLAT_Store_Protocol.md`'s, and §10's wire
+> is retired, so what is left of this document *is* the radio-specific part.)
+> **§11 (Weather Request) straddles that line on purpose**: its
 > lifecycle — a second advertised service, one authenticated read, a disconnect —
 > is radio, while the bundle it produces is an ordinary §4 object type carrying no
 > transport assumption.
@@ -472,8 +492,11 @@ Every bulk payload is a typed **object**:
 | `19` | `terrainShard` | host → device (upload) | the set's OBCT terrain shard ([`OBCA_Spec.md` §5.1](OBCA_Spec.md)'s `terrain` role) — **USB only**; **retired**, see below |
 | `20` | `weatherBundle` | app → device (upload) | one OBCW v1 weather bundle ([`OBCW_Spec.md`](OBCW_Spec.md)), singleton at `object_id = 0` — §11.5 |
 
-> **Types `17`–`19` are retired by OBCM v14 / issue #1420, and FS7.5b/c is where they leave the
-> tree.** A map is one OBCM object with its terrain raster inside it
+> **Types `17`–`19` are retired by OBCM v14 / issue #1420, and they have left the tree**: FS7.5b
+> took the producers, FS7.5-c3b the readers — the descriptor's set-part field in `obc-ble`, the
+> board's set machinery and the three `transfer-set-*.bin` wire vectors are all deleted. A map is one
+> OBCM object with its
+> terrain raster inside it
 > ([`OBCM_Spec.md` §1.3](OBCM_Spec.md)), so a map transfer is an ordinary single-object `PUT` of
 > kind *map* under protocol major **4** — [`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md) is the
 > normative contract for that, and it needs no map-shaped opcode at all. Nothing about the wire is
@@ -557,8 +580,8 @@ only object whose transfer is measured in minutes rather than frames.
 > `(shard_count, index)`, no manifest sent last, no set-wide ceiling, no torn-set cleanup. The
 > replacement is a single-object `PUT` under protocol major 4
 > ([`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md)), whose commit is the atomicity the
-> magic-last-write below was faking on FAT. Kept for history until FS7.5b/c deletes the code; do not
-> implement against it.
+> magic-last-write below was faking on FAT. The code is gone — FS7.5b's producers, FS7.5-c3b's
+> readers — so this is history, not a deprecation. Do not implement against it.
 
 A **volume set** ([`OBCA_Spec.md` §5](OBCA_Spec.md)) is one logical map spread
 over OBCM shards, optionally one OBCT **terrain shard**, and an OBCS manifest, so
@@ -1318,6 +1341,12 @@ It is mandatory for BLE uploads, every download receiver, `route`, `trip`,
 `fwImage`, and `echo` on USB, and any future type unless its definition says
 otherwise.
 
+> **The exception below is retired with §10** (FS7.5-c3b, #1420). Protocol v4 verifies the declared
+> length and a whole-payload CRC-32 before every commit and runs the kind's validator, maps included
+> ([`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md) §3.6); a mismatch is `checksumFailure` and
+> nothing is published. The trade this clause made was worth making against a filesystem that could
+> not commit atomically, and the flat store's single durable commit is what made it unnecessary.
+
 The one exception is an upload of the USB-only map-shaped types `map`,
 `mapShard`, `terrainShard`, and `mapSet` — of which only `map` survives OBCM v14, and it survives
 carrying the terrain bytes the other two used to carry, so the exception's *reason* (these objects
@@ -1836,6 +1865,24 @@ the 76-byte core it knows and fills the expiry tail when the entry carries it), 
 a pre-expiry 76-byte device and an 84-byte device both decode.
 
 ## 10. Transport binding — USB (issue #889)
+
+> **Retired in full by FS7.5-c3b (epic #1256, issue #1420).** The cable's binding is
+> [`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md) §5.2. Nothing below is served, and this section
+> is kept for the same reason §4.1's volume-set rules are: so that a reader who finds a client still
+> speaking it can see what it was and what answered it. Clause by clause:
+>
+> | This section says | What is true now |
+> | :-- | :-- |
+> | four bulk endpoints, `0x81/0x01` control and `0x82/0x02` stream | unchanged, and the only clause that survives — but the interface now reports `bInterfaceProtocol = 4` and the device descriptor's `bcdDevice` carries `0x0400`, which is what settles the version before a record is exchanged |
+> | "one frame is one USB transfer", strictly shorter than a max packet | **false.** Each record is `record_length u16` + that many frame bytes; packet boundaries carry no protocol meaning and a record spans as many as it needs. The ceilings are constants of the binding: 4,112 B device→host on either channel and host→device on the stream channel, 256 B for a host→device control record (§5.2) |
+> | the seven-selector table, and the "sole unsolicited channel" rule under it | **gone.** The control endpoint pair carries §3 control frames from the first byte, and §3.1 has no unsolicited control frames at all: a transfer's outcome is the answer to its own request. §5.2.2 maps each retired selector to its successor |
+> | selector 4, the §1 identity read | **not replaced.** The protocol major is a descriptor fact and the store's identity is `LIST`'s `StoreId` plus its commit sequence (§3.3) |
+> | selector 5 / device→host 3, the §3.1 device-information read | moved to **EP0**: one vendor control request, `bmRequestType 0xC1`, `bRequest 0x20`, answering `len u8 · UTF-8` ×3 — firmware revision, hardware revision, serial number (§5.2.1) |
+> | selector 7 / device→host 5, the mounted-card free-space read | **gone, and deliberately not replaced.** §1 of that document refuses capability discovery: a `PUT` that does not fit is `noSpace`, whose context is the bytes required |
+> | "every §4.4 command is reachable over USB, `ackRides` included" | **false.** The two imperatives that act on the store are opcodes — `deleteObject` is `REMOVE`, `installFw` is `ARM` — and the rest (bond, clock, retention, ride acknowledgement) keep the BLE characteristics they always had. The cable does not carry them |
+> | §6's map-object integrity carve-out, referenced here as policy | **retired.** §3.6 verifies the declared length and a whole-payload CRC-32 before every commit, maps included |
+> | the shared one-transfer gate, and the ZLP rule for a max-packet-multiple download | the gate is unchanged in effect (one engine beside the card serves one `PUT` or `GET`, and a second is `busy` whichever wire asked); the ZLP rule is moot, because a record's length is declared in front of it |
+> | physical possession as the cable's authentication | unchanged, and now stated as enumeration being the authorization boundary on this link (§5.2) |
 
 Everything above is written against BLE because BLE came first, but only §2
 (advertising), §3 (the GATT table), §5 (the CoC) and §8 (pairing) are actually

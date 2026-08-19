@@ -1,17 +1,24 @@
 //! The **scratch arena** (issue #1146, P2) — one block of RAM, three arms, one owner at a time.
 //!
-//! Three of the board's largest resident blocks are never live at the same moment, and each used to
-//! own its bytes permanently: the per-frame render scratch (`obc_render::RenderScratch`, below the
-//! 128 KiB USB arm; its recovered screen-point bytes are reinvested so the two arms now match
-//! exactly, target-side size reported and compile-time checked below),
-//! the nav block ([`NavArm`] — `NavScratch` + `NavTileCache` + the resumable `NavPlanner`,
-//! ~80.6 KB), and the USB upload staging buffer ([`usb::STAGE_LEN`](crate::usb::STAGE_LEN),
-//! two 64 KiB halves = 128 KiB since the upload retune; 16 KiB when this module was written). This
+//! Two of the board's largest resident blocks are never live at the same moment, and each used to
+//! own its bytes permanently: the per-frame render scratch (`obc_render::RenderScratch`) and the nav
+//! block ([`NavArm`] — `NavScratch` + `NavTileCache` + the resumable `NavPlanner`, ~80.6 KB). This
 //! module time-shares them through a `union`, so the board pays **max(arms)** instead of their sum.
+//!
+//! **There were three, and the third is gone with the v1 USB upload (FS7.5-c3b, #1420).** A cable
+//! transfer used to stage 128 KiB of map bytes here before writing them to a FAT file; protocol v4
+//! stages 512 bytes inside the engine and writes each 4 KiB stream record straight to the card, so
+//! there is nothing left to time-share.
+//!
+//! **It freed no RAM, and saying so is the point of this paragraph.** #1299 had already spent the
+//! render arm's headroom on frame capacity until the two arms matched *exactly*, so the USB arm was
+//! never the arm that set `max` on its own — removing it moves the block's size by zero bytes. What
+//! it does remove is two of the three exclusion rules below and the ride-loop grant handshake that
+//! enforced them: complexity, not bytes.
 //!
 //! **This is the only place in the feature that names the block's bytes, and the only place that
 //! reads or writes them through a raw pointer.** Everything outside reaches an arm through a guard:
-//! a `Deref` for the render and nav arms, a scoped closure for the USB one, and — for the nav arm's
+//! a `Deref` for the render and nav arms and — for the nav arm's
 //! `MaybeUninit` planner slot, the one field a guard cannot hand out unconditionally — the checked
 //! [`NavGuard::plan_parts`] / [`NavGuard::planner_ref`] accessors, which answer `None` until
 //! [`NavGuard::begin_plan`] has written it. That last one is why the claim is about *this* module
@@ -29,22 +36,17 @@
 //! | Pair | Rule | Enforced by |
 //! |---|---|---|
 //! | render ⊥ nav | the map does not redraw while a planner run is live | the Recalculating freeze → [`MapQuiesced`] |
-//! | render ⊥ usb | a cable transfer shows the transfer screen, not the map | [`TransferReady`] |
-//! | nav ⊥ usb | no reroute while docked-transferring | [`TransferReady`] + `TransferGate`'s search arm |
 //!
 //! # One thread-mode owner-switcher
 //!
 //! [`ArenaGate`] takes `&mut self`, so this module keeps it in a `static mut` reachable only from
 //! here and every claim/release runs in thread mode. During a normal ride the ride loop is the
 //! owner-switcher (the #677 async-frame discipline: guards are `!Send` and are never held across an
-//! `.await` where another claimant could run). The USB data plane never claims — it *asks*, and the
-//! loop grants between frames (see [`with_usb_stage`]). If no map can mount at boot, the recovery
-//! entry point claims the USB arm before spawning the otherwise-isolated USB task; no render or nav
-//! owner exists in that boot mode.
+//! `.await` where another claimant could run).
 //!
 //! # No two references at once
 //!
-//! Every reference into the arena — a guard's `Deref`, the USB plane's scoped access — is derived
+//! Every reference into the arena — each guard's `Deref` — is derived
 //! **freshly from the one raw pointer** ([`arena_ptr`]) and dies before the next one is made.
 //! Nothing here stores a reference, so no two live borrows of the block can exist even though three
 //! types name the same bytes. A frame that draws no map takes no reference at all: the app's render
@@ -65,11 +67,10 @@
 //! The budget is `max(arms)`, so growth is **not** linear:
 //!
 //! - An arm **below** the maximum grows at **zero** resident cost until it reaches the maximum arm.
-//!   USB set that ceiling; the render arm deliberately spends all of its former headroom on visible
-//!   frame capacity and now matches it exactly. The resource report and assertion below keep that
+//!   The nav arm is that case today, with ~36 KB of headroom under the render one.
+//! - Growing the **maximum** arm — today the render scratch, which is the ceiling now that the USB
+//!   arm is gone — costs the full delta, 1:1. The report and the assertion below keep that
 //!   accounting literal.
-//! - Growing the **maximum** arm (today: USB) costs the full delta, 1:1, exactly as before. Its
-//!   128 KiB size is deliberate: two 64 KiB halves let normal uploads issue 128-block writes.
 //!
 //! Both halves are traps in opposite directions: nobody should "optimize" a growth that is free,
 //! and nobody should wave through one that is not. The compile-time assert in `main.rs` says the
@@ -86,7 +87,7 @@ use core::mem::{ManuallyDrop, MaybeUninit};
 use core::ops::{Deref, DerefMut};
 use core::ptr::addr_of_mut;
 
-use obc_app::{ArenaError, ArenaGate, ArenaInit, ArenaOwner, MapQuiesced, TransferReady};
+use obc_app::{ArenaError, ArenaGate, ArenaInit, ArenaOwner, MapQuiesced};
 
 /// The **nav arm**: everything one route search needs, as one struct so the union has one member
 /// to name (epic #116 R4 + #499).
@@ -137,10 +138,6 @@ union ScratchArena {
     render: ManuallyDrop<obc_render::RenderScratch>,
     #[cfg(has_nav)]
     nav: ManuallyDrop<NavArm>,
-    /// The USB upload staging buffer — **two** halves laid end to end (see
-    /// [`Stage`](crate::link::stage)). A plain byte buffer: it needs no initialization, the plane
-    /// fills it before it reads it.
-    usb: ManuallyDrop<[u8; crate::usb::STAGE_LEN]>,
 }
 
 /// The arena's resident size — `max(arms)`, the single term the board's RAM budget carries in place
@@ -151,18 +148,14 @@ pub(crate) const RENDER_ARM_BYTES: usize = core::mem::size_of::<obc_render::Rend
 /// The nav arm's size, for the resource report. The *type's* size in every profile, like the
 /// terrain entries, even where `has_nav` would keep it out of the image — see [`NavArm`].
 pub(crate) const NAV_ARM_BYTES: usize = core::mem::size_of::<NavArm>();
-/// The USB arm's size, for the resource report.
-pub(crate) const USB_ARM_BYTES: usize = crate::usb::STAGE_LEN;
-
-// **`max(arms)`, stated rather than assumed** — and the equality half is the one that bites. If a
-// future edit grows the nav or render arm past the USB arm, the budget is still *correct* (it is a
-// `size_of` either way), but the cliff has moved: every growth note in this module and at `main.rs`'s
-// budget assert would then name the wrong arm, and the next reviewer would price a free growth as a
-// 1:1 one (or the reverse). Fail the build rather than let the docs go quietly stale.
+// **`max(arms)`, stated rather than assumed.** With the USB arm gone the render scratch *is* the
+// ceiling, so every growth note in this module and at `main.rs`'s budget assert now prices a render
+// growth 1:1 and a nav growth at nothing until it passes the render arm. Fail the build rather than
+// let those notes go quietly stale.
 const _: () = assert!(
-    NAV_ARM_BYTES <= ARENA_BYTES && RENDER_ARM_BYTES == ARENA_BYTES && ARENA_BYTES == USB_ARM_BYTES,
-    "the render and USB arms no longer exactly share the arena ceiling — re-read the growth-asymmetry \
-     notes in arena.rs and at main.rs's budget assert before re-pinning anything"
+    NAV_ARM_BYTES <= ARENA_BYTES && RENDER_ARM_BYTES == ARENA_BYTES,
+    "the render arm is no longer the arena ceiling — re-read the growth-asymmetry notes in arena.rs \
+     and at main.rs's budget assert before re-pinning anything"
 );
 
 /// The arena's storage, in the **`.uninit`** section (cortex-m-rt's `link.x`: `NOLOAD`, placed
@@ -287,8 +280,8 @@ impl Drop for RenderGuard {
 
 /// Claim the arena for a map render.
 ///
-/// The only precondition is that the arena is free — which *is* the render ⊥ nav / render ⊥ usb
-/// enforcement, because a live search or a live transfer is literally the holder. A refusal is not
+/// The only precondition is that the arena is free — which *is* the render ⊥ nav enforcement,
+/// because a live search is literally the holder. A refusal is not
 /// fatal: the caller skips this frame's map redraw and the reflective panel keeps the last one.
 ///
 /// Re-initializes the scratch in place ([`init_zeroed`](obc_render::RenderScratch::init_zeroed) — a
@@ -436,70 +429,4 @@ pub(crate) fn claim_nav(quiesced: MapQuiesced) -> Result<NavGuard, ArenaError> {
     // `planner_ready: false` — the zero fill above left a *slot*, not a planner. `begin_plan` is the
     // only thing that changes that, and it is what the accessors key on.
     Ok(NavGuard { planner_ready: false, _not_send: PhantomData })
-}
-
-// ============================ The USB arm ============================
-
-/// The USB staging arm, held for a **whole cable transfer** — and held by the *ride loop*, not by
-/// the data plane. The plane never claims: it asks (`usb::request_stage`), the loop grants between
-/// frames, and the plane reaches the bytes through [`with_usb_stage`].
-///
-/// That split is not ceremony. The plane's transfer future is suspended, not dropped, when the cable
-/// goes (`usb::run` stops polling it until VBUS returns), so a `&'static mut` handed into that frame
-/// could never be taken back — an unplug mid-upload would leave the arena owned by a task that may
-/// never run again, and the map would never redraw. A scoped accessor makes revocation a
-/// one-instruction fact instead: the loop drops this guard, and the plane's next append fails
-/// politely and discards its partial upload, which is what an interrupted upload does anyway.
-pub(crate) struct UsbGuard {
-    _not_send: PhantomData<*const ()>,
-}
-
-impl Drop for UsbGuard {
-    fn drop(&mut self) {
-        release(ArenaOwner::Usb);
-    }
-}
-
-/// Claim the arena for USB staging. Needs [`TransferReady`] — the transfer screen is up (so no map
-/// render is coming) and no search is running (whose nav arm the staging bytes would overwrite).
-///
-/// No in-place initialization: the arm is a byte buffer the plane writes before it reads, and its
-/// `Stage` tracks how much of it is live.
-pub(crate) fn claim_usb(ready: TransferReady) -> Result<UsbGuard, ArenaError> {
-    // SAFETY: see `gate`.
-    unsafe { gate() }.claim_usb(ready).map_err(|e| refuse("usb", e))?;
-    Ok(UsbGuard { _not_send: PhantomData })
-}
-
-/// Run `f` over the USB staging arm — the data plane's **only** access path, and it succeeds only
-/// while the normal ride loop or the no-map recovery entry point holds [`UsbGuard`].
-///
-/// `None` means the arm is not (or is no longer) the plane's: the loop never granted it, or it
-/// revoked the grant on an unplug. The plane treats that exactly as a failed card append — discard
-/// the partial and answer `error` — so a revocation can never turn into bytes written over another
-/// arm.
-///
-/// The closure is **synchronous by type**, which is what keeps the reference off the plane's async
-/// frame: nothing borrowed from the arena can survive an `.await` here.
-pub(crate) fn with_usb_stage<R>(f: impl FnOnce(&mut [u8; crate::usb::STAGE_LEN]) -> R) -> Option<R> {
-    if owner() != ArenaOwner::Usb {
-        return None;
-    }
-    // SAFETY: the gate says `Usb` owns the block, so no other arm's reference is live; the
-    // reference is derived fresh from `arena_ptr` and dies with `f`.
-    Some(f(unsafe { &mut *(arena_ptr() as *mut [u8; crate::usb::STAGE_LEN]) }))
-}
-
-/// Whether `[address, address + len)` lies wholly inside the USB arm while USB owns it.
-///
-/// The deferred block writer uses this numeric check before retaining a DMA address past
-/// `BlockDevice::write`: payload blocks borrow an arena half, while FAT/directory blocks may be
-/// temporary stack values that must be written synchronously. No reference is created here.
-pub(crate) fn usb_stage_contains(address: usize, len: usize) -> bool {
-    if owner() != ArenaOwner::Usb {
-        return false;
-    }
-    let start = arena_ptr() as usize;
-    let Some(end) = address.checked_add(len) else { return false };
-    address >= start && end <= start + crate::usb::STAGE_LEN
 }

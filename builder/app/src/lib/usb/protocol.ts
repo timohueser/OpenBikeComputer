@@ -1,617 +1,1086 @@
 /**
- * The control-plane codecs of [`obc-ble-interface-spec.md`](../../../../../specs/obc-ble-interface-spec.md),
- * in TypeScript: the transfer descriptor (§4.2), the `status` envelope (§4.3), the `command` writes
- * (§4.4), the identity read (§1) and the Config blob (§7.3).
+ * Protocol v4's bytes in TypeScript: the control frame, the seven request and response bodies, the
+ * stream frame and the error body.
  *
- * These are ports of `firmware/obc-ble/src/descriptor.rs`, field for field, and they are pinned to
- * the **same** `specs/vectors/` fixtures the firmware's `cargo test -p obc-vectors` and the iOS
- * app's `swift test` assert against (see `vectors.test.ts`). Three implementations, one set of
- * bytes: a divergence here is a bug here, never a reason to move a fixture.
+ * [`FLAT_Store_Protocol.md`](../../../../../specs/FLAT_Store_Protocol.md) §3 is the sole authority
+ * and every offset below is transcribed from its tables. The Rust twin is
+ * `firmware/obc-link/src/flat/wire.rs`, and both are pinned to the same frozen fixtures —
+ * `specs/vectors/flat-store-v4/`, decoded and re-encoded byte for byte by `vectors.test.ts` here and
+ * by `cargo test` there. Three languages, one set of bytes: a divergence here is a bug here, never a
+ * reason to move a fixture.
  *
- * USB is a second *transport*, not a second protocol — everything in this file is the wire the BLE
- * link already carries. What USB adds is a frame saying which of BLE's characteristics a control
- * message belongs to; its encoding lives in `transport.ts` and is provisional until #889 settles the
- * device side. **Nothing in this file moves when that is decided** — which is the whole point.
+ * ## Two decisions worth stating
  *
- * All integers are little-endian, matching OBCM/OBCR.
+ * **Every `u64` is a `bigint`, never a `number`.** `ObjectId`, `Revision`, payload lengths, commit
+ * sequences and an error's context are 64 bits on the wire, and `Number` loses integers above 2^53.
+ * A codec that silently truncated would be wrong in exactly the place — an identity — where being
+ * wrong is unrecoverable. The alternative considered and rejected was `number` with a range check at
+ * the boundary: it reads better at every call site and it makes the codec's correctness depend on
+ * where it is called from. {@link toSafeNumber} is the one narrowing, used where a caller genuinely
+ * needs a JS length (a byte offset into a `Uint8Array`) and can say so.
+ *
+ * **Decoding is total and typed.** A malformed record produces a {@link Refusal} carrying the
+ * contract's own code and detail (§3.9), not a thrown string — the same shape the device would put
+ * on the wire, which is what lets `vectors.test.ts` assert the *negative* fixtures against the same
+ * table the firmware answers from. Only a programming error (an encode of an out-of-range field)
+ * throws.
+ *
+ * This file holds no state and knows no policy. Whether a `PUT` may replace a ride, whether a
+ * listing is stale, what a kind's validator thinks — all of that is the device's, and reading it
+ * back is `client.ts`'s.
  */
 
-/** The wire version this client speaks. A device answering anything else is refused (§1). */
-export const PROTOCOL_VERSION = 2;
+/** The wire major this module implements. A transport fact (§4), never negotiated in a frame. */
+export const WIRE_MAJOR = 4;
 
-/** Why a control-plane decode failed. Mirrors `DescriptorError` in `descriptor.rs`. */
-export type DecodeErrorCode = "truncated" | "unknown-op" | "unknown-type" | "unknown-status";
+/** The four bytes every control frame opens with: ASCII `OBC4`. */
+export const MAGIC = Object.freeze([0x4f, 0x42, 0x43, 0x34]);
 
-/** A malformed or unrecognised control message. */
-export class DecodeError extends Error {
-    readonly code: DecodeErrorCode;
+/** §3.1's control frame header. */
+export const HEADER_LEN = 16;
 
-    constructor(code: DecodeErrorCode, message: string) {
-        super(message);
-        this.name = "DecodeError";
-        this.code = code;
-    }
+/** §3.8's stream frame. A stream record is this followed by exactly `payload length` bytes. */
+export const STREAM_HEADER_LEN = 16;
+
+/** §3.9's error response payload. Exactly this, never more and never less. */
+export const ERROR_BODY_LEN = 16;
+
+/** `StoreId` plus commit sequence, ahead of a `LIST` page's entries (§3.3). */
+export const LIST_PREFIX_LEN = 24;
+
+/** One `LIST` entry (§3.3). */
+export const LIST_ENTRY_LEN = 88;
+
+/** The display-name field's capacity, in UTF-8 bytes (§3.3, §3.6). */
+export const NAME_CAPACITY = 48;
+
+// --- opcodes, flags, kinds ------------------------------------------------------
+
+/** §3.2's opcode table. Seven, and there is no generic forwarding path. */
+export const Opcode = {
+    List: 0x01,
+    Status: 0x02,
+    Get: 0x03,
+    Put: 0x04,
+    Remove: 0x05,
+    Cancel: 0x06,
+    Arm: 0x07,
+} as const;
+export type Opcode = (typeof Opcode)[keyof typeof Opcode];
+
+const OPCODE_NAMES: Readonly<Record<Opcode, string>> = {
+    [Opcode.List]: "LIST",
+    [Opcode.Status]: "STATUS",
+    [Opcode.Get]: "GET",
+    [Opcode.Put]: "PUT",
+    [Opcode.Remove]: "REMOVE",
+    [Opcode.Cancel]: "CANCEL",
+    [Opcode.Arm]: "ARM",
+};
+
+/** The spec's own name for an opcode, for a message a person will read. */
+export function opcodeName(opcode: number): string {
+    return OPCODE_NAMES[opcode as Opcode] ?? `opcode ${opcode}`;
 }
 
-// --- object types and ops (§4.1, §4.2) ---------------------------------------
+/** The exact payload length each opcode's **request** carries. Every message is a fixed layout. */
+const REQUEST_BODY_LEN: Readonly<Record<Opcode, number>> = {
+    [Opcode.List]: 32,
+    [Opcode.Status]: 16,
+    [Opcode.Get]: 16,
+    [Opcode.Put]: 84,
+    [Opcode.Remove]: 16,
+    [Opcode.Cancel]: 4,
+    [Opcode.Arm]: 16,
+};
 
-/** The kind of object a bulk transfer carries (§4.1). */
-export const ObjectType = {
+/** §3.1's flag bits. Requests carry none. */
+export const Flags = {
+    /** A successful response. */
+    Response: 1 << 0,
+    /** An error response; its payload is exactly one 16-byte error body. */
+    Error: 1 << 1,
+    /** A further `LIST` page exists. Valid on nothing else. */
+    More: 1 << 2,
+} as const;
+
+/**
+ * `FLAT_Store_Format.md` §3.1's object kinds, which the wire carries unchanged.
+ *
+ * `MapSetManifest` is retired with `OBCA_Spec.md` §5 (#1420) — no producer writes it and the value
+ * is not reissued — and it stays in the table because the number is spent and a device that still
+ * holds one must be able to list and remove it.
+ */
+export const ObjectKind = {
     Route: 1,
-    Ride: 2,
-    /** Reserved on the bulk channel — Config crosses the control channel whole-blob. */
-    ConfigBlob: 3,
-    Diagnostics: 4,
-    /** A complete `UPDATE.BIN` OBCU container. The transfer layer stays format-blind (§7.6). */
-    FwImage: 5,
-    RouteList: 6,
-    RideList: 7,
-    /** Dev/test loopback: the device streams back exactly what it received. */
-    Echo: 8,
-    Trip: 9,
-    TripList: 10,
-    /**
-     * An OBCM map file, written to the card verbatim.
-     *
-     * **Provisional — #889 ratifies this number.** The interface spec's object table stops at `10`
-     * and reserves `11`–`15` for sensors (M4), so this takes the first value past that band rather
-     * than the first free one: a map arriving where an M4 sensor object was expected is a worse
-     * failure than a gap in the numbering.
-     *
-     * It has to exist for C4 (#903) at all — a map is the one thing the object model never carried,
-     * because a 200 MB file over BLE was never on the table and USB is what changes that. The
-     * transfer semantics are the ones every other object already has (announce, stream, whole-object
-     * CRC, commit), and a map is uploaded as {@link NEW_OBJECT_ID} like a route; a re-upload of an
-     * artifact the device already holds dedups on (length, CRC) exactly as §4.1 specifies. What is
-     * *not* settled here, because C4 does not need it, is how maps are enumerated and named on the
-     * card — there is no `mapList` and no naming field, and #889 (or the device dashboard, D-phase)
-     * owns both.
-     */
-    Map: 16,
-    /** One OBCM shard in a manifest-committed volume set (USB only). */
-    MapShard: 17,
-    /** The OBCA manifest that commits a previously uploaded shard set (USB only). */
-    MapSet: 18,
-    /**
-     * The set's **terrain shard** — an OBCT raster, `MS<id>.OBD` on the card (USB only, #1044).
-     *
-     * It is not a {@link MapShard}, and the difference is load-bearing rather than cosmetic. A
-     * shard's `object_id` is a packed `(shard_count, index)` naming one of the OBCM files the
-     * manifest's *leading* records describe; a raster has no index, is not an OBCM file, and lands
-     * under a different name. Sent as a shard it would consume an index the manifest never names.
-     *
-     * New-only (`object_id` = {@link NEW_OBJECT_ID}): there is at most one per set. It goes out
-     * **after every `mapShard` and before the `mapSet`**, because `OBCA_Spec.md` §5.2's `Shard
-     * Count` counts every record — terrain included — so the manifest is 56 bytes longer than the
-     * shard count alone implies and the device checks that length at the announce.
-     */
-    TerrainShard: 19,
+    Trip: 2,
+    Ride: 3,
+    WeatherBundle: 4,
+    /** OBCM. Since v14 (#1420) a map is **one** object carrying its terrain inside it. */
+    MapShard: 5,
+    /** Retired (#1420). Listable, removable, never written. */
+    MapSetManifest: 6,
+    UpdatePackage: 7,
+    /** Extents owned by the store, payload written by the bootloader (§4). */
+    RollbackReserve: 8,
 } as const;
-export type ObjectType = (typeof ObjectType)[keyof typeof ObjectType];
+export type ObjectKind = (typeof ObjectKind)[keyof typeof ObjectKind];
 
-const OBJECT_TYPES: ReadonlySet<number> = new Set(Object.values(ObjectType));
+const OBJECT_KINDS: ReadonlySet<number> = new Set(Object.values(ObjectKind));
 
-/** The imperative a descriptor carries (§4.2). */
-export const Op = { Upload: 1, Download: 2, Abort: 3 } as const;
-export type Op = (typeof Op)[keyof typeof Op];
+const KIND_NAMES: Readonly<Record<ObjectKind, string>> = {
+    [ObjectKind.Route]: "route",
+    [ObjectKind.Trip]: "trip",
+    [ObjectKind.Ride]: "ride",
+    [ObjectKind.WeatherBundle]: "weather bundle",
+    [ObjectKind.MapShard]: "map",
+    [ObjectKind.MapSetManifest]: "map set manifest",
+    [ObjectKind.UpdatePackage]: "update package",
+    [ObjectKind.RollbackReserve]: "rollback reserve",
+};
 
-/** The `object_id` an upload sends to mean "new — the device assigns the id" (§4.1). */
-export const NEW_OBJECT_ID = 0xffff;
-
-/** Object id of the singletons: the list objects, diagnostics, and the `fwImage` staging slot. */
-export const SINGLETON_OBJECT_ID = 0;
-
-/**
- * The volume-set corner of this codec: {@link setPartId} and the {@link ObjectType.MapShard} /
- * {@link ObjectType.MapSet} / {@link ObjectType.TerrainShard} kinds.
- *
- * **Nothing in this app sends one any more, and these stay anyway.** A map is one OBCM object since
- * OBCM v14 (#1420), so the flows that spoke this are deleted — but the *firmware* still accepts
- * these kinds from a card written before the cut, and this file transcribes the wire contract
- * rather than any particular flow. It is exactly the boundary `obc_formats::obcs` sits on, for the
- * same reason and until the same slice (FS7.5c).
- *
- * The retention is scoped to what is actually **exercised**, and the scoping is not uniform:
- * `vectors.test.ts` decodes and re-encodes `specs/vectors/transfer-set-shard.bin` and
- * `transfer-set-manifest.bin` — two of the three checked-in vectors `obc-vectors` and `obc-ble`
- * decode on the Rust side — which reaches **three** of the symbols here: {@link setPartId},
- * {@link ObjectType.MapShard} and {@link ObjectType.MapSet}.
- *
- * {@link ObjectType.TerrainShard} is the fourth and has **no** TypeScript coverage: the
- * `transfer-set-terrain.bin` vector is decoded on the Rust side only. It stays as a member of the
- * wire contract's kind space rather than as tested code — the number is spent, the firmware answers
- * to it, and a gap in the kind enum would be worse than an untested constant.
- *
- * The OBCT container constants and the OBCS layout constants that used to sit here reached nothing
- * at all once the mock device's announce validation went: they were kept by the same "wire contract"
- * sentence while having no consumer, which is the shape this epic keeps deleting. A codec under test
- * against shared bytes earns its place; a constant nothing reads does not, however true it is.
- */
-/** Pack a volume-set shard's `(shard_count, index)` into the descriptor's object id (§4.2). */
-export function setPartId(shardCount: number, index: number): number {
-    if (!Number.isInteger(shardCount) || shardCount < 1 || shardCount > 32) {
-        throw new RangeError(`a map set must contain 1–32 shards, got ${shardCount}.`);
-    }
-    if (!Number.isInteger(index) || index < 0 || index >= shardCount) {
-        throw new RangeError(`shard index ${index} is outside a ${shardCount}-shard set.`);
-    }
-    return (shardCount << 8) | index;
+/** A kind's word, for a sentence a rider reads. */
+export function kindName(kind: number): string {
+    return KIND_NAMES[kind as ObjectKind] ?? `kind ${kind}`;
 }
 
-/**
- * The fixed **12-byte** transfer descriptor (§4.2) — one shape for upload, download request,
- * download announce and abort, which is what lets the bulk channel carry payload and nothing else.
- *
- * ```text
- *   op         u8    1 = upload · 2 = download · 3 = abort
- *   type       u8    ObjectType
- *   object_id  u16   0xFFFF on upload = "new"
- *   total_len  u32   upload / download announce: full object size · request / abort: 0
- *   crc32      u32   upload / download announce: whole-object CRC-32 · request / abort: 0
- * ```
- *
- * Protocol v2 dropped v1's trailing, permanently-zero `offset`: transfers restart, they never
- * resume (§1 principle 4).
- */
-export interface TransferControl {
-    op: Op;
-    type: ObjectType;
-    objectId: number;
-    totalLen: number;
-    crc32: number;
-}
+/** `FLAT_Store_Format.md` §3's entry flags, as a `LIST` entry reports them. No client sets one. */
+export const EntryFlags = {
+    /** A ride the device is recording. Its length and CRC are zero until the commit that ends it. */
+    Recording: 1 << 0,
+    /** A previous revision a retaining replace left behind (§3.6). */
+    Retained: 1 << 1,
+    /** Extents held for the bootloader. The store did not write these bytes. */
+    Reserved: 1 << 2,
+} as const;
 
-export const TRANSFER_CONTROL_LEN = 12;
+/** `0` names no object (`FLAT_Store_Format.md` §3), and is what a `PUT` sends to create one. */
+export const NO_OBJECT = 0n;
 
-export function encodeTransferControl(d: TransferControl): Uint8Array {
-    const out = new Uint8Array(TRANSFER_CONTROL_LEN);
-    const view = new DataView(out.buffer);
-    out[0] = d.op;
-    out[1] = d.type;
-    view.setUint16(2, d.objectId, true);
-    view.setUint32(4, d.totalLen, true);
-    view.setUint32(8, d.crc32, true);
-    return out;
-}
+/** `0` in a `GET`'s revision field takes the current head (§3.5). */
+export const HEAD_REVISION = 0n;
 
-export function decodeTransferControl(data: Uint8Array): TransferControl {
-    need(data, TRANSFER_CONTROL_LEN, "transfer descriptor");
-    const view = viewOf(data);
-    return {
-        op: op(data[0]),
-        type: objectType(data[1]),
-        objectId: view.getUint16(2, true),
-        totalLen: view.getUint32(4, true),
-        crc32: view.getUint32(8, true),
-    };
-}
+// --- errors (§3.9) --------------------------------------------------------------
 
-// --- the `status` envelope (§4.3) --------------------------------------------
-
-/** The outcome of a transfer (§4.3 `msg = 1`). */
-export const TransferStatus = {
-    Committed: 0,
-    CrcMismatch: 1,
-    Aborted: 2,
-    Error: 3,
+/** §3.9's code table. Code `0` is invalid and is read as a malformed body. */
+export const ErrorCode = {
+    Unsupported: 1,
+    InvalidFrame: 2,
+    InvalidRequest: 3,
     NotFound: 4,
-    Busy: 5,
-    StorageFull: 6,
+    RevisionConflict: 5,
+    NoSpace: 6,
+    ChecksumFailure: 7,
+    MediaIo: 8,
+    Busy: 9,
+    Cancelled: 10,
+    Rejected: 11,
+    Internal: 12,
+    CatalogChanged: 13,
+    ReadOnly: 14,
 } as const;
-export type TransferStatus = (typeof TransferStatus)[keyof typeof TransferStatus];
+export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
 
-const TRANSFER_STATUSES: ReadonlySet<number> = new Set(Object.values(TransferStatus));
+const ERROR_CODES: ReadonlySet<number> = new Set(Object.values(ErrorCode));
 
-/** Human-readable names for the status codes, for error messages the rider will read. */
-export const TRANSFER_STATUS_NAMES: Readonly<Record<TransferStatus, string>> = {
-    [TransferStatus.Committed]: "committed",
-    [TransferStatus.CrcMismatch]: "crcMismatch",
-    [TransferStatus.Aborted]: "aborted",
-    [TransferStatus.Error]: "error",
-    [TransferStatus.NotFound]: "notFound",
-    [TransferStatus.Busy]: "busy",
-    [TransferStatus.StorageFull]: "storageFull",
-};
-
-/** The result of a `command` write (§4.3 `msg = 3`). */
-export const CommandStatus = { Ok: 0, UnknownCommand: 1, NotFound: 2, Busy: 3, Error: 4 } as const;
-export type CommandStatus = (typeof CommandStatus)[keyof typeof CommandStatus];
-
-const COMMAND_STATUSES: ReadonlySet<number> = new Set(Object.values(CommandStatus));
-
-export const COMMAND_STATUS_NAMES: Readonly<Record<CommandStatus, string>> = {
-    [CommandStatus.Ok]: "ok",
-    [CommandStatus.UnknownCommand]: "unknown command",
-    [CommandStatus.NotFound]: "not found",
-    [CommandStatus.Busy]: "busy",
-    [CommandStatus.Error]: "error",
+/** §3.9's names, exactly as the table spells them. */
+export const ERROR_CODE_NAMES: Readonly<Record<ErrorCode, string>> = {
+    [ErrorCode.Unsupported]: "unsupported",
+    [ErrorCode.InvalidFrame]: "invalidFrame",
+    [ErrorCode.InvalidRequest]: "invalidRequest",
+    [ErrorCode.NotFound]: "notFound",
+    [ErrorCode.RevisionConflict]: "revisionConflict",
+    [ErrorCode.NoSpace]: "noSpace",
+    [ErrorCode.ChecksumFailure]: "checksumFailure",
+    [ErrorCode.MediaIo]: "mediaIo",
+    [ErrorCode.Busy]: "busy",
+    [ErrorCode.Cancelled]: "cancelled",
+    [ErrorCode.Rejected]: "rejected",
+    [ErrorCode.Internal]: "internal",
+    [ErrorCode.CatalogChanged]: "catalogChanged",
+    [ErrorCode.ReadOnly]: "readOnly",
 };
 
 /**
- * One `status` notification: a `u8` discriminator plus a fixed body. In protocol v2 this is the
- * **sole** device → host control channel — one ordering domain for transfer results, store-change
- * edges, command results and download announces alike.
+ * §3.9's code-scoped details. `0` means "no narrower fact" everywhere.
+ *
+ * Grouped by code rather than flattened into one enum because the numbers *are* scoped: detail `3`
+ * is `truncated` under `invalidFrame` and `badCombination` under `invalidRequest`, and a single
+ * table would make those look like one value with two meanings.
  */
-export type StatusMessage =
-    | { msg: "transferResult"; objectId: number; status: TransferStatus; committedOffset: number }
-    | { msg: "storeChanged"; type: ObjectType; revision: number }
-    | { msg: "commandResult"; command: number; status: CommandStatus; detail: number }
-    | { msg: "downloadAnnounce"; descriptor: TransferControl };
+export const Detail = {
+    unsupported: { opcode: 1, kind: 2, wireMajor: 3 },
+    invalidFrame: { magic: 1, length: 2, truncated: 3, trailing: 4 },
+    invalidRequest: { reservedBits: 1, unknownEnum: 2, badCombination: 3, streamOffset: 4 },
+    notFound: { object: 1, revision: 2 },
+    revisionConflict: { headDiffers: 1, headAbsent: 2 },
+    noSpace: { extents: 1, catalogFull: 2, tooFragmented: 3 },
+    checksumFailure: { payload: 1 },
+    mediaIo: { read: 1, write: 2, sync: 3 },
+    busy: { transfer: 1, holds: 2 },
+    cancelled: { byClient: 1, byDevice: 2, linkLost: 3 },
+    catalogChanged: { listing: 1 },
+    readOnly: { catalogUnreadable: 1, revisionSpaceExhausted: 2, unformatted: 3 },
+} as const;
 
-export function encodeStatusMessage(m: StatusMessage): Uint8Array {
-    switch (m.msg) {
-        case "transferResult": {
-            const out = new Uint8Array(8);
-            const view = new DataView(out.buffer);
-            out[0] = 1;
-            view.setUint16(1, m.objectId, true);
-            out[3] = m.status;
-            view.setUint32(4, m.committedOffset, true);
-            return out;
-        }
-        case "storeChanged": {
-            const out = new Uint8Array(6);
-            out[0] = 2;
-            out[1] = m.type;
-            new DataView(out.buffer).setUint32(2, m.revision, true);
-            return out;
-        }
-        case "commandResult":
-            return new Uint8Array([3, m.command, m.status, m.detail]);
-        case "downloadAnnounce": {
-            const out = new Uint8Array(1 + TRANSFER_CONTROL_LEN);
-            out[0] = 4;
-            out.set(encodeTransferControl(m.descriptor), 1);
-            return out;
-        }
-    }
+/** The detail names of one code, for a message. `rejected`'s space belongs to a kind's validator. */
+const DETAIL_NAMES: Partial<Record<ErrorCode, Readonly<Record<number, string>>>> = {
+    [ErrorCode.Unsupported]: invert(Detail.unsupported),
+    [ErrorCode.InvalidFrame]: invert(Detail.invalidFrame),
+    [ErrorCode.InvalidRequest]: invert(Detail.invalidRequest),
+    [ErrorCode.NotFound]: invert(Detail.notFound),
+    [ErrorCode.RevisionConflict]: invert(Detail.revisionConflict),
+    [ErrorCode.NoSpace]: invert(Detail.noSpace),
+    [ErrorCode.ChecksumFailure]: invert(Detail.checksumFailure),
+    [ErrorCode.MediaIo]: invert(Detail.mediaIo),
+    [ErrorCode.Busy]: invert(Detail.busy),
+    [ErrorCode.Cancelled]: invert(Detail.cancelled),
+    [ErrorCode.CatalogChanged]: invert(Detail.catalogChanged),
+    [ErrorCode.ReadOnly]: invert(Detail.readOnly),
+};
+
+function invert(table: Readonly<Record<string, number>>): Record<number, string> {
+    const out: Record<number, string> = {};
+    for (const [name, value] of Object.entries(table)) out[value] = name;
+    return out;
+}
+
+/** One refusal, exactly as §3.9's 16-byte body carries it. */
+export interface Refusal {
+    readonly code: ErrorCode;
+    /** Code-scoped; `0` means no narrower fact. */
+    readonly detail: number;
+    /** Code-scoped; zero when the code defines none. */
+    readonly context: bigint;
+}
+
+/** A refusal with a detail and no context — the shape most of §3.9's table takes. */
+export function refusal(code: ErrorCode, detail = 0, context = 0n): Refusal {
+    return { code, detail, context };
+}
+
+/** `unsupported`, `invalidFrame/magic` … — the spec's own words for one refusal. */
+export function refusalName(r: Refusal): string {
+    const detail = DETAIL_NAMES[r.code]?.[r.detail];
+    return detail ? `${ERROR_CODE_NAMES[r.code]}/${detail}` : ERROR_CODE_NAMES[r.code];
+}
+
+/** §3.9's 16 bytes. */
+export function encodeErrorBody(r: Refusal): Uint8Array {
+    const out = new Uint8Array(ERROR_BODY_LEN);
+    const view = new DataView(out.buffer);
+    view.setUint16(0, r.code, true);
+    view.setUint16(2, r.detail, true);
+    view.setBigUint64(4, r.context, true);
+    return out;
 }
 
 /**
- * Decode a `status` notification.
+ * Decode §3.9's body. `null` for a body that is not one: the wrong length, a nonzero tail, or a
+ * code this build has no entry for.
  *
- * Returns `null` for an **unknown discriminator**, which the spec requires readers to ignore
- * rather than fail on — that is the forward-compatibility hinge that lets a later firmware add a
- * message type without breaking a shipped browser tab. Throws only when a *known* discriminator
- * carries a malformed body.
+ * An unknown code is deliberately **not** decoded into "some error": §3.9 says a receiver reads a
+ * code it does not know as a failure it cannot classify, and `client.ts` reports exactly that. What
+ * it must never do is treat it as success, which a lenient decode invites.
  */
-export function decodeStatusMessage(data: Uint8Array): StatusMessage | null {
-    if (data.length < 1) throw new DecodeError("truncated", "an empty status notification arrived.");
-    const view = viewOf(data);
-    switch (data[0]) {
-        case 1:
-            need(data, 8, "transferResult");
-            return {
-                msg: "transferResult",
-                objectId: view.getUint16(1, true),
-                status: transferStatus(data[3]),
-                committedOffset: view.getUint32(4, true),
+export function decodeErrorBody(body: Uint8Array): Refusal | null {
+    if (body.length !== ERROR_BODY_LEN || !isZero(body.subarray(12, 16))) return null;
+    const view = viewOf(body);
+    const code = view.getUint16(0, true);
+    if (!ERROR_CODES.has(code)) return null;
+    return { code: code as ErrorCode, detail: view.getUint16(2, true), context: view.getBigUint64(4, true) };
+}
+
+// --- the control frame (§3.1) ---------------------------------------------------
+
+/** A decoded control frame's header. */
+export interface Header {
+    readonly opcode: number;
+    readonly flags: number;
+    readonly requestId: number;
+    /** Where the payload starts and how long it is, as the header declared it. */
+    readonly payloadLength: number;
+}
+
+/**
+ * Why a control record produced no message.
+ *
+ * - `unanswerable` — there is no `RequestId` to echo: the record is shorter than a header, or its
+ *   `RequestId` is zero (§3.1). A receiver emits nothing and closes that record stream.
+ * - `refused` — the frame is answerable and wrong, and this refusal is the body of the error
+ *   response it earns.
+ */
+export type ControlFailure =
+    | { readonly kind: "unanswerable"; readonly why: string }
+    | { readonly kind: "refused"; readonly requestId: number; readonly refusal: Refusal };
+
+const unanswerable = (why: string): ControlFailure => ({ kind: "unanswerable", why });
+const refused = (requestId: number, r: Refusal): ControlFailure => ({ kind: "refused", requestId, refusal: r });
+const reservedBits = () => refusal(ErrorCode.InvalidRequest, Detail.invalidRequest.reservedBits);
+const badCombination = () => refusal(ErrorCode.InvalidRequest, Detail.invalidRequest.badCombination);
+
+/** Write §3.1's header into `out`. Throws only on a caller's own arithmetic error. */
+export function encodeHeader(
+    out: Uint8Array,
+    opcode: number,
+    flags: number,
+    payloadLength: number,
+    requestId: number,
+): void {
+    if (out.length < HEADER_LEN + payloadLength) {
+        throw new RangeError(`a ${HEADER_LEN + payloadLength}-byte frame does not fit ${out.length} bytes.`);
+    }
+    if (payloadLength > 0xffff) throw new RangeError(`a control payload of ${payloadLength} bytes is above u16.`);
+    out.set(MAGIC, 0);
+    out[4] = WIRE_MAJOR;
+    out[5] = opcode;
+    const view = new DataView(out.buffer, out.byteOffset, out.byteLength);
+    view.setUint16(6, flags, true);
+    view.setUint16(8, payloadLength, true);
+    view.setUint16(10, 0, true);
+    view.setUint32(12, requestId >>> 0, true);
+}
+
+/** One whole control frame: header plus `body`. */
+export function encodeControl(opcode: number, flags: number, requestId: number, body: Uint8Array): Uint8Array {
+    const out = new Uint8Array(HEADER_LEN + body.length);
+    encodeHeader(out, opcode, flags, body.length, requestId);
+    out.set(body, HEADER_LEN);
+    return out;
+}
+
+/** An error response: §3.1's header with `response|error`, and exactly one §3.9 body. */
+export function encodeErrorResponse(opcode: number, requestId: number, r: Refusal): Uint8Array {
+    return encodeControl(opcode, Flags.Response | Flags.Error, requestId, encodeErrorBody(r));
+}
+
+/**
+ * Decode a control record's header, checking every framing rule of §3.1 that does not need to know
+ * which direction the frame travelled.
+ *
+ * The `RequestId` is read **before** anything else can fail, because §3.1's whole distinction
+ * between "close the stream" and "answer with an error" turns on whether there is an identifier to
+ * echo.
+ */
+export function decodeHeader(record: Uint8Array): Header | ControlFailure {
+    if (record.length < HEADER_LEN) return unanswerable(`a ${record.length}-byte record is shorter than a header.`);
+    const view = viewOf(record);
+    const requestId = view.getUint32(12, true);
+    if (requestId === 0) return unanswerable("a zero RequestId is unanswerable.");
+    for (let i = 0; i < 4; i++) {
+        if (record[i] !== MAGIC[i]) {
+            return refused(requestId, refusal(ErrorCode.InvalidFrame, Detail.invalidFrame.magic));
+        }
+    }
+    if (record[4] !== WIRE_MAJOR) {
+        return refused(requestId, refusal(ErrorCode.Unsupported, Detail.unsupported.wireMajor));
+    }
+    if (view.getUint16(10, true) !== 0) return refused(requestId, reservedBits());
+    return {
+        opcode: record[5],
+        flags: view.getUint16(6, true),
+        requestId,
+        payloadLength: view.getUint16(8, true),
+    };
+}
+
+/** True where `value` is a {@link ControlFailure} rather than the thing that was asked for. */
+export function isFailure<T extends object>(value: T | ControlFailure): value is ControlFailure {
+    return "kind" in value && (value.kind === "unanswerable" || value.kind === "refused");
+}
+
+// --- requests (the device's decode side, and the client's encode side) -----------
+
+/** §3.3's cursor: the **pair**, plus the commit sequence the page was told. */
+export interface ListCursor {
+    readonly objectId: bigint;
+    readonly revision: bigint;
+    readonly commitSequence: bigint;
+}
+
+/** §3.3. `kind` of `null` lists every kind; `cursor` of `null` is a first page. */
+export interface ListRequest {
+    readonly kind: ObjectKind | null;
+    readonly cursor: ListCursor | null;
+}
+
+/** §3.4 and §3.5 share a shape: an object and a revision. */
+export interface ObjectRef {
+    readonly objectId: bigint;
+    readonly revision: bigint;
+}
+
+/** §3.6. */
+export interface PutRequest {
+    /** {@link NO_OBJECT} creates; anything else replaces. */
+    readonly objectId: bigint;
+    /** Zero when creating; the revision the device last reported when replacing. */
+    readonly expectedRevision: bigint;
+    readonly payloadLength: bigint;
+    readonly payloadCrc32: number;
+    readonly kind: ObjectKind;
+    /** Ask the same commit to leave the displaced revision `RETAINED` (§3.6). */
+    readonly retainPrevious: boolean;
+    readonly displayName: string;
+}
+
+/** §3.8's `CANCEL`: the identifier of the transfer to drop. */
+export interface CancelRequest {
+    readonly transferRequestId: number;
+}
+
+/** §4's `ARM`: the update package to make the next boot. */
+export interface ArmRequest {
+    readonly packageObjectId: bigint;
+    readonly expectedRevision: bigint;
+}
+
+/** One decoded request, tagged by its opcode. */
+export type Request =
+    | { readonly opcode: typeof Opcode.List; readonly body: ListRequest }
+    | { readonly opcode: typeof Opcode.Status; readonly body: ObjectRef }
+    | { readonly opcode: typeof Opcode.Get; readonly body: ObjectRef }
+    | { readonly opcode: typeof Opcode.Put; readonly body: PutRequest }
+    | { readonly opcode: typeof Opcode.Remove; readonly body: ObjectRef }
+    | { readonly opcode: typeof Opcode.Cancel; readonly body: CancelRequest }
+    | { readonly opcode: typeof Opcode.Arm; readonly body: ArmRequest };
+
+/** A decoded request and the `RequestId` its answer must echo. */
+export interface DecodedRequest {
+    readonly requestId: number;
+    readonly request: Request;
+}
+
+/**
+ * Decode one whole control record as a **request** — what the device does with a host's bytes, and
+ * what `loopback.ts` therefore needs.
+ *
+ * Total: every input is either a request or a {@link ControlFailure} the caller answers with.
+ */
+export function decodeRequest(record: Uint8Array): DecodedRequest | ControlFailure {
+    const header = decodeHeader(record);
+    if (isFailure(header)) return header;
+    const { requestId } = header;
+    if (!(header.opcode in REQUEST_BODY_LEN)) {
+        return refused(requestId, refusal(ErrorCode.Unsupported, Detail.unsupported.opcode));
+    }
+    const opcode = header.opcode as Opcode;
+    // "Requests carry no flags" (§3.1) — including the response bit, which is what makes a frame
+    // looped back to its sender a refusal rather than something it might try to serve.
+    if (header.flags !== 0) return refused(requestId, reservedBits());
+    if (header.payloadLength !== REQUEST_BODY_LEN[opcode]) {
+        return refused(requestId, refusal(ErrorCode.InvalidFrame, Detail.invalidFrame.length));
+    }
+    const carried = record.length - HEADER_LEN;
+    if (carried < header.payloadLength) {
+        return refused(requestId, refusal(ErrorCode.InvalidFrame, Detail.invalidFrame.truncated));
+    }
+    if (carried > header.payloadLength) {
+        return refused(requestId, refusal(ErrorCode.InvalidFrame, Detail.invalidFrame.trailing));
+    }
+
+    const body = record.subarray(HEADER_LEN);
+    const decoded = decodeRequestBody(opcode, body);
+    if ("code" in decoded) return refused(requestId, decoded);
+    return { requestId, request: decoded };
+}
+
+function decodeRequestBody(opcode: Opcode, body: Uint8Array): Request | Refusal {
+    const view = viewOf(body);
+    switch (opcode) {
+        case Opcode.List: {
+            const filter = view.getUint16(0, true);
+            if (filter !== 0 && !OBJECT_KINDS.has(filter)) {
+                // A filter naming a kind this major does not register is `unsupported`, exactly as
+                // an unknown opcode is: the client asked for something with no table behind it.
+                return refusal(ErrorCode.Unsupported, Detail.unsupported.kind);
+            }
+            const flags = view.getUint16(2, true);
+            if ((flags & ~1) !== 0 || !isZero(body.subarray(4, 8))) return reservedBits();
+            const cursor: ListCursor = {
+                objectId: view.getBigUint64(8, true),
+                revision: view.getBigUint64(16, true),
+                commitSequence: view.getBigUint64(24, true),
             };
-        case 2:
-            need(data, 6, "storeChanged");
-            return { msg: "storeChanged", type: objectType(data[1]), revision: view.getUint32(2, true) };
-        case 3:
-            need(data, 4, "commandResult");
-            return { msg: "commandResult", command: data[1], status: commandStatus(data[2]), detail: data[3] };
-        case 4:
-            need(data, 1 + TRANSFER_CONTROL_LEN, "downloadAnnounce");
-            return { msg: "downloadAnnounce", descriptor: decodeTransferControl(data.subarray(1)) };
+            const kind = filter === 0 ? null : (filter as ObjectKind);
+            if ((flags & 1) === 0) {
+                // "zero unless the cursor bit is set" — three fields, one rule.
+                if (cursor.objectId !== 0n || cursor.revision !== 0n || cursor.commitSequence !== 0n) {
+                    return badCombination();
+                }
+                return { opcode, body: { kind, cursor: null } };
+            }
+            return { opcode, body: { kind, cursor } };
+        }
+        case Opcode.Status: {
+            const objectId = view.getBigUint64(0, true);
+            // §3.4: a `STATUS` naming ObjectId zero is `invalidRequest` — the identity of the store
+            // comes from `LIST`.
+            if (objectId === NO_OBJECT) return badCombination();
+            return { opcode, body: { objectId, revision: view.getBigUint64(8, true) } };
+        }
+        case Opcode.Get:
+            return { opcode, body: { objectId: view.getBigUint64(0, true), revision: view.getBigUint64(8, true) } };
+        case Opcode.Put: {
+            const objectId = view.getBigUint64(0, true);
+            const expectedRevision = view.getBigUint64(8, true);
+            // §3.6: "Zero is not a wildcard in either field."
+            if ((objectId !== NO_OBJECT) !== (expectedRevision !== 0n)) return badCombination();
+            const kind = view.getUint16(28, true);
+            if (!OBJECT_KINDS.has(kind)) return refusal(ErrorCode.Unsupported, Detail.unsupported.kind);
+            const flags = view.getUint16(30, true);
+            if ((flags & ~1) !== 0 || !isZero(body.subarray(33, 36))) return reservedBits();
+            const name = decodeName(body[32], body.subarray(36, 36 + NAME_CAPACITY));
+            if (typeof name !== "string") return name;
+            return {
+                opcode,
+                body: {
+                    objectId,
+                    expectedRevision,
+                    payloadLength: view.getBigUint64(16, true),
+                    payloadCrc32: view.getUint32(24, true),
+                    kind: kind as ObjectKind,
+                    retainPrevious: (flags & 1) !== 0,
+                    displayName: name,
+                },
+            };
+        }
+        case Opcode.Remove:
+            return { opcode, body: { objectId: view.getBigUint64(0, true), revision: view.getBigUint64(8, true) } };
+        case Opcode.Cancel:
+            return { opcode, body: { transferRequestId: view.getUint32(0, true) } };
+        case Opcode.Arm:
+            return {
+                opcode,
+                body: { packageObjectId: view.getBigUint64(0, true), expectedRevision: view.getBigUint64(8, true) },
+            };
+    }
+}
+
+/**
+ * §3.3 and §3.6 carry the same 49-byte name field: a length byte, then 48 bytes whose unused tail is
+ * zero. The one rule beyond the spec's table is that the field is the UTF-8 it says it is — a menu
+ * has nothing to do with bytes that are not, and a lossy decode would put replacement characters in
+ * a rider's route list.
+ */
+function decodeName(length: number, field: Uint8Array): string | Refusal {
+    if (length > NAME_CAPACITY) return badCombination();
+    if (!isZero(field.subarray(length))) return reservedBits();
+    try {
+        return new TextDecoder("utf-8", { fatal: true }).decode(field.subarray(0, length));
+    } catch {
+        return badCombination();
+    }
+}
+
+/** Write a `name_len u8` + zero-padded 48-byte field. Throws on a name the field cannot hold. */
+function encodeName(out: Uint8Array, lengthAt: number, fieldAt: number, name: string): void {
+    const bytes = new TextEncoder().encode(name);
+    if (bytes.length > NAME_CAPACITY) {
+        throw new RangeError(`a display name is at most ${NAME_CAPACITY} UTF-8 bytes, this one is ${bytes.length}.`);
+    }
+    out[lengthAt] = bytes.length;
+    out.set(bytes, fieldAt);
+}
+
+// --- request encoders (the client's side) ----------------------------------------
+
+/** §3.3's 32-byte request. */
+export function encodeListRequest(requestId: number, request: ListRequest): Uint8Array {
+    const body = new Uint8Array(REQUEST_BODY_LEN[Opcode.List]);
+    const view = new DataView(body.buffer);
+    view.setUint16(0, request.kind ?? 0, true);
+    if (request.cursor) {
+        view.setUint16(2, 1, true);
+        view.setBigUint64(8, request.cursor.objectId, true);
+        view.setBigUint64(16, request.cursor.revision, true);
+        view.setBigUint64(24, request.cursor.commitSequence, true);
+    }
+    return encodeControl(Opcode.List, 0, requestId, body);
+}
+
+/** §3.4's 16-byte request. */
+export function encodeStatusRequest(requestId: number, ref: ObjectRef): Uint8Array {
+    return encodeControl(Opcode.Status, 0, requestId, encodeObjectRef(ref));
+}
+
+/** §3.5's 16-byte request. A revision of {@link HEAD_REVISION} takes the current head. */
+export function encodeGetRequest(requestId: number, ref: ObjectRef): Uint8Array {
+    return encodeControl(Opcode.Get, 0, requestId, encodeObjectRef(ref));
+}
+
+/** §3.7's 16-byte request. */
+export function encodeRemoveRequest(requestId: number, ref: ObjectRef): Uint8Array {
+    return encodeControl(Opcode.Remove, 0, requestId, encodeObjectRef(ref));
+}
+
+function encodeObjectRef(ref: ObjectRef): Uint8Array {
+    const body = new Uint8Array(16);
+    const view = new DataView(body.buffer);
+    view.setBigUint64(0, ref.objectId, true);
+    view.setBigUint64(8, ref.revision, true);
+    return body;
+}
+
+/** §3.6's 84-byte request. */
+export function encodePutRequest(requestId: number, request: PutRequest): Uint8Array {
+    const body = new Uint8Array(REQUEST_BODY_LEN[Opcode.Put]);
+    const view = new DataView(body.buffer);
+    view.setBigUint64(0, request.objectId, true);
+    view.setBigUint64(8, request.expectedRevision, true);
+    view.setBigUint64(16, request.payloadLength, true);
+    view.setUint32(24, request.payloadCrc32, true);
+    view.setUint16(28, request.kind, true);
+    view.setUint16(30, request.retainPrevious ? 1 : 0, true);
+    encodeName(body, 32, 36, request.displayName);
+    return encodeControl(Opcode.Put, 0, requestId, body);
+}
+
+/** §3.8's 4-byte request. */
+export function encodeCancelRequest(requestId: number, request: CancelRequest): Uint8Array {
+    const body = new Uint8Array(REQUEST_BODY_LEN[Opcode.Cancel]);
+    new DataView(body.buffer).setUint32(0, request.transferRequestId >>> 0, true);
+    return encodeControl(Opcode.Cancel, 0, requestId, body);
+}
+
+/** §4's 16-byte request. */
+export function encodeArmRequest(requestId: number, request: ArmRequest): Uint8Array {
+    const body = new Uint8Array(REQUEST_BODY_LEN[Opcode.Arm]);
+    const view = new DataView(body.buffer);
+    view.setBigUint64(0, request.packageObjectId, true);
+    view.setBigUint64(8, request.expectedRevision, true);
+    return encodeControl(Opcode.Arm, 0, requestId, body);
+}
+
+// --- responses -------------------------------------------------------------------
+
+/** One catalog entry, §3.3's 88 bytes. */
+export interface CatalogEntry {
+    readonly objectId: bigint;
+    readonly revision: bigint;
+    readonly payloadLength: bigint;
+    readonly payloadCrc32: number;
+    readonly kind: number;
+    /** {@link EntryFlags}. A client reads these; it never sets them. */
+    readonly flags: number;
+    readonly displayName: string;
+}
+
+/** One `LIST` page: the identity prefix, the entries, and whether a further page exists. */
+export interface ListPage {
+    readonly storeId: string;
+    readonly commitSequence: bigint;
+    readonly entries: readonly CatalogEntry[];
+    readonly more: boolean;
+}
+
+/** §3.4's three states. */
+export const ObjectState = { Absent: 0, Committed: 1, Superseded: 2 } as const;
+export type ObjectState = (typeof ObjectState)[keyof typeof ObjectState];
+
+/** §3.4's 24-byte response. Every head field is zero when `state` is `Absent`. */
+export interface StatusResponse {
+    readonly state: ObjectState;
+    readonly headRevision: bigint;
+    readonly headPayloadLength: bigint;
+    readonly headPayloadCrc32: number;
+}
+
+/** §3.5's 24-byte response, sent once the last payload byte is on the transport. */
+export interface GetResponse {
+    readonly revisionServed: bigint;
+    readonly payloadLength: bigint;
+    readonly payloadCrc32: number;
+}
+
+/** §3.6's 32-byte response. `objectId` is the assigned one when the request created an object. */
+export interface PutResponse {
+    readonly objectId: bigint;
+    readonly revision: bigint;
+    readonly payloadLength: bigint;
+    readonly payloadCrc32: number;
+}
+
+/** §4's 16-byte response. */
+export interface ArmResponse {
+    readonly rollbackObjectId: bigint;
+    readonly commitSequence: bigint;
+}
+
+/** Every response body this protocol has, tagged by the opcode that produced it. */
+export type Response =
+    | { readonly opcode: typeof Opcode.List; readonly body: ListPage }
+    | { readonly opcode: typeof Opcode.Status; readonly body: StatusResponse }
+    | { readonly opcode: typeof Opcode.Get; readonly body: GetResponse }
+    | { readonly opcode: typeof Opcode.Put; readonly body: PutResponse }
+    | { readonly opcode: typeof Opcode.Remove; readonly body: { readonly commitSequence: bigint } }
+    | { readonly opcode: typeof Opcode.Cancel; readonly body: { readonly cancelled: boolean } }
+    | { readonly opcode: typeof Opcode.Arm; readonly body: ArmResponse };
+
+/** A decoded response: the `RequestId` it echoes, and either a body or the refusal it carried. */
+export type DecodedResponse =
+    | { readonly requestId: number; readonly ok: true; readonly response: Response }
+    | { readonly requestId: number; readonly ok: false; readonly refusal: Refusal; readonly opcode: number };
+
+/**
+ * Why a device→host record could not be read as a response.
+ *
+ * This is not §3.9's table: those are refusals the device *sent*, which decode fine. This is the
+ * frame itself being unreadable, which under §3.1 means the two ends disagree about the wire and
+ * the channel cannot be trusted for the next answer either.
+ */
+export class ResponseError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = "ResponseError";
+    }
+}
+
+/**
+ * Decode one control record as a **response** — what the client does with the device's bytes.
+ *
+ * Every failure throws {@link ResponseError} rather than returning a typed refusal, and the
+ * asymmetry with {@link decodeRequest} is deliberate: a device has somewhere to put a refusal (an
+ * error response under the offending `RequestId`), and a host has nowhere at all. §3.1 gives the
+ * host no way to complain about a malformed answer, so the only honest move is to fail the waiter.
+ */
+export function decodeResponse(record: Uint8Array): DecodedResponse {
+    const header = decodeHeader(record);
+    if (isFailure(header)) {
+        throw new ResponseError(
+            header.kind === "unanswerable"
+                ? `the device sent an unreadable control record: ${header.why}`
+                : `the device sent a control record this client reads as ${refusalName(header.refusal)}.`,
+        );
+    }
+    if ((header.flags & Flags.Response) === 0) {
+        throw new ResponseError("the device sent a control frame with no response bit; there are no unsolicited ones.");
+    }
+    const body = record.subarray(HEADER_LEN);
+    if (body.length !== header.payloadLength) {
+        throw new ResponseError(
+            `a response declared ${header.payloadLength} payload bytes and its record carries ${body.length}.`,
+        );
+    }
+    if ((header.flags & Flags.Error) !== 0) {
+        const r = decodeErrorBody(body);
+        if (!r) throw new ResponseError("the device sent an error response whose body is not a §3.9 body.");
+        return { requestId: header.requestId, ok: false, refusal: r, opcode: header.opcode };
+    }
+    if ((header.flags & ~(Flags.Response | Flags.More)) !== 0) {
+        throw new ResponseError(`a response carries flags 0x${header.flags.toString(16)}; §3.1 defines three bits.`);
+    }
+    const more = (header.flags & Flags.More) !== 0;
+    if (more && header.opcode !== Opcode.List) {
+        throw new ResponseError(`the more bit is valid only on a LIST response, not on ${opcodeName(header.opcode)}.`);
+    }
+    return { requestId: header.requestId, ok: true, response: decodeResponseBody(header.opcode, body, more) };
+}
+
+function decodeResponseBody(opcode: number, body: Uint8Array, more: boolean): Response {
+    const view = viewOf(body);
+    const expect = (bytes: number) => {
+        if (body.length !== bytes) {
+            throw new ResponseError(
+                `a ${opcodeName(opcode)} response is ${bytes} bytes, this one carries ${body.length}.`,
+            );
+        }
+    };
+    switch (opcode) {
+        case Opcode.List: {
+            if (body.length < LIST_PREFIX_LEN || (body.length - LIST_PREFIX_LEN) % LIST_ENTRY_LEN !== 0) {
+                throw new ResponseError(
+                    `a LIST page is ${LIST_PREFIX_LEN} bytes plus whole ${LIST_ENTRY_LEN}-byte entries, ` +
+                        `not ${body.length}.`,
+                );
+            }
+            const count = (body.length - LIST_PREFIX_LEN) / LIST_ENTRY_LEN;
+            const entries: CatalogEntry[] = [];
+            for (let i = 0; i < count; i++) entries.push(decodeEntry(body, LIST_PREFIX_LEN + i * LIST_ENTRY_LEN));
+            return {
+                opcode: Opcode.List,
+                body: {
+                    storeId: hex(body.subarray(0, 16)),
+                    commitSequence: view.getBigUint64(16, true),
+                    entries,
+                    more,
+                },
+            };
+        }
+        case Opcode.Status: {
+            expect(24);
+            const state = body[0];
+            if (state !== ObjectState.Absent && state !== ObjectState.Committed && state !== ObjectState.Superseded) {
+                throw new ResponseError(`a STATUS response names state ${state}; §3.4 defines three.`);
+            }
+            return {
+                opcode: Opcode.Status,
+                body: {
+                    state,
+                    headRevision: view.getBigUint64(4, true),
+                    headPayloadLength: view.getBigUint64(12, true),
+                    headPayloadCrc32: view.getUint32(20, true),
+                },
+            };
+        }
+        case Opcode.Get:
+            expect(24);
+            return {
+                opcode: Opcode.Get,
+                body: {
+                    revisionServed: view.getBigUint64(0, true),
+                    payloadLength: view.getBigUint64(8, true),
+                    payloadCrc32: view.getUint32(16, true),
+                },
+            };
+        case Opcode.Put:
+            expect(32);
+            return {
+                opcode: Opcode.Put,
+                body: {
+                    objectId: view.getBigUint64(0, true),
+                    revision: view.getBigUint64(8, true),
+                    payloadLength: view.getBigUint64(16, true),
+                    payloadCrc32: view.getUint32(24, true),
+                },
+            };
+        case Opcode.Remove:
+            expect(8);
+            return { opcode: Opcode.Remove, body: { commitSequence: view.getBigUint64(0, true) } };
+        case Opcode.Cancel:
+            expect(1);
+            // §3.8: `0` cancelled, `1` no such transfer. Anything else is a third answer to a
+            // two-valued question, and reading it as "cancelled" would be a guess.
+            if (body[0] > 1) throw new ResponseError(`a CANCEL response says ${body[0]}; §3.8 defines 0 and 1.`);
+            return { opcode: Opcode.Cancel, body: { cancelled: body[0] === 0 } };
+        case Opcode.Arm:
+            expect(16);
+            return {
+                opcode: Opcode.Arm,
+                body: {
+                    rollbackObjectId: view.getBigUint64(0, true),
+                    commitSequence: view.getBigUint64(8, true),
+                },
+            };
         default:
-            return null;
+            throw new ResponseError(`the device answered with ${opcodeName(opcode)}, which this client never sends.`);
     }
 }
 
-// --- `command` writes (§4.4) --------------------------------------------------
-
-/** The command bytes (§4.4). Next free is `7`. */
-export const Command = {
-    DeleteObject: 1,
-    AckRides: 2,
-    InstallFw: 3,
-    ForgetBond: 4,
-    SetClock: 5,
-    SetRouteRetention: 6,
-} as const;
-export type Command = (typeof Command)[keyof typeof Command];
-
-/** `deleteObject` (cmd 1): `type u8 · object_id u16`. Routes and trips only — a ride delete is
- *  reserved and answered `notFound` (rides are deleted on the device itself). */
-export function encodeDeleteObject(type: ObjectType, objectId: number): Uint8Array {
-    const out = new Uint8Array(4);
-    out[0] = Command.DeleteObject;
-    out[1] = type;
-    new DataView(out.buffer).setUint16(2, objectId, true);
-    return out;
-}
-
-/**
- * `ackRides` (cmd 2): `count u8 · count × object_id u16` — the possession ack.
- *
- * **The hosted web tier never sends this.** #894 locks ride-sync semantics: `synced` means "a
- * durable copy exists off the device", and a browser download the user may cancel keeps no record,
- * so acking from a tab would start an expiry countdown against a ride nobody holds. The encoder
- * lives here because the desktop app (E1 #911) does ack, after fsync, over this same client — C5
- * (#904) must not call it.
- */
-export function encodeAckRides(rideIds: readonly number[]): Uint8Array {
-    if (rideIds.length > 0xff) throw new RangeError(`ackRides carries at most 255 ids, got ${rideIds.length}`);
-    const out = new Uint8Array(2 + rideIds.length * 2);
-    const view = new DataView(out.buffer);
-    out[0] = Command.AckRides;
-    out[1] = rideIds.length;
-    rideIds.forEach((id, i) => view.setUint16(2 + i * 2, id, true));
-    return out;
-}
-
-/** `installFw` (cmd 3): the command byte alone. Requests the on-glass confirm flow; the device
- *  never installs without a physical Select press, so this returning `ok` means "asked", not
- *  "installed" (§4.4). */
-export function encodeInstallFw(): Uint8Array {
-    return new Uint8Array([Command.InstallFw]);
-}
-
-/** `forgetBond` (cmd 4): the command byte alone. BLE-only in practice — a USB host has no bond to
- *  dissolve — but the vocabulary is one protocol, so the encoder is here for completeness. */
-export function encodeForgetBond(): Uint8Array {
-    return new Uint8Array([Command.ForgetBond]);
-}
-
-/** The earliest UTC `setClock` accepts: 2020-01-01. An earlier stamp is an obviously-bogus host
- *  clock and the device answers `error` (§4.4). */
-export const SET_CLOCK_MIN_UTC = 1_577_836_800;
-/** The magnitude bound on a `setClock` offset: ±14 h, the real-world span. */
-export const SET_CLOCK_MAX_OFFSET_MIN = 840;
-
-/**
- * `setClock` (cmd 5): `utc u32 · offset_min i16` — the peer stamps the device's trusted wall clock.
- *
- * The device has no RTC, and a clock it merely resumed from flash is *untrusted*: nothing is
- * stamped or expired from it. Exactly two sources make it trusted for the boot — a GPS fix and this
- * command — which is why every connected peer sends it, browser included. The range checks are the
- * device's own, applied here so a bad value fails in the tab instead of costing a round trip.
- */
-export function encodeSetClock(utcSeconds: number, offsetMinutes: number): Uint8Array {
-    if (!Number.isInteger(utcSeconds) || utcSeconds < SET_CLOCK_MIN_UTC || utcSeconds > 0xffffffff) {
-        throw new RangeError(`setClock utc ${utcSeconds} is outside [${SET_CLOCK_MIN_UTC}, 2^32).`);
-    }
-    if (!Number.isInteger(offsetMinutes) || Math.abs(offsetMinutes) > SET_CLOCK_MAX_OFFSET_MIN) {
-        throw new RangeError(`setClock offset ${offsetMinutes} min is beyond ±${SET_CLOCK_MAX_OFFSET_MIN}.`);
-    }
-    const out = new Uint8Array(7);
-    const view = new DataView(out.buffer);
-    out[0] = Command.SetClock;
-    view.setUint32(1, utcSeconds, true);
-    view.setInt16(5, offsetMinutes, true);
-    return out;
-}
-
-/** The largest valid retention level: `5` (2 months). Above it the device answers `error`. */
-export const MAX_RETENTION = 5;
-
-/** `setRouteRetention` (cmd 6): `object_id u16 · retention u8` — set a stored route's expiry
- *  policy without re-uploading it. Never touches the route's `last_used`, so a route mid-countdown
- *  keeps its anchor (§4.4). */
-export function encodeSetRouteRetention(objectId: number, retention: number): Uint8Array {
-    if (!Number.isInteger(retention) || retention < 0 || retention > MAX_RETENTION) {
-        throw new RangeError(`retention ${retention} is outside 0..=${MAX_RETENTION}.`);
-    }
-    const out = new Uint8Array(4);
-    out[0] = Command.SetRouteRetention;
-    new DataView(out.buffer).setUint16(1, objectId, true);
-    out[3] = retention;
-    return out;
-}
-
-// --- the identity read (§1) ---------------------------------------------------
-
-/**
- * The `protocolVersion` read: `version u16 · store_epoch u32 · obcm_version u8`, served at one of
- * **three** lengths. The length is the version mechanism — it has been since the 2-byte no-store
- * read (#776), and the `obcm_version` byte (#911) joins the same scheme rather than inventing one:
- *
- * | Bytes | Means |
- * | --: | :-- |
- * | 7 | the full read |
- * | 6 | a firmware predating `obcm_version` → `obcmVersion: null` |
- * | 2 | no mounted card → no era to name, and no room for the byte after it |
- *
- * The epoch names the store's id era, and every durable link the peer keeps — a route's device id,
- * a ride's synced flag — is scoped to `(serial, epoch)` so an era change can never silently alias
- * months-old ids. An absent epoch is a *failed* identity read, not epoch `0` (a legal value): the
- * spec's ack fail-closed contract says a connection whose identity read failed reconciles nothing.
- *
- * `obcmVersion` is the OBCM **map-format** version this device's firmware reads — a different
- * number in a different sequence from `version`, which is the wire contract. It is the one fact
- * `OBCC_Spec.md` §10 turns on: don't offer an assembly the connected device cannot read. A
- * trailing field the read did not carry is `null`, **never** a fabricated `0`: `obcmVersion: 0`
- * would read as "this device supports OBCM v0" and refuse every real map, where `null` correctly
- * means "unknown" and takes §6(c)'s no-known-target-firmware branch (offer it, stating the
- * version).
- */
-export interface VersionRead {
-    version: number;
-    /** `null` when the device serves the 2-byte short read — no card, so no era to name. */
-    storeEpoch: number | null;
-    /** `null` when the read carried no `obcm_version` byte: a firmware predating it, or the
-     *  store-less short read (which stops before the epoch, let alone the byte after it). */
-    obcmVersion: number | null;
-    /** The optional capability word (§1, WX3). `null` when the read carried no such field — a
-     *  firmware predating it — and never a fabricated `0`: both mean "no optional contracts", but
-     *  only one of them is something the device actually said. */
-    featureBits: number | null;
-}
-
-/** Bit 0 of {@link VersionRead.featureBits}: the device speaks the Weather Request contract (§11).
- *  Nothing in the browser builder acts on it — the weather path is the phone's — but the identity
- *  read is one wire shape across BLE and USB, and a mirror that cannot represent a field it will
- *  routinely receive is a mirror that quietly drops it. */
-export const FEATURE_WEATHER = 1 << 0;
-
-export function encodeVersionRead(v: VersionRead): Uint8Array {
-    // The four lengths, in the one place that decides them. A trailing field without the one
-    // before it has no encoding — the fields are positional — so it is dropped rather than
-    // silently shifted into its predecessor's bytes.
-    const length =
-        v.storeEpoch === null ? 2 : v.obcmVersion === null ? 6 : v.featureBits === null ? 7 : 11;
-    const out = new Uint8Array(length);
-    const view = new DataView(out.buffer);
-    view.setUint16(0, v.version, true);
-    if (length >= 6) view.setUint32(2, v.storeEpoch as number, true);
-    if (length >= 7) out[6] = v.obcmVersion as number;
-    if (length >= 11) view.setUint32(7, v.featureBits as number, true);
-    return out;
-}
-
-export function decodeVersionRead(data: Uint8Array): VersionRead {
-    if (data.length < 2)
-        throw new DecodeError("truncated", `identity read is ${data.length} bytes, expected 2, 6, 7 or 11.`);
-    const view = viewOf(data);
+function decodeEntry(body: Uint8Array, at: number): CatalogEntry {
+    const view = viewOf(body);
+    const nameLength = Math.min(body[at + 32], NAME_CAPACITY);
     return {
-        version: view.getUint16(0, true),
-        storeEpoch: data.length >= 6 ? view.getUint32(2, true) : null,
-        // Bytes past the last field we know are ignored, not rejected: that append-only rule is
-        // what let this field land without a `PROTOCOL_VERSION` bump, and it has to keep holding
-        // for whatever lands after it.
-        obcmVersion: data.length >= 7 ? data[6] : null,
-        // A *partial* capability word (8, 9 or 10 bytes) is absent, not the bytes that turned up:
-        // three bytes of a u32 are a broken read, not a small feature set, and treating them as
-        // data could claim a contract the device never announced.
-        featureBits: data.length >= 11 ? view.getUint32(7, true) : null,
+        objectId: view.getBigUint64(at, true),
+        revision: view.getBigUint64(at + 8, true),
+        payloadLength: view.getBigUint64(at + 16, true),
+        payloadCrc32: view.getUint32(at + 24, true),
+        kind: view.getUint16(at + 28, true),
+        flags: view.getUint16(at + 30, true),
+        // Lenient where the request decoder is strict, and on purpose: a name is the one field a
+        // client only ever *renders*. Refusing a whole catalog page because one entry's name is not
+        // valid UTF-8 would hide every other object on the card behind a cosmetic fault.
+        displayName: new TextDecoder().decode(body.subarray(at + 36, at + 36 + nameLength)),
     };
 }
 
-// --- the Config object (§7.3) -------------------------------------------------
+// --- response encoders (the mock device's side) -----------------------------------
 
-/** The name cap, matching the OBCR route-name field. */
-export const CONFIG_MAX_NAME = 48;
-/** The whole-blob cap that let Config live on a GATT characteristic in the first place. */
-export const CONFIG_MAX_ENCODED = 128;
-
-/**
- * The Config object: `name_len u16 · name · units u8 · weather_refresh u8`, append-only.
- *
- * The trailing refresh byte is decoded **raw and unvalidated** — §11.8 makes an unrecognised value
- * fatal in one direction only (a phone → device write), and this host is never that direction.
- *
- * Readers must ignore unknown trailing bytes and treat absent trailing fields as "device default" —
- * that rule *is* the version mechanism, so this decoder never rejects a longer blob from a newer
- * firmware.
- */
-export interface DeviceConfig {
-    /** The device name — writing Config with a changed name *is* the rename (§7.3, Delta 1). */
-    name: string;
-    /** `0 = metric · 1 = imperial`. */
-    units: number;
-    /** The weather refresh interval (§7.3, §11.8) **as the raw byte**: `0 = Off · 1 = 15 · 2 = 30 ·
-     *  3 = 60 · 4 = 120` minutes. `null` when the blob carried no such byte, which on a read means
-     *  **device default** — not `Off`. Round-tripping a Config read through a writer that collapsed
-     *  the two would silently disable weather on a plain rename.
-     *
-     *  Raw, and deliberately **not** range-checked here — see {@link knownWeatherRefresh}. */
-    weatherRefresh: number | null;
+/** §3.3's page: the 24-byte prefix, then `entries`. */
+export function encodeListResponse(requestId: number, page: ListPage): Uint8Array {
+    const body = new Uint8Array(LIST_PREFIX_LEN + page.entries.length * LIST_ENTRY_LEN);
+    body.set(unhex(page.storeId, 16), 0);
+    new DataView(body.buffer).setBigUint64(16, page.commitSequence, true);
+    page.entries.forEach((entry, i) => encodeEntry(body, LIST_PREFIX_LEN + i * LIST_ENTRY_LEN, entry));
+    return encodeControl(Opcode.List, Flags.Response | (page.more ? Flags.More : 0), requestId, body);
 }
 
-/** The §11.8 refresh enum, as the wire discriminants. */
-export const WeatherRefresh = {
-    off: 0,
-    every15: 1,
-    every30: 2,
-    every60: 3,
-    every120: 4,
-} as const;
-export type WeatherRefreshValue = (typeof WeatherRefresh)[keyof typeof WeatherRefresh];
-
-/** The device default (epic #1185) — also what an *absent* field means on a **read**. */
-export const WEATHER_REFRESH_DEFAULT: WeatherRefreshValue = WeatherRefresh.every30;
-
-/** Minutes per interval; `null` for `off`, which has no interval rather than a zero one. */
-export const WEATHER_REFRESH_MINUTES: Record<WeatherRefreshValue, number | null> = {
-    [WeatherRefresh.off]: null,
-    [WeatherRefresh.every15]: 15,
-    [WeatherRefresh.every30]: 30,
-    [WeatherRefresh.every60]: 60,
-    [WeatherRefresh.every120]: 120,
-};
-
-/**
- * The refresh interval **as a reader sees it**: the value when it names an interval this build
- * knows, or `null` when the field was absent *or* names one it does not (§11.8's read direction).
- *
- * The tolerance is the point, and it is why {@link decodeConfig} does not range-check. This host is
- * always the *reading* side — it never has to adopt an interval — and an unrecognised value arriving
- * from a device is a **newer** device, not a broken one. Rejecting it would mean that appending a
- * fifth interval, an ordinary append to an append-only enum, broke every shipped reader. The strict
- * rule belongs to the one direction that must honour the value: a phone → device Config write, which
- * this host does not perform (see `client.writeConfig`, which sends what the caller supplies).
- *
- * `null` is its own state — specifically **not** `off` and **not** the default. Callers that need to
- * tell "absent" from "unrecognised" read the raw {@link DeviceConfig.weatherRefresh} beside this.
- */
-export function knownWeatherRefresh(raw: number | null): WeatherRefreshValue | null {
-    if (raw === null) return null;
-    return (Object.values(WeatherRefresh) as number[]).includes(raw) ? (raw as WeatherRefreshValue) : null;
+function encodeEntry(body: Uint8Array, at: number, entry: CatalogEntry): void {
+    const view = new DataView(body.buffer, body.byteOffset, body.byteLength);
+    view.setBigUint64(at, entry.objectId, true);
+    view.setBigUint64(at + 8, entry.revision, true);
+    view.setBigUint64(at + 16, entry.payloadLength, true);
+    view.setUint32(at + 24, entry.payloadCrc32, true);
+    view.setUint16(at + 28, entry.kind, true);
+    view.setUint16(at + 30, entry.flags, true);
+    encodeName(body, at + 32, at + 36, entry.displayName);
 }
 
-export function encodeConfig(c: DeviceConfig): Uint8Array {
-    const name = new TextEncoder().encode(c.name);
-    if (name.length > CONFIG_MAX_NAME) {
-        throw new RangeError(`device name is ${name.length} UTF-8 bytes, the cap is ${CONFIG_MAX_NAME}.`);
+/** §3.4's 24-byte response. */
+export function encodeStatusResponse(requestId: number, answer: StatusResponse): Uint8Array {
+    const body = new Uint8Array(24);
+    const view = new DataView(body.buffer);
+    body[0] = answer.state;
+    view.setBigUint64(4, answer.headRevision, true);
+    view.setBigUint64(12, answer.headPayloadLength, true);
+    view.setUint32(20, answer.headPayloadCrc32, true);
+    return encodeControl(Opcode.Status, Flags.Response, requestId, body);
+}
+
+/** §3.5's 24-byte response. */
+export function encodeGetResponse(requestId: number, answer: GetResponse): Uint8Array {
+    const body = new Uint8Array(24);
+    const view = new DataView(body.buffer);
+    view.setBigUint64(0, answer.revisionServed, true);
+    view.setBigUint64(8, answer.payloadLength, true);
+    view.setUint32(16, answer.payloadCrc32, true);
+    return encodeControl(Opcode.Get, Flags.Response, requestId, body);
+}
+
+/** §3.6's 32-byte response. */
+export function encodePutResponse(requestId: number, answer: PutResponse): Uint8Array {
+    const body = new Uint8Array(32);
+    const view = new DataView(body.buffer);
+    view.setBigUint64(0, answer.objectId, true);
+    view.setBigUint64(8, answer.revision, true);
+    view.setBigUint64(16, answer.payloadLength, true);
+    view.setUint32(24, answer.payloadCrc32, true);
+    return encodeControl(Opcode.Put, Flags.Response, requestId, body);
+}
+
+/** §3.7's 8-byte response: the new catalog commit sequence, and nothing else. */
+export function encodeRemoveResponse(requestId: number, commitSequence: bigint): Uint8Array {
+    const body = new Uint8Array(8);
+    new DataView(body.buffer).setBigUint64(0, commitSequence, true);
+    return encodeControl(Opcode.Remove, Flags.Response, requestId, body);
+}
+
+/** §3.8's 1-byte response: `0` cancelled, `1` no such transfer. */
+export function encodeCancelResponse(requestId: number, cancelled: boolean): Uint8Array {
+    return encodeControl(Opcode.Cancel, Flags.Response, requestId, new Uint8Array([cancelled ? 0 : 1]));
+}
+
+/** §4's 16-byte response. */
+export function encodeArmResponse(requestId: number, answer: ArmResponse): Uint8Array {
+    const body = new Uint8Array(16);
+    const view = new DataView(body.buffer);
+    view.setBigUint64(0, answer.rollbackObjectId, true);
+    view.setBigUint64(8, answer.commitSequence, true);
+    return encodeControl(Opcode.Arm, Flags.Response, requestId, body);
+}
+
+// --- the stream channel (§3.8) -----------------------------------------------------
+
+/** §3.8's 16-byte stream frame. */
+export interface StreamFrame {
+    readonly transferRequestId: number;
+    readonly offset: bigint;
+    readonly payloadLength: number;
+}
+
+/** One stream record: the 16-byte frame immediately followed by exactly `payload` bytes. */
+export function encodeStreamRecord(transferRequestId: number, offset: bigint, payload: Uint8Array): Uint8Array {
+    if (payload.length === 0 || payload.length > 0xffff) {
+        throw new RangeError(`a stream record carries 1..=65535 payload bytes, this one has ${payload.length}.`);
     }
-    const out = new Uint8Array(2 + name.length + 1 + (c.weatherRefresh === null ? 0 : 1));
-    new DataView(out.buffer).setUint16(0, name.length, true);
-    out.set(name, 2);
-    out[2 + name.length] = c.units;
-    if (c.weatherRefresh !== null) out[3 + name.length] = c.weatherRefresh;
+    const out = new Uint8Array(STREAM_HEADER_LEN + payload.length);
+    const view = new DataView(out.buffer);
+    view.setUint32(0, transferRequestId >>> 0, true);
+    view.setBigUint64(4, offset, true);
+    view.setUint16(12, payload.length, true);
+    out.set(payload, STREAM_HEADER_LEN);
     return out;
 }
 
-export function decodeConfig(data: Uint8Array): DeviceConfig {
-    if (data.length < 3 || data.length > CONFIG_MAX_ENCODED) {
-        throw new DecodeError("truncated", `Config blob is ${data.length} bytes, expected 3..=${CONFIG_MAX_ENCODED}.`);
-    }
-    const nameLen = viewOf(data).getUint16(0, true);
-    if (nameLen > CONFIG_MAX_NAME || 2 + nameLen + 1 > data.length) {
-        throw new DecodeError("truncated", `Config name_len ${nameLen} does not fit its ${data.length}-byte blob.`);
-    }
+/**
+ * Split one stream record into its frame and its payload, or `null`.
+ *
+ * `null` is §3.8's "a zero length, a length disagreeing with the record", plus a nonzero reserved
+ * field. A record this cannot split names no offset the receiver can trust, so there is nothing to
+ * answer with beyond terminating the transfer it claims to belong to.
+ */
+/**
+ * Why a §3.8 record could not be split — the three distinguishable ways it can be malformed.
+ *
+ * `splitStreamRecord` answers `null` for all three, which is all a caller needs: §3.8 gives a
+ * malformed stream record no answer of its own, it terminates the transfer. A *test* needs more,
+ * because three fixtures that each assert `toBeNull()` pass identically whether the codec refused
+ * them for the stated reason or for any other one — which is how a rejection can be right by
+ * accident. {@link streamRecordFault} is that discrimination, and it exists for the vector suite.
+ */
+export type StreamRecordFault =
+    /** Shorter than the 16-byte frame: there is not even a header to read. */
+    | "short"
+    /** Bytes 14..16 are §3.8's reserved zero and are not zero. */
+    | "reservedBits"
+    /** A zero payload length, which §3.8 forbids outright. */
+    | "zeroLength"
+    /** The declared payload length disagrees with the record that carried it. */
+    | "lengthMismatch";
+
+/** Which of {@link StreamRecordFault} a record trips, or `null` when it splits cleanly. */
+export function streamRecordFault(record: Uint8Array): StreamRecordFault | null {
+    if (record.length < STREAM_HEADER_LEN) return "short";
+    const view = viewOf(record);
+    if (view.getUint16(14, true) !== 0) return "reservedBits";
+    const payloadLength = view.getUint16(12, true);
+    if (payloadLength === 0) return "zeroLength";
+    if (record.length !== STREAM_HEADER_LEN + payloadLength) return "lengthMismatch";
+    return null;
+}
+
+export function splitStreamRecord(record: Uint8Array): { frame: StreamFrame; payload: Uint8Array } | null {
+    if (streamRecordFault(record) !== null) return null;
+    const view = viewOf(record);
+    const payloadLength = view.getUint16(12, true);
     return {
-        name: new TextDecoder().decode(data.subarray(2, 2 + nameLen)),
-        units: data[2 + nameLen],
-        weatherRefresh: data.length >= 4 + nameLen ? data[3 + nameLen] : null,
+        frame: {
+            transferRequestId: view.getUint32(0, true),
+            offset: view.getBigUint64(4, true),
+            payloadLength,
+        },
+        payload: record.subarray(STREAM_HEADER_LEN),
     };
 }
 
-// --- shared decode helpers ----------------------------------------------------
+// --- shared helpers ------------------------------------------------------------------
 
-/** A `DataView` over exactly the bytes of `data` — `subarray` keeps the parent buffer, so the
- *  offset and length have to be carried explicitly or every field read is off by the slice. */
+/**
+ * A `DataView` over exactly the bytes of `data` — `subarray` keeps the parent buffer, so the offset
+ * and length have to be carried explicitly or every field read is off by the slice.
+ *
+ * Exported because `objects.ts` and `device/route.ts` read object *payloads* with it: the payload
+ * codecs are not wire codecs, but they parse the same little-endian layouts and there is no reason
+ * for a second copy of this one line.
+ */
 export function viewOf(data: Uint8Array): DataView {
     return new DataView(data.buffer, data.byteOffset, data.byteLength);
 }
 
-function need(data: Uint8Array, len: number, what: string): void {
-    if (data.length < len) {
-        throw new DecodeError("truncated", `${what} is ${data.length} bytes, the layout needs ${len}.`);
+/**
+ * A `bigint` as a JS `number`, refusing anything `Number` would round.
+ *
+ * The narrowing exists for one honest case: a length that has to become a `Uint8Array` size or a
+ * progress figure. A payload above 2^53 bytes is not a number this client can carry, and it is also
+ * not a card that exists, so refusing is both correct and unreachable.
+ */
+export function toSafeNumber(value: bigint, what: string): number {
+    if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw new RangeError(`${what} is ${value}, beyond JavaScript's exact integer range.`);
     }
+    return Number(value);
 }
 
-function op(v: number): Op {
-    if (v !== Op.Upload && v !== Op.Download && v !== Op.Abort) {
-        throw new DecodeError("unknown-op", `transfer op ${v} is not upload (1), download (2) or abort (3).`);
+/** Lowercase hex, the form a `StoreId` is compared and logged in. */
+export function hex(bytes: Uint8Array): string {
+    let out = "";
+    for (const byte of bytes) out += byte.toString(16).padStart(2, "0");
+    return out;
+}
+
+/** The inverse, for an encoder handed a `StoreId` as text. */
+export function unhex(text: string, bytes: number): Uint8Array {
+    if (text.length !== bytes * 2) throw new RangeError(`expected ${bytes * 2} hex digits, got ${text.length}.`);
+    const out = new Uint8Array(bytes);
+    for (let i = 0; i < bytes; i++) {
+        const byte = Number.parseInt(text.slice(i * 2, i * 2 + 2), 16);
+        if (Number.isNaN(byte)) throw new RangeError(`"${text}" is not hex.`);
+        out[i] = byte;
     }
-    return v;
+    return out;
 }
 
-export function objectType(v: number): ObjectType {
-    if (!OBJECT_TYPES.has(v)) throw new DecodeError("unknown-type", `object type ${v} is unknown or reserved.`);
-    return v as ObjectType;
-}
-
-function transferStatus(v: number): TransferStatus {
-    if (!TRANSFER_STATUSES.has(v)) throw new DecodeError("unknown-status", `transfer status ${v} is unknown.`);
-    return v as TransferStatus;
-}
-
-function commandStatus(v: number): CommandStatus {
-    if (!COMMAND_STATUSES.has(v)) throw new DecodeError("unknown-status", `command status ${v} is unknown.`);
-    return v as CommandStatus;
+function isZero(bytes: Uint8Array): boolean {
+    for (const byte of bytes) if (byte !== 0) return false;
+    return true;
 }

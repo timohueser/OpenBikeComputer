@@ -16,8 +16,10 @@
 //! | Pair | Rule | Encoded as |
 //! |---|---|---|
 //! | render ⊥ nav | the map does not redraw while a planner run is live | [`MapQuiesced`] |
-//! | render ⊥ usb | a cable transfer shows the transfer screen, not the map | [`TransferReady`] |
-//! | nav ⊥ usb | no reroute while docked-transferring | [`TransferReady`] + the search arm on [`TransferGate`](crate::TransferGate) |
+//!
+//! There were three. `render ⊥ usb` and `nav ⊥ usb` guarded the arena's USB staging arm, and both
+//! went with it in FS7.5-c3b (#1420): protocol v4 writes each stream record straight to the card, so
+//! there is no third arm and nothing for those two rules to arbitrate.
 //!
 //! A gate that is merely *documented* is a gate that gets skipped, so each precondition is a token
 //! only its `prove` constructor can mint: [`claim_nav`](ArenaGate::claim_nav) cannot even be
@@ -49,8 +51,6 @@ pub enum ArenaOwner {
     Render,
     /// The nav block, held for a whole search (many frames).
     Nav,
-    /// The USB staging buffer, held for a whole cable transfer.
-    Usb,
 }
 
 /// Why a claim (or a release) was refused. The board maps this to a debug `panic!` and a release
@@ -83,23 +83,6 @@ impl MapQuiesced {
     /// [`App::nav_arena_precondition`](crate::App::nav_arena_precondition).
     pub fn prove(freeze_active: bool, base_draws_map: bool) -> Option<MapQuiesced> {
         (freeze_active || !base_draws_map).then_some(MapQuiesced(()))
-    }
-}
-
-/// Proof that a **cable transfer may take the arena**: the transfer screen is up (so no map render
-/// is coming) *and* no route search is running (whose nav arm the staging buffer would overwrite).
-/// The precondition on [`claim_usb`](ArenaGate::claim_usb).
-///
-/// The search half is the same fact the [`TransferGate`](crate::TransferGate) search arm arbitrates
-/// — read it from there ([`search_live`](crate::TransferGate::search_live)) rather than
-/// re-deriving it, so the control plane's `busy` answer and this claim can never disagree.
-#[derive(Debug, Clone, Copy)]
-pub struct TransferReady(());
-
-impl TransferReady {
-    /// Mint the proof, or `None` when the UI is not on the transfer screen or a search is live.
-    pub fn prove(transfer_screen_up: bool, search_live: bool) -> Option<TransferReady> {
-        (transfer_screen_up && !search_live).then_some(TransferReady(()))
     }
 }
 
@@ -159,7 +142,7 @@ impl ArenaGate {
     /// The only precondition is that the arena is free — which is the whole render ⊥ nav / render ⊥
     /// usb enforcement, and it needs no token because a live search or a live transfer *is* the
     /// holder. Two invariants ride on that: a search claims [`Nav`](ArenaOwner::Nav) for its whole
-    /// duration (not per step), and a transfer claims [`Usb`](ArenaOwner::Usb) for its whole
+    /// duration (not per step), and a render claims for its
     /// duration — so a frame that would draw a map while either runs is refused here rather than
     /// silently reading a half-written A* table as span records.
     ///
@@ -187,13 +170,6 @@ impl ArenaGate {
     /// table and its finished planner, which is state, not an empty arm.
     pub fn claim_nav(&mut self, _map_quiesced: MapQuiesced) -> Result<(), ArenaError> {
         self.take(ArenaOwner::Nav).map(|_| ())
-    }
-
-    /// Claim the arena for **USB staging**, for the whole transfer.
-    ///
-    /// Requires [`TransferReady`]: the transfer screen is up and no search is running.
-    pub fn claim_usb(&mut self, _transfer_ready: TransferReady) -> Result<(), ArenaError> {
-        self.take(ArenaOwner::Usb).map(|_| ())
     }
 
     /// Release the arena — **only** the arm that holds it. Releasing anything else is an
@@ -240,15 +216,6 @@ mod tests {
         );
     }
 
-    /// **The regression** the nav ⊥ usb arm exists for: a reroute started while the cable is
-    /// streaming (or a transfer armed mid-search) would hand two owners the same bytes.
-    #[test]
-    fn the_usb_precondition_needs_the_transfer_screen_and_no_search() {
-        assert!(TransferReady::prove(true, false).is_some(), "docked, transfer screen up, nothing planning");
-        assert!(TransferReady::prove(false, false).is_none(), "no transfer screen means a map render may still come");
-        assert!(TransferReady::prove(true, true).is_none(), "a live search owns the arena — the cable waits");
-    }
-
     #[test]
     fn a_fresh_gate_is_idle_and_a_render_may_take_it() {
         let mut gate = ArenaGate::new();
@@ -281,19 +248,6 @@ mod tests {
         assert_eq!(gate.claim_render(), Ok(ArenaInit::Required), "the frame after the answer renders normally");
     }
 
-    /// The render ⊥ usb half: browsing the map during a cable transfer is refused in the UI (the
-    /// transfer screen is up), and refused here too if the UI ever lets one through.
-    #[test]
-    fn a_live_transfer_refuses_render_and_nav_claims() {
-        let mut gate = ArenaGate::new();
-        let ready = TransferReady::prove(true, false).expect("docked with the transfer screen up");
-        assert_eq!(gate.claim_usb(ready), Ok(()));
-
-        assert_eq!(gate.claim_render(), Err(ArenaError::Busy(ArenaOwner::Usb)));
-        let quiesced = MapQuiesced::prove(true, true).expect("even a properly frozen map");
-        assert_eq!(gate.claim_nav(quiesced), Err(ArenaError::Busy(ArenaOwner::Usb)), "no reroute while docked");
-    }
-
     /// A render span is short but it is still a span: a search that started inside one (the answer
     /// to a plan the rider queued a frame earlier) must wait for the frame to finish.
     #[test]
@@ -303,8 +257,6 @@ mod tests {
 
         let quiesced = MapQuiesced::prove(true, true).unwrap();
         assert_eq!(gate.claim_nav(quiesced), Err(ArenaError::Busy(ArenaOwner::Render)));
-        let ready = TransferReady::prove(true, false).unwrap();
-        assert_eq!(gate.claim_usb(ready), Err(ArenaError::Busy(ArenaOwner::Render)));
     }
 
     /// Every arm re-initializes its buffers in place on claim, so a second claim by the *same* arm
@@ -328,7 +280,6 @@ mod tests {
         assert_eq!(gate.claim_nav(proof), Ok(()));
 
         assert_eq!(gate.release(ArenaOwner::Render), Err(ArenaError::NotHeld(ArenaOwner::Nav)));
-        assert_eq!(gate.release(ArenaOwner::Usb), Err(ArenaError::NotHeld(ArenaOwner::Nav)));
         assert_eq!(gate.owner(), ArenaOwner::Nav, "the search keeps the arena through both");
         assert_eq!(gate.release(ArenaOwner::Nav), Ok(()));
     }
@@ -361,15 +312,14 @@ mod tests {
             assert_eq!(gate.release(ArenaOwner::Render), Ok(()));
         }
 
-        for foreign in [ArenaOwner::Nav, ArenaOwner::Usb] {
-            match foreign {
-                ArenaOwner::Nav => assert_eq!(gate.claim_nav(MapQuiesced::prove(false, false).unwrap()), Ok(())),
-                _ => assert_eq!(gate.claim_usb(TransferReady::prove(true, false).unwrap()), Ok(())),
-            }
-            assert_eq!(gate.release(foreign), Ok(()));
-            assert_eq!(gate.claim_render(), Ok(ArenaInit::Required), "{foreign:?} left its own bytes behind");
-            assert_eq!(gate.release(ArenaOwner::Render), Ok(()));
-        }
+        // **The nav arm, and there is only one other arm to check.** This was a loop over every
+        // foreign owner while the USB staging arm existed; with two arms the loop is the nav case
+        // written awkwardly, so it is written plainly. If a third arm is ever added, this becomes a
+        // loop again — and the const assert in `arena.rs` is what will say so first.
+        assert_eq!(gate.claim_nav(MapQuiesced::prove(false, false).unwrap()), Ok(()));
+        assert_eq!(gate.release(ArenaOwner::Nav), Ok(()));
+        assert_eq!(gate.claim_render(), Ok(ArenaInit::Required), "the nav arm left its own bytes behind");
+        assert_eq!(gate.release(ArenaOwner::Render), Ok(()));
     }
 
     /// The full ride-loop cycle the on-glass soak walks: frames render, a reroute takes over, the
@@ -386,8 +336,6 @@ mod tests {
         assert_eq!(gate.release(ArenaOwner::Nav), Ok(()));
         assert_eq!(gate.claim_render(), Ok(ArenaInit::Required), "the search left its A* table in the block");
         assert_eq!(gate.release(ArenaOwner::Render), Ok(()));
-        assert_eq!(gate.claim_usb(TransferReady::prove(true, false).unwrap()), Ok(()));
-        assert_eq!(gate.release(ArenaOwner::Usb), Ok(()));
         assert!(gate.is_idle(), "every arm gave the arena back");
     }
 }

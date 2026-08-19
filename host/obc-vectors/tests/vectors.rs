@@ -430,57 +430,6 @@ fn upload_transcript_is_self_consistent() {
     assert_eq!(u32::from_le_bytes([result[4], result[5], result[6], result[7]]) as usize, route.len());
 }
 
-/// The **volume-set** descriptors (§4.1, #1039, #1044): the three new type bytes, the one field on
-/// this wire whose meaning is not an object id, and the manifest length that counts *records*.
-///
-/// `mapShard`'s `object_id` is a packed `(shard_count, index)` — count in the **high** byte — and
-/// that packing is exactly the kind of thing three implementations derive from prose and get
-/// mirrored. A fixture is cheaper than the bug: a host that reads it the other way round announces
-/// "shard 8 of 2" and is answered `notFound` with nothing to point at.
-///
-/// The manifest's `total_len` is the second such trap and it cost a whole class of upload (#1044):
-/// it is `72 + 56 × Shard Count`, and §5.2's `Shard Count` counts **every** record — the terrain one
-/// included. So the eight-shard set below announces nine records, and a device that derived the
-/// number from the shard count alone refused every terrain-bearing map at its last transfer.
-#[test]
-fn volume_set_descriptors_pin_the_part_packing() {
-    let route = fixture("route-waypoints.obcr");
-    let shard = fixture("transfer-set-shard.bin");
-    let terrain = fixture("transfer-set-terrain.bin");
-    let raster = fixture("terrain-shard.obcd");
-    let manifest = fixture("transfer-set-manifest.bin");
-
-    assert_eq!(shard.len(), 12, "no descriptor change — a set rides the same 12 bytes");
-    assert_eq!(shard[0], 1, "op = upload");
-    assert_eq!(shard[1], 17, "type = mapShard");
-    let part = u16::from_le_bytes([shard[2], shard[3]]);
-    assert_eq!(part, 0x0802);
-    assert_eq!(part >> 8, 8, "the high byte is the shard count");
-    assert_eq!(part & 0xFF, 2, "and the low byte is this shard's index");
-    assert_eq!(u32::from_le_bytes([shard[4], shard[5], shard[6], shard[7]]) as usize, route.len());
-    assert_eq!(u32::from_le_bytes([shard[8], shard[9], shard[10], shard[11]]), crc32(&route));
-
-    assert_eq!(terrain.len(), 12, "a raster rides the same 12 bytes too");
-    assert_eq!(terrain[0], 1, "op = upload");
-    assert_eq!(terrain[1], 19, "type = terrainShard");
-    assert_eq!(u16::from_le_bytes([terrain[2], terrain[3]]), 0xFFFF, "one raster per set — nothing to select");
-    assert_eq!(u32::from_le_bytes([terrain[4], terrain[5], terrain[6], terrain[7]]) as usize, raster.len());
-    assert_eq!(u32::from_le_bytes([terrain[8], terrain[9], terrain[10], terrain[11]]), crc32(&raster));
-
-    assert_eq!(manifest.len(), 12);
-    assert_eq!(manifest[0], 1, "op = upload");
-    assert_eq!(manifest[1], 18, "type = mapSet");
-    assert_eq!(u16::from_le_bytes([manifest[2], manifest[3]]), 0xFFFF, "the manifest is new-only");
-    let total_len = u32::from_le_bytes([manifest[4], manifest[5], manifest[6], manifest[7]]);
-    assert_eq!(total_len, 72 + 64 * 9, "eight OBCM shards plus the terrain record (OBCA §5.2)");
-    assert_eq!(total_len, obc_formats::obcs::manifest_len(9) as u32, "…as the format authority computes it");
-    assert_eq!(
-        total_len - obc_formats::obcs::manifest_len(8) as u32,
-        obc_formats::obcs::SHARD_RECORD_LEN as u32,
-        "the raster costs exactly one record — the #1044 mismatch, pinned"
-    );
-}
-
 /// Each ride object's length is fully determined by its header + version (spec §7.2).
 #[test]
 fn ride_vector_length_is_self_describing() {

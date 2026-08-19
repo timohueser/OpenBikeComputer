@@ -5,15 +5,18 @@ description: How the OpenBikeComputer device and its phone companion app talk ov
 
 # The companion link
 
-> This page describes the currently implemented legacy link while the coordinated **flat store**
-> cutover is under development. The replacement contract is
-> [`FLAT_Store_Protocol.md`](src:specs/FLAT_Store_Protocol.md) — wire major **4**, six
-> opcodes (`LIST`, `STATUS`, `GET`, `PUT`, `REMOVE`, `CANCEL`) plus `ARM` for a firmware install,
-> one transfer at a time, no resume and no operation ids: the card's catalog *is* the result, and
-> [`FLAT_Store_Format.md`](src:specs/FLAT_Store_Format.md) is what that catalog is made of. (An
-> earlier Device Object System v2 / wire-major-3 design once stood here; it was superseded before
-> it shipped and its specs are tombstoned.) There is no compatibility or dual-write path between
-> the two designs.
+> **Both of the device's links now speak the flat store's wire**, and this page has not caught up
+> everywhere. The contract is [`FLAT_Store_Protocol.md`](src:specs/FLAT_Store_Protocol.md) — wire
+> major **4**, six opcodes (`LIST`, `STATUS`, `GET`, `PUT`, `REMOVE`, `CANCEL`) plus `ARM` for a
+> firmware install, one transfer at a time, no resume and no operation ids: the card's catalog *is*
+> the result, and [`FLAT_Store_Format.md`](src:specs/FLAT_Store_Format.md) is what that catalog is
+> made of. The radio cut over in **FS7.5-c3a** and the cable in **FS7.5-c3b** (epic #1256), so the
+> object model, the descriptors and the status envelope described below are **history on both
+> wires** — read them for the reasoning, not for the bytes. What is still current is everything the
+> object surface never covered: the two-plane split, pairing, the sensor central role, and the
+> device-local behaviour a landed upload triggers. (An earlier Device Object System v2 /
+> wire-major-3 design once stood here too; it was superseded before it shipped and its specs are
+> tombstoned.) There is no compatibility or dual-write path between the designs.
 
 The device is a self-contained navigator, but a route is usually *planned* on a
 phone and a ride is worth keeping once it's ridden. A small **iOS companion app**
@@ -42,38 +45,54 @@ cover the design and the *why*. Five ideas run through all of it:
 - **One device → app channel.** Every message the device sends back — a transfer
   result, a store-change signal, a download's announce — rides a single `status`
   notify characteristic, so there is one subscription and one ordering domain.
+  (This is the one of the five that protocol v4 does not keep: it went further and
+  removed the unsolicited channel altogether. A transfer's outcome is the answer to
+  its own request, and a store movement is a commit sequence a client reads back
+  from `LIST`.)
 
-## The radio moved to protocol v4 — read this page with that in mind
+## Both links moved to protocol v4 — read this page with that in mind
 
-Since **FS7.5-c3a** (epic #1256) the **object surface on BLE is protocol v4**, the
-flat store's wire, and its normative contract is
-[`FLAT_Store_Protocol.md`](https://github.com/timohueser/OpenBikeComputer/blob/develop/specs/FLAT_Store_Protocol.md)
-— seven opcodes (`LIST`, `STATUS`, `GET`, `PUT`, `REMOVE`, `CANCEL`, `ARM`) over a
-16-byte framed control channel, with the payload on the same L2CAP CoC.
+The **object surface is protocol v4** on the radio since **FS7.5-c3a** and on the
+cable since **FS7.5-c3b** (epic #1256). Its normative contract is
+[`FLAT_Store_Protocol.md`](src:specs/FLAT_Store_Protocol.md) — seven opcodes
+(`LIST`, `STATUS`, `GET`, `PUT`, `REMOVE`, `CANCEL`, `ARM`) over a 16-byte framed
+control channel, with the payload on a second channel: the L2CAP CoC on BLE, the
+second bulk endpoint pair on USB. The frame bytes are the same on both.
 
 What that changes on this page, concretely:
 
-- The `transferControl` characteristic (`…0005`) is **retired on the radio**. Its
-  replacement is **`objectControl`** (`…0009`): one Write Request carries one
-  complete control frame, and one *confirmed indication* carries its response.
-  There is no 12-byte descriptor and no `transferResult`; a transfer is a `PUT`
-  or a `GET` and its own `RequestId`.
+- The `transferControl` characteristic (`…0005`) is **retired**, and so is its
+  USB twin. Its replacement on the radio is **`objectControl`** (`…0009`): one
+  Write Request carries one complete control frame, and one *confirmed
+  indication* carries its response. There is no 12-byte descriptor and no
+  `transferResult`; a transfer is a `PUT` or a `GET` and its own `RequestId`.
 - `protocolVersion` is **two bytes, `u16` = 4**. The widened
   `version · store_epoch · obcm_version · feature_bits` read is retired with the
   store epoch itself: a v4 client learns the card's identity and the freshness of
-  its cache from the `StoreId` every `LIST` page carries.
-- `command`, `status` and `config` are **unchanged** — they were never part of the
-  object surface, and they keep the contract
-  [`obc-ble-interface-spec.md`](https://github.com/timohueser/OpenBikeComputer/blob/develop/specs/obc-ble-interface-spec.md)
-  gives them.
-- **USB is still on v2** and still speaks the descriptor protocol this page
-  describes. The cable's cutover is gated on an open owner decision about where
-  its non-object control surface lives, so the two links genuinely disagree right
-  now — which is why the sections below are kept rather than rewritten.
+  its cache from the `StoreId` every `LIST` page carries. On the cable there is no
+  version read at all — the major is settled by descriptor matching
+  (`bInterfaceProtocol = 4`) before a record is exchanged.
+- **USB's control endpoint pair carries §3 control frames and nothing else.** The
+  leading selector byte described at the foot of this page is gone; each record is
+  a `record_length u16` and then the frame, and a record spans packets freely. The
+  one thing that is not a §3 frame — the firmware, hardware and serial strings a
+  host reads before it exchanges a record — moved to an **EP0 vendor request**,
+  which is where every USB device's identity already lives.
+- `command`, `status` and `config` are **unchanged on the radio** — they were never
+  part of the object surface, and they keep the contract
+  [`obc-ble-interface-spec.md`](src:specs/obc-ble-interface-spec.md) gives them.
+  **The cable no longer carries them.** Over USB a device now serves object
+  transfer and device information and nothing else, so route retention, ride
+  acknowledgement, clock setting, bond forgetting and the settings blob are
+  BLE-only. The two imperatives that acted on the store did not need a command
+  channel to survive: deleting an object is `REMOVE` and installing firmware is
+  `ARM`.
 
-The transfer walkthrough, the two plane diagrams and the store-epoch section below
-therefore describe **the cable today, and the radio before c3a**. They are
-rewritten when USB cuts over and the two links speak one wire again.
+The object table, the transfer walkthrough, the plane and sync-loop diagrams, the
+store-epoch section and the cable section at the foot of the page therefore
+describe **the link before the cutover**. They are kept because the reasoning
+still explains why the flat store is shaped as it is — not because a client can
+implement against them.
 
 ## Two planes: control and data
 
@@ -89,7 +108,7 @@ went*; the CoC carries *the bytes*.
   <defs>
     <marker id="cl-a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
-  <text class="d-tag" x="20" y="22">Two planes — control on GATT, bulk on L2CAP</text>
+  <text class="d-tag" x="20" y="22">Two planes — control on GATT, bulk on L2CAP (before protocol v4)</text>
 
   <!-- phone -->
   <rect class="d-panel" x="16" y="88" width="120" height="180" rx="12" />
@@ -135,15 +154,17 @@ RAM-limited microcontroller.
 
 It also buys something the design didn't set out to get. A channel with no
 framing of its own makes **no demands on what carries it** beyond "reliable and
-ordered" — and a USB bulk endpoint is exactly that. So the object model above,
-the 12-byte descriptor, the status envelope and the whole-object CRC-32 all
-transplant onto a cable without a byte changing: USB is a second *transport*, not
-a second protocol, and it reads the same
-[`specs/vectors/`](src:specs/vectors) fixtures. The host half lives in the
-web builder's [USB client](src:builder/app/src/lib/usb), which
-drives the whole contract over an in-memory device; the device half — the LM20's
-USB peripheral, and the small matter of which control characteristic a frame
-belongs to when there is no GATT to say so — is
+ordered" — and a USB bulk endpoint is exactly that. So the whole object surface
+transplants onto a cable: USB is a second *transport*, not a second protocol.
+That claim survived the v4 cutover intact and is now stated in the contract
+itself — [`FLAT_Store_Protocol.md`](src:specs/FLAT_Store_Protocol.md) §5 gives an
+adapter "record boundaries, pacing, timeouts, drain, and nothing else", and the
+frame bytes are identical on both links. What each transport adds is only what its
+own shape lacks: BLE's channels are already message-shaped, while a bulk endpoint
+is a byte pipe, so USB puts a `record_length u16` in front of every frame and a
+record spans as many packets as it needs. The host half lives in the web builder's
+[USB client](src:builder/app/src/lib/usb), which drives the whole contract over an
+in-memory device; the device half is
 [`obc-fw-nrf54l/src/usb/`](src:firmware/obc-fw-nrf54l/src/usb), and it ships in
 **every** firmware build rather than behind a flag. The plane now comes up on
 hardware, and the fix that got it there is worth knowing about: it must be built
@@ -181,8 +202,9 @@ changed: the card was the obvious ceiling while it was reached over SPI, and
 since the storage transport moved to native 4-bit sEMMC it writes at 8.2 MB/s raw,
 which is no longer obviously below what the cable delivers. What sits between the
 two is filesystem bookkeeping and how much of the pipeline can overlap — see the
-pipeline notes further down. How maps are named and enumerated on the card is the
-device side's answer to the same size, and it is worth its own section below.
+pipeline notes further down. How maps were named and enumerated on the card was the
+device side's answer to the same size; that answer is the flat store's now, and the
+section below records what it replaced.
 
 ## Objects are files the device already speaks
 
@@ -206,6 +228,17 @@ the type would have been dead weight until [a wire existed](#the-same-link-down-
 that could move one.
 
 ### A map is the one object that does not fit the pattern
+
+> **None of this is how a map lands any more, and the reason is worth a sentence
+> rather than a deletion.** Every rule below is a way of buying atomicity on a
+> filesystem that does not offer any, for a file too large to copy. The [flat
+> store](src:specs/FLAT_Store_Format.md) offers it directly: a commit is one
+> durable transition that makes new bytes visible and old bytes free in the same
+> instant, so a map is an ordinary `PUT` and the magic-last trick, the temp file,
+> the boot sweep and the new-only rule all have nothing left to do. The break rule
+> is the one that survives, because it was never about the filesystem —
+> [`FLAT_Store_Protocol.md`](src:specs/FLAT_Store_Protocol.md) §1 still refuses
+> resume, for the same reason and at the same price.
 
 Every other upload gets its atomicity the same way: the bytes stream into a temp
 file the catalog scans never match, and the commit *copies* that temp to its
@@ -259,14 +292,15 @@ Five more rules fall out of the same size:
   minutes over the cable, so the worst case is a second twenty minutes, not a
   lost afternoon.
 
-Because the FAT layer the firmware uses creates 8.3 filenames only, a received
-map lands as `MP7.OBM` — the same trick the [reserved computed-route
-file](../architecture/#on-device-routing-the-router-seam) plays with `.OBR`, and the
-same convention that puts a stored object's durable id in its filename. Which map
-the renderer streams from
-is recorded in a small file beside them, and a map that has just arrived becomes
-that choice; it takes effect at the next start-up, because the map's tables are
-parsed once at boot and held for the whole session.
+Because the FAT layer the firmware used creates 8.3 filenames only, a received map
+landed under a short name carrying its durable id — the same trick the [reserved
+computed-route file](../architecture/#on-device-routing-the-router-seam) plays with
+`.OBR`. Which map the renderer streamed from was recorded in a small file beside
+them, and a map that had just arrived became that choice, effective at the next
+start-up. The flat store keeps the *last* of those facts and drops the rest: there
+are no filenames on the card at all, an object is named by its `ObjectId`, and a
+map still takes effect at the next start-up because its tables are parsed once at
+boot and held for the whole session.
 
 The key move is that **a route on the wire is the same bytes as a route on the
 card.** The phone converts an imported GPX or TCX to an OBCR file and streams
@@ -310,7 +344,7 @@ over the CoC, confirm over GATT.** Here is an upload — a route leaving the pho
     <marker id="tf-a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
     <marker id="tf-c" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7.5" markerHeight="7.5" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
   </defs>
-  <text class="d-tag" x="20" y="22">One upload — announce · stream · confirm</text>
+  <text class="d-tag" x="20" y="22">One upload — announce · stream · confirm (before protocol v4)</text>
 
   <!-- actors -->
   <rect class="d-panel" x="80" y="40" width="140" height="34" rx="9" />
@@ -452,21 +486,24 @@ stages:
   wire.
 - **How much reaches the card per command.** Handing the filesystem 512 bytes
   makes it issue one single-block write — one whole internal program cycle of the
-  card — per packet. The firmware therefore stages arriving bytes in two **64 KiB
-  halves**, coalesces their adjacent FAT clusters, and hands the card one
-  128-block multi-write. One half fills from the cable while FLPR DMA writes the
-  other; ownership does not return to USB until that DMA has completed.
+  card — per packet, so what a transfer really wants is few large writes. On the
+  filesystem this was bought with a double buffer: two **64 KiB halves**, one
+  filling from the cable while DMA wrote the other into coalesced FAT clusters.
+  Under the flat store it is bought at the wire instead — a stream record carries
+  up to 4 KiB, exactly one card write, and the engine writes each record's aligned
+  prefix straight through. The staging buffer that remains is 512 bytes.
 - **Filesystem bookkeeping.** Extending a file by one cluster costs several
   single-block writes of the allocation table — and they land *between* the bulk
-  bursts, which is exactly where they hurt. An upload announces its length before
-  the first byte, so the whole chain can be reserved up front. A one-sector FAT
-  cache then absorbs the residual updates, and the card gets a best-effort
-  pre-erase hint before each long run.
+  bursts, which is exactly where they hurt. That stage is **gone rather than
+  optimised**: the flat store reserves an object's extents in one allocation and
+  its only durable write is the commit, so there is no allocation table to update
+  mid-transfer and nothing to interleave with the wire.
 
-The result measured on the LM20-DK is roughly **7.3–7.9 MB/s** for real builder
-output, versus about 2.0 MB/s for the original synchronous path with a software
-CRC pass. At that point the card and filesystem are again the visible ceiling,
-not USB framing or checksum work.
+The 7.3–7.9 MB/s once measured on the LM20-DK — against about 2.0 MB/s for the
+original synchronous path — belonged to the filesystem pipeline above and is **not
+carried forward**: it was measured with the map's checksum pass skipped, and the
+flat store's path folds a whole-payload CRC before every commit. The shape of the
+answer is unchanged, though: the card is the ceiling, not USB framing.
 
 ### When a route lands — the device's side
 
@@ -1091,23 +1128,41 @@ turns out to cost almost nothing — because of a decision made long before USB 
 on the table.
 
 Look again at what a transfer actually needs from its transport. The bulk plane
-needs a channel that is **reliable, ordered, and unframed**; that is exactly what
-principle two asks of the CoC, and exactly what a **USB bulk endpoint** is. So
-the object stream — descriptors, payload bytes, terminal result — crosses a
-cable with *no translation whatsoever*. The descriptor still carries the same
-whole-object CRC, but verification is policy rather than framing: routes, trips,
-firmware and BLE traffic keep the end-to-end pass; USB map files avoid doing the
-same serial work twice and lean on USB packet CRC/retry, the card's block CRC/ECC,
-the exact announced length, format validation and the magic-last commit. Same
-state machine, same fixtures, same bytes on the wire.
+needs a channel that is **reliable and ordered**; that is exactly what principle
+two asks of the CoC, and exactly what a **USB bulk endpoint** is. So the object
+stream crosses a cable with the same frame bytes it puts on the air, and the
+[protocol](src:specs/FLAT_Store_Protocol.md) says so in its own words: an adapter
+owns "record boundaries, pacing, timeouts, drain, and nothing else".
 
-Only the control plane needs anything at all, and it needs one byte. GATT gives
-each control message its own addressed characteristic, so "which message is
-this?" is answered by the transport rather than by any byte of ours. USB has one
-endpoint pair, so that routing becomes a leading **selector byte** — and the rest
-of the frame is the *exact* payload the matching characteristic would have
-carried. That is the whole delta. USB is a second **transport**, not a second
-protocol.
+What the cable adds is one field, and it is there because of the one way a bulk
+endpoint is *not* a CoC: an SDU is a message and a byte pipe is not, so a USB
+record is a `record_length u16` followed by exactly that many frame bytes. Packet
+boundaries carry no protocol meaning — a 4 KiB stream record simply spans nine of
+them. The ceilings are constants of the binding rather than a negotiation, because
+there is nothing on USB to derive one from: 4,112 bytes for a stream record (a
+16-byte frame plus 4,096 payload bytes — one whole card write), and 256 for a
+host→device control record, whose widest message is a 100-byte `PUT`.
+
+The **control plane** is where the two links used to differ most, and the
+difference is now smaller rather than larger. GATT gives each control message its
+own addressed characteristic, so "which message is this?" is answered by the
+transport; USB used to answer it with a leading selector byte in front of whatever
+the matching characteristic would have carried. Protocol v4 gives the whole
+control endpoint pair to object frames instead, and the selector is gone with the
+messages it addressed. The one thing left that is *not* an object frame — the
+firmware, hardware and serial strings a host reads before it exchanges a record —
+went to **EP0**, as a vendor control request, which is where every USB device's
+identity already lives. There is deliberately no identity read beside it: which
+protocol this device speaks is answered by descriptor matching before a record
+moves, and which store it is holding is answered by `LIST`, which every client
+issues first anyway.
+
+The rest of what the selector carried does not come back on this wire. Bond
+clearing, clock setting, retention and ride acknowledgement are device-local acts
+with no store meaning, so they keep the BLE characteristics they always had, and
+the two imperatives that *did* act on the store became opcodes: `REMOVE` and
+`ARM`. Over the cable a device serves object transfer and device information, and
+nothing else.
 
 Five consequences are worth naming, because they are what makes the wired path a
 real product rather than a demo:
@@ -1124,61 +1179,66 @@ real product rather than a demo:
   timer how things are, so a bike ridden all day with nothing plugged in spends
   no energy at all on the possibility of a cable. On a device running off a
   battery, "poll for the rare case" is a cost paid by every ride.
-- **The device keeps working while a map lands.** Storage is arbitrated behind
-  one async mutex, and each store call takes it only for its own duration — so
-  the ride loop's redraws interleave between chunks. This is why USB **Mass
+- **The device keeps working while a map lands.** Every card write goes through
+  the one storage task and takes the card **per command rather than per commit**,
+  so the ride loop's redraws interleave between records. This is why USB **Mass
   Storage** was rejected outright: handing a host raw block access would force
-  the firmware to release the card entirely (two filesystem writers is
-  corruption), and you would be back to a device that becomes a disk instead of
-  remaining a bike computer.
+  the firmware to release the card entirely (two writers is corruption), and you
+  would be back to a device that becomes a disk instead of remaining a bike
+  computer.
 - **A broken map cannot lock out its replacement.** If no map mounts at boot, the
-  fault screen stays visible but the device still brings up the USB plane and
-  grants it the upload arena. The builder can replace the unreadable map at full
-  speed; a successful reboot then returns to the normal ride application.
+  fault screen stays visible but the device still brings up the USB plane. The
+  builder can replace the unreadable map at full speed; a successful reboot then
+  returns to the normal ride application.
 - **One transfer at a time means one across *both* wires.** The gate is shared
-  rather than per-transport, because what it protects is the device's single
-  upload temp and open download source — not the wire. Start a transfer over the
-  cable while the phone is mid-upload and you get the same typed `busy` the phone
-  would get from another phone.
+  rather than per-transport, because there is one engine beside the card and it
+  serves exactly one `PUT` or `GET`. Start a transfer over the cable while the
+  phone is mid-upload and you get the same typed `busy` the phone would get from
+  another phone — carrying, as its context, the `RequestId` of the transfer that
+  is already live.
 - **A cancel has to reach the wire, not just the caller.** A browser cannot
   cancel a USB transfer it has already submitted, so it releases the *caller* and
-  lets the transfer settle into nothing — which is survivable only because an
-  interrupted exchange is always followed by a channel reset. A native host can
-  cancel for real, and must: after an abort the device stops sending by design,
-  so a read left waiting on it would hold the endpoint forever and the link would
-  be dead while still looking alive.
+  lets the transfer settle into nothing. That is survivable because a `CANCEL` is
+  a control request of its own and the abandoned `PUT` is answered `cancelled`
+  either way: the allocation is released, the catalog is untouched, and nothing
+  half-written is reachable. A native host can cancel for real, and should.
 
-The map builder uses one small USB-only read beside those shared objects: the
-device reports the mounted card's free-byte count from FAT32's cached FSInfo
-sector. Step 4 compares that number with the selected assembly plus its safety
-allowance before enabling Send; no guessed card capacity and no stale desktop
-setting stands in for the card that is actually connected.
+The card's free space is no longer a question a host asks in advance. The map
+builder used to read the mounted card's free-byte count from FAT32's cached
+FSInfo sector and compare it against the selected assembly before enabling Send;
+protocol v4 refuses capability discovery, so the question *"will this map fit"* is
+answered at the point of decision instead — a `PUT` that does not fit comes back
+`noSpace`, with the bytes required as its context. What a client can still know
+without trying is the catalog: `LIST` carries every object's payload length.
 
-A cell-built map then crosses as what it is: one object — one announce, one
-progress line, one commit, whatever the map weighs. What guarantees it arrived
-is the **whole-object CRC-32** the descriptor announces and the device checks
-before it commits; the page has nothing of its own to check a map against, which
-is the same position a rider's hand-picked `.obcm` is in.
+A cell-built map crosses as what it is: one object — one `PUT`, one progress line,
+one commit, whatever the map weighs. What guarantees it arrived is the
+**whole-payload CRC-32** the request declares and the device folds before it
+commits; the page has nothing of its own to check a map against, which is the same
+position a rider's hand-picked `.obcm` is in. That check now covers a map as it
+covers everything else — the wired path once skipped it for map-shaped objects and
+leaned on packet CRC, block ECC and a magic-last commit, and the flat store's
+single durable commit made that trade unnecessary.
 
 There is no assemble-and-send-in-one-motion path today: the builder saves the
 assembled file, and sending it is the ordinary file upload. The direct path is a
 real design — the map never touching the disk between the assembler and the card
-— and it returns with the board cutover, as a single-object `PUT` under protocol
-major 4 rather than as anything map-shaped.
+— and it is now a single-object `PUT` away rather than anything map-shaped.
 
 Everything else about the link is unchanged by the choice of wire: the same
-objects, the same restart-don't-resume rule, the same change signal, the same
-`status` ordering domain. Pairing is the one genuine exception — encryption and
-bonding are BLE mechanisms, and the cable's authentication is that someone is
-holding it.
+opcodes, the same one-transfer rule, the same refusal to resume. Pairing is the
+one genuine exception — encryption and bonding are BLE mechanisms, and the cable's
+authentication is that someone is holding it, with enumeration as the boundary.
 
 ## Where this lives
 
-- The wire contract, normative: [`obc-ble-interface-spec.md`](src:specs/obc-ble-interface-spec.md) (§10 is the USB binding)
-- The host-tested, radio-free core — descriptor codecs, CRC-32, the transfer state machine: [`obc-ble`](src:firmware/obc-ble) ([`transfer.rs`](src:firmware/obc-ble/src/transfer.rs) · [`descriptor.rs`](src:firmware/obc-ble/src/descriptor.rs))
-- On the device, shared by every transport — the command handler, descriptor classification, the identity blobs, the one object store, and the cross-transport transfer gate: [`obc-fw-nrf54l/src/link/`](src:firmware/obc-fw-nrf54l/src/link)
+- The object contract on both links, normative: [`FLAT_Store_Protocol.md`](src:specs/FLAT_Store_Protocol.md) (§5.1 binds it to BLE, §5.2 to USB) over the card contract [`FLAT_Store_Format.md`](src:specs/FLAT_Store_Format.md)
+- The radio's own contract — advertising, the GATT table, pairing, and the `command` / `status` / `config` characteristics: [`obc-ble-interface-spec.md`](src:specs/obc-ble-interface-spec.md) (its §10 USB binding is retired)
+- The host-tested, transport-free engine — frame codecs, the transfer state machine, the admission latch both adapters share: [`obc-link`](src:firmware/obc-link) (`flat/`)
+- The legacy radio-free codecs still serving the characteristics the object surface never covered: [`obc-ble`](src:firmware/obc-ble) ([`descriptor.rs`](src:firmware/obc-ble/src/descriptor.rs) · [`transfer.rs`](src:firmware/obc-ble/src/transfer.rs))
+- On the device, shared by every transport — the command handler, the identity blobs, and the on-glass transfer progress the engine feeds: [`obc-fw-nrf54l/src/link/`](src:firmware/obc-fw-nrf54l/src/link)
 - On the device — the GATT server, connection lifecycle, and the CoC data plane: [`obc-fw-nrf54l/src/ble/`](src:firmware/obc-fw-nrf54l/src/ble)
-- On the device — the USB vendor interface, the selector envelope, and the bulk object stream: [`obc-fw-nrf54l/src/usb/`](src:firmware/obc-fw-nrf54l/src/usb)
+- On the device — the USB vendor interface, §5.2's record framing, the v4 adapter, and the EP0 device-information request: [`obc-fw-nrf54l/src/usb/`](src:firmware/obc-fw-nrf54l/src/usb)
 - The central-role **sensor manager** — scan / connect / subscribe / decode / dispatch, the `SENSOR_LINKS` cap and its budget: [`obc-fw-nrf54l/src/ble/sensors.rs`](src:firmware/obc-fw-nrf54l/src/ble/sensors.rs)
 - The radio-free sensor profile codecs, the advertisement classifier, and the crank→rpm accumulator: [`obc-ble`](src:firmware/obc-ble) (`sensors.rs`)
 - The app-facing sensor mailboxes both the radio manager and the injection path feed — one instance-owned `SensorHub`, handed to each task at spawn: [`obc-platform/src/sensor_hub.rs`](src:firmware/obc-platform/src/sensor_hub.rs)

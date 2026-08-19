@@ -8,26 +8,19 @@
  */
 
 import { WebUsbWatcher, type WatcherOptions } from "./webusb";
-import type { DeviceSession, DeviceStatus, DeviceWatcher, LocalFileSource } from "./session";
-import type { ProtocolClient } from "./client";
-import type { VersionRead } from "./protocol";
-import type { DeviceInfo } from "./transport";
+import type { DeviceSession, DeviceStatus, DeviceWatcher, StoreIdentity } from "./session";
+import type { FlatStoreClient } from "./client";
+import type { DeviceInfo } from "./records";
 
 export class WatchedDeviceSession implements DeviceSession {
     status = $state<DeviceStatus>("idle");
-    client = $state<ProtocolClient | null>(null);
-    identity = $state<VersionRead | null>(null);
+    client = $state<FlatStoreClient | null>(null);
+    store = $state<StoreIdentity | null>(null);
     info = $state<DeviceInfo | null>(null);
     error = $state<string | null>(null);
 
     readonly transport: string;
     readonly supported: boolean;
-    /**
-     * Present exactly when the watcher has one, so the "is there a disk-to-endpoint path" question
-     * has a single answer and it is the transport's. Bound to the watcher rather than copied, so it
-     * keeps reading whichever link is open now.
-     */
-    readonly localFileSource?: LocalFileSource;
 
     private readonly watcher: DeviceWatcher;
     private readonly unsubscribe: () => void;
@@ -36,14 +29,12 @@ export class WatchedDeviceSession implements DeviceSession {
         this.watcher = watcher;
         this.transport = transport;
         this.supported = watcher.current.status !== "unsupported";
-        const local = watcher.localFileSource;
-        if (local) this.localFileSource = (path) => local.call(watcher, path);
         // `subscribe` fires immediately with the current snapshot, so the initial state is set here
         // rather than duplicated above.
         this.unsubscribe = watcher.subscribe((state) => {
             this.status = state.status;
             this.client = state.client;
-            this.identity = state.identity;
+            this.store = state.store;
             this.info = state.info;
             this.error = state.error;
         });

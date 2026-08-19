@@ -131,25 +131,16 @@ fn rides_index(app: tauri::AppHandle) -> rides::IndexView {
 
 /// Land one pulled ride durably, and **only then** resolve.
 ///
-/// Everything about this command is the interface spec's §4.4 rule that the desktop app acks
-/// *after* `fsync`, never on transfer completion: the frontend awaits this, and sends `ackRides`
-/// afterwards. A ride whose write failed rejects here, is absent from
-/// [`rides_ack_set`](rides_ack_set), and is therefore never flagged on the device — so the worst a
-/// power cut can cost is re-downloading a ride, which is the direction that does not lose one.
+/// It lands the bytes with `fsync` before it resolves, so a ride the frontend believes it has is a
+/// ride on this disk. A ride whose write failed rejects here, is absent from
+/// the durable index, so a power cut costs at worst a re-download — the direction that does not
+/// lose a ride.
 ///
 /// On the blocking pool because `fsync` genuinely blocks — that is the whole point of calling it.
 #[tauri::command]
 async fn rides_import(app: tauri::AppHandle, request: rides::ImportRequest) -> Result<rides::Imported, String> {
     let (library, _) = ride_library(&app);
     tauri::async_runtime::spawn_blocking(move || library.import(&request)).await.map_err(|e| e.to_string())?
-}
-
-/// The ride ids of one `(serial, epoch)` whose bytes are on this disk right now — the exact list
-/// the frontend acks. See [`rides::Library::durable_ids`] for why it is computed here and not from
-/// what the caller thinks it just wrote.
-#[tauri::command]
-fn rides_ack_set(app: tauri::AppHandle, serial: String, epoch: u32) -> Vec<u16> {
-    ride_library(&app).0.durable_ids(&serial, epoch)
 }
 
 /// The stored ride object of one key — what a GPX re-export decodes.
@@ -225,7 +216,6 @@ fn main() {
             // E2 (#912). The library is a folder plus an index; the ack follows `rides_import`.
             rides_index,
             rides_import,
-            rides_ack_set,
             rides_read,
             rides_write_gpx,
             rides_choose_folder,
@@ -238,8 +228,6 @@ fn main() {
             usb::usb_write,
             usb::usb_cancel,
             usb::usb_reset,
-            usb::usb_file_digest,
-            usb::usb_send_file,
         ])
         .run(tauri::generate_context!())
         .expect("run the OpenBikeComputer app");

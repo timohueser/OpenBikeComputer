@@ -8,8 +8,7 @@ import {
     DeviceThumbs,
     ThumbCache,
     memoryStorage,
-    rideFingerprint,
-    routeFingerprint,
+    entryFingerprint,
     thumbKey,
     thumbnailStorageFor,
     type Thumb,
@@ -58,12 +57,14 @@ describe("thumb keys", () => {
     });
 
     it("uses the route CRC and does not invent a missing fingerprint", () => {
-        expect(routeFingerprint({ crc32: 0xdeadbeef })).toBe(`c${0xdeadbeef}`);
-        expect(routeFingerprint({ crc32: 0 })).toBeNull();
+        expect(entryFingerprint({ payloadCrc32: 0xdeadbeef })).toBe(`c${0xdeadbeef}`);
+        // A ride the device is still recording declares a zero CRC (§3.5), and a null fingerprint is
+        // what keeps its half-written payload out of the durable cache.
+        expect(entryFingerprint({ payloadCrc32: 0 })).toBeNull();
     });
 
     it("fingerprints an immutable ride by start time and length", () => {
-        expect(rideFingerprint({ startTime: 1_700_000_000, byteLen: 4_242 })).toBe("t1700000000-l4242");
+        expect(entryFingerprint({ payloadCrc32: 4_242 })).toBe("c4242");
     });
 });
 

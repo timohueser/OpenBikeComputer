@@ -12,7 +12,8 @@
  *
  * 1. `idle` — no device. C4/C5 show a "Connect your OBC" button; clicking it calls
  *    {@link DeviceSession.requestDevice} from inside the gesture.
- * 2. `connecting` — a device was adopted or chosen; identity is being read.
+ * 2. `connecting` — a device was adopted or chosen; its descriptors are being matched against wire
+ *    major 4 and its catalog read.
  * 3. `ready` — {@link DeviceSession.client} is live. Writes and reads are available.
  * 4. `error` — {@link DeviceSession.error} is a sentence written for a rider.
  * 5. `unsupported` — no WebUSB in this browser. Not a failure to retry: the answer is the desktop
@@ -32,27 +33,11 @@
  * connect, not to decide whether the button is drawn.
  */
 
-import type { ObjectSource, ProtocolClient } from "./client";
-import type { VersionRead } from "./protocol";
-import type { DeviceInfo } from "./transport";
-import type { DeviceState, DeviceStatus } from "./webusb";
+import type { FlatStoreClient } from "./client";
+import type { DeviceInfo } from "./records";
+import type { DeviceState, DeviceStatus, StoreIdentity } from "./webusb";
 
-export type { DeviceState, DeviceStatus };
-
-/**
- * Turn a path on **this machine's** disk into an object the transport can send by itself.
- *
- * Present only where both halves of that sentence are true: the host has a filesystem, and the
- * process that owns the USB endpoint can read it. That is the desktop app and nothing else — the
- * implementation is `nativeFileSource` in `lib/desktop/usb.ts`, and the source it returns carries a
- * {@link ObjectSource.sendTo}, so the bytes go disk → endpoint inside Rust without passing through
- * the webview (D4 #909, E3 #913).
- *
- * The path is not a free choice: the backend refuses anything outside the folders the app itself
- * owns (`usb::sendable_path`). What a caller has, in practice, is the path of a map this app just
- * built — which is the whole point of the flow (#894: build a map, plug in, one click).
- */
-export type LocalFileSource = (path: string) => Promise<ObjectSource>;
+export type { DeviceState, DeviceStatus, StoreIdentity };
 
 /**
  * A connection to one device, followed over its lifetime.
@@ -67,9 +52,15 @@ export interface DeviceSession {
     readonly supported: boolean;
     readonly status: DeviceStatus;
     /** Non-null exactly when `status === "ready"`. */
-    readonly client: ProtocolClient | null;
-    /** The protocol version and store epoch, read on connect. Id-keyed state scopes to the epoch. */
-    readonly identity: VersionRead | null;
+    readonly client: FlatStoreClient | null;
+    /**
+     * The card's `StoreId` and commit sequence, from the `LIST` every connection issues (§3.3).
+     *
+     * Id-keyed state scopes to the `StoreId`: object ids are store-global and never reused *within*
+     * one card, but a re-initialized card mints a new identity and everything a client cached about
+     * the old one is void.
+     */
+    readonly store: StoreIdentity | null;
     /** The running firmware version, board id and serial — what "update available" compares to. */
     readonly info: DeviceInfo | null;
     readonly error: string | null;
@@ -88,17 +79,6 @@ export interface DeviceSession {
 
     /** Stop watching and release everything. */
     close(): Promise<void>;
-
-    /**
-     * Absent on a tier whose transport cannot reach the disk — which is every browser, because a
-     * page has no paths. See {@link LocalFileSource}.
-     *
-     * It hangs off the *session* rather than off `Platform` because the thing it needs is the open
-     * link: the backend addresses an endpoint by handle, and the handle changes every time a device
-     * is re-plugged. A module-level "current device" would be the same fact kept in a second place,
-     * free to disagree with this one.
-     */
-    readonly localFileSource?: LocalFileSource;
 }
 
 /**
@@ -114,6 +94,4 @@ export interface DeviceWatcher {
     requestDevice(): Promise<boolean>;
     disconnect(): Promise<void>;
     close(): Promise<void>;
-    /** Mirrored onto the session it backs. Absent on `WebUsbWatcher`. */
-    localFileSource?(path: string): Promise<ObjectSource>;
 }
