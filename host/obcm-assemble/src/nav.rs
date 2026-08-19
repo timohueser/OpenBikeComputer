@@ -141,7 +141,7 @@ use obc_formats::obcm::{
 };
 use obc_map_scene::ground_dist_m;
 
-use crate::emit::{align_up, filler_len, scaled, FILLER_RUN, SCALE};
+use crate::emit::{scaled, MapWriter, SCALE};
 use crate::extsort::{ExternalSort, SpillReader, SpillWriter};
 use crate::grid::{on_grid_boundary, UBox};
 use crate::input::Cell;
@@ -560,33 +560,140 @@ pub struct MergedNav {
     pub stats: NavStats,
 }
 
-/// Exact §8 section sizing before a shard is written. Alignment depends on the section's absolute
-/// file offset, so the projection carries the unpadded lengths and answers once the shard layout has
-/// placed the nav section. This preserves the assembler's "project exactly, then stream" invariant.
+/// Exact §8 section sizing before a shard is written: the section's **unpadded lengths**, from which
+/// [`NavLayout`] derives everything else. Alignment depends on the section's absolute file offset,
+/// so this answers once the shard layout has placed the section — which is what preserves the
+/// assembler's "project exactly, then stream" invariant.
 #[derive(Clone, Copy)]
 pub struct NavProjection {
-    base_len: u64,
-    prefix_len: u64,
+    profile_len: u64,
     index_len: u64,
+    chunk_bytes: u64,
+    pool_len: u64,
+    snap_index_len: u64,
+    snap_chunk_bytes: u64,
     populated: bool,
+    snap_populated: bool,
+}
+
+/// Where §8's regions and gaps fall inside its section, **relative to the section's own start**.
+///
+/// **This is the section's layout, and there is one of it.** The projection that sizes a map before
+/// the write and the write itself both read their numbers out of here, so §8.1's alignment
+/// arithmetic — which of two boundaries a run reconciles, and how long each gap is — exists once
+/// rather than once per direction. What [`serialize`] does with it is put bytes and pad by the named
+/// amounts; it reasons about no boundary of its own.
+///
+/// Relative rather than absolute because [`NavProjection::bytes_at`] is asked about deliberately
+/// absurd positions (a planner probing the ceiling), and only the section's position **inside a
+/// 512-byte sector** changes any answer here — both `nav_index_padding` and `align_up` divide 512.
+/// So the walk runs at the section's sector remainder and cannot overflow whatever it is asked.
+///
+/// **`obc-pack` writes the same section without a layout struct, and the asymmetry is deliberate.**
+/// Its `walk_nav_section` runs the *write* twice — once discarding, to resolve the directory — which
+/// is strictly stronger than this, because nothing carries a number between the passes and so no
+/// carrier can be wrong. It can afford that because its whole §8 body is resident in `Vec`s. This
+/// one's is not: the index, chunks and pool are read off a scratch seam and out of the source cells
+/// as they are written, so a second pass would re-read all of it and double the dominant I/O of an
+/// assembly. Hence one walk, and a struct to carry what it found.
+#[derive(Clone, Copy, Default)]
+struct NavLayout {
+    /// §1.2 filler between the 40-byte directory and the profile table it cannot otherwise name.
+    dir_gap: u64,
+    profile_table: u64,
+    /// §8.1's alignment run: the index on a unit boundary, its chunks on a sector.
+    index_pad: u64,
+    index: u64,
+    /// …and the rounding step between the index and the chunks behind it.
+    index_gap: u64,
+    edge_pool: u64,
+    snap_index_pad: u64,
+    snap_index: u64,
+    snap_gap: u64,
+    /// The section's total length.
+    end: u64,
 }
 
 impl NavProjection {
     pub fn bytes_at(self, section_offset: u64) -> u64 {
-        // Only the section's position inside a sector matters, because `nav_index_padding`'s answer
-        // is a function of `(unpadded + align_up(index_len)) mod 512` alone. Reducing before adding
-        // keeps even a deliberately absurd projection total from wrapping here; `ShardPlan::layout`
-        // remains the checked owner of the full-file arithmetic.
-        let sector = NAV_CHUNK_SIZE as u64;
-        let unpadded = section_offset % sector + self.prefix_len;
-        let pad = if self.populated {
-            nav_index_padding(SCALE, unpadded, self.index_len).expect("a nav index length never approaches u64::MAX")
-                as u64
-        } else {
-            0
-        };
-        self.base_len + pad
+        self.layout_at(section_offset).end
     }
+
+    /// Walk the section's shape with a cursor that writes nothing — the projection, computed by the
+    /// arithmetic that emits rather than by a second copy of it.
+    fn layout_at(self, section_offset: u64) -> NavLayout {
+        let start = section_offset % NAV_CHUNK_SIZE as u64;
+        crate::emit::place(start, |w| {
+            w.advance(NAV_DIR_LEN as u64);
+            let profile_table = w.begin_section()?;
+            let dir_gap = profile_table - (start + NAV_DIR_LEN as u64);
+            w.advance(self.profile_len);
+            if !self.populated {
+                // An empty graph is the directory, the always-present profile table, and the filler
+                // that puts the first unit boundary past it — where all three zero-length regions
+                // point, because a zero-length region still has to be nameable.
+                let end = w.begin_section()?;
+                let at = end - start;
+                return Ok(NavLayout {
+                    dir_gap,
+                    profile_table: profile_table - start,
+                    index: at,
+                    edge_pool: at,
+                    snap_index: at,
+                    end: at,
+                    ..NavLayout::default()
+                });
+            }
+            let index_pad = index_run(w.at(), self.index_len);
+            w.advance(index_pad);
+            let index = w.at();
+            w.advance(self.index_len);
+            let after_index = w.at();
+            let index_gap = w.begin_section()? - after_index;
+            w.advance(self.chunk_bytes);
+            let edge_pool = w.at();
+            w.advance(self.pool_len);
+            // A snap index of no nodes has no sector to reconcile: its region only has to be
+            // nameable. In practice the pool leaves the cursor on a sector and this run is empty.
+            let before_snap = w.at();
+            let snap_index_pad = if self.snap_populated {
+                let run = index_run(before_snap, self.snap_index_len);
+                w.advance(run);
+                run
+            } else {
+                w.begin_section()? - before_snap
+            };
+            let snap_index = w.at();
+            w.advance(self.snap_index_len);
+            let after_snap_index = w.at();
+            let snap_gap = w.begin_section()? - after_snap_index;
+            w.advance(self.snap_chunk_bytes);
+            Ok(NavLayout {
+                dir_gap,
+                profile_table: profile_table - start,
+                index_pad,
+                index: index - start,
+                index_gap,
+                edge_pool: edge_pool - start,
+                snap_index_pad,
+                snap_index: snap_index - start,
+                snap_gap,
+                end: w.at() - start,
+            })
+        })
+        .expect("a walk that writes nothing cannot fail")
+    }
+}
+
+/// §8.1's alignment run before a quadtree index of `index_len` bytes starting, unpadded, at `at`.
+///
+/// It reconciles two alignments at once — the index on a **unit** boundary (or no scaled offset
+/// could name it) and the fixed 512-byte chunks behind it on a **sector**, so a full-chunk read is
+/// one card command. The rounding step in `align_up(index_offset × U + node_count × 4, U)` is the
+/// slack that lets both hold for every node count.
+#[inline]
+fn index_run(at: u64, index_len: u64) -> u64 {
+    nav_index_padding(SCALE, at, index_len).expect("a nav index length never approaches u64::MAX") as u64
 }
 
 impl MergedNav {
@@ -594,46 +701,19 @@ impl MergedNav {
         self.node_count == 0
     }
 
-    /// Exact section-size projection. Every data chunk is padded to `NAV_CHUNK_SIZE`; the only
-    /// offset-dependent term is the §8.1 alignment run before a populated index, which lands the
-    /// node chunks on a sector.
-    ///
-    /// The v14 terms it now also carries are all §1.2 gaps whose length is a function of a *length*
-    /// rather than of a position, so they belong in `base_len` rather than in [`NavProjection::
-    /// bytes_at`]: the eight bytes behind the 40-byte directory, the rounding step between an index
-    /// and the chunks behind it, and — for an empty graph — the run that carries the profile table's
-    /// tail to a boundary the zero-length regions can be *named* at.
+    /// The section's unpadded lengths, from which [`NavProjection::bytes_at`] derives its exact
+    /// size and [`serialize`] its every gap. Every data chunk is padded to `NAV_CHUNK_SIZE`; the
+    /// §1.2 filler and §8.1's alignment runs are the layout's business, not this one's.
     pub fn projection(&self, profile_table: &[u8]) -> NavProjection {
-        // The section starts on a unit boundary, and 40 is not a multiple of one, so the profile
-        // table sits eight bytes behind the directory at `U = 16` (§8.1's worked example).
-        let dir_gap = filler_len(NAV_DIR_LEN as u64);
-        let prefix_len = NAV_DIR_LEN as u64 + dir_gap + profile_table.len() as u64;
-        if self.files.is_none() {
-            // An empty graph is the directory, the always-present profile table, and the filler that
-            // puts the first unit boundary past it — where all three zero-length regions point.
-            return NavProjection { base_len: align_up(prefix_len), prefix_len, index_len: 0, populated: false };
-        }
-        // Node chunks start sector-aligned. Their run and the edge pool are whole sectors, so the
-        // snap index starts aligned too and its padding depends only on its own width.
-        let snap_pad = if self.snap_node_count > 0 {
-            nav_index_padding(SCALE, 0, self.snap_index_len).expect("a snap index length never approaches u64::MAX")
-                as u64
-        } else {
-            0
-        };
         NavProjection {
-            base_len: prefix_len
-                + self.index_len
-                + filler_len(self.index_len)
-                + self.chunk_count as u64 * NAV_CHUNK_SIZE as u64
-                + self.pool_len
-                + snap_pad
-                + self.snap_index_len
-                + filler_len(self.snap_index_len)
-                + self.snap_chunk_count as u64 * NAV_CHUNK_SIZE as u64,
-            prefix_len,
+            profile_len: profile_table.len() as u64,
             index_len: self.index_len,
-            populated: true,
+            chunk_bytes: self.chunk_count as u64 * NAV_CHUNK_SIZE as u64,
+            pool_len: self.pool_len,
+            snap_index_len: self.snap_index_len,
+            snap_chunk_bytes: self.snap_chunk_count as u64 * NAV_CHUNK_SIZE as u64,
+            populated: self.files.is_some(),
+            snap_populated: self.snap_node_count > 0,
         }
     }
 
@@ -1670,81 +1750,46 @@ pub fn serialize(
     section_offset: usize,
     cells: &[&Cell<'_>],
     scratch: &dyn ScratchStore,
-    sink: &mut dyn FnMut(&[u8]) -> Result<()>,
+    w: &mut MapWriter<'_>,
 ) -> Result<()> {
+    let start = w.at();
+    debug_assert_eq!(start, section_offset as u64, "the cursor is where the layout placed the section");
+    let projection = nav.projection(profile_table);
+    // The one place §8's boundaries are decided; everything below puts bytes and pads by its
+    // numbers. `l`'s offsets are section-relative, so the absolute ones are `start + …`.
+    let l = projection.layout_at(start);
     let profile_count = profile_table.len() / obc_formats::obcm::NAV_PROFILE_LEN;
-    // 40 is not a multiple of `U`, so the profile table cannot be *named* at the directory's last
-    // byte: it starts at the first unit boundary past it, and the eight bytes between them are §1.2
-    // filler. That is the whole cost of scaling in this section (§8.1).
-    let dir_gap = filler_len(NAV_DIR_LEN as u64) as usize;
-    let profile_table_offset = section_offset + NAV_DIR_LEN + dir_gap;
-    let unpadded_index_offset = profile_table_offset + profile_table.len();
-    // `nav_index_padding` reconciles §8.1's two alignments — the index on a unit boundary (or no
-    // scaled offset could name it) and the fixed 512-byte chunks behind it on a sector — and the
-    // rounding step in `align_up(index_offset × U + node_count × 4, U)` is the slack that lets both
-    // hold for every node count.
-    let index_pad = if nav.files.is_some() {
-        nav_index_padding(SCALE, unpadded_index_offset as u64, nav.index_len)
-            .ok_or_else(|| Error::Capacity("the nav index length does not fit the §8.1 alignment".into()))?
-    } else {
-        0
-    };
-    let index_offset = unpadded_index_offset + index_pad;
-    // Post-ceiling, every section offset and length fits `u32`, so the `usize` narrowing here is
-    // exact on every host.
-    let index_gap = filler_len(nav.index_len) as usize;
-    let node_chunks_offset = index_offset + nav.index_len as usize + index_gap;
-    let edge_pool_offset = node_chunks_offset + nav.chunk_count as usize * NAV_CHUNK_SIZE;
     let edge_chunk_count = (nav.pool_len / NAV_CHUNK_SIZE as u64) as u32;
-    let unpadded_snap_index_offset = edge_pool_offset + nav.pool_len as usize;
-    let snap_index_pad = if nav.snap_node_count > 0 {
-        nav_index_padding(SCALE, unpadded_snap_index_offset as u64, nav.snap_index_len)
-            .ok_or_else(|| Error::Capacity("the snap index length does not fit the §8.1 alignment".into()))?
-    } else {
-        filler_len(unpadded_snap_index_offset as u64) as usize
-    };
-    let snap_index_offset = unpadded_snap_index_offset + snap_index_pad;
-    let snap_gap = filler_len(nav.snap_index_len) as usize;
-
-    let mut written = 0usize;
-    let mut out = |buf: &[u8]| -> Result<()> {
-        written += buf.len();
-        sink(buf)
-    };
 
     // A zero-length region still has to be **nameable**, so an empty graph points all three of its
-    // offsets at the first unit boundary past the profile table rather than at its last byte.
-    let empty_at = align_up(unpadded_index_offset as u64) as usize;
-    let (index_at, edge_at, snap_at) = match nav.files {
-        Some(_) => (index_offset, edge_pool_offset, snap_index_offset),
-        None => (empty_at, empty_at, empty_at),
-    };
+    // offsets at the first unit boundary past the profile table rather than at its last byte — which
+    // is what the layout put in `index`/`edge_pool`/`snap_index` for it.
     let mut dir = Vec::with_capacity(NAV_DIR_LEN);
-    dir.extend_from_slice(&scaled(index_at as u64)?.to_le_bytes());
+    dir.extend_from_slice(&scaled(start + l.index)?.to_le_bytes());
     dir.extend_from_slice(&nav.node_count.to_le_bytes());
     dir.extend_from_slice(&nav.chunk_count.to_le_bytes());
-    dir.extend_from_slice(&scaled(edge_at as u64)?.to_le_bytes());
+    dir.extend_from_slice(&scaled(start + l.edge_pool)?.to_le_bytes());
     dir.extend_from_slice(&edge_chunk_count.to_le_bytes());
     dir.extend_from_slice(&(NAV_CHUNK_SIZE as u16).to_le_bytes());
-    dir.extend_from_slice(&scaled(profile_table_offset as u64)?.to_le_bytes());
+    dir.extend_from_slice(&scaled(start + l.profile_table)?.to_le_bytes());
     dir.push(profile_count as u8);
     dir.push(0); // reserved — a field, so `0`, unlike a gap
-    dir.extend_from_slice(&scaled(snap_at as u64)?.to_le_bytes());
+    dir.extend_from_slice(&scaled(start + l.snap_index)?.to_le_bytes());
     dir.extend_from_slice(&nav.snap_node_count.to_le_bytes());
     dir.extend_from_slice(&nav.snap_chunk_count.to_le_bytes());
     debug_assert_eq!(dir.len(), NAV_DIR_LEN);
-    out(&dir)?;
-    out(&FILLER_RUN[..dir_gap])?;
-    out(profile_table)?;
+    w.put(&dir)?;
+    w.pad(l.dir_gap)?;
+    w.put(profile_table)?;
     let Some(files) = &nav.files else {
         // The empty pair a non-core shard carries (§5.1): the directory and the profile table are
         // the whole section, plus the filler that carries it to the boundary the three zero-length
         // regions are named at.
-        out(&FILLER_RUN[..empty_at - unpadded_index_offset])?;
-        debug_assert_eq!(written as u64, nav.projection(profile_table).bytes_at(section_offset as u64));
+        w.begin_section()?;
+        debug_assert_eq!(w.at() - start, l.end);
         return Ok(());
     };
-    out(&FILLER_RUN[..index_pad])?;
+    w.pad(l.index_pad)?;
     // The §8.2 index is already in wire form on the seam, so it is a copy through one block buffer.
     let mut block = vec![0u8; nav.read_budget.clamp(NAV_CHUNK_SIZE, 1 << 20)];
     let mut at = 0u64;
@@ -1752,11 +1797,11 @@ pub fn serialize(
     while at < end {
         let want = block.len().min((end - at) as usize);
         scratch.read_at(files.index, at, &mut block[..want])?;
-        out(&block[..want])?;
+        w.put(&block[..want])?;
         at += want as u64;
     }
-    out(&FILLER_RUN[..index_gap])?;
-    emit_tree_chunks(nav.chunk_count, nav.read_budget, files.places, files.points, files.recs, scratch, &mut out)?;
+    w.pad(l.index_gap)?;
+    emit_tree_chunks(nav.chunk_count, nav.read_budget, files.places, files.points, files.recs, scratch, w)?;
 
     // The pool, record by record. `pad` is §8.3's `0xFF` sentinel run — the bytes a record's chunk
     // gets instead of a record that would straddle it — and `rec` is the one buffer every record is
@@ -1768,10 +1813,10 @@ pub fn serialize(
         let r = pool_ref(&r?);
         let len = r.len as usize;
         // The same rule the layout used, so the padding lands exactly where the `Edge Id`s say.
-        let start = place(at, len as u64);
-        if start > at {
-            out(&pad[..(start - at) as usize])?;
-            at = start;
+        let placed = place(at, len as u64);
+        if placed > at {
+            w.put(&pad[..(placed - at) as usize])?;
+            at = placed;
         }
         // The layout named a cell by its index in the list the merge read. Handing a different list
         // to the write would produce a file full of plausible-looking wrong polylines, so it is a
@@ -1786,35 +1831,27 @@ pub fn serialize(
         })?;
         let buf = &mut rec[..len];
         cell.read_into(cell.nav.edge_pool_offset + u64::from(r.off), buf)?;
-        out(buf)?;
+        w.put(buf)?;
         at += len as u64;
     }
     // §8.1 measures the pool in whole chunks, so the tail pads out to one.
     if at < nav.pool_len {
         // `pad` is `[0xFF; 512]`; the remainder is at most one chunk by construction.
-        out(&pad[..(nav.pool_len - at) as usize])?;
+        w.put(&pad[..(nav.pool_len - at) as usize])?;
     }
-    out(&FILLER_RUN[..snap_index_pad])?;
+    w.pad(l.snap_index_pad)?;
     if let Some(snap) = &files.snap {
         let mut at = 0u64;
         while at < nav.snap_index_len {
             let want = block.len().min((nav.snap_index_len - at) as usize);
             scratch.read_at(snap.index, at, &mut block[..want])?;
-            out(&block[..want])?;
+            w.put(&block[..want])?;
             at += want as u64;
         }
-        out(&FILLER_RUN[..snap_gap])?;
-        emit_tree_chunks(
-            nav.snap_chunk_count,
-            nav.read_budget,
-            snap.places,
-            snap.points,
-            snap.recs,
-            scratch,
-            &mut out,
-        )?;
+        w.pad(l.snap_gap)?;
+        emit_tree_chunks(nav.snap_chunk_count, nav.read_budget, snap.places, snap.points, snap.recs, scratch, w)?;
     }
-    debug_assert_eq!(written as u64, nav.projection(profile_table).bytes_at(section_offset as u64));
+    debug_assert_eq!(w.at() - start, l.end, "the projection is the write");
     Ok(())
 }
 
@@ -1833,21 +1870,21 @@ fn emit_tree_chunks(
     points: ScratchId,
     recs: ScratchId,
     scratch: &dyn ScratchStore,
-    out: &mut dyn FnMut(&[u8]) -> Result<()>,
+    w: &mut MapWriter<'_>,
 ) -> Result<()> {
     let mut chunk: Vec<u8> = Vec::with_capacity(NAV_CHUNK_SIZE);
     let mut rec = [0u8; NAV_CHUNK_SIZE];
     let mut current = 0u32;
-    let flush = |chunk: &mut Vec<u8>, out: &mut dyn FnMut(&[u8]) -> Result<()>| -> Result<()> {
+    let flush = |chunk: &mut Vec<u8>, w: &mut MapWriter<'_>| -> Result<()> {
         chunk.resize(NAV_CHUNK_SIZE, CHUNK_END);
-        out(chunk)?;
+        w.put(chunk)?;
         chunk.clear();
         Ok(())
     };
     for p in SpillReader::<{ qtree::PLACE_REC }>::open(scratch, places, read_budget)? {
         let p = p?;
         while current < qtree::place_chunk(&p) {
-            flush(&mut chunk, out)?;
+            flush(&mut chunk, w)?;
             current += 1;
         }
         debug_assert_eq!(chunk.len(), qtree::place_at(&p) as usize, "the plan and the write disagree about a leaf");
@@ -1862,7 +1899,7 @@ fn emit_tree_chunks(
         }
     }
     if chunk_count > 0 {
-        flush(&mut chunk, out)?;
+        flush(&mut chunk, w)?;
         debug_assert_eq!(current + 1, chunk_count, "every chunk is opened by a leaf");
     }
     Ok(())
@@ -1897,19 +1934,40 @@ mod tests {
     ///
     /// The v14 arithmetic reserves `align_up(index_len, U)` rather than `index_len` — that rounding
     /// slack is what lets the index start on a **unit** boundary while the chunks behind it start on
-    /// a **sector** one — so a four-byte index at prefix 84 now takes 412 bytes of run where v13
-    /// took 424, and lands the index twelve bytes below the sector instead of exactly on it.
+    /// a **sector** one — so a four-byte index at prefix 84 takes 412 bytes of run where v13 took
+    /// 424, and lands the index twelve bytes below the sector instead of exactly on it.
+    ///
+    /// `u64::MAX - 511` is not a position any map reaches; it is there because the layout walk runs
+    /// at the section's **sector remainder**, and a walk that ran at the absolute offset would
+    /// overflow before it answered.
     #[test]
     fn projection_alignment_depends_only_on_the_sector_remainder() {
-        let projection = NavProjection { base_len: 1_000, prefix_len: 84, index_len: 4, populated: true };
-        assert_eq!(projection.bytes_at(0), 1_412);
-        assert_eq!(projection.bytes_at(512), 1_412);
-        assert_eq!(projection.bytes_at(u64::MAX - 511), 1_412);
-        assert_eq!(NavProjection { populated: false, ..projection }.bytes_at(u64::MAX), 1_000);
+        // A 36-byte profile table puts the prefix at 40 + 8 + 36 = 84, the offset the run below is
+        // stated for; one sector of node chunks and one of edge pool behind it.
+        let projection = NavProjection {
+            profile_len: 36,
+            index_len: 4,
+            chunk_bytes: NAV_CHUNK_SIZE as u64,
+            pool_len: NAV_CHUNK_SIZE as u64,
+            snap_index_len: 0,
+            snap_chunk_bytes: 0,
+            populated: true,
+            snap_populated: false,
+        };
+        // 84 prefix + 412 run + 4 index + 12 gap + 512 chunks + 512 pool.
+        assert_eq!(projection.bytes_at(0), 1_536);
+        assert_eq!(projection.bytes_at(512), 1_536);
+        assert_eq!(projection.bytes_at(u64::MAX - 511), 1_536);
+        // An empty graph is the directory, the profile table, and the run to the boundary its three
+        // zero-length regions are named at.
+        assert_eq!(NavProjection { populated: false, ..projection }.bytes_at(u64::MAX - 511), 96);
+
         // The two properties the run buys, at the offset the numbers above are stated for.
-        let index_at = 84 + 412;
-        assert_eq!(index_at % SCALE.unit(), 0, "the index starts on a unit boundary");
-        assert_eq!(align_up(index_at + 4) % NAV_CHUNK_SIZE as u64, 0, "…and its chunks on a sector");
+        let l = projection.layout_at(0);
+        assert_eq!((l.index_pad, l.index), (412, 84 + 412));
+        assert_eq!(l.index % SCALE.unit(), 0, "the index starts on a unit boundary");
+        assert_eq!(crate::emit::align_up(l.index + 4) % NAV_CHUNK_SIZE as u64, 0, "…and its chunks on a sector");
+        assert_eq!(l.index_gap, 12, "twelve bytes below the sector, not on it");
     }
 
     /// **The budget sweep.** Every whole-merge fixture goes through here rather than calling
@@ -1957,7 +2015,7 @@ mod tests {
         /// rounding step between the index and the chunks.
         fn chunks(&self) -> &[u8] {
             let word = |at: usize| u32::from_le_bytes(self.section[at..at + 4].try_into().unwrap()) as u64;
-            let data_start = align_up(word(0) * SCALE.unit() + word(4) * 4) as usize;
+            let data_start = crate::emit::align_up(word(0) * SCALE.unit() + word(4) * 4) as usize;
             &self.section[data_start..][..word(8) as usize * NAV_CHUNK_SIZE]
         }
     }
@@ -1971,11 +2029,14 @@ mod tests {
         scratch: &dyn ScratchStore,
     ) -> Vec<u8> {
         let mut out = Vec::new();
-        serialize(nav, profile_table, section_offset, cells, scratch, &mut |b: &[u8]| {
-            out.extend_from_slice(b);
-            Ok(())
-        })
-        .expect("the section serializes");
+        {
+            let mut sink = |b: &[u8]| -> Result<()> {
+                out.extend_from_slice(b);
+                Ok(())
+            };
+            let mut w = MapWriter::new(SCALE, section_offset as u64, &mut sink);
+            serialize(nav, profile_table, section_offset, cells, scratch, &mut w).expect("the section serializes");
+        }
         out
     }
 
@@ -2033,7 +2094,11 @@ mod tests {
         let past = AT + 48 + profiles.len();
         for (field, what) in [(0usize, "node index"), (12, "edge pool"), (28, "snap index")] {
             let at = u32::from_le_bytes(bytes[field..field + 4].try_into().unwrap()) as usize * unit;
-            assert_eq!(at, align_up(past as u64) as usize, "the {what}'s zero-length region is still nameable");
+            assert_eq!(
+                at,
+                crate::emit::align_up(past as u64) as usize,
+                "the {what}'s zero-length region is still nameable"
+            );
         }
 
         // --- the gaps, as bytes ---
@@ -2181,7 +2246,8 @@ mod tests {
         let src = vec![0u8; SRC_POOL_AT + NAV_CHUNK_SIZE];
         let slice = obc_formats::io::SliceSource(&src);
         let cell = pool_cell(&slice, 1);
-        let err = serialize(&nav, &[], 0, &[&cell], &scratch, &mut |_: &[u8]| Ok(()))
+        let mut discard = |_: &[u8]| -> Result<()> { Ok(()) };
+        let err = serialize(&nav, &[], 0, &[&cell], &scratch, &mut MapWriter::new(SCALE, 0, &mut discard))
             .expect_err("cell 1 was not handed over");
         assert!(format!("{err}").contains("not the cell list"), "got: {err}");
     }

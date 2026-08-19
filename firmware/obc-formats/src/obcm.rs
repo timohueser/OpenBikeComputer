@@ -183,6 +183,113 @@ impl ScaledOffset {
     }
 }
 
+// --- §1.2 unit-boundary writing -----------------------------------------------
+
+/// One run of [`FILLER`], long enough for any single §1.2 gap a producer emits.
+///
+/// The longest is §8.1's alignment run, which lands the fixed 512-byte nav chunks on a sector; a
+/// section boundary's own gap is at most `U − 1 ≤ 511`. So one 512-byte run covers both, and no
+/// producer ever allocates a gap.
+pub const FILLER_RUN: [u8; 512] = [FILLER; 512];
+
+/// A file position that only moves by writing, and that knows where the next §1.2 unit boundary is.
+///
+/// Every structure a header or directory offset reaches begins on one (§1.2), which used to be a
+/// discipline: each boundary was an `align_up` of a hand-carried cursor, a `resize`/`write` of that
+/// many [`FILLER`] bytes, and a `scaled()` of the result — three steps that had to agree, at every
+/// boundary, in every writer. [`begin_section`](Self::begin_section) is those three steps as one
+/// call, and the cursor it advances is the same one the bytes went through, so the position a field
+/// names and the position the bytes landed at cannot drift apart.
+///
+/// **The sink is a closure, so a writer that discards its bytes still moves the cursor.** That is
+/// how a producer *projects* a layout with the code that *emits* it, rather than with a second copy
+/// of the arithmetic: hand [`new`](Self::new) a sink that ignores what it is given and read
+/// [`at`](Self::at) at the end. A projection that disagrees with the write is then not a bug that
+/// tests catch — it is a program that does not exist.
+///
+/// The `scale` travels with the cursor for the reason it travels inside a [`ScaledOffset`]: an
+/// assembler holds several files' offsets at once, and a boundary in one file's unit is not a
+/// boundary in another's.
+pub struct UnitWriter<'a, E> {
+    at: u64,
+    scale: OffsetScale,
+    sink: &'a mut dyn FnMut(&[u8]) -> Result<(), E>,
+}
+
+impl<'a, E> UnitWriter<'a, E> {
+    /// A cursor at byte `at` of the file `sink` receives, counting `scale`'s units.
+    ///
+    /// `at` need not be a boundary: a section writer starts its cursor at the absolute byte its
+    /// caller placed it, and §1.2's whole point is that the boundary is found rather than assumed.
+    #[inline]
+    pub fn new(scale: OffsetScale, at: u64, sink: &'a mut dyn FnMut(&[u8]) -> Result<(), E>) -> UnitWriter<'a, E> {
+        UnitWriter { at, scale, sink }
+    }
+
+    /// The byte the next write lands on.
+    #[inline]
+    pub const fn at(&self) -> u64 {
+        self.at
+    }
+
+    /// The unit every offset this writer's file stores counts (§1.1).
+    #[inline]
+    pub const fn scale(&self) -> OffsetScale {
+        self.scale
+    }
+
+    /// Append `bytes`, advancing the cursor by their length.
+    #[inline]
+    pub fn put(&mut self, bytes: &[u8]) -> Result<(), E> {
+        (self.sink)(bytes)?;
+        self.at += bytes.len() as u64;
+        Ok(())
+    }
+
+    /// Append `len` bytes of §1.2 [`FILLER`]. Used where a gap's length is computed rather than
+    /// found — §8.1's alignment run, whose size answers to a sector as well as to a unit.
+    pub fn pad(&mut self, len: u64) -> Result<(), E> {
+        let mut left = len;
+        while left > 0 {
+            let run = if left > FILLER_RUN.len() as u64 { FILLER_RUN.len() } else { left as usize };
+            self.put(&FILLER_RUN[..run])?;
+            left -= run as u64;
+        }
+        Ok(())
+    }
+
+    /// Move the cursor past `len` bytes **without writing them**.
+    ///
+    /// **This is a projection's tool and a writer must never reach for it.** A layout walked over a
+    /// discarding sink still has to account for bodies it is not holding — a nav section's chunk run
+    /// is gigabytes that live on a scratch seam, and padding past them one [`FILLER_RUN`] at a time
+    /// to learn where the next boundary falls would be millions of no-op calls to answer a question
+    /// about arithmetic. This is that arithmetic.
+    ///
+    /// The hazard is exactly what it looks like — a writer that skips instead of putting emits a
+    /// file with a hole where the cursor says there are bytes — so a producer using this type is
+    /// expected to check the bytes its sink actually received against the position it ended at. In
+    /// this tree the map writer does, and it is a refusal rather than an assertion.
+    #[inline]
+    pub fn advance(&mut self, len: u64) {
+        self.at += len;
+    }
+
+    /// Start a structure a scaled offset names: pad to the next unit boundary with [`FILLER`] and
+    /// return that boundary's **byte** offset.
+    ///
+    /// The return value is a byte offset rather than a [`ScaledOffset`] because a producer past the
+    /// interior its scale addresses (§1.1) is a refusal each writer words for its own reader — the
+    /// packer panics on a layout bug, the browser engine returns a capacity error. Pairing this with
+    /// that crate's own `scaled()` keeps the policy where it belongs and still makes the boundary
+    /// impossible to skip: the value handed to it is the aligned cursor, never the raw one.
+    pub fn begin_section(&mut self) -> Result<u64, E> {
+        let boundary = self.scale.align_up(self.at).expect("a layout cursor never approaches u64::MAX");
+        self.pad(boundary - self.at)?;
+        Ok(boundary)
+    }
+}
+
 // --- §8.4 edge addressing -----------------------------------------------------
 
 /// Bits of an `Edge Id` naming the record's ordinal within its chunk (§8.4). The remaining 27 name
@@ -560,6 +667,140 @@ mod tests {
         // …nor one past the `uint32` field's reach.
         assert!(scale.scaled(1 << 36).is_none());
         assert_eq!(scale.scaled((1u64 << 36) - 16).map(ScaledOffset::units), Some(u32::MAX));
+    }
+
+    /// The three steps a §1.2 boundary used to be — round the cursor up, write that many `0xFF`, and
+    /// scale the *rounded* value — are one call, and this is the proof that it is all three.
+    ///
+    /// The pin that matters is the last of the three: the offset a field stores names the byte the
+    /// bytes actually landed on, because there is no longer a spelling in which it could name the
+    /// unrounded one.
+    #[test]
+    fn begin_section_pads_the_gap_and_names_the_boundary_it_reached() {
+        let mut out: std::vec::Vec<u8> = std::vec::Vec::new();
+        let boundary = {
+            let mut sink = |bytes: &[u8]| -> Result<(), core::convert::Infallible> {
+                out.extend_from_slice(bytes);
+                Ok(())
+            };
+            let mut w = UnitWriter::new(OffsetScale::DEFAULT, 0, &mut sink);
+            w.put(&[0u8; HEADER_LEN]).unwrap();
+            assert_eq!(w.at(), 49);
+            let boundary = w.begin_section().unwrap();
+            assert_eq!(w.at(), boundary, "the cursor is the boundary it just reached");
+            w.put(b"style").unwrap();
+            // …and a cursor already on a boundary writes no filler at all.
+            assert_eq!(w.at(), 69);
+            let next = w.begin_section().unwrap();
+            assert_eq!(next, 80);
+            assert_eq!(w.begin_section().unwrap(), 80, "a second call at a boundary is a no-op");
+            boundary
+        };
+        assert_eq!(boundary, 64, "§1.2: the style table is the first unit boundary past the 49-byte header");
+        assert_eq!(OffsetScale::DEFAULT.scaled(boundary).map(ScaledOffset::units), Some(4), "…which is `4` in units");
+        assert_eq!(&out[49..64], &[FILLER; 15], "the gap is the format's one fill byte");
+        assert_eq!(&out[69..80], &[FILLER; 11]);
+        assert_eq!(out.len(), 80);
+    }
+
+    /// A writer over a sink that keeps nothing still moves its cursor, which is how a producer
+    /// *projects* a layout with the code that *emits* it.
+    #[test]
+    fn a_discarding_sink_still_advances_the_cursor() {
+        let mut discard = |_: &[u8]| -> Result<(), core::convert::Infallible> { Ok(()) };
+        let mut w = UnitWriter::new(OffsetScale::DEFAULT, 0, &mut discard);
+        w.put(&[0u8; HEADER_LEN]).unwrap();
+        w.begin_section().unwrap();
+        w.pad(3).unwrap();
+        assert_eq!(w.at(), 67, "49 rounded to 64, then three bytes of a computed run");
+        // §8.1's alignment run is a whole sector, which one `FILLER_RUN` covers without allocating.
+        w.pad(512).unwrap();
+        assert_eq!(w.at(), 579);
+    }
+
+    /// [`UnitWriter::pad`] must be able to exceed one [`FILLER_RUN`]. No §1.2 gap does today — the
+    /// longest is a sector — so the loop that makes it possible is otherwise unreached, and an
+    /// off-by-one in it would sit unseen until the day a caller needed a longer run.
+    #[test]
+    fn pad_spans_more_than_one_filler_run() {
+        let mut out: std::vec::Vec<u8> = std::vec::Vec::new();
+        {
+            let mut sink = |bytes: &[u8]| -> Result<(), core::convert::Infallible> {
+                out.extend_from_slice(bytes);
+                Ok(())
+            };
+            let mut w = UnitWriter::new(OffsetScale::DEFAULT, 0, &mut sink);
+            w.pad(1_500).unwrap();
+            assert_eq!(w.at(), 1_500);
+            w.pad(0).unwrap();
+            assert_eq!(w.at(), 1_500, "an empty run writes nothing and moves nothing");
+        }
+        assert_eq!(out.len(), 1_500, "1500 = 512 + 512 + 476, and the last run is the remainder");
+        assert!(out.iter().all(|&b| b == FILLER));
+    }
+
+    /// [`UnitWriter::advance`] is the one method that moves the cursor **without** writing, and the
+    /// one a writer must never reach for. Two properties, both stated here because the type cannot
+    /// enforce either: it moves exactly `n` and hands the sink nothing, and a walk that advances
+    /// past its bodies lands on the same byte as the walk that writes them — which is the whole
+    /// reason a projection may use it.
+    #[test]
+    fn advance_moves_the_cursor_by_exactly_its_length_and_writes_nothing() {
+        // One script, run twice: once putting real bodies, once advancing past them. The boundaries
+        // between them are found the same way both times.
+        let bodies: [&[u8]; 3] = [&[1u8; 49], &[2u8; 7], &[3u8; 600]];
+        let walk = |w: &mut UnitWriter<'_, core::convert::Infallible>, write: bool| {
+            for body in bodies {
+                if write {
+                    w.put(body).unwrap();
+                } else {
+                    w.advance(body.len() as u64);
+                }
+                w.begin_section().unwrap();
+            }
+            w.at()
+        };
+
+        let mut written: std::vec::Vec<u8> = std::vec::Vec::new();
+        let emitted_at = {
+            let mut sink = |bytes: &[u8]| -> Result<(), core::convert::Infallible> {
+                written.extend_from_slice(bytes);
+                Ok(())
+            };
+            walk(&mut UnitWriter::new(OffsetScale::DEFAULT, 96, &mut sink), true)
+        };
+
+        let mut skipped: std::vec::Vec<u8> = std::vec::Vec::new();
+        let projected_at = {
+            let mut sink = |bytes: &[u8]| -> Result<(), core::convert::Infallible> {
+                skipped.extend_from_slice(bytes);
+                Ok(())
+            };
+            walk(&mut UnitWriter::new(OffsetScale::DEFAULT, 96, &mut sink), false)
+        };
+
+        assert_eq!(emitted_at, projected_at, "the projection lands on the byte the write ends at");
+        assert_eq!(written.len(), (emitted_at - 96) as usize, "the write delivered every byte it moved over");
+        // …and the projection delivered only the filler, which is the hole a writer would leave.
+        assert_eq!(skipped.len(), written.len() - bodies.iter().map(|b| b.len()).sum::<usize>());
+        assert!(skipped.iter().all(|&b| b == FILLER));
+
+        // The bare property, without a script around it.
+        let mut discard = |_: &[u8]| -> Result<(), core::convert::Infallible> { panic!("advance writes nothing") };
+        let mut w = UnitWriter::new(OffsetScale::DEFAULT, 7, &mut discard);
+        w.advance(0);
+        assert_eq!(w.at(), 7);
+        w.advance(3_000_000_000);
+        assert_eq!(w.at(), 3_000_000_007, "and it is `u64` arithmetic, not a loop over a buffer");
+    }
+
+    /// The filler run must cover the longest single gap the format can ask for: `U − 1` at the
+    /// largest legal scale, which is also §8.1's 512-byte alignment run.
+    #[test]
+    fn one_filler_run_covers_every_gap_the_format_can_ask_for() {
+        const _: () = assert!(FILLER_RUN.len() as u64 == 1 << OFFSET_SCALE_MAX);
+        const _: () = assert!(FILLER_RUN.len() == NAV_CHUNK_SIZE);
+        assert!(FILLER_RUN.iter().all(|&b| b == FILLER));
     }
 
     #[test]
