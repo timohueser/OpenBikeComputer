@@ -13,18 +13,25 @@ from tools.bench_ingest import (
     HEADER_BYTES,
     KINDS,
     MAGIC,
+    REASON_COMMIT,
+    REASON_LINK,
+    REASON_PAYLOAD_CRC,
     RESULT_BYTES,
+    RETRIABLE,
     STATUS_ACK,
     STATUS_NAK,
     TAG_DONE,
     TAG_FAIL,
+    TAG_GONE,
     TAG_HEADER,
     TAG_READY,
     VERSION,
+    DeviceGone,
     IngestError,
     Link,
     LinkTimeout,
     Result,
+    RetriableError,
     await_ready,
     chunk_plan,
     crc32,
@@ -45,16 +52,42 @@ class FakeDevice(Link):
     catch before a commit.
     """
 
-    def __init__(self, chunk=4096, capacity=1 << 20, corrupt_at=None):
+    def __init__(
+        self,
+        chunk=4096,
+        capacity=1 << 20,
+        corrupt_at=None,
+        header_fault=False,
+        nak_chunk=None,
+        nak_reason=REASON_LINK,
+        commit_fails=False,
+    ):
         self.chunk = chunk
         self.capacity = capacity
         self.corrupt_at = corrupt_at
+        # `header_fault` is the device's own read deadline expiring on the header; `nak_chunk` is the
+        # same thing (or a refused store write) at a chunk boundary. Both are NAKs the real device
+        # sends and neither existed in the first round of these tests.
+        self.header_fault = header_fault
+        self.nak_chunk = nak_chunk
+        self.nak_reason = nak_reason
+        self.commit_fails = commit_fails
         self.tx = bytearray()
         self.committed = []
         self.next_id = 1
         self.events = []
         self.refusals = []
+        self.stopped = False
         self._reset()
+
+    def gone(self, reason):
+        """The frame the device sends on every exit path."""
+        frame = bytearray(ready_frame(0))
+        frame[5] = TAG_GONE
+        frame[6:10] = reason.to_bytes(4, "little")
+        frame[10:14] = crc32(bytes(frame[:10])).to_bytes(4, "little")
+        self.tx += frame
+        self.events.append("gone")
 
     def _reset(self):
         self.state = "magic"
@@ -63,6 +96,7 @@ class FakeDevice(Link):
         self.payload = bytearray()
         self.plan = []
         self.received = 0
+        self.chunk_index = 0
 
     # ── the Link face the host drives ──────────────────────────────────────────────────────────
 
@@ -71,16 +105,13 @@ class FakeDevice(Link):
             self._byte(byte)
 
     def read_exact(self, count, timeout):
-        if len(self.tx) < count and self.state == "magic":
+        if len(self.tx) < count and self.state == "magic" and not self.stopped:
             self.tx += ready_frame(self.chunk)
             self.events.append("ready")
         if len(self.tx) < count:
             raise LinkTimeout(f"the fake device has {len(self.tx)} bytes, not {count}")
         out, self.tx = bytes(self.tx[:count]), self.tx[count:]
         return out
-
-    def drain(self):
-        self.tx.clear()
 
     def close(self):
         pass
@@ -109,8 +140,14 @@ class FakeDevice(Link):
             self.payload.append(byte)
             self.received += 1
             if self.received == self.plan[0]:
+                # A chunk landed. The device either acks it or refuses here — a store that would not
+                # take it (reason 8) or its own read deadline having expired (reason 11).
+                if self.chunk_index == self.nak_chunk:
+                    self._nak(self.nak_reason)
+                    return
                 self.plan.pop(0)
                 self.received = 0
+                self.chunk_index += 1
                 self._ack()
                 if not self.plan:
                     self._finish()
@@ -125,6 +162,9 @@ class FakeDevice(Link):
         self._reset()
 
     def _header(self, frame):
+        if self.header_fault:
+            # The device's own read of the header did not complete before its deadline.
+            return self._nak(REASON_LINK)
         if frame[4] != VERSION or frame[5] != TAG_HEADER:
             return self._nak(1)
         if int.from_bytes(frame[68:72], "little") != crc32(frame[:68]):
@@ -157,7 +197,15 @@ class FakeDevice(Link):
         got = crc32(bytes(self.payload))
         if got != self.want_crc:
             # The reservation is cancelled, so nothing is committed and no id is consumed.
-            self._result(TAG_FAIL, 9, 0, 0, len(self.payload), got, 0)
+            self._result(TAG_FAIL, REASON_PAYLOAD_CRC, 0, 0, len(self.payload), got, 0)
+        elif self.commit_fails:
+            # The one failure that does not clean up after itself: the Allocation went into the
+            # commit by value, so the reservation stays held and the device ends the session.
+            self._result(TAG_FAIL, REASON_COMMIT, 0, 0, len(self.payload), got, 0)
+            self._reset()
+            self.stopped = True
+            self.gone(3)
+            return
         else:
             object_id = self.next_id
             self.next_id += 1
@@ -367,6 +415,115 @@ class Transfer(unittest.TestCase):
         seen = []
         send(device, KINDS["map"], "map", self.payload(3000), progress=lambda done, total: seen.append((done, total)))
         self.assertEqual(seen, [(1024, 3000), (2048, 3000), (3000, 3000)])
+
+
+class Refusals(unittest.TestCase):
+    """The unhappy paths. On a one-shot board session these are the product."""
+
+    def payload(self, length=4096):
+        return bytes((index * 7 + 11) & 0xFF for index in range(length))
+
+    def test_a_device_side_link_fault_mid_payload_is_retriable(self):
+        # Reason 11 is the likeliest mid-transfer failure there is — the device's own chunk deadline
+        # expiring. If it does not raise RetriableError, `--attempts` does not cover the one thing it
+        # exists for, and a manual re-run has to land inside a ten-second window.
+        device = FakeDevice(chunk=1024, nak_chunk=2, nak_reason=REASON_LINK)
+        with self.assertRaises(RetriableError):
+            send(device, KINDS["map"], "map", self.payload())
+        self.assertEqual(device.refusals, [REASON_LINK])
+        self.assertEqual(device.committed, [])
+
+    def test_a_refused_chunk_is_not_retriable(self):
+        # Reason 8 is the store refusing the write. Sending the same bytes again will not change it.
+        device = FakeDevice(chunk=1024, nak_chunk=1, nak_reason=8)
+        with self.assertRaises(IngestError) as caught:
+            send(device, KINDS["map"], "map", self.payload())
+        self.assertNotIsInstance(caught.exception, RetriableError)
+        self.assertEqual(device.refusals, [8])
+
+    def test_a_header_timeout_is_retriable(self):
+        device = FakeDevice(chunk=1024, header_fault=True)
+        with self.assertRaises(RetriableError):
+            send(device, KINDS["map"], "map", self.payload())
+        self.assertEqual(device.refusals, [REASON_LINK])
+
+    def test_a_link_fault_retried_the_way_main_does_it_succeeds(self):
+        device = FakeDevice(chunk=1024, nak_chunk=2, nak_reason=REASON_LINK)
+        with self.assertRaises(RetriableError):
+            send(device, KINDS["map"], "map", self.payload())
+        device.nak_chunk = None
+        result = send(device, KINDS["map"], "map", self.payload())
+        self.assertTrue(result.ok)
+        self.assertEqual(result.object_id, 1, "the cancelled attempt must not consume an ObjectId")
+        self.assertEqual(len(device.committed), 1)
+
+    def test_a_refused_commit_reports_reason_10_and_ends_the_session(self):
+        # The Allocation went into the commit by value, so the extents stay held until a remount and
+        # the device stops listening. The host must not retry into that.
+        device = FakeDevice(chunk=1024, commit_fails=True)
+        result = send(device, KINDS["map"], "map", self.payload())
+        self.assertFalse(result.ok)
+        self.assertEqual(result.reason, REASON_COMMIT)
+        self.assertNotIn(REASON_COMMIT, RETRIABLE)
+        self.assertEqual(device.committed, [])
+        # And the next attempt is told why rather than waiting out its timeout.
+        with self.assertRaises(DeviceGone) as caught:
+            send(device, KINDS["map"], "map", self.payload(), wait=0.2)
+        self.assertEqual(caught.exception.reason, 3)
+
+    def test_the_retriable_set_is_exactly_the_self_cleaning_failures(self):
+        self.assertEqual(RETRIABLE, frozenset({REASON_PAYLOAD_CRC, REASON_LINK}))
+
+
+class Gone(unittest.TestCase):
+    def test_a_gone_frame_ends_the_wait_with_its_reason(self):
+        device = FakeDevice()
+        device.stopped = True
+        device.gone(2)
+        with self.assertRaises(DeviceGone) as caught:
+            await_ready(device, wait=5.0)
+        self.assertEqual(caught.exception.reason, 2)
+        self.assertIn("session is over", str(caught.exception))
+
+    def test_the_window_closing_warns_that_the_card_is_being_wiped(self):
+        device = FakeDevice()
+        device.stopped = True
+        device.gone(1)
+        with self.assertRaises(DeviceGone) as caught:
+            await_ready(device, wait=5.0)
+        self.assertIn("DESTRUCTIVE", str(caught.exception))
+
+    def test_an_erroring_line_points_at_the_baud(self):
+        device = FakeDevice()
+        device.stopped = True
+        device.gone(4)
+        with self.assertRaisesRegex(DeviceGone, "--baud"):
+            await_ready(device, wait=5.0)
+
+    def test_a_damaged_advertisement_does_not_end_the_wait(self):
+        # One bad CRC is a glitched byte, not an absent board: the next advertisement is 500 ms away.
+        broken = bytearray(ready_frame(2048))
+        broken[7] ^= 0xFF
+        link = ScriptedLink(bytes(broken) + ready_frame(2048))
+        self.assertEqual(await_ready(link, wait=5.0), 2048)
+
+    def test_a_foreign_wire_version_is_named(self):
+        frame = bytearray(ready_frame(2048))
+        frame[4] = 9
+        frame[10:14] = crc32(bytes(frame[:10])).to_bytes(4, "little")
+        link = ScriptedLink(bytes(frame) + ready_frame(2048))
+        # Not fatal in the scan — it keeps looking — but `parse_ready` names it for a direct caller.
+        with self.assertRaisesRegex(IngestError, "version 9"):
+            parse_ready(bytes(frame))
+
+    def test_result_rejects_a_foreign_wire_version(self):
+        device = FakeDevice()
+        device._result(TAG_DONE, 0, 7, 1, 100, 0xDEAD, 3)
+        frame = bytearray(device.tx)
+        frame[4] = 9
+        frame[38:42] = crc32(bytes(frame[:38])).to_bytes(4, "little")
+        with self.assertRaisesRegex(IngestError, "version 9"):
+            parse_result(bytes(frame))
 
 
 if __name__ == "__main__":

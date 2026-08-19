@@ -77,9 +77,15 @@
 //! | Frame | Dir | Bytes | Layout |
 //! | :-- | :-- | --: | :-- |
 //! | READY | D→H | 14 | magic, version, `'R'`, chunk size `u32`, CRC over `0..10` |
+//! | GONE | D→H | 14 | magic, version, `'G'`, reason `u32` ([`gone`]), CRC over `0..10` |
 //! | HEADER | H→D | 72 | magic, version, `'H'`, kind (§3.1), name len, payload len `u64`, payload CRC `u32`, 48-byte zero-padded name, CRC over `0..68` |
 //! | STATUS | D→H | 2 | `0x06` ACK / `0x15` NAK, then a reason byte ([`reason`]) |
 //! | RESULT | D→H | 42 | magic, version, `'D'`/`'E'`, reason, pad, `ObjectId` `u64`, `Revision` `u64`, payload len `u64`, device-computed CRC `u32`, entry count `u16`, CRC over `0..38` |
+//!
+//! GONE is READY's shape with another tag, so a host blocked waiting for a READY decodes it with the
+//! code it already has. Every path out of the ingest sends one, including the path into the
+//! destructive measurement run — a host that arrived a second late learns that from the device
+//! rather than from a timeout it has to attribute itself.
 //!
 //! READY repeats about twice a second, and **only after the line has been quiet** for one interval,
 //! so an advertisement can never land on top of a host's burst. A STATUS answers the HEADER and
@@ -88,9 +94,24 @@
 //! one full but the last, both sides computing the same lengths, so no chunk carries a length field.
 //! Each chunk is acked *after* it is in the reservation, which is what paces the host: there is no
 //! flow control on this cable and none is gambled on. The device folds its own CRC as it goes and
-//! compares it with the header's **before** committing; a mismatch cancels the reservation, so a bad
-//! transfer publishes nothing and leaves no extents held. A retry is simply the next HEADER: the
-//! cancelled attempt freed its extents and a fresh put draws a new `ObjectId`.
+//! compares it with the header's **before** committing, which is the last moment it still holds the
+//! `Allocation`: a mismatch, a link fault or a refused chunk all `cancel`, so the attempt publishes
+//! nothing, gives its extents back, and the next HEADER is a fresh put with a new `ObjectId`.
+//!
+//! **One failure is not like the others.** A refused *commit* has already taken the `Allocation` by
+//! value, and §5.5 clears the reservation row only once its gate write lands — so those extents stay
+//! held with nothing left to cancel them, and only a remount frees them. `MAX_RESERVATIONS` is 2, so
+//! a session that carried on would wedge on its third object. The device therefore **ends the
+//! session** after a commit refusal and says so on both the wire and RTT: reset, and the mount
+//! reclaims.
+//!
+//! ## When it refuses to fall through
+//!
+//! A window that ends with the UARTE reporting errors is **not** a quiet line, and the bench will not
+//! run the measurements after one. Something is transmitting bytes this device cannot decode — a
+//! baud mismatch is by far the likeliest — which means a host is probably at the other end believing
+//! it is sending a map, and phase one would destroy the card it is aimed at. The RTT log names the
+//! configured baud so the mismatch is one line to spot.
 //!
 //! ## The board session
 //!
@@ -100,24 +121,32 @@
 //!     --file "$(python3 tools/fixtures.py resolve monaco-upahead | awk '/^map/ {print $2}')" \
 //!     --kind map --name monaco.obcm
 //!
-//! # 2. flash + run the bench (a second shell). NOT `cargo run --verify` — broken on this rig.
+//! # 2. flash + run the bench (a second shell). The committed runner already carries `--verify`.
+//! pkill probe-rs
 //! cd firmware/obc-fw-nrf54l
-//! cargo build --release --bin flat_store_bench
-//! probe-rs download --chip nRF54LM20A target/thumbv8m.main-none-eabihf/release/flat_store_bench
-//! probe-rs run --chip nRF54LM20A target/thumbv8m.main-none-eabihf/release/flat_store_bench
+//! cargo run --release --bin flat_store_bench
 //! ```
+//!
+//! Keep the read-back check: `.cargo/config.toml` sets the runner to `probe-rs run --chip
+//! nRF54LM20A --verify` because probe-rs 0.31 corrupts the first RRAM write after a code change
+//! often enough to matter, and on this part that is a boot HardFault at a random PC. (`cargo run
+//! --verify` is not a thing — the flag is in the runner, not in cargo's arguments.) To flash and
+//! attach separately, `probe-rs download --chip nRF54LM20A --verify <elf>` then `probe-rs run`.
 //!
 //! `sim-monaco`'s `monaco.obcm` is 718,336 bytes, which at [`INGEST_BAUD`]'s 115,200 8N1 is **about
 //! 63 s** on the wire (10 bits a byte, plus ~2 ms of USB turnaround per 8 KiB chunk). Raising
 //! [`INGEST_BAUD`] to `Baudrate::Baud1m` takes that to about 7.5 s and needs `--baud 1000000` on the
 //! host; 115,200 is the default because it is the rate this rig's VCOM is *proven* at, and a board
-//! session is not the place to find out that a J-Link CDC will not do a megabaud.
+//! session is not the place to find out that a J-Link CDC will not do a megabaud. A host that gets
+//! this wrong is not left guessing: the device sees undecodable bytes, ends the window
+//! [`Advertised::Erroring`], and names its own baud on RTT.
 //!
-//! Two rig facts that cost hours when forgotten: `probe-rs run` must not have another probe session
-//! attached (`pkill probe-rs` first), and a J-Link whose VCOM has wedged — host writes succeed, RTT
-//! still flows, nothing reaches the device — is fixed **only** by a physical power-cycle of the DK.
-//! If the host script sits on `waiting for the device` while RTT shows the bench advertising, that is
-//! the wedge, not a bug in either side.
+//! When the host reports no device, the [`TAG_GONE`] frame it printed says which of four unrelated
+//! things happened — the window closed and the destructive run is starting, the session ended, a
+//! commit refusal is holding extents, or the line was erroring. **Only when no GONE arrives at all**
+//! and RTT shows the bench advertising is it the J-Link VCOM wedge, whose one fix is a physical
+//! power-cycle of the DK. (A foreign `StoreId` is a fifth case that never reaches the wire: `run`
+//! refuses before the ingest is offered, and only RTT says so.)
 #![no_std]
 #![no_main]
 
@@ -1455,6 +1484,23 @@ const TAG_READY: u8 = b'R';
 const TAG_HEADER: u8 = b'H';
 const TAG_DONE: u8 = b'D';
 const TAG_FAIL: u8 = b'E';
+/// The device is about to stop listening. Same 14-byte shape as READY, so a host waiting for one
+/// reads it with the code it already has — and finds out *why* nothing is coming instead of
+/// timing out into a diagnosis it has to guess at.
+const TAG_GONE: u8 = b'G';
+
+/// Why the device stopped listening — the payload of a [`TAG_GONE`] frame.
+mod gone {
+    /// The advertising window closed and the **destructive measurement run is starting**. A host
+    /// that reads this has seconds, not minutes, to stop the operator.
+    pub const WINDOW_CLOSED: u32 = 1;
+    /// The session ended because the host went quiet after its last object. Nothing is wrong.
+    pub const SESSION_OVER: u32 = 2;
+    /// A commit was refused and its extents are held until a remount. Reset before retrying.
+    pub const RESERVATION_HELD: u32 = 3;
+    /// The line was erroring. The measurements are refused; check the baud.
+    pub const LINE_ERRORING: u32 = 4;
+}
 /// The two status bytes, ASCII ACK and NAK.
 const STATUS_ACK: u8 = 0x06;
 const STATUS_NAK: u8 = 0x15;
@@ -1487,6 +1533,9 @@ const _: () = assert!(INGEST_CHUNK <= embassy_nrf::EASY_DMA_SIZE, "a chunk is on
 /// this to `Baudrate::Baud1m` is a one-line change (and `--baud 1000000` on the host) once a session
 /// has spare time to establish that this J-Link's CDC will carry it.
 const INGEST_BAUD: Baudrate = Baudrate::Baud115200;
+/// The same rate as a number, for the diagnostics. A host that disagrees with this is the single
+/// most likely reason a window ends [`Advertised::Erroring`], so the message names it.
+const INGEST_BAUD_HZ: u32 = 115_200;
 
 /// How long the bench advertises before falling through to the measurement run.
 const INGEST_WINDOW_MS: u64 = 10_000;
@@ -1523,13 +1572,37 @@ mod reason {
     pub const LINK: u8 = 11;
 }
 
-/// Why a read did not deliver its bytes. Both are the same thing to the caller — the object is
-/// abandoned — but they are different things to the person holding the board.
+/// Why a read did not deliver its bytes.
+///
+/// The two are **not** interchangeable, and collapsing them is the bug this enum exists to prevent:
+/// a timeout means the line is quiet, and an error means something is driving it that this device
+/// cannot decode — a baud mismatch, a DTR glitch, a cable on its way out. Reading the second as the
+/// first is how a screaming line becomes "nobody answered", and "nobody answered" is how this
+/// binary starts wiping the card.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Link {
     Timeout,
     Uart,
 }
+
+/// How an advertising window ended.
+enum Advertised {
+    /// A host's magic arrived.
+    Answered,
+    /// The window expired with the line quiet. The only outcome that lets the measurements run.
+    Quiet,
+    /// The window ended with the UARTE reporting errors: bytes are arriving that this device cannot
+    /// decode. Something is on the other end, so the measurement run — which would wipe the card —
+    /// must not follow.
+    Erroring,
+}
+
+/// Consecutive UARTE errors that end a window as [`Advertised::Erroring`].
+///
+/// One error is line noise on a cable being plugged in. Thirty-two in a row is a host transmitting
+/// at a rate this device is not configured for, which is exactly what a `--baud 1000000` run against
+/// the 115,200 default looks like from here.
+const INGEST_UART_FAULT_LIMIT: u32 = 32;
 
 /// The one payload buffer. A chunk is 8 KiB and lives here, in `.bss`, exactly as the read path's
 /// buffers do: a map-sized temporary is what this bench's own docs were written to warn about, and
@@ -1551,28 +1624,59 @@ fn ingest_offer(p: embassy_nrf::Peripherals, boot: &Boot) -> bool {
         "INGEST advertising on the VCOM (SERIAL20, P1_16/P1_17) for {=u64} ms — `tools/bench_ingest.py` takes it from here",
         INGEST_WINDOW_MS
     );
-    if !ingest_wait(&mut tx, &mut rx, INGEST_WINDOW_MS) {
-        info!("INGEST nobody answered — running the measurements");
-        return false;
+    match ingest_wait(&mut tx, &mut rx, INGEST_WINDOW_MS) {
+        Advertised::Answered => {
+            ingest_session(&mut tx, &mut rx, boot);
+            true
+        }
+        Advertised::Quiet => {
+            // The last thing this device says before it starts destroying the card. A host that
+            // arrived late reads it instead of timing out and blaming the cable.
+            ingest_gone(&mut tx, gone::WINDOW_CLOSED);
+            info!("INGEST nobody answered — running the measurements");
+            false
+        }
+        // The one case that is neither. Something is transmitting and this device cannot read it, so
+        // there is very likely a host at the other end of the cable that believes it is sending a
+        // map. Falling through here would run phase one and destroy the card it was aimed at.
+        Advertised::Erroring => {
+            ingest_gone(&mut tx, gone::LINE_ERRORING);
+            error!(
+                "INGEST the VCOM reported {=u32} consecutive errors during the window — bytes are arriving that this device cannot decode",
+                INGEST_UART_FAULT_LIMIT
+            );
+            error!(
+                "INGEST the likeliest cause is a baud mismatch: this build is at {=u32} baud, so the host needs `--baud {=u32}`",
+                INGEST_BAUD_HZ, INGEST_BAUD_HZ
+            );
+            error!("INGEST REFUSING to run the measurements — they would destroy the card a host is aiming at");
+            true
+        }
     }
-    ingest_session(&mut tx, &mut rx, boot);
-    true
 }
 
-/// Advertise until a host's magic arrives, or until `window_ms` has passed with the line quiet.
+/// Advertise until a host's magic arrives, or until `window_ms` has passed.
 ///
 /// The magic is matched **one byte at a time**, and a READY only goes out after a whole
 /// [`INGEST_READY_MS`] of silence. Both are the same precaution: this cable has no flow control, so
 /// the device must never be transmitting while the host is mid-burst, and it must never drop a
 /// partly-matched magic on the floor because its own advertising timer came due.
-fn ingest_wait(tx: &mut UarteTx<'_>, rx: &mut UarteRx<'_>, window_ms: u64) -> bool {
+///
+/// A UARTE **error** is handled as its own case and not as silence. It returns from
+/// [`ingest_read`] immediately rather than after [`INGEST_READY_MS`], so treating it as a quiet
+/// interval would advertise at whatever rate the errors arrive — hundreds of READY frames a second,
+/// straight into the burst that is causing them — and then end the window claiming nobody was there.
+fn ingest_wait(tx: &mut UarteTx<'_>, rx: &mut UarteRx<'_>, window_ms: u64) -> Advertised {
     let ready = ingest_ready_frame();
     let deadline = Instant::now() + Duration::from_millis(window_ms);
     let mut matched = 0usize;
     let mut byte = [0u8; 1];
+    let mut faults = 0u32;
+    let mut complained = false;
     loop {
         match ingest_read(rx, &mut byte, INGEST_READY_MS) {
             Ok(()) => {
+                faults = 0;
                 matched = if byte[0] == INGEST_MAGIC[matched] {
                     matched + 1
                 } else if byte[0] == INGEST_MAGIC[0] {
@@ -1581,17 +1685,34 @@ fn ingest_wait(tx: &mut UarteTx<'_>, rx: &mut UarteRx<'_>, window_ms: u64) -> bo
                     0
                 };
                 if matched == INGEST_MAGIC.len() {
-                    return true;
+                    return Advertised::Answered;
                 }
             }
-            Err(_) => {
+            Err(Link::Timeout) => {
                 // The line has been quiet for an interval, so this is the safe moment to talk — and
                 // any half-matched magic is stale, because a host sends its header in one write.
+                faults = 0;
                 matched = 0;
                 if Instant::now() >= deadline {
-                    return false;
+                    return Advertised::Quiet;
                 }
                 let _ = tx.blocking_write(&ready);
+            }
+            Err(Link::Uart) => {
+                // NOT an advertising opportunity. Say so once, then either wait the line out or give
+                // up on it — but never conclude from this that the cable is idle.
+                matched = 0;
+                faults += 1;
+                if !complained {
+                    complained = true;
+                    warn!("INGEST the VCOM is reporting receive errors (overrun / framing / parity) — NOT treating this as a quiet line");
+                }
+                if faults >= INGEST_UART_FAULT_LIMIT {
+                    return Advertised::Erroring;
+                }
+                if Instant::now() >= deadline {
+                    return Advertised::Erroring;
+                }
             }
         }
     }
@@ -1632,37 +1753,55 @@ fn ingest_session(tx: &mut UarteTx<'_>, rx: &mut UarteRx<'_>, boot: &Boot) {
     // same advertising loop, so a host may send several objects in one flash and a failed attempt
     // may simply be sent again.
     loop {
-        ingest_object(tx, rx, &store);
-        if !ingest_wait(tx, rx, INGEST_WINDOW_MS) {
-            info!("INGEST the host has gone quiet — the session is over");
+        if matches!(ingest_object(tx, rx, &store), Session::Stop) {
+            ingest_gone(tx, gone::RESERVATION_HELD);
             return;
+        }
+        match ingest_wait(tx, rx, INGEST_WINDOW_MS) {
+            Advertised::Answered => {}
+            Advertised::Quiet => {
+                ingest_gone(tx, gone::SESSION_OVER);
+                info!("INGEST the host has gone quiet — the session is over");
+                return;
+            }
+            Advertised::Erroring => {
+                ingest_gone(tx, gone::LINE_ERRORING);
+                error!("INGEST the VCOM started erroring between objects — ending the session rather than guessing");
+                return;
+            }
         }
     }
 }
 
+/// Whether the session may take another object after the one that just finished.
+enum Session {
+    Continue,
+    Stop,
+}
+
 /// One object, from the header that follows an already-matched magic to the RESULT frame.
-fn ingest_object(tx: &mut UarteTx<'_>, rx: &mut UarteRx<'_>, store: &FlatStore<Card>) {
+fn ingest_object(tx: &mut UarteTx<'_>, rx: &mut UarteRx<'_>, store: &FlatStore<Card>) -> Session {
     let mut header = [0u8; HEADER_BYTES];
     header[..4].copy_from_slice(&INGEST_MAGIC);
     if let Err(fault) = ingest_read(rx, &mut header[4..], INGEST_CHUNK_MS) {
         ingest_link_failed("the header", fault);
         ingest_status(tx, STATUS_NAK, reason::LINK);
-        return;
+        return Session::Continue;
     }
     if header[4] != INGEST_VERSION || header[5] != TAG_HEADER {
         error!("INGEST header version {=u8} tag {=u8} — not this wire", header[4], header[5]);
         ingest_status(tx, STATUS_NAK, reason::VERSION);
-        return;
+        return Session::Continue;
     }
     if u32::from_le_bytes(header[68..72].try_into().unwrap_or_default()) != obc_crc::crc32(&header[..68]) {
         error!("INGEST the header's own CRC does not check — the framing is out of step");
         ingest_status(tx, STATUS_NAK, reason::HEADER_CRC);
-        return;
+        return Session::Continue;
     }
     let Ok(kind) = ObjectKind::decode(u16::from(header[6])) else {
         error!("INGEST kind {=u8} is not one of §3.1's", header[6]);
         ingest_status(tx, STATUS_NAK, reason::KIND);
-        return;
+        return Session::Continue;
     };
     let name_len = usize::from(header[7]);
     // The bound is checked before the slice, not after: the length is a byte off the wire, and
@@ -1677,13 +1816,13 @@ fn ingest_object(tx: &mut UarteTx<'_>, rx: &mut UarteRx<'_>, store: &FlatStore<C
             name_len, INGEST_NAME_CAP
         );
         ingest_status(tx, STATUS_NAK, reason::NAME);
-        return;
+        return Session::Continue;
     };
     let payload_len = u64::from_le_bytes(header[8..16].try_into().unwrap_or_default());
     let want_crc = u32::from_le_bytes(header[16..20].try_into().unwrap_or_default());
     if payload_len == 0 {
         ingest_status(tx, STATUS_NAK, reason::EMPTY);
-        return;
+        return Session::Continue;
     }
     info!(
         "INGEST header accepted: {} named {=str}, {=u64} B, crc 0x{=u32:08x}, {=u64} chunks of {=usize} B",
@@ -1705,7 +1844,7 @@ fn ingest_object(tx: &mut UarteTx<'_>, rx: &mut UarteRx<'_>, store: &FlatStore<C
                 defmt::Debug2Format(&error)
             );
             ingest_status(tx, STATUS_NAK, reason::ALLOCATE);
-            return;
+            return Session::Continue;
         }
     };
     ingest_status(tx, STATUS_ACK, reason::NONE);
@@ -1722,13 +1861,13 @@ fn ingest_object(tx: &mut UarteTx<'_>, rx: &mut UarteRx<'_>, store: &FlatStore<C
             ingest_link_failed("a payload chunk", fault);
             store.cancel(allocation);
             ingest_status(tx, STATUS_NAK, reason::LINK);
-            return;
+            return Session::Continue;
         }
         if let Err(error) = store.write(&mut allocation, &buf[..take]) {
             error!("INGEST the store refused a chunk at {=u64} B ({})", received, defmt::Debug2Format(&error));
             store.cancel(allocation);
             ingest_status(tx, STATUS_NAK, reason::WRITE);
-            return;
+            return Session::Continue;
         }
         digest.update(&buf[..take]);
         received += take as u64;
@@ -1746,10 +1885,12 @@ fn ingest_object(tx: &mut UarteTx<'_>, rx: &mut UarteRx<'_>, store: &FlatStore<C
         got_crc
     );
 
-    // Before the commit, not after: a mismatch must publish nothing, and `cancel` is what returns
-    // the extents the failed attempt held so the next attempt can have them.
     // Past the last chunk's ack the object closes with a RESULT rather than a STATUS — one frame,
     // whichever way it went, so the host never has to guess which of the two is coming next.
+    //
+    // The CRC is checked before the commit, not after: a mismatch must publish nothing, and `cancel`
+    // is what hands the extents back so the next attempt can have them. This is the last point at
+    // which that is still possible — the commit below takes the `Allocation` by value.
     if got_crc != want_crc {
         error!(
             "INGEST the payload CRC is 0x{=u32:08x}, not the 0x{=u32:08x} the header promised — NOT committing",
@@ -1757,7 +1898,7 @@ fn ingest_object(tx: &mut UarteTx<'_>, rx: &mut UarteRx<'_>, store: &FlatStore<C
         );
         store.cancel(allocation);
         ingest_result(tx, TAG_FAIL, reason::PAYLOAD_CRC, ObjectId::NONE, Revision(0), received, got_crc, 0);
-        return;
+        return Session::Continue;
     }
 
     let meta = EntryMeta {
@@ -1775,10 +1916,22 @@ fn ingest_object(tx: &mut UarteTx<'_>, rx: &mut UarteRx<'_>, store: &FlatStore<C
     let commit_us = us(started);
     let sequence = match outcome {
         Ok(sequence) => sequence,
+        // **This is the one failure that does not clean up after itself, and the session ends here.**
+        //
+        // `Mutation::Put` took the `Allocation` by value, and §5.5 clears the reservation row only
+        // after the gate write lands — so a refused commit leaves the row occupied and its extents
+        // spoken for, with no `Allocation` left anywhere to `cancel`. Only a remount frees them.
+        // `MAX_RESERVATIONS` is 2, so a session that looped here would wedge on its third object
+        // with a `NoSpace` that has nothing to do with the card being full. Stopping is honest:
+        // the operator resets, the mount reclaims, and the next attempt starts clean.
         Err(error) => {
             error!("INGEST §5.5 refused the publishing commit ({})", defmt::Debug2Format(&error));
+            error!(
+                "INGEST the reservation for those {=u64} B is still held — it is freed by a remount, so `probe-rs reset` before retrying",
+                payload_len
+            );
             ingest_result(tx, TAG_FAIL, reason::COMMIT, ObjectId::NONE, Revision(0), received, got_crc, 0);
-            return;
+            return Session::Stop;
         }
     };
     info!(
@@ -1787,6 +1940,7 @@ fn ingest_object(tx: &mut UarteTx<'_>, rx: &mut UarteRx<'_>, store: &FlatStore<C
     );
     ingest_result(tx, TAG_DONE, reason::NONE, id, Revision(1), payload_len, got_crc, store.entry_count());
     ingest_census(store);
+    Session::Continue
 }
 
 /// The whole catalog after a commit, one line per entry. This is the acceptance evidence: the object
@@ -1816,14 +1970,29 @@ fn ingest_census(store: &FlatStore<Card>) {
 
 /// The 14-byte READY.
 fn ingest_ready_frame() -> [u8; READY_BYTES] {
+    short_frame(TAG_READY, INGEST_CHUNK as u32)
+}
+
+/// One 14-byte frame carrying a tag and a `u32`. READY's chunk size and GONE's reason are the same
+/// shape on purpose: a host blocked waiting for a READY decodes a GONE with the code it already has.
+fn short_frame(tag: u8, value: u32) -> [u8; READY_BYTES] {
     let mut frame = [0u8; READY_BYTES];
     frame[..4].copy_from_slice(&INGEST_MAGIC);
     frame[4] = INGEST_VERSION;
-    frame[5] = TAG_READY;
-    frame[6..10].copy_from_slice(&(INGEST_CHUNK as u32).to_le_bytes());
+    frame[5] = tag;
+    frame[6..10].copy_from_slice(&value.to_le_bytes());
     let crc = obc_crc::crc32(&frame[..10]);
     frame[10..14].copy_from_slice(&crc.to_le_bytes());
     frame
+}
+
+/// Tell whoever is listening that this device has stopped, and why.
+///
+/// Sent on every path out of the ingest, because the alternative is a host that waits out its whole
+/// timeout and then has to guess between four unrelated causes — one of which is "the card is being
+/// wiped right now".
+fn ingest_gone(tx: &mut UarteTx<'_>, why: u32) {
+    let _ = tx.blocking_write(&short_frame(TAG_GONE, why));
 }
 
 /// One two-byte STATUS.
