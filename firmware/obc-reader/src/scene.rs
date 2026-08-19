@@ -10,9 +10,13 @@ use crate::{
     reader::MAP_CHUNK_SLOTS, CacheError, CapacityError, FeatureDecodeError, FeatureReadError, MapReadError, Reader,
 };
 
-/// Map a reader read failure onto the scene contract's coarser one. Shared by **both**
-/// [`MapScene`] impls — the single [`Reader`] below and the [`MountedSet`](crate::MountedSet) of
-/// `volume.rs` — so a set never reports a failure differently from the monolith it was split from.
+/// Map a reader read failure onto the scene contract's coarser one.
+///
+/// It was shared by two [`MapScene`] impls — the [`Reader`] below and `volume.rs`'s `MountedSet` —
+/// which is why it is a free function rather than inline: a set had to report a failure exactly as
+/// the monolith it was split from did. There is one impl now (FS7.5-c2, #1420) and one caller, so
+/// the sharing argument is gone; the function stays because a `match` with a name is easier to read
+/// at the call site than one without, not because anything still depends on it being one function.
 #[inline]
 pub(crate) fn read_error(error: MapReadError) -> SceneReadError {
     match error {
