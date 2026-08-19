@@ -300,7 +300,7 @@ mod binding_boundaries {
     /// express it — there is no prefix to have been split — so BLE keeps its own assembler.
     #[test]
     fn a_ble_record_split_across_writes_is_rejoined_by_its_header() {
-        let mut record = vec![0u8; STREAM_HEADER_LEN + 8];
+        let mut record = [0u8; STREAM_HEADER_LEN + 8];
         record[0..4].copy_from_slice(&7u32.to_le_bytes());
         record[12..14].copy_from_slice(&8u16.to_le_bytes());
         for (i, b) in record[STREAM_HEADER_LEN..].iter_mut().enumerate() {
