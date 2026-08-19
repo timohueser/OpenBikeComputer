@@ -62,7 +62,7 @@ public enum TripObjectCodec {
         data[data.startIndex + nameLengthOffset] = UInt8(nameBytes.count)
         for (i, byte) in nameBytes.enumerated() { data[data.startIndex + nameOffset + i] = byte }
         // name padding + reserved[3] already zero
-        for id in stages { data.appendUInt16LE(id.raw) }
+        for id in stages { data.appendUInt16LE(UInt16(truncatingIfNeeded: id.raw)) }
         return data
     }
 

@@ -47,10 +47,13 @@ public enum GATT {
     // diagnostics cross the CoC as object type 4, spec §7.5) — must not be reused.
     /// The dynamically-assigned L2CAP CoC PSM the app opens the channel on.
     nonisolated(unsafe) public static let psm = CBUUID(string: "3C920007-9916-4EBA-ABC2-342FE08F6B10")
-    /// `version u16 · store_epoch u32 · obcm_version u8 · feature_bits u32` LE — read on connect
-    /// for the version check (spec §1), the store-epoch identity, and the capability word (WX3);
-    /// **length-driven**, readable without encryption.
+    /// Protocol-v4 wire major as one little-endian `u16`, readable without encryption. Store
+    /// identity comes from `LIST`, never from this transport fact.
     nonisolated(unsafe) public static let protocolVersion = CBUUID(string: "3C920008-9916-4EBA-ABC2-342FE08F6B10")
+    /// Protocol-v4 control records: one authenticated Write Request per request and one confirmed
+    /// indication per result (`FLAT_Store_Protocol.md` §5.1). This is the only store control
+    /// characteristic used by the v4 client.
+    nonisolated(unsafe) public static let objectControl = CBUUID(string: "3C920009-9916-4EBA-ABC2-342FE08F6B10")
 
     // MARK: OBC Weather Request (spec §11, WX3 / #1188)
     // A random 128-bit base of its own, deliberately *not* a block inside the OBC Control base:

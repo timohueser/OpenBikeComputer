@@ -411,9 +411,9 @@ private struct PlannedRouteFile: Codable {
     /// The device object id this route is stored under, `nil` when not on the
     /// device. Optional-decoded, so a pre-B13 file (which lacked it) loads as
     /// "not uploaded" and self-heals on the next upload/reconcile. Stays a bare
-    /// `UInt16` on disk (the domain's `DeviceObjectID` wraps it at the
+    /// `UInt64` on disk (the domain's `DeviceObjectID` wraps it at the
     /// boundary) — no schema bump for #359.
-    var deviceObjectID: UInt16?
+    var deviceObjectID: UInt64?
     /// The (serial, epoch) scope of `deviceObjectID` (#769) — additive,
     /// optional-decoded. A **v1 flat file** carries the id alone: it loads as
     /// **no link at all** (the link is only real when all three parts are
@@ -425,6 +425,7 @@ private struct PlannedRouteFile: Codable {
     /// the fields are additive and every decoder skips unknown keys.
     var deviceSerial: String?
     var deviceStoreEpoch: UInt32?
+    var deviceStoreID: String?
     /// The committed upload payload's CRC-32 (the `OnDeviceState` fingerprint).
     /// Optional-decoded: a pre-fingerprint file loads as "content unknown",
     /// which reads as outdated and self-heals on the next upload.
@@ -449,6 +450,7 @@ private struct PlannedRouteFile: Codable {
         deviceObjectID = record.deviceLink?.objectID.raw
         deviceSerial = record.deviceLink?.serial
         deviceStoreEpoch = record.deviceLink?.epoch
+        deviceStoreID = record.deviceLink?.storeID
         uploadedCRC32 = record.uploadedCRC32
         retention = record.retention?.rawValue
         deviceExpiresAt = record.deviceExpiresAt
@@ -458,7 +460,11 @@ private struct PlannedRouteFile: Codable {
 
     func record(sourceFileData: Data) -> PlannedRouteRecord {
         let link: DeviceRouteLink? =
-            if let deviceObjectID, let deviceSerial, let deviceStoreEpoch {
+            if let deviceObjectID, let deviceSerial, let deviceStoreID {
+                DeviceRouteLink(
+                    serial: deviceSerial, storeID: deviceStoreID,
+                    objectID: DeviceObjectID(deviceObjectID))
+            } else if let deviceObjectID, let deviceSerial, let deviceStoreEpoch {
                 DeviceRouteLink(
                     serial: deviceSerial, epoch: deviceStoreEpoch,
                     objectID: DeviceObjectID(deviceObjectID))
@@ -492,7 +498,7 @@ private struct PlannedRouteFile: Codable {
 /// fields, **all-or-nothing on read** — a partial/flat link (id without
 /// serial/epoch) decodes as **no link at all** (#769: the link is only real
 /// when all three parts are present, so it can never light a badge or drive a
-/// replace-by-id against the wrong device or era). The id stays a bare `UInt16`
+/// replace-by-id against the wrong device or era). The id stays a bare `UInt64`
 /// on disk (the domain's `DeviceObjectID` wraps it at the boundary); link +
 /// fingerprint optional-decoded so a not-yet-uploaded trip loads clean.
 private struct TripFile: Codable {
@@ -500,9 +506,10 @@ private struct TripFile: Codable {
     var id: String
     var name: String
     var stageIDs: [String]
-    var deviceObjectID: UInt16?
+    var deviceObjectID: UInt64?
     var deviceSerial: String?
     var deviceStoreEpoch: UInt32?
+    var deviceStoreID: String?
     var uploadedCRC32: UInt32?
     var addedAt: Date
 
@@ -514,13 +521,18 @@ private struct TripFile: Codable {
         deviceObjectID = record.deviceLink?.objectID.raw
         deviceSerial = record.deviceLink?.serial
         deviceStoreEpoch = record.deviceLink?.epoch
+        deviceStoreID = record.deviceLink?.storeID
         uploadedCRC32 = record.uploadedCRC32
         addedAt = record.addedAt
     }
 
     var record: TripRecord {
         let link: DeviceRouteLink? =
-            if let deviceObjectID, let deviceSerial, let deviceStoreEpoch {
+            if let deviceObjectID, let deviceSerial, let deviceStoreID {
+                DeviceRouteLink(
+                    serial: deviceSerial, storeID: deviceStoreID,
+                    objectID: DeviceObjectID(deviceObjectID))
+            } else if let deviceObjectID, let deviceSerial, let deviceStoreEpoch {
                 DeviceRouteLink(
                     serial: deviceSerial, epoch: deviceStoreEpoch,
                     objectID: DeviceObjectID(deviceObjectID))

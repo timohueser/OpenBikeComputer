@@ -666,8 +666,7 @@ public final class MainScreenModel {
                 $0.crc32 == currentCRC && !claimed.contains($0.id)
             }) else { continue }
             var adopted = record
-            adopted.deviceLink = DeviceRouteLink(
-                serial: scope.serial, epoch: scope.epoch, objectID: entry.id)
+            adopted.deviceLink = DeviceRouteLink(scope: scope, objectID: entry.id)
             adopted.uploadedCRC32 = currentCRC
             plannedRecords[record.id] = adopted
             library.savePlannedRoute(adopted)
@@ -853,8 +852,7 @@ public final class MainScreenModel {
             guard let entry = adoptable.first(where: {
                 $0.crc32 == currentCRC && !claimed.contains($0.id)
             }) else { continue }
-            trip.deviceLink = DeviceRouteLink(
-                serial: scope.serial, epoch: scope.epoch, objectID: entry.id)
+            trip.deviceLink = DeviceRouteLink(scope: scope, objectID: entry.id)
             trip.uploadedCRC32 = currentCRC
             library.saveTrip(trip)
             claimed.insert(entry.id)
@@ -1511,8 +1509,7 @@ public final class MainScreenModel {
     ) {
         guard var record = plannedRecords[id] else { return }
         if let scope = connectedScope {
-            record.deviceLink = DeviceRouteLink(
-                serial: scope.serial, epoch: scope.epoch, objectID: objectID)
+            record.deviceLink = DeviceRouteLink(scope: scope, objectID: objectID)
             record.uploadedCRC32 = crc32
             // The transfer verified this whole-object CRC for this object, so
             // record it as device truth (#770): the badge proves immediately,
@@ -1556,7 +1553,7 @@ public final class MainScreenModel {
     public func markTripUploaded(_ id: TripID, objectID: DeviceObjectID?, crc32: UInt32) {
         guard var trip = trip(id) else { return }
         if let scope = connectedScope, let objectID {
-            trip.deviceLink = DeviceRouteLink(serial: scope.serial, epoch: scope.epoch, objectID: objectID)
+            trip.deviceLink = DeviceRouteLink(scope: scope, objectID: objectID)
             trip.uploadedCRC32 = crc32
             // The transfer verified this whole-object CRC — record it as device
             // truth so the badge proves before the next `listTrips()` catches up.

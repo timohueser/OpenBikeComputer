@@ -7,64 +7,47 @@ Shared fixtures under `specs/vectors/` pin the Swift and Rust codecs byte-for-by
 
 This file records only the choices an iOS contributor needs while navigating the implementation.
 
-## Versioning and store epoch
+## Versioning and store identity
 
-The current protocol version is `2`. The `protocolVersion` characteristic is append-only and is
-decoded by length:
-
-| Bytes | Fields |
-| ---: | --- |
-| 2 | `version u16` only: no mounted store |
-| 6 | plus `store_epoch u32` |
-| 7 | plus `obcm_version u8` |
-| 11 | plus `feature_bits u32` |
-
-Missing fields remain `nil`; they are never fabricated as zero. Unknown trailing bytes and feature
-bits are ignored. A partial `u32` capability word is absent, not a smaller word.
-
-The store epoch names the card's object-id era. Durable phone state is scoped to `(device serial,
-store epoch)` so a reset, card swap or recycled `u16` id cannot alias old state. A short identity read
-does not provide an epoch and therefore gates off acknowledgements and reconciliation. A protocol
-version mismatch is surfaced as `DeviceError.protocolMismatch`, never decoded optimistically.
-
-Feature bit 0 announces the complete Weather Request contract. `obcm_version` is the map-file
-version the running reader accepts and is independent of the protocol and firmware versions.
+The current protocol version is `4`. `protocolVersion` is exactly one little-endian `u16`. The
+client issues `LIST` before its first object operation and takes the exact 128-bit `StoreId` from
+that response. Durable phone state is scoped to `(device serial, StoreId)`, so a reset or card swap
+cannot alias an old object id. A version mismatch is surfaced, never decoded optimistically.
 
 ## Transport
 
 ### Control plane
 
 The app discovers DIS (`0x180A`), BAS (`0x180F`), OBC Control (`3C920000-…`) and Weather Request
-(`B3B60000-…`). `GATT.swift` owns UUIDs; typed codecs under `OBCTransport/Codecs/` own payloads.
+(`B3B60000-…`). `GATT.swift` owns UUIDs; `OBCProtocolV4` owns control and stream records.
 The DIS Firmware Revision String is either an installed OBCU version or a bare Git hash. Hashes are
 not parsed as release versions and therefore never produce an automatic update offer.
 
 ### Data plane
 
-Bulk objects move over one encrypted L2CAP CoC. `L2CAPByteChannel` owns the stream,
-`BLEChannel` owns whole-object transfer orchestration, and semantic features use capability-sized
-protocols from `OBCTransport`. The app never exposes CoreBluetooth types above `OBCTransport/BLE/`;
-the composition root alone chooses the concrete `DeviceTransport` aggregate.
+Bulk objects move over one encrypted L2CAP CoC. `L2CAPByteChannel` owns bytes and `BLEChannel`
+preserves v4 stream-record boundaries. `TransferClient` owns request ids, announce/stream/result
+lifetimes, and recovery. `BLETransport` retains only live-link records and radio facts.
 
 ### Bulk transfers
 
-Transfers restart from byte zero; they do not resume at offsets. The app writes a descriptor,
-streams exactly the declared length, verifies CRC-32/IEEE and waits for the typed terminal status.
-Downloads are announced through `status`. A disconnect leaves the operation unresolved so policy
-above the byte plane can retry the whole object. The complete descriptor, status and command layouts
-are spec §§4–6.
+One `objectControl` Write Request announces a v4 operation. `PUT` and `GET` stream framed records on
+the live CoC under that request id, then receive exactly one indicated result. Transfers never
+resume. After a broken link the client opens a fresh link, repeats `LIST`, and reconciles named
+mutations with `STATUS`; a lost create uses its catalog fingerprint as the v4 contract requires.
+The checked-in `specs/vectors/flat-store-v4/` bytes are the codec oracle.
 
 ## Object formats
 
 - Routes are OBCR v3 files. GPX/TCX conversion happens on the phone and the device stores the OBCR
   bytes verbatim.
-- Rides use the spec §7.2 ride object. The phone decodes to `Ride` before exporting GPX.
-- Route, ride and trip lists use the v2 six-byte list header. Decoders honor `entry_len`, skip future
-  tails and surface truncation when `total > count`.
+- Ride bytes still use the previous decoder behind the v4 GET path. FS8 will replace it after the
+  footer layout is fixed; the phone continues to decode to `Ride` before exporting GPX.
+- Route, ride and trip catalogs are v4 `LIST` entries.
 - Trips contain route object ids, not route bytes. Upload stages first and the trip last; deleting a
   trip does not implicitly delete its routes.
-- Firmware images are signed OBCU containers carried as `fwImage`.
-- Weather bundles are OBCW objects carried as `weatherBundle` with object id zero.
+- Firmware images are signed OBCU containers carried as update objects.
+- Weather bundles are OBCW objects. A create requests object id zero; the store assigns the id.
 
 The wire codecs live under `OBCTransport/Codecs/`; interchange-file parsing lives in `OBCFormats`.
 
@@ -103,7 +86,7 @@ The device never parses XML. `RouteSource` and the import UI expose the same two
 | Type | Contract role |
 | --- | --- |
 | `OBCProtocol` | pinned version and feature-bit constants |
-| `DeviceInfo` | DIS plus store epoch, OBCM version and feature bits |
+| `DeviceInfo` | DIS plus the v4 StoreId learned through `LIST` |
 | `DeviceConfig` | append-only Config blob, including name and raw refresh byte |
 | `RouteBlob` / `RouteDetail` | opaque OBCR upload and decoded route-object detail |
 | `Ride` / `RidePoint` | canonical decoded ride and export input |
