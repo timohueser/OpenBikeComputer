@@ -111,7 +111,7 @@ public struct MainScreenView: View {
                 .padding(.horizontal, 20)
                 .padding(.bottom, 6)
             } else if sync.hiddenRideCount > 0 {
-                // v2 rideList truncation (spec §7.4): past the device's cap some
+                // The bounded ride catalog can report that some
                 // rides are dropped from the list in FAT-arbitrary order, so
                 // "up to date" would be a lie — say so plainly (iOS tone rule).
                 OBCInlineBanner(

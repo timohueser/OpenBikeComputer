@@ -48,7 +48,7 @@ following temporary conflicts:
   expensive exhaustive codec test.
 - required XCUITest currently runs two screenshot methods while the rest of the application suite
   has no scheduled full route.
-- the rain-radar demo and EchoHarness have local routes but no current CI execution route.
+- the rain-radar demo has a local route but no current CI execution route.
 
 These are inventory findings, not permission to hide a conflict. The linked issues in the registry
 keep every temporary state accountable.
@@ -167,7 +167,6 @@ will expose the stable `obc test affected` wrapper and make the job matrix consu
 | Desktop application composition | Affected platform build and desktop launch smoke |
 | Python tool or service implementation | Matching Python suite |
 | Rain-radar demo | Demo tests |
-| EchoHarness | Harness build and tests |
 | Documentation only | Documentation and generated-policy checks unless it produces a shared artifact |
 | Live-service or hardware path | Hermetic contracts on the pull request; scheduled, manual, or release evidence as required |
 

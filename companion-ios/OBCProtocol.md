@@ -98,4 +98,5 @@ The device never parses XML. `RouteSource` and the import UI expose the same two
 
 `OBCDomain` contains transport-free values. `OBCTransport` contains the interface and codecs;
 `OBCTransport/BLE` is the real radio implementation. Tests should normally exercise codecs and
-semantic behavior without hardware, with EchoHarness reserved for on-device transport checks.
+semantic behavior without hardware; protocol-v4 vector and board-composition suites cover the
+transport contract until a v4 on-device soak harness is introduced.

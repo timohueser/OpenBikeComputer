@@ -182,9 +182,8 @@ public protocol WeatherDeviceLink: Sendable {
     /// (§11.3); the returned snapshot is the job's checkpoint.
     func readRequestContext() async throws -> WeatherContextReadReceipt
     /// Reconnect to the known peripheral (or ride a foreground session), upload one OBCW bundle as
-    /// object type 20 / id 0 over the CoC, await the device's `transferResult`, disconnect.
-    /// Returns on `committed` — which per §11.6 includes the duplicate/stale ignored-but-successful
-    /// rows, each of which finishes the request.
+    /// a protocol-v4 `.weather` object over the CoC, reconcile its `PUT` with `STATUS`, disconnect.
+    /// A duplicate/stale successful result still finishes the request.
     func uploadBundle(_ bytes: Data) async throws -> WeatherBundleUploadReceipt
     /// Finish the named request after conditional provider checks proved the selected bundle is
     /// current. Uses the same bounded second connection as an upload, but sends only a small command.

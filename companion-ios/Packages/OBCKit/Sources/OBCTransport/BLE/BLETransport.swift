@@ -200,7 +200,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         }
     }
 
-    public var storeChanges: AsyncStream<StoreChanged> {
+    public var catalogChanges: AsyncStream<CatalogChange> {
         AsyncStream { $0.finish() }
     }
 
@@ -610,7 +610,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         }
     }
 
-    /// Upload one OBCW bundle as object type `20`, singleton id `0`, over the ordinary reliable
+    /// Upload one OBCW bundle as a protocol-v4 `.weather` object over the ordinary reliable
     /// CoC — the second connection of the §11 exchange. Rides an existing foreground session when
     /// one is up (and never tears it down); otherwise makes its own bounded ephemeral connection
     /// to the known bonded peripheral and disconnects when the verdict lands. Success is the
@@ -1182,7 +1182,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     public func downloadTrip(_ id: DeviceObjectID) async throws -> TripObjectCodec.Decoded {
         // "Download the trip object" (spec §7.7) — the stored trip blob, decoded
         // app-side for its name + stage ids. Reconcile falls back to it only when
-        // the `tripList` `crc32` can't confirm the fingerprint.
+        // the trip catalog's CRC can't confirm the fingerprint.
         try TripObjectCodec.decode(try await download(kind: .trip, id: id))
     }
 

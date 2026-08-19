@@ -41,7 +41,7 @@ public enum Scenario: String, CaseIterable, Sendable {
     case uploadDrop
     case unsupportedFile
     /// A device that predates auto-expiry (epic #638): `setClock` /
-    /// `setRouteRetention` answer `unsupported` and `routeList` entries carry no
+    /// `setRouteRetention` answer `unsupported` and route catalog entries carry no
     /// expiry tail — S7 UI-tests the capability-gated (hidden) state against it.
     case oldFirmware
 }
@@ -71,7 +71,7 @@ public struct ScenarioPreset: Sendable {
     public var dropAtFraction: Double?
     /// Whether the modelled device understands auto-expiry (epic #638). `false`
     /// is the old-firmware knob (`setClock`/`setRouteRetention` → `unsupported`,
-    /// no `routeList` expiry tail).
+    /// no route-catalog expiry metadata).
     public var supportsExpiry: Bool
 
     public init(

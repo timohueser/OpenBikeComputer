@@ -90,7 +90,7 @@ public final class RideSyncCoordinator {
     /// H10: non-nil while a dropped sync waits for Resume — replaces the S4
     /// banner (one banner at a time; this one carries the link story too).
     public private(set) var syncInterruption: SyncInterruption?
-    /// How many rides the device holds beyond what its `rideList` could carry
+    /// How many rides the device holds beyond what its bounded catalog could carry
     /// (v2 header `total − count`, spec §7.4) — set from each sync's list read.
     /// `> 0` surfaces the "some rides can't be listed" warning: past the device's
     /// `MAX_RIDES` cap the catalog scan drops the excess in FAT-arbitrary order,
@@ -131,7 +131,7 @@ public final class RideSyncCoordinator {
     @ObservationIgnored public var onRideLanded: (Ride) -> Void = { _ in }
     /// The batch's `listRides()` read succeeded — proof the device is readable,
     /// so the model can clear a stale S3 failure state.
-    @ObservationIgnored public var onRideListRead: () -> Void = {}
+    @ObservationIgnored public var onRideCatalogRead: () -> Void = {}
     /// Mirror of `library.syncedRideIDs()` — what makes the next sync's "new".
     /// **Re-read from the library at the start of every sync** (the store is
     /// the source of truth): phone-side tombstones (`deleteRide` marks the id
@@ -279,7 +279,7 @@ public final class RideSyncCoordinator {
             // Canceled = a newer sync superseded this one and owns the shared
             // state now — touch nothing (same rule at every check below).
             guard !Task.isCancelled else { return }
-            onRideListRead()
+            onRideCatalogRead()
             // The v2 header's truncation signal: some rides are unsyncable until
             // the rider frees space on the device (spec §7.4). Surface it from the
             // list read whether or not there's anything fresh to fetch.
@@ -330,10 +330,10 @@ public final class RideSyncCoordinator {
                     if let summary = fresh.first(where: { $0.id == downloaded.id }) {
                         let decoded = try? RideObjectCodec.decode(
                             downloaded.payload, id: downloaded.id)
-                        // The RideList summary stays canonical for display; the
+                        // The ride catalog summary stays canonical for display; the
                         // payload contributes the tracklog (and a preview, if
                         // the list entry came without one), plus the per-ride
-                        // BLE-sensor summary (epic #707) the rideList entry
+                        // BLE-sensor summary (epic #707) the catalog entry
                         // doesn't carry — it only exists in the ride object's
                         // v2 header.
                         var ride = Ride(summary: summary, points: decoded?.points ?? [])

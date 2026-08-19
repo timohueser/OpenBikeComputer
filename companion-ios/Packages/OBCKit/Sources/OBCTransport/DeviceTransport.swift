@@ -122,17 +122,29 @@ public protocol DeviceRetention: Sendable {
     func setRouteRetention(_ id: DeviceObjectID, _ retention: Retention) async throws -> RetentionWriteOutcome
 }
 
+/// An in-process catalog invalidation cue used by mocks and preview transports. Protocol v4 has no
+/// v2 catalog-edge notification; the real BLE transport reconciles catalog state through `LIST` /
+/// `STATUS` and the connected audit instead.
+public struct CatalogChange: Equatable, Sendable {
+    public enum Kind: Equatable, Sendable {
+        case route
+        case ride
+        case trip
+    }
+
+    public var kind: Kind
+
+    public init(kind: Kind) {
+        self.kind = kind
+    }
+}
+
 /// Stored route, trip, and ride operations, without link lifecycle, device
 /// configuration, diagnostics, weather discovery, or firmware update authority.
 public protocol DeviceObjects: Sendable {
-    /// Unsolicited device store movements (`storeChanged`, spec §4.3 msg 2) —
-    /// an object committed or deleted **on the device** while connected (the
-    /// on-device route delete, epic #447 P6). **Live edges only, no replay**:
-    /// a movement is an event, not a state — late subscribers reconcile via
-    /// their own connect-time reload, never against a stale edge. Consumers
-    /// also audit catalogs at low cadence while connected because a BLE notify
-    /// can be dropped without replay.
-    var storeChanges: AsyncStream<StoreChanged> { get }
+    /// Optional local invalidation edges. The BLE implementation is a finished stream because v4
+    /// removed the v2 notification; consumers reconcile on connect and audit while connected.
+    var catalogChanges: AsyncStream<CatalogChange> { get }
 
     // MARK: Data plane (bulk objects — progress + cancel + restart)
     //
@@ -149,25 +161,24 @@ public protocol DeviceObjects: Sendable {
     /// Full detail for one stored route: the stored OBCR object, decoded
     /// app-side (spec §7.1 — "download the route object").
     func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail
-    /// Upload a route (app → device, B5). Success is the device's committed
-    /// `transferResult`; `resume()` after a drop restarts the whole upload.
+    /// Upload a route (app → device, B5). Success is a reconciled protocol-v4 `PUT` commit;
+    /// `resume()` after a drop restarts the whole upload.
     func uploadRoute(_ route: RouteBlob) -> TransferHandle
     /// Delete a route from the device.
     func deleteRoute(_ id: DeviceObjectID) async throws
-    /// Enumerate trips stored on the device — the `tripList` object (type 10,
-    /// spec §7.4) decoded to the reconcile catalog (TR8). Reconcile input for the
+    /// Enumerate trips stored on the device from protocol-v4 catalog metadata. Reconcile input for the
     /// trip card's "on device" badge (the per-entry `crc32` is the fingerprint),
     /// never list rows (trips are library-first, like routes).
     func listTrips() async throws -> [TripCatalogEntry]
     /// Full contents of one stored trip object (spec §7.7 — "download the trip
     /// object"): the name + the stage device ids in ride order, dangling refs
-    /// included. Reconcile only fetches this when the `tripList` fingerprint can't
+    /// included. Reconcile only fetches this when the catalog fingerprint can't
     /// decide (the primary check is the entry's `crc32`).
     func downloadTrip(_ id: DeviceObjectID) async throws -> TripObjectCodec.Decoded
     /// Upload a whole trip object (app → device, TR8) — the trip sibling of
     /// `uploadRoute`. A fresh trip sends `0xFFFF` (the device mints an id from its
     /// own trip counter); a re-push / adoption sends the stored id to replace it
-    /// in place. Success is the device's committed `transferResult`. The queue
+    /// in place. Success is the device's reconciled protocol-v4 `PUT` commit. The queue
     /// sends it **last**, after every member route (spec §7.7).
     func uploadTrip(_ trip: TripBlob) -> TransferHandle
     /// Delete a trip object from the device (`deleteObject` for a trip, spec §4.4)
@@ -175,8 +186,7 @@ public protocol DeviceObjects: Sendable {
     /// The "Delete trip & routes" cascade is composed by the caller (per-route
     /// deletes + this).
     func deleteTrip(_ id: DeviceObjectID) async throws
-    /// Enumerate tracked rides on the device — the summaries plus the v2 header's
-    /// truncation signal (`RideCatalog.hiddenRideCount`, spec §7.4).
+    /// Enumerate tracked rides on the device, including the bounded-catalog truncation signal.
     func listRides() async throws -> RideCatalog
     /// Full detail for one tracked ride (E3): the elevation profile.
     func rideDetail(_ id: RideID) async throws -> RideDetail
@@ -266,10 +276,8 @@ extension DeviceLink {
 }
 
 extension DeviceObjects {
-    /// Default: no object-store edge stream — for preview/test stand-ins that
-    /// have no independently changing store. A finished stream is truthful for
-    /// those conformers; real and mock transports supply their live multicast.
-    public var storeChanges: AsyncStream<StoreChanged> { AsyncStream { $0.finish() } }
+    /// Default: no local catalog edge stream.
+    public var catalogChanges: AsyncStream<CatalogChange> { AsyncStream { $0.finish() } }
 
     /// Default: no possession ack — for preview/test stand-ins that model no
     /// device-side synced state. `BLETransport` sends the real command;

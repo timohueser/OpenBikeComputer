@@ -67,7 +67,7 @@ public struct TripEntry: Sendable {
 /// `deviceObjectID` marks the routes the device also holds a copy of: they show
 /// the C1 "on device" badge, and `MockTransport.listRoutes()` serves exactly this
 /// subset — as `RouteCatalogEntry` values keyed by that id — the way the real
-/// device's `routeList` would.
+/// device's protocol-v4 route catalog would.
 public struct RouteEntry: Sendable {
     public var summary: RouteSummary
     public var points: [RoutePoint]
@@ -79,13 +79,13 @@ public struct RouteEntry: Sendable {
     /// `nil` when it lives only in the phone's library.
     public var deviceObjectID: DeviceObjectID?
     /// The whole-object CRC-32 the (mock) device reports for this copy in its
-    /// v2 `routeList` (spec §7.4) — the proof half of the app's identity-verified
+    /// protocol-v4 route catalog — the proof half of the app's identity-verified
     /// badge (#770). `nil` = "derive it from the fixture geometry" (what a seeded
     /// copy's committed CRC is); a real upload pins the committed payload's CRC
     /// here so a re-listed copy proves against the same fingerprint.
     public var crc32: UInt32?
     /// The retention level the (mock) **device** reports for this copy in its v2
-    /// `routeList` (epic #638), when the device holds it (`deviceObjectID != nil`).
+    /// route catalog (epic #638), when the device holds it (`deviceObjectID != nil`).
     /// `nil` → the device serves `.never` (invariant 6 — a pre-existing route
     /// migrates as Never). Only meaningful with a `deviceObjectID`.
     public var deviceRetention: Retention?

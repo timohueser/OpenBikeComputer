@@ -27,9 +27,9 @@ public struct MockTransport: DeviceTransport {
 
     public var state: AsyncStream<ConnectionState> { control.stateMulticast.stream() }
     public var battery: AsyncStream<Int> { control.batteryMulticast.stream() }
-    public var storeChanges: AsyncStream<StoreChanged> {
-        // Drop the `nil` seed — live edges only, matching the real transport.
-        let source = control.storeChangedMulticast.stream()
+    public var catalogChanges: AsyncStream<CatalogChange> {
+        // Drop the `nil` seed — local edges are live only.
+        let source = control.catalogChangedMulticast.stream()
         return AsyncStream { continuation in
             let pump = Task {
                 for await value in source {
@@ -114,9 +114,9 @@ public struct MockTransport: DeviceTransport {
     public func listRoutes() async throws -> [RouteCatalogEntry] {
         // The device's catalog under device object ids — reconcile input for
         // the "on device" badge, never list rows (the Planned list is
-        // library-first, #289). Mirrors the real `routeList` download.
+        // library-first, #289). Mirrors the real protocol-v4 route catalog.
         try await preludeThrowing()
-        control.recordCancelledRouteListReadIfNeeded()
+        control.recordCancelledRouteCatalogReadIfNeeded()
         return control.deviceRoutes()
     }
 
@@ -129,10 +129,10 @@ public struct MockTransport: DeviceTransport {
     // MARK: Trips (TR8)
 
     public func listTrips() async throws -> [TripCatalogEntry] {
-        // The device's trip catalog (`tripList`) — reconcile input for the trip
-        // card badge, never list rows. Mirrors the real `tripList` download.
+        // The device's protocol-v4 trip catalog — reconcile input for the trip
+        // card badge, never list rows.
         try await preludeThrowing()
-        try control.takeTripListFailure()
+        try control.takeTripCatalogFailure()
         return control.deviceTripCatalog()
     }
 
