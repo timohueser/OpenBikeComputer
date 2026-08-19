@@ -1345,13 +1345,6 @@ async fn main(_spawner: Spawner) {
         let (mut storage, flat_map): (Option<sd::Storage>, Option<&'static dyn obc_formats::io::ByteSource>) =
             match flat_store::classify(flat) {
                 flat_store::Card::Flat => {
-                    #[cfg(feature = "flat-exercise")]
-                    match flat_store::writer() {
-                        Some(writer) => _spawner.spawn(defmt::unwrap!(flat_store::interleave_exercise(flat, writer))),
-                        // Unreachable — `arm()` ran one statement ago — and reported rather than
-                        // unwrapped, because a measurement harness must never be why the board panics.
-                        None => defmt::error!("flat/exercise: the write half is not armed; no exercise this boot"),
-                    }
                     match flat_store::open_map(flat) {
                         Some(source) => (None, Some(source)),
                         None => {

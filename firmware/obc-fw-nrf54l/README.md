@@ -512,7 +512,7 @@ host-tested `obc-ble` crate (`cargo test -p obc-ble`, pinned to `specs/vectors/`
   never installed a container. So a device you flashed over SWD reports `ca9b336`, not a version, and
   no host offers it an auto-update (the dialect + why is in the BLE spec §3.1); to see a real version
   on glass, install a wrapped `UPDATE.BIN` (`obc-mkimage`). The same string answers the USB
-  `DEVICE_INFO_READ` frame. Hardware Revision `nrf54l15-dk`, Serial Number the 16-hex FICR `DEVICEID`
+  §5.2.1 EP0 vendor request. Hardware Revision `nrf54l15-dk`, Serial Number the 16-hex FICR `DEVICEID`
   whose last four digits are the `OBC-XXXX` advertised name.
 - **Storage lives on SD, ids are durable in filenames.** Uploaded routes land as 8.3 `RTnn.OBR`
   files (the `OBCR` magic held back as zeros until commit, so a power cut never leaves a half-route

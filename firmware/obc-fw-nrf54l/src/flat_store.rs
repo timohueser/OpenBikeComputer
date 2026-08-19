@@ -53,12 +53,13 @@
 //! than a policy of this module. What the *ordering* buys is only honest reporting — see
 //! [`crate::sd::bring_up_card`] for why FAT must not be tried first.
 //!
-//! ## What c1 does not do
+//! ## What FS7.5 finished here
 //!
-//! The renderer and the router still read through `sd.rs` (that is c2), and every transport still
-//! writes through the v1 object store (that is c3). So a **flat card boots to a fault screen** with
-//! the truth on RTT: the store mounted, the catalog is there, and this build cannot yet draw from
-//! it. See [`boot_fault_for`] for why that fault is the honest one rather than a new screen.
+//! c1 mounted and stopped; c2 pointed the renderer at [`open_map`]; c3a and c3b put both links'
+//! protocol-v4 engine inside [`storage_task`], which is why the engine is a field of the one task
+//! that writes rather than a value a transport owns. What is still owed is FS8's ride journal
+//! (#1390) — nothing records to a flat card yet — and FS11's (#1393) retirement of the FAT read
+//! path.
 
 use core::mem::MaybeUninit;
 
@@ -330,8 +331,7 @@ pub(crate) struct Catalog {
 /// **How many tasks hold a [`Writer`]** — the BLE v4 adapter and the USB v4 adapter.
 ///
 /// A census, not a guess, and [`REQUEST_QUEUE`] is derived from it. FS8's ride journal is the next
-/// entry; the `flat-exercise` exerciser is deliberately not one, because it is absent from every
-/// shipping profile and never runs beside a transport.
+/// entry.
 const SENDERS: usize = 2;
 
 /// Write requests queued at once.
@@ -372,13 +372,10 @@ pub(crate) const REQUEST_QUEUE_BYTES: usize =
 /// write's bytes come from a `'static` staging buffer — which is what c3's transports already have
 /// (the USB plane stages into the scratch arena).
 ///
-/// **The whole enum is dead until c3, and linked as nothing.** c1 stands the write half up and
-/// measures it; the shipping callers — the transports, the ride journal — arrive in c3. With no
-/// caller the linker keeps none of it, so the cost of the surface existing early is zero bytes, and
-/// the benefit is that c2/c3 plug into a serialization that has already been on glass. Even under
-/// `flat-exercise`, `Journal` and `Close` have no caller: the ride journal is c3's, and nothing c1
-/// opens outlives its `with_source` scope. They are here because the seam is six operations, and a
-/// task that served four of them would not be the write half.
+/// **`Journal` and `Close` still have no caller, and are here anyway.** The ride journal is FS8's
+/// (#1390) and nothing this image opens outlives its `with_source` scope. They stay because the
+/// seam is six operations and a task that served four of them would not be the write half; with no
+/// caller the linker keeps neither, so the cost is zero bytes.
 ///
 /// The variants also differ in size by an order of magnitude — a `Commit` carries up to
 /// [`MAX_BATCH`] `Mutation`s and each embeds an `EntryMeta` with §9's 48-byte display name, so the
@@ -445,11 +442,8 @@ pub(crate) enum Request {
 
 /// What one [`Request`] produced.
 ///
-/// **Dead in the default build until c3, and linked as nothing.** c1 stands the write half up and
-/// measures it; the shipping callers — the transports, the ride journal — arrive in c3. With no
-/// caller the linker keeps none of this, so the cost of the surface existing early is zero bytes and
-/// the benefit is that c2/c3 plug into a serialization that has already been on glass. The
-/// `flat-exercise` build is what exercises it today.
+/// Every variant has a caller since c3a except the two [`Request`] names above, and the linker keeps
+/// only what is reached.
 #[allow(dead_code)]
 pub(crate) enum Outcome {
     Allocated(Allocation),
@@ -504,15 +498,11 @@ static REQUESTS: Channel<CriticalSectionRawMutex, Job, REQUEST_QUEUE> = Channel:
 /// what makes "there is exactly one execution context that writes" a property of the type rather
 /// than a convention.
 ///
-/// Like [`Request`], it has no shipping caller until c3; the `flat-exercise` build is what drives it
-/// today, and the linker keeps none of it in a build with neither.
 #[derive(Clone, Copy)]
-#[cfg_attr(not(feature = "flat-exercise"), allow(dead_code))]
 pub(crate) struct Writer {
     requests: Sender<'static, CriticalSectionRawMutex, Job, REQUEST_QUEUE>,
 }
 
-#[cfg_attr(not(feature = "flat-exercise"), allow(dead_code))]
 impl Writer {
     /// Send `request` and wait for the store's answer.
     ///
@@ -671,7 +661,6 @@ static ARMED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::n
 /// FAT card no storage task is ever spawned, and a c3 caller that sent into that channel would fill
 /// two slots and then wait **forever** in `Sender::send` — no timeout, no error, no log. A write
 /// path that cannot run should say so at the first call, not wedge the plane that made it.
-#[cfg_attr(not(feature = "flat-exercise"), allow(dead_code))]
 pub(crate) fn writer() -> Option<Writer> {
     ARMED.load(core::sync::atomic::Ordering::Relaxed).then(|| Writer { requests: REQUESTS.sender() })
 }
@@ -697,8 +686,13 @@ pub(crate) fn writer() -> Option<Writer> {
 /// necessary and, on a single-threaded executor, not sufficient: the store would also have to hand
 /// control back between commands. Closing that needs a yield seam in `obc-storage` — a resumable
 /// commit, an async device, or a per-command callback — which is not this slice's and is not
-/// smuggled in as a lock here. **The follow-up is recorded on #1420**, with the reasoning and the
-/// measurement that should size it; `--features flat-exercise` is what produces that measurement.
+/// smuggled in as a lock here. **That follow-up is closed, not built** (#1420, item I2): the board
+/// session found no felt stall on glass, and the speculative-capability rule says a mechanism bought
+/// against a cost nobody has measured is a mechanism that should not exist. The harness that would
+/// have measured it — an `interleave_exercise` task behind a `flat-exercise` feature — is deleted
+/// with the question, per the owner's rule that scaffolding is stripped when its purpose is served
+/// rather than kept as a permanent fixture. If a stall ever shows up on a real ride, both come back
+/// out of git history with the reasoning intact.
 #[embassy_executor::task]
 pub(crate) async fn storage_task(
     store: &'static FlatStore<FlatCard>,
@@ -959,8 +953,7 @@ pub(crate) fn report(store: &FlatStore<FlatCard>, mount_us: u64) -> Catalog {
 }
 
 /// The metadata of the first object of `kind`, or `None`. The one catalog helper the read path
-/// needs: [`open_map`] resolves the map with it, and the interleave exercise picks a victim to read
-/// while a commit runs.
+/// needs: [`open_map`] resolves the map with it.
 pub(crate) fn first_of(store: &FlatStore<FlatCard>, kind: ObjectKind) -> Option<EntryMeta> {
     store.entries().find(|entry| entry.kind == kind)
 }
@@ -1045,209 +1038,4 @@ pub(crate) fn open_map(store: &'static FlatStore<FlatCard>) -> Option<&'static d
             None
         }
     }
-}
-
-// ══════════════════════ the on-glass interleave exercise ══════════════════════
-
-/// The write-path exercise and the interleaving measurement (`--features flat-exercise`).
-///
-/// **Never in a shipping image.** It writes to the card in the slot and it is a measurement, so it
-/// sits behind a feature that is off by default and absent from both profiles
-/// `resource_guard.py board` gates. It is also not a second bench: `bin/flat_store_bench.rs` already
-/// measures the store's own costs far better than this can, and deliberately measures them with
-/// *nothing else running*. This exercises the one thing a bench structurally cannot — the store
-/// under a **real scheduler**, with a reader task and the storage task competing for one executor.
-///
-/// ## What it asks, and why it is asked this way
-///
-/// The ruling says a commit's ~36 card commands should let a render read interleave into their gaps,
-/// so that the worst render stall is one command (10–20 ms) rather than one commit (~250 ms at 1,024
-/// entries). That claim has two halves and they can disagree:
-///
-/// - **The store's half** — the state borrow is per card command, so a reader *may* be served
-///   between any two of them. Proven off-board and pinned by `flat::granularity`; nothing on glass
-///   is needed for it and nothing on glass could improve on it.
-/// - **The scheduler's half** — the reader has to actually *run* between two of those commands.
-///   Only glass answers that, because it is a fact about this executor and this task set.
-///
-/// So the measurement is deliberately the crudest honest one: a reader on a fixed cadence, and the
-/// figure is the **longest gap between two of its completed reads** while one commit runs. A gap
-/// near one card command means the halves agree; a gap near the whole commit means they do not, and
-/// the difference is the executor's, not the store's.
-///
-/// The counters live in statics rather than in the reader's own frame **on purpose**: `select` drops
-/// the losing branch, and the losing branch here is always the reader — a figure that only survived
-/// when the measurement failed would be no figure at all.
-#[cfg(feature = "flat-exercise")]
-mod exercise {
-    use core::sync::atomic::{AtomicU32, Ordering};
-
-    // `u32` microseconds throughout: this part has no 64-bit atomics, and the widest figure the
-    // exercise can produce is one commit — ~250 ms at 1,024 entries, four orders of magnitude below
-    // a `u32`'s 71 minutes. A run that overflowed one would have failed long before reporting.
-
-    /// Longest gap between two completed probe reads, microseconds. **The figure.**
-    pub(super) static WORST_GAP_US: AtomicU32 = AtomicU32::new(0);
-    /// Longest single probe read, microseconds — the control: a gap is only interesting if it is
-    /// much larger than a read.
-    pub(super) static WORST_READ_US: AtomicU32 = AtomicU32::new(0);
-    /// Probe reads completed while the commit ran.
-    pub(super) static READS: AtomicU32 = AtomicU32::new(0);
-
-    pub(super) fn note(gap_us: u64, read_us: u64) {
-        WORST_GAP_US.fetch_max(gap_us.try_into().unwrap_or(u32::MAX), Ordering::Relaxed);
-        WORST_READ_US.fetch_max(read_us.try_into().unwrap_or(u32::MAX), Ordering::Relaxed);
-        READS.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub(super) fn taken() -> (u32, u32, u32) {
-        (READS.load(Ordering::Relaxed), WORST_GAP_US.load(Ordering::Relaxed), WORST_READ_US.load(Ordering::Relaxed))
-    }
-}
-
-#[cfg(feature = "flat-exercise")]
-#[embassy_executor::task]
-pub(crate) async fn interleave_exercise(store: &'static FlatStore<FlatCard>, writer: Writer) {
-    use embassy_futures::select::{select, Either};
-    use embassy_time::{Instant, Timer};
-    use obc_formats::io::ByteSource as _;
-    use obc_storage::flat::{DisplayName, EntryFlags, PutSource, Revision};
-
-    /// The reader's cadence. Fine enough that a stall is measured rather than inferred, coarse
-    /// enough that the reads are not themselves what keeps the card busy.
-    const READ_PERIOD_MS: u64 = 2;
-    /// One probe read: a single block, the smallest thing the card can be asked for — so the figure
-    /// is a scheduling measurement and not a transfer-size one.
-    const PROBE_LEN: usize = 512;
-    /// The exercise's payload. `'static` because a write request outlives the statement that sent it
-    /// (see [`Request`]), which is the same reason c3's transports will hand over arena slices.
-    static PAYLOAD: [u8; 512] = [0xC1; 512];
-    /// This call site's reply slot. One per site, so two callers can never collect each other's.
-    static REPLY: Reply = Signal::new();
-
-    // Read whatever the card already holds. A store with no objects still exercises the commit path;
-    // it just cannot exercise a reader beside it, and the report says so rather than inventing one.
-    let subject = first_of(store, ObjectKind::MapShard)
-        .or_else(|| first_of(store, ObjectKind::Route))
-        .or_else(|| store.entries().next());
-    let Some(subject) = subject else {
-        defmt::warn!("flat/exercise: the catalog is empty — no object to read, so no interleaving figure");
-        return;
-    };
-    let probe = PROBE_LEN.min(subject.payload_len as usize).max(1);
-    defmt::info!(
-        "flat/exercise: probing object {=u64} with {=usize} B reads every {=u64} ms while one commit runs at {=u16} entries",
-        subject.id.0,
-        probe,
-        READ_PERIOD_MS,
-        store.entry_count(),
-    );
-
-    // The reader. The figure is the gap between two *completed* reads, not a read's own duration: a
-    // stall shows up as one long gap whether the reader was blocked before its call or inside it,
-    // which is exactly the property under test.
-    let reader = async {
-        let mut buf = [0u8; PROBE_LEN];
-        let mut last = Instant::now();
-        loop {
-            let started = Instant::now();
-            let outcome = store.with_source(subject.id, None, |source| source.read_at(0, &mut buf[..probe]));
-            let now = Instant::now();
-            // Both halves, and the distinction is the useful part: the outer `Err` is the open being
-            // refused (no hold row, or the object gone), the inner one is the read itself. A gap
-            // measured across a read that never happened would be a measurement of nothing.
-            match outcome {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => {
-                    defmt::warn!(
-                        "flat/exercise: the probe read failed ({}) — the reader stops here",
-                        defmt::Debug2Format(&error)
-                    );
-                    return;
-                }
-                Err(error) => {
-                    defmt::warn!(
-                        "flat/exercise: the probe object would not open ({}) — the reader stops here",
-                        defmt::Debug2Format(&error)
-                    );
-                    return;
-                }
-            }
-            exercise::note((now - last).as_micros(), (now - started).as_micros());
-            last = now;
-            Timer::after_millis(READ_PERIOD_MS).await;
-        }
-    };
-
-    // The writer: one publication through the task — allocate, write, commit — with only the commit
-    // on the clock, because that is the step §5.5 puts a figure on and the one the reader races.
-    let commit = async {
-        let allocation = match writer.call(Request::Allocate { bytes: PAYLOAD.len() as u64 }, &REPLY).await {
-            Ok(Outcome::Allocated(allocation)) => allocation,
-            Err(error) => {
-                defmt::error!("flat/exercise: allocate refused ({})", defmt::Debug2Format(&error));
-                return None;
-            }
-            Ok(_) => return None,
-        };
-        let allocation = match writer.call(Request::Write { allocation, bytes: &PAYLOAD }, &REPLY).await {
-            Ok(Outcome::Wrote(allocation)) => allocation,
-            other => {
-                defmt::error!("flat/exercise: write refused ({})", defmt::Debug2Format(&other.err()));
-                let _ = writer.call(Request::Cancel { allocation }, &REPLY).await;
-                return None;
-            }
-        };
-        let meta = EntryMeta {
-            id: store.next_object_id(),
-            revision: Revision(1),
-            kind: ObjectKind::Route,
-            flags: EntryFlags::NONE,
-            payload_len: PAYLOAD.len() as u64,
-            payload_crc: obc_crc::crc32(&PAYLOAD),
-            name: DisplayName::new("c1-exercise").unwrap_or_default(),
-        };
-        let mut batch: heapless::Vec<Mutation, MAX_BATCH> = heapless::Vec::new();
-        let _ = batch.push(Mutation::Put { meta, source: PutSource::Fresh(allocation) });
-        let started = Instant::now();
-        let outcome = writer.call(Request::Commit { batch }, &REPLY).await;
-        let commit_us = started.elapsed().as_micros();
-        match outcome {
-            Ok(Outcome::Committed(sequence)) => Some((sequence, commit_us)),
-            other => {
-                defmt::error!("flat/exercise: commit refused ({})", defmt::Debug2Format(&other.err()));
-                None
-            }
-        }
-    };
-
-    // The reader loops forever, so `select` resolves when the commit does — and the counters are in
-    // statics, so the reader's figure survives being dropped.
-    let entries = store.entry_count();
-    let landed = match select(reader, commit).await {
-        Either::First(()) => {
-            defmt::error!("flat/exercise: the reader stopped before the commit did — the figure below is not a stall");
-            None
-        }
-        Either::Second(landed) => landed,
-    };
-    let (reads, worst_gap_us, worst_read_us) = exercise::taken();
-    match landed {
-        Some((sequence, commit_us)) => defmt::info!(
-            "flat/exercise: commit {=u64} at {=u16} entries took {=u64} us; the reader completed {=u32} probe(s) across it",
-            sequence,
-            entries,
-            commit_us,
-            reads,
-        ),
-        None => defmt::error!("flat/exercise: the commit did not land — the figures below are of an incomplete run"),
-    }
-    defmt::info!(
-        "flat/exercise: INTERLEAVING — worst gap between two completed reads {=u32} us, worst single read {=u32} us",
-        worst_gap_us,
-        worst_read_us,
-    );
-    defmt::info!(
-        "flat/exercise: read that against §5.5's ~1.5 ms write command and ~340 us read command. A gap near one command means the store's per-command granularity reached the scheduler; a gap near the whole commit means it did not, and the remaining stall is this executor's — `Store::commit` is synchronous and hands nothing back between its commands"
-    );
 }
