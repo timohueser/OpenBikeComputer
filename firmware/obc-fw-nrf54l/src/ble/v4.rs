@@ -74,7 +74,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{with_timeout, Duration, Timer};
 use nrf_sdc::{self as sdc};
-use obc_link::flat::{Admission, Ceilings, Channel, Reaction, RequestId};
+use obc_link::flat::{Admission, Ceilings, Channel, Opcode, Reaction, RequestId};
 use trouble_host::prelude::*;
 
 use crate::flat_store::{Outcome, Reply, Request, Writer};
@@ -465,7 +465,7 @@ async fn driver(
         // Control first when both are ready: a `CANCEL` or a `LIST` must not queue behind a stream
         // frame the engine may be about to refuse anyway.
         let reaction = match select(CONTROL_IN.wait(), STREAM_IN.wait()).await {
-            Either::First(len) => match control_record(writer, lane, len).await {
+            Either::First(len) => match control_record(writer, lane, &mut admission, len).await {
                 Some(reaction) => reaction,
                 None => return "lane",
             },
@@ -474,19 +474,39 @@ async fn driver(
                 None => return "lane",
             },
         };
-        if let Some(reason) = pump(writer, lane, stack, server, conn, tx, reaction).await {
+        if let Some(reason) = pump(writer, lane, &mut admission, stack, server, conn, tx, reaction).await {
             return reason;
         }
     }
 }
 
 /// Hand the staged control record to the engine, then release [`CONTROL_RX`].
-async fn control_record(writer: &Writer, lane: &mut Lane, len: usize) -> Option<Reaction> {
+async fn control_record(writer: &Writer, lane: &mut Lane, admission: &mut Admission, len: usize) -> Option<Reaction> {
     // SAFETY: `CONTROL_IN` has been taken, so `stage_control` will not write this buffer until
     // `CONTROL_TAKEN` is signalled below.
     let record: &'static [u8] =
         unsafe { core::slice::from_raw_parts(core::ptr::addr_of!(CONTROL_RX).cast::<u8>(), len) };
+    // PUT is the one control operation whose successful answer is deliberately deferred until its
+    // stream commits. Latch that admission at the hand-off which created it, while the exact
+    // control RequestId is still in hand. Waiting until the first CoC SDU to rediscover it makes
+    // the hot path depend on a second queue round trip across the control/stream race; on glass that
+    // left a successfully written PUT looking unadmitted and held every SDU for 750 ms until the
+    // controller packet pool exhausted.
+    let put_request = (len >= 16 && record.get(5).copied() == Some(Opcode::Put as u8))
+        .then(|| RequestId(u32::from_le_bytes([record[12], record[13], record[14], record[15]])));
     let reaction = lane.call(writer, |out| Request::Control { record, out }).await;
+    if let Some(request) = put_request {
+        let live = live_transfer(writer).await;
+        if admission.observed(request, live) {
+            warn!(
+                "ble: [v4] PUT request {} was not admitted (engine live request {})",
+                request.0,
+                live.map_or(0, |id| id.0)
+            );
+        } else {
+            info!("ble: [v4] PUT request {} admitted for stream", request.0);
+        }
+    }
     // **Released here and not a statement earlier.** The engine consumes `CONTROL_RX` synchronously
     // inside the storage task's `serve`, which is over by the time this call answers — so this is
     // the first instant at which the GATT task may stage another record without writing under a
@@ -524,12 +544,16 @@ async fn stream_record(writer: &Writer, lane: &mut Lane, admission: &mut Admissi
             let live = live_transfer(writer).await;
             if admission.observed(frame_id, live) {
                 if let Either::First(control_len) = select(CONTROL_IN.wait(), Timer::after(ADMISSION_WINDOW)).await {
-                    let reaction = control_record(writer, lane, control_len).await?;
+                    let reaction = control_record(writer, lane, admission, control_len).await?;
                     // Admission answered; the held frame goes next round, still un-dropped.
                     STREAM_IN.signal(len);
                     return Some(reaction);
                 }
-                warn!("ble: [v4] a stream frame arrived unadmitted — delivering after the hold window");
+                warn!(
+                    "ble: [v4] stream request {} is not engine request {} — delivering after the hold window",
+                    frame_id.0,
+                    live.map_or(0, |id| id.0)
+                );
             }
         }
     }
@@ -567,6 +591,7 @@ async fn live_transfer(writer: &Writer) -> Option<obc_link::flat::RequestId> {
 async fn pump(
     writer: &Writer,
     lane: &mut Lane,
+    admission: &mut Admission,
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
     server: &Server<'_>,
     conn: &GattConnection<'_, '_, DefaultPacketPool>,
@@ -638,7 +663,7 @@ async fn pump(
         // large, and §3.8's cancel is bilateral: a `CANCEL` written mid-download has to reach the
         // engine while there is still something to cancel.
         if let Some(len) = CONTROL_IN.try_take() {
-            match control_record(writer, lane, len).await {
+            match control_record(writer, lane, admission, len).await {
                 Some(next) => reaction = next,
                 None => return Some("lane"),
             }
