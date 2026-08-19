@@ -463,14 +463,6 @@ pub struct ObjectStore {
 /// length — which no OBCW producer can mean — is refused before a byte streams, instead of being
 /// streamed to the card for minutes and then failing validation.
 ///
-/// **This is now exactly the phone producer's own policy cap, not 4× it.** WXR5 (#1244) raised
-/// that cap from 64 KiB to 256 KiB when the phone's corridor became 162 × 162 cells of one uniform
-/// dataset (raw4 worst case ~150 KiB), so the margin this constant used to carry is spent. It is
-/// still the right number — a conforming bundle cannot exceed the producer policy, and the device
-/// pays nothing for the size because its reader is a windowed streamer — but a *further* producer
-/// raise is now a firmware change, which it deliberately was not before.
-const WEATHER_BUNDLE_MAX_LEN: u32 = 256 * 1024;
-
 impl ObjectStore {
     /// The empty store — no settings read, no card scan; [`hydrate`](Self::hydrate) does that,
     /// in place. Construction is split in two because this struct is ~13.5 KB by value: the old
