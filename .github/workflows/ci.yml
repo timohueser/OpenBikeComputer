@@ -416,6 +416,30 @@ jobs:
           python3 ../tools/resource_guard.py frames \
             --elf target/thumbv8m.main-none-eabihf/release/flat_store_bench \
             --match flat_store_bench --limit 36864
+      # The same ceiling, on the **shipping image** — new with FS7.5-c1, because the app now links the
+      # flat store and the bench gates above cannot see it there.
+      #
+      # Two needles, because the frames land in two crates: `obc_storage::flat` is the store, and
+      # `flat_store` is the board's binding and storage task. The second one is where the largest frame
+      # in this image actually is — `flat_store::serve` at 10,688 B, which is `Store::commit`'s 9,984
+      # inlined into the task's out-of-line request handler — so a gate pointed only at the store would
+      # measure 6,336 and miss it. That is not hypothetical: this leg exists because the first build of
+      # the board mount had `FlatStore::mount` inlined into the board helper, which carried 22,656 B
+      # while the store's own needle read 6,336 and passed. `mount`/`mount_in_place` are
+      # `#[inline(never)]` now for exactly that reason, and these two needles are what says so.
+      #
+      # 16,384 is the bench's limit, deliberately: the same code, so the same ceiling — and the app has
+      # far less residual stack to spend it against (37,640 B) than the bench does.
+      - name: "obc-fw-nrf54l: flat store frame ceiling (shipping image)"
+        if: matrix.name == 'build (default = LS021/FLPR, release)'
+        working-directory: firmware/obc-fw-nrf54l
+        run: |
+          python3 ../tools/resource_guard.py frames \
+            --elf target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l \
+            --match 'obc_storage::flat' --limit 16384
+          python3 ../tools/resource_guard.py frames \
+            --elf target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l \
+            --match 'flat_store' --limit 16384
       # The BLE board guard also subsumes #677's steady-state poll-frame parser: largest single
       # `sub sp` in every `TaskStorage<F>::poll`, still capped at 12 KiB, now with stale-symbol and
       # stale-instruction diagnostics covered by unit tests.
