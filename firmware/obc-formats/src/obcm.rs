@@ -718,6 +718,82 @@ mod tests {
         assert_eq!(w.at(), 579);
     }
 
+    /// [`UnitWriter::pad`] must be able to exceed one [`FILLER_RUN`]. No §1.2 gap does today — the
+    /// longest is a sector — so the loop that makes it possible is otherwise unreached, and an
+    /// off-by-one in it would sit unseen until the day a caller needed a longer run.
+    #[test]
+    fn pad_spans_more_than_one_filler_run() {
+        let mut out: std::vec::Vec<u8> = std::vec::Vec::new();
+        {
+            let mut sink = |bytes: &[u8]| -> Result<(), core::convert::Infallible> {
+                out.extend_from_slice(bytes);
+                Ok(())
+            };
+            let mut w = UnitWriter::new(OffsetScale::DEFAULT, 0, &mut sink);
+            w.pad(1_500).unwrap();
+            assert_eq!(w.at(), 1_500);
+            w.pad(0).unwrap();
+            assert_eq!(w.at(), 1_500, "an empty run writes nothing and moves nothing");
+        }
+        assert_eq!(out.len(), 1_500, "1500 = 512 + 512 + 476, and the last run is the remainder");
+        assert!(out.iter().all(|&b| b == FILLER));
+    }
+
+    /// [`UnitWriter::advance`] is the one method that moves the cursor **without** writing, and the
+    /// one a writer must never reach for. Two properties, both stated here because the type cannot
+    /// enforce either: it moves exactly `n` and hands the sink nothing, and a walk that advances
+    /// past its bodies lands on the same byte as the walk that writes them — which is the whole
+    /// reason a projection may use it.
+    #[test]
+    fn advance_moves_the_cursor_by_exactly_its_length_and_writes_nothing() {
+        // One script, run twice: once putting real bodies, once advancing past them. The boundaries
+        // between them are found the same way both times.
+        let bodies: [&[u8]; 3] = [&[1u8; 49], &[2u8; 7], &[3u8; 600]];
+        let walk = |w: &mut UnitWriter<'_, core::convert::Infallible>, write: bool| {
+            for body in bodies {
+                if write {
+                    w.put(body).unwrap();
+                } else {
+                    w.advance(body.len() as u64);
+                }
+                w.begin_section().unwrap();
+            }
+            w.at()
+        };
+
+        let mut written: std::vec::Vec<u8> = std::vec::Vec::new();
+        let emitted_at = {
+            let mut sink = |bytes: &[u8]| -> Result<(), core::convert::Infallible> {
+                written.extend_from_slice(bytes);
+                Ok(())
+            };
+            walk(&mut UnitWriter::new(OffsetScale::DEFAULT, 96, &mut sink), true)
+        };
+
+        let mut skipped: std::vec::Vec<u8> = std::vec::Vec::new();
+        let projected_at = {
+            let mut sink = |bytes: &[u8]| -> Result<(), core::convert::Infallible> {
+                skipped.extend_from_slice(bytes);
+                Ok(())
+            };
+            walk(&mut UnitWriter::new(OffsetScale::DEFAULT, 96, &mut sink), false)
+        };
+
+        assert_eq!(emitted_at, projected_at, "the projection lands on the byte the write ends at");
+        assert_eq!(written.len(), (emitted_at - 96) as usize, "the write delivered every byte it moved over");
+        // …and the projection delivered only the filler, which is the hole a writer would leave.
+        assert_eq!(skipped.len(), written.len() - bodies.iter().map(|b| b.len()).sum::<usize>());
+        assert!(skipped.iter().all(|&b| b == FILLER));
+
+        // The bare property, without a script around it.
+        let mut discard = |_: &[u8]| -> Result<(), core::convert::Infallible> { panic!("advance writes nothing") };
+        let mut w = UnitWriter::new(OffsetScale::DEFAULT, 7, &mut discard);
+        w.advance(0);
+        assert_eq!(w.at(), 7);
+        w.advance(3_000_000_000);
+        assert_eq!(w.at(), 3_000_000_007, "and it is `u64` arithmetic, not a loop over a buffer");
+    }
+
     /// The filler run must cover the longest single gap the format can ask for: `U − 1` at the
     /// largest legal scale, which is also §8.1's 512-byte alignment run.
     #[test]
