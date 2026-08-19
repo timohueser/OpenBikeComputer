@@ -105,14 +105,6 @@ pub fn refresh_in_flight() -> bool {
     IN_FLIGHT.load(Ordering::Relaxed)
 }
 
-/// A weather bundle committed (WX7 store, via `ObjectStore::weather_finish`): finish the pending
-/// request and re-anchor the schedule.
-pub(crate) fn note_commit() {
-    IN_FLIGHT.store(false, Ordering::Relaxed);
-    COMMITTED.store(true, Ordering::Relaxed);
-    WAKE.signal(());
-}
-
 /// Accept a compact phone-side "both sources unchanged" acknowledgement. The command handler calls
 /// this synchronously; the task owns the scheduler mutation and is woken through the ordinary edge.
 pub(crate) fn note_unchanged(request_id: u32, retry_after_s: u16) -> bool {
