@@ -134,8 +134,7 @@ fn fixed_chunk_range(
 
 /// The OBCM header fields that describe a map without touching any geometry — the "which map is
 /// this?" prefix every parse starts from, decoded before a single byte of style table, index or
-/// chunk is read. [`MapTables::parse`] carries on into the full tables; the volume-set
-/// [`ShardTables::parse`](crate::volume::ShardTables::parse) stops just past it.
+/// chunk is read. [`MapTables::parse`] carries on into the full tables.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MapHeader {
     pub version: u8,
@@ -205,9 +204,7 @@ pub(crate) fn parse_header(h: &[u8; HEADER_LEN]) -> Result<MapHeader, Error> {
 
 /// The prefix **every** OBCM parse begins with, decoded and bounds-checked once: the fixed 40-byte
 /// header plus the LOD table's position. [`MapTables::parse`] goes on to the style table and the
-/// POI/nav sections (whose offsets it reads straight out of the retained `header` bytes); a
-/// volume-set shard ([`ShardTables::parse`](crate::volume::ShardTables::parse)) has none of those
-/// and stops here.
+/// POI/nav sections, whose offsets it reads straight out of the retained `header` bytes.
 pub(crate) struct HeaderPrologue {
     /// The raw 40 header bytes, kept so a caller can decode the fields the prologue doesn't own.
     pub header: [u8; HEADER_LEN],
@@ -300,8 +297,7 @@ impl MapTables {
     /// **once** per map and hand the result to [`Reader::new`] each frame. A map shorter than the
     /// header, with the wrong magic / version, or with out-of-range table offsets is rejected. The
     /// magic / version / bbox / marker prefix and the LOD table's position go through the shared
-    /// `parse_prologue` (so a shard's own parse validates identically); the style table and the
-    /// POI/nav section offsets are decoded here.
+    /// `parse_prologue`; the style table and the POI/nav section offsets are decoded here.
     pub fn parse(src: &dyn ByteSource) -> Result<MapTables, Error> {
         let HeaderPrologue { header, map, lod_count, lod_table_offset, total } = parse_prologue(src)?;
         let MapHeader { version, bbox, marker_color, scale, terrain } = map;
@@ -381,8 +377,7 @@ impl MapTables {
         &self.lods
     }
 
-    /// The style table, indexed by id. Shards of one set carry byte-identical tables (they are the
-    /// skin, §4.7), so a mount validates rather than re-loads.
+    /// The style table, indexed by id.
     #[inline]
     pub fn styles(&self) -> &[Option<Style>; 256] {
         &self.styles
@@ -429,16 +424,6 @@ pub struct Reader<'a> {
     /// False only when construction legally re-entered an already borrowed cache. Streamed calls
     /// then return `CacheError::Busy`; reconstructing the cheap reader is the retry.
     cache_ready: bool,
-    /// Which file of a mounted map this reader reads — `0` for a single `.obcm`, the shard index
-    /// for a member of a volume set (`OBCA_Spec.md` §5). It tags every cache key so the shards of
-    /// one set can share a single ≈37 KB [`MapCache`] (and one parse generation) without
-    /// cross-serving each other's chunks.
-    file: u8,
-    /// A volume-set shard's **own** LOD table, borrowed from its [`crate::volume::ShardTables`].
-    /// `None` for a single map and for the core shard, whose ladder is `tables.lods`. A shard
-    /// carries the full ladder with the LODs it does not hold written empty (`OBCA_Spec.md`
-    /// §5.1), so this is what makes a per-shard reader address its own chunk offsets.
-    shard_lods: Option<&'a [Lod]>,
 }
 
 impl<'a> Reader<'a> {
@@ -449,6 +434,15 @@ impl<'a> Reader<'a> {
     /// generation here: building a reader over a different map's tables auto-clears the stale
     /// slots, so a map switch (a re-`parse`) can never cross-serve the old map's chunks — no manual
     /// [`MapCache::clear`] required.
+    ///
+    /// **There is one file, so this is the only constructor** (FS7.5, #1420). It used to have a
+    /// sibling — `new_in_set`, which built a reader over one shard of a volume set: it tagged every
+    /// cache key with the shard index so the set's shards could share one ≈37 KB [`MapCache`], and
+    /// it swapped in that shard's own header bbox and LOD ladder in place of the core's. A map is
+    /// one OBCM file now, so a shard index has nothing to range over, a reader's bbox and ladder are
+    /// always its `tables`', and one `Reader`/`MapCache` pair addresses exactly one source. The tag
+    /// is **deleted rather than pinned to zero**: a field that cannot vary is not a namespace, it is
+    /// a byte every cache slot carries and every lookup compares.
     pub fn new(src: &'a dyn ByteSource, tables: &'a MapTables, cache: &'a MapCache) -> Reader<'a> {
         let cache_ready = cache.adopt(tables.generation).is_ok();
         Reader {
@@ -459,63 +453,7 @@ impl<'a> Reader<'a> {
             tables,
             cache,
             cache_ready,
-            file: 0,
-            shard_lods: None,
         }
-    }
-
-    /// Build a reader over shard `file` of a mounted volume set. Identical to [`Reader::new`]
-    /// except that every cache key it writes is tagged with the shard index, which is what lets a
-    /// set's shards share one ≈37 KB [`MapCache`] without cross-serving each other's chunks.
-    ///
-    /// `tables` is always the **core**'s: the whole set is stamped from one skin (`OBCA_Spec.md`
-    /// §4.7), so one style table serves every shard, and one parse generation means no shard
-    /// clears the cache the previous one filled. `shard` supplies the parts that are *not* shared
-    /// — the shard's own header bbox (the quadtree root) and its own LOD table (its chunk-offset
-    /// tables live at its own offsets); `None` means the core, whose bbox and ladder are already
-    /// `tables`'.
-    ///
-    /// Crate-private on purpose. Because `tables` is the core's, the POI and nav directories a
-    /// non-core reader would report are the *core file's* offsets against a *shard's* bytes —
-    /// meaningless. [`crate::volume::MountedSet`] therefore uses these readers for geometry only
-    /// and routes nav/POI/hours to [`crate::volume::MountedSet::core_reader`] (§5.1).
-    pub(crate) fn new_in_set(
-        src: &'a dyn ByteSource,
-        tables: &'a MapTables,
-        cache: &'a MapCache,
-        file: u8,
-        shard: Option<&'a crate::volume::ShardTables>,
-    ) -> Reader<'a> {
-        let mut reader = Reader { file, ..Reader::new(src, tables, cache) };
-        if let Some(shard) = shard {
-            reader.bbox = shard.bbox();
-            reader.shard_lods = Some(shard.lods());
-        }
-        reader
-    }
-
-    /// Which file of the mounted map this reader reads (`0` for a single `.obcm`).
-    #[inline]
-    pub fn file(&self) -> u8 {
-        self.file
-    }
-
-    /// Whether this reader reads a **non-core shard** of a volume set (`OBCA_Spec.md` §5).
-    ///
-    /// It is the one structural fact that separates the geometry path from the nav/POI/hours one.
-    /// A shard reader borrows the **core's** [`MapTables`] — that is the whole RAM argument of a
-    /// set — so its `pois`/`nav` directories describe offsets into the *core file* while `self.src`
-    /// is the shard's bytes. Reading one against the other is not a degraded answer, it is a read
-    /// at an unrelated offset. Every nav, POI and hours accessor below therefore answers **empty**
-    /// on a shard rather than trusting a doc comment to keep callers away; `MountedSet` routes
-    /// those queries to [`crate::volume::MountedSet::core_reader`] (§5.1).
-    ///
-    /// Deliberately not a `debug_assert`: the empty answer *is* the contract (a set's dispatch is
-    /// role-blind, so a caller reaching a shard is normal), and an assertion would make the tests
-    /// that pin the contract unrunnable.
-    #[inline]
-    pub fn is_set_shard(&self) -> bool {
-        self.shard_lods.is_some()
     }
 
     /// Snapshot of the chunk-cache + streaming counters. Cumulative over the cache's life, so the
@@ -563,7 +501,7 @@ impl<'a> Reader<'a> {
         self.cache
             .try_borrow_mut()
             .map_err(MapReadError::Cache)?
-            .index_read(self.src, self.file, off, &mut b)
+            .index_read(self.src, off, &mut b)
             .map_err(MapReadError::Source)?;
         Ok(u32::from_le_bytes(b))
     }
@@ -764,12 +702,12 @@ mod tests {
         let mut word = [0u8; 4];
 
         for block in 0..WORKING_BLOCKS {
-            inner.index_read(&src, 0, (block * INDEX_BLOCK) as u64, &mut word).unwrap();
+            inner.index_read(&src, (block * INDEX_BLOCK) as u64, &mut word).unwrap();
         }
         assert_eq!(inner.stats().sd_reads, WORKING_BLOCKS as u32, "the cold scan fills from the source");
 
         for block in 0..WORKING_BLOCKS {
-            inner.index_read(&src, 0, (block * INDEX_BLOCK) as u64, &mut word).unwrap();
+            inner.index_read(&src, (block * INDEX_BLOCK) as u64, &mut word).unwrap();
         }
         assert_eq!(
             inner.stats().sd_reads,
@@ -785,19 +723,19 @@ mod tests {
         let entry = WalkEntry { cid: 7, node: BBox { min_lon: -50, min_lat: -40, max_lon: 0, max_lat: 0 } };
         let mut entries = Vec::new();
         assert!(entries.push(entry).is_ok());
-        cache.inner.borrow_mut().store_walk(2, 3, cover, &entries);
+        cache.inner.borrow_mut().store_walk(3, cover, &entries);
 
         let inside = BBox { min_lon: -20, min_lat: -10, max_lon: 20, max_lat: 10 };
-        let hit = cache.inner.borrow().cached_walk(2, 3, &inside).unwrap();
+        let hit = cache.inner.borrow().cached_walk(3, &inside).unwrap();
         assert_eq!(hit.len(), 1);
         assert_eq!(hit[0].cid, 7);
         assert_eq!(hit[0].node, entry.node);
 
         let outside = BBox { min_lon: -20, min_lat: -10, max_lon: 101, max_lat: 10 };
-        assert!(cache.inner.borrow().cached_walk(2, 3, &outside).is_none());
-        assert!(cache.inner.borrow().cached_walk(2, 4, &inside).is_none());
+        assert!(cache.inner.borrow().cached_walk(3, &outside).is_none());
+        assert!(cache.inner.borrow().cached_walk(4, &inside).is_none());
         cache.clear().unwrap();
-        assert!(cache.inner.borrow().cached_walk(2, 3, &inside).is_none());
+        assert!(cache.inner.borrow().cached_walk(3, &inside).is_none());
     }
 
     #[test]
@@ -822,12 +760,12 @@ mod tests {
         let node = BBox { min_lon: 0, min_lat: 0, max_lon: 1, max_lat: 1 };
 
         for cid in 0..CHUNKS as u32 {
-            inner.load_chunk(&src, 0, 0, cid, u64::from(cid) * LEN as u64, LEN, &node).unwrap();
+            inner.load_chunk(&src, 0, cid, u64::from(cid) * LEN as u64, LEN, &node).unwrap();
         }
         assert_eq!(inner.stats().chunk_misses, CHUNKS as u32);
 
         for cid in 0..CHUNKS as u32 {
-            inner.load_chunk(&src, 0, 0, cid, u64::from(cid) * LEN as u64, LEN, &node).unwrap();
+            inner.load_chunk(&src, 0, cid, u64::from(cid) * LEN as u64, LEN, &node).unwrap();
         }
         let stats = inner.stats();
         assert_eq!(stats.chunk_misses, CHUNKS as u32, "all five chunks should remain resident");
@@ -857,7 +795,7 @@ mod tests {
 
         // Prime all five slots. RRIP's first victim of the next miss is slot 0 (cid 0).
         for cid in 0..CACHE_SLOTS as u32 {
-            let loc = inner.load_chunk(&src, 0, 0, cid, u64::from(cid) * LEN as u64, LEN, &node).unwrap();
+            let loc = inner.load_chunk(&src, 0, cid, u64::from(cid) * LEN as u64, LEN, &node).unwrap();
             if cid < MAP_CHUNK_SLOTS as u32 {
                 assert!(matches!(loc, ChunkLoc::Slot(_)));
             } else {
@@ -873,11 +811,11 @@ mod tests {
         src.read_at(0, &mut k_old).unwrap();
 
         // Eviction read of K_new fails partway through filling slot 0's buffer.
-        assert!(matches!(inner.load_chunk(&src, 0, 0, 99, fail_at, LEN, &node), Err(IoError::Io)));
+        assert!(matches!(inner.load_chunk(&src, 0, 99, fail_at, LEN, &node), Err(IoError::Io)));
 
         // Request K_old again: it must be a *miss* (re-read), not a hit on the poisoned slot.
         let before = inner.stats();
-        let loc = inner.load_chunk(&src, 0, 0, 0, 0, LEN, &node).unwrap();
+        let loc = inner.load_chunk(&src, 0, 0, 0, LEN, &node).unwrap();
         let after = inner.stats();
         assert_eq!(after.chunk_hits, before.chunk_hits, "K_old must not hit the poisoned slot");
         assert_eq!(after.chunk_misses, before.chunk_misses + 1, "K_old must be re-read");
@@ -905,7 +843,7 @@ mod tests {
         let data = [0xA5u8; LEN];
         let src = SliceSource(&data);
         let node = BBox { min_lon: 0, min_lat: 0, max_lon: 1, max_lat: 1 };
-        let loc = inner.load_chunk(&src, 0, 0, 0, 0, LEN, &node).unwrap();
+        let loc = inner.load_chunk(&src, 0, 0, 0, LEN, &node).unwrap();
         match loc {
             ChunkLoc::Slot(i) => assert_eq!(&inner.chunks[i].buf[..LEN], &data[..]),
             ChunkLoc::Scratch => panic!("a slot-sized chunk should land in a slot"),
@@ -1059,9 +997,9 @@ mod tests {
         let mut inner = cache.inner.borrow_mut();
 
         // Resident, then a hit (no source read).
-        inner.index_block(&src, 0, 0).unwrap();
+        inner.index_block(&src, 0).unwrap();
         let before = inner.stats();
-        inner.index_block(&src, 0, 0).unwrap();
+        inner.index_block(&src, 0).unwrap();
         assert_eq!(inner.stats().sd_reads, before.sd_reads, "a resident block must hit, not re-read");
         drop(inner);
 
@@ -1069,7 +1007,7 @@ mod tests {
         cache.clear().unwrap();
         let mut inner = cache.inner.borrow_mut();
         let before = inner.stats();
-        inner.index_block(&src, 0, 0).unwrap();
+        inner.index_block(&src, 0).unwrap();
         assert_eq!(inner.stats().sd_reads, before.sd_reads + 1, "post-clear index read must re-read");
     }
 }

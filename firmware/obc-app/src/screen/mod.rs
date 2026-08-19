@@ -447,9 +447,9 @@ impl Render<'_> {
 ///
 /// Keeping the scene in this thin wrapper is what lets only the map-bearing screens be generic
 /// over [`MapScene`]. Every chrome screen still receives `&mut Render` through `Deref`, so the
-/// generic source does not infect the whole screen catalogue. A volume set supplies its
-/// [`MountedSet`](obc_reader::MountedSet) here while POI, hours and routing keep using the core
-/// [`Reader`] in [`Prepare`].
+/// generic source does not infect the whole screen catalogue. Since FS7.5 (#1420) a map is one
+/// file, so the scene a host supplies here is a plain [`Reader`] — the generic stays because it is
+/// what keeps the chrome screens out of it, not because two scene types are still in play.
 pub struct RenderFrame<'a, S: MapScene> {
     pub scene: Option<&'a S>,
     pub render: Render<'a>,

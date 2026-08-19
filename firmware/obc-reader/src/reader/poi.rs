@@ -126,14 +126,9 @@ pub struct PoiDirectory {
     pub hours_pool_count: usize,
 }
 
-/// The one shared empty POI directory a shard reader hands out — a `static` rather than a
-/// promoted temporary because [`PoiDirectory`] holds a `heapless::Vec` and does not const-promote.
-static EMPTY_POI_DIRECTORY: PoiDirectory = PoiDirectory::EMPTY;
-
 impl PoiDirectory {
-    /// The directory a reader with no POI section of its own reports — no categories, no chunks,
-    /// no hours pool. The POI twin of [`super::NavDirectory::EMPTY`], and what a **volume-set shard**
-    /// reader answers (`OBCA_Spec` §5.1: POIs live in the core file alone).
+    /// A directory with nothing in it — no categories, no chunks, no hours pool. The POI twin of
+    /// [`super::NavDirectory::EMPTY`], and the base an assembler builds a real one onto.
     pub const EMPTY: PoiDirectory =
         PoiDirectory { chunk_size: 0, entries: Vec::new(), hours_pool_offset: 0, hours_pool_count: 0 };
 }
@@ -155,13 +150,8 @@ impl<'a> Reader<'a> {
     /// [`Reader::nearest_pois`] walks the per-category quadtrees; P3 (#443) reads
     /// [`PoiDirectory::hours_pool_offset`]/[`PoiDirectory::hours_pool_count`] to resolve a POI's
     /// pooled schedule.
-    ///
-    /// [`PoiDirectory::EMPTY`] on a volume-set shard — see [`Reader::is_set_shard`].
     #[inline]
     pub fn poi_directory(&self) -> &PoiDirectory {
-        if self.is_set_shard() {
-            return &EMPTY_POI_DIRECTORY;
-        }
         &self.tables.pois
     }
 
@@ -181,10 +171,6 @@ impl<'a> Reader<'a> {
     /// Unlike [`Reader::nearest_pois`], this does **not** touch the [`super::MapCache`] — it's a plain
     /// stack read, safe to call from anywhere (including inside a `for_each_*` callback).
     pub fn poi_hours(&self, hours_ref: u16) -> Option<crate::hours::WeeklySchedule> {
-        // A volume-set shard carries no hours pool (see `is_set_shard`).
-        if self.is_set_shard() {
-            return None;
-        }
         // The no-hours sentinel and any index past the pool ⇒ no schedule.
         let dir = &self.tables.pois;
         if hours_ref == POI_HOURS_REF_NONE || (hours_ref as usize) >= dir.hours_pool_count {
@@ -233,10 +219,6 @@ impl<'a> Reader<'a> {
         out: &mut Vec<Poi, MAX_POI_RESULTS>,
     ) -> Result<(), Error> {
         out.clear();
-        // A volume-set shard carries no POI section (see `is_set_shard`).
-        if self.is_set_shard() {
-            return Ok(());
-        }
         let dir = &self.tables.pois;
         let entry = match dir.entries.iter().find(|e| e.category_id == category.id()) {
             // An absent or empty category is a valid "no POIs here" answer, not an error.
@@ -451,10 +433,6 @@ impl<'a> Reader<'a> {
         out: &mut Vec<CorridorPoi, MAX_CORRIDOR_RESULTS>,
     ) -> Result<(), Error> {
         out.clear();
-        // A volume-set shard carries no POI section (see `is_set_shard`).
-        if self.is_set_shard() {
-            return Ok(());
-        }
         let dir = &self.tables.pois;
         // `chunk_size / POI_RECORD_LEN` is the per-chunk record cap; a corrupt 0 would divide by
         // zero, so treat the whole (unwalkable) section as empty — same guard as `nearest_pois`.
