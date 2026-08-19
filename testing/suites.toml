@@ -1,0 +1,819 @@
+schema = 1
+
+# Rust ownership names Cargo packages, never their dependencies or source lists.
+# Targets and test harnesses are derived from `cargo metadata` on every check.
+
+[[suite]]
+id = "rust.obc-app"
+surface = "firmware-app"
+level = "component"
+command = "cargo test -p obc-app --locked"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = ["specs/vectors/**"]
+coverage_component = "firmware-app"
+ownership = [{ kind = "rust-package", name = "obc-app" }]
+quarantine = { reason = "One rain camera regression remains ignored pending restoration of the shared camera state.", issue = "#1252" }
+
+[[suite]]
+id = "rust.obc-formats"
+surface = "formats"
+level = "contract"
+command = "cargo test -p obc-formats --locked"
+fixtures = []
+pull_request = "always"
+scheduled = "none"
+extra_triggers = ["specs/**"]
+coverage_component = "format-protocol-codecs"
+ownership = [{ kind = "rust-package", name = "obc-formats" }]
+
+[[suite]]
+id = "rust.obc-crc"
+surface = "formats"
+level = "unit"
+command = "cargo test -p obc-crc --locked"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = []
+coverage_component = "crc"
+ownership = [{ kind = "rust-package", name = "obc-crc" }]
+
+[[suite]]
+id = "rust.obc-link"
+surface = "device-link"
+level = "contract"
+command = "cargo test -p obc-link --locked"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = ["specs/vectors/**"]
+coverage_component = "format-protocol-codecs"
+ownership = [{ kind = "rust-package", name = "obc-link" }]
+cadence_conflict = { reason = "Ignored vector regenerators share the library harness with required contract tests and need a deliberate split.", issue = "#1449" }
+
+[[suite]]
+id = "rust.obc-storage"
+surface = "storage"
+level = "component"
+command = "cargo test -p obc-storage --locked"
+fixtures = []
+pull_request = "affected"
+scheduled = "weekly"
+extra_triggers = []
+coverage_component = "storage"
+ownership = [{ kind = "rust-package", name = "obc-storage" }]
+budget_exception = { reason = "The valuable crash matrices currently share the library harness with fast storage tests.", issue = "#1449" }
+cadence_conflict = { reason = "Crash matrices need their own executable before fast and scheduled cadence can be selected independently.", issue = "#1449" }
+
+[[suite]]
+id = "rust.obc-dfu"
+surface = "dfu"
+level = "contract"
+command = "cargo test -p obc-dfu --locked"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = ["specs/vectors/**"]
+coverage_component = "dfu"
+ownership = [{ kind = "rust-package", name = "obc-dfu" }]
+
+[[suite]]
+id = "rust.obc-boot"
+surface = "boot"
+level = "contract"
+command = "cargo build --manifest-path firmware/obc-boot/Cargo.toml --release --locked"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = []
+platforms = ["linux"]
+coverage_component = "boot"
+ownership = [{ kind = "rust-package", name = "obc-boot" }]
+
+[[suite]]
+id = "rust.obc-fw-nrf54l"
+surface = "board"
+level = "contract"
+command = "cargo build --manifest-path firmware/obc-fw-nrf54l/Cargo.toml --release --locked"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = ["rust-toolchain.toml"]
+platforms = ["linux"]
+ownership = [{ kind = "rust-package", name = "obc-fw-nrf54l" }]
+
+[[suite]]
+id = "rust.obc-desktop"
+surface = "desktop"
+level = "component"
+command = "cargo test --manifest-path apps/obc-desktop/Cargo.toml --release --locked"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = ["builder/app/**"]
+platforms = ["linux", "macos", "windows"]
+coverage_component = "desktop"
+ownership = [{ kind = "rust-package", name = "obc-desktop" }]
+
+[[suite]]
+id = "rust.obc-ports"
+surface = "firmware-core"
+level = "unit"
+command = "cargo test -p obc-ports --locked"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = []
+coverage_component = "firmware-app"
+ownership = [{ kind = "rust-package", name = "obc-ports" }]
+
+[[suite]]
+id = "rust.obc-platform"
+surface = "firmware-core"
+level = "unit"
+command = "cargo test -p obc-platform --locked"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = []
+coverage_component = "firmware-app"
+ownership = [{ kind = "rust-package", name = "obc-platform" }]
+
+[[suite]]
+id = "rust.obc-map-scene"
+surface = "maps"
+level = "unit"
+command = "cargo test -p obc-map-scene --locked"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = []
+coverage_component = "navigation-map"
+ownership = [{ kind = "rust-package", name = "obc-map-scene" }]
+
+[[suite]]
+id = "rust.obc-reader"
+surface = "maps"
+level = "component"
+command = "cargo test -p obc-reader --locked"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = []
+coverage_component = "navigation-map"
+ownership = [{ kind = "rust-package", name = "obc-reader" }]
+
+[[suite]]
+id = "rust.obc-route"
+surface = "navigation"
+level = "component"
+command = "cargo test -p obc-route --locked"
+fixtures = ["test"]
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = []
+coverage_component = "navigation-map"
+ownership = [{ kind = "rust-package", name = "obc-route" }]
+cadence_conflict = { reason = "Captured route scenarios and fast navigation tests still share package execution.", issue = "#1449" }
+
+[[suite]]
+id = "rust.obc-render"
+surface = "rendering"
+level = "component"
+command = "cargo test -p obc-render --locked"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = []
+coverage_component = "navigation-map"
+ownership = [{ kind = "rust-package", name = "obc-render" }]
+cadence_conflict = { reason = "The ignored exhaustive 172,000-frame derivation shares the library harness with fast render tests.", issue = "#1449" }
+
+[[suite]]
+id = "rust.obc-weather"
+surface = "weather"
+level = "component"
+command = "cargo test -p obc-weather --locked"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = ["ops/weather/**"]
+coverage_component = "weather"
+ownership = [{ kind = "rust-package", name = "obc-weather" }]
+
+[[suite]]
+id = "rust.obc-elevation"
+surface = "maps"
+level = "contract"
+command = "cargo test -p obc-elevation --locked"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = []
+coverage_component = "navigation-map"
+ownership = [{ kind = "rust-package", name = "obc-elevation" }]
+
+[[suite]]
+id = "rust.obc-display"
+surface = "device-drivers"
+level = "contract"
+command = "cargo test -p obc-display --locked"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = []
+coverage_component = "device-drivers"
+ownership = [{ kind = "rust-package", name = "obc-display" }]
+cadence_conflict = { reason = "An ignored timing probe remains in the library harness and must stay explicitly manual.", issue = "#1449" }
+
+[[suite]]
+id = "rust.obc-sensors"
+surface = "device-drivers"
+level = "unit"
+command = "cargo test -p obc-sensors --locked"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = []
+coverage_component = "device-drivers"
+ownership = [{ kind = "rust-package", name = "obc-sensors" }]
+
+[[suite]]
+id = "rust.obc-ble"
+surface = "device-drivers"
+level = "component"
+command = "cargo test -p obc-ble --locked"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = ["specs/vectors/**"]
+coverage_component = "device-drivers"
+ownership = [{ kind = "rust-package", name = "obc-ble" }]
+
+[[suite]]
+id = "rust.obc-fixtures"
+surface = "test-support"
+level = "contract"
+command = "cargo test -p obc-fixtures --locked"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = ["fixtures/catalog.toml"]
+coverage_component = "host-tools"
+ownership = [{ kind = "rust-package", name = "obc-fixtures" }]
+
+[[suite]]
+id = "rust.obcm-testkit"
+surface = "test-support"
+level = "unit"
+command = "cargo test -p obcm-testkit --locked"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = []
+coverage_component = "host-tools"
+ownership = [{ kind = "rust-package", name = "obcm-testkit" }]
+
+[[suite]]
+id = "rust.obc-tree-walk"
+surface = "host-tools"
+level = "unit"
+command = "cargo test -p obc-tree-walk --locked"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = []
+coverage_component = "host-tools"
+ownership = [{ kind = "rust-package", name = "obc-tree-walk" }]
+
+[[suite]]
+id = "rust.obc-host-core"
+surface = "host-tools"
+level = "component"
+command = "cargo test -p obc-host-core --locked"
+fixtures = ["test"]
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = []
+coverage_component = "host-tools"
+ownership = [{ kind = "rust-package", name = "obc-host-core" }]
+cadence_conflict = { reason = "Board-parity fixture coverage and fast host helpers share one package command.", issue = "#1449" }
+
+[[suite]]
+id = "rust.obc-pack"
+surface = "map-tools"
+level = "component"
+command = "cargo test -p obc-pack --locked"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = ["builder/presets/**"]
+coverage_component = "host-tools"
+ownership = [{ kind = "rust-package", name = "obc-pack" }]
+
+[[suite]]
+id = "rust.obc-bake"
+surface = "map-tools"
+level = "component"
+command = "cargo test -p obc-bake --locked"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = ["host/obc-bake/regions.toml"]
+coverage_component = "host-tools"
+ownership = [{ kind = "rust-package", name = "obc-bake" }]
+
+[[suite]]
+id = "rust.obc-dem"
+surface = "map-tools"
+level = "fixture"
+command = "cargo test -p obc-dem --locked"
+fixtures = ["captured-dem", "live-copernicus-manual"]
+pull_request = "affected"
+scheduled = "manual"
+extra_triggers = []
+coverage_component = "host-tools"
+ownership = [{ kind = "rust-package", name = "obc-dem" }]
+cadence_conflict = { reason = "Hermetic decoder tests and ignored live Copernicus downloads share one Cargo package.", issue = "#1449" }
+
+[[suite]]
+id = "rust.obc-mkimage"
+surface = "host-tools"
+level = "component"
+command = "cargo test -p obc-mkimage --locked"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = []
+coverage_component = "host-tools"
+ownership = [{ kind = "rust-package", name = "obc-mkimage" }]
+
+[[suite]]
+id = "rust.obc-bench"
+surface = "rendering"
+level = "contract"
+command = "cargo run -p obc-bench --release --locked -- --check host/obc-bench/hashes.txt"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = ["host/obc-bench/hashes.txt"]
+coverage_component = "host-tools"
+ownership = [
+  { kind = "rust-package", name = "obc-bench" },
+  { kind = "workflow", pattern = "cargo run -p obc-bench --release --locked -- --check host/obc-bench/hashes.txt" },
+]
+
+[[suite]]
+id = "rust.obc-vectors"
+surface = "formats"
+level = "contract"
+command = "cargo test -p obc-vectors --locked"
+fixtures = []
+pull_request = "always"
+scheduled = "none"
+extra_triggers = ["specs/vectors/**"]
+coverage_component = "host-tools"
+ownership = [{ kind = "rust-package", name = "obc-vectors" }]
+cadence_conflict = { reason = "An ignored vector generation path shares its binary with required vector contracts.", issue = "#1449" }
+
+[[suite]]
+id = "rust.obcm-assemble"
+surface = "map-tools"
+level = "contract"
+command = "cargo test -p obcm-assemble --locked"
+fixtures = ["checked-in-assembly"]
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = ["apps/obc-web-assemble/tests/fixture/**"]
+coverage_component = "host-tools"
+ownership = [{ kind = "rust-package", name = "obcm-assemble" }]
+cadence_conflict = { reason = "The ignored fixture regenerator shares a package with required deterministic assembly contracts.", issue = "#1449" }
+
+[[suite]]
+id = "rust.obc-replay"
+surface = "host-tools"
+level = "unit"
+command = "cargo test -p obc-replay --locked"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = []
+coverage_component = "host-tools"
+ownership = [{ kind = "rust-package", name = "obc-replay" }]
+
+[[suite]]
+id = "rust.obc-usb-host"
+surface = "host-tools"
+level = "unit"
+command = "cargo test -p obc-usb-host --locked"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = []
+coverage_component = "host-tools"
+ownership = [{ kind = "rust-package", name = "obc-usb-host" }]
+
+[[suite]]
+id = "rust.obc-wx-bake"
+surface = "weather"
+level = "fixture"
+command = "cargo test -p obc-wx-bake --locked --features external-fixtures"
+fixtures = ["test", "captured-opera", "weather-event-packs"]
+pull_request = "affected"
+scheduled = "weekly"
+extra_triggers = ["ops/weather/**"]
+coverage_component = "weather"
+ownership = [{ kind = "rust-package", name = "obc-wx-bake" }]
+budget_exception = { reason = "Canonical mosaic and event-pack binaries exceed the temporary per-suite target while repeated bake work is removed.", issue = "#1449" }
+cadence_conflict = { reason = "Fast codec tests, captured fixtures, expensive bakes, and ignored generators still share this package.", issue = "#1449" }
+
+[[suite]]
+id = "rust.obc-wx-client"
+surface = "weather"
+level = "component"
+command = "cargo test -p obc-wx-client --locked"
+fixtures = ["captured-met"]
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = ["ops/weather/**"]
+coverage_component = "weather"
+ownership = [{ kind = "rust-package", name = "obc-wx-client" }]
+
+[[suite]]
+id = "rust.obc-sim"
+surface = "simulator"
+level = "component"
+command = "cargo test -p obc-sim --locked"
+fixtures = ["test"]
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = ["fixtures/catalog.toml"]
+coverage_component = "host-tools"
+ownership = [{ kind = "rust-package", name = "obc-sim" }]
+
+[[suite]]
+id = "rust.obc-web-demo"
+surface = "web"
+level = "component"
+command = "cargo test -p obc-web-demo --locked"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = []
+coverage_component = "web"
+ownership = [{ kind = "rust-package", name = "obc-web-demo" }]
+
+[[suite]]
+id = "rust.obc-web-convert"
+surface = "web"
+level = "contract"
+command = "cargo test -p obc-web-convert --locked"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = ["specs/vectors/**"]
+coverage_component = "web"
+ownership = [{ kind = "rust-package", name = "obc-web-convert" }]
+
+[[suite]]
+id = "rust.obc-web-assemble"
+surface = "web"
+level = "contract"
+command = "cargo test -p obc-web-assemble --locked"
+fixtures = ["checked-in-assembly"]
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = ["apps/obc-web-assemble/tests/fixture/**"]
+coverage_component = "web"
+ownership = [{ kind = "rust-package", name = "obc-web-assemble" }]
+cadence_conflict = { reason = "The ignored fixture regenerator and required deterministic contract are not separate targets yet.", issue = "#1449" }
+
+[[suite]]
+id = "rust.obc-skin-preview"
+surface = "web"
+level = "component"
+command = "cargo test -p obc-skin-preview --locked"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = []
+coverage_component = "web"
+ownership = [{ kind = "rust-package", name = "obc-skin-preview" }]
+
+# Non-Rust test sources are owned by explicit roots or Swift target names.
+
+[[suite]]
+id = "web.builder-vitest"
+surface = "web"
+level = "component"
+command = "cd builder/app && npm test"
+fixtures = ["checked-in-web-fixtures"]
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = ["specs/vectors/**", "builder/app/vite.config.ts"]
+coverage_component = "web"
+ownership = [
+  { kind = "path", source = "web-test", pattern = "builder/app/**/*.test.ts" },
+  { kind = "workflow", pattern = "npm test" },
+]
+budget_exception = { reason = "Device waits, repeated Vite builds, and the large SHA boundary test exceed the temporary suite budget.", issue = "#1449" }
+
+[[suite]]
+id = "python.repository-tools"
+surface = "dev-tools"
+level = "contract"
+command = "python3 -m unittest discover -s tools/tests -v"
+fixtures = []
+pull_request = "always"
+scheduled = "none"
+extra_triggers = ["testing/*.toml", "docs/testing.md", ".github/workflows/ci.yml"]
+coverage_component = "dev-tools"
+ownership = [
+  { kind = "path", source = "python-test", pattern = "tools/tests/test_*.py" },
+  { kind = "workflow", pattern = "python3 -m unittest discover -s tools/tests -v" },
+  { kind = "workflow", pattern = "python3 tools/suite_registry.py check" },
+]
+sleep_exception = { reason = "The registry checker test contains a literal sleep example used only inside an isolated rejection fixture.", issue = "#1236" }
+
+[[suite]]
+id = "python.firmware-tools"
+surface = "dev-tools"
+level = "contract"
+command = "python3 -m unittest discover -s firmware/tools/tests -v"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = []
+coverage_component = "dev-tools"
+ownership = [
+  { kind = "path", source = "python-test", pattern = "firmware/tools/tests/test_*.py" },
+  { kind = "workflow", pattern = "python3 -m unittest discover -s firmware/tools/tests -v" },
+]
+
+[[suite]]
+id = "python.weather-probe"
+surface = "weather"
+level = "unit"
+command = "python3 -m unittest discover -s ops/weather/tests -v"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = []
+coverage_component = "dev-tools"
+ownership = [
+  { kind = "path", source = "python-test", pattern = "ops/weather/tests/test_*.py" },
+  { kind = "workflow", pattern = "python3 -m unittest discover -s ops/weather/tests -v" },
+]
+
+[[suite]]
+id = "python.builder"
+surface = "map-tools"
+level = "fixture"
+command = "PYTHONPATH=. python3 -m pytest builder/tests/ -v"
+fixtures = ["builder-corpus"]
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = ["builder/presets/**"]
+coverage_component = "dev-tools"
+ownership = [
+  { kind = "path", source = "python-test", pattern = "builder/tests/test_*.py" },
+  { kind = "workflow", pattern = "PYTHONPATH=. python3 -m pytest builder/tests/ -v" },
+]
+
+[[suite]]
+id = "web.rain-radar-demo"
+surface = "weather"
+level = "component"
+command = "cd tools/rain-radar-demo && npm test"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = []
+coverage_component = "web"
+ownership = [{ kind = "path", source = "rain-radar-test", pattern = "tools/rain-radar-demo/tests/*.test.ts" }]
+cadence_conflict = { reason = "The maintained demo tests have no current CI job; TS2 owns adding their selected route.", issue = "#1451" }
+
+[[suite]]
+id = "swift.obckit-host"
+surface = "ios"
+level = "component"
+command = "swift test --package-path companion-ios/Packages/OBCKit"
+fixtures = ["captured-met", "legacy-library"]
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = ["specs/vectors/**"]
+platforms = ["macos"]
+coverage_component = "ios"
+ownership = [
+  { kind = "swift-target", package = "companion-ios/Packages/OBCKit/Package.swift", name = "OBCTransportTests" },
+  { kind = "swift-target", package = "companion-ios/Packages/OBCKit/Package.swift", name = "OBCProtocolV3Tests" },
+  { kind = "swift-target", package = "companion-ios/Packages/OBCKit/Package.swift", name = "OBCWeatherWireTests" },
+  { kind = "swift-target", package = "companion-ios/Packages/OBCKit/Package.swift", name = "OBCWeatherTests" },
+  { kind = "swift-target", package = "companion-ios/Packages/OBCKit/Package.swift", name = "OBCFormatsTests" },
+  { kind = "swift-target", package = "companion-ios/Packages/OBCKit/Package.swift", name = "OBCMockTests" },
+  { kind = "swift-target", package = "companion-ios/Packages/OBCKit/Package.swift", name = "OBCUITests" },
+  { kind = "workflow", pattern = "swift test --package-path companion-ios/Packages/OBCKit --skip *" },
+  { kind = "workflow", pattern = "swift test --package-path companion-ios/Packages/OBCKit --skip-build --filter *" },
+]
+budget_exception = { reason = "The exhaustive weather codec mutation test exceeds the per-suite target until its CRC seam is optimized.", issue = "#1449" }
+sleep_exception = { reason = "Short bounded host-model waits remain while the state-observation work is completed.", issue = "#1236" }
+
+[[suite]]
+id = "ios.xcuitest"
+surface = "ios"
+level = "end-to-end"
+command = "xcodebuild test -project companion-ios/OBCCompanion.xcodeproj -scheme OBCCompanion -destination 'platform=iOS Simulator,name=iPhone 16 Pro'"
+fixtures = []
+pull_request = "affected"
+scheduled = "weekly"
+extra_triggers = ["companion-ios/project.yml"]
+platforms = ["macos"]
+coverage_component = "ios"
+ownership = [
+  { kind = "path", source = "xcuitest", pattern = "companion-ios/OBCCompanionUITests/*.swift" },
+  { kind = "workflow", pattern = "companion-ios/scripts/capture-website-screenshots.sh --check" },
+]
+cadence_conflict = { reason = "Required CI runs two screenshot methods while the remaining XCUITest methods have no scheduled full route yet.", issue = "#1449" }
+
+[[suite]]
+id = "swift.echo-harness"
+surface = "device-link"
+level = "contract"
+command = "swift build --package-path companion-ios/EchoHarness"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = []
+platforms = ["macos"]
+coverage_component = "ios"
+ownership = [{ kind = "swift-package", package = "companion-ios/EchoHarness/Package.swift" }]
+cadence_conflict = { reason = "The harness build has no CI route and its physical-device echo run must remain a separate hardware cadence.", issue = "#1449" }
+
+# Required CI validations that do not own test source files still need one route.
+
+[[suite]]
+id = "ci.rust-workspace-tests"
+surface = "ci"
+level = "component"
+command = "cargo test --workspace --all-features --locked"
+fixtures = ["test"]
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml"]
+ownership = [
+  { kind = "workflow", pattern = "cargo test --workspace --all-features --locked" },
+  { kind = "workflow", pattern = "cargo test -p obc-formats --locked" },
+  { kind = "workflow", pattern = "cargo test --release --locked -- --nocapture" },
+]
+cadence_conflict = { reason = "The aggregate workspace command still mixes fast and captured-fixture cadences; TS2 will consume the per-suite routes.", issue = "#1451" }
+
+[[suite]]
+id = "ci.rust-format"
+surface = "ci"
+level = "contract"
+command = "obc check fmt"
+fixtures = []
+pull_request = "always"
+scheduled = "none"
+extra_triggers = ["rustfmt.toml"]
+ownership = [{ kind = "workflow", pattern = "cargo fmt *" }]
+
+[[suite]]
+id = "ci.rust-clippy"
+surface = "ci"
+level = "contract"
+command = "obc check clippy"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml"]
+ownership = [{ kind = "workflow", pattern = "cargo clippy *" }]
+
+[[suite]]
+id = "ci.rust-builds"
+surface = "ci"
+level = "contract"
+command = "obc check device board wasm"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml"]
+ownership = [{ kind = "workflow", pattern = "cargo build *" }]
+
+[[suite]]
+id = "ci.dependencies"
+surface = "ci"
+level = "contract"
+command = "python3 firmware/tools/check_dependencies.py"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = []
+ownership = [
+  { kind = "workflow", pattern = "python3 firmware/tools/check_dependencies.py" },
+  { kind = "workflow", pattern = "cargo deny *" },
+]
+
+[[suite]]
+id = "ci.resource-contracts"
+surface = "ci"
+level = "contract"
+command = "python3 firmware/tools/resource_guard.py strict-align"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = ["firmware/tools/resource_baseline.json"]
+ownership = [{ kind = "workflow", pattern = "python3 *resource_guard.py *" }]
+
+[[suite]]
+id = "ci.wasm-size"
+surface = "web"
+level = "contract"
+command = "bash builder/build-wasm-bridges.sh"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = ["builder/app/package-lock.json"]
+coverage_component = "web"
+ownership = [
+  { kind = "workflow", pattern = "bash builder/build-wasm-bridges.sh" },
+  { kind = "workflow", pattern = "python3 firmware/tools/wasm_size_guard.py *" },
+  { kind = "workflow", pattern = "trunk build --config docs/Trunk.toml" },
+]
+
+[[suite]]
+id = "ci.web-build"
+surface = "web"
+level = "contract"
+command = "cd builder/app && npm run check && npm run build:all"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = ["builder/app/package-lock.json"]
+coverage_component = "web"
+ownership = [
+  { kind = "workflow", pattern = "npm run check" },
+  { kind = "workflow", pattern = "npm run build:*" },
+]
+
+[[suite]]
+id = "ci.docs"
+surface = "docs"
+level = "contract"
+command = "python3 docs/build_docs.py --check-links"
+fixtures = []
+pull_request = "always"
+scheduled = "none"
+extra_triggers = ["docs/**"]
+ownership = [{ kind = "workflow", pattern = "python3 docs/build_docs.py --check-links" }]
+
+[[suite]]
+id = "ci.licenses"
+surface = "ci"
+level = "contract"
+command = "tools/licenses/gen-third-party.sh --check"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = ["Cargo.lock", "builder/app/package-lock.json"]
+ownership = [{ kind = "workflow", pattern = "tools/licenses/gen-third-party.sh --check" }]
+
+[[suite]]
+id = "ci.fixture-policy"
+surface = "test-support"
+level = "contract"
+command = "python3 tools/check_fixture_policy.py"
+fixtures = []
+pull_request = "always"
+scheduled = "none"
+extra_triggers = ["fixtures/catalog.toml"]
+ownership = [
+  { kind = "workflow", pattern = "python3 tools/check_fixture_policy.py" },
+  { kind = "workflow", pattern = "python3 tools/fixtures.py sync test" },
+]
+
+[[suite]]
+id = "ci.retired-map-stack"
+surface = "maps"
+level = "contract"
+command = "python3 tools/check_retired_map_stack.py"
+fixtures = []
+pull_request = "always"
+scheduled = "none"
+extra_triggers = []
+ownership = [{ kind = "workflow", pattern = "python3 tools/check_retired_map_stack.py" }]
+
+[[suite]]
+id = "ci.ios-app-build"
+surface = "ios"
+level = "contract"
+command = "xcodebuild build -project companion-ios/OBCCompanion.xcodeproj -scheme OBCCompanion"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = ["companion-ios/project.yml"]
+platforms = ["macos"]
+coverage_component = "ios"
+ownership = [{ kind = "workflow", pattern = "xcodebuild build -project OBCCompanion.xcodeproj -scheme OBCCompanion" }]
