@@ -292,10 +292,10 @@ impl ObjectStore {
         self.rescan_rides(shared);
     }
 
-    /// Scan `/tracks` for stored ride objects (`RD{id}.ORD`) — the id is durable in the filename, like
-    /// the routes'. An interrupted save (the held-back version byte, exactly
-    /// that signature) is swept; a merely unreadable file is kept off the catalog but never
-    /// deleted. Ordered as the directory lists them; the app sorts by `start_time`.
+    /// Scan `/tracks` for stored ride objects (`RD{id}.ORD`) whose id is durable in the filename.
+    /// An interrupted save (the held-back version byte, exactly that signature) is swept; a merely
+    /// unreadable file is kept off the catalog but never deleted. Ordered as the directory lists
+    /// them; the app sorts by `start_time`.
     fn rescan_rides(&mut self, shared: &mut SharedStore) {
         self.rides.clear();
         self.ride_total = 0;
@@ -345,7 +345,6 @@ impl ObjectStore {
         STORE_WAKE.signal(());
         self.revision
     }
-
 
     // ==================== config ↔ settings ====================
 
