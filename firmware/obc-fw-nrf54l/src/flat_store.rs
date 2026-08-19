@@ -646,9 +646,25 @@ pub(crate) async fn interleave_exercise(store: &'static FlatStore<FlatCard>, wri
             let started = Instant::now();
             let outcome = store.with_source(subject.id, None, |source| source.read_at(0, &mut buf[..probe]));
             let now = Instant::now();
-            if outcome.is_err() {
-                defmt::warn!("flat/exercise: the probe read was refused — the reader stops here");
-                return;
+            // Both halves, and the distinction is the useful part: the outer `Err` is the open being
+            // refused (no hold row, or the object gone), the inner one is the read itself. A gap
+            // measured across a read that never happened would be a measurement of nothing.
+            match outcome {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    defmt::warn!(
+                        "flat/exercise: the probe read failed ({}) — the reader stops here",
+                        defmt::Debug2Format(&error)
+                    );
+                    return;
+                }
+                Err(error) => {
+                    defmt::warn!(
+                        "flat/exercise: the probe object would not open ({}) — the reader stops here",
+                        defmt::Debug2Format(&error)
+                    );
+                    return;
+                }
             }
             exercise::note((now - last).as_micros(), (now - started).as_micros());
             last = now;
