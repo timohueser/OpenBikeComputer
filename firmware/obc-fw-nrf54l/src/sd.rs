@@ -261,18 +261,18 @@ const SD_MAX_VOLUMES: usize = 1;
 /// copy-promote pair (the reopened temp **and** the final `.OBR` at once) — the 5-handle peak the
 /// file-count note above documents, of which the map's own slot is now the set's.
 const SD_RIDE_PEAK_FILES: usize = 5;
-/// **The real ceiling on a mountable volume set for this board: 11 shards.**
+/// **What used to be the ceiling on a mountable volume set: 11 shards.**
 ///
-/// `OBCA_Spec.md` §5.2 allows `1..=32`, and this board cannot honour that — a mount holds every
-/// shard's handle open for its lifetime (re-opening per query would put a FAT directory walk in the
-/// render loop), so the largest set it can mount is `SD_MAX_FILES − SD_RIDE_PEAK_FILES`. That is
-/// comfortably past the shape §5.1 projects for the largest v1 set — DACH is core + coarse + ~6
-/// geometry = **8 files** — but it is short of the format's cap, and the difference must be a
-/// stated refusal rather than a failed open halfway through a ride.
+/// It was `SD_MAX_FILES − SD_RIDE_PEAK_FILES` because a mount held every shard's handle open for
+/// its lifetime, and it was carried into the type of the reader's mount store so a larger set was
+/// refused by name rather than by a failed open halfway through a ride. Neither of those exists:
+/// FS7.5-c2 (#1420) deleted the reader's set mount and refused the set *upload*, so no code path
+/// decides anything on this number any longer.
 ///
-/// [`SetShardStore`] carries the number into the type, so `obc_reader::MountedSet::mount` refuses a
-/// larger set with `MountError::Handles(11)` — an error that names *this device's* cap, which is
-/// the number a rider needs, rather than the format's.
+/// It survives as **one diagnostic** — `set_identity`'s once-per-boot line, which still tells
+/// whoever is holding a card with a big set on it something true — and as the shard-count check the
+/// announce path applies before the card refuses the transfer anyway. Both go with the transports
+/// in c3, and this constant goes with them.
 pub(crate) const SD_SET_MAX_SHARDS: usize = SD_MAX_FILES - SD_RIDE_PEAK_FILES;
 type Vmgr = VolumeManager<SdShared, NullTime, SD_MAX_DIRS, SD_MAX_FILES, SD_MAX_VOLUMES>;
 /// [`SdByteSource`] over this board's manager (the wrappers are generic over the handle budget).
@@ -310,10 +310,24 @@ static mut MAP_EXTENTS: core::mem::MaybeUninit<ExtentTable> = core::mem::MaybeUn
 /// `self`, which is exactly right for the render loop and useless to `TerrainElevation`, whose
 /// parsed reader holds its source for the session. This slot is that source, placed once.
 ///
-/// It is the **extent path only**, and that is the old rule kept rather than a new restriction: the
-/// terrain sidecar admitted no seek-path fallback either, because a terrain sample sits inside the
-/// nav emit loop and a FAT walk per 512 B tile would put SD seeks under the router. A map that will
-/// not extent-map simply yields no terrain, exactly as a sidecar that would not extent-map did.
+/// It is the **extent path only**, and — read this before repeating the earlier claim that it is
+/// "the sidecar's rule kept" — **that is a real behaviour change, not a rule preserved.**
+///
+/// The sidecar's rule was about the *sidecar's own* fragmentation: `MAP.OBD` had its own chain and
+/// its own extent table, so a `MAP.OBM` too fragmented for a 128-run table (#504's `MAP_SLOW` case)
+/// still got terrain as long as the small, freshly-written raster mapped cleanly. Terrain is inside
+/// the map file now, so the map's chain **is** the terrain's chain: a fragmented map now loses
+/// elevation as well as speed. The two failures were independent and are one.
+///
+/// The reason the seek path is still not admitted is the sidecar's, and it is unchanged: a terrain
+/// sample sits inside the nav emit loop, and reinserting a FAT walk per 512 B tile would put SD
+/// seeks under the router. What changed is only how much rides on the map's own fragmentation.
+///
+/// Nothing here restores the independence — there is no second file to be independent of, and
+/// buying it back would mean a second copy of the region on the card. What this slice owes instead
+/// is that the case is **never silent**: `mount_terrain` warns when a map carries a §1.3 region and
+/// the extent table refused, so a rider whose routes went flat has a line that says why, next to
+/// the `MAP_SLOW` notice that says the same thing about speed.
 static mut MAP_STATIC_SOURCE: core::mem::MaybeUninit<ExtentSource<'static, Sd>> = core::mem::MaybeUninit::uninit();
 
 /// Exact target-side bytes of the board-private map read statics — the extent table and the
@@ -1251,7 +1265,6 @@ impl Storage {
             open_map: None,
             open_map_name: None,
             map_extents: None,
-            #[cfg(has_nav)]
             map_boot_fault: None,
             open_track: None,
             pending_save: None,
@@ -1901,9 +1914,10 @@ impl Storage {
         // of the catalog: the files are on the card under names the rider recognises, and
         // `map_choices` marks them unreadable so `obc_app::boot_fault` says **MAP UNREADABLE**
         // instead of NO MAP. `choose_map` prefers a readable map, so this is only reached on a card
-        // whose *only* maps are sets. (The catalog, upload and delete halves of the set surface are
-        // still here and still work — a rider can list and remove one; they die with the transports
-        // in c3.)
+        // whose *only* maps are sets. **Uploading one is refused too** — see `set_upload_begin`;
+        // accepting bytes the device has already decided it cannot read is how a rider spends tens
+        // of minutes to reach this screen. What survives is the catalog and delete halves: a set
+        // already on the card is listed and can be removed. All of it dies with the transports in c3.
         if chosen.shards.is_some() {
             defmt::warn!(
                 "SD: {} is a volume set; a map is one OBCM file since FS7.5 — this build cannot open it",
@@ -2158,10 +2172,12 @@ impl Storage {
     #[inline(never)]
     fn set_identity(&self, manifest: &ShortFileName, id: u16) -> Option<SetIdentity> {
         let parsed = self.read_set_manifest(manifest)?;
-        // Listed, not hidden — it is a real map on the card and the rider must be able to see it —
-        // but say now why it will never load. Since FS7.5-c2 nothing mounts a set at all
-        // (`open_map` refuses one outright); this ceiling is the *upload* accept rule, which is
-        // still live until the transports cut over in c3.
+        // Listed, not hidden — it is a real map on the card and the rider must be able to see it.
+        // The ceiling below is now **only a diagnostic**: since FS7.5-c2 no set mounts (`open_map`
+        // refuses one) and no set uploads (`set_upload_begin` refuses one), so nothing decides
+        // anything on this comparison. It is left because the line it prints still tells whoever is
+        // holding a card with a big set on it something true about why, and it costs one `if` on a
+        // path that runs once per boot. It goes with the rest in c3.
         if parsed.shard_count() > SD_SET_MAX_SHARDS {
             defmt::warn!(
                 "SD: volume set {} names {=usize} shards; this board mounts at most {=usize} (OBCA §5.2 allows 32)",
@@ -2228,8 +2244,9 @@ impl Storage {
     /// So the record contributes its **recorded** `Bytes` to the total and nothing else happens.
     /// The manifest is the authority on what the set claims to be (it is what `total_bytes()` sums
     /// too), the figure stays stable whatever state the file is in, and the scan does no I/O for it
-    /// at all. Whether the raster actually opens is decided later and locally, by
-    /// [`open_terrain`](Self::open_terrain), which already degrades to *no elevation* by design.
+    /// at all. Whether a raster actually opens was decided later and locally, by the sidecar mount —
+    /// which FS7.5-c2 deleted along with the reader's set mount, so on this build the question never
+    /// arises: nothing opens a set, and terrain is a window inside a single-file map.
     ///
     /// The **upload's** commit is the one place that judges it, because there the two ends built
     /// the manifest and the raster together seconds ago — see
@@ -3545,32 +3562,29 @@ impl Storage {
         next.min(obc_formats::obcs::MAX_SET_ID as u32 + 1) as u16
     }
 
-    /// Open a set-upload session on the card: clear anything already stored under `id` (§5.4's
-    /// "delete the old manifest **before** overwriting any of its shards"), then write the
-    /// zero-magic `MS{id}.OBS` token that marks the set as in-flight.
+    /// **Refuse the set upload, at its first card write.**
     ///
-    /// `false` = the card refused; the caller answers `error` and the session never opens.
+    /// This opened a set-upload session — cleared anything under `id`, then wrote the zero-magic
+    /// `MS{id}.OBS` token that marks the set in-flight. Since FS7.5-c2 (#1420) it does none of that
+    /// and answers `false`, because `open_map` mounts one OBCM file: a set that reached the card
+    /// would boot to MAP UNREADABLE and stay there.
+    ///
+    /// The refusal is **here** rather than at the commit, and that is the whole point. Accepting a
+    /// set this firmware cannot read means spending tens of minutes of a rider's transfer on
+    /// gigabytes, committing them, and then showing a permanent fault screen with no surface that
+    /// explains it. Failing at the first streamed byte is the honest version of the same answer.
+    /// [`set_manifest_begin`](Self::set_manifest_begin) keeps the commit-side backstop.
+    ///
+    /// Only the *upload* half is refused. The catalog and delete halves deliberately still work — a
+    /// set already on a card is listed (as unreadable) and can be removed — and all three go with
+    /// the transports in c3, along with this function.
     pub fn set_upload_begin(&mut self, id: u16) -> bool {
-        self.upload_close();
-        self.delete_set(id);
-        let Some(name) = obc_formats::obcs::manifest_name(id) else { return false };
-        match self.vmgr.open_file_in_dir(self.root, name.as_str(), Mode::ReadWriteCreateOrTruncate) {
-            Ok(file) => {
-                let wrote = self.vmgr.write(file, &[0u8; 4]).is_ok() && self.vmgr.flush_file(file).is_ok();
-                let _ = self.vmgr.close_file(file);
-                if !wrote {
-                    defmt::warn!("SD: cannot start volume set MS{=u16} — the card refused the token write", id);
-                    let _ = self.vmgr.delete_file_in_dir(self.root, name.as_str());
-                    return false;
-                }
-                defmt::info!("SD: volume set MS{=u16} opened (manifest token written, magic held back)", id);
-                true
-            }
-            Err(e) => {
-                defmt::warn!("SD: cannot create /MS{=u16}.OBS: {}", id, defmt::Debug2Format(&e));
-                false
-            }
-        }
+        defmt::warn!(
+            "SD: refusing the MS{=u16} upload — this firmware reads single-file maps (OBCM v14), so a set \
+             would land on the card unreadable. Re-assemble the region as one .obcm and send that.",
+            id
+        );
+        false
     }
 
     /// Open shard `index` of set `id` for streaming — `MS{id}S{kk}.OBM`, truncating, with the four
@@ -3719,28 +3733,20 @@ impl Storage {
         }
     }
 
-    /// Re-open the set's `MS{id}.OBS` token for the manifest stream, truncating it back to the four
-    /// zero bytes. The manifest is the **last** file of the set (§5.4), and it is written into the
-    /// same name the token already occupies, so the set is never without its in-flight marker —
-    /// not even for the width of one create.
+    /// **The commit-side backstop for [`set_upload_begin`](Self::set_upload_begin)'s refusal.**
+    ///
+    /// This re-opened the set's `MS{id}.OBS` token for the manifest stream. No session can open any
+    /// more, so nothing should ever reach it; refusing here anyway is what makes *a set cannot be
+    /// committed* a property of the card path rather than of one call ordering. The manifest is a
+    /// set's commit point — the single write that turns `1..=32` files plus a placeholder into a map
+    /// — so it is the right last line to hold.
     pub fn set_manifest_begin(&mut self, id: u16) -> bool {
-        self.upload_close();
-        let Some(name) = obc_formats::obcs::manifest_name(id) else { return false };
-        match self.vmgr.open_file_in_dir(self.root, name.as_str(), Mode::ReadWriteCreateOrTruncate) {
-            Ok(file) => {
-                if self.vmgr.write(file, &[0u8; 4]).is_err() {
-                    defmt::warn!("SD: cannot start the MS{=u16} manifest — the card refused", id);
-                    let _ = self.vmgr.close_file(file);
-                    return false;
-                }
-                self.open_upload = Some((file, UploadOwner::Set));
-                true
-            }
-            Err(e) => {
-                defmt::warn!("SD: cannot reopen /MS{=u16}.OBS: {}", id, defmt::Debug2Format(&e));
-                false
-            }
-        }
+        defmt::warn!(
+            "SD: refusing the MS{=u16} manifest — a set cannot be committed by a firmware that reads \
+             single-file maps. This is a backstop; the upload was already refused at its first write.",
+            id
+        );
+        false
     }
 
     /// **The set's commit point.** Read the streamed manifest back with the held-back `OBCS` magic
