@@ -158,6 +158,16 @@ async fn wait_host_or_sensor_event(
 /// their committed heads have been fed to `App`. This ordering is what lets a same-id active route
 /// replacement invalidate geometry-derived state through `HostEvent::RouteUploaded`.
 fn apply_catalog_uploads(app: &mut App) {
+    // More than one full catalog of distinct facts can only happen when rapid remove/create churn
+    // leaves stale ids queued. If that exhausted the bounded handoff, conservatively refresh the
+    // active route first: even if its exact replace fact was the evicted oldest entry, no geometry
+    // derived from the displaced revision survives. Exact retained facts then land in commit order
+    // and retain the final advisory card.
+    if crate::flat_store::take_catalog_upload_loss() {
+        if let Some(id) = app.active_route_index().and_then(|i| app.route_ids().get(i).copied()) {
+            app.apply_event(obc_app::HostEvent::RouteUploaded { id, replaced: true, elevation: None });
+        }
+    }
     while let Some(upload) = crate::flat_store::take_catalog_upload() {
         match upload.kind() {
             crate::flat_store::CatalogUploadKind::Route => app.apply_event(obc_app::HostEvent::RouteUploaded {

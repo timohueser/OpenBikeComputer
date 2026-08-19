@@ -773,7 +773,11 @@ impl CatalogUpload {
     }
 
     pub(crate) const fn kind(self) -> CatalogUploadKind {
-        if self.flags & 1 == 0 { CatalogUploadKind::Route } else { CatalogUploadKind::Trip }
+        if self.flags & 1 == 0 {
+            CatalogUploadKind::Route
+        } else {
+            CatalogUploadKind::Trip
+        }
     }
 
     pub(crate) const fn id(self) -> u64 {
@@ -783,32 +787,72 @@ impl CatalogUpload {
     pub(crate) const fn replaced(self) -> bool {
         self.flags & 2 != 0
     }
+
+    fn same_object(self, other: Self) -> bool {
+        (self.flags & 1) == (other.flags & 1) && self.id == other.id
+    }
 }
 
 const _: () = assert!(core::mem::size_of::<CatalogUpload>() == 9);
 
 /// A complete UI catalog's worth of upload facts. The engine serializes transfers, and the ride
 /// task drains these after the catalog rescan caused by the same commits. Bounding this to the
-/// menus' combined identity capacity keeps the resident cost explicit while retaining every event
-/// that can still resolve in the snapshot it is applied against.
+/// menus' combined identity capacity keeps the resident cost explicit. Same-object commits
+/// coalesce; churn beyond one full snapshot retains the newest facts and raises the conservative
+/// active-route refresh below.
 const UPLOAD_EVENTS_CAP: usize = obc_app::MAX_ROUTES + obc_app::MAX_TRIPS;
 static UPLOAD_EVENTS: Mutex<CriticalSectionRawMutex, RefCell<Deque<CatalogUpload, UPLOAD_EVENTS_CAP>>> =
     Mutex::new(RefCell::new(Deque::new()));
+static UPLOAD_EVENTS_LOSS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
-/// The exact route/trip commit facts retained until their post-rescan app events are delivered.
-pub(crate) const CATALOG_UPLOAD_BYTES: usize =
-    core::mem::size_of::<Mutex<CriticalSectionRawMutex, RefCell<Deque<CatalogUpload, UPLOAD_EVENTS_CAP>>>>();
+/// The bounded route/trip commit handoff plus its one-bit conservative loss signal.
+pub(crate) const CATALOG_UPLOAD_BYTES: usize = core::mem::size_of::<
+    Mutex<CriticalSectionRawMutex, RefCell<Deque<CatalogUpload, UPLOAD_EVENTS_CAP>>>,
+>() + core::mem::size_of::<core::sync::atomic::AtomicBool>();
+
+/// Insert the latest fact for one object at the back of the queue. Repeated replaces must not spend
+/// another slot: remove the older fact, preserve every other fact's order, then append the final
+/// `replaced` value at its true commit position. Returns whether a distinct oldest fact had to be
+/// evicted because catalog churn left more queued identities than the UI can simultaneously hold.
+fn queue_catalog_upload(events: &mut Deque<CatalogUpload, UPLOAD_EVENTS_CAP>, upload: CatalogUpload) -> bool {
+    let queued = events.len();
+    let mut coalesced = false;
+    for _ in 0..queued {
+        if let Some(prior) = events.pop_front() {
+            if prior.same_object(upload) {
+                coalesced = true;
+            } else {
+                let _ = events.push_back(prior);
+            }
+        }
+    }
+    if coalesced {
+        let _ = events.push_back(upload);
+        return false;
+    }
+    if let Err(upload) = events.push_back(upload) {
+        let _ = events.pop_front();
+        let _ = events.push_back(upload);
+        return true;
+    }
+    false
+}
 
 fn note_catalog_upload(upload: CatalogUpload) {
     UPLOAD_EVENTS.lock(|events| {
-        if events.borrow_mut().push_back(upload).is_err() {
-            defmt::warn!("flat: upload-event queue full — catalog rescan retained, advisory deferred");
+        if queue_catalog_upload(&mut events.borrow_mut(), upload) {
+            UPLOAD_EVENTS_LOSS.store(true, core::sync::atomic::Ordering::Relaxed);
+            defmt::warn!("flat: upload-event queue saturated — oldest fact replaced; forcing active-route refresh");
         }
     });
 }
 
 pub(crate) fn take_catalog_upload() -> Option<CatalogUpload> {
     UPLOAD_EVENTS.lock(|events| events.borrow_mut().pop_front())
+}
+
+pub(crate) fn take_catalog_upload_loss() -> bool {
+    UPLOAD_EVENTS_LOSS.swap(false, core::sync::atomic::Ordering::Relaxed)
 }
 
 fn note_catalog_commit() {
