@@ -312,10 +312,10 @@ struct WeatherCapabilityCompatibilityTests {
         return (version, epoch, obcm, features)
     }
 
-    /// The 11 bytes a weather-capable firmware serves: version 2, epoch `0xA1B2C3D4`, OBCM 12,
+    /// A legacy extended identity fixture carried forward for weather compatibility checks.
     /// features = weather.
     private var newFirmwareRead: Data {
-        Data([0x02, 0x00, 0xD4, 0xC3, 0xB2, 0xA1, 12, 0x01, 0x00, 0x00, 0x00])
+        Data([0x04, 0x00, 0xD4, 0xC3, 0xB2, 0xA1, 12, 0x01, 0x00, 0x00, 0x00])
     }
 
     /// **Old app ↔ new firmware.** A shipped app decodes the identity read with the pre-WX3 rules

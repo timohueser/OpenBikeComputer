@@ -64,6 +64,8 @@ jobs:
         with:
           filters: |
             rust:
+              - 'Cargo.toml'
+              - 'Cargo.lock'
               - 'firmware/**'
               # host/ holds the packer, the bench + its golden hashes, and the test oracles
               # (obcm-testkit, obc-vectors) that firmware crates dev-depend on.
@@ -75,9 +77,13 @@ jobs:
               # endpoints, so the packer, the presets it round-trips, and the server module
               # under test all have to be able to trigger it.
               - 'builder/tests/**'
-              - 'builder/server/*.py'
+              - 'builder/server/**/*.py'
               - 'builder/requirements*.txt'
               - 'rust-toolchain.toml'
+              - 'rustfmt.toml'
+              - '.cargo/**'
+              - 'specs/vectors/**'
+              - 'ops/weather/**'
               - 'deny.toml'
               # The other half of the dependency-licence pair (#1149): the config, the template
               # and the generator all decide what THIRD-PARTY.md should contain, and the `deny`
@@ -89,12 +95,25 @@ jobs:
               - 'tools/check_fixture_policy.py'
               - 'tools/tests/**'
               - 'fixtures/**'
-              - '.github/workflows/ci.yml'
+              - 'testing/**'
+              - 'tools/suite_registry.py'
+              - 'tools/ci_aggregate.py'
+              - 'docs/testing.md'
+              - 'CONTRIBUTING.md'
+              - 'AGENTS.md'
+              - '.github/workflows/**'
               - '.github/actions/**'
             docs:
               - 'docs/**'
-              - '.github/workflows/ci.yml'
+              - 'testing/**'
+              - 'tools/suite_registry.py'
+              - 'tools/ci_aggregate.py'
+              - 'CONTRIBUTING.md'
+              - 'AGENTS.md'
+              - '.github/workflows/**'
             wasm:
+              - 'Cargo.toml'
+              - 'Cargo.lock'
               - 'firmware/**'
               - 'host/**'
               - 'apps/**'
@@ -104,7 +123,15 @@ jobs:
               # reach the wasm build via cargo's config walk-up, so a re-introduced file
               # must still rebuild the demo or a stack regression lands unbuilt.
               - '.cargo/config.toml'
-              - '.github/workflows/ci.yml'
+              - 'rust-toolchain.toml'
+              - 'rustfmt.toml'
+              - 'testing/**'
+              - 'tools/suite_registry.py'
+              - 'tools/ci_aggregate.py'
+              - 'docs/testing.md'
+              - 'CONTRIBUTING.md'
+              - 'AGENTS.md'
+              - '.github/workflows/**'
             ios:
               - 'companion-ios/**'
               # The Swift suite pins the shared protocol vectors byte-for-byte, so a regenerated
@@ -112,7 +139,14 @@ jobs:
               # `obcm_version` assertion sat a version behind for the whole of v12 (#1105): the
               # vector changed, the pin did not, and nothing ran to say so.
               - 'specs/vectors/**'
-              - '.github/workflows/ci.yml'
+              - 'fixtures/**'
+              - 'testing/**'
+              - 'tools/suite_registry.py'
+              - 'tools/ci_aggregate.py'
+              - 'docs/testing.md'
+              - 'CONTRIBUTING.md'
+              - 'AGENTS.md'
+              - '.github/workflows/**'
             desktop:
               # The Tauri shell embeds the same published-cell frontend, so either
               # half can break the packaged app.
@@ -120,8 +154,18 @@ jobs:
               - 'apps/obc-skin-preview/**'
               - 'builder/app/**'
               - 'rust-toolchain.toml'
-              - '.github/workflows/ci.yml'
+              - 'rustfmt.toml'
+              - '.cargo/**'
+              - 'testing/**'
+              - 'tools/suite_registry.py'
+              - 'tools/ci_aggregate.py'
+              - 'docs/testing.md'
+              - 'CONTRIBUTING.md'
+              - 'AGENTS.md'
+              - '.github/workflows/**'
             web:
+              - 'Cargo.toml'
+              - 'Cargo.lock'
               - 'builder/app/**'
               # The frontend now embeds firmware and host code: obc-web-convert (#896) compiles the
               # shared obc-route conversion path to wasm and obc-web-assemble (#1034) the
@@ -133,8 +177,49 @@ jobs:
               - 'host/**'
               - 'apps/**'
               - 'specs/vectors/**'
+              - 'fixtures/**'
               - 'rust-toolchain.toml'
-              - '.github/workflows/ci.yml'
+              - 'rustfmt.toml'
+              - '.cargo/**'
+              - 'testing/**'
+              - 'tools/suite_registry.py'
+              - 'tools/ci_aggregate.py'
+              - 'docs/testing.md'
+              - 'CONTRIBUTING.md'
+              - 'AGENTS.md'
+              - '.github/workflows/**'
+
+  # The registry is the only suite selector. TS2 records and checks this plan while the existing
+  # coarse filters still start broad runner/toolchain jobs; delivery step 3 consumes it as a matrix.
+  selection:
+    runs-on: ubuntu-latest
+    outputs:
+      plan: ${{ steps.plan.outputs.plan }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Select affected suites
+        id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            base="$(git merge-base HEAD "origin/$BASE_REF")"
+          elif [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            base="$BEFORE_SHA"
+          else
+            base="HEAD^"
+          fi
+          set +e
+          python3 tools/suite_registry.py select --base "$base" --format json > selection-plan.json
+          rc=$?
+          set -e
+          echo "plan=$(cat selection-plan.json)" >> "$GITHUB_OUTPUT"
+          cat selection-plan.json
+          exit "$rc"
 
   retired-map-stack:
     runs-on: ubuntu-latest
@@ -147,8 +232,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Test-suite registry drift
+        run: python3 tools/suite_registry.py check
       - name: Registry unit tests
         run: python3 -m unittest discover -s tools/tests -v
+      - name: Coarse runner filters cover registry selection
+        run: python3 tools/suite_registry.py validate-filters
       - name: Large fixture policy
         run: python3 tools/check_fixture_policy.py
 
@@ -201,7 +290,7 @@ jobs:
       - name: cargo clippy (workspace, all targets + features)
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
-  # The 251-test shared render + packer suite — the real safety net.
+  # The current inventory is generated by `python3 tools/suite_registry.py list`.
   test:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
@@ -293,14 +382,15 @@ jobs:
           # debug-uart = default + the VCOM host sensor/telemetry feed (the obc-platform debug codec).
           - { name: "clippy (debug-uart)", cmd: "cargo clippy --locked --features debug-uart -- -D warnings" }
           # The real flashed default artifact (LS021/FLPR) under fat LTO + the N3 RAM-budget assert.
-          - { name: "build (default = LS021/FLPR, release)", cmd: "cargo build --release --locked" }
+          - { name: "build (default = LS021/FLPR, release)", cmd: "set -o pipefail; cargo build --release --locked -vv 2>&1 | tee $RUNNER_TEMP/obc-fw-default-build.log" }
           # `ble` named explicitly. This leg used to be "the BLE build" against a map-only default,
           # and later carried a --no-default-features that existed only to keep `cs-single-core` out
           # of a BLE image. `ble` has been part of `default` since the LM20 retarget,
           # `cs-single-core` is gone (#931), and the new `sd-bench` map profiler is opt-in — so
-          # `default` and this pair are still the same feature set, built two ways. Kept because
-          # `--no-default-features --features ble` is the invocation the README documents and the one
-          # a future optional feature would first break.
+          # Cargo's `default` marker remains part of the resolved configuration even though it
+          # expands only to `ble`: TS2 measured distinct production ELFs (16 B flash difference on
+          # the pinned toolchain). Keep the documented explicit invocation as genuinely separate
+          # clippy/build/resource legs; deleting it would drop a distinct artifact contract.
           - { name: "clippy (ble)", cmd: "cargo clippy --locked --no-default-features --features ble -- -D warnings" }
           - { name: "build (ble, release)", cmd: "cargo build --release --locked --no-default-features --features ble" }
     steps:
@@ -308,6 +398,8 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: false
+          # An exported RUSTFLAGS value overrides the board crate's target rustflags wholesale.
+          rustflags: ""
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: firmware/obc-fw-nrf54l
@@ -351,6 +443,8 @@ jobs:
         if: matrix.name == 'build (default = LS021/FLPR, release)'
         working-directory: firmware/obc-fw-nrf54l
         run: |
+          python3 ../tools/resource_guard.py build-rustflags \
+            --log "$RUNNER_TEMP/obc-fw-default-build.log" --crate obc-fw-nrf54l
           rustup component add llvm-tools
           python3 ../tools/resource_guard.py board --profile default \
             --elf target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l
@@ -493,6 +587,8 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: false
+          # Preserve the boot crate's target-specific +strict-align Cargo configuration.
+          rustflags: ""
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: firmware/obc-boot
@@ -502,9 +598,11 @@ jobs:
       - name: "obc-boot: clippy (rtt)"
         run: cargo clippy --locked --features rtt -- -D warnings
       - name: "obc-boot: build (release)"
-        run: cargo build --release --locked
+        run: set -o pipefail; cargo build --release --locked -vv 2>&1 | tee "$RUNNER_TEMP/obc-boot-build.log"
       - name: "obc-boot: 32 KB size guard"
         run: |
+          python3 ../tools/resource_guard.py build-rustflags \
+            --log "$RUNNER_TEMP/obc-boot-build.log" --crate obc-boot
           rustup component add llvm-tools
           python3 ../tools/resource_guard.py boot \
             --elf target/thumbv8m.main-none-eabihf/release/obc-boot
@@ -947,16 +1045,12 @@ jobs:
 
   ci:
     if: always()
-    needs: [changes, retired-map-stack, fixture-registry, fmt, clippy, test, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, web, desktop-frontend, desktop]
+    needs: [changes, selection, retired-map-stack, fixture-registry, fmt, clippy, test, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, web, desktop-frontend, desktop]
     runs-on: ubuntu-latest
     steps:
-      - name: Verify all required jobs succeeded (or were skipped)
-        run: |
-          echo "results: ${{ join(needs.*.result, ' ') }}"
-          for r in ${{ join(needs.*.result, ' ') }}; do
-            if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
-              echo "::error::a required job did not succeed"
-              exit 1
-            fi
-          done
-          echo "all good"
+      - uses: actions/checkout@v4
+      - name: Verify selected suites and required jobs
+        env:
+          OBC_SELECTION_PLAN: ${{ needs.selection.outputs.plan }}
+          OBC_NEEDS_RESULTS: ${{ toJSON(needs) }}
+        run: python3 tools/ci_aggregate.py

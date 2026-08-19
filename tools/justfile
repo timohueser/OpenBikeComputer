@@ -3,6 +3,7 @@
 # (the repo root). Personal defaults (map/gpx/preset/toolchain paths) live in a gitignored
 # `tools/obc.local` — copy tools/obc.local.example and edit. `OBC_DRY_RUN=1 obc …` prints
 # the underlying commands without running them.
+# Test levels, suite cadence, and proportional verification are defined in docs/testing.md.
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 set positional-arguments := true
@@ -720,6 +721,15 @@ clean *args:
     _run python3 "$OBC_TOOLS/dev_cleanup.py" "$@"
 
 # ── Meta ─────────────────────────────────────────────────────────────────────
+
+# Inspect the machine-readable test and validation inventory from any directory.
+# The full taxonomy and suite-granularity policy live in docs/testing.md.
+# Args: check | list [--json] | explain SUITE_ID | select --base REF | validate-filters
+suites *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    _run python3 "$OBC_TOOLS/suite_registry.py" "$@"
 
 # Check your toolchain and report what's missing. Add --install to fix what it can
 # (rustup targets, just, probe-rs, the venv, replication client, and GEOS / RISC-V gcc via scripts/).
