@@ -103,13 +103,28 @@ python3 /path/to/OpenBikeComputer/tools/suite_registry.py check
 python3 /path/to/OpenBikeComputer/tools/suite_registry.py list
 python3 /path/to/OpenBikeComputer/tools/suite_registry.py list --json
 python3 /path/to/OpenBikeComputer/tools/suite_registry.py explain rust.obc-storage
+python3 /path/to/OpenBikeComputer/tools/suite_registry.py select --base develop --format text
+python3 /path/to/OpenBikeComputer/tools/suite_registry.py validate-filters
 ```
 
-From a checkout, the same interface is available as `obc suites check|list|explain`. `check` is
+From a checkout, the same interface is available as
+`obc suites check|list|explain|select|validate-filters`. `check` is
 the always-run CI policy command. It parses both registries, derives Cargo metadata and every
 supported non-Rust source, validates command and trigger resolution from the repository root, and
 requires exactly one registry owner for every discovered execution unit and required CI command.
 It does not contact a live service.
+
+`select --base REF [--head REF] [--format text|json]` reads changed paths from Git, derives Rust
+package and reverse-dependency edges from Cargo metadata, applies only the extra cross-language
+edges declared by the registry, and prints every selected and non-selected suite with its reason
+and required runner surface. Unknown production paths and selected suites without an executable CI
+route are errors. `validate-filters` proves the transitional runner-image filters cover the audited
+selection classes; those filters do not select suites and remain deliberately broad until delivery
+step 3 consumes the generated plan as the CI matrix.
+
+Some transitional validation suites have executable routes on more than one runner surface. The
+plan lists those candidates; the aggregate requires every candidate whose coarse runner filter was
+started for the change, and fails when a selected suite has no started route.
 
 Use the focused commands from `CONTRIBUTING.md` while developing. Fixture work is explicit, and
 the complete workspace remains exceptional:
@@ -134,8 +149,9 @@ a small bounded sleep only when its exception explains why.
 
 ## Change selection
 
-This table is the policy TS2 will implement in the shared local/CI selector. Until that selector
-lands, use it to choose proportional checks explicitly.
+This table is implemented by `suite_registry.py select`, the shared local/CI selection core. CI
+records the same plan and its aggregate gate evaluates required jobs against it. Delivery step 3
+will expose the stable `obc test affected` wrapper and make the job matrix consume the plan.
 
 | Change type | Required pull-request work |
 | --- | --- |
@@ -155,5 +171,5 @@ lands, use it to choose proportional checks explicitly.
 | Documentation only | Documentation and generated-policy checks unless it produces a shared artifact |
 | Live-service or hardware path | Hermetic contracts on the pull request; scheduled, manual, or release evidence as required |
 
-Required gates must eventually report pass, fail, or “not selected” with a reason. A skipped job is
-not evidence that a suite passed.
+The aggregate gate reports pass, fail, not selected, selected but not run, or blocked by an upstream
+failure for every suite. A skipped selected job is a failure, never evidence that the suite passed.
