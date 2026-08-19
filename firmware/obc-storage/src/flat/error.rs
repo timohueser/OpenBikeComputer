@@ -7,17 +7,39 @@
 //! gate from a mis-sorted entry array while it is choosing a catalog copy. Decoding is **total**:
 //! every input either decodes or produces one of these, and nothing panics on hostile bytes.
 
-/// What an operation at the store seam fails with. `FLAT_Store_Protocol.md` §2, verbatim.
+/// What an operation at the store seam fails with. `FLAT_Store_Protocol.md` §2.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoreError {
     NotFound,
-    RevisionConflict { current: Revision },
-    NoSpace { required: u64 },
+    RevisionConflict {
+        current: Revision,
+    },
+    NoSpace {
+        required: u64,
+    },
     TooFragmented,
     CatalogFull,
     Invalid,
     Media,
     ReadOnly,
+    /// **Try again**: every hold row is taken, so there is no slot to resolve this open into.
+    ///
+    /// It is [`Invalid`](StoreError::Invalid)'s opposite in the only way a client cares about.
+    /// `Invalid` is §3.5's `invalidRequest` — *this request is wrong and will be wrong next time*,
+    /// which is what a `GET` on a `RESERVED` entry earns. A full hold table is a **transient**
+    /// property of who else is reading right now, and a client told `invalidRequest` for it would
+    /// stop retrying something that would have succeeded a second later.
+    ///
+    /// The two were the same value until FS7.5-c2, and the comment at `open`'s table-full arm
+    /// already said what it should have been ("the wire face is `busy`, not `invalidRequest` —
+    /// `StoreError` has no variant of its own for it"). It was unreachable in practice at
+    /// `MAX_OPEN_OBJECTS = 16`, which is why it stayed a comment; the table is **6** now, so the
+    /// distinction has to exist in the type rather than in prose.
+    ///
+    /// **Wire mapping**: §3.9 code `9` `busy`, detail `holds 2` — beside `transfer 1`, which is the
+    /// other *ask again* the protocol already has. Context is the `RequestId` field's, and a
+    /// table-full open has no live request to name, so it carries none.
+    Busy,
 }
 
 use super::seam::Revision;

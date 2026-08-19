@@ -943,14 +943,25 @@ fn allocate_refusal(error: StoreError, bytes: u64) -> Refusal {
         StoreError::Invalid => Refusal::plain(ErrorCode::Busy),
         StoreError::Media => Refusal::new(ErrorCode::MediaIo, detail::media_io::WRITE),
         StoreError::ReadOnly => Refusal::new(ErrorCode::ReadOnly, detail::read_only::REVISION_SPACE_EXHAUSTED),
+        // `allocate` takes no hold row, so this is unreachable from here — mapped rather than
+        // funnelled into `Internal`, because a store that ever does say it is the same transient
+        // fact the arm above reports and a client should read it the same way.
+        StoreError::Busy => Refusal::new(ErrorCode::Busy, detail::busy::HOLDS),
         StoreError::NotFound | StoreError::RevisionConflict { .. } => Refusal::plain(ErrorCode::Internal),
     }
 }
 
-/// A refusal from `open`. A full hold table is the same transient fact as a full reservation table.
+/// A refusal from `open`. A full hold table is the same transient fact as a full reservation table,
+/// and since FS7.5-c2 it **says which** — `busy` detail `holds 2` rather than a plain `busy`, so a
+/// client can tell "another transfer owns the device" from "every read slot is taken".
+///
+/// `Invalid` still maps to a plain `busy` here for the reservation case, and it is also what a `GET`
+/// on a `RESERVED` entry produces — which is a genuine client error the store has no other way to
+/// spell at this seam. That conflation is older than this slice and is not resolved by it.
 fn open_refusal(error: StoreError) -> Refusal {
     match error {
         StoreError::NotFound => Refusal::new(ErrorCode::NotFound, detail::not_found::OBJECT),
+        StoreError::Busy => Refusal::new(ErrorCode::Busy, detail::busy::HOLDS),
         StoreError::Invalid => Refusal::plain(ErrorCode::Busy),
         StoreError::Media => Refusal::new(ErrorCode::MediaIo, detail::media_io::READ),
         StoreError::ReadOnly => Refusal::new(ErrorCode::ReadOnly, detail::read_only::CATALOG_UNREADABLE),
@@ -977,6 +988,10 @@ fn commit_refusal(error: StoreError, bytes: u64) -> Refusal {
         // The engine built the batch, so a structural refusal is this crate's fault and not the
         // client's.
         StoreError::Invalid => Refusal::plain(ErrorCode::Internal),
+        // A commit takes no hold row either. Same reasoning as `allocate_refusal`'s arm: mapped to
+        // the transient answer rather than to `Internal`, so a store that ever reports it is read
+        // as *ask again* and not as a device defect.
+        StoreError::Busy => Refusal::new(ErrorCode::Busy, detail::busy::HOLDS),
     }
 }
 
