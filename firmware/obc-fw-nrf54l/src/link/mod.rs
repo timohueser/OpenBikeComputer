@@ -10,13 +10,7 @@
 //! - [`command::run_command`] — the §4.4 imperatives (`deleteObject`, `ackRides`, `installFw`,
 //!   `forgetBond`, `setClock`, `setRouteRetention`). Takes the store, returns a typed outcome; it
 //!   has never had a radio in it.
-//! - [`transfer::classify_transfer`] — decode + validate a §4.2 descriptor against the store, and
-//!   say whether it arms, is rejected outright, or aborts what is running.
 //! - [`Armed`] + [`TRANSFER_ACTIVE`] — the one-transfer-at-a-time gate. **Deliberately shared
-//!   across transports**: both planes drive the *same* [`ObjectStore`], which has exactly one
-//!   upload temp and one open download source, so a BLE transfer in flight must answer a USB
-//!   `transferControl` with `busy` and vice versa. A per-transport gate would let two uploads
-//!   interleave into one temp file.
 //! - [`identity`] — the FICR-derived serial/name, the DIS strings, and the Config /
 //!   `protocolVersion` blob codecs, in plain bytes. BLE's GATT table wraps them into its
 //!   attribute-value types; USB writes the same bytes into a control frame.
@@ -24,8 +18,9 @@
 //!   counter — so one store, built once in `main` and handed to every plane.
 //!
 //! What stays transport-specific: how a control message is *addressed* (a GATT characteristic
-//! handle vs. a USB selector byte), how a device → host message is *delivered* (an ATT notify vs. a
-//! bulk-IN frame), and the link lifecycle (advertising/bonding vs. enumeration/VBUS).
+//! handle vs. an EP0 vendor request, `FLAT_Store_Protocol.md` §5.2.1) and the link lifecycle
+//! (advertising/bonding vs. enumeration/VBUS). The object surface is not here at all any more: both
+//! links speak protocol v4 into the one engine in `crate::flat_store`.
 //!
 //! Compiled whenever the companion link exists at all. The USB plane is unconditional and the
 //! radio is in every build that compiles, so gating on `ble` and gating on "either link" are the
@@ -248,8 +243,7 @@ pub fn clear_map_transfer() {
 
 /// One transfer at a time, **across every transport**: claimed by whichever control plane armed it,
 /// released by that transport's data plane when the transfer concludes (answered, aborted, or the
-/// channel dropped). While held, any further `transferControl` open — BLE or USB — is answered
-/// `busy`.
+/// channel dropped).
 ///
 /// Shared rather than per-transport because the resource being arbitrated is the store, not the
 /// wire: [`ObjectStore`] holds exactly one upload handle and one open download source. Two

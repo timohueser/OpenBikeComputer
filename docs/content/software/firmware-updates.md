@@ -311,7 +311,10 @@ list to be able to say *"this one goes to the people who asked for it"*.
 
 A client's entire decision is a comparison of two strings: the version the manifest
 names, and the version the connected device reports over
-[DIS](../companion-link/) or the USB device-information frame. So the dialect has to
+[DIS](../companion-link/) on the radio, or over the cable's EP0 device-information
+request ([`FLAT_Store_Protocol.md`](src:specs/FLAT_Store_Protocol.md) §5.2.1 — one
+vendor control request answering firmware revision, hardware revision and serial,
+readable the moment the interface is claimed). So the dialect has to
 mean the same thing everywhere, and it is written twice — once in TypeScript for the
 builder's web and desktop hosts, once in Swift for the phone — with the Swift test
 matrix a port of the TypeScript one, case for case, because two parsers that drift would
@@ -459,8 +462,11 @@ are three ways it gets there, and
 - **USB from the browser.** The map builder's device step does the same two
   steps over the cable — the [object model is the transport's
   guest](../companion-link/), so this is the identical `fwImage` upload followed
-  by the identical `installFw` request. It reads the running version from the
-  Device Information service, compares it against the published release, and
+  by the identical `installFw` request — under the flat store, a `PUT` of kind `7`
+  followed by an `ARM`. It reads the running version from the cable's own
+  device-information request (§5.2.1; the same three strings the radio serves from
+  DIS, moved to EP0 when the cable's selector envelope was retired), compares it
+  against the published release, and
   checks the container *before* spending the transfer on it: magic, header
   version, header CRC-32, the image CRC-32 over the bytes that follow, and the
   slot ceiling. That is the same decode rule the armer applies and it replaces
@@ -687,5 +693,5 @@ a frozen COM line would apply for the multi-ten-second install.
 - The host tool that builds and inspects `UPDATE.BIN`: [`obc-mkimage`](src:host/obc-mkimage) — the `objcopy → wrap` pipeline is in the [firmware README](src:firmware/README.md)
 - The publish pipeline — the tag trigger, the signing and `inspect` gate, the release assets and the R2 mirror: [`release.yml`](src:.github/workflows/release.yml); the signing key and its rotation recipe: [`obc-dfu/keys/README.md`](src:firmware/obc-dfu/keys/README.md)
 - The manifest readers and the shared version dialect: [`builder/app/src/lib/firmware/release.ts`](src:builder/app/src/lib/firmware/release.ts) for the web and desktop hosts, and its Swift twin in [`OBCKit/Sources/OBCTransport/Firmware/`](src:companion-ios/Packages/OBCKit/Sources/OBCTransport/Firmware) for the phone
-- The BLE and USB staging paths — the `fwImage` object and `installFw` command: [the companion link](../companion-link/) (contract: [`obc-ble-interface-spec.md`](src:specs/obc-ble-interface-spec.md) §4.4, §7.6); the browser half in [`web_builder/frontend/src/lib/device/`](src:builder/app/src/lib/device)
+- The BLE and USB staging paths — under the flat store a `PUT` of kind `7` and an `ARM` ([`FLAT_Store_Protocol.md`](src:specs/FLAT_Store_Protocol.md) §4), and before it the `fwImage` object and `installFw` command ([`obc-ble-interface-spec.md`](src:specs/obc-ble-interface-spec.md) §4.4, §7.6): [the companion link](../companion-link/); the browser half in [`web_builder/frontend/src/lib/device/`](src:builder/app/src/lib/device)
 - Copying a card image by hand and the release recipe: the [repo README](src:README.md)

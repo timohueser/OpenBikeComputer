@@ -60,6 +60,19 @@ RETIRED = [
 # is the *code*, and the identifiers above are what the code was called.
 
 
+# **One file is exempt, and the reason is what the file is.** `firmware/tools/resource_baseline.json`
+# is a *measurement log*: every `_resident_note_*` records what a past slice moved and why, and
+# several of them name the very symbols this guard bans because those symbols are what was measured.
+# Rewriting those notes to dodge a grep would be falsifying the record — the whole point of keeping
+# them is that a reader can reconstruct how the board's RAM got where it is. The guard exists to stop
+# the *code* coming back; a note saying "`SD_SET_MAX_SHARDS` cost this many bytes, and here is when it
+# stopped" is the opposite of that code coming back.
+#
+# Deliberately one path and not a glob: the exemption should be uncomfortable enough to notice if
+# someone tries to widen it.
+EXEMPT = {Path("firmware/tools/resource_baseline.json")}
+
+
 def main() -> int:
     failures: list[str] = []
     for directory, child_dirs, files in os.walk(ROOT):
@@ -69,6 +82,8 @@ def main() -> int:
             if path == Path(__file__).resolve() or path.suffix not in TEXT_SUFFIXES:
                 continue
             rel = path.relative_to(ROOT)
+            if rel in EXEMPT:
+                continue
             try:
                 lines = path.read_text(encoding="utf-8").splitlines()
             except (OSError, UnicodeDecodeError):
