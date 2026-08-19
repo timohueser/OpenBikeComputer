@@ -145,6 +145,16 @@ static CONTROL_IN: Signal<CriticalSectionRawMutex, usize> = Signal::new();
 /// The engine has consumed [`CONTROL_RX`] and the GATT task may stage another.
 static CONTROL_TAKEN: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
+/// True from the instant the GATT task starts writing [`CONTROL_RX`] until the driver has finished
+/// the engine call that borrows it.
+///
+/// [`CONTROL_IN`] cannot carry this ownership fact by itself: the driver clears that signal when it
+/// *takes* the length, before the engine has consumed the corresponding bytes. A second ATT write
+/// in that interval would therefore overwrite the engine's live borrow. This explicit gate stays
+/// closed even if [`control_taken`] times out; only consumption or a FIFO-ordered link teardown may
+/// release it.
+static CONTROL_BUSY: AtomicBool = AtomicBool::new(false);
+
 /// A received stream record, as its length in [`STREAM_RX`].
 static STREAM_IN: Signal<CriticalSectionRawMutex, usize> = Signal::new();
 
@@ -186,14 +196,14 @@ pub(crate) fn stage_control(record: &[u8]) -> Staging {
         warn!("ble: [v4] objectControl write before the stream channel is up — refused");
         return Staging::Unavailable;
     }
-    if CONTROL_IN.signaled() {
-        warn!("ble: [v4] a control record is still un-taken — refusing rather than overwriting it");
+    if CONTROL_BUSY.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
+        warn!("ble: [v4] a control record is still owned by the driver — refusing rather than overwriting it");
         return Staging::Unavailable;
     }
-    // SAFETY: the driver has released `CONTROL_RX` — `CONTROL_IN` being clear is exactly that fact,
-    // because the driver signals `CONTROL_TAKEN` only after the engine has consumed the record, and
-    // it takes `CONTROL_IN` before that. Both this and the driver are cooperative futures on the one
-    // thread-mode executor and neither holds the buffer across an `await`.
+    // SAFETY: the successful `CONTROL_BUSY` transition owns `CONTROL_RX` until `control_record`
+    // releases it after the engine call. Both this and the driver are cooperative futures on the
+    // one thread-mode executor; the atomic is nevertheless the explicit ownership authority, so
+    // taking `CONTROL_IN` cannot make the buffer appear free early.
     unsafe {
         let staging = &mut *core::ptr::addr_of_mut!(CONTROL_RX);
         staging[..record.len()].copy_from_slice(record);
@@ -203,7 +213,10 @@ pub(crate) fn stage_control(record: &[u8]) -> Staging {
     Staging::Taken
 }
 
-/// Wait until the engine has consumed the staged record, so the next write cannot race it.
+/// Wait until the engine has consumed the staged record.
+///
+/// A timeout releases only this GATT task's wait, not [`CONTROL_BUSY`]. The next write is therefore
+/// refused until the driver really consumes the record or link teardown safely retires it.
 pub(crate) async fn control_taken() {
     if with_timeout(CONTROL_TAKEN_TIMEOUT, CONTROL_TAKEN.wait()).await.is_err() {
         warn!("ble: [v4] the driver did not take a staged control record in time");
@@ -260,10 +273,18 @@ static mut LANE: core::mem::MaybeUninit<Lane> = core::mem::MaybeUninit::uninit()
 /// thing it cleans up after has happened.
 pub(crate) async fn release_engine(writer: &Writer) {
     static TEARDOWN_REPLY: Reply = Signal::new();
+    // Close admission before yielding. A GATT write must not enter while the FIFO barrier below is
+    // waiting to retire work from the old channel.
+    DRIVER_READY.store(false, Ordering::Release);
     if writer.call(Request::LinkLost { link: Link::Ble }, &TEARDOWN_REPLY).await.is_err() {
         warn!("ble: [v4] the engine refused a link-lost teardown");
     }
-    DRIVER_READY.store(false, Ordering::Relaxed);
+    // `Writer` is FIFO: once LinkLost answers, every earlier control request has either completed
+    // or been retired by that teardown. No engine borrow of `CONTROL_RX` can remain. Also discard a
+    // length the dropped driver never took, then wake a GATT task that may still be waiting.
+    CONTROL_IN.reset();
+    CONTROL_BUSY.store(false, Ordering::Release);
+    CONTROL_TAKEN.signal(());
 }
 
 // ══════════════════════════ the driver ══════════════════════════
@@ -440,8 +461,8 @@ async fn driver(
 
 /// Hand the staged control record to the engine, then release [`CONTROL_RX`].
 async fn control_record(writer: &Writer, lane: &mut Lane, len: usize) -> Option<Reaction> {
-    // SAFETY: `CONTROL_IN` has been taken, so `stage_control` will not write this buffer until
-    // `CONTROL_TAKEN` is signalled below.
+    // SAFETY: `CONTROL_BUSY` stays set after `CONTROL_IN` is taken, so `stage_control` cannot write
+    // this buffer until the engine call below has finished consuming it.
     let record: &'static [u8] =
         unsafe { core::slice::from_raw_parts(core::ptr::addr_of!(CONTROL_RX).cast::<u8>(), len) };
     let reaction = lane.call(writer, |out| Request::Control { link: Link::Ble, record, out }).await;
@@ -449,6 +470,7 @@ async fn control_record(writer: &Writer, lane: &mut Lane, len: usize) -> Option<
     // inside the storage task's `serve`, which is over by the time this call answers — so this is
     // the first instant at which the GATT task may stage another record without writing under a
     // borrow the queue still holds.
+    CONTROL_BUSY.store(false, Ordering::Release);
     CONTROL_TAKEN.signal(());
     reaction
 }

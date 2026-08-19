@@ -15,6 +15,9 @@ use tokio::sync::{watch, Mutex};
 /// (`firmware/obc-fw-nrf54l/src/usb/mod.rs`), and the class a WebUSB-reachable interface must use.
 const VENDOR_CLASS: u8 = 0xff;
 
+/// The one object-protocol major this host implements (§5.2).
+const WIRE_MAJOR: u8 = 4;
+
 /// How much of a bulk IN stream one transfer asks for.
 ///
 /// **This is the read size the terminating ZLP bought us.** A USB IN transfer ends when the request
@@ -137,6 +140,23 @@ pub fn split_layout(interface: u8, endpoints: &[EndpointFacts]) -> Result<Endpoi
         control: (ins[0].address, outs[0].address, ins[0].max_packet),
         bulk: (ins[1].address, outs[1].address, ins[1].max_packet),
     })
+}
+
+/// Refuse descriptor statements that contradict the wire major before the interface is claimed.
+///
+/// USB states the same major twice: `bInterfaceProtocol` and the high byte of `bcdDevice`. Checking
+/// both here keeps the native path aligned with WebUSB and, importantly, leaves a mismatched device
+/// unclaimed so another compatible app can still open it.
+fn check_wire_major(interface_protocol: u8, device_release: u16) -> Result<(), PipeFault> {
+    let device_major = (device_release >> 8) as u8;
+    let wrong = [interface_protocol, device_major].into_iter().find(|major| *major != WIRE_MAJOR);
+    if let Some(wrong) = wrong {
+        return Err(PipeFault::device(format!(
+            "This device speaks protocol v{wrong}; this app speaks v{WIRE_MAJOR}. \
+             Update the device firmware, or install a newer app build."
+        )));
+    }
+    Ok(())
 }
 
 // ============================ The pipes ============================
@@ -385,6 +405,10 @@ pub async fn open(info: &DeviceInfo, device_id: String) -> Result<(Arc<OpenLink>
         .collect();
     let layout = split_layout(vendor.interface_number(), &facts)?;
 
+    // Matching settles §5.2's version before we take ownership of the interface. A rejection after
+    // `claim_interface` would needlessly make an incompatible device busy for every other host.
+    check_wire_major(vendor.protocol(), info.device_version())?;
+
     let interface = device.claim_interface(layout.interface).await.map_err(|e| {
         PipeFault::device(format!("Interface {} could not be claimed: {e}{}", layout.interface, permission_hint(&e)))
     })?;
@@ -450,6 +474,18 @@ mod tests {
         let fault = split_layout(0, &[ep(0x81, 64), ep(0x01, 64)]).unwrap_err();
         assert_eq!(fault.code, "device-error");
         assert!(fault.message.contains("1 IN and 1 OUT"), "{}", fault.message);
+    }
+
+    #[test]
+    fn a_wrong_wire_major_is_refused_before_open_can_claim_it() {
+        check_wire_major(4, 0x0400).unwrap();
+
+        for (interface, release, reported) in [(3, 0x0400, "v3"), (4, 0x0500, "v5")] {
+            let fault = check_wire_major(interface, release).unwrap_err();
+            assert_eq!(fault.code, "device-error");
+            assert!(fault.message.contains(reported), "{}", fault.message);
+            assert!(fault.message.contains("v4"), "{}", fault.message);
+        }
     }
 
     #[test]

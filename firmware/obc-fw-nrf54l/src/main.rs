@@ -1503,11 +1503,10 @@ async fn main(_spawner: Spawner) {
             &mut *slot
         };
         {
-            // Routes, rides and trips are the **FAT** catalog's — every one of them is a file the v1
-            // object store wrote. Their flat-store twins arrive with the transports in c3, so a flat
-            // card boots to an empty Route menu and an empty ride list: c2 is the *read* cutover, and
-            // what it cuts over is the map. That is a stated limitation of the dev window, not a
-            // silent one — the menus are empty because nothing has written into that store yet.
+            // These menu loaders still read the **FAT** catalog. Protocol-v4 clients can already
+            // write flat Route, Ride and Trip objects, but this image does not project those entries
+            // into the on-device menus yet; on a flat card the menus therefore remain empty until
+            // that read-path cutover lands. Do not mistake an empty menu for an empty flat catalog.
             if let Some(storage) = storage.as_mut() {
                 ride::load_routes(storage, app);
                 ride::load_rides(storage, app);

@@ -13,7 +13,7 @@
  *
  * | | Where the bytes come from | Checked before sending |
  * | :-- | :-- | :-- |
- * | Map | a `.obcm` the rider picked | nothing to check it against; the device's CRC is the guarantee |
+ * | Map | a `.obcm` the rider picked | the selected map's current id + revision, when one exists |
  * | Route | a dropped GPX, converted by wasm | the OBCR header is read back and shown before sending |
  * | Firmware | an `UPDATE.BIN` | the whole OBCU container: header CRC, image CRC, slot ceiling |
  *
@@ -39,7 +39,7 @@
  */
 
 import { blobSource, type FlatStoreClient } from "../usb/client";
-import { ObjectKind, type PutResponse } from "../usb/protocol";
+import { EntryFlags, ObjectKind, type PutResponse } from "../usb/protocol";
 import { truncateUtf8 } from "../format";
 import { readUpdateImage, type UpdateImage } from "../firmware/obcu";
 import type { JobContext } from "./progress";
@@ -64,16 +64,30 @@ export function displayName(name: string, fallback: string): string {
  * what `blobSource` is for, and it is why this path costs nothing extra despite being the one a
  * 300 MB file is most likely to arrive on.
  *
- * Uploaded as a **create**. A map replacing a map would need the `ObjectId` and `Revision` of the
- * one it replaces, and the rider picking a file has expressed no opinion about which stored map that
- * is; the device page's remove is where an old map goes.
+ * Replaces the map the device will select: the active (non-retained) `MapShard` with the lowest
+ * `ObjectId`. That is the firmware's deterministic selection rule, so a second send moves the map
+ * the rider is actually using instead of accumulating an unreachable sibling. A card with no map
+ * creates one. `LIST` supplies both compare-and-swap fields immediately before `PUT`.
  */
 export async function sendMapFile(client: FlatStoreClient, file: File, ctx: JobContext): Promise<PutResponse> {
     ctx.phase("reading", file.size);
     const source = await blobSource(file);
+    const maps = await client.list({ kind: ObjectKind.MapShard, signal: ctx.signal });
+    const current = maps.entries
+        .filter((entry) => (entry.flags & EntryFlags.Retained) === 0)
+        .reduce<(typeof maps.entries)[number] | null>((best, entry) => {
+            if (!best || entry.objectId < best.objectId) return entry;
+            if (entry.objectId === best.objectId && entry.revision > best.revision) return entry;
+            return best;
+        }, null);
     ctx.phase("sending", source.totalLen);
     return client.put(
-        { kind: ObjectKind.MapShard, displayName: displayName(file.name.replace(/\.obcm$/i, ""), "Map") },
+        {
+            objectId: current?.objectId,
+            expectedRevision: current?.revision,
+            kind: ObjectKind.MapShard,
+            displayName: displayName(file.name.replace(/\.obcm$/i, ""), "Map"),
+        },
         source,
         {
             signal: ctx.signal,

@@ -273,7 +273,6 @@ describe("browser support", () => {
         expect(await watcher.requestDevice()).toBe(false);
     });
 });
-
 describe("the permission model", () => {
     it("adopts an already-permitted device with no prompt at all", async () => {
         // The whole auto-detect story: on every visit after the first, `getDevices()` returns what
@@ -721,4 +720,3 @@ describe("the EP0 device-info read", () => {
         await link.host.close();
     });
 });
-

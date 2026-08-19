@@ -1,6 +1,7 @@
 <!--
   Sending a map over USB: a map is ONE `.obcm` file, so this is one picker and
-  one transfer.
+  one transfer. A card's active lowest-id map is replaced with LIST's current
+  revision; only a card with no map creates a new object.
 
   There is no free-space meter, and that is a decision rather than an omission.
   §5.2.2 retires the card-space query: nothing asks in advance, because §3.6
@@ -23,7 +24,7 @@
     async function sendFile(file: File) {
         await job.run(
             (ctx) => sendMapFile(client, file, ctx),
-            (result) => `${file.name} is on the device (map ${result.objectId}). Restart it to switch to the new map.`,
+            (result) => `${file.name} is on the device (map ${result.objectId}). Restart it to load this map.`,
         );
     }
 
@@ -61,7 +62,7 @@
 
     {#if !job.running}
         <p class="small faint hint">
-            A regional map is hundreds of megabytes — expect minutes, and keep the cable in.
+            This replaces the active map. A regional map is hundreds of megabytes — expect minutes, and keep the cable in.
         </p>
     {/if}
 

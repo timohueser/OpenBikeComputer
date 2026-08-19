@@ -908,8 +908,8 @@ pub(crate) fn arm() -> Receiver<'static, CriticalSectionRawMutex, Job, REQUEST_Q
 
 // ══════════════════════════ the boot report ══════════════════════════
 
-/// What the mount found, on RTT. **This is where a flat card's truth lives in c1** — the glass gets
-/// the honest fault screen ([`boot_fault_for`]) and no dev-window prose.
+/// What the mount found, on RTT. The same catalog drives the boot fault and the flat map reader, so
+/// the log, glass and served object all describe one mount result.
 ///
 /// It returns the [`Catalog`] its walk produced, so `boot_fault_for` decides from this listing
 /// rather than taking a second one off the card.
@@ -958,7 +958,6 @@ pub(crate) fn report(store: &FlatStore<FlatCard>, mount_us: u64) -> Catalog {
         other,
         listing_complete,
     );
-    defmt::warn!("flat: c1 mounts and does not render — the renderer and the transports cut over in c2/c3");
     Catalog { maps: usize::from(maps), listing_complete }
 }
 
@@ -1001,10 +1000,10 @@ pub(crate) fn map_name() -> &'static str {
 /// say so. Everything else — an object that will not open, a map whose header will not parse — is
 /// MAP UNREADABLE, decided further up exactly as it is on the FAT arm.
 ///
-/// **The first map object wins, and there is deliberately no selection rule yet.** The FAT arm has
-/// one (`MAP.SEL`, then the newest upload, then anything readable) because a FAT card accumulates
-/// maps; nothing writes a second map to a flat store until c3's transports exist, so a rule here
-/// would be a policy with no case to decide. c3 brings the objects and the rule together.
+/// **The active map is the lowest-`ObjectId` `MapShard`.** Catalog iteration is ordered by
+/// `(ObjectId, Revision)`, and `first_of` resolves that object's head, so selection is deterministic
+/// even on a card that already contains several maps. Companion map sends follow the same rule:
+/// replace this object using its listed revision, and create only when no map exists.
 ///
 /// `#[inline(never)]` for the reason every constructor on this boot path is: a `StoreSource` built
 /// by value inside the boot task's async block is a permanent slot in that task's poll frame

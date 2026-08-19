@@ -121,27 +121,38 @@ describe("map upload from a file", () => {
         });
     });
 
-    it("makes a second object of a second send, and finds the first again by (kind, length, CRC, name)", async () => {
-        // The v1 wire deduped a fresh upload whose length and CRC matched something stored and
-        // answered with the *existing* id. v4 has no such rule — §3.4 puts the reconciliation on
-        // this side instead, and `findCreated` is it: the match that recovers a create whose answer
-        // was lost, rather than a device-side rule that quietly collapses two deliberate sends.
+    it("replaces the selected map on a second send instead of accumulating another object", async () => {
         await withDevice({}, async ({ client, device }) => {
             const bytes = syntheticBytes(64 * 1024);
             const file = new File([bytes], "grimsel-default.obcm");
             const first = await sendMapFile(client, file, context());
-            const second = await sendMapFile(client, file, context());
+            const replacement = syntheticBytes(96 * 1024);
+            const second = await sendMapFile(client, new File([replacement], "monaco.obcm"), context());
 
-            expect(second.objectId).not.toBe(first.objectId);
-            expect(device.entries).toHaveLength(2);
+            expect(second.objectId).toBe(first.objectId);
+            expect(second.revision).toBe(first.revision + 1n);
+            expect(device.entries).toHaveLength(1);
+            expect(device.entries[0].displayName).toBe("monaco");
+            expect(device.payloadOf(first.objectId)).toEqual(replacement);
+        });
+    });
 
-            const found = await client.findCreated({
-                kind: ObjectKind.MapShard,
-                payloadLength: BigInt(bytes.length),
-                payloadCrc32: Crc32.of(bytes),
-                displayName: "grimsel-default",
-            });
-            expect(found?.objectId).toBe(first.objectId);
+    it("replaces the active lowest-id map and leaves higher-id map objects alone", async () => {
+        await withDevice({}, async ({ client, device }) => {
+            device.seed({ objectId: 9n, revision: 4n, kind: ObjectKind.MapShard, displayName: "secondary" });
+            device.seed({ objectId: 3n, revision: 7n, kind: ObjectKind.MapShard, displayName: "active" });
+            device.seed({ objectId: 1n, kind: ObjectKind.Route, displayName: "not a map" });
+
+            const bytes = syntheticBytes(32 * 1024);
+            const result = await sendMapFile(client, new File([bytes], "replacement.obcm"), context());
+
+            expect(result.objectId).toBe(3n);
+            expect(result.revision).toBe(8n);
+            expect(device.entries.filter((entry) => entry.kind === ObjectKind.MapShard)).toEqual([
+                expect.objectContaining({ objectId: 3n, revision: 8n, displayName: "replacement" }),
+                expect.objectContaining({ objectId: 9n, revision: 4n, displayName: "secondary" }),
+            ]);
+            expect(device.payloadOf(3n)).toEqual(bytes);
         });
     });
 

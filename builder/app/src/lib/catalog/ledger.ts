@@ -74,7 +74,6 @@ export interface BandLedger {
     /** Ground in this band with no published cell at all. */
     missingCells: string[];
 }
-
 /**
  * What was compared with what, and the sentence that says so.
  *
@@ -378,4 +377,3 @@ export function ledgerForRegion(catalog: Catalog, entry: RegionEntry): Ledger {
         isFinal: true,
     };
 }
-
