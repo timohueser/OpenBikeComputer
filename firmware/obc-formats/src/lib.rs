@@ -19,7 +19,6 @@ pub mod io;
 pub mod obcg;
 pub mod obcm;
 pub mod obcr;
-pub mod obcs;
 pub mod obct;
 pub mod obcw;
 pub mod precip4;

@@ -226,10 +226,9 @@ pub const SELECTED_MAP_LEN: usize = 24;
 /// The selected-map file's tag; anything else there (absent, torn, older layout) decodes to `None`
 /// — "no preference", and the loader falls back to the first valid map on the card.
 ///
-/// **Not** the OBCA volume-set manifest magic, which is the same four bytes (`OBCA_Spec.md` §5.2,
-/// `obc_formats::obcs::MAGIC`). Different files — `MAP.SEL` here, `MS{id}.OBS` there — and neither
-/// parser is ever pointed at the other's bytes, but a grep for `b"OBCS"` finds three sites and only
-/// one of them is the format.
+/// It shares those four bytes with the ride sidecar's `SYNCED_MAGIC` — different files, no shared
+/// parser, and a grep for `b"OBCS"` finds both. It shared them with the OBCA volume-set manifest as
+/// well until OBCM v14 retired the set, which is the one of the three that was a *format*.
 const SELECTED_MAP_MAGIC: [u8; 4] = *b"OBCS";
 /// Selected-map layout version — bump on any field change (an old version reads as no preference).
 const SELECTED_MAP_VERSION: u8 = 1;

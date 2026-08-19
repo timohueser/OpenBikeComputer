@@ -327,13 +327,30 @@ pub(crate) struct Catalog {
 
 // ══════════════════════════ the storage task ══════════════════════════
 
+/// **How many tasks hold a [`Writer`]** — the BLE v4 adapter and the USB v4 adapter.
+///
+/// A census, not a guess, and [`REQUEST_QUEUE`] is derived from it. FS8's ride journal is the next
+/// entry; the `flat-exercise` exerciser is deliberately not one, because it is absent from every
+/// shipping profile and never runs beside a transport.
+const SENDERS: usize = 2;
+
 /// Write requests queued at once.
 ///
-/// **Two, and the small number is the point.** Writes are serialized by construction, so queue
-/// depth buys nothing but latency hiding: one slot is in service and one is waiting, and a third
-/// sender simply awaits its turn in `Sender::send` rather than being refused. A deeper queue would
-/// only park more messages — and a `Job` is not small (see [`Request`]), so depth is `.bss`.
-const REQUEST_QUEUE: usize = 2;
+/// **Two per sender, and that number is load-bearing rather than generous.** Each link has at most
+/// two jobs on this queue at one instant: the one its lane is awaiting, and at most one *orphan* — a
+/// job whose caller's future was dropped between the send and the answer, which a link teardown
+/// during a long finalizing commit genuinely does. Nothing produces a third, because a lane holds
+/// one buffer and cannot issue a second call without it.
+///
+/// Sizing to that census is what keeps the queue from ever filling, and a queue that cannot fill is
+/// the difference between a recoverable orphan and a lost one: `Sender::send` on a full queue
+/// *parks*, and a `Writer::call` future dropped while parked never enqueues its job at all — taking
+/// the `&'static mut` reaction buffer inside it with it, permanently, since nothing may re-derive
+/// one. [`Lane::reclaim`] rests on this; see there.
+///
+/// c3a's two slots were sized for one sender and said so. A `Job` is not small (see [`Request`]), so
+/// this is `.bss` and the growth is priced in the resource baseline rather than waved through.
+const REQUEST_QUEUE: usize = 2 * SENDERS;
 
 /// The queue's resident cost, for the budget table in `main.rs`. Named rather than left anonymous
 /// because it is the one part of this layer whose size is a *design* choice rather than a
@@ -534,6 +551,115 @@ impl Writer {
     }
 }
 
+// ══════════════════════════ the lane ══════════════════════════
+
+/// **One link's half of a round trip to the engine**: the buffer it lends, the slot the answer comes
+/// back in, and nothing else.
+///
+/// One lane per link, because two links are live at once — a phone in a pocket and a cable in J3 —
+/// and every part of a round trip is per-caller: the reaction buffer (§5's ceilings differ by two
+/// orders of magnitude between them), the reply slot ([`Writer::call`]'s one-slot-per-concurrently-
+/// live-call contract), and the recovery below.
+///
+/// The buffer is *lent* rather than copied — it crosses the queue inside the request and comes back
+/// inside the answer, which is what stops a `LIST` page being memcpy'd twice per record — so a
+/// `None` here means a previous call's future was dropped between the send and the answer.
+/// [`Lane::reclaim`] is how that is recovered.
+///
+/// Shared between the two adapters rather than written twice, so that the argument at `reclaim` has
+/// one home and cannot drift into two versions that disagree.
+pub(crate) struct Lane {
+    out: Option<&'static mut [u8]>,
+    reply: &'static Reply,
+    /// Which link this is, for the log lines. The adapters are otherwise indistinguishable here.
+    who: &'static str,
+}
+
+/// How long [`Lane::reclaim`] waits for an orphaned answer before giving the link up.
+///
+/// It is waiting on the storage task to finish jobs already in the queue, so the bound is a
+/// *scheduling* one — and the longest single thing that task does is a commit, ~250 ms at 1,024
+/// entries (`storage_task`'s own note). Two seconds is that with room; a link that has not been
+/// answered by then is not going to be, and refusing it is better than parking a transport forever.
+const RECLAIM_TIMEOUT: embassy_time::Duration = embassy_time::Duration::from_secs(2);
+
+impl Lane {
+    /// Build a lane over a caller-owned buffer and reply slot. Called once per link, per image.
+    pub(crate) fn new(out: &'static mut [u8], reply: &'static Reply, who: &'static str) -> Self {
+        Lane { out: Some(out), reply, who }
+    }
+
+    /// **Recover the buffer from a call whose future was dropped.**
+    ///
+    /// c3a inferred this from the queue's service order: requests are served FIFO by one consumer,
+    /// so once *any* later call had been answered, every earlier job had run and an orphan could
+    /// only be sitting in the reply slot. That was an argument about the **queue**, and it named
+    /// this slice as owing its re-establishment, because a second sender can interleave a job
+    /// between the orphan and the reclaiming call.
+    ///
+    /// It is re-established by not needing it. Three facts, each local to one lane:
+    ///
+    /// 1. **A reply slot has exactly one caller.** Each is a `static` private to its adapter and is
+    ///    named by that adapter alone, so whatever arrives in this slot is *this* lane's orphan and
+    ///    no other link's. The buffers are disjoint statics too, so a mis-reclaim could not even
+    ///    type-check into the wrong lane. The other link's activity is invisible here, which is the
+    ///    whole property the queue argument could not supply once the queue had two senders.
+    /// 2. **The orphan is always in the queue.** [`REQUEST_QUEUE`] is sized to the sender census, so
+    ///    `Sender::send` never parks, so a dropped `Writer::call` future is always dropped *after*
+    ///    its job was enqueued. A job in the queue is a job that will be served and answered.
+    /// 3. **So this is an observation, not an inference.** It waits on its own slot rather than
+    ///    reasoning about when someone else's call proves the orphan ran. (1) says what arrives is
+    ///    ours; (2) says something arrives.
+    ///
+    /// The wait is bounded anyway: (2) is an argument about a constant two files can change
+    /// independently, and a transport that parked forever on it would be a watchdog reset rather
+    /// than a log line.
+    pub(crate) async fn reclaim(&mut self) {
+        if self.out.is_some() {
+            return;
+        }
+        match embassy_time::with_timeout(RECLAIM_TIMEOUT, self.reply.wait()).await {
+            Ok((_, Ok(Outcome::Reacted { out, .. }))) => {
+                defmt::info!("flat/v4: [{}] reclaimed the reaction buffer from an abandoned call", self.who);
+                self.out = Some(out);
+            }
+            Ok(_) => defmt::warn!("flat/v4: [{}] an abandoned call left no buffer to reclaim", self.who),
+            Err(_) => {
+                defmt::warn!("flat/v4: [{}] no orphaned answer arrived — this link cannot serve", self.who)
+            }
+        }
+    }
+
+    /// Hand one request to the engine and take the buffer back with its answer.
+    pub(crate) async fn call(
+        &mut self,
+        writer: &Writer,
+        make: impl FnOnce(&'static mut [u8]) -> Request,
+    ) -> Option<Reaction> {
+        let out = self.out.take()?;
+        match writer.call(make(out), self.reply).await {
+            Ok(Outcome::Reacted { reaction, out }) => {
+                self.out = Some(out);
+                Some(reaction)
+            }
+            // `serve` answers these three requests with `Reacted` and nothing else, so the buffer is
+            // gone only if that stopped being true. Report rather than panic: these are link tasks.
+            _ => {
+                defmt::warn!("flat/v4: [{}] the engine answered a record with the wrong shape — lane closed", self.who);
+                None
+            }
+        }
+    }
+
+    /// The bytes a [`Reaction::Send`] named.
+    pub(crate) fn sent(&self, len: usize) -> &[u8] {
+        match &self.out {
+            Some(out) => &out[..len.min(out.len())],
+            None => &[],
+        }
+    }
+}
+
 /// True once [`arm`] has handed the receive end to the storage task.
 static ARMED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
@@ -635,14 +761,17 @@ fn serve(
         }
         Request::Control { record, out } => {
             let reaction = engine.on_control(store, policy, record, out);
+            publish_upload(engine);
             Ok(Outcome::Reacted { reaction, out })
         }
         Request::Stream { record, out } => {
             let reaction = engine.on_stream(store, policy, record, out);
+            publish_upload(engine);
             Ok(Outcome::Reacted { reaction, out })
         }
         Request::Pump { out } => {
             let reaction = engine.poll(store, out);
+            publish_upload(engine);
             Ok(Outcome::Reacted { reaction, out })
         }
         Request::LinkUp { ceilings } => {
@@ -662,10 +791,27 @@ fn serve(
         }
         Request::LinkLost => {
             engine.on_link_lost(store);
+            publish_upload(engine);
             Ok(Outcome::Done)
         }
         Request::LiveTransfer => Ok(Outcome::Live(engine.live_transfer())),
     }
+}
+
+/// **Push what the engine knows about a live upload to the glass** — issue #927's progress card,
+/// re-sourced.
+///
+/// It runs here, beside the engine, rather than in an adapter, and both halves of that are
+/// deliberate. Beside the engine, because this is the one execution context that holds one, so the
+/// read is a field access rather than a round trip on the very queue a multi-megabyte upload is
+/// saturating. Not in an adapter, because §5 says an adapter "never parses a payload" and the kind
+/// and the declared length are payload — the engine is the layer entitled to know them.
+///
+/// A rider sees a card for a **map** and nothing else, which is not a filter but the truth: a route
+/// lands in a second and a weather bundle is invisible by design, so a progress bar for either would
+/// be a flicker asking to be dismissed. `crate::link` owns the mapping from these facts to a screen.
+fn publish_upload(engine: &mut BoardEngine) {
+    crate::link::publish_map_transfer(engine.live_upload(), engine.take_upload_end());
 }
 
 // ══════════════════════════ the protocol-v4 engine ══════════════════════════

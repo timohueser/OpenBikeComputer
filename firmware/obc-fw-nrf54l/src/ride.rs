@@ -138,17 +138,12 @@ const fn weather_refresh_in_flight() -> bool {
 async fn wait_host_or_sensor_event(
     #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))] consumer: SensorConsumer<'static>,
 ) {
-    embassy_futures::select::select3(
+    embassy_futures::select::select(
         wait_sensor_event(
             #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
             consumer,
         ),
         crate::object_store::wait_store_changed(),
-        // …and the USB plane asking for the scratch arena's staging arm (#1146 P2). It has to be a
-        // wake arm rather than a level the next timer pass notices: the loop's sleep is event-driven
-        // and *clamped up* to the 2 s upload pace while a map is landing, so without this the first
-        // flush of every transfer would wait out a pace window for nothing.
-        crate::usb::wait_stage_request(),
     )
     .await;
 }
@@ -156,12 +151,9 @@ async fn wait_host_or_sensor_event(
 async fn wait_host_or_sensor_event(
     #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))] consumer: SensorConsumer<'static>,
 ) {
-    embassy_futures::select::select(
-        wait_sensor_event(
-            #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
-            consumer,
-        ),
-        crate::usb::wait_stage_request(),
+    wait_sensor_event(
+        #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+        consumer,
     )
     .await;
 }
@@ -765,11 +757,6 @@ pub(crate) async fn run_app(
     // and on every cancel/abort path.
     #[cfg(has_nav)]
     let mut nav_guard: Option<crate::arena::NavGuard> = None;
-    // The scratch arena's **USB staging arm**, held for the whole cable transfer — granted to the
-    // USB data plane between frames (the plane never claims; see `crate::arena::UsbGuard`) and
-    // reclaimed the moment its request level drops, which every transfer end, abort and unplug edge
-    // clears.
-    let mut usb_stage_guard: Option<crate::arena::UsbGuard> = None;
     // The active route's resident chunk-index slot. A bare `RouteIndex` + validity flag, NOT an
     // `Option<RouteIndex>` built by value: the slot is ~12.3 KB and permanently part of this frame
     // either way, but a by-value build (`RouteIndex::read`'s return) also transits the stack at
@@ -1057,37 +1044,6 @@ pub(crate) async fn run_app(
                     map_xfer_fed_ms = now;
                 }
                 map_uploading = receiving && map_card_shown;
-            }
-        }
-
-        // ── The scratch arena's USB staging arm (#1146 P2) ──
-        // The data plane never claims the arena: it raises a request level and this loop — the
-        // arena's sole owner-switcher — grants it between frames. Placed **right after** the
-        // map-transfer reconcile above, because that block is what puts the transfer card on the
-        // stack, and the card is what makes `transfer_screen_up()` true: ask first and the answer
-        // would be a pass late, every transfer.
-        //
-        // A precondition that does not hold yet is not an answer — the request stays up and this
-        // retries next pass (the plane streams unstaged if nothing lands within its own timeout).
-        // What *is* an answer is the reclaim: the request level drops on every transfer end, abort
-        // and unplug edge, and the guard goes with it.
-        {
-            let wants_stage = crate::usb::stage_requested();
-            if wants_stage && usb_stage_guard.is_none() {
-                // Off the app, not re-derived here: `usb_arena_precondition` is the typed twin of
-                // `nav_arena_precondition` the search arm above uses, so neither call site can pass
-                // the wrong pair of bools.
-                if let Some(ready) = app.usb_arena_precondition(crate::link::TRANSFER_ACTIVE.search_live()) {
-                    if let Ok(guard) = crate::arena::claim_usb(ready) {
-                        usb_stage_guard = Some(guard);
-                        crate::usb::set_stage_granted(true);
-                        defmt::info!("arena: staging arm granted to the USB data plane");
-                    }
-                }
-            } else if !wants_stage && usb_stage_guard.is_some() {
-                usb_stage_guard = None; // the guard's Drop releases the arena
-                crate::usb::set_stage_granted(false);
-                defmt::info!("arena: staging arm reclaimed (transfer ended, aborted, or the cable went)");
             }
         }
 

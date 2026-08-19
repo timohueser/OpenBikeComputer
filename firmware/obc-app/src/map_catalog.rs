@@ -206,41 +206,24 @@ pub fn flat_boot_fault(map_objects: usize, listing_complete: bool) -> crate::Boo
 /// What a card-root directory entry is, as far as the map catalog is concerned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MapEntry {
-    /// Not part of the catalog: a directory, dot-clutter, a wrong extension — or a volume-set
-    /// **shard**, which is a valid OBCM file that is nonetheless not a map (§5.4).
+    /// Not part of the catalog: a directory, dot-clutter, a wrong extension.
     Other,
-    /// A single map: a side-loaded `.obcm` (long-filename arm) or a received `MP{id}.OBM`.
+    /// A map: a side-loaded `.obcm` (long-filename arm) or a received `MP{id}.OBM`.
     Map,
-    /// A volume-set manifest, `MS{id}.OBS` — the one file that says the shards beside it are one
-    /// map (`OBCA_Spec.md` §5.2/§5.4).
-    SetManifest,
 }
 
 /// Classify one card-root entry for the map scan. Pure over the three facts the decision turns on,
-/// so the board's `is_map_entry`/`is_set_manifest_entry` are one-line bindings and the rule itself
-/// is tested where tests run (the board crate has no CI harness — see the module docs).
+/// so the board's `is_map_entry` is a one-line binding and the rule itself is tested where tests run
+/// (the board crate has no CI harness — see the module docs).
 ///
 /// `short` is the 8.3 name as `BASE.EXT`; `long` the entry's long filename if it has one.
 ///
-/// The safety-critical clause is the shard exclusion. `MS{id}S{kk}.OBM` shares the `.OBM` extension
-/// with a received single map — deliberately, so the transfer path needs no new file type — and each
-/// shard *is* a valid OBCM file, which is why the exclusion has to live in the name test and cannot
-/// fall out of a header read. §5.4: a reader "MUST NOT mount a shard individually as a standalone
-/// map", because a geometry shard is a map with no roads and no POIs and the core is a map that
-/// draws nothing at all.
+/// **The shard exclusion is gone with the volume set** (OBCM v14, #1420): a map is one file, so
+/// `.OBM` names a map and nothing else, and there is no longer a valid OBCM file on this card that a
+/// reader must refuse to mount.
 pub fn classify_map_entry(short: &[u8], long: Option<&str>, is_directory: bool) -> MapEntry {
     if is_directory || long.is_some_and(|n| n.starts_with('.')) {
         return MapEntry::Other;
-    }
-    // A shard is never a map, and never a manifest either — it is part of one.
-    if obc_formats::obcs::parse_shard_name(short).is_some() {
-        return MapEntry::Other;
-    }
-    // Pure 8.3, no long-name arm: unlike `.obcm`, `.OBS` already fits an 8.3 name, so the device
-    // creates it directly and there is no 4-character twin to accept. The id must parse too —
-    // `SET.OBS` is clutter, not a manifest.
-    if obc_formats::obcs::parse_manifest_name(short).is_some() {
-        return MapEntry::SetManifest;
     }
     // The 8.3 arm is the whole answer to "the firmware reads long filenames but cannot create
     // them": `OBM` is the 3-char twin of `.obcm`, unambiguous where a shortened `OBC` would also
@@ -479,35 +462,30 @@ mod tests {
 
     /// The safety-critical classification: a shard is a valid OBCM file and must still never be
     /// listed as a map (§5.4). Pure, so it is asserted here rather than only on a device.
+    /// **A `.OBM` file is a map, and there is no second convention any more.** `MS{id}.OBS`
+    /// manifests and `MS{id}S{kk}.OBM` shards were the volume set's names; OBCM v14 (#1420) made a
+    /// map one file, so a manifest is now ordinary clutter and a shard-shaped `.OBM` is simply a
+    /// map named oddly — which is the honest answer, since nothing on the card can distinguish it
+    /// from one a rider renamed by hand.
     #[test]
-    fn shards_are_never_maps_and_only_a_manifest_is_a_set() {
+    fn a_map_is_an_obm_file_and_the_set_names_are_gone() {
         use MapEntry::*;
         // Received single map, side-loaded long name, and the 8.3 twin.
         assert_eq!(classify_map_entry(b"MP7.OBM", None, false), Map);
         assert_eq!(classify_map_entry(b"BADENW~1.OBM", Some("baden-wuerttemberg.obcm"), false), Map);
         assert_eq!(classify_map_entry(b"ALPS.OBM", Some("Alps.OBM"), false), Map);
 
-        // The manifest is the one file that says "these are one map".
-        assert_eq!(classify_map_entry(b"MS7.OBS", None, false), SetManifest);
-        assert_eq!(classify_map_entry(b"MS999.OBS", None, false), SetManifest);
+        // The manifest extension names nothing this build reads.
+        assert_eq!(classify_map_entry(b"MS7.OBS", None, false), Other);
+        assert_eq!(classify_map_entry(b"MS999.OBS", None, false), Other);
 
-        // Every shard of every set, at both ends of the id and index ranges.
-        for name in [&b"MS7S00.OBM"[..], b"MS7S31.OBM", b"MS0S05.OBM", b"MS999S31.OBM"] {
-            assert_eq!(classify_map_entry(name, None, false), Other, "{:?} is a shard, not a map", name);
-        }
+        // What used to be a shard now has no reason to be excluded: the exclusion existed because a
+        // shard was a *valid OBCM file that was not a map*, and that thing no longer exists.
+        assert_eq!(classify_map_entry(b"MS7S00.OBM", None, false), Map);
 
-        // Clutter that only looks like one of the two conventions.
-        assert_eq!(classify_map_entry(b"SET.OBS", None, false), Other, "an unparseable id is not a manifest");
-        assert_eq!(classify_map_entry(b"MS07.OBS", None, false), Other, "leading zeros are not the §5.2 name");
-        assert_eq!(
-            classify_map_entry(b"MS7.OBM", None, false),
-            Map,
-            "the manifest extension is .OBS, so this is a map"
-        );
         assert_eq!(classify_map_entry(b"NOTES.TXT", None, false), Other);
         assert_eq!(classify_map_entry(b"MAPS.OBM", None, true), Other, "a directory is never an entry");
         assert_eq!(classify_map_entry(b"_MP7.OBM", Some("._MP7.OBM"), false), Other, "dot-clutter is excluded");
-        assert_eq!(classify_map_entry(b"MS7.OBS", Some(".MS7.OBS"), false), Other);
     }
 
     /// Out-of-range indices answer `false` rather than panicking: the board feeds this a live

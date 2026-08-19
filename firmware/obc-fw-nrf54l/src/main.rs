@@ -434,7 +434,7 @@ mod resource_report {
         entry("terrain_window", core::mem::size_of::<obc_formats::io::WindowSource<'static>>()),
     ];
 
-    const ENTRIES: usize = 35;
+    const ENTRIES: usize = 34;
 
     #[used]
     #[no_mangle]
@@ -457,15 +457,19 @@ mod resource_report {
         // authority once WX10 places the cache in the rain-render path.
         entry("weather_reader_cache", obc_weather::READER_CACHE_RESIDENT_BYTES),
         // The **scratch arena** (#1146 P2) and its three arms. `arena_total` is the only one of the
-        // four that is resident RAM — it is `max` of the other three, not their sum, and the three
-        // are reported beside it precisely so a reader can see *which* arm sets the total and how
-        // much free headroom the other two still have (the growth asymmetry; see `arena.rs`). They
-        // replace the `renderer` / `nav_scratch` / `nav_tile_cache` / `nav_planner` rows, and
-        // `arena_usb` is the `STAGE_LEN` that left `usb_named` below.
+        // three that is resident RAM — it is `max` of the other two, not their sum, and both are
+        // reported beside it precisely so a reader can see *which* arm sets the total and how much
+        // free headroom the other still has (the growth asymmetry; see `arena.rs`).
+        //
+        // **`arena_usb` is gone** (FS7.5-c3b): the v1 cable upload staged 128 KiB of map bytes
+        // through this block before writing them to a FAT file, and protocol v4 stages 512 bytes
+        // inside the engine and writes each stream record straight to the card. The row leaves
+        // rather than reading zero, because a zero would suggest an arm that exists and is empty.
+        // It set the ceiling and the render arm matches it exactly, so the total does **not** move
+        // — the whole saving of removing it is the two exclusion rules it took with it.
         entry("arena_total", arena::ARENA_BYTES),
         entry("arena_render", arena::RENDER_ARM_BYTES),
         entry("arena_nav", arena::NAV_ARM_BYTES),
-        entry("arena_usb", arena::USB_ARM_BYTES),
         // The terrain seam's two statics (EL7 + FS7.5 §1.3): the sampler + tile cache, and the byte
         // window the OBCT container is parsed through — no longer a sidecar's extent table, because
         // there is no sidecar. Named because a change in the tile-slot count must be legible here
@@ -489,8 +493,10 @@ mod resource_report {
         // resident block, and a growth in it should be legible in the report rather than only as a
         // few thousand anonymous bytes of `.bss`. This is the *named* half — the driver's own
         // endpoint bookkeeping and the task future are not nameable here and land in the linked
-        // `.bss + .data` gate, which is the authority for resident RAM. The **staging buffer is no
-        // longer part of this sum** (#1146 P2): it is `arena_usb` above.
+        // `.bss + .data` gate, which is the authority for resident RAM. Since FS7.5-c3b it includes
+        // the v4 adapter's three record buffers (`usb::v4::RESIDENT_BYTES`), which is where the two
+        // buffers the v1 planes owned went and then some: §5.2's 4,112-byte ceiling buys a stream
+        // record that reaches the card as one write.
         entry("usb_named", usb::RESIDENT_BYTES),
         // The sEMMC storage transport's two resident blocks (#1158) — the baseline named these
         // when the pivot landed, but the rows themselves were forgotten, which broke the report
@@ -513,9 +519,10 @@ mod resource_report {
         // cost" are in one place, and named as one row because they are one boot step's residue.
         entry("flat_map_read", flat_store::MAP_READ_BYTES),
         // The protocol-v4 transfer engine (FS7.5-c3a), which lives in the storage task because that
-        // is the one execution context allowed to write. Mostly its staging buffer, deliberately the
-        // 512-byte minimum on a radio-only cutover — see `flat_store::ENGINE_STAGE` for why, and for
-        // what c3b is expected to do to this row when USB arrives.
+        // is the one execution context allowed to write. Mostly its staging buffer, still the
+        // 512-byte minimum after c3b brought USB — and that is a decision, not an omission: §5.2's
+        // ceiling makes a full stream record four whole stages wide, so it bypasses the stage
+        // entirely and reaches the card in one write. See `flat_store::ENGINE_STAGE`.
         entry("flat_engine", flat_store::ENGINE_BYTES),
     ];
 }
@@ -787,61 +794,42 @@ async fn spawn_ble_stack(
 /// instruction, on every poll, forever. This tiny task's own pool static holds just the arguments
 /// until the inner spawn moves them into [`usb::run`]'s.
 #[embassy_executor::task]
-async fn spawn_usb_stack(
-    spawner: Spawner,
-    usb_p: embassy_nrf::Peri<'static, embassy_nrf::peripherals::USBHS>,
-    stores: link::LinkStores,
-) {
-    spawner.spawn(defmt::unwrap!(usb::run(usb_p, stores)));
+async fn spawn_usb_stack(spawner: Spawner, usb_p: embassy_nrf::Peri<'static, embassy_nrf::peripherals::USBHS>) {
+    spawner.spawn(defmt::unwrap!(usb::run(usb_p)));
 }
 
-/// Keep map replacement available when boot cannot parse the selected map.
+/// Keep map replacement available when boot cannot parse the map.
 ///
 /// The ordinary composition point sits after map parsing because the ride loop needs the parsed
 /// tables. A damaged map must not make the very cable used to replace it disappear, though. This
-/// reduced boot path owns the same storage/settings/object-store values, starts only USB, and
-/// reserves the scratch arena for staging permanently (there is no render or route planner in the
-/// fault idle). The next successful upload becomes selectable on reboot.
+/// reduced boot path starts only USB; the storage task — the write half **and** the protocol-v4
+/// engine — was already spawned further up, on every card, so the plane has an engine to answer
+/// with here exactly as it does on a normal boot.
 ///
-/// **It takes the `Option`, not the `Storage`** (FS7.5-c2). USB map recovery re-uploads a `.obcm`
-/// through the v1 object store, so it is the FAT arm's and a flat card has none — but that is only
-/// half the reason. `main`'s binding is now an `Option<Storage>`, and a caller that did
-/// `storage.take()` to unwrap it put the `Storage` in a *second* permanent slot of the boot task's
-/// poll frame, beside the binding's own: **+2,304 B of `__embassy_main::POOL`**, measured. Moving
-/// the `Option` whole is one place, and `None` — a flat card, or a `Storage` already consumed — is
-/// simply no recovery plane, which is what boot then reports.
+/// **It is card-agnostic since FS7.5-c3b**, where it used to be the FAT arm's. A v4 `PUT` goes to
+/// the flat store, so this needs no `Storage`, no object store, no shared mutex and no arena arm —
+/// and on a FAT card the honest outcome is the engine's own: every opcode answers `readOnly` with
+/// detail `unformatted 3`, because a card that is not a flat store is not one this build can write.
+/// A FAT card whose map will not parse is therefore replaced by writing a new card, not over the
+/// cable, and this plane says so rather than accepting bytes it cannot commit.
+///
+/// It still takes `storage` **by value**: consuming it is what ends the map-source borrow the caller
+/// holds across this call, and dropping it here is the truth about what a recovery boot does with
+/// the FAT volume — nothing.
+///
+/// The one thing it must still do is seed the firmware revision, because §5.2.1's EP0 device-info
+/// request serves it and "an update is available" compares against it.
 async fn spawn_map_recovery_usb(
     spawner: Spawner,
     usb_p: embassy_nrf::Peri<'static, embassy_nrf::peripherals::USBHS>,
     rramc: embassy_nrf::Peri<'static, embassy_nrf::peripherals::RRAMC>,
     storage: Option<sd::Storage>,
-) -> Option<arena::UsbGuard> {
-    let Some(mut storage) = storage else {
-        defmt::warn!("recovery: no FAT storage on this card — no USB map-recovery plane this boot");
-        return None;
-    };
-    storage.prepare_map_recovery();
+) {
+    drop(storage);
     let mut settings_store = settings::RramSettingsStore::new(rramc);
     dfu::seed_firmware_revision(&mut settings_store);
-    let shared_store: &'static SharedStoreMutex = unsafe {
-        init_static(
-            core::ptr::addr_of_mut!(SHARED_STORE_SLOT),
-            SharedStoreMutex::new(SharedStore { storage: Some(storage), settings: settings_store }),
-        )
-    };
-    let objects = {
-        let mut guard = shared_store.lock().await;
-        if let Some(storage) = guard.storage.as_mut() {
-            storage.select_weather_at_boot();
-        }
-        link::init_store(&mut guard)
-    };
-    let stores = link::LinkStores { shared: shared_store, objects, epoch: None };
-    let stage_guard = obc_app::TransferReady::prove(true, false).and_then(|ready| arena::claim_usb(ready).ok());
-    usb::set_stage_granted(stage_guard.is_some());
-    spawner.spawn(defmt::unwrap!(spawn_usb_stack(spawner, usb_p, stores)));
+    spawner.spawn(defmt::unwrap!(spawn_usb_stack(spawner, usb_p)));
     defmt::warn!("usb: map-recovery plane active — upload a replacement map and reboot");
-    stage_guard
 }
 
 /// Idle camera zoom for the boot map, in ground metres-per-pixel (the 0.5–4 mpp riding band). A
@@ -1410,13 +1398,6 @@ async fn main(_spawner: Spawner) {
             // `open_map` so the selection never lands on a corpse.
             storage.sweep_aborted_maps();
 
-            // The same reclaim for a torn **volume set** (issue #1039): a set is `1..=32` shard files
-            // plus a manifest, so its abandoned upload is gigabytes rather than hundreds of megabytes,
-            // and the file that identifies it is the zero-magic `MS{id}.OBS` token the upload writes
-            // before the first shard. Runs before `open_map` for the same reason the map sweep does —
-            // and after it, so a card carrying both kinds of corpse is clean in one boot.
-            storage.sweep_aborted_sets();
-
             // Open the selected `.obcm` and hold it open for the session — the map **streams** from it,
             // never read resident into the 256 KB part. (The `/routes/*.obcr` catalog is scanned into the
             // app's Route menu by `load_routes` *after* the app is built — in its own frame, so the ~5 KB
@@ -1466,7 +1447,7 @@ async fn main(_spawner: Spawner) {
                             "SD: no map to stream from — showing the {} fault screen, then heartbeat idle",
                             defmt::Debug2Format(&map_fault)
                         );
-                        let _recovery_stage = spawn_map_recovery_usb(_spawner, p.USBHS, p.RRAMC, storage).await;
+                        spawn_map_recovery_usb(_spawner, p.USBHS, p.RRAMC, storage).await;
                         show_boot_fault(&mut display, map_fault).await;
                         idle_blink(&mut led).await
                     }
@@ -1484,11 +1465,10 @@ async fn main(_spawner: Spawner) {
                         "map: not valid OBCM: {} — showing MAP UNREADABLE with USB recovery",
                         defmt::Debug2Format(&e)
                     );
-                    // USB map recovery is the FAT arm's: it re-uploads a `.obcm` through the v1
-                    // object store. The flat arm's transports arrive in c3; until they do, a flat
-                    // card with an unreadable map gets the screen and the RTT line, and the fix is a
-                    // re-upload from the host that wrote it.
-                    let _recovery_stage = spawn_map_recovery_usb(_spawner, p.USBHS, p.RRAMC, storage).await;
+                    // USB map recovery speaks protocol v4 against the flat store since c3b, so it
+                    // is the *flat* arm's now: a flat card whose map will not parse takes a
+                    // replacement over the cable, and a FAT one gets the engine's honest `readOnly`.
+                    spawn_map_recovery_usb(_spawner, p.USBHS, p.RRAMC, storage).await;
                     show_boot_fault(&mut display, obc_app::BootFault::BadMap).await;
                     idle_blink(&mut led).await
                 }
@@ -1608,7 +1588,8 @@ async fn main(_spawner: Spawner) {
 
         // Snapshot the running image's version off the DFU boot-state page (#996) before any plane
         // that publishes it exists: the BLE DIS strings are seeded inside `ble::run`, the USB plane
-        // answers `DEVICE_INFO_READ` from the same source, and both are spawned below. It is a
+        // answers §5.2.1's EP0 device-info request from the same source, and both are spawned
+        // below. It is a
         // one-shot read of a page this store already owns — see `dfu::seed_firmware_revision`.
         dfu::seed_firmware_revision(&mut settings_store);
 
@@ -1768,7 +1749,7 @@ async fn main(_spawner: Spawner) {
         // object model as the radio over a vendor bulk interface. Spawned through its own trampoline
         // for the same #677 reason as the BLE stack: constructing the task's future in `main` would
         // put its whole state machine in `main`'s poll frame. ---
-        _spawner.spawn(defmt::unwrap!(spawn_usb_stack(_spawner, p.USBHS, link_stores)));
+        _spawner.spawn(defmt::unwrap!(spawn_usb_stack(_spawner, p.USBHS)));
 
         // Hand the built display + the resident set to the shared, backend-agnostic ride loop. The
         // `display` (one of the two `MapDisplay` definitions) is the only per-backend value crossing this

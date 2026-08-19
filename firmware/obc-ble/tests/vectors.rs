@@ -32,11 +32,6 @@ fn transfer_control_vectors_round_trip() {
         ("transfer-upload-start.bin", Op::Upload, ObjectType::Route, 0xFFFF),
         ("transfer-download-request.bin", Op::Download, ObjectType::RideList, 0),
         ("transfer-abort.bin", Op::Abort, ObjectType::Route, 0xFFFF),
-        // The volume-set pair (#1039). The shard's id is a packed part, not an id; the manifest's
-        // is `new`, because a set's identity is the id the *device* mints for it.
-        ("transfer-set-shard.bin", Op::Upload, ObjectType::MapShard, 0x0802),
-        ("transfer-set-terrain.bin", Op::Upload, ObjectType::TerrainShard, 0xFFFF),
-        ("transfer-set-manifest.bin", Op::Upload, ObjectType::MapSet, 0xFFFF),
     ] {
         let bytes = fixture(name);
         assert_eq!(bytes.len(), TransferControl::ENCODED_LEN, "{name} is a 12-byte v2 descriptor");
@@ -903,18 +898,21 @@ fn map_object_type_and_reserved_band() {
     assert_eq!(TransferControl::decode(&desc.encode()).unwrap(), desc);
 }
 
-/// The volume-set upload types (#1039, #1044, `OBCA_Spec.md` §5): `mapShard` 17, `mapSet` 18 and
-/// `terrainShard` 19, the three types that join `map` in the USB-only band. Pins the bytes, that the
-/// reserved sensor band still rejects, and that all four classify as map payload — the property the
-/// board's held-back-magic streaming path keys on.
+/// The object-type band the map upload lives in. Pins the bytes, that the reserved sensor band
+/// still rejects, and that `map` classifies as map payload — the property the board's
+/// held-back-magic streaming path keys on.
+///
+/// **The volume-set types are gone** (OBCM v14, #1420): `mapShard` 17, `mapSet` 18 and
+/// `terrainShard` 19 named files of a multi-file map, and a map is one file now. Their values are
+/// not re-issued to anything else — same no-reuse discipline as a retired GATT UUID — so `from_u8`
+/// refuses them along with everything else unallocated.
 #[test]
-fn volume_set_object_types() {
-    assert_eq!(ObjectType::from_u8(17).unwrap(), ObjectType::MapShard);
-    assert_eq!(ObjectType::MapShard.as_u8(), 17);
-    assert_eq!(ObjectType::from_u8(18).unwrap(), ObjectType::MapSet);
-    assert_eq!(ObjectType::MapSet.as_u8(), 18);
-    assert_eq!(ObjectType::from_u8(19).unwrap(), ObjectType::TerrainShard);
-    assert_eq!(ObjectType::TerrainShard.as_u8(), 19);
+fn map_object_types() {
+    assert_eq!(ObjectType::from_u8(16).unwrap(), ObjectType::Map);
+    assert_eq!(ObjectType::Map.as_u8(), 16);
+    for retired in 17..=19u8 {
+        assert!(ObjectType::from_u8(retired).is_err(), "{retired} was a volume-set type and is not re-issued");
+    }
     // 20 is the weather bundle (WX3, #1188) — the one type since #889 that is *not* USB-only, so it
     // is named here rather than left as "not a type yet"; 21 is the next unallocated value.
     assert_eq!(ObjectType::from_u8(20).unwrap(), ObjectType::WeatherBundle);
@@ -923,83 +921,10 @@ fn volume_set_object_types() {
         assert!(ObjectType::from_u8(reserved).is_err(), "{reserved} stays reserved for the sensor work");
     }
 
-    for ty in [ObjectType::Map, ObjectType::MapShard, ObjectType::MapSet, ObjectType::TerrainShard] {
-        assert!(ty.is_map_payload(), "{ty:?} streams into its final file with the magic held back");
-    }
+    assert!(ObjectType::Map.is_map_payload(), "a map streams into its final file with the magic held back");
     for ty in [ObjectType::Route, ObjectType::Trip, ObjectType::FwImage, ObjectType::Echo] {
         assert!(!ty.is_map_payload(), "{ty:?} stages through UPLOAD.TMP");
     }
-}
-
-/// The `mapShard` descriptor's repurposed `object_id`: `shard_count` high, `index` low. Pins the
-/// packing on the wire (the host and the device must agree on the byte order without a spec
-/// re-read) and the two structural refusals — a set of zero shards, and an index at or past the
-/// count.
-#[test]
-fn set_part_packs_the_shard_count_and_index() {
-    use obc_ble::SetPart;
-
-    // The DACH-shaped case from `OBCA_Spec.md` §5.1: eight shards, this one the third.
-    let part = SetPart { shard_count: 8, index: 2 };
-    assert_eq!(part.encode(), 0x0802, "count in the high byte, index in the low one");
-    assert_eq!(SetPart::decode(0x0802), Some(part));
-
-    // Both ends of the spec's range, and the single-file fast path (§5.5).
-    for (count, index) in [(1u8, 0u8), (32, 0), (32, 31), (11, 10)] {
-        let part = SetPart { shard_count: count, index };
-        assert_eq!(SetPart::decode(part.encode()), Some(part), "{count}/{index}");
-    }
-
-    assert_eq!(SetPart::decode(0x0000), None, "a set of zero shards names no file");
-    assert_eq!(SetPart::decode(0x0303), None, "index == count is off the end");
-    assert_eq!(SetPart::decode(0x03FF), None);
-    // …and the value a plain map upload sends is not accidentally a legal part.
-    assert_eq!(SetPart::decode(TransferControl::NEW_OBJECT_ID), None, "0xFFFF is index 255 of 255");
-
-    // A shard descriptor round-trips whole through the production codec.
-    let desc = TransferControl {
-        op: Op::Upload,
-        ty: ObjectType::MapShard,
-        object_id: SetPart { shard_count: 8, index: 7 }.encode(),
-        total_len: 1_073_741_824,
-        crc32: 0xDEAD_BEEF,
-    };
-    assert_eq!(TransferControl::decode(&desc.encode()).unwrap(), desc);
-
-    // …and the shared fixture decodes to the same part through the same codec, which is what makes
-    // the packing a contract the Swift and TypeScript sides can be held to rather than prose each
-    // of them re-derives.
-    let shard = TransferControl::decode(&fixture("transfer-set-shard.bin")).unwrap();
-    assert_eq!(SetPart::decode(shard.object_id), Some(SetPart { shard_count: 8, index: 2 }));
-    let manifest = TransferControl::decode(&fixture("transfer-set-manifest.bin")).unwrap();
-    assert_eq!(manifest.object_id, TransferControl::NEW_OBJECT_ID, "a manifest is new-only");
-    // **Nine records, not eight** (#1044): the eight OBCM shards plus the terrain shard the
-    // `transfer-set-terrain.bin` descriptor announces. `OBCA_Spec.md` §5.2's `Shard Count` counts
-    // every record, and a device that derived the expected length from the shard count alone
-    // refused every terrain-bearing set at its very last transfer.
-    assert_eq!(manifest.total_len, obc_formats::obcs::manifest_len(9) as u32);
-    assert_eq!(
-        manifest.total_len,
-        obc_formats::obcs::manifest_len(8) as u32 + obc_formats::obcs::SHARD_RECORD_LEN as u32,
-        "exactly one record more than the same set without a raster"
-    );
-}
-
-/// The set's **terrain shard** descriptor (#1044): new-only, and announcing the OBCT fixture beside
-/// it byte-for-byte. The pairing is the point — a host that sends the raster as an ordinary
-/// `mapShard` consumes an index the manifest never names, so the type and the file it carries are
-/// checked together rather than as two independent literals.
-#[test]
-fn the_terrain_shard_descriptor_announces_the_terrain_fixture() {
-    let desc = TransferControl::decode(&fixture("transfer-set-terrain.bin")).unwrap();
-    assert_eq!(desc.ty, ObjectType::TerrainShard);
-    assert_eq!(desc.object_id, TransferControl::NEW_OBJECT_ID, "at most one raster per set — nothing to select");
-    let raster = fixture("terrain-shard.obcd");
-    assert_eq!(desc.total_len as usize, raster.len());
-    assert_eq!(desc.crc32, Crc32::checksum(&raster));
-    assert!(obc_formats::obct::validate_header_prefix(&raster).is_ok(), "…and it really is an OBCT container");
-    // A raster is not a shard: the part codec must not read this descriptor's id as one.
-    assert_eq!(obc_ble::SetPart::decode(desc.object_id), None);
 }
 
 /// The `routeList` fixture decodes through the production list codec, its first two entries agree
