@@ -66,6 +66,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Channel, Receiver, Sender};
 use embassy_sync::signal::Signal;
 
+use obc_link::flat::{Ceilings, Engine, Policy, Reaction, RequestId};
 use obc_storage::flat::store::MAX_BATCH;
 use obc_storage::flat::{
     Allocation, BlockDevice, EntryMeta, FlatStore, Handle, Mode, Mutation, ObjectKind, RideCheckpoint, Store as _,
@@ -192,10 +193,10 @@ static mut FLAT_STORE: MaybeUninit<FlatStore<FlatCard>> = MaybeUninit::uninit();
 /// is `sd`'s and is already counted there — see the note above [`FLAT_BOUNCE_WARNED`].
 ///
 /// The recording caller's 32,256-byte ride tail (§7.1) is **not** here — no ride records to the flat
-/// store until c3, and a budget row for a buffer nothing allocates would be a lie in the other
+/// store until FS8 (#1390), and a budget row for a buffer nothing allocates would be a lie in the other
 /// direction. It joins this sum in the slice that starts recording.
 pub(crate) const RESIDENT_BYTES: usize =
-    core::mem::size_of::<FlatStore<FlatCard>>() + REQUEST_QUEUE_BYTES + MAP_READ_BYTES;
+    core::mem::size_of::<FlatStore<FlatCard>>() + REQUEST_QUEUE_BYTES + MAP_READ_BYTES + ENGINE_BYTES;
 
 /// **Everything the read cutover keeps resident on this arm** (FS7.5-c2): the session-long
 /// [`MAP_SOURCE`] *and* the [`MAP_NAME`] the same boot step captures.
@@ -383,6 +384,43 @@ pub(crate) enum Request {
     Cancel { allocation: Allocation },
     /// Return a hold row. Refused rather than obeyed while another reader holds it (`flat::source`).
     Close { handle: Handle },
+
+    // ── the protocol-v4 engine (FS7.5-c3a) ──────────────────────────────────────────────────────
+    //
+    // The engine runs *here*, inside the one task that writes, and the transports are pure record
+    // shippers. That is not a convenience: `obc_link::flat::Store` is synchronous throughout — the
+    // mutators included — so an engine driven from a transport task would have to reach the card
+    // from a second execution context, which is exactly what the #1256 owner ruling forbids. Sitting
+    // it behind this queue makes "one engine, one owner" (`FLAT_Store_Protocol.md` §1) a property of
+    // the type rather than a convention, and it is what `Writer::call`'s one-slot-per-concurrently-
+    // live-call contract was written for.
+    /// One whole control record (§3.1), and the buffer the reaction's bytes land in.
+    ///
+    /// `out` is the **caller's** `'static` buffer and rides back in [`Outcome::Reacted`]. It is a
+    /// borrow rather than a copy for the same reason [`Request::Write`]'s bytes are: a request
+    /// outlives the statement that sent it, and a `LIST` page or a stream record is up to a link
+    /// ceiling of bytes that would otherwise be memcpy'd twice per record.
+    Control { record: &'static [u8], out: &'static mut [u8] },
+    /// One whole stream record (§3.8): the 16-byte frame followed by exactly its payload.
+    Stream { record: &'static [u8], out: &'static mut [u8] },
+    /// Pump the engine once — a live `GET`'s next record, or an error owed to a dropped transfer.
+    /// An adapter repeats this until the reaction is [`Reaction::Idle`]; a driver that stops pumping
+    /// stalls a download.
+    Pump { out: &'static mut [u8] },
+    /// A link came up with these record ceilings (§5.1, §5.2). Releases whatever the previous link
+    /// held and re-pins the engine to what *this* link negotiated. `Err(StoreError::Invalid)` is
+    /// §5.1's "a link below the protocol floor is refused rather than truncated".
+    LinkUp { control: usize, stream: usize },
+    /// §3.8's third form of cancel: the link went away. Answers nobody, because there is nobody
+    /// left to answer.
+    LinkLost,
+    /// The live transfer's `RequestId`, if one owns the engine.
+    ///
+    /// The one *read* on this queue, and it earns its place: §5's cross-channel ordering makes an
+    /// adapter hold a stream frame for a `RequestId` it has not yet seen admitted, and "has this
+    /// been admitted" is a question only the engine can answer. One round trip, and only inside the
+    /// race window.
+    LiveTransfer,
 }
 
 /// What one [`Request`] produced.
@@ -401,6 +439,13 @@ pub(crate) enum Outcome {
     Committed(u64),
     /// Nothing to hand back: `journal`, `cancel`, `close`.
     Done,
+    /// What the engine wants done, and the caller's buffer back with the bytes in it.
+    Reacted {
+        reaction: Reaction,
+        out: &'static mut [u8],
+    },
+    /// The live transfer's `RequestId`, or `None` when the engine is idle.
+    Live(Option<RequestId>),
 }
 
 /// The caller's half of one round trip: the answer, **tagged with the request it answers**.
@@ -530,12 +575,15 @@ pub(crate) async fn storage_task(
     store: &'static FlatStore<FlatCard>,
     requests: Receiver<'static, CriticalSectionRawMutex, Job, REQUEST_QUEUE>,
 ) -> ! {
-    defmt::info!("flat: storage task up — the write half is serialized here, reads stay direct");
+    defmt::info!("flat: storage task up — the write half and the v4 engine are serialized here, reads stay direct");
+    // The engine and its policy live in `.bss`, built out of line: see `engine_slot`.
+    let engine = engine_slot();
+    let mut policy = BoardPolicy;
     loop {
         let job = requests.receive().await;
         // The FLPR is switched per card command by `flpr_mux::with_storage`, so nothing is held
         // across this call and there is no mode session to acquire around the batch.
-        let outcome = serve(store, job.request);
+        let outcome = serve(store, engine, &mut policy, job.request);
         // The tag rides back with the answer: the caller may be gone, and the next user of this slot
         // has to be able to tell that this value is not theirs. See `Reply`.
         job.reply.signal((job.tag, outcome));
@@ -546,7 +594,12 @@ pub(crate) async fn storage_task(
 /// its frame is measured as its own symbol rather than folded into the task's poll frame — the same
 /// reason `mount_at_boot` is `#[inline(never)]`.
 #[inline(never)]
-fn serve(store: &FlatStore<FlatCard>, request: Request) -> Result<Outcome, StoreError> {
+fn serve(
+    store: &FlatStore<FlatCard>,
+    engine: &mut BoardEngine,
+    policy: &mut BoardPolicy,
+    request: Request,
+) -> Result<Outcome, StoreError> {
     match request {
         Request::Allocate { bytes } => store.allocate(bytes).map(Outcome::Allocated),
         Request::Write { mut allocation, bytes } => {
@@ -563,8 +616,119 @@ fn serve(store: &FlatStore<FlatCard>, request: Request) -> Result<Outcome, Store
             store.close(handle);
             Ok(Outcome::Done)
         }
+        Request::Control { record, out } => {
+            let reaction = engine.on_control(store, policy, record, out);
+            Ok(Outcome::Reacted { reaction, out })
+        }
+        Request::Stream { record, out } => {
+            let reaction = engine.on_stream(store, policy, record, out);
+            Ok(Outcome::Reacted { reaction, out })
+        }
+        Request::Pump { out } => {
+            let reaction = engine.poll(store, out);
+            Ok(Outcome::Reacted { reaction, out })
+        }
+        Request::LinkUp { control, stream } => {
+            // §5.1: a link below the protocol floor cannot carry this protocol and the adapter
+            // refuses the connection rather than truncating. `Ceilings::new` returning `None` *is*
+            // that refusal, and it reaches the adapter as the one error it can act on.
+            let Some(ceilings) = Ceilings::new(control, stream) else {
+                defmt::warn!(
+                    "flat/v4: link offers control {=usize} B / stream {=usize} B — below the protocol floor, refused",
+                    control,
+                    stream
+                );
+                return Err(StoreError::Invalid);
+            };
+            // A new link has no live transfer, and the old one's holds must go back before the
+            // engine forgets them: `on_link_lost` is the release, and the rebuild is what re-pins
+            // the ceilings a *negotiated* ATT MTU decides. Rebuilding in place rather than mutating
+            // is deliberate — `Ceilings` has no setter, and an engine whose ceilings changed under a
+            // live transfer would frame the rest of it against a link that no longer exists.
+            engine.on_link_lost(store);
+            *engine = Engine::new(ceilings);
+            defmt::info!("flat/v4: link up — control {=usize} B, stream {=usize} B", control, stream);
+            Ok(Outcome::Done)
+        }
+        Request::LinkLost => {
+            engine.on_link_lost(store);
+            Ok(Outcome::Done)
+        }
+        Request::LiveTransfer => Ok(Outcome::Live(engine.live_transfer())),
     }
 }
+
+// ══════════════════════════ the protocol-v4 engine ══════════════════════════
+
+/// The engine's staging buffer, in bytes.
+///
+/// **512 — the minimum the engine's own `const` assertion allows — and that is a c3a decision with a
+/// c3b sequel.** The stage exists to turn a burst of small link records into few large card writes,
+/// and on BLE there is no burst to turn: a CoC SDU is 245 bytes and the radio delivers a handful per
+/// connection interval, so a 4 KiB stage would batch writes the link cannot feed it fast enough to
+/// fill. What it *would* cost is real — [`Engine`] embeds the buffer, and a 4 KiB engine built by
+/// value is 4 KiB of transient frame at a depth this board measures (#1084/#1108).
+///
+/// USB is the case the default was written for, and c3b raises this with that transport's measured
+/// number in hand rather than inheriting a guess from the radio.
+const ENGINE_STAGE: usize = 512;
+
+/// The one engine, bound to this board's store.
+pub(crate) type BoardEngine = Engine<FlatStore<FlatCard>, ENGINE_STAGE>;
+
+/// `.bss`, for the reason every value this size on this board is: an engine built by value inside
+/// [`storage_task`]'s async block is a permanent slot in that task's poll frame, allocated at entry
+/// on every poll (#677, #1084, #1108).
+static mut ENGINE: MaybeUninit<BoardEngine> = MaybeUninit::uninit();
+
+/// The engine's resident cost. Named for the budget table in `main.rs`.
+pub(crate) const ENGINE_BYTES: usize = core::mem::size_of::<BoardEngine>();
+
+/// **Build the engine into its slot and hand back the one `&'static mut`.**
+///
+/// `#[inline(never)]` so the constructor's frame is a transient sibling rather than part of the
+/// task's poll frame. It is small — [`ENGINE_STAGE`] is 512 B and the rest is a live-transfer record
+/// — but the rule is about *where a value is built*, not how big it is, and c3b raises the stage.
+///
+/// The initial ceilings are the device's **preferred** BLE link (§5.1: `ATT_MTU - 3` at the
+/// preferred 247-byte MTU, and a CoC SDU of the packet pool's MTU − 6). They are re-pinned per
+/// connection by [`Request::LinkUp`], which is what makes a link that negotiated something smaller
+/// correct rather than merely usual.
+///
+/// # Safety
+/// Sole writer of [`ENGINE`]; called exactly once, from [`storage_task`], which is spawned once.
+#[inline(never)]
+fn engine_slot() -> &'static mut BoardEngine {
+    let ceilings = Ceilings::new(PREFERRED_CONTROL_CEILING, PREFERRED_STREAM_CEILING)
+        .expect("the device's preferred link is above the protocol floor");
+    // SAFETY: sole writer; `storage_task` is spawned exactly once and nothing else names this slot.
+    unsafe { crate::init_static(core::ptr::addr_of_mut!(ENGINE), Engine::new(ceilings)) }
+}
+
+/// §5.1's control ceiling at the device's preferred 247-byte ATT MTU.
+pub(crate) const PREFERRED_CONTROL_CEILING: usize = 244;
+/// The CoC SDU the packet pool yields (`DefaultPacketPool::MTU - 6`).
+pub(crate) const PREFERRED_STREAM_CEILING: usize = 245;
+
+/// The two decisions the engine cannot make for itself (`FLAT_Store_Protocol.md` §3.6, §4).
+///
+/// **Both are unfilled in c3a, and the defaults are the honest answers rather than placeholders.**
+///
+/// - `accept` is §3.6's "runs the kind's validator". The hook the seam offers is
+///   `(kind, payload_len)` — the payload itself is in an uncommitted allocation the engine cannot
+///   re-read, and `open` resolves committed entries only. So a real OBCR/OBCW/OBCM magic check
+///   needs a read hook `obc_link::flat::Policy` does not have, and inventing a length-only
+///   "validator" here would be a check that passes everything while reading as though it did not.
+///   What *is* enforced is the whole-payload CRC-32 the engine verifies before this is called, which
+///   is what catches a damaged transfer; what is not enforced is a well-formed transfer of the wrong
+///   bytes. Filling this is a named follow-up on #1420.
+/// - `validate_package` and `hand_off` are §4's arm. They need `obc-dfu`, the RRAM boot page and a
+///   reboot, and the default refuses — which is correct for a build that cannot arm: a device that
+///   committed a rollback reserve it could never hand off would strand extents no client can free
+///   (§3.7 refuses to `REMOVE` a `RESERVED` entry). `ARM` therefore answers `rejected`.
+pub(crate) struct BoardPolicy;
+
+impl Policy for BoardPolicy {}
 
 /// **Take the receive end and arm the write half**, for the one `spawn` in `main`.
 ///
