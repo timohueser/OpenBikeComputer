@@ -40,6 +40,31 @@ class Fs7BoardCompositionTests(unittest.TestCase):
         self.assertLess(routes, trips)
         self.assertLess(trips, events, "typed upload ids must resolve against the newly-fed snapshots")
 
+    def test_upload_queue_coalesces_replacements_and_has_a_loss_fallback(self) -> None:
+        queue = body(FLAT_STORE, "fn queue_catalog_upload", "fn note_catalog_upload")
+        self.assertIn("for _ in 0..queued", queue)
+        self.assertIn("prior.same_object(upload)", queue)
+        self.assertIn("events.push_back(upload)", queue)
+        self.assertLess(
+            queue.index("prior.same_object(upload)"),
+            queue.index("if let Err(upload) = events.push_back(upload)"),
+            "same-object replacements must coalesce before the capacity fallback",
+        )
+        self.assertIn("events.pop_front()", queue, "saturation keeps the newest fact, not a stale oldest one")
+
+        note = body(FLAT_STORE, "fn note_catalog_upload", "pub(crate) fn take_catalog_upload")
+        self.assertIn("UPLOAD_EVENTS_LOSS.store(true", note)
+        self.assertNotIn("advisory deferred", note, "a dropped fact is loss, not deferred work")
+
+        delivery = body(RIDE, "fn apply_catalog_uploads", "/// A `no_std`")
+        loss = delivery.index("take_catalog_upload_loss()")
+        drain = delivery.index("while let Some(upload)")
+        self.assertLess(loss, drain, "the conservative refresh precedes retained facts in commit order")
+        fallback = delivery[loss:drain]
+        self.assertIn("active_route_index()", fallback)
+        self.assertIn("HostEvent::RouteUploaded", fallback)
+        self.assertIn("replaced: true", fallback)
+
     def test_transient_catalog_reads_preserve_snapshot_and_rearm_retry(self) -> None:
         for loader, setter in (
             ("pub(crate) fn load_routes", "app.set_routes_with_ids"),
