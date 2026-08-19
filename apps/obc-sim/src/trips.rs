@@ -178,6 +178,25 @@ mod tests {
     /// snapshot harness stages exactly this file.
     const TRIP_ASSET: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/sources/sim-grimsel/routes/TP1.OBT");
 
+    struct VecSink(Vec<u8>);
+    impl obc_formats::io::ByteSink for VecSink {
+        fn write(&mut self, b: &[u8]) -> Result<(), obc_formats::io::Error> {
+            self.0.extend_from_slice(b);
+            Ok(())
+        }
+        fn patch_at(&mut self, off: u32, b: &[u8]) -> Result<(), obc_formats::io::Error> {
+            let o = off as usize;
+            self.0[o..o + b.len()].copy_from_slice(b);
+            Ok(())
+        }
+    }
+
+    fn encode_committed_trip() -> Vec<u8> {
+        let mut sink = VecSink(Vec::new());
+        write_trip("Alpen Traverse", &[0, 1, 99], &mut sink).unwrap();
+        sink.0
+    }
+
     /// Stage a routes folder with three copies of the sample route (`a`/`b`/`c`, so their sorted-scan
     /// ids are 0/1/2) plus the committed `TP1.OBT` trip grouping the first two (ids 0, 1) with one
     /// dangling ref (99). Route `c` (id 2) stays loose — a groupable menu: one folder + one
@@ -196,21 +215,15 @@ mod tests {
     /// asset's provenance pin (regenerate by re-running `write_trip` with these arguments).
     #[test]
     fn committed_trip_asset_matches_the_production_writer() {
-        struct VecSink(Vec<u8>);
-        impl obc_formats::io::ByteSink for VecSink {
-            fn write(&mut self, b: &[u8]) -> Result<(), obc_formats::io::Error> {
-                self.0.extend_from_slice(b);
-                Ok(())
-            }
-            fn patch_at(&mut self, off: u32, b: &[u8]) -> Result<(), obc_formats::io::Error> {
-                let o = off as usize;
-                self.0[o..o + b.len()].copy_from_slice(b);
-                Ok(())
-            }
-        }
-        let mut sink = VecSink(Vec::new());
-        write_trip("Alpen Traverse", &[0, 1, 99], &mut sink).unwrap();
-        assert_eq!(std::fs::read(TRIP_ASSET).expect("trip asset readable"), sink.0);
+        assert_eq!(std::fs::read(TRIP_ASSET).expect("trip asset readable"), encode_committed_trip());
+    }
+
+    /// Rewrite the committed asset with the production v2 writer. Ignored — run it deliberately
+    /// after a trip-format bump, just like the paired route-fixture regenerator.
+    #[test]
+    #[ignore]
+    fn regenerate_committed_trip_asset() {
+        std::fs::write(TRIP_ASSET, encode_committed_trip()).unwrap();
     }
 
     fn sample_distance_km() -> u32 {
