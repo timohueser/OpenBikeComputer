@@ -68,6 +68,36 @@ pub const fn nav_publish_disposition(cancel_requested: bool, id: crate::CatalogO
     }
 }
 
+/// Store-task result categories relevant to retracting a route whose publication raced cancel.
+/// Kept independent of a concrete store error type so the app/host state machine remains portable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NavCompensationStatus {
+    /// The exact published revision was removed.
+    Removed,
+    /// The exact revision is already absent (for example a later replacement removed it first).
+    Absent,
+    /// Media or scheduling failure that can succeed on a later pass.
+    Retry,
+    /// A permanent store refusal. The host must release its planner resources rather than spin
+    /// forever; the board logs this as a violated publish-capacity invariant.
+    Terminal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NavCompensationDisposition {
+    Cancelled,
+    Retry,
+    CancelledAfterTerminalFailure,
+}
+
+pub const fn nav_compensation_disposition(status: NavCompensationStatus) -> NavCompensationDisposition {
+    match status {
+        NavCompensationStatus::Removed | NavCompensationStatus::Absent => NavCompensationDisposition::Cancelled,
+        NavCompensationStatus::Retry => NavCompensationDisposition::Retry,
+        NavCompensationStatus::Terminal => NavCompensationDisposition::CancelledAfterTerminalFailure,
+    }
+}
+
 /// Everything the app can ask its host to do — the typed successor of the per-feature `take_*`
 /// latches. Drained in the fixed [`HostCommand::DRAIN_ORDER`] by
 /// [`App::drain_host_commands`](crate::App::drain_host_commands); each variant documents its
