@@ -1099,3 +1099,68 @@ fn a_down_link_is_not_served_and_the_wrong_wires_stream_is_discarded() {
     assert!(wire.control.is_empty() && wire.stream.is_empty(), "discarded in silence");
     assert_eq!(device.live_upload().expect("still live").received, 0, "and absorbed nothing");
 }
+
+/// **A `CANCEL` cancels the asking link's transfer, and only that one.**
+///
+/// §3.1 makes the client choose its own `RequestId`, and nothing coordinates two clients — so a
+/// phone and a cable both picking a small number is ordinary traffic, not an attack. Matching a
+/// `CANCEL` on the identifier alone therefore let one link destroy the other's transfer *and* take
+/// the cancelled error for itself: the victim died silently and its own peer was never told.
+///
+/// This was the one entry point that still matched on `RequestId` alone after the rest of the link
+/// lifecycle gained an identity, which is exactly the shape a partial fix leaves behind.
+#[test]
+fn a_cancel_names_a_transfer_on_its_own_wire_or_it_cancels_nothing() {
+    let disk = formatted_card(97);
+    let usb = Ceilings::for_usb(4_112).expect("§5.2's ceiling");
+    let ble = Ceilings::for_ble(247, 245, 256).expect("§5.1's preferred link");
+    let mut device = boot_on(&disk, usb);
+    device.link_up(Link::Usb, usb);
+    device.link_up(Link::Ble, ble);
+    let bytes = body();
+
+    // The cable's `PUT` is transfer 1 — a perfectly ordinary identifier for a client to pick.
+    device.control_on(Link::Usb, &client::put(1, 0, 0, &bytes, ROUTE, false, "over the cable"));
+    device.stream_on(Link::Usb, &client::stream(1, 0, &bytes[..1_008]));
+    assert_eq!(device.live_upload().expect("live").received, 1_008);
+
+    // The phone cancels *its* transfer 1, which it believes is its own. It is not.
+    let wire = device.control_on(Link::Ble, &client::cancel(9, 1));
+    let answer = Answer::of(wire.answer());
+    assert!(!answer.is_error(), "the CANCEL itself is well formed and is answered: {answer:?}");
+    // §3.8's answer byte: `0` cancelled, `1` no such transfer.
+    assert_eq!(answer.byte_at(0), 1, "§3.8's `no such transfer` — there is none of the asker's");
+    assert!(wire.stream.is_empty(), "and nothing went out on the radio's stream channel");
+
+    // The cable's upload is untouched, byte for byte, and still completes.
+    let still = device.live_upload().expect("the cable's upload survived the radio's CANCEL");
+    assert_eq!((still.request.0, still.received), (1, 1_008), "same transfer, same bytes");
+
+    // **Nothing was minted for the radio either.** A pump on the radio's own wire finds nothing
+    // owed — the failing version left a `cancelled` error there, addressed to a transfer the radio
+    // never started, which its client would have had to discard against a `RequestId` it never sent.
+    assert!(device.pump_on(Link::Ble).control.is_empty(), "no error was owed to the asking link");
+
+    let mut last = None;
+    for record in client::stream_all(1, &bytes, 1_008).into_iter().skip(1) {
+        let wire = device.stream_on(Link::Usb, &record);
+        if !wire.control.is_empty() {
+            last = Some(Answer::of(wire.answer()));
+        }
+    }
+    assert!(!last.expect("the last stream record is answered").is_error(), "the upload committed");
+
+    // …and the owning link can still cancel it, which is the half that must keep working. §3.8 is
+    // bilateral, so this produces **two** control records on the cable: the `CANCEL`'s own answer
+    // and the cancelled `PUT`'s `cancelled` error — which is the pair the radio wrongly received
+    // half of before this fix.
+    device.control_on(Link::Usb, &client::put(2, 0, 0, &bytes, ROUTE, false, "cancelled properly"));
+    let wire = device.control_on(Link::Usb, &client::cancel(3, 2));
+    assert_eq!(wire.control.len(), 2, "the CANCEL is answered and the transfer is refused");
+    let answered = Answer::of(&wire.control[0]);
+    assert_eq!(answered.byte_at(0), 0, "the owning link's CANCEL is honoured");
+    let refused = Answer::of(&wire.control[1]);
+    assert!(refused.is_error() && refused.request == 2, "the PUT itself is answered `cancelled`");
+    assert_eq!(refused.error().0, ErrorCode::Cancelled.value());
+    assert_eq!(device.live_upload(), None, "and the transfer is gone");
+}

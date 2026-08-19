@@ -921,8 +921,18 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         transfer: RequestId,
         out: &mut [u8],
     ) -> Reaction {
+        // **Both halves: the identifier *and* the wire.** `RequestId` spaces are per client — §3.1
+        // makes the client choose them and nothing coordinates two clients — so a phone and a cable
+        // picking the same small number is ordinary, not adversarial. Matching on the identifier
+        // alone let a `CANCEL` from one link destroy the other link's transfer *and* mint the
+        // cancelled error to the asking link, so the victim was killed silently and its peer was
+        // never told. This was the one entry point that missed the link identity when the rest of
+        // the lifecycle gained it.
+        //
+        // A `CANCEL` naming a transfer the asking link does not own answers `cancelled = false`,
+        // which is §3.8's own honest answer: there is no such transfer *of yours*.
         let live = self.live_transfer();
-        let cancelled = live == Some(transfer);
+        let cancelled = live == Some(transfer) && self.live_link() == Some(link);
         if cancelled {
             let opcode = if matches!(self.live, Live::Upload(_)) { Opcode::Put } else { Opcode::Get };
             self.abandon(store);

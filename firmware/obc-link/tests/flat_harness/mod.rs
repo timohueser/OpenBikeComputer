@@ -156,6 +156,12 @@ impl<D: BlockDevice> Device<D> {
         self.drive_on(link, first, usize::MAX)
     }
 
+    /// Pump a named link once — what an adapter does until it is told there is nothing to do.
+    pub fn pump_on(&mut self, link: Link) -> Wire {
+        let first = self.engine.poll(link, &self.store, &mut self.out);
+        self.drive_on(link, first, usize::MAX)
+    }
+
     /// That link went away.
     pub fn link_lost_on(&mut self, link: Link) {
         self.engine.on_link_lost(link, &self.store);
@@ -502,6 +508,11 @@ impl Answer {
 
     pub fn u64_at(&self, at: usize) -> u64 {
         u64::from_le_bytes(self.body[at..at + 8].try_into().unwrap())
+    }
+
+    /// One body byte — §3.8's `CANCEL` answer is exactly one.
+    pub fn byte_at(&self, at: usize) -> u8 {
+        self.body[at]
     }
 
     pub fn u32_at(&self, at: usize) -> u32 {
