@@ -60,9 +60,16 @@ toolchain and named-allocation table rather than updating a second copy here.
 
 | Profile | Linked resident | `.uninit` ceiling | Flash record | Poll frame | Main task | Residual stack | Boot-chain ceiling |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| default | 308,176 B / 308,256 B max | 132,096 B | 1,366,436 B | 9,728 / 12,288 B | 7,456 / 8,192 B | 51,248 B min | 24,576 B |
-| BLE | 308,176 B / 308,256 B max | 132,096 B | 1,366,444 B | 9,728 / 12,288 B | 7,456 / 8,192 B | 51,248 B min | 24,576 B |
+| default | 321,784 B / 321,864 B max | 132,096 B | 1,366,436 B | 9,728 / 12,288 B | 7,264 / 8,192 B | 37,640 B min | 28,672 B |
+| BLE | 321,784 B / 321,864 B max | 132,096 B | 1,366,444 B | 9,728 / 12,288 B | 7,264 / 8,192 B | 37,640 B min | 28,672 B |
 | bootloader | — | — | 16,708 / 32,768 B max | — | — | — | — |
+
+> ⚠️ **The residual stack is close to the measured deep-ride high-water and the gates cannot see
+> that.** Since FS7.5-c1 put the flat store in the image the residual is 37,640 B, against a
+> deep-ride peak last measured at ~35,808 B (default) / 37,760 B (BLE) on 2026-07-04. The automated
+> gates are all green — they compare the residual to its own approved floor, not to a run — so this
+> is the case the "on-device capture" section below exists for. Read
+> `board.default._resident_note_fs75c1` in the JSON before changing anything resident.
 
 “Linked resident” is `.bss + .data`; `.uninit` is resident RAM too and carries the scratch arena.
 Review the two together. `residual_stack` is measured from the end of all resident allocations, so
