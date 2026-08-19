@@ -588,6 +588,14 @@ pub struct NavProjection {
 /// absurd positions (a planner probing the ceiling), and only the section's position **inside a
 /// 512-byte sector** changes any answer here — both `nav_index_padding` and `align_up` divide 512.
 /// So the walk runs at the section's sector remainder and cannot overflow whatever it is asked.
+///
+/// **`obc-pack` writes the same section without a layout struct, and the asymmetry is deliberate.**
+/// Its `walk_nav_section` runs the *write* twice — once discarding, to resolve the directory — which
+/// is strictly stronger than this, because nothing carries a number between the passes and so no
+/// carrier can be wrong. It can afford that because its whole §8 body is resident in `Vec`s. This
+/// one's is not: the index, chunks and pool are read off a scratch seam and out of the source cells
+/// as they are written, so a second pass would re-read all of it and double the dominant I/O of an
+/// assembly. Hence one walk, and a struct to carry what it found.
 #[derive(Clone, Copy, Default)]
 struct NavLayout {
     /// §1.2 filler between the 40-byte directory and the profile table it cannot otherwise name.

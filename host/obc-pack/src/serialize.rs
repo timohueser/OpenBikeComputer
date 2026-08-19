@@ -691,13 +691,24 @@ pub fn serialize_tree(root: &Node, chunk_size: usize) -> (Vec<u8>, u32, Vec<u8>,
     }
     // `index_start` is a unit boundary, so a cursor started at the index's *length* finds the same
     // boundaries the reader will — which is what makes the region relocatable at all (OBCA §4.3).
+    //
+    // The table above and the chunk run below are the one place in this file where a boundary is
+    // computed twice — `align_up` per span there, `begin_section` per chunk here — because a §5.1
+    // entry is region-relative and the cursor is not. So they are tied back together: the cursor
+    // must land exactly `offsets[Chunk Count]` units past `data_start`, or the table the reader
+    // indexes with describes a region the writer did not lay out.
     let (data, ()) = lay_out(index_bytes.len(), |w| {
         w.put(&table)?;
-        w.begin_section()?;
+        let data_start = w.begin_section()?;
         for c in &chunks {
             w.put(c)?;
             w.begin_section()?;
         }
+        debug_assert_eq!(
+            w.at() - data_start,
+            span_total as u64,
+            "the §5.1 offset table and the chunks it addresses must end at the same byte"
+        );
         Ok(())
     });
     (index_bytes, node_count, data, chunks.len() as u32, dropped)
@@ -1407,6 +1418,14 @@ struct NavBody<'a> {
 /// the cursor, to *find* the offsets the 40-byte directory carries, and once over the real buffer
 /// with that directory in hand. A projection and an emission that were two pieces of code could
 /// disagree; two runs of one piece cannot, so the §8.1 alignment arithmetic exists once.
+///
+/// **`obcm-assemble` writes the same section a different way, and the asymmetry is deliberate.**
+/// There, `nav::NavLayout` is walked once and *read* by the write; here the write is walked twice.
+/// Walking twice is the stronger of the two — nothing carries a number between the passes, so there
+/// is no carrier to get wrong — and this side can afford it because the whole §8 body is already
+/// resident in these `Vec`s, so a second pass costs cursor arithmetic and nothing else. The
+/// assembler's body is not resident (it streams off a scratch seam and out of the source cells), so
+/// a second pass there would double the dominant I/O of an assembly; see `nav::NavLayout`.
 fn walk_nav_section<E>(
     w: &mut UnitWriter<'_, E>,
     directory: &[u8],
@@ -1849,11 +1868,11 @@ pub fn serialize_lods(
             poi_section_offset,
             nav_section_offset,
         ))?;
-        w.begin_section()?; // → the style table
+        debug_assert_eq!(w.begin_section()?, STYLE_OFFSET as u64, "→ the style table");
         w.put(&style_data)?;
-        w.begin_section()?; // → the LOD table
+        debug_assert_eq!(w.begin_section()?, lod_table_offset as u64, "→ the LOD table the header names");
         w.put(&table)?;
-        w.begin_section()?; // → the first LOD's index
+        debug_assert_eq!(w.begin_section()?, payload_start as u64, "→ the first LOD's index");
         for b in &blocks {
             w.put(&b.ib)?;
             w.put(&b.cb)?;
@@ -1923,9 +1942,7 @@ where
     F: FnMut(usize) -> (Option<Node>, usize, Option<f64>),
 {
     let style_data = pack_style_dict(styles);
-    // The streaming path needs only the first of the two: every later offset is simply where the
-    // cursor is when it gets there.
-    let (lod_table_offset, _) = prefix_offsets(style_data.len(), lod_count);
+    let (lod_table_offset, payload_start) = prefix_offsets(style_data.len(), lod_count);
 
     let mut table = Vec::with_capacity(lod_count * LOD_ENTRY_LEN);
     let mut dropped = 0usize;
@@ -1938,37 +1955,45 @@ where
         // `STYLE_OFFSET` placeholders (any unit-aligned byte will do; `0` is not one the writer may
         // name, since `scaled` refuses a non-boundary) and patch them in step 5.
         u.put(&header_bytes(lod_count, marker_color, global_bbox, lod_table_offset, STYLE_OFFSET, STYLE_OFFSET))?;
-        u.begin_section()?;
+        debug_assert_eq!(u.begin_section()?, STYLE_OFFSET as u64, "→ the style table");
 
         // 2. Style table, then a zeroed LOD table we patch in step 5. Both runs of filler behind
-        // them are the boundaries their scaled offsets already promised.
+        // them are the boundaries their scaled offsets already promised — and the cursor arriving
+        // where `prefix_offsets` said it would is what keeps the header's claim and the bytes one
+        // statement.
         u.put(&style_data)?;
-        u.begin_section()?;
+        debug_assert_eq!(u.begin_section()?, lod_table_offset as u64, "→ the LOD table the header names");
         u.put(&vec![0u8; lod_count * LOD_ENTRY_LEN])?;
-        u.begin_section()?;
+        debug_assert_eq!(u.begin_section()?, payload_start as u64, "→ the first LOD's index");
 
         // 3. Per-LOD: build → serialize → stream payload → drop the tree.
         for i in 0..lod_count {
             let (root, chunk_size, max_mpp) = build(i);
-            let (ib, nc, cb, cc, lod_dropped) = match root {
+            // Serialized before its LOD-table entry, because the entry states this region's counts;
+            // the entry's *offset* is simply where the cursor stands.
+            let region = match root {
                 Some(root) => {
                     let out = serialize_tree(&root, chunk_size);
                     drop(root); // free the tree before writing this LOD / building the next
-                    out
+                    Some(out)
                 }
-                // Empty region: no index, no chunk, and the mandatory single-`0` offset table — plus
-                // the filler that carries the region to the next unit boundary, so the LOD behind it
-                // still starts on one.
-                None => {
-                    let mut cb = 0u32.to_le_bytes().to_vec();
-                    cb.resize(align_up(cb.len()), FILLER);
-                    (Vec::new(), 0u32, cb, 0u32, 0usize)
-                }
+                None => None,
             };
-            dropped += lod_dropped;
+            let (nc, cc) = region.as_ref().map_or((0, 0), |&(_, nc, _, cc, _)| (nc, cc));
             push_lod_entry(&mut table, max_mpp, scaled(u.at() as usize), nc, chunk_size, cc);
-            u.put(&ib)?;
-            u.put(&cb)?;
+            match region {
+                Some((ib, _, cb, _, lod_dropped)) => {
+                    dropped += lod_dropped;
+                    u.put(&ib)?;
+                    u.put(&cb)?;
+                }
+                // Empty region: no index, no chunk, and the mandatory single-`0` offset table of
+                // §5.1 — then the boundary the LOD behind it has to start on.
+                None => {
+                    u.put(&0u32.to_le_bytes())?;
+                    u.begin_section()?;
+                }
+            }
         }
 
         // 4. The POI section begins at the current cursor (right after the last LOD);
