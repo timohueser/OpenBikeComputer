@@ -14,8 +14,6 @@ use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant};
 
-use crate::link::Armed;
-
 // ============================ Link status → the status UI ============================
 
 /// The link state the status UI shows.
@@ -271,19 +269,3 @@ pub(crate) fn battery() -> u8 {
 }
 
 // ============================ CoC data-plane arming ============================
-
-/// The GATT control plane → CoC data plane hand-off: `serve_connection` decodes a
-/// `transfer_control` write, [`classify_transfer`](crate::link::transfer::classify_transfer)
-/// validates it against the `ObjectStore`, and the [`Armed`] transfer is signalled here; `serve_coc`
-/// wakes on it and drives the CoC. A `Signal` (latest-value) suffices because exactly one transfer
-/// is in flight at a time — the *cross-transport* [`TRANSFER_ACTIVE`](crate::link::TRANSFER_ACTIVE)
-/// gate turns a second open into a typed `busy` instead of a silent overwrite. The signal itself is
-/// per-transport: each data plane waits on its own.
-pub(crate) static TRANSFER_ARM: Signal<CriticalSectionRawMutex, Armed> = Signal::new();
-
-/// An abort aimed at the in-flight CoC transfer: the control plane signals, the data plane consumes
-/// it at its next step (between SDUs / chunks), discards, and answers `aborted` with the durable
-/// offset. Latched — an abort that races the transfer's own completion is drained at the same
-/// boundary that clears `TRANSFER_ACTIVE`, before the terminal result is notified, so it can't leak
-/// into the next one.
-pub(crate) static TRANSFER_ABORT: Signal<CriticalSectionRawMutex, ()> = Signal::new();

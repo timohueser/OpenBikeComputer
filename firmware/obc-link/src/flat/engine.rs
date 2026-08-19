@@ -111,6 +111,29 @@ impl Ceilings {
         (control >= CONTROL_FLOOR && stream > STREAM_HEADER_LEN).then_some(Ceilings { control, stream })
     }
 
+    /// §5.1's ceilings for a BLE link, from what the link negotiated and what the adapter can hold.
+    ///
+    /// Three facts, in one place because they are one rule and an adapter that re-derived it would
+    /// be re-deriving a specification:
+    ///
+    /// - **The control ceiling is `ATT_MTU - 3`** (§5.1). An `att_mtu` below 3 cannot carry a
+    ///   handle-value payload at all and yields `None` rather than an underflow.
+    /// - **The stream ceiling is the CoC SDU**, fixed at channel establishment.
+    /// - **Both are clamped to `buffer`**, the adapter's reaction buffer. That clamp is
+    ///   load-bearing rather than defensive: the engine frames a `LIST` page and a stream record
+    ///   against these numbers, so a link that negotiated *upward* of the adapter's buffer would
+    ///   otherwise have it framing into bytes that are not there.
+    ///
+    /// `None` is §5.1's "a link below that floor cannot carry this protocol and the adapter refuses
+    /// the connection rather than truncating" — including the case where the clamp itself is what
+    /// puts the link under the floor, since a buffer too small to hold a single-entry page is the
+    /// same refusal for the same reason.
+    pub fn for_ble(att_mtu: usize, coc_sdu: usize, buffer: usize) -> Option<Self> {
+        let control = att_mtu.checked_sub(3)?.min(buffer);
+        let stream = coc_sdu.min(buffer);
+        Ceilings::new(control, stream)
+    }
+
     /// The largest control record this link carries.
     pub fn control(&self) -> usize {
         self.control
@@ -119,6 +142,67 @@ impl Ceilings {
     /// The largest stream record this link carries.
     pub fn stream(&self) -> usize {
         self.stream
+    }
+}
+
+/// **The adapter's admission latch** (§3.6, §5), and the reason it is a type here rather than a
+/// `bool` in a binding.
+///
+/// §3.6 lets a client stream a `PUT` immediately, without waiting for an acceptance, so the first
+/// stream frame of a transfer races its own control frame. A binding therefore has to know whether a
+/// frame is *already admitted* — a continuation of a live transfer, deliverable at once — or
+/// possibly the leading edge of one whose control frame has not arrived, which §5 says it must
+/// **hold** rather than deliver (the engine would discard it in silence and the upload would die at
+/// offset zero) and rather than drop.
+///
+/// Asking the engine per frame answers that correctly and costs a round trip on every record of a
+/// multi-megabyte upload. Latching "something has been admitted" is cheap and **wrong**: it stays
+/// set when the transfer it was set for finishes, so the *second* `PUT` on one channel — the
+/// ordinary "upload three routes" session — has its leading frame waved through to an idle engine
+/// and dies exactly as the unlatched race did. That is not hypothetical; it is the bug this type
+/// replaces.
+///
+/// So the latch remembers **which** `RequestId` was admitted. A frame bearing that id is a
+/// continuation and skips the query; any other id — including the first frame of the next transfer
+/// on the same channel — is queried. The hot path stays free and the race stays closed.
+///
+/// One deliberate narrowing: a client that reuses a `RequestId` immediately after its transfer ended
+/// is treated as a continuation. §3.8 already tells clients not to (`SHOULD NOT`, because in-flight
+/// frames from the old transfer would be absorbed by the new one) and describes this same failure,
+/// so the latch inherits the specification's own boundary rather than drawing a new one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Admission {
+    admitted: Option<RequestId>,
+}
+
+impl Admission {
+    /// A latch that has admitted nothing — what every new channel starts with.
+    pub fn new() -> Self {
+        Admission { admitted: None }
+    }
+
+    /// True when the engine must be consulted before this frame may be delivered.
+    pub fn needs_query(&self, frame: RequestId) -> bool {
+        self.admitted != Some(frame)
+    }
+
+    /// Record what the engine reported while `frame` was waiting. Returns **true when the frame must
+    /// be held** — nothing is live, or what is live is a different transfer, and either way this
+    /// frame is not admitted yet.
+    pub fn observed(&mut self, frame: RequestId, live: Option<RequestId>) -> bool {
+        if live == Some(frame) {
+            self.admitted = Some(frame);
+            return false;
+        }
+        // Not this transfer. Forget any earlier admission too: whatever it named is not what is
+        // arriving, so keeping it could only wave a later frame through on a stale identity.
+        self.admitted = None;
+        true
+    }
+
+    /// Forget every admission — a new channel has admitted nothing.
+    pub fn reset(&mut self) {
+        self.admitted = None;
     }
 }
 
@@ -943,14 +1027,25 @@ fn allocate_refusal(error: StoreError, bytes: u64) -> Refusal {
         StoreError::Invalid => Refusal::plain(ErrorCode::Busy),
         StoreError::Media => Refusal::new(ErrorCode::MediaIo, detail::media_io::WRITE),
         StoreError::ReadOnly => Refusal::new(ErrorCode::ReadOnly, detail::read_only::REVISION_SPACE_EXHAUSTED),
+        // `allocate` takes no hold row, so this is unreachable from here — mapped rather than
+        // funnelled into `Internal`, because a store that ever does say it is the same transient
+        // fact the arm above reports and a client should read it the same way.
+        StoreError::Busy => Refusal::new(ErrorCode::Busy, detail::busy::HOLDS),
         StoreError::NotFound | StoreError::RevisionConflict { .. } => Refusal::plain(ErrorCode::Internal),
     }
 }
 
-/// A refusal from `open`. A full hold table is the same transient fact as a full reservation table.
+/// A refusal from `open`. A full hold table is the same transient fact as a full reservation table,
+/// and since FS7.5-c2 it **says which** — `busy` detail `holds 2` rather than a plain `busy`, so a
+/// client can tell "another transfer owns the device" from "every read slot is taken".
+///
+/// `Invalid` still maps to a plain `busy` here for the reservation case, and it is also what a `GET`
+/// on a `RESERVED` entry produces — which is a genuine client error the store has no other way to
+/// spell at this seam. That conflation is older than this slice and is not resolved by it.
 fn open_refusal(error: StoreError) -> Refusal {
     match error {
         StoreError::NotFound => Refusal::new(ErrorCode::NotFound, detail::not_found::OBJECT),
+        StoreError::Busy => Refusal::new(ErrorCode::Busy, detail::busy::HOLDS),
         StoreError::Invalid => Refusal::plain(ErrorCode::Busy),
         StoreError::Media => Refusal::new(ErrorCode::MediaIo, detail::media_io::READ),
         StoreError::ReadOnly => Refusal::new(ErrorCode::ReadOnly, detail::read_only::CATALOG_UNREADABLE),
@@ -977,6 +1072,10 @@ fn commit_refusal(error: StoreError, bytes: u64) -> Refusal {
         // The engine built the batch, so a structural refusal is this crate's fault and not the
         // client's.
         StoreError::Invalid => Refusal::plain(ErrorCode::Internal),
+        // A commit takes no hold row either. Same reasoning as `allocate_refusal`'s arm: mapped to
+        // the transient answer rather than to `Internal`, so a store that ever reports it is read
+        // as *ask again* and not as a device defect.
+        StoreError::Busy => Refusal::new(ErrorCode::Busy, detail::busy::HOLDS),
     }
 }
 
@@ -994,6 +1093,19 @@ mod tests {
         // The same variant from a commit is the engine's own batch being wrong, which is not the
         // client's fault either — but it is not transient, so it is not `busy`.
         assert_eq!(commit_refusal(StoreError::Invalid, 0).code, ErrorCode::Internal);
+    }
+
+    /// A full **hold** table says which kind of busy it is. The detail is the half a client's retry
+    /// policy reads, and it is frozen in `FLAT_Store_Protocol.md` §3.9 — so it is pinned here rather
+    /// than left to whoever next edits the match.
+    #[test]
+    fn a_full_hold_table_is_busy_with_the_holds_detail() {
+        assert_eq!(open_refusal(StoreError::Busy), Refusal::new(ErrorCode::Busy, detail::busy::HOLDS));
+        // The other two seams cannot produce it — neither takes a hold row — but they map it rather
+        // than funnelling it into `Internal`, so a store that ever does say it reads as *ask again*.
+        assert_eq!(allocate_refusal(StoreError::Busy, 1), Refusal::new(ErrorCode::Busy, detail::busy::HOLDS));
+        assert_eq!(commit_refusal(StoreError::Busy, 0), Refusal::new(ErrorCode::Busy, detail::busy::HOLDS));
+        assert_ne!(detail::busy::HOLDS, detail::busy::TRANSFER, "the two reasons must stay distinguishable");
     }
 
     #[test]
@@ -1038,6 +1150,66 @@ mod tests {
         // with detail `0`, because the mode was writable when the transfer was admitted and this
         // path has no narrower fact than "not any more".
         assert_eq!(media_refusal(StoreError::ReadOnly, detail::media_io::WRITE), Refusal::new(ErrorCode::ReadOnly, 0));
+    }
+
+    #[test]
+    fn the_admission_latch_queries_the_first_frame_of_every_transfer_on_a_channel() {
+        let (a, b) = (RequestId(0x2A01), RequestId(0x2A02));
+        let mut admission = Admission::new();
+
+        // Transfer A: the leading frame is always queried, and is held while nothing is live.
+        assert!(admission.needs_query(a));
+        assert!(admission.observed(a, None), "an idle engine must hold the leading frame");
+        // Still unadmitted, so the next frame is queried again rather than waved through.
+        assert!(admission.needs_query(a));
+        assert!(!admission.observed(a, Some(a)), "the engine admitted it — deliver");
+        // Now it is a continuation: no further round trip for the rest of the upload.
+        assert!(!admission.needs_query(a));
+
+        // **The second transfer on the same channel.** A has ended — which the adapter never sees,
+        // because a transfer ends on a *stream* frame — so the latch must not still be answering for
+        // it. This is the regression a plain "something was admitted" flag shipped.
+        assert!(admission.needs_query(b), "B's leading frame must be queried, not waved through on A");
+        assert!(admission.observed(b, None), "B is not admitted yet — hold, do not deliver to an idle engine");
+        assert!(!admission.observed(b, Some(b)));
+        assert!(!admission.needs_query(b));
+        // A's identity is stale now and must not be honoured either.
+        assert!(admission.needs_query(a));
+
+        // A frame for a transfer other than the live one is held rather than delivered, and it
+        // clears the latch so the *live* transfer's next frame is re-queried rather than trusted.
+        assert!(admission.observed(a, Some(b)));
+        assert!(admission.needs_query(b));
+
+        // A new channel admits nothing.
+        assert!(!admission.observed(b, Some(b)));
+        assert!(!admission.needs_query(b));
+        admission.reset();
+        assert!(admission.needs_query(b));
+        assert_eq!(Admission::new(), Admission::default());
+    }
+
+    #[test]
+    fn the_ble_binding_reads_its_ceilings_off_the_link_and_the_adapters_buffer() {
+        // §5.1's own example: the device's preferred 247-byte MTU gives 244 bytes of control.
+        let ceilings = Ceilings::for_ble(247, 245, 256).expect("the device's preferred BLE link");
+        assert_eq!((ceilings.control(), ceilings.stream()), (244, 245));
+        // A link that negotiates upward of the adapter's buffer is clamped to it, both channels.
+        let clamped = Ceilings::for_ble(517, 1_024, 256).expect("a large link, small buffer");
+        assert_eq!((clamped.control(), clamped.stream()), (256, 256));
+        // The floor still applies after the clamp: a buffer under a single-entry page is refused
+        // rather than truncated, exactly as an under-floor MTU is.
+        assert_eq!(Ceilings::for_ble(247, 245, CONTROL_FLOOR - 1), None);
+        // An MTU below the floor is refused however roomy the buffer.
+        assert_eq!(Ceilings::for_ble(CONTROL_FLOOR + 2, 245, 4_096), None);
+        assert!(Ceilings::for_ble(CONTROL_FLOOR + 3, 245, 4_096).is_some());
+        // An `ATT_MTU` too small to subtract the 3-byte header from is `None`, never an underflow.
+        for att in [0, 1, 2, 3] {
+            assert_eq!(Ceilings::for_ble(att, 245, 4_096), None, "att_mtu {att} underflowed");
+        }
+        // A stream ceiling that cannot carry a frame header plus one payload byte is refused.
+        assert_eq!(Ceilings::for_ble(247, STREAM_HEADER_LEN, 4_096), None);
+        assert!(Ceilings::for_ble(247, STREAM_HEADER_LEN + 1, 4_096).is_some());
     }
 
     #[test]

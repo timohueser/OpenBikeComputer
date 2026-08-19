@@ -245,6 +245,79 @@ this bench's store gets phase one: initialize, then every measurement above, end
 own `recovered_ride`, §7.2's ride end, and the whole ride read back byte for byte against the payload
 phase one generated. A third reset finds no ride recording and starts phase one over.
 
+#### Serial map ingest — putting a real map on the card
+
+Before either phase, the bench advertises on the DK's VCOM UART for ten seconds. If a host answers
+it takes objects over the cable instead of measuring anything, and then parks — the measurement run
+would allocate the card out from under what it just accepted. Nothing answers, the window expires,
+and the bench is what it always was.
+
+This exists because a board session needs a **real packed map** on a real flat store and no
+transport on this rig can put one there: USB is still protocol v2, BLE v4's phone client is not
+ready, and the host has no card reader. The wire — magic, kind, length, CRC, then acked chunks — is
+documented in full in the binary's module docs; the CRC is verified before the commit, so a bad
+transfer publishes nothing and a retry is simply a fresh put with a new `ObjectId`.
+
+Start the host **first** — it blocks on the device's advertisement — then flash and run:
+
+```bash
+# shell 1, from the repo root
+python3 tools/bench_ingest.py --port /dev/cu.usbmodem*133 \
+    --file "$(python3 tools/fixtures.py resolve monaco-upahead | awk '/^map/ {print $2}')" \
+    --kind map --name monaco.obcm
+
+# shell 2, from this directory. The committed runner is `probe-rs run --chip nRF54LM20A --verify`,
+# so this flashes WITH the RRAM read-back check .cargo/config.toml explains — keep it.
+pkill probe-rs
+cargo run --release --bin flat_store_bench
+```
+
+`--verify` is not optional on this part: probe-rs 0.31's program path corrupts the first write after
+a code change often enough to matter, and on an RRAM device that is a boot HardFault at a random PC.
+The check turns it into an immediate, loud failure — if it trips, just run it again. (There is no
+`cargo run --verify`; `--verify` lives in the runner string, not in cargo's argument list. To pass
+anything to probe-rs from cargo it would have to be `cargo run -- …`.)
+
+If you would rather flash and attach as two steps — reflashing without dropping an RTT session, say
+— run probe-rs directly and keep the flag:
+
+```bash
+probe-rs download --chip nRF54LM20A --verify target/thumbv8m.main-none-eabihf/release/flat_store_bench
+probe-rs run      --chip nRF54LM20A target/thumbv8m.main-none-eabihf/release/flat_store_bench
+```
+
+`sim-monaco`'s `monaco.obcm` is 718,336 B, which is about **63 s** at the wire's default 115,200
+8N1. `INGEST_BAUD` in the binary takes that to ~7.5 s at `Baud1m` (pass `--baud 1000000` to match),
+at the cost of finding out mid-session whether this J-Link's CDC will carry a megabaud. RTT prints
+the `ObjectId` and a full catalog census after every commit, which is the acceptance evidence.
+
+**A `--baud` mismatch is silent, and it wipes the card.** Check it first. The host transmits only
+after it has decoded a valid READY, so at the wrong rate it decodes nothing, sends nothing, and
+waits — while the device sees an idle line, concludes nobody is there, and starts the destructive
+run. Neither side errors. The signature is that exact pair: **RTT says `nobody answered` while the
+host says it is still waiting.** Nothing else produces it, and the device prints a line naming its
+own baud right next to `nobody answered` for this reason.
+
+**If the host reports the device is not answering** and RTT does *not* say `nobody answered`, the
+device sends a `GONE` frame on every exit path and the host prints its reason. Four causes, four
+different fixes:
+
+- `the window closed` — the host started after the ten-second window, and the bench is now running
+  the **destructive** measurement suite. Reset it immediately;
+- `the session is over` — the board took its last object and parked. Reset to re-arm;
+- `reservation held` — a commit was refused and its extents are held until a remount. Reset;
+- `could not frame` — something else is driving this tty (a `screen`/`minicom` at another rate, a
+  second talker, a failing cable). The bench **refused** the measurement run, so the card is
+  untouched; clear the line and reset. Note this is *not* the baud case above — a mismatched host is
+  silent, not noisy.
+
+Two more never reach the wire at all: the baud mismatch, and a card carrying a foreign `StoreId`
+(`run` refuses before the ingest is ever offered — RTT says so, and `FORCE_REINIT` is the override).
+
+Only if **no** `GONE` arrives, RTT shows the bench advertising, and the baud is confirmed has the
+J-Link's VCOM wedged: host writes succeed, RTT keeps flowing, nothing reaches the device. A physical
+power-cycle of the DK is the only fix; `probe-rs reset` does not clear it.
+
 (The standalone FLPR waveform bench bin `ls021_flpr_bringup` was retired in #177 once the app drove
 the LS021 on glass; the M33-direct `ls021_bringup` bench was retired earlier in #176; the A1 BLE
 spike bin `ble_spike` was retired at #270 when the stack moved into `main.rs`/`src/ble/`; the
@@ -517,6 +590,40 @@ host-tested `obc-ble` crate (`cargo test -p obc-ble`, pinned to `specs/vectors/`
   phone** is rejected while bonded (no passkey card, generic failure on the stranger). Re-pair path:
   device **Settings ▸ Bluetooth ▸ Forget phone** (hold) + app *Forget* + iOS Bluetooth forget → next
   contact pairs with a fresh passkey.
+
+## Protocol v4 on the radio (FS7.5-c3a, epic #1256) — what a phone sees on each card
+
+The BLE object surface is [`FLAT_Store_Protocol.md`](../../specs/FLAT_Store_Protocol.md) §5.1:
+`objectControl` (`3C920009`, Write Request + confirmed indication) carries control frames, the
+L2CAP CoC carries §3.8 stream records one per SDU, and `protocolVersion` reads two bytes, `4`.
+`command` / `status` / `config` are untouched and still governed by
+[`obc-ble-interface-spec.md`](../../specs/obc-ble-interface-spec.md). **USB is still on v2.**
+
+The engine lives in the flat store's `storage_task`, not in the radio — the store seam is
+synchronous, and the card has exactly one writing execution context. The transports are record
+shippers.
+
+**The storage task is spawned on every card**, and that is what makes the two cases below one code
+path rather than a branch:
+
+| Card in the slot | What a v4 client gets |
+| :-- | :-- |
+| **A flat store** | Full service: `LIST` from the catalog, `GET`, `PUT`, `REMOVE`, `CANCEL`. `ARM` answers `rejected` — this build has no update policy wired (§4 needs `obc-dfu`, the RRAM boot page and a reboot). |
+| **A FAT card** | Every opcode answers `readOnly` with detail `unformatted 3`. That is not a fallback or a stub: §5.6 step 1 classifies a FAT card as **not a flat store**, and §3.9 already specifies exactly this answer for one — including for the reads, because there is nothing to read. |
+| **A card that carries a broken flat store** | Boot shows STORAGE FAULT before any plane comes up; the honesty rules in `obc-app` are unchanged. |
+
+Two client-visible facts worth knowing before you debug a phone against this:
+
+- **Open the CoC before writing `objectControl`.** The driver owns the channel, so a control write
+  arriving with no channel up is refused at the ATT layer (`PROCEDURE_ALREADY_IN_PROGRESS`) rather
+  than staged for an answer that would arrive whenever a channel happened to open. Lifting this
+  needs the driver split from the channel owner and is a named follow-up.
+- **Ride recording is unavailable on a flat card** until FS8 (#1390) lands the tail-in-slot journal.
+  The FAT arm's ride path is untouched.
+
+On-glass checks this section is waiting for: a real phone completing a `PUT` and a `GET`, the
+admission race (stream frame ahead of its control write) surviving a ride-loop render pass, and a
+`CANCEL` landing mid-download.
 
 ## The USB device plane (issue #889) — **in every build; cable-gated since #936**
 

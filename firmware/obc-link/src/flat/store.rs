@@ -66,11 +66,23 @@ pub enum StoreError {
     },
     TooFragmented,
     CatalogFull,
-    /// The seam's catch-all refusal. It is **not** always the client's fault: a full reservation or
-    /// hold table lands here too, and §3.9's answer to that is `busy`, never `invalidRequest`.
+    /// The seam's catch-all refusal. It is **not** always the client's fault: a full **reservation**
+    /// table lands here too, and §3.9's answer to that is `busy`, never `invalidRequest`.
+    ///
+    /// A full **hold** table used to be here as well and is [`Busy`](StoreError::Busy) now — see
+    /// there for why the two had to stop sharing a value.
     Invalid,
     Media,
     ReadOnly,
+    /// **Try again**: every hold row is taken, so an `open` has no slot to resolve into.
+    ///
+    /// §3.9 code `9` `busy`, detail `holds 2`. Distinct from [`Invalid`](StoreError::Invalid)
+    /// because the two answer opposite questions for a client: `invalidRequest` says *this request
+    /// is wrong and will be wrong next time*, and a full hold table says *someone else is reading
+    /// right now*. They shared a value while the device's table was 16 rows and the arm was
+    /// unreachable in practice; FS7.5-c2 took it to 6, so a client's retry policy now depends on
+    /// telling them apart.
+    Busy,
 }
 
 /// Where a `Put`'s extents come from.
