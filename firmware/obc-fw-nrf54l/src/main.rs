@@ -229,20 +229,37 @@ use embassy_nrf::buffered_uarte::{BufferedUarteRx, BufferedUarteTx};
 /// generated contract (`build.rs` derives the carved `memory.x` and this constant from the same
 /// `SEMMC_RAM_BASE` — the bottom of the lowest carve — so the budget can't fork from the linker map).
 const NRF_RAM_BYTES: usize = ls021_flpr::M33_RAM_BYTES;
-/// Headroom kept free under the resident statics for the main stack + embassy's executor/task arenas
-/// (statics grow up from the RAM base, the stack down from the top). This is only the build-time
-/// *floor* the assert enforces — the real stack is the residual `RAM − statics` (~79.4 KB on the
-/// default build: #1146 P2's arena freed ~76 KB of them, P3 spent ~24.5 KB back on the render caps,
-/// and #1158's sEMMC carve took 20 KB more out of the `RAM` region itself; ~48.6 KB before any of
-/// them, and the linked
-/// figure is `resource_baseline.json`'s `residual_stack_measured`, which is charged for `.uninit`
-/// as well as `.bss`). Pinned above the **measured deep-path peak**: 35,808 / 37,760 B on 2026-07-04
-/// (debug-uart FLPR build, post-#351 split; VCOM-harness full ride — fix on Home → route load →
-/// ride → finish-to-save), so a change that squeezes the residual below what the deepest path
-/// actually reaches fails at compile time (e.g. a `ble` + map build on the 256 KB DK) instead of
-/// overflowing the stack on glass.
+/// Headroom the [`RESIDENT_BYTES`] assert keeps free under the *itemized* statics, for the main
+/// stack and embassy's executor/task arenas (statics grow up from the RAM base, the stack down from
+/// the top).
+///
+/// ## ⚠️ This is NOT the stack-safety gate, and it used to claim it was
+///
+/// The claim it carried until FS7.5-c1 — that squeezing the residual below the measured deep-path
+/// peak "fails at compile time instead of overflowing the stack on glass" — is **false**, and the
+/// change that disproved it is the one that fixed this comment. FS7.5-c1 added 11,848 B of resident,
+/// took the real residual stack under the recorded `ble` deep-ride peak, and this assert passed with
+/// ~25 KB to spare.
+///
+/// The reason is structural, not a tuning problem. The assert compares [`RESIDENT_BYTES`] — a
+/// **hand-maintained sum of the blocks someone remembered to add** — against `NRF_RAM_BYTES`. The
+/// linker's answer is bigger: measured on this build, `RESIDENT_BYTES` is 401,034 B against a linked
+/// `.bss + .data + .uninit` of 453,880 B, so the sum **undercounts the truth by 52,846 B**. Task
+/// pools, `.L_MergedGlobals`, alignment padding, every static nobody itemized — none of it is here,
+/// and none of it can be, because the total is a link-time fact and this is a `const`.
+///
+/// So read this constant as what it is: a coarse compile-time tripwire that catches someone adding a
+/// *named, itemized* block far too large for the part. The gates that actually bound the stack are
+/// in `resource_baseline.json`, measured from the linked ELF:
+///
+/// - `residual_stack_min` — the linked `_stack_start − __euninit`, charged for `.uninit` as well as
+///   `.bss`, so moving bytes between sections cannot pretend to save any.
+/// - `deep_ride_high_water` + `deep_ride_margin_min` — the residual against what the board **actually
+///   reached on glass**. This is the one that answers the question this comment used to claim, and it
+///   is the one FS7.5-c1 added after finding there was no such gate.
+///
 /// On the combined `ble` build the SDC/host futures and MPSL's ISRs also ride the main stack on top
-/// of the deep-render path, so keep the same generous floor.
+/// of the deep-render path, which is why its recorded peak is the higher of the two.
 const STACK_RESERVE: usize = 64 * 1024;
 /// The single RGB222 framebuffer: one byte per pixel over the 240×320 frame = 75 KB.
 const FB_BYTES: usize = FRAME_W * FRAME_H;
@@ -1189,7 +1206,7 @@ async fn main(_spawner: Spawner) {
         // is bounded by the catalog it reads — a few hundred milliseconds at the largest one §9 allows.
         let flat_started = embassy_time::Instant::now();
         let flat = flat_store::mount_at_boot();
-        flat_store::report(flat, flat_started.elapsed().as_micros());
+        let flat_catalog = flat_store::report(flat, flat_started.elapsed().as_micros());
 
         let mut storage = match flat_store::classify(flat) {
             flat_store::Card::Flat => {
@@ -1198,12 +1215,20 @@ async fn main(_spawner: Spawner) {
                 // still writes through the v1 object store (c3), so there is nothing to hand a
                 // mounted store to yet. What does run is the write half's owner — one task, so that
                 // c2/c3 plug into a serialization that already exists and was measured on glass.
-                _spawner.spawn(defmt::unwrap!(flat_store::storage_task(flat, flat_store::receiver())));
+                // `arm` is what makes `writer()` hand out senders at all — on a FAT card nothing
+                // drains the queue and a sender would wedge, so the two are one act. It runs here
+                // and nowhere else.
+                _spawner.spawn(defmt::unwrap!(flat_store::storage_task(flat, flat_store::arm())));
                 #[cfg(feature = "flat-exercise")]
-                _spawner.spawn(defmt::unwrap!(flat_store::interleave_exercise(flat, flat_store::writer())));
+                match flat_store::writer() {
+                    Some(writer) => _spawner.spawn(defmt::unwrap!(flat_store::interleave_exercise(flat, writer))),
+                    // Unreachable — `arm()` ran one statement ago — and reported rather than
+                    // unwrapped, because a measurement harness must never be why the board panics.
+                    None => defmt::error!("flat/exercise: the write half is not armed; no exercise this boot"),
+                }
                 // The honest fault, from `obc_app::boot_fault` rather than a screen of its own —
                 // see `flat_store::boot_fault_for`. The truth a dev window needs is on RTT above.
-                let fault = flat_store::boot_fault_for(flat);
+                let fault = flat_store::boot_fault_for(flat_catalog);
                 defmt::error!(
                     "flat: mounted, and c1 cannot render from it — showing the {=str} fault screen, then heartbeat idle",
                     fault.copy().0

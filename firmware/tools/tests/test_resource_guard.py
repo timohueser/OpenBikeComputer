@@ -309,6 +309,12 @@ class BootChainTests(unittest.TestCase):
             "boot_chain_ceiling": 43_008,
             "boot_chain_headroom_min": 4_096,
             "boot_chain_roots": ["link::init_store"],
+            # v3's deep-ride gate. The fixture's residual (48,600 B) clears this comfortably, so it
+            # is inert for every pre-existing case and the tests below stay about what they were
+            # about; `DeepRideHighWaterTests` is where it is exercised.
+            "deep_ride_high_water": 35_808,
+            "deep_ride_high_water_measured": "2026-07-04 (fixture)",
+            "deep_ride_margin_min": 0,
         }
         profile.update(overrides)
         return {"board": {"default": profile}}
@@ -338,6 +344,33 @@ class BootChainTests(unittest.TestCase):
     def _check(self, measured, baseline):
         with mock.patch.object(resource_guard, "measure_board", return_value=measured):
             resource_guard.check_board(SimpleNamespace(profile="default", elf=Path("fake")), baseline)
+
+    def test_a_residual_under_the_measured_deep_ride_peak_fails(self):
+        """**The gate FS7.5-c1 walked through.** Every other stack check here compares the residual
+        to its own approved floor, so growing the residents and re-approving is green no matter how
+        little stack is left. This one compares it to a number that came off the board."""
+        with self.assertRaises(resource_guard.GuardError) as caught:
+            self._check(
+                # The chain is shrunk so the headroom gate above stays green: this test is about the
+                # deep-ride check firing on its own, not about it queueing behind another failure.
+                self._measured(residual_stack=35_000, chain_ceiling=10_000),
+                self._boot_baseline(residual_stack_min=35_000, boot_chain_ceiling=60_000),
+            )
+        message = str(caught.exception)
+        self.assertIn("MEASURED deep-ride high-water", message)
+        self.assertIn("not a budget to re-approve", message)
+
+    def test_the_margin_floor_is_enforced_above_the_bare_high_water(self):
+        """A margin floor of zero is the weakest form of the invariant, not the only one: a profile
+        that sets a real floor must fail while it is still *above* the measured peak."""
+        with self.assertRaises(resource_guard.GuardError) as caught:
+            self._check(
+                self._measured(residual_stack=36_808, chain_ceiling=10_000),
+                self._boot_baseline(
+                    residual_stack_min=36_808, boot_chain_ceiling=60_000, deep_ride_margin_min=4_096
+                ),
+            )
+        self.assertIn("a margin of 1000 B, under the 4096 B floor", str(caught.exception))
 
     def test_the_shipping_measurement_passes(self):
         self._check(self._measured(), self._boot_baseline())
