@@ -276,10 +276,19 @@ def canonical_symbol(name: str) -> str:
     gate that was supposed to be watching it. Canonicalising here fixes it once for every scoped
     needle rather than asking each caller to spell both forms.
 
+    It also decodes the **legacy escapes** the same renderer emits for punctuation: `$LT$` / `$GT$`
+    for the angle brackets of a generic, and `$u20$` for the space in `<A as B>`. That half was added
+    after the second bite of this class: FS7.5-c1 baselined a boot-chain root as
+    `FlatStore$LT$D$GT$::mount_in_place` — the spelling *one host's* demangler produced — and on CI
+    the symbol did not resolve. The guard went red as "stale", and the boot-chain walk fell back to a
+    ceiling with the entire mount missing from it, which is the exact blindness the root was added to
+    end. A needle should be spelled the way Rust spells it, `FlatStore<D>::mount_in_place`, and match
+    whatever the demangler in front of it renders.
+
     Only the matching predicate sees this form; the reported names stay exactly as the tool emitted
     them, because a diagnostic that renames the symbol it is complaining about is a worse diagnostic.
     """
-    return name.replace("..", "::")
+    return name.replace("..", "::").replace("$LT$", "<").replace("$GT$", ">").replace("$u20$", " ")
 
 
 def select_frames(
@@ -373,8 +382,14 @@ def chain_cost(parsed: Disassembly, root: str) -> tuple[int, tuple[str, ...]]:
 
 
 def resolve_symbol(parsed: Disassembly, needle: str, description: str) -> str:
-    """The one symbol containing `needle` (mangling-hash-insensitive), or a stale-parser error."""
-    matches = sorted(name for name in parsed.symbols if needle in name)
+    """The one symbol containing `needle` (mangling-hash-insensitive), or a stale-parser error.
+
+    Both sides go through [`canonical_symbol`], so a baselined needle is spelled the way Rust spells
+    a path and matches whichever rendering the demangler on this host produces. Not routing it
+    through there is what made FS7.5-c1's `mount_in_place` root resolve locally and go stale on CI.
+    """
+    wanted = canonical_symbol(needle)
+    matches = sorted(name for name in parsed.symbols if wanted in canonical_symbol(name))
     if not matches:
         raise GuardError(
             f"{description} guard is stale: no symbol contains `{needle}`; it was renamed, "
@@ -483,12 +498,15 @@ def measure_boot_chain(parsed: Disassembly, elf: Path, chain_roots: list[str]) -
     task_frames = select_task_body_frames(parsed)
     task_symbol = max(task_frames, key=lambda name: task_frames[name])
     deepest = (0, "", ())
-    chain_error: str | None = None
+    # **Every** stale root, not the first. One masking another is how a second blind spot survives a
+    # round that was opened to fix the first: the reported ceiling is missing both chains either way,
+    # so a reader who fixes the one name in the message would find the guard still wrong.
+    stale: list[str] = []
     for needle in chain_roots:
         try:
             root = resolve_symbol(parsed, needle, f"boot-chain root `{needle}`")
         except GuardError as error:
-            chain_error = chain_error or str(error)
+            stale.append(str(error))
             continue
         cost, path = chain_cost(parsed, root)
         if cost > deepest[0]:
@@ -501,7 +519,7 @@ def measure_boot_chain(parsed: Disassembly, elf: Path, chain_roots: list[str]) -
         chain_ceiling=task_frames[task_symbol] + chain_ceiling,
         chain_root=chain_root,
         chain_path=chain_path,
-        chain_error=chain_error,
+        chain_error="; ".join(stale) if stale else None,
     )
 
 
@@ -756,6 +774,16 @@ def check_deep_ride_high_water(profile_name: str, profile: dict[str, object], bo
     ride on glass and reads the stackmeter — never to make a build pass. If it is stale the honest
     fix is to re-measure it, and `deep_ride_high_water_measured` records when it last was.
     """
+    # A missing key here used to die as a bare `KeyError` in a traceback, which reads as a crashed
+    # tool rather than as the stale baseline it is. v3 added these two, so a profile without them is
+    # a baseline that was hand-edited past its schema.
+    missing = [key for key in ("deep_ride_high_water", "deep_ride_margin_min") if key not in profile]
+    require(
+        not missing,
+        f"{profile_name} baseline is missing {', '.join(missing)}: schema v3 added the deep-ride "
+        "gate, and a profile without it has no stack-safety check at all. Add the keys with a "
+        "measured on-glass high-water — never a guess, and never a figure chosen to make a build pass",
+    )
     high_water = profile["deep_ride_high_water"]
     margin_min = profile["deep_ride_margin_min"]
     margin = boot.residual_stack - high_water

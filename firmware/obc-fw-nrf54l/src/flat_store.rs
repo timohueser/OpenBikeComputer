@@ -451,8 +451,13 @@ impl Writer {
     /// discarded by the *next* caller rather than mistaken for its own — see [`Reply`] for why that
     /// is the whole reason a tag exists. The slot is never `reset`, only advanced past.
     ///
-    /// `reply` is a `'static` slot the caller owns. Sharing one between two call sites is allowed
-    /// and safe — the tag is what sorts the answers out — but a slot per site keeps the waits short.
+    /// `reply` is a `'static` slot the caller owns, and the contract on it is **one slot per
+    /// concurrently live call**. A slot may be reused freely *across time* — that is what the tag is
+    /// for — but it must never be awaited by two callers at once: a `Signal` holds **one value and
+    /// one waker**, so two live waiters on one slot lose an answer (the second `signal` overwrites
+    /// the first before either polls) and wake each other instead of themselves, which on this board
+    /// is an executor-starving ready-loop and then a watchdog reset. The `debug_assert` above encodes
+    /// the same sequential-only contract from the other side.
     pub(crate) async fn call(&self, request: Request, reply: &'static Reply) -> Result<Outcome, StoreError> {
         let tag = NEXT_TAG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         self.requests.send(Job { request, reply, tag }).await;
