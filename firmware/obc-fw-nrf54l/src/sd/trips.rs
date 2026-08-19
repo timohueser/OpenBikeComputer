@@ -77,7 +77,7 @@ impl<'a> Trips<'a> {
         let mut out = Vec::new();
         for (id, _, meta) in self.storage.trip_catalog.iter() {
             if let Some(meta) = meta.as_ref() {
-                let _ = out.push(TripInput { id, name: meta.name.as_str(), stage_ids: &meta.stage_ids });
+                let _ = out.push(TripInput { id: u64::from(id), name: meta.name.as_str(), stage_ids: &meta.stage_ids });
             }
         }
         out
@@ -99,7 +99,7 @@ impl<'a> Trips<'a> {
         self.storage.trip_catalog.get(id).map(|(_, file, _)| file.clone())
     }
 
-    pub(crate) fn stage_ids(&self, id: u16) -> Option<Vec<u16, { obc_route::MAX_TRIP_STAGES }>> {
+    pub(crate) fn stage_ids(&self, id: u16) -> Option<Vec<u64, { obc_route::MAX_TRIP_STAGES }>> {
         self.read(id).map(|(_, meta, _)| meta.stage_ids)
     }
 

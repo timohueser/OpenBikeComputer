@@ -131,10 +131,9 @@ const fn weather_refresh_in_flight() -> bool {
     false
 }
 
-/// The loop's third select arm: a sensor/host datapoint, **or** (`ble` builds) a store movement —
-/// a BLE route commit/delete wakes the loop so the live-catalog rescan (#450) lands now, not at
+/// The loop's third select arm: a sensor/host datapoint, or a flat-store movement on either link —
+/// a route/trip commit/delete wakes the loop so the live-catalog rescan (#450) lands now, not at
 /// the next timer/sensor wake (a parked device otherwise dozes up to the ~12 s watchdog-feed cap).
-#[cfg(feature = "ble")]
 async fn wait_host_or_sensor_event(
     #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))] consumer: SensorConsumer<'static>,
 ) {
@@ -143,17 +142,7 @@ async fn wait_host_or_sensor_event(
             #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
             consumer,
         ),
-        crate::object_store::wait_store_changed(),
-    )
-    .await;
-}
-#[cfg(not(feature = "ble"))]
-async fn wait_host_or_sensor_event(
-    #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))] consumer: SensorConsumer<'static>,
-) {
-    wait_sensor_event(
-        #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
-        consumer,
+        crate::flat_store::wait_catalog_commit(),
     )
     .await;
 }
@@ -183,7 +172,8 @@ pub(crate) fn load_routes(storage: &mut sd::Storage, app: &mut App) {
     // Carry each route's device-local retention meta (auto-expiry epic #638, S3) from the
     // `/routes` sidecar, pairwise with the ids, so the sweep reads device truth.
     let metas = storage.route_retention_metas();
-    app.set_routes_with_meta(&catalog, storage.route_ids(), &metas);
+    let ids: heapless::Vec<u64, { obc_app::MAX_ROUTES }> = storage.route_ids().iter().map(|&id| u64::from(id)).collect();
+    app.set_routes_with_meta(&catalog, &ids, &metas);
 }
 
 /// Scan the card's `/tracks` into the app's Rides menu (epic #447 P7 / #454), carrying each ride's
@@ -539,7 +529,7 @@ fn nav_finish(
             run.read_perf[2].commands
         );
     }
-    app.apply_event(obc_app::HostEvent::NavPlanned(result.map(|(id, _)| id)));
+    app.apply_event(obc_app::HostEvent::NavPlanned(result.map(|(id, _)| u64::from(id))));
 }
 
 /// The [`Gesture`](obc_app::Gesture) variant's name for the drained-input `defmt` breadcrumb
@@ -586,23 +576,18 @@ struct RenderedFrame {
 struct HostPass {
     /// `RescanStore` — re-scan the object store and re-feed the catalogs. BLE-only: the
     /// store-changed edge is raised solely by the BLE plane's commit/delete path.
-    #[cfg(feature = "ble")]
     rescan: bool,
     /// `CancelRoutePlan` — abort the in-flight route plan.
     cancel_plan: bool,
     /// `DeleteRoute { id }` — the durable id (index-resolved at drain).
-    delete_route: Option<u16>,
+    delete_route: Option<u64>,
     /// `DeleteTrip { id }` — cascade-delete the trip and its member routes.
-    delete_trip: Option<u16>,
+    delete_trip: Option<u64>,
     /// `DeleteRide { id }` — the durable ride id (index-resolved at drain).
     delete_ride: Option<u16>,
-    /// `StampRouteUsed { id, utc }` — write route `id`'s `last_used` to the retention sidecar
-    /// (auto-expiry epic #638, S3). A device-local sidecar write (no store revision/notify), so the
-    /// ride loop applies it directly under the store lock in both builds — unlike a delete.
-    stamp_route: Option<(u16, u32)>,
     /// `StampRideSynced { id, utc }` — write ride `id`'s `synced_at` to the synced sidecar
     /// (auto-expiry epic #638, S3), the sweep's legacy-ride countdown start. Sidecar write, applied
-    /// directly like [`stamp_route`](HostPass::stamp_route).
+    /// directly against the still-FAT ride journal.
     stamp_ride: Option<(u16, u32)>,
     /// `FinishTrack(action)` — close the open ride log (Save / Discard).
     finish: Option<obc_app::TrackAction>,
@@ -680,6 +665,9 @@ pub(crate) async fn run_app(
     // (the storage task owns writes only). `None` on a FAT card, where the map source is rebuilt per
     // redraw off `shared`'s `Storage`. Exactly one of the two serves any given boot.
     flat_map: Option<&'static dyn obc_formats::io::ByteSource>,
+    // The mounted flat store on a flat-card boot. Routes/trips and the active route source are
+    // resolved directly from it; `None` only on the transitional FAT map arm.
+    flat: Option<&'static obc_storage::flat::FlatStore<crate::flat_store::FlatCard>>,
     route_cache: &RouteCache,
     // The router's resident half (epic #116 R4 + EL7): the map's terrain, threaded from `main`
     // (never a local — the #270/#419 discipline). Its A* table, tile cache and planner slot are the
@@ -974,6 +962,10 @@ pub(crate) async fn run_app(
         // steady state. Then drain the object-store movement edge and apply a `StoreChanged` event per
         // commit/delete (the same edge that notifies the phone). Both `ble`-only: the map build has no
         // radio and no `object_store`, so the app simply stays disconnected there.
+        for _ in 0..crate::flat_store::take_catalog_commits() {
+            app.apply_event(obc_app::HostEvent::StoreChanged);
+        }
+
         #[cfg(feature = "ble")]
         {
             app.set_ble_status(crate::ble::app_ble_status());
@@ -990,9 +982,6 @@ pub(crate) async fn run_app(
             crate::link::set_recording(app.activity.is_tracking());
             if crate::object_store::dfu_install_pending() && app.open_remote_dfu_check() {
                 let _ = crate::object_store::take_dfu_install_ble();
-            }
-            for _ in 0..crate::object_store::take_store_changed() {
-                app.apply_event(obc_app::HostEvent::StoreChanged);
             }
             // BLE setClock (auto-expiry epic #638 S2, #642): a validated `(utc, offset)` from the phone
             // is waiting to stamp the wall clock. `stamp_clock_ble` sets + persists the offset and marks
@@ -1062,14 +1051,17 @@ pub(crate) async fn run_app(
             let _ = app.drain_host_commands(&mut mailbox);
             while let Some(cmd) = mailbox.pop() {
                 match cmd {
-                    #[cfg(feature = "ble")]
                     obc_app::HostCommand::RescanStore { .. } => host_pass.rescan = true,
                     obc_app::HostCommand::CancelRoutePlan => host_pass.cancel_plan = true,
                     obc_app::HostCommand::DeleteRoute { id } => host_pass.delete_route = Some(id),
                     obc_app::HostCommand::DeleteTrip { id } => host_pass.delete_trip = Some(id),
-                    obc_app::HostCommand::DeleteRide { id } => host_pass.delete_ride = Some(id),
-                    obc_app::HostCommand::StampRouteUsed { id, utc } => host_pass.stamp_route = Some((id, utc)),
-                    obc_app::HostCommand::StampRideSynced { id, utc } => host_pass.stamp_ride = Some((id, utc)),
+                    obc_app::HostCommand::DeleteRide { id } => host_pass.delete_ride = u16::try_from(id).ok(),
+                    // Flat route retention deliberately stays inert until #1398 supplies its
+                    // ObjectId-keyed metadata kind; there is no FAT sidecar to stamp after FS7.
+                    obc_app::HostCommand::StampRouteUsed { .. } => {}
+                    obc_app::HostCommand::StampRideSynced { id, utc } => {
+                        host_pass.stamp_ride = u16::try_from(id).ok().map(|id| (id, utc));
+                    }
                     obc_app::HostCommand::FinishTrack(action) => host_pass.finish = Some(action),
                     obc_app::HostCommand::PlanRoute(_req) => {
                         // Write the planner slot from the request **now** (synchronously, no store
@@ -1398,25 +1390,19 @@ pub(crate) async fn run_app(
             // open handle's index may now name a different file) and a replace-upload may have
             // swapped the bytes under the open geometry handle — close it and let the reconcile
             // reopen + re-index off the fresh scan.
-            #[cfg(feature = "ble")]
             if host_pass.rescan {
+                if let Some(store) = flat {
+                    // Drop the held revision before rebuilding identity/index state. A replace at
+                    // the same ObjectId must reopen the new revision, not keep rendering the hold.
+                    crate::flat_store::reconcile_route(store, None);
+                    crate::flat_store::load_routes(store, app);
+                    crate::flat_store::load_trips(store, app);
+                }
                 if let Some(s) = storage.as_mut() {
-                    // Close the active route's geometry handle BEFORE the scan: embedded-sdmmc
-                    // refuses a second open of an open file (`FileAlreadyOpen`, even ReadOnly), so a
-                    // scan that met the still-open geometry silently omitted it — and the identity
-                    // remap then unloaded the navigated route and it vanished from the Route menu
-                    // until the next rescan (the #480 vanishing-routes bug). The forced reconcile
-                    // below reopens it off the fresh tables.
-                    s.reconcile_route(None);
-                    load_routes(s, app);
                     // The same edge covers rides (a phone-side ride delete, or a ride download that just
                     // flipped a synced flag): re-scan `/tracks` and re-feed the Rides menu, which remaps
                     // its highlight by id (#454). Cheap when nothing ride-related moved.
                     load_rides(s, app);
-                    // …and trips (epic #526 TR4): a trip upload/delete moved the trip store, or a member
-                    // route delete changed a trip's resolvable stage totals — rescan `/routes` for trips
-                    // and re-feed the folders (resolved against the freshly-scanned route catalog above).
-                    load_trips(s, app);
                 }
                 prev_active = None; // force reconcile_route/track to re-run against the new indexing
                 index_route = None; // and the chunk index to rebuild off the freshly-opened file
@@ -1435,8 +1421,7 @@ pub(crate) async fn run_app(
                 // A full channel DROPS the id (not observed backpressure — the app's dispatch
                 // bookkeeping already ran): warn, and rely on the app's retain-until-rescan
                 // candidate to re-dispatch it after the bounded backoff (finding #876-3).
-                #[cfg(feature = "ble")]
-                if !crate::object_store::request_route_delete(id) {
+                if !crate::flat_store::request_route_delete(id) {
                     defmt::warn!(
                         "ride: route-delete channel full — id {} dropped; the app's retained candidate retries",
                         id
@@ -1451,8 +1436,9 @@ pub(crate) async fn run_app(
             // `ObjectStore::delete_trip_cascade`, so both store revisions + both `storeChanged` edges
             // move coherently and the rescan returns on the STORE_CHANGED edge).
             if let Some(id) = host_pass.delete_trip {
-                #[cfg(feature = "ble")]
-                crate::object_store::request_trip_cascade(id);
+                if !crate::flat_store::request_trip_cascade(id) {
+                    defmt::warn!("ride: trip-delete queue full — object {=u64} retained for retry", id);
+                }
             }
 
             // The System settings screen's card-free scan (T8 item 6): a drained on-entry request runs
@@ -1489,11 +1475,6 @@ pub(crate) async fn run_app(
             // here under the store lock in both builds (the ride loop already holds the card this
             // phase), rather than routed through the BLE plane's `ObjectStore`. The app already
             // mirrored the value into its resident meta, so no re-feed is needed.
-            if let Some((id, utc)) = host_pass.stamp_route {
-                if let Some(s) = storage.as_mut() {
-                    s.stamp_route_last_used(id, utc);
-                }
-            }
             if let Some((id, utc)) = host_pass.stamp_ride {
                 if let Some(s) = storage.as_mut() {
                     s.stamp_ride_synced_at(id, utc);
@@ -1622,42 +1603,6 @@ pub(crate) async fn run_app(
                                             // `ble` image ships no router), so nothing to do here.
             }
 
-            // The upload-arrived event (#451), applied strictly **after** the rescan above so the id
-            // resolves against the fresh catalog. The `RouteUploaded` event raises the right popup
-            // (idle prompt / mid-ride swap / active-replaced info card) and — on a replace of the
-            // navigated route — drops the app's stale matcher progress + elevation profile, while the
-            // rescan block already closed the open geometry handle and the reconcile below reopens +
-            // re-indexes it off the new bytes: the full forced-adoption chain, one pass.
-            #[cfg(feature = "ble")]
-            if let Some((id, replaced)) = crate::object_store::take_route_uploaded() {
-                // Build the route's mini elevation band from the just-committed OBCR (#682) — one scoped
-                // stream at commit time — so the idle received card can draw it (the swap / active-
-                // replace variants ignore it). A missing store or a no-elevation route yields `None`.
-                let elevation = storage.as_mut().and_then(|s| s.route_elevation_sparkline(id));
-                app.apply_event(obc_app::HostEvent::RouteUploaded { id, replaced, elevation });
-            }
-
-            // The trip twin, drained strictly **after** the route event: a trip object commits after
-            // its member routes (it references their ids), so posting its event last hands the app's
-            // single most-recent-wins prompt slot to the "TRIP RECEIVED" card — one popup for the
-            // whole routes-then-trip transfer instead of a per-route parade. Only a *fresh* trip
-            // pops: the app suppresses `replaced` (a host-side trip edit — the desktop's rename /
-            // reorder replaces at the same id, one upload per click). The rescan above already
-            // re-fed the trip catalog (`load_trips`), so the id resolves; shared `ObjectStore` path,
-            // so BLE and USB uploads behave identically. (The `ble` gate matches the module's own —
-            // `object_store` only exists on `ble` builds, which every USB-carrying image is.)
-            //
-            // Known, accepted edge of the fixed route-then-trip drain order: arrival order inside
-            // one pass isn't recorded, so a fresh *route* commit landing in the same ~ms pass as a
-            // fresh trip commit gets its card buried under the trip's even if the route arrived
-            // later. Both cards are advisory and both objects are already in the menu, so the cost
-            // is a mis-ordered courtesy, not a lost object — not worth a cross-slot sequence
-            // counter.
-            #[cfg(feature = "ble")]
-            if let Some((id, replaced)) = crate::object_store::take_trip_uploaded() {
-                app.apply_event(obc_app::HostEvent::TripUploaded { id, replaced });
-            }
-
             // Settings coherence, phone → device (#456): a BLE Config write persisted units + name to
             // RRAM but the live `App` copy never learned. Reload the BLE-owned fields into it *before*
             // the change-detection save below, so (a) the UI re-captions same-session and (b) the app's
@@ -1754,10 +1699,13 @@ pub(crate) async fn run_app(
                 // A Save also writes the durable ride object: snapshot the app's ride totals + wall-clock
                 // anchor in the same frame, so the header matches the log's last points.
                 let stats = (action == Some(obc_app::TrackAction::Save)).then(|| app.ride_stats());
+                let active_id = active.and_then(|i| app.route_ids().get(i).copied());
+                if let Some(store) = flat {
+                    crate::flat_store::reconcile_route(store, active_id);
+                }
                 // `storage` is `Option` (a card-less `ble` combined build still serves BLE, map idle); the
                 // map build always has `Some`. No card ⇒ nothing to reconcile.
                 if let Some(s) = storage.as_mut() {
-                    s.reconcile_route(active);
                     s.reconcile_track(action, session, &name, stats.as_ref(), settings_store);
                 }
                 prev_active = active;
@@ -1773,14 +1721,18 @@ pub(crate) async fn run_app(
                     Some(_) => {
                         // In place into the resident slot — see its declaration; a by-value build here
                         // is the stack-overflow footgun.
-                        if storage.as_ref().is_some_and(|s| s.build_route_index_into(&mut route_index)) {
+                        let source = flat.and_then(|store| {
+                            let id = active.and_then(|i| app.route_ids().get(i).copied());
+                            crate::flat_store::reconcile_route(store, id)
+                        });
+                        if source.is_some_and(|source| route_index.read_into(source).is_ok()) {
                             route_index_valid = true;
                             index_route = active; // cached — no more rebuilds until the route changes
                         } else {
                             // Transient SD glitch: leave the key mismatched so every frame retries, hiding
                             // the route this frame rather than the whole ride.
                             index_route = None;
-                            defmt::warn!("SD: route index read failed (flaky link?) — retrying next frame");
+                            defmt::warn!("flat: route index read failed — retrying next frame");
                         }
                     }
                     None => {
@@ -1791,8 +1743,11 @@ pub(crate) async fn run_app(
             // This frame's route reader = the cached index + a fresh geometry source (both cheap, no I/O —
             // the source just wraps the open handle). Geometry streams lazily where it's read: the matcher
             // on a fresh fix, the renderer on a redraw frame.
-            let route_src = storage.as_ref().and_then(|s| s.route_source());
-            let route = match (route_index_valid.then_some(&route_index), route_src.as_ref()) {
+            let route_src = flat.and_then(|store| {
+                let id = active.and_then(|i| app.route_ids().get(i).copied());
+                crate::flat_store::reconcile_route(store, id)
+            });
+            let route = match (route_index_valid.then_some(&route_index), route_src) {
                 (Some(idx), Some(src)) => Some(RouteReader::new_cached(idx, src, route_cache)),
                 _ => None,
             };
