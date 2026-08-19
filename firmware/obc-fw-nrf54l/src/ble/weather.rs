@@ -16,28 +16,10 @@
 //! Nothing here is periodic: the task sleeps until the scheduler's own next instant or an event
 //! edge, so an idle, not-riding device costs no wakeups at all.
 //!
-//! # ⚠️ Parked for the c3a dev window (FS7.5-c3a, epic #1256)
-//!
-//! **This plane raises no requests right now, and that is deliberate rather than broken.** §11.5
-//! bound the OBCW exchange to the CoC, and the CoC now carries protocol-v4 stream records: a weather
-//! bundle is object kind 4 and arrives as an ordinary `PUT`. The v1 upload path — and with it
-//! `note_commit`, which was the **only** writer of the commit edge — was deleted by the radio's
-//! cutover.
-//!
-//! Left running, the consequences would all be lies told to the rider: `commit_succeeded` could
-//! never fire, so every request would run the retry ladder to exhaustion; [`refresh_in_flight`]
-//! would stick `true` and leave the ride UI showing a refresh that can never finish; and the phone
-//! would be woken, repeatedly, for an upload the device has nowhere to put. On a flat card a
-//! `WeatherBundle` `PUT` does land — but nothing reads it yet, because the reader still comes
-//! through the FAT weather slots.
-//!
-//! So [`run`] parks after one log line **and [`request_weather_now`] stops raising anything** — the
-//! consumer and the producer together, because parking only the consumer would leave the rider's
-//! dashboard visit raising an "Updating…" level whose only two clearers are inside the parked loop.
-//! That is the smallest honest state: no requests, no ladder, no stuck spinner, and nothing
-//! pretending to work. **Unparking is the weather cutover** — teaching
-//! the reader to take kind 4 out of the flat store and ringing the commit edge from wherever that
-//! lands — which is its own slice and deliberately not smuggled in here.
+//! Weather bundles are flat-store kind 4 objects. The scheduler caches the validated active head,
+//! wakes on every catalog movement, and satisfies a pending request only when the new head carries
+//! that exact request id. Route/trip/map commits therefore wake the task harmlessly without ending
+//! a weather retry ladder.
 
 use core::cell::{Cell, RefCell};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -92,8 +74,6 @@ static URGENT: AtomicBool = AtomicBool::new(false);
 /// UI-facing level from dashboard entry/scheduler raise through commit or request lapse.
 static IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
-/// A weather bundle committed (the store's finish path) — the one thing that finishes a request.
-static COMMITTED: AtomicBool = AtomicBool::new(false);
 /// The live request id, mirrored out of the task so the synchronous command handler can reject a
 /// crossed `weatherUnchanged` acknowledgement before answering `ok`.
 static PENDING_REQUEST_ID: AtomicU32 = AtomicU32::new(0);
@@ -118,16 +98,9 @@ pub fn set_weather_inputs(s: WeatherSnapshot) {
 /// loop calls this on the non-weather → Weather-dashboard transition; returning from one of the
 /// dashboard's child surfaces does not re-arm it.
 pub fn request_weather_now() {
-    // **The producer is a no-op while the plane is parked** (FS7.5-c3a), and this is the half the
-    // park was missing. Raising `IN_FLIGHT` here would put "Updating…" on the ride UI, and **both**
-    // of its clearers live inside the loop that no longer runs — so one visit to the Weather
-    // dashboard would leave the indicator on for the rest of the boot. Parking the consumer while
-    // leaving the producer raising a level nothing lowers is worse than not parking at all: it turns
-    // a feature that does nothing into a UI that lies permanently.
-    //
-    // `URGENT` and the wake are pointless rather than harmful with no loop to receive them, and they
-    // go too, so that unparking is one edit in one place.
-    defmt::debug!("weather: dashboard opened — no request raised, the plane is parked for c3a");
+    URGENT.store(true, Ordering::Relaxed);
+    IN_FLIGHT.store(true, Ordering::Relaxed);
+    WAKE.signal(());
 }
 
 pub fn refresh_in_flight() -> bool {
@@ -150,18 +123,19 @@ pub(crate) fn note_settings_changed() {
     WAKE.signal(());
 }
 
+/// A flat-store commit/delete landed. The task revalidates the weather head and decides whether
+/// it is the response to the pending request; this edge alone never claims success.
+pub(crate) fn note_catalog_changed() {
+    WAKE.signal(());
+}
+
 /// The due-scheduler loop. Joined into `ble::run`'s task set for the stack's whole life; every
 /// local is small (the context is 52 bytes) so it adds no meaningful poll-frame weight (#677).
-pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, shared: &SharedStoreMutex) -> ! {
-    // See the module docs: the commit edge this scheduler needs died with the v1 CoC upload path,
-    // and every branch below would raise requests nothing can satisfy. Parking is what keeps the UI
-    // honest until the weather cutover lands.
-    warn!(
-        "ble: [weather] parked for the c3a dev window — the OBCW upload path is gone with the v1 CoC; no requests are raised and the refresh indicator stays clear"
-    );
-    core::future::pending::<()>().await;
-    #[allow(unreachable_code)]
+pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, _shared: &SharedStoreMutex) -> ! {
     let mut sched = DueScheduler::new();
+    let flat = crate::flat_store::mounted();
+    let mut seen_sequence = flat.map(|store| store.sequence());
+    let mut bundle = flat.and_then(|store| crate::flat_store::active_weather(store).ok().flatten());
     // Whether the GATT attribute currently carries a live request (vs. the §11.4 resting value).
     let mut context_live = false;
     // The refresh byte the attribute currently serves — `None` until this task's first write, so
@@ -170,10 +144,22 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, share
     let mut served_refresh: Option<u8> = None;
     loop {
         let now_s = Instant::now().as_secs();
-        if COMMITTED.swap(false, Ordering::Relaxed) {
-            sched.commit_succeeded(now_s);
-            PENDING_REQUEST_ID.store(0, Ordering::Relaxed);
-            info!("ble: [weather] upload accepted — request satisfied, next interval anchored");
+        let sequence = flat.map(|store| store.sequence());
+        if sequence != seen_sequence {
+            if let Some(flat) = flat {
+                if let Ok(next) = crate::flat_store::active_weather(flat) {
+                    if next != bundle {
+                        bundle = next;
+                        let pending = PENDING_REQUEST_ID.load(Ordering::Relaxed);
+                        if pending != 0 && bundle.is_some_and(|weather| weather.header().request_id == pending) {
+                            sched.commit_succeeded(now_s);
+                            PENDING_REQUEST_ID.store(0, Ordering::Relaxed);
+                            info!("ble: [weather] matching flat bundle committed — request satisfied");
+                        }
+                    }
+                    seen_sequence = sequence;
+                }
+            }
         }
         if let Some((request_id, retry_after_s)) = UNCHANGED.lock(|slot| slot.take()) {
             if sched.unchanged_succeeded(request_id, now_s, retry_after_s) {
@@ -192,15 +178,10 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, share
         let refresh = WeatherRefresh::from_u8(refresh_raw).unwrap_or(WeatherRefresh::DEFAULT);
         // The active bundle's identity — the boot/commit-refreshed selection, no card I/O — and
         // whether storage exists at all (#1221 F5: no card ⇒ no requests, or the phone burns).
-        let (store_ready, bundle, policy) = {
-            let guard = shared.lock().await;
-            (
-                guard.storage.is_some(),
-                store.borrow().weather_active(&guard),
-                guard.storage.as_ref().and_then(|storage| storage.weather_policy()),
-            )
-        };
-        let (location_changed, source_current) = match (bundle, policy, snapshot.now_utc) {
+        let store_ready = flat.is_some_and(|store| store.mode().readable());
+        let candidate = bundle.map(crate::flat_store::FlatWeather::candidate);
+        let policy = bundle.map(crate::flat_store::FlatWeather::header);
+        let (location_changed, source_current) = match (candidate, policy, snapshot.now_utc) {
             (Some(b), Some(policy), Some(now_utc)) => {
                 let centre_lat = (policy.south_lat_udeg as i64 + policy.north_lat_udeg as i64) / 2;
                 let centre_lon = (policy.west_lon_udeg as i64 + policy.east_lon_udeg as i64) / 2;
@@ -228,11 +209,11 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, share
         let facts = BundleFacts {
             held: bundle.is_some(),
             // Age only with a trusted clock; the scheduler treats unknown age conservatively.
-            age_s: match (bundle, snapshot.now_utc) {
+            age_s: match (candidate, snapshot.now_utc) {
                 (Some(b), Some(now_utc)) => Some((now_utc as i64 - b.generated_at).max(0) as u64),
                 _ => None,
             },
-            manual_reusable: bundle.is_some() && source_current && !location_changed,
+            manual_reusable: candidate.is_some() && source_current && !location_changed,
             location_changed,
             hourly_only: policy.is_some_and(|facts| facts.frame_count == 0),
         };
@@ -240,7 +221,7 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, share
         if let Some(raise) = sched.poll(now_s, refresh, snapshot.ride_active, store_ready, facts) {
             IN_FLIGHT.store(true, Ordering::Relaxed);
             PENDING_REQUEST_ID.store(raise.request_id, Ordering::Relaxed);
-            let ctx = build_context(&snapshot, refresh_raw, raise, bundle);
+            let ctx = build_context(&snapshot, refresh_raw, raise, candidate);
             let _ = server.set(&server.weather_request.context, &ctx.encode());
             context_live = true;
             served_refresh = Some(refresh_raw);

@@ -71,7 +71,7 @@ use embassy_sync::signal::Signal;
 use obc_link::flat::{Ceilings, Engine, Link, Policy, Reaction, RequestId};
 use obc_storage::flat::store::MAX_BATCH;
 use obc_storage::flat::{
-    Allocation, BlockDevice, EntryMeta, FlatStore, Handle, Mode, Mutation, ObjectId, ObjectKind,
+    Allocation, BlockDevice, EntryMeta, FlatStore, Handle, Mode, Mutation, ObjectId, ObjectKind, Revision,
     RideCheckpoint, Store as _, StoreError,
 };
 
@@ -202,6 +202,7 @@ pub(crate) const RESIDENT_BYTES: usize = core::mem::size_of::<FlatStore<FlatCard
     + REQUEST_QUEUE_BYTES
     + MAP_READ_BYTES
     + ROUTE_READ_BYTES
+    + WEATHER_READ_BYTES
     + ENGINE_BYTES;
 
 /// **Everything the read cutover keeps resident on this arm** (FS7.5-c2): the session-long
@@ -217,6 +218,9 @@ pub(crate) const MAP_READ_BYTES: usize = core::mem::size_of::<obc_storage::flat:
 /// The active route's one held revision. It is released on selection or revision changes.
 pub(crate) const ROUTE_READ_BYTES: usize =
     core::mem::size_of::<Option<obc_storage::flat::StoreSource<'static, FlatCard>>>();
+
+/// The active weather bundle's held immutable revision, refreshed on catalog movement.
+pub(crate) const WEATHER_READ_BYTES: usize = ROUTE_READ_BYTES;
 
 /// The store is the free bitmap plus its rows; if that ever stops being true the budget note above
 /// is wrong before anything else notices.
@@ -713,6 +717,8 @@ static CATALOG_WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 fn note_catalog_commit() {
     CATALOG_COMMITS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     CATALOG_WAKE.signal(());
+    #[cfg(feature = "ble")]
+    crate::ble::weather_catalog_changed();
 }
 
 pub(crate) fn take_catalog_commits() -> u32 {
@@ -1065,6 +1071,116 @@ pub(crate) fn report(store: &FlatStore<FlatCard>, mount_us: u64) -> Catalog {
 /// needs: [`open_map`] resolves the map with it.
 pub(crate) fn first_of(store: &FlatStore<FlatCard>, kind: ObjectKind) -> Option<EntryMeta> {
     store.entries().find(|entry| entry.kind == kind)
+}
+
+// ═══════════════════════════════ weather ═══════════════════════════════
+
+/// One fully validated flat-store weather head.
+///
+/// The proof is safe to retain after the source closes: flat-store revisions are immutable, and
+/// [`with_weather`] always reopens this exact `(ObjectId, Revision)` before using it. A replacement
+/// gets a different revision and therefore a different value here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FlatWeather {
+    pub(crate) id: ObjectId,
+    pub(crate) revision: Revision,
+    pub(crate) validated: obc_weather::ValidatedBundle,
+}
+
+impl FlatWeather {
+    pub(crate) const fn header(self) -> obc_formats::obcw::Header {
+        self.validated.header()
+    }
+
+    /// The scheduler wire identity, shared with the former A/B adapter. `Slot` is irrelevant to
+    /// flat storage; the serial generation, producer time and CRC are the actual protocol facts.
+    pub(crate) const fn candidate(self) -> obc_weather::Candidate {
+        let header = self.header();
+        obc_weather::Candidate {
+            slot: obc_weather::Slot::A,
+            generation: header.generation,
+            generated_at: header.generated_at,
+            total_len: header.total_len,
+            bundle_crc32: header.crc32,
+        }
+    }
+}
+
+/// Select and fully validate the active weather head.
+///
+/// Malformed objects are omitted rather than poisoning a previously valid bundle. When more than
+/// one object id exists, OBCW's serial-generation rule chooses the newest producer result; an exact
+/// identity tie is broken by the larger store id so the result is deterministic.
+#[inline(never)]
+pub(crate) fn active_weather(store: &'static FlatStore<FlatCard>) -> Result<Option<FlatWeather>, ()> {
+    let mut active: Option<FlatWeather> = None;
+    for entry in store.entries().filter(|entry| {
+        entry.kind == ObjectKind::WeatherBundle && !entry.flags.has(obc_storage::flat::EntryFlags::RETAINED)
+    }) {
+        let validated = store
+            .with_source(entry.id, Some(entry.revision), |source| {
+                obc_weather::WeatherReader::open(source).map(|reader| reader.validated())
+            })
+            .ok()
+            .and_then(Result::ok);
+        let Some(validated) = validated else {
+            defmt::warn!(
+                "flat: weather object {=u64} revision {=u64} is malformed or unreadable — omitted",
+                entry.id.0,
+                entry.revision.0
+            );
+            continue;
+        };
+        let incoming = FlatWeather { id: entry.id, revision: entry.revision, validated };
+        let replace = active.is_none_or(|current| {
+            obc_weather::candidate_is_newer(incoming.candidate(), current.candidate())
+                || (incoming.candidate() == current.candidate() && incoming.id > current.id)
+        });
+        if replace {
+            active = Some(incoming);
+        }
+    }
+    if !store.entries_ok() {
+        defmt::warn!("flat: weather catalog listing crossed a commit — retrying on the next catalog edge");
+        return Err(());
+    }
+    Ok(active)
+}
+
+static mut WEATHER_SOURCE: Option<obc_storage::flat::StoreSource<'static, FlatCard>> = None;
+
+/// Reconcile the session-held weather source to the selected validated revision.
+#[inline(never)]
+pub(crate) fn reconcile_weather(
+    store: &'static FlatStore<FlatCard>,
+    wanted: Option<FlatWeather>,
+) -> Option<&'static dyn obc_formats::io::ByteSource> {
+    let wanted_key = wanted.map(|weather| (weather.id, weather.revision));
+    let slot = core::ptr::addr_of_mut!(WEATHER_SOURCE);
+    // SAFETY: the ride loop is the sole caller. It reconciles only between synchronous sampling
+    // and rendering operations, never while a reader borrowing the previous source is live.
+    unsafe {
+        let current = (*slot).as_ref().map(|source| (source.id(), source.revision()));
+        if current != wanted_key {
+            let old = core::ptr::read(slot);
+            core::ptr::write(slot, None);
+            if let Some(source) = old {
+                store.close(source.release());
+            }
+            if let Some(weather) = wanted {
+                match store.source(weather.id, Some(weather.revision)) {
+                    Ok(source) => core::ptr::write(slot, Some(source)),
+                    Err(error) => defmt::warn!(
+                        "flat: weather object {=u64} revision {=u64} would not open: {}",
+                        weather.id.0,
+                        weather.revision.0,
+                        defmt::Debug2Format(&error)
+                    ),
+                }
+            }
+        }
+        (*slot).as_ref().map(|source| source as &dyn obc_formats::io::ByteSource)
+    }
 }
 
 // ══════════════════════════ the map, as bytes ══════════════════════════

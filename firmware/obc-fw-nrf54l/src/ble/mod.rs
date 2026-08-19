@@ -59,7 +59,10 @@ pub use state::{request_forget_bond, set_radio_enabled};
 pub use weather::refresh_in_flight as weather_refresh_in_flight;
 pub use weather::request_weather_now;
 pub use weather::set_weather_inputs;
-pub(crate) use weather::{note_settings_changed as weather_settings_changed, note_unchanged as weather_unchanged};
+pub(crate) use weather::{
+    note_catalog_changed as weather_catalog_changed, note_settings_changed as weather_settings_changed,
+    note_unchanged as weather_unchanged,
+};
 
 // The BLE sensor manager's app-facing seam (SE6, epic #707): the per-quantity status snapshot the
 // ride loop feeds the Sensors screen, and the scan/save/forget one-shot requests flowing back — the

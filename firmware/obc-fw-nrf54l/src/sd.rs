@@ -21,9 +21,6 @@
 //!                      zero-magic file the scan refuses and the boot sweep reclaims.
 //!   `/MAP.SEL`       — which map the renderer streams from (see `obc_app::store_meta`); absent or
 //!                      torn = no preference, and the loader takes the first readable map
-//!   `/WEATHER.A`, `/WEATHER.B` — OBCW generations. Uploads stream only into the inactive slot
-//!                      with zero magic; full outer/internal/structural validation precedes the
-//!                      magic-patch eligibility point. The active valid file is never truncated.
 //!   `/routes/*.obcr` — the route catalog the Route menu lists (side-loaded, long filenames)
 //!   `/routes/RT{id}.OBR` — BLE-uploaded routes (the durable object id lives in the name);
 //!                      the in-flight upload lives here as `UPLOAD.TMP` until commit
@@ -72,10 +69,8 @@ use obc_route::{
     RouteObjectInfo, RouteSummary,
 };
 use obc_storage::fat_extents::{BuildError, ExtentSource, ExtentTable, SharedBlockDevice};
-use obc_storage::weather::{self as weather_store, WeatherSlotIo};
 use obc_storage::route_name;
 use obc_storage::{SdByteSink, SdByteSource, SdTrackSink};
-use obc_weather::{Candidate as WeatherCandidate, Slot as WeatherSlot, SlotSelection, SlotValidation};
 
 
 /// The in-progress ride log on the card — a header-less array of fixed track records (8.3
@@ -156,25 +151,6 @@ const MAP_SELECTED: &str = "MAP.SEL";
 /// card holding more than a handful is not a real configuration — this is a scan bound, not a store
 /// cap: an upload is never refused for exceeding it, the extra map simply isn't listed.
 pub const MAX_MAPS: usize = 8;
-
-/// Which upload path owns [`Storage::open_upload`] (issue #1039).
-///
-/// There is exactly one streaming handle because there is exactly one transfer
-/// ([`crate::link::TRANSFER_ACTIVE`]), but "one transfer" is not "one transport": both links can be
-/// *connected* at once, and each tears its own state down when it drops. Before this tag, the temp
-/// path's [`upload_abort`](Storage::upload_abort) — which every link teardown runs, on **either**
-/// wire — closed whatever handle happened to be open. A phone walking out of range therefore closed
-/// the file the cable was streaming a map or a multi-gigabyte volume set into, and the next append
-/// failed into a discard that deleted it.
-///
-/// So the handle says who it belongs to, and a teardown only closes its own. The alternative —
-/// three handle slots — would encode the same fact with more state and one more way for the slots
-/// to disagree with the one-transfer gate.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum UploadOwner {
-    /// The inactive `/WEATHER.A` or `/WEATHER.B` generation.
-    Weather(WeatherSlot),
-}
 
 /// The staged firmware update in the **card root** (epic #615, locked: 8.3-safe, no LFN — the
 /// same file contract the future LM20 USB-MSC epic exposes). Sideloaded by the user (or, S6, the
@@ -468,25 +444,6 @@ pub struct Storage {
     /// open file (`FileAlreadyOpen`, even ReadOnly), which would silently drop the route from
     /// the catalog (issue #480).
     open_object: Option<(ShortFileName, RawFile, u32)>,
-    /// The in-flight upload's open file handle **and which path owns it** — the temp staging file,
-    /// a single map's final `MP{id}.OBM`, or one file of a volume set. See [`UploadOwner`]: the tag
-    /// is what stops one transport's teardown closing a handle the other transport is streaming
-    /// through (issue #1039).
-    open_upload: Option<(RawFile, UploadOwner)>,
-    /// Fully validated boot choice over `/WEATHER.A` and `/WEATHER.B`. Only metadata is resident;
-    /// OBCW bytes remain on SD.
-    weather_active: Option<WeatherCandidate>,
-    /// Location/frame facts used only by the board's refresh policy, populated from the same
-    /// session-open validated header as `weather_active`.
-    weather_policy: Option<WeatherPolicyFacts>,
-    /// Session-long read handle for [`weather_active`](Storage::weather_active), opened after the
-    /// A/B validation pass and replaced on commit. Holding it mirrors the map/route streams and is
-    /// important on embedded-sdmmc: reopening the file for every sample would put a directory walk
-    /// and open/close pair on the weather screen's hot path.
-    open_weather: Option<(RawFile, u32)>,
-    /// Full-validation proof for `open_weather`. Readers reconstructed from this token skip the
-    /// whole-object CRC/tile walk; the held read-only handle is the stable-source invariant.
-    weather_mount: Option<obc_weather::ValidatedBundle>,
     /// The loaded map's display name — its filename stem, captured in [`open_map`](Storage::open_map)
     /// (T8 item 6). Empty until a map opens; the System settings screen renders it (`grimsel · v10`)
     /// via [`App::set_map_info`](obc_app::App::set_map_info).
@@ -989,11 +946,6 @@ impl Storage {
             pending_save: None,
             ride_saved: false,
             open_object: None,
-            open_upload: None,
-            weather_active: None,
-            weather_policy: None,
-            open_weather: None,
-            weather_mount: None,
             map_name: String::new(),
         })
     }
@@ -1229,7 +1181,8 @@ impl Storage {
     pub fn ride_retention_inventory(&self) -> Vec<obc_app::RideRetentionRecord, MAX_RIDES> {
         let mut out = Vec::new();
         for (id, synced_at) in self.load_synced_set().entries() {
-            let _ = out.push(obc_app::RideRetentionRecord { id: u64::from(id), synced: true, synced_at_utc: synced_at });
+            let _ =
+                out.push(obc_app::RideRetentionRecord { id: u64::from(id), synced: true, synced_at_utc: synced_at });
         }
         out
     }
@@ -2497,258 +2450,6 @@ impl Storage {
     pub fn close_object(&mut self) {
         if let Some((_, file, _)) = self.open_object.take() {
             let _ = self.vmgr.close_file(file);
-        }
-    }
-}
-
-// ==================== WEATHER.A / WEATHER.B (WX7, #1192) ====================
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WeatherIoError {
-    Busy,
-    Open,
-    Write,
-    Flush,
-    Close,
-}
-
-/// Policy-only facts from the validated active OBCW header. Kept beside the board's session-open
-/// reader rather than in `obc_weather::Candidate`: slot selection crosses storage error paths where
-/// enlarging every candidate would materially increase the error enum and callers' stack frames.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WeatherPolicyFacts {
-    pub south_lat_udeg: i32,
-    pub west_lon_udeg: i32,
-    pub north_lat_udeg: i32,
-    pub east_lon_udeg: i32,
-    pub frame_count: u16,
-}
-
-impl Storage {
-    /// Revalidate both fixed roots and retain the deterministic active generation. This runs once
-    /// at mount; later weather upload composition refreshes it after a successful commit.
-    pub fn refresh_weather_selection(&mut self) -> SlotSelection {
-        // embedded-sdmmc refuses a second open of the same file. Drop the old selected slot before
-        // the validation pass opens both roots, then reopen exactly the winning one for streaming.
-        if let Some((file, _)) = self.open_weather.take() {
-            let _ = self.vmgr.close_file(file);
-        }
-        self.weather_mount = None;
-        self.weather_active = None;
-        self.weather_policy = None;
-        let mut selection = weather_store::inspect_slots(self);
-        self.weather_active = selection.active;
-        if let Some(active) = selection.active {
-            let name = weather_store::slot_file_name(active.slot);
-            match self.vmgr.open_file_in_dir(self.root, name, Mode::ReadOnly) {
-                Ok(file) => {
-                    let len = self.vmgr.file_length(file).unwrap_or(0);
-                    let source = SdByteSource::new(&self.vmgr, file, len);
-                    match obc_weather::WeatherReader::open(&source) {
-                        Ok(reader) => {
-                            let header = reader.header();
-                            let reopened = WeatherCandidate {
-                                slot: active.slot,
-                                generation: header.generation,
-                                generated_at: header.generated_at,
-                                total_len: header.total_len,
-                                bundle_crc32: header.crc32,
-                            };
-                            // The root may have changed between the two-slot inspection and this
-                            // session-open. Never retain selection metadata from one object beside
-                            // a validation token/source for another.
-                            if reopened == active {
-                                self.weather_policy = Some(WeatherPolicyFacts {
-                                    south_lat_udeg: header.south_lat_udeg,
-                                    west_lon_udeg: header.west_lon_udeg,
-                                    north_lat_udeg: header.north_lat_udeg,
-                                    east_lon_udeg: header.east_lon_udeg,
-                                    frame_count: header.frame_count,
-                                });
-                                self.weather_mount = Some(reader.validated());
-                                self.open_weather = Some((file, len));
-                            } else {
-                                let _ = self.vmgr.close_file(file);
-                                self.weather_active = None;
-                                self.weather_policy = None;
-                                selection.active = None;
-                            }
-                        }
-                        Err(_) => {
-                            let _ = self.vmgr.close_file(file);
-                            self.weather_active = None;
-                            self.weather_policy = None;
-                            selection.active = None;
-                        }
-                    }
-                }
-                Err(_) => {
-                    // The file was readable during validation and disappeared before the reopen.
-                    // Fail closed: metadata without a readable source is not an active bundle.
-                    self.weather_active = None;
-                    self.weather_policy = None;
-                    selection.active = None;
-                }
-            }
-        }
-        selection
-    }
-
-    pub const fn weather_active(&self) -> Option<WeatherCandidate> {
-        self.weather_active
-    }
-
-    pub const fn weather_policy(&self) -> Option<WeatherPolicyFacts> {
-        self.weather_policy
-    }
-
-    /// A cheap [`ByteSource`] view over the session-open active weather bundle.
-    pub fn weather_source(&self) -> Option<Source<'_>> {
-        self.open_weather.map(|(file, len)| SdByteSource::new(&self.vmgr, file, len))
-    }
-
-    /// The validation proof paired with [`weather_source`](Storage::weather_source).
-    pub const fn weather_mount(&self) -> Option<obc_weather::ValidatedBundle> {
-        self.weather_mount
-    }
-
-    /// Run after `Storage` has moved into its final `.bss` home. Keeping this out of
-    /// [`Storage::mount`] is load-bearing: naming a local `Storage` there materialized a second
-    /// ~13.5 KiB construction/copy slot in `main`'s permanent async poll frame (#677/#1108).
-    #[inline(never)]
-    pub fn select_weather_at_boot(&mut self) {
-        self.refresh_weather_selection();
-        match self.weather_active() {
-            Some(active) => defmt::info!(
-                "SD: weather slot {=str} generation {=u32} selected ({=u32} B)",
-                match active.slot {
-                    WeatherSlot::A => "A",
-                    WeatherSlot::B => "B",
-                },
-                active.generation,
-                active.total_len
-            ),
-            None => defmt::info!("SD: no valid WEATHER.A/WEATHER.B generation"),
-        }
-    }
-}
-
-impl WeatherSlotIo for Storage {
-    type Error = WeatherIoError;
-
-    fn inspect_slot(&mut self, slot: WeatherSlot, magic: Option<[u8; 4]>) -> SlotValidation {
-        // The active root is held open for the render/sampling lifetime, and embedded-sdmmc
-        // refuses a second open. Ordinary A/B selection may reuse its cached fully-validated
-        // identity; a caller asking for alternate held-magic validation reads through that same
-        // handle instead of reopening it.
-        if self.weather_active.is_some_and(|active| active.slot == slot) {
-            if magic.is_none() {
-                return SlotValidation::Valid(self.weather_active.expect("checked Some above"));
-            }
-            if let Some(source) = self.weather_source() {
-                return obc_weather::validate_slot_with_magic(slot, &source, magic.expect("checked Some above"));
-            }
-            return SlotValidation::Unreadable;
-        }
-        let Ok(name) = ShortFileName::create_from_str(weather_store::slot_file_name(slot)) else {
-            return SlotValidation::Unreadable;
-        };
-        let file = match self.vmgr.open_file_in_dir(self.root, &name, Mode::ReadOnly) {
-            Ok(file) => file,
-            Err(embedded_sdmmc::Error::NotFound) => return SlotValidation::Missing,
-            Err(_) => return SlotValidation::Unreadable,
-        };
-        let len = match self.vmgr.file_length(file) {
-            Ok(len) => len,
-            _ => {
-                let _ = self.vmgr.close_file(file);
-                return SlotValidation::Unreadable;
-            }
-        };
-        let validation = {
-            let source = SdByteSource::new(&self.vmgr, file, len);
-            match magic {
-                Some(magic) => obc_weather::validate_slot_with_magic(slot, &source, magic),
-                None => obc_weather::validate_slot(slot, &source),
-            }
-        };
-        if self.vmgr.close_file(file).is_err() {
-            return SlotValidation::Unreadable;
-        }
-        validation
-    }
-
-    fn begin_slot(&mut self, slot: WeatherSlot) -> Result<(), Self::Error> {
-        if self.open_upload.is_some() {
-            return Err(WeatherIoError::Busy);
-        }
-        let file = self
-            .vmgr
-            .open_file_in_dir(self.root, weather_store::slot_file_name(slot), Mode::ReadWriteCreateOrTruncate)
-            .map_err(|_| WeatherIoError::Open)?;
-        self.open_upload = Some((file, UploadOwner::Weather(slot)));
-        Ok(())
-    }
-
-    fn append_slot(&mut self, slot: WeatherSlot, bytes: &[u8]) -> Result<(), Self::Error> {
-        let Some((file, UploadOwner::Weather(owner))) = self.open_upload else {
-            return Err(WeatherIoError::Busy);
-        };
-        if owner != slot {
-            return Err(WeatherIoError::Busy);
-        }
-        self.vmgr.write(file, bytes).map_err(|_| WeatherIoError::Write)
-    }
-
-    fn close_slot(&mut self, slot: WeatherSlot) -> Result<(), Self::Error> {
-        let Some((file, owner)) = self.open_upload.take() else {
-            return Err(WeatherIoError::Busy);
-        };
-        if owner != UploadOwner::Weather(slot) {
-            self.open_upload = Some((file, owner));
-            return Err(WeatherIoError::Busy);
-        }
-        let flushed = self.vmgr.flush_file(file).is_ok();
-        let closed = self.vmgr.close_file(file).is_ok();
-        if !flushed {
-            Err(WeatherIoError::Flush)
-        } else if !closed {
-            Err(WeatherIoError::Close)
-        } else {
-            Ok(())
-        }
-    }
-
-    fn abandon_slot(&mut self, slot: WeatherSlot) {
-        let Some((file, owner)) = self.open_upload.take() else { return };
-        if owner == UploadOwner::Weather(slot) {
-            let _ = self.vmgr.close_file(file);
-        } else {
-            self.open_upload = Some((file, owner));
-        }
-    }
-
-    fn commit_magic(&mut self, slot: WeatherSlot, magic: [u8; 4]) -> Result<(), Self::Error> {
-        if self.open_upload.is_some() {
-            return Err(WeatherIoError::Busy);
-        }
-        let name =
-            ShortFileName::create_from_str(weather_store::slot_file_name(slot)).map_err(|_| WeatherIoError::Open)?;
-        let file =
-            self.vmgr.open_file_in_dir(self.root, &name, Mode::ReadWriteAppend).map_err(|_| WeatherIoError::Open)?;
-        let wrote = self.vmgr.file_seek_from_start(file, 0).is_ok() && self.vmgr.write(file, &magic).is_ok();
-        let flushed = wrote && self.vmgr.flush_file(file).is_ok();
-        let closed = self.vmgr.close_file(file).is_ok();
-        if !wrote {
-            Err(WeatherIoError::Write)
-        } else if !flushed {
-            // Magic may or may not have reached the card. Both recovery branches are tested by the
-            // pure store: old active stays valid; boot either ignores zero magic or selects new.
-            Err(WeatherIoError::Flush)
-        } else if !closed {
-            Err(WeatherIoError::Close)
-        } else {
-            Ok(())
         }
     }
 }
