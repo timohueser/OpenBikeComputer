@@ -13,6 +13,7 @@
 //! (§4 encoding again) over variable-length junction records with inline neighbor
 //! coords, plus a chunked edge pool addressed by pool-relative byte offset.
 
+use std::convert::Infallible;
 use std::io::{self, Seek, SeekFrom, Write};
 
 use obc_formats::obcm::{
@@ -24,11 +25,12 @@ use obc_formats::obcm::{
 // The OBCM constants the serializer lays out are owned by `obc-formats`; imported here (the
 // `VERSION as OBCM_VERSION` rename is a module-local readability alias). Not re-exported.
 use obc_formats::obcm::{
-    nav_edge_id, nav_index_padding, OffsetScale, FILLER, HEADER_LEN, LOD_ENTRY_LEN, NAV_CHUNK_SIZE, NAV_DIR_LEN,
-    NAV_EDGE_FIXED_LEN, NAV_EDGE_MAX_CHUNKS, NAV_EDGE_MAX_RECORDS_PER_CHUNK, NAV_MAX_DEGREE, NAV_MAX_PROFILES,
-    NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN, NAV_PROFILE_RESERVED_LEN,
-    NAV_SNAP_ANCHOR_GAP_M, NAV_SNAP_EDGE_MIN_M, NAV_SNAP_RECORD_LEN, POI_CATEGORY_COUNT, POI_CAT_ENTRY_LEN,
-    POI_CHUNK_SIZE, POI_HOURS_BLOB_LEN, POI_HOURS_REF_NONE, POI_NAME_LEN, POI_RECORD_LEN, VERSION as OBCM_VERSION,
+    nav_edge_id, nav_index_padding, OffsetScale, UnitWriter, FILLER, HEADER_LEN, LOD_ENTRY_LEN, NAV_CHUNK_SIZE,
+    NAV_DIR_LEN, NAV_EDGE_FIXED_LEN, NAV_EDGE_MAX_CHUNKS, NAV_EDGE_MAX_RECORDS_PER_CHUNK, NAV_MAX_DEGREE,
+    NAV_MAX_PROFILES, NAV_NEIGHBOR_LEN, NAV_NODE_FIXED_LEN, NAV_PROFILE_LEN, NAV_PROFILE_NAME_LEN,
+    NAV_PROFILE_RESERVED_LEN, NAV_SNAP_ANCHOR_GAP_M, NAV_SNAP_EDGE_MIN_M, NAV_SNAP_RECORD_LEN, POI_CATEGORY_COUNT,
+    POI_CAT_ENTRY_LEN, POI_CHUNK_SIZE, POI_HOURS_BLOB_LEN, POI_HOURS_REF_NONE, POI_NAME_LEN, POI_RECORD_LEN,
+    VERSION as OBCM_VERSION,
 };
 
 /// The `Offset Scale` every `.obcm` this packer writes carries (§1.1): `U = 16`, a 64 GiB
@@ -39,28 +41,59 @@ pub const SCALE: OffsetScale = OffsetScale::DEFAULT;
 
 /// The next unit boundary at or after `cursor` (§1.2's `align_up`). Every structure a header or
 /// directory offset reaches begins on one; the `0..U-1` bytes this rounds past are [`FILLER`].
+///
+/// The *writers* below reach their boundaries through [`UnitWriter::begin_section`], which pads the
+/// gap as it finds it. This spelling survives for the two places that need the boundary without
+/// having a cursor there: a chunk's span in a §5.1 offset table, and the fixed prefix's offsets,
+/// which the header has to state before the style table it precedes has been written.
 #[inline]
 fn align_up(cursor: usize) -> usize {
     SCALE.align_up(cursor as u64).expect("a layout cursor never approaches u64::MAX") as usize
-}
-
-/// The filler run [`align_up`] implies at `cursor` — `0..U-1` bytes of `0xFF`.
-#[inline]
-fn filler_len(cursor: usize) -> usize {
-    align_up(cursor) - cursor
 }
 
 /// The `uint32` a scaled offset field stores for byte offset `at`.
 ///
 /// A scaled offset **cannot** name a byte that is not a multiple of `U`, so a non-boundary argument
 /// here is a bug in the layout above it, not a rounding request — hence the panic rather than a
-/// silent round. Every call site has just aligned the cursor it passes.
+/// silent round. Every call site has just aligned the cursor it passes, and since the cursor type
+/// took over the boundaries most of them pass one [`UnitWriter::begin_section`] returned.
 #[inline]
 fn scaled(at: usize) -> u32 {
     SCALE
         .scaled(at as u64)
         .unwrap_or_else(|| panic!("byte {at} is not on a {}-byte unit boundary", SCALE.unit()))
         .units()
+}
+
+/// Lay bytes out through a [`UnitWriter`] over an in-memory buffer — the shape every section this
+/// packer builds has, and the one sink that cannot fail.
+///
+/// `at` is the absolute file byte the buffer's first byte lands on, so the cursor finds §1.2's
+/// boundaries where the reader will look for them rather than where the buffer happens to start.
+fn lay_out<T>(at: usize, build: impl FnOnce(&mut UnitWriter<'_, Infallible>) -> Result<T, Infallible>) -> (Vec<u8>, T) {
+    let mut buf: Vec<u8> = Vec::new();
+    let value = {
+        let mut sink = |bytes: &[u8]| -> Result<(), Infallible> {
+            buf.extend_from_slice(bytes);
+            Ok(())
+        };
+        match build(&mut UnitWriter::new(SCALE, at as u64, &mut sink)) {
+            Ok(value) => value,
+            Err(never) => match never {},
+        }
+    };
+    (buf, value)
+}
+
+/// Walk a layout with a sink that keeps nothing but the cursor — the *projection* of a section,
+/// run through the very code that emits it (§1.2). `place` sees exactly the byte lengths the write
+/// will, so what it reports and what gets written cannot be two different layouts.
+fn place<T>(at: usize, walk: impl FnOnce(&mut UnitWriter<'_, Infallible>) -> Result<T, Infallible>) -> T {
+    let mut discard = |_: &[u8]| -> Result<(), Infallible> { Ok(()) };
+    match walk(&mut UnitWriter::new(SCALE, at as u64, &mut discard)) {
+        Ok(value) => value,
+        Err(never) => match never {},
+    }
 }
 
 use crate::nav::{polyline_len_m, NavGraph};
@@ -647,26 +680,37 @@ impl FlattenTree for Node {
 /// anything. `dropped_features` counts chunk-overflow drops across all leaves (see [`pack_chunk`]).
 pub fn serialize_tree(root: &Node, chunk_size: usize) -> (Vec<u8>, u32, Vec<u8>, u32, usize) {
     let (index_bytes, node_count, chunks, dropped) = flatten_tree(root, chunk_size);
-    let table_len = (chunks.len() + 1) * 4;
-    // `index_start` is a unit boundary, so only the two lengths behind it decide the filler run.
-    let gap = filler_len(index_bytes.len() + table_len);
-    let spans: Vec<usize> = chunks.iter().map(|c| align_up(c.len())).collect();
-    let total: usize = spans.iter().sum();
-    let mut data = Vec::with_capacity(table_len + gap + total);
-    let mut offset = 0usize;
-    data.extend_from_slice(&scaled(offset).to_le_bytes());
-    for span in &spans {
-        offset += span;
-        data.extend_from_slice(&scaled(offset).to_le_bytes());
+    // The table is region-relative, so it is built from the chunks' spans rather than from a cursor:
+    // entry `e` names `data_start + e * U`, and a chunk's span is its content rounded to a unit.
+    let mut table = Vec::with_capacity((chunks.len() + 1) * 4);
+    let mut span_total = 0usize;
+    table.extend_from_slice(&scaled(span_total).to_le_bytes());
+    for c in &chunks {
+        span_total += align_up(c.len());
+        table.extend_from_slice(&scaled(span_total).to_le_bytes());
     }
-    data.resize(data.len() + gap, FILLER);
-    for (c, span) in chunks.iter().zip(&spans) {
-        let end = data.len() + span;
-        data.extend_from_slice(c);
-        data.resize(end, FILLER);
-    }
-    debug_assert_eq!(offset, total, "the last offset is the region's chunk-byte total");
-    debug_assert_eq!(data.len(), table_len + gap + total);
+    // `index_start` is a unit boundary, so a cursor started at the index's *length* finds the same
+    // boundaries the reader will — which is what makes the region relocatable at all (OBCA §4.3).
+    //
+    // The table above and the chunk run below are the one place in this file where a boundary is
+    // computed twice — `align_up` per span there, `begin_section` per chunk here — because a §5.1
+    // entry is region-relative and the cursor is not. So they are tied back together: the cursor
+    // must land exactly `offsets[Chunk Count]` units past `data_start`, or the table the reader
+    // indexes with describes a region the writer did not lay out.
+    let (data, ()) = lay_out(index_bytes.len(), |w| {
+        w.put(&table)?;
+        let data_start = w.begin_section()?;
+        for c in &chunks {
+            w.put(c)?;
+            w.begin_section()?;
+        }
+        debug_assert_eq!(
+            w.at() - data_start,
+            span_total as u64,
+            "the §5.1 offset table and the chunks it addresses must end at the same byte"
+        );
+        Ok(())
+    });
     (index_bytes, node_count, data, chunks.len() as u32, dropped)
 }
 
@@ -867,50 +911,40 @@ pub fn serialize_poi_section(pois: &[Poi], global_bbox: (i64, i64, i64, i64), se
     // each index starts on a unit boundary, and a category's chunks begin at
     // `align_up(Index Offset * U + Index Node Count * 4, U)` — §7.1's one rounding step, the same
     // convention §3 and §8.1 use. 512 is a multiple of `U` at every legal scale, so the chunks
-    // themselves need no filler between them and the region ends aligned for the next category.
-    let mut payload = Vec::new();
-    let mut cursor = align_up(section_offset + dir_len);
-    let dir_gap = cursor - (section_offset + dir_len);
-    payload.resize(dir_gap, FILLER);
-    let mut cat_entries = Vec::with_capacity(POI_CATEGORY_COUNT as usize);
-    for b in &blocks {
-        cat_entries.push((b.cat_id, scaled(cursor), b.node_count, b.chunk_count));
-        payload.extend_from_slice(&b.index);
-        cursor += b.index.len();
-        let gap = filler_len(cursor);
-        payload.resize(payload.len() + gap, FILLER);
-        cursor += gap;
-        payload.extend_from_slice(&b.chunks);
-        cursor += b.chunks.len();
-    }
-
-    // The hours-pool section begins at the first unit boundary at or after the last category's
-    // chunks — those are whole 512-byte strides, so in practice `cursor` is already one.
-    let gap = filler_len(cursor);
-    payload.resize(payload.len() + gap, FILLER);
-    let hours_pool_offset = cursor + gap;
-    let hours_pool = pack_hours_pool(&pool);
-    payload.extend_from_slice(&hours_pool);
+    // themselves need no filler between them and the region ends aligned for the next category,
+    // which is why every `begin_section` in the loop below is a no-op after the first.
+    //
+    // The cursor starts past the directory because the directory's own bytes cannot be written
+    // until this walk has resolved the offsets they carry.
+    let (payload, (cat_entries, hours_pool_offset)) = lay_out(section_offset + dir_len, |w| {
+        let mut cat_entries = Vec::with_capacity(POI_CATEGORY_COUNT as usize);
+        for b in &blocks {
+            cat_entries.push((b.cat_id, scaled(w.begin_section()? as usize), b.node_count, b.chunk_count));
+            w.put(&b.index)?;
+            w.begin_section()?;
+            w.put(&b.chunks)?;
+        }
+        // The hours pool, then the run that leaves the nav directory behind it nameable.
+        let hours_pool_offset = w.begin_section()? as usize;
+        w.put(&pack_hours_pool(&pool))?;
+        w.begin_section()?;
+        Ok((cat_entries, hours_pool_offset))
+    });
 
     // Now emit the directory with the resolved offsets + pool fields.
-    let mut dir = Vec::with_capacity(dir_len);
-    dir.push(POI_CATEGORY_COUNT);
-    dir.extend_from_slice(&(POI_CHUNK_SIZE as u16).to_le_bytes());
-    for (cat_id, index_offset, node_count, chunk_count) in cat_entries {
-        dir.push(cat_id);
-        dir.extend_from_slice(&index_offset.to_le_bytes());
-        dir.extend_from_slice(&node_count.to_le_bytes());
-        dir.extend_from_slice(&chunk_count.to_le_bytes());
-    }
-    dir.extend_from_slice(&scaled(hours_pool_offset).to_le_bytes());
-    dir.extend_from_slice(&(pool.len() as u16).to_le_bytes());
-    debug_assert_eq!(dir.len(), dir_len);
-
     let mut out = Vec::with_capacity(dir_len + payload.len());
-    out.extend_from_slice(&dir);
+    out.push(POI_CATEGORY_COUNT);
+    out.extend_from_slice(&(POI_CHUNK_SIZE as u16).to_le_bytes());
+    for (cat_id, index_offset, node_count, chunk_count) in cat_entries {
+        out.push(cat_id);
+        out.extend_from_slice(&index_offset.to_le_bytes());
+        out.extend_from_slice(&node_count.to_le_bytes());
+        out.extend_from_slice(&chunk_count.to_le_bytes());
+    }
+    out.extend_from_slice(&scaled(hours_pool_offset).to_le_bytes());
+    out.extend_from_slice(&(pool.len() as u16).to_le_bytes());
+    debug_assert_eq!(out.len(), dir_len);
     out.extend_from_slice(&payload);
-    // The section ends on a unit boundary so the nav directory behind it can be named.
-    out.resize(align_up(section_offset + out.len()) - section_offset, FILLER);
     out
 }
 
@@ -1318,35 +1352,6 @@ fn pack_profile_table(profiles: &[NavProfile]) -> Vec<u8> {
     out
 }
 
-/// Serialize the full nav-graph section (spec §8, v9) at absolute byte `section_offset`:
-/// `[directory (40 B)][profile table (§8.6)][node quadtree index][node chunks][edge pool]
-/// [snap-anchor quadtree index][snap-anchor chunks]`. The
-/// **profile table is written immediately after the directory**, before the node index, so even an
-/// empty graph (no routable ways) still carries its profiles; the section is **always present**.
-/// `profiles` is `1..=8` entries (validated in [`crate::config`]).
-///
-/// Graph normalizations happen here, on working copies (the caller's [`NavGraph`] is untouched):
-/// - **Densify + split.** Polylines are densified to the 30 000-µdeg segment bound; an edge whose
-///   record would overflow one chunk ([`NAV_MAX_EDGE_PTS`]) **or** whose piece would span more than
-///   [`NAV_MAX_NEIGHBOR_DELTA`] (so its neighbor delta wouldn't fit `i16`) is split at a vertex into
-///   pieces joined by synthetic degree-2 nodes (each piece's cost re-measured over its sub-polyline
-///   and `way_kind` inherited), so **no record straddles a chunk** and **every neighbor delta fits
-///   `i16`**.
-/// - **Degree cap.** A node keeps its first [`NAV_MAX_DEGREE`] adjacency entries (edge-pool order —
-///   deterministic); the packer warns on stderr about the rest.
-/// - **Bin-packed node chunks.** Leaves are first-fit-packed into shared 512-byte chunks
-///   ([`flatten_nav_tree`]) — distinct leaves may reference one chunk.
-///
-/// Wire `edge_id` = the record's **pool-relative byte offset** (§8.4): the reader derives
-/// `(chunk, offset)` as `id / 512`, `id % 512` with **zero resident index**. A self-loop edge
-/// (`a == b`) contributes **one** adjacency entry, not two.
-///
-/// `terrain` is where the v12 `Ascent M` comes from. It is sampled **after** every split, over each
-/// final piece's own polyline, because that is the only place the geometry an adjacency entry
-/// describes actually exists — an edge's total climb cannot be divided among its pieces after the
-/// fact (the dead-band is a fold over samples, not a length). Hand it
-/// [`NullElevation`](obc_elevation::NullElevation) and every entry gets `0`: a decode-valid map that
-/// routes exactly as v11 did, which is the degrade path *and* what keeps small test packs cheap.
 /// Mints §8.4 `Edge Id`s as records are placed in the edge pool.
 ///
 /// The writer got *simpler* at v14 — the id is a per-chunk record counter, so nothing has to know a
@@ -1385,6 +1390,166 @@ impl EdgeIds {
     }
 }
 
+/// The §8 regions the section's directory has to name, as [`walk_nav_section`] found them.
+struct NavOffsets {
+    profile_table_offset: usize,
+    index_offset: usize,
+    edge_pool_offset: usize,
+    snap_index_offset: usize,
+}
+
+/// Everything behind a populated graph's profile table, already in wire form.
+struct NavBody<'a> {
+    index: &'a [u8],
+    node_count: u32,
+    chunks: &'a [u8],
+    chunk_count: u32,
+    pool: &'a [u8],
+    edge_chunk_count: u32,
+    snap_index: &'a [u8],
+    snap_node_count: u32,
+    snap_chunks: &'a [u8],
+    snap_chunk_count: u32,
+}
+
+/// Walk §8 through `w`, returning the offsets its directory has to state.
+///
+/// **This is run twice and it is the same walk both times**: once over a sink that keeps nothing but
+/// the cursor, to *find* the offsets the 40-byte directory carries, and once over the real buffer
+/// with that directory in hand. A projection and an emission that were two pieces of code could
+/// disagree; two runs of one piece cannot, so the §8.1 alignment arithmetic exists once.
+///
+/// **`obcm-assemble` writes the same section a different way, and the asymmetry is deliberate.**
+/// There, `nav::NavLayout` is walked once and *read* by the write; here the write is walked twice.
+/// Walking twice is the stronger of the two — nothing carries a number between the passes, so there
+/// is no carrier to get wrong — and this side can afford it because the whole §8 body is already
+/// resident in these `Vec`s, so a second pass costs cursor arithmetic and nothing else. The
+/// assembler's body is not resident (it streams off a scratch seam and out of the source cells), so
+/// a second pass there would double the dominant I/O of an assembly; see `nav::NavLayout`.
+fn walk_nav_section<E>(
+    w: &mut UnitWriter<'_, E>,
+    directory: &[u8],
+    profile_table: &[u8],
+    body: Option<&NavBody<'_>>,
+) -> Result<NavOffsets, E> {
+    debug_assert_eq!(directory.len(), NAV_DIR_LEN);
+    // The profile table sits behind the 40-byte directory, at the first unit boundary past it — 40
+    // is not a multiple of 16, so at the default scale the table starts at the directory's byte 48
+    // and the eight bytes between them are §1.2 filler. That is the whole cost of scaling in this
+    // section.
+    w.put(directory)?;
+    let profile_table_offset = w.begin_section()? as usize;
+    w.put(profile_table)?;
+    let Some(b) = body else {
+        // Empty graph: the directory and the always-present profile table are the whole section. The
+        // zero-length regions still have to be *nameable*, so all three point at the first unit
+        // boundary past the table rather than at its last byte.
+        let at = w.begin_section()? as usize;
+        return Ok(NavOffsets { profile_table_offset, index_offset: at, edge_pool_offset: at, snap_index_offset: at });
+    };
+
+    // `nav_index_padding` chooses each alignment run so that two things hold at once: the index
+    // starts on a **unit** boundary (or no scaled offset could name it) and the fixed 512-byte
+    // chunks behind it start on a **sector** boundary, so a full-chunk read is one card command.
+    // The rounding step in `align_up(index_offset * U + node_count * 4, U)` is the slack that lets
+    // both hold for every node count. The edge pool stays sector-aligned because the node region is
+    // whole 512-byte chunks.
+    //
+    // Every gap here is `0xFF` since v14, where v13 wrote zeros for the alignment runs and `0xFF`
+    // inside chunks. One fill byte, one rule (§1.2): a gap is `0xFF` and a reserved field is `0`.
+    w.pad(index_pad(w.at(), b.index.len() as u64))?;
+    let index_offset = w.at() as usize;
+    w.put(b.index)?;
+    w.begin_section()?;
+    w.put(b.chunks)?;
+    let edge_pool_offset = w.at() as usize;
+    w.put(b.pool)?;
+    // A snap index of no nodes has no sector to reconcile, so its region only has to be nameable.
+    if b.snap_node_count == 0 {
+        w.begin_section()?;
+    } else {
+        w.pad(index_pad(w.at(), b.snap_index.len() as u64))?;
+    }
+    let snap_index_offset = w.at() as usize;
+    w.put(b.snap_index)?;
+    w.begin_section()?;
+    w.put(b.snap_chunks)?;
+    debug_assert_eq!(w.at(), align_up(w.at() as usize) as u64, "the file tail stays aligned");
+    Ok(NavOffsets { profile_table_offset, index_offset, edge_pool_offset, snap_index_offset })
+}
+
+/// §8.1's alignment run before a quadtree index of `index_len` bytes starting, unpadded, at `at`.
+#[inline]
+fn index_pad(at: u64, index_len: u64) -> u64 {
+    nav_index_padding(SCALE, at, index_len).expect("a nav index length never approaches u64::MAX") as u64
+}
+
+/// The 40-byte §8.1 directory, over the offsets [`walk_nav_section`]'s first pass resolved.
+fn nav_directory(offsets: &NavOffsets, body: Option<&NavBody<'_>>, profile_count: usize) -> Vec<u8> {
+    let (node_count, node_chunks, edge_chunks, snap_node_count, snap_chunks) = match body {
+        Some(b) => (b.node_count, b.chunk_count, b.edge_chunk_count, b.snap_node_count, b.snap_chunk_count),
+        None => (0, 0, 0, 0, 0),
+    };
+    let mut dir = Vec::with_capacity(NAV_DIR_LEN);
+    dir.extend_from_slice(&scaled(offsets.index_offset).to_le_bytes()); // index_offset
+    dir.extend_from_slice(&node_count.to_le_bytes()); // index_node_count
+    dir.extend_from_slice(&node_chunks.to_le_bytes()); // node_chunk_count
+    dir.extend_from_slice(&scaled(offsets.edge_pool_offset).to_le_bytes()); // edge_pool_offset
+    dir.extend_from_slice(&edge_chunks.to_le_bytes()); // edge_chunk_count
+    dir.extend_from_slice(&(NAV_CHUNK_SIZE as u16).to_le_bytes()); // chunk_size (pinned 512)
+    dir.extend_from_slice(&scaled(offsets.profile_table_offset).to_le_bytes()); // profile_table_offset
+    dir.push(profile_count as u8); // profile_count
+    dir.push(0u8); // reserved — a field, so `0`, unlike a gap
+    dir.extend_from_slice(&scaled(offsets.snap_index_offset).to_le_bytes()); // snap_index_offset
+    dir.extend_from_slice(&snap_node_count.to_le_bytes()); // snap_index_node_count
+    dir.extend_from_slice(&snap_chunks.to_le_bytes()); // snap_chunk_count
+    debug_assert_eq!(dir.len(), NAV_DIR_LEN);
+    dir
+}
+
+/// Lay the section out at `section_offset`: the placeholder walk that resolves the directory's
+/// offsets, then the identical walk that writes the bytes.
+fn emit_nav_section(
+    section_offset: usize,
+    profile_table: &[u8],
+    body: Option<&NavBody<'_>>,
+    profiles: usize,
+) -> Vec<u8> {
+    let placeholder = [0u8; NAV_DIR_LEN];
+    let offsets = place(section_offset, |w| walk_nav_section(w, &placeholder, profile_table, body));
+    let directory = nav_directory(&offsets, body, profiles);
+    let (out, _) = lay_out(section_offset, |w| walk_nav_section(w, &directory, profile_table, body));
+    out
+}
+
+/// Serialize the full nav-graph section (spec §8, v9) at absolute byte `section_offset`:
+/// `[directory (40 B)][profile table (§8.6)][node quadtree index][node chunks][edge pool]
+/// [snap-anchor quadtree index][snap-anchor chunks]`. The
+/// **profile table is written immediately after the directory**, before the node index, so even an
+/// empty graph (no routable ways) still carries its profiles; the section is **always present**.
+/// `profiles` is `1..=8` entries (validated in [`crate::config`]).
+///
+/// Graph normalizations happen here, on working copies (the caller's [`NavGraph`] is untouched):
+/// - **Densify + split.** Polylines are densified to the 30 000-µdeg segment bound; an edge whose
+///   record would overflow one chunk ([`NAV_MAX_EDGE_PTS`]) **or** whose piece would span more than
+///   [`NAV_MAX_NEIGHBOR_DELTA`] (so its neighbor delta wouldn't fit `i16`) is split at a vertex into
+///   pieces joined by synthetic degree-2 nodes (each piece's cost re-measured over its sub-polyline
+///   and `way_kind` inherited), so **no record straddles a chunk** and **every neighbor delta fits
+///   `i16`**.
+/// - **Degree cap.** A node keeps its first [`NAV_MAX_DEGREE`] adjacency entries (edge-pool order —
+///   deterministic); the packer warns on stderr about the rest.
+/// - **Bin-packed node chunks.** Leaves are first-fit-packed into shared 512-byte chunks
+///   ([`flatten_nav_tree`]) — distinct leaves may reference one chunk.
+///
+/// Wire `edge_id` is the packed `(chunk, ordinal)` pair of §8.4, minted by [`EdgeIds`] from the byte
+/// a record lands on. A self-loop edge (`a == b`) contributes **one** adjacency entry, not two.
+///
+/// `terrain` is where the v12 `Ascent M` comes from. It is sampled **after** every split, over each
+/// final piece's own polyline, because that is the only place the geometry an adjacency entry
+/// describes actually exists — an edge's total climb cannot be divided among its pieces after the
+/// fact (the dead-band is a fold over samples, not a length). Hand it
+/// [`NullElevation`](obc_elevation::NullElevation) and every entry gets `0`: a decode-valid map that
+/// routes exactly as v11 did, which is the degrade path *and* what keeps small test packs cheap.
 pub fn serialize_nav_section(
     graph: &NavGraph,
     profiles: &[NavProfile],
@@ -1393,53 +1558,8 @@ pub fn serialize_nav_section(
     terrain: &mut dyn ElevationSource,
 ) -> Vec<u8> {
     let profile_table = pack_profile_table(profiles);
-    // The profile table sits behind the 40-byte directory, at the first unit boundary past it — 40
-    // is not a multiple of 16, so at the default scale the table starts at the directory's byte 48
-    // and the eight bytes between them are §1.2 filler. That is the whole cost of scaling in this
-    // section. A populated graph may then insert up to one sector of alignment run before its node
-    // index; its exact size is known once the index has been built.
-    let dir_gap = filler_len(section_offset + NAV_DIR_LEN);
-    let profile_table_offset = section_offset + NAV_DIR_LEN + dir_gap;
-    let unpadded_index_offset = profile_table_offset + profile_table.len();
-
-    // Directory writer, shared by the empty and populated paths. `idx_off`/`edge_off` point at the
-    // node index and edge pool; an empty graph passes `unpadded_index_offset` for both zero-length
-    // regions.
-    let write_dir = |out: &mut Vec<u8>,
-                     idx_off: usize,
-                     node_count: u32,
-                     node_chunks: u32,
-                     edge_off: usize,
-                     edge_chunks: u32,
-                     snap_idx_off: usize,
-                     snap_node_count: u32,
-                     snap_chunks: u32| {
-        out.extend_from_slice(&scaled(idx_off).to_le_bytes()); // index_offset
-        out.extend_from_slice(&node_count.to_le_bytes()); // index_node_count
-        out.extend_from_slice(&node_chunks.to_le_bytes()); // node_chunk_count
-        out.extend_from_slice(&scaled(edge_off).to_le_bytes()); // edge_pool_offset
-        out.extend_from_slice(&edge_chunks.to_le_bytes()); // edge_chunk_count
-        out.extend_from_slice(&(NAV_CHUNK_SIZE as u16).to_le_bytes()); // chunk_size (pinned 512)
-        out.extend_from_slice(&scaled(profile_table_offset).to_le_bytes()); // profile_table_offset
-        out.push(profiles.len() as u8); // profile_count
-        out.push(0u8); // reserved — a field, so `0`, unlike a gap
-        out.extend_from_slice(&scaled(snap_idx_off).to_le_bytes()); // snap_index_offset
-        out.extend_from_slice(&snap_node_count.to_le_bytes()); // snap_index_node_count
-        out.extend_from_slice(&snap_chunks.to_le_bytes()); // snap_chunk_count
-        debug_assert_eq!(out.len(), NAV_DIR_LEN);
-        out.resize(NAV_DIR_LEN + dir_gap, FILLER);
-    };
-
     if graph.nodes.is_empty() {
-        // Empty graph: the directory (all regions zero-length, just past the profile table) + the
-        // always-present profile table. The zero-length regions still have to be *nameable*, so
-        // they point at the first unit boundary past the table rather than at its last byte.
-        let empty_at = align_up(unpadded_index_offset);
-        let mut out = Vec::with_capacity(empty_at - section_offset);
-        write_dir(&mut out, empty_at, 0, 0, empty_at, 0, empty_at, 0, 0);
-        out.extend_from_slice(&profile_table);
-        out.resize(empty_at - section_offset, FILLER);
-        return out;
+        return emit_nav_section(section_offset, &profile_table, None, profiles.len());
     }
 
     // R1 assigns dense ids in push order — the serializer indexes `coords` by id.
@@ -1573,58 +1693,20 @@ pub fn serialize_nav_section(
     }
 
     // Layout: [directory][filler][profile table][alignment run][node index][filler][node chunks]
-    // [edge pool][alignment run][snap index][filler][snap chunks].
-    //
-    // `nav_index_padding` chooses each alignment run so that two things hold at once: the index
-    // starts on a **unit** boundary (or no scaled offset could name it) and the fixed 512-byte
-    // chunks behind it start on a **sector** boundary, so a full-chunk read is one card command.
-    // The rounding step in `align_up(index_offset * U + node_count * 4, U)` is the slack that lets
-    // both hold for every node count. The edge pool stays sector-aligned because the node region is
-    // whole 512-byte chunks.
-    //
-    // Every gap here is `0xFF` since v14, where v13 wrote zeros for the alignment runs and `0xFF`
-    // inside chunks. One fill byte, one rule (§1.2): a gap is `0xFF` and a reserved field is `0`.
-    let index_pad = nav_index_padding(SCALE, unpadded_index_offset as u64, index.len() as u64)
-        .expect("a nav index length never approaches u64::MAX");
-    let index_offset = unpadded_index_offset + index_pad;
-    let node_chunks_offset = align_up(index_offset + index.len());
-    let index_gap = node_chunks_offset - (index_offset + index.len());
-    let edge_pool_offset = node_chunks_offset + chunks.len();
-    let unpadded_snap_index_offset = edge_pool_offset + pool.len();
-    let snap_index_pad = if snap_node_count == 0 {
-        filler_len(unpadded_snap_index_offset)
-    } else {
-        nav_index_padding(SCALE, unpadded_snap_index_offset as u64, snap_index.len() as u64)
-            .expect("a snap index length never approaches u64::MAX")
-    };
-    let snap_index_offset = unpadded_snap_index_offset + snap_index_pad;
-    let snap_gap = align_up(snap_index_offset + snap_index.len()) - (snap_index_offset + snap_index.len());
-    let mut out = Vec::with_capacity(
-        (snap_index_offset + snap_index.len() + snap_gap + snap_chunks.len()).saturating_sub(section_offset),
-    );
-    write_dir(
-        &mut out,
-        index_offset,
+    // [edge pool][alignment run][snap index][filler][snap chunks] — all of it in `walk_nav_section`.
+    let body = NavBody {
+        index: &index,
         node_count,
+        chunks: &chunks,
         chunk_count,
-        edge_pool_offset,
+        pool: &pool,
         edge_chunk_count,
-        snap_index_offset,
+        snap_index: &snap_index,
         snap_node_count,
+        snap_chunks: &snap_chunks,
         snap_chunk_count,
-    );
-    out.extend_from_slice(&profile_table);
-    out.resize(out.len() + index_pad, FILLER);
-    out.extend_from_slice(&index);
-    out.resize(out.len() + index_gap, FILLER);
-    out.extend_from_slice(&chunks);
-    out.extend_from_slice(&pool);
-    out.resize(out.len() + snap_index_pad, FILLER);
-    out.extend_from_slice(&snap_index);
-    out.resize(out.len() + snap_gap, FILLER);
-    out.extend_from_slice(&snap_chunks);
-    debug_assert_eq!(section_offset + out.len(), align_up(section_offset + out.len()), "the file tail stays aligned");
-    out
+    };
+    emit_nav_section(section_offset, &profile_table, Some(&body), profiles.len())
 }
 
 /// The byte offset of the style table in every file this packer writes: the first unit boundary at
@@ -1688,19 +1770,14 @@ fn header_bytes(
     out
 }
 
-/// The header plus the §1.2 filler that carries it to the style table's unit boundary.
-fn header_block(
-    lod_count: usize,
-    marker_color: u16,
-    global_bbox: (i64, i64, i64, i64),
-    lod_table_offset: usize,
-    poi_section_offset: usize,
-    nav_section_offset: usize,
-) -> Vec<u8> {
-    let mut out =
-        header_bytes(lod_count, marker_color, global_bbox, lod_table_offset, poi_section_offset, nav_section_offset);
-    out.resize(STYLE_OFFSET, FILLER);
-    out
+/// Where the file's fixed prefix puts the LOD table and the first LOD's index: each is named by a
+/// **scaled** offset, so each begins on the first unit boundary past the structure before it (§1.2).
+///
+/// Both serializers need these before they write the header that states them, which is why this is
+/// arithmetic rather than a cursor: at the moment the header goes out there is no cursor past it yet.
+fn prefix_offsets(style_len: usize, lod_count: usize) -> (usize, usize) {
+    let lod_table_offset = align_up(STYLE_OFFSET + style_len);
+    (lod_table_offset, align_up(lod_table_offset + lod_count * LOD_ENTRY_LEN))
 }
 
 /// Append one LOD-table entry `<fIIHI>`: max_mpp (`None` ⇒ `+inf`), index offset,
@@ -1747,8 +1824,7 @@ pub fn serialize_lods(
 ) -> (Vec<u8>, usize) {
     let style_data = pack_style_dict(styles);
     let lod_count = lods.len();
-    let lod_table_offset = align_up(STYLE_OFFSET + style_data.len());
-    let style_gap = lod_table_offset - (STYLE_OFFSET + style_data.len());
+    let (lod_table_offset, payload_start) = prefix_offsets(style_data.len(), lod_count);
 
     struct Block {
         ib: Vec<u8>,
@@ -1769,15 +1845,10 @@ pub fn serialize_lods(
     // Each LOD's index is named by a scaled `Index Offset`, so it starts on a unit boundary; the
     // LOD table's own end is rounded up once and every region behind it ends aligned by
     // construction (`serialize_tree` pads its last chunk), so no further alignment is needed here.
-    let payload_start = align_up(lod_table_offset + lod_count * LOD_ENTRY_LEN);
-    let table_gap = payload_start - (lod_table_offset + lod_count * LOD_ENTRY_LEN);
     let mut cursor = payload_start;
     let mut table = Vec::with_capacity(lod_count * LOD_ENTRY_LEN);
-    let mut payload = Vec::new();
     for b in &blocks {
         push_lod_entry(&mut table, b.mpp, scaled(cursor), b.nc, b.cs, b.cc);
-        payload.extend_from_slice(&b.ib);
-        payload.extend_from_slice(&b.cb);
         cursor += b.ib.len() + b.cb.len();
     }
 
@@ -1788,22 +1859,30 @@ pub fn serialize_lods(
     let nav_section_offset = poi_section_offset + poi_section.len();
     let nav_section = serialize_nav_section(nav, profiles, global_bbox, nav_section_offset, terrain);
 
-    let mut out = Vec::with_capacity(nav_section_offset + nav_section.len());
-    out.extend_from_slice(&header_block(
-        lod_count,
-        marker_color,
-        global_bbox,
-        lod_table_offset,
-        poi_section_offset,
-        nav_section_offset,
-    ));
-    out.extend_from_slice(&style_data);
-    out.resize(out.len() + style_gap, FILLER);
-    out.extend_from_slice(&table);
-    out.resize(out.len() + table_gap, FILLER);
-    out.extend_from_slice(&payload);
-    out.extend_from_slice(&poi_section);
-    out.extend_from_slice(&nav_section);
+    let (out, ()) = lay_out(0, |w| {
+        w.put(&header_bytes(
+            lod_count,
+            marker_color,
+            global_bbox,
+            lod_table_offset,
+            poi_section_offset,
+            nav_section_offset,
+        ))?;
+        let at = w.begin_section()?; // → the style table
+        debug_assert_eq!(at, STYLE_OFFSET as u64);
+        w.put(&style_data)?;
+        let at = w.begin_section()?; // → the LOD table
+        debug_assert_eq!(at, lod_table_offset as u64, "the header names the table the cursor reached");
+        w.put(&table)?;
+        let at = w.begin_section()?; // → the first LOD's index
+        debug_assert_eq!(at, payload_start as u64, "the first LOD entry names the index the cursor reached");
+        for b in &blocks {
+            w.put(&b.ib)?;
+            w.put(&b.cb)?;
+        }
+        w.put(&poi_section)?;
+        w.put(&nav_section)
+    });
     check_scale_covers(out.len() as u64);
     (out, dropped)
 }
@@ -1866,62 +1945,71 @@ where
     F: FnMut(usize) -> (Option<Node>, usize, Option<f64>),
 {
     let style_data = pack_style_dict(styles);
-    let lod_table_offset = align_up(STYLE_OFFSET + style_data.len());
-    let style_gap = lod_table_offset - (STYLE_OFFSET + style_data.len());
-    let payload_start = align_up(lod_table_offset + lod_count * LOD_ENTRY_LEN);
-    let table_gap = payload_start - (lod_table_offset + lod_count * LOD_ENTRY_LEN);
+    let (lod_table_offset, payload_start) = prefix_offsets(style_data.len(), lod_count);
 
-    // 1. Header + its filler to the style table's unit boundary (bbox stored lat,lon,lat,lon) —
-    // needs no tree. The POI/nav section offsets aren't known until the LODs are sized, so write
-    // `STYLE_OFFSET` placeholders (any unit-aligned byte will do; `0` is not one the writer may
-    // name, since `scaled` refuses a non-boundary) and patch them in step 5.
-    w.write_all(&header_block(lod_count, marker_color, global_bbox, lod_table_offset, STYLE_OFFSET, STYLE_OFFSET))?;
-
-    // 2. Style table, then a zeroed LOD table we patch in step 5. Both runs of filler behind them
-    // are written now, since their lengths are already known.
-    w.write_all(&style_data)?;
-    w.write_all(&vec![FILLER; style_gap])?;
-    w.write_all(&vec![0u8; lod_count * LOD_ENTRY_LEN])?;
-    w.write_all(&vec![FILLER; table_gap])?;
-
-    // 3. Per-LOD: build → serialize → stream payload → drop the tree.
     let mut table = Vec::with_capacity(lod_count * LOD_ENTRY_LEN);
-    let mut cursor = payload_start;
     let mut dropped = 0usize;
-    for i in 0..lod_count {
-        let (root, chunk_size, max_mpp) = build(i);
-        let (ib, nc, cb, cc, lod_dropped) = match root {
-            Some(root) => {
-                let out = serialize_tree(&root, chunk_size);
-                drop(root); // free the tree before writing this LOD / building the next
-                out
-            }
-            // Empty region: no index, no chunk, and the mandatory single-`0` offset table — plus
-            // the filler that carries the region to the next unit boundary, so the LOD behind it
-            // still starts on one.
-            None => {
-                let mut cb = 0u32.to_le_bytes().to_vec();
-                cb.resize(align_up(cb.len()), FILLER);
-                (Vec::new(), 0u32, cb, 0u32, 0usize)
-            }
-        };
-        dropped += lod_dropped;
-        push_lod_entry(&mut table, max_mpp, scaled(cursor), nc, chunk_size, cc);
-        w.write_all(&ib)?;
-        w.write_all(&cb)?;
-        cursor += ib.len() + cb.len();
-    }
+    let (poi_section_offset, nav_section_offset, cursor) = {
+        let mut sink = |bytes: &[u8]| w.write_all(bytes);
+        let mut u = UnitWriter::new(SCALE, 0, &mut sink);
 
-    // 4. The POI section begins at the current cursor (right after the last LOD);
-    // the nav-graph section follows it at the file tail.
-    let poi_section_offset = cursor;
-    let poi_section = serialize_poi_section(pois, global_bbox, poi_section_offset);
-    w.write_all(&poi_section)?;
-    cursor += poi_section.len();
-    let nav_section_offset = cursor;
-    let nav_section = serialize_nav_section(nav, profiles, global_bbox, nav_section_offset, terrain);
-    w.write_all(&nav_section)?;
-    cursor += nav_section.len();
+        // 1. Header + its filler to the style table's unit boundary (bbox stored lat,lon,lat,lon) —
+        // needs no tree. The POI/nav section offsets aren't known until the LODs are sized, so write
+        // `STYLE_OFFSET` placeholders (any unit-aligned byte will do; `0` is not one the writer may
+        // name, since `scaled` refuses a non-boundary) and patch them in step 5.
+        u.put(&header_bytes(lod_count, marker_color, global_bbox, lod_table_offset, STYLE_OFFSET, STYLE_OFFSET))?;
+        let at = u.begin_section()?; // → the style table
+        debug_assert_eq!(at, STYLE_OFFSET as u64);
+
+        // 2. Style table, then a zeroed LOD table we patch in step 5. Both runs of filler behind
+        // them are the boundaries their scaled offsets already promised — and the cursor arriving
+        // where `prefix_offsets` said it would is what keeps the header's claim and the bytes one
+        // statement.
+        u.put(&style_data)?;
+        let at = u.begin_section()?; // → the LOD table
+        debug_assert_eq!(at, lod_table_offset as u64, "the header names the table the cursor reached");
+        u.put(&vec![0u8; lod_count * LOD_ENTRY_LEN])?;
+        let at = u.begin_section()?; // → the first LOD's index
+        debug_assert_eq!(at, payload_start as u64, "the first LOD entry names the index the cursor reached");
+
+        // 3. Per-LOD: build → serialize → stream payload → drop the tree.
+        for i in 0..lod_count {
+            let (root, chunk_size, max_mpp) = build(i);
+            // Serialized before its LOD-table entry, because the entry states this region's counts;
+            // the entry's *offset* is simply where the cursor stands.
+            let region = match root {
+                Some(root) => {
+                    let out = serialize_tree(&root, chunk_size);
+                    drop(root); // free the tree before writing this LOD / building the next
+                    Some(out)
+                }
+                None => None,
+            };
+            let (nc, cc) = region.as_ref().map_or((0, 0), |&(_, nc, _, cc, _)| (nc, cc));
+            push_lod_entry(&mut table, max_mpp, scaled(u.at() as usize), nc, chunk_size, cc);
+            match region {
+                Some((ib, _, cb, _, lod_dropped)) => {
+                    dropped += lod_dropped;
+                    u.put(&ib)?;
+                    u.put(&cb)?;
+                }
+                // Empty region: no index, no chunk, and the mandatory single-`0` offset table of
+                // §5.1 — then the boundary the LOD behind it has to start on.
+                None => {
+                    u.put(&0u32.to_le_bytes())?;
+                    u.begin_section()?;
+                }
+            }
+        }
+
+        // 4. The POI section begins at the current cursor (right after the last LOD);
+        // the nav-graph section follows it at the file tail.
+        let poi_section_offset = u.at() as usize;
+        u.put(&serialize_poi_section(pois, global_bbox, poi_section_offset))?;
+        let nav_section_offset = u.at() as usize;
+        u.put(&serialize_nav_section(nav, profiles, global_bbox, nav_section_offset, terrain))?;
+        (poi_section_offset, nav_section_offset, u.at() as usize)
+    };
 
     // 5. Back-patch the LOD table and the header's two section-offset fields, then leave the cursor
     // at EOF. POI offset at header byte 32, nav at 36 (§1) — both **scaled**, like every offset the

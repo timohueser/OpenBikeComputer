@@ -346,16 +346,16 @@ impl<'a> TerrainRegion<'a> {
     /// No seek, which is the entire reason [`obc_dem::container::container_prefix`] exists: this
     /// runs in the middle of a map being written forward into a file or a browser download, and the
     /// directory has to be right the first time.
-    pub fn emit(&self, out: &mut dyn FnMut(&[u8]) -> Result<()>) -> Result<()> {
-        out(&self.prefix)?;
+    pub fn emit(&self, w: &mut crate::emit::MapWriter<'_>) -> Result<()> {
+        let start = w.at();
+        w.put(&self.prefix)?;
         let mut block = vec![0u8; self.block_len];
-        let mut written = self.prefix.len() as u64;
         for &slot in &self.slots {
             let Some(k) = slot else { continue };
             self.cells[k].src.read_at(CELL_BLOCK_OFFSET.into(), &mut block).map_err(Error::Io)?;
-            out(&block)?;
-            written += self.block_len as u64;
+            w.put(&block)?;
         }
+        let written = w.at() - start;
         if written != self.bytes {
             return Err(Error::Verify(format!(
                 "the terrain region projected to {} bytes but emitted {written}",
@@ -474,12 +474,13 @@ mod tests {
     /// Emit a region into a `Vec`, the way the map writer splices it.
     fn emitted(region: &TerrainRegion<'_>) -> Vec<u8> {
         let mut out = Vec::new();
-        region
-            .emit(&mut |buf: &[u8]| {
+        {
+            let mut sink = |buf: &[u8]| -> Result<()> {
                 out.extend_from_slice(buf);
                 Ok(())
-            })
-            .expect("the region emits");
+            };
+            region.emit(&mut crate::emit::MapWriter::new(crate::emit::SCALE, 0, &mut sink)).expect("the region emits");
+        }
         out
     }
 

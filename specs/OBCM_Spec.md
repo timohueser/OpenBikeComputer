@@ -1544,7 +1544,12 @@ distance (100 m in the reference router).
 ## Reference implementations
 
 - **Format authority (Rust, no_std):** `firmware/obc-formats/src/obcm.rs`
-  (version, fixed record lengths, flags, sentinels, POI ids/categories/labels) and
+  (version, fixed record lengths, flags, sentinels, POI ids/categories/labels, `OffsetScale` /
+  `ScaledOffset` for §1.1, and `UnitWriter` — §1.2's boundary-and-filler rule as a cursor, which is
+  how both writers below reach a section start **except** at the two places a boundary is needed
+  where no cursor has arrived yet: a §5.1 chunk's span in its own offset table, which is
+  region-relative, and the fixed prefix's offsets, which the header must state before the style and
+  LOD tables it precedes have been written) and
   `firmware/obc-formats/src/io.rs` (checked little-endian primitives + the neutral
   byte-source/sink seam). It contains no reader, packer, cache, or rendering policy.
 - **Writer (Rust, std host):** `host/obc-pack/src/serialize.rs` (`serialize_lods`,

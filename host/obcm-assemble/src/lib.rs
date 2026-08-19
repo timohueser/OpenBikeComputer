@@ -60,6 +60,12 @@
 //!
 //! So the projection is bounded at both ends, by two programs: refused before the fetch by the
 //! catalog consumer, and re-asserted before the write here.
+// A `debug_assert!` whose arguments have side effects is a release-build hole: the macro does not
+// evaluate them at all, so a `w.begin_section()?` tucked inside one silently stops writing filler
+// in every shipping build while every debug test still passes. That is not hypothetical — it is
+// what FS7.5-writer's review round introduced and the release packer caught. This lint is the
+// guard, and `-D warnings` in CI makes it a refusal.
+#![warn(clippy::debug_assert_with_mut_call)]
 
 use std::collections::HashMap;
 
@@ -481,7 +487,7 @@ pub fn assemble_full(
     let core_band = schema.core_band().expect("validated: exactly one core band");
     let core_cells: Vec<&Cell<'_>> = cells.iter().filter(|c| c.band == core_band.id).collect();
     let merged_pois = poi::merge(&core_cells)?;
-    let poi_section = poi::layout(&merged_pois, assembly.ubox());
+    let poi_section = poi::layout(&merged_pois, assembly.ubox())?;
     let t_poi = clock.now_us();
     let merged_nav = nav::merge(
         &core_cells,
