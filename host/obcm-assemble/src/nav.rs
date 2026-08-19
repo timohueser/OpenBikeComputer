@@ -589,7 +589,7 @@ pub struct NavProjection {
 /// 512-byte sector** changes any answer here — both `nav_index_padding` and `align_up` divide 512.
 /// So the walk runs at the section's sector remainder and cannot overflow whatever it is asked.
 #[derive(Clone, Copy, Default)]
-pub struct NavLayout {
+struct NavLayout {
     /// §1.2 filler between the 40-byte directory and the profile table it cannot otherwise name.
     dir_gap: u64,
     profile_table: u64,
