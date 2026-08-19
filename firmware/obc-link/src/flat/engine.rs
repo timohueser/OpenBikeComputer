@@ -111,6 +111,29 @@ impl Ceilings {
         (control >= CONTROL_FLOOR && stream > STREAM_HEADER_LEN).then_some(Ceilings { control, stream })
     }
 
+    /// §5.1's ceilings for a BLE link, from what the link negotiated and what the adapter can hold.
+    ///
+    /// Three facts, in one place because they are one rule and an adapter that re-derived it would
+    /// be re-deriving a specification:
+    ///
+    /// - **The control ceiling is `ATT_MTU - 3`** (§5.1). An `att_mtu` below 3 cannot carry a
+    ///   handle-value payload at all and yields `None` rather than an underflow.
+    /// - **The stream ceiling is the CoC SDU**, fixed at channel establishment.
+    /// - **Both are clamped to `buffer`**, the adapter's reaction buffer. That clamp is
+    ///   load-bearing rather than defensive: the engine frames a `LIST` page and a stream record
+    ///   against these numbers, so a link that negotiated *upward* of the adapter's buffer would
+    ///   otherwise have it framing into bytes that are not there.
+    ///
+    /// `None` is §5.1's "a link below that floor cannot carry this protocol and the adapter refuses
+    /// the connection rather than truncating" — including the case where the clamp itself is what
+    /// puts the link under the floor, since a buffer too small to hold a single-entry page is the
+    /// same refusal for the same reason.
+    pub fn for_ble(att_mtu: usize, coc_sdu: usize, buffer: usize) -> Option<Self> {
+        let control = att_mtu.checked_sub(3)?.min(buffer);
+        let stream = coc_sdu.min(buffer);
+        Ceilings::new(control, stream)
+    }
+
     /// The largest control record this link carries.
     pub fn control(&self) -> usize {
         self.control
@@ -1066,6 +1089,29 @@ mod tests {
         // with detail `0`, because the mode was writable when the transfer was admitted and this
         // path has no narrower fact than "not any more".
         assert_eq!(media_refusal(StoreError::ReadOnly, detail::media_io::WRITE), Refusal::new(ErrorCode::ReadOnly, 0));
+    }
+
+    #[test]
+    fn the_ble_binding_reads_its_ceilings_off_the_link_and_the_adapters_buffer() {
+        // §5.1's own example: the device's preferred 247-byte MTU gives 244 bytes of control.
+        let ceilings = Ceilings::for_ble(247, 245, 256).expect("the device's preferred BLE link");
+        assert_eq!((ceilings.control(), ceilings.stream()), (244, 245));
+        // A link that negotiates upward of the adapter's buffer is clamped to it, both channels.
+        let clamped = Ceilings::for_ble(517, 1_024, 256).expect("a large link, small buffer");
+        assert_eq!((clamped.control(), clamped.stream()), (256, 256));
+        // The floor still applies after the clamp: a buffer under a single-entry page is refused
+        // rather than truncated, exactly as an under-floor MTU is.
+        assert_eq!(Ceilings::for_ble(247, 245, CONTROL_FLOOR - 1), None);
+        // An MTU below the floor is refused however roomy the buffer.
+        assert_eq!(Ceilings::for_ble(CONTROL_FLOOR + 2, 245, 4_096), None);
+        assert!(Ceilings::for_ble(CONTROL_FLOOR + 3, 245, 4_096).is_some());
+        // An `ATT_MTU` too small to subtract the 3-byte header from is `None`, never an underflow.
+        for att in [0, 1, 2, 3] {
+            assert_eq!(Ceilings::for_ble(att, 245, 4_096), None, "att_mtu {att} underflowed");
+        }
+        // A stream ceiling that cannot carry a frame header plus one payload byte is refused.
+        assert_eq!(Ceilings::for_ble(247, STREAM_HEADER_LEN, 4_096), None);
+        assert!(Ceilings::for_ble(247, STREAM_HEADER_LEN + 1, 4_096).is_some());
     }
 
     #[test]

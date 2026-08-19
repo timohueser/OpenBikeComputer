@@ -1,28 +1,21 @@
-//! The L2CAP CoC data plane: the bulk-transfer channel the control plane ([`super::control`]) arms
-//! through [`super::state::TRANSFER_ARM`].
+//! What is left of the BLE data plane after the protocol-v4 cutover (FS7.5-c3a, epic #1256).
 //!
-//! The CoC carries **only the object's payload bytes** (no per-chunk framing); the whole transfer state
-//! machine + CRC codecs live in the host-tested [`obc_ble`] crate. One transfer at a time: the
-//! [`super::state::TRANSFER_ACTIVE`] gate is cleared immediately before each terminal result is
-//! notified, and a latched abort that raced completion is drained at that same boundary.
+//! **The CoC transfer machinery is gone from here.** The L2CAP channel now carries
+//! `FLAT_Store_Protocol.md` §3.8 stream records rather than an unframed byte pipe, and it is driven
+//! by [`super::v4`] — which owns the channel, the engine round trips and the record boundaries. The
+//! v1 runners this module used to hold (echo loopback, route upload, download, weather upload), the
+//! `TRANSFER_ARM`/`TRANSFER_ABORT` signals that armed them and the one-transfer gate they claimed all
+//! went with that wire: protocol v4 has no descriptor to classify and no per-runner shape, because a
+//! transfer is a `PUT` or a `GET` and the engine is generic over object kinds.
 //!
-//! - **Echo loopback** ([`run_echo`]): stream each SDU straight back through an [`obc_ble::Receiver`]
-//!   (a running CRC-32, no reassembly buffer), verify **one** whole-object CRC — the data plane proven
-//!   end to end with **zero storage**.
-//! - **Route uploads** ([`run_upload`]): CoC bytes sink through the [`Receiver`] into an SD temp;
-//!   commit validates (CRC + OBCR header) and atomically promotes (see `sd.rs`). Uploads don't resume:
-//!   a CoC drop, a link drop, or an `op=3` abort discards the partial and the app re-sends from the
-//!   start.
-//! - **Downloads** ([`run_download`]): `routeList` / `rideList` / diagnostics from a store-built
-//!   buffer, a route or ride detail streamed straight off the card — the announce rides the `status`
-//!   envelope (`downloadAnnounce`, protocol v2) first, then raw chunks, one whole-object CRC. Rides
-//!   reuse the machinery wholesale because the Finish-time save already stored each as **exactly** the
-//!   wire bytes (`sd.rs`), and the diagnostics object is rendered from the link plane's own facts.
-//! - Every store movement notifies `storeChanged` (status msg 2) — protocol v2's sole change signal
-//!   ([`publish_store_change`]).
+//! Two things stayed, and they stayed because neither was ever part of the object surface:
 //!
-//! On the first transfer the link is asked for the fast [`conn_params`] set (throughput); the store is
-//! shared with the control plane as a `RefCell` that is **never borrowed across an `await`**.
+//! - [`publish_store_change`] — the `storeChanged` status message (msg 2), still the v2 control
+//!   plane's change signal for the characteristics `obc-ble-interface-spec.md` continues to govern.
+//! - [`battery_task`] — the BAS level push, which is a SIG service and no business of ours.
+//!
+//! [`notify_bounded`] is the shared send both use: one host notify, [`HOST_OP_TIMEOUT`]-bounded so a
+//! peer that stops draining its ATT queue cannot stall a plane past the link's supervision timeout.
 
 use core::cell::RefCell;
 
