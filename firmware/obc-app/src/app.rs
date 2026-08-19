@@ -1468,17 +1468,19 @@ impl App {
     /// **and** push the planning screen — so the host steps the resumable router with the same live
     /// spinner + between-step render cadence the rider sees, and the `nav route:` RTT line reflects the
     /// real user-perceived cost. Only wired on the `debug-uart` build (driven by the `N` VCOM command);
-    /// no UI path reaches it.
-    pub fn debug_start_nav(&mut self, from: (i32, i32), to: (i32, i32), name: &str) {
-        self.activity.request_nav(crate::activity::NavRequest::new(from, to, name));
+    /// no UI path reaches it. Returns `false` without changing pending state while a plan is active.
+    pub fn debug_start_nav(&mut self, from: (i32, i32), to: (i32, i32), name: &str) -> bool {
         // At most one planning screen, ever: the bench host repeats the `N` line (the VCOM RX is
-        // flaky) and each repeat lands as a fresh request — but the answer replaces only the
-        // *first* planning screen it finds, so a second push here would survive it and spin
-        // forever (measured: a permanent ~9 Hz full-chrome repaint after the plan).
-        if !self.ui.stack.iter().any(|s| matches!(s, Screen::NavPlanning(_))) {
-            let _ = self.ui.stack.push(Screen::NavPlanning(crate::screen::NavPlanningScreen::new(name)));
+        // flaky). Reject a repeat before touching the request slot: once the host has drained the
+        // first request, overwriting the resident planner would orphan its allocation and strand
+        // this screen even though no second screen was pushed.
+        if self.ui.stack.iter().any(|s| matches!(s, Screen::NavPlanning(_))) {
+            return false;
         }
+        self.activity.request_nav(crate::activity::NavRequest::new(from, to, name));
+        let _ = self.ui.stack.push(Screen::NavPlanning(crate::screen::NavPlanningScreen::new(name)));
         self.ui.map_dirty = true;
+        true
     }
 
     /// **Debug / snapshot only** (#1146 P2): engage the Recalculating freeze as if the host had just

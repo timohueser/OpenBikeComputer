@@ -31,6 +31,17 @@ fn drain(app: &mut App) -> HostMailbox {
     mailbox
 }
 
+/// A cancel queued while the store's synchronous publish is running must not turn the eventual
+/// `Published` reply into a visible route. The host compensates that exact id before it considers
+/// cancellation complete; without the late cancel the same reply activates normally.
+#[test]
+fn cancel_before_publish_result_requires_compensation() {
+    use obc_app::host::{nav_publish_disposition, NavPublishDisposition};
+
+    assert_eq!(nav_publish_disposition(false, 41), NavPublishDisposition::Activate(41));
+    assert_eq!(nav_publish_disposition(true, 41), NavPublishDisposition::Compensate(41));
+}
+
 /// A drained [`HostCommand::PlanRoute`] is an **owned** value: the host can park it, keep driving
 /// the app, and answer many passes later with an owned [`HostEvent`] — no borrow into `App` at any
 /// point, and the late answer still lands on the active planning screen.
