@@ -7,10 +7,10 @@
 
 mod flat_harness;
 
-use flat_harness::{boot, client, crc32, formatted_card, payload, Answer, Device};
+use flat_harness::{boot, boot_on, client, crc32, formatted_card, payload, Answer, Device};
 use obc_link::flat::store::Policy;
 use obc_link::flat::wire::{detail, ErrorCode};
-use obc_link::flat::{CancelCause, ObjectId, ObjectKind, Revision};
+use obc_link::flat::{CancelCause, Ceilings, ObjectId, ObjectKind, Revision};
 use obc_storage::flat::sim::{FaultOnce, MediaOp};
 use obc_storage::flat::BlockDevice;
 
@@ -859,4 +859,131 @@ fn a_read_that_fails_mid_download_ends_it_and_closes_the_handle() {
     expect_error(&answer, ErrorCode::MediaIo, detail::media_io::READ);
     assert!(device.is_quiet());
     assert_eq!(device.remove_and_measure(id), 1, "a leaked hold would have kept the extent");
+}
+
+// ══════════════════════ the device's own view of an upload (FS7.5-c3b) ══════════════════════
+
+/// A live upload reports what it has landed, and the report ends with the transfer.
+///
+/// This is the one thing a *device* reads out of the engine that no client ever asks for: a map is
+/// hundreds of megabytes and lands over twenty minutes, and the wire's only answer to "how is it
+/// going" is the transfer's one response at the end of it. The rider's progress bar cannot wait
+/// that long, so it reads the engine directly — and this pins that the numbers it reads are the
+/// transfer's own, not a second counter that could drift from them.
+#[test]
+fn a_live_upload_reports_its_progress_and_stops_when_it_ends() {
+    let disk = formatted_card(90);
+    let mut device = boot(&disk);
+    let bytes = body();
+
+    assert_eq!(device.live_upload(), None, "an idle engine has no upload to report");
+    device.control(&client::put(1, 0, 0, &bytes, ROUTE, false, "watched"));
+    let admitted = device.live_upload().expect("an admitted PUT is a live upload");
+    assert_eq!(admitted.request.0, 1);
+    assert_eq!(admitted.kind, ObjectKind::Route);
+    assert_eq!((admitted.received, admitted.declared), (0, bytes.len() as u64));
+
+    let records = client::stream_all(1, &bytes, 1_008);
+    let mut expected = 0u64;
+    for (n, record) in records.iter().enumerate() {
+        device.stream(record);
+        expected += (record.len() - 16) as u64;
+        match device.live_upload() {
+            Some(progress) => {
+                assert_eq!(progress.received, expected, "record {n} reported the wrong byte count");
+                assert_eq!(progress.declared, bytes.len() as u64);
+            }
+            // The last record commits, and a committed upload is no longer live.
+            None => assert_eq!(n + 1, records.len(), "the upload vanished at record {n}"),
+        }
+    }
+    assert_eq!(device.live_upload(), None);
+}
+
+/// The terminal verdict is latched once and taken once — a commit says so, and so does a refusal.
+///
+/// Latched rather than reported live because the fact exists for exactly one call: the engine goes
+/// from *live* to *idle* inside `finish_upload`, and a device that only looks between calls would
+/// otherwise watch an upload disappear with no verdict at all.
+#[test]
+fn an_upload_latches_its_verdict_exactly_once() {
+    let disk = formatted_card(91);
+    let mut device = boot(&disk);
+    let bytes = body();
+
+    assert_eq!(device.take_upload_end(), None, "nothing has ended yet");
+    let answer = upload(&mut device, 1, 0, 0, &bytes, ROUTE, "landed");
+    assert!(!answer.is_error(), "{answer:?}");
+    assert_eq!(device.take_upload_end(), Some((ObjectKind::Route, obc_link::flat::UploadEnd::Committed)));
+    assert_eq!(device.take_upload_end(), None, "taking it clears it");
+
+    // A refusal latches the code its error response carried, and nothing narrower: a device turns
+    // this into one of a handful of screens and every finer fact belongs to the client that asked.
+    let wire = device.control(&client::put(2, 0, 0, &bytes, ROUTE, false, "damaged"));
+    assert!(wire.control.is_empty());
+    let mut corrupt = bytes.clone();
+    corrupt[0] ^= 0xFF;
+    for record in client::stream_all(2, &corrupt, 1_008) {
+        device.stream(&record);
+    }
+    assert_eq!(
+        device.take_upload_end(),
+        Some((ObjectKind::Route, obc_link::flat::UploadEnd::Refused(ErrorCode::ChecksumFailure)))
+    );
+}
+
+/// A link that goes away leaves no verdict, and neither does a cancel.
+///
+/// Both are the rider's or the peer's own doing, and a device that answered them with a card
+/// explaining what just happened would be explaining the rider's action back to them. §3.8's third
+/// form of cancel "answers nobody", and this is the device-side reading of that sentence.
+#[test]
+fn a_link_lost_and_a_cancel_leave_no_verdict_to_show() {
+    let disk = formatted_card(92);
+    let mut device = boot(&disk);
+    let bytes = body();
+
+    device.control(&client::put(1, 0, 0, &bytes, ROUTE, false, "cut"));
+    device.stream(&client::stream(1, 0, &bytes[..1_008]));
+    device.link_lost();
+    assert_eq!(device.live_upload(), None);
+    assert_eq!(device.take_upload_end(), None, "a pulled cable is not a verdict");
+
+    device.control(&client::put(2, 0, 0, &bytes, ROUTE, false, "cancelled"));
+    device.stream(&client::stream(2, 0, &bytes[..1_008]));
+    assert!(device.cancel_live(CancelCause::Device));
+    device.pump();
+    assert_eq!(device.take_upload_end(), None, "a cancel is not a verdict either");
+}
+
+/// A record that is a whole multiple of the stage reaches the card in **one** write, not one per
+/// stage.
+///
+/// §5.2's 4,112-byte USB ceiling exists to make a full stream record exactly 4,096 payload bytes,
+/// and that is only worth anything if the engine hands those bytes over intact: a card write costs
+/// about the same whether it carries one block or a hundred (`FLAT_Store_Format.md` §5.5), so
+/// splitting at the stage would have turned the ceiling into eight commands instead of one. The
+/// count is read off the card's own write log.
+#[test]
+fn a_record_of_whole_stages_reaches_the_card_in_one_write() {
+    let disk = formatted_card(93);
+    // §5.2's own ceiling, so the record under test is the one the cable actually sends: 16 header
+    // bytes plus 4,096 payload bytes. The harness stages 1 KiB, so that is four whole stages.
+    let mut device = boot_on(&disk, Ceilings::for_usb(4_112).expect("§5.2's ceiling is above the floor"));
+    // Two records' worth, so the one under test is an ordinary mid-transfer record: streaming the
+    // whole payload would commit inside the same call and the commit's own writes would be counted.
+    let bytes = payload(8 * 1_024);
+
+    device.control(&client::put(1, 0, 0, &bytes, ROUTE, false, "one write"));
+    let before = disk.write_widths().len();
+    device.stream(&client::stream(1, 0, &bytes[..4 * 1_024]));
+    let widths = disk.write_widths();
+    let of_this_record = &widths[before..];
+    assert_eq!(
+        of_this_record.len(),
+        1,
+        "four stages went to the card as {} commands: {of_this_record:?}",
+        of_this_record.len()
+    );
+    assert_eq!(of_this_record[0].1, 8, "and the one command carried all eight blocks");
 }
