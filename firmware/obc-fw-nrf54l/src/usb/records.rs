@@ -17,6 +17,15 @@
 //! reader that does not touch the endpoint while a record is out is exactly that: the bulk OUT
 //! endpoint NAKs, and the host's own send loop is what stops.
 //!
+//! ## Where the arithmetic lives
+//!
+//! Not here. The reassembly — where a read lands, when to compact, which bytes are a whole record —
+//! is [`obc_link::flat::Reassembler`], for the reason [`Ceilings`](obc_link::flat::Ceilings) and
+//! [`Admission`](obc_link::flat::Admission) are there too: it is a **rule of §5.2**, and this crate
+//! is bare metal with no test harness in CI, so a rule written here would be a rule nothing checks.
+//! What stays is what genuinely belongs to the device — the endpoint, the buffer, and the one
+//! `unsafe` that hands a record out as `'static`.
+//!
 //! ## Errors end the link, because §5.2 says so
 //!
 //! "A zero, out-of-range, truncated or overrun record length is `invalidFrame` and resets that
@@ -27,8 +36,11 @@
 
 use defmt::warn;
 use embassy_usb::driver::{Endpoint as _, EndpointError, EndpointIn, EndpointOut};
+use obc_link::flat::{Reassembler, RecordFault};
 
 use super::{EpIn, EpOut, MAX_PACKET};
+
+pub(crate) use obc_link::flat::record_buffer_len as buffer_len;
 
 /// Why a record stream ended. Every variant is a reason string the driver logs and tears down on.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -51,9 +63,6 @@ impl RecordEnd {
     }
 }
 
-/// The `record_length` prefix, in bytes.
-pub(crate) const PREFIX_LEN: usize = 2;
-
 /// **Reassembles §5.2 records off one bulk OUT endpoint.**
 ///
 /// The buffer is sized by [`buffer_len`] so that a compaction always leaves room for one whole
@@ -62,30 +71,15 @@ pub(crate) const PREFIX_LEN: usize = 2;
 pub(crate) struct RecordReader {
     ep: EpOut,
     buf: &'static mut [u8],
-    /// Bytes in the buffer.
-    filled: usize,
-    /// Where the next unparsed record starts.
-    at: usize,
-    /// The largest record this channel accepts (§5.2).
-    ceiling: usize,
+    frames: Reassembler,
     /// The endpoint's armed transfer size: what `read` will refuse a shorter buffer for.
     armed: usize,
-}
-
-/// The buffer one reader needs: a whole record, its prefix, and one armed read on top.
-///
-/// The `+ armed` term is what makes compaction sufficient rather than merely usual. A partial record
-/// can be one byte short of a whole one, so the worst case after compaction is `PREFIX_LEN + ceiling
-/// - 1` bytes held; the free tail must still take a full armed transfer, or the driver refuses the
-/// read with `BufferOverflow` and the reader stalls with the peer still sending.
-pub(crate) const fn buffer_len(ceiling: usize, armed: usize) -> usize {
-    PREFIX_LEN + ceiling + armed
 }
 
 impl RecordReader {
     pub(crate) fn new(ep: EpOut, buf: &'static mut [u8], ceiling: usize, armed: usize) -> Self {
         debug_assert!(buf.len() >= buffer_len(ceiling, armed), "the reader's buffer cannot hold a record and a read");
-        RecordReader { ep, buf, filled: 0, at: 0, ceiling, armed }
+        RecordReader { ep, buf, frames: Reassembler::new(ceiling), armed }
     }
 
     /// Park until the host has configured the interface. The endpoint is disabled before that and
@@ -94,10 +88,10 @@ impl RecordReader {
         self.ep.wait_enabled().await;
     }
 
-    /// Forget everything buffered — a new configuration starts a new record stream.
+    /// Forget everything buffered — a new configuration starts a new record stream, and §5.2 also
+    /// wants this after a framing fault, before teardown reaches the engine.
     pub(crate) fn reset(&mut self) {
-        self.filled = 0;
-        self.at = 0;
+        self.frames.reset();
     }
 
     /// **The next whole record.**
@@ -107,18 +101,29 @@ impl RecordReader {
     /// is also §5's credit withholding.
     pub(crate) async fn next(&mut self) -> Result<&'static [u8], RecordEnd> {
         loop {
-            if let Some(record) = self.take()? {
-                return Ok(record);
+            match self.frames.take(self.buf) {
+                Ok(Some((start, len))) => {
+                    // SAFETY: the slice aliases `self.buf`, which this reader owns for the life of
+                    // the image. It is invalidated only by the next `next`/`reset`, which is exactly
+                    // the caller's one-record-at-a-time contract — the same window the BLE adapter's
+                    // staged record lives in.
+                    return Ok(unsafe { core::slice::from_raw_parts(self.buf.as_ptr().add(start), len) });
+                }
+                Ok(None) => {}
+                Err(fault) => {
+                    match fault {
+                        RecordFault::ZeroLength => warn!("usb: [rec] a zero record length is not a record"),
+                        RecordFault::OverCeiling { declared, ceiling } => {
+                            warn!("usb: [rec] record length {} is above this channel's ceiling {}", declared, ceiling)
+                        }
+                    }
+                    return Err(RecordEnd::BadLength);
+                }
             }
-            // Make room for one whole armed read before asking for one.
-            if self.buf.len() - self.filled < self.armed {
-                self.buf.copy_within(self.at..self.filled, 0);
-                self.filled -= self.at;
-                self.at = 0;
-            }
-            match self.ep.read(&mut self.buf[self.filled..]).await {
+            let at = self.frames.read_offset(self.buf, self.armed);
+            match self.ep.read(&mut self.buf[at..]).await {
                 Ok(0) => {}
-                Ok(n) => self.filled += n,
+                Ok(n) => self.frames.filled(n),
                 Err(EndpointError::Disabled) => return Err(RecordEnd::LinkDown),
                 Err(e) => {
                     // Not a disable — a driver-level failure with the endpoint still up. The driver
@@ -129,28 +134,6 @@ impl RecordReader {
                 }
             }
         }
-    }
-
-    /// One whole record out of what is already buffered, if there is one.
-    fn take(&mut self) -> Result<Option<&'static [u8]>, RecordEnd> {
-        let held = self.filled - self.at;
-        if held < PREFIX_LEN {
-            return Ok(None);
-        }
-        let len = usize::from(u16::from_le_bytes([self.buf[self.at], self.buf[self.at + 1]]));
-        if len == 0 || len > self.ceiling {
-            warn!("usb: [rec] record length {} is outside this channel's ceiling {}", len, self.ceiling);
-            return Err(RecordEnd::BadLength);
-        }
-        if held < PREFIX_LEN + len {
-            return Ok(None);
-        }
-        let start = self.at + PREFIX_LEN;
-        self.at += PREFIX_LEN + len;
-        // SAFETY: the slice aliases `self.buf`, which this reader owns for the life of the image.
-        // It is invalidated only by the next `next`/`reset`, which is exactly the caller's
-        // one-record-at-a-time contract — the same window the BLE adapter's staged record lives in.
-        Ok(Some(unsafe { core::slice::from_raw_parts(self.buf.as_ptr().add(start), len) }))
     }
 }
 
