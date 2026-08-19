@@ -60,9 +60,16 @@
 //! # Serial map ingest — the board-acceptance path (FS7.5)
 //!
 //! A board session needs a **real packed map** on a real flat store, and on this rig there is no
-//! transport that can put one there: USB is still protocol v2, BLE v4's phone client is not ready,
+//! transport that can put one there: USB was still protocol v2, BLE v4's phone client is not ready,
 //! and the host has no card reader. So this bench carries one, in the only place the
 //! bench-separation rule allows it — here, in a binary the app image never links.
+//!
+//! **It dies when a host can `PUT` a map over USB v4** — `obc-usb-host` or the builder — because
+//! that is the moment its whole purpose is served; same rule as every other piece of scaffolding
+//! here. FS7.5-c3b (#1420) put the *device* half of that path in the shipping image and the builder's
+//! v4 client beside it, so the trigger is armed rather than fired: nobody has yet sent a map to a
+//! board over v4. The first board session that does is what deletes this mode, `tools/bench_ingest.py`
+//! and their tests — not a later cleanup pass.
 //!
 //! It is a **mode, not a phase**: before any measurement runs, the bench advertises on the DK's
 //! VCOM UART for [`INGEST_WINDOW_MS`]. If a host answers, it ingests objects until the host stops
