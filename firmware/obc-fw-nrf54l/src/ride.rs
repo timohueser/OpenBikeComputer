@@ -268,7 +268,10 @@ struct NavBuffers<'a> {
 /// itself sits in the [`NavBuffers`] `.bss` slot this struct guards.
 #[cfg(has_nav)]
 struct NavRun {
-    allocation: obc_storage::flat::Allocation,
+    allocation: Option<obc_storage::flat::Allocation>,
+    io: NavIo,
+    cancel_requested: bool,
+    io_started: Instant,
     /// Wall time when the request was drained — the RTT line's user-perceived `total_ms`.
     t0: Instant,
     /// Per-phase step time (µs), attributed by the planner's phase **before** each step:
@@ -280,6 +283,17 @@ struct NavRun {
     /// counters this sees sector-splitting and alignment bounces at the block-device boundary.
     #[cfg(feature = "sd-bench")]
     read_perf: [crate::card_io::ReadPerf; 3],
+}
+
+#[cfg(has_nav)]
+enum NavIo {
+    NeedAllocate,
+    Allocating(crate::flat_store::Ticket),
+    Ready,
+    Staged(NavStep),
+    Flushing(crate::flat_store::Ticket, obc_route::Step),
+    NeedFinish(obc_route::Step),
+    Finishing { ticket: crate::flat_store::Ticket, outcome: obc_route::Step, publishing: bool },
 }
 
 /// Maximum bytes a computed OBCR can emit: 128-byte header, 256 full 1,530-byte chunk bodies,
@@ -320,6 +334,7 @@ impl ByteSink for NavStageSink<'_> {
 }
 
 #[cfg(has_nav)]
+#[derive(Clone, Copy)]
 struct NavStep {
     outcome: obc_route::Step,
     appended: usize,
@@ -327,34 +342,19 @@ struct NavStep {
 }
 
 #[cfg(has_nav)]
-async fn flush_nav_stage(
+fn start_nav_flush(
     writer: crate::flat_store::Writer,
     guard: &mut crate::arena::NavGuard,
-    mut allocation: obc_storage::flat::Allocation,
-    appended: usize,
-    patch_len: usize,
-) -> Result<obc_storage::flat::Allocation, obc_storage::flat::StoreError> {
+    allocation: obc_storage::flat::Allocation,
+    step: NavStep,
+) -> Result<crate::flat_store::Ticket, NavStep> {
     let base = guard.output.as_ptr();
-    if appended != 0 {
-        // SAFETY: the arena is static storage; `guard` is its sole owner and remains held until
-        // this awaited round trip returns. The storage task consumes the slice synchronously before
-        // answering, so the next planner step cannot overwrite it while it is borrowed.
-        let bytes = unsafe { core::slice::from_raw_parts(base.add(HEADER_FULL_LEN), appended) };
-        allocation =
-            match writer.call(crate::flat_store::Request::Write { allocation, bytes }, &NAV_STORE_REPLY).await? {
-                crate::flat_store::Outcome::Wrote(allocation) => allocation,
-                _ => return Err(obc_storage::flat::StoreError::Invalid),
-            };
-    }
-    if patch_len != 0 {
-        // SAFETY: same static-arena/round-trip argument as the append above.
-        let bytes = unsafe { core::slice::from_raw_parts(base, patch_len) };
-        match writer.call(crate::flat_store::Request::Patch { allocation, offset: 0, bytes }, &NAV_STORE_REPLY).await? {
-            crate::flat_store::Outcome::Done => {}
-            _ => return Err(obc_storage::flat::StoreError::Invalid),
-        }
-    }
-    Ok(allocation)
+    // SAFETY: the arena is static storage; its guard stays held while this ticket is live, and the
+    // ride loop will not run another planner step until the storage task has answered.
+    let bytes = unsafe { core::slice::from_raw_parts(base.add(HEADER_FULL_LEN), step.appended) };
+    let header = unsafe { core::slice::from_raw_parts(base, step.patch_len) };
+    let request = crate::flat_store::Request::WriteComputedRoute { allocation, bytes, header };
+    writer.try_call(request, &NAV_STORE_REPLY).map_err(|_| step)
 }
 
 /// Construct + write a fresh request's planner into its `.bss` slot, in this immediately-popped
@@ -496,74 +496,16 @@ fn nav_step(
 #[cfg(has_nav)]
 #[inline(never)]
 #[allow(clippy::too_many_arguments)]
-async fn nav_finish(
-    writer: crate::flat_store::Writer,
-    flat: &'static obc_storage::flat::FlatStore<crate::flat_store::FlatCard>,
+fn nav_finish(
     app: &mut App,
     nav: &mut NavBuffers<'_>,
     run: NavRun,
-    outcome: obc_route::Step,
+    result: Result<(u64, u32), obc_route::NavError>,
     now: u32,
 ) {
     use obc_route::NavError;
-    let planned = match outcome {
-        obc_route::Step::Done(stats) => Ok(stats.total_distance_m),
-        obc_route::Step::Failed(e) => Err(e),
-        obc_route::Step::Running => Err(NavError::NoPath), // unreachable: callers pass terminals
-    };
-    let tw = Instant::now();
-    let result: Result<(u64, u32), NavError> = match planned {
-        Ok(len) => {
-            let name_len = usize::from(nav.guard.output[6]).min(48);
-            let name = core::str::from_utf8(&nav.guard.output[64..64 + name_len])
-                .ok()
-                .and_then(obc_storage::flat::DisplayName::new)
-                .ok_or(NavError::NoPath);
-            match name {
-                Ok(name) => {
-                    let crc = match writer
-                        .call(crate::flat_store::Request::Checksum { allocation: run.allocation }, &NAV_STORE_REPLY)
-                        .await
-                    {
-                        Ok(crate::flat_store::Outcome::Checksummed(crc)) => Ok(crc),
-                        _ => Err(NavError::NoPath),
-                    };
-                    match crc {
-                        Ok(payload_crc) => match writer
-                            .call(
-                                crate::flat_store::Request::PublishComputedRoute {
-                                    allocation: run.allocation,
-                                    payload_crc,
-                                    name,
-                                },
-                                &NAV_STORE_REPLY,
-                            )
-                            .await
-                        {
-                            Ok(crate::flat_store::Outcome::Published(id)) => Ok((id.0, len)),
-                            _ => Err(NavError::NoPath),
-                        },
-                        Err(error) => Err(error),
-                    }
-                }
-                Err(error) => Err(error),
-            }
-        }
-        Err(error) => Err(error),
-    };
-    if result.is_err() {
-        // A checksum, metadata, or commit failure must give the unpublished reservation back just
-        // like a planner failure does. `cancel` is harmless if a future response-shape bug reaches
-        // this branch after commit: the committed allocation token is no longer live.
-        let _ = writer.call(crate::flat_store::Request::Cancel { allocation: run.allocation }, &NAV_STORE_REPLY).await;
-    }
-    let write_us = run.write_us + tw.elapsed().as_micros();
-    let tr = Instant::now();
-    if let Ok((id, _)) = result {
-        crate::flat_store::load_routes(flat, app);
-        let _ = crate::flat_store::reconcile_route(flat, Some(id));
-    }
-    let rescan_us = tr.elapsed().as_micros();
+    let write_us = run.write_us;
+    let rescan_us = 0;
     let cache = nav.guard.tiles.stats();
     // The ε rung the plan ended on (N8): 13/10 for a plain success or a fast no-path, 2/1 or 3/1 if
     // the ε-escalation ladder retried on exhaustion. `settles` is cumulative across the rungs. Both
@@ -1620,36 +1562,26 @@ pub(crate) async fn run_app(
                     // request while a plan is somehow still in flight replaces it (can't happen
                     // through the UI — the planning screen blocks a second confirm — but stay safe;
                     // the drain already overwrote the slot for the new plan and kept the same guard).
-                    if let (Some(run), Some(writer)) = (nav_run.take(), crate::flat_store::writer()) {
-                        let _ = writer
-                            .call(crate::flat_store::Request::Cancel { allocation: run.allocation }, &NAV_STORE_REPLY)
-                            .await;
-                    }
-                    let allocated = match crate::flat_store::writer() {
-                        Some(writer) => writer
-                            .call(crate::flat_store::Request::Allocate { bytes: NAV_ROUTE_RESERVE }, &NAV_STORE_REPLY)
-                            .await
-                            .ok(),
-                        None => None,
-                    };
-                    match allocated {
-                        Some(crate::flat_store::Outcome::Allocated(allocation)) => {
-                            nav_run = Some(NavRun {
-                                allocation,
-                                t0: Instant::now(),
-                                phase_us: [0; 3],
-                                write_us: 0,
-                                #[cfg(feature = "sd-bench")]
-                                read_perf: [crate::card_io::ReadPerf::ZERO; 3],
-                            });
+                    if nav_run.is_some() {
+                        // The UI cannot issue a second plan while its planning screen is active.
+                        // Keep the impossible case fail-closed instead of lending one reply slot to
+                        // two live tickets after the drain has already replaced the planner.
+                        debug_assert!(false, "a second route plan arrived while one was active");
+                        if let Some(run) = nav_run.as_mut() {
+                            run.cancel_requested = true;
                         }
-                        // No card / no dir: nothing to route against — the generic failure tier, and
-                        // the arena goes straight back. A plan that never started must not leave the
-                        // map frozen behind a search nobody is running.
-                        _ => {
-                            app.apply_event(obc_app::HostEvent::NavPlanned(Err(obc_route::NavError::NoPath)));
-                            search_ended = true;
-                        }
+                    } else {
+                        nav_run = Some(NavRun {
+                            allocation: None,
+                            io: NavIo::NeedAllocate,
+                            cancel_requested: false,
+                            io_started: Instant::now(),
+                            t0: Instant::now(),
+                            phase_us: [0; 3],
+                            write_us: 0,
+                            #[cfg(feature = "sd-bench")]
+                            read_perf: [crate::card_io::ReadPerf::ZERO; 3],
+                        });
                     }
                 }
                 // `&& !plan_armed` because the canonical drain order puts a cancel *before* the plan
@@ -1658,66 +1590,196 @@ pub(crate) async fn run_app(
                 // Without the guard the cancel would close the new run's file and hand back the arena
                 // the new search is about to step on.
                 if nav_cancel && !host_pass.plan_armed {
-                    if let Some(run) = nav_run.take() {
-                        if let Some(writer) = crate::flat_store::writer() {
-                            let _ = writer
-                                .call(
-                                    crate::flat_store::Request::Cancel { allocation: run.allocation },
-                                    &NAV_STORE_REPLY,
-                                )
-                                .await;
-                        }
-                        defmt::info!("nav route: cancelled after {=u64} ms", run.t0.elapsed().as_millis());
-                        // No notify: the planning screen is already gone (Back popped it).
+                    if let Some(run) = nav_run.as_mut() {
+                        run.cancel_requested = true;
+                    } else {
+                        search_ended = true;
                     }
-                    // Outside the `if let`, not inside it: a cancel landing between the drain's claim
-                    // and the file open has no `NavRun` to close but does hold the arena, and a
-                    // freeze that outlives its search is a map that never redraws again.
-                    search_ended = true;
                 }
-                if let Some(run) = nav_run.as_mut() {
-                    if let (Some(map_src), Some(store), Some(writer), Some(guard)) =
-                        (flat_map, flat, crate::flat_store::writer(), nav_guard.as_mut())
-                    {
-                        // The step's view over the arena arm + the resident terrain, alive only for
-                        // the length of these synchronous calls.
-                        let mut bufs = NavBuffers { guard, elev: &mut *nav.elev };
-                        // The run is active ⇒ the slot was written for this plan; a `None` here
-                        // would mean the bookkeeping and the arm disagree, and the step below
-                        // answers the failure tier for the same reason.
-                        let phase = bufs.guard.planner_ref().map_or(obc_route::NavPhase::Snap, |p| p.phase());
-                        let phase_idx = match phase {
-                            obc_route::NavPhase::Snap => 0,
-                            obc_route::NavPhase::Search => 1,
-                            obc_route::NavPhase::Emit | obc_route::NavPhase::Done => 2,
-                        };
-                        #[cfg(feature = "sd-bench")]
-                        let reads_before = crate::card_io::read_perf_snapshot();
-                        let ts = Instant::now();
-                        let step = nav_step(map_src, map_tables, map_cache, &mut bufs);
-                        let us = ts.elapsed().as_micros();
-                        run.phase_us[phase_idx] += us;
-                        #[cfg(feature = "sd-bench")]
-                        run.read_perf[phase_idx].add_assign(crate::card_io::read_perf_snapshot().since(reads_before));
-                        let flush_started = Instant::now();
-                        let flushed =
-                            flush_nav_stage(writer, bufs.guard, run.allocation, step.appended, step.patch_len).await;
-                        run.write_us += flush_started.elapsed().as_micros();
-                        let outcome = match flushed {
-                            Ok(allocation) => {
-                                run.allocation = allocation;
-                                step.outcome
+                if let (Some(mut run), Some(writer), Some(guard)) =
+                    (nav_run.take(), crate::flat_store::writer(), nav_guard.as_mut())
+                {
+                    let mut finished = None;
+                    let mut cancelled = false;
+                    match run.io {
+                        NavIo::NeedAllocate => {
+                            if run.cancel_requested {
+                                cancelled = true;
+                            } else if let Ok(ticket) = writer.try_call(
+                                crate::flat_store::Request::Allocate { bytes: NAV_ROUTE_RESERVE },
+                                &NAV_STORE_REPLY,
+                            ) {
+                                run.io_started = Instant::now();
+                                run.io = NavIo::Allocating(ticket);
                             }
-                            Err(_) => obc_route::Step::Failed(obc_route::NavError::NoPath),
-                        };
-                        if !matches!(outcome, obc_route::Step::Running) {
-                            let run = nav_run.take().expect("just borrowed it");
-                            nav_finish(writer, store, app, &mut bufs, run, outcome, now).await;
-                            search_ended = true;
-                            prev_active = None; // reopen geometry / rebuild the index off the fresh scan
-                            index_route = None;
+                        }
+                        NavIo::Allocating(ticket) => {
+                            if let Some(answer) = writer.try_result(ticket, &NAV_STORE_REPLY) {
+                                run.write_us += run.io_started.elapsed().as_micros();
+                                match answer {
+                                    Ok(crate::flat_store::Outcome::Allocated(allocation)) => {
+                                        run.allocation = Some(allocation);
+                                        run.io = if run.cancel_requested {
+                                            NavIo::NeedFinish(obc_route::Step::Failed(obc_route::NavError::NoPath))
+                                        } else {
+                                            NavIo::Ready
+                                        };
+                                    }
+                                    _ => finished = Some(Err(obc_route::NavError::NoPath)),
+                                }
+                            }
+                        }
+                        NavIo::Ready => {
+                            if run.cancel_requested {
+                                run.io = NavIo::NeedFinish(obc_route::Step::Failed(obc_route::NavError::NoPath));
+                            } else if let Some(map_src) = flat_map {
+                                let mut bufs = NavBuffers { guard, elev: &mut *nav.elev };
+                                // The step's view over the arena arm + the resident terrain, alive only for
+                                // the length of these synchronous calls.
+                                // The run is active ⇒ the slot was written for this plan; a `None` here
+                                // would mean the bookkeeping and the arm disagree, and the step below
+                                // answers the failure tier for the same reason.
+                                let phase = bufs.guard.planner_ref().map_or(obc_route::NavPhase::Snap, |p| p.phase());
+                                let phase_idx = match phase {
+                                    obc_route::NavPhase::Snap => 0,
+                                    obc_route::NavPhase::Search => 1,
+                                    obc_route::NavPhase::Emit | obc_route::NavPhase::Done => 2,
+                                };
+                                #[cfg(feature = "sd-bench")]
+                                let reads_before = crate::card_io::read_perf_snapshot();
+                                let ts = Instant::now();
+                                let step = nav_step(map_src, map_tables, map_cache, &mut bufs);
+                                let us = ts.elapsed().as_micros();
+                                run.phase_us[phase_idx] += us;
+                                #[cfg(feature = "sd-bench")]
+                                run.read_perf[phase_idx]
+                                    .add_assign(crate::card_io::read_perf_snapshot().since(reads_before));
+                                run.io = if step.appended == 0 && step.patch_len == 0 {
+                                    if matches!(step.outcome, obc_route::Step::Running) {
+                                        NavIo::Ready
+                                    } else {
+                                        NavIo::NeedFinish(step.outcome)
+                                    }
+                                } else {
+                                    NavIo::Staged(step)
+                                };
+                            } else {
+                                run.io = NavIo::NeedFinish(obc_route::Step::Failed(obc_route::NavError::NoPath));
+                            }
+                        }
+                        NavIo::Staged(step) => {
+                            if run.cancel_requested {
+                                run.io = NavIo::NeedFinish(obc_route::Step::Failed(obc_route::NavError::NoPath));
+                            } else if let Some(allocation) = run.allocation {
+                                match start_nav_flush(writer, guard, allocation, step) {
+                                    Ok(ticket) => {
+                                        run.io_started = Instant::now();
+                                        run.io = NavIo::Flushing(ticket, step.outcome);
+                                    }
+                                    Err(step) => run.io = NavIo::Staged(step),
+                                }
+                            }
+                        }
+                        NavIo::Flushing(ticket, outcome) => {
+                            if let Some(answer) = writer.try_result(ticket, &NAV_STORE_REPLY) {
+                                run.write_us += run.io_started.elapsed().as_micros();
+                                match answer {
+                                    Ok(crate::flat_store::Outcome::Wrote(allocation)) => {
+                                        run.allocation = Some(allocation);
+                                        run.io = if run.cancel_requested || !matches!(outcome, obc_route::Step::Running)
+                                        {
+                                            NavIo::NeedFinish(outcome)
+                                        } else {
+                                            NavIo::Ready
+                                        };
+                                    }
+                                    _ => {
+                                        run.io =
+                                            NavIo::NeedFinish(obc_route::Step::Failed(obc_route::NavError::NoPath));
+                                    }
+                                }
+                            }
+                        }
+                        NavIo::NeedFinish(outcome) => {
+                            if let Some(allocation) = run.allocation {
+                                let mut final_outcome = outcome;
+                                let mut publishing =
+                                    !run.cancel_requested && matches!(outcome, obc_route::Step::Done(_));
+                                let request = if publishing {
+                                    let name_len = usize::from(guard.output[6]).min(48);
+                                    let name = core::str::from_utf8(&guard.output[64..64 + name_len])
+                                        .ok()
+                                        .and_then(obc_storage::flat::DisplayName::new);
+                                    match name {
+                                        Some(name) => {
+                                            crate::flat_store::Request::PublishComputedRoute { allocation, name }
+                                        }
+                                        None => {
+                                            publishing = false;
+                                            final_outcome = obc_route::Step::Failed(obc_route::NavError::NoPath);
+                                            crate::flat_store::Request::Cancel { allocation }
+                                        }
+                                    }
+                                } else {
+                                    crate::flat_store::Request::Cancel { allocation }
+                                };
+                                if let Ok(ticket) = writer.try_call(request, &NAV_STORE_REPLY) {
+                                    run.io_started = Instant::now();
+                                    run.io = NavIo::Finishing { ticket, outcome: final_outcome, publishing };
+                                }
+                            } else {
+                                finished = Some(Err(obc_route::NavError::NoPath));
+                            }
+                        }
+                        NavIo::Finishing { ticket, outcome, publishing } => {
+                            if let Some(answer) = writer.try_result(ticket, &NAV_STORE_REPLY) {
+                                run.write_us += run.io_started.elapsed().as_micros();
+                                if publishing {
+                                    match answer {
+                                        Ok(crate::flat_store::Outcome::Published(id)) => {
+                                            let len = match outcome {
+                                                obc_route::Step::Done(stats) => stats.total_distance_m,
+                                                _ => 0,
+                                            };
+                                            if let Some(store) = flat {
+                                                crate::flat_store::load_routes(store, app);
+                                                let _ = crate::flat_store::reconcile_route(store, Some(id.0));
+                                            }
+                                            finished = Some(Ok((id.0, len)));
+                                        }
+                                        _ => {
+                                            run.cancel_requested = false;
+                                            run.io =
+                                                NavIo::NeedFinish(obc_route::Step::Failed(obc_route::NavError::NoPath));
+                                        }
+                                    }
+                                } else if run.cancel_requested {
+                                    cancelled = true;
+                                } else {
+                                    finished = Some(Err(match outcome {
+                                        obc_route::Step::Failed(error) => error,
+                                        _ => obc_route::NavError::NoPath,
+                                    }));
+                                }
+                            }
                         }
                     }
+                    if cancelled {
+                        defmt::info!("nav route: cancelled after {=u64} ms", run.t0.elapsed().as_millis());
+                        search_ended = true;
+                    } else if let Some(result) = finished {
+                        let mut bufs = NavBuffers { guard, elev: &mut *nav.elev };
+                        nav_finish(app, &mut bufs, run, result, now);
+                        search_ended = true;
+                        prev_active = None;
+                        index_route = None;
+                    } else {
+                        nav_run = Some(run);
+                    }
+                } else if nav_run.is_some() {
+                    app.apply_event(obc_app::HostEvent::NavPlanned(Err(obc_route::NavError::NoPath)));
+                    nav_run = None;
+                    search_ended = true;
                 }
                 if search_ended {
                     // Drop the guard (releasing the arena so the next frame can render the map
