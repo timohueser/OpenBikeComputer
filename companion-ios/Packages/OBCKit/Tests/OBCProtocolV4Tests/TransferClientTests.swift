@@ -23,6 +23,153 @@ struct TransferClientTests {
         #expect(trace.streamOffsets == [0, 8, 0, 8, 16])
         #expect(trace.restores == 1)
     }
+
+    @Test("Store identity stops after the first LIST page")
+    func storeIdentityDoesNotWalkTheCatalog() async throws {
+        let link = PagedIdentityLink()
+        let client = TransferClient(link: link, firstRequestID: 0x4100)
+
+        let storeID = try await client.storeID()
+        let requests = await link.listRequests
+
+        #expect(storeID == link.storeID)
+        #expect(requests == 1)
+    }
+
+    @Test("A fresh create starts PUT without a catalog preflight")
+    func freshCreateDoesNotWalkTheCatalog() async throws {
+        let payload = Data("new route".utf8)
+        let link = FreshCreateLink(payload: payload)
+        let client = TransferClient(link: link, firstRequestID: 0x4200)
+
+        let result = try await client.put(payload, kind: .route, displayName: "New Route")
+        let opcodes = await link.opcodes
+
+        #expect(result.objectID == ObjectID(rawValue: 42))
+        #expect(opcodes == [.list, .put])
+    }
+}
+
+private actor PagedIdentityLink: TransferLink {
+    nonisolated let maximumStreamPayload = 8
+    nonisolated let storeID = try! StoreID(bytes: Data(repeating: 0xA5, count: 16))
+
+    private var pending: ControlFrame?
+    private(set) var listRequests = 0
+
+    func sendControlRecord(_ record: Data) async throws {
+        let frame = try ControlFrame(decoding: record, direction: .request)
+        guard frame.opcode == .list else { throw TransferClientError.unexpectedResponse }
+        pending = frame
+        listRequests += 1
+    }
+
+    func receiveControlRecord() async throws -> Data {
+        guard let frame = pending else { throw TransferClientError.unexpectedResponse }
+        pending = nil
+        var payload = Data(repeating: 0xA5, count: 16)
+        payload.appendLE(UInt64(7))
+        payload.appendLE(UInt64(9))
+        payload.appendLE(UInt64(1))
+        payload.appendLE(UInt64(512))
+        payload.appendLE(UInt32(0x1234_5678))
+        payload.appendLE(ObjectKind.route.rawValue)
+        payload.appendLE(UInt16(0))
+        payload.append(UInt8(4))
+        payload.append(contentsOf: [0, 0, 0])
+        payload.append(Data("Test".utf8))
+        payload.append(Data(repeating: 0, count: 44))
+        payload.appendLE(UInt32(0))
+        return ControlFrame(
+            opcode: .list,
+            flags: ControlFrame.responseFlag | ControlFrame.moreFlag,
+            requestID: frame.requestID,
+            payload: payload
+        ).encode()
+    }
+
+    func sendStreamRecord(_ record: Data) async throws { throw TransferClientError.unexpectedStream }
+    func receiveStreamRecord() async throws -> Data { throw TransferClientError.unexpectedStream }
+    func cancelStreamReceive() async {}
+    func restore() async throws {}
+}
+
+private actor FreshCreateLink: TransferLink {
+    nonisolated let maximumStreamPayload = 8
+
+    private let payload: Data
+    private var pending: ControlFrame?
+    private var responseWaiter: CheckedContinuation<Data, Error>?
+    private var readyResponse: Data?
+    private(set) var opcodes: [Opcode] = []
+
+    init(payload: Data) { self.payload = payload }
+
+    func sendControlRecord(_ record: Data) async throws {
+        let frame = try ControlFrame(decoding: record, direction: .request)
+        pending = frame
+        opcodes.append(frame.opcode)
+    }
+
+    func receiveControlRecord() async throws -> Data {
+        guard let frame = pending else { throw TransferClientError.unexpectedResponse }
+        pending = nil
+        switch frame.opcode {
+        case .list:
+            var body = Data(repeating: 0xB6, count: 16)
+            body.appendLE(UInt64(11))
+            body.appendLE(UInt64(9))
+            body.appendLE(UInt64(1))
+            body.appendLE(UInt64(512))
+            body.appendLE(UInt32(0x1234_5678))
+            body.appendLE(ObjectKind.route.rawValue)
+            body.appendLE(UInt16(0))
+            body.append(UInt8(4))
+            body.append(contentsOf: [0, 0, 0])
+            body.append(Data("Test".utf8))
+            body.append(Data(repeating: 0, count: 44))
+            body.appendLE(UInt32(0))
+            return ControlFrame(
+                opcode: .list,
+                flags: ControlFrame.responseFlag | ControlFrame.moreFlag,
+                requestID: frame.requestID,
+                payload: body
+            ).encode()
+        case .put:
+            if let readyResponse {
+                self.readyResponse = nil
+                return readyResponse
+            }
+            return try await withCheckedThrowingContinuation { responseWaiter = $0 }
+        default:
+            throw TransferClientError.unexpectedResponse
+        }
+    }
+
+    func sendStreamRecord(_ record: Data) async throws {
+        let stream = try StreamRecord(decoding: record)
+        guard stream.offset + UInt64(stream.payload.count) == UInt64(payload.count) else { return }
+        var body = Data()
+        body.appendLE(UInt64(42))
+        body.appendLE(UInt64(1))
+        body.appendLE(UInt64(payload.count))
+        body.appendLE(CRC32.checksum(payload))
+        body.appendLE(UInt32(0))
+        let response = ControlFrame(
+            opcode: .put, flags: ControlFrame.responseFlag,
+            requestID: stream.requestID, payload: body
+        ).encode()
+        if let responseWaiter {
+            self.responseWaiter = nil
+            responseWaiter.resume(returning: response)
+        } else {
+            readyResponse = response
+        }
+    }
+
+    func receiveStreamRecord() async throws -> Data { throw TransferClientError.unexpectedStream }
+    func cancelStreamReceive() async {}
+    func restore() async throws {}
 }
 
 private actor DisconnectingLink: TransferLink {

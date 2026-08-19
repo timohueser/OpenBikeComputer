@@ -33,9 +33,12 @@
 //!   mid-`receive`. It is the channel's destruction, not the reader's timing, that makes the drop
 //!   harmless, and stating it the wrong way would license a refactor that kept the channel alive.) §5: "MUST NOT deliver it,
 //!   and MUST NOT drop it."
-//! - **Credit is withheld while a frame is held.** [`reader_pump`] receives one record, posts it,
-//!   and then waits for [`STREAM_TAKEN`] before receiving again. One frame in flight, never two, and
-//!   the CoC's own credit flow control is what pushes back on the peer meanwhile.
+//! - **Byte-stream fragments are reassembled before delivery.** CoreBluetooth exposes a CoC as
+//!   `InputStream` / `OutputStream`, and an output write may accept fewer bytes than requested. The
+//!   reader therefore uses §3.8's own header length to recover a complete record instead of treating
+//!   one incoming SDU as one record. It posts that record and waits for [`STREAM_TAKEN`] before
+//!   assembling another, so one frame is in flight, never two, and the CoC's own credit flow control
+//!   pushes back on the peer meanwhile.
 //! - **The admission race is closed with a real hold.** A control write and a CoC SDU can genuinely
 //!   arrive in either order — the GATT pump may be parked, so "no control record is pending" does
 //!   not mean "none was written". When a stream frame arrives and
@@ -74,6 +77,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{with_timeout, Duration, Timer};
 use nrf_sdc::{self as sdc};
+use obc_link::flat::wire::{StreamAssembly, StreamRecordAssembler};
 use obc_link::flat::{Admission, Ceilings, Channel, Link, Reaction, RequestId};
 use trouble_host::prelude::*;
 
@@ -264,8 +268,8 @@ pub(crate) async fn release_engine(writer: &Writer) {
 
 // ══════════════════════════ the driver ══════════════════════════
 
-/// **The engine driver.** Replaces the v1 `serve_coc`: the CoC no longer carries an unframed byte
-/// pipe, it carries §3.8 stream records, one per SDU.
+/// **The engine driver.** Replaces the v1 `serve_coc`: the CoC carries the byte stream formed by
+/// consecutive §3.8 stream records.
 pub(crate) async fn serve_objects(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
     server: &Server<'_>,
@@ -358,29 +362,47 @@ pub(crate) async fn serve_objects(
     }
 }
 
-/// Receive one stream record at a time and hand it over, waiting to be told the driver is done
-/// before receiving another.
+/// Recover stream records from the CoC byte stream and hand them over one at a time.
 ///
-/// **This is where §5's credit withholding lives.** One record is outstanding at a time, so the
-/// CoC's own credit flow control pushes back on the peer while a frame is held — there is no second
-/// buffer for a second frame to go to, and there does not need to be.
+/// CoreBluetooth's `OutputStream.write` returns the number of bytes it accepted, which may be less
+/// than the complete record the app supplied. Those pieces arrive here as separate SDUs. §3.8's
+/// payload length makes the byte stream self-framing, so [`StreamRecordAssembler`] joins pieces in
+/// the existing [`STREAM_RX`] buffer and also handles two records sharing an SDU. One record remains
+/// outstanding at a time, so this is still where §5's credit withholding lives.
 async fn reader_pump(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
     reader: &mut L2capChannelReader<'_, DefaultPacketPool>,
 ) -> &'static str {
+    let mut assembler = StreamRecordAssembler::new();
     loop {
-        // SAFETY: the borrow is taken fresh per receive and released before `STREAM_IN` is signalled;
-        // the driver reads the buffer only between that signal and `STREAM_TAKEN`, which is exactly
-        // the window in which this future holds no reference to it.
-        let rx = unsafe { &mut *core::ptr::addr_of_mut!(STREAM_RX) };
-        let received = match reader.receive(stack, rx).await {
-            Ok(0) => continue,
-            Ok(n) => n,
+        let sdu = match reader.receive_sdu(stack).await {
+            Ok(sdu) if sdu.is_empty() => continue,
+            Ok(sdu) => sdu,
             Err(_) => return "channel",
         };
-        STREAM_TAKEN.reset();
-        STREAM_IN.signal(received);
-        STREAM_TAKEN.wait().await;
+        let bytes = sdu.as_ref();
+        let mut consumed = 0;
+        while consumed < bytes.len() {
+            // SAFETY: the mutable borrow ends before a complete record is signalled. The driver
+            // reads this buffer only between `STREAM_IN` and `STREAM_TAKEN`, when this future holds
+            // no reference to it.
+            let rx = unsafe { &mut *core::ptr::addr_of_mut!(STREAM_RX) };
+            let (used, state) = assembler.push(rx, &bytes[consumed..]);
+            consumed += used;
+            match state {
+                StreamAssembly::NeedMore => {}
+                StreamAssembly::Complete(len) => {
+                    STREAM_TAKEN.reset();
+                    STREAM_IN.signal(len);
+                    STREAM_TAKEN.wait().await;
+                    assembler.reset();
+                }
+                StreamAssembly::TooLarge(len) => {
+                    warn!("ble: [v4] stream record is {} B — above the adapter buffer", len);
+                    return "stream-framing";
+                }
+            }
+        }
     }
 }
 
@@ -465,7 +487,11 @@ async fn stream_record(writer: &Writer, lane: &mut Lane, admission: &mut Admissi
                     STREAM_IN.signal(len);
                     return Some(reaction);
                 }
-                warn!("ble: [v4] a stream frame arrived unadmitted — delivering after the hold window");
+                warn!(
+                    "ble: [v4] stream request {} is not engine request {} — delivering after the hold window",
+                    frame_id.0,
+                    live.map_or(0, |id| id.0)
+                );
             }
         }
     }

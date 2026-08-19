@@ -720,14 +720,18 @@ static random address, bonding and reconnect are unchanged.
 
 - One `objectControl` Write Request value carries one complete control frame; one confirmed
   indication carries its response. A client enables indications before its first write.
-- One L2CAP CoC SDU on the advertised PSM carries one complete stream frame. A frame never spans
-  SDUs and an SDU never carries two.
+- The L2CAP CoC on the advertised PSM is a byte stream of consecutive stream frames. Receivers use
+  each frame's 16-byte header and `payloadLength` to recover record boundaries; a frame may span
+  SDUs and one SDU may contain the end of one frame and the start of the next. This is required by
+  platforms such as CoreBluetooth, which expose the CoC through partial `InputStream` /
+  `OutputStream` operations rather than an SDU-preserving API.
 - The control ceiling is `ATT_MTU - 3`; the device's preferred 247-byte MTU gives 244 bytes. The
   largest fixed message in §3 is the 100-byte `PUT`, and a `LIST` page carries as many 88-byte
   entries as the ceiling allows — two on BLE, tens on USB — so the protocol floor is the 128 bytes a
   single-entry page needs. A link below that floor cannot carry this protocol and the adapter refuses
   the connection rather than truncating. The stream ceiling is the CoC SDU, fixed at channel
-  establishment.
+  establishment; it is the maximum complete stream-frame length, independent of how that frame is
+  segmented into SDUs.
 - CoC credits are pacing. They acknowledge nothing about durability.
 - `3C920009` keeps its v3 meaning across this major bump rather than being retired and reassigned.
   The no-reuse convention of [`obc-ble-interface-spec.md`](obc-ble-interface-spec.md) forbids giving a
