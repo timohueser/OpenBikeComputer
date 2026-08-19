@@ -12,7 +12,7 @@ public enum OBCProtocol {
     /// OBC Control. `B1`'s connect path compares the device's reported
     /// `DeviceInfo.protocolVersion` against this; on mismatch it surfaces
     /// `DeviceError.protocolMismatch` (surface, don't crash).
-    public static let version: UInt16 = 2
+    public static let version: UInt16 = 4
 
     /// The mismatch to surface for a device reporting `deviceVersion`, or `nil`
     /// when it matches this build (#303). Pure and total — never traps — so the
