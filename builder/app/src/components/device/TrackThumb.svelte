@@ -31,7 +31,7 @@
          *  track letterboxes inside it. The trip band's left cell, whose height the stage rows
          *  set; tiles keep the default fixed-height look. */
         fill?: boolean;
-        /** Overlaid top-right — the expiry/status tag. */
+        /** Overlaid top-right — the caller's status tag ("trip", "recording", "in library"). */
         tag?: import("svelte").Snippet;
     } = $props();
 

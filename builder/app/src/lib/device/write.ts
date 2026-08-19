@@ -3,12 +3,13 @@
  *
  * **A map is one object.** There is no multi-file map upload here — no manifest, no shards, no
  * separate terrain file to order against them — so every write in this file is a single
- * announce/stream/commit against one `.obcm`, `.obcr` or `UPDATE.BIN`, and there is no state that
- * outlives a transfer.
+ * `PUT` against one `.obcm`, `.obcr` or `UPDATE.BIN`, and there is no state that outlives a
+ * transfer.
  *
- * All three are therefore the same six lines underneath — announce, stream, whole-object CRC,
- * commit — which is the point of the object model and the reason this file is short. What differs
- * is what has to be true *before* the first byte moves, and that is where the substance is:
+ * All three are therefore the same shape underneath — declare the length, the whole-payload CRC, the
+ * kind and a display name, stream the payload, read back what the commit published (§3.6) — which is
+ * the point of the object model and the reason this file is short. What differs is what has to be
+ * true *before* the first byte moves, and that is where the substance is:
  *
  * | | Where the bytes come from | Checked before sending |
  * | :-- | :-- | :-- |
@@ -16,107 +17,164 @@
  * | Route | a dropped GPX, converted by wasm | the OBCR header is read back and shown before sending |
  * | Firmware | an `UPDATE.BIN` | the whole OBCU container: header CRC, image CRC, slot ceiling |
  *
- * **"Uploaded" means the device has a valid file, in every one of them.** The whole-object CRC-32
- * is announced up front and verified by the device at commit; anything else is a `transferResult`
- * that is not `committed`, and `ProtocolClient.upload` turns that into a throw. There is no path
- * through this file that reports success for a half-written object.
+ * **"Uploaded" means the device has a valid object, in every one of them.** §3.6 has the device
+ * verify the declared length and the whole-payload CRC, run the kind's validator, and only then
+ * commit; anything else is an error response, which `FlatStoreClient.put` turns into a throw. There
+ * is no path through this file that reports success for a half-written object.
  *
  * ## Cancelling and unplugging
  *
- * Neither is special-cased here, and that is deliberate. Every await takes the job's signal, and
- * the client already holds the spec's §4.1 rule: an exchange that does not reach its correlated
- * close sends the device an abort, waits for it to say it has drained, and resets the pipe before
- * releasing the transfer slot. So a cancelled or unplugged write leaves *both* ends clean, and the
- * next attempt is an ordinary first attempt rather than a recovery path — which is exactly why
- * `flows.test.ts` retries on the same link and expects it to just work.
+ * Neither is special-cased here, and that is deliberate. Every await takes the job's signal, and the
+ * client already holds §3.6's rule: any break before the commit leaves the card as if nothing had
+ * happened — the allocation is released, the written bytes are anonymous, the catalog is untouched.
+ * So a cancelled or unplugged write leaves *both* ends clean, and the next attempt is an ordinary
+ * first attempt rather than a recovery path.
+ *
+ * ## What is not here
+ *
+ * There is no free-space check before a map send. §5.2.2 retires the query, and §3.6 answers the
+ * question at the point of decision: a `PUT` that does not fit is `noSpace`, whose context is the
+ * bytes required. Asking in advance would be a second answer to a question the upload already
+ * answers, and a stale one by the time the bytes arrive.
  */
 
-import { blobSource, type ProtocolClient, type UploadResult } from "../usb/client";
-import { NEW_OBJECT_ID, ObjectType, SINGLETON_OBJECT_ID } from "../usb/protocol";
+import { blobSource, type FlatStoreClient } from "../usb/client";
+import { ObjectKind, type PutResponse } from "../usb/protocol";
+import { truncateUtf8 } from "../format";
 import { readUpdateImage, type UpdateImage } from "../firmware/obcu";
 import type { JobContext } from "./progress";
 import type { PreparedRoute } from "./route";
 
-// The chunk size is deliberately **not** overridden here any more. It used to be a local 32 KiB —
-// half the client's own default since the upload retune, so a map (the one object where the number
-// matters) was quietly getting the *smaller* chunk. There is one throughput dial and it lives with
-// the transport that pays for it: `DEFAULT_CHUNK_SIZE` / `UPLOAD_WINDOW` in `../usb/client`.
+/** §3.6's display-name field: at most 48 UTF-8 bytes. */
+export const DISPLAY_NAME_MAX = 48;
+
+/** A name the wire will take, trimmed on a byte boundary and never empty. */
+export function displayName(name: string, fallback: string): string {
+    return truncateUtf8(name.trim() || fallback, DISPLAY_NAME_MAX);
+}
+
+// The batch size is deliberately **not** overridden here. There is one throughput dial and it lives
+// with the transport that pays for it: `DEFAULT_BATCH_BYTES` / `UPLOAD_WINDOW` in `../usb/client`.
 
 /**
  * Send a `.obcm` the rider already has.
  *
  * No staging: a `File` is *already* a handle to bytes on disk, so it is read twice straight from
- * there — once for the CRC the descriptor announces, once to send — and nothing is copied anywhere.
- * That is what `blobSource` is for, and it is why this path costs nothing extra despite being the
- * one a 300 MB file is most likely to arrive on.
+ * there — once for the CRC §3.6 declares, once to send — and nothing is copied anywhere. That is
+ * what `blobSource` is for, and it is why this path costs nothing extra despite being the one a
+ * 300 MB file is most likely to arrive on.
+ *
+ * Uploaded as a **create**. A map replacing a map would need the `ObjectId` and `Revision` of the
+ * one it replaces, and the rider picking a file has expressed no opinion about which stored map that
+ * is; the device page's remove is where an old map goes.
  */
-export async function sendMapFile(client: ProtocolClient, file: File, ctx: JobContext): Promise<UploadResult> {
+export async function sendMapFile(client: FlatStoreClient, file: File, ctx: JobContext): Promise<PutResponse> {
     ctx.phase("reading", file.size);
     const source = await blobSource(file);
     ctx.phase("sending", source.totalLen);
-    return client.upload(ObjectType.Map, NEW_OBJECT_ID, source, {
-        signal: ctx.signal,
-        onProgress: (done, total) => ctx.progress(done, total),
-        // A map's commit is a close, an open, a 40-byte header read, a 4-byte write and a flush
-        // (`Storage::map_upload_commit`) — bounded work the ordinary timeout covers with room to
-        // spare. It does still take long enough to be worth naming, because the device also has to
-        // land the last staging half before it starts.
-        onSent: () => ctx.phase("committing"),
-    });
+    return client.put(
+        { kind: ObjectKind.MapShard, displayName: displayName(file.name.replace(/\.obcm$/i, ""), "Map") },
+        source,
+        {
+            signal: ctx.signal,
+            onProgress: (done, total) => ctx.progress(done, total),
+            // The commit is bounded work the ordinary timeout covers with room to spare, and it
+            // still takes long enough to be worth naming: the device has to land the last staging
+            // half before it starts.
+            onSent: () => ctx.phase("committing"),
+        },
+    );
 }
 
 /**
  * Send a converted route.
  *
- * Uploaded as a **new** object rather than replacing one: the device assigns the id, and a route
- * whose bytes it already holds dedups to the existing id instead of minting a twin (§4.1). So
- * dropping the same GPX twice is a no-op, not a duplicate in the rider's route list.
+ * Uploaded as a **create**: the device assigns the `ObjectId` and reports it in the answer. Dropping
+ * the same GPX twice therefore makes two objects, where the v1 wire deduped on (length, CRC) — that
+ * dedupe is gone with the envelope, and §3.4 says why the honest replacement is the client's: the
+ * catalog carries every object's payload length and CRC, so a caller that wants convergence looks
+ * before it uploads. `FlatStoreClient.findCreated` is that lookup, and the drop flow uses it to
+ * reconcile an upload whose answer was lost rather than to pre-empt an ordinary second drop.
  */
-export function sendRoute(client: ProtocolClient, route: PreparedRoute, ctx: JobContext): Promise<UploadResult> {
+export function sendRoute(client: FlatStoreClient, route: PreparedRoute, ctx: JobContext): Promise<PutResponse> {
     ctx.phase("sending", route.obcr.length);
-    return client.upload(ObjectType.Route, NEW_OBJECT_ID, route.obcr, {
-        signal: ctx.signal,
-        onProgress: (done, total) => ctx.progress(done, total),
-    });
+    return client.put(
+        { kind: ObjectKind.Route, displayName: displayName(route.header.name, "Route") },
+        route.obcr,
+        {
+            signal: ctx.signal,
+            onProgress: (done, total) => ctx.progress(done, total),
+        },
+    );
 }
 
 /** A verified update, and what the device will report once it is running. */
 export interface StagedFirmware {
     readonly image: UpdateImage;
-    readonly result: UploadResult;
+    readonly result: PutResponse;
 }
 
 /**
- * Verify an `UPDATE.BIN` and write it to the device's card as the staged image.
+ * Verify an `UPDATE.BIN` and write it to the card as an update-package object (§4's kind 7).
  *
- * **Staging only.** This is where C4 stops and #728's install semantics take over: the device
- * writes the container to `/UPDATE.BIN` verbatim, and nothing is armed, erased or rebooted by this
- * call. Installing is a separate, explicit ask ({@link askToInstall}) that the rider still has to
- * confirm on the glass — the spec's security posture is that a link may stage an image and can
- * never arm one, and there are no silent installs, ever.
+ * **Staging only.** Uploading never installs; `ARM` is the separate, explicit step
+ * ({@link armUpdate}) that makes an installed image the next boot, and the two are different
+ * decisions precisely so delivery cannot arm anything.
+ *
+ * It **replaces** an update package the card already holds rather than adding a second one, and
+ * that is a client-side policy rather than a wire rule: §3 has no singleton slot, so without this
+ * every staging attempt would leave another multi-megabyte object on the card for the rider to find
+ * and remove. The compare-and-swap on the existing revision is what makes it safe — a package
+ * something else replaced in between fails rather than clobbering.
  */
 export async function stageFirmware(
-    client: ProtocolClient,
+    client: FlatStoreClient,
     bytes: Uint8Array,
     ctx: JobContext,
 ): Promise<StagedFirmware> {
     ctx.phase("verifying", bytes.length);
     const { image, container } = readUpdateImage(bytes);
+
+    const held = await client.list({ kind: ObjectKind.UpdatePackage, signal: ctx.signal });
+    // The head of whatever package is there. More than one is not a state this client creates, and
+    // the newest is the one a rider would mean.
+    const previous = held.entries.reduce<(typeof held.entries)[number] | null>(
+        (best, entry) => (!best || entry.objectId > best.objectId ? entry : best),
+        null,
+    );
+
     ctx.phase("sending", container.length);
-    const result = await client.upload(ObjectType.FwImage, SINGLETON_OBJECT_ID, container, {
-        signal: ctx.signal,
-        onProgress: (done, total) => ctx.progress(done, total),
-    });
+    const result = await client.put(
+        {
+            objectId: previous?.objectId,
+            expectedRevision: previous?.revision,
+            kind: ObjectKind.UpdatePackage,
+            displayName: displayName(image.version, "Update"),
+        },
+        container,
+        {
+            signal: ctx.signal,
+            onProgress: (done, total) => ctx.progress(done, total),
+        },
+    );
     return { image, result };
 }
 
 /**
- * Ask the device to install what is staged.
+ * Ask the device to make a staged package the next boot (§4's `ARM`).
  *
- * `ok` means the *request* was accepted, and nothing more: the device runs its own scan, shows a
- * confirm card, and installs only on a physical Select press. Copy that says anything stronger than
- * "confirm it on the device" is wrong.
+ * **The device's current policy refuses this**, answering `rejected` — a stated dev-window gap, not
+ * a failure of this call. It is wired because the shape is settled and because a refusal a rider can
+ * read is better than an affordance that quietly does nothing; the caller surfaces the refusal as
+ * itself rather than as "installing…".
+ *
+ * On success the device commits a rollback reserve, writes the boot handoff, answers, and reboots —
+ * so the answer is the last thing this link will hear from it.
  */
-export function askToInstall(client: ProtocolClient, signal?: AbortSignal): Promise<void> {
-    return client.installFw(signal);
+export function armUpdate(
+    client: FlatStoreClient,
+    staged: { objectId: bigint; revision: bigint },
+    signal?: AbortSignal,
+): Promise<{ rollbackObjectId: bigint; commitSequence: bigint }> {
+    return client.arm({ objectId: staged.objectId, expectedRevision: staged.revision }, signal);
 }

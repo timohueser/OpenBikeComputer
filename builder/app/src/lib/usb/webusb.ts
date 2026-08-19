@@ -26,13 +26,20 @@
  * {@link PipeError} `unsupported`, and the honest answer for them is the desktop app (#894) — the
  * fallback is not a degraded USB path, it is the existing download-and-copy flow.
  *
- * ## What #889 settled
+ * ## The endpoint layout, and where the version comes from
  *
- * The endpoint layout below — a vendor-specific interface, lowest IN/OUT pair control, next pair
- * bulk — is what the firmware descriptors now declare, so {@link discoverLayout}'s rule is a
- * contract rather than a guess (`firmware/obc-fw-nrf54l/src/usb/mod.rs` allocates them in that
- * order and says so). All four endpoints are 512 bytes: the LM20's USBHS is a high-speed core, and
- * high-speed bulk endpoints are 512 bytes by USB rule.
+ * The layout below — a vendor-specific interface, lowest IN/OUT pair control, next pair stream — is
+ * what the firmware descriptors declare, so {@link discoverLayout}'s rule is a contract rather than
+ * a guess. All four endpoints are 512 bytes: the LM20's USBHS is a high-speed core, and high-speed
+ * bulk endpoints are 512 bytes by USB rule. Packet size is **not** a protocol number any more —
+ * `FLAT_Store_Protocol.md` §5.2 lets a record span packets, and `records.ts` is what reassembles
+ * them.
+ *
+ * **The wire major is settled by matching, before a record moves** (§5.2). The vendor interface
+ * reports `bInterfaceProtocol = 4` and the device descriptor's `bcdDevice` carries the major in its
+ * high byte, `0x0400`. {@link checkWireMajor} reads both and refuses a device that says anything
+ * else — there is no version *read* on this link, and adding one back would be the duplication the
+ * major bump removed.
  *
  * The **VID/PID is still provisional on purpose** — see {@link OBC_USB_FILTERS}. Allocating a real
  * product id is an owner action, not a code change; when it happens, this constant and the
@@ -40,9 +47,9 @@
  */
 
 import { PipeError, withAbort, type BytePipe, type DeviceLink } from "./pipe";
-import { ProtocolClient, type ClientOptions } from "./client";
-import type { DeviceInfo } from "./transport";
-import type { VersionRead } from "./protocol";
+import { FlatStoreClient, type ClientOptions } from "./client";
+import type { DeviceInfo } from "./records";
+import { WIRE_MAJOR } from "./protocol";
 
 // --- the slice of WebUSB this file uses ---------------------------------------
 //
@@ -71,7 +78,27 @@ export interface UsbEndpointLike {
 
 export interface UsbInterfaceLike {
     interfaceNumber: number;
-    alternate: { interfaceClass: number; endpoints: UsbEndpointLike[] };
+    alternate: {
+        interfaceClass: number;
+        /** §5.2's `bInterfaceProtocol` — the wire major, readable before a record is exchanged. */
+        interfaceProtocol?: number;
+        endpoints: UsbEndpointLike[];
+    };
+}
+
+/** What a `controlTransferIn` settles with. */
+export interface UsbControlInResult {
+    data?: DataView;
+    status: string;
+}
+
+/** The setup packet §5.2.1 needs: device-to-host, vendor, recipient interface. */
+export interface UsbControlSetup {
+    requestType: "vendor";
+    recipient: "interface";
+    request: number;
+    value: number;
+    index: number;
 }
 
 export interface UsbConfigurationLike {
@@ -82,6 +109,8 @@ export interface UsbConfigurationLike {
 export interface UsbDeviceLike {
     readonly vendorId: number;
     readonly productId: number;
+    /** `bcdDevice`'s high byte — §5.2's other statement of the wire major. */
+    readonly deviceVersionMajor?: number;
     readonly serialNumber?: string;
     readonly productName?: string;
     readonly opened: boolean;
@@ -93,6 +122,7 @@ export interface UsbDeviceLike {
     releaseInterface(interfaceNumber: number): Promise<void>;
     transferIn(endpointNumber: number, length: number): Promise<UsbInResult>;
     transferOut(endpointNumber: number, data: Uint8Array): Promise<UsbOutResult>;
+    controlTransferIn(setup: UsbControlSetup, length: number): Promise<UsbControlInResult>;
     clearHalt(direction: "in" | "out", endpointNumber: number): Promise<void>;
 }
 
@@ -149,8 +179,8 @@ class WebUsbPipe implements BytePipe {
      *  abandoned. At most one, because {@link receive} claims before it submits.
      *
      *  That claim-then-submit also assumes **one reader at a time** per pipe, which is what the
-     *  layers above provide: the control plane has a single read loop, and `ProtocolClient`'s
-     *  one-transfer gate (§4.1) serialises every bulk read. Two concurrent readers would share this
+     *  layers above provide: the control channel has a single read loop, and the client's
+     *  one-transfer gate (§1) serialises every stream read. Two concurrent readers would share this
      *  one transfer and be handed the same bytes twice rather than a packet each. */
     private heldIn: HeldTransfer | null = null;
     /** OUT transfers still on the wire.
@@ -165,7 +195,7 @@ class WebUsbPipe implements BytePipe {
     private writesInFlight = 0;
 
     constructor(
-        readonly kind: "control" | "bulk",
+        readonly kind: "control" | "stream",
         private readonly device: UsbDeviceLike,
         private readonly inEndpoint: number,
         private readonly outEndpoint: number,
@@ -205,18 +235,18 @@ class WebUsbPipe implements BytePipe {
         }
     }
 
+    /**
+     * One OUT transfer of whatever the caller handed over.
+     *
+     * There is deliberately **no** "must fit one packet" rule here any more. Under the v1 envelope a
+     * control frame was one transfer and a frame at exactly the packet size was indistinguishable
+     * from one that had not ended, so the host refused to send it. §5.2 replaces that with a length
+     * prefix: packet boundaries carry no protocol meaning, records span packets by design, and the
+     * only thing that says where a record ends is its own first two bytes. Keeping the old check
+     * would refuse the ordinary 4,112-byte stream record this protocol is built around.
+     */
     async write(bytes: Uint8Array, signal?: AbortSignal): Promise<void> {
         this.check();
-        // A control frame is one transfer, so it has to fit in one packet: at exactly the packet
-        // size the device could not tell the frame had ended without a zero-length packet, and the
-        // frames this protocol sends are all far below it (the longest is a 512-byte Config write
-        // on an endpoint sized for it).
-        if (this.kind === "control" && bytes.length >= this.packetSize) {
-            throw new PipeError(
-                "device-error",
-                `a ${bytes.length}-byte control frame does not fit the ${this.packetSize}-byte endpoint.`,
-            );
-        }
         const result = await this.transfer(() => this.send(bytes), signal, "the write");
         if (result.status !== "ok") {
             throw new PipeError("device-error", `The device answered "${result.status}" to a write.`);
@@ -227,9 +257,10 @@ class WebUsbPipe implements BytePipe {
      * Return the endpoint pair to a known-empty state — by argument, because WebUSB will not let it
      * be done by force.
      *
-     * §4.1 wants the channel *emptied* before the slot goes to another descriptor. BLE closes and
-     * reopens the CoC; D4's native pipe cancels every URB, drains the completions, then clears the
-     * halt (`apps/obc-desktop/src/usb/link.rs`). This pipe can do only the last of those three.
+     * A transfer that ends before its last record leaves the channel at an unknown offset, so it is
+     * emptied before another transfer uses it. BLE closes and reopens the CoC; D4's native pipe
+     * cancels every URB, drains the completions, then clears the halt
+     * (`apps/obc-desktop/src/usb/link.rs`). This pipe can do only the last of those three.
      * `clearHalt` is a `CLEAR_FEATURE(ENDPOINT_HALT)` control request — it neither cancels a
      * transfer nor discards a byte — and the WebUSB API has no per-transfer cancel at all; the only
      * thing that aborts a submitted transfer is `close()`, which would take the control plane's read
@@ -238,15 +269,17 @@ class WebUsbPipe implements BytePipe {
      *
      * - **Nothing is buffered on the IN side.** A bulk IN endpoint delivers only into an outstanding
      *   transfer; with none submitted there is no host-side buffer at all, and the unread bytes are
-     *   still in the device, where §4.2's abort has it discard them.
+     *   still in the device, where §3.8's cancel has it drop the transfer.
      * - **Stray OUT bytes are the device's problem, and it handles them.** An aborted write leaves a
-     *   `transferOut` that will still be delivered. The firmware reads and discards bytes that
-     *   arrive with no descriptor armed (`firmware/obc-fw-nrf54l/src/usb/data_plane.rs`), which is
-     *   exactly what makes that orphan harmless.
+     *   `transferOut` that will still be delivered. §3.8 has the device discard stream frames bearing
+     *   a `RequestId` that is not the live transfer's — in silence, because late frames from a
+     *   transfer the peer has been told about are ordinary in-flight traffic — which is exactly what
+     *   makes that orphan harmless, and why the client never reuses a `RequestId`.
      * - **A cancelled read's transfer is kept, not orphaned — if it is still pending.** This is the
-     *   one C3 got wrong, and the abort handshake is why it matters rather than why it doesn't.
-     *   `ProtocolClient.sendAbort` waits for `transferResult(aborted)`, and a device that has
-     *   answered it sends **nothing more** for that object — so a transfer still pending then will
+     *   one C3 got wrong, and the cancel handshake is why it matters rather than why it doesn't.
+     *   `FlatStoreClient` waits for the cancelled transfer's own `cancelled` response, and a device
+     *   that has answered it sends **nothing more** for that object — so a transfer still pending
+     *   then will
      *   never see a stale byte, and will never complete on its own either. It just sits on the
      *   endpoint. Submitting a fresh `transferIn` for the next object would queue *behind* it, and
      *   the abandoned one would take that object's first packet and drop it on the floor: a
@@ -423,15 +456,16 @@ class WebUsbPipe implements BytePipe {
 export interface EndpointLayout {
     interfaceNumber: number;
     control: { in: number; out: number; packetSize: number };
-    bulk: { in: number; out: number; packetSize: number };
+    stream: { in: number; out: number; packetSize: number };
 }
 
 /**
- * Pick the vendor interface and split its endpoints into a control pair and a bulk pair.
+ * Pick the vendor interface and split its endpoints into a control pair and a stream pair.
  *
- * The rule — lowest-numbered IN/OUT pair is control, the next is bulk — is the host's half of a
- * contract #889 has yet to write down. It is deliberately mechanical so the firmware descriptor can
- * be read off it, and {@link openWebUsbLink} takes an explicit layout for when the real one differs.
+ * The rule — lowest-numbered IN/OUT pair is control, the next is stream — is what the firmware
+ * descriptors declare, so this is a contract rather than a guess. It is deliberately mechanical so
+ * the descriptor can be read off it, and {@link openWebUsbLink} takes an explicit layout for a
+ * device whose real one differs.
  */
 export function discoverLayout(configuration: UsbConfigurationLike): EndpointLayout {
     const iface = configuration.interfaces.find((i) => i.alternate.interfaceClass === VENDOR_CLASS);
@@ -447,14 +481,41 @@ export function discoverLayout(configuration: UsbConfigurationLike): EndpointLay
         throw new PipeError(
             "device-error",
             `The device's interface exposes ${ins.length} IN and ${outs.length} OUT endpoints; ` +
-                "two of each are needed (a control pair and a bulk pair).",
+                "two of each are needed (a control pair and a stream pair).",
         );
     }
     return {
         interfaceNumber: iface.interfaceNumber,
         control: { in: ins[0].endpointNumber, out: outs[0].endpointNumber, packetSize: ins[0].packetSize },
-        bulk: { in: ins[1].endpointNumber, out: outs[1].endpointNumber, packetSize: ins[1].packetSize },
+        stream: { in: ins[1].endpointNumber, out: outs[1].endpointNumber, packetSize: ins[1].packetSize },
     };
+}
+
+/**
+ * Refuse a device that does not announce wire major {@link WIRE_MAJOR} (§5.2).
+ *
+ * Both statements are checked, and neither is required to be present: WebUSB exposes
+ * `deviceVersionMajor` everywhere but `interfaceProtocol` only on `alternate`, and a test harness
+ * that scripts one of them should not have to script both. What is refused is a device that
+ * *contradicts* the major — saying nothing is treated as an older descriptor and left to fail on the
+ * first exchange, where the failure names an actual message rather than a missing field.
+ *
+ * The message shape is the one the v1 identity read used, because the rider's two options have not
+ * changed: the device is behind, or the page is.
+ */
+export function checkWireMajor(device: UsbDeviceLike, layout: EndpointLayout, configuration: UsbConfigurationLike): void {
+    const iface = configuration.interfaces.find((i) => i.interfaceNumber === layout.interfaceNumber);
+    const stated = [device.deviceVersionMajor, iface?.alternate.interfaceProtocol].filter(
+        (value): value is number => typeof value === "number",
+    );
+    const wrong = stated.find((value) => value !== WIRE_MAJOR);
+    if (wrong !== undefined) {
+        throw new PipeError(
+            "device-error",
+            `This device speaks protocol v${wrong}; this page speaks v${WIRE_MAJOR}. ` +
+                "Update the device firmware, or reload the page for a newer build.",
+        );
+    }
 }
 
 function byNumber(a: UsbEndpointLike, b: UsbEndpointLike): number {
@@ -468,29 +529,68 @@ export interface WebUsbLink extends DeviceLink {
     disconnected(): void;
 }
 
-/** Open, configure and claim a device, returning its two pipes. */
+/**
+ * Open, configure and claim a device, returning its two channels and its EP0 read.
+ *
+ * The wire major is checked here, between the claim and the first record: §5.2 settles it by
+ * matching, and a device that says something else must never be handed to a client that would then
+ * misparse every frame it sent.
+ */
 export async function openWebUsbLink(device: UsbDeviceLike, layout?: EndpointLayout): Promise<WebUsbLink> {
     if (!device.opened) await device.open();
     if (!device.configuration) await device.selectConfiguration(1);
     const configuration = device.configuration;
     if (!configuration) throw new PipeError("device-error", "The device offers no USB configuration.");
     const chosen = layout ?? discoverLayout(configuration);
+    checkWireMajor(device, chosen, configuration);
     await device.claimInterface(chosen.interfaceNumber);
 
     const control = new WebUsbPipe("control", device, chosen.control.in, chosen.control.out, chosen.control.packetSize);
-    const bulk = new WebUsbPipe("bulk", device, chosen.bulk.in, chosen.bulk.out, chosen.bulk.packetSize);
+    const stream = new WebUsbPipe("stream", device, chosen.stream.in, chosen.stream.out, chosen.stream.packetSize);
     return {
         device,
         control,
-        bulk,
+        stream,
+        /**
+         * §5.2.1's EP0 vendor request. Recipient **interface** rather than device, so it cannot
+         * collide with the device-level MS OS 2.0 descriptor request the same device answers for
+         * Windows; `wIndex` is therefore the interface this link claimed.
+         */
+        async vendorIn(request: number, value: number, length: number): Promise<Uint8Array> {
+            let result: UsbControlInResult;
+            try {
+                result = await device.controlTransferIn(
+                    {
+                        requestType: "vendor",
+                        recipient: "interface",
+                        request,
+                        value,
+                        index: chosen.interfaceNumber,
+                    },
+                    length,
+                );
+            } catch (cause) {
+                throw new PipeError("device-error", describe(cause), { cause });
+            }
+            if (result.status !== "ok") {
+                throw new PipeError("device-error", `The device answered "${result.status}" to a control request.`);
+            }
+            const data = result.data;
+            // §5.2.1 says the device returns a short transfer, so an empty one is a device that
+            // stalled the request in all but name rather than a device with no strings.
+            if (!data || data.byteLength === 0) {
+                throw new PipeError("device-error", "The device returned nothing for a control request.");
+            }
+            return new Uint8Array(data.buffer, data.byteOffset, data.byteLength).slice();
+        },
         disconnected() {
             const error = new PipeError("closed", "The device was unplugged.");
             control.fail(error);
-            bulk.fail(error);
+            stream.fail(error);
         },
         async close() {
             await control.close();
-            await bulk.close();
+            await stream.close();
             try {
                 await device.releaseInterface(chosen.interfaceNumber);
                 await device.close();
@@ -506,12 +606,26 @@ export async function openWebUsbLink(device: UsbDeviceLike, layout?: EndpointLay
 /** What the UI renders. */
 export type DeviceStatus = "unsupported" | "idle" | "connecting" | "ready" | "error";
 
+/**
+ * The store the connected device holds, as `LIST` reports it (§3.3).
+ *
+ * This is what the v1 identity read used to carry, minus everything the descriptors now answer. A
+ * `StoreId` a client has not seen means the card was re-initialized and everything it cached is
+ * void; the commit sequence is how it learns of a movement it did not cause.
+ */
+export interface StoreIdentity {
+    readonly storeId: string;
+    readonly commitSequence: bigint;
+}
+
 /** The watcher's whole observable state, handed to subscribers as one immutable snapshot. */
 export interface DeviceState {
     status: DeviceStatus;
     /** Non-null exactly when `status === "ready"`. */
-    client: ProtocolClient | null;
-    identity: VersionRead | null;
+    client: FlatStoreClient | null;
+    /** The card's identity, read back from the `LIST` every client issues first. */
+    store: StoreIdentity | null;
+    /** The three §5.2.1 strings, or `null` where this host cannot issue an EP0 request. */
     info: DeviceInfo | null;
     /** A message written for the rider, non-null exactly when `status === "error"`. */
     error: string | null;
@@ -525,7 +639,7 @@ export interface WatcherOptions extends ClientOptions {
 }
 
 /**
- * Finds the device, keeps up with plugging and unplugging, and owns the {@link ProtocolClient}.
+ * Finds the device, keeps up with plugging and unplugging, and owns the {@link FlatStoreClient}.
  *
  * Framework-free on purpose — `session.svelte.ts` is a thin reactive shell over this, and D4 reuses
  * it unchanged behind a native transport. Subscribers get an immutable snapshot per change, so a
@@ -545,7 +659,7 @@ export class WebUsbWatcher {
         this.state = {
             status: this.usb ? "idle" : "unsupported",
             client: null,
-            identity: null,
+            store: null,
             info: null,
             error: this.usb
                 ? null
@@ -606,7 +720,7 @@ export class WebUsbWatcher {
     /** Drop the link but keep watching, so re-plugging reconnects. */
     async disconnect(): Promise<void> {
         const client = this.state.client;
-        this.publish({ status: this.usb ? "idle" : "unsupported", client: null, identity: null, info: null, error: null });
+        this.publish({ status: this.usb ? "idle" : "unsupported", client: null, store: null, info: null, error: null });
         await client?.close();
         this.link = null;
     }
@@ -624,20 +738,28 @@ export class WebUsbWatcher {
         let link: WebUsbLink | null = null;
         try {
             link = await openWebUsbLink(device, this.options.layout);
-            const client = new ProtocolClient(link, { timeoutMs: this.options.timeoutMs });
-            // The identity read is first on every connection and gates everything else: a version
-            // mismatch is surfaced and stopped on rather than best-effort decoded (§1).
-            const identity = await client.identity();
+            const client = new FlatStoreClient(link, { timeoutMs: this.options.timeoutMs });
+            // §5.2.1 first, because it sits below the record framing: the firmware revision is what
+            // "an update is available" compares against, and it is readable the moment the interface
+            // is claimed. Then `LIST`, which §3 says every client issues before it does anything
+            // else and which is where the store's identity and cache freshness come from.
             const info = await client.deviceInfo();
+            const page = await client.listPage({});
             this.link = link;
-            this.publish({ status: "ready", client, identity, info, error: null });
+            this.publish({
+                status: "ready",
+                client,
+                store: { storeId: page.storeId, commitSequence: page.commitSequence },
+                info,
+                error: null,
+            });
             return true;
         } catch (cause) {
             // A device claimed but never handshaken still holds its interface. Releasing it is what
             // lets a retry — or another tab — get at the device instead of finding it busy.
             await link?.close().catch(() => undefined);
             this.link = null;
-            this.publish({ status: "error", client: null, identity: null, info: null, error: describe(cause) });
+            this.publish({ status: "error", client: null, store: null, info: null, error: describe(cause) });
             return false;
         }
     }
@@ -660,7 +782,7 @@ export class WebUsbWatcher {
         this.link.disconnected();
         const client = this.state.client;
         this.link = null;
-        this.publish({ status: "idle", client: null, identity: null, info: null, error: null });
+        this.publish({ status: "idle", client: null, store: null, info: null, error: null });
         void client?.close();
     };
 

@@ -90,7 +90,7 @@ export const platform: Platform = {
     // Native USB (D4 #909), loaded on demand for the same reason the web host
     // does it: the protocol client, the codecs and the transport are their own
     // chunk, and a window that only builds a map never parses them. Underneath
-    // it is C3's `ProtocolClient` unchanged — only the byte pipe differs.
+    // it is the same `FlatStoreClient` the browser drives — only the byte pipe differs.
     device: async () => {
         const { openNativeSession } = await import("../desktop/usb.svelte");
         return openNativeSession();

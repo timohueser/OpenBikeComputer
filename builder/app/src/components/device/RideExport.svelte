@@ -1,21 +1,25 @@
 <!--
   The rides on the device, and a GPX out of any one of them (C5, #904).
 
-  The only surface here that *reads* from the device instead of writing to it, and the only one
-  whose central design question is what it must not do. `synced` on the device means "a durable copy
-  exists off the device" — it guards deletes and anchors the auto-expiry countdown (#638) — and a
-  browser download is not durable: the rider can cancel at the save dialog. So this panel never
-  acks, and the panel is handed a `RideSource` rather than a client so that it cannot (see
-  `lib/device/rides.ts`).
+  The only surface here that *reads* from the device instead of writing to it. It is handed a
+  `RideSource` rather than a client, so "this panel cannot change anything on the device" is a
+  property of the object it holds rather than of what it remembers not to call
+  (`lib/device/rides.ts`).
 
-  That has a consequence the rider has to be told, in one line, right here: an export is not a
-  backup. Someone who believes it was, and then lets the device auto-delete, has lost a ride. The
-  sentence sits under the list rather than in a tooltip for exactly that reason.
+  Nothing on this path tells the device anything, and that is now true of every USB peer: §5.2.2
+  retires the v1 possession acknowledgement, because an ack changes no object and so has no store
+  meaning. The rider still has to be told the consequence, in one line, right here — an export is
+  not a backup. The file that lands in a Downloads folder is the only copy, and the device does not
+  know it exists.
 
   The catalog is read once, on mount, and there is deliberately no subscription to the store's
-  change signal: a ride is only created by finishing one, and nobody finishes a ride with a cable
+  commit sequence: a ride is only created by finishing one, and nobody finishes a ride with a cable
   plugged in. A reconnect remounts this panel anyway, which is the one case where the list could
   really have gone stale.
+
+  A `LIST` entry carries the name and the payload's size and nothing else about a ride (§3.3), so
+  that is the line under each name. The start time, distance and duration are in the ride object,
+  which only an export downloads.
 -->
 <script lang="ts">
     import { onMount } from "svelte";
@@ -25,11 +29,10 @@
     import { DeviceJob } from "../../lib/device/job.svelte";
     import {
         exportRide,
-        rideDistance,
-        rideDuration,
+        recordedRides,
         rideKey,
         scopeKey,
-        type RideListEntry,
+        type CatalogEntry,
         type RideScope,
         type RideSource,
     } from "../../lib/device/rides";
@@ -40,17 +43,16 @@
 
     const job = new DeviceJob("ride");
 
-    let entries = $state<RideListEntry[]>([]);
-    let truncated = $state(false);
+    let entries = $state<CatalogEntry[]>([]);
     let loading = $state(true);
     let listError = $state<string | null>(null);
     /**
-     * Rides exported in *this visit*, keyed by `(serial, epoch, id)`.
+     * Rides exported in *this visit*, keyed by `(serial, era, id)`.
      *
      * Not a record of anything — it is never persisted, and it is thrown away the moment the id era
-     * changes, because a store-epoch bump recycles ids and a tick against a recycled id would be a
-     * claim about a ride nobody has seen. It exists so the row says "exported" instead of nothing,
-     * which is a different word from "synced" on purpose.
+     * changes, because a re-initialized card starts its ids again and a tick against a restarted id
+     * would be a claim about a ride nobody has seen. It exists so the row says "exported" instead
+     * of nothing.
      */
     let exported = $state(new Set<string>());
     let lastScope = "";
@@ -74,9 +76,15 @@
         loading = entries.length === 0;
         listError = null;
         try {
-            const catalog = await rides.listRides();
-            entries = [...catalog.entries].sort((a, b) => b.startTime - a.startTime || b.objectId - a.objectId);
-            truncated = catalog.truncated;
+            // Newest first, by `ObjectId`. A `LIST` entry carries no start time, and the id comes
+            // from a monotonic allocation cursor never reused within one card
+            // (`FLAT_Store_Format.md` §3) — so on one card, id order *is* recording order.
+            //
+            // `recordedRides` drops what is still being recorded: §3.5 refuses a `GET` of an entry
+            // carrying `RECORDING`, so such a row could only ever be an error to click.
+            entries = recordedRides(await rides.listRides()).sort((a, b) =>
+                a.objectId < b.objectId ? 1 : a.objectId > b.objectId ? -1 : 0,
+            );
         } catch (cause) {
             listError = cause instanceof Error ? cause.message : String(cause);
         } finally {
@@ -84,7 +92,7 @@
         }
     }
 
-    async function save(entry: RideListEntry) {
+    async function save(entry: CatalogEntry) {
         const result = await job.run(
             (ctx) => exportRide(rides, entry, ctx),
             (value) => `Saved ${value.filename} — ${value.points.toLocaleString()} points.`,
@@ -92,20 +100,6 @@
         if (!result) return;
         saveBytes(new TextEncoder().encode(result.gpx), result.filename, "application/gpx+xml");
         exported = new Set(exported).add(rideKey(scope, entry.objectId));
-    }
-
-    /** The one line under a ride's name: when, how far, how long, how big. */
-    function facts(entry: RideListEntry): string {
-        const when = entry.startTime
-            ? new Date(entry.startTime * 1000).toLocaleDateString(undefined, {
-                  year: "numeric",
-                  month: "short",
-                  day: "numeric",
-              })
-            : "date not recorded";
-        return [when, rideDistance(entry.distanceM), rideDuration(entry.movingTimeS), formatBytes(entry.byteLen)].join(
-            " · ",
-        );
     }
 </script>
 
@@ -125,12 +119,12 @@
                 <li>
                     <div class="what">
                         <p class="name">
-                            {entry.name || `Ride ${entry.objectId}`}
+                            {entry.displayName || `Ride ${entry.objectId}`}
                             {#if exported.has(rideKey(scope, entry.objectId))}
                                 <span class="tag">exported</span>
                             {/if}
                         </p>
-                        <p class="small faint">{facts(entry)}</p>
+                        <p class="small faint">{formatBytes(Number(entry.payloadLength))}</p>
                     </div>
                     <button type="button" class="btn" disabled={job.running} onclick={() => void save(entry)}>
                         Export GPX
@@ -139,15 +133,9 @@
             {/each}
         </ul>
 
-        {#if truncated}
-            <p class="small faint">
-                The device listed its newest rides only; older ones are still on the card.
-            </p>
-        {/if}
-
         <p class="small muted">
-            An export is not a backup — the device is not told, the ride stays unsynced there, and
-            the file you save is the only copy.
+            An export is not a backup — the device is not told anything, and the file you save is the
+            only copy.
         </p>
         <Gated need="rideLibrary" />
     {/if}

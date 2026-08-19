@@ -8,6 +8,11 @@
     // "From device" uses the same shared USB session as step 4. The chooser is
     // opened directly from its click (WebUSB's user-gesture rule), list entries
     // stay cheap, and an OBCR is downloaded/decoded only when selected.
+    //
+    // A catalog entry carries the name and the payload's size and nothing else
+    // about a route (`FLAT_Store_Protocol.md` §3.3), so the rows show those; the
+    // length in km comes out of the OBCR header once a route is actually picked
+    // and downloaded, which is the only moment this side can know it.
 
     import { onDestroy, onMount } from "svelte";
     import { GpxError, parseGpx, type GpxRoute } from "../../lib/coverage/gpx";
@@ -20,7 +25,7 @@
     import { formatBytes } from "../../lib/format";
     import { confirmAction } from "../../lib/ui/confirm.svelte";
     import { deviceHolder } from "../../lib/device/session.svelte";
-    import type { RouteListEntry } from "../../lib/usb/objects";
+    import type { CatalogEntry } from "../../lib/usb/protocol";
     import { MAX_ROUTE_POINTS } from "../../lib/coverage/gpx";
 
     let { store, onclose }: { store: CoverageStore; onclose: () => void } = $props();
@@ -64,10 +69,10 @@
 
     let routes = $state<PanelRoute[]>([]);
     let uploadError = $state<string | null>(null);
-    let deviceEntries = $state<RouteListEntry[]>([]);
+    let deviceEntries = $state<CatalogEntry[]>([]);
     let deviceError = $state<string | null>(null);
     let deviceLoading = $state(false);
-    let deviceRouteLoading = $state<Set<number>>(new Set());
+    let deviceRouteLoading = $state<Set<bigint>>(new Set());
     let prompting = $state(false);
     let listedClient: object | null = null;
     let source = $state<"gpx" | "device">("gpx");
@@ -149,7 +154,10 @@
         deviceLoading = true;
         deviceError = null;
         try {
-            deviceEntries = (await client.listRoutes()).entries;
+            // Dynamic, like every other reach into `lib/usb` from this panel: the panel is in the
+            // entry chunk and `usb/bundle.test.ts` fails if the stack follows it there.
+            const { ObjectKind } = await import("../../lib/usb/protocol");
+            deviceEntries = [...(await client.list({ kind: ObjectKind.Route })).entries];
             listedClient = client;
         } catch (cause) {
             deviceError = cause instanceof Error ? cause.message : String(cause);
@@ -174,9 +182,9 @@
         void session.requestDevice().finally(() => (prompting = false));
     }
 
-    const deviceRouteId = (objectId: number) => `device-${objectId}`;
+    const deviceRouteId = (objectId: bigint) => `device-${objectId}`;
 
-    async function toggleDeviceRoute(entry: RouteListEntry, checked: boolean) {
+    async function toggleDeviceRoute(entry: CatalogEntry, checked: boolean) {
         const id = deviceRouteId(entry.objectId);
         if (!checked) {
             removeRoute(id);
@@ -187,11 +195,14 @@
         deviceRouteLoading = new Set(deviceRouteLoading).add(entry.objectId);
         deviceError = null;
         try {
-            const [{ routeTrack }, { ObjectType }] = await Promise.all([
+            const [{ routeTrack }, { decodeRouteHeader }] = await Promise.all([
                 import("../../lib/convert/bridge"),
-                import("../../lib/usb/protocol"),
+                import("../../lib/device/route"),
             ]);
-            const decoded = await routeTrack(await client.download(ObjectType.Route, entry.objectId));
+            // The entry's own `(ObjectId, Revision)`, not the head: the listing and the download
+            // then name the same bytes even if the card moved in between.
+            const obcr = (await client.get({ objectId: entry.objectId, revision: entry.revision })).bytes;
+            const decoded = await routeTrack(obcr);
             if (decoded.length < 2) throw new Error("The stored route contains fewer than two points.");
             const step = decoded.length <= MAX_ROUTE_POINTS ? 1 : (decoded.length - 1) / (MAX_ROUTE_POINTS - 1);
             const points = Array.from(
@@ -202,7 +213,13 @@
                 id,
                 origin: "device",
                 checked: true,
-                route: { name: entry.name, points, distanceKm: entry.distanceM / 1000 },
+                route: {
+                    name: entry.displayName,
+                    points,
+                    // From the OBCR header just downloaded (`OBCR_Spec.md` §1) — the catalog has no
+                    // distance to offer, and this is the same number the device navigates by.
+                    distanceKm: decodeRouteHeader(obcr).distanceM / 1000,
+                },
             });
         } catch (cause) {
             deviceError = cause instanceof Error ? cause.message : String(cause);
@@ -316,9 +333,9 @@
                                             (event.currentTarget as HTMLInputElement).checked,
                                         )}
                                 />
-                                <span class="name">{entry.name}</span>
+                                <span class="name">{entry.displayName || `Route ${entry.objectId}`}</span>
                             </label>
-                            <span class="mono faint small">{Math.round(entry.distanceM / 1000)} km</span>
+                            <span class="mono faint small">{formatBytes(Number(entry.payloadLength))}</span>
                         </li>
                     {/each}
                 </ul>
