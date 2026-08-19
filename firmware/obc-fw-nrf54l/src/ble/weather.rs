@@ -7,8 +7,7 @@
 //!
 //! - **Inputs** cross the plane boundary the same way every other App fact does: the ride loop
 //!   distils an [`obc_app::ble::WeatherSnapshot`] once per pass ([`set_weather_inputs`], the reverse
-//!   direction of `app_ble_status`), the Config write path pokes [`note_settings_changed`], and a
-//!   committed bundle pokes [`note_commit`] from the store's finish path.
+//!   direction of `app_ble_status`), and the Config write path pokes [`note_settings_changed`].
 //! - **Outputs** are exactly two: `server.set` on the Weather Request context attribute (so the
 //!   next authenticated read serves this request), and [`super::state::arm_weather_request`] (the
 //!   bounded advertising swap the lifecycle loop already honours — budget expiry and the
@@ -16,6 +15,26 @@
 //!
 //! Nothing here is periodic: the task sleeps until the scheduler's own next instant or an event
 //! edge, so an idle, not-riding device costs no wakeups at all.
+//!
+//! # ⚠️ Parked for the c3a dev window (FS7.5-c3a, epic #1256)
+//!
+//! **This plane raises no requests right now, and that is deliberate rather than broken.** §11.5
+//! bound the OBCW exchange to the CoC, and the CoC now carries protocol-v4 stream records: a weather
+//! bundle is object kind 4 and arrives as an ordinary `PUT`. The v1 upload path — and with it
+//! `note_commit`, which was the **only** writer of the commit edge — was deleted by the radio's
+//! cutover.
+//!
+//! Left running, the consequences would all be lies told to the rider: `commit_succeeded` could
+//! never fire, so every request would run the retry ladder to exhaustion; [`refresh_in_flight`]
+//! would stick `true` and leave the ride UI showing a refresh that can never finish; and the phone
+//! would be woken, repeatedly, for an upload the device has nowhere to put. On a flat card a
+//! `WeatherBundle` `PUT` does land — but nothing reads it yet, because the reader still comes
+//! through the FAT weather slots.
+//!
+//! So [`run`] parks after one log line. It is the smallest honest state: no requests, no ladder, no
+//! stuck spinner, and nothing pretending to work. **Unparking is the weather cutover** — teaching
+//! the reader to take kind 4 out of the flat store and ringing the commit edge from wherever that
+//! lands — which is its own slice and deliberately not smuggled in here.
 
 use core::cell::{Cell, RefCell};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -124,6 +143,14 @@ pub(crate) fn note_settings_changed() {
 /// The due-scheduler loop. Joined into `ble::run`'s task set for the stack's whole life; every
 /// local is small (the context is 52 bytes) so it adds no meaningful poll-frame weight (#677).
 pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, shared: &SharedStoreMutex) -> ! {
+    // See the module docs: the commit edge this scheduler needs died with the v1 CoC upload path,
+    // and every branch below would raise requests nothing can satisfy. Parking is what keeps the UI
+    // honest until the weather cutover lands.
+    warn!(
+        "ble: [weather] parked for the c3a dev window — the OBCW upload path is gone with the v1 CoC; no requests are raised and the refresh indicator stays clear"
+    );
+    core::future::pending::<()>().await;
+    #[allow(unreachable_code)]
     let mut sched = DueScheduler::new();
     // Whether the GATT attribute currently carries a live request (vs. the §11.4 resting value).
     let mut context_live = false;
