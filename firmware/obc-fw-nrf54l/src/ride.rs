@@ -1724,9 +1724,8 @@ pub(crate) async fn run_app(
                                                     finished = Some(Ok((id, len)));
                                                 }
                                                 obc_app::host::NavPublishDisposition::Compensate(id) => {
-                                                    run.io = NavIo::NeedPublishCompensation(
-                                                        obc_storage::flat::ObjectId(id),
-                                                    );
+                                                    run.io =
+                                                        NavIo::NeedPublishCompensation(obc_storage::flat::ObjectId(id));
                                                 }
                                             }
                                         }
@@ -1870,7 +1869,11 @@ pub(crate) async fn run_app(
             // POI-browser navigation needed. `has_nav` only (the router isn't in the `ble` image).
             #[cfg(all(feature = "debug-uart", has_nav))]
             if let Some((from, to)) = obc_platform::debug_link::take_nav() {
-                if !app.debug_start_nav(from, to, "Bench") {
+                // `NavPlanning` normally mirrors this, but test the host's actual ownership too:
+                // Back may already have popped the screen while its cancellation is still queued.
+                // A debug N in that window must not become a replacement plan that overwrites the
+                // resident planner before the old run has released its allocation.
+                if nav_run.is_some() || !app.debug_start_nav(from, to, "Bench") {
                     defmt::warn!("nav plan: ignored repeated debug N while a plan is active");
                 }
             }
