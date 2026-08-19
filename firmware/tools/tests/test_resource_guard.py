@@ -133,6 +133,13 @@ other:
         with self.assertRaisesRegex(resource_guard.GuardError, "no rustc invocation"):
             resource_guard.validate_build_rustflags("Fresh release build", "obc-fw-nrf54l")
 
+    def test_actual_shipping_rustc_invocation_accepts_cargo_colour_sequences(self):
+        ci_log = (
+            "\x1b[1m\x1b[92m     Running\x1b[0m `rustc --crate-name obc_boot "
+            "--edition=2021 -C target-feature=+strict-align src/main.rs`\n"
+        )
+        resource_guard.validate_build_rustflags(ci_log, "obc-boot")
+
     def test_resource_table_is_self_describing(self):
         def entry(name, value):
             return name.encode().ljust(32, b"\0") + struct.pack("<I", value)
