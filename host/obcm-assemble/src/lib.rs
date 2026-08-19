@@ -481,7 +481,7 @@ pub fn assemble_full(
     let core_band = schema.core_band().expect("validated: exactly one core band");
     let core_cells: Vec<&Cell<'_>> = cells.iter().filter(|c| c.band == core_band.id).collect();
     let merged_pois = poi::merge(&core_cells)?;
-    let poi_section = poi::layout(&merged_pois, assembly.ubox());
+    let poi_section = poi::layout(&merged_pois, assembly.ubox())?;
     let t_poi = clock.now_us();
     let merged_nav = nav::merge(
         &core_cells,

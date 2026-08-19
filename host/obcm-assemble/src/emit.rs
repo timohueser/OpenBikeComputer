@@ -21,7 +21,7 @@
 //! rather than into a buffer the size of the map.
 
 use obc_formats::obcm::{
-    OffsetScale, FILLER, HEADER_LEN, LOD_ENTRY_LEN, MAGIC, STYLE_DASHED_BIT, STYLE_FIXED_WIDTH_BIT,
+    OffsetScale, UnitWriter, HEADER_LEN, LOD_ENTRY_LEN, MAGIC, STYLE_DASHED_BIT, STYLE_FIXED_WIDTH_BIT,
     STYLE_HAS_COLOR2_BIT, STYLE_PRIORITY_MASK, STYLE_RECORD_LEN, STYLE_TERRAIN_LAYER_BIT, VERSION,
 };
 use sha2::{Digest, Sha256};
@@ -162,9 +162,19 @@ pub fn scaled(at: u64) -> Result<u32> {
     })
 }
 
-/// A run of [`FILLER`] long enough for any single §1.2 gap this writer emits — one unit for the
-/// section boundaries, one 512-byte sector for §8.1's alignment runs. Sliced, never allocated.
-pub(crate) const FILLER_RUN: [u8; obc_formats::obcm::NAV_CHUNK_SIZE] = [FILLER; obc_formats::obcm::NAV_CHUNK_SIZE];
+/// This engine's cursor: a [`UnitWriter`] over the assembly's output sink.
+///
+/// Every writer below takes one rather than a bare byte sink, so §1.2's boundaries are found by the
+/// same cursor the bytes go through — and so the section writers need no position counter of their
+/// own to know where they are in the file.
+pub type MapWriter<'a> = UnitWriter<'a, Error>;
+
+/// Walk a layout with a cursor whose sink keeps nothing — the *projection* of a section, run
+/// through the arithmetic that emits it rather than through a second copy of it.
+pub(crate) fn place<T>(at: u64, walk: impl FnOnce(&mut UnitWriter<'_, Error>) -> Result<T>) -> Result<T> {
+    let mut discard = |_: &[u8]| -> Result<()> { Ok(()) };
+    walk(&mut UnitWriter::new(SCALE, at, &mut discard))
+}
 
 /// Where a producer SHOULD warn (OBCA §5.7): seven eighths of the wall, i.e. "you are close".
 ///
@@ -243,27 +253,15 @@ impl MapPlan {
         // §1.3: terrain sits last, precisely so that splicing it moves no other offset. A map with
         // no raster ends at the nav section and writes `(0, 0)` — the header pair that means "this
         // map carries no elevation", which is unambiguous because byte 0 is the header itself.
-        let (terrain_offset, terrain_len, nav_gap, terrain_gap, total) = if self.terrain_bytes == 0 {
-            (0, 0, 0, 0, nav_end)
+        let (terrain_offset, terrain_len, total) = if self.terrain_bytes == 0 {
+            (0, 0, nav_end)
         } else {
             let at = align_up(nav_end);
             let end = at.checked_add(self.terrain_bytes).ok_or_else(|| self.past_u64())?;
             let total = align_up(end);
-            (at, total - at, at - nav_end, total - end, total)
+            (at, total - at, total)
         };
-        Ok(Layout {
-            lod_table_offset,
-            style_gap: lod_table_offset - style_end,
-            table_gap: payload_start - table_end,
-            lod_offsets,
-            poi_offset,
-            nav_offset,
-            nav_gap,
-            terrain_offset,
-            terrain_len,
-            terrain_gap,
-            total,
-        })
+        Ok(Layout { lod_table_offset, lod_offsets, poi_offset, nav_offset, terrain_offset, terrain_len, total })
     }
 
     fn past_u64(&self) -> Error {
@@ -281,27 +279,20 @@ impl MapPlan {
     }
 }
 
+/// Where each region starts. The §1.2 gaps *between* them are not here: [`write`] reaches them by
+/// asking its cursor for the next unit boundary, which is the same arithmetic this used to carry a
+/// field per gap for.
 struct Layout {
     lod_table_offset: u64,
-    /// §1.2 filler between the style table and the LOD table.
-    style_gap: u64,
-    /// …and between the LOD table and the first LOD's index.
-    table_gap: u64,
     lod_offsets: Vec<u64>,
     poi_offset: u64,
     nav_offset: u64,
-    /// §1.2 filler between the end of the nav section and the terrain region — `0` for a map with
-    /// no raster, whose nav section is the last thing in the file.
-    nav_gap: u64,
     /// Byte offset of the §1.3 terrain region, or `0` for a map with no elevation.
     terrain_offset: u64,
     /// The region's length **including** the filler `Terrain Length`'s unit count rounds up to, so
     /// that the header's pair is `(offset, len)` in bytes and both scale by the same rule. `0`
     /// exactly when `terrain_offset` is — §1.3 makes a reader refuse a file that sets one alone.
     terrain_len: u64,
-    /// §1.2 filler between the OBCT container's last byte and the unit boundary `Terrain Length`
-    /// rounds up to — §1.3's "the window is up to `U − 1` bytes longer than the container".
-    terrain_gap: u64,
     total: u64,
 }
 
@@ -387,16 +378,15 @@ pub fn write(
     }
 
     let mut hasher = Sha256::new();
-    let mut written: u64 = 0;
     let mut out = |buf: &[u8]| -> Result<()> {
         hasher.update(buf);
-        written += buf.len() as u64;
         sink(buf)
     };
+    let mut w = MapWriter::new(SCALE, 0, &mut out);
 
     // 1. Header (bbox stored lat, lon, lat, lon — `OBCM_Spec.md` §1), then the §1.2 filler that
     //    carries the 49-byte header to the style table's unit boundary.
-    out(&header_block(
+    w.put(&header_bytes(
         plan.box_,
         plan.lods.len(),
         marker_color,
@@ -406,45 +396,46 @@ pub fn write(
         l.terrain_offset,
         l.terrain_len,
     )?)?;
+    w.begin_section()?;
 
     // 2. Style table (the skin, §4.7) and 3. the LOD table, each followed by the filler that lands
     //    the next scaled-offset-named structure on its boundary.
-    out(&style_bytes)?;
-    out(&FILLER_RUN[..l.style_gap as usize])?;
+    w.put(&style_bytes)?;
+    w.begin_section()?;
     let mut table = Vec::with_capacity(plan.lods.len() * LOD_ENTRY_LEN);
     for (p, &offset) in plan.lods.iter().zip(&l.lod_offsets) {
         push_lod_entry(&mut table, p.max_mpp, scaled(offset)?, p.node_count, p.chunk_size, p.chunk_count);
     }
-    out(&table)?;
-    out(&FILLER_RUN[..l.table_gap as usize])?;
+    w.put(&table)?;
+    w.begin_section()?;
 
     // 4. Each LOD region: fresh upper tree, relocated cell blocks, offset table, chunk bytes.
     for p in &plan.lods {
-        graft::emit_lod(p, cells, &mut out)?;
+        graft::emit_lod(p, cells, &mut w)?;
     }
 
     // 5/6. The POI and nav sections.
     //
-    // Both section writers take a `usize` base. That is a 32-bit type in the wasm32 `--lib` build
-    // this engine actually ships in, so these conversions are checked rather than cast: a layout
-    // past `usize` would otherwise wrap and address a section that is not there. `FILE_CEILING`
-    // keeps them unreachable today, but a ceiling is a policy and a cast is forever.
-    let poi_base = usize::try_from(l.poi_offset).map_err(|_| plan.past_usize("POI", l.poi_offset))?;
+    // The nav writer takes a `usize` base. That is a 32-bit type in the wasm32 `--lib` build this
+    // engine actually ships in, so the conversion is checked rather than cast: a layout past `usize`
+    // would otherwise wrap and address a section that is not there. `FILE_CEILING` keeps it
+    // unreachable today, but a ceiling is a policy and a cast is forever.
     let nav_base = usize::try_from(l.nav_offset).map_err(|_| plan.past_usize("nav", l.nav_offset))?;
-    out(&crate::poi::serialize(poi, poi_base)?)?;
-    crate::nav::serialize(nav, profile_table, nav_base, nav_cells, scratch, &mut out)?;
+    crate::poi::emit(poi, &mut w)?;
+    crate::nav::serialize(nav, profile_table, nav_base, nav_cells, scratch, &mut w)?;
 
     // 7. The raster (§1.3): the filler that carries the nav section to the region's unit boundary,
     //    the OBCT container verbatim, then the filler `Terrain Length`'s unit count rounds up to.
     if let Some(region) = terrain {
-        out(&FILLER_RUN[..l.nav_gap as usize])?;
-        region.emit(&mut out)?;
-        out(&FILLER_RUN[..l.terrain_gap as usize])?;
+        w.begin_section()?;
+        region.emit(&mut w)?;
+        w.begin_section()?;
     }
 
     // §4.8.6: the write must land exactly where §5.7's projection said it would. A `debug_assert`
     // would leave a release build emitting a file whose header offsets are a sentence about a
     // layout that does not exist.
+    let written = w.at();
     if written != l.total {
         return Err(Error::Verify(format!(
             "the map projected to {} bytes but wrote {written} — the §5.7 projection and the write disagree",
@@ -506,33 +497,6 @@ pub fn header_bytes(
     head.extend_from_slice(&scaled(terrain_len)?.to_le_bytes());
     debug_assert_eq!(head.len(), HEADER_LEN);
     Ok(head)
-}
-
-/// The header plus the §1.2 filler that carries it to the style table's unit boundary.
-// The header's own argument list plus nothing; see `header_bytes`.
-#[allow(clippy::too_many_arguments)]
-fn header_block(
-    box_: AlignedBox,
-    lod_count: usize,
-    marker_color: u16,
-    lod_table_offset: u64,
-    poi_offset: u64,
-    nav_offset: u64,
-    terrain_offset: u64,
-    terrain_len: u64,
-) -> Result<Vec<u8>> {
-    let mut out = header_bytes(
-        box_,
-        lod_count,
-        marker_color,
-        lod_table_offset,
-        poi_offset,
-        nav_offset,
-        terrain_offset,
-        terrain_len,
-    )?;
-    out.resize(STYLE_OFFSET as usize, FILLER);
-    Ok(out)
 }
 
 /// Append one 18-byte LOD-table entry (`OBCM_Spec.md` §3), byte-for-byte the packer's
@@ -747,7 +711,7 @@ mod tests {
         // comfortably inside the 64 GiB that does.
         let mut p = plan();
         p.lods = vec![LodPlan { node_count: 1, chunk_bytes: 3_000_000_000, ..LodPlan::empty(0, None, 4096) }; 2];
-        let poi = crate::poi::empty_layout(p.box_.ubox());
+        let poi = crate::poi::empty_layout(p.box_.ubox()).expect("an empty section lays out");
         let nav = MergedNav::empty(Default::default());
         let nav_projection = nav.projection(&[]);
 
@@ -782,7 +746,7 @@ mod tests {
         let mut p = plan();
         // Two LODs of 40 GB each: past v14's 64 GiB interior.
         p.lods = vec![LodPlan { node_count: 1, chunk_bytes: 40_000_000_000, ..LodPlan::empty(0, None, 4096) }; 2];
-        let poi = crate::poi::empty_layout(p.box_.ubox());
+        let poi = crate::poi::empty_layout(p.box_.ubox()).expect("an empty section lays out");
         let nav = MergedNav::empty(Default::default());
         let nav_projection = nav.projection(&[]);
 

@@ -19,7 +19,7 @@ use std::collections::{HashMap, HashSet};
 
 use obc_formats::obcm::{BRANCH_BIT, EMPTY_LEAF};
 
-use crate::emit::{align_up, filler_len, scaled, FILLER_RUN, SCALE};
+use crate::emit::{align_up, filler_len, scaled, MapWriter, SCALE};
 use crate::grid::{quad_children, AlignedBox, CellId, UBox};
 use crate::input::Cell;
 use crate::{Error, Result};
@@ -92,17 +92,13 @@ impl LodPlan {
         }
     }
 
-    /// The §1.2 filler between this region's offset table and its chunk data — the one rounding step
-    /// §3 puts between `table_end` and `data_start`.
+    /// Total bytes of the region: index + offset table + §1.2 filler + chunks.
     ///
     /// The region's index starts on a unit boundary (its `Index Offset` is scaled, so nothing else
     /// is expressible), and the index and the offset table are both read by 4-byte indexing from
-    /// there — so the gap is a function of the two counts alone and needs no absolute offset.
-    pub fn data_gap(&self) -> u64 {
-        filler_len(self.node_count as u64 * 4 + (self.chunk_count as u64 + 1) * 4)
-    }
-
-    /// Total bytes of the region: index + offset table + §1.2 filler + chunks.
+    /// there — so the one rounding step §3 puts between `table_end` and `data_start` is a function
+    /// of the two counts alone and needs no absolute offset. [`emit_lod`] finds that same step by
+    /// asking its cursor for the boundary, and asserts the two agree.
     ///
     /// A region always **ends** on a unit boundary — the chunk data is a whole number of units, and
     /// an empty region's four-byte table is padded to one — so the next LOD's index, and the POI
@@ -288,12 +284,15 @@ fn relocate(value: u32, g: &GraftCell, cell: CellId, lod: usize) -> Result<u32> 
 /// The filler run is v14's one rounding step: the chunks are addressed by **scaled** offsets, so
 /// `data_start` has to be a unit boundary while the index and the table behind it — read by 4-byte
 /// indexing — do not. Its bytes are `0xFF` like every other §1.2 gap.
-pub fn emit_lod(plan: &LodPlan, cells: &[Cell<'_>], out: &mut dyn FnMut(&[u8]) -> Result<()>) -> Result<()> {
+pub fn emit_lod(plan: &LodPlan, cells: &[Cell<'_>], w: &mut MapWriter<'_>) -> Result<()> {
+    let start = w.at();
     if plan.node_count == 0 {
         // The mandatory single-`0` offset table of §5.1, plus the filler that leaves the next
         // region's index on a boundary.
-        out(&0u32.to_le_bytes())?;
-        return out(&FILLER_RUN[..(align_up(4) - 4) as usize]);
+        w.put(&0u32.to_le_bytes())?;
+        w.begin_section()?;
+        debug_assert_eq!(w.at() - start, plan.region_bytes(), "the projection is the write");
+        return Ok(());
     }
 
     // 1. The fresh upper tree, then each cell's relocated block (its nodes `1..`).
@@ -301,7 +300,7 @@ pub fn emit_lod(plan: &LodPlan, cells: &[Cell<'_>], out: &mut dyn FnMut(&[u8]) -
     for v in &plan.upper {
         buf.extend_from_slice(&v.to_le_bytes());
     }
-    out(&buf)?;
+    w.put(&buf)?;
     for g in &plan.cells {
         if g.node_count <= 1 {
             continue; // the root was inlined into the slot; there is no block
@@ -310,11 +309,11 @@ pub fn emit_lod(plan: &LodPlan, cells: &[Cell<'_>], out: &mut dyn FnMut(&[u8]) -
         let l = cell.lod(plan.lod)?;
         let raw = cell.read(l.index_offset + 4, (g.node_count as usize - 1) * 4)?;
         let mut block = Vec::with_capacity(raw.len());
-        for w in raw.chunks_exact(4) {
-            let v = relocate(u32::from_le_bytes([w[0], w[1], w[2], w[3]]), g, cell.id, plan.lod)?;
+        for word in raw.chunks_exact(4) {
+            let v = relocate(u32::from_le_bytes([word[0], word[1], word[2], word[3]]), g, cell.id, plan.lod)?;
             block.extend_from_slice(&v.to_le_bytes());
         }
-        out(&block)?;
+        w.put(&block)?;
     }
 
     // 2. The offset table: `chunk_count + 1` entries **in units** (§5.1), each cell's shifted by its
@@ -332,8 +331,8 @@ pub fn emit_lod(plan: &LodPlan, cells: &[Cell<'_>], out: &mut dyn FnMut(&[u8]) -
         let table_start = l.index_offset + (l.node_count * 4) as u64;
         let raw = cell.read(table_start, (g.chunk_count as usize + 1) * 4)?;
         let mut prev = 0u32;
-        for (k, w) in raw.chunks_exact(4).enumerate() {
-            let v = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+        for (k, word) in raw.chunks_exact(4).enumerate() {
+            let v = u32::from_le_bytes([word[0], word[1], word[2], word[3]]);
             if k == 0 {
                 if v != 0 {
                     return Err(Error::Format(format!("cell {}: LOD {} offsets[0] is {v}, not 0", cell.id, plan.lod)));
@@ -364,12 +363,12 @@ pub fn emit_lod(plan: &LodPlan, cells: &[Cell<'_>], out: &mut dyn FnMut(&[u8]) -
             )));
         }
     }
-    out(&table)?;
+    w.put(&table)?;
 
     // 3. The §1.2 filler that carries the region to `data_start`, then the chunk bytes, verbatim
     // (§2.3). One streaming copy per cell, and the copy needs no per-chunk repadding: the cell's
     // own chunks are already unit-aligned, so its whole region moves as one run of bytes.
-    out(&FILLER_RUN[..plan.data_gap() as usize])?;
+    w.begin_section()?;
     for g in &plan.cells {
         if g.chunk_units == 0 {
             continue;
@@ -377,8 +376,10 @@ pub fn emit_lod(plan: &LodPlan, cells: &[Cell<'_>], out: &mut dyn FnMut(&[u8]) -
         let cell = &cells[g.cell];
         let l = cell.lod(plan.lod)?;
         let data_start = align_up(l.index_offset + (l.node_count * 4 + (l.chunk_count + 1) * 4) as u64);
-        cell.copy(data_start, g.chunk_bytes() as usize, out)?;
+        let mut copy = |bytes: &[u8]| w.put(bytes);
+        cell.copy(data_start, g.chunk_bytes() as usize, &mut copy)?;
     }
+    debug_assert_eq!(w.at() - start, plan.region_bytes(), "the projection is the write");
     Ok(())
 }
 
