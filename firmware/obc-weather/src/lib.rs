@@ -1,8 +1,8 @@
 //! Allocation-free OBCW bundle traversal.
 //!
 //! [`WeatherReader`] validates a random-access [`ByteSource`] and fetches hourly records, frame
-//! descriptors and one 16 x 16 rain tile at a time. The fixed cache and pure A/B generation policy
-//! live beside the reader; filesystem adapters, scheduling, alerts and rendering do not.
+//! descriptors and one 16 x 16 rain tile at a time. The fixed cache and storage-neutral generation
+//! policy live beside the reader; filesystem adapters, scheduling, alerts and rendering do not.
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -16,14 +16,9 @@ use obc_formats::obcw::{
 
 mod cache;
 mod catalog;
-mod slots;
 
 pub use cache::{CellIndex, HourlyIter, WeatherCache, FRAME_CURRENT_CAP_S, READER_CACHE_RESIDENT_BYTES};
-pub use catalog::{select_catalog, CatalogRevision};
-pub use slots::{
-    candidate_is_newer, select_slots, validate_slot, validate_slot_with_magic, Candidate, SelectionReason, Slot,
-    SlotSelection, SlotValidation, WEATHER_A_FILE, WEATHER_B_FILE,
-};
+pub use catalog::{candidate_is_newer, select_catalog, Candidate, CatalogRevision};
 
 /// CRC reads are deliberately large enough to avoid one SD seek per tile-sized block while
 /// keeping open-time scratch comfortably below 2 KiB.
@@ -74,8 +69,8 @@ pub struct WeatherReader<'a, S: ByteSource + ?Sized> {
 /// its fields are private, so callers cannot turn an unvalidated header into a fast reader.
 ///
 /// The source must remain byte-stable while the token is used. The device guarantees that by
-/// holding the active A/B slot read-only and writing only the inactive slot; the simulator replaces
-/// the token whenever it replaces/re-anchors its byte vector.
+/// holding one immutable flat-store revision; the simulator replaces the token whenever it
+/// replaces or re-anchors its byte vector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ValidatedBundle {
     header: Header,

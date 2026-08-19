@@ -43,7 +43,7 @@ pub struct CellIndex {
 /// The fixed cache shared across one active weather generation at a time.
 ///
 /// Every key includes `Header::generation` and the validated bundle CRC; reusing this value after
-/// an A/B swap cannot return a tile or directory entry from the previous object, including an
+/// replacing the selected immutable revision cannot return a tile or directory entry from the previous object, including an
 /// equal-generation bundle with a later producer timestamp. A cold random tile lookup performs at most
 /// three `ByteSource::read_at` calls: descriptor, four-entry directory window, payload. A tile hit
 /// performs none, and another tile in the same window performs only its payload read.

@@ -183,8 +183,8 @@ impl<D: BlockDevice> ByteSource for StoreSource<'_, D> {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), Error> {
         // Range first, medium second — the same order, and for the same reason, as every other
         // `ByteSource` in the tree: a caller asking past the end is a bad offset, and only a genuine
-        // media failure is `Io`. Callers distinguish them (the weather A/B publisher refuses to
-        // truncate a slot it could not read, rather than one it read as short).
+        // media failure is `Io`. Catalog loaders distinguish them so a transient read preserves
+        // the last validated snapshot while a definitively short object can be omitted.
         let end = offset.checked_add(buf.len() as u64).ok_or(Error::BadOffset)?;
         if end > self.len {
             return Err(Error::BadOffset);

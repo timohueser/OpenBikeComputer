@@ -61,12 +61,13 @@
 //! (#1390) — nothing records to a flat card yet — and FS11's (#1393) retirement of the FAT read
 //! path.
 
-use core::mem::MaybeUninit;
+use core::{cell::RefCell, mem::MaybeUninit};
 
 use embassy_futures::select::{select, Either};
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, Mutex};
 use embassy_sync::channel::{Channel, Receiver, Sender};
 use embassy_sync::signal::Signal;
+use heapless::Deque;
 
 use obc_link::flat::{Ceilings, Engine, Link, Policy, Reaction, RequestId};
 use obc_storage::flat::store::MAX_BATCH;
@@ -207,6 +208,7 @@ static FLAT_STORE_READY: core::sync::atomic::AtomicBool = core::sync::atomic::At
 /// direction. It joins this sum in the slice that starts recording.
 pub(crate) const RESIDENT_BYTES: usize = core::mem::size_of::<FlatStore<FlatCard>>()
     + REQUEST_QUEUE_BYTES
+    + CATALOG_UPLOAD_BYTES
     + MAP_READ_BYTES
     + ROUTE_READ_BYTES
     + WEATHER_READ_BYTES
@@ -751,6 +753,64 @@ pub(crate) fn writer() -> Option<Writer> {
 static CATALOG_COMMITS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 static CATALOG_WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
+/// One successful protocol-v4 route/trip upload waiting for the app's post-rescan event seam.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CatalogUpload {
+    id: [u8; 8],
+    flags: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CatalogUploadKind {
+    Route,
+    Trip,
+}
+
+impl CatalogUpload {
+    fn new(kind: CatalogUploadKind, id: u64, replaced: bool) -> Self {
+        let flags = (kind == CatalogUploadKind::Trip) as u8 | ((replaced as u8) << 1);
+        Self { id: id.to_le_bytes(), flags }
+    }
+
+    pub(crate) const fn kind(self) -> CatalogUploadKind {
+        if self.flags & 1 == 0 { CatalogUploadKind::Route } else { CatalogUploadKind::Trip }
+    }
+
+    pub(crate) const fn id(self) -> u64 {
+        u64::from_le_bytes(self.id)
+    }
+
+    pub(crate) const fn replaced(self) -> bool {
+        self.flags & 2 != 0
+    }
+}
+
+const _: () = assert!(core::mem::size_of::<CatalogUpload>() == 9);
+
+/// A complete UI catalog's worth of upload facts. The engine serializes transfers, and the ride
+/// task drains these after the catalog rescan caused by the same commits. Bounding this to the
+/// menus' combined identity capacity keeps the resident cost explicit while retaining every event
+/// that can still resolve in the snapshot it is applied against.
+const UPLOAD_EVENTS_CAP: usize = obc_app::MAX_ROUTES + obc_app::MAX_TRIPS;
+static UPLOAD_EVENTS: Mutex<CriticalSectionRawMutex, RefCell<Deque<CatalogUpload, UPLOAD_EVENTS_CAP>>> =
+    Mutex::new(RefCell::new(Deque::new()));
+
+/// The exact route/trip commit facts retained until their post-rescan app events are delivered.
+pub(crate) const CATALOG_UPLOAD_BYTES: usize =
+    core::mem::size_of::<Mutex<CriticalSectionRawMutex, RefCell<Deque<CatalogUpload, UPLOAD_EVENTS_CAP>>>>();
+
+fn note_catalog_upload(upload: CatalogUpload) {
+    UPLOAD_EVENTS.lock(|events| {
+        if events.borrow_mut().push_back(upload).is_err() {
+            defmt::warn!("flat: upload-event queue full — catalog rescan retained, advisory deferred");
+        }
+    });
+}
+
+pub(crate) fn take_catalog_upload() -> Option<CatalogUpload> {
+    UPLOAD_EVENTS.lock(|events| events.borrow_mut().pop_front())
+}
+
 fn note_catalog_commit() {
     CATALOG_COMMITS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     CATALOG_WAKE.signal(());
@@ -992,7 +1052,19 @@ fn serve(
 /// lands in a second and a weather bundle is invisible by design, so a progress bar for either would
 /// be a flicker asking to be dismissed. `crate::link` owns the mapping from these facts to a screen.
 fn publish_upload(engine: &mut BoardEngine) {
-    crate::link::publish_map_transfer(engine.live_upload(), engine.take_upload_end());
+    let live = engine.live_upload();
+    let ended = engine.take_upload_end();
+    if let Some((kind, obc_link::flat::UploadEnd::Committed { id, replaced })) = ended {
+        let kind = match kind {
+            obc_link::flat::ObjectKind::Route => Some(CatalogUploadKind::Route),
+            obc_link::flat::ObjectKind::Trip => Some(CatalogUploadKind::Trip),
+            _ => None,
+        };
+        if let Some(kind) = kind {
+            note_catalog_upload(CatalogUpload::new(kind, id.0, replaced));
+        }
+    }
+    crate::link::publish_map_transfer(live, ended);
 }
 
 // ══════════════════════════ the protocol-v4 engine ══════════════════════════
@@ -1157,12 +1229,11 @@ impl FlatWeather {
         self.validated.header()
     }
 
-    /// The scheduler wire identity, shared with the former A/B adapter. `Slot` is irrelevant to
-    /// flat storage; the serial generation, producer time and CRC are the actual protocol facts.
+    /// The scheduler wire identity: serial generation, producer time and CRC are the protocol
+    /// facts, independent of the storage that holds the immutable revision.
     pub(crate) const fn candidate(self) -> obc_weather::Candidate {
         let header = self.header();
         obc_weather::Candidate {
-            slot: obc_weather::Slot::A,
             generation: header.generation,
             generated_at: header.generated_at,
             total_len: header.total_len,
@@ -1426,17 +1497,21 @@ pub(crate) fn load_routes(store: &'static FlatStore<FlatCard>, app: &mut obc_app
     let mut routes: heapless::Vec<obc_route::RouteSummary, { obc_app::MAX_ROUTES }> = heapless::Vec::new();
     let mut ids: heapless::Vec<u64, { obc_app::MAX_ROUTES }> = heapless::Vec::new();
     for entry in heads {
-        let decoded = store
-            .with_source(entry.id, Some(entry.revision), |source| obc_route::RouteSummary::read(source))
-            .ok()
-            .and_then(Result::ok);
-        match decoded {
-            Some(summary) => {
+        match store.with_source(entry.id, Some(entry.revision), |source| obc_route::RouteSummary::read(source)) {
+            Ok(Ok(summary)) => {
                 let _ = routes.push(summary);
                 let _ = ids.push(entry.id.0);
             }
-            None => defmt::warn!(
-                "flat: route object {=u64} revision {=u64} is malformed or unreadable — omitted from menu",
+            Ok(Err(obc_formats::io::Error::Io)) | Err(_) => {
+                defmt::warn!(
+                    "flat: route object {=u64} revision {=u64} hit transient media I/O — keeping the prior menu snapshot",
+                    entry.id.0,
+                    entry.revision.0
+                );
+                return false;
+            }
+            Ok(Err(_)) => defmt::warn!(
+                "flat: route object {=u64} revision {=u64} is malformed — omitted from menu",
                 entry.id.0,
                 entry.revision.0
             ),
@@ -1463,17 +1538,21 @@ pub(crate) fn load_trips(store: &'static FlatStore<FlatCard>, app: &mut obc_app:
     let mut metas: heapless::Vec<obc_route::TripMeta, { obc_app::MAX_TRIPS }> = heapless::Vec::new();
     let mut ids: heapless::Vec<u64, { obc_app::MAX_TRIPS }> = heapless::Vec::new();
     for entry in heads {
-        let decoded = store
-            .with_source(entry.id, Some(entry.revision), |source| obc_route::TripMeta::read(source))
-            .ok()
-            .and_then(Result::ok);
-        match decoded {
-            Some(meta) => {
+        match store.with_source(entry.id, Some(entry.revision), |source| obc_route::TripMeta::read(source)) {
+            Ok(Ok(meta)) => {
                 let _ = metas.push(meta);
                 let _ = ids.push(entry.id.0);
             }
-            None => defmt::warn!(
-                "flat: trip object {=u64} revision {=u64} is malformed or unreadable — omitted from menu",
+            Ok(Err(obc_formats::io::Error::Io)) | Err(_) => {
+                defmt::warn!(
+                    "flat: trip object {=u64} revision {=u64} hit transient media I/O — keeping the prior menu snapshot",
+                    entry.id.0,
+                    entry.revision.0
+                );
+                return false;
+            }
+            Ok(Err(_)) => defmt::warn!(
+                "flat: trip object {=u64} revision {=u64} is malformed — omitted from menu",
                 entry.id.0,
                 entry.revision.0
             ),

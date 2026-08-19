@@ -148,13 +148,12 @@ struct Args {
     /// "today's hours" weekday + the OPEN/CLOSED-now badge for a reproducible render. Defaults to the
     /// device default (2025-01-01 12:00, a Wednesday noon).
     clock: Option<obc_ports::DateTime>,
-    /// `--weather DIR|demo[:SCENARIO]`: offer the production rain-overlay lease on every frame —
+    /// `--weather FILE.obcw|demo[:SCENARIO]`: offer the production rain-overlay lease on every frame —
     /// GUI and headless `--png` alike (WX10). Offering is not drawing: the app hands the lease on
     /// only to a screen that declared it wants rain (`Caps::rain_overlay`), so the raster appears
     /// on the WX11 **rain map** and the ordinary Map stays rain-free with a store mounted. A
-    /// directory is a weather-store root holding
-    /// `WEATHER.A`/`WEATHER.B` (the WX7 A/B layout; `specs/vectors/*.obcw` copied under those names
-    /// work). `demo` synthesizes a deterministic bundle over the loaded map's own bbox —
+    /// file is one validated OBCW bundle (`specs/vectors/*.obcw` work directly). `demo`
+    /// synthesizes a deterministic bundle over the loaded map's own bbox —
     /// scenarios `scattered` (default) | `drizzle` | `frontal` | `storm` — the WX10 look-tuning
     /// scenes.
     weather: Option<String>,
@@ -553,7 +552,7 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
             "--clock" => {
                 a.clock = Some(parse_clock(&it.next().ok_or("--clock needs YYYY-MM-DDTHH:MM")?)?);
             }
-            "--weather" => a.weather = Some(it.next().ok_or("--weather needs a store directory")?),
+            "--weather" => a.weather = Some(it.next().ok_or("--weather needs a .obcw file or demo source")?),
             "--weather-now" => {
                 a.weather_now = Some(it.next().and_then(|s| s.parse().ok()).ok_or("--weather-now needs unix seconds")?);
             }
@@ -868,7 +867,7 @@ Scripted snapshots:
   --freeze                Show the live recalculation freeze over the map
 
 Weather (independent product controls):
-  --weather SOURCE        DIR|demo[:SCENARIO]|live (see README for scenarios)
+  --weather SOURCE        FILE.obcw|demo[:SCENARIO]|live (see README for scenarios)
   --weather-now UNIX      Freshness instant
   --weather-refreshing    Show the non-blocking refresh cue
   --weather-alert ALERT   rain[:MIN]|storm[:MIN]|gust[:MIN]
@@ -1517,7 +1516,7 @@ fn main() {
         // from the app's own matched progress + recent-pace estimate (`ride_projection` →
         // `sample_along`), then the real alert engine (thresholds/dedup/cooldown) over the very
         // snapshot the screens render. Source-agnostic: whichever bundle is loaded (`demo:`,
-        // a store directory, or a `--weather live` fetch) is what it decides over. Opt-in so the
+        // a fixture file, or a `--weather live` fetch) is what it decides over. Opt-in so the
         // WX10/WX11/WX14 fixture renders stay byte-identical (their scenarios would otherwise
         // grow alert cards).
         let wx_projection = if args.weather_decide { route.as_ref().zip(app.ride_projection()) } else { None };

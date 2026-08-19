@@ -22,7 +22,7 @@ options:
   --lon DEG            rider longitude (required)
   --radius-km KM       corridor radius; default 90 km, the one corridor there is
   --service URL        weather service origin; default https://wx.openbikecomputer.com
-  --out DIR            write the bundle to DIR/WEATHER.A (creating DIR); default: none, report only
+  --out FILE.obcw      write the bundle to this file (creating its parent); default: report only
   --now UNIX           evaluate freshness at this instant instead of the system clock
   --latency MS         add this delay to every request (failure control)
   --offline            fail every request (failure control)
@@ -180,13 +180,12 @@ fn run() -> Result<(), String> {
     }
 
     if let Some(out) = &args.out {
-        std::fs::create_dir_all(out).map_err(|error| format!("{}: {error}", out.display()))?;
-        let path = out.join("WEATHER.A");
-        std::fs::write(&path, &bundle.bytes).map_err(|error| format!("{}: {error}", path.display()))?;
-        // The other slot must not hold a stale generation the boot selector would prefer.
-        let _ = std::fs::remove_file(out.join("WEATHER.B"));
+        if let Some(parent) = out.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
+        }
+        std::fs::write(out, &bundle.bytes).map_err(|error| format!("{}: {error}", out.display()))?;
         if !args.json {
-            println!("wrote       {}", path.display());
+            println!("wrote       {}", out.display());
         }
     }
     Ok(())

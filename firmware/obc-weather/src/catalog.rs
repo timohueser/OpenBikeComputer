@@ -1,5 +1,26 @@
 //! Allocation-free selection of an effective object from head/retained catalog revisions.
 
+/// Storage-neutral identity used to compare producer generations and serve refresh context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Candidate {
+    pub generation: u32,
+    pub generated_at: i64,
+    pub total_len: u32,
+    pub bundle_crc32: u32,
+}
+
+/// Whether `incoming` is strictly newer than `active` under RFC-1982 serial arithmetic with the
+/// producer timestamp resolving equal and exactly-half-range generations. Exact ties are not
+/// replacements.
+pub fn candidate_is_newer(incoming: Candidate, active: Candidate) -> bool {
+    let delta = incoming.generation.wrapping_sub(active.generation);
+    if delta == 0 || delta == 0x8000_0000 {
+        incoming.generated_at > active.generated_at
+    } else {
+        delta < 0x8000_0000
+    }
+}
+
 /// One catalog revision after the storage adapter attempted domain validation.
 ///
 /// `Ok(Some(value))` is valid, `Ok(None)` is definitively malformed, and `Err(error)` is a
@@ -67,6 +88,16 @@ mod tests {
     fn no_weather_is_none() {
         let revisions: [CatalogRevision<u8, ReadError>; 0] = [];
         assert_eq!(select_catalog(revisions, |_, _| false), Ok(None));
+    }
+
+    #[test]
+    fn candidate_order_wraps_and_uses_timestamps_for_ambiguous_generations() {
+        let candidate =
+            |generation, generated_at| Candidate { generation, generated_at, total_len: 1, bundle_crc32: 2 };
+        assert!(candidate_is_newer(candidate(3, 0), candidate(u32::MAX - 2, 0)));
+        assert!(candidate_is_newer(candidate(7, 101), candidate(7, 100)));
+        assert!(candidate_is_newer(candidate(0x8000_0007, 101), candidate(7, 100)));
+        assert!(!candidate_is_newer(candidate(7, 100), candidate(7, 100)));
     }
 
     #[test]

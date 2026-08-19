@@ -154,6 +154,24 @@ async fn wait_host_or_sensor_event(
     .await;
 }
 
+/// Apply successful protocol-v4 route/trip uploads only after the catalog snapshots containing
+/// their committed heads have been fed to `App`. This ordering is what lets a same-id active route
+/// replacement invalidate geometry-derived state through `HostEvent::RouteUploaded`.
+fn apply_catalog_uploads(app: &mut App) {
+    while let Some(upload) = crate::flat_store::take_catalog_upload() {
+        match upload.kind() {
+            crate::flat_store::CatalogUploadKind::Route => app.apply_event(obc_app::HostEvent::RouteUploaded {
+                id: upload.id(),
+                replaced: upload.replaced(),
+                elevation: None,
+            }),
+            crate::flat_store::CatalogUploadKind::Trip => {
+                app.apply_event(obc_app::HostEvent::TripUploaded { id: upload.id(), replaced: upload.replaced() })
+            }
+        }
+    }
+}
+
 /// A `no_std` [`Clock`](obc_render::Clock) over embassy's monotonic `Instant`, in microseconds — the
 /// time base for the map render's per-stage timing (collect / sort / draw) the VCOM telemetry
 /// carries. The same monotonic clock the loop's frame `Instant` reads, so the stages reconcile.
@@ -1412,8 +1430,8 @@ pub(crate) async fn run_app(
                 // Drop the held revision before rebuilding identity/index state. A replace at
                 // the same ObjectId must reopen the new revision, not keep rendering the hold.
                 crate::flat_store::reconcile_route(flat, None);
-                crate::flat_store::load_routes(flat, app);
-                crate::flat_store::load_trips(flat, app);
+                let routes_loaded = crate::flat_store::load_routes(flat, app);
+                let trips_loaded = crate::flat_store::load_trips(flat, app);
                 if let Ok(next) = crate::flat_store::active_weather(flat) {
                     if next != weather_bundle {
                         weather_bundle = next;
@@ -1421,6 +1439,17 @@ pub(crate) async fn run_app(
                     }
                 }
                 crate::flat_store::reconcile_weather(flat, weather_bundle);
+                if routes_loaded && trips_loaded {
+                    // The event's id resolves against the snapshots just fed above. In particular,
+                    // a same-id route replace now reaches `on_route_uploaded`, which drops all
+                    // geometry-derived state from the displaced revision before rendering resumes.
+                    apply_catalog_uploads(app);
+                } else {
+                    // A transient source/listing failure deliberately kept the previous whole
+                    // snapshot. Re-arm the typed rescan cue so recovery needs no unrelated future
+                    // catalog commit to happen first.
+                    app.apply_event(obc_app::HostEvent::StoreChanged);
+                }
                 if let Some(s) = storage.as_mut() {
                     // The same edge covers rides (a phone-side ride delete, or a ride download that just
                     // flipped a synced flag): re-scan `/tracks` and re-feed the Rides menu, which remaps

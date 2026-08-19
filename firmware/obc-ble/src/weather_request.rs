@@ -353,12 +353,12 @@ fn rd_u64(d: &[u8], off: usize) -> u64 {
 /// structural validation.
 ///
 /// The rule is *newest valid generation wins*, and it is deliberately independent of the request
-/// id — see the module docs. Serial arithmetic (RFC-1982 style, as `obc_weather::slots`) decides
+/// id — see the module docs. Serial arithmetic (RFC-1982 style, as `obc_weather::candidate_is_newer`) decides
 /// "newer", so a generation counter that wraps does not strand the device on a bundle from before
 /// the wrap.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UploadDisposition {
-    /// Commit into the inactive slot and select it. The only outcome that changes what the rider sees.
+    /// Atomically publish and select it. The only outcome that changes what the rider sees.
     Commit,
     /// Structurally fine and already held: the same generation is on the card. Reported as
     /// **success**, because the phone did nothing wrong and retrying would not improve matters.
@@ -369,7 +369,7 @@ pub enum UploadDisposition {
 }
 
 /// What identifies one bundle against another for selection purposes: the pair
-/// `obc_weather::slots::Candidate` compares on. Both halves are needed — see [`classify_upload`].
+/// [`obc_weather::Candidate`] compares on. Both halves are needed — see [`classify_upload`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BundleIdentity {
     pub generation: u32,
@@ -380,7 +380,7 @@ pub struct BundleIdentity {
 /// Decide an arriving bundle's fate. `active` is `None` when no valid bundle is held, in which case
 /// anything that validated is an improvement.
 ///
-/// **This must agree with `obc_weather::slots::candidate_is_newer` exactly**, and the test suite
+/// **This must agree with `obc_weather::candidate_is_newer` exactly**, and the test suite
 /// pins that agreement across the whole matrix rather than trusting this comment — an earlier draft
 /// compared generations alone and silently disagreed with the storage layer in two places, which is
 /// the sort of divergence that shows up as "the device kept the old forecast" and nothing else.

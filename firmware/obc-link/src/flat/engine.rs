@@ -260,8 +260,9 @@ pub struct UploadProgress {
 /// caller that never looks costs one stale enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UploadEnd {
-    /// §3.6's commit landed. The catalog is the result.
-    Committed,
+    /// §3.6's commit landed. `id` is the resulting head and `replaced` distinguishes a create from
+    /// replace-at-same-id so a board can invalidate state derived from the displaced revision.
+    Committed { id: ObjectId, replaced: bool },
     /// The transfer was refused, with the code its error response carried (§3.9). The detail is
     /// deliberately not here: a device turns this into one of a handful of screens, and every
     /// narrower fact belongs to the client that asked.
@@ -1075,7 +1076,8 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
     /// commit.
     fn finish_upload<P: Policy>(&mut self, store: &S, policy: &mut P, out: &mut [u8]) -> Reaction {
         let Live::Upload(upload) = &self.live else { return Reaction::Idle };
-        let (kind, declared_len, declared_crc) = (upload.kind, upload.declared_len, upload.declared_crc);
+        let (kind, declared_len, declared_crc, replaced) =
+            (upload.kind, upload.declared_len, upload.declared_crc, upload.displaced.is_some());
         let computed = upload.crc.finalize();
         if computed != declared_crc {
             let refusal = Refusal::with_context(
@@ -1098,7 +1100,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
                 // The commit consumed the allocation and the catalog is the result. Nothing is live
                 // from here, whatever the response does.
                 self.live = Live::Idle;
-                self.upload_end = Some((kind, UploadEnd::Committed));
+                self.upload_end = Some((kind, UploadEnd::Committed { id, replaced }));
                 match encode_put(out, request, id, revision, len, crc) {
                     Some(len) => Reaction::Send { channel: Channel::Control, len },
                     // §3.4 is what a client does with a response it never saw.

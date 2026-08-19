@@ -434,7 +434,7 @@ mod resource_report {
         entry("terrain_window", core::mem::size_of::<obc_formats::io::WindowSource<'static>>()),
     ];
 
-    const ENTRIES: usize = 35;
+    const ENTRIES: usize = 36;
 
     #[used]
     #[no_mangle]
@@ -503,15 +503,18 @@ mod resource_report {
         // callers) and the `Semmc` host-driver state itself.
         entry("sd_bounce", card_io::BOUNCE_BYTES),
         entry("semmc_driver", core::mem::size_of::<semmc::Semmc>()),
-        // The **flat store** (FS7.5-c1), itemized in two rows rather than one because they answer
+        // The **flat store** (FS7.5-c1), itemized in separate rows because they answer
         // different questions. `flat_store` is the store type itself — §6.2's 8 KiB free bitmap plus
         // the hold/reservation rows — so a change in `MAX_OPEN_OBJECTS` or an extent-index widening
         // is legible here. `flat_requests` is the storage task's queue, the one part of that layer
         // whose size is a design choice rather than a consequence: depth × the largest request. The
-        // binding's alignment buffer is not a third row — it is `sd_bounce`, shared (see
+        // `flat_catalog_uploads` is the bounded handoff from successful route/trip commits to the
+        // app's typed upload events. The binding's alignment buffer is not another row — it is
+        // `sd_bounce`, shared (see
         // `flat_store`'s note on why it places none of its own).
         entry("flat_store", core::mem::size_of::<obc_storage::flat::FlatStore<flat_store::FlatCard>>()),
         entry("flat_requests", flat_store::REQUEST_QUEUE_BYTES),
+        entry("flat_catalog_uploads", flat_store::CATALOG_UPLOAD_BYTES),
         // The read cutover's own resident cost on the flat arm (FS7.5-c2): the session-long
         // `StoreSource` over the map object **and** the display name the same boot step captures.
         // Named beside the store it reads from so the two halves of "what does reading a flat card
@@ -1389,8 +1392,13 @@ async fn main(_spawner: Spawner) {
         {
             // Routes and trips are flat-store objects. One bounded snapshot seeds the menu, newest
             // first so a fresh upload remains visible on a card with more than the UI cap.
-            flat_store::load_routes(flat, app);
-            flat_store::load_trips(flat, app);
+            let routes_loaded = flat_store::load_routes(flat, app);
+            let trips_loaded = flat_store::load_trips(flat, app);
+            if !routes_loaded || !trips_loaded {
+                // Preserve the empty boot snapshot and retry from the ride loop; a transient media
+                // read must not require another catalog commit before the first menu can appear.
+                app.apply_event(obc_app::HostEvent::StoreChanged);
+            }
             // Ride recording remains FS8; FAT rides stay available during that separate cutover.
             if let Some(storage) = storage.as_mut() {
                 ride::load_rides(storage, app);

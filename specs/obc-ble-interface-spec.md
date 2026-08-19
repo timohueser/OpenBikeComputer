@@ -2169,9 +2169,9 @@ Its placement in the type space and why it is neither USB-only nor map-shaped is
   phone's to fix. Answering the second case `crcMismatch` would hide a producer
   bug behind an infinite, blameless-looking retry ladder.
 - **Where it lands** is a device convention rather than a wire one, but it is why
-  an interrupted upload is harmless: the reference firmware holds **two** slots and
-  writes into the inactive one, so the bundle the rider is looking at survives a
-  torn transfer untouched. The slot rules are
+  an interrupted upload is harmless: the reference firmware publishes immutable
+  flat-store revisions atomically, so the bundle the rider is looking at survives
+  a torn transfer untouched. The storage rules are
   [`firmware/docs/WEATHER_STORAGE.md`](../firmware/docs/WEATHER_STORAGE.md).
 - **No download direction.** The device never serves a bundle back: the phone
   built it and can rebuild it, and the only thing the device knows that the phone
@@ -2189,14 +2189,14 @@ strand the device on a bundle from before the wrap. The decision is deliberately
 Serial arithmetic leaves two cases genuinely ambiguous — an **equal** generation,
 and generations exactly **half the range** apart — and in both the later
 `generated_at` decides. That tiebreak is not an embellishment: it is what
-`obc_weather`'s slot selector already uses to pick a bundle at boot, and the two
+`obc_weather`'s catalog selector already uses to pick a bundle at boot, and the two
 must agree or the device can answer `committed` and then quietly boot the *old*
 bundle. `obc-ble`'s classifier is tested against that selector directly across the
 whole matrix rather than trusting a comment that says they match.
 
 | Incoming vs. the active bundle | Disposition | `transferResult` |
 | :-- | :-- | :-- |
-| no valid bundle held | **commit** into the inactive slot and select it | `committed` |
+| no valid bundle held | **commit** and select the immutable revision | `committed` |
 | serially newer generation | **commit** | `committed` |
 | equal (or half-range) generation, later `generated_at` | **commit** | `committed` |
 | identical generation **and** `generated_at` | **duplicate — ignored** | `committed` (success) |
