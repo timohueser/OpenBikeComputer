@@ -20,8 +20,8 @@ import shutil
 import subprocess
 import sys
 import tomllib
-from dataclasses import dataclass
-from typing import Any, Callable, Iterable, Sequence
+from dataclasses import dataclass, field
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 
 LEVELS = {"unit", "component", "contract", "fixture", "end-to-end", "live", "hardware"}
@@ -41,6 +41,37 @@ ISSUE_RE = re.compile(r"^(?:#\d+|https://github\.com/[^/]+/[^/]+/issues/\d+)$")
 SWIFT_TARGET_RE = re.compile(r"\.testTarget\s*\(\s*name:\s*\"([^\"]+)\"", re.MULTILINE)
 REAL_SLEEP_RE = re.compile(r"(?:Task\.sleep|time\.sleep|std::thread::sleep)\s*\(")
 LIVE_COMMAND_RE = re.compile(r"(?:^|\s)(?:curl|wget|ssh)\s|https?://")
+RUST_FOUNDATION_PATHS = {
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "rustfmt.toml",
+    ".cargo/config.toml",
+    ".cargo/config",
+}
+TEST_POLICY_PATTERNS = (
+    ".github/workflows/**",
+    "testing/**",
+    "tools/suite_registry.py",
+    "tools/ci_aggregate.py",
+    "docs/testing.md",
+    "CONTRIBUTING.md",
+    "AGENTS.md",
+)
+CODE_OR_POLICY_SUFFIXES = {
+    ".c",
+    ".h",
+    ".js",
+    ".json",
+    ".py",
+    ".rs",
+    ".swift",
+    ".toml",
+    ".ts",
+    ".tsx",
+    ".yaml",
+    ".yml",
+}
 
 # Only commands that exercise repository behavior belong to workflow discovery.
 # Dependency installation, cache setup, artifact upload, and shell bookkeeping do not.
@@ -87,6 +118,45 @@ class Inventory:
     coverage: list[dict[str, Any]]
     discovered: list[Discovered]
     matches: dict[str, list[Discovered]]
+
+
+@dataclass(frozen=True)
+class CargoPackage:
+    name: str
+    root: str
+    manifest: str
+    dependencies: frozenset[str]
+    root_workspace: bool = True
+
+
+@dataclass(frozen=True)
+class CargoGraph:
+    packages: Mapping[str, CargoPackage]
+    reverse_dependencies: Mapping[str, frozenset[str]]
+
+
+@dataclass
+class SuiteSelection:
+    suite: dict[str, Any]
+    runners: list[str]
+    reasons: list[str] = field(default_factory=list)
+
+    @property
+    def selected(self) -> bool:
+        return bool(self.reasons)
+
+
+@dataclass
+class SelectionPlan:
+    base: str
+    head: str
+    changed_paths: list[str]
+    suites: list[SuiteSelection]
+    errors: list[str]
+
+    @property
+    def selected(self) -> list[SuiteSelection]:
+        return [selection for selection in self.suites if selection.selected]
 
 
 def repository_root() -> Path:
@@ -205,11 +275,17 @@ def discover_workflow(root: Path) -> list[Discovered]:
     if not workflow.exists():
         return []
     lines = workflow.read_text(encoding="utf-8").splitlines()
-    commands: list[str] = []
+    commands: list[tuple[str, str]] = []
     block_indent: int | None = None
+    current_job = ""
     for raw in lines:
         indent = len(raw) - len(raw.lstrip())
         stripped = raw.strip()
+        job_match = re.fullmatch(r"  ([A-Za-z0-9_-]+):", raw)
+        if job_match:
+            current_job = job_match.group(1)
+            block_indent = None
+            continue
         if stripped.startswith("export "):
             continue
         if block_indent is not None:
@@ -218,7 +294,7 @@ def discover_workflow(root: Path) -> list[Discovered]:
             elif stripped and not stripped.startswith("#"):
                 command = stripped.rstrip("\\").strip()
                 if any(marker in command for marker in WORKFLOW_MARKERS):
-                    commands.append(command)
+                    commands.append((command, current_job))
                 continue
         match = re.search(r"(?:^|[-{,]\s)(?:run|cmd):\s*(.*?)(?:\s*}\s*)?$", stripped)
         if not match:
@@ -229,8 +305,11 @@ def discover_workflow(root: Path) -> list[Discovered]:
             continue
         value = _strip_yaml_scalar(value)
         if any(marker in value for marker in WORKFLOW_MARKERS):
-            commands.append(value)
-    return [Discovered("workflow-command", command, ".github/workflows/ci.yml") for command in sorted(set(commands))]
+            commands.append((value, current_job))
+    return [
+        Discovered("workflow-command", command, ".github/workflows/ci.yml", job)
+        for command, job in sorted(set(commands))
+    ]
 
 
 def discover_all(root: Path, metadata_loader: Callable[[Path, Path | None], dict[str, Any]] = _cargo_metadata) -> list[Discovered]:
@@ -452,6 +531,422 @@ def load_inventory(root: Path | None = None) -> Inventory:
     return validate(root, suites, coverage, discover_all(root))
 
 
+def _metadata_manifests(root: Path) -> list[Path | None]:
+    manifests: list[Path | None] = [None]
+    for relative in (
+        "firmware/obc-fw-nrf54l/Cargo.toml",
+        "firmware/obc-boot/Cargo.toml",
+        "apps/obc-desktop/Cargo.toml",
+    ):
+        candidate = root / relative
+        if candidate.exists():
+            manifests.append(candidate)
+    return manifests
+
+
+def build_cargo_graph(
+    root: Path,
+    metadata_loader: Callable[[Path, Path | None], dict[str, Any]] = _cargo_metadata,
+) -> CargoGraph:
+    """Derive package roots and reverse edges from Cargo rather than registry policy."""
+
+    raw_packages: dict[str, dict[str, Any]] = {}
+    for manifest in _metadata_manifests(root):
+        metadata = metadata_loader(root, manifest)
+        workspace_members = set(metadata.get("workspace_members", []))
+        for package in metadata.get("packages", []):
+            manifest_path = Path(package["manifest_path"])
+            try:
+                relative_manifest = _relative(manifest_path, root)
+            except ValueError:
+                continue
+            raw_packages[package["name"]] = {
+                "manifest": relative_manifest,
+                "dependencies": {dependency["name"] for dependency in package.get("dependencies", [])},
+                "root_workspace": manifest is None and package.get("id") in workspace_members,
+            }
+    names = set(raw_packages)
+    packages: dict[str, CargoPackage] = {}
+    reverse: dict[str, set[str]] = {name: set() for name in names}
+    for name, package in raw_packages.items():
+        dependencies = frozenset(package["dependencies"].intersection(names))
+        manifest = package["manifest"]
+        packages[name] = CargoPackage(
+            name,
+            str(Path(manifest).parent),
+            manifest,
+            dependencies,
+            bool(package["root_workspace"]),
+        )
+        for dependency in dependencies:
+            reverse[dependency].add(name)
+    return CargoGraph(packages, {name: frozenset(values) for name, values in reverse.items()})
+
+
+def _glob_matches(path: str, pattern: str) -> bool:
+    """Match repository globs, including the zero-directory meaning of `**/`."""
+
+    if fnmatch.fnmatchcase(path, pattern):
+        return True
+    collapsed = pattern
+    while "**/" in collapsed:
+        collapsed = collapsed.replace("**/", "", 1)
+        if fnmatch.fnmatchcase(path, collapsed):
+            return True
+    return False
+
+
+def git_changed_paths(root: Path, base: str, head: str) -> list[str]:
+    command = ["git", "diff", "--name-only", "--diff-filter=ACMR", f"{base}...{head}"]
+    try:
+        result = subprocess.run(command, cwd=root, check=True, capture_output=True, text=True)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        detail = getattr(exc, "stderr", "") or str(exc)
+        raise RegistryError(f"cannot read changed paths from Git: {detail.strip()}") from exc
+    return sorted({line.strip() for line in result.stdout.splitlines() if line.strip()})
+
+
+def workflow_job_runners(root: Path) -> dict[str, str]:
+    """Derive the coarse runner output controlling each CI job."""
+
+    workflow = root / ".github/workflows/ci.yml"
+    if not workflow.exists():
+        return {}
+    runners: dict[str, str] = {}
+    current_job = ""
+    for raw in workflow.read_text(encoding="utf-8").splitlines():
+        job_match = re.fullmatch(r"  ([A-Za-z0-9_-]+):", raw)
+        if job_match:
+            current_job = job_match.group(1)
+            runners[current_job] = "always"
+            continue
+        if not current_job:
+            continue
+        condition = re.search(r"needs\.changes\.outputs\.([A-Za-z0-9_-]+)\s*==\s*'true'", raw)
+        if condition:
+            runners[current_job] = condition.group(1)
+    return runners
+
+
+def suite_runner_surfaces(inventory: Inventory, root: Path) -> dict[str, list[str]]:
+    """Derive executable CI surfaces; an empty list is an intentionally visible missing route."""
+
+    job_runners = workflow_job_runners(root)
+    routes: dict[str, list[str]] = {}
+    for suite in inventory.suites:
+        suite_id = suite["id"]
+        discovered_runners = {
+            job_runners[item.detail]
+            for item in inventory.matches[suite_id]
+            if item.kind == "workflow-command" and item.detail in job_runners
+        }
+        rust_owners = [
+            owner["name"]
+            for owner in suite.get("ownership", [])
+            if owner.get("kind") == "rust-package"
+        ]
+        if "always" in discovered_runners:
+            routes[suite_id] = ["always"]
+            continue
+        if rust_owners:
+            discovered_runners.add("desktop" if "obc-desktop" in rust_owners else "rust")
+        routes[suite_id] = sorted(discovered_runners)
+    return routes
+
+
+def _add_reason(selection: SuiteSelection, reason: str) -> None:
+    if reason not in selection.reasons:
+        selection.reasons.append(reason)
+
+
+def _rust_suite_names(suite: dict[str, Any]) -> set[str]:
+    return {
+        owner["name"]
+        for owner in suite.get("ownership", [])
+        if owner.get("kind") == "rust-package"
+    }
+
+
+def _reverse_dependency_closure(graph: CargoGraph, package: str) -> dict[str, str]:
+    """Return reverse dependents mapped to the edge that first selected them."""
+
+    selected: dict[str, str] = {}
+    pending = [package]
+    while pending:
+        dependency = pending.pop(0)
+        for consumer in sorted(graph.reverse_dependencies.get(dependency, frozenset())):
+            if consumer == package or consumer in selected:
+                continue
+            selected[consumer] = dependency
+            pending.append(consumer)
+    return selected
+
+
+def _suite_owns_changed_test(suite: dict[str, Any], path: str) -> bool:
+    for owner in suite.get("ownership", []):
+        if owner.get("kind") == "path" and _glob_matches(path, owner.get("pattern", "")):
+            return True
+        if owner.get("kind") in {"swift-target", "swift-package"}:
+            package = owner.get("package", "")
+            package_root = str(Path(package).parent)
+            if path == package or path.startswith(f"{package_root}/"):
+                return True
+    return False
+
+
+def _is_policy_path(path: str) -> bool:
+    return any(_glob_matches(path, pattern) for pattern in TEST_POLICY_PATTERNS)
+
+
+def _looks_like_production(path: str) -> bool:
+    if path.startswith(("docs/", "artifacts/", ".claude/", ".repowise/")):
+        return False
+    name = Path(path).name
+    if name.startswith("test_") or "/tests/" in path or "/test/" in path:
+        return False
+    return Path(path).suffix.lower() in CODE_OR_POLICY_SUFFIXES
+
+
+def select_suites(
+    inventory: Inventory,
+    changed_paths: Sequence[str],
+    cargo_graph: CargoGraph,
+    routes: Mapping[str, Sequence[str]],
+    *,
+    base: str = "",
+    head: str = "HEAD",
+) -> SelectionPlan:
+    """Build the deterministic suite-level selection plan from repository facts."""
+
+    selections = {
+        suite["id"]: SuiteSelection(suite=suite, runners=list(routes.get(suite["id"], ())))
+        for suite in inventory.suites
+    }
+    errors: list[str] = []
+    owned_paths: set[str] = set()
+    rust_suites = {
+        package: [suite for suite in inventory.suites if package in _rust_suite_names(suite)]
+        for package in cargo_graph.packages
+    }
+
+    for path in sorted(set(changed_paths)):
+        path_owned = False
+        if _is_policy_path(path):
+            path_owned = True
+            for suite in inventory.suites:
+                if suite["id"].startswith("ci.") or suite["id"] == "python.repository-tools":
+                    _add_reason(selections[suite["id"]], f"test policy changed: {path}")
+
+        if path in RUST_FOUNDATION_PATHS:
+            path_owned = True
+            for suite in inventory.suites:
+                rust_owners = _rust_suite_names(suite)
+                selected_rust_owner = any(
+                    owner in cargo_graph.packages
+                    and (path not in {"Cargo.toml", "Cargo.lock"} or cargo_graph.packages[owner].root_workspace)
+                    for owner in rust_owners
+                )
+                if selected_rust_owner or suite["id"] in {
+                    "ci.rust-workspace-tests",
+                    "ci.rust-format",
+                    "ci.rust-clippy",
+                    "ci.rust-builds",
+                    "ci.dependencies",
+                    "ci.resource-contracts",
+                    "ci.wasm-size",
+                    "ci.licenses",
+                }:
+                    _add_reason(selections[suite["id"]], f"foundational Rust input changed: {path}")
+
+        changed_packages: list[str] = []
+        for package in cargo_graph.packages.values():
+            package_prefix = f"{package.root}/" if package.root != "." else ""
+            if path == package.manifest or (package_prefix and path.startswith(package_prefix)):
+                changed_packages.append(package.name)
+        for package_name in sorted(set(changed_packages)):
+            path_owned = True
+            for suite in rust_suites.get(package_name, []):
+                _add_reason(selections[suite["id"]], f"changed Rust package {package_name}: {path}")
+            for consumer, dependency in _reverse_dependency_closure(cargo_graph, package_name).items():
+                for suite in rust_suites.get(consumer, []):
+                    _add_reason(
+                        selections[suite["id"]],
+                        f"reverse dependency {consumer} compiles {dependency} after {package_name} changed",
+                    )
+
+        if path == "fixtures/catalog.toml" or path.startswith("fixtures/"):
+            path_owned = True
+            for suite in inventory.suites:
+                if suite.get("fixtures"):
+                    _add_reason(selections[suite["id"]], f"declared fixture input changed: {path}")
+
+        for suite in inventory.suites:
+            suite_id = suite["id"]
+            matched_triggers = [
+                pattern for pattern in suite.get("extra_triggers", []) if _glob_matches(path, pattern)
+            ]
+            if matched_triggers:
+                path_owned = True
+                for pattern in matched_triggers:
+                    _add_reason(selections[suite_id], f"registry trigger {pattern} matched {path}")
+            if _suite_owns_changed_test(suite, path):
+                path_owned = True
+                _add_reason(selections[suite_id], f"owned test or package source changed: {path}")
+
+        if path_owned:
+            owned_paths.add(path)
+        elif _looks_like_production(path):
+            errors.append(
+                f"changed production path has no suite owner: {path}; add a registry trigger or build-graph owner"
+            )
+
+    selected_runners = {
+        runner
+        for selection in selections.values()
+        if selection.selected
+        for runner in selection.runners
+    }
+    for selection in selections.values():
+        if selection.suite.get("pull_request") != "always" or selection.selected:
+            continue
+        if "always" in selection.runners:
+            _add_reason(selection, "always-run policy suite")
+        elif selected_runners.intersection(selection.runners):
+            _add_reason(
+                selection,
+                "required whenever its runner surface is selected: "
+                + ", ".join(sorted(selected_runners.intersection(selection.runners))),
+            )
+
+    for selection in selections.values():
+        if selection.selected and not selection.runners:
+            errors.append(
+                f"selected suite {selection.suite['id']} has no executable CI route; "
+                f"command is `{selection.suite['command']}`"
+            )
+        selection.reasons.sort()
+    return SelectionPlan(
+        base=base,
+        head=head,
+        changed_paths=sorted(set(changed_paths)),
+        suites=[selections[suite["id"]] for suite in inventory.suites],
+        errors=sorted(set(errors)),
+    )
+
+
+def selection_plan_data(plan: SelectionPlan) -> dict[str, Any]:
+    return {
+        "schema": 1,
+        "base": plan.base,
+        "head": plan.head,
+        "changed_paths": plan.changed_paths,
+        "selected_suite_ids": [selection.suite["id"] for selection in plan.selected],
+        "required_runner_surfaces": sorted(
+            {runner for selection in plan.selected for runner in selection.runners}
+        ),
+        "errors": plan.errors,
+        "suites": [
+            {
+                "id": selection.suite["id"],
+                "surface": selection.suite["surface"],
+                "platforms": selection.suite.get("platforms", []),
+                "selected": selection.selected,
+                "runner_surfaces": selection.runners,
+                "reasons": selection.reasons
+                if selection.selected
+                else ["no changed path, Cargo edge, or required cadence selected this suite"],
+            }
+            for selection in plan.suites
+        ],
+    }
+
+
+def render_selection_text(plan: SelectionPlan) -> str:
+    lines = [f"selection {plan.base}...{plan.head}: {len(plan.changed_paths)} changed path(s)"]
+    for selection in plan.suites:
+        state = "SELECTED" if selection.selected else "not selected"
+        runners = ",".join(selection.runners) if selection.runners else "missing route"
+        reasons = selection.reasons or ["no changed path, Cargo edge, or required cadence selected this suite"]
+        lines.append(f"{state:<12} {selection.suite['id']:<36} runners={runners}")
+        lines.extend(f"  - {reason}" for reason in reasons)
+    if plan.errors:
+        lines.append("errors:")
+        lines.extend(f"  - {error}" for error in plan.errors)
+    return "\n".join(lines)
+
+
+def coarse_filters(root: Path) -> dict[str, list[str]]:
+    workflow = root / ".github/workflows/ci.yml"
+    filters: dict[str, list[str]] = {}
+    current = ""
+    in_filters = False
+    for raw in workflow.read_text(encoding="utf-8").splitlines():
+        if raw.strip() == "filters: |":
+            in_filters = True
+            continue
+        if not in_filters:
+            continue
+        key_match = re.fullmatch(r"            ([A-Za-z0-9_-]+):", raw)
+        if key_match:
+            current = key_match.group(1)
+            filters[current] = []
+            continue
+        item_match = re.fullmatch(r"              - ['\"](.+)['\"]", raw)
+        if item_match and current:
+            filters[current].append(item_match.group(1))
+            continue
+        if raw and not raw.startswith(" "):
+            break
+    return filters
+
+
+def validate_coarse_filters(
+    root: Path,
+    inventory: Inventory,
+    cargo_graph: CargoGraph,
+    routes: Mapping[str, Sequence[str]],
+) -> list[str]:
+    """Exercise the locked audit classes against selection and the transitional filters."""
+
+    filters = coarse_filters(root)
+    representatives = [
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        "rustfmt.toml",
+        ".cargo/config.toml",
+        "specs/vectors/obcm-v2.json",
+        "ops/weather/check_freshness.py",
+        "tools/suite_registry.py",
+        "builder/server/nested/handler.py",
+        "fixtures/catalog.toml",
+        ".github/workflows/bake.yml",
+        "testing/suites.toml",
+        "builder/app/src/lib/example.ts",
+        "companion-ios/Packages/OBCKit/Sources/OBCFormats/example.swift",
+        "apps/obc-desktop/src/main.rs",
+        "docs/index.md",
+    ]
+    errors: list[str] = []
+    for path in representatives:
+        plan = select_suites(inventory, [path], cargo_graph, routes)
+        errors.extend(plan.errors)
+        for selection in plan.selected:
+            conditional = [runner for runner in selection.runners if runner != "always"]
+            if not conditional:
+                continue
+            if not any(
+                any(_glob_matches(path, pattern) for pattern in filters.get(runner, []))
+                for runner in conditional
+            ):
+                errors.append(
+                    f"coarse filters {conditional!r} miss {path}, which selects {selection.suite['id']}"
+                )
+    if errors:
+        raise RegistryError("\n".join(f"- {error}" for error in sorted(set(errors))))
+    return representatives
+
+
 def _suite_summary(suite: dict[str, Any], owned: Sequence[Discovered]) -> dict[str, Any]:
     return {
         "id": suite["id"],
@@ -523,6 +1018,40 @@ def command_explain(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_select(args: argparse.Namespace) -> int:
+    root = (args.root or repository_root()).resolve()
+    inventory = load_inventory(root)
+    graph = build_cargo_graph(root)
+    routes = suite_runner_surfaces(inventory, root)
+    changed_paths = git_changed_paths(root, args.base, args.head)
+    plan = select_suites(
+        inventory,
+        changed_paths,
+        graph,
+        routes,
+        base=args.base,
+        head=args.head,
+    )
+    if args.format == "json":
+        print(json.dumps(selection_plan_data(plan), sort_keys=True, separators=(",", ":")))
+    else:
+        print(render_selection_text(plan))
+    return 1 if plan.errors else 0
+
+
+def command_validate_filters(args: argparse.Namespace) -> int:
+    root = (args.root or repository_root()).resolve()
+    inventory = load_inventory(root)
+    representatives = validate_coarse_filters(
+        root,
+        inventory,
+        build_cargo_graph(root),
+        suite_runner_surfaces(inventory, root),
+    )
+    print(f"coarse CI filters cover {len(representatives)} audited selection classes")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Inspect and validate testing/suites.toml")
     parser.add_argument("--root", type=Path, help=argparse.SUPPRESS)
@@ -535,6 +1064,16 @@ def build_parser() -> argparse.ArgumentParser:
     explain = subparsers.add_parser("explain", help="explain one suite")
     explain.add_argument("suite_id")
     explain.set_defaults(func=command_explain)
+    select = subparsers.add_parser("select", help="select affected suites from a Git diff")
+    select.add_argument("--base", required=True, help="base Git revision")
+    select.add_argument("--head", default="HEAD", help="head Git revision (default: HEAD)")
+    select.add_argument("--format", choices=("text", "json"), default="text")
+    select.set_defaults(func=command_select)
+    filters = subparsers.add_parser(
+        "validate-filters",
+        help="prove coarse runner filters cover the audited registry selections",
+    )
+    filters.set_defaults(func=command_validate_filters)
     return parser
 
 

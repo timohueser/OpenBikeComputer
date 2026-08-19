@@ -724,7 +724,7 @@ clean *args:
 
 # Inspect the machine-readable test and validation inventory from any directory.
 # The full taxonomy and suite-granularity policy live in docs/testing.md.
-# Args: check | list [--json] | explain SUITE_ID
+# Args: check | list [--json] | explain SUITE_ID | select --base REF | validate-filters
 suites *args:
     #!/usr/bin/env bash
     set -euo pipefail

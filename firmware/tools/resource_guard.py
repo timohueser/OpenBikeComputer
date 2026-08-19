@@ -36,6 +36,7 @@ STRICT_ALIGN_CONFIGS = (
     HERE.parent / "obc-fw-nrf54l" / ".cargo" / "config.toml",
     HERE.parent / "obc-boot" / ".cargo" / "config.toml",
 )
+ANSI_CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 class GuardError(RuntimeError):
@@ -942,6 +943,42 @@ def check_strict_align(args: argparse.Namespace) -> None:
     print("strict-align backend check passed: 4 x ldrb with flag; ldr control without flag")
 
 
+def validate_build_rustflags(log: str, crate: str) -> None:
+    """Prove the shipping crate's actual Cargo rustc command retained +strict-align."""
+
+    crate_name = crate.replace("-", "_")
+    # CI deliberately keeps Cargo colour enabled. Cargo wraps the ``Running`` label in SGR
+    # sequences before tee writes the verbose build log, so matching the raw text would reject
+    # the exact production invocation it is meant to inspect. Strip CSI controls only; the rustc
+    # command and all of its arguments remain byte-for-byte visible to the checks below.
+    plain_log = ANSI_CSI_RE.sub("", log)
+    invocations = [
+        line
+        for line in plain_log.splitlines()
+        if "Running `" in line and f"--crate-name {crate_name}" in line and "rustc" in line
+    ]
+    require(invocations, f"verbose Cargo log contains no rustc invocation for `{crate}`")
+    strict = [
+        line
+        for line in invocations
+        if re.search(r"(?:^|\s)-C(?:\s+|=?)target-feature=\+strict-align(?:\s|`|$)", line)
+    ]
+    require(
+        strict,
+        f"actual rustc invocation for `{crate}` omits `-C target-feature=+strict-align`; "
+        "a job-wide RUSTFLAGS value may be shadowing the board Cargo config",
+    )
+
+
+def check_build_rustflags(args: argparse.Namespace) -> None:
+    try:
+        log = args.log.read_text(encoding="utf-8")
+    except OSError as error:
+        raise GuardError(f"cannot read verbose Cargo log {args.log}: {error}") from error
+    validate_build_rustflags(log, args.crate)
+    print(f"actual {args.crate} production rustc invocation includes +strict-align")
+
+
 def check_frames(args: argparse.Namespace) -> None:
     """Gate the largest single stack frame among the symbols of one module, in any ELF.
 
@@ -998,6 +1035,12 @@ def parser() -> argparse.ArgumentParser:
         type=Path,
         help="Cargo config that must wire +strict-align (repeatable; defaults to board + boot)",
     )
+    actual = commands.add_parser(
+        "build-rustflags",
+        help="prove a shipping crate's actual verbose Cargo invocation includes +strict-align",
+    )
+    actual.add_argument("--log", type=Path, required=True)
+    actual.add_argument("--crate", required=True)
     return root
 
 
@@ -1013,8 +1056,10 @@ def main() -> int:
             check_boot(args, baseline)
         elif args.command == "frames":
             check_frames(args)
-        else:
+        elif args.command == "strict-align":
             check_strict_align(args)
+        else:
+            check_build_rustflags(args)
     except (GuardError, KeyError, TypeError) as error:
         print(f"resource guard failed: {error}", file=sys.stderr)
         return 1
