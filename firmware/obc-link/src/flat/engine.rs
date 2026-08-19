@@ -1011,6 +1011,19 @@ mod tests {
         assert_eq!(commit_refusal(StoreError::Invalid, 0).code, ErrorCode::Internal);
     }
 
+    /// A full **hold** table says which kind of busy it is. The detail is the half a client's retry
+    /// policy reads, and it is frozen in `FLAT_Store_Protocol.md` §3.9 — so it is pinned here rather
+    /// than left to whoever next edits the match.
+    #[test]
+    fn a_full_hold_table_is_busy_with_the_holds_detail() {
+        assert_eq!(open_refusal(StoreError::Busy), Refusal::new(ErrorCode::Busy, detail::busy::HOLDS));
+        // The other two seams cannot produce it — neither takes a hold row — but they map it rather
+        // than funnelling it into `Internal`, so a store that ever does say it reads as *ask again*.
+        assert_eq!(allocate_refusal(StoreError::Busy, 1), Refusal::new(ErrorCode::Busy, detail::busy::HOLDS));
+        assert_eq!(commit_refusal(StoreError::Busy, 0), Refusal::new(ErrorCode::Busy, detail::busy::HOLDS));
+        assert_ne!(detail::busy::HOLDS, detail::busy::TRANSFER, "the two reasons must stay distinguishable");
+    }
+
     #[test]
     fn a_card_that_is_not_the_card_the_superblock_describes_is_unformatted_on_the_wire() {
         for mode in [Mode::Unformatted, Mode::CardTooSmall] {

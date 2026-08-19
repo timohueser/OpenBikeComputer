@@ -584,6 +584,41 @@ mod tests {
         assert!(store.entries_ok());
     }
 
+    /// **A full hold table is `Busy`, not `Invalid`.** The two shared a value until FS7.5-c2, and
+    /// the difference is the whole of a client's retry policy: `Invalid` is §3.5's `invalidRequest`
+    /// — *this request is wrong and will be wrong next time* — while every row being taken is a fact
+    /// about who else is reading right now.
+    ///
+    /// Exhaustion is reachable at all because the table is [`MAX_OPEN_OBJECTS`] rows, which FS7.5-c2
+    /// took from 16 to 6; the arm was unreachable in practice before, which is exactly why it went
+    /// six years without a test. `MAX_OPEN_OBJECTS + 1` **distinct** objects, because repeating one
+    /// would share a row by refcount and never fill the table.
+    #[test]
+    fn a_full_hold_table_is_refused_as_busy_rather_than_invalid() {
+        let (disk, ids) = fixture(MAX_OPEN_OBJECTS + 1);
+        let store = FlatStore::mount(&disk);
+
+        let mut open: vec::Vec<crate::flat::store::Handle> = vec::Vec::new();
+        for (index, id) in ids.iter().take(MAX_OPEN_OBJECTS).enumerate() {
+            open.push(Store::open(&store, *id, None).unwrap_or_else(|error| {
+                panic!("row {index} of {MAX_OPEN_OBJECTS} should still be free, got {error:?}")
+            }));
+        }
+        assert_eq!(
+            Store::open(&store, ids[MAX_OPEN_OBJECTS], None).unwrap_err(),
+            StoreError::Busy,
+            "the row after the last one is a transient refusal, not a malformed request"
+        );
+
+        // And it really was transient: give one row back and the same open succeeds.
+        store.close(open.pop().expect("a row to return"));
+        let handle = Store::open(&store, ids[MAX_OPEN_OBJECTS], None).expect("the freed row serves the next caller");
+        store.close(handle);
+        for handle in open {
+            store.close(handle);
+        }
+    }
+
     /// The leak detector itself. Dropping a source that still holds its handle is the mistake it
     /// exists to catch, and a test that stops catching it is worse than no test.
     #[test]

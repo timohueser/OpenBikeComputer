@@ -873,6 +873,18 @@ impl<D: BlockDevice> FlatStore<D> {
         let _ = read_blocks(&self.dev, SUPERBLOCK[0], &mut block);
     }
 
+    /// How many extent ranges the head revision of `id` holds — `None` when there is no such object.
+    ///
+    /// For the fixtures that need to *prove* an object is fragmented rather than assume it: an
+    /// allocator change that quietly handed out one contiguous run would leave a straddling-read
+    /// test passing while it had stopped straddling anything. Nothing else calls it, and it is
+    /// `cfg(test)`, so no device build has it — the same shape as
+    /// [`hold_free_across_a_command`](Self::hold_free_across_a_command) above.
+    #[cfg(test)]
+    pub(super) fn head_range_count(&self, id: ObjectId) -> Option<usize> {
+        self.find(id).ok()?.1.map(|entry| entry.ranges.len())
+    }
+
     /// The one method that takes `&mut self`, and the reason `store`, `geometry` and `extents` need
     /// no cell: it runs inside [`mount`](Self::mount) on a store nothing else can reach yet, and those
     /// three are never written again.
