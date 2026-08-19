@@ -3,7 +3,7 @@
 //! The cell catalog's whole promise is that any selection is an *assembly*, not a bake. This is what
 //! makes that true without a backend: [`obcm-assemble`](../obcm_assemble/index.html), the OBCA
 //! engine, compiled to wasm and driven from a browser tab. The cells the builder downloaded go in;
-//! one `.obcm` — or a volume set's shards plus its OBCS manifest — comes out, byte-for-byte
+//! one `.obcm` — geometry, nav graph, POIs and the spliced §1.3 raster — comes out, byte-for-byte
 //! identical to what the native CLI produces from the same inputs.
 //!
 //! Deliberately not a framework host like [`obc-web-demo`](../obc_web_demo/index.html): no frame
@@ -14,13 +14,18 @@
 //! | `new Assembler(schemaJson, skinJson, optionsJson?)` | an empty assembly, waiting for cells |
 //! | `.addCell(id, band, partial, bytes)` | hand over one downloaded cell; `bytes` crosses **once** |
 //! | `.addCellByKey(id, band, partial, byteLength, key)` | …or leave the bytes outside wasm and read them on demand (#1116 B2) |
+//! | `.addKnownEmpty(id, band)` | one selected square the catalog asserts is canonically empty |
 //! | `.setTerrain(postingLog2, cellLog2)` / `.addTerrainCell(id, sha256, bytes)` | the raster (EL4) |
-//! | `.run(onProgress?, onFile?, onRead?, sink?)` | assemble; returns the summary JSON, throws a typed error |
-//! | `.fileCount` / `.fileName(i)` / `.fileRole(i)` / `.fileSha256(i)` / `.fileByteLength(i)` | whatever `onFile` did **not** take, shards first and the manifest **last** (OBCA §5.4) |
-//! | `.takeFile(i)` | move one file's bytes out to JS and free the wasm-side copy; twice throws |
+//! | `.run(onProgress?, onRead?, sink?, scratch?)` | assemble; returns the summary JSON, throws a typed error |
+//! | `.fileSha256` / `.fileByteLength` | the finished map's identity |
+//! | `.hasFile` / `.takeFile()` | the bytes, when the run buffered them; a sink means the host has them already |
 //! | `.warnings()` | what OBCA says a producer SHOULD report rather than refuse |
 //! | `.releaseCells()` | drop the input buffers once the output is taken |
-//! | `obc_assemble_estimate(networkBandBytes, totalCellBytes, terrainBytes, mergeBudgetBytes, inputOnDisk, streamedShardBytes, budgetBytes?)` | can this selection be assembled in a tab at all — **before** the download |
+//! | `obc_assemble_estimate(networkBandBytes, totalCellBytes, terrainBytes, mergeBudgetBytes, inputOnDisk, outputSunk, budgetBytes?)` | can this selection be assembled in a tab at all — **before** the download |
+//!
+//! **Nothing here names a file.** The engine names nothing and this bridge names nothing: what
+//! crosses is a digest, a length and (sometimes) the bytes. Whether that becomes `MAP.OBCM` on a
+//! card or a save dialog's suggestion is the caller's decision, and it is the only party that knows.
 //!
 //! `.run()` **blocks** for the whole assembly — ~20 s at country scale — so it belongs in a **Web
 //! Worker**, not on the main thread. That contract, and what a cancel button has to do given it, is
@@ -39,8 +44,8 @@ pub mod estimate;
 
 pub use driver::{
     assemble, assemble_cells, assemble_cells_with_known_empty, assemble_everything, AssembleFailure, BridgeOptions,
-    CellBytes, CellReads, ErrorCode, Hooks, KnownEmptyCell, NoHooks, Outcome, OutputFile, Phase, ScratchWrites,
-    SealedShard, ShardWrites, SourceCell, TerrainCellBytes, TerrainLattice, Wiring,
+    CellBytes, CellReads, ErrorCode, Hooks, KnownEmptyCell, MapWrites, NoHooks, Outcome, Phase, ScratchWrites,
+    SealedMap, SourceCell, TerrainCellBytes, TerrainLattice, Wiring,
 };
 pub use estimate::{
     estimate_memory, estimate_memory_with_budget, MemoryEstimate, Residency, ENGINE_FLOOR, OUTPUT_PER_CELL_BYTE,
@@ -52,8 +57,8 @@ mod web {
     use wasm_bindgen::prelude::*;
 
     use crate::driver::{
-        assemble, AssembleFailure, BridgeOptions, CellBytes, CellReads, ErrorCode, Hooks, KnownEmptyCell, OutputFile,
-        Phase, ScratchWrites, SealedShard, ShardWrites, SourceCell, TerrainCellBytes, TerrainLattice, Wiring,
+        assemble, AssembleFailure, BridgeOptions, CellBytes, CellReads, ErrorCode, Hooks, KnownEmptyCell, MapWrites,
+        Outcome, Phase, ScratchWrites, SealedMap, SourceCell, TerrainCellBytes, TerrainLattice, Wiring,
     };
 
     /// Module start (wasm-bindgen runs this during instantiation): surface Rust panics in the console
@@ -70,15 +75,12 @@ mod web {
         fn console_warn(msg: &str);
     }
 
-    /// The browser's [`Hooks`]: `Date.now()` for the phase split, and the caller's callback for
-    /// progress and abort.
+    /// The browser's [`Hooks`]: `Date.now()` for the phase split, and the caller's callbacks for
+    /// progress, abort, and the sunk map's identity.
     struct JsHooks {
         on_progress: Option<js_sys::Function>,
-        /// `on_file(name, role, sha256, bytes)`, called from inside `run` as each shard passes its
-        /// §4.8 verify. Its presence is what turns the hand-off on at all.
-        on_file: Option<js_sys::Function>,
-        /// `sealed(slot, name, role, sha256, byteLength)` — the sink's own version of `on_file`,
-        /// carrying an identity because the host already wrote the bytes (#1116 D1).
+        /// `sealed(sha256, byteLength)` — the sink's report, carrying an identity because the host
+        /// wrote the bytes itself and never saw them (#1116 D1).
         on_sealed: Option<js_sys::Function>,
         /// `Date.now()` is wall clock and can step backwards (NTP, a suspended tab). The engine
         /// subtracts consecutive readings, so a step back would underflow a `u64`; clamping here
@@ -119,74 +121,31 @@ mod web {
             }
         }
 
-        fn wants_shards(&self) -> bool {
-            self.on_file.is_some()
-        }
-
-        /// Hand one verified shard to JS and free the wasm-side buffer.
+        /// Tell JS what the map the host's own sink wrote turned out to be (#1116 D1).
         ///
-        /// The order is the whole point. The bytes are copied into a JS `Uint8Array`, the Rust
-        /// `Vec` is dropped, and only *then* is the callback invoked — so the wasm heap is already
-        /// back down to the rest of the run before the worker starts transferring the buffer on.
-        /// The copy itself is unavoidable (linear memory cannot be donated to an `ArrayBuffer`), and
-        /// it is exactly what `takeFile` has always done; what changes is when.
-        ///
-        /// A callback that **throws** is not survivable the way a thrown progress callback is: the
-        /// shard's bytes are already gone, so continuing would produce a set that is missing a file
-        /// and report it as finished. It fails the run instead, as `io` — the sink did fail.
-        fn take_shard(&mut self, shard: OutputFile) -> Result<Option<OutputFile>, String> {
-            let Some(f) = &self.on_file else { return Ok(Some(shard)) };
-            let OutputFile { name, role, sha256, bytes } = shard;
-            let array = js_sys::Uint8Array::from(bytes.as_slice());
-            drop(bytes);
-            let args = js_sys::Array::of4(
-                &JsValue::from_str(&name),
-                &JsValue::from_str(role),
-                &JsValue::from_str(&sha256),
-                &array,
-            );
-            match f.apply(&JsValue::NULL, &args) {
-                Ok(_) => Ok(None),
-                Err(e) => Err(format!(
-                    "the file sink threw while taking {name} ({e:?}), and the shard's bytes had already been handed \
-                     to it. The set is incomplete and was not finished; nothing that was written is a map until the \
-                     OBCS manifest exists (OBCA §5.4), so discard whatever was saved and re-run."
-                )),
-            }
-        }
-
-        /// Tell JS about one shard the host's own sink wrote and §4.8 has passed (#1116 D1).
-        ///
-        /// Nothing crosses but five scalars — the bytes were never here. A throw fails the run as
-        /// `io` for the same reason `take_shard`'s does: the file exists and the caller does not
-        /// know its name, so a set reported as finished would name a file nobody recorded.
-        fn shard_sealed(&mut self, shard: SealedShard) -> Result<(), String> {
+        /// Nothing crosses but two scalars — the bytes were never here. A throw fails the run as
+        /// `io`: the file exists, the caller does not know which bytes are in it, and a map reported
+        /// as finished whose identity nobody recorded is worse than a run that says it failed.
+        fn map_sealed(&mut self, map: SealedMap) -> Result<(), String> {
             let Some(f) = &self.on_sealed else { return Ok(()) };
-            let SealedShard { slot, name, role, sha256, byte_length } = shard;
-            let args = js_sys::Array::new();
-            args.push(&JsValue::from_f64(slot as f64));
-            args.push(&JsValue::from_str(&name));
-            args.push(&JsValue::from_str(role));
-            args.push(&JsValue::from_str(&sha256));
-            args.push(&JsValue::from_f64(byte_length as f64));
-            match f.apply(&JsValue::NULL, &args) {
+            let SealedMap { sha256, byte_length } = map;
+            match f.call2(&JsValue::NULL, &JsValue::from_str(&sha256), &JsValue::from_f64(byte_length as f64)) {
                 Ok(_) => Ok(()),
                 Err(e) => Err(format!(
-                    "the shard sink threw while reporting {name} ({e:?}). The file is written but the set was not \
-                     finished; nothing that was written is a map until the OBCS manifest exists (OBCA §5.4), so \
-                     discard whatever was saved and re-run."
+                    "the map sink threw while reporting the finished file ({e:?}). The bytes are written but their \
+                     identity was not recorded; discard the file and re-run."
                 )),
             }
         }
     }
 
-    /// The browser's [`ShardWrites`]: one OPFS `FileSystemSyncAccessHandle` per shard, on the far
-    /// side of four JS calls (#1116 D1).
+    /// The browser's [`MapWrites`]: one OPFS `FileSystemSyncAccessHandle` on the far side of four JS
+    /// calls (#1116 D1).
     ///
     /// The mirror of [`JsReads`], and cheap for the same reason: `write` hands the host a view that
     /// *is* the engine's buffer and `readAt` hands it one that *is* the destination, so bytes move
     /// between linear memory and the file in one step with nothing copied on the JS side. What
-    /// crosses per call is a slot number, an offset, and one freshly-made view object.
+    /// crosses per call is an offset and one freshly-made view object.
     struct JsSink {
         create: js_sys::Function,
         write: js_sys::Function,
@@ -196,18 +155,18 @@ mod web {
 
     impl JsSink {
         /// Read the four methods off the object a caller passed. Missing or non-callable is a
-        /// half-wired host and is refused before a byte is written, rather than at the first shard.
+        /// half-wired host and is refused before a byte is written.
         fn from_object(obj: &js_sys::Object) -> Result<JsSink, AssembleFailure> {
             let method = |name: &str| -> Result<js_sys::Function, AssembleFailure> {
                 let v = js_sys::Reflect::get(obj, &JsValue::from_str(name)).map_err(|_| AssembleFailure {
                     code: ErrorCode::Internal,
-                    message: format!("the shard sink has no {name:?}"),
+                    message: format!("the map sink has no {name:?}"),
                 })?;
                 v.dyn_into::<js_sys::Function>().map_err(|_| AssembleFailure {
                     code: ErrorCode::Internal,
                     message: format!(
-                        "the shard sink's {name:?} is not a function — a sink must provide create, write, readAt, \
-                         seal and sealed."
+                        "the map sink's {name:?} is not a function — a sink must provide create, write, readAt, seal \
+                         and sealed."
                     ),
                 })
             };
@@ -229,41 +188,30 @@ mod web {
         }
     }
 
-    impl ShardWrites for JsSink {
-        fn create(&self, slot: usize, name: &str) -> Result<(), String> {
-            JsSink::taken(
-                self.create.call2(&JsValue::NULL, &JsValue::from_f64(slot as f64), &JsValue::from_str(name)),
-                "create",
-            )
+    impl MapWrites for JsSink {
+        fn create(&self) -> Result<(), String> {
+            JsSink::taken(self.create.call0(&JsValue::NULL), "create")
         }
 
-        fn write(&self, slot: usize, bytes: &[u8]) -> Result<(), String> {
+        fn write(&self, bytes: &[u8]) -> Result<(), String> {
             // SAFETY: the same contract as `JsReads::read` — the view aliases linear memory and is
             // made, passed and dropped inside one synchronous JS call that only reads from it. No
             // Rust allocation can run in between, and the callback is documented not to re-enter
             // the assembler or to keep the view.
             let src = unsafe { js_sys::Uint8Array::view(bytes) };
-            JsSink::taken(self.write.call2(&JsValue::NULL, &JsValue::from_f64(slot as f64), &src), "write")
+            JsSink::taken(self.write.call1(&JsValue::NULL, &src), "write")
         }
 
-        fn read_at(&self, slot: usize, offset: u64, into: &mut [u8]) -> Result<(), String> {
+        fn read_at(&self, offset: u64, into: &mut [u8]) -> Result<(), String> {
             // SAFETY: as in `JsReads::read` — a per-call view, filled and dropped inside the call.
-            // A sunk shard's offset can pass 4 GiB since the read seam widened; `f64` carries it
-            // exactly to 2^53, far past the 64 GiB §1.1 lets a file reach.
+            // A sunk map's offset can pass 4 GiB since the read seam widened; `f64` carries it
+            // exactly to 2^53, far past the 64 GiB interior §1.1 lets a file reach.
             let dest = unsafe { js_sys::Uint8Array::view_mut_raw(into.as_mut_ptr(), into.len()) };
-            JsSink::taken(
-                self.read_at.call3(
-                    &JsValue::NULL,
-                    &JsValue::from_f64(slot as f64),
-                    &JsValue::from_f64(offset as f64),
-                    &dest,
-                ),
-                "readAt",
-            )
+            JsSink::taken(self.read_at.call2(&JsValue::NULL, &JsValue::from_f64(offset as f64), &dest), "readAt")
         }
 
-        fn seal(&self, slot: usize) -> Result<(), String> {
-            JsSink::taken(self.seal.call1(&JsValue::NULL, &JsValue::from_f64(slot as f64)), "seal")
+        fn seal(&self) -> Result<(), String> {
+            JsSink::taken(self.seal.call0(&JsValue::NULL), "seal")
         }
     }
 
@@ -397,10 +345,10 @@ mod web {
         }
     }
 
-    /// One assembly: cells in, an OBCA set out.
+    /// One assembly: cells in, one map out.
     ///
     /// The lifecycle is fixed — construct, `addCell` for every downloaded cell, `run`, then take the
-    /// files. Cells may be handed over as they finish downloading; nothing is parsed until `run`.
+    /// file. Cells may be handed over as they finish downloading; nothing is parsed until `run`.
     #[wasm_bindgen]
     pub struct Assembler {
         schema_json: String,
@@ -412,27 +360,27 @@ mod web {
         /// [`Assembler::add_cell_by_key`] returns.
         source_cells: Vec<SourceCell>,
         known_empty: Vec<KnownEmptyCell>,
-        /// The catalog's terrain lattice, once the caller declares one. `None` leaves the set
-        /// without a `terrain` role — a complete map with flat profiles (`OBCC_Spec.md` §13).
+        /// The catalog's terrain lattice, once the caller declares one. `None` leaves the map's
+        /// §1.3 region empty — a complete map with flat profiles (`OBCC_Spec.md` §13).
         terrain: Option<TerrainLattice>,
         terrain_cells: Vec<TerrainCellBytes>,
-        files: Vec<OutputFile>,
-        /// Which files have already been moved out to JS. An emptied buffer is indistinguishable
-        /// from a legitimately empty one, and the difference decides between handing back an
-        /// unusable file and saying why — see [`Assembler::take_file`].
-        taken: Vec<bool>,
-        warnings: Vec<String>,
+        /// What the finished run produced, once there is one.
+        outcome: Option<Outcome>,
+        /// Whether the bytes have already been moved out to JS. An emptied buffer is
+        /// indistinguishable from a legitimately empty one, and the difference decides between
+        /// handing back an unusable file and saying why — see [`Assembler::take_file`].
+        taken: bool,
     }
 
     #[wasm_bindgen]
     impl Assembler {
         /// Start an assembly at a schema and a skin (OBCC §4 / §5 documents, as JSON text).
         ///
-        /// `options_json` is an optional object: `{name, cardId, targetShardBytes, acceptHoles,
-        /// acceptPartial, forceSplit}`, every field optional. Unknown keys are ignored, so a newer
-        /// builder can talk to an older module. There is deliberately **no** `skipVerify`: OBCA §4.8
-        /// makes the read-back a precondition of writing a set, and this bridge exists to hand bytes
-        /// to a device.
+        /// `options_json` is an optional object: `{acceptHoles, acceptPartial, readBlockBytes,
+        /// mergeBudgetBytes}`, every field optional. Unknown keys are ignored, so a newer builder
+        /// can talk to an older module. There is deliberately **no** `skipVerify`: OBCA §4.8 makes
+        /// the read-back a precondition of writing a map, and this bridge exists to hand bytes to a
+        /// device.
         #[wasm_bindgen(constructor)]
         pub fn new(schema_json: String, skin_json: String, options_json: Option<String>) -> Result<Assembler, JsValue> {
             let options = BridgeOptions::parse(options_json.as_deref().unwrap_or(""))
@@ -446,9 +394,8 @@ mod web {
                 known_empty: Vec::new(),
                 terrain: None,
                 terrain_cells: Vec::new(),
-                files: Vec::new(),
-                taken: Vec::new(),
-                warnings: Vec::new(),
+                outcome: None,
+                taken: false,
             })
         }
 
@@ -498,10 +445,11 @@ mod web {
         }
 
         /// Declare the catalog's terrain lattice (`OBCC_Spec.md` §13.1's `posting_log2` /
-        /// `cell_log2`). Calling it is what makes the set carry a `terrain` role at all; a catalog
-        /// with no terrain block simply never calls it, and the map assembles exactly as before.
+        /// `cell_log2`). Calling it is what gives the map a §1.3 terrain region at all; a catalog
+        /// with no terrain block simply never calls it, and the map assembles with the pair at
+        /// `(0, 0)`.
         ///
-        /// Declaring the lattice with **no** cells is legal and meaningful: it writes a shard that
+        /// Declaring the lattice with **no** cells is legal and meaningful: it writes a region that
         /// is all directory, which says "this ground is canonically void" (open ocean, outside the
         /// dataset's coverage) rather than "the raster failed to arrive".
         #[wasm_bindgen(js_name = setTerrain)]
@@ -533,7 +481,8 @@ mod web {
         }
 
         /// Assemble, and return the summary as JSON — the same document `obcm-assemble --json`
-        /// prints. The files themselves are then taken one at a time with [`Assembler::take_file`].
+        /// prints. The bytes are then taken with [`Assembler::take_file`], unless a `sink` wrote
+        /// them, in which case the host already has them.
         ///
         /// **This blocks.** A country-scale assembly is ~20 s of straight-line compute, so calling it
         /// on the main thread freezes the tab for the duration; run it in a Web Worker and post
@@ -541,24 +490,10 @@ mod web {
         ///
         /// `on_progress(phase, fraction)` is called at every phase boundary and about a hundred times
         /// over the write and the §4.8 read-back; `phase` is one of `open`/`poi`/`nav`/`plan`/
-        /// `write`/`verify`/`manifest`/`done` and `fraction` is **overall** completion, weighted by
-        /// the measured phase split. Returning a truthy value asks for an abort, honoured at the next
-        /// write or verify read — see [`crate::driver`] for the granularity. A callback that
-        /// *throws* is warned about once and otherwise ignored; it never cancels the run.
-        ///
-        /// `on_file(name, role, sha256, bytes)` is the **eviction** seam (#1116 B1), and passing it
-        /// is what turns eviction on. It is called synchronously from inside `run`, once per shard,
-        /// as soon as that shard's §4.8 read-back has passed — and the wasm-side buffer is freed
-        /// before it runs, so the output's residency over a whole assembly is one shard rather than
-        /// the whole set. A file taken this way is **not** in `fileCount` afterwards; `takeFile`
-        /// still hands on everything that was not (the terrain shard, the manifest).
-        ///
-        /// Take the `Uint8Array` and return promptly: the assembly is blocked behind the callback,
-        /// and nothing can be awaited from inside it. Post it on and let the consumer do the slow
-        /// part. If it **throws**, the run fails as `io` — by then the bytes are gone, and a set with
-        /// a hole in it must not be reported as finished. A run that fails or is cancelled may
-        /// already have handed shards out; cleaning them up is the caller's job (§5.4 makes them
-        /// invisible as a map until the manifest exists, so nothing half-usable reaches a device).
+        /// `write`/`verify`/`done` and `fraction` is **overall** completion, weighted by the measured
+        /// phase split. Returning a truthy value asks for an abort, honoured at the next write or
+        /// verify read — see [`crate::driver`] for the granularity. A callback that *throws* is
+        /// warned about once and otherwise ignored; it never cancels the run.
         ///
         /// `on_read(slot, offset, dest) -> boolean` is how the bytes of every cell added with
         /// [`Assembler::add_cell_by_key`] are fetched (#1116 B2), and it must be present if any
@@ -577,23 +512,22 @@ mod web {
         /// a per-call JS crossing affordable at all (see [`crate::driver`]'s module header).
         ///
         /// `sink` is the output's version of `on_read` (#1116 D1), and the one that decides whether
-        /// a country-scale map can be assembled in a tab at all: an object with `create(slot,
-        /// name)`, `write(slot, bytes)`, `readAt(slot, offset, into)`, `seal(slot)` and
-        /// `sealed(slot, name, role, sha256, byteLength)`. In the browser those are one OPFS
-        /// `FileSystemSyncAccessHandle` per shard, opened in the worker before the run.
+        /// a country-scale map can be assembled in a tab at all: an object with `create()`,
+        /// `write(bytes)`, `readAt(offset, into)`, `seal()` and `sealed(sha256, byteLength)`. In the
+        /// browser those are one OPFS `FileSystemSyncAccessHandle`, opened in the worker before the
+        /// run.
         ///
-        /// With one, **no shard is ever in wasm memory**: `write` forwards straight to the host, the
+        /// With one, **the map is never in wasm memory**: `write` forwards straight to the host, the
         /// §4.8 read-back reads the host's file back (through a block cache, like the input's), and
-        /// `sealed` reports each shard's identity as it passes — so nothing shard-sized is copied,
-        /// posted, or held. Shards reported that way are not in `fileCount`; `takeFile` still hands
-        /// on the terrain shard and the manifest. The core shard cannot be split (one nav graph, one
-        /// file), so this is the only thing that keeps a ~3 GiB one out of a 4 GiB address space.
+        /// `sealed` reports the finished file's identity. A DACH map is a single ~9 GiB object —
+        /// larger than this address space — so a sink is not an optimisation there, it is the only
+        /// shape in which the selection exists.
         ///
         /// The four byte-moving methods return `true` for success; anything falsy, or a throw, fails
         /// the run as `io`. `bytes` and `into` are views straight onto wasm's linear memory, valid
         /// **only for the duration of the call** — the same rule as `on_read`'s `dest`. A `sealed`
-        /// that throws fails the run as `io` too: the file exists and the caller does not know its
-        /// name.
+        /// that throws fails the run as `io` too: the file exists and the caller does not know which
+        /// bytes are in it.
         ///
         /// `scratch` is the third seam's host side (#1116 D2): where the engine's *spill* — the
         /// sorted passes' working files, not the map's input or output — goes instead of into wasm
@@ -613,12 +547,11 @@ mod web {
         pub fn run(
             &mut self,
             on_progress: Option<js_sys::Function>,
-            on_file: Option<js_sys::Function>,
             on_read: Option<js_sys::Function>,
             sink: Option<js_sys::Object>,
             scratch: Option<js_sys::Object>,
         ) -> Result<String, JsValue> {
-            let (shard_sink, on_sealed) = match &sink {
+            let (map_sink, on_sealed) = match &sink {
                 Some(obj) => {
                     let sealed = js_sys::Reflect::get(obj, &JsValue::from_str("sealed"))
                         .ok()
@@ -626,8 +559,8 @@ mod web {
                         .ok_or_else(|| {
                             to_js(AssembleFailure {
                                 code: ErrorCode::Internal,
-                                message: "the shard sink has no callable \"sealed\" — a sink that cannot report a \
-                                          finished shard would write files nobody can name."
+                                message: "the map sink has no callable \"sealed\" — a sink that cannot report the \
+                                          finished file would write bytes nobody can identify."
                                     .into(),
                             })
                         })?;
@@ -635,7 +568,7 @@ mod web {
                 }
                 None => (None, None),
             };
-            let mut hooks = JsHooks { on_progress, on_file, on_sealed, last_us: 0, warned: false };
+            let mut hooks = JsHooks { on_progress, on_sealed, last_us: 0, warned: false };
             let reads = on_read.map(|on_read| JsReads { on_read });
             let js_scratch = match &scratch {
                 Some(obj) => Some(JsScratch::from_object(obj).map_err(to_js)?),
@@ -648,89 +581,83 @@ mod web {
                 known_empty: core::mem::take(&mut self.known_empty),
                 terrain: self.terrain,
                 terrain_cells: core::mem::take(&mut self.terrain_cells),
-                sink: shard_sink.as_ref().map(|s| s as &dyn ShardWrites),
+                sink: map_sink.as_ref().map(|s| s as &dyn MapWrites),
                 scratch: js_scratch.as_ref().map(|s| s as &dyn ScratchWrites),
             };
             let out = assemble(wiring, &self.schema_json, &self.skin_json, &self.options, &mut hooks).map_err(to_js)?;
-            self.taken = vec![false; out.files.len()];
-            self.files = out.files;
-            self.warnings = out.warnings;
-            Ok(out.summary_json)
+            let summary = out.summary_json.clone();
+            self.taken = false;
+            self.outcome = Some(out);
+            Ok(summary)
         }
 
-        /// How many files of the finished set are still here: every shard `on_file` did not take,
-        /// then the OBCS manifest **last**. With no `on_file`, that is the whole set.
-        #[wasm_bindgen(getter, js_name = fileCount)]
-        pub fn file_count(&self) -> usize {
-            self.files.len()
+        /// The finished map's lowercase-hex SHA-256 — the same digest the summary carries, and the
+        /// one a `sealed` callback was already told. Empty before a successful `run`.
+        #[wasm_bindgen(getter, js_name = fileSha256)]
+        pub fn file_sha256(&self) -> String {
+            self.outcome.as_ref().map(|o| o.sha256.clone()).unwrap_or_default()
         }
 
-        /// File `index`'s derived 8.3 filename (`MS<id>S<kk>.OBM`, `MS<id>.OBS`).
-        #[wasm_bindgen(js_name = fileName)]
-        pub fn file_name(&self, index: usize) -> Result<String, JsValue> {
-            self.file(index).map(|f| f.name.clone())
-        }
-
-        /// `"core"`, `"coarse"`, `"geometry"`, `"terrain"`, or `"manifest"`.
-        #[wasm_bindgen(js_name = fileRole)]
-        pub fn file_role(&self, index: usize) -> Result<String, JsValue> {
-            self.file(index).map(|f| f.role.to_string())
-        }
-
-        /// File `index`'s lowercase-hex SHA-256, as the manifest records it (empty for the manifest).
-        #[wasm_bindgen(js_name = fileSha256)]
-        pub fn file_sha256(&self, index: usize) -> Result<String, JsValue> {
-            self.file(index).map(|f| f.sha256.clone())
-        }
-
-        /// File `index`'s size, readable without moving the bytes — so a caller can plan a transfer
-        /// before it pays for one. It reads `0` once the file has been taken, because the bytes are
-        /// genuinely gone; the JS wrapper snapshots it at that moment instead, and a second
-        /// [`Assembler::take_file`] throws rather than let the two disagree.
-        #[wasm_bindgen(js_name = fileByteLength)]
-        pub fn file_byte_length(&self, index: usize) -> Result<usize, JsValue> {
-            self.file(index).map(|f| f.bytes.len())
-        }
-
-        /// Move file `index`'s bytes out to JS, **freeing the wasm-side copy**.
+        /// The finished map's size, readable without moving the bytes — so a caller can plan a
+        /// transfer before it pays for one, and so it stays true after [`Assembler::take_file`] has
+        /// emptied the buffer. `0` before a successful `run`.
         ///
-        /// One file at a time is the whole point: an assembled set can be gigabytes, and taking them
-        /// one by one means the transient double-residency is one file rather than the set.
+        /// A `f64` rather than a `usize`: a sunk map may be larger than this address space, and
+        /// `f64` names every byte of the 64 GiB interior exactly.
+        #[wasm_bindgen(getter, js_name = fileByteLength)]
+        pub fn file_byte_length(&self) -> f64 {
+            self.outcome.as_ref().map_or(0.0, |o| o.byte_length as f64)
+        }
+
+        /// Whether the bytes are here to take. `false` after a run with a `sink`, which wrote them
+        /// to the host's own storage and never held them — the file exists, it is simply not this
+        /// module's to hand over.
+        #[wasm_bindgen(getter, js_name = hasFile)]
+        pub fn has_file(&self) -> bool {
+            self.outcome.as_ref().is_some_and(|o| o.bytes.is_some()) && !self.taken
+        }
+
+        /// Move the map's bytes out to JS, **freeing the wasm-side copy**.
         ///
-        /// A second call for the same index **throws** `internal`. It used to return an empty array,
-        /// which is the worse answer: the natural retry shape — take, upload, catch, take again —
-        /// would then write a 0-byte `.OBM` to a card and report success, and the file's own
-        /// `byteLength` (read before the take, as a caller planning a transfer does) would still
-        /// claim the original size. A shard that silently becomes empty is a corrupt map; a thrown
-        /// error is a bug the caller can see.
+        /// A second call **throws** `internal`. It used to return an empty array, which is the worse
+        /// answer: the natural retry shape — take, upload, catch, take again — would then write a
+        /// 0-byte map to a card and report success, while `fileByteLength` still claimed the
+        /// original size. A file that silently becomes empty is a corrupt map; a thrown error is a
+        /// bug the caller can see.
+        ///
+        /// Throws for a run that used a `sink` too, for the same reason: there is nothing here, and
+        /// answering with an empty array would say there was.
         #[wasm_bindgen(js_name = takeFile)]
-        pub fn take_file(&mut self, index: usize) -> Result<Vec<u8>, JsValue> {
-            if self.taken.get(index).copied().unwrap_or(false) {
-                let name = self.files.get(index).map(|f| f.name.as_str()).unwrap_or("?");
+        pub fn take_file(&mut self) -> Result<Vec<u8>, JsValue> {
+            if self.taken {
                 return Err(to_js(AssembleFailure {
                     code: ErrorCode::Internal,
-                    message: format!(
-                        "file {index} ({name}) was already taken — its bytes now belong to JS, and this call would \
-                         have returned an empty file. Keep the array `take()` returned rather than calling it twice."
-                    ),
+                    message: "the map was already taken — its bytes now belong to JS, and this call would have \
+                              returned an empty file. Keep the array `takeFile()` returned rather than calling it \
+                              twice."
+                        .into(),
                 }));
             }
-            let f = self.files.get_mut(index).ok_or_else(|| {
+            let bytes = self.outcome.as_mut().and_then(|o| o.bytes.take()).ok_or_else(|| {
                 to_js(AssembleFailure {
                     code: ErrorCode::Internal,
-                    message: format!("file index {index} does not exist"),
+                    message: "there is no map to take — either `run` has not finished, or it was given a sink \
+                                  and the bytes went straight to the host's own storage."
+                        .into(),
                 })
             })?;
-            let bytes = core::mem::take(&mut f.bytes);
-            self.taken[index] = true;
+            self.taken = true;
             Ok(bytes)
         }
 
-        /// Everything OBCA says a producer SHOULD *report* rather than refuse: §5.7's core-headroom
-        /// warning, §4.5.2's dropped duplicate POIs, `OBCM_Spec.md` §8.3's degree-cap truncations.
-        /// An assembly with warnings is still a legal set; ignoring them ships the same bytes.
+        /// Everything OBCA says a producer SHOULD *report* rather than refuse: §5.7's size warning,
+        /// §4.5.2's dropped duplicate POIs, `OBCM_Spec.md` §8.3's degree-cap truncations.
+        /// An assembly with warnings is still a legal map; ignoring them ships the same bytes.
         pub fn warnings(&self) -> js_sys::Array {
-            self.warnings.iter().map(|w| JsValue::from_str(w)).collect()
+            match &self.outcome {
+                Some(o) => o.warnings.iter().map(|w| JsValue::from_str(w)).collect(),
+                None => js_sys::Array::new(),
+            }
         }
 
         /// Drop the input cell buffers. Automatic on `run`; exposed for the caller that abandons an
@@ -742,15 +669,6 @@ mod web {
             self.known_empty = Vec::new();
             self.terrain_cells = Vec::new();
         }
-
-        fn file(&self, index: usize) -> Result<&OutputFile, JsValue> {
-            self.files.get(index).ok_or_else(|| {
-                to_js(AssembleFailure {
-                    code: ErrorCode::Internal,
-                    message: format!("file index {index} does not exist"),
-                })
-            })
-        }
     }
 
     /// Project the peak memory of assembling a selection, **before** downloading it: pass the
@@ -758,23 +676,19 @@ mod web {
     /// terrain squares' share) plus the run's residency mode, and get `{engineBytes, inputBytes,
     /// outputBytes, peakBytes, budgetBytes, ceilingBytes, fits, headroomBytes}`.
     ///
-    /// The mode is #1116 phase B's two escapes, and the caller must state what this run will
-    /// actually have: `input_on_disk` only when the cells will stream from OPFS (a writable store
-    /// with room **and** a passing sync-read probe), `streamed_shard_bytes > 0` (the split size)
-    /// only for a consumer that takes shards mid-run — the download path, never the device path.
-    /// See [`crate::estimate::Residency`].
+    /// The mode is the run's two escapes, and the caller must state what this run will actually
+    /// have: `input_on_disk` only when the cells will stream from OPFS (a writable store with room
+    /// **and** a passing sync-read probe), `output_sunk` only when a `sink` will be wired into
+    /// [`Assembler::run`]. See [`crate::estimate::Residency`].
     ///
     /// This complements OBCA §5.7's file-size ledger rather than repeating it: §5.7 prices the
     /// *output* against the per-file wall, this prices the *run* against wasm32's 4 GiB address
     /// space. A selection can pass one and fail the other. See [`crate::estimate`] for the model
     /// and where its constants were measured.
     ///
-    /// The two numbers were both 4 GiB and it was always a **coincidence**, not a shared cause —
-    /// which FS7.5-seam demonstrated by moving one and not the other. This budget is wasm32's
-    /// address space and is still 4 GiB. The *readable* file wall went to 64 GiB when the seam
-    /// widened (`obcm_assemble::FILE_CEILING`), while the *writable* one stayed at 4 GiB − 1 for a
-    /// third reason again — OBCA §5.2's `uint32` `Bytes`
-    /// (`obcm_assemble::shard::SET_SHARD_CEILING`). Three walls, three causes, one number twice.
+    /// The two numbers used to be 4 GiB apiece and it was always a **coincidence**. This budget is
+    /// wasm32's address space and is still 4 GiB; the file wall is `obcm_assemble::FILE_CEILING`,
+    /// the 64 GiB interior an `Offset Scale` of 4 addresses, and it is now sixteen times larger.
     ///
     /// `budget_bytes` overrides the number `fits` is judged against. The default is a **desktop**
     /// judgement ([`crate::PRACTICAL_BUDGET`], 3 GiB); a caller that knows it is on a phone should
@@ -787,7 +701,7 @@ mod web {
         terrain_bytes: f64,
         merge_budget_bytes: f64,
         input_on_disk: bool,
-        streamed_shard_bytes: f64,
+        output_sunk: bool,
         budget_bytes: Option<f64>,
     ) -> js_sys::Object {
         let e = crate::estimate::estimate_memory_with_budget(
@@ -795,7 +709,7 @@ mod web {
             total_cell_bytes,
             terrain_bytes,
             merge_budget_bytes,
-            crate::estimate::Residency { input_on_disk, streamed_shard_bytes },
+            crate::estimate::Residency { input_on_disk, output_sunk },
             budget_bytes.unwrap_or(crate::estimate::PRACTICAL_BUDGET),
         );
         let obj = js_sys::Object::new();

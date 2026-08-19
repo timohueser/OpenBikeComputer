@@ -2,9 +2,9 @@
 //! is the same on every run.
 //!
 //! These are not "does the wrapper work" tests. They exist so that a change to the assembly engine —
-//! the renumber tie-break, the shard planner, a hash-map iteration order that leaks into the
-//! output — cannot ship a browser build that quietly disagrees with the command line. The inputs are
-//! the checked-in cell tree in `tests/fixture/` and the expected outputs are what
+//! the renumber tie-break, the layout, a hash-map iteration order that leaks into the output —
+//! cannot ship a browser build that quietly disagrees with the command line. The inputs are the
+//! checked-in cell tree in `tests/fixture/` and the expected outputs are what
 //! `cargo run -p obcm-assemble` wrote from them; `tests/fixture.rs` documents the provenance of
 //! both, executably.
 //!
@@ -20,8 +20,8 @@ use std::path::{Path, PathBuf};
 
 use obc_web_assemble::{
     assemble, assemble_cells, assemble_cells_with_known_empty, assemble_everything, BridgeOptions, CellBytes,
-    CellReads, ErrorCode, Hooks, KnownEmptyCell, NoHooks, OutputFile, Phase, SealedShard, ShardWrites, SourceCell,
-    TerrainCellBytes, TerrainLattice, Wiring,
+    CellReads, ErrorCode, Hooks, KnownEmptyCell, MapWrites, NoHooks, Phase, SealedMap, SourceCell, TerrainCellBytes,
+    TerrainLattice, Wiring,
 };
 
 fn fixture_dir() -> PathBuf {
@@ -76,7 +76,7 @@ fn terrain_lattice() -> TerrainLattice {
 
 /// Every published terrain cell, with the digest the sidecar pins it with — exactly what the builder
 /// hands over after `fetchVerified`. The fixture's fourth square is deliberately **not** here: it is
-/// canonically void, so it has no object (`OBCC_Spec.md` §13.6) and must reach the shard as a `0`
+/// canonically void, so it has no object (`OBCC_Spec.md` §13.6) and must reach the region as a `0`
 /// directory slot.
 fn terrain_cells() -> Vec<TerrainCellBytes> {
     let doc = terrain_sidecar();
@@ -93,45 +93,30 @@ fn terrain_cells() -> Vec<TerrainCellBytes> {
         .collect()
 }
 
-/// The whole fixture assembly — cells **and** raster — which is what the CLI wrote `expected/` from.
+/// The whole fixture assembly — cells **and** raster — which is what the CLI wrote
+/// `expected/map.obcm` from.
 fn assemble_fixture(opts: &BridgeOptions, hooks: &mut dyn Hooks) -> obc_web_assemble::Outcome {
     assemble_everything(cells(), Vec::new(), Some(terrain_lattice()), terrain_cells(), &sidecar(), &skin(), opts, hooks)
         .expect("the assembly runs")
 }
 
-/// The options the fixture's `expected/` was produced with (`--name "Bridge Fixture"
-/// --accept-partial`). The coarse `2^20` cell is necessarily partial at this extract's size, which
-/// is why the flag is on rather than the refusal being papered over.
+/// The options the fixture's `expected/` was produced with (`--accept-partial`). The coarse `2^20`
+/// cell is necessarily partial at this extract's size, which is why the flag is on rather than the
+/// refusal being papered over.
 fn options() -> BridgeOptions {
-    BridgeOptions { name: "Bridge Fixture".into(), accept_partial: true, ..BridgeOptions::default() }
+    BridgeOptions { accept_partial: true, ..BridgeOptions::default() }
 }
 
-/// What the native CLI left in `tests/fixture/<dir>/`, as `(filename, bytes)` in the order the
-/// bridge must hand them on: shards ascending, manifest last.
-fn expected(dir: &str) -> Vec<(String, Vec<u8>)> {
-    let root = fixture_dir().join(dir);
-    let mut files: Vec<(String, Vec<u8>)> = std::fs::read_dir(&root)
-        .unwrap_or_else(|e| panic!("{} — see tests/fixture.rs: {e}", root.display()))
-        .map(|e| {
-            let e = e.expect("a directory entry");
-            (e.file_name().to_string_lossy().into_owned(), std::fs::read(e.path()).expect("an expected file"))
-        })
-        .collect();
-    // The order the bridge hands them on: OBCM shards ascending, then the terrain shard, then the
-    // manifest **last** (§5.4). None of that is the alphabet's order — `MS1.OBD` sorts *before*
-    // `MS1S00.OBM` — so the key is spelled out rather than relied on.
-    let rank = |name: &str| {
-        if name.ends_with(".OBS") {
-            2
-        } else if name.ends_with(".OBD") {
-            1
-        } else {
-            0
-        }
-    };
-    files.sort_by(|a, b| rank(&a.0).cmp(&rank(&b.0)).then(a.0.cmp(&b.0)));
-    assert!(!files.is_empty(), "{} is empty", root.display());
-    files
+/// One of the two files the native CLI left in `tests/fixture/expected/`: `map.obcm` (the raster
+/// spliced into its §1.3 region) and `flat.obcm` (the same selection with no raster at all).
+fn expected(name: &str) -> Vec<u8> {
+    let path = fixture_dir().join("expected").join(name);
+    std::fs::read(&path).unwrap_or_else(|e| panic!("{} — see tests/fixture.rs: {e}", path.display()))
+}
+
+/// The bytes the run produced, whether it buffered them or the outcome only carries an identity.
+fn taken(out: &obc_web_assemble::Outcome) -> &[u8] {
+    out.bytes.as_deref().expect("this assembly buffered its map")
 }
 
 /// Fail on the first differing byte with its index and both values, instead of dumping two
@@ -149,42 +134,60 @@ fn assert_same_bytes(actual: &[u8], want: &[u8], what: &str) {
     assert_eq!(actual.len(), want.len(), "{what}: length");
 }
 
-/// The headline: a single-file assembly through the bridge **is** the file the CLI wrote.
+/// The headline: an assembly through the bridge **is** the file the CLI wrote.
 #[test]
 fn the_bridge_reproduces_the_native_clis_bytes() {
     let out = assemble_fixture(&options(), &mut NoHooks);
-    let want = expected("expected");
-    assert_eq!(out.files.len(), want.len(), "file count: {:?} vs {:?}", out.files, want);
-    for (got, (name, bytes)) in out.files.iter().zip(&want) {
-        assert_eq!(&got.name, name, "the derived filenames must match the CLI's (OBCA §5.2)");
-        assert_same_bytes(&got.bytes, bytes, name);
-    }
-    // One OBCM file, its raster, and the manifest last — §5.5's fast path with terrain beside it,
-    // which is the shape a rider's map actually has.
-    assert_eq!(out.files.iter().map(|f| f.role).collect::<Vec<_>>(), vec!["core", "terrain", "manifest"]);
+    let want = expected("map.obcm");
+    assert_same_bytes(taken(&out), &want, "map.obcm");
+    // The identity travels beside the bytes, and it is the identity of the whole file — raster
+    // included, because the raster is part of the file now.
+    assert_eq!(out.byte_length, want.len() as u64);
+    let s: serde_json::Value = serde_json::from_str(&out.summary_json).expect("the summary is JSON");
+    assert_eq!(s["sha256"], out.sha256.as_str());
+    assert_eq!(s["bytes"].as_u64(), Some(out.byte_length));
 }
 
-/// **The terrain round trip** (EL4): the shard the assembler wrote is a legal OBCT container whose
-/// directory places every downloaded cell's block verbatim, and whose one unpublished square is the
-/// `0` sentinel — read back with the real reader, from the checked-in bytes.
+// --- the §1.3 terrain region ---------------------------------------------------------------------
+
+/// `OBCM_Spec.md` §1's header: the version, the offset scale, and the §1.3 region pair.
+const HEADER_TERRAIN_OFFSET_AT: usize = 41;
+const HEADER_TERRAIN_LEN_AT: usize = 45;
+
+/// The map's spliced raster, as a device resolves it: the §1.3 window the header names.
+fn terrain_window(map: &[u8]) -> Option<&[u8]> {
+    let at = offset(map, HEADER_TERRAIN_OFFSET_AT);
+    let len = offset(map, HEADER_TERRAIN_LEN_AT);
+    // §1.3 makes `0` mean absence for both fields or neither; the engine's own header writer
+    // refuses the mixed case, so a mixed pair here is a finding rather than a shape to handle.
+    assert_eq!(at == 0, len == 0, "§1.3's pair is set together or not at all");
+    (at != 0).then(|| &map[at..at + len])
+}
+
+/// **The terrain round trip** (EL4): the region the assembler spliced into the map's tail is a legal
+/// OBCT container whose directory places every downloaded cell's block verbatim, and whose one
+/// unpublished square is the `0` sentinel — read back through the §1.3 window a device forms, from
+/// the checked-in bytes.
 #[test]
-fn the_terrain_shard_places_every_published_cell_and_leaves_the_void_absent() {
+fn the_terrain_region_places_every_published_cell_and_leaves_the_void_absent() {
     let out = assemble_fixture(&options(), &mut NoHooks);
-    let shard = &out.files.iter().find(|f| f.role == "terrain").expect("a terrain shard").bytes;
+    let map = taken(&out);
+    let region = terrain_window(map).expect("this assembly has a raster");
 
     // OBCT §4.2's header, over the fixture's 2 × 2 rectangle at the catalog's lattice.
-    assert_eq!(&shard[..4], b"OBCT");
-    assert_eq!(shard[5], terrain_lattice().posting_log2);
-    assert_eq!(shard[6], terrain_lattice().cell_log2);
-    assert_eq!(u16::from_le_bytes(shard[16..18].try_into().unwrap()), 2, "rows");
-    assert_eq!(u16::from_le_bytes(shard[18..20].try_into().unwrap()), 2, "cols");
-    let dir: Vec<u32> = shard[32..48].chunks_exact(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect();
+    assert_eq!(&region[..4], b"OBCT");
+    assert_eq!(region[5], terrain_lattice().posting_log2);
+    assert_eq!(region[6], terrain_lattice().cell_log2);
+    assert_eq!(u16::from_le_bytes(region[16..18].try_into().unwrap()), 2, "rows");
+    assert_eq!(u16::from_le_bytes(region[18..20].try_into().unwrap()), 2, "cols");
+    let dir: Vec<u32> = region[32..48].chunks_exact(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect();
     assert_eq!(dir.iter().filter(|&&e| e == 0).count(), 1, "exactly one canonically void square (OBCC §13.6)");
     assert_eq!(dir[3], 0, "…and it is the rectangle's last slot");
 
     // Every present block is byte-for-byte the block of the published cell it came from — placement,
     // not grafting. The published objects' own blocks start after their 32-byte header and single
-    // directory entry.
+    // directory entry. The block offsets are **region**-relative, which is what makes the spliced
+    // raster the same container the bakery publishes rather than one patched for its position.
     for cell in terrain_cells() {
         let (i, j) = {
             let mut parts = cell.id.split('/').skip(1);
@@ -193,34 +196,37 @@ fn the_terrain_shard_places_every_published_cell_and_leaves_the_void_absent() {
         let slot = (i - 602) as usize * 2 + (j - 526) as usize;
         let at = dir[slot] as usize;
         assert!(at != 0, "cell {} was published and must be present", cell.id);
-        assert_eq!(&shard[at..at + 2048], &cell.bytes[36..36 + 2048], "cell {}'s block moved", cell.id);
+        assert_eq!(&region[at..at + 2048], &cell.bytes[36..36 + 2048], "cell {}'s block moved", cell.id);
     }
 
-    // §5.7's pin, on the raster: 32-byte header + 4 × 4-byte directory + 3 × 2048-byte blocks.
-    assert_eq!(shard.len(), 32 + 16 + 3 * 2048);
+    // 32-byte header + 4 × 4-byte directory + 3 × 2048-byte blocks, and the map is the flat map plus
+    // exactly that — the splice adds the raster and nothing else.
+    assert_eq!(region.len(), 32 + 16 + 3 * 2048);
+    assert_eq!(map.len(), expected("flat.obcm").len() + region.len());
     let s: serde_json::Value = serde_json::from_str(&out.summary_json).expect("the summary is JSON");
-    assert_eq!(s["terrain"]["file"], "MS1.OBD");
-    assert_eq!(s["terrain"]["bytes"], shard.len());
+    assert_eq!(s["terrain"]["bytes"], region.len());
     assert_eq!(s["terrain"]["cells"], 3);
     assert_eq!(s["terrain"]["slots"], 4);
+    // There is no second digest: the raster is a run of bytes inside a file that has one identity.
+    assert!(s["terrain"]["sha256"].is_null(), "the raster stopped having a digest of its own");
 }
 
-/// A selection with no raster assembles exactly as it did before terrain existed: no `.OBD`, no
-/// `terrain` role, and the summary says so. `OBCC_Spec.md` §13's degrade-to-flat rule, at the seam
+/// A selection with no raster assembles exactly as it did **before the raster was ever spliced in**:
+/// `expected/flat.obcm` is the file this fixture produced when terrain was a separate `.OBD`, byte
+/// for byte, and its §1.3 pair is `(0, 0)`. `OBCC_Spec.md` §13's degrade-to-flat rule, at the seam
 /// where it is easiest to get wrong.
 #[test]
-fn a_selection_with_no_terrain_writes_no_terrain_shard() {
+fn a_selection_with_no_terrain_is_the_map_it_always_was() {
     let out = assemble_cells(cells(), &sidecar(), &skin(), &options(), &mut NoHooks).expect("the assembly runs");
-    assert!(!out.files.iter().any(|f| f.role == "terrain"));
+    let map = taken(&out);
+    assert_same_bytes(map, &expected("flat.obcm"), "flat.obcm");
+    assert_eq!(&map[HEADER_TERRAIN_OFFSET_AT..HEADER_TERRAIN_OFFSET_AT + 8], &[0u8; 8], "§1.3's pair is (0, 0)");
+    assert!(terrain_window(map).is_none());
     let s: serde_json::Value = serde_json::from_str(&out.summary_json).expect("summary");
     assert!(s["terrain"].is_null());
-    // …and the manifest is back to one record.
-    let manifest = &out.files.last().expect("a manifest").bytes;
-    assert_eq!(manifest[6], 1, "Shard Count");
-    assert_eq!(manifest.len(), obc_formats::obcs::manifest_len(1));
 }
 
-/// A digest the catalog does not confirm is refused, and the whole set is refused with it — the
+/// A digest the catalog does not confirm is refused, and the whole map is refused with it — the
 /// §4.8 posture, on the raster: nothing self-made reaches a device unverified.
 #[test]
 fn a_terrain_cell_that_fails_its_catalog_digest_aborts_the_assembly() {
@@ -257,225 +263,6 @@ fn known_empty_cells_expand_coverage_without_payloads() {
     assert_eq!(json["cells"].as_u64(), base_json["cells"].as_u64().map(|n| n + 3));
 }
 
-/// …and the multi-file shape, which is what a resumable upload actually hands on: shards in index
-/// order, the OBCS manifest **last** (OBCA §5.4 — a set with no manifest is invisible as a map,
-/// which is the property an interrupted transfer wants).
-#[test]
-fn the_bridge_reproduces_the_native_clis_volume_set() {
-    let opts = BridgeOptions { force_split: true, ..options() };
-    let out = assemble_fixture(&opts, &mut NoHooks);
-    let want = expected("expected-split");
-    assert_eq!(out.files.len(), want.len(), "file count: {:?} vs {:?}", out.files, want);
-    for (got, (name, bytes)) in out.files.iter().zip(&want) {
-        assert_eq!(&got.name, name);
-        assert_same_bytes(&got.bytes, bytes, name);
-    }
-    let roles: Vec<&str> = out.files.iter().map(|f| f.role).collect();
-    assert_eq!(roles, vec!["core", "coarse", "geometry", "terrain", "manifest"], "§5.1's roles, manifest last");
-    // The raster does not split with the geometry: one terrain shard per set, spanning the whole
-    // assembly, however many OBCM files the map needs.
-    assert_eq!(out.files.iter().filter(|f| f.role == "terrain").count(), 1);
-}
-
-/// A caller that takes every shard as it is verified (#1116 B1). Records what it was handed, in the
-/// order it was handed it, so the delivery *stream* can be held to the same checked-in bytes as the
-/// end-of-run set.
-#[derive(Default)]
-struct Evicting {
-    /// `(name, role, sha256, bytes)`, in delivery order.
-    taken: Vec<(String, String, String, Vec<u8>)>,
-    /// Refuse the `n`-th hand-off, as a sink that ran out of disk would.
-    fail_at: Option<usize>,
-    /// Hand everything straight back instead of taking it — the `Ok(Some(_))` half of the contract.
-    keep: bool,
-    /// Ask to stop at the first progress report after this many shards have been handed over — a
-    /// cancel button pressed by someone watching the files arrive.
-    abort_after_taken: Option<usize>,
-}
-
-impl Hooks for Evicting {
-    fn now_us(&mut self) -> u64 {
-        0
-    }
-    fn progress(&mut self, _phase: Phase, _fraction: f64) -> bool {
-        self.abort_after_taken.is_some_and(|n| self.taken.len() >= n)
-    }
-    fn wants_shards(&self) -> bool {
-        true
-    }
-    fn take_shard(&mut self, shard: OutputFile) -> Result<Option<OutputFile>, String> {
-        if self.fail_at == Some(self.taken.len()) {
-            return Err(format!("the card is full and {} could not be written", shard.name));
-        }
-        self.taken.push((shard.name.clone(), shard.role.to_string(), shard.sha256.clone(), shard.bytes.clone()));
-        if self.keep {
-            return Ok(Some(shard));
-        }
-        Ok(None)
-    }
-}
-
-/// **The eviction pin**: a set delivered shard-by-shard *during* the run, then the remainder at the
-/// end, is the same set — the same files, in the same order, byte for byte — as the one the native
-/// CLI wrote in one piece.
-///
-/// This is the claim B1 rests on. The output no longer stays resident until `takeFile`, so the
-/// question "did we lose or reorder anything by handing it over early" is exactly the question the
-/// determinism fixture already answers for the whole-set path, asked of the streamed one.
-#[test]
-fn the_evicted_stream_plus_the_remainder_is_the_native_clis_volume_set() {
-    let opts = BridgeOptions { force_split: true, ..options() };
-    let mut hooks = Evicting::default();
-    let out = assemble_fixture(&opts, &mut hooks);
-    let want = expected("expected-split");
-
-    // Every OBCM shard left during the run, in index order…
-    assert_eq!(
-        hooks.taken.iter().map(|(_, role, _, _)| role.as_str()).collect::<Vec<_>>(),
-        vec!["core", "coarse", "geometry"],
-        "the shards must arrive in the order the engine wrote them"
-    );
-    // …and only the raster and the manifest were still in the store at the end. That is the whole
-    // point: the set's residency over the run is one shard, not four.
-    assert_eq!(out.files.iter().map(|f| f.role).collect::<Vec<_>>(), vec!["terrain", "manifest"]);
-
-    // The stream, then the remainder, is the set — name by name and byte by byte.
-    let delivered: Vec<(String, Vec<u8>)> = hooks
-        .taken
-        .iter()
-        .map(|(name, _, _, bytes)| (name.clone(), bytes.clone()))
-        .chain(out.files.iter().map(|f| (f.name.clone(), f.bytes.clone())))
-        .collect();
-    assert_eq!(delivered.len(), want.len(), "file count: {:?} vs {:?}", delivered, want);
-    for ((name, bytes), (want_name, want_bytes)) in delivered.iter().zip(&want) {
-        assert_eq!(name, want_name, "the derived filenames must match the CLI's (OBCA §5.2)");
-        assert_same_bytes(bytes, want_bytes, name);
-    }
-
-    // The digest each shard was handed over with is the engine's own — the identity a caller records
-    // against a file it has already saved. (`assemble_everything` refuses the run outright if these
-    // ever disagree; this is the same equality, stated where a reader can see it.)
-    let s: serde_json::Value = serde_json::from_str(&out.summary_json).expect("the summary is JSON");
-    for (i, (name, role, sha256, bytes)) in hooks.taken.iter().enumerate() {
-        assert_eq!(s["shards"][i]["file"], name.as_str());
-        assert_eq!(s["shards"][i]["role"], role.as_str());
-        assert_eq!(s["shards"][i]["sha256"], sha256.as_str());
-        assert_eq!(s["shards"][i]["bytes"].as_u64(), Some(bytes.len() as u64));
-    }
-}
-
-/// …and the single-file fast path evicts too: one shard out during the run, terrain and the manifest
-/// after it. The shape where "one shard" and "the whole set" are the same thing is the one where an
-/// off-by-one in the hand-off would hide.
-#[test]
-fn a_single_file_assembly_hands_its_one_shard_over_too() {
-    let mut hooks = Evicting::default();
-    let out = assemble_fixture(&options(), &mut hooks);
-    let want = expected("expected");
-    assert_eq!(hooks.taken.len(), 1);
-    assert_eq!(hooks.taken[0].0, want[0].0);
-    assert_same_bytes(&hooks.taken[0].3, &want[0].1, &want[0].0);
-    assert_eq!(out.files.iter().map(|f| f.role).collect::<Vec<_>>(), vec!["terrain", "manifest"]);
-    for (got, (name, bytes)) in out.files.iter().zip(want.iter().skip(1)) {
-        assert_eq!(&got.name, name);
-        assert_same_bytes(&got.bytes, bytes, name);
-    }
-}
-
-/// Handing a shard **back** (`Ok(Some(_))`, the trait's default) is not a half-measure: the set comes
-/// out exactly as it does with no hand-off at all. This is what makes the seam safe to add to a
-/// caller that only wants to *watch* the files go by.
-#[test]
-fn a_shard_handed_back_stays_in_the_set() {
-    let opts = BridgeOptions { force_split: true, ..options() };
-    let mut hooks = Evicting { keep: true, ..Default::default() };
-    let out = assemble_fixture(&opts, &mut hooks);
-    let want = expected("expected-split");
-    assert_eq!(hooks.taken.len(), 3, "it still saw every shard");
-    assert_eq!(out.files.len(), want.len(), "…and kept every one of them");
-    for (got, (name, bytes)) in out.files.iter().zip(&want) {
-        assert_eq!(&got.name, name);
-        assert_same_bytes(&got.bytes, bytes, name);
-    }
-}
-
-/// A caller that never asks for shards is never handed one, however the rest of its hooks look. The
-/// two halves are one decision, and the default is the old behaviour — which is what keeps every
-/// other test in this file, and every native caller, on the path they were written for.
-#[test]
-fn a_caller_that_does_not_ask_is_handed_nothing() {
-    struct Silent(std::rc::Rc<std::cell::Cell<usize>>);
-    impl Hooks for Silent {
-        fn now_us(&mut self) -> u64 {
-            0
-        }
-        fn progress(&mut self, _phase: Phase, _fraction: f64) -> bool {
-            false
-        }
-        // Deliberately overridden *without* `wants_shards`: the driver must still never call it.
-        fn take_shard(&mut self, shard: OutputFile) -> Result<Option<OutputFile>, String> {
-            self.0.set(self.0.get() + 1);
-            Ok(Some(shard))
-        }
-    }
-    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
-    let opts = BridgeOptions { force_split: true, ..options() };
-    let out = assemble_fixture(&opts, &mut Silent(calls.clone()));
-    assert_eq!(calls.get(), 0, "take_shard was called without wants_shards");
-    assert_eq!(out.files.len(), expected("expected-split").len(), "the whole set is still here");
-}
-
-/// A sink that refuses a shard fails the **run**, as `io` and with its own words. It must not be
-/// swallowed: the bytes are already gone by then, so continuing would finish a set with a hole in it
-/// and report it as a map.
-#[test]
-fn a_sink_that_refuses_a_shard_fails_the_run_as_io() {
-    let opts = BridgeOptions { force_split: true, ..options() };
-    let mut hooks = Evicting { fail_at: Some(1), ..Default::default() };
-    let e = assemble_everything(
-        cells(),
-        Vec::new(),
-        Some(terrain_lattice()),
-        terrain_cells(),
-        &sidecar(),
-        &skin(),
-        &opts,
-        &mut hooks,
-    )
-    .expect_err("the sink refused the second shard");
-    assert_eq!(e.code, ErrorCode::Io, "{}", e.message);
-    assert!(e.message.contains("the card is full"), "the sink's own message must survive: {}", e.message);
-    // The first shard was taken before the refusal — which is the caller's to clean up, and is why
-    // the message says so rather than claiming nothing was written.
-    assert_eq!(hooks.taken.len(), 1);
-}
-
-/// A cancelled run may already have handed shards out — the property a UI's cleanup path is written
-/// against. It is safe because of §5.4, not because nothing was written: the OBCS manifest is last,
-/// so however many `.OBM` files a cancelled run left behind, none of them is a map to a device.
-#[test]
-fn a_cancelled_run_may_already_have_handed_shards_out() {
-    let opts = BridgeOptions { force_split: true, ..options() };
-    let mut hooks = Evicting { abort_after_taken: Some(1), ..Default::default() };
-    let e = assemble_everything(
-        cells(),
-        Vec::new(),
-        Some(terrain_lattice()),
-        terrain_cells(),
-        &sidecar(),
-        &skin(),
-        &opts,
-        &mut hooks,
-    )
-    .expect_err("cancelled");
-    assert_eq!(e.code, ErrorCode::Aborted, "{}", e.message);
-    assert!(e.message.contains("manifest is written last"), "{}", e.message);
-    assert!(!hooks.taken.is_empty(), "this fixture no longer cancels after a shard has been handed over");
-    // Nothing was handed over *after* the cancellation: every store entry point reads the abort flag
-    // before it hands anything out.
-    assert!(hooks.taken.len() < 3);
-}
-
 /// Same inputs, same bytes — twice, in one process. The engine renumbers nav nodes and re-bins POIs
 /// through hash maps; a run-order dependency in either would show up here as two different files
 /// from one fixture.
@@ -483,10 +270,8 @@ fn a_cancelled_run_may_already_have_handed_shards_out() {
 fn two_runs_produce_identical_bytes() {
     let a = assemble_cells(cells(), &sidecar(), &skin(), &options(), &mut NoHooks).expect("run one");
     let b = assemble_cells(cells(), &sidecar(), &skin(), &options(), &mut NoHooks).expect("run two");
-    for (x, y) in a.files.iter().zip(&b.files) {
-        assert_same_bytes(&x.bytes, &y.bytes, &format!("{} across two runs", x.name));
-    }
-    assert_eq!(a.files[0].sha256, b.files[0].sha256);
+    assert_same_bytes(taken(&a), taken(&b), "the map across two runs");
+    assert_eq!(a.sha256, b.sha256);
 }
 
 // --- the §1.2 gaps ------------------------------------------------------------------------------
@@ -496,10 +281,10 @@ fn two_runs_produce_identical_bytes() {
 // run that wrote its gaps as zeros, or left one out and slid every structure behind it down, would
 // agree with itself and with a freshly regenerated fixture, and every offset in the file would still
 // resolve. `OBCM_Spec.md` §1.2 says the gaps are part of the file and two bakes agree on them or
-// they do not agree at all, so they get a pin of their own: an independent walk of the finished
-// shard that names each gap the layout implies and reads its bytes.
+// they do not agree at all, so they get a pin of their own: an independent walk of the finished map
+// that names each gap the layout implies and reads its bytes.
 
-/// The unit every offset in a shard this engine writes counts (§1.1), and the fill byte (§1.2).
+/// The unit every offset in a map this engine writes counts (§1.1), and the fill byte (§1.2).
 const UNIT: usize = 16;
 const FILLER: u8 = 0xFF;
 
@@ -526,34 +311,33 @@ fn assert_filler(bytes: &[u8], from: usize, to: usize, what: &str) {
     }
 }
 
-/// Every gap `OBCM_Spec.md` §1.2 puts in one shard, walked from the file's own directories.
+/// Every gap `OBCM_Spec.md` §1.2 puts in one map, walked from the file's own directories.
 ///
 /// Two kinds of mistake this catches that a byte-for-byte comparison against the CLI cannot: a gap
 /// written with the wrong fill (the reader never looks at these bytes, so nothing else notices), and
 /// a gap that is not there at all (every offset behind it simply moves, and the file stays
 /// self-consistent). The counters at the end are what stop the walk being vacuous — a fixture whose
 /// structures happened to land on unit boundaries would exercise nothing.
-fn assert_section_gaps(shard: &[u8]) -> (usize, usize) {
+fn assert_section_gaps(map: &[u8]) -> (usize, usize) {
     let mut gaps = 0usize; // region and section boundaries actually filled
     let mut padded_chunks = 0usize; // §5.1 chunks whose content ended mid-unit
     let mut gap = |from: usize, to: usize, what: &str| {
-        assert_filler(shard, from, to, what);
+        assert_filler(map, from, to, what);
         gaps += (to > from) as usize;
     };
 
     // §1: the 49-byte header, then the run to the style table's boundary.
-    assert_eq!(shard[4], 14, "the version byte this walk is written against");
-    assert_eq!(shard[40], 4, "`Offset Scale`, so U = 16");
-    assert_eq!(&shard[41..49], &[0u8; 8], "a set's raster is its own file, so §1.3's pair is (0, 0)");
-    let style_at = offset(shard, 21);
+    assert_eq!(map[4], 14, "the version byte this walk is written against");
+    assert_eq!(map[40], 4, "`Offset Scale`, so U = 16");
+    let style_at = offset(map, 21);
     assert_eq!(style_at, 64, "the style table starts at align_up(49)");
     gap(49, style_at, "header → style table");
 
     // §2 → §3: the style table's own tail, and the LOD table's.
-    let lod_table_at = offset(shard, 26);
-    let style_end = style_at + 1 + shard[style_at] as usize * 8;
+    let lod_table_at = offset(map, 26);
+    let style_end = style_at + 1 + map[style_at] as usize * 8;
     gap(style_end, lod_table_at, "style table → LOD table");
-    let lod_count = shard[25] as usize;
+    let lod_count = map[25] as usize;
     let lod_table_end = lod_table_at + lod_count * 18;
 
     // §3/§5.1: per LOD, the rounding step between the offset table and `data_start`, and the run
@@ -561,41 +345,41 @@ fn assert_section_gaps(shard: &[u8]) -> (usize, usize) {
     let mut previous_end = lod_table_end;
     for i in 0..lod_count {
         let entry = lod_table_at + i * 18;
-        let index_at = offset(shard, entry + 4);
+        let index_at = offset(map, entry + 4);
         assert_eq!(index_at % UNIT, 0, "LOD {i}: a scaled `Index Offset` cannot name a non-boundary");
         gap(previous_end, index_at, &format!("→ LOD {i}'s index"));
-        let (node_count, chunk_count) = (le32(shard, entry + 8), le32(shard, entry + 14));
-        let chunk_size = u16::from_le_bytes(shard[entry + 12..entry + 14].try_into().unwrap()) as usize;
+        let (node_count, chunk_count) = (le32(map, entry + 8), le32(map, entry + 14));
+        let chunk_size = u16::from_le_bytes(map[entry + 12..entry + 14].try_into().unwrap()) as usize;
         let table_at = index_at + node_count * 4;
         let table_end = table_at + (chunk_count + 1) * 4;
         let data_start = align_up(table_end);
         gap(table_end, data_start, &format!("LOD {i}: offset table → data_start"));
         for k in 0..chunk_count {
-            let (from, to) = (offset(shard, table_at + k * 4), offset(shard, table_at + (k + 1) * 4));
+            let (from, to) = (offset(map, table_at + k * 4), offset(map, table_at + (k + 1) * 4));
             assert!(to - from <= align_up(chunk_size), "LOD {i} chunk {k}: span past §5.1's bound");
             // The chunk's content ends at its one sentinel; from there to the unit boundary is
             // filler, so the run of `0xFF` at the end is `1 + (0..U-1)`. A writer that padded with
             // zeros leaves a run of exactly one, and the last byte of the span is not `0xFF`.
             let end = data_start + to;
-            let run = shard[data_start + from..end].iter().rev().take_while(|&&b| b == FILLER).count();
+            let run = map[data_start + from..end].iter().rev().take_while(|&&b| b == FILLER).count();
             assert!(run >= 1, "LOD {i} chunk {k}: no `0xFF` sentinel at the end of the span");
             assert!(run <= UNIT, "LOD {i} chunk {k}: {run} trailing 0xFF, more than a sentinel plus one unit");
             padded_chunks += (run > 1) as usize;
         }
-        previous_end = data_start + offset(shard, table_at + chunk_count * 4);
+        previous_end = data_start + offset(map, table_at + chunk_count * 4);
     }
 
     // §7.1: the directory's tail, each category's index → chunks step, and the section's own end.
-    let poi_at = offset(shard, 32);
+    let poi_at = offset(map, 32);
     gap(previous_end, poi_at, "last LOD → POI section");
-    let categories = shard[poi_at] as usize;
-    let poi_chunk_size = u16::from_le_bytes(shard[poi_at + 1..poi_at + 3].try_into().unwrap()) as usize;
+    let categories = map[poi_at] as usize;
+    let poi_chunk_size = u16::from_le_bytes(map[poi_at + 1..poi_at + 3].try_into().unwrap()) as usize;
     let dir_end = poi_at + 1 + 2 + categories * 13 + 4 + 2;
     gap(dir_end, align_up(dir_end), "POI directory → first category");
     for c in 0..categories {
         let entry = poi_at + 3 + c * 13;
-        let index_at = offset(shard, entry + 1);
-        let (node_count, chunk_count) = (le32(shard, entry + 5), le32(shard, entry + 9));
+        let index_at = offset(map, entry + 1);
+        let (node_count, chunk_count) = (le32(map, entry + 5), le32(map, entry + 9));
         let index_end = index_at + node_count * 4;
         gap(index_end, align_up(index_end), &format!("POI category {}: index → chunks", c + 1));
         // 512 is a multiple of `U` at every legal scale, so a category's chunk run carries none.
@@ -603,9 +387,9 @@ fn assert_section_gaps(shard: &[u8]) -> (usize, usize) {
         assert_eq!(poi_chunk_size % UNIT, 0, "the fixed POI stride needs no filler inside the run");
         let _ = chunk_count;
     }
-    let pool_at = offset(shard, dir_end - 6);
-    let pool_end = pool_at + 2 + u16::from_le_bytes(shard[dir_end - 2..dir_end].try_into().unwrap()) as usize * 29;
-    let nav_at = offset(shard, 36);
+    let pool_at = offset(map, dir_end - 6);
+    let pool_end = pool_at + 2 + u16::from_le_bytes(map[dir_end - 2..dir_end].try_into().unwrap()) as usize * 29;
+    let nav_at = offset(map, 36);
     gap(pool_end, nav_at, "hours pool → nav section");
 
     // §8.1: the eight bytes behind the 40-byte directory, the alignment run that lands the node
@@ -613,53 +397,54 @@ fn assert_section_gaps(shard: &[u8]) -> (usize, usize) {
     // `0xFF` since v14** — v13 wrote zeros for the alignment runs, which is precisely the change no
     // offset in this file can see.
     gap(nav_at + 40, nav_at + 48, "nav directory → profile table");
-    let profile_end = nav_at + 48 + shard[nav_at + 26] as usize * 56;
-    let index_at = offset(shard, nav_at);
-    let node_count = le32(shard, nav_at + 4);
+    let profile_end = nav_at + 48 + map[nav_at + 26] as usize * 56;
+    let index_at = offset(map, nav_at);
+    let node_count = le32(map, nav_at + 4);
     gap(profile_end, index_at, "profile table → node index (§8.1's alignment run)");
     let index_end = index_at + node_count * 4;
     let chunks_at = align_up(index_end);
     gap(index_end, chunks_at, "node index → node chunks");
     if node_count > 0 {
-        // §8.1's sector landing is a producer guarantee for a **populated** graph; the empty
-        // section a non-core shard carries has no chunks to land, and its three zero-length regions
-        // simply point at the first unit boundary past the profile table.
+        // §8.1's sector landing is a producer guarantee for a **populated** graph.
         assert_eq!(chunks_at % 512, 0, "…and the run put them on a sector, which is the point of it");
     } else {
         assert_eq!(index_at, align_up(profile_end), "an empty graph's regions are still nameable");
     }
-    let pool_at = offset(shard, nav_at + 12);
-    assert_eq!(pool_at, chunks_at + le32(shard, nav_at + 8) * 512);
-    let snap_at = offset(shard, nav_at + 28);
-    let snap_nodes = le32(shard, nav_at + 32);
-    gap(pool_at + le32(shard, nav_at + 16) * 512, snap_at, "edge pool → snap index");
+    let pool_at = offset(map, nav_at + 12);
+    assert_eq!(pool_at, chunks_at + le32(map, nav_at + 8) * 512);
+    let snap_at = offset(map, nav_at + 28);
+    let snap_nodes = le32(map, nav_at + 32);
+    gap(pool_at + le32(map, nav_at + 16) * 512, snap_at, "edge pool → snap index");
     gap(snap_at + snap_nodes * 4, align_up(snap_at + snap_nodes * 4), "snap index → snap chunks");
     (gaps, padded_chunks)
 }
 
-/// The gap walk over the fixture's own core shard.
+/// The gap walk over the fixture's own map.
 #[test]
-fn every_section_boundary_of_the_assembled_shard_is_filler() {
+fn every_section_boundary_of_the_assembled_map_is_filler() {
     let out = assemble_cells(cells(), &sidecar(), &skin(), &options(), &mut NoHooks).expect("the assembly runs");
-    let core = &out.files.iter().find(|f| f.role == "core").expect("a core shard").bytes;
-    let (gaps, padded_chunks) = assert_section_gaps(core);
+    let (gaps, padded_chunks) = assert_section_gaps(taken(&out));
     // The fixture must actually *have* gaps, or the walk above asserts nothing. Both counters are
     // the two costs §1.2 quantifies separately: the per-region ones, and the per-chunk ones.
     assert!(gaps >= 8, "only {gaps} non-empty region gaps — this fixture no longer exercises §1.2");
     assert!(padded_chunks > 0, "no §5.1 chunk ended mid-unit, so the per-chunk filler is untested");
 }
 
-/// …and over every shard of the volume set, where a non-core shard's *empty* POI and nav sections
-/// are the shape whose filler is easiest to forget: the regions are zero-length, so nothing but the
-/// gaps is there at all.
+/// …and over the map the raster was spliced into, where the same walk must find the same gaps: the
+/// §1.3 region rides in the tail, past everything §1.2 names, so splicing it must not move a byte of
+/// the layout in front of it.
 #[test]
-fn every_shard_of_a_volume_set_is_filled_the_same_way() {
-    let opts = BridgeOptions { force_split: true, ..options() };
-    let out = assemble_fixture(&opts, &mut NoHooks);
-    for file in out.files.iter().filter(|f| f.name.ends_with(".OBM")) {
-        let (gaps, _) = assert_section_gaps(&file.bytes);
-        assert!(gaps >= 4, "{}: only {gaps} non-empty region gaps", file.name);
-    }
+fn splicing_the_raster_moves_none_of_the_gaps_in_front_of_it() {
+    let out = assemble_fixture(&options(), &mut NoHooks);
+    let map = taken(&out);
+    let spliced = assert_section_gaps(map);
+    let flat = assert_section_gaps(&expected("flat.obcm"));
+    assert_eq!(spliced, flat, "the raster changed the §1.2 gap structure of the map in front of it");
+    // …and it sits behind the last thing the walk reached, on a unit boundary as §1.1 requires of
+    // anything a scaled offset names.
+    let at = offset(map, HEADER_TERRAIN_OFFSET_AT);
+    assert_eq!(at % UNIT, 0);
+    assert_eq!(at + terrain_window(map).expect("a raster").len(), map.len(), "the raster is the tail");
 }
 
 /// **`Edge Id` is a `(chunk, ordinal)` pair, not a byte offset** (§8.4). The two agree on the first
@@ -669,15 +454,15 @@ fn every_shard_of_a_volume_set_is_filled_the_same_way() {
 #[test]
 fn the_edge_ids_the_merge_mints_are_chunks_and_ordinals() {
     let out = assemble_cells(cells(), &sidecar(), &skin(), &options(), &mut NoHooks).expect("the assembly runs");
-    let core = &out.files.iter().find(|f| f.role == "core").expect("a core shard").bytes;
-    let nav_at = offset(core, 36);
-    assert_eq!(le32(core, nav_at + 16), 1, "the fixture's whole edge pool is one 512-byte chunk");
+    let map = taken(&out);
+    let nav_at = offset(map, 36);
+    assert_eq!(le32(map, nav_at + 16), 1, "the fixture's whole edge pool is one 512-byte chunk");
 
     // Every `Edge Id` in the §8.3 adjacency, read off the node chunks.
-    let chunks_at = align_up(offset(core, nav_at) + le32(core, nav_at + 4) * 4);
+    let chunks_at = align_up(offset(map, nav_at) + le32(map, nav_at + 4) * 4);
     let mut ids: Vec<u32> = Vec::new();
-    for k in 0..le32(core, nav_at + 8) {
-        let chunk = &core[chunks_at + k * 512..][..512];
+    for k in 0..le32(map, nav_at + 8) {
+        let chunk = &map[chunks_at + k * 512..][..512];
         let mut at = 0usize;
         while at + 13 <= 512 && chunk[at + 12] != 0xFF {
             let degree = chunk[at + 12] as usize;
@@ -708,9 +493,7 @@ fn the_order_cells_arrive_in_does_not_reach_the_output() {
     let mut shuffled = cells();
     shuffled.reverse();
     let got = assemble_cells(shuffled, &sidecar(), &skin(), &options(), &mut NoHooks).expect("in reverse order");
-    for (a, b) in got.files.iter().zip(&want.files) {
-        assert_same_bytes(&a.bytes, &b.bytes, &format!("{} with the cells reversed", a.name));
-    }
+    assert_same_bytes(taken(&got), taken(&want), "the map with the cells reversed");
 }
 
 /// The recorded (phase, fraction) stream, plus a clock that ticks **once per call** — so a
@@ -751,8 +534,8 @@ impl Hooks for Recorder {
 }
 
 /// **The phase-seam pin.** The bridge names phases by counting the engine's own clock calls (see
-/// `driver`'s module header), which is a contract with `obcm_assemble::assemble`'s internals that
-/// nothing else enforces. If the engine gains or loses a phase, this test fails — instead of a
+/// `driver`'s module header), which is a contract with `obcm_assemble::assemble_full`'s internals
+/// that nothing else enforces. If the engine gains or loses a phase, this test fails — instead of a
 /// progress bar that says "nav" while the verify pass runs.
 #[test]
 fn the_phase_sequence_is_the_one_the_engine_calls() {
@@ -767,16 +550,7 @@ fn the_phase_sequence_is_the_one_the_engine_calls() {
     }
     assert_eq!(
         order,
-        vec![
-            Phase::Open,
-            Phase::Poi,
-            Phase::Nav,
-            Phase::Plan,
-            Phase::Write,
-            Phase::Verify,
-            Phase::Manifest,
-            Phase::Done
-        ],
+        vec![Phase::Open, Phase::Poi, Phase::Nav, Phase::Plan, Phase::Write, Phase::Verify, Phase::Done],
         "the engine's clock + store call sequence no longer maps onto these phases"
     );
     // A progress bar may never go backwards, and it must end at 1.0.
@@ -797,8 +571,8 @@ fn the_phase_sequence_is_the_one_the_engine_calls() {
 /// as it was. That mutation is invisible to the sequence test and fails here, because the counting
 /// clock makes each `phases_us` figure the number of clock reads that phase contains.
 ///
-/// One read per boundary, four per shard (write start/end, verify start/end), one final total:
-/// `5 + 4·shards + 1`. A single-file assembly is 10.
+/// One read per boundary, four for the write and verify passes (start/end each), one final total:
+/// ten in all.
 #[test]
 fn the_clock_is_read_exactly_once_per_phase_boundary() {
     let mut rec = Recorder::default();
@@ -816,10 +590,11 @@ fn the_clock_is_read_exactly_once_per_phase_boundary() {
 }
 
 /// **The verify-progress pin.** §4.8 is 43 % of a measured region-scale run (11.4 s of
-/// baden-württemberg's 26.2 s, #1116's phase-D harness), and the engine makes exactly *one* store call for
-/// the whole pass — so a bar driven by store calls alone reaches its write-phase maximum and then
-/// freezes for two fifths of the wait. `VerifySource::read_at` is what stops that, and this is the
-/// test that says so: the pass reports many times, strictly forward, over a wide span of the bar.
+/// baden-württemberg's 26.2 s, #1116's phase-D harness), and the engine makes exactly *one* store
+/// call for the whole pass — so a bar driven by store calls alone reaches its write-phase maximum
+/// and then freezes for two fifths of the wait. `VerifySource::read_at` is what stops that, and this
+/// is the test that says so: the pass reports many times, strictly forward, over a wide span of the
+/// bar.
 ///
 /// The inverted form is the shipped-then-fixed defect: before the wrapper, the write's own emits ran
 /// to a fraction of **1.0** and every one after it repeated it. Both halves are asserted.
@@ -851,10 +626,10 @@ fn the_verify_pass_reports_its_own_progress_instead_of_freezing_the_bar() {
          is two fifths of the run"
     );
     // …and the boundaries still land where the phases say: verify opens where the write left the bar
-    // (0.203 + the write term) and the manifest is the 1.0. This fixture's output is 0.61× its input
+    // (0.203 + the write term) and `done` is the 1.0. This fixture's output is 0.61× its input
     // bytes — the projection both terms are measured against — so neither term reaches its full span
-    // and the manifest closes the gap. At the scale the 1.00 ratio was measured on (#1116's harness
-    // regions), output ≈ input and they do.
+    // and the final report closes the gap. At the scale the 1.00 ratio was measured on (#1116's
+    // harness regions), output ≈ input and they do.
     assert!((0.39..=0.46).contains(&first), "verify started at {first}, not where the write phase ends");
     assert_eq!(rec.seen.last().expect("progress was reported"), &(Phase::Done, 1.0));
 }
@@ -867,34 +642,34 @@ fn a_progress_callback_can_abort_the_run() {
     let mut rec = Recorder::aborting_at(Phase::Write);
     let e = assemble_cells(cells(), &sidecar(), &skin(), &options(), &mut rec).expect_err("aborted");
     assert_eq!(e.code, ErrorCode::Aborted);
-    assert!(e.message.contains("manifest is written last"), "{}", e.message);
+    assert!(e.message.contains("partial file"), "{}", e.message);
     // Nothing past the write was reported: the abort is honoured at the next store call.
     assert!(!rec.seen.iter().any(|(p, _)| *p == Phase::Done));
 }
 
 /// **The verify-abort pin**, and the sharper half of the same defect: with §4.8 making one store
 /// call and reporting nothing, an abort armed anywhere inside it was a **no-op** — the run went on
-/// to produce the whole set, so a cancel button pressed during the longest phase of the run did
+/// to produce the whole map, so a cancel button pressed during the longest phase of the run did
 /// nothing at all.
 ///
 /// Both moments are checked: the boundary callback (`n = 1`, the review's own probe) and one from
 /// inside the read loop (`n = 4`), which only the `read_at` poll can honour. And in both, the
-/// failure must read as `aborted` — `verify_shard` turns any read refusal into `Error::Verify`, so
+/// failure must read as `aborted` — `verify_map` turns any read refusal into `Error::Verify`, so
 /// the naive mapping would tell the rider the assembler is broken because they pressed cancel.
 #[test]
 fn an_abort_armed_inside_the_verify_pass_stops_the_run() {
     for n in [1, 4] {
         let mut rec = Recorder { abort_at: Some((Phase::Verify, n)), ..Default::default() };
         let e = match assemble_cells(cells(), &sidecar(), &skin(), &options(), &mut rec) {
-            // The pre-fix behaviour, exactly: cancel during §4.8 and the full set is produced anyway.
-            Ok(out) => panic!("cancelled at verify callback {n}, and it still produced {:?}", out.files),
+            // The pre-fix behaviour, exactly: cancel during §4.8 and the whole map is produced anyway.
+            Ok(out) => panic!("cancelled at verify callback {n}, and it still produced {out:?}"),
             Err(e) => e,
         };
         assert_eq!(e.code, ErrorCode::Aborted, "cancelled at verify callback {n}: {}", e.message);
         assert!(e.message.contains("cancelled"), "{}", e.message);
-        // The abort is honoured on the very next read: no manifest was ever asked for, so §5.4's
-        // "a set with no manifest is not a map" holds and nothing is left half-usable.
-        assert!(!rec.seen.iter().any(|(p, _)| matches!(p, Phase::Manifest | Phase::Done)));
+        // The abort is honoured on the very next read, so the run never reaches `done` and nothing
+        // downstream is told there is a map.
+        assert!(!rec.seen.iter().any(|(p, _)| *p == Phase::Done));
         assert_eq!(rec.fractions(Phase::Verify).len(), n, "the pass kept reporting after it was told to stop");
     }
 }
@@ -927,41 +702,17 @@ fn the_summary_is_the_clis_json() {
     let out = assemble_cells(cells(), &sidecar(), &skin(), &options(), &mut NoHooks).expect("the assembly runs");
     let s: serde_json::Value = serde_json::from_str(&out.summary_json).expect("the summary is JSON");
     assert_eq!(s["cells"], 5);
-    assert_eq!(s["manifest"], "MS1.OBS");
-    assert_eq!(s["shards"][0]["role"], "core");
-    assert_eq!(s["shards"][0]["file"], "MS1S00.OBM");
+    assert_eq!(s["bytes"].as_u64(), Some(taken(&out).len() as u64));
     // The §4.8 verify report is present and non-vacuous — the whole point of running verify in the
-    // tab is that the caller can see it did.
-    assert!(s["shards"][0]["verified"]["chunks"].as_u64().expect("a chunk count") > 0);
-    assert!(s["shards"][0]["verified"]["features"].as_u64().expect("a feature count") > 0);
+    // tab is that the caller can see it did. (The CLI prints it to a terminal; a browser has none,
+    // so here it is a field.)
+    assert!(s["verified"]["chunks"].as_u64().expect("a chunk count") > 0);
+    assert!(s["verified"]["features"].as_u64().expect("a feature count") > 0);
     // The fixture's seam is real: nav nodes were unified across it and an islet was pruned.
     assert!(s["nav"]["unified"].as_u64().expect("a unified count") > 0, "the fixture's seam must unify junctions");
     assert!(s["nav"]["pruned_nodes"].as_u64().expect("a prune count") > 0, "the fixture's islet must be pruned");
     assert_eq!(s["poi"]["records"], 4);
     assert_eq!(out.warnings, Vec::<String>::new(), "this fixture is clean; a warning here is a real finding");
-}
-
-/// The write and verify phases **interleave** — the engine writes shard *i*, verifies shard *i*,
-/// then writes shard *i+1* — so a set is where a single write/verify counter would have run
-/// backwards at every shard boundary. Two independent terms over one span is what stops it, and this
-/// is the shape that would catch a regression to one.
-#[test]
-fn the_bar_stays_monotone_across_an_interleaved_volume_set() {
-    let opts = BridgeOptions { force_split: true, ..options() };
-    let mut rec = Recorder::default();
-    assemble_cells(cells(), &sidecar(), &skin(), &opts, &mut rec).expect("the assembly runs");
-
-    // The set really does interleave: write appears again after verify has already been reported.
-    let phases: Vec<Phase> = rec.seen.iter().map(|(p, _)| *p).collect();
-    let first_verify = phases.iter().position(|p| *p == Phase::Verify).expect("a verify phase");
-    assert!(phases[first_verify..].contains(&Phase::Write), "this fixture no longer exercises the interleaving");
-
-    let mut last = -1.0;
-    for (p, f) in &rec.seen {
-        assert!(*f >= last, "{p:?} reported {f} after {last} — the bar went backwards at a shard boundary");
-        last = *f;
-    }
-    assert_eq!(rec.seen.last().expect("progress was reported"), &(Phase::Done, 1.0));
 }
 
 // --- the input cells, from outside wasm memory (#1116 B2) --------------------------------------
@@ -1041,12 +792,7 @@ impl CellReads for Stored {
 fn cells_read_through_the_host_produce_the_native_clis_bytes() {
     let store = Stored::new();
     let out = assemble(store.wiring(), &sidecar(), &skin(), &options(), &mut NoHooks).expect("the assembly runs");
-    let want = expected("expected");
-    assert_eq!(out.files.len(), want.len(), "file count: {:?} vs {:?}", out.files, want);
-    for (got, (name, bytes)) in out.files.iter().zip(&want) {
-        assert_eq!(&got.name, name);
-        assert_same_bytes(&got.bytes, bytes, name);
-    }
+    assert_same_bytes(taken(&out), &expected("map.obcm"), "map.obcm from host reads");
     // Every cell really did come through the seam — a path that quietly found the bytes elsewhere
     // would pass the comparison above and prove nothing.
     let slots: std::collections::HashSet<usize> = store.reads.borrow().iter().map(|(s, _, _)| *s).collect();
@@ -1055,21 +801,6 @@ fn cells_read_through_the_host_produce_the_native_clis_bytes() {
     // host's: a catalog byte count is what the engine reads as the cell's size.
     for (slot, offset, len) in store.reads.borrow().iter() {
         assert!(*offset as usize + *len <= store.blobs[*slot].len(), "read {offset}+{len} past the end of slot {slot}");
-    }
-}
-
-/// …and the same for a volume set, where §2.3's 256 KiB verbatim geometry copies (which go around
-/// the cache) run beside §4.6.6's per-record nav emission (which is the reason it exists).
-#[test]
-fn a_volume_set_assembles_the_same_from_host_reads() {
-    let store = Stored::new();
-    let opts = BridgeOptions { force_split: true, ..options() };
-    let out = assemble(store.wiring(), &sidecar(), &skin(), &opts, &mut NoHooks).expect("the assembly runs");
-    let want = expected("expected-split");
-    assert_eq!(out.files.len(), want.len(), "file count: {:?} vs {:?}", out.files, want);
-    for (got, (name, bytes)) in out.files.iter().zip(&want) {
-        assert_eq!(&got.name, name);
-        assert_same_bytes(&got.bytes, bytes, name);
     }
 }
 
@@ -1088,14 +819,11 @@ fn the_read_block_size_changes_the_call_count_and_not_the_bytes() {
         let opts = BridgeOptions { read_block_bytes: block, ..options() };
         let out = assemble(store.wiring(), &sidecar(), &skin(), &opts, &mut NoHooks).expect("the assembly runs");
         let reads = store.reads.borrow().len();
-        (out.files.into_iter().map(|f| (f.name, f.bytes)).collect::<Vec<_>>(), reads)
+        (out.bytes.expect("buffered"), reads)
     };
     let (uncached, engine_reads) = run(1);
     let (cached, host_reads) = run(64 * 1024);
-    assert_eq!(uncached.len(), cached.len());
-    for ((name, a), (_, b)) in uncached.iter().zip(&cached) {
-        assert_same_bytes(a, b, &format!("{name} with the read cache off"));
-    }
+    assert_same_bytes(&uncached, &cached, "the map with the read cache off");
     eprintln!("host reads: {engine_reads} with the cache off, {host_reads} at 64 KiB blocks");
     // 30× on a 20 KB fixture, where most regions already fit one read; the ratio a country's cells
     // see is the one in the module header, because it is the per-record walks that grow with size.
@@ -1141,107 +869,74 @@ fn cells_handed_over_by_key_without_a_reader_are_refused() {
     assert!(e.message.contains("no read callback"), "{}", e.message);
 }
 
-// --- the output shards, outside wasm memory (#1116 D1) ------------------------------------------
+// --- the map, written outside wasm memory (#1116 D1) --------------------------------------------
 
-/// One slot's file on the host's own storage.
-#[derive(Default, Clone)]
-struct DiskFile {
-    /// The derived §5.2 name the driver announced at `create`. Recorded rather than used: the
-    /// browser writes into a pre-opened scratch file and saves it under this name afterwards, so a
-    /// sink that quietly disagreed with the manifest would be invisible without checking it here.
-    name: String,
-    bytes: Vec<u8>,
-    sealed: bool,
-}
-
-/// The host's own storage, as this crate sees it through [`ShardWrites`]: one file per slot, plus
-/// the three things a real disk does that a `Vec<u8>` in the same process never would — refuse a
-/// write, refuse a read, and hand back bytes that are not the ones it was given.
+/// The host's own storage, as this crate sees it through [`MapWrites`]: one file, plus the three
+/// things a real disk does that a `Vec<u8>` in the same process never would — refuse a write, refuse
+/// a read, and hand back bytes that are not the ones it was given.
 #[derive(Default)]
 struct Disk {
-    files: std::cell::RefCell<Vec<DiskFile>>,
-    /// Refuse `write` once this many bytes have been accepted for that slot — a disk filling up
-    /// mid-shard.
-    refuse_write_after: Option<(usize, usize)>,
-    /// Refuse every `read_at` of this slot: a handle closed under the §4.8 read-back's feet.
-    refuse_reads: Option<usize>,
-    /// Flip one byte of a slot at `seal`, **behind the driver's back**. Nothing in this process ever
-    /// sees the change: this crate's digest was taken from the bytes on the way in, and the engine's
-    /// from the same bytes by its own path. Only a §4.8 pass that genuinely re-reads the file can
-    /// notice.
-    corrupt: Option<(usize, usize)>,
+    bytes: std::cell::RefCell<Vec<u8>>,
+    sealed: std::cell::Cell<bool>,
+    /// Refuse `write` once this many bytes have been accepted — a disk filling up mid-file.
+    refuse_write_after: Option<usize>,
+    /// Refuse every `read_at`: a handle closed under the §4.8 read-back's feet.
+    refuse_reads: bool,
+    /// Flip one byte at `seal`, **behind the driver's back**. Nothing in this process ever sees the
+    /// change: this crate's digest was taken from the bytes on the way in, and the engine's from the
+    /// same bytes by its own path. Only a §4.8 pass that genuinely re-reads the file can notice.
+    corrupt: Option<usize>,
     /// How many times the host was asked for bytes — the read-back's own crossing count.
     reads: std::cell::Cell<usize>,
 }
 
-impl Disk {
-    fn slot(&self, slot: usize) -> Result<std::cell::RefMut<'_, DiskFile>, String> {
-        let files = self.files.borrow_mut();
-        if slot >= files.len() {
-            return Err(format!("there is no slot {slot}"));
-        }
-        Ok(std::cell::RefMut::map(files, |f| &mut f[slot]))
-    }
-
-    /// What is on the host's storage, in slot order — the set as a rider would find it.
-    fn written(&self) -> Vec<(String, Vec<u8>)> {
-        self.files.borrow().iter().map(|f| (f.name.clone(), f.bytes.clone())).collect()
-    }
-}
-
-impl ShardWrites for Disk {
-    fn create(&self, slot: usize, name: &str) -> Result<(), String> {
-        let mut files = self.files.borrow_mut();
-        if files.len() <= slot {
-            files.resize(slot + 1, DiskFile::default());
-        }
-        files[slot] = DiskFile { name: name.to_string(), bytes: Vec::new(), sealed: false };
+impl MapWrites for Disk {
+    fn create(&self) -> Result<(), String> {
+        self.bytes.borrow_mut().clear();
+        self.sealed.set(false);
         Ok(())
     }
 
-    fn write(&self, slot: usize, bytes: &[u8]) -> Result<(), String> {
-        let mut file = self.slot(slot)?;
-        if let Some((s, after)) = self.refuse_write_after {
-            if slot == s && file.bytes.len() + bytes.len() > after {
+    fn write(&self, bytes: &[u8]) -> Result<(), String> {
+        let mut file = self.bytes.borrow_mut();
+        if let Some(after) = self.refuse_write_after {
+            if file.len() + bytes.len() > after {
                 return Err("the disk is full".into());
             }
         }
-        assert!(!file.sealed, "slot {slot} was written after it was sealed");
-        file.bytes.extend_from_slice(bytes);
+        assert!(!self.sealed.get(), "the map was written after it was sealed");
+        file.extend_from_slice(bytes);
         Ok(())
     }
 
-    fn read_at(&self, slot: usize, offset: u64, into: &mut [u8]) -> Result<(), String> {
+    fn read_at(&self, offset: u64, into: &mut [u8]) -> Result<(), String> {
         self.reads.set(self.reads.get() + 1);
-        if self.refuse_reads == Some(slot) {
+        if self.refuse_reads {
             return Err("the storage handle is closed".into());
         }
-        let file = self.slot(slot)?;
-        assert!(file.sealed, "slot {slot} was read back before it was sealed");
+        assert!(self.sealed.get(), "the map was read back before it was sealed");
+        let file = self.bytes.borrow();
         let at = offset as usize;
-        let want = file.bytes.get(at..at + into.len()).ok_or_else(|| format!("slot {slot} has no byte {at}"))?;
+        let want = file.get(at..at + into.len()).ok_or_else(|| format!("the map has no byte {at}"))?;
         into.copy_from_slice(want);
         Ok(())
     }
 
-    fn seal(&self, slot: usize) -> Result<(), String> {
-        let mut file = self.slot(slot)?;
-        file.sealed = true;
-        if let Some((s, at)) = self.corrupt {
-            if slot == s {
-                file.bytes[at] ^= 0xff;
-            }
+    fn seal(&self) -> Result<(), String> {
+        self.sealed.set(true);
+        if let Some(at) = self.corrupt {
+            self.bytes.borrow_mut()[at] ^= 0xff;
         }
         Ok(())
     }
 }
 
-/// A caller whose shards are written by the host, recording what it was told it now has.
+/// A caller whose map is written by the host, recording what it was told it now has.
 #[derive(Default)]
 struct Sinking {
-    sealed: Vec<SealedShard>,
-    /// Refuse the `n`-th report, as a caller whose own bookkeeping failed.
-    fail_at: Option<usize>,
+    sealed: Vec<SealedMap>,
+    /// Refuse the report, as a caller whose own bookkeeping failed.
+    refuse: bool,
 }
 
 impl Hooks for Sinking {
@@ -1251,16 +946,16 @@ impl Hooks for Sinking {
     fn progress(&mut self, _phase: Phase, _fraction: f64) -> bool {
         false
     }
-    fn shard_sealed(&mut self, shard: SealedShard) -> Result<(), String> {
-        if self.fail_at == Some(self.sealed.len()) {
-            return Err(format!("{} could not be recorded", shard.name));
+    fn map_sealed(&mut self, map: SealedMap) -> Result<(), String> {
+        if self.refuse {
+            return Err("the finished map could not be recorded".into());
         }
-        self.sealed.push(shard);
+        self.sealed.push(map);
         Ok(())
     }
 }
 
-/// The fixture assembled with its shards written through `disk` instead of into this address space.
+/// The fixture assembled with its map written through `disk` instead of into this address space.
 fn assemble_to_disk(
     disk: &Disk,
     opts: &BridgeOptions,
@@ -1281,134 +976,96 @@ fn assemble_to_disk(
     )
 }
 
-/// **The D1 pin**: a volume set whose shards were never in this address space is the same set — the
-/// same files, the same names, the same digests, byte for byte — as the one the native CLI wrote in
-/// one piece.
+/// **The D1 pin**: a map that was never in this address space is the same file — the same bytes, the
+/// same digest — as the one the native CLI wrote.
 ///
-/// This is the claim the whole phase rests on. The core shard cannot be split (one nav graph, one
-/// file), so at DACH scale it is a ~3 GiB allocation in a 4 GiB address space and the *only* answer
-/// is that it is not an allocation at all. The seam that makes that true must contribute no format
-/// knowledge, and this is where that is checked.
+/// This is the claim the whole phase rests on, and one file made it sharper rather than softer: a
+/// DACH map is a single ~9 GiB object, so it is not merely too big to hold, it is too big to
+/// *address*. The seam that lets the engine write it must contribute no format knowledge, and this
+/// is where that is checked.
 #[test]
-fn shards_written_through_the_sink_are_the_native_clis_volume_set() {
-    let disk = Disk::default();
-    let mut hooks = Sinking::default();
-    let opts = BridgeOptions { force_split: true, ..options() };
-    let out = assemble_to_disk(&disk, &opts, &mut hooks).expect("the assembly runs");
-    let want = expected("expected-split");
-
-    // Nothing shard-sized came back: the raster (which the engine writes through its own sink) and
-    // the manifest are all that is left in wasm memory.
-    assert_eq!(out.files.iter().map(|f| f.role).collect::<Vec<_>>(), vec!["terrain", "manifest"]);
-    assert_eq!(hooks.sealed.iter().map(|s| s.role).collect::<Vec<_>>(), vec!["core", "coarse", "geometry"]);
-
-    // What the host has, then what is left here, is the set — in order, name by name, byte by byte.
-    let delivered: Vec<(String, Vec<u8>)> =
-        disk.written().into_iter().chain(out.files.iter().map(|f| (f.name.clone(), f.bytes.clone()))).collect();
-    assert_eq!(delivered.len(), want.len(), "file count: {:?} vs {}", delivered.iter().map(|f| &f.0), want.len());
-    for ((name, bytes), (want_name, want_bytes)) in delivered.iter().zip(&want) {
-        assert_eq!(name, want_name, "the derived filenames must match the CLI's (OBCA §5.2)");
-        assert_same_bytes(bytes, want_bytes, name);
-    }
-
-    // …and what the caller was *told* it has matches what the engine says it wrote. The host saved
-    // these bytes without ever seeing them, so this equality is the only thing between a mislabelled
-    // file and a card.
-    let s: serde_json::Value = serde_json::from_str(&out.summary_json).expect("the summary is JSON");
-    for (i, sealed) in hooks.sealed.iter().enumerate() {
-        assert_eq!(sealed.slot, i, "a shard's slot is its index in the set");
-        assert_eq!(s["shards"][i]["file"], sealed.name.as_str());
-        assert_eq!(s["shards"][i]["sha256"], sealed.sha256.as_str());
-        assert_eq!(s["shards"][i]["bytes"].as_u64(), Some(sealed.byte_length));
-        assert_eq!(sealed.byte_length as usize, want[i].1.len());
-    }
-}
-
-/// …and the single-file fast path, where "one shard" and "the whole set" are the same thing — the
-/// shape a country actually has, and the one an off-by-one in the sink would hide.
-#[test]
-fn a_single_file_assembly_writes_its_one_shard_through_the_sink() {
+fn a_map_written_through_the_sink_is_the_native_clis_bytes() {
     let disk = Disk::default();
     let mut hooks = Sinking::default();
     let out = assemble_to_disk(&disk, &options(), &mut hooks).expect("the assembly runs");
-    let want = expected("expected");
-    let on_disk = disk.written();
-    assert_eq!(on_disk.len(), 1);
-    assert_eq!(on_disk[0].0, want[0].0);
-    assert_same_bytes(&on_disk[0].1, &want[0].1, &want[0].0);
+    let want = expected("map.obcm");
+
+    // Nothing came back: the whole file, raster included, went to the host.
+    assert!(out.bytes.is_none(), "a sunk map must not be resident too");
+    assert_same_bytes(&disk.bytes.borrow(), &want, "map.obcm through the sink");
+
+    // …and what the caller was *told* it has matches what the engine says it wrote. The host saved
+    // these bytes without ever seeing them, so this equality is the only thing between a
+    // mislabelled file and a card.
     assert_eq!(hooks.sealed.len(), 1);
-    assert_eq!(out.files.iter().map(|f| f.role).collect::<Vec<_>>(), vec!["terrain", "manifest"]);
-    for (got, (name, bytes)) in out.files.iter().zip(want.iter().skip(1)) {
-        assert_eq!(&got.name, name);
-        assert_same_bytes(&got.bytes, bytes, name);
-    }
+    assert_eq!(hooks.sealed[0].sha256, out.sha256);
+    assert_eq!(hooks.sealed[0].byte_length, want.len() as u64);
+    let s: serde_json::Value = serde_json::from_str(&out.summary_json).expect("the summary is JSON");
+    assert_eq!(s["sha256"], out.sha256.as_str());
+    assert_eq!(s["bytes"].as_u64(), Some(want.len() as u64));
 }
 
-/// **The proof that §4.8 reads the file.** Flip one byte of a sealed shard behind the driver's
+/// **The proof that §4.8 reads the file.** Flip one byte of the sealed map behind the driver's
 /// back — the sink's own storage changed, nothing in this process did — and the verify pass must
-/// reject the set.
+/// reject it.
 ///
-/// It is the test the buffered store could never pass. With the bytes in a `Vec`, "read the shard
-/// back" and "look at the shard" are the same operation, so §4.8 proves the *encoder* agrees with
-/// the *decoder* and nothing about the medium. With a sink the medium is the thing that can lie, and
-/// a read-back that quietly answered out of an in-memory copy would ship a corrupt map with a clean
+/// It is the test the buffered store could never pass. With the bytes in a `Vec`, "read the map
+/// back" and "look at the map" are the same operation, so §4.8 proves the *encoder* agrees with the
+/// *decoder* and nothing about the medium. With a sink the medium is the thing that can lie, and a
+/// read-back that quietly answered out of an in-memory copy would ship a corrupt map with a clean
 /// verdict. Byte 0 is the OBCM magic, so what fails is unmistakably the reader.
 #[test]
-fn a_shard_the_sink_corrupts_on_disk_fails_verify() {
-    let disk = Disk { corrupt: Some((0, 0)), ..Disk::default() };
+fn a_map_the_sink_corrupts_on_disk_fails_verify() {
+    let disk = Disk { corrupt: Some(0), ..Disk::default() };
     let mut hooks = Sinking::default();
-    let e = assemble_to_disk(&disk, &options(), &mut hooks).expect_err("the shard on disk is not the one written");
+    let e = assemble_to_disk(&disk, &options(), &mut hooks).expect_err("the file on disk is not the one written");
     assert_eq!(e.code, ErrorCode::Verify, "{}", e.message);
-    // Nothing was reported as sealed and nothing was written after it: §4.8 is a precondition of the
-    // manifest, so the corrupt shard never became part of a map (OBCA §5.4).
-    assert!(hooks.sealed.is_empty(), "a shard that failed its read-back was reported as finished");
+    // Nothing was reported as sealed: §4.8 is a precondition of telling the caller it has a map.
+    assert!(hooks.sealed.is_empty(), "a map that failed its read-back was reported as finished");
     assert!(disk.reads.get() > 0, "the read-back never asked the host for a byte");
 }
 
-/// A sink that cannot take a shard's bytes fails the **run**, as `io` and in the host's own words,
-/// naming the file it was writing. Not `verify`: a full disk is not a defect in the assembler.
+/// A sink that cannot take the map's bytes fails the **run**, as `io` and in the host's own words.
+/// Not `verify`: a full disk is not a defect in the assembler.
 #[test]
 fn a_sink_that_refuses_a_write_fails_the_run_as_io() {
-    let disk = Disk { refuse_write_after: Some((0, 4096)), ..Disk::default() };
+    let disk = Disk { refuse_write_after: Some(4096), ..Disk::default() };
     let mut hooks = Sinking::default();
     let e = assemble_to_disk(&disk, &options(), &mut hooks).expect_err("the disk filled up");
     assert_eq!(e.code, ErrorCode::Io, "{}", e.message);
     assert!(e.message.contains("the disk is full"), "the host's own words: {}", e.message);
-    assert!(e.message.contains(".OBM"), "the message must name the shard: {}", e.message);
+    assert!(e.message.contains("the map could not be written"), "{}", e.message);
     assert!(hooks.sealed.is_empty());
 }
 
 /// …and a sink that cannot give them **back** is `io` too, although §4.8 is where it surfaces.
 ///
-/// This is the same rule as `map_error`'s abort-first one, one seam over: `verify_shard` reports any
+/// This is the same rule as `map_error`'s abort-first one, one seam over: `verify_map` reports any
 /// read failure as a §4.8 defect, so without the host's own message a closed handle would tell a
-/// rider that the assembler wrote a set the reader cannot read — the one verdict the docs say never
+/// rider that the assembler wrote a map the reader cannot read — the one verdict the docs say never
 /// to retry past.
 #[test]
-fn a_shard_the_sink_cannot_read_back_is_io_not_a_verify_defect() {
-    let disk = Disk { refuse_reads: Some(0), ..Disk::default() };
+fn a_map_the_sink_cannot_read_back_is_io_not_a_verify_defect() {
+    let disk = Disk { refuse_reads: true, ..Disk::default() };
     let e = assemble_to_disk(&disk, &options(), &mut NoHooks).expect_err("the read-back cannot read");
     assert_eq!(e.code, ErrorCode::Io, "{}", e.message);
     assert!(e.message.contains("the storage handle is closed"), "the host's own words: {}", e.message);
-    assert!(e.message.contains(".OBM"), "the message must name the shard: {}", e.message);
+    assert!(e.message.contains("the map"), "the message must say what could not be read: {}", e.message);
 }
 
-/// A caller that cannot record a finished shard stops the run as `io`. The file exists and its name
-/// is now the only thing that could find it again, so finishing the set would report a map whose
-/// files nobody wrote down.
+/// A caller that cannot record the finished map stops the run as `io`. The file exists and its
+/// digest is the only thing that says which bytes are in it, so reporting success would hand on a
+/// map nobody wrote down.
 #[test]
 fn a_sealed_report_the_caller_refuses_fails_the_run_as_io() {
     let disk = Disk::default();
-    let mut hooks = Sinking { fail_at: Some(1), ..Default::default() };
-    let opts = BridgeOptions { force_split: true, ..options() };
-    let e = assemble_to_disk(&disk, &opts, &mut hooks).expect_err("the caller refused the second shard");
+    let mut hooks = Sinking { refuse: true, ..Default::default() };
+    let e = assemble_to_disk(&disk, &options(), &mut hooks).expect_err("the caller refused the report");
     assert_eq!(e.code, ErrorCode::Io, "{}", e.message);
     assert!(e.message.contains("could not be recorded"), "{}", e.message);
-    assert_eq!(
-        hooks.sealed.len(),
-        1,
-        "the first was recorded before the refusal — that one is the caller's to clean up"
-    );
+    // The bytes are on the host's storage all the same — that file is the caller's to clean up, and
+    // is why the refusal is reported rather than swallowed.
+    assert_eq!(disk.bytes.borrow().len(), expected("map.obcm").len());
 }
 
 /// A cancel is a cancellation wherever it lands, sink or no sink: during the write, where it reaches
@@ -1422,14 +1079,13 @@ fn a_cancel_through_the_sink_path_is_still_a_cancellation() {
         let e = assemble_to_disk(&disk, &options(), &mut rec).expect_err("cancelled");
         assert_eq!(e.code, ErrorCode::Aborted, "cancelled during {phase:?}: {}", e.message);
         assert!(e.message.contains("cancelled"), "{}", e.message);
-        // §5.4 is what makes that safe: whatever the host has, none of it is a map without the
-        // manifest, and the manifest was never asked for.
-        assert!(!rec.seen.iter().any(|(p, _)| matches!(p, Phase::Manifest | Phase::Done)));
+        // Whatever reached the host is a partial file, and the run never reported it finished.
+        assert!(!rec.seen.iter().any(|(p, _)| *p == Phase::Done));
     }
 }
 
 /// The §4.8 read-back goes through the same block cache the input reads do, and for the same reason:
-/// the pass walks a sealed shard a record at a time, and one host call per read is one file read and
+/// the pass walks the sealed map a record at a time, and one host call per read is one file read and
 /// one boundary crossing per record.
 ///
 /// Transparency first — the same bytes either way — and then the count, because "with the cache"
@@ -1440,13 +1096,12 @@ fn the_read_back_is_cached_and_the_cache_changes_no_bytes() {
         let disk = Disk::default();
         let opts = BridgeOptions { read_block_bytes: block, ..options() };
         assemble_to_disk(&disk, &opts, &mut NoHooks).expect("the assembly runs");
-        (disk.written(), disk.reads.get())
+        let written = disk.bytes.borrow().clone();
+        (written, disk.reads.get())
     };
     let (uncached, engine_reads) = run(1);
     let (cached, host_reads) = run(64 * 1024);
-    for ((name, a), (_, b)) in uncached.iter().zip(&cached) {
-        assert_same_bytes(a, b, &format!("{name} with the read-back cache off"));
-    }
+    assert_same_bytes(&uncached, &cached, "the map with the read-back cache off");
     eprintln!("read-back: {engine_reads} host reads with the cache off, {host_reads} at 64 KiB blocks");
     assert!(host_reads * 10 < engine_reads, "the block cache saved only {engine_reads} → {host_reads} host reads");
 }

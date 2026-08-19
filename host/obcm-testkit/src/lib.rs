@@ -230,6 +230,12 @@ pub fn terrain_stub(len: usize) -> Vec<u8> {
 /// a post-pass over an already-built file rather than a parameter of every builder. `Terrain
 /// Length` counts units, so the window this hands a reader is up to `U - 1` bytes longer than
 /// `region` — the tail is filler, and the container's own header is what bounds its content.
+///
+/// `obcm-assemble` splices for real now, so this is no longer the only writer of a §1.3 region —
+/// and it stays anyway, for the reason the testkit's alignment arithmetic stays: an oracle must not
+/// import the code it is an oracle for. `obc-reader`'s §1.3 tests are read against bytes laid out
+/// by a second, independent transcription of the same three sentences of spec, which is what makes
+/// them a check on the reader rather than a round trip through one shared opinion.
 pub fn splice_terrain(map: &[u8], region: &[u8]) -> Vec<u8> {
     assert!(!region.is_empty(), "an absent terrain region is the header's `0` pair, not a zero-length one");
     let mut f = map.to_vec();

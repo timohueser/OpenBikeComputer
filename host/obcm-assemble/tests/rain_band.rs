@@ -5,8 +5,8 @@
 //! the two enforcement points (skin resolve, image restamp).
 
 use obc_map_scene::{RAIN_BAND_GAP_HIGH, RAIN_BAND_GAP_LOW, RAIN_BELOW_Z};
+use obcm_assemble::emit::{pack_style_table, restamp_style_table, RestampError};
 use obcm_assemble::schema::{Schema, Skin, SkinStyle, StyleId, StyleRecord};
-use obcm_assemble::shard::{pack_style_table, restamp_style_table, RestampError};
 use serde_json::Value;
 
 const SCHEMA_JSON: &str = include_str!("../../../builder/presets/schema.json");
@@ -130,11 +130,11 @@ fn restamp_refuses_boundary_crossings() {
     // `Offset Scale` byte, because `Style Offset` is a **unit** count and means nothing without it.
     let baked = [record(1, 10), record(2, 30)];
     let table = pack_style_table(&baked);
-    let at = obcm_assemble::shard::STYLE_OFFSET as usize;
+    let at = obcm_assemble::emit::STYLE_OFFSET as usize;
     let mut image = vec![0u8; at + table.len()];
-    image[obcm_assemble::shard::HEADER_STYLE_OFFSET_AT..obcm_assemble::shard::HEADER_STYLE_OFFSET_AT + 4]
-        .copy_from_slice(&obcm_assemble::shard::scaled(at as u64).expect("a unit boundary").to_le_bytes());
-    image[obc_formats::obcm::HEADER_OFFSET_SCALE_OFF] = obcm_assemble::shard::SCALE.log2();
+    image[obcm_assemble::emit::HEADER_STYLE_OFFSET_AT..obcm_assemble::emit::HEADER_STYLE_OFFSET_AT + 4]
+        .copy_from_slice(&obcm_assemble::emit::scaled(at as u64).expect("a unit boundary").to_le_bytes());
+    image[obc_formats::obcm::HEADER_OFFSET_SCALE_OFF] = obcm_assemble::emit::SCALE.log2();
     image[at..].copy_from_slice(&table);
 
     // Same-side restyle (colors, weights, even z shifts inside each side): accepted.

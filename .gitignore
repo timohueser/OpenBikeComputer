@@ -11,6 +11,12 @@ __pycache__/
 # to the native CLI's, asserted from both Rust and Node, and cutting it wants libGEOS. Regenerate
 # with the two commands in apps/obc-web-assemble/tests/fixture.rs.
 !apps/obc-web-assemble/tests/fixture/cells/**/*.obcm
+# ...and its *output* half. These were `MS1S00.OBM` until the volume set died (#1420 FS7.5b2), so
+# they were never `*.obcm` and never met this rule; one map is one `.obcm`, and the rename walked
+# them straight into it. They are the goldens seven determinism tests compare against — a
+# terrain-less assembly and the same map with the raster spliced into its OBCM §1.3 region.
+# Regenerate with the command in apps/obc-web-assemble/tests/fixture.rs.
+!apps/obc-web-assemble/tests/fixture/expected/*.obcm
 *.obcr
 # ...except the shared wire-protocol test vectors (S0, issue #268). They must ship
 # in-repo: firmware `cargo test -p obc-vectors` and the app's swift tests pin their

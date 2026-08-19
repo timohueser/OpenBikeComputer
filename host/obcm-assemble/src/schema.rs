@@ -26,15 +26,6 @@ pub enum BandRole {
 }
 
 impl BandRole {
-    /// The `Role` byte of an OBCS shard record (OBCA §5.2).
-    pub fn wire(self) -> u8 {
-        match self {
-            BandRole::Core => 0,
-            BandRole::Geometry => 1,
-            BandRole::Coarse => 2,
-        }
-    }
-
     pub fn as_str(self) -> &'static str {
         match self {
             BandRole::Core => "core",

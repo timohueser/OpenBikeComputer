@@ -145,37 +145,6 @@ export const UPLOAD_WINDOW = 4;
 export const DEFAULT_TIMEOUT_MS = 15_000;
 
 /**
- * The base budget for a commit the caller has told us is **expensive**, via
- * {@link TransferOptions.commitBytes}.
- *
- * **This is opt-in, and deliberately so.** Almost every commit is cheap and bounded: a map's is a
- * close, an open, a 40-byte header read, a 4-byte write and a flush
- * (`Storage::map_upload_commit`), and a route's is smaller still — {@link DEFAULT_TIMEOUT_MS} is
- * already generous for those, and raising it globally would only mean a genuinely wedged device
- * takes four times longer to say so. The failure this exists for has exactly one instance.
- *
- * A **volume-set manifest** is a file under 2 KB whose commit re-opens and cross-checks every shard
- * header already on the card (`Storage::set_manifest_commit` → `set_shard_totals`,
- * `firmware/obc-fw-nrf54l/src/sd.rs`) — up to 32 directory lookups and header reads, behind a card
- * that may still be finishing the program cycle of the shard before it. Timing that out is not a
- * slow spinner, it is **data loss**: the client throws *and* `withTransferSlot` fires an `op = 3`
- * abort, which makes the device delete a set it may have just committed successfully.
- */
-const COMMIT_TIMEOUT_BASE_MS = 60_000;
-
-/**
- * Extra commit budget per megabyte the device has to re-read, capped by
- * {@link COMMIT_TIMEOUT_MAX_MS}.
- *
- * Deliberately loose: this bound exists to stop an infinite spinner, not to police the device's
- * timing.
- */
-const COMMIT_TIMEOUT_PER_MB_MS = 200;
-
-/** Ceiling on the commit wait, so a mis-announced length cannot produce an unbounded spinner. */
-const COMMIT_TIMEOUT_MAX_MS = 10 * 60_000;
-
-/**
  * The two checks the upload loop makes between chunks, handed to a source that does its own I/O.
  *
  * A {@link ObjectSource.sendTo} implementation is *replacing* that loop, so it inherits the loop's
@@ -280,17 +249,6 @@ export interface TransferOptions {
     /** Override {@link DEFAULT_CHUNK_SIZE} for one upload. */
     chunkSize?: number;
     /**
-     * How many bytes the device has to **re-read** to commit this object — set this *only* where the
-     * commit is more than a header check, because it is what buys the terminal wait a much larger
-     * budget than {@link DEFAULT_TIMEOUT_MS}.
-     *
-     * One caller sets it today, and it is the one that would otherwise lose data: a volume-set
-     * manifest is under 2 KB, but committing it cross-checks every shard already on the card, so its
-     * wait has to be budgeted against the *set*. Left unset, an upload waits the ordinary timeout,
-     * which is what keeps a wedged device quick to surface.
-     */
-    commitBytes?: number;
-    /**
      * Called once the last byte has been handed to the transport, before the wait for the device's
      * verdict.
      *
@@ -298,16 +256,6 @@ export interface TransferOptions {
      * and nothing is moving — so a caller that shows progress wants to say what is happening.
      */
     onSent?: () => void;
-}
-
-/**
- * The wait budget for the terminal `transferResult` of an upload whose commit was declared expensive
- * ({@link TransferOptions.commitBytes}). Ordinary uploads do not come here — see
- * {@link COMMIT_TIMEOUT_BASE_MS} for why the scaling is opt-in.
- */
-export function commitTimeoutMs(commitBytes: number): number {
-    const megabytes = Math.ceil(Math.max(commitBytes, 0) / (1024 * 1024));
-    return Math.min(COMMIT_TIMEOUT_BASE_MS + megabytes * COMMIT_TIMEOUT_PER_MB_MS, COMMIT_TIMEOUT_MAX_MS);
 }
 
 /** What an upload committed to. */
@@ -477,11 +425,7 @@ export class ProtocolClient {
             } catch (cause) {
                 console.warn("obc: an upload's onSent hook threw; ignoring it", cause);
             }
-            // Only a caller that declared an expensive commit gets the scaled budget; everything else
-            // keeps the ordinary one, so a wedged device still surfaces in seconds.
-            const commitWaitMs =
-                options.commitBytes === undefined ? undefined : commitTimeoutMs(options.commitBytes);
-            const result = await this.awaitTransferResult(signal, "upload", commitWaitMs);
+            const result = await this.awaitTransferResult(signal, "upload");
             if (result.status !== TransferStatus.Committed) throw this.transferFailure(result, "upload");
             // A fresh upload's result carries the assigned id, so correlation is only meaningful for
             // a named one — but a *named* upload answered about some other object is a stale or
@@ -500,40 +444,6 @@ export class ProtocolClient {
             }
             return { objectId: result.objectId, committedOffset: result.committedOffset };
         }, options.signal);
-    }
-
-    /**
-     * Abandon a volume set between whole-file transfers.
-     *
-     * Cancelling an active shard already sends `op=abort`; this is the other edge: the worker or
-     * host can fail after one shard committed and before the next descriptor opens.
-     *
-     * **Naming the set is what asks for the deletion.** An idle `op = 3` naming anything else is a
-     * quiesce that leaves every staged file alone (interface spec §5 rule 6) — which is what makes
-     * a refused shard retryable, and what this call is deliberately not.
-     */
-    async abandonMapSet(): Promise<void> {
-        await this.withTransferSlot(
-            () => ({ type: ObjectType.MapSet, objectId: SINGLETON_OBJECT_ID }),
-            async () => {
-                // **`mapSet`, not `mapShard`, and that is the whole disambiguation.** An `op = 3`
-                // with nothing in flight now means two different things, and the descriptor's type
-                // is what tells the device which: naming the *set* abandons it, naming anything else
-                // is a pure quiesce that touches no stored state.
-                //
-                // It used to name a shard, which was indistinguishable from the abort the failure
-                // path sends after a shard the device refused — so one refused shard deleted the
-                // whole set, and the retry sealed a manifest over nothing.
-                await this.sendDescriptor({
-                    op: Op.Abort,
-                    type: ObjectType.MapSet,
-                    objectId: SINGLETON_OBJECT_ID,
-                    totalLen: 0,
-                    crc32: 0,
-                });
-                await this.awaitTransferResult(undefined, "set-abandon", undefined, true);
-            },
-        );
     }
 
     /**
@@ -825,33 +735,15 @@ export class ProtocolClient {
             // and then confirming** (`TransferDisposition::AnswerIdleAbort`). So the abort is what
             // makes the retry an ordinary first attempt rather than a coin flip. It costs one
             // control round trip, on the failure path only.
-            await this.sendQuiesceAbort(descriptorOf());
+            //
+            // It is a **quiesce and nothing more**: it empties the endpoint and changes no stored
+            // state, so the object the caller just failed to write is still the caller's to re-send.
+            await this.sendAbort(descriptorOf());
             await this.resetBulk();
             throw asDeviceError(cause);
         } finally {
             this.transferBusy = false;
         }
-    }
-
-    /**
-     * The failure path's `op = 3`: get the device to empty its endpoint before we retry, and change
-     * nothing else.
-     *
-     * **Never names a `mapSet`.** An idle abort naming the set is the device's signal to abandon it —
-     * every staged file deleted — and this abort fires after *any* failed exchange, including a
-     * single shard or the manifest refused on CRC, which the caller is about to re-send. So a
-     * set-shaped descriptor is rewritten to a shard-shaped one before it goes out: same exchange
-     * named, none of the abandonment. Giving up on a set is
-     * {@link ProtocolClient.abandonMapSet}, and it is always an explicit decision by the caller.
-     *
-     * The rewritten id is a shard index the set may not have (a manifest's `objectId` is not a part
-     * id at all). That is deliberate and harmless: an idle abort's descriptor selects *which
-     * cleanup*, and the quiesce is the one that does none — the device never looks the part up.
-     */
-    private async sendQuiesceAbort(target: { type: ObjectType; objectId: number }): Promise<void> {
-        const quiesce =
-            target.type === ObjectType.MapSet ? { type: ObjectType.MapShard, objectId: target.objectId } : target;
-        await this.sendAbort(quiesce);
     }
 
     /**
@@ -1012,22 +904,17 @@ export class ProtocolClient {
     /**
      * The terminal `transferResult` of an exchange.
      *
-     * **Skips stale `aborted` results unless one is what was asked for**, and the reason is that the
-     * mailbox is a plain FIFO: `take` shifts the head whatever it is. A quiesce abort whose ack
-     * arrived after its 2 s wait gave up is still queued, so without this the *next* upload's wait
-     * returns that `aborted` as its own verdict — a failure the device never issued, on a code
-     * (`aborted`) that `sendAssembledSetFile` does not retry. `expectAborted` is for the two callers
-     * that legitimately want one: the abort handshake itself, and `abandonMapSet`.
+     * **Skips stale `aborted` results**, and the reason is that the mailbox is a plain FIFO: `take`
+     * shifts the head whatever it is. A quiesce abort whose ack arrived after its 2 s wait gave up
+     * is still queued, so without this the *next* upload's wait returns that `aborted` as its own
+     * verdict — a failure the device never issued about an object that may well have landed. The
+     * one caller that legitimately wants an `aborted` is the abort handshake, and it takes it off
+     * the mailbox itself rather than coming through here.
      *
      * The skip shares the caller's budget rather than restarting it, so a device that says nothing
      * useful still times out on schedule.
      */
-    private async awaitTransferResult(
-        signal: AbortSignal | undefined,
-        what: string,
-        timeoutMs?: number,
-        expectAborted = false,
-    ) {
+    private async awaitTransferResult(signal: AbortSignal | undefined, what: string, timeoutMs?: number) {
         const deadline = Date.now() + (timeoutMs ?? this.timeoutMs);
         for (;;) {
             const remaining = Math.max(0, deadline - Date.now());
@@ -1035,7 +922,7 @@ export class ProtocolClient {
             if (msg.msg !== "transferResult") {
                 throw new DeviceError("protocol", `expected a transfer result, got a ${msg.msg}.`);
             }
-            if (!expectAborted && msg.status === TransferStatus.Aborted) continue;
+            if (msg.status === TransferStatus.Aborted) continue;
             return msg;
         }
     }

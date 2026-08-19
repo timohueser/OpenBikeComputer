@@ -41,13 +41,6 @@ import {
     CommandStatus,
     MAX_RETENTION,
     NEW_OBJECT_ID,
-    OBCS_HEADER_LEN,
-    OBCS_MEMBER_ID_OFFSET,
-    OBCS_RECORD_LEN,
-    OBCS_VERSION,
-    OBCT_HEADER_LEN,
-    OBCT_MAGIC,
-    OBCT_VERSION,
     ObjectType,
     Op,
     PROTOCOL_VERSION,
@@ -61,7 +54,6 @@ import {
     encodeConfig,
     encodeStatusMessage,
     encodeVersionRead,
-    manifestLen,
     viewOf,
     type DeviceConfig,
     type StatusMessage,
@@ -395,26 +387,9 @@ export class MockDevice {
     private readonly routes = new Map<number, Stored>();
     private readonly rides = new Map<number, Stored>();
     private readonly trips = new Map<number, Stored>();
-    /** Maps (`ObjectType.Map`, provisional — see `protocol.ts`). No list object exists for them,
-     *  so this is a plain store with no catalog entry beside it. */
+    /** Maps (`ObjectType.Map`, provisional — see `protocol.ts`). One `.obcm` is one map, so this is
+     *  a plain store with no catalog entry beside it. */
     private readonly maps = new Map<number, Stored>();
-    /** Staged volume-set shards, keyed by packed `(count,index)`; invisible until a manifest. */
-    private readonly mapShards = new Map<number, Stored>();
-    private readonly mapSets = new Map<number, Stored>();
-    /** The committed sets' terrain shards, by set id — the mock's `MS<id>.OBD`. Lets a test assert
-     *  the raster actually landed rather than only that the manifest was accepted. */
-    private readonly mapSetTerrain = new Map<number, Stored>();
-    /** The staged set's terrain shard (#1044), or `null` when this set carries no raster. A raster
-     *  is **not** a shard: it has no index, so it cannot live in `mapShards` without occupying a
-     *  slot the manifest never names — the very confusion the separate object type exists to end. */
-    private mapTerrain: Stored | null = null;
-    /** The shard count every staged `mapShard` has agreed on, or `null` with no set in flight. The
-     *  real device holds this in its upload session and refuses a descriptor that contradicts it. */
-    private mapShardCount: number | null = null;
-    /** The id minted for the set in flight. The device mints it at the **first shard** — it names
-     *  the files on the card — and both the raster and the manifest echo it, so the mock must have
-     *  one before the manifest commits rather than inventing it there. */
-    private mapSetId = 1;
     private readonly routeEntries = new Map<number, RouteListEntry>();
     private readonly rideEntries = new Map<number, RideListEntry>();
     private readonly tripEntries = new Map<number, TripListEntry>();
@@ -444,65 +419,6 @@ export class MockDevice {
     readonly commandLog: number[] = [];
     /** Non-transport failures from detached work — a real defect, not a disconnect. */
     readonly faults: unknown[] = [];
-
-    /** Test/dev-harness visibility into the otherwise invisible staged set. */
-    get stagedMapShardCount(): number {
-        return this.mapShards.size;
-    }
-
-    /** Whether the staged set carries a terrain shard (#1044) — invisible on the wire otherwise. */
-    get stagedTerrain(): boolean {
-        return this.mapTerrain !== null;
-    }
-
-    /** The committed set's terrain shard, or `undefined` when it carried no raster. */
-    committedTerrain(setId: number): Stored | undefined {
-        return this.mapSetTerrain.get(setId);
-    }
-
-    /** Drop everything staged for the set in flight — a commit, an abort, or a torn link.
-     *
-     *  The id is deliberately **not** advanced here: the device derives set ids from the names on
-     *  the card, so an abandoned set frees its id for the next attempt. Only a committed manifest
-     *  spends one. */
-    private clearStagedSet(): void {
-        this.mapShards.clear();
-        this.mapTerrain = null;
-        this.mapShardCount = null;
-    }
-
-    /**
-     * The device's commit-time cross-check, as the mock can see it: does this manifest describe the
-     * files this session actually staged?
-     *
-     * The firmware re-reads the manifest, validates it against `OBCA_Spec.md` §5.3 and against the
-     * card, and deletes the whole set when it does not match. The mock holds the three parts of
-     * that a test can reach without a filesystem: the record count, the terrain record against the
-     * raster it received, and each OBCM record's `Bytes` against the shard it holds.
-     */
-    private manifestDescribesTheStagedSet(manifest: Uint8Array): boolean {
-        const parsed = parseSetManifest(manifest);
-        if (!parsed) return false;
-        const shards = parsed.records.filter((r) => r.role !== SET_ROLE_TERRAIN);
-        const terrain = parsed.records.filter((r) => r.role === SET_ROLE_TERRAIN);
-        // A terrain record is legal only as the last one, and there is at most one (§5.2).
-        if (terrain.length > 1) return false;
-        if (terrain.length === 1 && parsed.records[parsed.records.length - 1].role !== SET_ROLE_TERRAIN) return false;
-        if (shards.length !== this.mapShards.size) return false;
-        // The record the manifest keeps for the raster, against the raster that arrived. This is
-        // the check the announce's length rule cannot make: a manifest with N+1 shard records and
-        // no terrain record is the *same length* as one with N shards plus terrain.
-        const recorded = terrain.length === 1 ? terrain[0].bytes : null;
-        const onCard = this.mapTerrain ? this.mapTerrain.byteLen : null;
-        if (recorded !== onCard) return false;
-        // Each OBCM record against the shard staged at its index (§5.2 derives the filename from
-        // the index, so record k is shard k).
-        for (let index = 0; index < shards.length; index++) {
-            const staged = this.mapShards.get((shards.length << 8) | index);
-            if (!staged || staged.byteLen !== shards[index].bytes) return false;
-        }
-        return true;
-    }
 
     private running = false;
 
@@ -626,7 +542,7 @@ export class MockDevice {
      * This class used to run an `idleDiscard` loop here, mirroring the eager read the firmware had.
      * Both are gone for the same reason: the host pipelines an object's payload behind its announce,
      * so the discard raced the device's own `classify` for the same bytes and small objects lost
-     * outright — a 296-byte set manifest was eaten in the field 18 ms before the announce claiming it
+     * outright — a 296-byte object was eaten in the field 18 ms before the announce claiming it
      * was answered, and the upload sat at 0% forever. The loopback `Channel` already models the
      * surviving behaviour exactly: an unread write simply queues.
      *
@@ -798,35 +714,10 @@ export class MockDevice {
                 // firmware this request would simply wait its turn at the data plane's `select`.
                 await this.draining;
                 await this.drainBulk();
-                // **Only `mapSet` abandons the staged set** (interface spec §5 rule 6). A
-                // `mapShard` or `terrainShard` abort here is the quiesce the host sends after a
-                // file the device refused, and the caller is about to re-send that one file —
-                // deleting the set under it is how a single CRC refusal used to take the whole map
-                // with it. `clearStagedSet` drops the terrain band too, which is exactly why the
-                // quiesce must not reach it.
-                if (d.type === ObjectType.MapSet) {
-                    this.clearStagedSet();
-                    await this.status({
-                        msg: "transferResult",
-                        objectId: d.objectId,
-                        status: TransferStatus.Aborted,
-                        committedOffset: 0,
-                    });
-                    return;
-                }
-                if (d.type === ObjectType.MapShard || d.type === ObjectType.TerrainShard) {
-                    // Quiesce only: the pipe is empty, the set — terrain band included — is
-                    // untouched.
-                    await this.status({
-                        msg: "transferResult",
-                        objectId: d.objectId,
-                        status: TransferStatus.Aborted,
-                        committedOffset: 0,
-                    });
-                    return;
-                }
-                // Nothing to abort. A real device answers the descriptor rather than staying
-                // silent, so a peer that aborts a transfer the device already closed still settles.
+                // Nothing to abort. An idle `op = 3` is a pure quiesce: the pipe is emptied and no
+                // stored object is touched, which is what makes the caller's re-send an ordinary
+                // first attempt. A real device answers the descriptor rather than staying silent,
+                // so a peer that aborts a transfer the device already closed still settles.
                 await this.status({
                     msg: "transferResult",
                     objectId: d.objectId,
@@ -907,8 +798,8 @@ export class MockDevice {
      * Refuse the next upload with `status` **after** its bytes have moved — the shape of a torn
      * transfer, as opposed to `uploadReject`'s descriptor-time refusals.
      *
-     * A test hook, and the only way to drive the one failure `sendAssembledSetFile` retries without
-     * stubbing the client out from under it.
+     * A test hook, and the only way to drive a device that consumed the whole object and then
+     * refused it — a CRC or commit verdict — without stubbing the client out from under the flow.
      */
     failNextUploadWith(status: TransferStatus): void {
         this.failNextUpload = status;
@@ -969,16 +860,7 @@ export class MockDevice {
         }
         // The descriptor-time rejects are not decided here — see {@link transfer}, which refuses them
         // on the control plane without arming anything, as `classify_transfer` does.
-        // **A re-send destroys what it re-sends, at its first byte.** The device streams a shard or
-        // a raster straight into its final name with `ReadWriteCreateOrTruncate`, so the moment a
-        // re-send starts, the file that was under that name is gone — and if the re-send then fails,
-        // the set is one file short. A mock that only added files on success could never reach that
-        // state, and the firmware bug it hides (a session still counting a file the card no longer
-        // holds, so the manifest passes its announce and dies at the set-deleting commit) is exactly
-        // what #1044's last review round found. Un-stage first, re-add at commit.
-        if (d.type === ObjectType.MapShard) this.mapShards.delete(d.objectId);
-        if (d.type === ObjectType.TerrainShard) this.mapTerrain = null;
-
+        //
         // A sinking device holds nothing: the real one writes each slice to the card and keeps only
         // the running CRC, which is the *only* way a 300 MB map fits on a microcontroller at all.
         const buffer = this.sinkUploads ? null : new Uint8Array(d.totalLen);
@@ -1019,16 +901,12 @@ export class MockDevice {
             });
             return;
         }
-        // The device's commit is not a formality — it validates the bytes it just took and can
-        // still refuse them (a raster that is not an OBCT, a manifest that does not describe the
-        // files beside it). `null` is that refusal, and it must reach the host as a status rather
-        // than as a silently-accepted object, or a whole class of firmware behaviour goes untested.
         const objectId = this.commit(d, buffer, got);
         await this.status({
             msg: "transferResult",
-            objectId: objectId ?? d.objectId,
-            status: objectId === null ? TransferStatus.Error : TransferStatus.Committed,
-            committedOffset: objectId === null ? 0 : d.totalLen,
+            objectId,
+            status: TransferStatus.Committed,
+            committedOffset: d.totalLen,
         });
     }
 
@@ -1036,43 +914,6 @@ export class MockDevice {
     private uploadReject(d: TransferControl): TransferStatus | null {
         if (d.type === ObjectType.FwImage) {
             return d.totalLen > this.maxFwImageLen ? TransferStatus.Error : null;
-        }
-        // ---- volume sets: the rules that live *between* transfers (spec §4.1, OBCA §5.4) ----
-        //
-        // These were once "accept anything with a plausible shape", and that hole is what let #1044
-        // ship: a host that skipped the terrain shard and a device that counted records disagreed
-        // about the manifest's length by exactly 56 bytes, and no test in this repo could see it
-        // because the mock had no length rule to break. What the mock enforces is now what the
-        // firmware enforces, expressed the same way — count, order, and the manifest's exact length.
-        if (d.type === ObjectType.MapShard) {
-            const count = d.objectId >>> 8;
-            const index = d.objectId & 0xff;
-            if (!(count >= 1 && count <= 32 && index < count)) return TransferStatus.NotFound;
-            // Every shard restates the set's shape; one that contradicts the set in flight is a
-            // mismatch, not a second set silently merged into the first.
-            if (this.mapShardCount !== null && this.mapShardCount !== count) return TransferStatus.Error;
-            return null;
-        }
-        if (d.type === ObjectType.TerrainShard) {
-            // A malformed id is answered before anything about the session, as it is for a shard.
-            if (d.objectId !== NEW_OBJECT_ID) return TransferStatus.NotFound;
-            // A raster names no set of its own — the set id is minted by the first shard.
-            if (this.mapShardCount === null) return TransferStatus.Error;
-            // OBCA §5.2 caps a manifest at 32 records, so a full set has no room for a terrain one.
-            if (this.mapShardCount + 1 > 32) return TransferStatus.StorageFull;
-            // …and it has to be long enough to be an OBCT at all (map rule 3, against OBCT).
-            if (d.totalLen < OBCT_HEADER_LEN) return TransferStatus.Error;
-            return null;
-        }
-        if (d.type === ObjectType.MapSet) {
-            if (d.objectId !== NEW_OBJECT_ID) return TransferStatus.NotFound;
-            const count = this.mapShardCount;
-            if (count === null) return TransferStatus.Error;
-            // Manifest-last: every shard the manifest will name must already have committed.
-            if (this.mapShards.size !== count) return TransferStatus.Error;
-            // …and its announced length is fixed by the *record* count — shards plus the raster.
-            if (d.totalLen !== manifestLen(count + (this.mapTerrain ? 1 : 0))) return TransferStatus.Error;
-            return null;
         }
         const store = this.storeFor(d.type);
         if (!store) return TransferStatus.NotFound;
@@ -1085,51 +926,13 @@ export class MockDevice {
         return d.objectId === NEW_OBJECT_ID ? null : TransferStatus.NotFound;
     }
 
-    /** The assigned object id, or `null` when the commit itself refuses the bytes it just took. */
-    private commit(d: TransferControl, bytes: Uint8Array | null, byteLen: number): number | null {
+    /** The assigned object id. */
+    private commit(d: TransferControl, bytes: Uint8Array | null, byteLen: number): number {
         if (d.type === ObjectType.FwImage) {
             // A CRC-verified commit promotes the staged bytes over any existing UPDATE.BIN, and
             // the singleton slot means the result echoes id 0 rather than assigning one.
             this.staged = bytes;
             return SINGLETON_OBJECT_ID;
-        }
-        if (d.type === ObjectType.MapShard) {
-            // The set id is minted by the **first** shard, as the device's is: it is what a raster
-            // and the manifest both echo, and what a set is called on the card.
-            if (this.mapShardCount === null) this.mapSetId = this.nextMapId;
-            this.mapShardCount = d.objectId >>> 8;
-            this.mapShards.set(d.objectId, { bytes, crc32: d.crc32, byteLen });
-            return d.objectId;
-        }
-        if (d.type === ObjectType.TerrainShard) {
-            // The device patches the held-back magic in only after the OBCT header prefix
-            // validates, and deletes the file and answers `error` when it does not.
-            if (bytes && !isObct(bytes)) {
-                this.mapTerrain = null;
-                return null;
-            }
-            // A re-sent raster that lands overwrites the one file; it is never a second record.
-            this.mapTerrain = { bytes, crc32: d.crc32, byteLen };
-            // The result echoes the **set id**, as the manifest's does — a raster has no part to
-            // correlate against, and the set id is the only identity it has.
-            return this.mapSetId;
-        }
-        if (d.type === ObjectType.MapSet) {
-            // **The commit-time cross-check** (spec §4.1 rule 7): the manifest is re-read and
-            // checked against the files actually staged, and a manifest that does not describe them
-            // is refused with the whole set deleted. The announce's length rule cannot see any of
-            // this — a same-length impostor passes it — so modelling it here is what gives that
-            // firmware path its only coverage.
-            if (bytes && !this.manifestDescribesTheStagedSet(bytes)) {
-                this.clearStagedSet();
-                return null;
-            }
-            const id = this.mapSetId;
-            this.nextMapId = id + 1;
-            this.mapSets.set(id, { bytes, crc32: d.crc32, byteLen });
-            if (this.mapTerrain) this.mapSetTerrain.set(id, this.mapTerrain);
-            this.clearStagedSet();
-            return id;
         }
         const store = this.storeFor(d.type);
         if (!store) return d.objectId;
@@ -1373,66 +1176,6 @@ export function loopbackDevice(
             await link.device.close();
         },
     };
-}
-
-// --- the two card formats the mock has to judge, not just store -----------------
-//
-// A device's *commit* is where a volume set stops being bytes and becomes a map, and it is where
-// the firmware does its only real parsing: the raster must open as an OBCT container, and the
-// manifest must describe the files beside it. Neither is visible to the announce rules above — a
-// same-length impostor manifest passes every one of them — so a mock that only stored what it was
-// handed left that whole firmware path untested. These are the smallest readers that let it judge.
-
-/** `OBCA_Spec.md` §5.2's `Role == 3`: the set's terrain record, and always the last one. */
-const SET_ROLE_TERRAIN = 3;
-
-/** One record of a parsed OBCS manifest — the three fields a cross-check needs. */
-interface SetManifestRecord {
-    readonly role: number;
-    readonly bytes: number;
-    /** The member's `ObjectId` (§5.2), or `0n` while the manifest is unbound. */
-    readonly memberId: bigint;
-}
-
-/**
- * Parse an OBCS set manifest (`OBCA_Spec.md` §5.2), or `null` when it is not one.
- *
- * Deliberately partial: magic, version, `Shard Count`, the exact length that count fixes, each
- * record's role + `Bytes`, and the member ids' binding rule. Everything else (bboxes, the set id,
- * digests) is checked by the device against files this mock does not model, and inventing checks it
- * cannot really make would be worse than having none.
- *
- * The member ids are the one v3 field that *is* fully checkable from the bytes alone, so they are
- * checked here rather than left to the device: `obc_formats::obcs::validate` refuses a manifest that
- * is half-bound or names one object twice, and a mock that accepted either would let a client's
- * tests pass on bytes the real firmware rejects.
- */
-function parseSetManifest(bytes: Uint8Array): { readonly records: SetManifestRecord[] } | null {
-    if (bytes.length < OBCS_HEADER_LEN) return null;
-    if (String.fromCharCode(...bytes.subarray(0, 4)) !== "OBCS") return null;
-    if (bytes[4] !== OBCS_VERSION) return null;
-    const count = bytes[6];
-    if (count < 1 || count > 32) return null;
-    if (bytes.length !== manifestLen(count)) return null;
-    if (bytes[7] >= count) return null; // Core Shard is an index into the records
-    const view = viewOf(bytes);
-    const records: SetManifestRecord[] = [];
-    for (let i = 0; i < count; i++) {
-        const at = OBCS_HEADER_LEN + i * OBCS_RECORD_LEN;
-        const memberId = view.getBigUint64(at + OBCS_MEMBER_ID_OFFSET, true);
-        records.push({ role: bytes[at], bytes: view.getUint32(at + 20, true), memberId });
-    }
-    // Bound (every id names an object, no two the same) or unbound (every id `0`), never between.
-    const named = records.filter((r) => r.memberId !== 0n);
-    if (named.length !== 0 && named.length !== records.length) return null;
-    if (new Set(named.map((r) => r.memberId)).size !== named.length) return null;
-    return { records };
-}
-
-/** Whether these bytes open as an OBCT terrain container this firmware reads (`OBCT_Spec.md` §4). */
-function isObct(bytes: Uint8Array): boolean {
-    if (bytes.length < OBCT_HEADER_LEN) return false;
-    return String.fromCharCode(...bytes.subarray(0, 4)) === OBCT_MAGIC && bytes[4] === OBCT_VERSION;
 }
 
 // --- the synced-ride sidecar --------------------------------------------------
