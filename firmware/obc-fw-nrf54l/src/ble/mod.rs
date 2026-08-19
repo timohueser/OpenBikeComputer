@@ -36,6 +36,7 @@ mod gatt;
 mod lifecycle;
 mod sensors;
 mod state;
+mod v4;
 mod weather;
 
 // The app-facing link snapshot (epic #447): the ride loop feeds it into `App::set_ble_status` each
@@ -58,10 +59,7 @@ pub use state::{request_forget_bond, set_radio_enabled};
 pub use weather::refresh_in_flight as weather_refresh_in_flight;
 pub use weather::request_weather_now;
 pub use weather::set_weather_inputs;
-pub(crate) use weather::{
-    note_commit as weather_committed, note_settings_changed as weather_settings_changed,
-    note_unchanged as weather_unchanged,
-};
+pub(crate) use weather::{note_settings_changed as weather_settings_changed, note_unchanged as weather_unchanged};
 
 // The radio link's lifetime counters, for the §7.5 diagnostics blob any transport can serve.
 pub(crate) use state::link_counters;
@@ -89,18 +87,18 @@ use nrf_sdc::{self as sdc, mpsl};
 use trouble_host::prelude::*;
 
 use crate::init_static;
-use crate::link::{identity, TRANSFER_ACTIVE};
+use crate::link::identity;
 use crate::object_store::ObjectStore;
 use crate::SharedStoreMutex;
 
 use control::serve_connection;
-use data_plane::{battery_task, serve_coc};
+use data_plane::battery_task;
 use gatt::{
     advertised_name, config_blob, device_address, dis_firmware_revision, dis_hardware_revision, dis_serial_number,
     Server, OBC_PSM,
 };
 use lifecycle::{advertise_lifecycle, negotiate_link, AdvertisingIntent};
-use state::{publish, LinkState, FORGET_BOND, TRANSFER_ABORT, TRANSFER_ARM};
+use state::{publish, LinkState, FORGET_BOND};
 
 /// Concurrent **sensor** links the central role holds (SE6, epic #707) — the HR/power/cadence
 /// straps the manager connects to beside the phone link. 3 on the LM20 — HR, power, and cadence
@@ -176,6 +174,8 @@ pub(crate) const OBJECT_STORE_BYTES: usize = crate::link::OBJECT_STORE_BYTES;
 pub(crate) const SERVER_BYTES: usize = core::mem::size_of::<Server<'static>>();
 pub(crate) const GAP_NAME_BYTES: usize = core::mem::size_of::<heapless::String<48>>();
 pub(crate) const SENSOR_MANAGER_BYTES: usize = sensors::RESIDENT_BYTES;
+/// The protocol-v4 adapter's record and reaction buffers (FS7.5-c3a).
+pub(crate) const V4_ADAPTER_BYTES: usize = v4::RESIDENT_BYTES;
 
 pub const RESIDENT_BYTES: usize = MPSL_BYTES
     + SDC_MEM_SIZE
@@ -185,7 +185,8 @@ pub const RESIDENT_BYTES: usize = MPSL_BYTES
     + OBJECT_STORE_BYTES
     + SERVER_BYTES
     + GAP_NAME_BYTES
-    + SENSOR_MANAGER_BYTES;
+    + SENSOR_MANAGER_BYTES
+    + V4_ADAPTER_BYTES;
 
 // The resident statics (see the module doc): written exactly once in [`run`], never aliased.
 static mut MPSL: MaybeUninit<MultiprotocolServiceLayer<'static>> = MaybeUninit::uninit();
@@ -324,7 +325,7 @@ pub async fn run(
     // visible at composition rather than reached through a global.
     sensor_injector: obc_platform::sensor_hub::SampleInjector<'static>,
 ) -> ! {
-    let crate::link::LinkStores { shared, objects: store, epoch: store_epoch } = stores;
+    let crate::link::LinkStores { shared, objects: store, epoch: _store_epoch } = stores;
     // LFCLK = the internal RC at Nordic's recommended calibration cadence (calibrate every
     // 16×0.25 s = 4 s; temp-check every 2 intervals) — guarantees the ±500 ppm class the accuracy
     // field claims. NOT the 32 k crystal — see the module doc (unprogrammed XO INTCAPs → HCI 0x3E).
@@ -437,16 +438,10 @@ pub async fn run(
     let _ = server.set(&server.dis.hardware_revision, &dis_hardware_revision());
     let _ = server.set(&server.dis.serial_number, &dis_serial_number());
     let _ = server.set(&server.obc.config, &config_blob(&store.borrow()));
-    // `protocolVersion` (V2 / #632; card-resident epoch #776): the pre-pairing read. `store_epoch` is
-    // the boot mint pass's outcome, threaded in (never re-read here) — the epoch lives on the card
-    // now, and a card swap must not silently change what this task serves. `Some(epoch)` → the full
-    // 11-byte `version u16 · store_epoch u32 · obcm_version u8 · feature_bits u32` [`VersionRead`]
-    // (E1 / #911; the capability word WX3 / #1188); `None`
-    // (no mounted store) → the 2-byte **version-only** form (`PROTOCOL_VERSION` LE), which the app
-    // decodes as `storeEpoch = nil` and fail-closes the ack — never a fabricated epoch (0 is a legal
-    // value). The attribute is a variable-length `Vec` so a 2- or 11-byte read is served verbatim.
-    // The value never changes for the connection's life.
-    let _ = server.set(&server.obc.protocol_version, &gatt::version_read_blob(store_epoch));
+    // `protocolVersion` needs no boot seed since c3a: §5.1 makes it two fixed bytes (`u16` = 4),
+    // declared as the characteristic's `value`. Protocol v2's store-epoch blob — and with it the
+    // card-resident epoch of #776 — is retired on this link: a v4 client learns the card's identity
+    // from the `StoreId` every `LIST` page carries (§3).
     // The resting value: a structurally valid "nothing is due" rather than a zeroed buffer, so a
     // peer that reads the characteristic out of turn cannot mistake it for a request at 0°N 0°E.
     // Seeded with the **stored** refresh byte, not `EMPTY`'s compile-time default (#1221 F2):
@@ -599,7 +594,7 @@ pub async fn run(
                         serve_connection(stack, server, &conn, store, shared),
                         join4(
                             negotiate_link(stack, &conn),
-                            serve_coc(stack, server, &conn, store, shared),
+                            v4::serve_objects(stack, server, &conn),
                             battery_task(stack, server, &conn),
                             link_control(stack, server, &conn, store, shared, advertising_intent),
                         ),
@@ -609,28 +604,24 @@ pub async fn run(
                         Either::First(reason) => reason,
                         Either::Second(_) => unreachable!("the background futures never return"),
                     };
-                    // The drop may have cancelled the data plane mid-transfer (at an await): discard any
-                    // in-flight upload + release the store's open handles, clear the one-transfer gate, and
-                    // drain any latched arm/abort so the next connection starts clean (uploads restart).
-                    //
-                    // Everything here is scoped to **this** wire, and none of it is incidental
-                    // (issue #1039): the cable can be uploading while the phone drops off. The gate
-                    // is released only if the radio was the one holding it, `TRANSFER_ARM` /
-                    // `TRANSFER_ABORT` are this plane's own signals (USB has its own pair), and
-                    // `link_reset` closes the temp handle only if the temp is what is open.
+                    // **§3.8's third form of cancel, and it belongs here rather than in the driver**
+                    // (FS7.5-c3a). A peer disconnect resolves the `select` above and *drops*
+                    // `serve_objects`, so the driver's own teardown never runs: a live `PUT` would
+                    // keep its reservation and a live `GET` its hold — pinning a revision the store
+                    // cannot free — for as long as the rider stayed disconnected. Releasing from the
+                    // disconnect arm is what makes "the link went away" reach the engine on the path
+                    // that actually happens.
+                    if let Some(writer) = crate::flat_store::writer() {
+                        v4::release_engine(&writer).await;
+                    }
+                    // The v1 half of the same teardown: discard any in-flight upload and release the
+                    // store's open handles. Scoped to **this** wire (#1039) — the cable can be
+                    // uploading while the phone drops off — and `link_reset` closes the temp handle
+                    // only if the temp is what is open.
                     {
                         let mut guard = shared.lock().await;
                         store.borrow_mut().link_reset(&mut guard);
-                        // The weather transaction is the radio's own (§11.5 binds it to the CoC),
-                        // so *this* teardown releases a cancelled one — deliberately not inside
-                        // `link_reset`, which also runs on the cable's teardown (#1039's rule:
-                        // only the wire that owns a handle may drop it). A no-op when none is
-                        // in flight; the inactive slot keeps its zero magic and is never eligible.
-                        store.borrow_mut().weather_abort(&mut guard);
                     }
-                    TRANSFER_ACTIVE.release(crate::link::gate_owner(crate::link::Transport::Ble));
-                    TRANSFER_ARM.reset();
-                    TRANSFER_ABORT.reset();
                     publish(|s| {
                         s.disconnects += 1;
                         s.last_disconnect_reason = reason;

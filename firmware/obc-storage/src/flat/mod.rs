@@ -63,6 +63,8 @@ mod fuzz;
 #[cfg(test)]
 mod granularity;
 #[cfg(test)]
+mod map_read;
+#[cfg(test)]
 mod read_cost;
 #[cfg(test)]
 mod vectors;

@@ -202,15 +202,19 @@ impl Armed {
 }
 
 /// Which wire a descriptor arrived on — the *only* place transport identity crosses into the shared
-/// classifier, and it exists for exactly one rule: **a map is USB-only** (spec §10). A map is
-/// hundreds of megabytes; over BLE it would be days, which is why the type did not exist before a
-/// cable did. Rather than leave that to a comment, [`transfer::classify_transfer`] takes this and a
-/// map descriptor on the radio is refused with a typed, logged `error` — the same shape as any other
-/// unsupported op/type pair, rather than silently falling into the route commit path.
+/// v1 classifier.
+///
+/// **One variant since FS7.5-c3a, and that is the cutover showing through.** The radio no longer
+/// reaches [`transfer::classify_transfer`] at all: BLE speaks protocol v4, whose engine is generic
+/// over object kinds and needs no per-wire rule. What is left is the cable, and the rule this type
+/// exists for — **a map is USB-only** (spec §10), because a map is hundreds of megabytes and over
+/// BLE that is days — is now true by construction rather than by a guard.
+///
+/// It is kept rather than dissolved into the guards it feeds because c3b deletes the classifier
+/// whole when USB cuts over, and an enum that survives one slice is a cleaner thing to lift out than
+/// a parameter threaded back through four call sites.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Transport {
-    /// The BLE link: GATT control plane, L2CAP CoC data plane.
-    Ble,
     /// The USB device plane: framed control endpoint, bulk data endpoints.
     Usb,
 }
@@ -332,10 +336,10 @@ pub(crate) static TRANSFER_ACTIVE: obc_app::TransferGate = obc_app::TransferGate
 
 /// This wire's identity to the gate. [`Transport`] is the classifier's vocabulary and
 /// [`obc_app::GateOwner`] is the gate's; the two are the same fact and this is the one place they
-/// meet.
+/// meet. `GateOwner` keeps its `Ble` variant — the gate is still a cross-transport one and c3b's
+/// USB engine will claim it beside whatever else does — but nothing on this side names it now.
 pub(crate) const fn gate_owner(transport: Transport) -> obc_app::GateOwner {
     match transport {
-        Transport::Ble => obc_app::GateOwner::Ble,
         Transport::Usb => obc_app::GateOwner::Usb,
     }
 }

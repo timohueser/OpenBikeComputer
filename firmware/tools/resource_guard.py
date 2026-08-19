@@ -277,10 +277,19 @@ def canonical_symbol(name: str) -> str:
     gate that was supposed to be watching it. Canonicalising here fixes it once for every scoped
     needle rather than asking each caller to spell both forms.
 
+    It also decodes the **legacy escapes** the same renderer emits for punctuation: `$LT$` / `$GT$`
+    for the angle brackets of a generic, and `$u20$` for the space in `<A as B>`. That half was added
+    after the second bite of this class: FS7.5-c1 baselined a boot-chain root as
+    `FlatStore$LT$D$GT$::mount_in_place` — the spelling *one host's* demangler produced — and on CI
+    the symbol did not resolve. The guard went red as "stale", and the boot-chain walk fell back to a
+    ceiling with the entire mount missing from it, which is the exact blindness the root was added to
+    end. A needle should be spelled the way Rust spells it, `FlatStore<D>::mount_in_place`, and match
+    whatever the demangler in front of it renders.
+
     Only the matching predicate sees this form; the reported names stay exactly as the tool emitted
     them, because a diagnostic that renames the symbol it is complaining about is a worse diagnostic.
     """
-    return name.replace("..", "::")
+    return name.replace("..", "::").replace("$LT$", "<").replace("$GT$", ">").replace("$u20$", " ")
 
 
 def select_frames(
@@ -374,12 +383,30 @@ def chain_cost(parsed: Disassembly, root: str) -> tuple[int, tuple[str, ...]]:
 
 
 def resolve_symbol(parsed: Disassembly, needle: str, description: str) -> str:
-    """The one symbol containing `needle` (mangling-hash-insensitive), or a stale-parser error."""
-    matches = sorted(name for name in parsed.symbols if needle in name)
+    """The one symbol containing `needle` (mangling-hash-insensitive), or a stale-parser error.
+
+    Both sides go through [`canonical_symbol`], so a baselined needle is spelled the way Rust spells
+    a path and matches whichever rendering the demangler on this host produces. Not routing it
+    through there is what made FS7.5-c1's `mount_in_place` root resolve locally and go stale on CI.
+    """
+    wanted = canonical_symbol(needle)
+    matches = sorted(name for name in parsed.symbols if wanted in canonical_symbol(name))
     if not matches:
+        # **Show what the demangler in front of us actually rendered.** A bare "no symbol contains
+        # X" cannot distinguish "inlined away" from "spelled differently here", and the difference
+        # decides the fix. Retrying on the needle's last path segment is what turns a round of
+        # guessing at someone else's host into a one-shot correction: FS7.5-c1 burned a CI round
+        # because the message could not say whether the symbol was gone or merely renamed.
+        tail = needle.rsplit("::", 1)[-1]
+        near = sorted(name for name in parsed.symbols if tail and tail in canonical_symbol(name))
+        hint = (
+            f" Symbols containing `{tail}`: {', '.join(name[:90] for name in near[:4])}"
+            if near
+            else f" No symbol contains `{tail}` either, so it really is gone from this image."
+        )
         raise GuardError(
             f"{description} guard is stale: no symbol contains `{needle}`; it was renamed, "
-            "inlined away, or is no longer reached from the boot path"
+            "inlined away, or is no longer reached from the boot path." + hint
         )
     if len(matches) > 1:
         raise GuardError(
@@ -484,12 +511,15 @@ def measure_boot_chain(parsed: Disassembly, elf: Path, chain_roots: list[str]) -
     task_frames = select_task_body_frames(parsed)
     task_symbol = max(task_frames, key=lambda name: task_frames[name])
     deepest = (0, "", ())
-    chain_error: str | None = None
+    # **Every** stale root, not the first. One masking another is how a second blind spot survives a
+    # round that was opened to fix the first: the reported ceiling is missing both chains either way,
+    # so a reader who fixes the one name in the message would find the guard still wrong.
+    stale: list[str] = []
     for needle in chain_roots:
         try:
             root = resolve_symbol(parsed, needle, f"boot-chain root `{needle}`")
         except GuardError as error:
-            chain_error = chain_error or str(error)
+            stale.append(str(error))
             continue
         cost, path = chain_cost(parsed, root)
         if cost > deepest[0]:
@@ -502,7 +532,7 @@ def measure_boot_chain(parsed: Disassembly, elf: Path, chain_roots: list[str]) -
         chain_ceiling=task_frames[task_symbol] + chain_ceiling,
         chain_root=chain_root,
         chain_path=chain_path,
-        chain_error=chain_error,
+        chain_error="; ".join(stale) if stale else None,
     )
 
 
@@ -545,11 +575,12 @@ def load_baseline(path: Path) -> dict[str, object]:
         baseline = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as error:
         raise GuardError(f"cannot read baseline {path}: {error}") from error
-    if baseline.get("schema_version") != 2:
+    if baseline.get("schema_version") != 3:
         raise GuardError(
-            f"unsupported baseline schema in {path}; expected schema_version 2 "
+            f"unsupported baseline schema in {path}; expected schema_version 3 "
             "(v2 added the boot-chain block: task_frame_limit / residual_stack_min / "
-            "boot_chain_ceiling / boot_chain_roots)"
+            "boot_chain_ceiling / boot_chain_roots; v3 added the deep-ride high-water gate: "
+            "deep_ride_high_water / deep_ride_margin_min)"
         )
     return baseline
 
@@ -734,6 +765,54 @@ def check_boot_chain(profile_name: str, profile: dict[str, object], boot: BootCh
         f"ceiling {boot.chain_ceiling} B), under the {profile['boot_chain_headroom_min']} B floor "
         "MPSL's ISRs and the unmodelled indirect calls need. This is the #1108 failure mode: it "
         "goes red BEFORE the board stops booting",
+    )
+    check_deep_ride_high_water(profile_name, profile, boot)
+
+
+def check_deep_ride_high_water(profile_name: str, profile: dict[str, object], boot: BootChain) -> None:
+    """**The gate that compares the residual stack to a RUN rather than to its own floor.**
+
+    Every other stack check here is self-referential: `residual_stack_min` is whatever the last
+    approved build measured, so growing the residents and re-approving the floor is a green diff no
+    matter how little stack is left. `boot_chain_ceiling` is a static over-approximation of *one*
+    path — the boot chain — and says nothing about the deep ride path, which is where this board's
+    stack actually peaks.
+
+    So the baseline now carries the deepest **measured on-glass** high-water for each profile, and
+    the residual has to clear it with a margin. This exists because FS7.5-c1 walked straight through
+    the gap: +11,848 B of resident took the residual to 37,640 B, past a recorded 37,760 B peak on
+    the `ble` profile, and every gate in this file went green.
+
+    `deep_ride_high_water` is a **measurement, not a budget**. It moves only when someone runs the
+    ride on glass and reads the stackmeter — never to make a build pass. If it is stale the honest
+    fix is to re-measure it, and `deep_ride_high_water_measured` records when it last was.
+    """
+    # A missing key here used to die as a bare `KeyError` in a traceback, which reads as a crashed
+    # tool rather than as the stale baseline it is. v3 added these two, so a profile without them is
+    # a baseline that was hand-edited past its schema.
+    missing = [key for key in ("deep_ride_high_water", "deep_ride_margin_min") if key not in profile]
+    require(
+        not missing,
+        f"{profile_name} baseline is missing {', '.join(missing)}: schema v3 added the deep-ride "
+        "gate, and a profile without it has no stack-safety check at all. Add the keys with a "
+        "measured on-glass high-water — never a guess, and never a figure chosen to make a build pass",
+    )
+    high_water = profile["deep_ride_high_water"]
+    margin_min = profile["deep_ride_margin_min"]
+    margin = boot.residual_stack - high_water
+    print(
+        f"{profile_name}: deep-ride high-water {high_water:,} B "
+        f"({profile['deep_ride_high_water_measured']}); residual clears it by {margin:,} B "
+        f"(floor {margin_min:,} B)"
+    )
+    require(
+        margin >= margin_min,
+        f"{profile_name} residual main stack is {boot.residual_stack} B against a MEASURED deep-ride "
+        f"high-water of {high_water} B ({profile['deep_ride_high_water_measured']}) — a margin of "
+        f"{margin} B, under the {margin_min} B floor. This is not a budget to re-approve: the number "
+        "on the right is what the board actually reached on glass, so a residual under it is a stack "
+        "overflow on the deep ride path, not a tight one. Give the stack bytes back (delete or "
+        "overlap residents), or re-measure the high-water on glass and move it with the evidence",
     )
 
 

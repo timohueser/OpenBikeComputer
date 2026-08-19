@@ -47,6 +47,15 @@ sha2 = { version = "0.11", default-features = false, optional = true }
 # The same digest, for `cfg(test)` runs that do not enable the `std` feature.
 sha2 = { version = "0.11", default-features = false }
 
+# The read cutover's pin (FS7.5-c2, #1420): `flat::map_read` commits a real OBCM map into a flat
+# store and drives the renderer's own `MapTables`/`Reader` over it through `StoreSource`, against a
+# `SliceSource` over the same bytes as the oracle. Dev-only, and deliberately upward — the device
+# image resolves `obc-storage` without either, and the alternative (asserting field values instead
+# of comparing two paths over one array of bytes) would be a weaker check that still needed the
+# reader to write.
+obc-reader = { path = "../obc-reader" }
+obcm-testkit = { path = "../../host/obcm-testkit" }
+
 # The wire crate's host-only fake-link harness and its published scenario suite, which the
 # kernel-backed transaction is held to. It is a dev-dependency so the device image never sees
 # `std`: `cargo build -p obc-storage` still resolves `obc-link` without it.
