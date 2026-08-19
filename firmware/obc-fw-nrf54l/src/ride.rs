@@ -412,35 +412,32 @@ fn sensor_status_of(q: usize) -> obc_app::SensorStatus {
 /// emit phase constructs it). Everything long-running (render, input, the watchdog feed) runs
 /// normally **between** steps — that is the whole point of #499.
 ///
-/// The reader is `Reader::new` over whichever arm's bytes serve this card (FS7.5-c2, #1420): the
-/// flat store's `'static` `StoreSource`, or the FAT map's per-call source. There used to be a third
-/// case — a mounted volume set, whose reader had to come from `MountedSet::core_reader` because the
-/// set shared **one** `MapCache` across its shards and every cache key carried a shard index, so a
-/// `Reader::new` over the core's bytes was tagged file `0` and could collide with another shard's
-/// namespace. One map is one file: there is no index, no tag, and one way to build a reader.
+/// The reader is `Reader::new` over the FAT map's per-call source (FS7.5-c2, #1420). There used to
+/// be a second case — a mounted volume set, whose reader had to come from `MountedSet::core_reader`
+/// because the set shared **one** `MapCache` across its shards and every cache key carried a shard
+/// index, so a `Reader::new` over the core's bytes was tagged file `0` and could collide with
+/// another shard's namespace. One map is one file: there is no index, no tag, and one way to build a
+/// reader.
 ///
-/// **The router needs the FAT arm's route sink**, so a plan step still requires `storage`. A flat
-/// card cannot plan until c3 writes routes into the store; the caller's `Option` is what says so.
+/// **There is deliberately no flat arm here.** A plan writes its OBCR through the FAT route sink, so
+/// a step only ever runs with a `Storage`; a flat card has no `/routes` to emit into and cannot
+/// reach this function at all until c3 gives the store a writer. This took a `flat_map` parameter
+/// for one round and it was unreachable by its own docstring — a branch that cannot execute is not
+/// forward-compatibility, it is an untested path pretending to be one. c3 adds it when there is
+/// something to test it against.
 #[cfg(has_nav)]
 #[inline(never)]
 fn nav_step(
     storage: &sd::Storage,
-    flat_map: Option<&'static dyn obc_formats::io::ByteSource>,
     map_tables: &MapTables,
     map_cache: &MapCache,
     nav: &mut NavBuffers,
     file: embedded_sdmmc::RawFile,
 ) -> obc_route::Step {
-    let fat_src = match flat_map {
-        Some(_) => None,
-        None => storage.map_source(),
+    let Some(map_src) = storage.map_source() else {
+        return obc_route::Step::Failed(obc_route::NavError::NoPath);
     };
-    let map_src: &dyn obc_formats::io::ByteSource = match (flat_map, &fat_src) {
-        (Some(source), _) => source,
-        (None, Some(source)) => source,
-        (None, None) => return obc_route::Step::Failed(obc_route::NavError::NoPath),
-    };
-    let reader = Reader::new(map_src, map_tables, map_cache);
+    let reader = Reader::new(&map_src, map_tables, map_cache);
     let mut sink = storage.nav_sink(file);
     // Only called while a `NavRun` is active, and a run is only created after the drain wrote the
     // planner — but the guard is what *knows* that, so ask it rather than assert it. An unwritten
@@ -1639,7 +1636,7 @@ pub(crate) async fn run_app(
                         #[cfg(feature = "sd-bench")]
                         let reads_before = sd::read_perf_snapshot();
                         let ts = Instant::now();
-                        let step = nav_step(s, flat_map, map_tables, map_cache, &mut bufs, run.file);
+                        let step = nav_step(s, map_tables, map_cache, &mut bufs, run.file);
                         let us = ts.elapsed().as_micros();
                         run.phase_us[phase_idx] += us;
                         #[cfg(feature = "sd-bench")]
