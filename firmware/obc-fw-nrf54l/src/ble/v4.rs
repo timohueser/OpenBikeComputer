@@ -278,7 +278,6 @@ async fn serve_channel(
         // already pending is served before any SDU is taken off the channel, so a `PUT`'s admission
         // always reaches the engine ahead of the stream frames that belong to it (§3.6, §5).
         if let Some(len) = CONTROL_IN.try_take() {
-            CONTROL_TAKEN.signal(());
             if !drive_control(writer, lane, stack, server, conn, ch, len).await {
                 return "control";
             }
@@ -288,7 +287,6 @@ async fn serve_channel(
         let rx = unsafe { &mut *core::ptr::addr_of_mut!(STREAM_RX) };
         let received = match select(CONTROL_IN.wait(), ch.receive(stack, rx)).await {
             Either::First(len) => {
-                CONTROL_TAKEN.signal(());
                 if !drive_control(writer, lane, stack, server, conn, ch, len).await {
                     return "control";
                 }
@@ -302,7 +300,6 @@ async fn serve_channel(
         // arrived while it was in flight, it was written first and goes to the engine first — after
         // which this frame is delivered, not dropped.
         if let Some(len) = CONTROL_IN.try_take() {
-            CONTROL_TAKEN.signal(());
             if !drive_control(writer, lane, stack, server, conn, ch, len).await {
                 return "control";
             }
@@ -336,9 +333,14 @@ async fn drive_control(
     // task, before the answer this awaits.
     let record: &'static [u8] =
         unsafe { core::slice::from_raw_parts(core::ptr::addr_of!(CONTROL_RX).cast::<u8>(), len) };
-    let Some(reaction) = lane.call(writer, |out| Request::Control { record, out }).await else {
-        return false;
-    };
+    let reaction = lane.call(writer, |out| Request::Control { record, out }).await;
+    // **Released here and not a statement earlier.** The engine consumes `CONTROL_RX` synchronously
+    // inside the storage task's `serve`, which is over by the time this call answers — so this is
+    // the first instant at which the GATT task may stage another record without writing under a
+    // borrow the queue still holds. Signalling at the point the record was *taken from the signal*
+    // would leave that window open for the whole round trip.
+    CONTROL_TAKEN.signal(());
+    let Some(reaction) = reaction else { return false };
     pump(writer, lane, stack, server, conn, ch, reaction).await
 }
 
