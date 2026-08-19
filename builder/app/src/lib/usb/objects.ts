@@ -193,24 +193,24 @@ export const TRIP_HEADER_LEN = 56;
  */
 export interface TripObject {
     name: string;
-    stages: number[];
+    stages: bigint[];
 }
 
 export function decodeTripObject(data: Uint8Array): TripObject {
     if (data.length < TRIP_HEADER_LEN) {
         throw new ObjectDecodeError(`trip object is ${data.length} bytes, shorter than its 56-byte header.`);
     }
-    if (data[0] !== 1) {
-        throw new ObjectDecodeError(`trip object version ${data[0]}; this client decodes 1.`);
+    if (data[0] !== 2) {
+        throw new ObjectDecodeError(`trip object version ${data[0]}; this client decodes 2.`);
     }
     const view = viewOf(data);
     const stageCount = view.getUint16(2, true);
-    const expected = TRIP_HEADER_LEN + 2 * stageCount;
+    const expected = TRIP_HEADER_LEN + 8 * stageCount;
     if (data.length !== expected) {
         throw new ObjectDecodeError(`trip with ${stageCount} stages should be ${expected} bytes, got ${data.length}.`);
     }
-    const stages: number[] = [];
-    for (let i = 0; i < stageCount; i++) stages.push(view.getUint16(TRIP_HEADER_LEN + i * 2, true));
+    const stages: bigint[] = [];
+    for (let i = 0; i < stageCount; i++) stages.push(view.getBigUint64(TRIP_HEADER_LEN + i * 8, true));
     return { name: paddedName(data, 4, 5, 48), stages };
 }
 
@@ -223,12 +223,12 @@ export function encodeTripObject(t: TripObject): Uint8Array {
     if (t.stages.length > 0xffff) {
         throw new RangeError(`a trip carries at most 65535 stages; this one has ${t.stages.length}`);
     }
-    const out = new Uint8Array(TRIP_HEADER_LEN + 2 * t.stages.length);
+    const out = new Uint8Array(TRIP_HEADER_LEN + 8 * t.stages.length);
     const view = new DataView(out.buffer);
-    out[0] = 1;
+    out[0] = 2;
     view.setUint16(2, t.stages.length, true);
     writePaddedName(out, 4, 5, 48, t.name);
-    t.stages.forEach((id, i) => view.setUint16(TRIP_HEADER_LEN + i * 2, id, true));
+    t.stages.forEach((id, i) => view.setBigUint64(TRIP_HEADER_LEN + i * 8, id, true));
     return out;
 }
 

@@ -192,26 +192,6 @@ pub(crate) fn load_rides(storage: &mut sd::Storage, app: &mut App) {
     app.set_ride_retention_inventory(&storage.ride_retention_inventory());
 }
 
-/// Perform the one boot-time media scan that seeds the canonical trip repository. Runtime trip
-/// commits/deletes mutate that repository directly; a route-only store edge must never rescan trip
-/// media behind the trip revision advertised to the phone. Keep its directory-name scratch in this
-/// popped frame rather than letting it become part of `main`'s async frame.
-#[inline(never)]
-pub(crate) fn scan_trips_at_boot(storage: &mut sd::Storage) {
-    storage.trips().scan();
-}
-
-/// Reload the app's trip folders from the canonical repository without scanning or mutating it.
-/// Called at boot and on every store-changed edge — **after** [`load_routes`], so a route deleted
-/// individually re-resolves trip stage totals against the fresh route catalog (a dangling stage
-/// then contributes nothing). Its own `#[inline(never)]` frame for the same stack reason as
-/// [`load_routes`]/[`load_rides`].
-#[inline(never)]
-pub(crate) fn load_trips(storage: &mut sd::Storage, app: &mut App) {
-    let trips = storage.trips();
-    app.set_trips(&trips.inputs());
-}
-
 /// Fill an open Ride detail's pending **track-profile request** (epic #678 T2 / #680): drain the
 /// ride's durable id, stream its `RD{id}.ORD` once (chunked SD reads — no whole-track buffer),
 /// and answer `App::set_ride_profile` — a stream failure (or no card) answers `None`, so a dead

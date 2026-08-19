@@ -22,10 +22,10 @@
 
 /** The slice of a `TripView` this module reads — structural, so tests need no protocol types. */
 export interface TripStages {
-    readonly objectId: number;
+    readonly objectId: bigint;
     readonly name: string;
     /** The trip's stage ids, or null when the trip object could not be read. */
-    readonly detail: { readonly stages: readonly number[] } | null;
+    readonly detail: { readonly stages: readonly bigint[] } | null;
 }
 
 export type TripDeletePlan =
@@ -37,7 +37,7 @@ export type TripDeletePlan =
     | {
           readonly offer: "both";
           /** The route ids deleted by the second option — deduped, existing, not shared. */
-          readonly deletable: readonly number[];
+          readonly deletable: readonly bigint[];
           /** The trip's unique stage ids that exist as routes — the dialog's "its N routes". */
           readonly routeCount: number;
           /** "2 of its 4 routes are also in “Other trip” and will stay" — null when none are. */
@@ -51,7 +51,7 @@ export type TripDeletePlan =
 export function planTripDelete(
     trip: TripStages,
     allTrips: readonly TripStages[],
-    existingRouteIds: ReadonlySet<number>,
+    existingRouteIds: ReadonlySet<bigint>,
 ): TripDeletePlan {
     if (trip.detail === null) {
         return { offer: "trip-only", reason: "This trip's own stage list could not be read." };
@@ -69,7 +69,7 @@ export function planTripDelete(
     if (routes.length === 0) return { offer: "trip-only", reason: null };
 
     // A route is shared when any other trip lists it too; remember who, for the note.
-    const sharedIn = new Map<number, TripStages[]>();
+    const sharedIn = new Map<bigint, TripStages[]>();
     for (const other of others) {
         for (const id of new Set(other.detail?.stages ?? [])) {
             if (routes.includes(id)) sharedIn.set(id, [...(sharedIn.get(id) ?? []), other]);
@@ -88,7 +88,7 @@ export function planTripDelete(
  * reached from the "both" offer, where at least one route is shared and at least one is not —
  * so `0 < sharedIn.size < routeCount`, and "of its N routes" is always plural.
  */
-function sharedNote(routeCount: number, sharedIn: ReadonlyMap<number, readonly TripStages[]>): string | null {
+function sharedNote(routeCount: number, sharedIn: ReadonlyMap<bigint, readonly TripStages[]>): string | null {
     if (sharedIn.size === 0) return null;
     const names = [...new Set([...sharedIn.values()].flat().map((t) => t.name || `Trip ${t.objectId}`))];
     const listed =

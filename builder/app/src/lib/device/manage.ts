@@ -4,7 +4,7 @@
  * Neither is a protocol feature, and that is the point: both ride on the one primitive §3.6 already
  * has, **a `PUT` naming an existing object replaces it in one commit**. A rename gets the OBCR,
  * rewrites the 48-byte name field in the payload, and puts the same object back under the same
- * `ObjectId` — so every reference to it survives. A trip edit gets a 56-byte-plus-two-per-stage
+ * `ObjectId` — so every reference to it survives. A trip edit gets a 56-byte-plus-eight-per-stage
  * object, mutates the stage list, and does the same.
  *
  * **Every replace carries the revision it expects** (§3.6), and that is the substance rather than
@@ -33,30 +33,25 @@ export const TRIP_NAME_MAX = 48;
 /**
  * The largest route id a trip can name.
  *
- * A trip object stores its stages as `u16`, and an `ObjectId` is a `u64` allocated from a monotonic
- * cursor that is never reused (`FLAT_Store_Format.md` §3). So a card whose cursor has passed 65,535
- * can hold routes no trip object can reference. That is a **payload-format** limit, not a wire one,
- * and it cannot be fixed from this side — the trip object is a device format. What this module does
- * is refuse to write a stage that would truncate, rather than writing an id that silently names a
- * different route.
+ * Trip v2 stores the flat store's complete nonzero `u64` ObjectId.
  */
-export const MAX_TRIP_STAGE_ID = 0xffff;
+export const MAX_TRIP_STAGE_ID = 0xffff_ffff_ffff_ffffn;
 
 /** A route this trip format cannot name. Its own error, because the fix is not "try again". */
 export class TripStageError extends Error {
     constructor(objectId: bigint) {
         super(
-            `Route ${objectId} cannot be put in a trip: a trip stores its stages in 16 bits and this ` +
-                `device's ids have grown past ${MAX_TRIP_STAGE_ID}.`,
+            `Route ${objectId} cannot be put in a trip: its id is outside the trip format's nonzero ` +
+                `u64 range (maximum ${MAX_TRIP_STAGE_ID}).`,
         );
         this.name = "TripStageError";
     }
 }
 
-/** Narrow an `ObjectId` to the trip object's 16-bit stage field, or refuse. */
-export function stageId(objectId: bigint): number {
-    if (objectId <= 0n || objectId > BigInt(MAX_TRIP_STAGE_ID)) throw new TripStageError(objectId);
-    return Number(objectId);
+/** Validate an `ObjectId` for the trip object's nonzero `u64` stage field. */
+export function stageId(objectId: bigint): bigint {
+    if (objectId <= 0n || objectId > MAX_TRIP_STAGE_ID) throw new TripStageError(objectId);
+    return objectId;
 }
 
 /**
@@ -143,7 +138,7 @@ export async function updateTrip(
 
 // --- pure stage-list mutators, for `updateTrip` --------------------------------
 
-export function addStage(trip: TripObject, routeId: number): TripObject {
+export function addStage(trip: TripObject, routeId: bigint): TripObject {
     // Adding a stage that is already in the trip is a no-op, not a duplicate: the
     // menu offering the add has no way to know the trip's current stages are stale.
     if (trip.stages.includes(routeId)) return trip;

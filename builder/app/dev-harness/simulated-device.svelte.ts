@@ -184,9 +184,7 @@ async function seedGpxRoute(device: MockDevice, id: bigint, name: string, gpx: s
  * shape, and two of the three carry waypoints — so the merged card shows cumulative distances
  * across a stage that contributes none.
  *
- * The trip object names its stages in 16 bits (`objects.ts`), which is why the stage ids are
- * narrowed to `Number` here: the ids are the store's `u64`s and this format is the one place they
- * do not fit.
+ * The trip object names its stages with the store's full-width `u64` ObjectIds (`objects.ts`).
  */
 async function seedTour(device: MockDevice): Promise<void> {
     try {
@@ -203,7 +201,7 @@ async function seedTour(device: MockDevice): Promise<void> {
             objectId: TRIP_ID,
             kind: ObjectKind.Trip,
             displayName: name,
-            bytes: encodeTripObject({ name, stages: stages.map((s) => Number(s.id)) }),
+            bytes: encodeTripObject({ name, stages: stages.map((s) => s.id) }),
         });
     } catch (cause) {
         console.warn("dev-harness: could not seed the tour (is the wasm bridge built?)", cause);
