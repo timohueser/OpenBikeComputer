@@ -943,14 +943,25 @@ fn allocate_refusal(error: StoreError, bytes: u64) -> Refusal {
         StoreError::Invalid => Refusal::plain(ErrorCode::Busy),
         StoreError::Media => Refusal::new(ErrorCode::MediaIo, detail::media_io::WRITE),
         StoreError::ReadOnly => Refusal::new(ErrorCode::ReadOnly, detail::read_only::REVISION_SPACE_EXHAUSTED),
+        // `allocate` takes no hold row, so this is unreachable from here — mapped rather than
+        // funnelled into `Internal`, because a store that ever does say it is the same transient
+        // fact the arm above reports and a client should read it the same way.
+        StoreError::Busy => Refusal::new(ErrorCode::Busy, detail::busy::HOLDS),
         StoreError::NotFound | StoreError::RevisionConflict { .. } => Refusal::plain(ErrorCode::Internal),
     }
 }
 
-/// A refusal from `open`. A full hold table is the same transient fact as a full reservation table.
+/// A refusal from `open`. A full hold table is the same transient fact as a full reservation table,
+/// and since FS7.5-c2 it **says which** — `busy` detail `holds 2` rather than a plain `busy`, so a
+/// client can tell "another transfer owns the device" from "every read slot is taken".
+///
+/// `Invalid` still maps to a plain `busy` here for the reservation case, and it is also what a `GET`
+/// on a `RESERVED` entry produces — which is a genuine client error the store has no other way to
+/// spell at this seam. That conflation is older than this slice and is not resolved by it.
 fn open_refusal(error: StoreError) -> Refusal {
     match error {
         StoreError::NotFound => Refusal::new(ErrorCode::NotFound, detail::not_found::OBJECT),
+        StoreError::Busy => Refusal::new(ErrorCode::Busy, detail::busy::HOLDS),
         StoreError::Invalid => Refusal::plain(ErrorCode::Busy),
         StoreError::Media => Refusal::new(ErrorCode::MediaIo, detail::media_io::READ),
         StoreError::ReadOnly => Refusal::new(ErrorCode::ReadOnly, detail::read_only::CATALOG_UNREADABLE),
@@ -977,6 +988,10 @@ fn commit_refusal(error: StoreError, bytes: u64) -> Refusal {
         // The engine built the batch, so a structural refusal is this crate's fault and not the
         // client's.
         StoreError::Invalid => Refusal::plain(ErrorCode::Internal),
+        // A commit takes no hold row either. Same reasoning as `allocate_refusal`'s arm: mapped to
+        // the transient answer rather than to `Internal`, so a store that ever reports it is read
+        // as *ask again* and not as a device defect.
+        StoreError::Busy => Refusal::new(ErrorCode::Busy, detail::busy::HOLDS),
     }
 }
 
@@ -994,6 +1009,19 @@ mod tests {
         // The same variant from a commit is the engine's own batch being wrong, which is not the
         // client's fault either — but it is not transient, so it is not `busy`.
         assert_eq!(commit_refusal(StoreError::Invalid, 0).code, ErrorCode::Internal);
+    }
+
+    /// A full **hold** table says which kind of busy it is. The detail is the half a client's retry
+    /// policy reads, and it is frozen in `FLAT_Store_Protocol.md` §3.9 — so it is pinned here rather
+    /// than left to whoever next edits the match.
+    #[test]
+    fn a_full_hold_table_is_busy_with_the_holds_detail() {
+        assert_eq!(open_refusal(StoreError::Busy), Refusal::new(ErrorCode::Busy, detail::busy::HOLDS));
+        // The other two seams cannot produce it — neither takes a hold row — but they map it rather
+        // than funnelling it into `Internal`, so a store that ever does say it reads as *ask again*.
+        assert_eq!(allocate_refusal(StoreError::Busy, 1), Refusal::new(ErrorCode::Busy, detail::busy::HOLDS));
+        assert_eq!(commit_refusal(StoreError::Busy, 0), Refusal::new(ErrorCode::Busy, detail::busy::HOLDS));
+        assert_ne!(detail::busy::HOLDS, detail::busy::TRANSFER, "the two reasons must stay distinguishable");
     }
 
     #[test]

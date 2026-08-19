@@ -94,6 +94,53 @@ impl ByteSource for SliceSource<'_> {
     }
 }
 
+/// A [`ByteSource`] over a **window** of another one: the bytes `offset..offset + len`, re-based so
+/// the window's first byte is byte `0`.
+///
+/// The one thing an embedded container needs and nothing else provides. OBCM v14 §1.3 puts a whole
+/// OBCT terrain container inside the map file, and every offset *inside* that container is relative
+/// to its own first byte — so a consumer needs a source whose zero is the container's zero, not the
+/// map's. Copying the region would need somewhere to copy it to; the whole point of splicing it in
+/// was that there is no such place on a 512 KB part.
+///
+/// **The window is the truth, not a hint.** A read that starts inside and runs past the end is
+/// [`Error::BadOffset`], exactly as it is at the end of a whole file — a container that asks for
+/// bytes past its region is malformed, and serving it the map's next section would hand a terrain
+/// parse a plausible-looking answer built out of somebody else's bytes.
+///
+/// [`new`](WindowSource::new) is the only constructor and it refuses a window that does not fit
+/// inside `inner`, so a badly-formed §1.3 pointer is caught once, where the region is resolved,
+/// rather than per read.
+pub struct WindowSource<'a> {
+    inner: &'a dyn ByteSource,
+    offset: u64,
+    len: u64,
+}
+
+impl<'a> WindowSource<'a> {
+    /// The window `offset..offset + len` of `inner`, or `None` when that range is not wholly inside
+    /// it.
+    pub fn new(inner: &'a dyn ByteSource, offset: u64, len: u64) -> Option<WindowSource<'a>> {
+        let end = offset.checked_add(len)?;
+        (end <= inner.len()).then_some(WindowSource { inner, offset, len })
+    }
+}
+
+impl ByteSource for WindowSource<'_> {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), Error> {
+        let end = offset.checked_add(buf.len() as u64).ok_or(Error::BadOffset)?;
+        if end > self.len {
+            return Err(Error::BadOffset);
+        }
+        // Cannot overflow: `new` proved `self.offset + self.len <= inner.len()`, and `end <= len`.
+        self.inner.read_at(self.offset + offset, buf)
+    }
+
+    fn len(&self) -> u64 {
+        self.len
+    }
+}
+
 /// Validate a five-byte `magic + version` prefix without importing a format-specific error.
 pub fn validate_prefix(bytes: &[u8], magic: &[u8; 4], min_version: u8, max_version: u8) -> Result<u8, DecodeError> {
     let prefix = bytes.get(..5).ok_or(DecodeError::Bounds)?;
@@ -241,6 +288,52 @@ mod tests {
         assert_eq!(rd_u16(&bytes, 2), 0xABCD);
         assert_eq!(rd_i32(&bytes, 4), -0x0123_4567);
         assert_eq!(rd_u32(&bytes, 8), 0x89AB_CDEF);
+    }
+
+    /// The window re-bases, and it re-bases *only* — the bytes it serves are the inner source's,
+    /// shifted, and the length it reports is the window's.
+    #[test]
+    fn a_window_serves_its_region_from_byte_zero() {
+        let whole: [u8; 16] = core::array::from_fn(|i| i as u8);
+        let inner = SliceSource(&whole);
+        let window = WindowSource::new(&inner, 4, 8).expect("the window fits");
+
+        assert_eq!(window.len(), 8);
+        let mut out = [0u8; 8];
+        window.read_at(0, &mut out).expect("the whole window");
+        assert_eq!(out, [4, 5, 6, 7, 8, 9, 10, 11], "byte 0 of the window is byte 4 of the file");
+        let mut one = [0u8; 1];
+        window.read_at(7, &mut one).expect("the last byte");
+        assert_eq!(one, [11]);
+    }
+
+    /// The end of a window is as hard as the end of a file. A straddling read must not be served
+    /// out of the bytes that happen to follow the region — that is the whole reason this type
+    /// exists rather than an offset added at each call site.
+    #[test]
+    fn a_window_refuses_reads_past_its_end_rather_than_running_on() {
+        let whole: [u8; 16] = core::array::from_fn(|i| i as u8);
+        let inner = SliceSource(&whole);
+        let window = WindowSource::new(&inner, 4, 8).expect("the window fits");
+
+        let mut out = [0u8; 4];
+        assert_eq!(window.read_at(6, &mut out), Err(Error::BadOffset), "straddling the end");
+        assert_eq!(window.read_at(8, &mut out), Err(Error::BadOffset), "starting at the end");
+        assert_eq!(window.read_at(u64::MAX, &mut out), Err(Error::BadOffset), "an offset that wraps");
+    }
+
+    /// A region that does not fit is refused **once**, where it is resolved. A §1.3 pointer past
+    /// the file's end is a malformed header, and a window built over it would fail every read
+    /// instead of the header failing to parse.
+    #[test]
+    fn a_window_outside_its_source_is_refused_at_construction() {
+        let whole = [0u8; 16];
+        let inner = SliceSource(&whole);
+        assert!(WindowSource::new(&inner, 8, 9).is_none(), "one byte past the end");
+        assert!(WindowSource::new(&inner, 17, 0).is_none(), "an empty window past the end");
+        assert!(WindowSource::new(&inner, u64::MAX, 1).is_none(), "an offset that wraps");
+        assert!(WindowSource::new(&inner, 16, 0).is_some(), "an empty window at the end is inside it");
+        assert!(WindowSource::new(&inner, 0, 16).is_some(), "the whole file is a legal window");
     }
 
     #[test]

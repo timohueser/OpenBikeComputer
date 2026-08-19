@@ -207,6 +207,9 @@ pub mod detail {
     /// `busy`; context is the `RequestId` of the live transfer.
     pub mod busy {
         pub const TRANSFER: u16 = 1;
+        /// The store's open-object table is full — every hold row is taken by a reader that has not
+        /// closed yet. Names no request and carries no context, unlike [`TRANSFER`].
+        pub const HOLDS: u16 = 2;
     }
     /// `cancelled`.
     pub mod cancelled {
