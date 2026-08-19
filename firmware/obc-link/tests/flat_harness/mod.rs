@@ -111,10 +111,16 @@ pub struct Device<D: BlockDevice> {
 
 /// Mounts a card and puts an idle engine on a BLE-shaped link.
 pub fn boot<D: BlockDevice>(disk: D) -> Device<D> {
+    boot_on(disk, Ceilings::new(CONTROL_CEILING, STREAM_CEILING).expect("a link above the floor"))
+}
+
+/// The same on a link of the caller's shape — a USB one, where §5.2's ceiling is a constant of the
+/// binding and a stream record is whole stages wide rather than one radio SDU.
+pub fn boot_on<D: BlockDevice>(disk: D, ceilings: Ceilings) -> Device<D> {
     Device {
         store: FlatStore::mount(disk),
-        engine: Engine::new(Ceilings::new(CONTROL_CEILING, STREAM_CEILING).expect("a link above the floor")),
-        out: vec![0; STREAM_CEILING.max(CONTROL_CEILING) + STREAM_HEADER_LEN],
+        out: vec![0; ceilings.stream().max(ceilings.control()) + STREAM_HEADER_LEN],
+        engine: Engine::new(ceilings),
     }
 }
 
@@ -179,6 +185,16 @@ impl<D: BlockDevice> Device<D> {
     /// True when nothing is live and nothing is owed.
     pub fn is_quiet(&self) -> bool {
         self.engine.is_quiet()
+    }
+
+    /// What the live upload has landed so far — the device-side progress report.
+    pub fn live_upload(&self) -> Option<obc_link::flat::UploadProgress> {
+        self.engine.live_upload()
+    }
+
+    /// The verdict on the last upload, taken.
+    pub fn take_upload_end(&mut self) -> Option<(ObjectKind, obc_link::flat::UploadEnd)> {
+        self.engine.take_upload_end()
     }
 
     fn drive(&mut self, first: Reaction, budget: usize) -> Wire {

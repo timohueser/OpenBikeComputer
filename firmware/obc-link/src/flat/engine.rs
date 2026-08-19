@@ -134,6 +134,25 @@ impl Ceilings {
         Ceilings::new(control, stream)
     }
 
+    /// §5.2's ceilings for a USB link — the adapter's record buffer, on both channels.
+    ///
+    /// **There is nothing to negotiate and therefore nothing to derive.** §5.1 reads BLE's two
+    /// numbers off a link that fixed them at connection time; USB fixes neither, because a bulk
+    /// endpoint's max packet is a *packet* size and §5.2's records span packets by design. So the
+    /// ceiling is a constant of the binding, and the constant is the buffer the adapter frames into
+    /// — which is the same clamp `for_ble` applies last, arrived at directly instead of after two
+    /// link facts that do not exist here.
+    ///
+    /// One number for both channels, because one buffer serves both: the engine frames a `LIST`
+    /// page and a `GET`'s stream records into the same reaction buffer, so a control ceiling above
+    /// the stream one (or the reverse) would describe bytes the adapter does not have.
+    ///
+    /// `None` is §5.1's refusal, unchanged: a buffer too small for a single-entry page cannot carry
+    /// this protocol, and truncating it is not on the table.
+    pub fn for_usb(record: usize) -> Option<Self> {
+        Ceilings::new(record, record)
+    }
+
     /// The largest control record this link carries.
     pub fn control(&self) -> usize {
         self.control
@@ -206,6 +225,44 @@ impl Admission {
     }
 }
 
+/// **What a live upload has landed so far** — the one thing a *device* needs from the engine that no
+/// client ever asks for.
+///
+/// A map is hundreds of megabytes and lands over twenty minutes, and a rider watching a progress
+/// bar is not a client of this protocol: the wire's answer to "how is it going" is the transfer's
+/// one response, twenty minutes later. So the device reads the engine directly, and reads it where
+/// the engine already is — no round trip, no second counter, nothing on the wire.
+///
+/// It is a report, not a hook. The engine calls nothing back and knows nothing about screens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UploadProgress {
+    /// The transfer's identifier (§3.1), so a reader can tell one upload from the next.
+    pub request: RequestId,
+    /// What is being uploaded — the only input a device needs to decide whether it has a screen
+    /// for this.
+    pub kind: ObjectKind,
+    /// Payload bytes absorbed so far.
+    pub received: u64,
+    /// What the `PUT` declared (§3.6).
+    pub declared: u64,
+}
+
+/// **How the last upload ended**, latched once and taken once.
+///
+/// Latched rather than reported live for the same reason the progress above is read rather than
+/// pushed: the terminal fact exists for exactly one instant — the call that commits or refuses — and
+/// a device that only looks between calls would otherwise see an upload vanish with no verdict. A
+/// caller that never looks costs one stale enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UploadEnd {
+    /// §3.6's commit landed. The catalog is the result.
+    Committed,
+    /// The transfer was refused, with the code its error response carried (§3.9). The detail is
+    /// deliberately not here: a device turns this into one of a handful of screens, and every
+    /// narrower fact belongs to the client that asked.
+    Refused(ErrorCode),
+}
+
 /// The live upload, if one owns the engine.
 struct Upload<A> {
     request: RequestId,
@@ -256,6 +313,8 @@ pub struct Engine<S: Store, const STAGE: usize = DEFAULT_STAGE> {
     ceilings: Ceilings,
     live: Live<S>,
     owed: Option<Owed>,
+    /// The verdict on the last upload, for a device with a screen. See [`UploadEnd`].
+    upload_end: Option<(ObjectKind, UploadEnd)>,
     staging: [u8; STAGE],
 }
 
@@ -265,7 +324,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         const {
             assert!(STAGE >= 512 && STAGE.is_multiple_of(512), "the stage is whole 512-byte blocks");
         }
-        Engine { ceilings, live: Live::Idle, owed: None, staging: [0; STAGE] }
+        Engine { ceilings, live: Live::Idle, owed: None, upload_end: None, staging: [0; STAGE] }
     }
 
     /// The `RequestId` of the live transfer, if one owns the engine.
@@ -275,6 +334,27 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
             Live::Upload(upload) => Some(upload.request),
             Live::Download(download) => Some(download.request),
         }
+    }
+
+    /// What the live upload has landed so far, or `None` when none is live. See [`UploadProgress`].
+    pub fn live_upload(&self) -> Option<UploadProgress> {
+        match &self.live {
+            Live::Upload(upload) => Some(UploadProgress {
+                request: upload.request,
+                kind: upload.kind,
+                received: upload.received,
+                declared: upload.declared_len,
+            }),
+            _ => None,
+        }
+    }
+
+    /// **Take the verdict on the last upload**, clearing it. See [`UploadEnd`].
+    ///
+    /// A link that goes away leaves nothing here: §3.8's third form of cancel answers nobody, and a
+    /// device whose cable was pulled needs no card explaining that back to the rider who pulled it.
+    pub fn take_upload_end(&mut self) -> Option<(ObjectKind, UploadEnd)> {
+        self.upload_end.take()
     }
 
     /// True while nothing is owed and nothing is live: what an adapter checks before it sleeps.
@@ -771,8 +851,15 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         while !input.is_empty() {
             // A record at or above one stage goes straight to the card: the copy through staging
             // would buy nothing, and this is the path a bulk USB record takes.
+            //
+            // **The whole aligned prefix, in one call.** Splitting at exactly `STAGE` would hand a
+            // 4,096-byte USB record to the card as eight separate 512-byte writes, and on this card
+            // a write command costs about the same whether it carries one block or a hundred
+            // (`FLAT_Store_Format.md` §5.5) — so the split, not the copy, was the cost. §5.2's
+            // ceiling is chosen to make a full USB stream record exactly 4,096 payload bytes for
+            // this reason, and the remainder below is the transfer's last, short record.
             if upload.staged == 0 && input.len() >= STAGE {
-                let (chunk, rest) = input.split_at(STAGE);
+                let (chunk, rest) = input.split_at(input.len() - input.len() % STAGE);
                 store.write(&mut upload.allocation, chunk)?;
                 input = rest;
                 continue;
@@ -816,6 +903,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
                 // The commit consumed the allocation and the catalog is the result. Nothing is live
                 // from here, whatever the response does.
                 self.live = Live::Idle;
+                self.upload_end = Some((kind, UploadEnd::Committed));
                 match encode_put(out, request, id, revision, len, crc) {
                     Some(len) => Reaction::Send { channel: Channel::Control, len },
                     // §3.4 is what a client does with a response it never saw.
@@ -911,6 +999,10 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
     /// anonymous, and the catalog is untouched.
     fn fail_upload(&mut self, store: &S, refusal: Refusal, out: &mut [u8]) -> Reaction {
         let request = self.owed_request();
+        // Read the kind before the abandon, which is the statement that forgets it.
+        if let Live::Upload(upload) = &self.live {
+            self.upload_end = Some((upload.kind, UploadEnd::Refused(refusal.code)));
+        }
         self.abandon(store);
         self.emit_error(out, Opcode::Put, request, refusal)
     }
