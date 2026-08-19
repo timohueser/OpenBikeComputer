@@ -544,11 +544,12 @@ def load_baseline(path: Path) -> dict[str, object]:
         baseline = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as error:
         raise GuardError(f"cannot read baseline {path}: {error}") from error
-    if baseline.get("schema_version") != 2:
+    if baseline.get("schema_version") != 3:
         raise GuardError(
-            f"unsupported baseline schema in {path}; expected schema_version 2 "
+            f"unsupported baseline schema in {path}; expected schema_version 3 "
             "(v2 added the boot-chain block: task_frame_limit / residual_stack_min / "
-            "boot_chain_ceiling / boot_chain_roots)"
+            "boot_chain_ceiling / boot_chain_roots; v3 added the deep-ride high-water gate: "
+            "deep_ride_high_water / deep_ride_margin_min)"
         )
     return baseline
 
@@ -733,6 +734,44 @@ def check_boot_chain(profile_name: str, profile: dict[str, object], boot: BootCh
         f"ceiling {boot.chain_ceiling} B), under the {profile['boot_chain_headroom_min']} B floor "
         "MPSL's ISRs and the unmodelled indirect calls need. This is the #1108 failure mode: it "
         "goes red BEFORE the board stops booting",
+    )
+    check_deep_ride_high_water(profile_name, profile, boot)
+
+
+def check_deep_ride_high_water(profile_name: str, profile: dict[str, object], boot: BootChain) -> None:
+    """**The gate that compares the residual stack to a RUN rather than to its own floor.**
+
+    Every other stack check here is self-referential: `residual_stack_min` is whatever the last
+    approved build measured, so growing the residents and re-approving the floor is a green diff no
+    matter how little stack is left. `boot_chain_ceiling` is a static over-approximation of *one*
+    path — the boot chain — and says nothing about the deep ride path, which is where this board's
+    stack actually peaks.
+
+    So the baseline now carries the deepest **measured on-glass** high-water for each profile, and
+    the residual has to clear it with a margin. This exists because FS7.5-c1 walked straight through
+    the gap: +11,848 B of resident took the residual to 37,640 B, past a recorded 37,760 B peak on
+    the `ble` profile, and every gate in this file went green.
+
+    `deep_ride_high_water` is a **measurement, not a budget**. It moves only when someone runs the
+    ride on glass and reads the stackmeter — never to make a build pass. If it is stale the honest
+    fix is to re-measure it, and `deep_ride_high_water_measured` records when it last was.
+    """
+    high_water = profile["deep_ride_high_water"]
+    margin_min = profile["deep_ride_margin_min"]
+    margin = boot.residual_stack - high_water
+    print(
+        f"{profile_name}: deep-ride high-water {high_water:,} B "
+        f"({profile['deep_ride_high_water_measured']}); residual clears it by {margin:,} B "
+        f"(floor {margin_min:,} B)"
+    )
+    require(
+        margin >= margin_min,
+        f"{profile_name} residual main stack is {boot.residual_stack} B against a MEASURED deep-ride "
+        f"high-water of {high_water} B ({profile['deep_ride_high_water_measured']}) — a margin of "
+        f"{margin} B, under the {margin_min} B floor. This is not a budget to re-approve: the number "
+        "on the right is what the board actually reached on glass, so a residual under it is a stack "
+        "overflow on the deep ride path, not a tight one. Give the stack bytes back (delete or "
+        "overlap residents), or re-measure the high-water on glass and move it with the evidence",
     )
 
 

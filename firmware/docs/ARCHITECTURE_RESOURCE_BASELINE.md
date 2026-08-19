@@ -58,18 +58,23 @@ python3 ../tools/resource_guard.py boot \
 The numbers below summarize the checked-in JSON. Read the JSON for the current feature string,
 toolchain and named-allocation table rather than updating a second copy here.
 
-| Profile | Linked resident | `.uninit` ceiling | Flash record | Poll frame | Main task | Residual stack | Boot-chain ceiling |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| default | 321,784 B / 321,864 B max | 132,096 B | 1,570,976 B | 9,728 / 12,288 B | 7,264 / 8,192 B | 37,640 B min | 24,576 B |
-| BLE | 321,784 B / 321,864 B max | 132,096 B | 1,570,960 B | 9,728 / 12,288 B | 7,264 / 8,192 B | 37,640 B min | 24,576 B |
-| bootloader | — | — | 16,708 / 32,768 B max | — | — | — | — |
+| Profile | Linked resident | `.uninit` ceiling | Flash record | Poll frame | Main task | Residual stack | Boot-chain ceiling | Deep-ride high-water |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| default | 321,784 B / 321,864 B max | 132,096 B | 1,570,976 B | 9,728 / 12,288 B | 7,264 / 8,192 B | 37,640 B min | 24,576 B | 35,808 B (+1,832) |
+| BLE | 321,784 B / 321,864 B max | 132,096 B | 1,570,960 B | 9,728 / 12,288 B | 7,264 / 8,192 B | 37,640 B min | 24,576 B | 37,760 B (**−120**) |
+| bootloader | — | — | 16,708 / 32,768 B max | — | — | — | — | — |
 
-> ⚠️ **The residual stack is close to the measured deep-ride high-water and the gates cannot see
-> that.** Since FS7.5-c1 put the flat store in the image the residual is 37,640 B, against a
-> deep-ride peak last measured at ~35,808 B (default) / 37,760 B (BLE) on 2026-07-04. The automated
-> gates are all green — they compare the residual to its own approved floor, not to a run — so this
-> is the case the "on-device capture" section below exists for. Read
-> `board.default._resident_note_fs75c1` in the JSON before changing anything resident.
+> ⚠️ **The BLE profile's board gate is RED on purpose.** Since FS7.5-c1 put the flat store in the
+> image the residual stack is 37,640 B, against a deep-ride high-water last measured at ~35,808 B
+> (default) / 37,760 B (BLE) on 2026-07-04 — so BLE is 120 B under water and default clears by
+> 1,832 B. Schema v3's `deep_ride_high_water` / `deep_ride_margin_min` are what say so; before them
+> nothing compared the residual to a *run*, only to its own approved floor, which is how those
+> 11,848 B walked under a recorded peak with every check green.
+>
+> The high-water is stale — 2026-07-04, nothing has re-run it — but stale in an **unknown**
+> direction, so it is carried unchanged until someone re-measures it on glass (the "on-device
+> capture" section below). A measurement is replaced by another measurement, not by an argument.
+> Read `board.default._resident_note_fs75c1` in the JSON before changing anything resident.
 
 “Linked resident” is `.bss + .data`; `.uninit` is resident RAM too and carries the scratch arena.
 Review the two together. `residual_stack` is measured from the end of all resident allocations, so
@@ -88,7 +93,14 @@ bootloader's flash budget is gated because its slot has a hard architectural siz
 - `poll_frame_limit` catches large async futures. `task_frame_limit` separately catches the main
   Embassy task body, which does not necessarily appear under the ordinary poll-symbol pattern.
 - Boot-chain analysis is a conservative call-graph drift detector, not a stack-safety proof. The
-  residual-stack and on-device high-water checks remain independent gates.
+  residual-stack and deep-ride high-water checks remain independent gates.
+- `residual_stack_min` is self-referential — it is whatever the last approved build measured — so it
+  catches drift, never insufficiency. `deep_ride_high_water` is the one gate that compares the
+  residual against a number measured **on the board**, and it is the only one that can say a build
+  has too little stack rather than merely less than before. It moves only with a fresh on-glass run.
+- The `RESIDENT_BYTES` + `STACK_RESERVE` assert in `main.rs` is a coarse compile-time tripwire over
+  hand-itemized blocks, **not** a stack gate: it undercounts the linked total by ~52.8 KB, because
+  task pools, merged globals and padding are link-time facts a `const` cannot see.
 - Strict alignment is enabled in both shipping Cargo roots and probed against the selected ARM
   backend.
 - `firmware/tools/check_dependencies.py` enforces the device dependency direction. Heavy host
