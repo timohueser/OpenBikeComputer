@@ -145,6 +145,67 @@ impl Ceilings {
     }
 }
 
+/// **The adapter's admission latch** (§3.6, §5), and the reason it is a type here rather than a
+/// `bool` in a binding.
+///
+/// §3.6 lets a client stream a `PUT` immediately, without waiting for an acceptance, so the first
+/// stream frame of a transfer races its own control frame. A binding therefore has to know whether a
+/// frame is *already admitted* — a continuation of a live transfer, deliverable at once — or
+/// possibly the leading edge of one whose control frame has not arrived, which §5 says it must
+/// **hold** rather than deliver (the engine would discard it in silence and the upload would die at
+/// offset zero) and rather than drop.
+///
+/// Asking the engine per frame answers that correctly and costs a round trip on every record of a
+/// multi-megabyte upload. Latching "something has been admitted" is cheap and **wrong**: it stays
+/// set when the transfer it was set for finishes, so the *second* `PUT` on one channel — the
+/// ordinary "upload three routes" session — has its leading frame waved through to an idle engine
+/// and dies exactly as the unlatched race did. That is not hypothetical; it is the bug this type
+/// replaces.
+///
+/// So the latch remembers **which** `RequestId` was admitted. A frame bearing that id is a
+/// continuation and skips the query; any other id — including the first frame of the next transfer
+/// on the same channel — is queried. The hot path stays free and the race stays closed.
+///
+/// One deliberate narrowing: a client that reuses a `RequestId` immediately after its transfer ended
+/// is treated as a continuation. §3.8 already tells clients not to (`SHOULD NOT`, because in-flight
+/// frames from the old transfer would be absorbed by the new one) and describes this same failure,
+/// so the latch inherits the specification's own boundary rather than drawing a new one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Admission {
+    admitted: Option<RequestId>,
+}
+
+impl Admission {
+    /// A latch that has admitted nothing — what every new channel starts with.
+    pub fn new() -> Self {
+        Admission { admitted: None }
+    }
+
+    /// True when the engine must be consulted before this frame may be delivered.
+    pub fn needs_query(&self, frame: RequestId) -> bool {
+        self.admitted != Some(frame)
+    }
+
+    /// Record what the engine reported while `frame` was waiting. Returns **true when the frame must
+    /// be held** — nothing is live, or what is live is a different transfer, and either way this
+    /// frame is not admitted yet.
+    pub fn observed(&mut self, frame: RequestId, live: Option<RequestId>) -> bool {
+        if live == Some(frame) {
+            self.admitted = Some(frame);
+            return false;
+        }
+        // Not this transfer. Forget any earlier admission too: whatever it named is not what is
+        // arriving, so keeping it could only wave a later frame through on a stale identity.
+        self.admitted = None;
+        true
+    }
+
+    /// Forget every admission — a new channel has admitted nothing.
+    pub fn reset(&mut self) {
+        self.admitted = None;
+    }
+}
+
 /// The live upload, if one owns the engine.
 struct Upload<A> {
     request: RequestId,
@@ -1089,6 +1150,43 @@ mod tests {
         // with detail `0`, because the mode was writable when the transfer was admitted and this
         // path has no narrower fact than "not any more".
         assert_eq!(media_refusal(StoreError::ReadOnly, detail::media_io::WRITE), Refusal::new(ErrorCode::ReadOnly, 0));
+    }
+
+    #[test]
+    fn the_admission_latch_queries_the_first_frame_of_every_transfer_on_a_channel() {
+        let (a, b) = (RequestId(0x2A01), RequestId(0x2A02));
+        let mut admission = Admission::new();
+
+        // Transfer A: the leading frame is always queried, and is held while nothing is live.
+        assert!(admission.needs_query(a));
+        assert!(admission.observed(a, None), "an idle engine must hold the leading frame");
+        // Still unadmitted, so the next frame is queried again rather than waved through.
+        assert!(admission.needs_query(a));
+        assert!(!admission.observed(a, Some(a)), "the engine admitted it — deliver");
+        // Now it is a continuation: no further round trip for the rest of the upload.
+        assert!(!admission.needs_query(a));
+
+        // **The second transfer on the same channel.** A has ended — which the adapter never sees,
+        // because a transfer ends on a *stream* frame — so the latch must not still be answering for
+        // it. This is the regression a plain "something was admitted" flag shipped.
+        assert!(admission.needs_query(b), "B's leading frame must be queried, not waved through on A");
+        assert!(admission.observed(b, None), "B is not admitted yet — hold, do not deliver to an idle engine");
+        assert!(!admission.observed(b, Some(b)));
+        assert!(!admission.needs_query(b));
+        // A's identity is stale now and must not be honoured either.
+        assert!(admission.needs_query(a));
+
+        // A frame for a transfer other than the live one is held rather than delivered, and it
+        // clears the latch so the *live* transfer's next frame is re-queried rather than trusted.
+        assert!(admission.observed(a, Some(b)));
+        assert!(admission.needs_query(b));
+
+        // A new channel admits nothing.
+        assert!(!admission.observed(b, Some(b)));
+        assert!(!admission.needs_query(b));
+        admission.reset();
+        assert!(admission.needs_query(b));
+        assert_eq!(Admission::new(), Admission::default());
     }
 
     #[test]

@@ -74,7 +74,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{with_timeout, Duration, Timer};
 use nrf_sdc::{self as sdc};
-use obc_link::flat::{Ceilings, Channel, Reaction};
+use obc_link::flat::{Admission, Ceilings, Channel, Reaction, RequestId};
 use trouble_host::prelude::*;
 
 use crate::flat_store::{Outcome, Reply, Request, Writer};
@@ -149,15 +149,6 @@ static STREAM_TAKEN: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 /// True while a driver is running and able to answer a control record.
 static DRIVER_READY: AtomicBool = AtomicBool::new(false);
-
-/// Whether this channel has already seen a transfer admitted.
-///
-/// The admission hold only has to cover the **first** frame of a transfer: once the engine reports
-/// something live, every later frame of that upload is admitted by construction (§1 serves one
-/// transfer at a time). Latching that fact is what keeps the query off the hot path — without it a
-/// live upload pays a queue round trip per stream frame to be told the same thing it was told last
-/// frame. Cleared per channel, because a new link has admitted nothing.
-static ADMISSION_SEEN: AtomicBool = AtomicBool::new(false);
 
 /// The adapter's resident cost, for the budget table in `main.rs`.
 pub(crate) const RESIDENT_BYTES: usize = OUT_LEN + OUT_LEN + DefaultPacketPool::MTU;
@@ -403,7 +394,6 @@ pub(crate) async fn serve_objects(
         CONTROL_IN.reset();
         STREAM_IN.reset();
         STREAM_TAKEN.reset();
-        ADMISSION_SEEN.store(false, Ordering::Relaxed);
         DRIVER_READY.store(true, Ordering::Relaxed);
         // **The reader is a sibling, not a branch**, and that is what stops a consumed PDU being
         // thrown away. It is dropped only when the *driver* returns, and the driver returns only to
@@ -468,6 +458,9 @@ async fn driver(
     conn: &GattConnection<'_, '_, DefaultPacketPool>,
     tx: &mut L2capChannelWriter<'_, DefaultPacketPool>,
 ) -> &'static str {
+    // Owned by the driver, so it is per channel by construction rather than by a `reset` someone has
+    // to remember. See `Admission` for why it remembers *which* transfer was admitted.
+    let mut admission = Admission::new();
     loop {
         // Control first when both are ready: a `CANCEL` or a `LIST` must not queue behind a stream
         // frame the engine may be about to refuse anyway.
@@ -476,7 +469,7 @@ async fn driver(
                 Some(reaction) => reaction,
                 None => return "lane",
             },
-            Either::Second(len) => match stream_record(writer, lane, len).await {
+            Either::Second(len) => match stream_record(writer, lane, &mut admission, len).await {
                 Some(reaction) => reaction,
                 None => return "lane",
             },
@@ -503,26 +496,42 @@ async fn control_record(writer: &Writer, lane: &mut Lane, len: usize) -> Option<
 }
 
 /// Hand the received stream record to the engine, holding it first if nothing is admitted yet.
-async fn stream_record(writer: &Writer, lane: &mut Lane, len: usize) -> Option<Reaction> {
+async fn stream_record(writer: &Writer, lane: &mut Lane, admission: &mut Admission, len: usize) -> Option<Reaction> {
     // §5's admission hold. A stream frame that belongs to a `PUT` whose control write has not
     // reached the engine yet would be discarded in silence (§3.8) and the upload would die at offset
     // zero — and "no control record is pending" does *not* mean none was written, because the GATT
-    // pump may be parked on the shared store. So: ask the engine, and if it is idle, hold this frame
-    // while the control channel is given its window. The reader is already withholding credit.
-    // The latch first, the queue only if it is clear — see `ADMISSION_SEEN`. The check is
-    // "anything live" rather than "this frame's `RequestId` is live", which is sufficient under §1's
-    // one-transfer-at-a-time rule and is narrower than §3.8 would permit; if that rule is ever
-    // relaxed this is one of the places that has to widen with it.
-    if !ADMISSION_SEEN.load(Ordering::Relaxed) && live_transfer(writer).await.is_none() {
-        if let Either::First(control_len) = select(CONTROL_IN.wait(), Timer::after(ADMISSION_WINDOW)).await {
-            let reaction = control_record(writer, lane, control_len).await?;
-            // Admission answered; the held frame goes next round, still un-dropped.
-            STREAM_IN.signal(len);
-            return Some(reaction);
+    // pump may be parked on the shared store. So: ask the engine, and if this frame is not admitted,
+    // hold it while the control channel is given its window. The reader is already withholding
+    // credit, so holding costs nothing but the wait.
+    //
+    // The query is skipped for a frame that continues the transfer the engine last confirmed —
+    // `Admission` is keyed on the `RequestId` §3.8 puts in the frame header, so a steady-state
+    // upload pays no round trips *and* the leading frame of the **next** transfer on this channel is
+    // still queried. A plain "something was admitted" flag got the first half right and the second
+    // half catastrophically wrong; `Admission`'s own tests carry that case.
+    //
+    // Reading four bytes of the §3.8 frame header is not "parsing a payload" (§5): it is the record
+    // boundary information the binding is explicitly responsible for. A record too short to carry
+    // one is not decoded here — it goes to the engine, which owns that refusal.
+    let frame_id = (len >= 4).then(|| {
+        // SAFETY: as below — the driver reads this buffer only between `STREAM_IN` and
+        // `STREAM_TAKEN`, and `reader_pump` holds no reference across that window.
+        let header = unsafe { core::slice::from_raw_parts(core::ptr::addr_of!(STREAM_RX).cast::<u8>(), 4) };
+        RequestId(u32::from_le_bytes([header[0], header[1], header[2], header[3]]))
+    });
+    if let Some(frame_id) = frame_id {
+        if admission.needs_query(frame_id) {
+            let live = live_transfer(writer).await;
+            if admission.observed(frame_id, live) {
+                if let Either::First(control_len) = select(CONTROL_IN.wait(), Timer::after(ADMISSION_WINDOW)).await {
+                    let reaction = control_record(writer, lane, control_len).await?;
+                    // Admission answered; the held frame goes next round, still un-dropped.
+                    STREAM_IN.signal(len);
+                    return Some(reaction);
+                }
+                warn!("ble: [v4] a stream frame arrived unadmitted — delivering after the hold window");
+            }
         }
-        warn!("ble: [v4] a stream frame arrived with nothing admitted — delivering after the hold window");
-    } else {
-        ADMISSION_SEEN.store(true, Ordering::Relaxed);
     }
     // SAFETY: the driver reads this buffer only between `STREAM_IN` and `STREAM_TAKEN`, and
     // `reader_pump` holds no reference to it across that window.
