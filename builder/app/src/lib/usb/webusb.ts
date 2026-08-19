@@ -532,9 +532,9 @@ export interface WebUsbLink extends DeviceLink {
 /**
  * Open, configure and claim a device, returning its two channels and its EP0 read.
  *
- * The wire major is checked here, between the claim and the first record: §5.2 settles it by
- * matching, and a device that says something else must never be handed to a client that would then
- * misparse every frame it sent.
+ * The wire major is checked here after configuration selection and **before the interface claim**:
+ * §5.2 settles it by matching, and a device that says something else must neither be handed to a
+ * client that would misparse its frames nor left needlessly claimed against another app.
  */
 export async function openWebUsbLink(device: UsbDeviceLike, layout?: EndpointLayout): Promise<WebUsbLink> {
     if (!device.opened) await device.open();

@@ -30,7 +30,6 @@ const indices = fixtureIndices(exampleCatalog, {
         { id: "18/1204/1053", bytes: 168 },
     ],
 });
-
 const ctx: SelectionContext = { catalog: exampleCatalog, indices, regionCells: new Map() };
 const A = cellSquare(parseCellId("18/1204/1052"));
 const B = cellSquare(parseCellId("18/1204/1053"));
@@ -297,4 +296,3 @@ describe("the core file's ceiling (OBCA §5.7)", () => {
         expect(ledgerForRegion(exampleCatalog, regionEntry(Math.round(3.05 * GIB))).verdict.kind).toBe("warn");
     });
 });
-
