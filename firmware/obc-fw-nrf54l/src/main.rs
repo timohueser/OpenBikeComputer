@@ -332,7 +332,7 @@ const RESIDENT_BYTES: usize = FB_BYTES
 /// makes the dev window's real cost legible: both stacks are linked at once until c4 closes it, and
 /// this is the price of that, itemized rather than hiding in anonymous `.bss`.
 ///
-/// §7.1's 32,256-byte ride tail is **not** here. No ride journals to the flat store until c3, so
+/// §7.1's 32,256-byte ride tail is **not** here. No ride journals to the flat store until FS8 (#1390), so
 /// nothing allocates the buffer — a row for it would be a lie in the other direction. It joins this
 /// sum in the slice that starts recording.
 const FLAT_RESIDENT: usize = flat_store::RESIDENT_BYTES;
@@ -506,6 +506,11 @@ mod resource_report {
         // Named beside the store it reads from so the two halves of "what does reading a flat card
         // cost" are in one place, and named as one row because they are one boot step's residue.
         entry("flat_map_read", flat_store::MAP_READ_BYTES),
+        // The protocol-v4 transfer engine (FS7.5-c3a), which lives in the storage task because that
+        // is the one execution context allowed to write. Mostly its staging buffer, deliberately the
+        // 512-byte minimum on a radio-only cutover — see `flat_store::ENGINE_STAGE` for why, and for
+        // what c3b is expected to do to this row when USB arrives.
+        entry("flat_engine", flat_store::ENGINE_BYTES),
     ];
 }
 
@@ -1328,14 +1333,24 @@ async fn main(_spawner: Spawner) {
         // assignment form put the manager's result in a *second* permanent poll-frame slot beside
         // the binding's (measured at +2,304 B of `__embassy_main::POOL`; the #1084/#1108 mechanism,
         // in its quiet form).
+        // **The write half's owner, and since c3a the protocol-v4 engine's — spawned on *every*
+        // card, not only a flat one.** `arm` is what makes `writer()` hand out senders at all, so
+        // the two are one act; what changed in c3a is that the act is unconditional.
+        //
+        // The reason is `FLAT_Store_Protocol.md` §3.9, not convenience. A FAT card is a card that is
+        // **not a flat store** — §5.6 step 1, `Mode::Unformatted` — and the protocol already has the
+        // honest answer for one: every opcode returns `readOnly` with detail `unformatted 3`,
+        // including the reads, because there is nothing to read. Mounting the engine against the
+        // store that is always mounted therefore makes a FAT card answer the truth about itself,
+        // where a build that only armed on flat cards would have the BLE adapter holding a record it
+        // had no engine to answer with. One code path, two cards, and neither of them a special
+        // case; see the c3a section of the board README for what a phone sees on each.
+        _spawner.spawn(defmt::unwrap!(flat_store::storage_task(flat, flat_store::arm())));
+
         #[allow(clippy::type_complexity)]
         let (mut storage, flat_map): (Option<sd::Storage>, Option<&'static dyn obc_formats::io::ByteSource>) =
             match flat_store::classify(flat) {
                 flat_store::Card::Flat => {
-                    // The write half's owner. `arm` is what makes `writer()` hand out senders at all —
-                    // on a FAT card nothing drains the queue and a sender would wedge, so the two are
-                    // one act. It runs here and nowhere else.
-                    _spawner.spawn(defmt::unwrap!(flat_store::storage_task(flat, flat_store::arm())));
                     #[cfg(feature = "flat-exercise")]
                     match flat_store::writer() {
                         Some(writer) => _spawner.spawn(defmt::unwrap!(flat_store::interleave_exercise(flat, writer))),
