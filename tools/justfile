@@ -507,6 +507,19 @@ loc *args:
     }
     cd "$OBC_ROOT"; _run python3 "$OBC_TOOLS/loc_report.py" "$@"
 
+# Ledger one change's lines as production vs test/harness, with the rule that
+# classified each file. This is the committed counting basis for #1256's
+# 6,000-line storage budget — run it instead of hand-deriving a ledger, and
+# quote its number in the PR. Defaults to HEAD against the merge-base with
+# origin/develop; `--pr N` counts a merged PR, `--storage-series` adds the
+# budget line to post on the epic.
+# Production-vs-test LOC ledger for a change. Args: [--pr N | --base REF --head REF] [--storage-series]
+loc-ledger *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    cd "$OBC_ROOT"; _run python3 "$OBC_TOOLS/loc_ledger.py" "$@"
+
 # Build the host workspace (simulator + shared crates + packer).
 build:
     #!/usr/bin/env bash
