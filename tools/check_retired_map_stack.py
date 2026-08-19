@@ -26,11 +26,11 @@ RETIRED = [
     re.compile(r"--" + r"v2\b"),
     re.compile(r"\bcatalog" + r"Root\b"),
     re.compile(r"maps\.openbikecomputer\." + r"org/catalog\.json"),
-    # The volume set (#1420 FS7.5b2). A map is one OBCM file: no manifest, no shards, no roles,
-    # no archive to bundle several files into, and no 32-slot sink to write them through. These
-    # are the producer-side spellings, so none of them may come back — the *reader* side
-    # (`obc_formats::obcs`, the board's mount, the three wire kinds) is deliberately alive until
-    # the board cutover and is therefore not listed here.
+    # The volume set (#1420 FS7.5b2 producers, FS7.5c3b readers). A map is one OBCM file: no
+    # manifest, no shards, no roles, no archive to bundle several files into, and no 32-slot sink
+    # to write them through. The reader side went with the USB cutover — `obc-formats/src/obcs.rs`,
+    # the board's set machinery, `SetPart` and the three wire kinds — so both halves are listed now
+    # and neither may come back.
     re.compile(r"\bsendAssembled" + r"SetFile\b"),
     re.compile(r"\babandonAssembled" + r"Set\b"),
     re.compile(r"\bopenShard" + r"Sink\b"),
@@ -38,7 +38,26 @@ RETIRED = [
     re.compile(r"\bstore" + r"Zip\b"),
     re.compile(r"\bzip" + r"Layout\b"),
     re.compile(r"\bforce_" + r"split\b"),
+    # The reader side, retired by FS7.5-c3b with the USB v4 cutover.
+    re.compile(r"\bobc_formats::" + r"obcs\b"),
+    re.compile(r"\bSet" + r"Part\b"),
+    re.compile(r"\bset_shard_" + r"begin\b"),
+    re.compile(r"\bset_manifest_" + r"commit\b"),
+    re.compile(r"\bvalidate_committed_" + r"manifest\b"),
+    re.compile(r"\bsweep_aborted_" + r"sets\b"),
+    re.compile(r"\bSD_SET_MAX_" + r"SHARDS\b"),
+    # The v1 USB selector envelope, retired by FS7.5-c3b: the control bulk pair is wholly v4, and
+    # the non-object surface is one EP0 vendor request (`FLAT_Store_Protocol.md` §5.2.1).
+    re.compile(r"\bCARD_FREE_" + r"READ\b"),
+    re.compile(r"\bDEVICE_INFO_" + r"READ\b"),
+    re.compile(r"\bIDENTITY_" + r"READ\b"),
 ]
+
+# Spellings deliberately **not** listed, so the next reader does not add them: `transferControl`,
+# `mapSet` and `terrainShard` are wire names this repo still explains in prose — the retirement note
+# in `specs/vectors/README.md`, the BLE interface spec's no-reuse table, the docs' companion-link
+# page — and a guard that banned the word would ban the explanation with it. What may not come back
+# is the *code*, and the identifiers above are what the code was called.
 
 
 def main() -> int:

@@ -26,21 +26,18 @@ recorded-track log, and the OBCT terrain raster
 
 A drift on any side fails that side's tests — the files are the contract.
 
-> **Pending FS7.5c (OBCM v14, [#1420](https://github.com/timohueser/OpenBikeComputer/issues/1420)).**
-> Three files in the table below are still known to be moving, and this note exists so that no
-> number in it is read as current when it is not:
+> **FS7.5-c3b removed three files** (OBCM v14, [#1420](https://github.com/timohueser/OpenBikeComputer/issues/1420)).
+> `transfer-set-shard.bin`, `transfer-set-terrain.bin` and `transfer-set-manifest.bin` pinned the
+> `mapShard` / `terrainShard` / `mapSet` object types of a volume-set upload. A map is one object
+> now (`OBCA_Spec.md` §5 is superseded), so they described a transfer no producer will make. They
+> outlived FS7.5b because the board still parsed set manifests off cards written before the cut;
+> that reader — `obc-formats/src/obcs.rs` and the `sd.rs` machinery behind it — went with the USB
+> cutover, and the fixtures went with it. They were not regenerated; they are gone, and the three
+> object-type values `17`–`19` are not re-issued to anything else.
 >
-> - `transfer-set-shard.bin`, `transfer-set-terrain.bin` and `transfer-set-manifest.bin` pin the
->   `mapShard` / `terrainShard` / `mapSet` object types of a volume-set upload. A map is one object
->   now (`OBCA_Spec.md` §5 is superseded), so these three describe a transfer no producer will make.
->   They did **not** die with FS7.5b, and the reason is a dependency rather than a schedule: the
->   board firmware still parses v2/v3 set manifests off cards written before the cut, so
->   `firmware/obc-fw-nrf54l/src/sd.rs` still calls `obc-formats/src/obcs.rs` and the codec they pin
->   is still shipped. They go in **FS7.5c**, with the board's set machinery, `obcs.rs` and the
->   `obc-vectors` builders behind them. They are not regenerated; they go.
->
-> `version-read.bin` and `version-read-features.bin` were the other two, and FS7.5b re-cut both:
-> their `obcm_version` byte is self-sourced from `obc_formats::obcm::VERSION`, which is now `14`.
+> `version-read.bin` and `version-read-features.bin` were the other two pending files, and FS7.5b
+> re-cut both: their `obcm_version` byte is self-sourced from `obc_formats::obcm::VERSION`, which is
+> now `14`.
 
 ## Files
 
@@ -61,9 +58,6 @@ A drift on any side fails that side's tests — the files are the contract.
 | `version-read-nostore.bin` | `protocolVersion` read §1 | the **2-byte** read a device with no mounted card serves: `version u16` = 2 and nothing else. A reader must take it as "no epoch" — never epoch `0`, which is a legal era — and fail its ack closed. No epoch also means no room for the `obcm_version` after it |
 | `transfer-upload-start.bin` | `transferControl` §4.2 | fresh route upload, id `0xFFFF` (new); **12-byte v2 descriptor** (no `offset`); `total_len`/`crc32` are the **actual** length + CRC-32 of `route-waypoints.obcr` |
 | `transfer-download-request.bin` | `transferControl` §4.2 | download request for the `rideList` object (12 bytes) |
-| `transfer-set-shard.bin` (**dies in FS7.5c**) | `transferControl` §4.2 | a **volume-set shard** upload (§4.1, #1039): type `17` `mapShard`, and the one `object_id` on this wire that is not an object id — the packed part `(shard_count << 8) \| index` = `0x0802`, shard 2 of 8. Count in the *high* byte; the fixture exists because that is the half of the rule three implementations would otherwise each re-derive from prose. `total_len`/`crc32` are `route-waypoints.obcr`'s, as the other descriptors' are |
-| `transfer-set-terrain.bin` (**dies in FS7.5c**) | `transferControl` §4.2 | the set's **terrain shard** upload (#1044): type `19` `terrainShard`, new-only (`0xFFFF`) because there is at most one per set. `total_len`/`crc32` are `terrain-shard.obcd`'s own, so the descriptor and the file it announces are one decodable pair. Sent after every `mapShard` and before the `mapSet` |
-| `transfer-set-manifest.bin` (**dies in FS7.5c**) | `transferControl` §4.2 | the **set manifest** upload: type `18` `mapSet`, new-only (`0xFFFF`), and written **last** (`OBCA_Spec.md` §5.4). `total_len` = `72 + 64 × 9` = 648 — the *record* count, not the shard count: eight OBCM shards **plus** the terrain record above, because §5.2's `Shard Count` counts every record. The record is 64 bytes since manifest **v3** (#1389) gave every record its member's `ObjectId`; it was 56 before. A device checks it at the announce, against what it actually received (#1044) |
 | `transfer-abort.bin` | `transferControl` §4.2 | abort of the active upload (12 bytes) |
 | `status-download-announce.bin` | `status` msg 4 §4.3 | the download announce — `msg` byte + the 12-byte descriptor (`op` = download, id 7, size + CRC of `route-waypoints.obcr`); protocol v2 moves the announce off `transferControl` |
 | `status-transfer-result.bin` | `status` msg 1 §4.3 | `committed`, assigned id 7, all bytes durable |

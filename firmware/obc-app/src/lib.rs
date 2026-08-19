@@ -55,7 +55,6 @@ pub(crate) mod ride_engine;
 pub mod route;
 pub mod screen;
 pub mod sensors;
-pub mod set_upload;
 pub mod settings;
 pub mod stat_fields;
 pub mod store_meta;
@@ -100,10 +99,6 @@ pub use ride::{RideCatalog, RideSummary, MAX_RIDES, UI_RIDES_CAP};
 pub use route::{Catalog, RouteSummary, MAX_ROUTES};
 pub use screen::{Screen, ScreenKind, Transition, WarningFlags, WarningScreen, WeatherAlertKind};
 pub use sensors::{SensorPhase, SensorScanHit, SensorScanHits, SensorStatus};
-pub use set_upload::{
-    manifest_announce, orphan_shard_verdict, shard_announce, sweep_verdict, terrain_announce, terrain_record_agrees,
-    RootMagic, SetReject, SetUpload, SweepVerdict,
-};
 pub use settings::{
     ClimbMode, DateTimeEditorExt, IdleReturn, SavedSensor, Settings, Units, WaypointMode, WeatherRefresh,
     DATETIME_MAX_YEAR, DATETIME_MIN_YEAR, SENSOR_SLOTS,

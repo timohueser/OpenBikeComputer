@@ -1,36 +1,35 @@
-//! The **USB device plane** (issue #889): the nRF54LM20's USBHS carrying the *same* companion
-//! protocol the radio carries, so a browser (WebUSB) or the desktop app can push a map, a route or
-//! a firmware image straight to a plugged-in device.
+//! The **USB device plane** (issues #889, #1420): the nRF54LM20's USBHS carrying protocol v4, so a
+//! browser (WebUSB) or the desktop app can push a map, a route or a firmware image straight to a
+//! plugged-in device.
 //!
 //! ## Why this is a transport, not a protocol
 //!
-//! `obc-ble-interface-spec.md` principle #2 — the bulk channel is a raw byte pipe with **no
-//! per-chunk framing** — is the whole reason this module is small. BLE's L2CAP CoC and a USB bulk
-//! endpoint are the same thing (reliable, ordered, unframed), so the object stream needs *zero*
-//! translation: the identical [`obc_ble::Receiver`] / [`obc_ble::StreamSender`] state machine, the
-//! identical descriptors, and the identical `specs/vectors/` fixtures. The descriptor CRC remains
-//! on the wire; map-shaped USB uploads may omit its redundant device-side whole-object pass because
-//! USB and sEMMC already protect the transfer block by block. Everything that decides *what* a
-//! message means lives in [`crate::link`], shared with the radio.
+//! `FLAT_Store_Protocol.md` §5 puts it plainly: "an adapter owns record boundaries, pacing,
+//! timeouts, drain, and nothing else." The frame bytes are identical on both links, so nothing here
+//! decides what a message *means* — that is the engine's, and the engine lives beside the card in
+//! [`crate::flat_store::storage_task`].
 //!
-//! Only one thing genuinely differs. BLE's control plane is GATT: seven separately-addressed
-//! characteristics, where "which characteristic" is carried by the transport rather than by any
-//! byte of ours. USB has one endpoint pair, so that routing becomes a byte — see [`control`] for
-//! the envelope (ratified from C3/#902, which built the host client against it).
+//! What USB adds is one thing and it is small: §5.2's `record_length u16` in front of every frame,
+//! because a bulk endpoint is a byte pipe and BLE's channels are already message-shaped. See
+//! [`records`]. The one thing that is *not* a §3 frame — the device information a host reads before
+//! it exchanges a record — is an EP0 vendor request, which is USB's own place for identity. See
+//! [`device_info`] and §5.2.1.
 //!
 //! ## Endpoint layout (the host contract)
 //!
-//! One vendor-specific interface (class `0xFF`), four bulk endpoints, allocated in this order so
-//! the host's "lowest IN/OUT pair is control, the next is bulk" rule
+//! One vendor-specific interface (class `0xFF`, `bInterfaceProtocol = 4`), four bulk endpoints,
+//! allocated in this order so the host's "lowest IN/OUT pair is control, the next is stream" rule
 //! (`builder/app/src/lib/usb/webusb.ts::discoverLayout`) reads them correctly:
 //!
 //! | Endpoint | Direction | Carries |
 //! | :-- | :-- | :-- |
-//! | 0x81 / 0x01 | IN / OUT | control frames — one frame per transfer, `selector u8 · payload` |
-//! | 0x82 / 0x02 | IN / OUT | the unframed object stream — BLE's CoC, byte for byte |
+//! | 0x81 / 0x01 | IN / OUT | §3 control records, each `record_length u16` + frame |
+//! | 0x82 / 0x02 | IN / OUT | §3.8 stream records, same framing |
 //!
 //! The USBHS is a **high-speed** core (`PhyType::InternalHighSpeed`), so every bulk endpoint is
-//! 512 bytes by USB rule; there is no full-speed fallback to size for.
+//! 512 bytes by USB rule; there is no full-speed fallback to size for. Packet boundaries carry no
+//! protocol meaning (§5.2) — a record may span them, which is what lets a 4 KiB stream record exist
+//! on a 512-byte endpoint at all.
 //!
 //! ## VBUS is a hard gate, not a convenience (#936)
 //!
@@ -41,8 +40,8 @@
 //!
 //! ## Pins, clocks, interrupts
 //!
-//! **Zero GPIO cost**: D+/D−/VBUS/TXRTUNE are dedicated USBHS pins, so nothing in the board's pin
-//! plan moves. The driver needs AHB ≥ 30 MHz (asserted in its `calculate_trdt`); the board runs
+//! **Zero GPIO cost**: D+/D-/VBUS/TXRTUNE are dedicated USBHS pins, so nothing in the board's pin
+//! plan moves. The driver needs AHB >= 30 MHz (asserted in its `calculate_trdt`); the board runs
 //! 128 MHz. It starts the **XO24M** oscillator itself while enabled. The board binding gives it
 //! `USBHS` and `VREGUSB`; neither vector overlaps MPSL or the SDC (MPSL takes `RADIO_0`,
 //! `TIMER10`, `GRTC_3`, `CLOCK_POWER`, `SWI00`; the board's high-priority input executor is on
@@ -50,14 +49,15 @@
 //!
 //! ## Concurrency with the ride loop — the reason MSC was rejected
 //!
-//! The app keeps running while a transfer lands. Every store call locks the shared SD + settings
-//! mutex only for its own duration and releases before the next endpoint `await`, so the ride
-//! loop's map render interleaves between chunks exactly as it does for BLE. Mass Storage would
-//! instead have handed the host raw block access and forced the firmware to release the card
-//! entirely; firmware-mediated writes compose with the existing arbitration instead.
+//! The app keeps running while a transfer lands. Every card write goes through the one storage task
+//! and takes the card per command rather than per commit, so the ride loop's map render interleaves
+//! between records exactly as it does for BLE. Mass Storage would instead have handed the host raw
+//! block access and forced the firmware to release the card entirely; firmware-mediated writes
+//! compose with the existing arbitration instead.
 
-pub(crate) mod control;
-pub(crate) mod data_plane;
+pub(crate) mod device_info;
+pub(crate) mod records;
+pub(crate) mod v4;
 
 use core::future::{poll_fn, Future};
 use core::mem::MaybeUninit;
@@ -74,8 +74,9 @@ use embassy_usb::{Builder, Config, UsbDevice};
 
 use crate::init_static;
 use crate::link::identity;
+use obc_link::flat::WIRE_MAJOR;
 
-use control::ControlTx;
+use device_info::{DeviceInfoHandler, MAX_DEVICE_INFO};
 
 // ============================ Identity on the wire ============================
 
@@ -99,10 +100,12 @@ const PRODUCT_ID: u16 = 0x0001;
 const MANUFACTURER: &str = "OpenBikeComputer";
 const PRODUCT: &str = "OpenBikeComputer";
 
-/// Every bulk endpoint on a high-speed device is 512 bytes — the USB 2.0 rule, not a choice. It is
-/// also the control plane's frame ceiling: a control frame is exactly one transfer, and the host
-/// rejects a frame that would fill a whole packet (it could not tell the frame had ended without a
-/// zero-length packet). The largest frame the protocol sends is a `config` write at ~130 bytes.
+/// Every bulk endpoint on a high-speed device is 512 bytes — the USB 2.0 rule, not a choice.
+///
+/// It is **not** a frame ceiling any more, and that is the v4 cutover in one constant: §5.2's
+/// records span packets, so a record's length is a number in front of it rather than the size of the
+/// transfer that carried it. What this still bounds is one `write` call on an IN endpoint (one call
+/// is one packet on this driver) and the arming of the control OUT endpoint.
 const MAX_PACKET: u16 = 512;
 
 /// **How many max packets the bulk OUT endpoint arms at once** — the upload throughput dial
@@ -195,64 +198,20 @@ static mut BOS_DESC: MaybeUninit<[u8; BOS_DESC_LEN]> = MaybeUninit::uninit();
 /// registry property (the GUID string in UTF-16 is the bulk of it) ≈ 180 bytes.
 const MSOS_DESC_LEN: usize = 256;
 static mut MSOS_DESC: MaybeUninit<[u8; MSOS_DESC_LEN]> = MaybeUninit::uninit();
-/// Control-transfer (EP0) data buffer. We register no custom control handler, so this only has to
-/// hold the standard requests' data — one EP0 packet.
-const CONTROL_BUF_LEN: usize = 64;
+/// Control-transfer (EP0) data buffer.
+///
+/// Sized to §5.2.1's answer rather than to one EP0 packet: the stack hands this buffer to a
+/// handler's `control_in` and then chunks whatever it wrote across EP0's 64-byte packets, so the
+/// buffer is the response ceiling and the packet size is not. [`MAX_DEVICE_INFO`] is the widest
+/// §5.2.1 permits (three 48-byte strings behind their length bytes); the rest is the standard
+/// requests' data, which never exceeds one packet.
+const CONTROL_BUF_LEN: usize = 256;
+const _: () = assert!(CONTROL_BUF_LEN >= MAX_DEVICE_INFO, "EP0's buffer must hold §5.2.1's whole answer");
 static mut CONTROL_BUF: MaybeUninit<[u8; CONTROL_BUF_LEN]> = MaybeUninit::uninit();
 
-/// One received control frame. Sized to the endpoint because `EndpointOut::read` refuses a buffer
-/// smaller than one max packet.
-static mut CTRL_RX: MaybeUninit<[u8; MAX_PACKET as usize]> = MaybeUninit::uninit();
-/// One bulk **burst**, in either direction — the USB analogue of the CoC's SDU scratch.
-///
-/// Sized to [`BULK_BURST_LEN`] rather than one packet since #1173: the driver hands back everything
-/// the core absorbed while the CPU was busy, and a buffer shorter than the armed transfer would
-/// simply refuse it (`EndpointError::BufferOverflow`). The IN direction still writes one max packet
-/// per transfer — see `CHUNK_LEN` in [`data_plane`].
-static mut BULK_BUF: MaybeUninit<[u8; BULK_BURST_LEN]> = MaybeUninit::uninit();
-
-/// **One half** of an upload's [`Stage`](crate::link::stage::Stage) buffer — how many bytes pile up
-/// in RAM before they reach the card as one batch, and therefore how big one `CMD25` is.
-///
-/// # The number, and how to sweep it
-///
-/// **64 KiB: two 32 KiB FAT clusters and one 128-block card command.** The map-upload block device
-/// coalesces the FAT layer's per-cluster calls back into one disk-contiguous run, so a normal half
-/// reaches the card as one CMD25. A fragmented chain safely splits at its LBA discontinuity.
-///
-/// It follows that this constant should move *with* the card's cluster size, not independently.
-/// To sweep it: change this one line, re-pin `compile_time_allocations.arena_usb` in
-/// `firmware/tools/resource_baseline.json` to `2 * STAGE_HALF_LEN`, and read the `~{} kB/s` line
-/// `run_upload` prints at the end of every transfer over RTT. At 64 KiB the USB arm is 128 KiB,
-/// 13,664 B larger than the render arm; the resource guard therefore prices that growth directly.
-///
-/// # The historical rungs (SPI-era — kept because the *shape* survived, not the numbers)
-///
-/// Measured on the shipping card over the **retired SPI transport** (2026-07-30), per 32 KB of map:
-/// 4 KB → 0.70 MB/s, 8 KB → 0.76, 16 KB → 0.81, 32 KB → 0.86, against 0.20 unstaged. Those absolute
-/// figures are **obsolete** — the sEMMC pivot (#1158) made the bus ~7.6× faster and the whole table
-/// now sits below what the transport alone can do. What survives is the shape: the rungs price how
-/// often the card's internal program cycle is paid, which is card-side and did not change. The old
-/// "16 KB takes 94% of what is on the table, and the second 16 KB costs residual stack" argument is
-/// **retired on both halves** — the sEMMC transport changed the numerator, and #1146 P2 moved these
-/// bytes out of `.bss`.
-///
-/// # Why the RAM argument no longer bites
-///
-/// **Since #1146 P2 these bytes are the scratch arena's USB arm**, not a static of their own. The
-/// arena is `max(arms)` and the render arm is 117,408 B, so the USB arm grew at **zero** resident
-/// cost until it reached that — see [`crate::arena`]'s growth-asymmetry note. Two 64 KiB halves put
-/// the USB arm 13,664 B above the render arm, a deliberate resident cost that buys the card's
-/// measured 128-block write-efficiency while leaving the linked stack margin pinned by the
-/// resource guard.
-pub(crate) const STAGE_HALF_LEN: usize = 64 * 1024;
-
-/// The whole staging arm: **two** [`STAGE_HALF_LEN`] halves (#1158 follow-up).
-///
-/// The transport fills one half while the other is the card's — see [`Stage`](crate::link::stage)
-/// for what that does and does not buy today. Sized here rather than in `stage.rs` because the arena
-/// names these bytes and the resource baseline pins them.
-pub(crate) const STAGE_LEN: usize = 2 * STAGE_HALF_LEN;
+/// The EP0 vendor-request handler ([`device_info`]), pinned for the `'static` life the builder
+/// borrows it for.
+static mut INFO_HANDLER: MaybeUninit<DeviceInfoHandler> = MaybeUninit::uninit();
 
 /// The `iSerialNumber` string, pinned for the `'static` life the descriptor borrows it for.
 static mut SERIAL: MaybeUninit<heapless::String<16>> = MaybeUninit::uninit();
@@ -261,114 +220,22 @@ static mut SERIAL: MaybeUninit<heapless::String<16>> = MaybeUninit::uninit();
 /// of the map and BLE terms). The driver's own endpoint bookkeeping (`StateStorage<16>`) lives
 /// inside embassy-nrf and is not nameable here; it is a handful of wakers and atomics and shows up
 /// in the linked `.bss` measurement, which is the authority.
-/// **[`STAGE_LEN`] is deliberately not in this sum** since #1146 P2: the staging buffer is an arm of
-/// the scratch arena, counted once as [`crate::arena::ARENA_BYTES`] beside the render and nav arms
-/// it time-shares with.
+///
+/// The v4 adapter's own three buffers are [`v4::RESIDENT_BYTES`], summed in rather than left out:
+/// they replace this module's old `CTRL_RX` + `BULK_BUF` pair and the 128 KiB arena arm the v1
+/// upload staged through, and an itemization that split them across two files would make that
+/// exchange impossible to read off either.
 pub const RESIDENT_BYTES: usize = EP_BUFFER_LEN
     + CONFIG_DESC_LEN
     + BOS_DESC_LEN
     + MSOS_DESC_LEN
     + CONTROL_BUF_LEN
-    // CTRL_RX + BULK_BUF (the latter is a whole burst since #1173).
-    + MAX_PACKET as usize
-    + BULK_BURST_LEN
+    + v4::RESIDENT_BYTES
+    + core::mem::size_of::<DeviceInfoHandler>()
     + core::mem::size_of::<heapless::String<16>>()
     // [`VBUS_WAKER`] — 8 B, and itemized rather than waved through so the whole of #937's resident
     // cost is a named term instead of an unexplained step in the linked `.bss` gate.
     + core::mem::size_of::<AtomicWaker>();
-
-// ============================ The staging-arm handshake (#1146 P2) ============================
-//
-// The staging buffer stopped being this module's static and became an arm of the scratch arena, and
-// the arena has exactly one owner-switcher: the ride loop. So the data plane asks and the loop
-// grants between frames, through the same shape as every other cross-plane fact here — a level plus
-// a wake edge, never a queue.
-//
-// Two levels, one writer each, so neither side can lose an edge to the other:
-//   * [`STAGE_REQ`]     — the **plane** writes it. "A transfer is streaming and wants the arm."
-//     Raised before the wait below, cleared on every path that closes a transfer.
-//   * [`STAGE_GRANTED`] — the **loop** writes it, after it has actually claimed the arena.
-//
-// The bytes themselves never cross: the plane reaches them through
-// [`arena::with_usb_stage`](crate::arena::with_usb_stage), which answers only while the loop still
-// holds the guard. That is what makes an unplug survivable — see [`crate::arena::UsbGuard`].
-
-/// The plane's request level (see above).
-static STAGE_REQ: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-/// The loop's answer level (see above).
-static STAGE_GRANTED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-/// Plane → loop: look at [`STAGE_REQ`] now rather than at the next sensor/timer wake. The ride
-/// loop's sleep is event-driven and clamped up to 2 s during an upload, so without this the first
-/// flush of every map transfer would wait out a pace window for no reason.
-static STAGE_WAKE: embassy_sync::signal::Signal<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, ()> =
-    embassy_sync::signal::Signal::new();
-/// Loop → plane: the answer level moved.
-static STAGE_EDGE: embassy_sync::signal::Signal<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, ()> =
-    embassy_sync::signal::Signal::new();
-
-/// How long the plane waits for the loop to answer before streaming unstaged. One ride-loop pass is
-/// all it should take (the wake above is in the loop's select); this is the safety valve that keeps
-/// a transfer from ever *blocking* on the arena — an upload that runs at the unstaged 0.20 MB/s is a
-/// slow upload, an upload that never starts is a bug report.
-const STAGE_GRANT_TIMEOUT_MS: u64 = 1_000;
-
-/// Whether the data plane is asking for (or already using) the staging arm — read by the ride loop
-/// once per pass.
-pub(crate) fn stage_requested() -> bool {
-    STAGE_REQ.load(core::sync::atomic::Ordering::Relaxed)
-}
-
-/// The ride loop's answer: `true` = it claimed the arena's USB arm for this transfer.
-pub(crate) fn set_stage_granted(granted: bool) {
-    STAGE_GRANTED.store(granted, core::sync::atomic::Ordering::Relaxed);
-    STAGE_EDGE.signal(());
-}
-
-/// The ride loop's wake arm: a transfer wants the staging arm.
-pub(crate) async fn wait_stage_request() {
-    STAGE_WAKE.wait().await
-}
-
-/// Ask the ride loop for the staging arm and wait (briefly) for its answer — the plane side of the
-/// handshake. `true` = stage into the arena; `false` = stream unstaged.
-///
-/// Called once per transfer, right after the target file is open and (for a map) the on-glass card
-/// has been published — which lets the loop's `App::usb_arena_precondition` evaluate the
-/// transfer-card half of the arena contract on its very next pass.
-pub(crate) async fn request_stage() -> bool {
-    STAGE_REQ.store(true, core::sync::atomic::Ordering::Relaxed);
-    STAGE_EDGE.reset();
-    STAGE_WAKE.signal(());
-    let deadline = embassy_time::Instant::now() + embassy_time::Duration::from_millis(STAGE_GRANT_TIMEOUT_MS);
-    while !STAGE_GRANTED.load(core::sync::atomic::Ordering::Relaxed) {
-        // The loop answers by flipping the level and ringing the edge; a wake for an edge we already
-        // observed just re-reads the level, which is why the level is the truth and the signal only
-        // the wake.
-        if embassy_time::with_deadline(deadline, STAGE_EDGE.wait()).await.is_err() {
-            break;
-        }
-    }
-    let granted = STAGE_GRANTED.load(core::sync::atomic::Ordering::Relaxed);
-    if !granted {
-        // **Withdraw the request with the give-up.** The level is what the ride loop grants against,
-        // and this transfer has already decided to stream unstaged: left raised, it would have the
-        // loop mint a `TransferReady`, claim the arena and hold ~117 KB for the rest of a transfer
-        // that will never look at it — and hold it *against a route search*, which is the one thing
-        // the `nav ⊥ usb` rule is there to arbitrate. If the grant lands anyway a beat later, the
-        // loop's own `!wants_stage && guard.is_some()` reclaim on the next pass takes it back.
-        release_stage();
-        warn!("usb: [bulk] no staging arm granted — streaming unstaged (slower, never wrong)");
-    }
-    granted
-}
-
-/// Give the staging arm back: the transfer ended, was aborted, or the endpoint went away. Idempotent
-/// — every terminal path in the data plane calls it (through `close_transfer`), and so does the
-/// endpoint-lost teardown, because "which of them ran" is not a fact worth tracking.
-pub(crate) fn release_stage() {
-    STAGE_REQ.store(false, core::sync::atomic::Ordering::Relaxed);
-    STAGE_WAKE.signal(());
-}
 
 // ============================ The VBUS gate (#936) ============================
 //
@@ -591,6 +458,11 @@ fn build_plane(usb_p: Peri<'static, peripherals::USBHS>) -> UsbPlane {
     config.device_class = 0xFF;
     config.device_sub_class = 0x00;
     config.device_protocol = 0x00;
+    // §5.2: "the device descriptor's `bcdDevice` carries the major in its high byte, `0x0400`".
+    // This is half of how a client settles the wire version **before** a record is exchanged; the
+    // other half is `bInterfaceProtocol` on the alt setting below. Neither is a read — matching is
+    // the version check, which is why v4 has no identity request.
+    config.device_release = 0x0400;
     config.composite_with_iads = false;
     // Bus-powered from the host, like every other small USB peripheral; 100 mA is the pre-enumeration
     // budget every host grants unconditionally. (`bcd_usb` stays at the 2.1 default — declaring 2.1
@@ -616,22 +488,34 @@ fn build_plane(usb_p: Peri<'static, peripherals::USBHS>) -> UsbPlane {
     // ---- The one interface and its four endpoints. **Allocation order is the wire contract**:
     // embassy hands out endpoint numbers in order, and the host pairs "lowest IN with lowest OUT"
     // as control and the next pair as bulk. Reordering these four lines silently swaps the planes.
-    let (ctrl_in, ctrl_out, bulk_in, bulk_out) = {
+    let (ctrl_in, ctrl_out, bulk_in, bulk_out, interface_number) = {
         let mut function = builder.function(0xFF, 0x00, 0x00);
         let mut interface = function.interface();
-        let mut alt = interface.alt_setting(0xFF, 0x00, 0x00, None);
+        let interface_number = interface.interface_number();
+        // §5.2: `bInterfaceProtocol = 4`. The one place the wire major is stated on this link.
+        let mut alt = interface.alt_setting(0xFF, 0x00, WIRE_MAJOR, None);
         let ctrl_in = alt.endpoint_bulk_in(None, MAX_PACKET);
         let ctrl_out = alt.endpoint_bulk_out(None, MAX_PACKET);
         let bulk_in = alt.endpoint_bulk_in(None, MAX_PACKET);
         let bulk_out = alt.endpoint_bulk_out(None, MAX_PACKET);
-        (ctrl_in, ctrl_out, bulk_in, bulk_out)
+        (ctrl_in, ctrl_out, bulk_in, bulk_out, interface_number)
     };
+
+    // §5.2.1's EP0 vendor request. Device-level, because that is where embassy routes every request
+    // the standard stack does not answer itself; the handler filters on the interface number above,
+    // which is what makes it the *interface* request §5.2.1 specifies.
+    //
+    // SAFETY: sole writer of `INFO_HANDLER`; `build_plane` is called exactly once, from `run`.
+    let info: &'static mut DeviceInfoHandler = unsafe {
+        init_static(core::ptr::addr_of_mut!(INFO_HANDLER), DeviceInfoHandler { interface: interface_number })
+    };
+    builder.handler(info);
 
     // The burst mask above named an endpoint *index*, and indices are handed out in the allocation
     // order those four lines fix. Check the one the builder actually returned: a reordering that
     // slipped past the wire-contract comment would otherwise burst the wrong endpoint — the bulk
     // pipe back to one packet at a time (silently, at 1.4 MB/s) and 4 KiB of staging spent on
-    // ~130-byte control frames.
+    // a channel whose widest message is a 100-byte `PUT`.
     assert_eq!(
         embassy_usb::driver::Endpoint::info(&bulk_out).addr.index(),
         BULK_OUT_EP_INDEX,
@@ -663,9 +547,7 @@ fn set_usb_radio_inhibited(inhibited: bool) {
 /// ([`crate::spawn_usb_stack`]) — the same #677 discipline the BLE stack documents: a task's state
 /// machine belongs in its own `.bss` pool, and the token construction belongs somewhere shallow.
 #[embassy_executor::task]
-pub async fn run(usb_p: Peri<'static, peripherals::USBHS>, stores: crate::link::LinkStores) -> ! {
-    let crate::link::LinkStores { shared, objects: store, epoch: store_epoch } = stores;
-
+pub async fn run(usb_p: Peri<'static, peripherals::USBHS>) -> ! {
     // Arm VBUS detection, and *only* that: `HardwareVbusDetect::new` touches VREGUSB (clear the two
     // events, unmask them, `TASKS_START`) and enables its vector. That is the entire hardware
     // footprint of a cable-less boot from here on — the value itself is discarded, because
@@ -701,25 +583,12 @@ pub async fn run(usb_p: Peri<'static, peripherals::USBHS>, stores: crate::link::
         MAX_PACKET
     );
 
-    // SAFETY: sole writer of each buffer; `run` is spawned once.
-    let ctrl_rx = unsafe { init_static(core::ptr::addr_of_mut!(CTRL_RX), [0u8; MAX_PACKET as usize]) };
-    let bulk_buf = unsafe { init_static(core::ptr::addr_of_mut!(BULK_BUF), [0u8; BULK_BURST_LEN]) };
-
-    // Both planes send on the control IN endpoint — the control loop its replies, the data plane
-    // its announces and terminal results — so it lives behind one async mutex. That serialisation
-    // is also the ordering guarantee the host relies on: like BLE's single `status` CCCD, every
-    // device → host control message shares one ordering domain.
-    let tx = ControlTx::new(ctrl_in);
-
-    // Built once and pinned, not rebuilt per cable: both halves own their endpoints for the life of
-    // the task and already re-arm themselves across an unplug (`wait_enabled` at the top of each
-    // loop, `link_reset` on the way round). The cable cycle is expressed by *whether they are
-    // polled*, which keeps their signatures — and their `.bss` footprint — unchanged.
-    let planes = join(
-        control::run(&tx, ctrl_out, ctrl_rx, store, shared, store_epoch),
-        data_plane::run(&tx, bulk_in, bulk_out, bulk_buf, store, shared),
-    );
-    let mut planes = core::pin::pin!(planes);
+    // Built once and pinned, not rebuilt per cable: the adapter owns its four endpoints for the life
+    // of the task and re-arms them across an unplug (`wait_enabled` at the top of its loop). The
+    // cable cycle is expressed by *whether it is polled*, which keeps its `.bss` footprint a
+    // property of the image rather than of how often someone plugs a cable in.
+    let adapter = v4::serve_objects(ctrl_in, ctrl_out, bulk_in, bulk_out);
+    let mut adapter = core::pin::pin!(adapter);
 
     join(device.run(), async {
         loop {
@@ -731,9 +600,9 @@ pub async fn run(usb_p: Peri<'static, peripherals::USBHS>, stores: crate::link::
                 if !vbus_present() {
                     return Poll::Ready(());
                 }
-                match planes.as_mut().poll(cx) {
+                match adapter.as_mut().poll(cx) {
                     Poll::Pending => Poll::Pending,
-                    // Both halves are `-> !`.
+                    // The adapter is `-> !`.
                     Poll::Ready(_) => unreachable!(),
                 }
             })
@@ -743,15 +612,13 @@ pub async fn run(usb_p: Peri<'static, peripherals::USBHS>, stores: crate::link::
             // plane that stays parked — never one that reads a powered-down core.
             warn!("usb: VBUS removed — device plane parked, endpoints idle until a cable returns");
             set_usb_radio_inhibited(false);
-            // Give the scratch arena's staging arm back (#1146 P2) — **this is the unplug edge the
-            // arena's revocation depends on**. The transfer future is only *parked* here, not
-            // dropped: it is still suspended inside `run_upload` and will resume when a cable
-            // returns. So the arm cannot be handed back by that frame, and if the loop kept waiting
-            // for it the map would never redraw again on a cable that never comes back. Releasing
-            // here lets the loop reclaim now; the parked upload discovers on its next append that
-            // the arm is gone and discards its partial, which is what an interrupted upload does
-            // anyway (spec §1 principle 4: transfers restart, never resume).
-            release_stage();
+            // **The adapter is only parked here, not dropped**, so it cannot be what tells the
+            // engine the link is gone: it is still suspended inside a record read and resumes when
+            // a cable returns. What settles a half-landed transfer is the endpoint disable the host
+            // controller raises on the same edge — the reader's next poll answers `Disabled`, the
+            // driver ends, and `LinkLost` releases the allocation (§3.8's third form of cancel).
+            // Nothing is resumed across the gap; §1 refuses resume outright.
+            //
             // Asleep on the VREGUSB vector, not on a timer (#937). The device pump keeps its place
             // in this same `join` while we are parked, and that is fine in both directions: the
             // return edge wakes the *task*, which re-polls `device.run()`, whose `Bus::poll`
