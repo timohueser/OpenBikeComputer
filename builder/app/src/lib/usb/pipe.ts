@@ -7,31 +7,29 @@
  *
  * ```text
  *   session.svelte.ts   reactive shell — what a Svelte component holds
- *   client.ts           the object model: identity, lists, transfers, commands
- *   transport.ts        the one byte USB adds: which control characteristic a frame is
+ *   client.ts           protocol v4: LIST, STATUS, GET, PUT, REMOVE, CANCEL, ARM
+ *   records.ts          FLAT_Store_Protocol.md §5.2's record framing: `record_length u16 · frame`
  *   pipe.ts             two byte pipes — WebUSB, nusb (`../desktop/usb.ts`) or loopback underneath
  * ```
  *
  * The bottom layer really is swappable in isolation — that is what `BytePipe` is for, and the
- * loopback and WebUSB implementations prove it. `transport.ts` is a weaker seam: it owns the frame
- * *encoding* alone, but the assumption that control messages carry a leading selector is shared with
- * `client.ts`'s dispatch. Its header says exactly what moves if #889 ratifies something else.
+ * loopback and WebUSB implementations prove it.
  *
  * There is no barrel over the stack: every consumer imports the module it actually needs, which is
  * what keeps `loopback.ts` — a full simulated device the hosted bundle has no business carrying —
  * out of the shipped chunks, and `platform/bundle.test.ts` honest about what ships.
  *
- * The interface spec's principle #2 is that the bulk channel is a **raw byte pipe with no
- * per-chunk framing**: a control-plane descriptor announces the transfer, the channel carries
- * exactly the object's payload bytes, and one whole-object CRC-32 is verified at commit. That is
- * why a USB bulk endpoint slots in under the same object model as BLE's L2CAP CoC — the layer
- * above never learns which one it is talking to.
+ * `FLAT_Store_Protocol.md` §5.2 gives USB **two bulk endpoint pairs** carrying length-prefixed
+ * records, and says packet boundaries carry no protocol meaning: a record may span packets. So the
+ * pipe below stays what it always was — an ordered, unframed byte channel — and `records.ts` is the
+ * one place that turns those bytes back into records. That split is what lets BLE (one CoC SDU is
+ * one frame) and USB (a record may be five packets) sit under one client.
  *
- * So this file deliberately knows nothing about USB. Three implementations target it:
+ * Three implementations target this file:
  *
- * - `webusb.ts` — a Chromium `navigator.usb` bulk endpoint pair (this issue).
- * - `loopback.ts` — an in-memory pipe wired to a simulated device, so C4 (#903), C5 (#904) and the
- *   whole desktop path can be built and tested before LM20 USB silicon exists (this issue).
+ * - `webusb.ts` — a Chromium `navigator.usb` bulk endpoint pair.
+ * - `loopback.ts` — an in-memory pipe wired to a simulated device, so the whole stack can be built
+ *   and tested before LM20 USB silicon exists.
  * - `../desktop/usb.ts` — Rust `nusb` behind Tauri commands, for the desktop app (D4 #909). It
  *   lives under `lib/desktop/` rather than here because it imports `@tauri-apps/api`, which the
  *   hosted bundle must never contain.
@@ -40,9 +38,9 @@
  *
  * **A read is not a message.** {@link BytePipe.read} hands back whatever the transport delivered —
  * one byte, a full packet, several packets coalesced. Callers must accumulate until they have as
- * many bytes as the descriptor announced. Assuming a read returns a whole logical unit passes on a
- * loopback that happens to write whole objects and then fails on hardware, where a 62 KB object
- * arrives as a thousand 64-byte packets.
+ * many bytes as the record's own length prefix announced. Assuming a read returns a whole logical
+ * unit passes on a loopback that happens to write whole records and then fails on hardware, where a
+ * 4,112-byte record arrives as nine 512-byte packets.
  *
  * **Cancellation has to reach the transport.** A `read` parked on an endpoint that will never
  * deliver — because the rider pulled the cable — is exactly the stuck spinner #902's acceptance
@@ -57,8 +55,8 @@
  * - `closed` — the pipe is closed, or the device went away mid-operation (an unplug). Terminal:
  *   nothing on this pipe will work again.
  * - `aborted` — the caller's `AbortSignal` fired. The pipe itself is still usable, but the byte
- *   stream is now at an unknown offset, so a cancelled transfer must {@link BytePipe.reset} before
- *   the pipe is handed to another descriptor (interface spec §4.1).
+ *   stream is now at an unknown offset — possibly inside a record — so a cancelled transfer must
+ *   {@link BytePipe.reset} before another transfer uses the channel.
  * - `device-error` — the transport rejected the transfer (a stall, a babble, a driver error).
  * - `unsupported` — this browser has no WebUSB at all. Firefox and Safari take this path, and the
  *   desktop app is the answer for them (#894).
@@ -80,9 +78,9 @@ export class PipeError extends Error {
  * One direction-agnostic byte channel: reliable, ordered, and unframed.
  *
  * A `BytePipe` is full-duplex — `read` and `write` may be in flight at once — but neither
- * direction is expected to tolerate two concurrent calls of its own kind. The protocol client
- * serialises them, which is also what interface spec §4.1 requires of the object layer ("at most
- * one transfer is in flight at a time").
+ * direction is expected to tolerate two concurrent calls of its own kind. The client serialises
+ * them, which is also what §1 requires of the device ("the device serves exactly one `PUT` or
+ * `GET`").
  */
 export interface BytePipe {
     /** Diagnostics only, never a branch target: `"webusb"`, `"loopback"`, `"native"`. */
@@ -108,7 +106,7 @@ export interface BytePipe {
      * outstanding cannot outrun the device — the card writes at 8.2 MB/s over sEMMC (#1158) and the
      * FAT layer above it takes a cut of that, so it is still the slower end of the cable. A writer
      * that fires and forgets defeats it entirely, which is why the upload loop retires an old
-     * transfer for every new one it queues (`client.ts::pumpChunks`) rather than queueing the object.
+     * transfer for every new one it queues (`client.ts::pumpStream`) rather than queueing the object.
      *
      * **Concurrent writes are allowed on this call, in submission order.** They were not, before the
      * upload pipeline was windowed; an implementation that cannot preserve order between two
@@ -119,10 +117,9 @@ export interface BytePipe {
     /**
      * Discard everything buffered or in flight and return the pipe to a known-empty state.
      *
-     * The spec's rule, §4.1: an exchange that does not reach its correlated close leaves the
-     * channel at an unknown offset and is "not reusable" — over BLE the app closes and reopens the
-     * CoC. `reset` is that step for a pipe that has no channel to reopen, so that the next
-     * descriptor starts clean.
+     * A transfer that ends before its last record leaves the channel at an unknown offset, possibly
+     * mid-record — over BLE the app closes and reopens the CoC. `reset` is that step for a pipe that
+     * has no channel to reopen, so that the next transfer starts on a record boundary.
      *
      * *How* an implementation gets there differs, and the difference is not cosmetic: the loopback
      * drops its queued slices, D4's native pipe cancels every URB and drains the completions, and
@@ -136,18 +133,36 @@ export interface BytePipe {
 }
 
 /**
- * The pair of channels one device speaks over.
+ * The pair of channels one device speaks over, plus USB's one out-of-band read.
  *
- * BLE splits the protocol across two planes — small typed control state on GATT, bulk bytes on the
- * CoC (spec principle #1) — and USB keeps that split rather than flattening it: `control` carries
- * one message per operation, `bulk` carries raw object payload. Nothing large ever crosses
- * `control`, so a device can serve both from one interface without either starving the other.
+ * `FLAT_Store_Protocol.md` §5 keeps the protocol on two channels: `control` carries §3's control
+ * frames, `stream` carries §3.8's stream frames. Both are record-framed by `records.ts`; neither is
+ * a message pipe, because §5.2 lets a record span USB packets.
+ *
+ * The channels are named after the spec rather than after the endpoint type they happen to use. All
+ * four endpoints are bulk endpoints; calling one of them "bulk" said nothing and hid that the
+ * stream pair is the one with the 4,096-byte payload rule on it.
  */
 export interface DeviceLink {
-    /** Message-oriented: one write is one control frame, one read is one control frame. */
+    /** §3's control frames: requests out, responses in, one frame per record. */
     readonly control: BytePipe;
-    /** The unframed object stream — BLE's CoC, byte for byte. */
-    readonly bulk: BytePipe;
+    /** §3.8's stream frames: a 16-byte frame and its payload, one frame per record. */
+    readonly stream: BytePipe;
+
+    /**
+     * One EP0 vendor device-to-host request, recipient **interface** (§5.2.1).
+     *
+     * Present only on a transport that can issue one. WebUSB can (`controlTransferIn`); the loopback
+     * models it; the desktop bridge cannot today, because the Rust side exposes no control-transfer
+     * command — so it omits this rather than answering with a fabricated payload, and
+     * {@link FlatStoreClient.deviceInfo} says the host cannot ask rather than inventing a version.
+     *
+     * The interface number is the transport's own fact — it claimed the interface — so it is not a
+     * parameter here. Resolves with however many bytes the device returned, which §5.2.1 says may be
+     * short of `length`.
+     */
+    vendorIn?(request: number, value: number, length: number, signal?: AbortSignal): Promise<Uint8Array>;
+
     /** Close both pipes. Idempotent. */
     close(): Promise<void>;
 }

@@ -10,13 +10,7 @@
 //! - [`command::run_command`] — the §4.4 imperatives (`deleteObject`, `ackRides`, `installFw`,
 //!   `forgetBond`, `setClock`, `setRouteRetention`). Takes the store, returns a typed outcome; it
 //!   has never had a radio in it.
-//! - [`transfer::classify_transfer`] — decode + validate a §4.2 descriptor against the store, and
-//!   say whether it arms, is rejected outright, or aborts what is running.
 //! - [`Armed`] + [`TRANSFER_ACTIVE`] — the one-transfer-at-a-time gate. **Deliberately shared
-//!   across transports**: both planes drive the *same* [`ObjectStore`], which has exactly one
-//!   upload temp and one open download source, so a BLE transfer in flight must answer a USB
-//!   `transferControl` with `busy` and vice versa. A per-transport gate would let two uploads
-//!   interleave into one temp file.
 //! - [`identity`] — the FICR-derived serial/name, the DIS strings, and the Config /
 //!   `protocolVersion` blob codecs, in plain bytes. BLE's GATT table wraps them into its
 //!   attribute-value types; USB writes the same bytes into a control frame.
@@ -24,8 +18,9 @@
 //!   counter — so one store, built once in `main` and handed to every plane.
 //!
 //! What stays transport-specific: how a control message is *addressed* (a GATT characteristic
-//! handle vs. a USB selector byte), how a device → host message is *delivered* (an ATT notify vs. a
-//! bulk-IN frame), and the link lifecycle (advertising/bonding vs. enumeration/VBUS).
+//! handle vs. an EP0 vendor request, `FLAT_Store_Protocol.md` §5.2.1) and the link lifecycle
+//! (advertising/bonding vs. enumeration/VBUS). The object surface is not here at all any more: both
+//! links speak protocol v4 into the one engine in `crate::flat_store`.
 //!
 //! Compiled whenever the companion link exists at all. The USB plane is unconditional and the
 //! radio is in every build that compiles, so gating on `ble` and gating on "either link" are the
@@ -34,17 +29,16 @@
 
 pub(crate) mod command;
 pub(crate) mod identity;
-pub(crate) mod stage;
-pub(crate) mod transfer;
 
 use core::cell::RefCell;
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use obc_ble::{Receiver, StatusMessage, TransferControl, TransferResult, TransferStatus};
+use obc_ble::StatusMessage;
+use obc_link::flat::ObjectKind;
 
 use crate::init_static;
-use crate::object_store::{DiagInput, ObjectStore};
+use crate::object_store::ObjectStore;
 
 // ============================ The one object store ============================
 
@@ -138,86 +132,7 @@ pub fn publish_stack_high_water(bytes: usize) {
     STACK_HIGH_WATER.store(bytes as u32, Ordering::Relaxed);
 }
 
-/// The latest stack high-water mark (bytes) for the diagnostics blob.
-pub(crate) fn stack_high_water() -> u32 {
-    STACK_HIGH_WATER.load(Ordering::Relaxed)
-}
-
-/// Assemble the §7.5 diagnostics input both data planes hand to
-/// [`ObjectStore::download_open`](crate::object_store::ObjectStore::download_open).
-///
-/// The link counters are the **BLE** link's on purpose: the diagnostics object describes the
-/// *device*, not the transport that asked for it, and a USB reader wants the radio's connect /
-/// disconnect history exactly as the phone does. Callers own the two identity strings because
-/// `DiagInput` borrows them.
-pub(crate) fn diag_input<'a>(firmware: &'a str, serial: &'a str, uptime_s: u32) -> DiagInput<'a> {
-    let s = crate::ble::link_counters();
-    DiagInput {
-        firmware,
-        hardware: identity::HARDWARE_REVISION,
-        serial,
-        uptime_s,
-        connects: s.0,
-        disconnects: s.1,
-        last_disconnect_reason: s.2,
-        stack_hw: stack_high_water(),
-    }
-}
-
 // ============================ Data-plane arming ============================
-
-/// A transfer a control plane validated and handed to its data plane: the echo loopback, an upload
-/// with its ready fresh [`Receiver`] (the store opened the temp), or a download (the data plane
-/// opens the source itself; opening may be slow — a CRC pre-pass — and belongs off the reply path).
-#[derive(Clone, Copy)]
-pub(crate) enum Armed {
-    Echo(TransferControl),
-    Upload(TransferControl, Receiver),
-    Download(TransferControl),
-    /// One shard of a volume set (#1039). Streams exactly as an `Upload` of a map does; the
-    /// [`obc_ble::SetPart`] rides along because `object_id` is not an id here — it says *which file
-    /// of the set this is*, and the data plane needs it to name the file at the first byte.
-    SetShard(TransferControl, Receiver, obc_ble::SetPart),
-    /// The set's terrain shard (#1044) — an OBCT raster, not an OBCM file, so it carries no
-    /// [`obc_ble::SetPart`]: there is at most one per set and its name is derived from the set id
-    /// alone (`MS{id}.OBD`).
-    SetTerrain(TransferControl, Receiver),
-    /// The set manifest — the last file of a set, and its commit point (`OBCA_Spec.md` §5.4).
-    SetManifest(TransferControl, Receiver),
-}
-
-impl Armed {
-    /// The descriptor's `object_id` — what a control plane must echo when it has to refuse an
-    /// already-classified transfer (a lost [`TRANSFER_ACTIVE`] claim), so the host can correlate the
-    /// `busy` with the descriptor it sent.
-    pub(crate) fn object_id(&self) -> u16 {
-        match self {
-            Armed::Echo(desc) | Armed::Download(desc) => desc.object_id,
-            Armed::Upload(desc, ..)
-            | Armed::SetShard(desc, ..)
-            | Armed::SetTerrain(desc, ..)
-            | Armed::SetManifest(desc, ..) => desc.object_id,
-        }
-    }
-}
-
-/// Which wire a descriptor arrived on — the *only* place transport identity crosses into the shared
-/// v1 classifier.
-///
-/// **One variant since FS7.5-c3a, and that is the cutover showing through.** The radio no longer
-/// reaches [`transfer::classify_transfer`] at all: BLE speaks protocol v4, whose engine is generic
-/// over object kinds and needs no per-wire rule. What is left is the cable, and the rule this type
-/// exists for — **a map is USB-only** (spec §10), because a map is hundreds of megabytes and over
-/// BLE that is days — is now true by construction rather than by a guard.
-///
-/// It is kept rather than dissolved into the guards it feeds because c3b deletes the classifier
-/// whole when USB cuts over, and an enum that survives one slice is a cleaner thing to lift out than
-/// a parameter threaded back through four call sites.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Transport {
-    /// The USB device plane: framed control endpoint, bulk data endpoints.
-    Usb,
-}
 
 // ============================ Map-transfer progress mirror (issue #927) ============================
 //
@@ -236,54 +151,62 @@ static MAP_PHASE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::n
 static MAP_RX_KIB: AtomicU32 = AtomicU32::new(0);
 static MAP_TOTAL_KIB: AtomicU32 = AtomicU32::new(0);
 
-/// Publish "a map transfer has started, `total_len` bytes announced" (USB data plane).
-pub(crate) fn map_transfer_started(total_len: u32) {
-    MAP_RX_KIB.store(0, Ordering::Relaxed);
-    MAP_TOTAL_KIB.store(total_len / 1024, Ordering::Relaxed);
-    MAP_PHASE.store(1, Ordering::Relaxed);
-}
-
-/// Publish the running byte count (USB data plane, once per chunk — two relaxed stores).
-pub(crate) fn map_transfer_progress(received: u32) {
-    MAP_RX_KIB.store(received / 1024, Ordering::Relaxed);
-}
-
-/// Publish the transfer's outcome. `None` clears the state entirely — which is what an abort or an
-/// unplug does, deliberately: the rider caused those and needs no card explaining it back to them.
-pub(crate) fn map_transfer_ended(outcome: Option<TransferStatus>) {
-    MAP_PHASE.store(
-        match outcome {
-            None => 0,
-            Some(TransferStatus::Committed) => 2,
-            Some(TransferStatus::CrcMismatch) => 4,
-            // `error` after the bytes landed is the commit's verdict: either the card refused the
-            // write or the payload wasn't a readable OBCM. The store logs which; the card says the
-            // one the rider can act on — re-send from a builder that targets this OBCM version.
-            Some(_) => 5,
-        },
-        Ordering::Relaxed,
-    );
-}
-
-/// Publish a storage failure (the file could not be opened or a chunk could not be appended) —
-/// distinct from a bad payload, because the fix is different: free space or a different card.
-pub(crate) fn map_transfer_storage_failed() {
-    MAP_PHASE.store(3, Ordering::Relaxed);
-}
-
-/// Publish "a file of the volume set in flight was refused **before** it streamed" (#1044).
+/// **The engine's view of an upload, as a screen** — called from `flat_store::serve` after every
+/// engine call, on whichever link made it.
 ///
-/// Every other announce-time refusal deliberately never reaches the glass: no transfer starts, so
-/// there is nothing on screen to correct and the host that asked is the one told. A set is the one
-/// case where that reasoning fails. Its files are separate transfers, so by the time the manifest
-/// is announced the last shard has already ended in [`MapTransfer::Installed`](obc_app::screen::MapTransfer::Installed)
-/// — "Map installed / Restart", on a set that is about to be refused whole and swept at the next
-/// boot. Leaving the card there is the device telling the rider the opposite of what happened.
+/// One function rather than the five edges the v1 planes published, because there are no longer five
+/// moments to publish at: the engine is a state machine one execution context holds, so the honest
+/// shape is "here is everything that is true now" rather than a sequence of notifications a plane
+/// has to remember to send on every path. That sequence is exactly how the v1 version grew a
+/// `map_transfer_refused` for the one case a plane forgot.
 ///
-/// Called only while a set session is open, which is exactly the condition under which a stale
-/// success can be on the glass.
-pub(crate) fn map_transfer_refused() {
-    MAP_PHASE.store(6, Ordering::Relaxed);
+/// The three inputs collapse to three outcomes:
+///
+/// - a **verdict** wins, whatever else is true: it is the terminal card and it was latched precisely
+///   because it is true for one instant;
+/// - otherwise a **live map upload** is a progress bar;
+/// - otherwise, if a bar is on the glass and nothing is live, the transfer went away without a
+///   verdict — a pulled cable, a dropped connection, a `CANCEL`. That clears the card rather than
+///   raising one. The rider caused all three and needs no card explaining it back to them.
+pub(crate) fn publish_map_transfer(
+    live: Option<obc_link::flat::UploadProgress>,
+    ended: Option<(ObjectKind, obc_link::flat::UploadEnd)>,
+) {
+    use obc_link::flat::UploadEnd;
+    if let Some((ObjectKind::MapShard, end)) = ended {
+        MAP_PHASE.store(
+            match end {
+                UploadEnd::Committed => 2,
+                // The payload arrived damaged: the whole-object CRC the `PUT` declared did not match
+                // what landed. Re-sending is the fix, and it is the one the card names.
+                UploadEnd::Refused(obc_link::flat::ErrorCode::ChecksumFailure) => 4,
+                // The card could not take the bytes — out of space, or media that refused a write.
+                // A different fix (free space, another card), so a different card.
+                UploadEnd::Refused(obc_link::flat::ErrorCode::NoSpace | obc_link::flat::ErrorCode::MediaIo) => 3,
+                // Everything else is the object being wrong for this device: a kind validator said
+                // no, a revision moved underneath, the store is read-only. Re-send from a builder
+                // that targets this firmware.
+                UploadEnd::Refused(_) => 5,
+            },
+            Ordering::Relaxed,
+        );
+        return;
+    }
+    match live {
+        Some(progress) if progress.kind == ObjectKind::MapShard => {
+            // KiB rather than bytes so a 4 GiB map still fits a `u32` with room, and finer than any
+            // bar 240 px can resolve.
+            MAP_RX_KIB.store((progress.received / 1024) as u32, Ordering::Relaxed);
+            MAP_TOTAL_KIB.store((progress.declared / 1024) as u32, Ordering::Relaxed);
+            MAP_PHASE.store(1, Ordering::Relaxed);
+        }
+        // Nothing live and nothing ended: if a bar is up, its transfer is gone.
+        _ => {
+            if MAP_PHASE.load(Ordering::Relaxed) == 1 {
+                MAP_PHASE.store(0, Ordering::Relaxed);
+            }
+        }
+    }
 }
 
 /// The app-facing map-transfer state, or `None` when there is nothing to show — read once per pass
@@ -320,8 +243,7 @@ pub fn clear_map_transfer() {
 
 /// One transfer at a time, **across every transport**: claimed by whichever control plane armed it,
 /// released by that transport's data plane when the transfer concludes (answered, aborted, or the
-/// channel dropped). While held, any further `transferControl` open — BLE or USB — is answered
-/// `busy`.
+/// channel dropped).
 ///
 /// Shared rather than per-transport because the resource being arbitrated is the store, not the
 /// wire: [`ObjectStore`] holds exactly one upload handle and one open download source. Two
@@ -334,30 +256,8 @@ pub fn clear_map_transfer() {
 /// [`obc_app::link_gate`], where they can be tested.
 pub(crate) static TRANSFER_ACTIVE: obc_app::TransferGate = obc_app::TransferGate::new();
 
-/// This wire's identity to the gate. [`Transport`] is the classifier's vocabulary and
-/// [`obc_app::GateOwner`] is the gate's; the two are the same fact and this is the one place they
-/// meet. `GateOwner` keeps its `Ble` variant — the gate is still a cross-transport one and c3b's
-/// USB engine will claim it beside whatever else does — but nothing on this side names it now.
-pub(crate) const fn gate_owner(transport: Transport) -> obc_app::GateOwner {
-    match transport {
-        Transport::Usb => obc_app::GateOwner::Usb,
-    }
-}
-
 // ============================ Status-message vocabulary ============================
 
 /// A `status` message's bytes, ready to hand to a transport (`&buf[..len]`). Each plane keeps one
 /// small stack buffer per message rather than a heapless alloc — every status message fits.
 pub(crate) type StatusBytes = ([u8; StatusMessage::MAX_ENCODED_LEN], usize);
-
-/// A `transferResult` status message with a zero `committed_offset` — the shape for every result a
-/// control plane answers directly (nothing durable is being reported).
-pub(crate) fn transfer_result(object_id: u16, status: TransferStatus) -> StatusBytes {
-    transfer_result_at(object_id, status, 0)
-}
-
-/// A `transferResult` carrying a real durable byte count — a committed transfer reports its
-/// `total_len`.
-pub(crate) fn transfer_result_at(object_id: u16, status: TransferStatus, committed_offset: u32) -> StatusBytes {
-    StatusMessage::TransferResult(TransferResult::new(object_id, status, committed_offset)).encode()
-}

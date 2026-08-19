@@ -1,22 +1,27 @@
 <!--
-  The routes gallery: every top-level route as a tile — thumbnail, expiry tag, serif name, facts,
-  one ⋯ menu — and the drop zone as the grid's last, ghost tile (rendered by the page through
-  `children`, so this component stays presentation-only).
+  The routes gallery: every top-level route as a tile — thumbnail, serif name, size, one ⋯ menu —
+  and the drop zone as the grid's last, ghost tile (rendered by the page through `children`, so this
+  component stays presentation-only).
 
-  The tile itself is the preview button (`Tile.svelte`); the ⋯ menu holds everything else,
-  including the six-level "Keep on device" choice. Every cable operation arrives as a callback
-  from the page, which owns the queueing. The component's own state is exactly one thing — which
-  name is being edited inline.
+  What a tile can say is exactly what a `LIST` entry carries (§3.3): the id, the revision, the
+  payload's length and CRC, the kind, the flags and a display name. A route's distance, ascent and
+  point count are in the OBCR payload, so they appear when the rider opens the preview and the
+  object is downloaded — not here, where showing them would cost a download per tile. Nothing is
+  rendered as a placeholder in their place; a figure this side cannot know is simply not a line.
+
+  The tile itself is the preview button (`Tile.svelte`); the ⋯ menu holds everything else. Every
+  cable operation arrives as a callback from the page, which owns the queueing. The component's own
+  state is exactly one thing — which name is being edited inline.
 -->
 <script lang="ts">
     import Tile from "./Tile.svelte";
     import TrackThumb from "./TrackThumb.svelte";
     import PopMenu from "./PopMenu.svelte";
     import type { TripView } from "../../lib/device/dashboard.svelte";
-    import { RETENTION_LEVELS, expiryPhrase, expiryWarns, retentionLabel } from "../../lib/device/retention";
     import type { Thumb } from "../../lib/device/thumbs.svelte";
+    import { formatBytes } from "../../lib/format";
     import { menuPick } from "../../lib/ui/menu";
-    import type { RouteListEntry } from "../../lib/usb/objects";
+    import type { CatalogEntry } from "../../lib/usb/protocol";
 
     let {
         routes,
@@ -27,51 +32,41 @@
         onrename,
         ondelete,
         onaddtotrip,
-        onsetretention,
         children,
     }: {
-        routes: readonly RouteListEntry[];
+        routes: readonly CatalogEntry[];
         /** For the "Add to …" menu items. */
         trips: readonly TripView[];
         /** The thumbnail track of a route, or null while it is still on its way. */
-        trackFor: (routeId: number) => Thumb | null;
+        trackFor: (routeId: bigint) => Thumb | null;
         /** True while a preview download holds the cable — tiles wait their turn. */
         busy?: boolean;
-        onopen: (route: RouteListEntry) => void;
-        onrename: (route: RouteListEntry, name: string) => void;
-        ondelete: (route: RouteListEntry) => void;
+        onopen: (route: CatalogEntry) => void;
+        onrename: (route: CatalogEntry, name: string) => void;
+        ondelete: (route: CatalogEntry) => void;
         /** Add a top-level route to a trip; `null` asks for a new trip around it. */
-        onaddtotrip: (route: RouteListEntry, tripId: number | null) => void;
-        /** Set the §4.4 cmd 6 retention level of a stored route. */
-        onsetretention: (route: RouteListEntry, level: number) => void;
+        onaddtotrip: (route: CatalogEntry, tripId: bigint | null) => void;
         /** The grid's last tile — the page renders the GPX drop zone here. */
         children?: import("svelte").Snippet;
     } = $props();
 
-    /** The one name being edited inline. */
-    let editing = $state<{ id: number; value: string } | null>(null);
+    /** The one name being edited inline, keyed by the route's `ObjectId`. */
+    let editing = $state<{ id: bigint; value: string } | null>(null);
 
-    function commitEdit(route: RouteListEntry) {
+    function commitEdit(route: CatalogEntry) {
         const edit = editing;
         editing = null;
         if (!edit || !edit.value.trim()) return;
-        if (edit.value.trim() !== route.name) onrename(route, edit.value);
+        if (edit.value.trim() !== route.displayName) onrename(route, edit.value);
     }
 
-    function onEditKey(event: KeyboardEvent, route: RouteListEntry) {
+    function onEditKey(event: KeyboardEvent, route: CatalogEntry) {
         if (event.key === "Enter") commitEdit(route);
         if (event.key === "Escape") editing = null;
     }
 
-    function nameOf(route: RouteListEntry): string {
-        return route.name || `Route ${route.objectId}`;
-    }
-
-    function facts(route: RouteListEntry): string {
-        const parts = [`${(route.distanceM / 1000).toFixed(1)} km`, `${route.ascentM.toLocaleString()} m up`];
-        if (route.waypointCount > 0)
-            parts.push(`${route.waypointCount} waypoint${route.waypointCount === 1 ? "" : "s"}`);
-        return parts.join(" · ");
+    function nameOf(route: CatalogEntry): string {
+        return route.displayName || `Route ${route.objectId}`;
     }
 </script>
 
@@ -82,11 +77,7 @@
                 {@const track = trackFor(route.objectId)}
                 <!-- Coral, matching the detailed preview's track — rides draw forest, so the two
                      galleries tell apart at a glance. -->
-                <TrackThumb segments={track ? [{ track, color: "var(--coral)" }] : []}>
-                    {#snippet tag()}
-                        <span class="tag" class:warn={expiryWarns(route)}>{expiryPhrase(route)}</span>
-                    {/snippet}
-                </TrackThumb>
+                <TrackThumb segments={track ? [{ track, color: "var(--coral)" }] : []} />
             {/snippet}
             <span class="grow">
                 {#if editing && editing.id === route.objectId}
@@ -102,27 +93,18 @@
                 {:else}
                     <p class="name">{nameOf(route)}</p>
                 {/if}
-                <p class="small faint">{facts(route)}</p>
+                <p class="small faint">{formatBytes(Number(route.payloadLength))}</p>
             </span>
             <PopMenu label="Route actions">
                 <button
                     type="button"
-                    onclick={(e) => menuPick(e, () => (editing = { id: route.objectId, value: route.name }))}
+                    onclick={(e) => menuPick(e, () => (editing = { id: route.objectId, value: route.displayName }))}
                 >
                     Rename…
                 </button>
-                <details>
-                    <summary>Keep on device…</summary>
-                    {#each RETENTION_LEVELS as level (level)}
-                        <button type="button" onclick={(e) => menuPick(e, () => onsetretention(route, level))}>
-                            <span class="check" class:on={route.retention === level}>✓</span>
-                            {retentionLabel(level)}
-                        </button>
-                    {/each}
-                </details>
                 {#each trips as trip (trip.objectId)}
                     <button type="button" onclick={(e) => menuPick(e, () => onaddtotrip(route, trip.objectId))}>
-                        Add to “{trip.name || `Trip ${trip.objectId}`}”
+                        Add to “{trip.displayName || `Trip ${trip.objectId}`}”
                     </button>
                 {/each}
                 <button type="button" onclick={(e) => menuPick(e, () => onaddtotrip(route, null))}>
@@ -167,32 +149,4 @@
         width: 100%;
     }
 
-    .tag {
-        font-size: 10px;
-        letter-spacing: 0.05em;
-        text-transform: uppercase;
-        border: 1px solid var(--line-strong);
-        border-radius: 999px;
-        padding: 1px 8px;
-        color: var(--ink-soft);
-        white-space: nowrap;
-        background: color-mix(in srgb, var(--panel) 80%, transparent);
-    }
-
-    .tag.warn {
-        color: var(--coral);
-        border-color: var(--coral);
-    }
-
-    .check {
-        display: inline-block;
-        width: 12px;
-        margin-left: -14px;
-        visibility: hidden;
-    }
-
-    .check.on {
-        visibility: visible;
-        color: var(--forest);
-    }
 </style>

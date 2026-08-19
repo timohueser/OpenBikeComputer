@@ -1,10 +1,12 @@
 //! Device identity and the small read-only blobs, as **plain bytes**.
 //!
 //! On BLE these are separately-addressed GATT attributes (three DIS strings, `config`,
-//! `protocolVersion`); over USB they are the payloads of selector-routed control frames. Both are
-//! the same bytes, so the codecs live here and each transport only decides how to address and
-//! deliver them. `ble::gatt` wraps the results into trouble-host's heapless-0.9 attribute types;
-//! `usb::control` copies them straight into a frame.
+//! `protocolVersion`). Over USB, since FS7.5-c3b, the device strings are the payload of §5.2.1's one
+//! EP0 vendor request and the rest is not carried at all — `config` keeps the BLE characteristic it
+//! always had, and the wire major is a descriptor fact rather than a read. Both links serve the same
+//! bytes, so the codecs live here and each transport decides only how to address and deliver them.
+//! `ble::gatt` wraps the results into trouble-host's heapless-0.9 attribute types; `usb::device_info`
+//! writes them into an EP0 response.
 
 use core::cell::{Cell, RefCell};
 
@@ -118,7 +120,7 @@ pub(crate) fn revision_from(installed: Option<&ImageHeader>) -> heapless::String
 /// The **Firmware Revision** string of the running image, e.g. `v1.3.0` after an installed update
 /// and `ca9b336` on a probe-flashed build — [`revision_of`] applied to the boot-state snapshot
 /// [`seed_installed_version`] took. This is the *only* place the running image's version is
-/// published: BLE DIS `0x2A26` and the USB `DEVICE_INFO_READ` frame are the same bytes, and it is
+/// published: BLE DIS `0x2A26` and USB's §5.2.1 EP0 vendor request are the same bytes, and it is
 /// never duplicated into the Config object, where the two could disagree.
 pub(crate) fn firmware_revision() -> heapless::String<FW_VERSION_LEN> {
     let (buf, len) = INSTALLED_VERSION.lock(|cell| cell.get());
@@ -170,66 +172,5 @@ pub(crate) fn apply_config_write(data: &[u8], store: &RefCell<ObjectStore>, shar
             Err(_) => false,
         },
         None => false,
-    }
-}
-
-/// The §1 identity read (V2 / #632; card-resident epoch #776; OBCM version E1 / #911; capability
-/// word WX3 / #1188). With a store epoch (`Some`) it is the full 11-byte
-/// [`VersionRead`](obc_ble::VersionRead) — `version u16 ·
-/// store_epoch u32 · obcm_version u8 · feature_bits u32`. With **no store** (`None` — a no-card boot has no epoch, and
-/// 0 is a *legal* epoch we must never fabricate) it is the 2-byte **version-only** form
-/// (`PROTOCOL_VERSION` LE): the peer reads a short value, decodes `storeEpoch = nil`, and
-/// fail-closes the ack. Returned as `(buf, len)` so the caller serves whichever length applies.
-///
-/// `obcm_version` is read straight off [`obc_formats::obcm::VERSION`] — the same constant the map
-/// reader validates every `.obcm` header against — so what the device *claims* to read and what it
-/// *does* read cannot drift: a format bump moves both or neither. It is deliberately not a
-/// hand-kept number here, and not derived from the firmware-revision string, which maps to a format
-/// version only through a table that exists nowhere. A host uses it for `OBCC_Spec.md` §6(c): don't
-/// offer a map artifact this device can't read.
-///
-/// The store-less read carries no `obcm_version` even though the device knows it — the fields are
-/// positional, `store_epoch` has no absent encoding, and a device with no card has nowhere to put a
-/// map anyway (see the [`VersionRead`](obc_ble::VersionRead) docs).
-/// The capability word this build announces (§1, §11).
-///
-/// [`FEATURE_WEATHER`](obc_ble::FEATURE_WEATHER) is set **by WX8 (#1193), in the same change that
-/// makes the contract true** — exactly the §11.7 rule: this branch routes type-`20` uploads into
-/// the WX7 dual-slot store, persists + honours the §7.3 `weather_refresh` field, populates the real
-/// request context, and runs the due scheduler that raises the advertising hint. A phone that reads
-/// the bit and runs the fetch-build-upload loop now lands a bundle the rider actually sees.
-///
-/// Gated on the `ble` feature because the bit covers the **whole** §11 contract, and the service /
-/// context read / advertising half of it lives in the radio: a radio-less build accepting the
-/// layouts is not the contract, and §11.7 is explicit that announcing nothing is the only accurate
-/// answer there. (Every shipping image carries `ble`; the gate exists for the constrained dev
-/// profiles.)
-const fn feature_bits() -> u32 {
-    if cfg!(feature = "ble") {
-        obc_ble::FEATURE_WEATHER
-    } else {
-        0
-    }
-}
-
-pub(crate) fn version_read_bytes(store_epoch: Option<u32>) -> ([u8; obc_ble::VersionRead::ENCODED_LEN], usize) {
-    let mut buf = [0u8; obc_ble::VersionRead::ENCODED_LEN];
-    match store_epoch {
-        Some(epoch) => {
-            let vr = obc_ble::VersionRead {
-                version: obc_ble::PROTOCOL_VERSION,
-                store_epoch: epoch,
-                obcm_version: Some(obc_formats::obcm::VERSION),
-                feature_bits: Some(feature_bits()),
-            };
-            let (encoded, len) = vr.encode();
-            buf.copy_from_slice(&encoded);
-            (buf, len)
-        }
-        None => {
-            let v = obc_ble::PROTOCOL_VERSION.to_le_bytes();
-            buf[..v.len()].copy_from_slice(&v);
-            (buf, v.len())
-        }
     }
 }

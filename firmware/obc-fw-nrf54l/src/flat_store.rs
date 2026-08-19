@@ -53,12 +53,13 @@
 //! than a policy of this module. What the *ordering* buys is only honest reporting — see
 //! [`crate::sd::bring_up_card`] for why FAT must not be tried first.
 //!
-//! ## What c1 does not do
+//! ## What FS7.5 finished here
 //!
-//! The renderer and the router still read through `sd.rs` (that is c2), and every transport still
-//! writes through the v1 object store (that is c3). So a **flat card boots to a fault screen** with
-//! the truth on RTT: the store mounted, the catalog is there, and this build cannot yet draw from
-//! it. See [`boot_fault_for`] for why that fault is the honest one rather than a new screen.
+//! c1 mounted and stopped; c2 pointed the renderer at [`open_map`]; c3a and c3b put both links'
+//! protocol-v4 engine inside [`storage_task`], which is why the engine is a field of the one task
+//! that writes rather than a value a transport owns. What is still owed is FS8's ride journal
+//! (#1390) — nothing records to a flat card yet — and FS11's (#1393) retirement of the FAT read
+//! path.
 
 use core::mem::MaybeUninit;
 
@@ -66,7 +67,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Channel, Receiver, Sender};
 use embassy_sync::signal::Signal;
 
-use obc_link::flat::{Ceilings, Engine, Policy, Reaction, RequestId};
+use obc_link::flat::{Ceilings, Engine, Link, Policy, Reaction, RequestId};
 use obc_storage::flat::store::MAX_BATCH;
 use obc_storage::flat::{
     Allocation, BlockDevice, EntryMeta, FlatStore, Handle, Mode, Mutation, ObjectKind, RideCheckpoint, Store as _,
@@ -327,13 +328,29 @@ pub(crate) struct Catalog {
 
 // ══════════════════════════ the storage task ══════════════════════════
 
+/// **How many tasks hold a [`Writer`]** — the BLE v4 adapter and the USB v4 adapter.
+///
+/// A census, not a guess, and [`REQUEST_QUEUE`] is derived from it. FS8's ride journal is the next
+/// entry.
+const SENDERS: usize = 2;
+
 /// Write requests queued at once.
 ///
-/// **Two, and the small number is the point.** Writes are serialized by construction, so queue
-/// depth buys nothing but latency hiding: one slot is in service and one is waiting, and a third
-/// sender simply awaits its turn in `Sender::send` rather than being refused. A deeper queue would
-/// only park more messages — and a `Job` is not small (see [`Request`]), so depth is `.bss`.
-const REQUEST_QUEUE: usize = 2;
+/// **Two per sender, and that number is load-bearing rather than generous.** Each link has at most
+/// two jobs on this queue at one instant: the one its lane is awaiting, and at most one *orphan* — a
+/// job whose caller's future was dropped between the send and the answer, which a link teardown
+/// during a long finalizing commit genuinely does. Nothing produces a third, because a lane holds
+/// one buffer and cannot issue a second call without it.
+///
+/// Sizing to that census is what keeps the queue from ever filling, and a queue that cannot fill is
+/// the difference between a recoverable orphan and a lost one: `Sender::send` on a full queue
+/// *parks*, and a `Writer::call` future dropped while parked never enqueues its job at all — taking
+/// the `&'static mut` reaction buffer inside it with it, permanently, since nothing may re-derive
+/// one. [`Lane::reclaim`] rests on this; see there.
+///
+/// c3a's two slots were sized for one sender and said so. A `Job` is not small (see [`Request`]), so
+/// this is `.bss` and the growth is priced in the resource baseline rather than waved through.
+const REQUEST_QUEUE: usize = 2 * SENDERS;
 
 /// The queue's resident cost, for the budget table in `main.rs`. Named rather than left anonymous
 /// because it is the one part of this layer whose size is a *design* choice rather than a
@@ -355,13 +372,10 @@ pub(crate) const REQUEST_QUEUE_BYTES: usize =
 /// write's bytes come from a `'static` staging buffer — which is what c3's transports already have
 /// (the USB plane stages into the scratch arena).
 ///
-/// **The whole enum is dead until c3, and linked as nothing.** c1 stands the write half up and
-/// measures it; the shipping callers — the transports, the ride journal — arrive in c3. With no
-/// caller the linker keeps none of it, so the cost of the surface existing early is zero bytes, and
-/// the benefit is that c2/c3 plug into a serialization that has already been on glass. Even under
-/// `flat-exercise`, `Journal` and `Close` have no caller: the ride journal is c3's, and nothing c1
-/// opens outlives its `with_source` scope. They are here because the seam is six operations, and a
-/// task that served four of them would not be the write half.
+/// **`Journal` and `Close` still have no caller, and are here anyway.** The ride journal is FS8's
+/// (#1390) and nothing this image opens outlives its `with_source` scope. They stay because the
+/// seam is six operations and a task that served four of them would not be the write half; with no
+/// caller the linker keeps neither, so the cost is zero bytes.
 ///
 /// The variants also differ in size by an order of magnitude — a `Commit` carries up to
 /// [`MAX_BATCH`] `Mutation`s and each embeds an `EntryMeta` with §9's 48-byte display name, so the
@@ -400,23 +414,27 @@ pub(crate) enum Request {
     /// borrow rather than a copy for the same reason [`Request::Write`]'s bytes are: a request
     /// outlives the statement that sent it, and a `LIST` page or a stream record is up to a link
     /// ceiling of bytes that would otherwise be memcpy'd twice per record.
-    Control { record: &'static [u8], out: &'static mut [u8] },
+    Control { link: Link, record: &'static [u8], out: &'static mut [u8] },
     /// One whole stream record (§3.8): the 16-byte frame followed by exactly its payload.
-    Stream { record: &'static [u8], out: &'static mut [u8] },
+    Stream { link: Link, record: &'static [u8], out: &'static mut [u8] },
     /// Pump the engine once — a live `GET`'s next record, or an error owed to a dropped transfer.
     /// An adapter repeats this until the reaction is [`Reaction::Idle`]; a driver that stops pumping
     /// stalls a download.
-    Pump { out: &'static mut [u8] },
-    /// A link came up with these record ceilings (§5.1, §5.2). Releases whatever the previous link
-    /// held and re-pins the engine to what *this* link negotiated.
+    Pump { link: Link, out: &'static mut [u8] },
+    /// **This** link came up with these record ceilings (§5.1, §5.2).
+    ///
+    /// It re-pins `link`'s ceilings and releases `link`'s transfer if it had one — and touches
+    /// nothing belonging to the other link, which is the point. See the arm in [`serve`] for the
+    /// bug that shape exists to prevent.
     ///
     /// It carries a **validated** [`Ceilings`], not two numbers, so §5.1's floor refusal never
     /// reaches this queue: [`Ceilings::for_ble`] is where a link is judged, the adapter closes the
     /// channel on `None`, and nothing here has to answer a transport verdict with a `StoreError`.
-    LinkUp { ceilings: Ceilings },
-    /// §3.8's third form of cancel: the link went away. Answers nobody, because there is nobody
-    /// left to answer.
-    LinkLost,
+    LinkUp { link: Link, ceilings: Ceilings },
+    /// §3.8's third form of cancel: **this** link went away. Answers nobody, because there is nobody
+    /// left to answer — and releases only what that link held, so an unplugged cable is not a reason
+    /// to kill a phone's download.
+    LinkLost { link: Link },
     /// The live transfer's `RequestId`, if one owns the engine.
     ///
     /// The one *read* on this queue, and it earns its place: §5's cross-channel ordering makes an
@@ -428,11 +446,8 @@ pub(crate) enum Request {
 
 /// What one [`Request`] produced.
 ///
-/// **Dead in the default build until c3, and linked as nothing.** c1 stands the write half up and
-/// measures it; the shipping callers — the transports, the ride journal — arrive in c3. With no
-/// caller the linker keeps none of this, so the cost of the surface existing early is zero bytes and
-/// the benefit is that c2/c3 plug into a serialization that has already been on glass. The
-/// `flat-exercise` build is what exercises it today.
+/// Every variant has a caller since c3a except the two [`Request`] names above, and the linker keeps
+/// only what is reached.
 #[allow(dead_code)]
 pub(crate) enum Outcome {
     Allocated(Allocation),
@@ -487,15 +502,11 @@ static REQUESTS: Channel<CriticalSectionRawMutex, Job, REQUEST_QUEUE> = Channel:
 /// what makes "there is exactly one execution context that writes" a property of the type rather
 /// than a convention.
 ///
-/// Like [`Request`], it has no shipping caller until c3; the `flat-exercise` build is what drives it
-/// today, and the linker keeps none of it in a build with neither.
 #[derive(Clone, Copy)]
-#[cfg_attr(not(feature = "flat-exercise"), allow(dead_code))]
 pub(crate) struct Writer {
     requests: Sender<'static, CriticalSectionRawMutex, Job, REQUEST_QUEUE>,
 }
 
-#[cfg_attr(not(feature = "flat-exercise"), allow(dead_code))]
 impl Writer {
     /// Send `request` and wait for the store's answer.
     ///
@@ -534,6 +545,115 @@ impl Writer {
     }
 }
 
+// ══════════════════════════ the lane ══════════════════════════
+
+/// **One link's half of a round trip to the engine**: the buffer it lends, the slot the answer comes
+/// back in, and nothing else.
+///
+/// One lane per link, because two links are live at once — a phone in a pocket and a cable in J3 —
+/// and every part of a round trip is per-caller: the reaction buffer (§5's ceilings differ by two
+/// orders of magnitude between them), the reply slot ([`Writer::call`]'s one-slot-per-concurrently-
+/// live-call contract), and the recovery below.
+///
+/// The buffer is *lent* rather than copied — it crosses the queue inside the request and comes back
+/// inside the answer, which is what stops a `LIST` page being memcpy'd twice per record — so a
+/// `None` here means a previous call's future was dropped between the send and the answer.
+/// [`Lane::reclaim`] is how that is recovered.
+///
+/// Shared between the two adapters rather than written twice, so that the argument at `reclaim` has
+/// one home and cannot drift into two versions that disagree.
+pub(crate) struct Lane {
+    out: Option<&'static mut [u8]>,
+    reply: &'static Reply,
+    /// Which link this is, for the log lines. The adapters are otherwise indistinguishable here.
+    who: &'static str,
+}
+
+/// How long [`Lane::reclaim`] waits for an orphaned answer before giving the link up.
+///
+/// It is waiting on the storage task to finish jobs already in the queue, so the bound is a
+/// *scheduling* one — and the longest single thing that task does is a commit, ~250 ms at 1,024
+/// entries (`storage_task`'s own note). Two seconds is that with room; a link that has not been
+/// answered by then is not going to be, and refusing it is better than parking a transport forever.
+const RECLAIM_TIMEOUT: embassy_time::Duration = embassy_time::Duration::from_secs(2);
+
+impl Lane {
+    /// Build a lane over a caller-owned buffer and reply slot. Called once per link, per image.
+    pub(crate) fn new(out: &'static mut [u8], reply: &'static Reply, who: &'static str) -> Self {
+        Lane { out: Some(out), reply, who }
+    }
+
+    /// **Recover the buffer from a call whose future was dropped.**
+    ///
+    /// c3a inferred this from the queue's service order: requests are served FIFO by one consumer,
+    /// so once *any* later call had been answered, every earlier job had run and an orphan could
+    /// only be sitting in the reply slot. That was an argument about the **queue**, and it named
+    /// this slice as owing its re-establishment, because a second sender can interleave a job
+    /// between the orphan and the reclaiming call.
+    ///
+    /// It is re-established by not needing it. Three facts, each local to one lane:
+    ///
+    /// 1. **A reply slot has exactly one caller.** Each is a `static` private to its adapter and is
+    ///    named by that adapter alone, so whatever arrives in this slot is *this* lane's orphan and
+    ///    no other link's. The buffers are disjoint statics too, so a mis-reclaim could not even
+    ///    type-check into the wrong lane. The other link's activity is invisible here, which is the
+    ///    whole property the queue argument could not supply once the queue had two senders.
+    /// 2. **The orphan is always in the queue.** [`REQUEST_QUEUE`] is sized to the sender census, so
+    ///    `Sender::send` never parks, so a dropped `Writer::call` future is always dropped *after*
+    ///    its job was enqueued. A job in the queue is a job that will be served and answered.
+    /// 3. **So this is an observation, not an inference.** It waits on its own slot rather than
+    ///    reasoning about when someone else's call proves the orphan ran. (1) says what arrives is
+    ///    ours; (2) says something arrives.
+    ///
+    /// The wait is bounded anyway: (2) is an argument about a constant two files can change
+    /// independently, and a transport that parked forever on it would be a watchdog reset rather
+    /// than a log line.
+    pub(crate) async fn reclaim(&mut self) {
+        if self.out.is_some() {
+            return;
+        }
+        match embassy_time::with_timeout(RECLAIM_TIMEOUT, self.reply.wait()).await {
+            Ok((_, Ok(Outcome::Reacted { out, .. }))) => {
+                defmt::info!("flat/v4: [{}] reclaimed the reaction buffer from an abandoned call", self.who);
+                self.out = Some(out);
+            }
+            Ok(_) => defmt::warn!("flat/v4: [{}] an abandoned call left no buffer to reclaim", self.who),
+            Err(_) => {
+                defmt::warn!("flat/v4: [{}] no orphaned answer arrived — this link cannot serve", self.who)
+            }
+        }
+    }
+
+    /// Hand one request to the engine and take the buffer back with its answer.
+    pub(crate) async fn call(
+        &mut self,
+        writer: &Writer,
+        make: impl FnOnce(&'static mut [u8]) -> Request,
+    ) -> Option<Reaction> {
+        let out = self.out.take()?;
+        match writer.call(make(out), self.reply).await {
+            Ok(Outcome::Reacted { reaction, out }) => {
+                self.out = Some(out);
+                Some(reaction)
+            }
+            // `serve` answers these three requests with `Reacted` and nothing else, so the buffer is
+            // gone only if that stopped being true. Report rather than panic: these are link tasks.
+            _ => {
+                defmt::warn!("flat/v4: [{}] the engine answered a record with the wrong shape — lane closed", self.who);
+                None
+            }
+        }
+    }
+
+    /// The bytes a [`Reaction::Send`] named.
+    pub(crate) fn sent(&self, len: usize) -> &[u8] {
+        match &self.out {
+            Some(out) => &out[..len.min(out.len())],
+            None => &[],
+        }
+    }
+}
+
 /// True once [`arm`] has handed the receive end to the storage task.
 static ARMED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
@@ -545,7 +665,6 @@ static ARMED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::n
 /// FAT card no storage task is ever spawned, and a c3 caller that sent into that channel would fill
 /// two slots and then wait **forever** in `Sender::send` — no timeout, no error, no log. A write
 /// path that cannot run should say so at the first call, not wedge the plane that made it.
-#[cfg_attr(not(feature = "flat-exercise"), allow(dead_code))]
 pub(crate) fn writer() -> Option<Writer> {
     ARMED.load(core::sync::atomic::Ordering::Relaxed).then(|| Writer { requests: REQUESTS.sender() })
 }
@@ -571,8 +690,13 @@ pub(crate) fn writer() -> Option<Writer> {
 /// necessary and, on a single-threaded executor, not sufficient: the store would also have to hand
 /// control back between commands. Closing that needs a yield seam in `obc-storage` — a resumable
 /// commit, an async device, or a per-command callback — which is not this slice's and is not
-/// smuggled in as a lock here. **The follow-up is recorded on #1420**, with the reasoning and the
-/// measurement that should size it; `--features flat-exercise` is what produces that measurement.
+/// smuggled in as a lock here. **That follow-up is closed, not built** (#1420, item I2): the board
+/// session found no felt stall on glass, and the speculative-capability rule says a mechanism bought
+/// against a cost nobody has measured is a mechanism that should not exist. The harness that would
+/// have measured it — an `interleave_exercise` task behind a `flat-exercise` feature — is deleted
+/// with the question, per the owner's rule that scaffolding is stripped when its purpose is served
+/// rather than kept as a permanent fixture. If a stall ever shows up on a real ride, both come back
+/// out of git history with the reasoning intact.
 #[embassy_executor::task]
 pub(crate) async fn storage_task(
     store: &'static FlatStore<FlatCard>,
@@ -633,39 +757,71 @@ fn serve(
             store.close(handle);
             Ok(Outcome::Done)
         }
-        Request::Control { record, out } => {
-            let reaction = engine.on_control(store, policy, record, out);
+        Request::Control { link, record, out } => {
+            let reaction = engine.on_control(link, store, policy, record, out);
+            publish_upload(engine);
             Ok(Outcome::Reacted { reaction, out })
         }
-        Request::Stream { record, out } => {
-            let reaction = engine.on_stream(store, policy, record, out);
+        Request::Stream { link, record, out } => {
+            let reaction = engine.on_stream(link, store, policy, record, out);
+            publish_upload(engine);
             Ok(Outcome::Reacted { reaction, out })
         }
-        Request::Pump { out } => {
-            let reaction = engine.poll(store, out);
+        Request::Pump { link, out } => {
+            let reaction = engine.poll(link, store, out);
+            publish_upload(engine);
             Ok(Outcome::Reacted { reaction, out })
         }
-        Request::LinkUp { ceilings } => {
-            // A new link has no live transfer, and the old one's holds must go back before the
-            // engine forgets them: `on_link_lost` is the release, and the rebuild is what re-pins
-            // the ceilings a *negotiated* ATT MTU decides. Rebuilding in place rather than mutating
-            // is deliberate — `Ceilings` has no setter, and an engine whose ceilings changed under a
-            // live transfer would frame the rest of it against a link that no longer exists.
-            engine.on_link_lost(store);
-            *engine = Engine::new(ceilings);
+        Request::LinkUp { link, ceilings } => {
+            // **Scoped to `link`, and that is the whole of FS7.5-c3b's P1 fix.** This used to
+            // release the live transfer and rebuild the engine outright, which was right while one
+            // link existed: there was nothing else for it to disturb. With two — a phone in a pocket
+            // and a cable in J3, both spawned side by side in `main` — it meant a reconnecting
+            // radio destroyed a cable's twenty-minute map upload with no answer to the client
+            // sending it, *and* re-pinned the shared stream ceiling to the radio's 245 bytes so the
+            // cable's next 4,112-byte record died as over-ceiling. The reverse direction broke the
+            // radio's framing the same way.
+            //
+            // `Engine::on_link_up` now touches only this link's ceilings and only this link's
+            // transfer, and every transfer carries the ceilings it was admitted under. The
+            // newcomer's own `PUT` then meets §1's one-at-a-time rule the ordinary way — `busy`,
+            // with the live `RequestId` as context, whichever wire asked, which is exactly what the
+            // spec commit's §10 sentence promises.
+            engine.on_link_up(link, store, ceilings);
             defmt::info!(
-                "flat/v4: link up — control {=usize} B, stream {=usize} B",
+                "flat/v4: link up ({}) — control {=usize} B, stream {=usize} B",
+                match link {
+                    Link::Ble => "ble",
+                    Link::Usb => "usb",
+                },
                 ceilings.control(),
                 ceilings.stream()
             );
             Ok(Outcome::Done)
         }
-        Request::LinkLost => {
-            engine.on_link_lost(store);
+        Request::LinkLost { link } => {
+            engine.on_link_lost(link, store);
+            publish_upload(engine);
             Ok(Outcome::Done)
         }
         Request::LiveTransfer => Ok(Outcome::Live(engine.live_transfer())),
     }
+}
+
+/// **Push what the engine knows about a live upload to the glass** — issue #927's progress card,
+/// re-sourced.
+///
+/// It runs here, beside the engine, rather than in an adapter, and both halves of that are
+/// deliberate. Beside the engine, because this is the one execution context that holds one, so the
+/// read is a field access rather than a round trip on the very queue a multi-megabyte upload is
+/// saturating. Not in an adapter, because §5 says an adapter "never parses a payload" and the kind
+/// and the declared length are payload — the engine is the layer entitled to know them.
+///
+/// A rider sees a card for a **map** and nothing else, which is not a filter but the truth: a route
+/// lands in a second and a weather bundle is invisible by design, so a progress bar for either would
+/// be a flicker asking to be dismissed. `crate::link` owns the mapping from these facts to a screen.
+fn publish_upload(engine: &mut BoardEngine) {
+    crate::link::publish_map_transfer(engine.live_upload(), engine.take_upload_end());
 }
 
 // ══════════════════════════ the protocol-v4 engine ══════════════════════════
@@ -698,27 +854,21 @@ pub(crate) const ENGINE_BYTES: usize = core::mem::size_of::<BoardEngine>();
 ///
 /// `#[inline(never)]` so the constructor's frame is a transient sibling rather than part of the
 /// task's poll frame. It is small — [`ENGINE_STAGE`] is 512 B and the rest is a live-transfer record
-/// — but the rule is about *where a value is built*, not how big it is, and c3b raises the stage.
+/// — but the rule is about *where a value is built*, not how big it is.
 ///
-/// The initial ceilings are the device's **preferred** BLE link (§5.1: `ATT_MTU - 3` at the
-/// preferred 247-byte MTU, and a CoC SDU of the packet pool's MTU − 6). They are re-pinned per
-/// connection by [`Request::LinkUp`], which is what makes a link that negotiated something smaller
-/// correct rather than merely usual.
+/// **It comes up with no link up and therefore no ceilings**, which is the honest starting state of
+/// a device nobody has connected to: each adapter announces itself with [`Request::LinkUp`] and is
+/// served only while it has. The engine used to be built with the radio's preferred numbers, which
+/// was a guess that happened to be right for one link and wrong for the other the moment USB
+/// arrived.
 ///
 /// # Safety
 /// Sole writer of [`ENGINE`]; called exactly once, from [`storage_task`], which is spawned once.
 #[inline(never)]
 fn engine_slot() -> &'static mut BoardEngine {
-    let ceilings = Ceilings::new(PREFERRED_CONTROL_CEILING, PREFERRED_STREAM_CEILING)
-        .expect("the device's preferred link is above the protocol floor");
     // SAFETY: sole writer; `storage_task` is spawned exactly once and nothing else names this slot.
-    unsafe { crate::init_static(core::ptr::addr_of_mut!(ENGINE), Engine::new(ceilings)) }
+    unsafe { crate::init_static(core::ptr::addr_of_mut!(ENGINE), Engine::new()) }
 }
-
-/// §5.1's control ceiling at the device's preferred 247-byte ATT MTU.
-pub(crate) const PREFERRED_CONTROL_CEILING: usize = 244;
-/// The CoC SDU the packet pool yields (`DefaultPacketPool::MTU - 6`).
-pub(crate) const PREFERRED_STREAM_CEILING: usize = 245;
 
 /// The two decisions the engine cannot make for itself (`FLAT_Store_Protocol.md` §3.6, §4).
 ///
@@ -758,8 +908,8 @@ pub(crate) fn arm() -> Receiver<'static, CriticalSectionRawMutex, Job, REQUEST_Q
 
 // ══════════════════════════ the boot report ══════════════════════════
 
-/// What the mount found, on RTT. **This is where a flat card's truth lives in c1** — the glass gets
-/// the honest fault screen ([`boot_fault_for`]) and no dev-window prose.
+/// What the mount found, on RTT. The same catalog drives the boot fault and the flat map reader, so
+/// the log, glass and served object all describe one mount result.
 ///
 /// It returns the [`Catalog`] its walk produced, so `boot_fault_for` decides from this listing
 /// rather than taking a second one off the card.
@@ -808,13 +958,11 @@ pub(crate) fn report(store: &FlatStore<FlatCard>, mount_us: u64) -> Catalog {
         other,
         listing_complete,
     );
-    defmt::warn!("flat: c1 mounts and does not render — the renderer and the transports cut over in c2/c3");
     Catalog { maps: usize::from(maps), listing_complete }
 }
 
 /// The metadata of the first object of `kind`, or `None`. The one catalog helper the read path
-/// needs: [`open_map`] resolves the map with it, and the interleave exercise picks a victim to read
-/// while a commit runs.
+/// needs: [`open_map`] resolves the map with it.
 pub(crate) fn first_of(store: &FlatStore<FlatCard>, kind: ObjectKind) -> Option<EntryMeta> {
     store.entries().find(|entry| entry.kind == kind)
 }
@@ -852,10 +1000,10 @@ pub(crate) fn map_name() -> &'static str {
 /// say so. Everything else — an object that will not open, a map whose header will not parse — is
 /// MAP UNREADABLE, decided further up exactly as it is on the FAT arm.
 ///
-/// **The first map object wins, and there is deliberately no selection rule yet.** The FAT arm has
-/// one (`MAP.SEL`, then the newest upload, then anything readable) because a FAT card accumulates
-/// maps; nothing writes a second map to a flat store until c3's transports exist, so a rule here
-/// would be a policy with no case to decide. c3 brings the objects and the rule together.
+/// **The active map is the lowest-`ObjectId` `MapShard`.** Catalog iteration is ordered by
+/// `(ObjectId, Revision)`, and `first_of` resolves that object's head, so selection is deterministic
+/// even on a card that already contains several maps. Companion map sends follow the same rule:
+/// replace this object using its listed revision, and create only when no map exists.
 ///
 /// `#[inline(never)]` for the reason every constructor on this boot path is: a `StoreSource` built
 /// by value inside the boot task's async block is a permanent slot in that task's poll frame
@@ -899,209 +1047,4 @@ pub(crate) fn open_map(store: &'static FlatStore<FlatCard>) -> Option<&'static d
             None
         }
     }
-}
-
-// ══════════════════════ the on-glass interleave exercise ══════════════════════
-
-/// The write-path exercise and the interleaving measurement (`--features flat-exercise`).
-///
-/// **Never in a shipping image.** It writes to the card in the slot and it is a measurement, so it
-/// sits behind a feature that is off by default and absent from both profiles
-/// `resource_guard.py board` gates. It is also not a second bench: `bin/flat_store_bench.rs` already
-/// measures the store's own costs far better than this can, and deliberately measures them with
-/// *nothing else running*. This exercises the one thing a bench structurally cannot — the store
-/// under a **real scheduler**, with a reader task and the storage task competing for one executor.
-///
-/// ## What it asks, and why it is asked this way
-///
-/// The ruling says a commit's ~36 card commands should let a render read interleave into their gaps,
-/// so that the worst render stall is one command (10–20 ms) rather than one commit (~250 ms at 1,024
-/// entries). That claim has two halves and they can disagree:
-///
-/// - **The store's half** — the state borrow is per card command, so a reader *may* be served
-///   between any two of them. Proven off-board and pinned by `flat::granularity`; nothing on glass
-///   is needed for it and nothing on glass could improve on it.
-/// - **The scheduler's half** — the reader has to actually *run* between two of those commands.
-///   Only glass answers that, because it is a fact about this executor and this task set.
-///
-/// So the measurement is deliberately the crudest honest one: a reader on a fixed cadence, and the
-/// figure is the **longest gap between two of its completed reads** while one commit runs. A gap
-/// near one card command means the halves agree; a gap near the whole commit means they do not, and
-/// the difference is the executor's, not the store's.
-///
-/// The counters live in statics rather than in the reader's own frame **on purpose**: `select` drops
-/// the losing branch, and the losing branch here is always the reader — a figure that only survived
-/// when the measurement failed would be no figure at all.
-#[cfg(feature = "flat-exercise")]
-mod exercise {
-    use core::sync::atomic::{AtomicU32, Ordering};
-
-    // `u32` microseconds throughout: this part has no 64-bit atomics, and the widest figure the
-    // exercise can produce is one commit — ~250 ms at 1,024 entries, four orders of magnitude below
-    // a `u32`'s 71 minutes. A run that overflowed one would have failed long before reporting.
-
-    /// Longest gap between two completed probe reads, microseconds. **The figure.**
-    pub(super) static WORST_GAP_US: AtomicU32 = AtomicU32::new(0);
-    /// Longest single probe read, microseconds — the control: a gap is only interesting if it is
-    /// much larger than a read.
-    pub(super) static WORST_READ_US: AtomicU32 = AtomicU32::new(0);
-    /// Probe reads completed while the commit ran.
-    pub(super) static READS: AtomicU32 = AtomicU32::new(0);
-
-    pub(super) fn note(gap_us: u64, read_us: u64) {
-        WORST_GAP_US.fetch_max(gap_us.try_into().unwrap_or(u32::MAX), Ordering::Relaxed);
-        WORST_READ_US.fetch_max(read_us.try_into().unwrap_or(u32::MAX), Ordering::Relaxed);
-        READS.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub(super) fn taken() -> (u32, u32, u32) {
-        (READS.load(Ordering::Relaxed), WORST_GAP_US.load(Ordering::Relaxed), WORST_READ_US.load(Ordering::Relaxed))
-    }
-}
-
-#[cfg(feature = "flat-exercise")]
-#[embassy_executor::task]
-pub(crate) async fn interleave_exercise(store: &'static FlatStore<FlatCard>, writer: Writer) {
-    use embassy_futures::select::{select, Either};
-    use embassy_time::{Instant, Timer};
-    use obc_formats::io::ByteSource as _;
-    use obc_storage::flat::{DisplayName, EntryFlags, PutSource, Revision};
-
-    /// The reader's cadence. Fine enough that a stall is measured rather than inferred, coarse
-    /// enough that the reads are not themselves what keeps the card busy.
-    const READ_PERIOD_MS: u64 = 2;
-    /// One probe read: a single block, the smallest thing the card can be asked for — so the figure
-    /// is a scheduling measurement and not a transfer-size one.
-    const PROBE_LEN: usize = 512;
-    /// The exercise's payload. `'static` because a write request outlives the statement that sent it
-    /// (see [`Request`]), which is the same reason c3's transports will hand over arena slices.
-    static PAYLOAD: [u8; 512] = [0xC1; 512];
-    /// This call site's reply slot. One per site, so two callers can never collect each other's.
-    static REPLY: Reply = Signal::new();
-
-    // Read whatever the card already holds. A store with no objects still exercises the commit path;
-    // it just cannot exercise a reader beside it, and the report says so rather than inventing one.
-    let subject = first_of(store, ObjectKind::MapShard)
-        .or_else(|| first_of(store, ObjectKind::Route))
-        .or_else(|| store.entries().next());
-    let Some(subject) = subject else {
-        defmt::warn!("flat/exercise: the catalog is empty — no object to read, so no interleaving figure");
-        return;
-    };
-    let probe = PROBE_LEN.min(subject.payload_len as usize).max(1);
-    defmt::info!(
-        "flat/exercise: probing object {=u64} with {=usize} B reads every {=u64} ms while one commit runs at {=u16} entries",
-        subject.id.0,
-        probe,
-        READ_PERIOD_MS,
-        store.entry_count(),
-    );
-
-    // The reader. The figure is the gap between two *completed* reads, not a read's own duration: a
-    // stall shows up as one long gap whether the reader was blocked before its call or inside it,
-    // which is exactly the property under test.
-    let reader = async {
-        let mut buf = [0u8; PROBE_LEN];
-        let mut last = Instant::now();
-        loop {
-            let started = Instant::now();
-            let outcome = store.with_source(subject.id, None, |source| source.read_at(0, &mut buf[..probe]));
-            let now = Instant::now();
-            // Both halves, and the distinction is the useful part: the outer `Err` is the open being
-            // refused (no hold row, or the object gone), the inner one is the read itself. A gap
-            // measured across a read that never happened would be a measurement of nothing.
-            match outcome {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => {
-                    defmt::warn!(
-                        "flat/exercise: the probe read failed ({}) — the reader stops here",
-                        defmt::Debug2Format(&error)
-                    );
-                    return;
-                }
-                Err(error) => {
-                    defmt::warn!(
-                        "flat/exercise: the probe object would not open ({}) — the reader stops here",
-                        defmt::Debug2Format(&error)
-                    );
-                    return;
-                }
-            }
-            exercise::note((now - last).as_micros(), (now - started).as_micros());
-            last = now;
-            Timer::after_millis(READ_PERIOD_MS).await;
-        }
-    };
-
-    // The writer: one publication through the task — allocate, write, commit — with only the commit
-    // on the clock, because that is the step §5.5 puts a figure on and the one the reader races.
-    let commit = async {
-        let allocation = match writer.call(Request::Allocate { bytes: PAYLOAD.len() as u64 }, &REPLY).await {
-            Ok(Outcome::Allocated(allocation)) => allocation,
-            Err(error) => {
-                defmt::error!("flat/exercise: allocate refused ({})", defmt::Debug2Format(&error));
-                return None;
-            }
-            Ok(_) => return None,
-        };
-        let allocation = match writer.call(Request::Write { allocation, bytes: &PAYLOAD }, &REPLY).await {
-            Ok(Outcome::Wrote(allocation)) => allocation,
-            other => {
-                defmt::error!("flat/exercise: write refused ({})", defmt::Debug2Format(&other.err()));
-                let _ = writer.call(Request::Cancel { allocation }, &REPLY).await;
-                return None;
-            }
-        };
-        let meta = EntryMeta {
-            id: store.next_object_id(),
-            revision: Revision(1),
-            kind: ObjectKind::Route,
-            flags: EntryFlags::NONE,
-            payload_len: PAYLOAD.len() as u64,
-            payload_crc: obc_crc::crc32(&PAYLOAD),
-            name: DisplayName::new("c1-exercise").unwrap_or_default(),
-        };
-        let mut batch: heapless::Vec<Mutation, MAX_BATCH> = heapless::Vec::new();
-        let _ = batch.push(Mutation::Put { meta, source: PutSource::Fresh(allocation) });
-        let started = Instant::now();
-        let outcome = writer.call(Request::Commit { batch }, &REPLY).await;
-        let commit_us = started.elapsed().as_micros();
-        match outcome {
-            Ok(Outcome::Committed(sequence)) => Some((sequence, commit_us)),
-            other => {
-                defmt::error!("flat/exercise: commit refused ({})", defmt::Debug2Format(&other.err()));
-                None
-            }
-        }
-    };
-
-    // The reader loops forever, so `select` resolves when the commit does — and the counters are in
-    // statics, so the reader's figure survives being dropped.
-    let entries = store.entry_count();
-    let landed = match select(reader, commit).await {
-        Either::First(()) => {
-            defmt::error!("flat/exercise: the reader stopped before the commit did — the figure below is not a stall");
-            None
-        }
-        Either::Second(landed) => landed,
-    };
-    let (reads, worst_gap_us, worst_read_us) = exercise::taken();
-    match landed {
-        Some((sequence, commit_us)) => defmt::info!(
-            "flat/exercise: commit {=u64} at {=u16} entries took {=u64} us; the reader completed {=u32} probe(s) across it",
-            sequence,
-            entries,
-            commit_us,
-            reads,
-        ),
-        None => defmt::error!("flat/exercise: the commit did not land — the figures below are of an incomplete run"),
-    }
-    defmt::info!(
-        "flat/exercise: INTERLEAVING — worst gap between two completed reads {=u32} us, worst single read {=u32} us",
-        worst_gap_us,
-        worst_read_us,
-    );
-    defmt::info!(
-        "flat/exercise: read that against §5.5's ~1.5 ms write command and ~340 us read command. A gap near one command means the store's per-command granularity reached the scheduler; a gap near the whole commit means it did not, and the remaining stall is this executor's — `Store::commit` is synchronous and hands nothing back between its commands"
-    );
 }

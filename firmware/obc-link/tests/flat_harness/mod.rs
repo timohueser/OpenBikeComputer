@@ -10,7 +10,7 @@
 
 use obc_link::flat::store::Policy;
 use obc_link::flat::wire::{flags, HEADER_LEN, STREAM_HEADER_LEN};
-use obc_link::flat::{CancelCause, Ceilings, Channel, Engine, ObjectKind, OpenPolicy, Reaction};
+use obc_link::flat::{CancelCause, Ceilings, Channel, Engine, Link, ObjectKind, OpenPolicy, Reaction};
 use obc_storage::flat::sim::{FaultOnce, SparseDisk};
 use obc_storage::flat::{
     BlockDevice, DisplayName, EntryFlags, EntryMeta, FlatStore, Mutation, ObjectId, PutSource, Revision, StoreId,
@@ -107,15 +107,29 @@ pub struct Device<D: BlockDevice> {
     pub store: FlatStore<D>,
     engine: Engine<FlatStore<D>, STAGE>,
     out: Vec<u8>,
+    /// What [`Device::link_lost`] brings the radio back up with. A link that is down cannot be
+    /// served at all now, so a helper that models a *break* has to model the reconnect too.
+    ceilings: Ceilings,
 }
 
 /// Mounts a card and puts an idle engine on a BLE-shaped link.
 pub fn boot<D: BlockDevice>(disk: D) -> Device<D> {
-    Device {
+    boot_on(disk, Ceilings::new(CONTROL_CEILING, STREAM_CEILING).expect("a link above the floor"))
+}
+
+/// The same on a link of the caller's shape — a USB one, where §5.2's ceiling is a constant of the
+/// binding and a stream record is whole stages wide rather than one radio SDU.
+pub fn boot_on<D: BlockDevice>(disk: D, ceilings: Ceilings) -> Device<D> {
+    let mut device = Device {
         store: FlatStore::mount(disk),
-        engine: Engine::new(Ceilings::new(CONTROL_CEILING, STREAM_CEILING).expect("a link above the floor")),
-        out: vec![0; STREAM_CEILING.max(CONTROL_CEILING) + STREAM_HEADER_LEN],
-    }
+        out: vec![0; ceilings.stream().max(ceilings.control()) + STREAM_HEADER_LEN],
+        engine: Engine::new(),
+        ceilings,
+    };
+    // Every test that does not care which wire it is on is on the radio, which is what the suite
+    // meant before links had identities. `link_up` is what a test that *does* care calls.
+    device.engine.on_link_up(Link::Ble, &device.store, ceilings);
+    device
 }
 
 impl<D: BlockDevice> Device<D> {
@@ -125,9 +139,37 @@ impl<D: BlockDevice> Device<D> {
         self.control_with(record, &mut OpenPolicy)
     }
 
+    /// Bring a link up (or back up) with its own ceilings — the two-link cases.
+    pub fn link_up(&mut self, link: Link, ceilings: Ceilings) {
+        self.engine.on_link_up(link, &self.store, ceilings);
+    }
+
+    /// One control record from a named link.
+    pub fn control_on(&mut self, link: Link, record: &[u8]) -> Wire {
+        let first = self.engine.on_control(link, &self.store, &mut OpenPolicy, record, &mut self.out);
+        self.drive_on(link, first, usize::MAX)
+    }
+
+    /// One stream record from a named link.
+    pub fn stream_on(&mut self, link: Link, record: &[u8]) -> Wire {
+        let first = self.engine.on_stream(link, &self.store, &mut OpenPolicy, record, &mut self.out);
+        self.drive_on(link, first, usize::MAX)
+    }
+
+    /// Pump a named link once — what an adapter does until it is told there is nothing to do.
+    pub fn pump_on(&mut self, link: Link) -> Wire {
+        let first = self.engine.poll(link, &self.store, &mut self.out);
+        self.drive_on(link, first, usize::MAX)
+    }
+
+    /// That link went away.
+    pub fn link_lost_on(&mut self, link: Link) {
+        self.engine.on_link_lost(link, &self.store);
+    }
+
     /// The same on a device whose policy hooks are filled in.
     pub fn control_with<P: Policy>(&mut self, record: &[u8], policy: &mut P) -> Wire {
-        let first = self.engine.on_control(&self.store, policy, record, &mut self.out);
+        let first = self.engine.on_control(Link::Ble, &self.store, policy, record, &mut self.out);
         self.drive(first, usize::MAX)
     }
 
@@ -139,25 +181,25 @@ impl<D: BlockDevice> Device<D> {
 
     /// Both at once, for a flow that arms an update and is then cut.
     pub fn control_with_upto<P: Policy>(&mut self, record: &[u8], policy: &mut P, budget: usize) -> Wire {
-        let first = self.engine.on_control(&self.store, policy, record, &mut self.out);
+        let first = self.engine.on_control(Link::Ble, &self.store, policy, record, &mut self.out);
         self.drive(first, budget)
     }
 
     /// Pumps a live transfer until it goes quiet.
     pub fn pump(&mut self) -> Wire {
-        let first = self.engine.poll(&self.store, &mut self.out);
+        let first = self.engine.poll(Link::Ble, &self.store, &mut self.out);
         self.drive(first, usize::MAX)
     }
 
     /// Pumps exactly one record out of it.
     pub fn pump_once(&mut self) -> Wire {
-        let first = self.engine.poll(&self.store, &mut self.out);
+        let first = self.engine.poll(Link::Ble, &self.store, &mut self.out);
         self.drive(first, 1)
     }
 
     /// One stream record.
     pub fn stream(&mut self, record: &[u8]) -> Wire {
-        let first = self.engine.on_stream(&self.store, &mut OpenPolicy, record, &mut self.out);
+        let first = self.engine.on_stream(Link::Ble, &self.store, &mut OpenPolicy, record, &mut self.out);
         self.drive(first, usize::MAX)
     }
 
@@ -167,8 +209,17 @@ impl<D: BlockDevice> Device<D> {
     }
 
     /// The link went away.
+    /// **The radio link broke and the client came back** — a break, in the sense the break matrix
+    /// means it: the transfer is released with nobody to answer, and the next thing the peer does is
+    /// reconnect and retry. Both halves are here because a link that is down is now genuinely
+    /// unserved (`on_control` answers `Idle`), so a helper that only tore down would leave every
+    /// following statement in those tests talking to a wire nobody is on.
+    ///
+    /// [`link_lost_on`](Device::link_lost_on) is the un-reconnected half, for the two-link tests
+    /// that care about the difference.
     pub fn link_lost(&mut self) {
-        self.engine.on_link_lost(&self.store);
+        self.engine.on_link_lost(Link::Ble, &self.store);
+        self.engine.on_link_up(Link::Ble, &self.store, self.ceilings);
     }
 
     /// The device drops the live transfer of its own accord (§3.8's other direction).
@@ -181,7 +232,21 @@ impl<D: BlockDevice> Device<D> {
         self.engine.is_quiet()
     }
 
+    /// What the live upload has landed so far — the device-side progress report.
+    pub fn live_upload(&self) -> Option<obc_link::flat::UploadProgress> {
+        self.engine.live_upload()
+    }
+
+    /// The verdict on the last upload, taken.
+    pub fn take_upload_end(&mut self) -> Option<(ObjectKind, obc_link::flat::UploadEnd)> {
+        self.engine.take_upload_end()
+    }
+
     fn drive(&mut self, first: Reaction, budget: usize) -> Wire {
+        self.drive_on(Link::Ble, first, budget)
+    }
+
+    fn drive_on(&mut self, link: Link, first: Reaction, budget: usize) -> Wire {
         let mut wire = Wire::default();
         let mut reaction = first;
         let mut sent = 0;
@@ -209,7 +274,7 @@ impl<D: BlockDevice> Device<D> {
             if sent >= budget {
                 break;
             }
-            reaction = self.engine.poll(&self.store, &mut self.out);
+            reaction = self.engine.poll(link, &self.store, &mut self.out);
         }
         wire
     }
@@ -443,6 +508,11 @@ impl Answer {
 
     pub fn u64_at(&self, at: usize) -> u64 {
         u64::from_le_bytes(self.body[at..at + 8].try_into().unwrap())
+    }
+
+    /// One body byte — §3.8's `CANCEL` answer is exactly one.
+    pub fn byte_at(&self, at: usize) -> u8 {
+        self.body[at]
     }
 
     pub fn u32_at(&self, at: usize) -> u32 {

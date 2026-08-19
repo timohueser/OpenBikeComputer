@@ -252,9 +252,12 @@ it takes objects over the cable instead of measuring anything, and then parks �
 would allocate the card out from under what it just accepted. Nothing answers, the window expires,
 and the bench is what it always was.
 
-This exists because a board session needs a **real packed map** on a real flat store and no
-transport on this rig can put one there: USB is still protocol v2, BLE v4's phone client is not
-ready, and the host has no card reader. The wire — magic, kind, length, CRC, then acked chunks — is
+This exists because a board session needs a **real packed map** on a real flat store and nothing
+this binary brings up can put one there. The bench image is storage and nothing else — it spawns no
+USB plane and no radio — so the app build's v4 `PUT` is out of reach from inside it, BLE v4's phone
+client is not ready, and the host has no card reader. (Since FS7.5-c3b the *app* build does serve a
+map over the cable; running the bench through it would mean bringing up the plane the bench exists
+to stay out of the way of.) The wire — magic, kind, length, CRC, then acked chunks — is
 documented in full in the binary's module docs; the CRC is verified before the commit, so a bad
 transfer publishes nothing and a retry is simply a fresh put with a new `ObjectId`.
 
@@ -356,11 +359,11 @@ SDXC 64 GB), against the SPI path this replaced:
 | single-block read | 430 µs | 1.1 ms |
 
 The bulk number is not the whole map-rendering story. The 2026-08-07 on-device profile used the
-shipping FAT extent path and the actual `MS7.OBS` three-shard map (394,075,657 B, 32 KiB clusters)
-— **a card that predates the volume set's removal** (#1420 FS7.5b2), since nothing produces a set
-any more; repeating this measurement means keeping that card, or re-running it against a single-file
-map and recording that the shape of the read changed with it —
-while `SynthLocation` moved the camera. Counters at the `ByteSource` and concrete `BlockDevice`
+shipping FAT extent path and a **three-file volume set** (394,075,657 B across its geometry files,
+32 KiB clusters) — **a card that predates the volume set's removal** (#1420: FS7.5b2 took the
+producers, FS7.5c3b the reader), since nothing produces or mounts one any more; repeating this
+measurement means keeping that card, or re-running it against a single-file map and recording that
+the shape of the read changed with it — while `SynthLocation` moved the camera. Counters at the `ByteSource` and concrete `BlockDevice`
 boundaries separate logical reader requests from physical sEMMC commands; the time includes FLPR
 mode acquisition, the card commands and any alignment-bounce copy.
 
@@ -500,10 +503,12 @@ builds on it:
 
 ## BLE — board-specific notes & on-glass verification
 
-The wire protocol (advertising policy, GATT services/UUIDs, CoC framing, object layouts, pairing
-security) is canonical in [`obc-ble-interface-spec.md`](../../specs/obc-ble-interface-spec.md) — read it
-there, not here. `src/ble/` implements it; the S0 descriptor codecs + transfer state machine are the
-host-tested `obc-ble` crate (`cargo test -p obc-ble`, pinned to `specs/vectors/`). What's
+The radio's own contract — advertising policy, GATT services/UUIDs, CoC framing, pairing security,
+and the `command` / `status` / `config` characteristics — is canonical in
+[`obc-ble-interface-spec.md`](../../specs/obc-ble-interface-spec.md); read it there, not here. The
+**object** surface is not in that document any more on either link: it is
+[`FLAT_Store_Protocol.md`](../../specs/FLAT_Store_Protocol.md), implemented by the host-tested
+`obc-link` crate (`cargo test -p obc-link`) and reached through `src/ble/` and `src/usb/`. What's
 **board/firmware-specific** and worth knowing:
 
 - **DIS identity** — Firmware Revision is the **installed OBCU container's version string**, read
@@ -512,47 +517,27 @@ host-tested `obc-ble` crate (`cargo test -p obc-ble`, pinned to `specs/vectors/`
   never installed a container. So a device you flashed over SWD reports `ca9b336`, not a version, and
   no host offers it an auto-update (the dialect + why is in the BLE spec §3.1); to see a real version
   on glass, install a wrapped `UPDATE.BIN` (`obc-mkimage`). The same string answers the USB
-  `DEVICE_INFO_READ` frame. Hardware Revision `nrf54l15-dk`, Serial Number the 16-hex FICR `DEVICEID`
+  §5.2.1 EP0 vendor request. Hardware Revision `nrf54l15-dk`, Serial Number the 16-hex FICR `DEVICEID`
   whose last four digits are the `OBC-XXXX` advertised name.
-- **Storage lives on SD, ids are durable in filenames.** Uploaded routes land as 8.3 `RTnn.OBR`
-  files (the `OBCR` magic held back as zeros until commit, so a power cut never leaves a half-route
-  the boot scan accepts); the **map build's** catalog scan matches `*.OBR` beside `.obcr`, so an
-  uploaded route shows in the on-device menu after a reflash. A **map** received over USB (#927) is
-  the fourth member of that family: `/MPnn.OBM` in the card root, same durable-id-in-the-filename
-  rule, and `OBM` is the 8.3-safe twin of `.obcm` the scan accepts beside it. It is the one upload
-  that streams *straight into its final file* rather than through `UPLOAD.TMP` — a temp-then-copy
-  promote would double both the minutes of writing and the free space needed — so the held-back
-  magic is patched into the final file itself at commit, and `sweep_aborted_maps()` reclaims the
-  zero-magic corpse of an interrupted transfer at the next boot. A **volume set** (#1039) is the
-  same file family `1..=32` times over — `/MSnnSkk.OBM` shards plus the `/MSnn.OBS` manifest
-  (`OBCA_Spec.md` §5) — and the same trick one level up: `set_upload_begin()` writes the manifest as
-  four zero bytes *before the first shard streams* and `set_manifest_commit()` patches `OBCS` in
-  last, after re-reading it and checking it against the shards on the card. So the manifest is the
-  set's commit point **and** its abandoned-upload signature: `sweep_aborted_sets()` reclaims a set
-  whose manifest magic is not *whole* — zeroed, half-patched, or shorter than four bytes — and can
-  never mistake a card-reader copy for its own (that one is written front to back from a finished
-  manifest, so its magic is there from the first block). Set ids are card-derived with no RRAM floor
-  — they name files, they are not durable protocol object ids — and are taken from **every** `MS`
-  name on the card, listed or not, so a rider's half-copied set is never minted over;
-  `set_upload_begin()` then runs the whole `delete_plan` first, which is §5.4's own replace-a-set
-  rule. `/MAP.SEL` records which map
-  the renderer streams from; a committed upload — single map or set — becomes that choice, effective
-  at the next boot (the map's tables are parsed once at startup and held for the session). A set
-  mount opens and retains every shard, resolves one direct-read FAT extent table per shard, and
-  places `SetShards<11>` in `.bss`; the board therefore mounts at most **11 shards** even though the
-  file format permits 32. Set-shard tables admit up to **64 FAT runs** (the standalone-map path
-  keeps its 128-run cap); a more fragmented shard is fixed by re-copying the publish tree to the
-  card. The parsed manifest is dropped after a synchronous mount, and the standalone/set extent
-  tables share one size/alignment-guarded `.bss` union because boot chooses exactly one map kind.
-  A larger set, or one whose shard extent table cannot be built and verified, is shown as
-  **MAP UNREADABLE** rather than partially mounted. Geometry renders through the same
-  app `MapScene` path as one `.obcm`; POIs, hours, the navigation graph and on-device routing stay on
-  the set's core shard. Every ride Finish on the map build
-  writes `/tracks/RDnn.ORD` (byte-for-byte the S0 §7.2 ride object) — the only save artifact; the `ble`
-  build just serves those. The id in each filename is recovered at boot and is what the app's
-  synced-set keys on. A ride is deleted **only on the device** (its Rides screen, hold-to-delete);
-  the wire `deleteObject` on a ride answers `notFound` deliberately, and app-side deletes are
-  tombstoned in the app.
+- **A FAT card is a reader's card now, and nothing else.** Since FS7.5-c3b (#1420) the wire writes
+  only to a flat store: every v4 opcode against a FAT card answers `readOnly` with detail
+  `unformatted 3` (the table under "Protocol v4 on both links" below), so nothing lands on one over
+  either wire. What the FAT arm still does is *read* what an older build — or a card reader — put
+  there: `RTnn.OBR` routes beside side-loaded `.obcr`, `/MPnn.OBM` maps beside side-loaded `.obcm`
+  (`OBM` is the 8.3-safe twin the scan accepts, since this FAT layer can create short names only),
+  `/MAP.SEL` naming which of them the renderer streams from, and `/tracks/RDnn.ORD` rides — the
+  byte-for-byte S0 §7.2 ride object every Finish still writes, and the only save artifact. The
+  durable id lives in each 8.3 name and is recovered at boot; that is what the app's synced-ride set
+  keys on. `sweep_aborted_maps()` still runs at boot, because a zero-magic `MP*.OBM` corpse is what a
+  *previous* build's interrupted map upload left behind and a rider's card can still be carrying one.
+  A ride is deleted **only on the device** (its Rides screen, hold-to-delete).
+- **The volume set is gone from the card, reader side included.** A map is one OBCM file with its
+  terrain inside it (`OBCM_Spec.md` §1.3), so the manifest, the shards, the set-wide mount and the
+  `.bss` shard table all went with FS7.5b's producers and FS7.5-c3b's reader. One consequence is
+  worth carrying to the bench: the map scan's shard-name exclusion went too, so a card still holding
+  an old set now lists **each shard as its own map** — every one of them is a real OBCM file, and a
+  geometry shard opened alone has no roads and no POIs. That card wants re-sending onto a flat store,
+  not diagnosing.
 - **Config + bond persist in the RRAM SETTINGS carve** (`settings.rs`), which survives power cycles
   **and a firmware reflash** (it sits above the app image, so `probe-rs download` leaves it): the
   device name (config codec v3) @0, the boot counter @2048, the single 64-byte CRC-checked bond slot
@@ -564,7 +549,7 @@ host-tested `obc-ble` crate (`cargo test -p obc-ble`, pinned to `specs/vectors/`
 
 **Verify on glass** (nRF Connect is the pre-app oracle for A3–A4; the iOS app + harness for A5+):
 - **nRF Connect** — service/char table matches the spec, DIS strings + serial real, BAS notifies,
-  `protocolVersion` reads `1`, `psm` reads `0x0080`; negotiated MTU (247) + 2M PHY, interval settles
+  `protocolVersion` reads two bytes, `4`, `psm` reads `0x0080`; negotiated MTU (247) + 2M PHY, interval settles
   to the idle set; disconnect/re-connect + walk out of range bumps the counters and always returns to
   advertising. As an *unbonded* stranger (post-A8): DIS/`protocolVersion` readable, access-denied on
   every gated char + the CoC.
@@ -576,33 +561,47 @@ host-tested `obc-ble` crate (`cargo test -p obc-ble`, pinned to `specs/vectors/`
   the map build (`synth` is fine indoors), reflash `ble`, sync pulls them; spot-check a decoded ride's
   totals in the app against the device's Paused ledger. Ids must survive a power cycle; the boot
   counter must increment across them.
-- **Volume-set map path (#1033)** — put a valid `MS{id}.OBS` plus all derived shards on the card (or
-  upload the set), ensure `/MAP.SEL` names the manifest, and boot the default image. RTT must report
-  one mounted set and retain every shard; ride a route across a geometry-shard boundary at fine zoom,
-  then zoom out onto the coarse shard. Roads, route ink, rider marker and guidance must remain
-  continuous through both transitions. Repeat with a missing shard and with a set over 11 shards:
-  both must stop at **MAP UNREADABLE**, never render the remaining files as a smaller map. This run
-  is also the RAM acceptance for #1033: the guarded release ELF leaves 53,400 B above linked
-  residents, 17,592 B beyond the last measured 35,808 B deep-path peak, so complete the ordinary
-  route-load → ride → finish/save path while watching for `STKOF`/HardFault.
+- **Single-file map path** — the volume-set run this item used to describe (#1033) is retired with
+  the set itself (#1420 FS7.5b/c3b); what replaces it is one map file and the whole of it. Put a
+  packed `.obcm` on the card, boot the default image, and ride a route from end to end at fine zoom
+  and then zoomed out: roads, route ink, rider marker and guidance stay continuous, because there is
+  no longer a boundary to cross. The RAM acceptance the set run carried is still owed against this
+  shape and its figures do not carry over — the numbers it quoted (53,400 B above linked residents,
+  17,592 B beyond a 35,808 B deep-path peak) were measured with an eleven-shard mount in `.bss` — so
+  re-measure the deep path here rather than re-quoting them, walking the ordinary route-load → ride →
+  finish/save path with `STKOF`/HardFault in view.
 - **Pairing** — passkey card on the panel typed on the phone → bond lands; power-cycle / app
   restart / walk-away → silent reconnect, no dialog; reflash `ble` → still no dialog. A **second
   phone** is rejected while bonded (no passkey card, generic failure on the stranger). Re-pair path:
   device **Settings ▸ Bluetooth ▸ Forget phone** (hold) + app *Forget* + iOS Bluetooth forget → next
   contact pairs with a fresh passkey.
 
-## Protocol v4 on the radio (FS7.5-c3a, epic #1256) — what a phone sees on each card
+## Protocol v4 on both links (FS7.5-c3a/c3b, epic #1256) — what a client sees on each card
 
-The BLE object surface is [`FLAT_Store_Protocol.md`](../../specs/FLAT_Store_Protocol.md) §5.1:
-`objectControl` (`3C920009`, Write Request + confirmed indication) carries control frames, the
-L2CAP CoC carries the byte stream of consecutive §3.8 stream records (records are recovered from
-their own header and may cross SDU boundaries), and `protocolVersion` reads two bytes, `4`.
-`command` / `status` / `config` are untouched and still governed by
-[`obc-ble-interface-spec.md`](../../specs/obc-ble-interface-spec.md). **USB is still on v2.**
+The object surface is [`FLAT_Store_Protocol.md`](../../specs/FLAT_Store_Protocol.md) §5, and since
+c3b that is true of the cable as well as the radio:
 
-The engine lives in the flat store's `storage_task`, not in the radio — the store seam is
+- **BLE** is §5.1: `objectControl` (`3C920009`, Write Request + confirmed indication) carries
+  control frames, the L2CAP CoC carries the byte stream of consecutive §3.8 stream records — a
+  record is recovered from its **own header** and may cross SDU boundaries, because CoreBluetooth
+  exposes a CoC as a stream whose write may be accepted in pieces — and `protocolVersion` reads two
+  bytes, `4`. `command` / `status` / `config` are untouched and still governed by
+  [`obc-ble-interface-spec.md`](../../specs/obc-ble-interface-spec.md).
+- **USB** is §5.2: both bulk endpoint pairs carry §3 frames, each record a `record_length u16` in
+  front of the frame bytes, and the version is settled by descriptor matching before a record moves
+  (`bInterfaceProtocol = 4`, `bcdDevice = 0x0400`). The cable's non-object surface is one EP0 vendor
+  request (§5.2.1); it carries nothing else. The endpoint section further down has the board detail.
+
+Over the cable a device therefore serves **object transfer and device information, and nothing
+else**. Route retention, ride acknowledgement, clock setting, bond forgetting and the settings blob
+are BLE-only imperatives — §5.2.2 is the table of where each retired selector went, and the short
+version is that the two that act on the store became `REMOVE` and `ARM` and the rest kept the BLE
+characteristics they always had.
+
+The engine lives in the flat store's `storage_task`, not in either transport — the store seam is
 synchronous, and the card has exactly one writing execution context. The transports are record
-shippers.
+shippers, and they are deliberately the same code below the records: one `Lane` into one engine, so
+the two links cannot drift into two answers to the same question.
 
 **The storage task is spawned on every card**, and that is what makes the two cases below one code
 path rather than a branch:
@@ -613,32 +612,44 @@ path rather than a branch:
 | **A FAT card** | Every opcode answers `readOnly` with detail `unformatted 3`. That is not a fallback or a stub: §5.6 step 1 classifies a FAT card as **not a flat store**, and §3.9 already specifies exactly this answer for one — including for the reads, because there is nothing to read. |
 | **A card that carries a broken flat store** | Boot shows STORAGE FAULT before any plane comes up; the honesty rules in `obc-app` are unchanged. |
 
-Two client-visible facts worth knowing before you debug a phone against this:
+Three client-visible facts worth knowing before you debug a client against this:
 
-- **Open the CoC before writing `objectControl`.** The driver owns the channel, so a control write
-  arriving with no channel up is refused at the ATT layer (`PROCEDURE_ALREADY_IN_PROGRESS`) rather
-  than staged for an answer that would arrive whenever a channel happened to open. Lifting this
-  needs the driver split from the channel owner and is a named follow-up.
+- **Open the CoC before writing `objectControl`** (BLE only). The driver owns the channel, so a
+  control write arriving with no channel up is refused at the ATT layer
+  (`PROCEDURE_ALREADY_IN_PROGRESS`) rather than staged for an answer that would arrive whenever a
+  channel happened to open. Lifting this needs the driver split from the channel owner and is a
+  named follow-up.
 - **Ride recording is unavailable on a flat card** until FS8 (#1390) lands the tail-in-slot journal.
   The FAT arm's ride path is untouched.
+- **On-glass map-transfer progress survived the cutover, and it no longer comes from a transport.**
+  The card the rider watches during an upload is fed from the engine
+  (`obc_link::flat::Engine::live_upload` / `take_upload_end`, published beside the engine in
+  `flat_store::publish_upload`), because §5 forbids an adapter from parsing a payload and the kind
+  and declared length are payload. A rider sees a card for a **map** and nothing else: a route lands
+  in a second and a weather bundle is invisible by design.
 
-On-glass checks this section is waiting for: a real phone completing a `PUT` and a `GET`, the
-admission race (stream frame ahead of its control write) surviving a ride-loop render pass, and a
-`CANCEL` landing mid-download.
+On-glass checks this section is waiting for: a real phone and a real cable each completing a `PUT`
+and a `GET`, the admission race (stream record ahead of its control record) surviving a ride-loop
+render pass, and a `CANCEL` landing mid-download.
+
+This section is the **transport cutover only**. It does not close FS6 or FS7: the remaining
+on-device map, route, trip, and weather consumers and their legacy FAT removal stay tracked by
+#1388 and #1389.
 
 ## The USB device plane (issue #889) — **in every build; cable-gated since #936**
 
-Every build ships a second transport for the *same* companion protocol: the LM20's USBHS
+Every build ships a second transport for the *same* object protocol: the LM20's USBHS
 behind one vendor-specific interface, so the web builder (WebUSB, Chromium) or the desktop app can
 push a map / route / firmware image to a plugged-in device. It was briefly behind a `usb` Cargo
 feature; **that feature is gone** — the plane is part of the device, not an option of it, and the
 resource baseline in [`firmware/tools/resource_baseline.json`](../tools/resource_baseline.json) pins
 the shape that includes it (+5,096 B resident and +45,688 B flash for the plane, +64 B and +288 B
 more for #936's VBUS gate, then +8 B resident and **−80 B** flash for #937's event-driven park;
-guarded poll frame 9,664 → 9,728 B against the unchanged 12,288 B limit, and unmoved since). The
-wire protocol is canonical in
-[`obc-ble-interface-spec.md`](../../specs/obc-ble-interface-spec.md) — USB is a transport under it, not a
-second protocol. What is **board-specific** and worth knowing:
+guarded poll frame 9,664 → 9,728 B against the unchanged 12,288 B limit, then FS7.5-c3b's cutover,
+which re-pins the whole `usb_named` block — the v4 adapter's three buffers replace the v1 plane's
+staging pair *and* the arena arm it wrote through). The wire protocol is canonical in
+[`FLAT_Store_Protocol.md`](../../specs/FLAT_Store_Protocol.md) §5.2 — USB is a transport under it,
+not a second protocol. What is **board-specific** and worth knowing:
 
 - **Zero GPIO cost.** D+/D−/VBUS/TXRTUNE are dedicated USBHS pins; nothing in the pin map above
   moves. The driver ships in embassy-nrf 0.11 (`src/usb/usbhs.rs`, a full `embassy_usb_driver::Driver`
@@ -670,49 +681,60 @@ second protocol. What is **board-specific** and worth knowing:
   **two** handlers — ours (wake the park) and embassy's (clear the events, wake the driver's own
   bus waker) — bound in one `bind_interrupts!` arm. Ours reads and clears nothing, so the order
   between them does not matter; dropping embassy's would leave the events uncleared and storm.
-- **Endpoint layout** (the host reads it off the descriptors): one interface, class `0xFF`, four
-  bulk endpoints at the high-speed-mandated 512 B — `0x81/0x01` control frames, `0x82/0x02` the
-  object stream. Control frames are `selector u8 · payload`, one frame per transfer.
+- **Endpoint layout** (the host reads it off the descriptors): one interface, class `0xFF` with
+  `bInterfaceProtocol = 4`, four bulk endpoints at the high-speed-mandated 512 B — `0x81/0x01` §3
+  control records, `0x82/0x02` §3.8 stream records. **Both pairs carry the same framing**: a
+  `record_length u16` and then exactly that many frame bytes. A packet boundary means nothing to the
+  protocol — a 4 KiB stream record simply spans nine of them, which is why `MAX_PACKET` is no longer
+  a frame ceiling. The ceilings are constants of the binding (§5.2): 4,112 B device→host on either
+  channel and host→device on the stream channel (a 16-byte stream frame plus 4,096 payload bytes,
+  one whole card write, and the `LIST` page ceiling at 46 entries), and 256 B for a host→device
+  control record, because §3's widest request is the 100-byte `PUT`. Device identity and the
+  firmware/hardware/serial strings are **not** on these endpoints: they are one EP0 vendor request,
+  `bmRequestType 0xC1`, `bRequest 0x20` (§5.2.1), readable the moment the interface is claimed.
 - **The bulk OUT endpoint is armed in bursts** (#1173), which is why
   `embassy-usb-synopsys-otg` is vendored under `vendor/` — stock, it arms one packet and re-arms
   only after the firmware task has copied it out, so the endpoint NAKs for a whole scheduler round
   trip per 512 B (~342 µs measured on glass 2026-08-07, capping uploads at ~1.4 MB/s). The dial is
   `BULK_OUT_BURST_PACKETS` in `src/usb/mod.rs`; the sweep recipe is on the constant, and both RAM
-  baselines move with it. **Bench it from RTT:** flash `cargo run --release`, upload a multi-shard
-  map from the web builder, and read the `~{} kB/s` figure on each
-  `usb: [bulk] upload finished` line. The watch-list — each line says something different went
-  wrong, and none of them is "slow":
+  baselines move with it. **There is no throughput line to read it off any more** — the
+  `usb: [bulk] upload finished … ~{} kB/s` print went with the v1 data plane in FS7.5-c3b, so a
+  sweep needs the figure timed at the host or a new device-side print. The watch-list — each line
+  says something different went wrong, and none of them is "slow":
 
   | RTT line | What it means |
   | :-- | :-- |
-  | `ep_out buffer overflow index=2` (driver) | **The burst reader armed with bytes still staged.** Should be structurally impossible — `arm_transfer` asserts against it — so a panic is the expected form. Treat any occurrence as possible silent loss; map uploads intentionally do not spend a second whole-file CRC pass looking for driver bugs. |
+  | `ep_out buffer overflow index=2` (driver) | **The burst reader armed with bytes still staged.** Should be structurally impossible — `arm_transfer` asserts against it — so a panic is the expected form. Treat any occurrence as possible silent loss. |
   | the endpoint goes dead after exactly one burst | The core cleared `EPENA` on transfer completion and the stock `DOEPTSIZ`+`CNAK` re-arm is not enough on this part. Nothing else looks like this. |
-  | `discarded N unclaimed bytes while idle` with **N > 512** | Payload racing its own announce, now absorbed a whole burst deep. Expected to disappear once the idle-read fix lands; before it, this is bytes being thrown away. |
-  | `reject probe: first payload bytes …` | A CRC-checked object failed, with the discriminator inline: a **clean format magic** means the stream was offset-free and lost or gained bytes mid-way; **garbage** means it arrived offset. The probe is deliberately absent for link-checked map objects. |
-  | `host overran the announced length by N B` | The peer sent more than it announced — a host bug, not a device one. |
-  | `still receiving … into an abort drain` | The drain is not keeping up with a burst-armed endpoint; harmless, but it means the abort answer is late. |
+  | `usb: [rec] record length N is outside this channel's ceiling C` | A host framing bug or a desynchronised record stream: the length prefix is being read where payload is. The reader ends that record stream rather than guessing. |
+  | `usb: [v4] a stream record arrived unadmitted — delivering after the hold window` | §3.6's admission race lost: the `PUT`'s first stream record beat its control record by more than the 250 ms hold. One per transfer at boot-time contention is survivable noise; every transfer means the control pump is being starved. |
+  | `usb: [v4] the store's write half is not armed` | The plane came up without an engine — object service is down for this boot, and it is a storage-task failure, not a USB one. |
 
   Two cases worth constructing deliberately, because natural traffic almost never produces them:
-  an object whose length is an **exact multiple of 512** (no short packet anywhere, so the final
-  burst stays armed across the gap to the next announce), and an **unplug** and a host **abort**
-  in the middle of a burst.
-- **Map uploads use DMA at both ends of the pipeline.** The vendored OTG driver runs in buffer-DMA
-  mode, including aligned IN bounce storage and burst-sized OUT DMA. The scratch arena contributes
-  two 64 KiB halves: USB fills one while the storage path coalesces two adjacent 32 KiB FAT
-  clusters from the other into one 128-block CMD25 on the FLPR. The next append joins that DMA
-  before reusing its half; this ownership rule is correctness-critical. `UPLOAD_WRITE_PIPE` also
-  caches one FAT sector and the sEMMC driver offers ACMD23 as a best-effort pre-erase hint.
-- **The descriptor CRC remains on the wire, but USB map verification is link-checked.** `map`,
-  `mapShard`, `terrainShard`, and `mapSet` skip the redundant device-side whole-object fold. USB
-  packet CRC/retry, sEMMC block CRC/ECC, the exact announced length, the format header, and the
-  magic-last commit remain. Routes, trips, firmware images, echo, BLE uploads, and downloads retain
-  the whole-object check. This policy avoids roughly 20 serial CPU cycles per map byte without a
-  protocol-version or host change.
-- **Measured 2026-08-07 on the LM20-DK + reference SanDisk card:** a final 73.4 MB builder set's
-  three OBCM shards sustained 7.50, 7.27 and 7.85 MB/s; its 6 MB terrain shard sustained 7.65 MB/s.
-  That is about 7.3–7.9 MB/s across real artifacts, up from about 2.0 MB/s on the original
-  synchronous/CRC path. RTT's `usb: [bulk] upload finished` line is the authority for a particular
-  card and file.
+  a record whose length is an **exact multiple of 512** (no short packet anywhere, so the final
+  burst stays armed across the gap to the next record), and an **unplug** in the middle of a burst.
+- **Uploads use DMA at the USB end, and the card write is the engine's.** The vendored OTG driver
+  runs in buffer-DMA mode, including aligned IN bounce storage and burst-sized OUT DMA. What is
+  *gone* is everything below it: the v1 plane staged 128 KiB of map bytes in the scratch arena and
+  drove them through FAT, and a v4 `PUT` instead writes each stream record's aligned prefix straight
+  to the flat store through the one storage task (`obc_link`'s engine stages 512 bytes, no more).
+  **That freed no RAM, and the accounting is worth stating rather than assuming**: #1299 had already
+  grown the render arm until it matched the USB arm exactly, and the arena is `max(arms)`, so
+  `arena_total` is unchanged at 131,072 B. What the removal actually bought is two exclusion rules
+  (`render ⊥ usb`, `nav ⊥ usb`) and the ride loop's grant handshake — complexity, not bytes.
+- **A whole-payload CRC-32 is checked before every commit, maps included.** The v1 plane exempted
+  map-shaped objects from the device-side fold and leaned on USB packet CRC/retry, the card's block
+  CRC/ECC and a magic-last commit instead; §3.6 retires that policy outright — the device verifies
+  the declared length and the declared CRC over the whole payload, runs the kind's validator, and
+  only then commits, so a mismatch is `checksumFailure` and nothing is published. The fold costs
+  what it costs (`obc-crc` folds at 3.4 MB/s on this part — see the flat-store bench), and that cost
+  is now on the map path too.
+- **The 7.3–7.9 MB/s upload figures are not carried forward.** They were measured on 2026-08-07
+  against the v1 FAT path — a 73.4 MB builder set through the arena's double buffer into coalesced
+  CMD25 writes, with the map CRC skipped — and FS7.5-c3b deleted every stage of that pipeline. They
+  are kept here as history, not as a target: the v4 path writes to the flat store instead of FAT,
+  folds a CRC the old one skipped, and has never been timed on glass. Re-measuring it is on the
+  board session's list.
 - **Windows needs no driver install**: MS OS 2.0 BOS descriptors declare the `WINUSB` compatible id
   and a stable `DeviceInterfaceGUIDs` property, so Windows auto-binds WinUSB with no `.inf` and no
   Zadig.
@@ -724,7 +746,9 @@ second protocol. What is **board-specific** and worth knowing:
 
 Steps 1–2 are the **cable-less boot**, and they are the ones that matter most: that is how the
 device is used. Steps 3–6 are the ordinary transfer path; step 7 is recovery. All seven were
-confirmed on glass, with the burst/DMA map path and recovery upload re-checked on 2026-08-07.
+confirmed on glass through 2026-08-07 — but against the v1 plane. **Enumeration and the cable cycle
+(1–3, 5, 6) are unchanged by FS7.5-c3b; everything that moves an object (4 and 7) is owed a fresh
+run**, because the plane under it is a different one.
 
 1. With **J3 empty**, flash `cargo run --release` over **J4** — the plain default build; no feature
    flag selects the plane any more (remember the flash-twice quirk and keep `--verify`; retry 2–3×
@@ -733,7 +757,7 @@ confirmed on glass, with the burst/DMA map path and recovery upload re-checked o
    `usb: no VBUS on J3 — device plane parked; it comes up when a cable is plugged in`, then the map
    renders and the session keeps logging. No `DAP FAULT`, no reset loop. This is the #936
    regression test: before the VBUS gate, this exact step killed the boot.
-3. Now plug **J3** into the host. RTT: `usb: VBUS present — bringing the device plane up` followed by
+3. Now plug **J3** into the host. RTT: `usb: VBUS present — BLE radio parked; bringing the device plane up` followed by
    `usb: device plane up — 1209:0001, serial '…', HS bulk 512 B`. **Watch the clock here** — that is
    the #937 check. The defmt timestamp on `VBUS present` should be within a few milliseconds of the
    connector seating, because a VREGUSB interrupt woke the task. If instead it lands *seconds*
@@ -743,20 +767,24 @@ confirmed on glass, with the burst/DMA map path and recovery upload re-checked o
    `OpenBikeComputer`, the FICR serial as `iSerialNumber`, **Speed: Up to 480 Mb/s**, one
    vendor-specific interface and four bulk endpoints.
 4. In Chromium, `chrome://device-log` shows the enumeration; the web builder's connect button opens
-   the chooser and the identity + device-info reads answer. RTT should show
-   `usb: [ctl] endpoint enabled` and `usb: [bulk] endpoint enabled` once the host claims the
-   interface.
+   the chooser, the EP0 device-info read (§5.2.1) answers with the firmware/hardware/serial strings,
+   and the first `LIST` comes back. RTT should show
+   `usb: [v4] endpoints enabled — control 4112 B, stream 4112 B` once the host claims the interface
+   (that pair is what the *device* may send; the 256 B narrowing is the host→device control reader's,
+   and it is not in the line).
+   There is no identity read to check for and no version handshake to watch: the major was settled by
+   `bInterfaceProtocol` before the chooser opened.
 5. **Unplug J3 mid-ride.** RTT: `usb: VBUS removed — device plane parked, endpoints idle until a
    cable returns`, and the ride loop carries on untouched.
-6. **Plug it back in.** `usb: VBUS back — device plane serving again`, the host re-enumerates, and a
+6. **Plug it back in.** `usb: VBUS back — BLE radio parked; device plane serving again`, the host re-enumerates, and a
    transfer works again — again within milliseconds, not seconds. Repeat a few times: the cable
    cycle is a loop, not a one-shot, and this is also where a lost VREGUSB edge would show up, since
    the park after an unplug is the one that has to be woken by an interrupt rather than entered
    with the answer already known.
 7. **Recovery path:** boot once with an unreadable or absent map. Keep the fault screen visible,
-   connect the builder, and upload a valid map/set; USB must enumerate and run at the ordinary map
-   rate even though the ride loop and BLE were never spawned. Restart and confirm the normal BLE
-   stack starts — that proves the replacement parsed and mounted rather than merely committed.
+   connect the builder, and `PUT` a valid map; USB must enumerate and run at the ordinary map rate
+   even though the ride loop and BLE were never spawned. Restart and confirm the normal ride
+   application starts — that proves the replacement parsed and mounted rather than merely committed.
 
 **Known failure modes.** *No* `usb:` line at all → the task never started (it is spawned
 unconditionally, so this is a real bring-up failure, not a missing build flag — check for a panic
@@ -769,10 +797,11 @@ noticed** is the #937 signature: the park's VREGUSB wake is not arriving, and si
 timer is gone nothing else will rescue it — check that both handlers are still on the `VREGUSB` arm
 of `bind_interrupts!`. Enumeration at 12 Mb/s instead of 480 →
 the PHY fell back to full speed, and the 512 B bulk descriptors are then illegal; that is a real
-bug, not a slow link. A device that enumerates but whose transfers hang → look for `discarded N
-unclaimed bytes while idle` (the host wrote payload before its descriptor was acked) or a `busy`
-status (the cross-transport one-transfer gate — a BLE transfer is in flight). `Code 43` on Windows
-means the MS OS 2.0 descriptor set was rejected; re-read it with `usbview`.
+bug, not a slow link. A device that enumerates but whose transfers hang → look for
+`usb: [v4] a stream record arrived unadmitted` (the host's payload beat its own `PUT` by more than
+the 250 ms hold, so §3.8 discarded it and the upload died on a gap at offset zero) or a `busy` error
+response (§1's one-transfer rule is shared across links — a BLE transfer is live). `Code 43` on
+Windows means the MS OS 2.0 descriptor set was rejected; re-read it with `usbview`.
 
 ## Driving it from a host (`debug-uart`)
 

@@ -61,9 +61,6 @@ pub use weather::request_weather_now;
 pub use weather::set_weather_inputs;
 pub(crate) use weather::{note_settings_changed as weather_settings_changed, note_unchanged as weather_unchanged};
 
-// The radio link's lifetime counters, for the §7.5 diagnostics blob any transport can serve.
-pub(crate) use state::link_counters;
-
 // The BLE sensor manager's app-facing seam (SE6, epic #707): the per-quantity status snapshot the
 // ride loop feeds the Sensors screen, and the scan/save/forget one-shot requests flowing back — the
 // central-role analogue of the phone link's `app_ble_status` + `request_forget_bond`. SE7 (the
@@ -614,14 +611,12 @@ pub async fn run(
                     if let Some(writer) = crate::flat_store::writer() {
                         v4::release_engine(&writer).await;
                     }
-                    // The v1 half of the same teardown: discard any in-flight upload and release the
-                    // store's open handles. Scoped to **this** wire (#1039) — the cable can be
-                    // uploading while the phone drops off — and `link_reset` closes the temp handle
-                    // only if the temp is what is open.
-                    {
-                        let mut guard = shared.lock().await;
-                        store.borrow_mut().link_reset(&mut guard);
-                    }
+                    // **There is no v1 half of this teardown any more** (FS7.5-c3b). The object
+                    // store used to hold an in-flight upload and an open temp handle that a dropped
+                    // link had to discard; both links now transfer through the engine, whose entire
+                    // per-link state the `release_engine` above releases. What the object store
+                    // still holds — the route/ride catalog and the settings cache — is not a
+                    // property of any link.
                     publish(|s| {
                         s.disconnects += 1;
                         s.last_disconnect_reason = reason;

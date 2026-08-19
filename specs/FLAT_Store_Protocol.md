@@ -752,10 +752,79 @@ package signature and version check are what bound what may run on the device.
   u16` followed by exactly that many frame bytes. Packet boundaries carry no protocol meaning; a
   record may span packets, but records are neither interleaved nor concatenated without their
   prefixes.
+- **The control bulk pair carries §3 control frames and nothing else.** There is no selector, no
+  envelope and no second framing on either pair; a record's bytes are a §3 frame from its first byte.
 - A zero, out-of-range, truncated or overrun record length is `invalidFrame` and resets that record
   stream before teardown is reported to the engine.
 - Before an `ARM` reboot, the response record and every earlier IN record must complete at the
   device-controller layer, or the drain timeout must expire.
+
+**Record ceilings are a constant of this binding, not a negotiation.** §3 has no capability
+discovery, and USB offers nothing to derive a ceiling from — a bulk endpoint's max packet is a
+packet size, and §5.2's records span packets by design. So the number is fixed here:
+
+| Direction / channel | Ceiling | Why this number |
+| :-- | --: | :-- |
+| device → host, either channel | 4,112 B | §3.8's 16-byte stream frame plus 4,096 payload bytes — one whole card write. It is also the `LIST` page ceiling, which makes a page 46 entries. |
+| host → device, stream channel | 4,112 B | the same, so a client frames uploads and downloads against one number |
+| host → device, control channel | 256 B | §3's largest request is the 100-byte `PUT`; the device sizes this buffer to the protocol rather than to the ceiling, and a longer control record is `invalidFrame` with detail `length` |
+
+A client MUST NOT send a stream record whose payload exceeds 4,096 bytes; §3.8 already makes a
+length above the link's ceiling terminate the transfer.
+
+#### 5.2.1 Identity and device information: EP0 vendor requests
+
+BLE's non-object control surface is a set of GATT characteristics — separately addressed by the
+transport, outside this document's scope, and untouched by the major bump. USB has one control
+endpoint pair and §5.2 has just given all of it to §3, so USB's equivalent of "a second, separately
+addressed control surface" is **EP0**, where every USB device's identity already lives. That is the
+whole of the decision recorded on #1420: nothing about §3's frozen framing changes, and no third
+endpoint pair is added to carry a retired envelope.
+
+Enumeration is already the authorization boundary on this link (above), and these requests sit below
+the record framing, so they are readable the moment the interface is claimed and before any record is
+exchanged.
+
+| Field | Value |
+| :-- | :-- |
+| `bmRequestType` | `0xC1` — device-to-host, vendor, recipient **interface** |
+| `bRequest` | `0x20`, `GET_DEVICE_INFO` |
+| `wValue` | zero |
+| `wIndex` | the vendor interface's number |
+| `wLength` | at least the payload below; the device returns a short transfer |
+
+The payload is `len u8 · UTF-8`, three times, in this order: **firmware revision**, **hardware
+revision**, **serial number**. Each length is `0..=255` and each string is at most 48 bytes; the whole
+payload is at most 192 bytes. The firmware revision is the load-bearing one — it is what "an update
+is available" compares against, and the running image's version lives there and nowhere else.
+
+Recipient is **interface** rather than device so this request cannot collide with the device-level
+MS OS 2.0 descriptor request (`bRequest = 0x01`, `wIndex = 7`) the same device answers for Windows.
+
+**There is no identity request, and that is the point of Option A rather than an omission.** The two
+things a v1 identity read carried are both already answerable without one:
+
+- *Which protocol does this device speak?* — the interface descriptor's `bInterfaceProtocol` and the
+  device descriptor's `bcdDevice`, per §5.2's opening paragraph. The version is settled by matching,
+  before a record moves.
+- *Which store is this, and is my cache still valid?* — `LIST`'s `StoreId` and commit sequence (§3.3),
+  which every client issues first anyway.
+
+Adding a third answer to questions the wire already answers is exactly the duplication the major bump
+removed.
+
+#### 5.2.2 What the v1 selector envelope's other reads become
+
+The envelope this section replaces carried five more host→device selectors. None of them survives on
+this link, and each has a stated successor rather than a deletion:
+
+| v1 selector | Successor |
+| :-- | :-- |
+| `cardFreeRead` | Nothing asks in advance. §1 refuses capability discovery, and the question *"will this map fit"* is answered at the point of decision: a `PUT` that does not fit is `noSpace`, whose context is the bytes required (§3.9). What a client can know without trying is the catalog — `LIST` carries every object's payload length. |
+| `status` (device→host, unsolicited) | There are no unsolicited control frames (§3.1). A transfer's outcome is the answer to its own `PUT`/`GET`; a store movement is the commit sequence a client reads back from `LIST` (§3.3), which is also how it learns of movements it did not cause. |
+| `transferControl` | `PUT`, `GET`, `CANCEL` (§3.5–§3.8), with `RequestId` as the transfer identifier. |
+| `command` | The three imperatives that act on the store are opcodes: `deleteObject` is `REMOVE` (§3.7) and `installFw` is `ARM` (§4). The rest — bond, clock, retention count, ride acknowledgement — are device-local acts with no store meaning, and they keep the BLE control surface they already had; the cable does not carry them. |
+| `config` read / write | The device's own settings are not objects in this store and never were. They keep the BLE characteristics that carry them today. |
 
 There is no USB mass storage binding and there will not be one: it would hand the host raw blocks and
 force the firmware off the card.

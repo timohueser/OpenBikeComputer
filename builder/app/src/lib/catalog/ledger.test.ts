@@ -7,7 +7,7 @@
 // its coarse cells are — normally, unavoidably — partial.
 
 import { describe, expect, it } from "vitest";
-import { fitsOnCard, gib, ledgerFor, ledgerForRegion, MAX_FILE_BYTES, OVERHEAD_BUDGET } from "./ledger";
+import { gib, ledgerFor, ledgerForRegion, MAX_FILE_BYTES, OVERHEAD_BUDGET } from "./ledger";
 import type { RegionEntry } from "./manifest";
 import { resolveSelection, type BoxPart, type RegionPart, type SelectionContext } from "./selection";
 import { cellSquare, parseCellId } from "./grid";
@@ -30,7 +30,6 @@ const indices = fixtureIndices(exampleCatalog, {
         { id: "18/1204/1053", bytes: 168 },
     ],
 });
-
 const ctx: SelectionContext = { catalog: exampleCatalog, indices, regionCells: new Map() };
 const A = cellSquare(parseCellId("18/1204/1052"));
 const B = cellSquare(parseCellId("18/1204/1053"));
@@ -295,17 +294,5 @@ describe("the core file's ceiling (OBCA §5.7)", () => {
         // where it does.
         expect(ledgerForRegion(exampleCatalog, regionEntry(Math.round(3.03 * GIB))).verdict.kind).toBe("ok");
         expect(ledgerForRegion(exampleCatalog, regionEntry(Math.round(3.05 * GIB))).verdict.kind).toBe("warn");
-    });
-});
-
-describe("fitsOnCard", () => {
-    it("measures against free space, not against any per-file limit", () => {
-        // §9/D4: maps are volume sets, so there is no user-visible file-size
-        // wall. The only question a rider is asked is whether the card has room.
-        const ledger = ledgerOf(overAB);
-        const need = Math.ceil(ledger.totalBytes * (1 + OVERHEAD_BUDGET));
-        expect(fitsOnCard(ledger, need)).toEqual({ fits: true, shortfallBytes: 0 });
-        expect(fitsOnCard(ledger, need - 100)).toEqual({ fits: false, shortfallBytes: 100 });
-        expect(fitsOnCard(ledger, 32 * GIB).fits).toBe(true);
     });
 });

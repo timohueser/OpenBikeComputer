@@ -42,14 +42,20 @@ export interface ThumbStorage {
     keys(): string[];
 }
 
-/** A route CRC is its stable content identity. Zero means the device did not provide one. */
-export function routeFingerprint(entry: { readonly crc32: number }): string | null {
-    return entry.crc32 !== 0 ? `c${entry.crc32 >>> 0}` : null;
-}
-
-/** Rides are immutable on the device; start time plus byte length identifies their contents. */
-export function rideFingerprint(entry: { readonly startTime: number; readonly byteLen: number }): string {
-    return `t${entry.startTime}-l${entry.byteLen}`;
+/**
+ * A catalog entry's content identity, for the cache key.
+ *
+ * One function for every kind, because §3.3 gives every kind the same identity: a committed object's
+ * payload never changes under one revision, so the payload's CRC names exactly those bytes — and a
+ * replace publishes a new revision with a new CRC, which is what makes a stale thumbnail impossible.
+ * The two it replaces keyed a route on its CRC and a ride on `(start time, byte length)`, which was
+ * the v1 catalog's way of saying the same thing in the two shapes it had.
+ *
+ * `null` where the device declared no CRC — a ride it is still recording — which keeps that entry
+ * out of the durable cache rather than caching a thumbnail of a payload that is still growing.
+ */
+export function entryFingerprint(entry: { readonly payloadCrc32: number }): string | null {
+    return entry.payloadCrc32 !== 0 ? `c${entry.payloadCrc32 >>> 0}` : null;
 }
 
 export function thumbKey(scope: RideScope, kind: ThumbKind, id: number, fingerprint: string): string {

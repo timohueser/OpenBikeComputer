@@ -6,12 +6,12 @@
  * *universal* USB path, and the answer for every Safari and Firefox user the hosted site cannot
  * reach.
  *
- * **Nothing about the protocol lives here.** `lib/usb/` is the object model, the descriptors, the
- * whole-object CRC and the client, written once and validated against `specs/vectors/`; this
- * file supplies the two byte pipes underneath it and a watcher with the same three methods
- * `WebUsbWatcher` has. `ProtocolClient` and `DeviceLink` are used unchanged, and they cannot tell
- * which transport they got — which was C3's whole design claim, and this is the thing that either
- * makes it true or exposes it.
+ * **Nothing about the protocol lives here.** `lib/usb/` is §3's codec, §5.2's record framing and the
+ * client, written once and validated against `specs/vectors/flat-store-v4/`; this file supplies the
+ * two byte pipes underneath them and a watcher with the same three methods `WebUsbWatcher` has.
+ * `FlatStoreClient` and `DeviceLink` are used unchanged, and they cannot tell which transport they
+ * got — which was C3's whole design claim, and this is the thing that either makes it true or
+ * exposes it.
  *
  * ## Why it lives in `lib/desktop/` and not beside `webusb.ts`
  *
@@ -29,22 +29,36 @@
  * - **No chooser, no permission prompt.** `requestDevice()` is "look again now", not a dialog. The
  *   session's shape is identical anyway, so the Connect button and the auto-detect path both keep
  *   working without a single UI branch on which transport is underneath.
- * - **Reads are still not messages.** The bulk pipe hands back whatever one transfer delivered, and
- *   the client accumulates to the announced length. Nothing about that changes.
+ * - **Reads are still not messages.** The stream pipe hands back whatever one transfer delivered,
+ *   and `records.ts` accumulates to the length the record's own prefix announced. §5.2 makes that
+ *   *more* true here than it was under the v1 envelope, not less: a record spans packets by design.
+ * - **There is no EP0 read.** §5.2.1's `GET_DEVICE_INFO` is a vendor control transfer, and the Rust
+ *   side exposes no control-transfer command — so the link below omits `DeviceLink.vendorIn` and
+ *   {@link FlatStoreClient.deviceInfo} answers `unavailable`. The connect flow publishes
+ *   `info: null` rather than a fabricated firmware revision, which "an update is available" would
+ *   then compare against.
+ *
+ * ## Why a map is not sent from disk here
+ *
+ * There used to be a `nativeFileSource` whose bytes went disk → endpoint inside Rust, never
+ * entering the webview. Protocol v4 removes the seam it hung on: §3.8 requires **every** stream
+ * record to be framed by the protocol client — `RequestId`, absolute offset, length, and §5.2's
+ * record prefix around all of it — so `ObjectSource` has no `sendTo` any more, and the Rust
+ * `usb_send_file` command writes raw file bytes with no framing at all. A native path built on it
+ * would produce records the device reads as garbage, which is a worse outcome than a slower send.
+ *
+ * So the desktop app sends a map exactly the way the browser does: a picked `File` through the
+ * webview, `blobSource`, `FlatStoreClient.put`. The alternative — teaching the Rust command to
+ * frame records — is a real option and a Rust change, not a change here; it buys back the webview
+ * hop, which the device's own card write dominates anyway (8.2 MB/s over sEMMC, #1158).
  */
 
 import { PipeError, withAbort, type BytePipe, type DeviceLink } from "../usb/pipe";
-import { ProtocolClient, type ClientOptions, type ObjectSource, type SendHooks } from "../usb/client";
+import { DeviceError, FlatStoreClient, type ClientOptions } from "../usb/client";
+import type { DeviceInfo } from "../usb/records";
 import type { DeviceState, DeviceWatcher } from "../usb/session";
 import { Channel } from "@tauri-apps/api/core";
-import {
-    desktop,
-    type UsbDeviceSummary,
-    type UsbEvent,
-    type UsbLinkInfo,
-    type UsbPlane,
-    type UsbSendProgress,
-} from "./invoke";
+import { desktop, type UsbDeviceSummary, type UsbEvent, type UsbLinkInfo, type UsbPlane } from "./invoke";
 
 // --- the pipe -----------------------------------------------------------------
 
@@ -70,8 +84,21 @@ class NativePipe implements BytePipe {
     private writeTail: Promise<void> = Promise.resolve();
 
     constructor(
-        readonly kind: UsbPlane,
+        /**
+         * The backend's name for this endpoint pair.
+         *
+         * `"bulk"` is what `DeviceLink.stream` is called on the Rust side — the pair's old name,
+         * from when the channels were named after the endpoint type rather than after what §5 puts
+         * on them. Renaming it is a Rust change (the `UsbPlane` enum, the command headers and
+         * `apps/obc-desktop/src/usb/`), so the wire word stays `"bulk"` and the seam is here.
+         */
+        readonly plane: UsbPlane,
         private readonly handle: number,
+        /**
+         * The endpoint's max packet size, as `usb_open` reported it. Diagnostics only, never a
+         * branch target: §5.2 gives packet boundaries no protocol meaning, and the backend chooses
+         * its own transfer length for a read.
+         */
         readonly packetSize: number,
     ) {}
 
@@ -86,11 +113,12 @@ class NativePipe implements BytePipe {
         const release = this.cancelOnAbort(signal, "in");
         try {
             const body = await Promise.race([
-                withAbort(desktop.usbRead(this.handle, this.kind), signal, "the read"),
+                withAbort(desktop.usbRead(this.handle, this.plane), signal, "the read"),
                 this.dead(),
             ]);
             // Never empty: the backend absorbs zero-length packets, which are USB-level markers
-            // (the object terminator #889 added) rather than data a caller could interpret.
+            // rather than data. A caller counting bytes towards a record's announced length could
+            // not tell an empty read from a spurious wakeup, which is `BytePipe.read`'s contract.
             return new Uint8Array(body);
         } catch (cause) {
             throw this.asPipeError(cause, "read");
@@ -99,22 +127,23 @@ class NativePipe implements BytePipe {
         }
     }
 
+    /**
+     * One OUT transfer of whatever the caller handed over.
+     *
+     * There is deliberately **no** "a control frame must fit one packet" rule here any more. Under
+     * the v1 envelope a frame was one transfer, so a frame at exactly the packet size was
+     * indistinguishable from one that had not ended and the host refused to send it. §5.2 replaces
+     * that with a length prefix: records span packets by design, and the only thing that says where
+     * a record ends is its own first two bytes. The old check would refuse the ordinary 4,112-byte
+     * stream record this protocol is built around.
+     */
     async write(bytes: Uint8Array, signal?: AbortSignal): Promise<void> {
         this.check();
-        // A control frame is one transfer, so it has to fit in one packet: at exactly the packet
-        // size the device could not tell the frame had ended without a zero-length packet. Same
-        // rule, same reason, as the WebUSB pipe and the firmware's own `const _: () = assert!`.
-        if (this.kind === "control" && bytes.length >= this.packetSize) {
-            throw new PipeError(
-                "device-error",
-                `a ${bytes.length}-byte control frame does not fit the ${this.packetSize}-byte endpoint.`,
-            );
-        }
         const run = async () => {
             const release = this.cancelOnAbort(signal, "out");
             try {
                 await Promise.race([
-                    withAbort(desktop.usbWrite(this.handle, this.kind, bytes), signal, "the write"),
+                    withAbort(desktop.usbWrite(this.handle, this.plane, bytes), signal, "the write"),
                     this.dead(),
                 ]);
             } catch (cause) {
@@ -144,7 +173,7 @@ class NativePipe implements BytePipe {
     async reset(): Promise<void> {
         this.check();
         try {
-            await desktop.usbReset(this.handle, this.kind);
+            await desktop.usbReset(this.handle, this.plane);
         } catch (cause) {
             // A pipe whose device has already gone has nothing left to reset, and the caller's
             // original error is the interesting one.
@@ -167,7 +196,7 @@ class NativePipe implements BytePipe {
     /** Tell the backend to cancel this direction when `signal` fires. Returns the unsubscriber. */
     private cancelOnAbort(signal: AbortSignal | undefined, dir: "in" | "out"): () => void {
         if (!signal) return () => undefined;
-        const onAbort = () => void desktop.usbCancel(this.handle, this.kind, dir).catch(() => undefined);
+        const onAbort = () => void desktop.usbCancel(this.handle, this.plane, dir).catch(() => undefined);
         signal.addEventListener("abort", onAbort, { once: true });
         return () => signal.removeEventListener("abort", onAbort);
     }
@@ -233,7 +262,14 @@ export interface NativeLink extends DeviceLink {
     disconnected(): void;
 }
 
-/** Open and claim a device by the backend's opaque id, returning its two pipes. */
+/**
+ * Open and claim a device by the backend's opaque id, returning its two channels.
+ *
+ * `DeviceLink.vendorIn` is deliberately absent: §5.2.1's `GET_DEVICE_INFO` is an EP0 vendor
+ * request, the Rust side has no control-transfer command, and omitting the method is what lets
+ * {@link FlatStoreClient.deviceInfo} say "this host cannot ask" instead of answering with a version
+ * nobody read off the device.
+ */
 export async function openNativeLink(deviceId: string): Promise<NativeLink> {
     let info: UsbLinkInfo;
     try {
@@ -242,19 +278,20 @@ export async function openNativeLink(deviceId: string): Promise<NativeLink> {
         throw asPipeError(cause, "connection");
     }
     const control = new NativePipe("control", info.handle, info.controlPacketSize);
-    const bulk = new NativePipe("bulk", info.handle, info.bulkPacketSize);
+    // §5's stream channel, under the backend's own name for the pair — see {@link NativePipe.plane}.
+    const stream = new NativePipe("bulk", info.handle, info.bulkPacketSize);
     return {
         info,
         control,
-        bulk,
+        stream,
         disconnected() {
             const error = new PipeError("closed", "The device was unplugged.");
             control.fail(error);
-            bulk.fail(error);
+            stream.fail(error);
         },
         async close() {
             await control.close();
-            await bulk.close();
+            await stream.close();
             try {
                 await desktop.usbClose(info.handle);
             } catch {
@@ -262,81 +299,6 @@ export async function openNativeLink(deviceId: string): Promise<NativeLink> {
             }
         },
     };
-}
-
-// --- the bulk plane, by file path ---------------------------------------------
-
-/**
- * An {@link ObjectSource} whose bytes never enter this process.
- *
- * #894's plane split, made concrete: the control plane (a 12-byte descriptor, a status envelope)
- * rides the IPC because it is tiny and the protocol that produces it is TypeScript; the object's
- * bytes go disk → endpoint inside Rust, because a country map is hundreds of megabytes and pushing
- * it through the webview so the webview could hand it straight back is theatre.
- *
- * The file is still read **twice** — once to fingerprint, once to send — for the same reason
- * `blobSource` reads a `Blob` twice: §4.2 announces the whole-object CRC-32 before the first byte
- * moves, and a checksum of bytes you have not seen does not exist. Both passes happen in Rust.
- *
- * The path must be one the backend will stream (its maps folder — see
- * `usb::sendable_path`); anything else is refused there rather than trusted here.
- */
-export async function nativeFileSource(handle: number, path: string): Promise<ObjectSource> {
-    const digest = await desktop.usbFileDigest(path);
-    return {
-        totalLen: digest.len,
-        crc32: digest.crc32,
-        // Unreachable: `ProtocolClient.upload` prefers `sendTo` whenever a source has one. It
-        // throws rather than quietly reading the file over the IPC, because a silent fallback to
-        // the thing this class exists to avoid is worse than a loud failure.
-        // eslint-disable-next-line require-yield
-        async *chunks(): AsyncGenerator<Uint8Array> {
-            throw new Error(`${path} streams natively; its bytes are not available to the page.`);
-        },
-        sendTo: (_pipe, hooks) => sendNativeFile(handle, path, hooks),
-    };
-}
-
-/**
- * Stream a file into the bulk endpoint, honouring the hooks the chunk loop would have honoured.
- *
- * The progress channel is doing two jobs. It moves the bar, and it is the *only* moment at which
- * this side can notice that the device rejected the descriptor — so `check()` runs on every report
- * and, when it throws, the send is cancelled at the transport and the device's reason is what
- * surfaces. Without that, a device answering "storage full" after the first megabyte would still be
- * pushed the remaining 299.
- */
-async function sendNativeFile(handle: number, path: string, hooks: SendHooks): Promise<number> {
-    // Before anything moves: a transfer already cancelled, or already rejected, must not start.
-    hooks.check();
-
-    const cancel = () => void desktop.usbCancel(handle, "bulk", "out").catch(() => undefined);
-    /** The reason the send was stopped from this side, kept so it outranks the cancel it caused. */
-    let stopped: unknown = null;
-
-    const progress = new Channel<UsbSendProgress>();
-    progress.onmessage = (report) => {
-        hooks.onProgress?.(report.sent);
-        if (stopped) return;
-        try {
-            hooks.check();
-        } catch (cause) {
-            stopped = cause;
-            cancel();
-        }
-    };
-    const onAbort = () => cancel();
-    hooks.signal?.addEventListener("abort", onAbort, { once: true });
-    try {
-        return await desktop.usbSendFile(handle, path, progress);
-    } catch (cause) {
-        // "The device said storage-full" is the useful sentence; "the transfer was cancelled" is
-        // merely how this side reacted to it.
-        if (stopped) throw stopped;
-        throw asPipeError(cause, "transfer");
-    } finally {
-        hooks.signal?.removeEventListener("abort", onAbort);
-    }
 }
 
 // --- discovery ----------------------------------------------------------------
@@ -369,7 +331,7 @@ export interface Bridge {
 }
 
 /**
- * Finds the device, keeps up with plugging and unplugging, and owns the {@link ProtocolClient}.
+ * Finds the device, keeps up with plugging and unplugging, and owns the {@link FlatStoreClient}.
  *
  * The same three-method shape as `WebUsbWatcher`, so `WatchedDeviceSession` wraps either one and
  * the UI above never learns which. Subscribers get an immutable snapshot per change.
@@ -380,7 +342,7 @@ export class NativeWatcher implements DeviceWatcher {
     private readonly listeners = new Set<(state: DeviceState) => void>();
 
     private link: NativeLink | null = null;
-    private state: DeviceState = { status: "idle", client: null, identity: null, info: null, error: null };
+    private state: DeviceState = { status: "idle", client: null, store: null, info: null, error: null };
 
     constructor(options: NativeWatcherOptions = {}) {
         this.options = options;
@@ -439,7 +401,7 @@ export class NativeWatcher implements DeviceWatcher {
             devices = await this.bridge.usbList();
         } catch (cause) {
             if (this.owns(token)) {
-                this.publish({ status: "error", client: null, identity: null, info: null, error: describe(cause) });
+                this.publish({ status: "error", client: null, store: null, info: null, error: describe(cause) });
             }
             return false;
         }
@@ -448,7 +410,7 @@ export class NativeWatcher implements DeviceWatcher {
             this.publish({
                 status: "idle",
                 client: null,
-                identity: null,
+                store: null,
                 info: null,
                 error: null,
             });
@@ -457,21 +419,6 @@ export class NativeWatcher implements DeviceWatcher {
         return this.adopt(devices[0], token);
     }
 
-    /**
-     * A file on this disk, as an {@link ObjectSource} — the seam E3 (#913) reaches for when the map
-     * to send is one this app just built.
-     *
-     * Reads `this.link` at call time rather than closing over a handle: a device that was unplugged
-     * and put back is a *different* handle, and a source built against the old one would be sent to
-     * an endpoint that no longer exists. Rejecting when there is no link is the same rule the pipes
-     * hold — an operation on a device that is not there fails, it does not queue.
-     */
-    localFileSource = async (path: string): Promise<ObjectSource> => {
-        const link = this.link;
-        if (!link) throw new PipeError("closed", "No device is connected.");
-        return nativeFileSource(link.info.handle, path);
-    };
-
     /** Drop the link but keep watching, so re-plugging reconnects. */
     async disconnect(): Promise<void> {
         // A deliberate disconnect outranks any connect flow still in flight: claim the flow so a
@@ -479,7 +426,7 @@ export class NativeWatcher implements DeviceWatcher {
         this.claimFlow();
         this.chasing = null;
         const client = this.state.client;
-        this.publish({ status: "idle", client: null, identity: null, info: null, error: null });
+        this.publish({ status: "idle", client: null, store: null, info: null, error: null });
         this.link = null;
         await client?.close();
     }
@@ -528,11 +475,24 @@ export class NativeWatcher implements DeviceWatcher {
         let link: NativeLink | null = null;
         try {
             link = await openNativeLink(device.id);
-            const client = new ProtocolClient(link, { timeoutMs: this.options.timeoutMs });
-            // The identity read is first on every connection and gates everything else: a version
-            // mismatch is surfaced and stopped on rather than best-effort decoded (§1).
-            const identity = await client.identity();
-            const info = await client.deviceInfo();
+            const client = new FlatStoreClient(link, { timeoutMs: this.options.timeoutMs });
+            // §5.2.1's EP0 read first, mirroring `WebUsbWatcher.connect` — except that this host
+            // cannot issue one. `deviceInfo()` says so with `unavailable`, and **only** that code is
+            // caught: a device that answered a request badly is a real failure and must not be
+            // rounded down to "no info". Publishing `info: null` is the honest state until the Rust
+            // bridge grows a control-transfer command; the alternative, a version this side made up,
+            // is what "an update is available" would then compare against.
+            let info: DeviceInfo | null;
+            try {
+                info = await client.deviceInfo();
+            } catch (cause) {
+                if (!(cause instanceof DeviceError) || cause.code !== "unavailable") throw cause;
+                info = null;
+            }
+            // Then `LIST`, which §3 says every client issues before anything else and which is where
+            // the store's identity and cache freshness come from. The wire major is not read at all:
+            // §5.2 settles it by descriptor matching, and this host claimed the interface already.
+            const page = await client.listPage({});
             if (!this.owns(token)) {
                 // A newer flow (or a disconnect) took the state while this handshake ran. The
                 // connection itself is real, so it must be closed, not dropped — see the section
@@ -541,7 +501,13 @@ export class NativeWatcher implements DeviceWatcher {
                 return { ok: false };
             }
             this.link = link;
-            this.publish({ status: "ready", client, identity, info, error: null });
+            this.publish({
+                status: "ready",
+                client,
+                store: { storeId: page.storeId, commitSequence: page.commitSequence },
+                info,
+                error: null,
+            });
             return { ok: true };
         } catch (cause) {
             // A device claimed but never handshaken still holds its interface, and an interface can
@@ -582,11 +548,11 @@ export class NativeWatcher implements DeviceWatcher {
                 const present = await this.stillAttached(device.id);
                 if (!this.owns(token)) return false;
                 if (present === false) {
-                    this.publish({ status: "idle", client: null, identity: null, info: null, error: null });
+                    this.publish({ status: "idle", client: null, store: null, info: null, error: null });
                     return false;
                 }
             }
-            this.publish({ status: "error", client: null, identity: null, info: null, error: lastError });
+            this.publish({ status: "error", client: null, store: null, info: null, error: lastError });
             return false;
         } finally {
             if (this.owns(token)) this.chasing = null;
@@ -616,7 +582,7 @@ export class NativeWatcher implements DeviceWatcher {
                     this.link.disconnected();
                     const client = this.state.client;
                     this.link = null;
-                    this.publish({ status: "idle", client: null, identity: null, info: null, error: null });
+                    this.publish({ status: "idle", client: null, store: null, info: null, error: null });
                     void client?.close();
                     return;
                 }
@@ -626,7 +592,7 @@ export class NativeWatcher implements DeviceWatcher {
                 if (this.chasing === event.id) {
                     this.claimFlow();
                     this.chasing = null;
-                    this.publish({ status: "idle", client: null, identity: null, info: null, error: null });
+                    this.publish({ status: "idle", client: null, store: null, info: null, error: null });
                 }
                 return;
             }

@@ -3,46 +3,40 @@
  *
  * There is no device in CI and none on the machine that wrote this, so the substitution has to be
  * chosen carefully. It is made at exactly one place: the **Tauri command boundary**. Everything
- * above it — `NativePipe`, `NativeWatcher`, `nativeFileSource`, `ProtocolClient`, the codecs, the
- * CRC — is the shipping code, and the fake backend below stands in for
+ * above it — `NativePipe`, `NativeWatcher`, `FlatStoreClient`, §5.2's record framing, the codecs,
+ * the CRC — is the shipping code, and the fake backend below stands in for
  * `apps/obc-desktop/src/usb/`, forwarding to C3's simulated device.
  *
  * That means these tests are about the two things a fake *can* prove:
  *
- * 1. **The seam holds.** The same `specs/vectors/` fixtures round-trip through the real client
- *    over the native pipe, byte for byte, with a real whole-object CRC — which is #909's first
- *    acceptance criterion and the entire claim that USB is a second transport rather than a second
- *    protocol.
- * 2. **The transport properties C3's contract names are honoured**: a read is not a message, a
- *    zero-length packet is a marker and not data, cancellation reaches the transport, an unplug
- *    settles pending calls, and a source that streams itself makes the same checks the chunk loop
- *    makes.
+ * 1. **The seam holds.** A real `specs/vectors/` object round-trips through the real client over
+ *    the native pipes, byte for byte, with the device verifying the whole-object CRC — which is
+ *    #909's first acceptance criterion and the entire claim that USB-over-Rust is a second
+ *    transport rather than a second protocol.
+ * 2. **The transport properties C3's contract names are honoured**: a read is not a record, a
+ *    zero-length packet is a marker and not data, concurrent writes keep submission order,
+ *    cancellation reaches the transport, and an unplug settles pending calls.
  *
- * What it cannot prove is anything about `nusb`, the OS, or the descriptors — enumeration, stalls,
- * short-packet termination and the ZLP contract are hardware, and the PR body says how they were
- * checked on glass.
+ * There is a third thing, and it is an absence: this host has no EP0 vendor request, so §5.2.1's
+ * device info is unreadable here. That is asserted rather than worked around — a connection that
+ * invented a firmware revision would feed "an update is available" a lie.
+ *
+ * What this cannot prove is anything about `nusb`, the OS, or the descriptors — enumeration,
+ * stalls, short-packet termination and the ZLP contract are hardware, and the PR body says how they
+ * were checked on glass.
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { FlatStoreClient } from "../usb/client";
 import { Crc32 } from "../usb/crc32";
-import {
-    loopbackLink,
-    MockDevice,
-    REFERENCE_OBCM_VERSION,
-    type LoopbackLink,
-    type LoopbackOptions,
-    type MockDeviceOptions,
-} from "../usb/loopback";
-import { decodeRouteList } from "../usb/objects";
+import { loopbackLink, MockDevice, type LoopbackLink, type LoopbackOptions, type MockDeviceOptions } from "../usb/loopback";
 import { PipeError, type BytePipe } from "../usb/pipe";
-import { NEW_OBJECT_ID, ObjectType, PROTOCOL_VERSION, SINGLETON_OBJECT_ID } from "../usb/protocol";
-import type { DeviceState, DeviceWatcher } from "../usb/session";
-import { WatchedDeviceSession } from "../usb/session.svelte";
+import { MAX_HOST_STREAM_RECORD } from "../usb/records";
+import { HEAD_REVISION, ObjectKind } from "../usb/protocol";
 
 // --- the fake backend ----------------------------------------------------------
 
@@ -59,7 +53,13 @@ class FakeChannel<T> {
 
 const calls: Call[] = [];
 /** Set per test: what `usb_watch` / `usb_list` report is attached. */
-let attached: Array<{ id: string; vendorId: number; productId: number; product: string | null; serialNumber: string | null }> = [];
+let attached: Array<{
+    id: string;
+    vendorId: number;
+    productId: number;
+    product: string | null;
+    serialNumber: string | null;
+}> = [];
 /** The hot-plug channel the watcher handed `usb_watch` — a test pushes plug events through it. */
 let watchChannel: FakeChannel<import("./invoke").UsbEvent> | null = null;
 let wire: LoopbackLink | null = null;
@@ -69,49 +69,22 @@ let openFault: { code: string; message: string; onlyId?: string } | null = null;
 /** Gates shifted per `usb_open` call — an entry parks that open until its promise resolves,
  *  which is how a test freezes one connect flow mid-open while another overtakes it. */
 let openGates: Array<(() => Promise<void>) | undefined> = [];
-/** Per-call gates for `usb_write` on the bulk plane, modelling the backend's free ordering of concurrent invokes. */
+/** Per-call gates for `usb_write` on the stream plane, modelling the backend's free ordering of
+ *  concurrent invokes. */
 let writeGates: Array<(() => Promise<void>) | undefined> = [];
 /** In-flight reads/writes, so `usb_cancel` can settle them the way a cancelled URB does. */
 const inFlight = new Map<string, AbortController>();
+
 /**
- * A file the fake backend will stream, keyed by path (standing in for `sendable_path`'s allowlist).
+ * The backend's plane name → the channel §5 gives it.
  *
- * Read through a callback rather than held as bytes, so the flat-memory measurement below can use a
- * 300 MB one without the *fixture* being the thing that allocates 300 MB.
+ * `"bulk"` is `DeviceLink.stream` under the Rust side's older name for the endpoint pair; the
+ * mismatch is deliberate and lives in `usb.ts`, because renaming it is a Rust change.
  */
-interface FakeFile {
-    len: number;
-    slice(at: number, n: number): Uint8Array;
-}
-
-const heldFile = (bytes: Uint8Array): FakeFile => ({
-    len: bytes.length,
-    slice: (at, n) => bytes.subarray(at, at + n),
-});
-
-/** `len` bytes of `i & 0xff`, generated on demand into one reused buffer. */
-function syntheticFile(len: number): FakeFile {
-    let scratch = new Uint8Array(0);
-    return {
-        len,
-        slice(at, n) {
-            if (scratch.length < n) scratch = new Uint8Array(n);
-            for (let i = 0; i < n; i++) scratch[i] = (at + i) & 0xff;
-            return scratch.subarray(0, n);
-        },
-    };
-}
-
-let sendable = new Map<string, FakeFile>();
-/** Bytes per transfer the fake file streamer uses — the Rust side's `CHUNK`, scaled down. */
-let FAKE_SEND_CHUNK = 4096;
-/** Set to stall the file send after this many bytes, so a cancel has something to interrupt. */
-let sendStallAfter = Number.POSITIVE_INFINITY;
-
 function planeOf(name: string): BytePipe {
     const link = wire?.host;
     if (!link) throw { code: "closed", message: "no link" };
-    return name === "control" ? link.control : link.bulk;
+    return name === "control" ? link.control : link.stream;
 }
 
 async function backend(cmd: string, args: unknown, options?: { headers?: Record<string, string> }): Promise<unknown> {
@@ -182,52 +155,8 @@ async function backend(cmd: string, args: unknown, options?: { headers?: Record<
         case "usb_reset":
             await planeOf(a.plane as string).reset();
             return null;
-        case "usb_file_digest": {
-            const file = sendable.get(a.path as string);
-            if (!file) throw { code: "device-error", message: `${a.path} is outside the folders this app streams from.` };
-            // One streaming pass, exactly as `sendfile::digest` does it — nothing is held.
-            const crc = new Crc32();
-            for (let at = 0; at < file.len; at += FAKE_SEND_CHUNK) {
-                crc.update(file.slice(at, Math.min(FAKE_SEND_CHUNK, file.len - at)));
-            }
-            return { len: file.len, crc32: crc.value() };
-        }
-        case "usb_send_file":
-            return fakeSendFile(a.path as string, a.onProgress as FakeChannel<{ sent: number; total: number }>);
         default:
             throw new Error(`the fake backend has no command ${cmd}`);
-    }
-}
-
-/** The Rust streamer's shape: read a chunk, write it, report, repeat — cancellable at the transport. */
-async function fakeSendFile(path: string, progress: FakeChannel<{ sent: number; total: number }>): Promise<number> {
-    const file = sendable.get(path);
-    if (!file) throw { code: "device-error", message: `${path} is outside the folders this app streams from.` };
-    const controller = new AbortController();
-    inFlight.set("bulk:out", controller);
-    let sent = 0;
-    try {
-        progress.onmessage?.({ sent: 0, total: file.len });
-        while (sent < file.len) {
-            if (sent >= sendStallAfter) {
-                // Park until cancelled, standing in for a device that has stopped draining.
-                await new Promise<void>((resolve) =>
-                    controller.signal.addEventListener("abort", () => resolve(), { once: true }),
-                );
-            }
-            const n = Math.min(FAKE_SEND_CHUNK, file.len - sent);
-            await wire!.host.bulk.write(file.slice(sent, n), controller.signal);
-            sent += n;
-            progress.onmessage?.({ sent, total: file.len });
-            // Yield, so a `check()` that throws inside the progress handler gets to run its cancel
-            // before the next chunk — the same interleaving the real IPC produces.
-            await Promise.resolve();
-        }
-        return sent;
-    } catch (cause) {
-        throw asFault(cause);
-    } finally {
-        inFlight.delete("bulk:out");
     }
 }
 
@@ -245,7 +174,7 @@ vi.mock("@tauri-apps/api/core", () => ({
     Channel: FakeChannel,
 }));
 
-const { NativeWatcher, nativeFileSource, openNativeLink } = await import("./usb");
+const { NativeWatcher, openNativeLink } = await import("./usb");
 
 // --- fixtures ------------------------------------------------------------------
 
@@ -260,8 +189,20 @@ function repoRoot(): string {
 const ROOT = repoRoot();
 const vector = (name: string): Uint8Array => new Uint8Array(readFileSync(join(ROOT, "specs/vectors", name)));
 
-const DEVICE = { id: "usb#1", vendorId: 0x1209, productId: 0x0001, product: "OpenBikeComputer", serialNumber: "0011223344556677" };
-const DEVICE_B = { id: "usb#2", vendorId: 0x1209, productId: 0x0001, product: "OpenBikeComputer", serialNumber: "8877665544332211" };
+const DEVICE = {
+    id: "usb#1",
+    vendorId: 0x1209,
+    productId: 0x0001,
+    product: "OpenBikeComputer",
+    serialNumber: "0011223344556677",
+};
+const DEVICE_B = {
+    id: "usb#2",
+    vendorId: 0x1209,
+    productId: 0x0001,
+    product: "OpenBikeComputer",
+    serialNumber: "8877665544332211",
+};
 
 /** A live simulated device behind the fake backend, and a watcher already connected to it. */
 async function connected(options: LoopbackOptions & MockDeviceOptions = {}) {
@@ -282,91 +223,62 @@ beforeEach(() => {
     openGates = [];
     writeGates = [];
     inFlight.clear();
-    sendable = new Map();
-    sendStallAfter = Number.POSITIVE_INFINITY;
-    FAKE_SEND_CHUNK = 4096;
     wire = null;
     device = null;
 });
 
 // --- the seam ------------------------------------------------------------------
 
-describe("the native pipe under C3's client", () => {
-    it("round-trips specs/vectors objects, byte for byte", async () => {
-        const { watcher, ok } = await connected();
+describe("the native pipes under the flat-store client", () => {
+    it("round-trips a specs/vectors object, byte for byte", async () => {
+        // 64-byte packets, so every record of any size spans several transfers in both directions.
+        // A client that treated one `usb_read` as one record would pass on a mock that wrote whole
+        // records and fail here, which is the whole reason the loopback re-slices (§5.2).
+        const { watcher, ok } = await connected({ packetSize: 64, streamPayload: 256 });
         expect(ok).toBe(true);
-        const state = watcher.current;
-        expect(state.status).toBe("ready");
-        const client = state.client!;
+        const client = watcher.current.client!;
+        expect(watcher.current.status).toBe("ready");
+        // The `LIST` every connection issues first (§3.3) is where the card's identity comes from.
+        expect(watcher.current.store).toEqual({ storeId: device!.storeId, commitSequence: device!.sequence });
 
-        // §1 identity and §3.1 device info: the two reads every connection makes before anything
-        // else, and the ones that would fail first if the control frame envelope were wrong.
-        expect(state.identity).toEqual({
-            version: PROTOCOL_VERSION,
-            featureBits: 0,
-            storeEpoch: 0xa1b2c3d4,
-            obcmVersion: REFERENCE_OBCM_VERSION,
-        });
-        expect(state.info?.firmwareRevision).toBe("0.4.0+abc1234");
-
-        // An upload of a real OBCR fixture: descriptor, raw bytes over the bulk plane, whole-object
-        // CRC verified by the device at commit. The device is the one checking the CRC, so a
-        // mis-sliced transfer fails here rather than being "uploaded".
+        // A `PUT` of a real OBCR fixture: the request over the control channel, the payload as §3.8
+        // stream records, and the device verifying the whole-object CRC at commit. The device is
+        // the one checking, so a mis-framed record fails here rather than being "uploaded".
         const obcr = vector("route-waypoints.obcr");
-        const result = await client.upload(ObjectType.Route, NEW_OBJECT_ID, obcr);
-        expect(result.committedOffset).toBe(obcr.length);
-        expect(device!.stored(ObjectType.Route, result.objectId)).toEqual(obcr);
+        const put = await client.put({ kind: ObjectKind.Route, displayName: "waypoints" }, obcr);
+        expect(put.payloadLength).toBe(BigInt(obcr.length));
+        expect(put.payloadCrc32).toBe(Crc32.of(obcr));
+        expect(device!.payloadOf(put.objectId)).toEqual(obcr);
 
-        // …and a download in the other direction, over a bulk endpoint that hands over arbitrary
-        // slices: the client must accumulate to the announced length rather than assume one read
-        // is one object.
-        const back = await client.download(ObjectType.Route, result.objectId);
-        expect(back).toEqual(obcr);
+        // …and a `GET` in the other direction, whose length and CRC this side verifies.
+        const got = await client.get({ objectId: put.objectId, revision: HEAD_REVISION });
+        expect(got.bytes).toEqual(obcr);
+        expect(got.revisionServed).toBe(put.revision);
 
-        // A list object, decoded through the shared codec.
-        const routes = await client.listRoutes();
-        expect(routes.entries.map((e) => e.objectId)).toContain(result.objectId);
-        expect(routes.truncated).toBe(false);
-
-        // Config read and write — the longest control frame the protocol produces.
-        const config = await client.readConfig();
-        expect(config.name).toBe("OBC Tourer");
-        await client.writeConfig({ name: "Alps", units: 1, weatherRefresh: null });
-        expect(await client.readConfig()).toEqual({ name: "Alps", units: 1, weatherRefresh: null });
+        // The catalog, paged over the same channel, now names it.
+        const catalog = await client.list();
+        expect(catalog.entries.map((e) => e.objectId)).toContain(put.objectId);
+        expect(catalog.entries.find((e) => e.objectId === put.objectId)?.displayName).toBe("waypoints");
 
         await watcher.close();
     });
 
-    it("keeps concurrent chunk writes in submission order across the bridge", async () => {
+    it("keeps concurrent stream writes in submission order across the bridge", async () => {
         // The backend gives concurrent invokes no ordering guarantee — each lands in its own task
-        // racing for the endpoint lock. Delaying the first bulk invoke a few ticks models the race:
-        // without the pipe's submission chain the second chunk reaches the wire first and the
+        // racing for the endpoint lock. Delaying the first stream invoke a few ticks models the
+        // race: without the pipe's submission chain the second batch reaches the wire first and the
         // object arrives with its middle swapped — right total length, wrong whole-object CRC, the
         // on-glass desktop shard rejections of 2026-08-07. With the chain, the delay just delays.
         const { watcher, ok } = await connected();
         expect(ok).toBe(true);
         const client = watcher.current.client!;
-        // Big enough that `pumpChunks` has several chunks in its window, plus an odd tail.
+        // Big enough that the upload keeps several batches in its window, plus an odd tail.
         const bytes = new Uint8Array(200_003);
         for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 31 + (i >> 9)) & 0xff;
         writeGates.push(() => new Promise<void>((resolve) => setTimeout(resolve, 10)));
-        const result = await client.upload(ObjectType.Route, NEW_OBJECT_ID, bytes);
-        expect(result.committedOffset).toBe(bytes.length);
-        expect(device!.stored(ObjectType.Route, result.objectId)).toEqual(bytes);
-        await watcher.close();
-    });
-
-    it("serves a checked-in list object back unchanged", async () => {
-        // `route-list.bin` is the fixture the firmware and iOS pin too. Seeding it and reading it
-        // back over the native pipe is the strongest available statement that the transport is
-        // transparent: any re-framing at all would show up as a byte difference.
-        const { watcher } = await connected();
-        const bytes = vector("route-list.bin");
-        const { entries } = decodeRouteList(bytes);
-        for (const entry of entries) device!.seedRoute(entry);
-        const client = watcher.current.client!;
-        const listed = await client.download(ObjectType.RouteList, SINGLETON_OBJECT_ID);
-        expect(listed).toEqual(bytes);
+        const put = await client.put({ kind: ObjectKind.MapShard, displayName: "black forest" }, bytes);
+        expect(put.payloadCrc32).toBe(Crc32.of(bytes));
+        expect(device!.payloadOf(put.objectId)).toEqual(bytes);
         await watcher.close();
     });
 });
@@ -378,7 +290,7 @@ describe("the native pipe's transport contract", () => {
         const { watcher } = await connected();
         const write = calls.find((c) => c.cmd === "usb_write");
         // A `Vec<u8>` argument would have been JSON — about four bytes of text per byte of payload,
-        // which is fine for a 7-byte identity read and absurd for a firmware image.
+        // which is fine for a 32-byte `LIST` and absurd for a 300 MB map.
         expect(write?.args).toBeInstanceOf(Uint8Array);
         expect(write?.options?.headers).toEqual({ handle: "1", plane: "control" });
         const read = calls.find((c) => c.cmd === "usb_read");
@@ -386,13 +298,32 @@ describe("the native pipe's transport contract", () => {
         await watcher.close();
     });
 
+    it("sends a record that spans packets instead of refusing it", async () => {
+        // The rule this replaces: under the v1 envelope a frame was one transfer, so anything at or
+        // above the endpoint's packet size was refused before it left the page. §5.2 makes a record
+        // self-delimiting — `record_length u16` and then that many bytes, across as many packets as
+        // it takes — so the ordinary 4,112-byte stream record (§3.8's frame plus one 4,096-byte card
+        // write) has to go out, and so does a control record that lands on the 512-byte boundary.
+        wire = loopbackLink();
+        attached = [DEVICE];
+        const link = await openNativeLink(DEVICE.id);
+        const stream = Uint8Array.from({ length: MAX_HOST_STREAM_RECORD }, (_, i) => (i * 13) & 0xff);
+        await link.stream.write(stream);
+        expect(await drain(wire.device.stream, stream.length)).toEqual(stream);
+
+        const control = new Uint8Array(512).fill(0xa5);
+        await link.control.write(control);
+        expect(await drain(wire.device.control, control.length)).toEqual(control);
+        await link.close();
+    });
+
     it("cancels at the transport rather than merely releasing the caller", async () => {
         const { watcher } = await connected();
         const link = await openNativeLink(DEVICE.id);
         const abort = new AbortController();
-        const read = link.bulk.read(abort.signal);
-        // Nothing is queued on the bulk plane, so this read is genuinely parked — which is the case
-        // that wedges if a cancel only settles the promise: the backend would still hold the
+        const read = link.stream.read(abort.signal);
+        // Nothing is queued on the stream plane, so this read is genuinely parked — which is the
+        // case that wedges if a cancel only settles the promise: the backend would still hold the
         // endpoint and the next read would queue behind an orphan that never completes.
         await Promise.resolve();
         abort.abort();
@@ -404,12 +335,12 @@ describe("the native pipe's transport contract", () => {
     it("settles everything parked on it the moment the device is unplugged", async () => {
         const { watcher } = await connected();
         const link = await openNativeLink(DEVICE.id);
-        const read = link.bulk.read();
+        const read = link.stream.read();
         link.disconnected();
         await expect(read).rejects.toMatchObject({ code: "closed" });
         // …and stays closed: a later call fails immediately instead of making another doomed round
         // trip, which is the difference between one error message and a stuck spinner.
-        await expect(link.bulk.read()).rejects.toMatchObject({ code: "closed" });
+        await expect(link.stream.read()).rejects.toMatchObject({ code: "closed" });
 
         // The abandoned command settles *after* the caller was failed by the unplug — `dead()` won
         // the race, so its rejection lands on nobody. It must stay harmless: no second error, no
@@ -418,17 +349,48 @@ describe("the native pipe's transport contract", () => {
         // construction; this is the path that proves it rather than a comment claiming it.)
         await wire!.host.close();
         await new Promise((resolve) => setTimeout(resolve, 10));
-        expect(link.bulk.open).toBe(false);
+        expect(link.stream.open).toBe(false);
         await watcher.close();
     });
+});
 
-    it("refuses a control frame that would fill a whole packet", async () => {
-        const { watcher } = await connected();
+/** Read `total` bytes off a loopback end, which delivers them one packet at a time. */
+async function drain(pipe: BytePipe, total: number): Promise<Uint8Array> {
+    const out = new Uint8Array(total);
+    let at = 0;
+    while (at < total) {
+        const slice = await pipe.read();
+        out.set(slice, at);
+        at += slice.length;
+    }
+    return out;
+}
+
+// --- §5.2.1, which this host cannot ask ----------------------------------------
+
+describe("the device info this host cannot read", () => {
+    it("says so rather than answering with a version nobody read off the device", async () => {
+        // §5.2.1's `GET_DEVICE_INFO` is an EP0 vendor request and the Rust bridge exposes no
+        // control-transfer command, so the link omits `vendorIn` entirely. The client turns that
+        // absence into one specific code, which is what the connect flow catches.
+        wire = loopbackLink();
+        attached = [DEVICE];
         const link = await openNativeLink(DEVICE.id);
-        // At exactly the packet size the device cannot tell the frame ended without a zero-length
-        // packet — the same rule the firmware asserts at compile time.
-        await expect(link.control.write(new Uint8Array(512))).rejects.toMatchObject({ code: "device-error" });
-        await link.control.write(new Uint8Array(511)).catch(() => undefined);
+        expect(link.vendorIn, "a link that cannot issue EP0 must not pretend to").toBeUndefined();
+        const client = new FlatStoreClient(link);
+        await expect(client.deviceInfo()).rejects.toMatchObject({ name: "DeviceError", code: "unavailable" });
+        await client.close();
+    });
+
+    it("connects anyway, publishing no firmware version at all", async () => {
+        // The alternative — failing the connection, or filling the field with a plausible number —
+        // would either strand the desktop tier or hand "an update is available" a lie. `null` is the
+        // honest third answer, and the UI renders the absence.
+        const { watcher, ok } = await connected();
+        expect(ok).toBe(true);
+        expect(watcher.current.status).toBe("ready");
+        expect(watcher.current.info).toBeNull();
+        expect(watcher.current.store).not.toBeNull();
         await watcher.close();
     });
 });
@@ -449,17 +411,17 @@ describe("native discovery", () => {
         attached = [];
         const watcher = new NativeWatcher();
         expect(await watcher.start()).toBe(false);
-        expect(watcher.current).toMatchObject({ status: "idle", error: null, client: null });
+        expect(watcher.current).toMatchObject({ status: "idle", error: null, client: null, store: null });
         await watcher.close();
     });
 
     it("releases the interface when a connection fails partway", async () => {
-        // A device claimed but never handshaken still holds its interface, and an interface can be
+        // A device claimed but never listed still holds its interface, and an interface can be
         // claimed once — so a failed connect that kept it would lock out every retry.
         wire = loopbackLink();
         attached = [DEVICE];
         const watcher = new NativeWatcher({ timeoutMs: 20, hotplugRetryDelayMs: 1 });
-        // No MockDevice running, so the identity read times out.
+        // No MockDevice running, so the `LIST` times out.
         expect(await watcher.start()).toBe(false);
         expect(watcher.current.status).toBe("error");
         expect(calls.some((c) => c.cmd === "usb_close")).toBe(true);
@@ -468,7 +430,10 @@ describe("native discovery", () => {
 
     it("surfaces a refused open as the sentence the backend wrote", async () => {
         attached = [DEVICE];
-        openFault = { code: "device-error", message: "Interface 0 could not be claimed: busy — something else has it open." };
+        openFault = {
+            code: "device-error",
+            message: "Interface 0 could not be claimed: busy — something else has it open.",
+        };
         const watcher = new NativeWatcher({ hotplugRetryDelayMs: 1 });
         expect(await watcher.start()).toBe(false);
         expect(watcher.current.error).toContain("something else has it open");
@@ -608,8 +573,8 @@ describe("native discovery", () => {
         await new Promise((resolve) => setTimeout(resolve, 200));
         expect(watcher.current.status).toBe("ready");
         expect(calls.filter((c) => c.cmd === "usb_open")).toHaveLength(2);
-        const routes = await watcher.current.client!.listRoutes();
-        expect(routes.truncated).toBe(false);
+        const page = await watcher.current.client!.listPage({});
+        expect(page.storeId).toBe(device!.storeId);
         await watcher.close();
     });
 
@@ -665,7 +630,13 @@ describe("native discovery", () => {
         openFault = { code: "device-error", message: "gone", onlyId: DEVICE.id };
         // Attempts 1–4 fail fast; the 5th parks in its open so the successor can overtake it.
         let release!: () => void;
-        openGates = [undefined, undefined, undefined, undefined, () => new Promise<void>((resolve) => (release = resolve))];
+        openGates = [
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            () => new Promise<void>((resolve) => (release = resolve)),
+        ];
         watchChannel!.onmessage!({ type: "connected", device: DEVICE });
         await vi.waitFor(() => expect(calls.filter((c) => c.cmd === "usb_open")).toHaveLength(5));
 
@@ -724,178 +695,9 @@ describe("native discovery", () => {
     });
 });
 
-// --- the bulk plane by file path ------------------------------------------------
-
-describe("a file streamed natively", () => {
-    it("uploads without its bytes ever entering the page", async () => {
-        const { watcher } = await connected();
-        const client = watcher.current.client!;
-        const obcr = vector("route-plain.obcr");
-        sendable.set("/maps/route.obcr", heldFile(obcr));
-
-        const source = await nativeFileSource(1, "/maps/route.obcr");
-        // The descriptor's two facts come from the backend's own pass over the file — the same CRC
-        // the device will compute, which is the whole reason `obc-ble::Crc32` is linked in there.
-        expect(source.totalLen).toBe(obcr.length);
-        expect(source.crc32).toBe(Crc32.of(obcr));
-        // And the fallback is a throw, not a quiet read over the IPC: a silent fallback to the very
-        // thing the file plane exists to avoid would be worse than a loud failure.
-        await expect((async () => { for await (const _ of source.chunks(1024)) break; })()).rejects.toThrow(
-            /streams natively/,
-        );
-
-        const seen: number[] = [];
-        const result = await client.upload(ObjectType.Route, NEW_OBJECT_ID, source, {
-            onProgress: (done) => seen.push(done),
-        });
-        expect(result.committedOffset).toBe(obcr.length);
-        expect(device!.stored(ObjectType.Route, result.objectId)).toEqual(obcr);
-        expect(seen.at(-1)).toBe(obcr.length);
-        // Not one `usb_write` for the object: the descriptor went over the control plane and the
-        // bytes went disk → endpoint.
-        expect(calls.filter((c) => c.cmd === "usb_write" && c.options?.headers?.plane === "bulk")).toEqual([]);
-        expect(calls.filter((c) => c.cmd === "usb_send_file")).toHaveLength(1);
-        await watcher.close();
-    });
-
-    it("stops the send when the device rejects the descriptor mid-stream", async () => {
-        // The failure a naive native send gets wrong: a descriptor-open reject arrives on the
-        // control plane while the bytes are already queued, and nothing in the JS chunk loop is
-        // left to notice it. Here the progress reports are the only pulse, so `check()` runs on
-        // each one — and a 2 MB "map" against a 1 KB ceiling has to stop early, not finish.
-        const { watcher } = await connected({ maxFwImageLen: 1024 });
-        const client = watcher.current.client!;
-        const image = new Uint8Array(2 * 1024 * 1024).fill(7);
-        sendable.set("/maps/UPDATE.BIN", heldFile(image));
-        const source = await nativeFileSource(1, "/maps/UPDATE.BIN");
-
-        let peak = 0;
-        await expect(
-            client.upload(ObjectType.FwImage, SINGLETON_OBJECT_ID, source, {
-                onProgress: (done) => (peak = Math.max(peak, done)),
-            }),
-        ).rejects.toMatchObject({ name: "DeviceError" });
-        expect(peak, "the send kept pushing at a device that had already said no").toBeLessThan(image.length);
-        await watcher.close();
-    });
-
-    it("cancels a send that is stuck, at the transport", async () => {
-        const { watcher } = await connected();
-        const client = watcher.current.client!;
-        const big = new Uint8Array(256 * 1024).fill(3);
-        sendable.set("/maps/big.obcm", heldFile(big));
-        sendStallAfter = FAKE_SEND_CHUNK * 2;
-        const source = await nativeFileSource(1, "/maps/big.obcm");
-
-        const abort = new AbortController();
-        const upload = client.upload(ObjectType.Map, NEW_OBJECT_ID, source, { signal: abort.signal });
-        // Let the send get going and then park, so there is a real in-flight transfer to interrupt.
-        await new Promise((resolve) => setTimeout(resolve, 20));
-        abort.abort();
-        await expect(upload).rejects.toMatchObject({ name: "DeviceError", code: "aborted" });
-        await watcher.close();
-    });
-
-    it("refuses a path the backend will not stream", async () => {
-        await connected();
-        await expect(nativeFileSource(1, "/etc/passwd")).rejects.toMatchObject({
-            message: expect.stringContaining("outside the folders"),
-        });
-    });
-
-    it("keeps this process's heap flat across a 300 MB object", async () => {
-        // The web tier's own claim (`device/memory.test.ts`) is that a 300 MB map upload never
-        // materialises the artifact — +4 to +5 MB of heap over the whole transfer. The native path
-        // has to be *at least* as good, and for a stronger reason: none of those bytes should reach
-        // this process at all. So this measures the same way and expects a much lower number, which
-        // is the difference between "streaming" and "not even streaming, because it isn't here".
-        //
-        // The fake backend generates its bytes rather than holding them, so what grows here is only
-        // the code under test.
-        const TOTAL = 300 * 1024 * 1024;
-        // A high-speed endpoint's shape, and the same numbers `device/memory.test.ts` uses: 64 KB
-        // packets, 256 KB of writer credit. The device sinks its uploads, because a simulated
-        // device that kept 300 MB would be the thing consuming the memory rather than the code.
-        FAKE_SEND_CHUNK = 64 * 1024;
-        const { watcher } = await connected({
-            sinkUploads: true,
-            bulkPacketSize: 64 * 1024,
-            bulkHighWaterMark: 256 * 1024,
-        });
-        const client = watcher.current.client!;
-        sendable.set("/maps/france.obcm", syntheticFile(TOTAL));
-
-        const source = await nativeFileSource(1, "/maps/france.obcm");
-        expect(source.totalLen).toBe(TOTAL);
-
-        const base = process.memoryUsage().heapUsed;
-        let peak = base;
-        const result = await client.upload(ObjectType.Map, NEW_OBJECT_ID, source, {
-            onProgress: () => (peak = Math.max(peak, process.memoryUsage().heapUsed)),
-        });
-        expect(result.committedOffset).toBe(TOTAL);
-
-        const grew = peak - base;
-        // Printed, not just asserted: "flat" should be a number someone can read in the CI log.
-        console.log(`native 300 MB send: peak heap +${(grew / 1024 / 1024).toFixed(1)} MB`);
-        expect(grew, `peak heap grew by ${grew} bytes over a 300 MB object`).toBeLessThan(16 * 1024 * 1024);
-        await watcher.close();
-    }, 300_000);
-});
-
-// --- native file sources -------------------------------------------------------
-
-describe("a native file source", () => {
-    it("addresses whatever link is open now", async () => {
-        // Handles are per-open. A source bound to the handle a session had at page load would, after
-        // an unplug and re-plug, stream into an endpoint that no longer exists — so the factory
-        // reads the link at call time, and says so when there isn't one.
-        attached = [];
-        const watcher = new NativeWatcher();
-        await watcher.start();
-        await expect(watcher.localFileSource("/maps/black-forest.obcm")).rejects.toMatchObject({
-            name: "PipeError",
-            code: "closed",
-        });
-
-        wire = loopbackLink();
-        device = new MockDevice(wire.device);
-        void device.run();
-        attached = [DEVICE];
-        expect(await watcher.requestDevice()).toBe(true);
-        sendable.set("/maps/black-forest.obcm", heldFile(new Uint8Array(64).fill(1)));
-        await expect(watcher.localFileSource("/maps/black-forest.obcm")).resolves.toMatchObject({ totalLen: 64 });
-        await watcher.close();
-    });
-
-    it("is absent on a watcher that has no disk under it", () => {
-        // The gate is a property of the transport, not a host name. A browser's `WebUsbWatcher`
-        // has no `localFileSource`, so neither does the session over it.
-        const idle: DeviceState = { status: "idle", client: null, identity: null, info: null, error: null };
-        const pathless: DeviceWatcher = {
-            current: idle,
-            subscribe: (listener) => (listener(idle), () => undefined),
-            requestDevice: async () => false,
-            disconnect: async () => undefined,
-            close: async () => undefined,
-        };
-        expect(new WatchedDeviceSession(pathless, "webusb").localFileSource).toBeUndefined();
-    });
-});
-
-// --- the temp-file digest, for the record ---------------------------------------
-
-describe("the digest a descriptor announces", () => {
-    it("is the CRC-32 the whole toolchain agrees on", () => {
-        // Pinned on this side too, so the Rust unit test and this one state the same constant:
-        // crc32("123456789") == 0xCBF43926, which is also `specs/vectors/manifest.json`'s.
-        const dir = mkdtempSync(join(tmpdir(), "obc-usb-digest-"));
-        try {
-            const path = join(dir, "check.bin");
-            writeFileSync(path, "123456789");
-            expect(Crc32.of(new Uint8Array(readFileSync(path)))).toBe(0xcbf43926);
-        } finally {
-            rmSync(dir, { recursive: true, force: true });
-        }
-    });
-});
+// A note on what is *not* here any more: there used to be a `nativeFileSource` suite — a map sent
+// disk → endpoint inside Rust, its bytes never entering the page, with a flat-heap measurement over
+// a 300 MB object. §3.8 requires every stream record to be framed by the protocol client, and the
+// `usb_send_file` command writes raw bytes, so that path cannot exist until the Rust side frames
+// records. The heap claim it made now belongs to the shared upload loop and is tested where that
+// loop lives; the CRC constant it pinned is `usb/crc32.test.ts`'s.

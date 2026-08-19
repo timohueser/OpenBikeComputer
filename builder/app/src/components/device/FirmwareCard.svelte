@@ -1,40 +1,49 @@
 <!--
   Firmware, over the same cable as everything else.
 
-  DFU here is *SD-staged*: the page writes an `UPDATE.BIN` to the card and that is all it does.
-  Installing is the device's own confirm card and a physical Select press — a link may stage an
-  image and can never arm one, which is the same rule the phone has lived under since #615. So the
-  copy on this card never says "installing", and the two steps stay two steps.
+  Two steps, and they stay two. **Staging** is an ordinary `PUT` of an update-package object (§4's
+  kind 7): the verified `UPDATE.BIN` lands on the card and nothing else happens. **Arming** is the
+  separate `ARM` request that makes a staged package the next boot, and it is the only thing on this
+  card that changes what the device will run.
+
+  The device's current policy **refuses to arm**, answering `rejected` (a stated dev-window gap).
+  The button is wired and drawn all the same: a refusal a rider can read is worth more than an
+  affordance that quietly does nothing, and worth far more than a card that pretends the update
+  installed. So the copy here never says "installing" unless the device said so first.
 
   The version check is #773's: an anonymous GET for the published manifest, compared against the
-  running version the identity/DIS read reports. A device running a probe-flashed build reports a
-  git hash rather than a version — that parses as nothing, and no update is offered, deliberately.
-  The card says so in as many words ("development build — automatic updates are paused") rather
-  than going quiet, and the file picker below stays the way such a device gets back onto releases.
+  firmware revision §5.2.1's device-info payload reports. A device running a probe-flashed build
+  reports a git hash rather than a version — that parses as nothing, and no update is offered,
+  deliberately. The card says so in as many words ("development build — automatic updates are
+  paused") rather than going quiet, and the file picker below stays the way such a device gets back
+  onto releases.
 
   The check itself is `lib/firmware/check.svelte.ts`, shared with the prompt that appears when a
-  device connects (#1002). This card remains the only surface that stages anything or asks the
-  device to install it; the prompt can only point here.
+  device connects (#1002). This card remains the only surface that stages or arms anything; the
+  prompt can only point here.
 -->
 <script lang="ts">
     import { onMount } from "svelte";
     import { formatBytes } from "../../lib/format";
     import { DeviceJob } from "../../lib/device/job.svelte";
-    import { askToInstall, stageFirmware } from "../../lib/device/write";
+    import { armUpdate, stageFirmware } from "../../lib/device/write";
     import { firmwareCheck } from "../../lib/firmware/check.svelte";
     import { updateStatus, type FirmwareRelease } from "../../lib/firmware/release";
     import { FIRMWARE_ANCHOR } from "../../lib/routes";
     import { Sha256 } from "../../lib/device/sha256";
-    import type { ProtocolClient } from "../../lib/usb/client";
-    import type { DeviceInfo } from "../../lib/usb/transport";
+    import { DeviceError, type FlatStoreClient } from "../../lib/usb/client";
+    import type { DeviceInfo } from "../../lib/usb/records";
     import TransferBar from "./TransferBar.svelte";
 
-    let { client, info }: { client: ProtocolClient; info: DeviceInfo | null } = $props();
+    let { client, info }: { client: FlatStoreClient; info: DeviceInfo | null } = $props();
 
     const job = new DeviceJob("firmware");
-    let staged = $state<string | null>(null);
-    let asked = $state(false);
-    let askError = $state<string | null>(null);
+    /** The package this card put on the card: its version, and the `(ObjectId, Revision)` the
+     *  commit published — which is what `ARM`'s compare-and-swap names (§4). */
+    let staged = $state<{ version: string; objectId: bigint; revision: bigint } | null>(null);
+    let armed = $state(false);
+    let armError = $state<string | null>(null);
+    let arming = $state(false);
     let picker = $state<HTMLInputElement>();
 
     // Only once a device is connected: with nothing to compare against, a request to the update
@@ -51,9 +60,7 @@
     async function sendRelease(entry: FirmwareRelease) {
         // Acting on it answers the question the prompt would otherwise ask about this version.
         firmwareCheck.answer(info?.serialNumber, entry.version);
-        staged = null;
-        asked = false;
-        askError = null;
+        reset();
         await job.run(async (ctx) => {
             ctx.phase("downloading", entry.bytes);
             const response = await fetch(entry.url, { signal: ctx.signal, credentials: "omit" });
@@ -65,23 +72,26 @@
                 throw new Error("The downloaded update failed its checksum. Nothing was sent to the device.");
             }
             return stageFirmware(client, bytes, ctx);
-        }, (result) => {
-            staged = result.image.version;
-            return `${result.image.version} is on the device's card (${formatBytes(result.image.containerLen)}).`;
-        });
+        }, describeStaged);
     }
 
     async function sendFile(file: File) {
-        staged = null;
-        asked = false;
-        askError = null;
+        reset();
         await job.run(async (ctx) => {
             ctx.phase("reading", file.size);
             return stageFirmware(client, new Uint8Array(await file.arrayBuffer()), ctx);
-        }, (result) => {
-            staged = result.image.version;
-            return `${result.image.version} is on the device's card (${formatBytes(result.image.containerLen)}).`;
-        });
+        }, describeStaged);
+    }
+
+    function reset() {
+        staged = null;
+        armed = false;
+        armError = null;
+    }
+
+    function describeStaged(result: Awaited<ReturnType<typeof stageFirmware>>): string {
+        staged = { version: result.image.version, objectId: result.result.objectId, revision: result.result.revision };
+        return `${result.image.version} is on the device's card (${formatBytes(result.image.containerLen)}).`;
     }
 
     function onPick(event: Event) {
@@ -91,13 +101,31 @@
         if (file) void sendFile(file);
     }
 
-    async function ask() {
-        askError = null;
+    /**
+     * Ask the device to make the staged package its next boot (§4's `ARM`).
+     *
+     * A `rejected` answer is the device's stated policy rather than a fault, so it gets its own
+     * sentence: the rider is told the device refused, not that something broke. Any other failure
+     * keeps the client's own message.
+     */
+    async function arm() {
+        const target = staged;
+        if (!target || arming) return;
+        arming = true;
+        armError = null;
         try {
-            await askToInstall(client);
-            asked = true;
+            await armUpdate(client, target);
+            armed = true;
         } catch (cause) {
-            askError = cause instanceof Error ? cause.message : String(cause);
+            armError =
+                cause instanceof DeviceError && cause.code === "rejected"
+                    ? `The device refused to arm this update. ${target.version} is still on its card, ` +
+                      "and the device is running what it was running before."
+                    : cause instanceof Error
+                      ? cause.message
+                      : String(cause);
+        } finally {
+            arming = false;
         }
     }
 </script>
@@ -157,24 +185,23 @@
 
     <TransferBar {job} />
 
-    {#if staged && !asked}
+    {#if staged && !armed}
         <div class="confirm">
-            <button type="button" class="btn primary" onclick={() => void ask()}>
-                Ask the device to install it
+            <button type="button" class="btn primary" disabled={arming} onclick={() => void arm()}>
+                Install {staged.version} on next boot
             </button>
-            <p class="small faint">Nothing is installed until you confirm it on the device.</p>
+            <p class="small faint">The image is on the card either way; this is what makes it the one that boots.</p>
         </div>
     {/if}
 
-    {#if asked}
+    {#if armed && staged}
         <p class="note small">
-            The device is asking you to confirm. Press Select on it to install {staged} — it reboots
-            and installs on its own. Keep it powered.
+            {staged.version} is armed. The device reboots and installs it on its own — keep it powered.
         </p>
     {/if}
 
-    {#if askError}
-        <p class="note error small" role="alert">{askError}</p>
+    {#if armError}
+        <p class="note error small" role="alert">{armError}</p>
     {/if}
 </section>
 

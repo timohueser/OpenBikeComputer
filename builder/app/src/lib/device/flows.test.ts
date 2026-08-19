@@ -2,21 +2,22 @@
  * The three flows, end to end against the simulated device (C4, #903).
  *
  * The LM20's USB peripheral does not exist yet (#889), so this is where "it works" is decided.
- * `loopback.ts` is not an echo: it assigns ids, dedups a re-uploaded object, answers a second
- * transfer `busy`, hands bulk bytes over in packet-sized slices and runs the abort handshake — so a
- * flow that gets any of those wrong fails here rather than on a rider's desk.
+ * `loopback.ts` is not an echo: it assigns ids, enforces §3.6's compare-and-swap, answers a second
+ * transfer `busy`, refuses a payload the card cannot hold with the bytes it needed, hands bulk bytes
+ * over in packet-sized slices and runs the bilateral cancel — so a flow that gets any of those wrong
+ * fails here rather than on a rider's desk.
  *
- * A map is **one object** here, exactly as a route and a firmware image are: one announce, one
- * stream, one whole-object CRC, one commit. There is no multi-file map upload to test — no
- * manifest, no ordering rule between files, no state that outlives a transfer — so a map's tests
- * are the same tests the other two get, on a much larger object.
+ * A map is **one object**, exactly as a route and a firmware image are: one `PUT`, one stream, one
+ * whole-payload CRC, one commit. There is no multi-file map upload to test — no manifest, no
+ * ordering rule between files, no state that outlives a transfer — so a map's tests are the same
+ * tests the other two get, on a much larger object.
  *
  * What these tests are **not** is a substitute for hardware. Nothing here proves the LM20 enumerates,
  * that its endpoints have the sizes assumed, or that a real SD write keeps up; those wait for #889.
  * What they do prove is that the object-model half — the half that is byte-identical across BLE and
- * USB — is right, including the three failure paths that are easiest to get wrong and worst to get
- * wrong: a cancelled write, an unplug mid-transfer, and a device that takes every byte and then
- * refuses them.
+ * USB — is right, including the four failure paths that are easiest to get wrong and worst to get
+ * wrong: a cancelled write, an unplug mid-transfer, a device that takes every byte and then refuses
+ * them, and a card with no room for the object being pushed at it.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -24,12 +25,14 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 
-import { DeviceError } from "../usb/client";
-import { loopbackDevice } from "../usb/loopback";
-import { ObjectType, SINGLETON_OBJECT_ID, TransferStatus } from "../usb/protocol";
+import { DeviceError, FlatStoreClient } from "../usb/client";
+import { Crc32 } from "../usb/crc32";
+import { MockDevice, loopbackDevice, loopbackLink } from "../usb/loopback";
+import type { BytePipe, DeviceLink } from "../usb/pipe";
+import { ObjectKind } from "../usb/protocol";
 import { initConvert } from "../convert/bridge";
 import { prepareRoute } from "./route";
-import { askToInstall, sendMapFile, sendRoute, stageFirmware } from "./write";
+import { armUpdate, sendMapFile, sendRoute, stageFirmware } from "./write";
 import type { JobContext, JobPhase } from "./progress";
 
 // --- fixtures -----------------------------------------------------------------
@@ -83,114 +86,180 @@ function context(options: { signal?: AbortSignal; at?: (done: number, phase: Job
     };
 }
 
+/** The rig every happy-path flow runs on, with the mock's own defect log checked on the way out. */
+async function withDevice<T>(
+    options: Parameters<typeof loopbackDevice>[0],
+    body: (rig: ReturnType<typeof loopbackDevice>) => Promise<T>,
+): Promise<T> {
+    const rig = loopbackDevice(options);
+    try {
+        return await body(rig);
+    } finally {
+        await rig.close();
+        expect(rig.device.faults, "the mock device recorded a non-transport fault").toEqual([]);
+    }
+}
+
 // --- the flows ----------------------------------------------------------------
 
 describe("map upload from a file", () => {
-    it("commits it and dedups a second send of the same file", async () => {
-        const { client, device, close } = loopbackDevice();
-        try {
+    it("commits one object and reports the id the device assigned", async () => {
+        await withDevice({}, async ({ client, device }) => {
             const bytes = syntheticBytes(200_000);
             const file = new File([bytes], "grimsel-default.obcm");
-            const first = await sendMapFile(client, file, context());
-            expect(device.stored(ObjectType.Map, first.objectId)).toEqual(bytes);
+            const ctx = context();
+            const result = await sendMapFile(client, file, ctx);
 
-            // §4.1: a fresh upload whose length and CRC match something already stored is answered
-            // with the *existing* id and stores nothing — so sending the same map twice cannot
-            // fill the card with twins.
-            const second = await sendMapFile(client, file, context());
+            expect(result.objectId).toBe(1n);
+            expect(result.payloadLength).toBe(BigInt(bytes.length));
+            expect(result.payloadCrc32).toBe(Crc32.of(bytes));
+            expect(device.payloadOf(result.objectId)).toEqual(bytes);
+            expect(device.entries[0].displayName).toBe("grimsel-default");
+            // `committing` is named because the wire goes quiet there: the last byte is gone and the
+            // device is still landing its staging half.
+            expect(ctx.phases).toEqual(["reading", "sending", "committing"]);
+        });
+    });
+
+    it("replaces the selected map on a second send instead of accumulating another object", async () => {
+        await withDevice({}, async ({ client, device }) => {
+            const bytes = syntheticBytes(64 * 1024);
+            const file = new File([bytes], "grimsel-default.obcm");
+            const first = await sendMapFile(client, file, context());
+            const replacement = syntheticBytes(96 * 1024);
+            const second = await sendMapFile(client, new File([replacement], "monaco.obcm"), context());
+
             expect(second.objectId).toBe(first.objectId);
-        } finally {
-            await close();
-        }
+            expect(second.revision).toBe(first.revision + 1n);
+            expect(device.entries).toHaveLength(1);
+            expect(device.entries[0].displayName).toBe("monaco");
+            expect(device.payloadOf(first.objectId)).toEqual(replacement);
+        });
+    });
+
+    it("replaces the active lowest-id map and leaves higher-id map objects alone", async () => {
+        await withDevice({}, async ({ client, device }) => {
+            device.seed({ objectId: 9n, revision: 4n, kind: ObjectKind.MapShard, displayName: "secondary" });
+            device.seed({ objectId: 3n, revision: 7n, kind: ObjectKind.MapShard, displayName: "active" });
+            device.seed({ objectId: 1n, kind: ObjectKind.Route, displayName: "not a map" });
+
+            const bytes = syntheticBytes(32 * 1024);
+            const result = await sendMapFile(client, new File([bytes], "replacement.obcm"), context());
+
+            expect(result.objectId).toBe(3n);
+            expect(result.revision).toBe(8n);
+            expect(device.entries.filter((entry) => entry.kind === ObjectKind.MapShard)).toEqual([
+                expect.objectContaining({ objectId: 3n, revision: 8n, displayName: "replacement" }),
+                expect.objectContaining({ objectId: 9n, revision: 4n, displayName: "secondary" }),
+            ]);
+            expect(device.payloadOf(3n)).toEqual(bytes);
+        });
+    });
+
+    it("answers a map the card cannot hold with the bytes it needed", async () => {
+        // §5.2.2 retires the free-space query, so nothing asks in advance. §3.6 answers at the point
+        // of decision instead, and its context is what this upload actually needed — which is what
+        // lets the page say how much has to go rather than "not enough room".
+        await withDevice({ cardBytes: 100_000 }, async ({ client, device }) => {
+            const file = new File([syntheticBytes(256 * 1024)], "too-big.obcm");
+            const failure = await sendMapFile(client, file, context()).catch((cause: unknown) => cause);
+            expect(failure).toBeInstanceOf(DeviceError);
+            expect((failure as DeviceError).code).toBe("no-space");
+            expect((failure as DeviceError).refusal?.context).toBe(BigInt(256 * 1024));
+            expect(device.entries, "a map that did not fit was committed anyway").toEqual([]);
+        });
     });
 
     it("reports an unplug mid-transfer, and the next attempt is an ordinary one", async () => {
-        const first = loopbackDevice({ bulkPacketSize: 4096, bulkHighWaterMark: 8 * 1024 });
+        const first = loopbackDevice({ packetSize: 4096, streamHighWaterMark: 8 * 1024 });
         const bytes = syntheticBytes(2 * 1024 * 1024);
         const file = new File([bytes], "big.obcm");
         const ctx = context({
             at: (done, phase) => {
                 // Pull the cable a little way into the *send*, not the read: mid-stream is the
-                // state with a partial file at the far end.
+                // state with a partial object at the far end.
                 if (phase === "sending" && done > 256 * 1024) void first.link.device.close();
             },
         });
         const failure = await sendMapFile(first.client, file, ctx).catch((e: unknown) => e);
         expect(failure).toBeInstanceOf(DeviceError);
         expect((failure as DeviceError).code).toBe("link");
-        expect(first.device.stored(ObjectType.Map, 1), "a half-written map is never committed").toBeNull();
+        expect(first.device.entries, "a half-written map is never committed").toEqual([]);
         await first.close();
 
         // Plugging it back in is a fresh session — nothing carried over from the dead one, no
-        // resume, no repair. Transfers restart, they never resume (spec principle 4).
-        const again = loopbackDevice({ bulkPacketSize: 4096 });
-        try {
-            const result = await sendMapFile(again.client, file, context());
-            expect(result.committedOffset).toBe(bytes.length);
-            expect(again.device.stored(ObjectType.Map, result.objectId)).toEqual(bytes);
-        } finally {
-            await again.close();
-        }
+        // resume, no repair. §3.6: any break before the commit leaves the card as if nothing had
+        // happened, and transfers restart rather than resume.
+        await withDevice({ packetSize: 4096 }, async ({ client, device }) => {
+            const result = await sendMapFile(client, file, context());
+            expect(result.payloadLength).toBe(BigInt(bytes.length));
+            expect(device.payloadOf(result.objectId)).toEqual(bytes);
+        });
     }, 30_000);
 
     it("cancels mid-send, and retries on the same link", async () => {
-        // The recovery property, on one connection: after a cancel the device has cleared its
-        // gate and discarded the partial, and the pipe has been reset — so the retry is not a
-        // special path, it is the first path again.
-        const { client, device, close } = loopbackDevice({ bulkPacketSize: 4096, bulkHighWaterMark: 8 * 1024 });
-        const bytes = syntheticBytes(1024 * 1024);
-        const file = new File([bytes], "cancelled.obcm");
-        const controller = new AbortController();
-        try {
+        // The recovery property, on one connection: §3.8's cancel is bilateral, so the device has
+        // released its transfer slot and discarded the partial while this side reset its channel —
+        // and the retry is therefore not a special path, it is the first path again.
+        await withDevice({ packetSize: 4096, streamHighWaterMark: 8 * 1024 }, async ({ client, device }) => {
+            const bytes = syntheticBytes(1024 * 1024);
+            const file = new File([bytes], "cancelled.obcm");
+            const controller = new AbortController();
             const ctx = context({
                 signal: controller.signal,
+                // Cancelled from inside the progress callback rather than after a timer: the
+                // loopback moves a megabyte in microtasks, so a wall-clock delay would race the
+                // transfer it means to interrupt.
                 at: (done, phase) => {
                     if (phase === "sending" && done > 128 * 1024) controller.abort();
                 },
             });
             await expect(sendMapFile(client, file, ctx)).rejects.toMatchObject({ code: "aborted" });
-            expect(device.stored(ObjectType.Map, 1)).toBeNull();
+            expect(device.entries).toEqual([]);
 
             const result = await sendMapFile(client, file, context());
-            expect(result.committedOffset).toBe(bytes.length);
-            expect(device.stored(ObjectType.Map, result.objectId)).toEqual(bytes);
-        } finally {
-            await close();
-        }
+            expect(device.payloadOf(result.objectId)).toEqual(bytes);
+        });
     }, 30_000);
 
-    it("surfaces a device CRC refusal, keeps nothing, and lets the file go again on the same link", async () => {
+    it("surfaces a device checksum refusal, keeps nothing, and lets the file go again on the same link", async () => {
         // The third failure shape, and the one that is neither a cancel nor an unplug: the device
-        // took every announced byte, checked the whole-object CRC and said no. Nothing about it is
-        // recoverable *inside* the flow — a map is one object, so there is no partial to resume and
-        // nothing to retry behind the rider's back — so what has to be true is that the refusal
-        // reaches the caller with the device's own code, that no half-map is left on the card, and
-        // that the quiesce which follows leaves the link ordinary rather than desynchronised.
+        // took every announced byte, checked the whole-payload CRC it was promised (§3.6) and said
+        // no. Nothing about it is recoverable *inside* the flow — a map is one object, so there is
+        // no partial to resume — so what has to be true is that the refusal reaches the caller with
+        // the device's own code, that no half-map is on the card, and that the channel reset which
+        // follows leaves the link ordinary rather than desynchronised.
         //
-        // That last part is the whole reason this is driven end to end against the loopback rather
-        // than a stubbed client: the retry is what proves the abort handshake actually ran.
-        const { client, device, close } = loopbackDevice({ bulkPacketSize: 4096, bulkHighWaterMark: 8 * 1024 });
+        // That last part is why this runs against the loopback rather than a stubbed client: the
+        // retry is what proves the abandon path actually ran.
+        const link = loopbackLink({ packetSize: 4096, streamHighWaterMark: 8 * 1024 });
+        const device = new MockDevice(link.device);
+        void device.run();
+        const wire = damageOneStreamWrite(link.host);
+        const client = new FlatStoreClient(wire.link);
         try {
             const bytes = syntheticBytes(256 * 1024);
             const file = new File([bytes], "grimsel.obcm");
 
-            device.failNextUploadWith(TransferStatus.CrcMismatch);
-            await expect(sendMapFile(client, file, context())).rejects.toMatchObject({ code: "crc-mismatch" });
-            expect(device.stored(ObjectType.Map, 1), "a refused map was stored anyway").toBeNull();
+            wire.arm();
+            await expect(sendMapFile(client, file, context())).rejects.toMatchObject({ code: "checksum" });
+            expect(device.entries, "a refused map was committed anyway").toEqual([]);
 
             const result = await sendMapFile(client, file, context());
-            expect(result.committedOffset).toBe(bytes.length);
-            expect(device.stored(ObjectType.Map, result.objectId)).toEqual(bytes);
+            expect(result.payloadLength).toBe(BigInt(bytes.length));
+            expect(device.payloadOf(result.objectId)).toEqual(bytes);
         } finally {
-            await close();
+            device.stop();
+            await client.close();
+            await link.device.close();
+            expect(device.faults).toEqual([]);
         }
     }, 30_000);
 
     it("refuses a second transfer while one is running", async () => {
-        // Three surfaces share one client and one device; §4.1 allows exactly one transfer at a
-        // time, and the answer has to be a clean error rather than two interleaved objects.
-        const { client, close } = loopbackDevice({ bulkPacketSize: 4096, bulkHighWaterMark: 8 * 1024 });
-        try {
+        // Three surfaces share one client and one device; §1 allows exactly one transfer at a time,
+        // and the answer has to be a clean error rather than two interleaved objects.
+        await withDevice({ packetSize: 4096, streamHighWaterMark: 8 * 1024 }, async ({ client }) => {
             const file = new File([syntheticBytes(1024 * 1024)], "one.obcm");
             const running = sendMapFile(client, file, context());
             const second = sendMapFile(client, new File([syntheticBytes(4096)], "two.obcm"), context()).catch(
@@ -198,16 +267,13 @@ describe("map upload from a file", () => {
             );
             await running;
             expect((await second) as DeviceError).toMatchObject({ code: "busy" });
-        } finally {
-            await close();
-        }
+        });
     });
 });
 
 describe("route upload", () => {
     it("converts a dropped GPX and sends the OBCR the device would have produced itself", async () => {
-        const { client, device, close } = loopbackDevice();
-        try {
+        await withDevice({}, async ({ client, device }) => {
             const gpx = readFileSync(join(ROOT, "host/obc-vectors/src/route-source.gpx"));
             // The route's name comes from the file's stem, which is what makes this comparable to
             // the checked-in vector: same input, same name, same bytes.
@@ -221,33 +287,30 @@ describe("route upload", () => {
             });
 
             const result = await sendRoute(client, prepared, context());
-            expect(device.stored(ObjectType.Route, result.objectId)).toEqual(prepared.obcr);
-            // The device lists what it stored, so the route shows up in the catalog a rider reads.
-            const { entries } = await client.listRoutes();
-            expect(entries.map((e) => e.objectId)).toContain(result.objectId);
-        } finally {
-            await close();
-        }
+            expect(device.payloadOf(result.objectId)).toEqual(prepared.obcr);
+            // §3.6's display name is what a catalog listing shows, and it is the route's own name —
+            // so the row a rider reads on the device page is the row they dropped.
+            const listed = await client.list({ kind: ObjectKind.Route });
+            expect(listed.entries.map((entry) => [entry.objectId, entry.displayName])).toEqual([
+                [result.objectId, "Vector Loop"],
+            ]);
+        });
     });
 
     it("rejects a file that is not a route before anything is sent", async () => {
-        const { client, device, close } = loopbackDevice();
-        try {
+        await withDevice({}, async ({ client, device }) => {
             await expect(prepareRoute(new File([new Uint8Array(64)], "notes.txt"))).rejects.toMatchObject({
                 name: "ConvertError",
             });
-            expect(device.stored(ObjectType.Route, 1)).toBeNull();
+            expect(device.entries).toEqual([]);
             void client;
-        } finally {
-            await close();
-        }
+        });
     });
 });
 
 describe("firmware update", () => {
-    it("stages a verified container and then asks — it never installs", async () => {
-        const { client, device, close } = loopbackDevice();
-        try {
+    it("stages a verified container and replaces the one already on the card", async () => {
+        await withDevice({}, async ({ client, device }) => {
             // The signed (v2) container — the only shape the device installs (`OBCU_Spec.md` §1.4),
             // and the trailer must reach it intact or it refuses the file as truncated.
             const container = vector("update-container-v2.bin");
@@ -256,49 +319,98 @@ describe("firmware update", () => {
             expect(image.version).toBe("1.2.0+abc1234");
             expect(image.sigScheme).toBe(1);
             expect(image.containerLen).toBe(container.length);
-            // A fwImage upload is a singleton stage: id 0 in, id 0 back (§7.6).
-            expect(result.objectId).toBe(SINGLETON_OBJECT_ID);
-            expect(device.stagedFirmware).toEqual(container);
+            expect(result.revision).toBe(1n);
+            expect(device.payloadOf(result.objectId)).toEqual(container);
             expect(ctx.phases).toEqual(["verifying", "sending"]);
 
-            // The command is a *request*. The device answering ok means it will show its confirm
-            // card; the install still needs a physical Select press, and nothing here can skip it.
-            await askToInstall(client);
-        } finally {
-            await close();
-        }
+            // §3 has no singleton slot, so "one update package on the card" is this module's policy
+            // and the compare-and-swap on the listed revision is what makes it safe. Staging again
+            // must therefore bump the revision of the object that is there, not leave a second
+            // multi-megabyte package for the rider to find.
+            const again = await stageFirmware(client, container, context());
+            expect(again.result.objectId).toBe(result.objectId);
+            expect(again.result.revision).toBe(2n);
+            expect(device.entries.filter((entry) => entry.kind === ObjectKind.UpdatePackage)).toHaveLength(1);
+        });
     });
 
     it("refuses a damaged image locally, before spending a transfer on it", async () => {
-        const { client, device, close } = loopbackDevice();
-        try {
+        await withDevice({}, async ({ client, device }) => {
             const broken = Uint8Array.from(vector("update-container-v2.bin"));
             broken[70] ^= 0xff;
             await expect(stageFirmware(client, broken, context())).rejects.toMatchObject({ code: "image-crc" });
-            expect(device.stagedFirmware).toBeNull();
+            expect(device.entries).toEqual([]);
 
             // …and so is an intact but *unsigned* one, which the device would refuse anyway (§1.4).
             const unsigned = vector("update-container-v1.bin");
             await expect(stageFirmware(client, unsigned, context())).rejects.toMatchObject({ code: "unsigned" });
-            expect(device.stagedFirmware).toBeNull();
-        } finally {
-            await close();
-        }
+            expect(device.entries).toEqual([]);
+        });
     });
 
-    it("reports 'nothing staged' rather than pretending an install was asked for", async () => {
-        const { client, close } = loopbackDevice();
-        try {
-            await expect(askToInstall(client)).rejects.toMatchObject({ code: "not-found" });
-        } finally {
-            await close();
-        }
+    it("surfaces the device's refusal to arm rather than reporting an install", async () => {
+        // §4's dev-window gap: the device's current policy answers `ARM` with `rejected`. Staging is
+        // not installing and never was, so the honest report is the refusal itself — a page that
+        // said "installing…" here would be claiming a reboot that never comes.
+        await withDevice({}, async ({ client }) => {
+            const container = vector("update-container-v2.bin");
+            const { result } = await stageFirmware(client, container, context());
+            await expect(armUpdate(client, { objectId: result.objectId, revision: result.revision })).rejects
+                .toMatchObject({ code: "rejected" });
+        });
+    });
+
+    it("arms the staged package where the device's policy allows it", async () => {
+        await withDevice({ armPolicy: "allow" }, async ({ client, device }) => {
+            const { result } = await stageFirmware(client, vector("update-container-v2.bin"), context());
+            const armed = await armUpdate(client, { objectId: result.objectId, revision: result.revision });
+            expect(armed.rollbackObjectId).toBeGreaterThan(0n);
+            expect(armed.commitSequence).toBe(device.sequence);
+            expect(device.entries.some((entry) => entry.kind === ObjectKind.RollbackReserve)).toBe(true);
+        });
     });
 });
+
+/**
+ * A host link that damages the payload of one stream write, once armed.
+ *
+ * The wire is where a checksum failure comes from, so this is where it is injected: the record
+ * framing stays intact and one payload byte does not, which is exactly the case §3.6's declared
+ * whole-payload CRC exists to catch. Damaging the *client's* source instead would test the client's
+ * arithmetic rather than the device's verdict.
+ */
+function damageOneStreamWrite(link: DeviceLink): { link: DeviceLink; arm: () => void } {
+    const stream = link.stream;
+    let armed = false;
+    let damaged = false;
+    const wrapped: BytePipe = {
+        transport: stream.transport,
+        get open() {
+            return stream.open;
+        },
+        read: (signal) => stream.read(signal),
+        write(bytes, signal) {
+            if (!armed || damaged) return stream.write(bytes, signal);
+            damaged = true;
+            const flipped = bytes.slice();
+            // The last byte of a batch is the last payload byte of its last record, so the frame's
+            // own length prefix and offset survive and the device consumes every announced byte.
+            flipped[flipped.length - 1] ^= 0xff;
+            return stream.write(flipped, signal);
+        },
+        reset: () => stream.reset(),
+        close: () => stream.close(),
+    };
+    return {
+        link: { control: link.control, stream: wrapped, vendorIn: link.vendorIn, close: () => link.close() },
+        arm: () => {
+            armed = true;
+        },
+    };
+}
 
 function syntheticBytes(total: number): Uint8Array<ArrayBuffer> {
     const bytes = new Uint8Array(total);
     for (let i = 0; i < bytes.length; i++) bytes[i] = i & 0xff;
     return bytes;
 }
-

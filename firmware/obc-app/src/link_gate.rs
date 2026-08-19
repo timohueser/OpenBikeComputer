@@ -11,7 +11,7 @@
 //! holding, and the next descriptor on the radio was answered `busy`-free while a multi-gigabyte
 //! volume set was still streaming. A flag cannot tell whose it is; an owner can.
 //!
-//! The rule lives here rather than on the board for the reason [`crate::set_upload`] does: the
+//! The rule lives here rather than on the board for the reason every pure rule in this crate does:
 //! board crate has no `test` harness in CI, and "a teardown releases only its own claim" is exactly
 //! the kind of statement that should be asserted rather than reviewed.
 //!

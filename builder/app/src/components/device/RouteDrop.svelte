@@ -1,25 +1,22 @@
 <!--
-  The GPX drop zone, as the routes grid's last, ghost tile: drop or click to choose, pick how long
-  the device keeps it, send.
+  The GPX drop zone, as the routes grid's last, ghost tile: drop or click to choose, send.
 
   The conversion runs first and the *route* is what gets described — distance, ascent and point
   count read back out of the OBCR header the converter just wrote, not guessed from the GPX. So
   what the tile shows is what the device will show, and a file that converts to something
   unexpected is caught before it is on the card rather than on a hill.
 
-  "Keep on device" is §4.4 cmd 6: the upload itself has no retention field, so a non-forever
-  choice is applied right after the commit, before the page refreshes its lists. The device
-  dedupes a re-dropped file by CRC and answers with the existing id — applying the chosen
-  retention to that id is the spec's case (b), an edit, which is exactly what re-dropping means.
+  A send is a `PUT` and nothing else. There is no "keep on device" choice here any more: retention
+  is not on the cable — protocol v4 has no command that sets it and a `LIST` entry carries no
+  expiry — so a control offering it would be a promise this link cannot keep.
 -->
 <script lang="ts">
     import { formatBytes } from "../../lib/format";
     import { DeviceJob } from "../../lib/device/job.svelte";
     import { prepareRoute, type PreparedRoute } from "../../lib/device/route";
-    import { RETENTION_LEVELS, retentionLabel } from "../../lib/device/retention";
     import { sendRoute } from "../../lib/device/write";
     import { initConvert } from "../../lib/convert/bridge";
-    import type { ProtocolClient } from "../../lib/usb/client";
+    import type { FlatStoreClient } from "../../lib/usb/client";
     import TransferBar from "./TransferBar.svelte";
 
     let {
@@ -30,7 +27,7 @@
         empty = false,
         heading = "Route",
     }: {
-        client: ProtocolClient;
+        client: FlatStoreClient;
         /** Take over when several files land at once (the trip dialog). Null keeps the
          *  single-file behaviour: extra files are ignored, as they always were. */
         onmultiple?: ((files: File[]) => void) | null;
@@ -51,16 +48,11 @@
     let route = $state<PreparedRoute | null>(null);
     let readError = $state<string | null>(null);
     let dragging = $state(false);
-    /** The §4.4 cmd 6 level applied after a successful send. `0` = forever = send nothing. */
-    let retention = $state(0);
-    /** The upload landed but the retention stamp did not — its own sentence, never the job's. */
-    let retentionNote = $state<string | null>(null);
     let picker = $state<HTMLInputElement>();
 
     async function accept(file: File) {
         route = null;
         readError = null;
-        retentionNote = null;
         job.reset();
         try {
             route = await prepareRoute(file);
@@ -93,29 +85,15 @@
 
     async function send(prepared: PreparedRoute) {
         const run = serialize ?? (<T,>(op: () => Promise<T>) => op());
-        const keep = retention;
-        retentionNote = null;
-        // The job is the *upload*, alone: once the device has committed the route, the tile
-        // must say so and the page must re-list, whatever happens next — a retention stamp
-        // failing after the commit is an annotation problem, not a failed send.
+        // §3.6 commits or it does not: the device verifies the declared length and the whole-payload
+        // CRC before it publishes anything, so a resolved `PUT` means the card holds a valid route
+        // and a failed one leaves the card as if nothing had happened.
         const result = await job.run(
             (ctx) => run(() => sendRoute(client, prepared, ctx)),
             (value) => `“${prepared.header.name}” is on the device (route ${value.objectId}).`,
         );
         if (!result) return;
         route = null;
-        // Forever is the device's default for a fresh upload, so level 0 sends nothing; any
-        // other choice is stamped before the refresh. The id may be a dedupe's existing route —
-        // see the header.
-        if (keep !== 0) {
-            try {
-                await run(() => client.setRouteRetention(result.objectId, keep));
-            } catch {
-                retentionNote =
-                    "The route is on the device, but the keep-on-device setting could not be " +
-                    "applied — set it from the route's ⋯ menu.";
-            }
-        }
         onsent?.();
     }
 
@@ -200,19 +178,6 @@
         <p class="note small" role="alert">{readError}</p>
     {/if}
 
-    {#if retentionNote}
-        <p class="note small" role="alert">{retentionNote}</p>
-    {/if}
-
-    <label class="keep small" for="routedrop-keep">
-        keep on device:
-        <select id="routedrop-keep" bind:value={retention} onclick={(e) => e.stopPropagation()}>
-            {#each RETENTION_LEVELS as level (level)}
-                <option value={level}>{retentionLabel(level)}</option>
-            {/each}
-        </select>
-    </label>
-
     <input
         bind:this={picker}
         type="file"
@@ -292,18 +257,6 @@
     .lead {
         font-weight: 600;
         color: var(--ink-soft);
-    }
-
-    .keep {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-    }
-
-    .keep select {
-        font-size: 12.5px;
-        padding: 2px 6px;
-        border-radius: 7px;
     }
 
     .picked {

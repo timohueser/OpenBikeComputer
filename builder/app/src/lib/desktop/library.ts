@@ -17,7 +17,6 @@
 
 import { desktop, type RideIndexEntry } from "./invoke";
 import type { LibraryRide, LibraryView, RideImport, RideLibrary } from "../device/library";
-import type { RideScope } from "../device/rides";
 
 /**
  * `RideIndexEntry` → `LibraryRide`.
@@ -85,11 +84,11 @@ export function openRideLibrary(): RideLibrary {
             return { ride: toRide(landed.ride), imported: landed.imported };
         },
 
-        durableIds(scope: RideScope): Promise<number[]> {
-            // `pullRides` refuses a null epoch before it reaches here; the `?? 0` is only so this
-            // signature does not have to lie about the type.
-            return desktop.ridesAckSet(scope.serial, scope.epoch ?? 0);
-        },
+        // There is no `durableIds` any more. It existed to build the list of rides a pull would
+        // acknowledge to the device, and `FLAT_Store_Protocol.md` §5.2.2 retires that command from
+        // the cable — a possession ack changes no object, so it keeps the BLE surface it had. The
+        // Rust `rides_ack_set` command it called is now unreferenced from this host; removing it is
+        // a Rust change this slice does not make.
 
         async readObject(key: string): Promise<Uint8Array> {
             return new Uint8Array(await desktop.ridesRead(key));

@@ -7,10 +7,10 @@
 
 mod flat_harness;
 
-use flat_harness::{boot, client, crc32, formatted_card, payload, Answer, Device};
+use flat_harness::{boot, boot_on, client, crc32, formatted_card, payload, Answer, Device};
 use obc_link::flat::store::Policy;
 use obc_link::flat::wire::{detail, ErrorCode};
-use obc_link::flat::{CancelCause, ObjectId, ObjectKind, Revision};
+use obc_link::flat::{CancelCause, Ceilings, Link, ObjectId, ObjectKind, Revision};
 use obc_storage::flat::sim::{FaultOnce, MediaOp};
 use obc_storage::flat::BlockDevice;
 
@@ -859,4 +859,308 @@ fn a_read_that_fails_mid_download_ends_it_and_closes_the_handle() {
     expect_error(&answer, ErrorCode::MediaIo, detail::media_io::READ);
     assert!(device.is_quiet());
     assert_eq!(device.remove_and_measure(id), 1, "a leaked hold would have kept the extent");
+}
+
+// ══════════════════════ the device's own view of an upload (FS7.5-c3b) ══════════════════════
+
+/// A live upload reports what it has landed, and the report ends with the transfer.
+///
+/// This is the one thing a *device* reads out of the engine that no client ever asks for: a map is
+/// hundreds of megabytes and lands over twenty minutes, and the wire's only answer to "how is it
+/// going" is the transfer's one response at the end of it. The rider's progress bar cannot wait
+/// that long, so it reads the engine directly — and this pins that the numbers it reads are the
+/// transfer's own, not a second counter that could drift from them.
+#[test]
+fn a_live_upload_reports_its_progress_and_stops_when_it_ends() {
+    let disk = formatted_card(90);
+    let mut device = boot(&disk);
+    let bytes = body();
+
+    assert_eq!(device.live_upload(), None, "an idle engine has no upload to report");
+    device.control(&client::put(1, 0, 0, &bytes, ROUTE, false, "watched"));
+    let admitted = device.live_upload().expect("an admitted PUT is a live upload");
+    assert_eq!(admitted.request.0, 1);
+    assert_eq!(admitted.kind, ObjectKind::Route);
+    assert_eq!((admitted.received, admitted.declared), (0, bytes.len() as u64));
+
+    let records = client::stream_all(1, &bytes, 1_008);
+    let mut expected = 0u64;
+    for (n, record) in records.iter().enumerate() {
+        device.stream(record);
+        expected += (record.len() - 16) as u64;
+        match device.live_upload() {
+            Some(progress) => {
+                assert_eq!(progress.received, expected, "record {n} reported the wrong byte count");
+                assert_eq!(progress.declared, bytes.len() as u64);
+            }
+            // The last record commits, and a committed upload is no longer live.
+            None => assert_eq!(n + 1, records.len(), "the upload vanished at record {n}"),
+        }
+    }
+    assert_eq!(device.live_upload(), None);
+}
+
+/// The terminal verdict is latched once and taken once — a commit says so, and so does a refusal.
+///
+/// Latched rather than reported live because the fact exists for exactly one call: the engine goes
+/// from *live* to *idle* inside `finish_upload`, and a device that only looks between calls would
+/// otherwise watch an upload disappear with no verdict at all.
+#[test]
+fn an_upload_latches_its_verdict_exactly_once() {
+    let disk = formatted_card(91);
+    let mut device = boot(&disk);
+    let bytes = body();
+
+    assert_eq!(device.take_upload_end(), None, "nothing has ended yet");
+    let answer = upload(&mut device, 1, 0, 0, &bytes, ROUTE, "landed");
+    assert!(!answer.is_error(), "{answer:?}");
+    assert_eq!(device.take_upload_end(), Some((ObjectKind::Route, obc_link::flat::UploadEnd::Committed)));
+    assert_eq!(device.take_upload_end(), None, "taking it clears it");
+
+    // A refusal latches the code its error response carried, and nothing narrower: a device turns
+    // this into one of a handful of screens and every finer fact belongs to the client that asked.
+    let wire = device.control(&client::put(2, 0, 0, &bytes, ROUTE, false, "damaged"));
+    assert!(wire.control.is_empty());
+    let mut corrupt = bytes.clone();
+    corrupt[0] ^= 0xFF;
+    for record in client::stream_all(2, &corrupt, 1_008) {
+        device.stream(&record);
+    }
+    assert_eq!(
+        device.take_upload_end(),
+        Some((ObjectKind::Route, obc_link::flat::UploadEnd::Refused(ErrorCode::ChecksumFailure)))
+    );
+}
+
+/// A link that goes away leaves no verdict, and neither does a cancel.
+///
+/// Both are the rider's or the peer's own doing, and a device that answered them with a card
+/// explaining what just happened would be explaining the rider's action back to them. §3.8's third
+/// form of cancel "answers nobody", and this is the device-side reading of that sentence.
+#[test]
+fn a_link_lost_and_a_cancel_leave_no_verdict_to_show() {
+    let disk = formatted_card(92);
+    let mut device = boot(&disk);
+    let bytes = body();
+
+    device.control(&client::put(1, 0, 0, &bytes, ROUTE, false, "cut"));
+    device.stream(&client::stream(1, 0, &bytes[..1_008]));
+    device.link_lost();
+    assert_eq!(device.live_upload(), None);
+    assert_eq!(device.take_upload_end(), None, "a pulled cable is not a verdict");
+
+    device.control(&client::put(2, 0, 0, &bytes, ROUTE, false, "cancelled"));
+    device.stream(&client::stream(2, 0, &bytes[..1_008]));
+    assert!(device.cancel_live(CancelCause::Device));
+    device.pump();
+    assert_eq!(device.take_upload_end(), None, "a cancel is not a verdict either");
+}
+
+/// A record that is a whole multiple of the stage reaches the card in **one** write, not one per
+/// stage.
+///
+/// §5.2's 4,112-byte USB ceiling exists to make a full stream record exactly 4,096 payload bytes,
+/// and that is only worth anything if the engine hands those bytes over intact: a card write costs
+/// about the same whether it carries one block or a hundred (`FLAT_Store_Format.md` §5.5), so
+/// splitting at the stage would have turned the ceiling into eight commands instead of one. The
+/// count is read off the card's own write log.
+#[test]
+fn a_record_of_whole_stages_reaches_the_card_in_one_write() {
+    let disk = formatted_card(93);
+    // §5.2's own ceiling, so the record under test is the one the cable actually sends: 16 header
+    // bytes plus 4,096 payload bytes. The harness stages 1 KiB, so that is four whole stages.
+    let mut device = boot_on(&disk, Ceilings::for_usb(4_112).expect("§5.2's ceiling is above the floor"));
+    // Two records' worth, so the one under test is an ordinary mid-transfer record: streaming the
+    // whole payload would commit inside the same call and the commit's own writes would be counted.
+    let bytes = payload(8 * 1_024);
+
+    device.control(&client::put(1, 0, 0, &bytes, ROUTE, false, "one write"));
+    let before = disk.write_widths().len();
+    device.stream(&client::stream(1, 0, &bytes[..4 * 1_024]));
+    let widths = disk.write_widths();
+    let of_this_record = &widths[before..];
+    assert_eq!(
+        of_this_record.len(),
+        1,
+        "four stages went to the card as {} commands: {of_this_record:?}",
+        of_this_record.len()
+    );
+    assert_eq!(of_this_record[0].1, 8, "and the one command carried all eight blocks");
+}
+
+// ══════════════════════ two links, one engine (FS7.5-c3b) ══════════════════════
+
+/// **A link coming up does not touch the other link's transfer**, and the newcomer meets §1's
+/// one-at-a-time rule in the ordinary way.
+///
+/// This is the behaviour the first cut of c3b got wrong, and it was wrong in the way that costs the
+/// most: `LinkUp` released the live transfer and rebuilt the engine, so a phone reconnecting in a
+/// rider's pocket destroyed a cable's twenty-minute map upload — silently, with no answer to the
+/// client that was sending it — and re-pinned the stream ceiling to the radio's 245 bytes so the
+/// cable's next 4,112-byte record died as over-ceiling. Both peers were behaving perfectly.
+///
+/// The rule the code now implements: a link coming up is a **new peer on one wire**, not a new state
+/// of the device.
+#[test]
+fn a_link_coming_up_leaves_the_other_links_transfer_alone_and_gets_busy() {
+    let disk = formatted_card(94);
+    let usb = Ceilings::for_usb(4_112).expect("§5.2's ceiling");
+    let ble = Ceilings::for_ble(247, 245, 256).expect("§5.1's preferred link");
+    let mut device = boot_on(&disk, usb);
+    device.link_up(Link::Usb, usb);
+    let bytes = body();
+
+    // The cable admits a `PUT` and streams part of it.
+    let wire = device.control_on(Link::Usb, &client::put(1, 0, 0, &bytes, ROUTE, false, "over the cable"));
+    assert!(wire.control.is_empty(), "an admitted PUT answers nothing until the last byte");
+    device.stream_on(Link::Usb, &client::stream(1, 0, &bytes[..1_008]));
+    let landed = device.live_upload().expect("the cable's upload is live").received;
+    assert_eq!(landed, 1_008);
+
+    // A phone connects. Nothing about the cable's transfer may move.
+    device.link_up(Link::Ble, ble);
+    let still = device.live_upload().expect("the cable's upload survived a radio connection");
+    assert_eq!(still.request.0, 1, "and it is the same transfer");
+    assert_eq!(still.received, 1_008, "with the same bytes");
+
+    // …and the phone's own `PUT` is refused the way §1 says, naming the live transfer.
+    let answer = Answer::of(
+        device.control_on(Link::Ble, &client::put(2, 0, 0, &bytes, ROUTE, false, "over the radio")).answer(),
+    );
+    let (code, detail, context) = error(&answer);
+    assert_eq!(code, ErrorCode::Busy.value(), "the second transfer is busy whichever wire asked");
+    assert_eq!(detail, detail::busy::TRANSFER);
+    assert_eq!(context, 1, "and the context is the live transfer's RequestId");
+
+    // The cable's upload still finishes, at its own ceiling, over the radio's shoulder.
+    let mut last = None;
+    for record in client::stream_all(1, &bytes, 1_008).into_iter().skip(1) {
+        let wire = device.stream_on(Link::Usb, &record);
+        if !wire.control.is_empty() {
+            last = Some(Answer::of(wire.answer()));
+        }
+    }
+    assert!(!last.expect("the last stream record is answered").is_error(), "the upload committed");
+}
+
+/// **A link going away releases only what that link held.**
+///
+/// §3.8's third form of cancel answers "the transfer whose link went away", not "the transfer" — and
+/// the unscoped version of `on_link_lost` was how an unplugged cable became a reason to kill a
+/// phone's download.
+#[test]
+fn a_link_going_away_releases_only_its_own_transfer() {
+    let disk = formatted_card(95);
+    let usb = Ceilings::for_usb(4_112).expect("§5.2's ceiling");
+    let ble = Ceilings::for_ble(247, 245, 256).expect("§5.1's preferred link");
+    let mut device = boot_on(&disk, usb);
+    device.link_up(Link::Usb, usb);
+    device.link_up(Link::Ble, ble);
+    let bytes = body();
+
+    device.control_on(Link::Usb, &client::put(1, 0, 0, &bytes, ROUTE, false, "over the cable"));
+    device.stream_on(Link::Usb, &client::stream(1, 0, &bytes[..1_008]));
+
+    // The phone drops off. The cable is mid-upload and must not notice.
+    device.link_lost_on(Link::Ble);
+    let still = device.live_upload().expect("the cable's upload survived the radio going away");
+    assert_eq!((still.request.0, still.received), (1, 1_008));
+    let free = device.free_extents();
+
+    // The cable goes. Now — and only now — the allocation comes back.
+    device.link_lost_on(Link::Usb);
+    assert_eq!(device.live_upload(), None, "the owning link's departure released it");
+    assert!(device.is_quiet(), "and nothing is owed to a peer that cannot hear it");
+    assert!(device.free_extents() > free, "the allocation went back to the free map");
+    assert_eq!(device.take_upload_end(), None, "a link that went away is not a verdict");
+}
+
+/// A link that is **down** is not served at all, and a stream record on the wrong wire is discarded
+/// in silence exactly as §3.8 discards one bearing an unknown `RequestId`.
+#[test]
+fn a_down_link_is_not_served_and_the_wrong_wires_stream_is_discarded() {
+    let disk = formatted_card(96);
+    let usb = Ceilings::for_usb(4_112).expect("§5.2's ceiling");
+    let mut device = boot_on(&disk, usb);
+    device.link_up(Link::Usb, usb);
+    // `boot_on` brings the radio up as the suite's default; take it away again, which is what a
+    // disconnect leaves behind.
+    device.link_lost_on(Link::Ble);
+    let bytes = body();
+
+    // The radio is down: it has no ceilings, so there is nothing to frame an answer against.
+    let wire = device.control_on(Link::Ble, &client::list(9, None));
+    assert!(wire.control.is_empty(), "a wire nobody is on gets no answer");
+
+    // The cable's upload is live; a stream record arriving on the radio belongs to no transfer the
+    // receiver can be sure of.
+    device.control_on(Link::Usb, &client::put(1, 0, 0, &bytes, ROUTE, false, "over the cable"));
+    let wire = device.stream_on(Link::Ble, &client::stream(1, 0, &bytes[..1_008]));
+    assert!(wire.control.is_empty() && wire.stream.is_empty(), "discarded in silence");
+    assert_eq!(device.live_upload().expect("still live").received, 0, "and absorbed nothing");
+}
+
+/// **A `CANCEL` cancels the asking link's transfer, and only that one.**
+///
+/// §3.1 makes the client choose its own `RequestId`, and nothing coordinates two clients — so a
+/// phone and a cable both picking a small number is ordinary traffic, not an attack. Matching a
+/// `CANCEL` on the identifier alone therefore let one link destroy the other's transfer *and* take
+/// the cancelled error for itself: the victim died silently and its own peer was never told.
+///
+/// This was the one entry point that still matched on `RequestId` alone after the rest of the link
+/// lifecycle gained an identity, which is exactly the shape a partial fix leaves behind.
+#[test]
+fn a_cancel_names_a_transfer_on_its_own_wire_or_it_cancels_nothing() {
+    let disk = formatted_card(97);
+    let usb = Ceilings::for_usb(4_112).expect("§5.2's ceiling");
+    let ble = Ceilings::for_ble(247, 245, 256).expect("§5.1's preferred link");
+    let mut device = boot_on(&disk, usb);
+    device.link_up(Link::Usb, usb);
+    device.link_up(Link::Ble, ble);
+    let bytes = body();
+
+    // The cable's `PUT` is transfer 1 — a perfectly ordinary identifier for a client to pick.
+    device.control_on(Link::Usb, &client::put(1, 0, 0, &bytes, ROUTE, false, "over the cable"));
+    device.stream_on(Link::Usb, &client::stream(1, 0, &bytes[..1_008]));
+    assert_eq!(device.live_upload().expect("live").received, 1_008);
+
+    // The phone cancels *its* transfer 1, which it believes is its own. It is not.
+    let wire = device.control_on(Link::Ble, &client::cancel(9, 1));
+    let answer = Answer::of(wire.answer());
+    assert!(!answer.is_error(), "the CANCEL itself is well formed and is answered: {answer:?}");
+    // §3.8's answer byte: `0` cancelled, `1` no such transfer.
+    assert_eq!(answer.byte_at(0), 1, "§3.8's `no such transfer` — there is none of the asker's");
+    assert!(wire.stream.is_empty(), "and nothing went out on the radio's stream channel");
+
+    // The cable's upload is untouched, byte for byte, and still completes.
+    let still = device.live_upload().expect("the cable's upload survived the radio's CANCEL");
+    assert_eq!((still.request.0, still.received), (1, 1_008), "same transfer, same bytes");
+
+    // **Nothing was minted for the radio either.** A pump on the radio's own wire finds nothing
+    // owed — the failing version left a `cancelled` error there, addressed to a transfer the radio
+    // never started, which its client would have had to discard against a `RequestId` it never sent.
+    assert!(device.pump_on(Link::Ble).control.is_empty(), "no error was owed to the asking link");
+
+    let mut last = None;
+    for record in client::stream_all(1, &bytes, 1_008).into_iter().skip(1) {
+        let wire = device.stream_on(Link::Usb, &record);
+        if !wire.control.is_empty() {
+            last = Some(Answer::of(wire.answer()));
+        }
+    }
+    assert!(!last.expect("the last stream record is answered").is_error(), "the upload committed");
+
+    // …and the owning link can still cancel it, which is the half that must keep working. §3.8 is
+    // bilateral, so this produces **two** control records on the cable: the `CANCEL`'s own answer
+    // and the cancelled `PUT`'s `cancelled` error — which is the pair the radio wrongly received
+    // half of before this fix.
+    device.control_on(Link::Usb, &client::put(2, 0, 0, &bytes, ROUTE, false, "cancelled properly"));
+    let wire = device.control_on(Link::Usb, &client::cancel(3, 2));
+    assert_eq!(wire.control.len(), 2, "the CANCEL is answered and the transfer is refused");
+    let answered = Answer::of(&wire.control[0]);
+    assert_eq!(answered.byte_at(0), 0, "the owning link's CANCEL is honoured");
+    let refused = Answer::of(&wire.control[1]);
+    assert!(refused.is_error() && refused.request == 2, "the PUT itself is answered `cancelled`");
+    assert_eq!(refused.error().0, ErrorCode::Cancelled.value());
+    assert_eq!(device.live_upload(), None, "and the transfer is gone");
 }

@@ -250,14 +250,6 @@ pub fn request_forget_bond() {
     FORGET_BOND.signal(());
 }
 
-/// The lifetime link counters + the last disconnect reason, for the §7.5 diagnostics blob
-/// ([`crate::link::diag_input`]). Kept here because they are the *radio* link's history; the
-/// diagnostics object is a device fact, so a USB reader gets the same three numbers.
-pub(crate) fn link_counters() -> (u32, u32, u8) {
-    let s = status();
-    (s.connects, s.disconnects, s.last_disconnect_reason)
-}
-
 /// The battery percent for the BAS characteristic, read by `battery_task` to seed + notify. A
 /// constant [`StubFuelGauge`]-matching 75 % until the real nPM1300 fuel gauge is wired across the
 /// plane seam (the ride loop owns the gauge; feeding it into BAS is a #270 follow-up).
