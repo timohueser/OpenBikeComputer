@@ -245,6 +245,42 @@ this bench's store gets phase one: initialize, then every measurement above, end
 own `recovered_ride`, §7.2's ride end, and the whole ride read back byte for byte against the payload
 phase one generated. A third reset finds no ride recording and starts phase one over.
 
+#### Serial map ingest — putting a real map on the card
+
+Before either phase, the bench advertises on the DK's VCOM UART for ten seconds. If a host answers
+it takes objects over the cable instead of measuring anything, and then parks — the measurement run
+would allocate the card out from under what it just accepted. Nothing answers, the window expires,
+and the bench is what it always was.
+
+This exists because a board session needs a **real packed map** on a real flat store and no
+transport on this rig can put one there: USB is still protocol v2, BLE v4's phone client is not
+ready, and the host has no card reader. The wire — magic, kind, length, CRC, then acked chunks — is
+documented in full in the binary's module docs; the CRC is verified before the commit, so a bad
+transfer publishes nothing and a retry is simply a fresh put with a new `ObjectId`.
+
+Start the host **first** — it blocks on the device's advertisement — then flash and run:
+
+```bash
+# shell 1, from the repo root
+python3 tools/bench_ingest.py --port /dev/cu.usbmodem*133 \
+    --file "$(python3 tools/fixtures.py resolve monaco-upahead | awk '/^map/ {print $2}')" \
+    --kind map --name monaco.obcm
+
+# shell 2, from this directory. NOT `cargo run --verify` — that is broken on this rig.
+pkill probe-rs
+cargo build --release --bin flat_store_bench
+probe-rs download --chip nRF54LM20A target/thumbv8m.main-none-eabihf/release/flat_store_bench
+probe-rs run      --chip nRF54LM20A target/thumbv8m.main-none-eabihf/release/flat_store_bench
+```
+
+`sim-monaco`'s `monaco.obcm` is 718,336 B, which is about **63 s** at the wire's default 115,200
+8N1. `INGEST_BAUD` in the binary takes that to ~7.5 s at `Baud1m` (pass `--baud 1000000` to match),
+at the cost of finding out mid-session whether this J-Link's CDC will carry a megabaud. RTT prints
+the `ObjectId` and a full catalog census after every commit, which is the acceptance evidence.
+
+If the host sits waiting while RTT shows the bench advertising, the J-Link's VCOM has wedged: only a
+physical power-cycle of the DK clears it, and no amount of `probe-rs reset` will.
+
 (The standalone FLPR waveform bench bin `ls021_flpr_bringup` was retired in #177 once the app drove
 the LS021 on glass; the M33-direct `ls021_bringup` bench was retired earlier in #176; the A1 BLE
 spike bin `ble_spike` was retired at #270 when the stack moved into `main.rs`/`src/ble/`; the
