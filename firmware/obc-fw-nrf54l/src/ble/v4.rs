@@ -25,8 +25,13 @@
 //!   a `select` the driver re-enters every pass. The old shape raced `receive` against the control
 //!   signal, so a `receive` that had already consumed a PDU into [`STREAM_RX`] and suspended inside
 //!   flow control — routine when ACL TX grants are exhausted by sensor notifications — lost its
-//!   bytes whenever the control side won. Now the reader is dropped only when the driver has decided
-//!   the channel is over, which is between receives with nothing in hand. §5: "MUST NOT deliver it,
+//!   bytes whenever the control side won. Now the reader is dropped only when the **driver returns**,
+//!   and the driver returns only to tear the channel down: both split halves go out of scope
+//!   together, the channel's refcount drops and the CoC is disconnected. So a frame undelivered at
+//!   that moment belongs to a transfer that is over either way. (The weaker claim — "dropped between
+//!   receives, with nothing in hand" — is **false**: several driver paths return while the reader is
+//!   mid-`receive`. It is the channel's destruction, not the reader's timing, that makes the drop
+//!   harmless, and stating it the wrong way would license a refactor that kept the channel alive.) §5: "MUST NOT deliver it,
 //!   and MUST NOT drop it."
 //! - **Credit is withheld while a frame is held.** [`reader_pump`] receives one record, posts it,
 //!   and then waits for [`STREAM_TAKEN`] before receiving again. One frame in flight, never two, and
@@ -93,10 +98,18 @@ const CONTROL_TAKEN_TIMEOUT: Duration = Duration::from_millis(500);
 /// How long a stream frame is held while the control channel is given its chance to admit it.
 ///
 /// §3.6 lets a client stream immediately, without waiting for an acceptance, so the first frame of a
-/// `PUT` genuinely races its own control write. This is the width of that race as the device can see
-/// it: one GATT event pump pass, plus whatever the ride loop is holding the shared store for. A
-/// frame still unadmitted after this is handed over anyway, and the engine's silent discard (§3.8)
-/// is then the correct answer — it belongs to no transfer.
+/// `PUT` genuinely races its own control write.
+///
+/// **750 ms is a guess and is labelled as one.** It is meant to cover one GATT event pump pass plus
+/// whatever the ride loop is holding the shared store for, and *neither of those has been measured*
+/// — the board session re-pins it against the worst observed `shared.lock` hold. Measure, don't
+/// theorize, is the standing law here, and a plausible-looking constant with no number behind it is
+/// exactly what that law is about; this comment is the marker, not a justification.
+///
+/// The hold is deliberately **bounded**: a frame still unadmitted when the window closes is handed
+/// over anyway, and §3.8's silent discard is then the correct answer, because it genuinely belongs
+/// to no transfer the receiver can be sure of. Waiting forever on a `RequestId` that may never be
+/// admitted would wedge the channel on a client that simply gave up.
 const ADMISSION_WINDOW: Duration = Duration::from_millis(750);
 
 // ══════════════════════════ the buffers ══════════════════════════
@@ -136,6 +149,15 @@ static STREAM_TAKEN: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 /// True while a driver is running and able to answer a control record.
 static DRIVER_READY: AtomicBool = AtomicBool::new(false);
+
+/// Whether this channel has already seen a transfer admitted.
+///
+/// The admission hold only has to cover the **first** frame of a transfer: once the engine reports
+/// something live, every later frame of that upload is admitted by construction (§1 serves one
+/// transfer at a time). Latching that fact is what keeps the query off the hot path — without it a
+/// live upload pays a queue round trip per stream frame to be told the same thing it was told last
+/// frame. Cleared per channel, because a new link has admitted nothing.
+static ADMISSION_SEEN: AtomicBool = AtomicBool::new(false);
 
 /// The adapter's resident cost, for the budget table in `main.rs`.
 pub(crate) const RESIDENT_BYTES: usize = OUT_LEN + OUT_LEN + DefaultPacketPool::MTU;
@@ -207,28 +229,45 @@ pub(crate) struct Lane {
     out: Option<&'static mut [u8]>,
 }
 
-/// Guards the one-and-only take of [`OUT`].
-static OUT_TAKEN: AtomicBool = AtomicBool::new(false);
+/// True once [`lane`] has built [`LANE`].
+static LANE_BUILT: AtomicBool = AtomicBool::new(false);
+
+/// The lane itself, in `.bss`.
+static mut LANE: core::mem::MaybeUninit<Lane> = core::mem::MaybeUninit::uninit();
+
+/// **The one lane, for the life of the image.**
+///
+/// Two properties, and both were bought by review findings rather than chosen up front:
+///
+/// - **The buffer is taken once.** A `Lane` built per connection could mint a second `&'static mut`
+///   to [`OUT`] while a dropped call still had the first parked in [`ENGINE_REPLY`]. Here there is
+///   one `Lane`, its state lives in `.bss`, and a connection that finds `out: None` calls
+///   [`Lane::reclaim`] rather than conjuring a second reference.
+/// - **`ble::run` holds nothing.** The lane is reached from inside [`serve_objects`], so the value
+///   never becomes a local of the BLE task. That is not tidiness: carried as a local across that
+///   task's awaits it cost the poll frame **8,628 B** — 1,036 → 9,664 — by changing the coroutine's
+///   liveness enough that LLVM stopped sinking `init_resources`' and `init_server`'s construction
+///   temporaries out of the frame. Eight bytes of value, three orders of magnitude of frame; the
+///   #677/#1084 trap exactly, and the reason this returns a reference from a slot.
+///
+/// # Safety
+/// One caller at a time: [`serve_objects`] is the only one and there is one BLE connection. The
+/// `&'static mut` it hands out is re-derived per call, and no two live at once.
+#[inline(never)]
+pub(crate) fn lane() -> &'static mut Lane {
+    // SAFETY: sole writer of `LANE`; the flag makes the build happen exactly once, before any driver
+    // exists, and `Lane` has no `Drop`.
+    unsafe {
+        if !LANE_BUILT.swap(true, Ordering::Relaxed) {
+            let out: Option<&'static mut [u8]> =
+                Some(core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(OUT).cast::<u8>(), OUT_LEN));
+            return crate::init_static(core::ptr::addr_of_mut!(LANE), Lane { out });
+        }
+        &mut *(*core::ptr::addr_of_mut!(LANE)).as_mut_ptr()
+    }
+}
 
 impl Lane {
-    /// **Take [`OUT`], exactly once for the life of the image.**
-    ///
-    /// Called from `ble::run` before the connection loop, not per connection, and that is what makes
-    /// the uniqueness of the `&'static mut` structural: there is one `Lane`, it outlives every
-    /// connection, and no second one can be constructed because the flag refuses. The previous shape
-    /// built a lane per connection and argued that the old one was gone; that argument was false
-    /// while a dropped call still had the buffer parked in [`ENGINE_REPLY`].
-    pub(crate) fn take() -> Lane {
-        if OUT_TAKEN.swap(true, Ordering::Relaxed) {
-            // Not reachable from the one call site; reported rather than panicking, because this is
-            // the radio stack. A lane with no buffer refuses to serve rather than aliasing one.
-            warn!("ble: [v4] the reaction buffer was taken twice — this lane will not serve");
-            return Lane { out: None };
-        }
-        // SAFETY: the flag above makes this the only take, and it happens before any driver exists.
-        Lane { out: Some(unsafe { &mut *core::ptr::addr_of_mut!(OUT) }) }
-    }
-
     /// **Recover the buffer from a call whose future was dropped.**
     ///
     /// Sound because of the queue's own ordering rather than a timing argument: requests are served
@@ -236,6 +275,12 @@ impl Lane {
     /// and an orphaned answer can only be sitting in [`ENGINE_REPLY`]. The caller therefore reclaims
     /// **before** issuing the next call — `Writer::call` discards a mismatched reply, which would
     /// throw the buffer away with it.
+    ///
+    /// **That inference needs one more thing than FIFO service: the later call must have been
+    /// *enqueued* after the orphan.** It holds while BLE is the only sender, which is true today.
+    /// FS8's ride journal and c3b's USB adapter both add senders, and each owes this argument a
+    /// re-establishment — a second sender can interleave a job between the orphan and the reclaiming
+    /// call, and then "a later answer arrived" no longer implies "the orphan has been served".
     fn reclaim(&mut self) {
         if self.out.is_some() {
             return;
@@ -298,7 +343,6 @@ pub(crate) async fn serve_objects(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
     server: &Server<'_>,
     conn: &GattConnection<'_, '_, DefaultPacketPool>,
-    lane: &mut Lane,
 ) -> ! {
     let Some(writer) = crate::flat_store::writer() else {
         // Unreachable since c3a spawns the storage task on every card, and reported rather than
@@ -306,6 +350,9 @@ pub(crate) async fn serve_objects(
         warn!("ble: [v4] the store's write half is not armed — object service is down this boot");
         core::future::pending().await
     };
+    // Reached here rather than passed in: see `lane`. A local of `ble::run` costs that task's poll
+    // frame 8,628 B.
+    let lane = lane();
     let listener = L2capChannel::listen(stack, conn.raw());
     loop {
         let ch = match listener.accept(&L2capChannelConfig::default()).await {
@@ -356,12 +403,15 @@ pub(crate) async fn serve_objects(
         CONTROL_IN.reset();
         STREAM_IN.reset();
         STREAM_TAKEN.reset();
+        ADMISSION_SEEN.store(false, Ordering::Relaxed);
         DRIVER_READY.store(true, Ordering::Relaxed);
-        // **The reader is a sibling, not a branch.** It must never be dropped mid-`receive`: it may
-        // already have consumed a PDU into `STREAM_RX` and be suspended inside flow control, and
-        // dropping it there loses those bytes for good (§5 forbids both delivering and dropping such
-        // a frame). Here it is dropped only when the *driver* has finished — i.e. the channel is
-        // being torn down — which happens between receives, with nothing in hand.
+        // **The reader is a sibling, not a branch**, and that is what stops a consumed PDU being
+        // thrown away. It is dropped only when the *driver* returns, and the driver returns only to
+        // tear this channel down: both split halves fall out of scope together, so the channel is
+        // disconnected in the same breath. A frame still in `STREAM_RX` then belongs to a transfer
+        // that is over regardless. What must never happen again is the old shape — dropping the
+        // reader while the channel lives on — which is why this is a `select` over two siblings and
+        // not a `select` the driver re-enters every pass.
         let outcome =
             match select(driver(&writer, lane, stack, server, conn, &mut writer_half), reader_pump(stack, &mut reader))
                 .await
@@ -369,10 +419,15 @@ pub(crate) async fn serve_objects(
                 Either::First(reason) => reason,
                 Either::Second(never) => never,
             };
-        DRIVER_READY.store(false, Ordering::Relaxed);
-        // §3.8's third form of cancel. Not optional: the live transfer's allocation or hold is
-        // released here or not at all.
-        let _ = writer.call(Request::LinkLost, &ENGINE_REPLY).await;
+        // §3.8's third form of cancel — **through `release_engine`, on its own reply slot.** Calling
+        // it on `ENGINE_REPLY` was a self-inflicted trap: the `select` above can drop the driver mid
+        // `Lane::call`, so the orphaned answer — the one carrying the reaction buffer — is still in
+        // that slot, and `Writer::call` discards a mismatched reply. This teardown would therefore
+        // have thrown `OUT` away, `reclaim` would have found the slot empty, and every later CoC
+        // accept would be refused for the rest of the boot. `TEARDOWN_REPLY` leaves the orphan where
+        // `reclaim` can find it, and this round trip is itself the later-served call the FIFO
+        // argument needs. It clears `DRIVER_READY` too.
+        release_engine(&writer).await;
         info!("ble: [v4] channel down ({}) — engine released, re-accepting", outcome);
     }
 }
@@ -454,7 +509,11 @@ async fn stream_record(writer: &Writer, lane: &mut Lane, len: usize) -> Option<R
     // zero — and "no control record is pending" does *not* mean none was written, because the GATT
     // pump may be parked on the shared store. So: ask the engine, and if it is idle, hold this frame
     // while the control channel is given its window. The reader is already withholding credit.
-    if live_transfer(writer).await.is_none() {
+    // The latch first, the queue only if it is clear — see `ADMISSION_SEEN`. The check is
+    // "anything live" rather than "this frame's `RequestId` is live", which is sufficient under §1's
+    // one-transfer-at-a-time rule and is narrower than §3.8 would permit; if that rule is ever
+    // relaxed this is one of the places that has to widen with it.
+    if !ADMISSION_SEEN.load(Ordering::Relaxed) && live_transfer(writer).await.is_none() {
         if let Either::First(control_len) = select(CONTROL_IN.wait(), Timer::after(ADMISSION_WINDOW)).await {
             let reaction = control_record(writer, lane, control_len).await?;
             // Admission answered; the held frame goes next round, still un-dropped.
@@ -462,6 +521,8 @@ async fn stream_record(writer: &Writer, lane: &mut Lane, len: usize) -> Option<R
             return Some(reaction);
         }
         warn!("ble: [v4] a stream frame arrived with nothing admitted — delivering after the hold window");
+    } else {
+        ADMISSION_SEEN.store(true, Ordering::Relaxed);
     }
     // SAFETY: the driver reads this buffer only between `STREAM_IN` and `STREAM_TAKEN`, and
     // `reader_pump` holds no reference to it across that window.
@@ -508,9 +569,15 @@ async fn pump(
         match reaction {
             Reaction::Idle => return None,
             Reaction::Close(channel) => {
-                // §3.1's unanswerable record: emit nothing and close **that** record stream. An
-                // unanswerable control frame is not a reason to take the stream channel down with
-                // it, so which channel the engine named is honoured rather than flattened.
+                // §3.1's unanswerable record: emit nothing and close that record stream.
+                //
+                // **Today both arms end the driver, and ending the driver drops both split halves —
+                // so the stream channel goes down either way and only the log differs.** Honouring
+                // the distinction for real means keeping the driver alive on a control-side close,
+                // which needs a control channel that can be closed independently of the CoC; BLE has
+                // no such thing (the ATT link *is* the connection). The match is kept because the
+                // engine's answer carries the channel and discarding it here would hide that, but
+                // the comment says what the code does rather than what the shape suggests.
                 return match channel {
                     Channel::Control => {
                         warn!("ble: [v4] unanswerable control record — dropping the link");

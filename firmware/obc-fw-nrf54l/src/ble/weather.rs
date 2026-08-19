@@ -31,8 +31,11 @@
 //! `WeatherBundle` `PUT` does land — but nothing reads it yet, because the reader still comes
 //! through the FAT weather slots.
 //!
-//! So [`run`] parks after one log line. It is the smallest honest state: no requests, no ladder, no
-//! stuck spinner, and nothing pretending to work. **Unparking is the weather cutover** — teaching
+//! So [`run`] parks after one log line **and [`request_weather_now`] stops raising anything** — the
+//! consumer and the producer together, because parking only the consumer would leave the rider's
+//! dashboard visit raising an "Updating…" level whose only two clearers are inside the parked loop.
+//! That is the smallest honest state: no requests, no ladder, no stuck spinner, and nothing
+//! pretending to work. **Unparking is the weather cutover** — teaching
 //! the reader to take kind 4 out of the flat store and ringing the commit edge from wherever that
 //! lands — which is its own slice and deliberately not smuggled in here.
 
@@ -115,9 +118,16 @@ pub fn set_weather_inputs(s: WeatherSnapshot) {
 /// loop calls this on the non-weather → Weather-dashboard transition; returning from one of the
 /// dashboard's child surfaces does not re-arm it.
 pub fn request_weather_now() {
-    IN_FLIGHT.store(true, Ordering::Relaxed);
-    URGENT.store(true, Ordering::Relaxed);
-    WAKE.signal(());
+    // **The producer is a no-op while the plane is parked** (FS7.5-c3a), and this is the half the
+    // park was missing. Raising `IN_FLIGHT` here would put "Updating…" on the ride UI, and **both**
+    // of its clearers live inside the loop that no longer runs — so one visit to the Weather
+    // dashboard would leave the indicator on for the rest of the boot. Parking the consumer while
+    // leaving the producer raising a level nothing lowers is worse than not parking at all: it turns
+    // a feature that does nothing into a UI that lies permanently.
+    //
+    // `URGENT` and the wake are pointless rather than harmful with no loop to receive them, and they
+    // go too, so that unparking is one edit in one place.
+    defmt::debug!("weather: dashboard opened — no request raised, the plane is parked for c3a");
 }
 
 pub fn refresh_in_flight() -> bool {
