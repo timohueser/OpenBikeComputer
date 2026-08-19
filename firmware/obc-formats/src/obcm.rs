@@ -258,6 +258,23 @@ impl<'a, E> UnitWriter<'a, E> {
         Ok(())
     }
 
+    /// Move the cursor past `len` bytes **without writing them**.
+    ///
+    /// **This is a projection's tool and a writer must never reach for it.** A layout walked over a
+    /// discarding sink still has to account for bodies it is not holding — a nav section's chunk run
+    /// is gigabytes that live on a scratch seam, and padding past them one [`FILLER_RUN`] at a time
+    /// to learn where the next boundary falls would be millions of no-op calls to answer a question
+    /// about arithmetic. This is that arithmetic.
+    ///
+    /// The hazard is exactly what it looks like — a writer that skips instead of putting emits a
+    /// file with a hole where the cursor says there are bytes — so a producer using this type is
+    /// expected to check the bytes its sink actually received against the position it ended at. In
+    /// this tree the map writer does, and it is a refusal rather than an assertion.
+    #[inline]
+    pub fn advance(&mut self, len: u64) {
+        self.at += len;
+    }
+
     /// Start a structure a scaled offset names: pad to the next unit boundary with [`FILLER`] and
     /// return that boundary's **byte** offset.
     ///

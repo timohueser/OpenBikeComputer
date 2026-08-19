@@ -616,10 +616,10 @@ impl NavProjection {
     fn layout_at(self, section_offset: u64) -> NavLayout {
         let start = section_offset % NAV_CHUNK_SIZE as u64;
         crate::emit::place(start, |w| {
-            w.pad(NAV_DIR_LEN as u64)?;
+            w.advance(NAV_DIR_LEN as u64);
             let profile_table = w.begin_section()?;
             let dir_gap = profile_table - (start + NAV_DIR_LEN as u64);
-            w.pad(self.profile_len)?;
+            w.advance(self.profile_len);
             if !self.populated {
                 // An empty graph is the directory, the always-present profile table, and the filler
                 // that puts the first unit boundary past it — where all three zero-length regions
@@ -637,29 +637,29 @@ impl NavProjection {
                 });
             }
             let index_pad = index_run(w.at(), self.index_len);
-            w.pad(index_pad)?;
+            w.advance(index_pad);
             let index = w.at();
-            w.pad(self.index_len)?;
+            w.advance(self.index_len);
             let after_index = w.at();
             let index_gap = w.begin_section()? - after_index;
-            w.pad(self.chunk_bytes)?;
+            w.advance(self.chunk_bytes);
             let edge_pool = w.at();
-            w.pad(self.pool_len)?;
+            w.advance(self.pool_len);
             // A snap index of no nodes has no sector to reconcile: its region only has to be
             // nameable. In practice the pool leaves the cursor on a sector and this run is empty.
             let before_snap = w.at();
             let snap_index_pad = if self.snap_populated {
                 let run = index_run(before_snap, self.snap_index_len);
-                w.pad(run)?;
+                w.advance(run);
                 run
             } else {
                 w.begin_section()? - before_snap
             };
             let snap_index = w.at();
-            w.pad(self.snap_index_len)?;
+            w.advance(self.snap_index_len);
             let after_snap_index = w.at();
             let snap_gap = w.begin_section()? - after_snap_index;
-            w.pad(self.snap_chunk_bytes)?;
+            w.advance(self.snap_chunk_bytes);
             Ok(NavLayout {
                 dir_gap,
                 profile_table: profile_table - start,
