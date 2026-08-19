@@ -461,9 +461,10 @@ mod resource_report {
         entry("arena_render", arena::RENDER_ARM_BYTES),
         entry("arena_nav", arena::NAV_ARM_BYTES),
         entry("arena_usb", arena::USB_ARM_BYTES),
-        // The terrain seam's two statics (EL7): the sampler + tile cache, and the sidecar's own
-        // extent table/source. Named because they are the newest resident block on this path and a
-        // change in the tile-slot count must be legible here, not as anonymous `.bss`.
+        // The terrain seam's two statics (EL7 + FS7.5 §1.3): the sampler + tile cache, and the byte
+        // window the OBCT container is parsed through — no longer a sidecar's extent table, because
+        // there is no sidecar. Named because a change in the tile-slot count must be legible here
+        // rather than as anonymous `.bss`.
         TERRAIN_ENTRIES[0],
         TERRAIN_ENTRIES[1],
         entry("stack_reserve", STACK_RESERVE),
@@ -501,9 +502,10 @@ mod resource_report {
         entry("flat_store", core::mem::size_of::<obc_storage::flat::FlatStore<flat_store::FlatCard>>()),
         entry("flat_requests", flat_store::REQUEST_QUEUE_BYTES),
         // The read cutover's own resident cost on the flat arm (FS7.5-c2): the session-long
-        // `StoreSource` over the map object. Named beside the store it reads from so the two halves
-        // of "what does reading a flat card cost" are in one place.
-        entry("flat_map_source", flat_store::MAP_SOURCE_BYTES),
+        // `StoreSource` over the map object **and** the display name the same boot step captures.
+        // Named beside the store it reads from so the two halves of "what does reading a flat card
+        // cost" are in one place, and named as one row because they are one boot step's residue.
+        entry("flat_map_read", flat_store::MAP_READ_BYTES),
     ];
 }
 
@@ -576,15 +578,23 @@ static mut NULL_ELEV: obc_route::NullElevation = obc_route::NullElevation;
 /// that was replaced, and — the reason it matters here — **one arm instead of two**, because a flat
 /// card has no filesystem to hang a sidecar off in the first place.
 ///
-/// `map` must be a `'static` source: [`TerrainElevation`](obc_elevation::TerrainElevation) borrows
-/// its source for the session. On the FAT arm that is `Storage::static_map_source` (the extent path
-/// only — see its docs); on the flat arm it is the mounted store's `StoreSource`.
+/// The source must be `'static`: [`TerrainElevation`](obc_elevation::TerrainElevation) borrows it
+/// for the session. On the flat arm that is the mounted store's `StoreSource`; on the FAT arm it is
+/// `Storage::static_map_source`, which is the **extent path only**.
 ///
-/// **Every failure is `None`, and `None` is not a fault** — the rule the sidecar had, unchanged by
-/// the move: no region, a window the header places outside the file, or a container that will not
-/// parse all mean *this map has no terrain*, and the ride loop uses [`NULL_ELEV`] so routes plan and
-/// ride exactly as they did, flat. A rider whose raster is unreadable has the map they would have
-/// had without one.
+/// **That last part is a behaviour change, and it is not the sidecar's rule kept.** The sidecar had
+/// its own FAT chain and its own extent table, so a map too fragmented for a 128-run table (#504's
+/// `MAP_SLOW` case) still got terrain. Inside the file, the map's chain *is* the terrain's: a
+/// fragmented FAT map now loses elevation as well as speed, and the two failures that used to be
+/// independent are one. Restoring the independence would mean a second copy of the raster on the
+/// card, so what this owes instead is that the case is **never silent** — see the `defmt::warn!`
+/// below, which fires exactly when a map carries a region and the extent table refused.
+///
+/// **Every other failure is `None`, and `None` is not a fault** — the rule the sidecar had, and this
+/// part *is* unchanged: no region, a window the header places outside the file, or a container that
+/// will not parse all mean *this map has no terrain*, and the ride loop uses [`NULL_ELEV`] so routes
+/// plan and ride exactly as they did, flat. A rider whose raster is unreadable has the map they
+/// would have had without one.
 ///
 /// `#[inline(never)]` is load-bearing (#677): `TerrainElevation` embeds its tile cache, so the
 /// by-value parse temporary is ~2.1 KB. In this transient frame it pops with the call; inlined
@@ -608,11 +618,30 @@ fn mount_terrain(
     // Resolving the arm is this function's, not `main`'s: everything between the two is a value in
     // the boot task's coroutine, permanently, and there is no reason for the map's bytes to be one
     // of them.
+    // Read the region first: it is what decides whether a missing source is worth a word. A map
+    // with no elevation and a map whose elevation this build cannot reach are different facts, and
+    // the boot-fault honesty rule's shape applies here too — the quiet answer is only allowed when
+    // there is genuinely nothing to report.
+    let region = tables.terrain()?;
     let map: &'static dyn obc_formats::io::ByteSource = match flat_map {
         Some(source) => source,
-        None => storage?.static_map_source()?,
+        None => match storage.and_then(sd::Storage::static_map_source) {
+            Some(source) => source,
+            None => {
+                // The one case this slice made worse, said out loud. `MAP_SLOW` already tells the
+                // rider their map reads slowly; without this line the *other* consequence — flat
+                // profiles on every planned route — would be invisible, and "my climbs disappeared"
+                // is not something anyone would connect to a fragmented card.
+                defmt::warn!(
+                    "map: this map carries a §1.3 terrain region ({=u64} B) but its FAT chain would not \
+                     extent-map, and terrain reads only through that path — routes stay flat. Re-copy the \
+                     card to defragment it (the same fix as the slow-map notice).",
+                    region.len
+                );
+                return None;
+            }
+        },
     };
-    let region = tables.terrain()?;
     let Some(window) = obc_formats::io::WindowSource::new(map, region.offset, region.len) else {
         defmt::warn!(
             "map: the §1.3 terrain region ({=u64}..+{=u64}) is not inside the file — routes stay flat",
