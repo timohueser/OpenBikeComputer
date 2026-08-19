@@ -268,6 +268,28 @@ class BootChainTests(unittest.TestCase):
         # And the name reported back is the one the tool emitted, not the normalised form.
         self.assertIn("$LT$", rust_spelling)
 
+    def test_a_stale_root_reports_what_the_demangler_actually_rendered(self):
+        """A bare "no symbol contains X" cannot tell "inlined away" from "spelled differently on this
+        host", and the difference decides the fix. FS7.5-c1 burned a CI round on exactly that
+        ambiguity, so the message now shows the candidates."""
+        parsed = resource_guard.parse_disassembly(
+            "00001000 <obc_storage::flat::store::FlatStore$LT$SomeCard$GT$::mount_in_place::h47f>:\n"
+            "    1000: b084          sub sp, #0x10\n"
+        )
+        with self.assertRaises(resource_guard.GuardError) as caught:
+            resource_guard.resolve_symbol(parsed, "FlatStore<D>::mount_in_place", "root")
+        message = str(caught.exception)
+        self.assertIn("Symbols containing `mount_in_place`", message)
+        self.assertIn("SomeCard", message, "the message must show the rendering that does exist")
+
+    def test_a_genuinely_absent_root_says_so_rather_than_offering_candidates(self):
+        parsed = resource_guard.parse_disassembly(
+            "00001000 <something::else::hff>:\n    1000: b084          sub sp, #0x10\n"
+        )
+        with self.assertRaises(resource_guard.GuardError) as caught:
+            resource_guard.resolve_symbol(parsed, "gone::mount_in_place", "root")
+        self.assertIn("really is gone from this image", str(caught.exception))
+
     def test_every_stale_boot_chain_root_is_reported_not_just_the_first(self):
         """One stale root masking another is how a second blind spot survives the round opened to fix
         the first: the reported ceiling is missing both chains either way, so a reader who fixes the

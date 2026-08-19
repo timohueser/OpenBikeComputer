@@ -100,7 +100,7 @@
       "boot_chain_roots": [
         "link::init_store",
         "obc_fw_nrf54l::mount_terrain",
-        "FlatStore<D>::mount_in_place",
+        "mount_in_place",
         "sd::mount_fat"
       ],
       "boot_chain_measured_ci": 10944,
@@ -117,7 +117,8 @@
       "deep_ride_high_water_measured": "2026-07-04 (STALE — pending re-measure)",
       "deep_ride_margin_min": 0,
       "_deep_ride_margin_note": "**Zero, deliberately, and it is not a safety margin.** It is the weakest form of the invariant — the stack must at least reach the deepest point the board has been seen to reach — chosen so this gate's first red is unambiguously the one real regression rather than an argument about policy. A real margin (the 4,096 B `boot_chain_headroom_min` uses is the obvious candidate) is for whoever re-measures `deep_ride_high_water` to set, with a fresh figure under it. At zero, `default` clears by 1,832 B and `ble` FAILS by 120 B; see `_resident_note_fs75c1`.",
-      "_deep_ride_high_water_note": "VCOM-harness full ride — Home -> route load -> ride -> finish/save — on a debug-uart FLPR build, post-#351 split. **Stale pending re-measure**: it predates the LM20 retarget and every render-cap change since, and nothing in the tree has re-run it. It is carried unchanged anyway, because a measurement is only ever replaced by another measurement — and the replacement run happens **once, on the merged FS7.5-c1+c2 image**, since c1 alone never ships and never rides — not by an argument that it is probably lower now. FS7.5-c1's first draft made exactly that argument (that #1146 had moved ~117 KB off the stack) and it was false: #1146 P2 moved the render scratch from `.bss` to `.uninit`, and `residual_stack` is `_stack_start - __euninit`, which charges both. Nothing about it lowered the ride's peak."
+      "_deep_ride_high_water_note": "VCOM-harness full ride — Home -> route load -> ride -> finish/save — on a debug-uart FLPR build, post-#351 split. **Stale pending re-measure**: it predates the LM20 retarget and every render-cap change since, and nothing in the tree has re-run it. It is carried unchanged anyway, because a measurement is only ever replaced by another measurement — and the replacement run happens **once, on the merged FS7.5-c1+c2 image**, since c1 alone never ships and never rides — not by an argument that it is probably lower now. FS7.5-c1's first draft made exactly that argument (that #1146 had moved ~117 KB off the stack) and it was false: #1146 P2 moved the render scratch from `.bss` to `.uninit`, and `residual_stack` is `_stack_start - __euninit`, which charges both. Nothing about it lowered the ride's peak.",
+      "_boot_chain_roots_note": "`mount_in_place` is deliberately **bare** rather than scoped to `FlatStore<D>`. Two hosts render that generic differently — this one emits `FlatStore$LT$D$GT$::mount_in_place`, CI emits something neither that spelling nor the Rust one matches, and the CI log does not print the symbol list, so the exact rendering is not observable from here. The bare needle resolves on both. `resolve_symbol` canonicalises `..`/`$LT$`/`$GT$`/`$u20$` on both sides, which is what a scoped needle needs and is kept for the roots that have one.\\n\\nThe ambiguity this leaves is **loud, not silent**: `obc2::Transaction::mount_in_place` is the same bare name one layer up, and if DOS4 ever links it into the board image `resolve_symbol` raises `guard is ambiguous`, names the colliding symbols and says to tighten the root. That is the safe direction — the failure this round produced was the other one, a root that silently stopped contributing while the ceiling still printed a number."
     },
     "ble": {
       "features": "--no-default-features --features ble (map + BLE + USB device plane, constrained nrf-mem capacities)",
@@ -220,7 +221,7 @@
       "boot_chain_roots": [
         "link::init_store",
         "obc_fw_nrf54l::mount_terrain",
-        "FlatStore<D>::mount_in_place",
+        "mount_in_place",
         "sd::mount_fat"
       ],
       "boot_chain_measured_ci": 10944,
@@ -237,7 +238,8 @@
       "deep_ride_high_water_measured": "2026-07-04 (STALE — pending re-measure)",
       "deep_ride_margin_min": 0,
       "_deep_ride_margin_note": "**Zero, deliberately, and it is not a safety margin.** It is the weakest form of the invariant — the stack must at least reach the deepest point the board has been seen to reach — chosen so this gate's first red is unambiguously the one real regression rather than an argument about policy. A real margin (the 4,096 B `boot_chain_headroom_min` uses is the obvious candidate) is for whoever re-measures `deep_ride_high_water` to set, with a fresh figure under it. At zero, `default` clears by 1,832 B and `ble` FAILS by 120 B; see `_resident_note_fs75c1`.",
-      "_deep_ride_high_water_note": "VCOM-harness full ride — Home -> route load -> ride -> finish/save — on a debug-uart FLPR build, post-#351 split. **Stale pending re-measure**: it predates the LM20 retarget and every render-cap change since, and nothing in the tree has re-run it. It is carried unchanged anyway, because a measurement is only ever replaced by another measurement — and the replacement run happens **once, on the merged FS7.5-c1+c2 image**, since c1 alone never ships and never rides — not by an argument that it is probably lower now. FS7.5-c1's first draft made exactly that argument (that #1146 had moved ~117 KB off the stack) and it was false: #1146 P2 moved the render scratch from `.bss` to `.uninit`, and `residual_stack` is `_stack_start - __euninit`, which charges both. Nothing about it lowered the ride's peak."
+      "_deep_ride_high_water_note": "VCOM-harness full ride — Home -> route load -> ride -> finish/save — on a debug-uart FLPR build, post-#351 split. **Stale pending re-measure**: it predates the LM20 retarget and every render-cap change since, and nothing in the tree has re-run it. It is carried unchanged anyway, because a measurement is only ever replaced by another measurement — and the replacement run happens **once, on the merged FS7.5-c1+c2 image**, since c1 alone never ships and never rides — not by an argument that it is probably lower now. FS7.5-c1's first draft made exactly that argument (that #1146 had moved ~117 KB off the stack) and it was false: #1146 P2 moved the render scratch from `.bss` to `.uninit`, and `residual_stack` is `_stack_start - __euninit`, which charges both. Nothing about it lowered the ride's peak.",
+      "_boot_chain_roots_note": "`mount_in_place` is deliberately **bare** rather than scoped to `FlatStore<D>`. Two hosts render that generic differently — this one emits `FlatStore$LT$D$GT$::mount_in_place`, CI emits something neither that spelling nor the Rust one matches, and the CI log does not print the symbol list, so the exact rendering is not observable from here. The bare needle resolves on both. `resolve_symbol` canonicalises `..`/`$LT$`/`$GT$`/`$u20$` on both sides, which is what a scoped needle needs and is kept for the roots that have one.\\n\\nThe ambiguity this leaves is **loud, not silent**: `obc2::Transaction::mount_in_place` is the same bare name one layer up, and if DOS4 ever links it into the board image `resolve_symbol` raises `guard is ambiguous`, names the colliding symbols and says to tighten the root. That is the safe direction — the failure this round produced was the other one, a root that silently stopped contributing while the ceiling still printed a number."
     }
   },
   "bootloader": {

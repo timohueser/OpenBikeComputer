@@ -391,9 +391,21 @@ def resolve_symbol(parsed: Disassembly, needle: str, description: str) -> str:
     wanted = canonical_symbol(needle)
     matches = sorted(name for name in parsed.symbols if wanted in canonical_symbol(name))
     if not matches:
+        # **Show what the demangler in front of us actually rendered.** A bare "no symbol contains
+        # X" cannot distinguish "inlined away" from "spelled differently here", and the difference
+        # decides the fix. Retrying on the needle's last path segment is what turns a round of
+        # guessing at someone else's host into a one-shot correction: FS7.5-c1 burned a CI round
+        # because the message could not say whether the symbol was gone or merely renamed.
+        tail = needle.rsplit("::", 1)[-1]
+        near = sorted(name for name in parsed.symbols if tail and tail in canonical_symbol(name))
+        hint = (
+            f" Symbols containing `{tail}`: {', '.join(name[:90] for name in near[:4])}"
+            if near
+            else f" No symbol contains `{tail}` either, so it really is gone from this image."
+        )
         raise GuardError(
             f"{description} guard is stale: no symbol contains `{needle}`; it was renamed, "
-            "inlined away, or is no longer reached from the boot path"
+            "inlined away, or is no longer reached from the boot path." + hint
         )
     if len(matches) > 1:
         raise GuardError(
