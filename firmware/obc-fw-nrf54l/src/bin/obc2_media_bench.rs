@@ -63,7 +63,6 @@ use embassy_time::Instant;
 use embedded_sdmmc::{
     Block, BlockCount, BlockDevice, BlockIdx, RawDirectory, TimeSource, Timestamp, VolumeIdx, VolumeManager,
 };
-use obc_storage::fat_extents::SharedBlockDevice;
 use obc_storage::obc2::adapter::{Adapter, GatedFile};
 use obc_storage::obc2::blocklog::WriteLog;
 use obc_storage::obc2::geometry::{self, FatType, Region, VolumeGeometry};
@@ -75,6 +74,7 @@ use obc_storage::obc2::limits::{
 };
 use obc_storage::obc2::recovery::{choose, CheckpointObservation, Decision, SlotObservation};
 use obc_storage::obc2::{GenerationId, OperationId, StoreId};
+use obc_storage::shared_device::SharedBlockDevice;
 
 // The critical-section impl comes from linking nrf-mpsl (the default `ble` feature set); MPSL is
 // never initialised here, and its impl works from reset — the same arrangement `display_test` uses.

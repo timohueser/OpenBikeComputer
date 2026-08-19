@@ -492,11 +492,11 @@ mod tests {
     use embedded_sdmmc::VolumeIdx;
 
     use super::*;
-    use crate::fat_extents::SharedBlockDevice;
     use crate::obc2::blocklog::WriteLog;
     use crate::obc2::fatsim::{self, fat32_card, geometry_sectors, touched, Layout, NullTime, SparseDisk};
     use crate::obc2::geometry::{self, Region, VolumeGeometry};
     use crate::obc2::limits::{RIDE_FILE_LEN, SLOT_FILE_LEN, SMALL_BODY_LEN, SMALL_GATE_OFFSET};
+    use crate::shared_device::SharedBlockDevice;
 
     /// The instrumented card: the sparse FAT32 image with the §13.1 write log over it.
     type Card = WriteLog<SparseDisk, 256>;

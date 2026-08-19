@@ -68,7 +68,7 @@ use obc_route::{
     ride_elevation_profile, ride_preview_polyline, track_to_ride, Profile, RideInfo, RideStats, RouteIndex,
     RouteObjectInfo, RouteSummary,
 };
-use obc_storage::fat_extents::{BuildError, ExtentSource, ExtentTable, SharedBlockDevice};
+use obc_storage::shared_device::SharedBlockDevice;
 use obc_storage::route_name;
 use obc_storage::{SdByteSink, SdByteSource, SdTrackSink};
 
@@ -163,13 +163,6 @@ const UPDATE_BIN: &str = "UPDATE.BIN";
 /// goes unconfirmed.
 const ROLLBACK_BIN: &str = "ROLLBACK.BIN";
 
-/// The reserved **computed-route** file (epic #116, R4): the on-device router's OBCR output,
-/// overwritten on every plan. The 8.3 face of the spec'd `/routes/_nav.obcr` — embedded-sdmmc
-/// creates short names only, and the 4-char `.obcr` extension needs an LFN it can't write, so the
-/// device uses the `.OBR` twin the catalog scan already lists. No `RT` prefix ⇒ no durable
-/// upload id; the scan hands it a session-scoped side-load id, exactly like a side-loaded `.obcr`.
-const NAV_ROUTE_FILE: &str = "_NAV.OBR";
-
 /// First id of the reserved **session-scoped** band handed to side-loaded `.obcr` files (their
 /// names carry no durable id — see [`Storage::sideload_id`]). Uploaded ids grow monotonically from
 /// 0 and reject at this floor — 65,024 lifetime uploads before a card must be cleared, i.e. never.
@@ -217,8 +210,6 @@ const SD_MAX_VOLUMES: usize = 1;
 type Vmgr = VolumeManager<SdShared, NullTime, SD_MAX_DIRS, SD_MAX_FILES, SD_MAX_VOLUMES>;
 /// [`SdByteSource`] over this board's manager (the wrappers are generic over the handle budget).
 type Source<'a> = SdByteSource<'a, SdShared, NullTime, SD_MAX_DIRS, SD_MAX_FILES, SD_MAX_VOLUMES>;
-/// [`SdByteSink`] over this board's manager — the router's OBCR emit writes through it.
-type Sink<'a> = SdByteSink<'a, SdShared, NullTime, SD_MAX_DIRS, SD_MAX_FILES, SD_MAX_VOLUMES>;
 /// [`SdTrackSink`] over this board's manager.
 type TrackSinkT<'a> = SdTrackSink<'a, SdShared, NullTime, SD_MAX_DIRS, SD_MAX_FILES, SD_MAX_VOLUMES>;
 
@@ -228,53 +219,6 @@ type TrackSinkT<'a> = SdTrackSink<'a, SdShared, NullTime, SD_MAX_DIRS, SD_MAX_FI
 /// state lives in `flpr_mux`), so this slot costs nothing; it stays because the `'static` borrow
 /// shape above it is what the extent fast path is built on.
 static mut SD_CARD: core::mem::MaybeUninit<Sd> = core::mem::MaybeUninit::uninit();
-
-/// **The open map's resident extent table** — the one direct-read table this board keeps
-/// (`#500`), written once per boot by [`build_map_extents`](Storage::build_map_extents).
-///
-/// It used to be one arm of an `ExtentSlots` union, whose other arm was eleven smaller tables — one
-/// per shard of a mounted volume set — because `open_map` made a one-map-**or**-one-set choice per
-/// boot and the two could never be live together. A map is one file (FS7.5, #1420), so there is no
-/// second arm, no `ManuallyDrop` union-field ceremony, and no four const asserts pinning the
-/// larger arm's size and alignment over the smaller. The union's whole size was the set's;
-/// what stays resident is the 128-run table a standalone map always needed.
-///
-/// It stays **outside** [`Storage`] because that value crosses `main`'s async frame by value, and
-/// an inline table measurably produced two extra resident copies (#270/#500).
-static mut MAP_EXTENTS: core::mem::MaybeUninit<ExtentTable> = core::mem::MaybeUninit::uninit();
-
-/// The `'static` direct-read source over the open map, for the one consumer that needs the map's
-/// bytes to outlive a `&self` borrow: the **embedded terrain window** (`OBCM_Spec.md` §1.3).
-///
-/// [`map_source`](Storage::map_source) hands out a fresh, cheap source per redraw and borrows
-/// `self`, which is exactly right for the render loop and useless to `TerrainElevation`, whose
-/// parsed reader holds its source for the session. This slot is that source, placed once.
-///
-/// It is the **extent path only**, and — read this before repeating the earlier claim that it is
-/// "the sidecar's rule kept" — **that is a real behaviour change, not a rule preserved.**
-///
-/// The sidecar's rule was about the *sidecar's own* fragmentation: `MAP.OBD` had its own chain and
-/// its own extent table, so a `MAP.OBM` too fragmented for a 128-run table (#504's `MAP_SLOW` case)
-/// still got terrain as long as the small, freshly-written raster mapped cleanly. Terrain is inside
-/// the map file now, so the map's chain **is** the terrain's chain: a fragmented map now loses
-/// elevation as well as speed. The two failures were independent and are one.
-///
-/// The reason the seek path is still not admitted is the sidecar's, and it is unchanged: a terrain
-/// sample sits inside the nav emit loop, and reinserting a FAT walk per 512 B tile would put SD
-/// seeks under the router. What changed is only how much rides on the map's own fragmentation.
-///
-/// Nothing here restores the independence — there is no second file to be independent of, and
-/// buying it back would mean a second copy of the region on the card. What this slice owes instead
-/// is that the case is **never silent**: `mount_terrain` warns when a map carries a §1.3 region and
-/// the extent table refused, so a rider whose routes went flat has a line that says why, next to
-/// the `MAP_SLOW` notice that says the same thing about speed.
-static mut MAP_STATIC_SOURCE: core::mem::MaybeUninit<ExtentSource<'static, Sd>> = core::mem::MaybeUninit::uninit();
-
-/// Exact target-side bytes of the board-private map read statics — the extent table and the
-/// `'static` source over it — exported numerically for the compile-time RAM budget and the resource
-/// report in `main.rs` without exposing their concrete types.
-pub(crate) const MAP_EXTENT_BYTES: usize =
-    core::mem::size_of::<ExtentTable>() + core::mem::size_of::<ExtentSource<'static, Sd>>();
 
 /// One map on the card, as [`Storage::scan_maps_into`] reports it (issue #927) — **the map
 /// catalog**, and the reason there is no catalog *file*.
@@ -308,38 +252,26 @@ pub struct MapSummary {
     pub obcm_version: u8,
     /// Whether [`MAP_SELECTED`] names this map.
     pub selected: bool,
-    /// Directory-entry location, so a chosen map's extent table can be built without a second scan.
-    entry_block: embedded_sdmmc::BlockIdx,
-    entry_offset: u32,
 }
 
-/// What [`Storage::map_source`] hands out: extent-mapped direct block reads when the map's chain
-/// resolved at open (#500), the manager's seek+read path otherwise. One enum rather than a trait
-/// object so the render/nav paths stay monomorphic (no vtable on the per-chunk hot path).
+/// What the retired FAT [`Storage::map_source`] hands out.
 pub enum MapSource<'a> {
-    /// Direct block reads through the resolved [`ExtentTable`] — zero FAT traffic per read.
-    Extent(ExtentSource<'a, Sd>),
-    /// The plain seek path — correct on any card, O(offset) on backward seeks.
     Seek(Source<'a>),
 }
 
 impl ByteSource for MapSource<'_> {
     // `inline(never)`: reached from the deepest render/nav frames — keep the dispatch (and both
     // arms' machinery) out of those frames' locals, whatever the inliner decides later; a call
-    // per multi-ms SD read is free. See the matching note on `ExtentSource::read_at`.
+    // per multi-ms SD read is free.
     #[inline(never)]
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), obc_formats::io::Error> {
-        match self {
-            MapSource::Extent(s) => s.read_at(offset, buf),
-            MapSource::Seek(s) => s.read_at(offset, buf),
-        }
+        let MapSource::Seek(source) = self;
+        source.read_at(offset, buf)
     }
 
     fn len(&self) -> u64 {
-        match self {
-            MapSource::Extent(s) => s.len(),
-            MapSource::Seek(s) => s.len(),
-        }
+        let MapSource::Seek(source) = self;
+        source.len()
     }
 }
 
@@ -405,12 +337,6 @@ pub struct Storage {
     /// the open one, and the loaded map would be the one map missing from its own catalog (the
     /// `open_object` trap from issue #480, in the map plane).
     open_map_name: Option<ShortFileName>,
-    /// The open map's FAT chain resolved to extent runs (#500): when present, `map_source` serves
-    /// direct block reads (zero per-read FAT traffic) instead of the manager's O(offset) seek.
-    /// `None` = build refused (fragmented past the cap / odd geometry) or failed verification —
-    /// the seek path still works, just slowly, and open_map logged why. A reference into the
-    /// [`MAP_EXTENTS`] `.bss` slot — see its doc for why the table must not live in here by value.
-    map_extents: Option<&'static ExtentTable>,
     /// The fault the boot must show when [`map_source`](Storage::map_source) has nothing to hand
     /// out — `None` until [`open_map`](Storage::open_map) has run, then whatever
     /// [`obc_app::boot_fault`] answers for the card that was actually scanned.
@@ -581,153 +507,11 @@ fn bring_up_fault(e: crate::semmc::SemmcError) -> obc_app::BootFault {
 #[derive(Clone, Copy)]
 pub(crate) struct SemmcCard;
 
-// ── On-device map-read profiler (`sd-bench`) ────────────────────────────────────────────────
-
-/// Cumulative physical-read counters at the concrete block-device boundary.
-///
-/// The renderer already counts logical `ByteSource::read_at` calls and requested bytes. These
-/// counters deliberately sit lower: one sample covers the complete `with_storage` span (FLPR mode
-/// acquisition, sEMMC command(s), and a rare alignment-bounce copy), so their delta is the M33's
-/// actual awake time attributable to card reads. Relaxed atomics are enough: storage is synchronous
-/// on the one thread-mode executor; atomics only make a snapshot unambiguously race-free to read.
-#[cfg(feature = "sd-bench")]
-#[derive(Clone, Copy)]
-pub(crate) struct ReadPerf {
-    pub(crate) us: u32,
-    pub(crate) commands: u32,
-    pub(crate) blocks: u32,
-    pub(crate) single_commands: u32,
-    pub(crate) multi_commands: u32,
-}
-
-#[cfg(feature = "sd-bench")]
-impl ReadPerf {
-    pub(crate) const ZERO: Self = Self { us: 0, commands: 0, blocks: 0, single_commands: 0, multi_commands: 0 };
-
-    pub(crate) fn since(self, before: Self) -> Self {
-        Self {
-            us: self.us.wrapping_sub(before.us),
-            commands: self.commands.wrapping_sub(before.commands),
-            blocks: self.blocks.wrapping_sub(before.blocks),
-            single_commands: self.single_commands.wrapping_sub(before.single_commands),
-            multi_commands: self.multi_commands.wrapping_sub(before.multi_commands),
-        }
-    }
-
-    pub(crate) fn add_assign(&mut self, other: Self) {
-        self.us = self.us.wrapping_add(other.us);
-        self.commands = self.commands.wrapping_add(other.commands);
-        self.blocks = self.blocks.wrapping_add(other.blocks);
-        self.single_commands = self.single_commands.wrapping_add(other.single_commands);
-        self.multi_commands = self.multi_commands.wrapping_add(other.multi_commands);
-    }
-}
-
-#[cfg(feature = "sd-bench")]
-static READ_US: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-#[cfg(feature = "sd-bench")]
-static READ_COMMANDS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-#[cfg(feature = "sd-bench")]
-static READ_BLOCKS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-#[cfg(feature = "sd-bench")]
-static READ_SINGLE_COMMANDS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-#[cfg(feature = "sd-bench")]
-static READ_MULTI_COMMANDS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-
-#[cfg(feature = "sd-bench")]
-pub(crate) fn read_perf_snapshot() -> ReadPerf {
-    use core::sync::atomic::Ordering::Relaxed;
-    ReadPerf {
-        us: READ_US.load(Relaxed),
-        commands: READ_COMMANDS.load(Relaxed),
-        blocks: READ_BLOCKS.load(Relaxed),
-        single_commands: READ_SINGLE_COMMANDS.load(Relaxed),
-        multi_commands: READ_MULTI_COMMANDS.load(Relaxed),
-    }
-}
-
-#[cfg(feature = "sd-bench")]
-fn note_read_perf(started: Instant, commands: usize, blocks: usize, single_commands: usize) {
-    use core::sync::atomic::Ordering::Relaxed;
-    let elapsed = started.elapsed().as_micros().min(u64::from(u32::MAX)) as u32;
-    READ_US.fetch_add(elapsed, Relaxed);
-    READ_COMMANDS.fetch_add(commands as u32, Relaxed);
-    READ_BLOCKS.fetch_add(blocks as u32, Relaxed);
-    READ_SINGLE_COMMANDS.fetch_add(single_commands as u32, Relaxed);
-    READ_MULTI_COMMANDS.fetch_add((commands - single_commands) as u32, Relaxed);
-}
-
-// ═══════════════════════ the alignment bounce ═══════════════════════
-//
-// **The map-upload write pipeline that used to live here is gone** (FS7.5-c3b, #1420). It coalesced
-// a `VolumeManager::write`'s per-cluster calls back into one CMD25 while a staged USB upload
-// streamed through the scratch arena, and it was enabled by exactly one thing — that stage. Protocol
-// v4 writes each 4 KiB stream record straight to the flat store, so nothing enables it and nothing
-// ever could; what is left below is the alignment bounce, which the ride path and the flat binding
-// both still need.
-
-/// **The alignment bounce** (epic #1158).
-///
-/// The sEMMC firmware's DMA requires 32-bit-aligned buffers, and `embedded_sdmmc::Block` cannot
-/// promise one: it is `#[repr(transparent)]` over `[u8; 512]`, and that transparency is
-/// load-bearing — `Block::slice_from_bytes` reinterprets a caller's plain byte buffer as `&[Block]`
-/// without copying, which is exactly what lets the fork's `VolumeManager::write` hand a whole
-/// cluster run to one CMD25. `#[repr(align(4))]` cannot coexist with `#[repr(transparent)]`, and
-/// adding it in our fork would make that reinterpretation unsound for every misaligned byte buffer
-/// in the tree. So the fork is left alone and the alignment is handled here.
-///
-/// A block is 512 B — itself a multiple of 4 — so the *whole span* is aligned iff its first byte is:
-/// one test, no per-block arithmetic. When it fails, the transfer is chunked through this buffer
-/// instead of degrading to one command per block: a misaligned run still moves in
-/// [`BOUNCE_BLOCKS`]-block CMD18/CMD25 batches. It should never fire in practice — the ride path's
-/// buffers are aligned — so [`WARNED_BOUNCE`] reports the first one, which is how a future
-/// regression that quietly cut read throughput would be noticed on glass rather than in a profile.
-const BOUNCE_BLOCKS: usize = 4;
-/// The bounce buffer's resident size — named in the `resource-report` table (`sd_bounce`) so its
-/// 2 KB of `.data` stays legible in the report rather than anonymous.
-pub(crate) const BOUNCE_BYTES: usize = BOUNCE_BLOCKS * BLOCK_LEN;
-#[repr(C, align(4))]
-struct Bounce([u8; BOUNCE_BYTES]);
-static mut BOUNCE: Bounce = Bounce([0; BOUNCE_BYTES]);
-/// One-shot latch so a misaligned buffer is diagnosed once, not per block.
-static WARNED_BOUNCE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-
 const BLOCK_LEN: usize = Block::LEN;
 
 /// `Block` is `#[repr(transparent)]` over `[u8; 512]`, which is what makes the byte views below
 /// sound. Pinned here because the whole bounce/fast-path split is built on it.
 const _: () = assert!(core::mem::size_of::<Block>() == BLOCK_LEN);
-
-fn warn_bounce(addr: usize) {
-    if !WARNED_BOUNCE.swap(true, core::sync::atomic::Ordering::Relaxed) {
-        defmt::warn!("SD: misaligned block buffer at 0x{=usize:08x} — bouncing (throughput cost)", addr);
-    }
-}
-
-/// **Lend the alignment bounce to the flat store's binding** (FS7.5-c1, `crate::flat_store`).
-///
-/// One buffer for both stacks, and shared rather than duplicated because 2 KiB of `.bss` on this
-/// part is 2 KiB of main stack (`_stack_start − __euninit`) and the two can never want it at the
-/// same instant: every use — this stack's and the flat one's — is inside a
-/// [`flpr_mux::with_storage`](crate::flpr_mux::with_storage) closure, and that borrow is
-/// non-re-entrant by assertion. It also does not outlive the FAT stack the way a second buffer
-/// would: c4 deletes this module and the buffer with it, at which point the flat binding places its
-/// own — one line, and a decision made when there is a measurement to make it against.
-///
-/// The size is FAT's, not the flat store's: 4 blocks, where §5.5's commit window is 8. So a
-/// *misaligned* commit body moves in two card commands per window instead of one. It costs nothing
-/// when the store's buffers happen to be word-aligned, which `warn_bounce`'s one-shot line is how
-/// anyone finds out — and a mount, whose window is 2 KiB, is exactly one chunk either way.
-///
-/// # Safety
-/// The caller must be inside a `flpr_mux::with_storage` closure (which is where the exclusivity
-/// argument above comes from) and must not call any other bounce user from within `f`.
-pub(crate) unsafe fn with_bounce<R>(addr: usize, f: impl FnOnce(&mut [u8]) -> R) -> R {
-    warn_bounce(addr);
-    // SAFETY: the caller's obligation above makes this the sole live borrow.
-    let bounce = unsafe { &mut *core::ptr::addr_of_mut!(BOUNCE) };
-    f(&mut bounce.0)
-}
 
 /// **Report the mounted volume's cluster size, once, at mount.**
 ///
@@ -736,13 +520,8 @@ pub(crate) unsafe fn with_bounce<R>(addr: usize, f: impl FnOnce(&mut [u8]) -> R)
 /// an on-glass throughput result interpretable.
 ///
 /// Read straight off the card rather than asked of `VolumeManager`, which does not expose it. The
-/// checks are `obc-storage`'s `fat_extents.rs`, borrowed rather than re-invented — with one
-/// deliberate difference: that one requires an MBR and fails a superfloppy card outright, because it
-/// is building extents the ride path depends on and would rather refuse than guess. This is a boot
-/// log line, so it reads sector 0 as a BPB first and only then looks for a partition table. The two
-/// therefore disagree about a superfloppy: `fat_extents` rejects it, this reports its cluster size.
-/// That is not drift to reconcile — a card the volume manager cannot mount never reaches an upload,
-/// so the only cost of being lenient here is a truthful log line for a card nothing else will use.
+/// This diagnostic accepts either an MBR-partitioned volume or a superfloppy BPB because it does
+/// not drive any read-path decision.
 ///
 /// **A boot signature alone does not tell an MBR from a BPB.** A *superfloppy* card — no partition
 /// table, the volume boot record directly in sector 0, common on SD — carries `0xAA55` at 510 too,
@@ -824,31 +603,23 @@ impl BlockDevice for SemmcCard {
                 let buf = unsafe { core::slice::from_raw_parts_mut(blocks.as_mut_ptr().cast::<u8>(), n * BLOCK_LEN) };
                 return sd.read_blocks(start_block_idx.0, buf);
             }
-            warn_bounce(addr);
-            // SAFETY: sole borrow — this runs inside `with_storage`, which is non-re-entrant, and
-            // no interrupt handler touches the bounce.
-            let bounce = unsafe { &mut *core::ptr::addr_of_mut!(BOUNCE) };
-            for (i, chunk) in blocks.chunks_mut(BOUNCE_BLOCKS).enumerate() {
-                let len = chunk.len() * BLOCK_LEN;
-                sd.read_blocks(start_block_idx.0 + (i * BOUNCE_BLOCKS) as u32, &mut bounce.0[..len])?;
-                for (b, src) in chunk.iter_mut().zip(bounce.0[..len].chunks_exact(BLOCK_LEN)) {
-                    b.contents.copy_from_slice(src);
-                }
+            // SAFETY: sole borrow — this runs inside `with_storage`, which is non-re-entrant.
+            unsafe {
+                crate::card_io::with_bounce(addr, |bounce| {
+                    let bounce_blocks = bounce.len() / BLOCK_LEN;
+                    for (i, chunk) in blocks.chunks_mut(bounce_blocks).enumerate() {
+                        let len = chunk.len() * BLOCK_LEN;
+                        sd.read_blocks(start_block_idx.0 + (i * bounce_blocks) as u32, &mut bounce[..len])?;
+                        for (b, src) in chunk.iter_mut().zip(bounce[..len].chunks_exact(BLOCK_LEN)) {
+                            b.contents.copy_from_slice(src);
+                        }
+                    }
+                    Ok(())
+                })
             }
-            Ok(())
         })?;
         #[cfg(feature = "sd-bench")]
-        {
-            let commands = if addr.is_multiple_of(4) { 1 } else { n.div_ceil(BOUNCE_BLOCKS) };
-            let single_commands = if addr.is_multiple_of(4) {
-                usize::from(n == 1)
-            } else {
-                // Every full bounce chunk is one BOUNCE_BLOCKS-block CMD18. Only a one-block
-                // remainder is CMD17; 2- and 3-block remainders are still CMD18, not singles.
-                usize::from(n % BOUNCE_BLOCKS == 1)
-            };
-            note_read_perf(bench_started, commands, n, single_commands);
-        }
+        crate::card_io::note_read_perf(bench_started, addr, n);
         if let Err(e) = r {
             log_transfer_error("read", start_block_idx.0, n, e);
         }
@@ -867,17 +638,20 @@ impl BlockDevice for SemmcCard {
                 let buf = unsafe { core::slice::from_raw_parts(blocks.as_ptr().cast::<u8>(), n * BLOCK_LEN) };
                 return sd.write_blocks(start_block_idx.0, buf);
             }
-            warn_bounce(addr);
             // SAFETY: as in `read`.
-            let bounce = unsafe { &mut *core::ptr::addr_of_mut!(BOUNCE) };
-            for (i, chunk) in blocks.chunks(BOUNCE_BLOCKS).enumerate() {
-                let len = chunk.len() * BLOCK_LEN;
-                for (b, dst) in chunk.iter().zip(bounce.0[..len].chunks_exact_mut(BLOCK_LEN)) {
-                    dst.copy_from_slice(&b.contents);
-                }
-                sd.write_blocks(start_block_idx.0 + (i * BOUNCE_BLOCKS) as u32, &bounce.0[..len])?;
+            unsafe {
+                crate::card_io::with_bounce(addr, |bounce| {
+                    let bounce_blocks = bounce.len() / BLOCK_LEN;
+                    for (i, chunk) in blocks.chunks(bounce_blocks).enumerate() {
+                        let len = chunk.len() * BLOCK_LEN;
+                        for (b, dst) in chunk.iter().zip(bounce[..len].chunks_exact_mut(BLOCK_LEN)) {
+                            dst.copy_from_slice(&b.contents);
+                        }
+                        sd.write_blocks(start_block_idx.0 + (i * bounce_blocks) as u32, &bounce[..len])?;
+                    }
+                    Ok(())
+                })
             }
-            Ok(())
         })?;
         if let Err(e) = r {
             log_transfer_error("write", start_block_idx.0, n, e);
@@ -940,7 +714,6 @@ impl Storage {
             open_route: None,
             open_map: None,
             open_map_name: None,
-            map_extents: None,
             map_boot_fault: None,
             open_track: None,
             pending_save: None,
@@ -1553,8 +1326,7 @@ impl Storage {
             return None;
         };
         let chosen = maps[keep].clone();
-        let (name, display, entry_block, entry_offset) =
-            (chosen.file.clone(), chosen.name.clone(), chosen.entry_block, chosen.entry_offset);
+        let (name, display) = (chosen.file.clone(), chosen.name.clone());
         defmt::info!(
             "SD: {=usize} map(s) on the card; loading {} (v{=u8}, {=u64} B)",
             maps.len(),
@@ -1580,7 +1352,6 @@ impl Storage {
         }
         self.open_map = Some((file, len));
         self.open_map_name = Some(name);
-        self.build_map_extents(entry_block, entry_offset, file, len);
         // Last, and only on the success path: the map that just opened is the survivor, so the
         // uploads it superseded can go. Every early return above leaves the card untouched — a map
         // that could not be opened has proved nothing, and deleting its predecessor on the strength
@@ -1676,15 +1447,14 @@ impl Storage {
         let selected = self.load_selected_map();
         // Two phases because the `iter_dir_lfn` callback borrows the manager and the identity read
         // opens a file.
-        let mut entries: Vec<(ShortFileName, String<24>, embedded_sdmmc::BlockIdx, u32, u32), MAX_MAPS> = Vec::new();
+        let mut entries: Vec<(ShortFileName, String<24>, u32), MAX_MAPS> = Vec::new();
         self.iter_dir_lfn(self.root, |e, long| {
             if !is_map_entry(e, long) {
                 return;
             }
-            let _ =
-                entries.push((e.name.clone(), map_display_name(&e.name, long), e.entry_block, e.entry_offset, e.size));
+            let _ = entries.push((e.name.clone(), map_display_name(&e.name, long), e.size));
         });
-        for (file, name, entry_block, entry_offset, byte_len) in entries {
+        for (file, name, byte_len) in entries {
             let Some(obcm_version) = self.map_identity(&file) else {
                 unlistable += 1;
                 continue;
@@ -1693,7 +1463,7 @@ impl Storage {
             let selected = selected
                 .as_ref()
                 .is_some_and(|s| file.base_name() == s.base_name() && file.extension() == s.extension());
-            let entry = MapSummary { id, file, name, byte_len, obcm_version, selected, entry_block, entry_offset };
+            let entry = MapSummary { id, file, name, byte_len, obcm_version, selected };
             if out.push(entry).is_err() {
                 defmt::warn!("SD: more than {=usize} maps on the card — the rest are not listed", MAX_MAPS);
                 break;
@@ -1816,103 +1586,25 @@ impl Storage {
         Some(free_clusters as u64 * sec_per_clus * bytes_per_sec)
     }
 
-    /// Resolve the just-opened map's FAT chain into [`map_extents`](Storage::map_extents) — the
-    /// one-time walk that makes every later map read a direct block read (#500). Any refusal
-    /// (fragmented past the cap, unexpected geometry, failed verification) leaves `None`: the
-    /// manager's seek path still serves the map, just at the old speed, and the log says why.
-    /// The logged extent count is also #500's fragmentation measurement — 1 = contiguous.
-    fn build_map_extents(&mut self, entry_block: embedded_sdmmc::BlockIdx, entry_offset: u32, file: RawFile, len: u32) {
-        self.map_extents = None;
-        match ExtentTable::build(self.card, entry_block, entry_offset, len) {
-            Ok(table) => {
-                // Into the `.bss` slot before it can be captured anywhere by value (see
-                // `MAP_EXTENTS`). SAFETY: `open_map` opens one map once per boot, so this is the
-                // sole write to the slot; it must never be overwritten after the `'static`
-                // reference escapes.
-                let table: &'static ExtentTable =
-                    unsafe { crate::init_static(core::ptr::addr_of_mut!(MAP_EXTENTS), table) };
-                if self.verify_extents(table, file, len) {
-                    defmt::info!(
-                        "SD: map is {=usize} extent(s) over {=u32} bytes — direct block reads on",
-                        table.extent_count(),
-                        len
-                    );
-                    self.map_extents = Some(table);
-                } else {
-                    defmt::warn!("SD: map extent table failed verification — keeping the FAT-seek read path");
-                }
-            }
-            Err(e) => defmt::warn!(
-                "SD: map extent table unavailable ({}) — keeping the FAT-seek read path",
-                defmt::Debug2Format(&e)
-            ),
-        }
-    }
-
-    /// Cross-check a fresh extent table against the manager's own read of the same file: a small
-    /// window at the head and at the tail through **both** paths must agree byte-for-byte. Cheap
-    /// (one-time, four short reads), and it turns any geometry slip into a loud fallback instead
-    /// of wrong map bytes.
-    ///
-    /// It was generic over the table's capacity while a mounted set had eleven 64-run tables beside
-    /// the map's 128-run one. One map, one table, one capacity (FS7.5-c2): the parameter had exactly
-    /// one instantiation left. `ExtentTableWithCapacity`'s own const generic is now in the same
-    /// position one layer down — noted for FS11, which is where `fat_extents` is scheduled to go.
-    fn verify_extents(&self, table: &ExtentTable, file: RawFile, len: u32) -> bool {
-        let slow = Source::new(&self.vmgr, file, len);
-        let fast = ExtentSource::new(self.card, table);
-        let mut a = [0u8; 64];
-        let mut b = [0u8; 64];
-        for off in [0, len.saturating_sub(a.len() as u32)] {
-            let n = a.len().min(len as usize);
-            let off = u64::from(off);
-            if slow.read_at(off, &mut a[..n]).is_err() || fast.read_at(off, &mut b[..n]).is_err() || a[..n] != b[..n] {
-                return false;
-            }
-        }
-        true
-    }
-
     /// A [`ByteSource`](obc_formats::io::ByteSource) over the open map file, for reading the header
     /// ([`obc_reader::MapTables::parse`]) or building a per-frame [`Reader`](obc_reader::Reader). `None` if
     /// no map was opened ([`open_map`](Self::open_map) returned `None`). Cheap — the source just wraps
     /// the already-open handle, so it's rebuilt every redraw, keeping no borrow across the `&mut self`
-    /// route/track operations. Extent-mapped direct block reads when the table built (#500), the
-    /// manager's seek path otherwise.
+    /// route/track operations.
     pub fn map_source(&self) -> Option<MapSource<'_>> {
         let (f, len) = self.open_map?;
-        Some(match self.map_extents {
-            Some(table) => MapSource::Extent(ExtentSource::new(self.card, table)),
-            None => MapSource::Seek(SdByteSource::new(&self.vmgr, f, len)),
-        })
+        Some(MapSource::Seek(SdByteSource::new(&self.vmgr, f, len)))
     }
 
-    /// A **`'static`** [`ByteSource`](obc_formats::io::ByteSource) over the open map, or `None` when
-    /// the map reads through the FAT-seek path — see [`MAP_STATIC_SOURCE`] for why the seek path is
-    /// not offered and why this exists beside [`map_source`](Self::map_source).
-    ///
-    /// Call **once**, at boot, after [`open_map`](Self::open_map). The slot is written once per boot
-    /// and the reference handed out is the only one; a second call would overwrite bytes a live
-    /// `&'static` is reading.
+    /// FAT maps no longer provide a session-static terrain source.
     #[cfg(has_nav)]
     pub fn static_map_source(&self) -> Option<&'static dyn ByteSource> {
-        let table = self.map_extents?;
-        // SAFETY: the one call site is `main`'s boot path, before anything is spawned. The retained
-        // map handle pins the FAT chain `table` describes for the session, and `ExtentSource` owns
-        // nothing to drop.
-        Some(unsafe {
-            crate::init_static(core::ptr::addr_of_mut!(MAP_STATIC_SOURCE), ExtentSource::new(self.card, table))
-        })
+        None
     }
 
-    /// Whether the open map reads through the **slow FAT-seek path** — [`build_map_extents`] refused
-    /// the extent table (fragmented past the cap or failed verification), so every backward seek is
-    /// O(offset) again (#500/#504). `false` with no map open and for a contiguous map (direct block
-    /// reads on). Surfaced on glass as a dismissable "map reads are slow — re-copy the card" warning:
-    /// it needs ~3× the reference card's fragmentation to trip, but when it does the rider gets an
-    /// actionable one-liner instead of a device that just went sluggish.
+    /// The retired FAT map path is never selected by a flat-only boot.
     pub fn map_degraded(&self) -> bool {
-        self.open_map.is_some() && self.map_extents.is_none()
+        false
     }
 
     /// Make the open route geometry match the app's selected route (a catalog index), reopening
@@ -1973,54 +1665,6 @@ impl Storage {
         let spark = obc_route::elevation_sparkline(&SdByteSource::new(&self.vmgr, file, len));
         let _ = self.vmgr.close_file(file);
         spark
-    }
-
-    /// Open (truncating) the reserved computed-route file `/routes/_NAV.OBR` for the router's
-    /// OBCR emit (epic #116, R4). Releases every handle this `Storage` may hold **on that file**
-    /// first — the reserved route can be the actively-previewed/ridden route (its geometry open)
-    /// or mid-detail-download — because embedded-sdmmc refuses a truncate-open of an open file
-    /// (`FileAlreadyOpen`). The ride loop re-derives + reopens geometry after the plan (it forces
-    /// its reconcile), so dropping the handles here is always safe. `None` = no card / no dir /
-    /// open failure — the caller degrades to the generic routing-failure tier.
-    pub fn nav_route_begin(&mut self) -> Option<RawFile> {
-        // Close the active geometry unconditionally (cheap; the loop reopens off the fresh scan) —
-        // and a detail download parked on the nav file, if any.
-        self.reconcile_route(None);
-        if let Ok(nav) = ShortFileName::create_from_str(NAV_ROUTE_FILE) {
-            if matches!(&self.open_object, Some((on, ..)) if *on == nav) {
-                self.close_object();
-            }
-        }
-        let dir = self.routes_dir_or_create()?;
-        self.vmgr.open_file_in_dir(dir, NAV_ROUTE_FILE, Mode::ReadWriteCreateOrTruncate).ok()
-    }
-
-    /// A [`ByteSink`](obc_formats::io::ByteSink) over the open nav-route file — what
-    /// [`plan_route`](obc_route::plan_route) streams the emitted OBCR through.
-    pub fn nav_sink(&self, file: RawFile) -> Sink<'_> {
-        SdByteSink::new(&self.vmgr, file)
-    }
-
-    /// Flush + close the nav-route file after the plan. On failure (`ok == false`) the partial
-    /// file is deleted — a torn emit must not linger where the catalog scan would list it as an
-    /// unreadable route (the reserved name is rewritten on every plan anyway).
-    pub fn nav_route_finish(&mut self, file: RawFile, ok: bool) {
-        let _ = self.vmgr.flush_file(file);
-        let _ = self.vmgr.close_file(file);
-        if !ok {
-            if let Some(dir) = self.routes_dir {
-                let _ = self.vmgr.delete_file_in_dir(dir, NAV_ROUTE_FILE);
-            }
-        }
-    }
-
-    /// The committed nav route's object id, resolved against the tables the **last catalog scan**
-    /// filled — call after the post-plan [`scan_routes_into`](Storage::scan_routes_into). `None` when the
-    /// reserved file isn't in the catalog (the emit failed, or the scan couldn't read it).
-    pub fn nav_route_id(&self) -> Option<u16> {
-        let nav = ShortFileName::create_from_str(NAV_ROUTE_FILE).ok()?;
-        let pos = self.route_files.iter().position(|n| *n == nav)?;
-        self.route_ids.get(pos).copied()
     }
 
     /// Reconcile the open ride log to the app's tracking intent — call once per frame *before*
@@ -2458,11 +2102,11 @@ impl Storage {
 //
 // The storage half of the app-side armer: locate + validate the staged `UPDATE.BIN` and write
 // the `ROLLBACK.BIN` snapshot, both resolved to raw block extents through the same
-// `obc_storage::fat_extents` machinery as the map (#500). The *decision logic* — the scan
+// a bounded local FAT-chain walk. The *decision logic* — the scan
 // matrix, the arm sequencing — is pure and host-tested in `obc_dfu::armer`; these methods are
 // its thin `StageIo`/snapshot adapters over FatFs + the raw card. Everything here runs inside
 // the ride loop's drained request at shallow per-pass depth, in frames that pop on return —
-// the transient `ExtentTable` (~2 KB) and the `StagedRef`s never sit resident.
+// its small parsing block and the `StagedRef`s never sit resident.
 impl Storage {
     /// Locate an 8.3 `name` in the card root, returning the entry facts the extent build needs:
     /// `(entry_block, entry_offset, byte length)` — the same public `DirEntry` capture as the
@@ -2597,10 +2241,12 @@ impl StageIo for SdStage<'_> {
     }
 }
 
-/// Resolve a root file's FAT chain to `obc_dfu` extents via [`ExtentTable::build`] (the map path's
-/// machinery, #500). The table is a ~2 KB transient in this popped frame — unlike the map's
-/// session-long `.bss` table, it's read once into `out` and dropped. Two fragmentation walls:
-/// `fat_extents`' own cap (128) and `obc_dfu::MAX_EXTENTS` (96, the boot-state page's wire cap).
+/// Resolve one legacy FAT staging file into the bootloader's raw-block extents.
+///
+/// This is intentionally the only FAT-chain walk left after the flat-only map cutover: DFU's boot
+/// record needs physical runs, not a reusable random-read source. Runs are written directly into
+/// the caller's fixed wire-cap buffer, so there is no resident extent table or storage-crate FAT
+/// abstraction to keep alive for an unreachable map fallback.
 fn resolve_extents(
     card: &'static Sd,
     entry_block: embedded_sdmmc::BlockIdx,
@@ -2608,22 +2254,105 @@ fn resolve_extents(
     len: u32,
     out: &mut [obc_dfu::Extent],
 ) -> Result<usize, ExtentsError> {
-    match ExtentTable::build(card, entry_block, entry_offset, len) {
-        Ok(table) => {
-            let count = table.extent_count();
-            if count > out.len() {
-                return Err(ExtentsError::TooFragmented { extents: count as u32 });
-            }
-            for (slot, (lba, blocks)) in out.iter_mut().zip(table.runs()) {
-                *slot = obc_dfu::Extent { start_block: lba, blocks };
-            }
-            Ok(count)
+    fn read(card: &Sd, block: &mut Block, lba: u32) -> Result<(), ExtentsError> {
+        card.read(core::slice::from_mut(block), BlockIdx(lba)).map_err(|_| ExtentsError::Io)
+    }
+    let mut block = Block::new();
+    let u16_at = |bytes: &[u8], at: usize| u16::from_le_bytes([bytes[at], bytes[at + 1]]);
+    let u32_at = |bytes: &[u8], at: usize| u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+
+    read(card, &mut block, 0)?;
+    if u16_at(&block.contents, 510) != 0xAA55 {
+        return Err(ExtentsError::Io);
+    }
+    let part = &block.contents[446..462];
+    if (part[0] & 0x7f) != 0 || !matches!(part[4], 0x01 | 0x04 | 0x06 | 0x0b | 0x0c | 0x0e) {
+        return Err(ExtentsError::Io);
+    }
+    let part_lba = u32_at(part, 8);
+    read(card, &mut block, part_lba)?;
+    let bpb = &block.contents;
+    if u16_at(bpb, 510) != 0xAA55 || u16_at(bpb, 11) != 512 {
+        return Err(ExtentsError::Io);
+    }
+    let spc = u32::from(bpb[13]);
+    let reserved = u32::from(u16_at(bpb, 14));
+    let fats = u32::from(bpb[16]);
+    let root_entries = u32::from(u16_at(bpb, 17));
+    let total = match u16_at(bpb, 19) {
+        0 => u32_at(bpb, 32),
+        n => u32::from(n),
+    };
+    let fat_size = match u16_at(bpb, 22) {
+        0 => u32_at(bpb, 36),
+        n => u32::from(n),
+    };
+    if spc == 0 || fats == 0 || fat_size == 0 {
+        return Err(ExtentsError::Io);
+    }
+    let root_blocks = root_entries.checked_mul(32).ok_or(ExtentsError::Io)?.div_ceil(512);
+    let non_data = fats
+        .checked_mul(fat_size)
+        .and_then(|n| n.checked_add(reserved))
+        .and_then(|n| n.checked_add(root_blocks))
+        .ok_or(ExtentsError::Io)?;
+    let cluster_count = total.checked_sub(non_data).ok_or(ExtentsError::Io)? / spc;
+    if cluster_count < 4085 {
+        return Err(ExtentsError::Io);
+    }
+    let fat32 = cluster_count >= 65_525;
+    let entries_per_block = if fat32 { 128 } else { 256 };
+    let cluster_count =
+        cluster_count.min(fat_size.saturating_mul(entries_per_block).saturating_sub(2)).min(0x0fff_fff5);
+    let fat_start = part_lba.checked_add(reserved).ok_or(ExtentsError::Io)?;
+    let data_start = part_lba.checked_add(non_data).ok_or(ExtentsError::Io)?;
+
+    read(card, &mut block, entry_block.0)?;
+    let at = usize::try_from(entry_offset).map_err(|_| ExtentsError::Io)?;
+    let entry = block.contents.get(at..at.checked_add(32).ok_or(ExtentsError::Io)?).ok_or(ExtentsError::Io)?;
+    if entry[11] == 0x0f || entry[11] & 0x10 != 0 || u32_at(entry, 28) != len {
+        return Err(ExtentsError::Io);
+    }
+    let high = if fat32 { u32::from(u16_at(entry, 20)) } else { 0 };
+    let mut cluster = (high << 16) | u32::from(u16_at(entry, 26));
+    let needed = len.div_ceil(spc * Block::LEN as u32);
+    let mut count = 0usize;
+    let mut next_lba = u32::MAX;
+    let mut cached_fat_lba = u32::MAX;
+    for i in 0..needed {
+        if cluster < 2 || cluster >= 2 + cluster_count {
+            return Err(ExtentsError::Io);
         }
-        Err(BuildError::TooFragmented(n)) => Err(ExtentsError::TooFragmented { extents: n }),
-        Err(e) => {
-            defmt::warn!("dfu: extent resolve failed: {}", defmt::Debug2Format(&e));
-            Err(ExtentsError::Io)
+        let lba = data_start + (cluster - 2) * spc;
+        if lba == next_lba {
+            if count <= out.len() {
+                out[count - 1].blocks += spc;
+            }
+        } else {
+            count += 1;
+            if count <= out.len() {
+                out[count - 1] = obc_dfu::Extent { start_block: lba, blocks: spc };
+            }
         }
+        next_lba = lba + spc;
+        if i + 1 == needed {
+            continue;
+        }
+        let width = if fat32 { 4 } else { 2 };
+        let byte = cluster.checked_mul(width).ok_or(ExtentsError::Io)?;
+        let fat_lba = fat_start.checked_add(byte / Block::LEN as u32).ok_or(ExtentsError::Io)?;
+        if fat_lba != cached_fat_lba {
+            read(card, &mut block, fat_lba)?;
+            cached_fat_lba = fat_lba;
+        }
+        let off = (byte % Block::LEN as u32) as usize;
+        cluster =
+            if fat32 { u32_at(&block.contents, off) & 0x0fff_ffff } else { u32::from(u16_at(&block.contents, off)) };
+    }
+    if count > out.len() {
+        Err(ExtentsError::TooFragmented { extents: count as u32 })
+    } else {
+        Ok(count)
     }
 }
 

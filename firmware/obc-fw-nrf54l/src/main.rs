@@ -51,6 +51,7 @@ mod sd;
 mod flat_store;
 // The microSD host over Nordic's sEMMC soft peripheral on the FLPR (epic #1158): the card in
 // native 4-bit SD mode, 32 MHz reads / 21.3 MHz writes. `sd.rs`'s whole transport.
+mod card_io;
 mod semmc;
 // Which of the two soft-peripheral images owns the FLPR right now (epic #1158) — the display scan
 // blob or the sEMMC host. The mode scheduler: lazy switching, one *never park mid-scan* gate, and
@@ -274,7 +275,6 @@ const MAP_RESIDENT: usize = core::mem::size_of::<obc_app::App>()
     + core::mem::size_of::<obc_reader::MapTables>()
     + core::mem::size_of::<obc_route::RouteCache>()
     + core::mem::size_of::<obc_route::RouteIndex>()
-    + sd::MAP_EXTENT_BYTES
     + TERRAIN_RESIDENT;
 /// The map's **terrain** (EL7, epic #1068): the [`TERRAIN`] slot (an OBCT reader + its four 512 B
 /// tiles, ~2.1 KB) and the sidecar's own extent table/source in `sd.rs` (~1.3 KB). Resident
@@ -449,7 +449,6 @@ mod resource_report {
         // One map, one file: the `set_shards` / `set_extent_tables` / `set_sources` rows (6,432 +
         // 14,212 + 88 = 20,732 B) were the volume-set mount's, and FS7.5-c2 deleted it. What a map
         // costs to read is one resolved FAT chain and one source over it.
-        entry("map_extents", sd::MAP_EXTENT_BYTES),
         entry("route_cache", core::mem::size_of::<RouteCache>()),
         entry("route_index", core::mem::size_of::<obc_route::RouteIndex>()),
         // WX7's complete reader + generation-aware frame/directory/tile cache type. This is a
@@ -502,7 +501,7 @@ mod resource_report {
         // when the pivot landed, but the rows themselves were forgotten, which broke the report
         // gate on every PR: the 4-block alignment bounce (`sd.rs`, fires only for misaligned
         // callers) and the `Semmc` host-driver state itself.
-        entry("sd_bounce", sd::BOUNCE_BYTES),
+        entry("sd_bounce", card_io::BOUNCE_BYTES),
         entry("semmc_driver", core::mem::size_of::<semmc::Semmc>()),
         // The **flat store** (FS7.5-c1), itemized in two rows rather than one because they answer
         // different questions. `flat_store` is the store type itself — §6.2's 8 KiB free bitmap plus
@@ -1301,9 +1300,8 @@ async fn main(_spawner: Spawner) {
         // The flat store owns the raw card from LBA 0 and FAT is a filesystem *on* a card, so a card
         // is one or the other and never both. `FLAT_Store_Format.md` §5.6 step 1 is the test, and
         // `FlatStore::mount` **is** that test — it never fails, it classifies — so the board runs no
-        // second superblock reader of its own that could disagree with the store's rule. On a FAT
-        // card the whole probe is two block reads and `Mode::Unformatted`, and the v1 stack below
-        // takes over exactly as it did before this slice.
+        // second superblock reader of its own that could disagree with the store's rule. A card
+        // without a flat superblock is rejected: the shipping image no longer mounts FAT.
         //
         // `mount_at_boot` is `#[inline(never)]` into a `.bss` slot: a ~10.5 KB store must not become
         // a permanent slot in this task's poll frame, and `mount`'s own ~14 KB constructor frame must
@@ -1371,17 +1369,11 @@ async fn main(_spawner: Spawner) {
                     show_boot_fault(&mut display, fault).await;
                     idle_blink(&mut led).await
                 }
-                flat_store::Card::NotFlat => match sd::mount_fat() {
-                    Ok(storage) => (Some(storage), None),
-                    Err(fault) => {
-                        defmt::error!(
-                            "SD: storage unusable — showing the {=str} fault screen, then heartbeat idle",
-                            fault.copy().0
-                        );
-                        show_boot_fault(&mut display, fault).await;
-                        idle_blink(&mut led).await
-                    }
-                },
+                flat_store::Card::NotFlat => {
+                    defmt::error!("flat: card is not formatted as a flat store — FAT compatibility is retired");
+                    show_boot_fault(&mut display, obc_app::BootFault::StorageFault).await;
+                    idle_blink(&mut led).await
+                }
             };
 
         // The FAT arm's card housekeeping. None of it has a flat twin: a flat store's atomic commit

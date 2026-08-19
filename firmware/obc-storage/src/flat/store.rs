@@ -548,6 +548,70 @@ struct Resolved {
 }
 
 impl<D: BlockDevice> FlatStore<D> {
+    /// Patch bytes already appended to a live, unpublished allocation.
+    ///
+    /// Protocol uploads never need this: their CRC and header are known before the first payload
+    /// byte. The on-device OBCR emitter is different — its streamed header is intentionally
+    /// backfilled after geometry and index emission — so the board needs one bounded random write
+    /// before publication. No committed object is addressable here, and a stale allocation token
+    /// is refused by the same identity check as [`Store::write`].
+    pub fn patch_allocation(&self, allocation: &Allocation, offset: u64, bytes: &[u8]) -> Result<(), StoreError> {
+        let end = offset.checked_add(bytes.len() as u64).ok_or(StoreError::Invalid)?;
+        if end > allocation.written {
+            return Err(StoreError::Invalid);
+        }
+        let mut rows = self.reservations.borrow_mut();
+        if row_of(&rows, allocation).is_none() {
+            return Err(StoreError::Invalid);
+        }
+        let row = rows[allocation.slot as usize].as_mut().expect("the row was just validated");
+        let partial = (row.written % BLOCK as u64) as usize;
+        let staged_at = row.written - partial as u64;
+        let mut done = 0usize;
+        let mut block = [0u8; BLOCK];
+        while done < bytes.len() {
+            let at = offset + done as u64;
+            let block_at = at - at % BLOCK as u64;
+            let within = (at - block_at) as usize;
+            let take = (BLOCK - within).min(bytes.len() - done);
+            if partial != 0 && block_at == staged_at {
+                row.staging[within..within + take].copy_from_slice(&bytes[done..done + take]);
+            } else {
+                let located = row.ranges.locate(self.geometry, block_at).ok_or(StoreError::Invalid)?;
+                read_blocks(&self.dev, located.block, &mut block)?;
+                block[within..within + take].copy_from_slice(&bytes[done..done + take]);
+                write_blocks(&self.dev, located.block, &block)?;
+            }
+            done += take;
+        }
+        Ok(())
+    }
+
+    /// CRC-32/IEEE of the bytes appended to a live allocation, including its unflushed tail.
+    ///
+    /// This is the on-device producer's final verification pass after its header patch. It reads in
+    /// the same 4 KiB windows as catalog streaming, bounded on the stack and wide enough not to turn
+    /// a normal route into hundreds of single-block commands.
+    pub fn allocation_crc(&self, allocation: &Allocation) -> Result<u32, StoreError> {
+        let rows = self.reservations.borrow();
+        let row = row_of(&rows, allocation).ok_or(StoreError::Invalid)?;
+        let partial = (row.written % BLOCK as u64) as usize;
+        let flushed = row.written - partial as u64;
+        let mut digest = Crc32::new();
+        let mut window = [0u8; STREAM_WINDOW];
+        let mut done = 0u64;
+        while done < flushed {
+            let located = row.ranges.locate(self.geometry, done).ok_or(StoreError::Invalid)?;
+            let take = (flushed - done).min(located.contiguous).min(STREAM_WINDOW as u64) as usize;
+            debug_assert!(take.is_multiple_of(BLOCK));
+            read_blocks(&self.dev, located.block, &mut window[..take])?;
+            digest.update(&window[..take]);
+            done += take as u64;
+        }
+        digest.update(&row.staging[..partial]);
+        Ok(digest.finalize())
+    }
+
     /// §5.6: superblock, gates, one body, the free bitmap, and the ride journal only when an entry
     /// says a ride was recording. There is no journal replay, no garbage collection and no recovery
     /// scan, so those five steps are the whole of mount.
