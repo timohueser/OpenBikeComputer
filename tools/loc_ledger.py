@@ -18,7 +18,6 @@ always invoke it through the interpreter, never as ``./tools/loc_ledger.py``)::
     python3 tools/loc_ledger.py --pr 1418            # both sides of a merge commit
     python3 tools/loc_ledger.py --storage-series     # + the #1256 budget line to post
     python3 tools/loc_ledger.py --basis code         # lead with non-blank, non-comment
-    python3 tools/loc_ledger.py --json               # machine-readable
 
 Or through the task runner: ``obc loc-ledger [args]``.
 
@@ -46,8 +45,10 @@ has been ticked on both (see "basis drift" below):
 line; the totals block prints both either way, so a ledger can never again be
 read without knowing which basis it is on.
 
-*Basis drift — the thing that tripped twice.*  Reconstructed with this script
-against the merged history, the published ticks were:
+*Basis drift — one flip, in the middle of the series.*  Reconstructed with this
+script against the merged history.  The first four rows are the PRs that
+carried a "Running storage-layer total" line on #1256; all figures are on the
+``--storage-series`` set so the rows are comparable:
 
 ===========  ==============  ============  ============  ==================
 PR           posted          raw basis     code basis    ticked on
@@ -55,14 +56,22 @@ PR           posted          raw basis     code basis    ticked on
 #1403 FS3    +2,499          +2,489        +1,836        raw
 #1414        +169            +171          +67           raw
 #1417 FS6    +303            +325          +111          raw
-#1418 FS7.1  +39             +223          +39           **code**
-#1425        +58             +229          +100          **code**
+#1418 FS7.1  +39             +221          +44           **code**
 ===========  ==============  ============  ============  ==================
 
-So the running ~3,650 is a mixture, and the two PRs whose ledgers were
-disputed are exactly the two where the basis silently changed.  Reconciling
-the series onto one basis is FS11's job (#1393); this script's job is to make
-the choice visible and mechanical rather than re-derived per PR.
+The flip is #1418's, and it is a single PR, not a pattern: three raw ticks,
+then one on code lines.  On a consistent raw basis the running total is about
+3,830 rather than the posted ~3,650, and that ~180-line gap *is* the flip.
+
+(#1425's ``+58`` and #1424's ``−4,273`` are quoted here and there as evidence
+of the code basis — #1425 states "non-blank, non-comment lines" outright — but
+neither is a series tick: neither posted a running total, and neither touches
+the counted set at all, so both are 0 against the budget.  They are host-side
+map-format work.)
+
+Reconciling the series onto one basis is an owner ruling, tracked by FS11
+(#1393); this script's job is to make the choice visible and mechanical rather
+than re-derived per PR.
 
 *Scope.*  Only ``.rs`` files are counted at all.  Specs, docs, workflows, JSON,
 TypeScript and Swift land in a third **other** bucket that is reported but
@@ -93,12 +102,36 @@ the *base* version, so a hunk is attributed to the tree it actually existed in.
 *``#[cfg(test)]`` region detection is deliberately approximate, and
 deterministic.*  The scanner strips line comments, block comments and string
 and char literal *contents* (so a brace inside ``"}"`` cannot mislead it), finds
-attributes whose ``cfg`` expression mentions the token ``test``, and then brace-
-matches the item that follows — or, for ``mod foo;``, records the module name
-for rule 7.  It does not parse Rust.  A macro that emits unbalanced braces, or
-``cfg_attr`` indirection, can defeat it.  Neither exists in the counted set
-today, and the trade is intentional: a stdlib-only script that is wrong in ways
-you can read beats a syn dependency in the tool that arbitrates a budget.
+``cfg`` attributes that select the test configuration, and then brace-matches
+the item that follows — or, for ``mod foo;``, records the module name for rule
+7.  It does not parse Rust.  What that costs, stated rather than discovered:
+
+*Handled, with a test each, because the tree contains all three:*
+
+  ``cfg_attr``      ignored entirely.  ``#[cfg_attr(test, derive(Debug))]``
+                    applies an *attribute* conditionally; the item is compiled
+                    either way.  Matching it was a live bug — the three crate
+                    roots carrying ``#![cfg_attr(not(test), no_std)]``
+                    (``obc-app``, ``obc-reader``, ``obc-dfu``) each counted as
+                    test/harness in their entirety, 268 lines of production.
+  ``not(test)``     the production half of a build, so every balanced
+                    ``not( … )`` group is removed before the ``test`` token is
+                    looked for.  ``all(not(test), feature = "x")`` is
+                    production; ``any(test, miri)`` is test.
+  ``[u8; 4]``       a ``;`` inside brackets or parens ends no item, so the body
+                    of ``#[cfg(test)] fn f(buf: [u8; 4]) { … }`` stays gated.
+  ``'a``            a lifetime tick is not a char literal, so a brace between
+                    two of them on one line survives.
+
+*Not handled, and known:* a macro invocation that emits unbalanced braces would
+run a gated region past its end, and ``include!``-style indirection is not
+followed.  Neither occurs today: sweeping all 651 tracked ``.rs`` files under
+``firmware/``, ``host/`` and ``apps/`` for a gated region that swallows most of
+a file or runs to EOF from high up flags exactly one, ``obc2/equivalence.rs``,
+and that file is a whole-file harness module under rule 7 anyway (its gating is
+a dozen genuine regions with 274 ungated lines between them, not a runaway).
+The trade is intentional: a stdlib-only script that is wrong in ways you can
+read beats a ``syn`` dependency in the tool that arbitrates a budget.
 
 *Renames.*  Detected (``git diff -M``); a pure rename is 0/0 and a rewrite
 counts only its real changes, rather than a whole file added and another
@@ -108,7 +141,6 @@ removed.
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import re
 import subprocess
@@ -154,9 +186,48 @@ STORAGE_SERIES_PATHS = ("firmware/obc-storage/src/flat/",)
 FIXTURE_DIRS = ("fixtures", "testdata", "test-data", "golden", "vectors")
 
 _HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
-_CFG_ATTR = re.compile(r"^#!?\[\s*cfg(_attr)?\s*\(")
+#: `cfg`, deliberately **not** `cfg_attr`: `#[cfg_attr(test, derive(Debug))]`
+#: applies an attribute conditionally, it does not gate the item — the item is
+#: compiled either way. Matching it was a live bug: every crate root carrying
+#: `#![cfg_attr(not(test), no_std)]` (obc-app, obc-reader, obc-dfu) counted as
+#: test/harness in its entirety.
+_CFG_ATTR = re.compile(r"^#!?\[\s*cfg\s*\(")
 _MOD_DECL = re.compile(r"\bmod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;")
 _TEST_TOKEN = re.compile(r"\btest\b")
+
+
+def gates_on_test(attr_text: str) -> bool:
+    """Does this ``cfg`` expression select the *test* configuration?
+
+    Every ``not( … )`` group is removed first, balanced, so `not(test)` — which
+    is the **production** half of a build — cannot be read as a test gate.
+    `all(not(test), feature = "x")` is production; `any(test, miri)` is test.
+    """
+    out: list[str] = []
+    i = 0
+    while i < len(attr_text):
+        j = attr_text.find("not(", i)
+        if j < 0:
+            out.append(attr_text[i:])
+            break
+        # `not` must be a whole token, not the tail of `cannot(`.
+        if j > 0 and (attr_text[j - 1].isalnum() or attr_text[j - 1] == "_"):
+            out.append(attr_text[i : j + 4])
+            i = j + 4
+            continue
+        out.append(attr_text[i:j])
+        depth = 0
+        k = j + 3
+        while k < len(attr_text):
+            if attr_text[k] == "(":
+                depth += 1
+            elif attr_text[k] == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            k += 1
+        i = k + 1
+    return bool(_TEST_TOKEN.search("".join(out)))
 
 
 def run_git(repo: str, *args: str) -> str:
@@ -240,9 +311,17 @@ def strip_noise(lines: list[str]) -> list[str]:
                     else:
                         i = end + len(closer)
                     continue
+            if ch == "'" and i + 1 < n and (line[i + 1].isalpha() or line[i + 1] == "_"):
+                # A lifetime (`'a`), not a char literal — `'a'` would have a
+                # closing tick two characters along. Without this, `impl<'a>
+                # Foo<'a> {` reads as a char literal spanning both ticks and can
+                # swallow the brace between them.
+                if i + 2 >= n or line[i + 2] != "'":
+                    buf.append(ch)
+                    i += 1
+                    continue
             if ch in '"\'':
-                # A lifetime (`'a`) is not a char literal; a char literal always
-                # closes on the same line.
+                # A char literal always closes on the same line.
                 j = i + 1
                 closed = False
                 while j < n:
@@ -299,7 +378,7 @@ def scan_cfg_test(text: str) -> tuple[set[int], set[str]]:
                 break
             j += 1
         attr_text = " ".join(attr)
-        if not _TEST_TOKEN.search(attr_text):
+        if not gates_on_test(attr_text):
             i = j + 1
             continue
         # `#![cfg(test)]` at the top of a file gates the whole file.
@@ -310,6 +389,7 @@ def scan_cfg_test(text: str) -> tuple[set[int], set[str]]:
         # Find the item this attribute decorates: a braced body, or a `;`.
         k = j
         brace = 0
+        nest = 0  # `(` and `[` depth — a `;` inside `[u8; 4]` ends nothing
         opened = False
         end = None
         while k < n:
@@ -317,7 +397,11 @@ def scan_cfg_test(text: str) -> tuple[set[int], set[str]]:
             # Further attributes on the same item (`#[cfg(test)] #[allow(…)] mod x`)
             # carry neither a brace nor a `;`, so the walk passes straight over them.
             for ch in line:
-                if ch == "{":
+                if ch in "([":
+                    nest += 1
+                elif ch in ")]":
+                    nest -= 1
+                elif ch == "{":
                     brace += 1
                     opened = True
                 elif ch == "}":
@@ -325,7 +409,7 @@ def scan_cfg_test(text: str) -> tuple[set[int], set[str]]:
                     if opened and brace <= 0:
                         end = k
                         break
-                elif ch == ";" and not opened and brace == 0:
+                elif ch == ";" and not opened and brace == 0 and nest <= 0:
                     end = k
                     m = _MOD_DECL.search(line)
                     if m:
@@ -708,47 +792,14 @@ def render(ledger: Ledger, storage: Ledger | None, show_other: bool) -> str:
             "    The ≤ 6,000 ceiling and the 19,933 lines it is measured against are raw file"
         )
         lines.append(
-            "    lengths, which is why raw leads. The published series has been ticked on both"
+            "    lengths, which is why raw leads. The published series ran on raw until #1418"
         )
-        lines.append("    bases — see 'basis drift' in this script's docstring.")
+        lines.append(
+            "    ticked a code-basis figure — reconciling it is an owner ruling, not this"
+        )
+        lines.append("    script's. See 'basis drift' in the docstring.")
         lines.append("")
     return "\n".join(lines)
-
-
-def to_json(ledger: Ledger, storage: Ledger | None) -> str:
-    def bucket_dump(counts_on, bucket: str) -> dict:
-        out = {}
-        for b in ("code", "raw"):
-            a, d, n = counts_on(bucket, b)
-            out[b] = {"added": a, "removed": d, "net": n}
-        return out
-
-    def dump(l: Ledger) -> dict:
-        return {
-            "base": l.base,
-            "head": l.head,
-            "basis": l.basis,
-            "production": bucket_dump(l.totals, PRODUCTION),
-            "test": bucket_dump(l.totals, TEST),
-            "other": bucket_dump(l.totals, OTHER),
-            "files": [
-                {
-                    "path": f.path,
-                    "bucket": f.bucket,
-                    "reason": f.reason,
-                    "production": bucket_dump(lambda b, ba, f=f: f.prod.on(ba), PRODUCTION),
-                    "test": bucket_dump(lambda b, ba, f=f: f.test.on(ba), TEST),
-                    "other": bucket_dump(lambda b, ba, f=f: f.other.on(ba), OTHER),
-                }
-                for f in l.files
-            ],
-        }
-
-    out = {"ledger": dump(ledger)}
-    if storage is not None:
-        out["storage_series"] = dump(storage)
-        out["storage_series"]["counted_paths"] = list(STORAGE_SERIES_PATHS)
-    return json.dumps(out, indent=2, sort_keys=False)
 
 
 def resolve_range(repo: str, args: argparse.Namespace) -> tuple[str, str]:
@@ -793,7 +844,6 @@ def main(argv: list[str]) -> int:
     )
     ap.add_argument("--storage-series", action="store_true", help="also print the #1256 budget line")
     ap.add_argument("--show-other", action="store_true", help="list uncounted non-Rust files too")
-    ap.add_argument("--json", action="store_true", help="machine-readable output")
     args = ap.parse_args(argv)
 
     repo = run_git(os.path.dirname(os.path.abspath(__file__)) or ".", "rev-parse", "--show-toplevel").strip()
@@ -804,10 +854,7 @@ def main(argv: list[str]) -> int:
     if args.storage_series:
         storage = build_ledger(repo, base, head, args.basis, list(STORAGE_SERIES_PATHS))
 
-    if args.json:
-        print(to_json(ledger, storage))
-    else:
-        print(render(ledger, storage, args.show_other))
+    print(render(ledger, storage, args.show_other))
     return 0
 
 
