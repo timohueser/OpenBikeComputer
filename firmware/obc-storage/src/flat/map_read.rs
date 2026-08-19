@@ -97,6 +97,14 @@ fn card_with_map(payload: &[u8]) -> (SparseDisk, ObjectId) {
 
     let id = publish(&store, payload, "two-lod");
     assert!(payload.len() > extent, "the map must outgrow one extent, or the hole buys nothing");
+    // **The fixture proves its own shape.** The straddling reads below would keep passing on a
+    // contiguous object, so an allocator that stopped taking the hole would silently turn this file
+    // back into the test it was before the review round — green, and measuring nothing.
+    assert_eq!(
+        store.head_range_count(id),
+        Some(2),
+        "the map must land on two non-adjacent ranges: the freed extent, then past the survivor"
+    );
     // `keep` is never read; it exists to sit between the hole and the rest of the free map.
     let _ = keep;
     (disk, id)

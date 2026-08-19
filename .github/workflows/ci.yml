@@ -368,7 +368,7 @@ jobs:
       # DOS4 cutover nothing else in CI looks at it. It is gated because the regression is measured,
       # not hypothetical: a 56 KiB projection built in a return slot put 206,080 B of transient stack
       # on this board and HardFaulted on MSPLIM, against the shipping image's residual main stack
-      # (51,576 B when this leg was written; 56,160 B since FS7.5-c2 — the authority is
+      # (51,576 B when this leg was written; 56,088 B since FS7.5-c2 — the authority is
       # `residual_stack_measured` in resource_baseline.json, not this comment). The fix took the largest OBC2 frame to 6,080 B; 8,192 is that with headroom.
       - name: "obc-fw-nrf54l: OBC2 store frame ceiling"
         if: matrix.name == 'build (default = LS021/FLPR, release)'
@@ -384,16 +384,18 @@ jobs:
       # regression in `FlatStore::mount` underneath it.
       #
       # 1. The store: `FlatStore::mount` builds a ~10 KB store in a return slot, and is the largest
-      #    frame here at 13,312 B — 14,016 until FS7.5-c2 took `MAX_OPEN_OBJECTS` from 16 to 6 (one
-      #    map is one file, so eleven shard rows go and one swap row comes back; 64 B a row, and
-      #    `mount` carries the store).
-      #    16,384 is the older figure with 2,368 B of headroom, deliberately left where it is: the
+      #    frame here at 13,312 B. A hold row is 64 B and `mount` carries the store, so the figure
+      #    tracks `MAX_OPEN_OBJECTS`: FS6 raised it 12 -> 16 to cover the terrain, route and weather
+      #    opens the old count omitted, and FS7.5-c2 took it 16 -> 6 (one map is one file, so eleven
+      #    shard rows go and one swap row comes back) for 14,016 -> 13,312.
+      #
+      #    The limit stays 16,384 — the older figure with 2,368 B of headroom — deliberately: a frame
       #    limit is a ratchet against growth, and re-tightening it on every saving would make each
-      #    future change a gate edit. It is the number that
-      #    matters — the app mounts this, against the residual main stack the shipping image has
-      #    (56,160 B since FS7.5-c2; 51,576 B when this was written). (FS6 raised `MAX_OPEN_OBJECTS` 12 → 16 to cover the terrain, route and
-      #    weather opens the old count omitted; a hold row is 64 B, so both figures below moved by
-      #    256 B per store the frame carries.) The needle reaches the store's **trait** methods as well as its
+      #    future change a gate edit. It is the number that matters, because the app mounts this
+      #    against the shipping image's residual main stack, and `residual_stack_measured` in
+      #    resource_baseline.json is that number's authority rather than this comment.
+      #
+      #    The needle reaches the store's **trait** methods as well as its
       #    inherent ones only because `select_frames` canonicalises `..` to `::` first: llvm-objdump
       #    demangles a trait impl as `<obc_storage..flat..store..FlatStore<D> as ...>::commit`, and
       #    without that this needle silently skipped all six trait-impl symbols — `Store::commit`,
@@ -443,7 +445,7 @@ jobs:
       # `#[inline(never)]` now for exactly that reason, and these two needles are what says so.
       #
       # 16,384 is the bench's limit, deliberately: the same code, so the same ceiling — and the app has
-      # far less residual stack to spend it against (56,160 B since FS7.5-c2, 37,640 at c1) than the
+      # far less residual stack to spend it against (56,088 B since FS7.5-c2, 37,640 at c1) than the
       # bench does.
       #
       # What keeps `mount_in_place` OUT OF LINE is not these needles — they only measure whichever
