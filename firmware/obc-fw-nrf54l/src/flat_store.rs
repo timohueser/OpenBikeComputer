@@ -505,9 +505,10 @@ pub(crate) fn writer() -> Option<Writer> {
 /// entries — and this is one cooperative thread-mode executor, so between its first and last command
 /// no other task is polled. The borrow granularity that lets a reader *be served* mid-commit is
 /// necessary and, on a single-threaded executor, not sufficient: the store would also have to hand
-/// control back between commands. Closing that needs a resumable/stepped commit in `obc-storage`,
-/// which is not this slice's and is not smuggled in as a lock here. The on-glass numbers in the PR
-/// say which of the two figures the board actually pays today.
+/// control back between commands. Closing that needs a yield seam in `obc-storage` — a resumable
+/// commit, an async device, or a per-command callback — which is not this slice's and is not
+/// smuggled in as a lock here. **The follow-up is recorded on #1420**, with the reasoning and the
+/// measurement that should size it; `--features flat-exercise` is what produces that measurement.
 #[embassy_executor::task]
 pub(crate) async fn storage_task(
     store: &'static FlatStore<FlatCard>,
