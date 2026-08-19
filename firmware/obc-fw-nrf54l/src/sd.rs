@@ -207,7 +207,7 @@ pub(crate) const SIDELOAD_ID_BASE: u16 = 0xFF00;
 /// **Why more than 4 open files** (the default 4 loses mid-ride uploads): riding with tracking holds three
 /// handles for the whole session — the map stream, the active route's geometry, and the ORD track
 /// log. A BLE route upload adds its temp (4), and `upload_commit`'s copy-promote (embedded-sdmmc
-/// can't rename, see the note above [`Storage::upload_commit`]) holds the reopened temp **and**
+/// can't rename) holds the reopened temp **and**
 /// the final `.OBR` at once — a 5-handle peak, which the 4-slot default answered with a failed
 /// commit exactly and only mid-ride. Each slot is 64 bytes of `FileInfo`, so the RAM cost is
 /// noise — which is why the budget below was never trimmed back after the set that forced it up
@@ -1727,25 +1727,10 @@ impl Storage {
     /// sees in the card root, so a boot that finds nothing to stream from must say **MAP
     /// UNREADABLE** rather than **NO MAP**.
     ///
-    /// A volume set (`OBCA_Spec.md` §5) is listed as **one** map, keyed on its `MS{id}.OBS`
-    /// manifest, and its `MS{id}S{kk}.OBM` shards are never listed at all — §5.4 is explicit that a
-    /// shard opened alone is "exactly the kind of quiet wrongness a rider cannot diagnose" (a
-    /// geometry shard has no roads and no POIs; the core draws nothing). [`is_map_entry`] excludes
-    /// them by name, and [`Storage::set_identity`] refuses a set whose shards are not all present
-    /// at the recorded size — so a mid-copy set is invisible rather than half a map.
-    ///
-    /// Two consequences of that exclusion, stated rather than discovered:
-    ///
-    /// - **A side-loaded file named like a shard is invisible.** A rider who hand-copies one map
-    ///   onto the card as `MS4S00.OBM` gets nothing — no listing, no fault, no explanation. That is
-    ///   the price of making §5.4 structural, and it is the right side to err on: a shard *looking*
-    ///   like a map is the failure a rider cannot diagnose, while a file that does not appear is one
-    ///   they can rename. A hand-copied whole **set** (manifest included) works exactly as an
-    ///   uploaded one does.
-    /// - **A set costs one open + one 40-byte header read per shard, per scan.** The scan runs at
-    ///   boot and at each `next_map_id_from_scan`, so a 32-shard set is ~33 opens — bounded, but not
-    ///   free, and the reason `set_identity` is the *only* thing that reads a shard at scan time
-    ///   (no LOD tables, no style tables, no digests).
+    /// **A map is one `.OBM` file.** The volume set that used to complicate this — one logical map
+    /// listed from a manifest, its shards excluded by name so a shard opened alone could not be
+    /// mistaken for a map — is retired with OBCM v14 (#1420), and with it the per-shard opens this
+    /// scan used to pay.
     pub fn scan_maps_into(&self, out: &mut Vec<MapSummary, MAX_MAPS>) -> usize {
         out.clear();
         let mut unlistable = 0usize;
@@ -1822,6 +1807,19 @@ impl Storage {
         self.open_map.is_some() && self.open_map_name.as_ref() == Some(name)
     }
 
+    /// **Read-only since FS7.5-c3b, and kept until FS11 (#1393) for one reason: cards in the field.**
+    ///
+    /// Nothing writes `MAP.SEL` any more — `save_selected_map` went with the v1 command surface that
+    /// set it (`FLAT_Store_Protocol.md` §5.2.2), and the flat store has no such file. A read whose
+    /// writer is gone would normally go too, by the standing rule about never-exercised paths. This
+    /// one stays because the rule is about capabilities nobody exercises, and this file **is**
+    /// exercised: a FAT card that has been in a device carries a `MAP.SEL` an earlier firmware
+    /// wrote, and a rider who chose a map expects that choice to survive the update that removed the
+    /// way to change it. Dropping the read would silently re-pick their map.
+    ///
+    /// **It dies with this module in FS11**, which retires the FAT read path entirely; there is no
+    /// second decision to make and no separate follow-up to file.
+    ///
     /// The card's recorded map selection ([`MAP_SELECTED`]), or `None` for absent / torn / a name
     /// this device would never have written — all of which mean **no preference**.
     pub fn load_selected_map(&self) -> Option<ShortFileName> {

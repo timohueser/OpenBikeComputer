@@ -87,7 +87,7 @@ pub fn take_store_changed() -> u32 {
 /// deliberately a **single latest-wins slot**, which *is* the locked popup rule (consecutive
 /// uploads replace the prompt, most recent wins), so a burst between passes needs no queue.
 ///
-/// Published by [`ObjectStore::upload_finish`] **before** its revision bump, so the pass the
+/// Published before the revision bump that follows it, so the pass the
 /// [`STORE_WAKE`] pulls out of warm sleep sees the rescan edge and this event together; the ride
 /// loop drains the rescan **first** (the id must resolve against the fresh catalog), then rings
 /// [`App::apply_event`](obc_app::App::apply_event). Same module-static
@@ -109,8 +109,8 @@ pub(crate) fn take_route_uploaded() -> Option<(u16, bool)> {
 /// identically (`present-bit | replaced-bit | id`). The replaced-bit matters more here than for
 /// routes: the desktop app *edits* a trip exclusively by replace-at-same-id (rename, add/remove/
 /// move stage — one upload per click), so the app **suppresses the popup on a replace** and only a
-/// *fresh* trip — a delivery — is announced. Published by [`ObjectStore::upload_finish_trip`]
-/// **before** its revision bump, drained by the ride loop strictly *after* the route event so the
+/// *fresh* trip — a delivery — is announced. Published before the revision bump that follows it,
+/// and drained by the ride loop strictly *after* the route event so the
 /// pass's popup order matches the wire's routes-then-trip commit order — the trip popup then wins
 /// the app's single most-recent-wins prompt slot, which is exactly what collapses a trip
 /// transfer's per-route popup parade into one "TRIP RECEIVED" card. Same latest-wins single-slot +
@@ -450,12 +450,12 @@ impl ObjectStore {
         if let Some(m) = shared.settings.load_id_marks() {
             self.next_id = self.next_id.max(m.next_route_id);
         }
-        // The trip-id floor draws from its own RRAM line (spec §4.1 — a separate counter).
-        if let Some(floor) = shared.settings.load_trip_mark() {
-            if let Some(storage) = &mut shared.storage {
-                storage.trips().observe_floor(floor);
-            }
-        }
+        // **There is no trip-id floor any more.** It drew from its own RRAM line, written by the
+        // `deviceObjectID`-minting path that arrived over the cable — and that writer went with the
+        // v1 command surface (FS7.5-c3b). A read whose writer is deleted answers the blank line
+        // forever, which is not a floor, it is a decode of nothing; the standing rule is that a
+        // never-exercised capability goes rather than lingering as a call that always returns
+        // `None`. When trips come back over a link that can carry them, so does the line.
         if let Some(storage) = &mut shared.storage {
             let trips = storage.trips();
             let len = trips.len();

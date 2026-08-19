@@ -1137,28 +1137,6 @@ impl App {
         crate::arena_gate::MapQuiesced::prove(self.reroute_freeze_active(), self.base_draws_map())
     }
 
-    /// Whether the map-transfer card (issue #927) is on the stack — the "the UI shows the transfer
-    /// screen" half of the arena's `render ⊥ usb` rule. Modal and opaque, so while it is up the base
-    /// draws no map; both facts are checked here rather than assumed, since the card is host-pushed
-    /// and the rule must hold whatever else the stack is doing.
-    fn transfer_screen_up(&self) -> bool {
-        self.ui.stack.iter().any(|s| matches!(s, Screen::MapTransfer(_))) && !self.base_draws_map()
-    }
-
-    /// The proof that a **cable transfer may take the arena**, minted from this app's state plus the
-    /// one fact the app does not own: whether a route search is live on the host's own transfer gate
-    /// ([`TransferGate::search_live`](crate::TransferGate::search_live) on the board — read from
-    /// there rather than from [`plan_in_flight`](App::plan_in_flight), so the control plane's `busy`
-    /// answer and this claim can never disagree).
-    ///
-    /// The typed twin of [`nav_arena_precondition`](App::nav_arena_precondition), and it exists for
-    /// the same reason: the board's `claim_usb` call site should read the precondition off the app
-    /// rather than re-derive it from two bare bools at the call site, where a second call site could
-    /// pass them in the wrong order or forget one.
-    pub fn usb_arena_precondition(&self, search_live: bool) -> Option<crate::arena_gate::TransferReady> {
-        crate::arena_gate::TransferReady::prove(self.transfer_screen_up(), search_live)
-    }
-
     /// Whether the frame needs the streamed-map [`Reader`] built and passed to
     /// [`render_map_timed`](App::render_map_timed) — a superset of [`base_draws_map`](App::base_draws_map).
     /// Map-base screens always do; the **POI list** screen (issue #425) does too, but only until it

@@ -114,41 +114,11 @@ const ID_MARKS_OFFSET: u32 = 2560;
 /// The id line is one RRAM write line by construction — pin it so a codec growth fails loud.
 const _: () = assert!(obc_app::store_meta::ID_MARKS_LEN == RRAM_WRITE_LINE);
 
-/// Byte offset of the **trip-id high-water line** (epic #526 TR4, #653) — one 16-byte line holding
-/// the next fresh trip object id, so a trip id deleted last session can't be re-issued (the phone's
-/// persisted trip `deviceObjectID`s key on it). Trip ids draw from a device counter separate from
-/// routes/rides (spec §4.1), so this is its own line rather than a field beside [`IdMarks`]. Placed
-/// on the free line right after the arm marker (@2064 + 48 B = @2112), clear of the id high-water
-/// line @2560. Codec (magic/version/CRC, torn line → "no floor") lives just below.
-#[cfg(feature = "ble")]
-const TRIP_MARK_OFFSET: u32 = 2112;
-/// The trip-mark tag; anything else there (blank page, torn write, older layout) reads as "no floor".
-/// Distinct from `OBCD`/`OBCI`/`OBCP`/`OBCB` so the magic actually discriminates this record.
-#[cfg(feature = "ble")]
-const TRIP_MARK_MAGIC: [u8; 4] = *b"OBTM";
-/// Trip-mark layout version (bump on any field change — an old version reads as no floor).
-#[cfg(feature = "ble")]
-const TRIP_MARK_VERSION: u8 = 1;
-/// Pin the trip-mark line clear of both the arm marker above it and the id high-water line below it.
-#[cfg(feature = "ble")]
-const _: () = assert!(ARM_MARKER_OFFSET + obc_app::dfu::ARM_MARKER_LEN as u32 <= TRIP_MARK_OFFSET);
-#[cfg(feature = "ble")]
-const _: () = assert!(TRIP_MARK_OFFSET + RRAM_WRITE_LINE as u32 <= ID_MARKS_OFFSET);
-
-/// Decode the trip-id floor, or `None` for a blank / torn / foreign line (→ "no floor").
-#[cfg(feature = "ble")]
-fn decode_trip_mark(b: &[u8; RRAM_WRITE_LINE]) -> Option<u16> {
-    if b[0..4] != TRIP_MARK_MAGIC || b[4] != TRIP_MARK_VERSION {
-        return None;
-    }
-    let mut crc = obc_ble::Crc32::new();
-    crc.update(&b[0..12]);
-    let stored = u32::from_le_bytes([b[12], b[13], b[14], b[15]]);
-    if crc.finalize() != stored {
-        return None;
-    }
-    Some(u16::from_le_bytes([b[6], b[7]]))
-}
+// **@2112 and @2128 are retired** (FS7.5-c3b): the trip-id and map-id high-water lines. Both were
+// written by minting paths that arrived over the cable's v1 command surface, and both went with it
+// — a floor whose writer is deleted decodes the blank line forever, which is not a floor. The two
+// offsets must **not** be reused without a fresh magic, same discipline as @2576 above: a card that
+// has been in a device carries the old bytes, and a new record at the same offset would have to be
 
 /// Byte offset of the **DFU arm-marker slot** within the reserved settings page — the armer's
 /// breadcrumb, written right after the `Armed` boot-state write and consumed by the boot-outcome
@@ -382,24 +352,6 @@ impl RramSettingsStore {
         let bytes = obc_app::store_meta::encode_id_marks(m);
         if let Err(e) = self.rram.write(off, &bytes) {
             defmt::warn!("settings: id-marks RRAM write failed: {}", e);
-        }
-    }
-
-    /// Load the durable **trip**-id high-water floor (epic #526 TR4, #653), or `None` when the line is
-    /// blank / torn / a foreign layout — "no floor", i.e. fresh trip ids fall back to `scan_max + 1`.
-    /// Trip ids draw from a device counter **separate** from routes/rides (spec §4.1), so this is its
-    /// own RRAM line rather than a field beside [`IdMarks`]'s route/ride counters. (A future
-    /// consolidation could fold it into `IdMarks` once that codec is next revised.)
-    #[cfg(feature = "ble")]
-    pub fn load_trip_mark(&mut self) -> Option<u16> {
-        let off = region_offset() + TRIP_MARK_OFFSET;
-        let mut buf = [0u8; RRAM_WRITE_LINE];
-        match self.rram.read(off, &mut buf) {
-            Ok(()) => decode_trip_mark(&buf),
-            Err(e) => {
-                defmt::warn!("settings: trip-mark RRAM read failed: {} → no floor (scan-max+1)", e);
-                None
-            }
         }
     }
 

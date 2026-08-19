@@ -72,6 +72,17 @@ use super::{EpIn, EpOut, BULK_BURST_LEN, MAX_PACKET};
 /// bound both readers refuse a record above.
 pub(crate) const RECORD_CEILING: usize = 16 + 4_096;
 
+/// §5.2's ceilings for this link, resolved once rather than per cable.
+///
+/// `for_usb` answers `Option` because §5.1's floor refusal is a real outcome on a link that
+/// *negotiates*; USB negotiates nothing, so on this binding the answer is fixed. Unwrapping it here
+/// — at a `static`, not inside a task — means a ceiling edited below the floor is a bring-up panic
+/// with a legible message rather than a link that silently refuses every cable.
+static CEILINGS: Ceilings = match Ceilings::for_usb(RECORD_CEILING) {
+    Some(ceilings) => ceilings,
+    None => panic!("§5.2's record ceiling is below the protocol floor"),
+};
+
 /// §5.2's narrower bound on a **host → device control** record.
 ///
 /// §3's largest request is the 100-byte `PUT`. Sizing this buffer to [`RECORD_CEILING`] would be
@@ -175,7 +186,10 @@ pub(crate) async fn serve_objects(ctrl_in: EpIn, ctrl_out: EpOut, bulk_in: EpIn,
     let mut stream_tx = RecordWriter::new(bulk_in);
     // Reached here rather than passed in: see `lane`.
     let lane = lane();
-    let ceilings = Ceilings::for_usb(RECORD_CEILING).expect("§5.2's ceiling is above the protocol floor");
+    // Not an `expect` in a link task: §5.2's ceiling is a *constant*, so "is it above the protocol
+    // floor" is a question with one answer for the life of the image and a task is the wrong place
+    // to discover it. `CEILINGS` is that answer, computed once.
+    let ceilings = CEILINGS;
 
     loop {
         // Before configuration (and after an unplug) the endpoints are disabled; parking here is the
@@ -343,8 +357,18 @@ async fn stream_record(
                 embassy_futures::select::select(CONTROL_IN.wait(), Timer::after(ADMISSION_WINDOW)).await
             {
                 let reaction = control_record(writer, lane, control).await?;
-                // Admission answered; the held record goes next round, still un-dropped and with the
-                // pump still not reading behind it.
+                // **Re-signalling `STREAM_IN` with the record we are holding, rather than delivering
+                // it here.** §5 says a held frame must not be delivered before its admission and
+                // must not be dropped; this is the third option — put it back where the driver's
+                // next `select` will take it, having spent this pass on the control record that may
+                // be its admission. The pump is still not reading behind it (`STREAM_TAKEN` is
+                // un-signalled), so nothing overwrites the buffer meanwhile and §5's credit
+                // withholding continues to hold.
+                //
+                // It costs one extra trip round the driver loop, and it is deliberately not
+                // optimised into a direct call: the loop is where control records win ties, and
+                // delivering from here would jump that queue with a record that has just been told
+                // to wait.
                 STREAM_IN.signal(record);
                 return Some(reaction);
             }

@@ -397,6 +397,39 @@ describe("CANCEL", () => {
             expect(await client.cancel(0x0dead)).toBe(false);
         });
     });
+
+    it("gives up on a device that is enumerated but hung, instead of wedging the transfer slot", async () => {
+        // The failure this pins is not a device that has gone away — that one fails fast, and the
+        // test above it covers it. It is a device that is still *there*: the endpoint accepts
+        // nothing and answers nothing, so an unbounded `CANCEL` inside `abandon` parks forever and
+        // the client's one-transfer latch is never released. That is the exact wedge the latch's own
+        // documentation claims to have retired, and it shipped one call deeper.
+        const rig = loopbackDevice({ clientTimeoutMs: 25 });
+        rig.device.seed({ kind: ObjectKind.MapShard, displayName: "map", bytes: payload(200_000) });
+        const abort = new AbortController();
+        const download = rig.client.get(
+            { objectId: 1n, revision: 0n },
+            {
+                signal: abort.signal,
+                onProgress: (done) => {
+                    if (done > 10_000) {
+                        // Wedge the device *first*, so the `CANCEL` that `abandon` sends has nowhere
+                        // to go, and only then abort.
+                        rig.device.stop();
+                        abort.abort();
+                    }
+                },
+            },
+        );
+        await expect(download).rejects.toMatchObject({ code: "aborted" });
+
+        // The point of the test: `abandon` returned rather than parking, so the slot is free and the
+        // next call reaches the wire instead of queueing behind a cancel that will never answer.
+        // Against a hung device that next call fails on its own timeout — a bounded error, which is
+        // the whole difference from a spinner that never resolves.
+        await expect(rig.client.listPage({})).rejects.toMatchObject({ code: "timeout" });
+        await rig.client.close();
+    });
 });
 
 // ------------------------------------------------------------------- REMOVE and ARM

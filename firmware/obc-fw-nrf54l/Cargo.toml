@@ -90,7 +90,6 @@ resource-report = []
 # service the connected database does not contain is the trap this spike exists to avoid.
 ble-weather-request = []
 
-
 # The all-features stack (issue #270, epic #267): nrf-sdc/MPSL/TrouBLE folded into `main.rs`.
 # **Part of `default` since the LM20 retarget** — map + router + BLE run in one image, sharing
 # the SD + settings store. MPSL provides the critical-section impl (its radio timing forbids

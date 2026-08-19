@@ -915,7 +915,9 @@ function after(meta: { objectId: bigint; revision: bigint }, cursor: { objectId:
  * Seed the device, drive the client, `close()` when done. The device's control loop runs detached;
  * closing the client closes the link, which ends it.
  */
-export function loopbackDevice(options: LoopbackOptions & MockDeviceOptions = {}): {
+export function loopbackDevice(
+    options: LoopbackOptions & MockDeviceOptions & { clientTimeoutMs?: number } = {},
+): {
     client: FlatStoreClient;
     device: MockDevice;
     link: LoopbackLink;
@@ -924,7 +926,10 @@ export function loopbackDevice(options: LoopbackOptions & MockDeviceOptions = {}
     const link = loopbackLink(options);
     const device = new MockDevice(link.device, options);
     void device.run();
-    const client = new FlatStoreClient(link.host);
+    // `clientTimeoutMs` exists for one kind of test: a device that is enumerated but hung, where
+    // the assertion is that a call *ends* rather than what it returns. The client's real default is
+    // fifteen seconds, which is right on a wire and useless in a suite.
+    const client = new FlatStoreClient(link.host, { timeoutMs: options.clientTimeoutMs });
     return {
         client,
         device,

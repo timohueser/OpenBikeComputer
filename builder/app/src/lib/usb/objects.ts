@@ -215,6 +215,14 @@ export function decodeTripObject(data: Uint8Array): TripObject {
 }
 
 export function encodeTripObject(t: TripObject): Uint8Array {
+    // **Refused here, not left to call-site discipline.** `setUint16` wraps silently, so a trip with
+    // 65,536 stages would encode as one with zero and the device would commit a trip that is not the
+    // trip it was given — a wrong object rather than a rejected one, which is the failure direction
+    // worth spending a branch on. Every caller today is far under the cap; that is exactly why the
+    // check belongs in the encoder, where it stays true when a caller stops being careful.
+    if (t.stages.length > 0xffff) {
+        throw new RangeError(`a trip carries at most 65535 stages; this one has ${t.stages.length}`);
+    }
     const out = new Uint8Array(TRIP_HEADER_LEN + 2 * t.stages.length);
     const view = new DataView(out.buffer);
     out[0] = 1;

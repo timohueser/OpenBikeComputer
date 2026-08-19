@@ -556,10 +556,17 @@ export async function openWebUsbLink(device: UsbDeviceLike, layout?: EndpointLay
          * collide with the device-level MS OS 2.0 descriptor request the same device answers for
          * Windows; `wIndex` is therefore the interface this link claimed.
          */
-        async vendorIn(request: number, value: number, length: number): Promise<Uint8Array> {
+        async vendorIn(request: number, value: number, length: number, signal?: AbortSignal): Promise<Uint8Array> {
+            // The seam offers a signal and this implementation used to drop it, which made every
+            // caller's timeout a lie on this one call. WebUSB has no cancel for a control transfer,
+            // so the honest shape is the pre-flight check plus a race: the transfer is not stopped,
+            // but the caller stops waiting for it, which is the difference between a bounded failure
+            // and a spinner. A late resolution is discarded by the `Promise.race` and by nothing
+            // else needing it — `withAbort` is the same helper both byte pipes use, and its own docs
+            // are careful about exactly this distinction.
             let result: UsbControlInResult;
             try {
-                result = await device.controlTransferIn(
+                const transfer = device.controlTransferIn(
                     {
                         requestType: "vendor",
                         recipient: "interface",
@@ -569,7 +576,9 @@ export async function openWebUsbLink(device: UsbDeviceLike, layout?: EndpointLay
                     },
                     length,
                 );
+                result = await withAbort(transfer, signal, "the device-info read");
             } catch (cause) {
+                if (cause instanceof PipeError) throw cause;
                 throw new PipeError("device-error", describe(cause), { cause });
             }
             if (result.status !== "ok") {
