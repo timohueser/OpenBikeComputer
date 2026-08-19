@@ -42,6 +42,21 @@ fn cancel_before_publish_result_requires_compensation() {
     assert_eq!(nav_publish_disposition(true, 41), NavPublishDisposition::Compensate(41));
 }
 
+/// Compensation is idempotent with respect to an exact revision: success and `NotFound` both mean
+/// the cancelled publication is gone, while retryable and terminal failures have distinct liveness
+/// behavior. `Absent` covers the race where a later replacement already removed revision 1.
+#[test]
+fn publish_compensation_results_have_explicit_liveness() {
+    use obc_app::host::{
+        nav_compensation_disposition, NavCompensationDisposition as Disposition, NavCompensationStatus as Status,
+    };
+
+    assert_eq!(nav_compensation_disposition(Status::Removed), Disposition::Cancelled);
+    assert_eq!(nav_compensation_disposition(Status::Absent), Disposition::Cancelled);
+    assert_eq!(nav_compensation_disposition(Status::Retry), Disposition::Retry);
+    assert_eq!(nav_compensation_disposition(Status::Terminal), Disposition::CancelledAfterTerminalFailure);
+}
+
 /// A drained [`HostCommand::PlanRoute`] is an **owned** value: the host can park it, keep driving
 /// the app, and answer many passes later with an owned [`HostEvent`] — no borrow into `App` at any
 /// point, and the late answer still lands on the active planning screen.

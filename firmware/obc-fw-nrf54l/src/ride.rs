@@ -1758,16 +1758,41 @@ pub(crate) async fn run_app(
                         NavIo::CompensatingPublish(ticket, id) => {
                             if let Some(answer) = writer.try_result(ticket, &NAV_STORE_REPLY) {
                                 run.write_us += run.io_started.elapsed().as_micros();
-                                if matches!(answer, Ok(crate::flat_store::Outcome::Done)) {
-                                    cancelled = true;
-                                } else {
-                                    // Do not acknowledge cancellation while its published route is
-                                    // still visible. Retry the exact-revision removal on a later pass.
-                                    defmt::warn!(
-                                        "nav route: cancellation compensation for object {=u64} failed — retrying",
-                                        id.0
-                                    );
-                                    run.io = NavIo::NeedPublishCompensation(id);
+                                use obc_app::host::{
+                                    nav_compensation_disposition, NavCompensationDisposition as Disposition,
+                                    NavCompensationStatus as Status,
+                                };
+                                let status = match answer {
+                                    Ok(crate::flat_store::Outcome::Done) => Status::Removed,
+                                    Err(obc_storage::flat::StoreError::NotFound) => Status::Absent,
+                                    Err(obc_storage::flat::StoreError::Media | obc_storage::flat::StoreError::Busy) => {
+                                        Status::Retry
+                                    }
+                                    // The exact id/revision makes every other refusal permanent or
+                                    // an invariant violation. Most importantly, ReadOnly cannot be
+                                    // repaired in-session. Publish reserved a second sequence, so
+                                    // seeing it here means another writer consumed that last slot.
+                                    _ => Status::Terminal,
+                                };
+                                match nav_compensation_disposition(status) {
+                                    Disposition::Cancelled => cancelled = true,
+                                    Disposition::Retry => {
+                                        defmt::warn!(
+                                            "nav route: cancellation compensation for object {=u64} hit transient media failure — retrying",
+                                            id.0
+                                        );
+                                        run.io = NavIo::NeedPublishCompensation(id);
+                                    }
+                                    Disposition::CancelledAfterTerminalFailure => {
+                                        // Never report route success, and never retain NavGuard/the
+                                        // planner arena forever. This should be unreachable under
+                                        // PublishComputedRoute's two-sequence admission invariant.
+                                        defmt::error!(
+                                            "nav route: terminal cancellation compensation failure for object {=u64}; releasing planner",
+                                            id.0
+                                        );
+                                        cancelled = true;
+                                    }
                                 }
                             }
                         }

@@ -766,6 +766,18 @@ impl<D: BlockDevice> FlatStore<D> {
         self.served.get().sequence
     }
 
+    /// Whether the current catalog has sequence space for `count` further commits.
+    ///
+    /// This deliberately checks the greatest well-formed gate rather than [`Self::sequence`]: a
+    /// mount can fall back to the older catalog copy after the newer body's media read fails, but
+    /// the next commit must still continue past the newer gate's sequence. Callers that publish an
+    /// object which may need a compensating removal use `count == 2`; accepting that publication
+    /// with only one sequence left would make the object impossible to retract.
+    pub fn has_commit_capacity(&self, count: u64) -> bool {
+        let served = self.served.get();
+        served.mode.writable() && served.high_water.checked_add(count).is_some()
+    }
+
     /// Entries the catalog holds.
     pub fn entry_count(&self) -> u16 {
         self.served.get().entry_count

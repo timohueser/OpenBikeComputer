@@ -894,6 +894,12 @@ fn serve(
             Ok(Outcome::Wrote(allocation))
         }
         Request::PublishComputedRoute { allocation, name } => {
+            // Publishing can race a queued cancellation. Reserve one further catalog sequence for
+            // the exact-revision compensating remove before making the route visible; otherwise a
+            // publish at u64::MAX would succeed and leave a ghost that no later commit can retract.
+            if !store.has_commit_capacity(2) {
+                return Err(StoreError::ReadOnly);
+            }
             let id = store.next_object_id();
             let payload_crc = store.allocation_crc(&allocation)?;
             let meta = EntryMeta {
