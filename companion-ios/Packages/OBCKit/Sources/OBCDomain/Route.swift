@@ -13,8 +13,8 @@ public struct RouteID: Hashable, Sendable {
     public init(_ rawValue: String) { self.rawValue = rawValue }
 }
 
-/// One entry of the device's route catalog (`listRoutes()` — the `routeList`
-/// object, spec §7.4): the durable device object id plus the display fields.
+/// One entry of the device's protocol-v4 route catalog (`listRoutes()`): the durable device object
+/// id plus the display fields.
 /// Deliberately **not** a `RouteSummary` — the catalog is keyed by
 /// ``DeviceObjectID``, and its one consumer (reconciling the C1 "on device"
 /// badge, #289) compares those ids against `PlannedRouteRecord.deviceObjectID`;
@@ -28,7 +28,7 @@ public struct RouteCatalogEntry: Identifiable, Equatable, Sendable {
     public var elevationGainMeters: Double
     /// Number of geometry points in the stored route object.
     public var pointCount: Int
-    /// The stored object's whole-object CRC-32 (v2 `routeList` entry, spec §7.4) —
+    /// The stored object's whole-object CRC-32 from protocol-v4 catalog metadata —
     /// the content fingerprint that lets the app verify *what* a linked id points
     /// at (identity-verified badges) and recognize an identical unlinked copy
     /// (adopt-by-content). `0` = unknown (the device hasn't filled the side-loaded
@@ -36,10 +36,9 @@ public struct RouteCatalogEntry: Identifiable, Equatable, Sendable {
     /// special-casing). The badge/adoption logic that consumes it is V6 (#770).
     public var crc32: UInt32
     /// The device's computed auto-delete instant for this route (epic #638), from
-    /// the v2+expiry `routeList` entry's `expires_at` tail (spec §7.4). `nil` when
+    /// protocol-v4 catalog retention metadata. `nil` when
     /// the device hasn't started the countdown (`last_used == 0`), retention is
-    /// ``Retention/never``, **or** the device predates expiry (a pre-tail 76-byte
-    /// entry — see ``RouteListEntry``). Display-only; goes stale gracefully as
+    /// ``Retention/never``, **or** the device predates expiry. Display-only; goes stale gracefully as
     /// extend-on-use moves it.
     public var expiresAt: Date?
     /// The device's stored retention level for this route (epic #638), from the

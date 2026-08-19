@@ -53,8 +53,8 @@ impl<D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: usiz
         let offset = u32::try_from(offset).map_err(|_| Error::BadOffset)?;
         // Prove range errors before touching the medium. Once the range is known good, a seek
         // failure is an I/O failure (card removal, corrupt FAT chain, etc.), not malformed caller
-        // input. Weather A/B publication relies on that distinction to avoid truncating a slot
-        // whose validity could not be established because the medium became unreadable.
+        // input. Callers rely on that distinction to retry an object whose validity could not be
+        // established because the medium became unreadable.
         let count = u32::try_from(buf.len()).map_err(|_| Error::BadOffset)?;
         let end = offset.checked_add(count).ok_or(Error::BadOffset)?;
         if end > self.len {

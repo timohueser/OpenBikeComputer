@@ -174,7 +174,7 @@ public final class MainScreenModel {
     /// links under an unknown scope would be a reconcile write the fail-closed
     /// rule forbids.
     @ObservationIgnored private var lastRouteCatalog: [RouteCatalogEntry]?
-    /// The connected device's per-object content CRCs — the v2 `routeList`
+    /// The connected device's per-object content CRCs from its protocol-v4 route catalog.
     /// `crc32` (spec §7.4), keyed by device object id. The **proof half** of the
     /// identity-verified badge (#770): a link is only a checkmark when this map
     /// holds a non-zero CRC for its object that equals the record's committed
@@ -183,12 +183,12 @@ public final class MainScreenModel {
     /// verified that CRC) so a fresh badge lights before the next catalog read.
     /// `0` (or an absent key) = unknown → proves nothing.
     @ObservationIgnored private var deviceRouteCRCs: [DeviceObjectID: UInt32] = [:]
-    /// The last trip catalog a reload read (`tripList`) — the trip sibling of
+    /// The last trip catalog a reload read — the trip sibling of
     /// `lastRouteCatalog`, kept so the identity settle can re-run the trip
     /// reconcile once the scope is decidable, and so the whole-trip precheck can
     /// count device trip slots.
     @ObservationIgnored private var lastTripCatalog: [TripCatalogEntry]?
-    /// The connected device's per-trip content CRCs — the v2 `tripList` `crc32`
+    /// The connected device's per-trip content CRCs from protocol-v4 catalog metadata.
     /// (spec §7.4), keyed by device trip id. The proof half of the trip badge
     /// (TR8, the route-CRC idiom, #770): a trip link is a checkmark only when this
     /// holds a non-zero CRC for its object equal to the record's committed
@@ -251,7 +251,7 @@ public final class MainScreenModel {
             return identityChecked && protocolMismatch == nil && connectedScope != nil
         }
         sync.identitySettled = { [weak self] in await self?.identityTask?.value }
-        sync.onRideListRead = { [weak self] in self?.loadState = .loaded }
+        sync.onRideCatalogRead = { [weak self] in self?.loadState = .loaded }
         // A landed ride is already persisted (the coordinator's job) — mirror
         // it into the session's list so newly synced rides surface at once,
         // not only after the next reload.
@@ -325,7 +325,7 @@ public final class MainScreenModel {
             }
         })
         streamTasks.append(Task { [weak self, transport] in
-            for await change in transport.storeChanges {
+            for await change in transport.catalogChanges {
                 guard let self else { return }
                 // The device's store moved under an open app — an on-device
                 // route delete (epic #447 P6) or an upload committed from
@@ -335,13 +335,12 @@ public final class MainScreenModel {
                 // trigger the reload (a device-side route or trip delete, TR3's
                 // long-press cascade). A burst coalesces behind the in-flight
                 // read; an opened CoC exchange is never cancelled halfway.
-                if change.type == .route || change.type == .trip { reload() }
+                if change.kind == .route || change.kind == .trip { reload() }
             }
         })
-        // Notifications are deliberately best-effort on BLE. Keep them as the
-        // immediate path, then audit the tiny route/trip catalogs occasionally
-        // so a dropped edge cannot leave an "on device" checkmark stale until
-        // the next app launch or reconnect.
+        // Protocol v4 has no store-change notification. Local/mock invalidations are the immediate
+        // path above; audit the tiny route/trip catalogs occasionally on BLE so an external change
+        // cannot leave an "on device" checkmark stale until the next app launch or reconnect.
         streamTasks.append(Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(60))
@@ -419,7 +418,7 @@ public final class MainScreenModel {
                 lastRouteCatalog = deviceRoutes
                 reconcileOnDevice(with: deviceRoutes)
                 // The trip catalog rides the same reload (TR8): reconcile each
-                // trip's device link/badge against `tripList`. Best-effort, but
+                // trip's device link/badge against the trip catalog. Best-effort, but
                 // fail-CLOSED: a failed read skips the reconcile entirely (stale
                 // links beat nuked ones) — treating a transient `listTrips`
                 // failure as "zero trips" dropped every trip link, and the next
@@ -757,7 +756,7 @@ public final class MainScreenModel {
     /// The trip-level device-copy state behind the card badge (TR6/TR8): the trip
     /// is "up to date" only when the **trip object itself** is proven current
     /// *and* every stage is up to date. The trip object's own proof (TR8) is a
-    /// valid scoped link plus a non-zero `tripList` `crc32` that equals the
+    /// valid scoped link plus a non-zero trip-catalog CRC that equals the
     /// committed fingerprint — the same route-CRC idiom. A trip the phone never
     /// pushed (no link) reads `.notOnDevice`.
     public func tripOnDeviceState(_ id: TripID) -> OnDeviceState {
@@ -798,7 +797,7 @@ public final class MainScreenModel {
         return uploaded
     }
 
-    /// True-up every trip's `deviceLink` against the device's live `tripList`
+    /// True-up every trip's `deviceLink` against the device's live trip catalog.
     /// (TR8) — the trip sibling of `reconcileOnDevice`, drop pass **and** adopt
     /// pass. A device-side trip delete (absent object) or a foreign replacement
     /// (a present object whose non-zero CRC disagrees with what we committed)
@@ -865,7 +864,7 @@ public final class MainScreenModel {
     /// replace / fresh and do the precheck math (`TripUploadPlanner`). `nil` when
     /// the trip has dissolved. The device counts come from the last reconcile's
     /// catalogs; the trip-object action replaces its existing device copy when a
-    /// valid scoped link points at a still-present `tripList` entry, else fresh.
+    /// valid scoped link points at a still-present trip-catalog entry, else fresh.
     public func planTripUpload(_ id: TripID) -> TripUploadPlan? {
         guard let trip = trip(id) else { return nil }
         let stageInputs = trip.stageIDs.map { routeID in
@@ -877,7 +876,7 @@ public final class MainScreenModel {
         }
         // A valid scoped link IS the replace target — exactly `plannedDeviceObjectID`'s
         // rule for route stages, no catalog-contains check. The reconcile owns dropping
-        // links for trips the device no longer lists (every successful `tripList` read);
+        // links for trips the device no longer lists (every successful catalog read);
         // re-checking a *cached* catalog here demoted a valid link to a fresh upload
         // whenever the cache was stale (e.g. the post-commit `listTrips` failed) — and a
         // fresh upload of an already-stored trip mints a silent duplicate. A replace of

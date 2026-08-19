@@ -1471,7 +1471,6 @@ dependencies = [
  "obc-formats",
  "obc-link",
  "obc-ports",
- "obc-weather",
 ]
 
 [[package]]

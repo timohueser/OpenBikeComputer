@@ -230,7 +230,7 @@ fn draw_sparkline(cv: &mut impl Surface, x0: i32, y_top: i32, w_band: i32, h_ban
 /// trip* into a self-dismiss and the card body into the removed notice.
 #[derive(Debug)]
 pub struct TripReceivedScreen {
-    trip_id: u16,
+    trip_id: crate::CatalogObjectId,
     selected: usize,
     /// Map-plane millis when the popup opened — the 30 s auto-close anchor.
     opened_ms: u32,
@@ -238,7 +238,7 @@ pub struct TripReceivedScreen {
 
 impl TripReceivedScreen {
     /// A prompt for the trip with durable id `trip_id`, opened at `now_ms` (the auto-close anchor).
-    pub fn new(trip_id: u16, now_ms: u32) -> Self {
+    pub fn new(trip_id: crate::CatalogObjectId, now_ms: u32) -> Self {
         TripReceivedScreen { trip_id, selected: 0, opened_ms: now_ms }
     }
 

@@ -89,6 +89,10 @@ use core::ptr::addr_of_mut;
 
 use obc_app::{ArenaError, ArenaGate, ArenaInit, ArenaOwner, MapQuiesced};
 
+/// One planner step's staged OBCR output. The largest terminal step is the full 256-entry chunk
+/// index (11,264 B), one final 1,530-byte chunk body, and the 128-byte header backfill.
+pub(crate) const NAV_OUTPUT_STAGE_BYTES: usize = 16 * 1_024;
+
 /// The **nav arm**: everything one route search needs, as one struct so the union has one member
 /// to name (epic #116 R4 + #499).
 ///
@@ -124,6 +128,10 @@ pub(crate) struct NavArm {
     /// the "was it written?" fact with the guard instead of leaving it in the ride loop's `NavRun`
     /// bookkeeping.
     planner: MaybeUninit<obc_route::NavPlanner>,
+    /// Append bytes plus the final header backfill, flushed through the flat-store writer after
+    /// each bounded synchronous planner step. This fits in the nav arm's existing headroom under
+    /// the larger render arm, so it adds no resident RAM.
+    pub(crate) output: [u8; NAV_OUTPUT_STAGE_BYTES],
 }
 
 /// The arena itself: one block, three overlapping views.
@@ -348,7 +356,12 @@ impl NavGuard {
     /// fields of one struct: splitting the borrow is the arena's job, not the caller's.
     pub(crate) fn plan_parts(
         &mut self,
-    ) -> Option<(&mut obc_route::NavPlanner, &mut obc_route::NavScratch, &mut obc_reader::NavTileCache)> {
+    ) -> Option<(
+        &mut obc_route::NavPlanner,
+        &mut obc_route::NavScratch,
+        &mut obc_reader::NavTileCache,
+        &mut [u8; NAV_OUTPUT_STAGE_BYTES],
+    )> {
         if !self.planner_ready {
             return None;
         }
@@ -357,7 +370,7 @@ impl NavGuard {
         // and `&mut self` bounds all three borrows to this guard, so no second reference can exist.
         let arm = unsafe { &mut *(arena_ptr() as *mut NavArm) };
         let planner = unsafe { arm.planner.assume_init_mut() };
-        Some((planner, &mut arm.scratch, &mut arm.tiles))
+        Some((planner, &mut arm.scratch, &mut arm.tiles, &mut arm.output))
     }
 
     /// The written planner, for the read-only diagnostics the finish path reports (`settles`, the ε

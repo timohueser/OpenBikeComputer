@@ -25,13 +25,14 @@ use crate::retention::{RideRetentionRecord, RouteRetentionMeta};
 use crate::ride::{RideCatalog, RideSummary, MAX_RIDES, UI_RIDES_CAP};
 use crate::route::{Catalog, RouteSummary, MAX_ROUTES};
 use crate::trip::{TripInput, TripSummary, Trips, MAX_TRIPS};
+use crate::CatalogObjectId;
 
 /// One route-catalog entry: the durable object id and its summary, handed out **together** so the
 /// id ↔ summary pairing is a type, not a convention (issue #802's catalog invariant).
 #[derive(Debug, Clone, Copy)]
 pub struct RouteEntry<'a> {
     /// The route's durable object id (#450) — what survives a live rescan.
-    pub id: u16,
+    pub id: CatalogObjectId,
     /// The resident summary the menus render.
     pub summary: &'a RouteSummary,
 }
@@ -49,7 +50,7 @@ pub struct RideEntry<'a> {
 /// [`CatalogState::remap_route`] / [`CatalogState::remap_ride`] resolve an old index through to
 /// find its new home. Returned by the `replace_*` methods so `App` can re-point the screen stack
 /// and `Activity` keys with the exact mapping the component itself used.
-pub(crate) type OldRouteIds = heapless::Vec<u16, MAX_ROUTES>;
+pub(crate) type OldRouteIds = heapless::Vec<CatalogObjectId, MAX_ROUTES>;
 /// The ride twin of [`OldRouteIds`].
 pub(crate) type OldRideIds = heapless::Vec<u16, UI_RIDES_CAP>;
 
@@ -60,7 +61,7 @@ pub(crate) struct CatalogState {
     routes: Catalog,
     /// Each route's **durable object id**, pairwise with [`routes`](CatalogState::routes) (#450) —
     /// only ever written in lock step with it (the component's whole point).
-    route_ids: heapless::Vec<u16, MAX_ROUTES>,
+    route_ids: heapless::Vec<CatalogObjectId, MAX_ROUTES>,
     /// Each route's device-local **retention meta** (level + `last_used`), pairwise with
     /// [`route_ids`](CatalogState::route_ids) (epic #638, S3). Carried alongside the catalog — never
     /// in the byte-pinned OBCR file — and **remapped by identity** across a rescan (a surviving
@@ -192,7 +193,7 @@ impl CatalogState {
     }
 
     /// Each route's durable id, pairwise with [`routes`](CatalogState::routes).
-    pub(crate) fn route_ids(&self) -> &[u16] {
+    pub(crate) fn route_ids(&self) -> &[CatalogObjectId] {
         &self.route_ids
     }
 
@@ -204,12 +205,12 @@ impl CatalogState {
 
     /// The durable id at catalog index `idx`, or `None` out of range — drain-time id resolution
     /// (#837: a vanished subject resolves to nothing).
-    pub(crate) fn route_id_at(&self, idx: usize) -> Option<u16> {
+    pub(crate) fn route_id_at(&self, idx: usize) -> Option<CatalogObjectId> {
         self.route_ids.get(idx).copied()
     }
 
     /// The catalog index currently holding durable id `id`, or `None` when it isn't resident.
-    pub(crate) fn route_index_of(&self, id: u16) -> Option<usize> {
+    pub(crate) fn route_index_of(&self, id: CatalogObjectId) -> Option<usize> {
         self.route_ids.iter().position(|&x| x == id)
     }
 
@@ -222,7 +223,7 @@ impl CatalogState {
     /// past [`MAX_ROUTES`] are ignored), re-resolve the trip folders against the new ids, and
     /// return the old id column so the caller can remap every held index by identity
     /// ([`remap_route`](CatalogState::remap_route)).
-    pub(crate) fn replace_routes(&mut self, summaries: &[RouteSummary], ids: &[u16]) -> OldRouteIds {
+    pub(crate) fn replace_routes(&mut self, summaries: &[RouteSummary], ids: &[CatalogObjectId]) -> OldRouteIds {
         let old_ids = self.route_ids.clone();
         let old_meta = self.route_meta.clone();
         self.routes.clear();
@@ -252,7 +253,7 @@ impl CatalogState {
     /// Old route index → new route index by durable identity: the id `old_ids` recorded at `idx`,
     /// found in the replaced catalog — or `None` when that route vanished. The one mapping every
     /// held index (`active_route`, cache keys, open screens) follows across a rescan (#450).
-    pub(crate) fn remap_route(&self, old_ids: &[u16], idx: usize) -> Option<usize> {
+    pub(crate) fn remap_route(&self, old_ids: &[CatalogObjectId], idx: usize) -> Option<usize> {
         let id = *old_ids.get(idx)?;
         self.route_index_of(id)
     }
@@ -279,7 +280,7 @@ impl CatalogState {
     /// Optimistically stamp route `id`'s `last_used` in the resident meta (the sweep/activation
     /// mirror of the host's sidecar write) so a re-derivation before the host's rescan lands doesn't
     /// re-enqueue the same stamp. A no-op if the id isn't resident.
-    pub(crate) fn stamp_route_last_used(&mut self, id: u16, utc: u32) {
+    pub(crate) fn stamp_route_last_used(&mut self, id: CatalogObjectId, utc: u32) {
         if let Some(p) = self.route_ids.iter().position(|&x| x == id) {
             self.route_meta[p].last_used_utc = utc;
         }
@@ -345,7 +346,7 @@ impl CatalogState {
     /// host's rescan lands doesn't re-enqueue the same stamp for a ride outside the display catalog.
     /// Only ever fills a `0` stamp. A no-op if the id isn't in the inventory.
     pub(crate) fn stamp_inventory_synced_at(&mut self, id: u16, utc: u32) {
-        if let Some(r) = self.ride_inventory.iter_mut().find(|r| r.id == id && r.synced_at_utc == 0) {
+        if let Some(r) = self.ride_inventory.iter_mut().find(|r| r.id == u64::from(id) && r.synced_at_utc == 0) {
             r.synced_at_utc = utc;
         }
     }
@@ -378,8 +379,11 @@ impl CatalogState {
         for (s, &id) in summaries.iter().zip(ids).take(UI_RIDES_CAP) {
             let _ = self.rides.push(s.clone());
             let _ = self.ride_ids.push(id);
-            let _ =
-                self.ride_inventory.push(RideRetentionRecord { id, synced: s.synced, synced_at_utc: s.synced_at_utc });
+            let _ = self.ride_inventory.push(RideRetentionRecord {
+                id: u64::from(id),
+                synced: s.synced,
+                synced_at_utc: s.synced_at_utc,
+            });
         }
         // The view caches follow their subject's identity (identity survives → the resident
         // profile moves with it, no re-stream; vanished → the buffer drops).

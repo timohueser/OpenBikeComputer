@@ -639,20 +639,6 @@ ownership = [
 ]
 cadence_conflict = { reason = "Required CI runs two screenshot methods while the remaining XCUITest methods have no scheduled full route yet.", issue = "#1449" }
 
-[[suite]]
-id = "swift.echo-harness"
-surface = "device-link"
-level = "contract"
-command = "swift build --package-path companion-ios/EchoHarness"
-fixtures = []
-pull_request = "affected"
-scheduled = "none"
-extra_triggers = ["companion-ios/EchoHarness/Package.swift", "companion-ios/EchoHarness/Sources/**"]
-platforms = ["macos"]
-coverage_component = "ios"
-ownership = [{ kind = "swift-package", package = "companion-ios/EchoHarness/Package.swift" }]
-cadence_conflict = { reason = "The harness build has no CI route and its physical-device echo run must remain a separate hardware cadence.", issue = "#1449" }
-
 # Required CI validations that do not own test source files still need one route.
 
 [[suite]]

@@ -83,8 +83,8 @@ pub enum ObjectType {
     /// **Singleton.** `object_id` MUST be `0`: there is one weather bundle and an upload always
     /// targets it. Any other id is answered `notFound`. It is not `0xFFFF`/new-only like a map —
     /// "new-only" exists because a map cannot be replaced in place, whereas a bundle is *always* a
-    /// replacement, landing in the inactive one of the two slots (`WEATHER.A`/`WEATHER.B`) so an
-    /// interrupted upload leaves the old one intact.
+    /// replacement. Flat-store publication retains the old immutable revision until the new
+    /// object commits, so an interrupted upload leaves the old one intact.
     ///
     /// Unlike the map types this one is **BLE-first**: ~46 KiB is a couple of seconds on the CoC,
     /// which is the whole reason the intermittent lifecycle is affordable.

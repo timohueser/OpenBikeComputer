@@ -146,6 +146,11 @@ fn a_replace_is_a_compare_and_swap_on_the_head_revision() {
 
     let answer = upload(&mut device, 3, 1, 1, &bytes, ROUTE, "second");
     assert_eq!(answer.u64_at(8), 2, "the replace published the next revision");
+    assert_eq!(
+        device.take_upload_end(),
+        Some((ObjectKind::Route, obc_link::flat::UploadEnd::Committed { id: ObjectId(1), replaced: true })),
+        "the board composition needs the exact replaced identity"
+    );
     assert_eq!(device.entries().len(), 1, "an ordinary replace leaves a head and nothing else");
     assert_eq!(device.entry(1).unwrap().name.as_bytes(), b"second");
 }
@@ -914,7 +919,10 @@ fn an_upload_latches_its_verdict_exactly_once() {
     assert_eq!(device.take_upload_end(), None, "nothing has ended yet");
     let answer = upload(&mut device, 1, 0, 0, &bytes, ROUTE, "landed");
     assert!(!answer.is_error(), "{answer:?}");
-    assert_eq!(device.take_upload_end(), Some((ObjectKind::Route, obc_link::flat::UploadEnd::Committed)));
+    assert_eq!(
+        device.take_upload_end(),
+        Some((ObjectKind::Route, obc_link::flat::UploadEnd::Committed { id: ObjectId(1), replaced: false }))
+    );
     assert_eq!(device.take_upload_end(), None, "taking it clears it");
 
     // A refusal latches the code its error response carried, and nothing narrower: a device turns

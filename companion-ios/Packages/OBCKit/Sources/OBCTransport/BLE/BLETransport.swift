@@ -153,6 +153,14 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     private var pendingReads: [CBUUID: [CheckedContinuation<Data, Error>]] = [:]
     private var pendingWrites: [CBUUID: [CheckedContinuation<Void, Error>]] = [:]
 
+    // Protocol v4 removed transfer verdicts from `status`, but the authenticated
+    // `weatherUnchanged` command remains on the legacy command/status pair. Keep exactly one
+    // waiter for that one surviving exchange; an early notification is buffered until the GATT
+    // write acknowledgement has returned.
+    private var weatherCommandWaiter: (token: UUID, continuation: CheckedContinuation<CommandResult, Error>)?
+    private var pendingWeatherCommandResult: CommandResult?
+    private var cancelledWeatherCommandTokens: Set<UUID> = []
+
     // Physical indication records for protocol v4. Correlation, operation lifetime and STATUS
     // reconciliation belong to TransferClient; the transport only preserves received records.
     private var pendingObjectControlRecords: [Data] = []
@@ -192,7 +200,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         }
     }
 
-    public var storeChanges: AsyncStream<StoreChanged> {
+    public var catalogChanges: AsyncStream<CatalogChange> {
         AsyncStream { $0.finish() }
     }
 
@@ -602,7 +610,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         }
     }
 
-    /// Upload one OBCW bundle as object type `20`, singleton id `0`, over the ordinary reliable
+    /// Upload one OBCW bundle as a protocol-v4 `.weather` object over the ordinary reliable
     /// CoC — the second connection of the §11 exchange. Rides an existing foreground session when
     /// one is up (and never tears it down); otherwise makes its own bounded ephemeral connection
     /// to the known bonded peripheral and disconnects when the verdict lands. Success is the
@@ -810,7 +818,14 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
             guard characteristics[GATT.objectControl] != nil, characteristics[GATT.psm] != nil
             else { return }
         case .unchanged:
-            break
+            guard characteristics[GATT.command] != nil, let status = characteristics[GATT.status]
+            else { return }
+            // The command result is the durable acknowledgement. Do not write until the notify is
+            // genuinely armed or a fast device can answer between the CCCD write and this exchange.
+            guard status.isNotifying else {
+                peripheral?.setNotifyValue(true, for: status)
+                return
+            }
         }
         weatherUploadInFlight = true
         if weatherUploadConnectedAt == nil { weatherUploadConnectedAt = weatherRequestClock.now }
@@ -836,15 +851,80 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         }
     }
 
-    /// V4 has no unchanged command. Nothing needs to be written when the held revision is already
-    /// current; complete the weather leg without inventing an opcode.
+    /// Command-only fast path for a request whose held bundle is still the newest available
+    /// revision. Object traffic moved to v4, but §11 keeps this seven-byte authenticated command
+    /// and its `commandResult` acknowledgement on the command/status GATT pair.
     private func runWeatherUnchangedExchange(
         requestID: UInt32, retryAfterSeconds: UInt16, token: UUID
     ) async {
-        _ = requestID
-        _ = retryAfterSeconds
-        guard !Task.isCancelled else { return }
-        queue.async { [weak self] in self?.completeWeatherUpload(token: token) }
+        do {
+            await clearPendingWeatherCommandResult()
+            try Task.checkCancellation()
+            try await write(
+                WeatherUnchangedCommand.encode(
+                    requestID: requestID, retryAfterSeconds: retryAfterSeconds
+                ),
+                to: GATT.command
+            )
+            let result = try await nextWeatherCommandResult(token: token)
+            guard result.command == WeatherUnchangedCommand.commandByte else {
+                queue.async { [weak self] in self?.failWeatherUpload(.connectionDropped, token: token) }
+                return
+            }
+            switch result.status {
+            case .ok:
+                queue.async { [weak self] in self?.completeWeatherUpload(token: token) }
+            case .busy:
+                queue.async { [weak self] in self?.failWeatherUpload(.deviceBusy, token: token) }
+            case .unknownCommand, .notFound, .error:
+                queue.async { [weak self] in self?.failWeatherUpload(.rejected, token: token) }
+            }
+        } catch {
+            queue.async { [weak self] in self?.failWeatherUpload(.connectionDropped, token: token) }
+        }
+    }
+
+    private func clearPendingWeatherCommandResult() async {
+        await withCheckedContinuation { continuation in
+            queue.async { [self] in
+                pendingWeatherCommandResult = nil
+                continuation.resume()
+            }
+        }
+    }
+
+    private func nextWeatherCommandResult(token: UUID) async throws -> CommandResult {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                queue.async { [self] in
+                    guard weatherUploadToken == token,
+                          cancelledWeatherCommandTokens.remove(token) == nil
+                    else {
+                        continuation.resume(throwing: DeviceError.transferDropped)
+                        return
+                    }
+                    if let result = pendingWeatherCommandResult {
+                        pendingWeatherCommandResult = nil
+                        continuation.resume(returning: result)
+                    } else {
+                        weatherCommandWaiter = (token, continuation)
+                    }
+                }
+            }
+        } onCancel: { [weak self] in
+            self?.queue.async { [weak self] in
+                guard let self else { return }
+                if let waiter = weatherCommandWaiter, waiter.token == token {
+                    weatherCommandWaiter = nil
+                    waiter.continuation.resume(throwing: DeviceError.transferDropped)
+                } else if weatherUploadToken == token {
+                    // Cancellation can arrive after the result path completed and cleared the
+                    // attempt. Only remember a token while registration may still race with us;
+                    // completed attempts mint no future waiter and must not accumulate here.
+                    cancelledWeatherCommandTokens.insert(token)
+                }
+            }
+        }
     }
 
     /// Weather is an ordinary retaining PUT through the one protocol-v4 client.
@@ -1102,7 +1182,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     public func downloadTrip(_ id: DeviceObjectID) async throws -> TripObjectCodec.Decoded {
         // "Download the trip object" (spec §7.7) — the stored trip blob, decoded
         // app-side for its name + stage ids. Reconcile falls back to it only when
-        // the `tripList` `crc32` can't confirm the fingerprint.
+        // the trip catalog's CRC can't confirm the fingerprint.
         try TripObjectCodec.decode(try await download(kind: .trip, id: id))
     }
 
@@ -1643,12 +1723,16 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         channelWaiters.removeAll()
         let objectControls = objectControlWaiters
         objectControlWaiters.removeAll()
+        let weatherCommand = weatherCommandWaiter
+        weatherCommandWaiter = nil
+        pendingWeatherCommandResult = nil
         pendingObjectControlRecords.removeAll()
         openingChannel = false
         disarmChannelWatchdog()
         for cont in reads { cont.resume(throwing: DeviceError.notConnected) }
         for cont in writes { cont.resume(throwing: DeviceError.notConnected) }
         for waiter in objectControls { waiter.resume(throwing: TransferLinkLost()) }
+        weatherCommand?.continuation.resume(throwing: DeviceError.notConnected)
         for cont in channels { cont.resume(throwing: DeviceError.notConnected) }
     }
 
@@ -2304,6 +2388,25 @@ extension BLETransport: CBPeripheralDelegate {
             }
             return
         }
+        if uuid == GATT.status {
+            if error != nil {
+                if let waiter = weatherCommandWaiter {
+                    weatherCommandWaiter = nil
+                    waiter.continuation.resume(throwing: DeviceError.readFailed)
+                }
+            } else if let data = characteristic.value,
+                      case .commandResult(let result) = try? StatusMessage(decoding: data),
+                      result.command == WeatherUnchangedCommand.commandByte
+            {
+                if let waiter = weatherCommandWaiter {
+                    weatherCommandWaiter = nil
+                    waiter.continuation.resume(returning: result)
+                } else {
+                    pendingWeatherCommandResult = result
+                }
+            }
+            return
+        }
 
         // Resolve a pending read.
         resumeReads(uuid, error == nil ? .success(characteristic.value ?? Data()) : .failure(DeviceError.readFailed))
@@ -2312,6 +2415,14 @@ extension BLETransport: CBPeripheralDelegate {
     public func peripheral(
         _ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?
     ) {
+        if characteristic.uuid == GATT.status {
+            if error == nil {
+                beginWeatherUploadIfReady()
+            } else if discoveryPolicy.weatherUploadPending {
+                failWeatherUpload(.connectionDropped)
+            }
+            return
+        }
         // #753: on a fresh pair the FIRST gated op is a CCCD write, not the PSM
         // read — `beginAuthenticate` arms the `objectControl` indication before reading the
         // PSM — so it's the CCCD write that raises the passkey sheet, and iOS's

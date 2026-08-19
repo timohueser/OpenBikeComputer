@@ -50,7 +50,7 @@ public struct TransferHandle: Sendable {
     public var currentOutcome: TransferOutcome? { outcomePromise.current }
 
     /// The device-assigned object id, for a **route upload** — resolves after the
-    /// transfer commits (the device reports it in the `transferResult`). `nil` when
+    /// transfer commits (the protocol-v4 `PUT` result reports it). `nil` when
     /// this handle carries no id (a download, an immediately-finished handle, or a
     /// pre-bring-up BLE path). Await *after* `outcome == .completed`.
     public var assignedObjectID: DeviceObjectID? {

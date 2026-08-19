@@ -68,7 +68,6 @@ use obc_link::frame::Opcode;
 use obc_link::ids::{GenerationId, LogicalObjectId, OperationId};
 use obc_link::registry::ObjectKind;
 use obc_link::upload::Target;
-use obc_storage::fat_extents::SharedBlockDevice;
 use obc_storage::obc2::adapter::Adapter;
 use obc_storage::obc2::blocklog::WriteLog;
 use obc_storage::obc2::fat::{self, FatMedia, SlotTable, Stride, Survey, NO_SLOTS};
@@ -80,6 +79,7 @@ use obc_storage::obc2::mount::{Outcome, CREATION_ORDER};
 use obc_storage::obc2::transaction::KernelMedia as _;
 use obc_storage::obc2::transaction::{AcceptEverything, KernelTransaction, NoHooks};
 use obc_storage::obc2::StoreId;
+use obc_storage::shared_device::SharedBlockDevice;
 
 // The critical-section impl comes from linking nrf-mpsl (the default `ble` feature set); MPSL is
 // never initialised here, and its impl works from reset — the same arrangement the media bench uses.

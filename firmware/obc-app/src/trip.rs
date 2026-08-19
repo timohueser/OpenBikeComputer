@@ -22,6 +22,7 @@ use obc_formats::obcr::NAME_CAP;
 use obc_route::MAX_TRIP_STAGES;
 
 use crate::route::RouteSummary;
+use crate::CatalogObjectId;
 
 /// Maximum trips the resident menu catalog holds (epic #526: cap 16). Each [`TripSummary`] costs
 /// a name + two small stage `Vec`s (~`4·MAX_TRIP_STAGES` bytes), so the table is a couple of KB
@@ -37,9 +38,9 @@ pub type Trips = heapless::Vec<TripSummary, MAX_TRIPS>;
 /// scans `TP{id}.OBT`, the board its `ObjectStore`).
 #[derive(Debug, Clone, Copy)]
 pub struct TripInput<'a> {
-    pub id: u16,
+    pub id: CatalogObjectId,
     pub name: &'a str,
-    pub stage_ids: &'a [u16],
+    pub stage_ids: &'a [CatalogObjectId],
 }
 
 /// A resolved trip: its identity + name, the route object ids it references (kept verbatim so a
@@ -49,11 +50,11 @@ pub struct TripInput<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TripSummary {
     /// The trip's durable object id (its own device counter, separate from routes/rides).
-    pub id: u16,
+    pub id: CatalogObjectId,
     pub name: String<NAME_CAP>,
     /// The stage route ids **as stored**, ride order — the resolution source of truth (re-run on a
     /// catalog rescan) and, for a fully-dangling trip, the only thing left to key a delete on.
-    pub stage_ids: Vec<u16, MAX_TRIP_STAGES>,
+    pub stage_ids: Vec<CatalogObjectId, MAX_TRIP_STAGES>,
     /// The resolved catalog indices, ride order — one per **resolvable** stage (a dangling id is
     /// skipped, so this can be shorter than [`stage_ids`](TripSummary::stage_ids)).
     pub stage_indices: Vec<u16, MAX_TRIP_STAGES>,
@@ -74,7 +75,7 @@ impl TripSummary {
     /// summary whose durable id is `catalog_ids[i]`. Each stage id is looked up in `catalog_ids`;
     /// a hit contributes its catalog index (ride order) and its distance/climb, a miss (dangling ref)
     /// is dropped from the resolved list but stays in `stage_ids`.
-    pub fn resolve(input: &TripInput, catalog: &[RouteSummary], catalog_ids: &[u16]) -> TripSummary {
+    pub fn resolve(input: &TripInput, catalog: &[RouteSummary], catalog_ids: &[CatalogObjectId]) -> TripSummary {
         let mut name = String::new();
         let _ = name.push_str(truncate_on_char_boundary(input.name, NAME_CAP));
 
@@ -99,7 +100,7 @@ impl TripSummary {
     /// (possibly changed) catalog, from the verbatim [`stage_ids`](TripSummary::stage_ids). Called
     /// on a route rescan so a route that appeared/vanished re-files correctly without the host having
     /// to re-feed the trips.
-    pub fn reresolve(&mut self, catalog: &[RouteSummary], catalog_ids: &[u16]) {
+    pub fn reresolve(&mut self, catalog: &[RouteSummary], catalog_ids: &[CatalogObjectId]) {
         self.stage_indices.clear();
         self.distance_km = 0;
         self.climb_m = 0;

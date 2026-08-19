@@ -183,8 +183,8 @@ impl<D: BlockDevice> ByteSource for StoreSource<'_, D> {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), Error> {
         // Range first, medium second — the same order, and for the same reason, as every other
         // `ByteSource` in the tree: a caller asking past the end is a bad offset, and only a genuine
-        // media failure is `Io`. Callers distinguish them (the weather A/B publisher refuses to
-        // truncate a slot it could not read, rather than one it read as short).
+        // media failure is `Io`. Catalog loaders distinguish them so a transient read preserves
+        // the last validated snapshot while a definitively short object can be omitted.
         let end = offset.checked_add(buf.len() as u64).ok_or(Error::BadOffset)?;
         if end > self.len {
             return Err(Error::BadOffset);
@@ -266,6 +266,8 @@ impl<D: BlockDevice> FlatStore<D> {
 mod tests {
     use std::vec;
 
+    use obc_crc::Crc32;
+
     use super::*;
     use crate::flat::layout::{Geometry, EXTENT_AREA};
     use crate::flat::seam::{DisplayName, EntryFlags, EntryMeta, Mutation, ObjectKind, PutSource, StoreId};
@@ -326,6 +328,43 @@ mod tests {
 
         let handle = source.release();
         store.close(handle);
+    }
+
+    #[test]
+    fn an_unpublished_stream_can_patch_its_header_and_hash_the_final_bytes() {
+        let disk = SparseDisk::blank(EXTENT_AREA + Geometry::DEFAULT.extent_blocks() * 4, 3);
+        let store = FlatStore::initialize(&disk, STORE).expect("an expressible card");
+        let mut expected = payload();
+        let mut allocation = store.allocate((LEN + 700) as u64).expect("the oversized reservation fits");
+        store.write(&mut allocation, &expected).expect("the streamed payload fits");
+
+        let header = [0xA5; 128];
+        expected[..header.len()].copy_from_slice(&header);
+        store.patch_allocation(&allocation, 0, &header).expect("an appended header remains patchable");
+        assert_eq!(
+            store.allocation_crc(&allocation).expect("the live allocation hashes"),
+            Crc32::checksum(&expected),
+            "the checksum covers the patched bytes and the unflushed tail",
+        );
+
+        let id = store.next_object_id();
+        let meta = EntryMeta {
+            id,
+            revision: Revision(1),
+            kind: ObjectKind::Route,
+            flags: EntryFlags::NONE,
+            payload_len: LEN as u64,
+            payload_crc: Crc32::checksum(&expected),
+            name: DisplayName::new("computed").expect("a short name"),
+        };
+        store.commit(&[Mutation::Put { meta, source: PutSource::Fresh(allocation) }]).expect("the route publishes");
+        store
+            .with_source(id, None, |source| {
+                let mut actual = vec![0; LEN];
+                source.read_at(0, &mut actual).expect("the published payload reopens");
+                assert_eq!(actual, expected);
+            })
+            .expect("the route source opens");
     }
 
     /// Past the end is a caller error, not a media one — including a window that *starts* inside and

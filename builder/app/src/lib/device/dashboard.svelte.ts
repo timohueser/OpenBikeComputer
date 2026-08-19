@@ -18,7 +18,7 @@
  *   3. **The catalog is what a client can know without downloading.** §3.3's entry is id, revision,
  *      payload length, payload CRC, kind, flags and a display name — and that is the whole of it.
  *      A route's distance, a ride's start time and a trip's stage list live in the payload. Only the
- *      last of those is fetched here, because a trip object is 56 bytes plus two per stage and the
+ *      last of those is fetched here, because a trip object is 56 bytes plus eight per stage and the
  *      page cannot draw a trip without it; a route's or a ride's figures would cost a whole object
  *      each and are shown after the rider asks for one.
  *
@@ -127,11 +127,10 @@ export class DeviceDashboard {
     /**
      * Every route id that is a stage of some trip — the rows the top-level list leaves out.
      *
-     * A `number`, not a `bigint`, because a trip object names its stages as `u16` — see
-     * {@link stagesOf}.
+     * Full-width flat-store ObjectIds, exactly as the trip payload carries them.
      */
-    get stagedIds(): Set<number> {
-        const staged = new Set<number>();
+    get stagedIds(): Set<bigint> {
+        const staged = new Set<bigint>();
         for (const trip of this.trips) for (const id of trip.detail?.stages ?? []) staged.add(id);
         return staged;
     }
@@ -139,21 +138,18 @@ export class DeviceDashboard {
     /** Routes that are not inside any trip, in list order. */
     get topLevelRoutes(): CatalogEntry[] {
         const staged = this.stagedIds;
-        return this.routes.filter((route) => !staged.has(Number(route.objectId)));
+        return this.routes.filter((route) => !staged.has(route.objectId));
     }
 
     /**
      * A trip's stages resolved against the route list. Null marks a dangling id — a member route
      * deleted on its own, which the device tolerates and serves verbatim.
      *
-     * The comparison narrows the catalog's `u64` `ObjectId` to a `number` because the **trip object
-     * names its stages in 16 bits** (`objects.ts`). That is a payload-format limit, not a wire one:
-     * a card whose id cursor has passed 65,535 can hold routes no trip can name. Nothing here can
-     * fix it — the trip object is a device format — and `manage.ts` refuses to build such a trip
-     * rather than writing an id that truncates.
+     * Trip v2 stores the catalog's complete `u64` ObjectId, so resolution stays exact even after
+     * the flat store's allocation cursor has moved beyond JavaScript's safe integer range.
      */
-    stagesOf(trip: TripView): Array<{ id: number; route: CatalogEntry | null }> {
-        const byId = new Map(this.routes.map((route) => [Number(route.objectId), route]));
+    stagesOf(trip: TripView): Array<{ id: bigint; route: CatalogEntry | null }> {
+        const byId = new Map(this.routes.map((route) => [route.objectId, route]));
         return (trip.detail?.stages ?? []).map((id) => ({ id, route: byId.get(id) ?? null }));
     }
 

@@ -9,7 +9,7 @@
 //! board-specific — #801 non-goal, #809 owns the board loop); the *command/event semantics* it
 //! shares are pinned by protocol tests instead.
 
-use obc_app::{App, RideSummary, RouteRetentionMeta, TrackAction};
+use obc_app::{App, CatalogObjectId, RideSummary, RouteRetentionMeta, TrackAction};
 use obc_formats::io::SliceSource;
 use obc_ports::TrackSink;
 use obc_route::{Profile, RideStats, RouteSummary};
@@ -21,13 +21,13 @@ pub trait RouteRepository {
     /// The route catalog (summaries), for [`App::set_routes_with_ids`](obc_app::App::set_routes_with_ids).
     fn catalog(&self) -> &[RouteSummary];
     /// Each catalog entry's session-stable durable id, parallel to [`catalog`](RouteRepository::catalog).
-    fn ids(&self) -> &[u16];
+    fn ids(&self) -> &[CatalogObjectId];
     /// Delete the route with durable id `id` (the on-device hold-to-delete). `true` = removed; the
     /// caller then re-feeds the catalog. A vanished id is a no-op.
-    fn delete_by_id(&mut self, id: u16) -> bool;
+    fn delete_by_id(&mut self, id: CatalogObjectId) -> bool;
     /// Persist the router's emitted OBCR as the reserved nav route (overwriting any previous plan),
     /// returning its session-stable id — or `None` on an I/O failure.
-    fn write_nav_route(&mut self, bytes: &[u8]) -> Option<u16>;
+    fn write_nav_route(&mut self, bytes: &[u8]) -> Option<CatalogObjectId>;
     /// Make the active route match `want`, (re)reading its bytes only on a change. **Returns whether
     /// the active bytes were (re)loaded this call** — the signal [`ActiveRouteSession`](crate::ActiveRouteSession)
     /// gates its index reparse on, so a settled view never reparses.
@@ -49,7 +49,7 @@ pub trait RouteRepository {
     /// active re-stamp, and the once-per-activation stamp
     /// ([`StampRouteUsed`](obc_app::HostCommand::StampRouteUsed)). Default no-op (a retention-less
     /// host has no sidecar).
-    fn stamp_route_used(&mut self, id: u16, utc: u32) {
+    fn stamp_route_used(&mut self, id: CatalogObjectId, utc: u32) {
         let _ = (id, utc);
     }
 }
@@ -102,13 +102,13 @@ pub trait TrackRepository {
 pub trait TripCatalog {
     /// The member route ids of the trip with id `id`, for the cascade delete (delete the trip *and*
     /// its member routes). Empty for an unknown id / a trip-less host.
-    fn member_route_ids(&self, id: u16) -> Vec<u16> {
+    fn member_route_ids(&self, id: CatalogObjectId) -> Vec<CatalogObjectId> {
         let _ = id;
         Vec::new()
     }
     /// Delete the trip with id `id` (its backing `.obt` only — the cascade over member routes is the
     /// dispatcher's composition). `true` = removed.
-    fn delete_by_id(&mut self, id: u16) -> bool {
+    fn delete_by_id(&mut self, id: CatalogObjectId) -> bool {
         let _ = id;
         false
     }

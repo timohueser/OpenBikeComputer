@@ -72,7 +72,7 @@ remaining option.
 
 These are independent product controls, not part of the simulator-fixture consolidation:
 
-- `--weather DIR|demo[:SCENARIO]|live` mounts a weather store, deterministic demo, or live service.
+- `--weather FILE.obcw|demo[:SCENARIO]|live` loads one weather bundle, deterministic demo, or live service.
   Demo scenarios are `scattered` (the default), `drizzle`, `frontal`, `storm`, `dry`, `incoming`,
   `stormahead`, `rainahead`, `gusty`, and `hourly`.
 - `--weather-now UNIX` overrides the freshness instant.

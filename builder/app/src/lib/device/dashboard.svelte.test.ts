@@ -30,7 +30,7 @@ function seedRoute(device: MockDevice, objectId: bigint, name: string) {
     return device.seed({ objectId, kind: ObjectKind.Route, displayName: name, bytes: routeBytes(Number(objectId)) });
 }
 
-function seedTrip(device: MockDevice, objectId: bigint, name: string, stages: number[]) {
+function seedTrip(device: MockDevice, objectId: bigint, name: string, stages: bigint[]) {
     return device.seed({
         objectId,
         kind: ObjectKind.Trip,
@@ -57,7 +57,7 @@ describe("DeviceDashboard", () => {
             seedRoute(device, 1n, "Day 1");
             seedRoute(device, 2n, "Day 2");
             seedRoute(device, 3n, "Home loop");
-            seedTrip(device, 4n, "Jura Crest Trail", [1, 2]);
+            seedTrip(device, 4n, "Jura Crest Trail", [1n, 2n]);
 
             await dash.ensureLoaded(client, SCOPE);
             expect(dash.error).toBeNull();
@@ -84,11 +84,11 @@ describe("DeviceDashboard", () => {
     it("marks a dangling stage instead of dropping it", async () => {
         await withDevice(async ({ client, device }, dash) => {
             seedRoute(device, 2n, "Still here");
-            seedTrip(device, 5n, "Half gone", [9, 2]);
+            seedTrip(device, 5n, "Half gone", [9n, 2n]);
 
             await dash.ensureLoaded(client, SCOPE);
             const stages = dash.stagesOf(dash.trips[0]);
-            expect(stages[0]).toEqual({ id: 9, route: null });
+            expect(stages[0]).toEqual({ id: 9n, route: null });
             expect(stages[1].route?.displayName).toBe("Still here");
         });
     });

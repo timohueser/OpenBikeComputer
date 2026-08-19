@@ -250,7 +250,7 @@ def discover_paths(root: Path) -> list[Discovered]:
 
 def discover_swift(root: Path) -> list[Discovered]:
     found: list[Discovered] = []
-    for relative in ("companion-ios/Packages/OBCKit/Package.swift", "companion-ios/EchoHarness/Package.swift"):
+    for relative in ("companion-ios/Packages/OBCKit/Package.swift",):
         manifest = root / relative
         if not manifest.exists():
             continue

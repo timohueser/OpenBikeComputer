@@ -547,15 +547,12 @@ and the `command` / `status` / `config` characteristics — is canonical in
   **Forget phone** in Settings ▸ Bluetooth is the only device-side clear, so physical possession
   guards the *clear* step (it no longer silently replaces the bond on a fresh pairing).
 
-**Verify on glass** (nRF Connect is the pre-app oracle for A3–A4; the iOS app + harness for A5+):
+**Verify on glass** (nRF Connect is the pre-app oracle for A3–A4; the iOS app covers A5+):
 - **nRF Connect** — service/char table matches the spec, DIS strings + serial real, BAS notifies,
   `protocolVersion` reads two bytes, `4`, `psm` reads `0x0080`; negotiated MTU (247) + 2M PHY, interval settles
   to the idle set; disconnect/re-connect + walk out of range bumps the counters and always returns to
   advertising. As an *unbonded* stranger (post-A8): DIS/`protocolVersion` readable, access-denied on
   every gated char + the CoC.
-- **Echo/transfer harness** `companion-ios/EchoHarness` (reuses the app's `BLEChannel`):
-  `swift run echo-harness --count 1000 --size 32768` round-trips byte-identical; `--corrupt` expects a
-  `crcMismatch`. `upload`/`list`/`detail`/`delete`/`abort-test` exercise the route plane.
 - **E2E golden path** — share a GPX to the iOS app, upload (B5 sheet), reflash the **map** build; the
   route is in the device menu and rideable (SD persists across flashes). For sync: record 2–3 rides on
   the map build (`synth` is fine indoors), reflash `ble`, sync pulls them; spot-check a decoded ride's

@@ -24,7 +24,7 @@ import OBCDomain
 /// | `-OBCNetwork <state>` | `offline` / `online` | pin the MapKit-basemap reachability (#294) — `offline` forces the grid fallback |
 /// | `-OBCFirmwareDemo` | (flag) | open the S7 firmware-update screen with a pre-staged sample update (the Files picker can't be automated) |
 /// | `-OBCDeviceRoutesFull` | (flag) | pad the device's route catalog to one below the cap so a multi-stage trip fails the whole-trip precheck (TR8 storage-precheck demo/test) |
-/// | `-OBCOldFirmware` | (flag) | model a device predating auto-expiry (epic #638): `setClock`/`setRouteRetention` answer `unsupported`, no `routeList` expiry tail — S7's capability-gated (hidden) state |
+/// | `-OBCOldFirmware` | (flag) | model a device predating auto-expiry (epic #638): `setClock`/`setRouteRetention` answer `unsupported`, no route-catalog expiry metadata — S7's capability-gated (hidden) state |
 /// | `-OBCWeatherDemo <state>` | `healthy` / `empty` / `stale` / `failing` / `unsupported` | seed the WX13 Weather screens with a fixture job ring, service manifest state and (for `failing`) an owed job; `unsupported` drops the device's weather feature bit |
 ///
 /// Env fallbacks (used when the argument is absent): `OBC_SCENARIO`,
@@ -92,7 +92,7 @@ public struct MockLaunchOptions: Equatable, Sendable {
     /// under the mock transport means an empty ring and no service — honest, but not photographable.
     public var weatherDemo: WeatherDemoState?
     /// Model a device that predates auto-expiry (epic #638): `setClock` /
-    /// `setRouteRetention` answer `unsupported` and `routeList` entries carry no
+    /// `setRouteRetention` answer `unsupported` and route catalog entries carry no
     /// expiry tail. `false` = the current firmware (expiry supported). Drives
     /// S7's capability-gated (hidden) state under automation.
     public var oldFirmware: Bool

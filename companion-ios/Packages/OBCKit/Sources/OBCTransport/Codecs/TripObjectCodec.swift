@@ -7,15 +7,15 @@ import OBCDomain
 /// (a route stays a byte-identical OBCR file, membership edits never touch it).
 ///
 /// Layout (little-endian): a fixed **56-byte header** followed by
-/// `stage_count × u16` route object ids in ride order:
+/// `stage_count × u64` route object ids in ride order:
 /// ```
-/// version    u8  = 1
+/// version    u8  = 2
 /// reserved   u8
 /// stage_count u16
 /// name_len   u8   ≤ 48
 /// name       char[48]  (zero-padded)
 /// reserved   u8[3]
-/// stages     u16[stage_count]   route object ids, ride order
+/// stages     u64[stage_count]   flat-store object ids, ride order
 /// ```
 /// **Compaction is the caller's job, not the codec's.** The app owns validation
 /// and hands `encode` the already-resolved, ride-ordered device ids for the
@@ -24,16 +24,16 @@ import OBCDomain
 /// the object holds (dangling refs included — the device tolerates them on read
 /// and never rewrites a stored trip), so decode∘encode round-trips byte-exactly.
 ///
-/// Pinned byte-for-byte against `specs/vectors/trip-v1.bin`
+/// Pinned byte-for-byte against `specs/vectors/trip-v2.bin`
 /// (`TripCodecTests`), which the firmware side pins too, so neither can drift
 /// from the spec without a test going red.
 public enum TripObjectCodec {
     /// The trip object format version this codec writes (spec §7.7). Public so the
     /// mock's device-side trip store and the vector tests can stamp it.
-    public static let version: UInt8 = 1
+    public static let version: UInt8 = 2
     /// The fixed header size (spec §7.7); stage ids follow it.
     static let headerLength = 56
-    static let stageIDLength = 2
+    static let stageIDLength = 8
     /// Name-field cap (matches the device `NAME_CAP` / the wire `Config` name).
     static let nameCap = 48
     /// Header offset of `name_len`.
@@ -62,7 +62,7 @@ public enum TripObjectCodec {
         data[data.startIndex + nameLengthOffset] = UInt8(nameBytes.count)
         for (i, byte) in nameBytes.enumerated() { data[data.startIndex + nameOffset + i] = byte }
         // name padding + reserved[3] already zero
-        for id in stages { data.appendUInt16LE(UInt16(truncatingIfNeeded: id.raw)) }
+        for id in stages { data.appendUInt64LE(id.raw) }
         return data
     }
 
@@ -110,7 +110,7 @@ public enum TripObjectCodec {
         stages.reserveCapacity(stageCount)
         for k in 0..<stageCount {
             let offset = b + headerLength + k * stageIDLength
-            stages.append(DeviceObjectID(data.readUInt16LE(at: offset)))
+            stages.append(DeviceObjectID(data.readUInt64LE(at: offset)))
         }
         return Decoded(version: version, name: name, stageObjectIDs: stages)
     }

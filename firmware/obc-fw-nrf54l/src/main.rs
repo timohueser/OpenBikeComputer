@@ -51,6 +51,7 @@ mod sd;
 mod flat_store;
 // The microSD host over Nordic's sEMMC soft peripheral on the FLPR (epic #1158): the card in
 // native 4-bit SD mode, 32 MHz reads / 21.3 MHz writes. `sd.rs`'s whole transport.
+mod card_io;
 mod semmc;
 // Which of the two soft-peripheral images owns the FLPR right now (epic #1158) — the display scan
 // blob or the sEMMC host. The mode scheduler: lazy switching, one *never park mid-scan* gate, and
@@ -274,7 +275,6 @@ const MAP_RESIDENT: usize = core::mem::size_of::<obc_app::App>()
     + core::mem::size_of::<obc_reader::MapTables>()
     + core::mem::size_of::<obc_route::RouteCache>()
     + core::mem::size_of::<obc_route::RouteIndex>()
-    + sd::MAP_EXTENT_BYTES
     + TERRAIN_RESIDENT;
 /// The map's **terrain** (EL7, epic #1068): the [`TERRAIN`] slot (an OBCT reader + its four 512 B
 /// tiles, ~2.1 KB) and the sidecar's own extent table/source in `sd.rs` (~1.3 KB). Resident
@@ -434,7 +434,7 @@ mod resource_report {
         entry("terrain_window", core::mem::size_of::<obc_formats::io::WindowSource<'static>>()),
     ];
 
-    const ENTRIES: usize = 34;
+    const ENTRIES: usize = 36;
 
     #[used]
     #[no_mangle]
@@ -449,7 +449,6 @@ mod resource_report {
         // One map, one file: the `set_shards` / `set_extent_tables` / `set_sources` rows (6,432 +
         // 14,212 + 88 = 20,732 B) were the volume-set mount's, and FS7.5-c2 deleted it. What a map
         // costs to read is one resolved FAT chain and one source over it.
-        entry("map_extents", sd::MAP_EXTENT_BYTES),
         entry("route_cache", core::mem::size_of::<RouteCache>()),
         entry("route_index", core::mem::size_of::<obc_route::RouteIndex>()),
         // WX7's complete reader + generation-aware frame/directory/tile cache type. This is a
@@ -502,22 +501,30 @@ mod resource_report {
         // when the pivot landed, but the rows themselves were forgotten, which broke the report
         // gate on every PR: the 4-block alignment bounce (`sd.rs`, fires only for misaligned
         // callers) and the `Semmc` host-driver state itself.
-        entry("sd_bounce", sd::BOUNCE_BYTES),
+        entry("sd_bounce", card_io::BOUNCE_BYTES),
         entry("semmc_driver", core::mem::size_of::<semmc::Semmc>()),
-        // The **flat store** (FS7.5-c1), itemized in two rows rather than one because they answer
+        // The **flat store** (FS7.5-c1), itemized in separate rows because they answer
         // different questions. `flat_store` is the store type itself — §6.2's 8 KiB free bitmap plus
         // the hold/reservation rows — so a change in `MAX_OPEN_OBJECTS` or an extent-index widening
         // is legible here. `flat_requests` is the storage task's queue, the one part of that layer
         // whose size is a design choice rather than a consequence: depth × the largest request. The
-        // binding's alignment buffer is not a third row — it is `sd_bounce`, shared (see
+        // `flat_catalog_uploads` is the bounded handoff from successful route/trip commits to the
+        // app's typed upload events. The binding's alignment buffer is not another row — it is
+        // `sd_bounce`, shared (see
         // `flat_store`'s note on why it places none of its own).
         entry("flat_store", core::mem::size_of::<obc_storage::flat::FlatStore<flat_store::FlatCard>>()),
         entry("flat_requests", flat_store::REQUEST_QUEUE_BYTES),
+        entry("flat_catalog_uploads", flat_store::CATALOG_UPLOAD_BYTES),
         // The read cutover's own resident cost on the flat arm (FS7.5-c2): the session-long
         // `StoreSource` over the map object **and** the display name the same boot step captures.
         // Named beside the store it reads from so the two halves of "what does reading a flat card
         // cost" are in one place, and named as one row because they are one boot step's residue.
         entry("flat_map_read", flat_store::MAP_READ_BYTES),
+        // The selected Route and WeatherBundle revisions each spend one bounded flat-store hold
+        // row and one `StoreSource`. They are released/reopened on catalog movement, unlike the map
+        // source which remains held for the whole boot.
+        entry("flat_route_read", flat_store::ROUTE_READ_BYTES),
+        entry("flat_weather_read", flat_store::WEATHER_READ_BYTES),
         // The protocol-v4 transfer engine (FS7.5-c3a), which lives in the storage task because that
         // is the one execution context allowed to write. Mostly its staging buffer, still the
         // 512-byte minimum after c3b brought USB — and that is a decision, not an omission: §5.2's
@@ -596,17 +603,8 @@ static mut NULL_ELEV: obc_route::NullElevation = obc_route::NullElevation;
 /// that was replaced, and — the reason it matters here — **one arm instead of two**, because a flat
 /// card has no filesystem to hang a sidecar off in the first place.
 ///
-/// The source must be `'static`: [`TerrainElevation`](obc_elevation::TerrainElevation) borrows it
-/// for the session. On the flat arm that is the mounted store's `StoreSource`; on the FAT arm it is
-/// `Storage::static_map_source`, which is the **extent path only**.
-///
-/// **That last part is a behaviour change, and it is not the sidecar's rule kept.** The sidecar had
-/// its own FAT chain and its own extent table, so a map too fragmented for a 128-run table (#504's
-/// `MAP_SLOW` case) still got terrain. Inside the file, the map's chain *is* the terrain's: a
-/// fragmented FAT map now loses elevation as well as speed, and the two failures that used to be
-/// independent are one. Restoring the independence would mean a second copy of the raster on the
-/// card, so what this owes instead is that the case is **never silent** — see the `defmt::warn!`
-/// below, which fires exactly when a map carries a region and the extent table refused.
+/// The source must be `'static`: [`TerrainElevation`](obc_elevation::TerrainElevation) borrows the
+/// flat store's mounted map source for the session.
 ///
 /// **Every other failure is `None`, and `None` is not a fault** — the rule the sidecar had, and this
 /// part *is* unchanged: no region, a window the header places outside the file, or a container that
@@ -629,37 +627,10 @@ static mut NULL_ELEV: obc_route::NullElevation = obc_route::NullElevation;
 #[inline(never)]
 #[allow(clippy::mut_from_ref)]
 fn mount_terrain(
-    flat_map: Option<&'static dyn obc_formats::io::ByteSource>,
-    storage: Option<&sd::Storage>,
+    map: &'static dyn obc_formats::io::ByteSource,
     tables: &MapTables,
 ) -> Option<&'static mut obc_elevation::TerrainElevation<'static, { obc_elevation::DEFAULT_TILE_SLOTS }>> {
-    // Resolving the arm is this function's, not `main`'s: everything between the two is a value in
-    // the boot task's coroutine, permanently, and there is no reason for the map's bytes to be one
-    // of them.
-    // Read the region first: it is what decides whether a missing source is worth a word. A map
-    // with no elevation and a map whose elevation this build cannot reach are different facts, and
-    // the boot-fault honesty rule's shape applies here too — the quiet answer is only allowed when
-    // there is genuinely nothing to report.
     let region = tables.terrain()?;
-    let map: &'static dyn obc_formats::io::ByteSource = match flat_map {
-        Some(source) => source,
-        None => match storage.and_then(sd::Storage::static_map_source) {
-            Some(source) => source,
-            None => {
-                // The one case this slice made worse, said out loud. `MAP_SLOW` already tells the
-                // rider their map reads slowly; without this line the *other* consequence — flat
-                // profiles on every planned route — would be invisible, and "my climbs disappeared"
-                // is not something anyone would connect to a fragmented card.
-                defmt::warn!(
-                    "map: this map carries a §1.3 terrain region ({=u64} B) but its FAT chain would not \
-                     extent-map, and terrain reads only through that path — routes stay flat. Re-copy the \
-                     card to defragment it (the same fix as the slow-map notice).",
-                    region.len
-                );
-                return None;
-            }
-        },
-    };
     let Some(window) = obc_formats::io::WindowSource::new(map, region.offset, region.len) else {
         defmt::warn!(
             "map: the §1.3 terrain region ({=u64}..+{=u64}) is not inside the file — routes stay flat",
@@ -813,19 +784,13 @@ async fn spawn_usb_stack(spawner: Spawner, usb_p: embassy_nrf::Peri<'static, emb
 /// A FAT card whose map will not parse is therefore replaced by writing a new card, not over the
 /// cable, and this plane says so rather than accepting bytes it cannot commit.
 ///
-/// It still takes `storage` **by value**: consuming it is what ends the map-source borrow the caller
-/// holds across this call, and dropping it here is the truth about what a recovery boot does with
-/// the FAT volume — nothing.
-///
 /// The one thing it must still do is seed the firmware revision, because §5.2.1's EP0 device-info
 /// request serves it and "an update is available" compares against it.
 async fn spawn_map_recovery_usb(
     spawner: Spawner,
     usb_p: embassy_nrf::Peri<'static, embassy_nrf::peripherals::USBHS>,
     rramc: embassy_nrf::Peri<'static, embassy_nrf::peripherals::RRAMC>,
-    storage: Option<sd::Storage>,
 ) {
-    drop(storage);
     let mut settings_store = settings::RramSettingsStore::new(rramc);
     dfu::seed_firmware_revision(&mut settings_store);
     spawner.spawn(defmt::unwrap!(spawn_usb_stack(spawner, usb_p)));
@@ -1296,9 +1261,8 @@ async fn main(_spawner: Spawner) {
         // The flat store owns the raw card from LBA 0 and FAT is a filesystem *on* a card, so a card
         // is one or the other and never both. `FLAT_Store_Format.md` §5.6 step 1 is the test, and
         // `FlatStore::mount` **is** that test — it never fails, it classifies — so the board runs no
-        // second superblock reader of its own that could disagree with the store's rule. On a FAT
-        // card the whole probe is two block reads and `Mode::Unformatted`, and the v1 stack below
-        // takes over exactly as it did before this slice.
+        // second superblock reader of its own that could disagree with the store's rule. A card
+        // without a flat superblock is rejected: the shipping image no longer mounts FAT.
         //
         // `mount_at_boot` is `#[inline(never)]` into a `.bss` slot: a ~10.5 KB store must not become
         // a permanent slot in this task's poll frame, and `mount`'s own ~14 KB constructor frame must
@@ -1309,24 +1273,14 @@ async fn main(_spawner: Spawner) {
         let flat = flat_store::mount_at_boot();
         let flat_catalog = flat_store::report(flat, flat_started.elapsed().as_micros());
 
-        // ── Which stack serves the map (FS7.5-c2, #1420) ───────────────────────────────────────
+        // ── Flat map source (FS7.5-c2, #1420) ──────────────────────────────────────────────────
         //
-        // c1 classified the card and stopped; this is where the renderer's bytes come from. Exactly
-        // one of the two is `Some` for the life of the image, and which one is decided here and
-        // nowhere else — the ride loop below takes both and never re-derives the choice.
-        //
-        // **Reads go direct on both arms.** The flat arm's `&'static StoreSource` is a plain
+        // The `&'static StoreSource` is a plain
         // `ByteSource` a render calls straight through; the storage task spawned below owns *writes*
         // only, and a render's `read_at` never touches its channel (the #1256 ruling of 2026-08-18,
         // and `flat_store::storage_task`'s docs for what the store's per-card-command borrow
         // granularity buys and what it does not).
         //
-        // One `match`, one pair, **one `Storage` slot**: `mount_fat`'s value flows straight into the
-        // binding rather than being assigned into an already-live `Option` afterwards. The
-        // difference is not style — a `Storage` is kilobytes, this is an async block, and an
-        // assignment form put the manager's result in a *second* permanent poll-frame slot beside
-        // the binding's (measured at +2,304 B of `__embassy_main::POOL`; the #1084/#1108 mechanism,
-        // in its quiet form).
         // **The write half's owner, and since c3a the protocol-v4 engine's — spawned on *every*
         // card, not only a flat one.** `arm` is what makes `writer()` hand out senders at all, so
         // the two are one act; what changed in c3a is that the act is unconditional.
@@ -1341,62 +1295,29 @@ async fn main(_spawner: Spawner) {
         // case; see the c3a section of the board README for what a phone sees on each.
         _spawner.spawn(defmt::unwrap!(flat_store::storage_task(flat, flat_store::arm())));
 
-        #[allow(clippy::type_complexity)]
-        let (mut storage, flat_map): (Option<sd::Storage>, Option<&'static dyn obc_formats::io::ByteSource>) =
-            match flat_store::classify(flat) {
-                flat_store::Card::Flat => {
-                    match flat_store::open_map(flat) {
-                        Some(source) => (None, Some(source)),
-                        None => {
-                            // The honest fault, from `obc_app::boot_fault` rather than a screen of its
-                            // own — see `flat_store::boot_fault_for`. NO MAP only for a catalog with no
-                            // map object in it; a map that is there and will not open is MAP UNREADABLE,
-                            // which is the same rule the FAT scan has followed since #1042.
-                            let fault = flat_store::boot_fault_for(flat_catalog);
-                            defmt::error!(
-                                "flat: no map to render from — showing the {=str} fault screen, then heartbeat idle",
-                                fault.copy().0
-                            );
-                            show_boot_fault(&mut display, fault).await;
-                            idle_blink(&mut led).await
-                        }
-                    }
-                }
-                flat_store::Card::FlatBroken(fault) => {
+        let flat_map: &'static dyn obc_formats::io::ByteSource = match flat_store::classify(flat) {
+            flat_store::Card::Flat => match flat_store::open_map(flat) {
+                Some(source) => source,
+                None => {
+                    let fault = flat_store::boot_fault_for(flat_catalog);
+                    defmt::error!(
+                        "flat: no map to render from — showing the {=str} fault screen, then heartbeat idle",
+                        fault.copy().0
+                    );
                     show_boot_fault(&mut display, fault).await;
                     idle_blink(&mut led).await
                 }
-                flat_store::Card::NotFlat => match sd::mount_fat() {
-                    Ok(storage) => (Some(storage), None),
-                    Err(fault) => {
-                        defmt::error!(
-                            "SD: storage unusable — showing the {=str} fault screen, then heartbeat idle",
-                            fault.copy().0
-                        );
-                        show_boot_fault(&mut display, fault).await;
-                        idle_blink(&mut led).await
-                    }
-                },
-            };
-
-        // The FAT arm's card housekeeping. None of it has a flat twin: a flat store's atomic commit
-        // is what the magic-last-write hack was faking, so there are no torn uploads to sweep, and
-        // the map object was already opened above.
-        if let Some(storage) = storage.as_mut() {
-            // Reclaim any map upload that never committed (issue #927) before the catalog is read: a
-            // torn transfer leaves its final `MP{id}.OBM` with the held-back magic still zeroed, which
-            // every catalog refuses — so without this sweep its hundreds of megabytes would sit on the
-            // card forever, invisible to the one surface that could explain them. The map twin of the
-            // object store's `is_aborted_commit` sweep over `/routes`, and it must run **before**
-            // `open_map` so the selection never lands on a corpse.
-            storage.sweep_aborted_maps();
-
-            // Open the selected `.obcm` and hold it open for the session — the map **streams** from it,
-            // never read resident into the 256 KB part. (The `/routes/*.obcr` catalog is scanned into the
-            // app's Route menu by `load_routes` *after* the app is built — in its own frame, so the ~5 KB
-            // `Catalog` never sits on `main`'s stack beneath the long-lived ride loop.)
-            storage.open_map();
-        }
+            },
+            flat_store::Card::FlatBroken(fault) => {
+                show_boot_fault(&mut display, fault).await;
+                idle_blink(&mut led).await
+            }
+            flat_store::Card::NotFlat => {
+                defmt::error!("flat: card is not formatted as a flat store — FAT compatibility is retired");
+                show_boot_fault(&mut display, obc_app::BootFault::StorageFault).await;
+                idle_blink(&mut led).await
+            }
+        };
 
         // Place the streamed-map geometry cache in `.bss`, built in place (an all-zero
         // `MaybeUninit::zeroed` → a `.bss` memset, never a stack temporary).
@@ -1409,44 +1330,10 @@ async fn main(_spawner: Spawner) {
         // spike (a 1536-byte style scratch + the ~2.3 KB style array) on the deep render path, which is
         // what kept that path overrunning the 256 KB part's stack. The transient parse cost is paid
         // **here**, at boot, where the call stack is shallow; a missing or structurally-bad map shows a
-        // fault screen, then idles. The idle camera centre is the parsed bbox. `init_src`'s `storage` borrow
-        // ends with this block, so the loop can rebuild a fresh source each redraw AND reconcile the card
-        // (`&mut storage`) between frames.
+        // fault screen, then idles. The idle camera centre is the parsed bbox.
         // SAFETY: sole owner of MAP_TABLES; single executor → no aliasing; written exactly once here.
-        // Which fault a map-less boot deserves is the *card's* answer, not `map_source`'s: a volume
-        // set this build declines to open, a listed map that will not open, a torn `MP{id}.OBM` the
-        // scan could not parse — each leaves a map on the card, and NO MAP would send the rider
-        // looking for a file that is right there. `Storage::boot_fault` is NO MAP only when the card
-        // held nothing; the rule itself is `obc_app::boot_fault`, tested where tests run. On the flat
-        // arm this line is unreachable — `flat_store::open_map` already faulted above if it had
-        // nothing to hand back — so `NoMap` is the placeholder for a state that cannot occur rather
-        // than a second opinion about a card. Read before the `map_source` borrow so the `else` arm
-        // is free of it.
-        let map_fault = storage.as_ref().map_or(obc_app::BootFault::NoMap, sd::Storage::boot_fault);
         let map_tables: &MapTables = unsafe {
-            // Keep the source in a lexical scope: the recovery arm needs `storage` by value, and the
-            // temporary map source must have released its borrow before that async call begins.
-            let parsed = {
-                // The flat arm's source is `'static` and was resolved at classification; the FAT
-                // arm's borrows `storage` and is rebuilt per redraw. Both are a `&dyn ByteSource` by
-                // the time `MapTables::parse` sees one, which is the whole of the read cutover at
-                // this seam.
-                let fat_src = storage.as_ref().and_then(sd::Storage::map_source);
-                let init_src: &dyn obc_formats::io::ByteSource = match (flat_map, &fat_src) {
-                    (Some(source), _) => source,
-                    (None, Some(source)) => source,
-                    (None, None) => {
-                        defmt::error!(
-                            "SD: no map to stream from — showing the {} fault screen, then heartbeat idle",
-                            defmt::Debug2Format(&map_fault)
-                        );
-                        spawn_map_recovery_usb(_spawner, p.USBHS, p.RRAMC, storage).await;
-                        show_boot_fault(&mut display, map_fault).await;
-                        idle_blink(&mut led).await
-                    }
-                };
-                MapTables::parse(init_src)
-            };
+            let parsed = MapTables::parse(flat_map);
             let slot = core::ptr::addr_of_mut!(MAP_TABLES) as *mut MapTables;
             match parsed {
                 Ok(t) => {
@@ -1458,10 +1345,9 @@ async fn main(_spawner: Spawner) {
                         "map: not valid OBCM: {} — showing MAP UNREADABLE with USB recovery",
                         defmt::Debug2Format(&e)
                     );
-                    // USB map recovery speaks protocol v4 against the flat store since c3b, so it
-                    // is the *flat* arm's now: a flat card whose map will not parse takes a
-                    // replacement over the cable, and a FAT one gets the engine's honest `readOnly`.
-                    spawn_map_recovery_usb(_spawner, p.USBHS, p.RRAMC, storage).await;
+                    // USB map recovery speaks protocol v4 against the flat store, so a replacement
+                    // can still be uploaded when the current map will not parse.
+                    spawn_map_recovery_usb(_spawner, p.USBHS, p.RRAMC).await;
                     show_boot_fault(&mut display, obc_app::BootFault::BadMap).await;
                     idle_blink(&mut led).await
                 }
@@ -1481,11 +1367,9 @@ async fn main(_spawner: Spawner) {
         // until the header is parsed. Folded into the `.bss` `TERRAIN` slot via `mount_terrain`,
         // whose `#[inline(never)]` keeps the ~2.1 KB parse temporary out of this task's poll frame.
         //
-        // Both arms hand it a `'static` source over the *map*: the flat arm's `StoreSource`, or the
-        // FAT arm's extent source. A FAT map that would not extent-map yields no terrain, which is
-        // exactly the rule the `.OBD` sidecar had — see `Storage::static_map_source`.
+        // The flat store hands it the same `'static` source over the map.
         #[cfg(has_nav)]
-        let terrain = mount_terrain(flat_map, storage.as_ref(), map_tables);
+        let terrain = mount_terrain(flat_map, map_tables);
 
         // Boot to **Home**: the user drives Home → Route menu → Map with the buttons. The opt-in
         // `sd-bench` image instead starts directly on the live Map so an unattended RTT run exercises
@@ -1502,19 +1386,22 @@ async fn main(_spawner: Spawner) {
             App::init_map(slot, AppState::new(cam_lon, cam_lat, zoom_for_mpp(INIT_MPP)));
             &mut *slot
         };
+        // FS8/FS9 still own the legacy ride/update implementation. It remains an explicit empty
+        // seam until those slices move it to flat objects; map and terrain never consult it.
+        let mut storage: Option<sd::Storage> = None;
         {
-            // These menu loaders still read the **FAT** catalog. Protocol-v4 clients can already
-            // write flat Route, Ride and Trip objects, but this image does not project those entries
-            // into the on-device menus yet; on a flat card the menus therefore remain empty until
-            // that read-path cutover lands. Do not mistake an empty menu for an empty flat catalog.
+            // Routes and trips are flat-store objects. One bounded snapshot seeds the menu, newest
+            // first so a fresh upload remains visible on a card with more than the UI cap.
+            let routes_loaded = flat_store::load_routes(flat, app);
+            let trips_loaded = flat_store::load_trips(flat, app);
+            if !routes_loaded || !trips_loaded {
+                // Preserve the empty boot snapshot and retry from the ride loop; a transient media
+                // read must not require another catalog commit before the first menu can appear.
+                app.apply_event(obc_app::HostEvent::StoreChanged);
+            }
+            // Ride recording remains FS8; FAT rides stay available during that separate cutover.
             if let Some(storage) = storage.as_mut() {
-                ride::load_routes(storage, app);
                 ride::load_rides(storage, app);
-                // Trip folders (epic #526 TR4): scan `TP{id}.OBT` and resolve each trip's stages
-                // against the route catalog just loaded — after `load_routes`, so the stage
-                // resolution sees it.
-                ride::scan_trips_at_boot(storage);
-                ride::load_trips(storage, app);
             }
             // Mirror the map's §8.6 routing-profile names into the app for the Bike-type settings
             // screen + created-route overview label (N5). Map metadata, so it runs on the `ble` image
@@ -1528,21 +1415,7 @@ async fn main(_spawner: Spawner) {
                 let mut fw: heapless::String<32> = heapless::String::new();
                 let _ = write!(fw, "{}+{}", env!("CARGO_PKG_VERSION"), env!("OBC_FW_GIT"));
                 app.set_fw_version(&fw);
-                // The name is the map's own either way: the FAT arm's long filename stem, or the
-                // flat entry's §9 display name captured by `flat_store::open_map`.
-                let map_name = match &storage {
-                    Some(storage) => storage.map_name(),
-                    None => flat_store::map_name(),
-                };
-                app.set_map_info(map_name, map_tables.version);
-            }
-            // Issue #504: the map loaded but its extent table was refused (fragmented past the cap /
-            // failed verification), so reads fall back to the slow FAT-seek path. Surface it once as a
-            // dismissable notice — the `Warning` event pushes the card over Home; the ride loop shows it
-            // on the first frame. A contiguous map (the common case) sets nothing. The flat arm has no
-            // FAT chain to be fragmented and no seek path to fall back to, so it never sets it.
-            if storage.as_ref().is_some_and(sd::Storage::map_degraded) {
-                app.apply_event(obc_app::HostEvent::Warning(obc_app::WarningFlags::MAP_SLOW));
+                app.set_map_info(flat_store::map_name(), map_tables.version);
             }
         }
 
@@ -1644,9 +1517,6 @@ async fn main(_spawner: Spawner) {
         // every flavor regardless — only the served value is ble-specific.
         let _store_epoch: Option<u32> = {
             let mut guard = shared_store.lock().await;
-            if let Some(storage) = guard.storage.as_mut() {
-                storage.select_weather_at_boot();
-            }
             if guard.storage.is_none() {
                 defmt::info!("store-epoch: no mounted store — no epoch to mint or serve");
                 None
@@ -1756,6 +1626,7 @@ async fn main(_spawner: Spawner) {
             map_tables,
             map_cache,
             flat_map,
+            flat,
             route_cache,
             nav,
             &mut led,
@@ -1774,6 +1645,7 @@ async fn main(_spawner: Spawner) {
             map_tables,
             map_cache,
             flat_map,
+            flat,
             route_cache,
             nav,
             &mut led,

@@ -3,7 +3,7 @@ import Foundation
 /// A stored route's **retention level** — how long the device keeps a route after
 /// its last use before auto-deleting it (epic #638). The wire enum (`u8`) the
 /// phone sets via `setRouteRetention` (spec §4.4 cmd 6) and the device reports in
-/// each `routeList` entry (spec §7.4). Deletion is device-only; the app's library
+/// each protocol-v4 route catalog entry. Deletion is device-only; the app's library
 /// keeps the route forever and re-upload is one tap.
 ///
 /// `expiry = last_used + retention`, computed device-side; the app never runs the

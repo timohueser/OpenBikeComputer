@@ -73,27 +73,23 @@ describe("renameRouteBytes", () => {
 });
 
 describe("stage mutators", () => {
-    const trip: TripObject = { name: "T", stages: [1, 2, 3] };
+    const trip: TripObject = { name: "T", stages: [1n, 2n, 3n] };
 
     it("add dedupes, remove drops by index, move clamps", () => {
-        expect(addStage(trip, 2)).toBe(trip);
-        expect(addStage(trip, 4).stages).toEqual([1, 2, 3, 4]);
-        expect(removeStage(trip, 1).stages).toEqual([1, 3]);
-        expect(moveStage(trip, 0, 1).stages).toEqual([2, 1, 3]);
-        expect(moveStage(trip, 2, 5).stages).toEqual([1, 2, 3]);
+        expect(addStage(trip, 2n)).toBe(trip);
+        expect(addStage(trip, 4n).stages).toEqual([1n, 2n, 3n, 4n]);
+        expect(removeStage(trip, 1).stages).toEqual([1n, 3n]);
+        expect(moveStage(trip, 0, 1).stages).toEqual([2n, 1n, 3n]);
+        expect(moveStage(trip, 2, 5).stages).toEqual([1n, 2n, 3n]);
         expect(moveStage(trip, 0, -1)).toBe(trip);
     });
 });
 
 describe("stageId", () => {
     it("refuses an ObjectId the trip format cannot name", () => {
-        // A trip stores its stages as `u16` while an `ObjectId` is a `u64` from a cursor that is
-        // never reused (`FLAT_Store_Format.md` §3), so a long-lived card can hold routes no trip
-        // object can reference. Writing a truncated id would name a *different* route, so the only
-        // honest answer is to refuse.
-        expect(stageId(1n)).toBe(1);
-        expect(stageId(BigInt(MAX_TRIP_STAGE_ID))).toBe(MAX_TRIP_STAGE_ID);
-        expect(() => stageId(BigInt(MAX_TRIP_STAGE_ID) + 1n)).toThrow(TripStageError);
+        expect(stageId(1n)).toBe(1n);
+        expect(stageId(MAX_TRIP_STAGE_ID)).toBe(MAX_TRIP_STAGE_ID);
+        expect(() => stageId(MAX_TRIP_STAGE_ID + 1n)).toThrow(TripStageError);
         expect(() => stageId(0n)).toThrow(TripStageError);
     });
 });
@@ -150,21 +146,21 @@ describe("against the loopback device", () => {
             const created = await createTrip(client, "  Tour du Mont Blanc  ", [3n, 1n]);
             expect(decodeTripObject(device.payloadOf(created.objectId)!)).toEqual({
                 name: "Tour du Mont Blanc",
-                stages: [3, 1],
+                stages: [3n, 1n],
             });
 
             // The page re-lists after every mutation, so the revision each edit expects is the one
             // the catalog just reported — never one this code remembered.
             const revisionOf = async () => (await client.list({ kind: ObjectKind.Trip })).entries[0].revision;
             await updateTrip(client, { objectId: created.objectId, revision: await revisionOf() }, (t) =>
-                addStage(t, 7),
+                addStage(t, 7n),
             );
             const moved = await updateTrip(client, { objectId: created.objectId, revision: await revisionOf() }, (t) =>
                 moveStage(t, 2, -2),
             );
 
-            expect(moved.stages).toEqual([7, 3, 1]);
-            expect(decodeTripObject(device.payloadOf(created.objectId)!).stages).toEqual([7, 3, 1]);
+            expect(moved.stages).toEqual([7n, 3n, 1n]);
+            expect(decodeTripObject(device.payloadOf(created.objectId)!).stages).toEqual([7n, 3n, 1n]);
             const trips = await client.list({ kind: ObjectKind.Trip });
             expect(trips.entries.map((entry) => [entry.objectId, entry.revision, entry.displayName])).toEqual([
                 [created.objectId, 3n, "Tour du Mont Blanc"],
@@ -174,7 +170,7 @@ describe("against the loopback device", () => {
 
     it("refuses to build a trip over a route the format cannot name, before sending anything", async () => {
         await withDevice(async ({ client, device }) => {
-            await expect(createTrip(client, "Too far", [BigInt(MAX_TRIP_STAGE_ID) + 1n])).rejects.toBeInstanceOf(
+            await expect(createTrip(client, "Too far", [MAX_TRIP_STAGE_ID + 1n])).rejects.toBeInstanceOf(
                 TripStageError,
             );
             expect(device.entries).toEqual([]);

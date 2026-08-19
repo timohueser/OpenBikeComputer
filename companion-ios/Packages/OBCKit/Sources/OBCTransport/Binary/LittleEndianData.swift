@@ -16,6 +16,12 @@ extension Data {
         append(UInt8((value >> 24) & 0xFF))
     }
 
+    mutating func appendUInt64LE(_ value: UInt64) {
+        for shift in stride(from: 0, to: 64, by: 8) {
+            append(UInt8((value >> UInt64(shift)) & 0xFF))
+        }
+    }
+
     mutating func writeUInt16LE(_ value: UInt16, at offset: Int) {
         let index = startIndex + offset
         self[index] = UInt8(value & 0xFF)
@@ -37,5 +43,13 @@ extension Data {
     func readUInt32LE(at index: Index) -> UInt32 {
         UInt32(self[index]) | (UInt32(self[index + 1]) << 8)
             | (UInt32(self[index + 2]) << 16) | (UInt32(self[index + 3]) << 24)
+    }
+
+    func readUInt64LE(at index: Index) -> UInt64 {
+        var value: UInt64 = 0
+        for byte in 0..<8 {
+            value |= UInt64(self[index + byte]) << UInt64(byte * 8)
+        }
+        return value
     }
 }
