@@ -884,10 +884,14 @@ compile.
 ### Device and ride surfaces
 
 The assembled map is saved as one file, which the rider then sends to the device.
-Direct send is a single object: the page verifies the finished file's digest,
-announces its length before the first byte, and the device commits it whole or
-not at all — a cancelled or interrupted send leaves nothing a reader will open.
-Manual upload remains for maps obtained elsewhere.
+The send is a single object: its length is announced before the first byte, and
+the device commits it whole or not at all — a cancelled or interrupted send
+leaves nothing a reader will open. What guarantees it arrived is the
+**whole-object CRC-32** the device checks before committing; the page has no
+independent digest to compare a map against, which is the same position a map
+obtained elsewhere is in. Sending the assembler's output straight to the cable,
+without it touching the disk, returns with the board cutover as a single-object
+transfer under protocol major 4.
 There is no old whole-region catalog fallback hiding behind that button.
 
 Routes and firmware still use the shared object protocol. The cable also runs in
