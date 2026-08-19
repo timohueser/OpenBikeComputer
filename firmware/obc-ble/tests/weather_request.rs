@@ -270,7 +270,7 @@ fn generation_comparison_survives_the_u32_wrap() {
 /// across the wrap and the half-range ambiguity, rather than trusting a comment that says they match.
 #[test]
 fn classification_agrees_with_the_storage_layers_selector() {
-    use obc_weather::{candidate_is_newer, Candidate, Slot};
+    use obc_weather::{candidate_is_newer, Candidate};
 
     let generations = [0u32, 1, 2, 7, 0x7FFF_FFFF, 0x8000_0000, 0x8000_0001, u32::MAX];
     let timestamps = [i64::MIN, -1, 0, 100, 200, i64::MAX];
@@ -282,8 +282,8 @@ fn classification_agrees_with_the_storage_layers_selector() {
                     let incoming = ident(ig, it);
                     let active = ident(ag, at);
                     let storage_would_replace = candidate_is_newer(
-                        Candidate { slot: Slot::B, generation: ig, generated_at: it, total_len: 1, bundle_crc32: 0 },
-                        Candidate { slot: Slot::A, generation: ag, generated_at: at, total_len: 1, bundle_crc32: 0 },
+                        Candidate { generation: ig, generated_at: it, total_len: 1, bundle_crc32: 0 },
+                        Candidate { generation: ag, generated_at: at, total_len: 1, bundle_crc32: 0 },
                     );
                     let wire_commits = classify_upload(incoming, Some(active)) == UploadDisposition::Commit;
                     assert_eq!(

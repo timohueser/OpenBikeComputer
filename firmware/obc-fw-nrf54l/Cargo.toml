@@ -184,8 +184,8 @@ obc-storage = { path = "../obc-storage" }
 # today is the `obc2_store_bench` binary (#1359); the live v1 link path is untouched.
 obc-link = { path = "../obc-link" }
 obc-crc = { path = "../obc-crc" }
-# Shared no_std OBCW reader/cache and deterministic A/B selector. The board supplies only the
-# FatFs adapter; no provider, UI or BLE policy enters this edge.
+# Shared no_std OBCW reader/cache and deterministic generation selector. The board supplies only
+# the flat-store adapter; no provider, UI or BLE policy enters this edge.
 obc-weather = { path = "../obc-weather" }
 # The shared text renderer — `draw_text` + the Terminus `Font` tiers every on-device screen uses. (#122)
 obc-render = { path = "../obc-render" }
