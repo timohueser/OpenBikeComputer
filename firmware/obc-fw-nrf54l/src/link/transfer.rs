@@ -199,25 +199,6 @@ pub(crate) fn classify_transfer(
                 TransferDisposition::Answer(transfer_result(desc.object_id, status))
             }
         },
-        // A **weather bundle** (WX8 #1193, spec §11.5): the singleton OBCW upload at `object_id = 0`,
-        // streamed into the WX7 crash-safe dual-slot store — never the destructive `UPLOAD.TMP`
-        // temp path. Radio-only, mirroring the map's transport gate in the other direction: §11.5
-        // binds the exchange to the CoC, the phone is the only OBCW producer the system has, and a
-        // cable host has no weather job — so a type-20 descriptor on USB falls to the catch-all's
-        // typed `error` below rather than arming a data plane with no weather runner. (If a USB
-        // weather path is ever wanted it is a deliberate spec change, not a missing arm.)
-        (Op::Upload, ObjectType::WeatherBundle) if transport == Transport::Ble => {
-            match store.borrow().weather_upload_open(shared, &desc) {
-                Ok(rx) => {
-                    log_transfer_arm(&desc);
-                    TransferDisposition::Arm(Armed::Upload(desc, rx))
-                }
-                Err(status) => {
-                    log_transfer_reject(&desc, status);
-                    TransferDisposition::Answer(transfer_result(desc.object_id, status))
-                }
-            }
-        }
         // A map upload (#889 for the type, #927 for the storage): **USB only** (spec §10). A map is
         // hundreds of megabytes — over BLE that is days, which is why the type did not exist before a
         // cable did — so a map descriptor on the radio is refused here rather than being handed to a
@@ -298,25 +279,6 @@ pub(crate) fn classify_transfer(
                     TransferDisposition::Answer(transfer_result(desc.object_id, status))
                 }
             }
-        }
-        // A map, a shard, a raster or a manifest on the radio. All four are refused by the same rule
-        // and for the same reason: §10 makes a map USB-only because BLE could never move one in a rider's
-        // lifetime, and a **set** is strictly larger than the map that argument was made about — a
-        // DACH-shaped set is 7.6–8.9 GiB (`OBCA_Spec.md` §5.1). No new argument is needed and none
-        // is made; the reject is typed and logged rather than a silent fall-through, so a host that
-        // tries gets a diagnosable "no".
-        //
-        // Reached only when the arms above did not match, i.e. on BLE — `is_map_payload` is the
-        // wire's own name for "these three types stream into their final file, and only the cable
-        // carries them", so the two lists cannot drift apart.
-        (Op::Upload, ty) if ty.is_map_payload() => {
-            warn!(
-                "link: [ctl] map upload rejected: maps and volume sets are USB-only (spec §10) — type {} id {} len {}",
-                desc.ty.as_u8(),
-                desc.object_id,
-                desc.total_len
-            );
-            TransferDisposition::Answer(transfer_result(desc.object_id, TransferStatus::Error))
         }
         (
             Op::Download,

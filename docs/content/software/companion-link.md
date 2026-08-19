@@ -43,6 +43,38 @@ cover the design and the *why*. Five ideas run through all of it:
   result, a store-change signal, a download's announce — rides a single `status`
   notify characteristic, so there is one subscription and one ordering domain.
 
+## The radio moved to protocol v4 — read this page with that in mind
+
+Since **FS7.5-c3a** (epic #1256) the **object surface on BLE is protocol v4**, the
+flat store's wire, and its normative contract is
+[`FLAT_Store_Protocol.md`](https://github.com/timohueser/OpenBikeComputer/blob/develop/specs/FLAT_Store_Protocol.md)
+— seven opcodes (`LIST`, `STATUS`, `GET`, `PUT`, `REMOVE`, `CANCEL`, `ARM`) over a
+16-byte framed control channel, with the payload on the same L2CAP CoC.
+
+What that changes on this page, concretely:
+
+- The `transferControl` characteristic (`…0005`) is **retired on the radio**. Its
+  replacement is **`objectControl`** (`…0009`): one Write Request carries one
+  complete control frame, and one *confirmed indication* carries its response.
+  There is no 12-byte descriptor and no `transferResult`; a transfer is a `PUT`
+  or a `GET` and its own `RequestId`.
+- `protocolVersion` is **two bytes, `u16` = 4**. The widened
+  `version · store_epoch · obcm_version · feature_bits` read is retired with the
+  store epoch itself: a v4 client learns the card's identity and the freshness of
+  its cache from the `StoreId` every `LIST` page carries.
+- `command`, `status` and `config` are **unchanged** — they were never part of the
+  object surface, and they keep the contract
+  [`obc-ble-interface-spec.md`](https://github.com/timohueser/OpenBikeComputer/blob/develop/specs/obc-ble-interface-spec.md)
+  gives them.
+- **USB is still on v2** and still speaks the descriptor protocol this page
+  describes. The cable's cutover is gated on an open owner decision about where
+  its non-object control surface lives, so the two links genuinely disagree right
+  now — which is why the sections below are kept rather than rewritten.
+
+The transfer walkthrough, the two plane diagrams and the store-epoch section below
+therefore describe **the cable today, and the radio before c3a**. They are
+rewritten when USB cuts over and the two links speak one wire again.
+
 ## Two planes: control and data
 
 A BLE **GATT attribute is capped at 512 bytes** — a hard wall, not a soft

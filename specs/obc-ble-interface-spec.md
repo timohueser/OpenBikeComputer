@@ -4,6 +4,27 @@
 > [`Device_Object_System_v2.md`](Device_Object_System_v2.md), using wire major 3. This document
 > remains the authority only for the temporary legacy implementation during the coordinated
 > cutover. Shipping DOS v2 peers do not translate or serve these descriptors.
+>
+> ⚠️ **The radio no longer speaks this document's object surface** (FS7.5-c3a, epic #1256). On BLE
+> the object surface is **protocol v4**, whose normative contract is
+> [`FLAT_Store_Protocol.md`](FLAT_Store_Protocol.md) §5.1. Concretely, and these are the lines a
+> client implementer will otherwise trust:
+>
+> - **`transferControl` (`3C920005`) is retired on BLE.** Its replacement is `objectControl`
+>   (`3C920009`): one Write Request carries one complete v4 control frame, one *confirmed
+>   indication* carries its response. There is no 12-byte descriptor and no `transferResult`.
+> - **`protocolVersion` (`3C920008`) is two bytes, `u16` = 4.** The `VersionRead` widening —
+>   `version · store_epoch · obcm_version · feature_bits` — is retired with the store epoch itself:
+>   a v4 client learns the card's identity from the `StoreId` every `LIST` page carries (§3).
+> - **§11.5's weather-bundle-over-CoC exchange does not exist on the radio.** A weather bundle is
+>   object kind 4 and arrives as an ordinary v4 `PUT`; the device's request-raising half is parked
+>   for the dev window (see the firmware's `ble::weather`).
+> - **`command` (`…0001`), `status` (`…0002`) and `config` (`…0004`) are unchanged** and this
+>   document remains their authority. They were never part of the object surface.
+>
+> **USB still speaks everything below**, descriptors included: the cable's cutover is gated on an
+> owner decision recorded on #1420. So this document is now *the cable, plus the control
+> characteristics both links share* — not the radio's object wire.
 
 The legacy wire contract between the OpenBikeComputer device (nRF54L
 firmware, BLE peripheral) and the companion app (iOS, BLE central): advertising,
