@@ -277,6 +277,8 @@ enum NavIo {
     Flushing(crate::flat_store::Ticket, obc_route::Step),
     NeedFinish(obc_route::Step),
     Finishing { ticket: crate::flat_store::Ticket, outcome: obc_route::Step, publishing: bool },
+    NeedPublishCompensation(obc_storage::flat::ObjectId),
+    CompensatingPublish(crate::flat_store::Ticket, obc_storage::flat::ObjectId),
 }
 
 /// Maximum bytes a computed OBCR can emit: 128-byte header, 256 full 1,530-byte chunk bodies,
@@ -1710,13 +1712,23 @@ pub(crate) async fn run_app(
                                 if publishing {
                                     match answer {
                                         Ok(crate::flat_store::Outcome::Published(id)) => {
-                                            let len = match outcome {
-                                                obc_route::Step::Done(stats) => stats.total_distance_m,
-                                                _ => 0,
-                                            };
-                                            crate::flat_store::load_routes(flat, app);
-                                            let _ = crate::flat_store::reconcile_route(flat, Some(id.0));
-                                            finished = Some(Ok((id.0, len)));
+                                            run.allocation = None;
+                                            match obc_app::host::nav_publish_disposition(run.cancel_requested, id.0) {
+                                                obc_app::host::NavPublishDisposition::Activate(id) => {
+                                                    let len = match outcome {
+                                                        obc_route::Step::Done(stats) => stats.total_distance_m,
+                                                        _ => 0,
+                                                    };
+                                                    crate::flat_store::load_routes(flat, app);
+                                                    let _ = crate::flat_store::reconcile_route(flat, Some(id));
+                                                    finished = Some(Ok((id, len)));
+                                                }
+                                                obc_app::host::NavPublishDisposition::Compensate(id) => {
+                                                    run.io = NavIo::NeedPublishCompensation(
+                                                        obc_storage::flat::ObjectId(id),
+                                                    );
+                                                }
+                                            }
                                         }
                                         _ => {
                                             run.cancel_requested = false;
@@ -1731,6 +1743,32 @@ pub(crate) async fn run_app(
                                         obc_route::Step::Failed(error) => error,
                                         _ => obc_route::NavError::NoPath,
                                     }));
+                                }
+                            }
+                        }
+                        NavIo::NeedPublishCompensation(id) => {
+                            let request = crate::flat_store::Request::RemoveComputedRoute {
+                                id,
+                                revision: obc_storage::flat::Revision(1),
+                            };
+                            if let Ok(ticket) = writer.try_call(request, &NAV_STORE_REPLY) {
+                                run.io_started = Instant::now();
+                                run.io = NavIo::CompensatingPublish(ticket, id);
+                            }
+                        }
+                        NavIo::CompensatingPublish(ticket, id) => {
+                            if let Some(answer) = writer.try_result(ticket, &NAV_STORE_REPLY) {
+                                run.write_us += run.io_started.elapsed().as_micros();
+                                if matches!(answer, Ok(crate::flat_store::Outcome::Done)) {
+                                    cancelled = true;
+                                } else {
+                                    // Do not acknowledge cancellation while its published route is
+                                    // still visible. Retry the exact-revision removal on a later pass.
+                                    defmt::warn!(
+                                        "nav route: cancellation compensation for object {=u64} failed — retrying",
+                                        id.0
+                                    );
+                                    run.io = NavIo::NeedPublishCompensation(id);
                                 }
                             }
                         }
@@ -1832,7 +1870,9 @@ pub(crate) async fn run_app(
             // POI-browser navigation needed. `has_nav` only (the router isn't in the `ble` image).
             #[cfg(all(feature = "debug-uart", has_nav))]
             if let Some((from, to)) = obc_platform::debug_link::take_nav() {
-                app.debug_start_nav(from, to, "Bench");
+                if !app.debug_start_nav(from, to, "Bench") {
+                    defmt::warn!("nav plan: ignored repeated debug N while a plan is active");
+                }
             }
 
             let active = app.active_route_index();

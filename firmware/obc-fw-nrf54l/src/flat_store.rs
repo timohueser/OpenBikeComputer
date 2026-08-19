@@ -424,6 +424,9 @@ pub(crate) enum Request {
     WriteComputedRoute { allocation: Allocation, bytes: &'static [u8], header: &'static [u8] },
     /// Publish a freshly generated route under the store's next id.
     PublishComputedRoute { allocation: Allocation, name: DisplayName },
+    /// Compensate a cancellation that raced the synchronous publish. The exact revision is carried
+    /// so this can never remove a later replacement that happens to share the object id.
+    RemoveComputedRoute { id: ObjectId, revision: Revision },
     /// §5.5's atomic batch. Replies with the commit sequence.
     Commit { batch: heapless::Vec<Mutation, MAX_BATCH> },
     /// §7.2's ride checkpoint.
@@ -905,6 +908,9 @@ fn serve(
             store
                 .commit(&[Mutation::Put { meta, source: PutSource::Fresh(allocation) }])
                 .map(|_| Outcome::Published(id))
+        }
+        Request::RemoveComputedRoute { id, revision } => {
+            store.commit(&[Mutation::Remove { id, revision }]).map(|_| Outcome::Done)
         }
         Request::Commit { batch } => store.commit(&batch).map(Outcome::Committed),
         Request::Journal { checkpoint } => store.journal(checkpoint).map(|()| Outcome::Done),

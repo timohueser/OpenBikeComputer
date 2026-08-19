@@ -487,15 +487,18 @@ fn repeated_debug_requests_stack_one_planning_screen() {
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
     app.set_settings(Settings { idle_return: IdleReturn::Never, ..Settings::default() });
     nav_catalog(&mut app);
-    for _ in 0..3 {
-        app.debug_start_nav(POS, POI, "Bench");
-    }
+    assert!(app.debug_start_nav(POS, POI, "First"));
+    let request = plan_req(&mut app).expect("the first debug request drains into the active host plan");
+    assert_eq!(request.name(), "First");
+    assert_eq!(request.from, POS);
+    assert_eq!(request.to, POI);
+    assert!(!app.debug_start_nav((1, 2), (3, 4), "Replacement"));
     let planning = |app: &App| {
         // Count via the public seam: answering removes exactly the planning screens it finds.
         matches!(app.top_screen(), Screen::NavPlanning(_))
     };
     assert!(planning(&app));
-    let _ = plan_req(&mut app);
+    assert!(plan_req(&mut app).is_none(), "the rejected repeat queues no second plan");
     app.apply_event(obc_app::HostEvent::NavPlanned(Ok(7)));
     assert!(matches!(app.top_screen(), Screen::RouteOverview(_)), "the answer lands on the one screen");
     let _ = app.take_dirty();

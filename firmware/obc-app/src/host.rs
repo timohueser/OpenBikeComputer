@@ -51,6 +51,23 @@ use crate::activity::{DetourRequest, DfuAction, NavRequest, TrackAction};
 use crate::dfu::{DfuFailure, DfuInstallError, DfuScanError, DfuScanReport, Version};
 use crate::screen::WarningFlags;
 
+/// What the board host must do when a computed-route publication answers. Cancellation can arrive
+/// while the synchronous store task is committing, so the answer is not automatically a success:
+/// the just-published revision must be removed before the host reports the cancellation complete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NavPublishDisposition {
+    Activate(crate::CatalogObjectId),
+    Compensate(crate::CatalogObjectId),
+}
+
+pub const fn nav_publish_disposition(cancel_requested: bool, id: crate::CatalogObjectId) -> NavPublishDisposition {
+    if cancel_requested {
+        NavPublishDisposition::Compensate(id)
+    } else {
+        NavPublishDisposition::Activate(id)
+    }
+}
+
 /// Everything the app can ask its host to do — the typed successor of the per-feature `take_*`
 /// latches. Drained in the fixed [`HostCommand::DRAIN_ORDER`] by
 /// [`App::drain_host_commands`](crate::App::drain_host_commands); each variant documents its
