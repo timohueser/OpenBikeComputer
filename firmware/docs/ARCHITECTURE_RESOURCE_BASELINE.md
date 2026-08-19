@@ -64,17 +64,23 @@ toolchain and named-allocation table rather than updating a second copy here.
 | BLE | 321,784 B / 321,864 B max | 132,096 B | 1,570,960 B | 9,728 / 12,288 B | 7,264 / 8,192 B | 37,640 B min | 24,576 B | 37,760 B (**−120**) |
 | bootloader | — | — | 16,708 / 32,768 B max | — | — | — | — | — |
 
-> ⚠️ **The BLE profile's board gate is RED on purpose.** Since FS7.5-c1 put the flat store in the
-> image the residual stack is 37,640 B, against a deep-ride high-water last measured at ~35,808 B
-> (default) / 37,760 B (BLE) on 2026-07-04 — so BLE is 120 B under water and default clears by
-> 1,832 B. Schema v3's `deep_ride_high_water` / `deep_ride_margin_min` are what say so; before them
+> ⚠️ **The BLE profile's board gate is RED, expected, and transitional.** Since FS7.5-c1 put the flat
+> store in the image the residual stack is 37,640 B, against a deep-ride high-water last measured at
+> ~35,808 B (default) / 37,760 B (BLE) on 2026-07-04 — so BLE is 120 B under water and default clears
+> by 1,832 B. Schema v3's `deep_ride_high_water` / `deep_ride_margin_min` are what say so; before them
 > nothing compared the residual to a *run*, only to its own approved floor, which is how those
 > 11,848 B walked under a recorded peak with every check green.
 >
-> The high-water is stale — 2026-07-04, nothing has re-run it — but stale in an **unknown**
-> direction, so it is carried unchanged until someone re-measures it on glass (the "on-device
-> capture" section below). A measurement is replaced by another measurement, not by an argument.
-> Read `board.default._resident_note_fs75c1` in the JSON before changing anything resident.
+> **c1 holds for c2 and the pair merges together**, so this state never flashes to a rider: c1 alone
+> mounts the flat store and cannot render from it, so it is not a configuration anyone rides. c2's
+> set-table deletion returns 20,732 B, taking the residual to ~58,372 B and both margins comfortably
+> positive.
+>
+> The high-water is stale — 2026-07-04, nothing has re-run it — and stale in an **unknown**
+> direction, so it is carried unchanged until it is re-measured on the **merged pair** (the
+> "on-device capture" section below). A measurement is replaced by another measurement, not by an
+> argument, and never by profiling a configuration that will not ship. Read
+> `board.default._resident_note_fs75c1` in the JSON before changing anything resident.
 
 “Linked resident” is `.bss + .data`; `.uninit` is resident RAM too and carries the scratch arena.
 Review the two together. `residual_stack` is measured from the end of all resident allocations, so
