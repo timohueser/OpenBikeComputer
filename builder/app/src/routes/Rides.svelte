@@ -12,8 +12,8 @@
     import PreviewModal from "../components/device/PreviewModal.svelte";
     import RideLibraryPanel from "../components/device/RideLibrary.svelte";
     import type { ProfilePoint } from "../lib/device/elevation";
-    import { rideSyncAccess, type LibraryRide, type RideLibrary } from "../lib/device/library";
-    import { rideDistance, rideDuration, rideScope } from "../lib/device/rides";
+    import type { LibraryRide, RideLibrary } from "../lib/device/library";
+    import { rideAccess, rideDistance, rideDuration, rideScope } from "../lib/device/rides";
     import { deviceHolder } from "../lib/device/session.svelte";
     import { platform } from "../lib/platform";
     import { decodeRideObject } from "../lib/usb/objects";
@@ -68,8 +68,8 @@
         {/if}
         <RideLibraryPanel
             {library}
-            rides={connected?.client ? rideSyncAccess(connected.client) : null}
-            scope={connected ? rideScope(connected.info, connected.identity) : null}
+            rides={connected?.client ? rideAccess(connected.client) : null}
+            scope={connected ? rideScope(connected.info, connected.store) : null}
             onpreview={(ride) => void openPreview(library, ride)}
         />
     {:catch reason}

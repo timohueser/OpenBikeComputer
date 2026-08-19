@@ -12,6 +12,12 @@
   through `dashboard.enqueue` so the page cannot trip the client's one-transfer rule over itself.
   That includes the thumbnails: `deviceThumbs.fill` walks the lists one small download at a time
   through the same queue, so a tile filling in never races a click.
+
+  **A tile shows what a catalog listing knows, a modal shows what a payload knows.** §3.3's entry is
+  id, revision, payload length, payload CRC, kind, flags and a display name — so a route's distance
+  and a ride's start time are not on a tile, because putting them there would mean downloading every
+  object to draw the page. Opening one downloads it, and the modal has the figures. Nothing is
+  drawn as a dash in the meantime.
 -->
 <script lang="ts">
     import { untrack } from "svelte";
@@ -27,47 +33,55 @@
     import { dashboard, type TripView } from "../lib/device/dashboard.svelte";
     import type { ProfilePoint } from "../lib/device/elevation";
     import type { TrackSegment } from "../lib/device/segments";
+    import { previewTrack, pullRide, pullRides, type LibraryView, type RideLibrary } from "../lib/device/library";
     import {
-        previewTrack,
-        pullRide,
-        pullRides,
-        rideSyncAccess,
-        type LibraryView,
-        type RideLibrary,
-    } from "../lib/device/library";
-    import { addStage, createTrip, moveStage, removeStage, renameRoute, updateTrip } from "../lib/device/manage";
-    import { rideDistance, rideDuration, rideScope } from "../lib/device/rides";
+        addStage,
+        createTrip,
+        moveStage,
+        removeStage,
+        renameRoute,
+        stageId,
+        updateTrip,
+    } from "../lib/device/manage";
+    import { recordedRides, rideAccess, rideDistance, rideDuration, rideScope } from "../lib/device/rides";
     import { decodeRouteHeader, type PreparedRoute } from "../lib/device/route";
     import { deviceHolder } from "../lib/device/session.svelte";
     import { DeviceJob, jobRegistry } from "../lib/device/job.svelte";
-    import {
-        deviceThumbs,
-        rideFingerprint,
-        routeFingerprint,
-        STAGE_COLORS,
-        type Thumb,
-        type ThumbRequest,
-    } from "../lib/device/thumbs.svelte";
+    import { deviceThumbs, entryFingerprint, STAGE_COLORS, type Thumb, type ThumbRequest } from "../lib/device/thumbs.svelte";
     import { platform } from "../lib/platform";
-    import { planTripDelete } from "../lib/device/tripDelete";
+    import { planTripDelete, type TripStages } from "../lib/device/tripDelete";
     import { confirmAction, confirmChoice } from "../lib/ui/confirm.svelte";
-    import { ObjectType } from "../lib/usb/protocol";
-    import { DeviceError, type ProtocolClient } from "../lib/usb/client";
-    import { decodeRideObject, type RideListEntry, type RouteListEntry } from "../lib/usb/objects";
+    import { DeviceError, type FlatStoreClient } from "../lib/usb/client";
+    import { decodeRideObject } from "../lib/usb/objects";
+    import type { CatalogEntry, ObjectRef } from "../lib/usb/protocol";
     import { sendRoute } from "../lib/device/write";
 
     const session = $derived(deviceHolder.session);
     const client = $derived(session?.status === "ready" ? session.client : null);
-    const scope = $derived(rideScope(session?.info ?? null, session?.identity ?? null));
+    const scope = $derived(rideScope(session?.info ?? null, session?.store ?? null));
 
-    // Load once per (serial, epoch); the store survives tab switches, so coming
+    /** The `(ObjectId, Revision)` pair every request names — the listing's own, never the head, so
+     *  a request and the listing it came from cannot disagree about which bytes are meant. */
+    const refOf = (entry: CatalogEntry): ObjectRef => ({
+        objectId: entry.objectId,
+        revision: entry.revision,
+    });
+
+    /** The shape `tripDelete.ts` reasons over — plain numbers and a name, no protocol types. */
+    const asStages = (trip: TripView): TripStages => ({
+        objectId: Number(trip.objectId),
+        name: trip.displayName,
+        detail: trip.detail,
+    });
+
+    // Load once per (serial, era); the store survives tab switches, so coming
     // back renders instantly and a card swap reloads.
     $effect(() => {
         if (client) void dashboard.ensureLoaded(client, scope);
     });
 
     /** One mutation, queued, with the refresh that makes the page the authority again. */
-    async function mutate(op: (client: ProtocolClient) => Promise<unknown>): Promise<void> {
+    async function mutate(op: (client: FlatStoreClient) => Promise<unknown>): Promise<void> {
         const c = client;
         if (!c) return;
         try {
@@ -78,63 +92,71 @@
         }
     }
 
-    const doRenameRoute = (route: RouteListEntry, name: string) =>
-        void mutate((c) => renameRoute(c, route.objectId, name));
+    const routeName = (route: CatalogEntry) => route.displayName || `Route ${route.objectId}`;
+    const tripName = (trip: TripView) => trip.displayName || `Trip ${trip.objectId}`;
+
+    const doRenameRoute = (route: CatalogEntry, name: string) => void mutate((c) => renameRoute(c, route, name));
 
     const doRenameTrip = (trip: TripView, name: string) =>
-        void mutate((c) => updateTrip(c, trip.objectId, (t) => ({ ...t, name })));
+        void mutate((c) => updateTrip(c, trip, (t) => ({ ...t, name })));
 
-    const doAddToTrip = (route: RouteListEntry, tripId: number | null) =>
-        void mutate((c) =>
-            tripId === null
-                ? createTrip(c, route.name || `Route ${route.objectId}`, [route.objectId])
-                : updateTrip(c, tripId, (t) => addStage(t, route.objectId)),
-        );
-
-    /** The ⋯ menu's "Keep on device" pick — §4.4 cmd 6, then the refresh shows the new tag. */
-    const doSetRetention = (route: RouteListEntry, level: number) =>
-        void mutate((c) => c.setRouteRetention(route.objectId, level));
+    /**
+     * Put a route in a trip: an existing one, or a new trip built around it.
+     *
+     * The trip is looked up by id in the list the menu was drawn from, because an edit is a
+     * read-modify-write that has to carry the revision it expects (§3.6) — a trip something else
+     * replaced in between fails the compare-and-swap and the page re-lists, rather than clobbering.
+     */
+    const doAddToTrip = (route: CatalogEntry, tripId: bigint | null) =>
+        void mutate((c) => {
+            if (tripId === null) return createTrip(c, routeName(route), [route.objectId]);
+            const trip = dashboard.trips.find((t) => t.objectId === tripId);
+            if (!trip) throw new Error("That trip is no longer on the device.");
+            // `stageId` refuses an id a trip object cannot name in its 16-bit stage field, rather
+            // than writing one that truncates into a different route.
+            return updateTrip(c, trip, (t) => addStage(t, stageId(route.objectId)));
+        });
 
     const doMoveStage = (trip: TripView, index: number, delta: number) =>
-        void mutate((c) => updateTrip(c, trip.objectId, (t) => moveStage(t, index, delta)));
+        void mutate((c) => updateTrip(c, trip, (t) => moveStage(t, index, delta)));
 
     async function doRemoveStage(trip: TripView, index: number) {
         // Removing the last stage would leave an empty grouping — offer to take
         // the trip with it instead of leaving a husk on the card.
         if ((trip.detail?.stages.length ?? 0) <= 1) {
             const ok = await confirmAction({
-                title: `Remove the last route from “${trip.name}”?`,
+                title: `Remove the last route from “${tripName(trip)}”?`,
                 body: "An empty trip is nothing, so the trip is deleted with it. The route stays on the device.",
                 confirmLabel: "Remove and delete trip",
                 destructive: true,
             });
             if (!ok) return;
-            await mutate((c) => c.deleteObject(ObjectType.Trip, trip.objectId));
+            await mutate((c) => c.remove(refOf(trip)));
             return;
         }
-        await mutate((c) => updateTrip(c, trip.objectId, (t) => removeStage(t, index)));
+        await mutate((c) => updateTrip(c, trip, (t) => removeStage(t, index)));
     }
 
-    async function deleteRoute(route: RouteListEntry) {
+    async function deleteRoute(route: CatalogEntry) {
         if (!client) return;
         const ok = await confirmAction({
-            title: `Delete “${route.name || `Route ${route.objectId}`}” from the device?`,
+            title: `Delete “${routeName(route)}” from the device?`,
             body: "The route is removed from the card. A copy on this computer, if you have one, is not touched.",
             confirmLabel: "Delete route",
             destructive: true,
         });
         if (!ok) return;
-        await mutate((c) => c.deleteObject(ObjectType.Route, route.objectId));
+        await mutate((c) => c.remove(refOf(route)));
     }
 
     /**
-     * Delete an object, treating the device's "not found" as success: an object already gone
-     * **is** the state the delete was asked to produce, so a stale plan (or a repeat click)
+     * Remove an object, treating the device's "not found" as success: an object already gone
+     * **is** the state the remove was asked to produce, so a stale plan (or a repeat click)
      * must not abort a delete sequence or surface a banner about it. Real errors still throw.
      * One transfer — callers run it through `mutate`/`enqueue` like any other cable operation.
      */
-    const deleteIfPresent = (c: ProtocolClient, type: ObjectType, objectId: number) =>
-        c.deleteObject(type, objectId).catch((cause: unknown) => {
+    const removeIfPresent = (c: FlatStoreClient, ref: ObjectRef) =>
+        c.remove(ref).catch((cause: unknown) => {
             if (cause instanceof DeviceError && cause.code === "not-found") return;
             throw cause;
         });
@@ -159,8 +181,9 @@
     async function deleteTrip(trip: TripView) {
         const c = client;
         if (!c) return;
-        const name = trip.name || `Trip ${trip.objectId}`;
-        const plan = planTripDelete(trip, dashboard.trips, new Set(dashboard.routes.map((r) => r.objectId)));
+        const name = tripName(trip);
+        const routeIds = () => new Set(dashboard.routes.map((r) => Number(r.objectId)));
+        const plan = planTripDelete(asStages(trip), dashboard.trips.map(asStages), routeIds());
 
         if (plan.offer === "trip-only") {
             const body = "Only the grouping is removed — its routes stay on the device as ordinary routes.";
@@ -171,7 +194,7 @@
                 destructive: true,
             });
             if (!ok) return;
-            await mutate(() => deleteIfPresent(c, ObjectType.Trip, trip.objectId));
+            await mutate(() => removeIfPresent(c, refOf(trip)));
             return;
         }
 
@@ -190,7 +213,7 @@
         });
         if (choice === "cancel") return;
         if (choice === "extra") {
-            await mutate(() => deleteIfPresent(c, ObjectType.Trip, trip.objectId));
+            await mutate(() => removeIfPresent(c, refOf(trip)));
             return;
         }
         let failure: unknown = null;
@@ -204,11 +227,16 @@
                     "The trip changed on the device while the dialog was open — nothing was deleted. Try again.";
                 return;
             }
-            const freshPlan = planTripDelete(fresh, dashboard.trips, new Set(dashboard.routes.map((r) => r.objectId)));
+            const freshPlan = planTripDelete(asStages(fresh), dashboard.trips.map(asStages), routeIds());
             const deletable = freshPlan.offer === "both" ? freshPlan.deletable : [];
-            await dashboard.enqueue(() => deleteIfPresent(c, ObjectType.Trip, trip.objectId));
+            // The routes as the refresh just listed them, so each remove carries the revision the
+            // plan was computed against.
+            const byId = new Map(dashboard.routes.map((route) => [Number(route.objectId), route]));
+            // The trip goes first: while it exists, its stages are what makes those routes shared.
+            await dashboard.enqueue(() => removeIfPresent(c, refOf(fresh)));
             for (const id of deletable) {
-                await dashboard.enqueue(() => deleteIfPresent(c, ObjectType.Route, id));
+                const route = byId.get(id);
+                if (route) await dashboard.enqueue(() => removeIfPresent(c, refOf(route)));
             }
         } catch (cause) {
             failure = cause;
@@ -232,49 +260,29 @@
     let tripDrop = $state<File[] | null>(null);
     const dropJob = new DeviceJob("routes");
 
-    async function addRoutes(routes: PreparedRoute[], tripName: string | null, retention: number) {
+    async function addRoutes(routes: PreparedRoute[], name: string | null) {
         const c = client;
         tripDrop = null;
         if (!c) return;
         await dropJob.run(
             async (ctx) => {
-                // Sequential — the wire takes one transfer at a time. The device dedupes a
-                // re-dropped file by CRC and answers with the existing id, so the collected
-                // ids are correct even when half of these were already on the card — and the
-                // chosen retention lands on those too, which is the spec's case (b), an edit.
-                //
-                // The retention stamp is best-effort per stage: the uploads and the trip are
-                // the substance, and a failed annotation on stage k must not strand stages
-                // k+1…n off the card. Failures are counted and said once, in the result line.
-                const ids: number[] = [];
-                let retentionFailures = 0;
+                // Sequential — the wire takes one transfer at a time. Each `PUT` creates an
+                // object and answers with the id the commit assigned (§3.6), which is what the
+                // trip's stage list is then built from.
+                const ids: bigint[] = [];
                 for (const route of routes) {
                     const { objectId } = await dashboard.enqueue(() => sendRoute(c, route, ctx));
                     ids.push(objectId);
-                    if (retention !== 0) {
-                        try {
-                            await dashboard.enqueue(() => c.setRouteRetention(objectId, retention, ctx.signal));
-                        } catch (cause) {
-                            // A cancel is the rider's, not a stamp failure — stop the whole job.
-                            if (ctx.signal.aborted) throw cause;
-                            retentionFailures += 1;
-                        }
-                    }
                 }
-                if (tripName !== null) {
-                    await dashboard.enqueue(() => createTrip(c, tripName, ids, ctx.signal));
+                if (name !== null) {
+                    await dashboard.enqueue(() => createTrip(c, name, ids, ctx.signal));
                 }
-                return { count: ids.length, tripName, retentionFailures };
+                return { count: ids.length, name };
             },
-            (r) => {
-                const landed =
-                    r.tripName !== null
-                        ? `“${r.tripName}” is on the device, ${r.count} stages.`
-                        : `${r.count} routes are on the device.`;
-                if (r.retentionFailures === 0) return landed;
-                const which = r.retentionFailures === 1 ? "one stage" : `${r.retentionFailures} stages`;
-                return `${landed} The keep-on-device setting could not be applied to ${which} — set it from the route's ⋯ menu.`;
-            },
+            (r) =>
+                r.name !== null
+                    ? `“${r.name}” is on the device, ${r.count} stages.`
+                    : `${r.count} routes are on the device.`,
         );
         await dashboard.refresh(c);
     }
@@ -296,13 +304,17 @@
         });
     });
 
+    /** Rides the device will actually serve: §3.5 refuses a `GET` of one it is still recording. */
+    const pullable = $derived(recordedRides(dashboard.rides));
+
     /** Ride ids a durable copy of which is in the folder — inverse of the library's own list. */
     const heldHere = $derived.by(() => {
         if (!libraryView || scope.epoch === null) return null;
         return new Set(
             libraryView.rides
                 .filter((r) => r.present && r.serial === scope.serial && r.epoch === scope.epoch)
-                .map((r) => r.objectId),
+                // The index stores an id as a JSON number; the catalog carries the wire's `u64`.
+                .map((r) => BigInt(r.objectId)),
         );
     });
 
@@ -310,12 +322,12 @@
         if (library) libraryView = await library.view();
     }
 
-    async function pullOne(entry: RideListEntry) {
+    async function pullOne(entry: CatalogEntry) {
         const c = client;
         const lib = library;
         if (!c || !lib) return;
         await pullJob.run(
-            (ctx) => dashboard.enqueue(() => pullRide(rideSyncAccess(c), lib, scope, entry, ctx)),
+            (ctx) => dashboard.enqueue(() => pullRide(rideAccess(c), lib, scope, entry, ctx)),
             ({ ride }) => `“${ride.name}” is in the library.`,
         );
         await refreshLibrary();
@@ -326,7 +338,7 @@
         const lib = library;
         if (!c || !lib) return;
         await pullJob.run(
-            (ctx) => dashboard.enqueue(() => pullRides(rideSyncAccess(c), lib, scope, ctx)),
+            (ctx) => dashboard.enqueue(() => pullRides(rideAccess(c), lib, scope, ctx)),
             (report) =>
                 report.imported.length === 0 && report.repaired.length === 0
                     ? `Nothing new — all ${report.listed} rides on the device are already in the library.`
@@ -337,31 +349,28 @@
 
     // --- thumbnails: session-only on web, durably cached in the desktop app --------------------
 
-    function routeThumbRequest(c: ProtocolClient, route: RouteListEntry): ThumbRequest {
+    function thumbRequest(
+        c: FlatStoreClient,
+        kind: "route" | "ride",
+        entry: CatalogEntry,
+        held: Thumb | undefined,
+    ): ThumbRequest {
         return {
-            kind: "route",
-            id: route.objectId,
-            fingerprint: routeFingerprint(route),
-            load: async (signal) => {
-                const points = await routeTrack(await c.download(ObjectType.Route, route.objectId, { signal }));
-                return points.map((p) => [p.lat, p.lon] as [number, number]);
-            },
-        };
-    }
-
-    function rideThumbRequest(c: ProtocolClient, ride: RideListEntry, held: Thumb | undefined): ThumbRequest {
-        return {
-            kind: "ride",
-            id: ride.objectId,
-            fingerprint: rideFingerprint(ride),
+            kind,
+            // The thumb store keys on a number; an `ObjectId` is a `u64` allocated from a cursor
+            // that starts at 1, so every id a card will hold in this decade is exact as a double.
+            id: Number(entry.objectId),
+            fingerprint: entryFingerprint(entry),
             // A ride already pulled has its preview track in the library index — the free win:
             // no download, and the tile shows exactly what the Ride-library page shows.
             load: held
                 ? async () => held
-                : async (signal) =>
-                      previewTrack(
-                          decodeRideObject(await c.download(ObjectType.Ride, ride.objectId, { signal })),
-                      ),
+                : async (signal) => {
+                      const bytes = (await c.get(refOf(entry), { signal })).bytes;
+                      if (kind === "ride") return previewTrack(decodeRideObject(bytes));
+                      const points = await routeTrack(bytes);
+                      return points.map((p) => [p.lat, p.lon] as [number, number]);
+                  },
         };
     }
 
@@ -378,8 +387,9 @@
             }
         }
         const requests: ThumbRequest[] = [
-            ...dashboard.routes.map((route) => routeThumbRequest(c, route)),
-            ...dashboard.rides.map((ride) => rideThumbRequest(c, ride, heldTracks.get(ride.objectId))),
+            ...dashboard.routes.map((route) => thumbRequest(c, "route", route, undefined)),
+            // A ride still being recorded has no payload to draw yet (§3.5), so it is not asked for.
+            ...pullable.map((ride) => thumbRequest(c, "ride", ride, heldTracks.get(Number(ride.objectId)))),
         ];
         const aborter = new AbortController();
         // `untrack`: the fill reads (and writes) the thumb store's reactive map, and this effect
@@ -399,7 +409,11 @@
                 : `${removed} saved ${removed === 1 ? "preview" : "previews"} deleted. Current previews remain until the app closes.`;
     }
 
-    // --- previews: download the object, decode it, show it. Never acks. ----
+    // --- previews: download the object, decode it, show it ------------------
+    //
+    // This is also where a route's or a ride's figures come from. They are payload facts, and the
+    // payload is exactly what opening a preview fetches — so the modal is the honest place for
+    // them, and the tile behind it is not poorer for lacking them.
 
     /** Aborts preview-driven fetches when the device (or the page) goes away — the trip preview
      *  walks stage tracks through the queue and must not keep walking a dead link. */
@@ -420,31 +434,32 @@
         /** The route's stored waypoints — the modal's floating card + map diamonds. */
         waypoints: RouteWaypoint[];
         /** Set for routes: the modal's header offers Delete. */
-        route: RouteListEntry | null;
+        route: CatalogEntry | null;
     } | null>(null);
     /** The object a preview download is running for, to mark the page busy. */
     let previewing = $state<string | null>(null);
 
-    async function previewRoute(route: RouteListEntry) {
+    async function previewRoute(route: CatalogEntry) {
         const c = client;
         if (!c || previewing) return;
         previewing = `route-${route.objectId}`;
         try {
-            const obcr = await dashboard.enqueue(() => c.download(ObjectType.Route, route.objectId));
+            const obcr = (await dashboard.enqueue(() => c.get(refOf(route)))).bytes;
+            // Every figure below comes from the OBCR header (§1) of the bytes just downloaded. The
+            // catalog carries none of them, and this is the download that makes them knowable.
+            const header = decodeRouteHeader(obcr);
             preview = {
-                title: route.name || `Route ${route.objectId}`,
+                title: routeName(route),
                 points: await routeTrack(obcr),
                 segments: null,
                 // The same downloaded bytes, decoded a second way — the modal's waypoint card,
                 // markers and profile ticks. (The modal adds its own "Waypoints" chip when any.)
                 waypoints: await routeWaypoints(obcr),
                 stats: [
-                    { label: "Distance", value: `${(route.distanceM / 1000).toFixed(1)} km` },
-                    { label: "Ascent", value: `${route.ascentM.toLocaleString()} m` },
-                    // From the OBCR header of the bytes just downloaded — the list entry does not
-                    // carry descent, but the header (§2) does.
-                    { label: "Descent", value: `${decodeRouteHeader(obcr).descentM.toLocaleString()} m` },
-                    { label: "Points", value: route.pointCount.toLocaleString() },
+                    { label: "Distance", value: `${(header.distanceM / 1000).toFixed(1)} km` },
+                    { label: "Ascent", value: `${header.ascentM.toLocaleString()} m` },
+                    { label: "Descent", value: `${header.descentM.toLocaleString()} m` },
+                    { label: "Points", value: header.pointCount.toLocaleString() },
                 ],
                 route,
             };
@@ -455,23 +470,22 @@
         }
     }
 
-    async function previewRide(ride: RideListEntry) {
+    async function previewRide(ride: CatalogEntry) {
         const c = client;
         if (!c || previewing) return;
         previewing = `ride-${ride.objectId}`;
         try {
-            const object = decodeRideObject(
-                await dashboard.enqueue(() => c.download(ObjectType.Ride, ride.objectId)),
-            );
+            const object = decodeRideObject((await dashboard.enqueue(() => c.get(refOf(ride)))).bytes);
             preview = {
-                title: ride.name || `Ride ${ride.objectId}`,
+                title: object.name || ride.displayName || `Ride ${ride.objectId}`,
                 points: object.points.map((p) => ({ lat: p.lat1e7 / 1e7, lon: p.lon1e7 / 1e7, ele: p.eleM })),
                 segments: null,
+                // The ride object's own summary fields (§7.2) — the device computed these at Finish.
                 stats: [
-                    { label: "Distance", value: rideDistance(ride.distanceM) },
-                    { label: "Moving time", value: rideDuration(ride.movingTimeS) },
-                    { label: "Avg speed", value: `${((ride.avgSpeedCms / 100) * 3.6).toFixed(1)} km/h` },
-                    { label: "Climb", value: `${ride.climbM.toLocaleString()} m` },
+                    { label: "Distance", value: rideDistance(object.distanceM) },
+                    { label: "Moving time", value: rideDuration(object.movingTimeS) },
+                    { label: "Avg speed", value: `${((object.avgSpeedCms / 100) * 3.6).toFixed(1)} km/h` },
+                    { label: "Climb", value: `${object.climbM.toLocaleString()} m` },
                 ],
                 waypoints: [],
                 route: null,
@@ -492,7 +506,8 @@
      * when the device or the page goes away. Dangling stages are skipped, as the band skips them.
      *
      * The stat chips are sums over the downloaded stages' own headers — the same bytes the
-     * segments are drawn from — plus the stage count.
+     * segments are drawn from — plus the stage count. They exist here and not on the band for the
+     * same reason: a trip's totals are payload arithmetic, and this is where the payloads are.
      */
     async function previewTrip(trip: TripView) {
         const c = client;
@@ -509,15 +524,13 @@
             for (const [index, stage] of stages.entries()) {
                 const route = stage.route;
                 if (!route) continue; // dangling: skipped, exactly as the band draws it
-                const obcr = await dashboard.enqueue(() =>
-                    c.download(ObjectType.Route, route.objectId, { signal }),
-                );
+                const obcr = (await dashboard.enqueue(() => c.get(refOf(route), { signal }))).bytes;
                 const header = decodeRouteHeader(obcr);
                 distanceM += header.distanceM;
                 ascentM += header.ascentM;
                 descentM += header.descentM;
                 segments.push({
-                    name: route.name || `Route ${stage.id}`,
+                    name: route.displayName || `Route ${stage.id}`,
                     // By position in the FULL stage list, dangling included — the same cycle the
                     // band's dots use, so a row's dot and its drawn segment always agree.
                     color: STAGE_COLORS[index % STAGE_COLORS.length],
@@ -529,7 +542,7 @@
             // band shows — and says plainly when some of it could not be drawn.
             const missing = stages.length - segments.length;
             preview = {
-                title: trip.name || `Trip ${trip.objectId}`,
+                title: tripName(trip),
                 points: [],
                 segments,
                 stats: [
@@ -549,7 +562,6 @@
         }
     }
 </script>
-
 <article>
     {#if deviceHolder.interrupted}
         <p class="note error small" role="alert">{deviceHolder.interrupted}</p>
@@ -594,7 +606,7 @@
                 <TripBand
                     {trip}
                     stages={dashboard.stagesOf(trip)}
-                    trackFor={(id) => deviceThumbs.get("route", id)}
+                    trackFor={(id) => deviceThumbs.get("route", Number(id))}
                     busy={previewing !== null}
                     onopen={() => void previewTrip(trip)}
                     onopenstage={(route) => void previewRoute(route)}
@@ -608,13 +620,12 @@
             <RouteTiles
                 routes={dashboard.topLevelRoutes}
                 trips={dashboard.trips}
-                trackFor={(id) => deviceThumbs.get("route", id)}
+                trackFor={(id) => deviceThumbs.get("route", Number(id))}
                 busy={previewing !== null}
                 onopen={(route) => void previewRoute(route)}
                 onrename={doRenameRoute}
                 ondelete={(route) => void deleteRoute(route)}
                 onaddtotrip={doAddToTrip}
-                onsetretention={doSetRetention}
             >
                 <RouteDrop
                     {client}
@@ -639,7 +650,7 @@
                         <button
                             type="button"
                             class="btn primary"
-                            disabled={pullJob.running || dashboard.rides.length === 0}
+                            disabled={pullJob.running || pullable.length === 0}
                             onclick={() => void pullAll()}
                         >
                             ⤓&nbsp; Pull all to library
@@ -648,19 +659,13 @@
                 </span>
             </div>
 
-            {#if dashboard.ridesTruncated}
-                <p class="small faint">
-                    The device listed its newest rides only; older ones are still on the card.
-                </p>
-            {/if}
-
             {#if dashboard.rides.length === 0}
                 <p class="small muted">No rides on the device.</p>
             {:else}
                 <RideTiles
                     rides={dashboard.rides}
                     {heldHere}
-                    trackFor={(id) => deviceThumbs.get("ride", id)}
+                    trackFor={(id) => deviceThumbs.get("ride", Number(id))}
                     busy={previewing !== null}
                     pulling={pullJob.running}
                     onopen={(ride) => void previewRide(ride)}
@@ -669,8 +674,8 @@
             {/if}
 
             <p class="small faint disclosure">
-                Rides are renamed and deleted on the device itself — over the cable they are read-only, so a
-                ride can never be lost.
+                Rides are renamed and deleted on the device itself — this page only reads them, and copying one
+                to the library does not tell the device anything.
             </p>
 
             {#if pullJob.running || pullJob.result || pullJob.error}
@@ -688,15 +693,15 @@
             {#if session.info}
                 {session.info.hardwareRevision} · fw {session.info.firmwareRevision} · serial {session.info.serialNumber}
             {/if}
-            {#if session.identity?.obcmVersion != null}
-                · maps v{session.identity.obcmVersion}
+            {#if session.store}
+                · card {session.store.storeId}
             {/if}
         </p>
 
         {#if tripDrop}
             <TripDropDialog
                 files={tripDrop}
-                onadd={(routes, tripName, retention) => void addRoutes(routes, tripName, retention)}
+                onadd={(routes, name) => void addRoutes(routes, name)}
                 oncancel={() => (tripDrop = null)}
             />
         {/if}

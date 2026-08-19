@@ -9,12 +9,11 @@
  * a full round trip through the wire's ride object — with one documented exception the wire format
  * makes unavoidable, asserted as *the only* exception rather than waved at.
  *
- * The second is **that nothing happened to the device**. #894 locks `synced` as a durability
- * predicate — a flag whose `synced_at` stamp starts an auto-expiry countdown (#638) against the only
- * copy of a ride — and the hosted tier is the one sink that must never set it, because a browser
- * download can be cancelled at the save dialog. So a full list-and-export session is checked from
- * three sides: the device's command log stays empty, its `/tracks/SYNCED.SET` bytes are identical
- * before and after, and the object the export path is handed does not have an ack to send.
+ * The second is **that nothing happened to the device**. Under protocol v4 that claim is a structural
+ * one rather than a behavioural one: §5.2.2 retires the v1 `command` selector, so there is no ack, no
+ * clock write and no config write on this cable at all — the only two things a peer can do to an
+ * object are a `PUT` and a `REMOVE`, and {@link rideAccess} hands the export path an object that has
+ * neither, at compile time *and* at runtime.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -23,25 +22,30 @@ import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { initConvert } from "../convert/bridge";
-import { DeviceError, ProtocolClient } from "../usb/client";
+import { DeviceError, FlatStoreClient } from "../usb/client";
 import {
     MockDevice,
+    REFERENCE_STORE_ID,
     loopbackDevice,
     loopbackLink,
     type LoopbackOptions,
     type MockDeviceOptions,
 } from "../usb/loopback";
-import { encodeRideObject, type RideListEntry, type RideObject, type RidePoint } from "../usb/objects";
+import { encodeRideObject, type RideObject, type RidePoint } from "../usb/objects";
 import type { BytePipe, DeviceLink } from "../usb/pipe";
+import { EntryFlags, ObjectKind, type CatalogEntry } from "../usb/protocol";
 import type { JobContext, JobPhase } from "./progress";
 import {
     exportRide,
+    recordedRides,
     rideAccess,
     rideDate,
     rideFilename,
     rideKey,
+    rideScope,
     rideToTrackLog,
     scopeKey,
+    storeEra,
     type RideSource,
 } from "./rides";
 
@@ -117,20 +121,6 @@ function rideFromTrackLog(log: Uint8Array, name: string, startTime: number): Rid
     };
 }
 
-/** A ride list entry describing a stored ride object — what the device's catalog would report. */
-function entryFor(objectId: number, ride: RideObject, bytes: Uint8Array): RideListEntry {
-    return {
-        objectId,
-        byteLen: bytes.length,
-        startTime: ride.startTime,
-        distanceM: ride.distanceM,
-        movingTimeS: ride.movingTimeS,
-        avgSpeedCms: ride.avgSpeedCms,
-        climbM: ride.climbM,
-        name: ride.name,
-    };
-}
-
 /** A long ride, for the paths that need a transfer still running when something goes wrong. */
 function longRide(points: number): RideObject {
     const list: RidePoint[] = [];
@@ -192,18 +182,19 @@ function context(options: { signal?: AbortSignal; at?: (done: number, phase: Job
 
 /** A device with seeded rides, and the read-only handle the export path gets. */
 function deviceWith(
-    rides: Array<{ id: number; ride: RideObject }>,
+    rides: Array<{ id: bigint; ride: RideObject }>,
     options: LoopbackOptions & MockDeviceOptions = {},
 ) {
-    const harness = loopbackDevice(options);
-    const entries: RideListEntry[] = [];
-    for (const { id, ride } of rides) {
-        const bytes = encodeRideObject(ride);
-        const entry = entryFor(id, ride, bytes);
-        harness.device.seedRide(entry, bytes);
-        entries.push(entry);
-    }
-    return { ...harness, entries, source: rideAccess(harness.client) };
+    const rig = loopbackDevice(options);
+    const entries = rides.map(({ id, ride }) =>
+        rig.device.seed({
+            objectId: id,
+            kind: ObjectKind.Ride,
+            displayName: ride.name,
+            bytes: encodeRideObject(ride),
+        }),
+    );
+    return { ...rig, entries, source: rideAccess(rig.client) };
 }
 
 // --- byte identity --------------------------------------------------------------
@@ -213,7 +204,7 @@ describe("the exported GPX", () => {
      * The one thing the wire cannot carry.
      *
      * `track_to_gpx` opens a fresh `<trkseg>` on every point flagged `segment_start`, so the pinned
-     * fixture — a log with a pause in it — has two. The ride object (spec §7.2) has no segment flag:
+     * fixture — a log with a pause in it — has two. The ride object (§7.2) has no segment flag:
      * the device drops it at Finish, in `track_to_ride`, for *every* peer. The phone's exporter says
      * the same thing ("The ride object carries no segment breaks, so the track is one `<trkseg>`").
      *
@@ -232,17 +223,17 @@ describe("the exported GPX", () => {
     it("reproduces the native exporter byte-for-byte, pulled from the device", async () => {
         const log = vector("track-log.obct");
         const ride = rideFromTrackLog(log, TRACK_NAME, 1_783_598_400);
-        const { entries, source, close } = deviceWith([{ id: 4, ride }]);
+        const { entries, source, close } = deviceWith([{ id: 4n, ride }]);
         try {
             // The catalog is what a rider picks from, so the export starts where they do.
             const listed = await source.listRides();
-            expect(listed.entries.map((e) => e.objectId)).toEqual([4]);
+            expect(listed.map((entry) => entry.objectId)).toEqual([4n]);
 
-            const exported = await exportRide(source, listed.entries[0], context());
+            const exported = await exportRide(source, listed[0], context());
             const expected = new TextDecoder().decode(vector("track-export.gpx"));
             expect(exported.gpx).toBe(withoutSegmentBreak(expected));
             expect(exported.points).toBe(5);
-            expect(exported.bytes).toBe(entries[0].byteLen);
+            expect(BigInt(exported.bytes)).toBe(entries[0].payloadLength);
         } finally {
             await close();
         }
@@ -253,9 +244,9 @@ describe("the exported GPX", () => {
         // non-ASCII ride name is the case where those two stop agreeing if anything re-encodes.
         const log = vector("track-log.obct");
         const ride = rideFromTrackLog(log, "Höhenweg — Schauinsland", 1_783_598_400);
-        const { source, close } = deviceWith([{ id: 1, ride }]);
+        const { source, close } = deviceWith([{ id: 1n, ride }]);
         try {
-            const exported = await exportRide(source, (await source.listRides()).entries[0], context());
+            const exported = await exportRide(source, (await source.listRides())[0], context());
             const bytes = new TextEncoder().encode(exported.gpx);
             expect(new TextDecoder("utf-8", { fatal: true }).decode(bytes)).toBe(exported.gpx);
             expect(exported.gpx).toContain("<trk><name>Höhenweg — Schauinsland</name>");
@@ -316,31 +307,34 @@ describe("the ride object -> track log transcode", () => {
     });
 });
 
-// --- the rule this issue exists to enforce ---------------------------------------
+// --- the surface the export path is given -----------------------------------------
+//
+// This used to be a four-test suite about the ride acknowledgement — that the browser never sends
+// one, asserted against the device's command log and its `/tracks/SYNCED.SET` bytes. There is no ack
+// on the cable any more: §5.2.2 retires the v1 `command` selector outright, because a possession ack
+// changes no object and so has no store meaning. It keeps the BLE control surface it had; USB does
+// not carry it, and neither does anything below. What survives is the narrowing itself, which is
+// still load-bearing because §3.6 and §3.7 *are* on this cable.
 
-describe("the browser never acks", () => {
-    /**
-     * The structural half.
-     *
-     * `RideSource` holds two reads and nothing else, so an ack cannot be written against it — but a
-     * type is only a compile-time fact, and a cast defeats it. `rideAccess` therefore hands back an
-     * object that does not *have* the property either, so the cast throws instead of quietly
-     * flagging a ride and starting an expiry countdown against it.
-     */
+describe("what the export path can reach", () => {
     it("hands the export path a device it cannot write to", async () => {
         const { client, source, close } = deviceWith([]);
         try {
             expect(Object.keys(source).sort()).toEqual(["downloadRide", "listRides"]);
-            for (const forbidden of ["ackRides", "command", "deleteObject", "setClock", "upload", "writeConfig"]) {
+            for (const forbidden of ["put", "remove", "arm", "cancel", "close", "get", "list"]) {
                 expect(source, `\`${forbidden}\` must not be reachable from the export path`).not.toHaveProperty(
                     forbidden,
                 );
             }
-            expect(() => (source as unknown as ProtocolClient).ackRides([1])).toThrow(TypeError);
+            // A type is a compile-time fact and a cast defeats it, so the narrowing is real at
+            // runtime too: the object does not *have* the method, and the cast throws.
+            expect(() => (source as unknown as FlatStoreClient).remove({ objectId: 1n, revision: 1n })).toThrow(
+                TypeError,
+            );
             expect(Object.isFrozen(source), "and it cannot be grown back").toBe(true);
             // The client itself still has it — this is a narrowing at the seam, not a removal.
-            expect(typeof client.ackRides).toBe("function");
-            // A `ProtocolClient` is deliberately *not* a `RideSource` — `downloadRide` exists
+            expect(typeof client.remove).toBe("function");
+            // A `FlatStoreClient` is deliberately *not* a `RideSource` — `downloadRide` exists
             // nowhere else — so `rideAccess` is the only way to obtain one, and there is no
             // "pass the client straight in" shortcut for a call site to take.
             const notASource: Partial<RideSource> = client as unknown as Partial<RideSource>;
@@ -349,121 +343,38 @@ describe("the browser never acks", () => {
             await close();
         }
     });
-
-    /**
-     * The behavioural half, at the level the device would actually change.
-     *
-     * A ride the phone has already synced is the interesting starting state: the sidecar is
-     * non-empty, so "unchanged" is a real comparison rather than two empty arrays. The setup ack is
-     * the phone's; everything after the snapshot is the browser's, and the browser must add nothing.
-     */
-    it("leaves the synced sidecar byte-identical across a full list-and-export session", async () => {
-        const ride = rideFromTrackLog(vector("track-log.obct"), TRACK_NAME, 1_783_598_400);
-        const { client, device, source, close } = deviceWith([
-            { id: 4, ride },
-            { id: 7, ride: longRide(12) },
-        ]);
-        try {
-            // The phone, on an earlier connect: a trusted clock, then an ack that stamps ride 4.
-            await client.setClock(new Date(1_783_598_400_000), 120);
-            await client.ackRides([4]);
-            const before = device.syncedSidecar();
-            const commandsBefore = device.commandLog.length;
-            expect(before.length, "a non-empty sidecar, so 'unchanged' means something").toBeGreaterThan(10);
-
-            // Everything from here is the hosted tier's session: list, then export both rides —
-            // including the one the device already thinks is synced, and the one it does not.
-            const listed = await source.listRides();
-            expect(listed.entries.map((e) => e.objectId)).toEqual([4, 7]);
-            for (const entry of listed.entries) {
-                const exported = await exportRide(source, entry, context());
-                expect(exported.gpx.startsWith("<?xml")).toBe(true);
-            }
-
-            expect(device.syncedSidecar(), "the browser wrote to /tracks/SYNCED.SET").toEqual(before);
-            expect(device.commandLog.length, "the browser sent a command").toBe(commandsBefore);
-            expect(device.synced, "the unsynced ride must stay unsynced").toEqual(new Set([4]));
-        } finally {
-            await close();
-        }
-    });
-
-    it("sends no command of any kind to a device it has only read from", async () => {
-        const ride = rideFromTrackLog(vector("track-log.obct"), TRACK_NAME, 1_783_598_400);
-        const { device, source, close } = deviceWith([{ id: 4, ride }]);
-        try {
-            const empty = device.syncedSidecar();
-            await exportRide(source, (await source.listRides()).entries[0], context());
-            expect(device.commandLog).toEqual([]);
-            expect(device.syncedSidecar()).toEqual(empty);
-            // Guard the guard: an all-zero "nothing synced" sidecar is what unchanged looks like
-            // here, so check it really is the empty one rather than a comparison of two blanks.
-            expect(new DataView(empty.buffer).getUint16(6, true), "entry count").toBe(0);
-            expect(device.synced.size).toBe(0);
-        } finally {
-            await close();
-        }
-    });
-
-    /**
-     * The guard against the edit that reintroduces it by hand.
-     *
-     * The type narrowing stops code written *against* `RideSource`; it does not stop somebody
-     * changing the prop type back to `ProtocolClient` and calling the client directly. Scoped to the
-     * files the browser's ride export is made of, so that E1/E2's desktop ack — which is required to
-     * exist, after fsync — is not caught by a guard that would then have to be weakened.
-     */
-    it("never names the ack command anywhere on the browser's ride path", () => {
-        const src = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-        const files = [
-            "lib/device/rides.ts",
-            "components/device/RideExport.svelte",
-            "components/device/DeviceSurfaces.svelte",
-        ];
-        // The prose in `rides.ts` explains at length why the call is absent — and quotes it — so
-        // the scan is over code with the comments taken out, not over the file's words.
-        const code = (text: string): string =>
-            text
-                .replace(/\/\*[\s\S]*?\*\//g, "")
-                .replace(/<!--[\s\S]*?-->/g, "")
-                .split("\n")
-                .filter((line) => !/^\s*(\/\/|\*)/.test(line))
-                .join("\n");
-
-        const offenders = files.filter((file) => /\.\s*ackRides\s*\(/.test(code(readFileSync(join(src, file), "utf8"))));
-        expect(offenders).toEqual([]);
-        // Guard the guard: the scan has to still find a call that is really there.
-        expect(/\.\s*ackRides\s*\(/.test(code("await client.ackRides([4]);"))).toBe(true);
-    });
 });
 
 // --- honest failure --------------------------------------------------------------
 
 describe("when the export cannot finish", () => {
-    /** A host link that flips one byte on its way in, once armed — a wire error the announced
-     *  whole-object CRC has to catch before anything is handed to a rider. */
+    /** A host link that flips one byte on its way in, once armed — a wire error the device's
+     *  declared whole-payload CRC (§3.5) has to catch before anything is handed to a rider. */
     function corruptible(link: DeviceLink): { link: DeviceLink; arm: () => void } {
-        const bulk = link.bulk;
+        const stream = link.stream;
         let armed = false;
         let flipped = false;
         const wrapped: BytePipe = {
-            transport: bulk.transport,
+            transport: stream.transport,
             get open() {
-                return bulk.open;
+                return stream.open;
             },
             async read(signal) {
-                const slice = await bulk.read(signal);
+                const slice = await stream.read(signal);
                 if (!armed || flipped || slice.length === 0) return slice;
                 flipped = true;
                 const damaged = slice.slice();
-                damaged[0] ^= 0xff;
+                damaged[damaged.length - 1] ^= 0xff;
                 return damaged;
             },
-            write: (bytes, signal) => bulk.write(bytes, signal),
-            reset: () => bulk.reset(),
-            close: () => bulk.close(),
+            write: (bytes, signal) => stream.write(bytes, signal),
+            reset: () => stream.reset(),
+            close: () => stream.close(),
         };
-        return { link: { control: link.control, bulk: wrapped, close: () => link.close() }, arm: () => (armed = true) };
+        return {
+            link: { control: link.control, stream: wrapped, vendorIn: link.vendorIn, close: () => link.close() },
+            arm: () => (armed = true),
+        };
     }
 
     it("refuses to offer a file whose bytes did not survive the cable", async () => {
@@ -471,21 +382,17 @@ describe("when the export cannot finish", () => {
         const device = new MockDevice(raw.device);
         void device.run();
         const wire = corruptible(raw.host);
-        const client = new ProtocolClient(wire.link);
+        const client = new FlatStoreClient(wire.link);
         const ride = rideFromTrackLog(vector("track-log.obct"), TRACK_NAME, 1_783_598_400);
-        const bytes = encodeRideObject(ride);
-        device.seedRide(entryFor(4, ride, bytes), bytes);
+        device.seed({ objectId: 4n, kind: ObjectKind.Ride, displayName: ride.name, bytes: encodeRideObject(ride) });
         try {
             const source = rideAccess(client);
-            const entry = (await source.listRides()).entries[0];
+            const entry = (await source.listRides())[0];
             wire.arm(); // the catalog arrived intact; damage the ride itself
             const failure = await exportRide(source, entry, context()).catch((e: unknown) => e);
             expect(failure).toBeInstanceOf(DeviceError);
-            expect((failure as DeviceError).code).toBe("crc-mismatch");
+            expect((failure as DeviceError).code).toBe("checksum");
             expect((failure as DeviceError).message).toMatch(/checksum/i);
-            // Nothing is committed to a file on a failed checksum, and nothing was said to the
-            // device about it either — a corrupt pull is still a pull that acked nothing.
-            expect(device.commandLog).toEqual([]);
         } finally {
             device.stop();
             await client.close();
@@ -496,10 +403,9 @@ describe("when the export cannot finish", () => {
     it("reports an unplug mid-pull instead of leaving a spinner", async () => {
         // 30 000 points is about 540 KB on the wire — long enough that the cable can be pulled
         // while bytes are still moving, which is the state a stuck spinner comes from.
-        const harness = deviceWith([{ id: 4, ride: longRide(30_000) }], {
-            bulkPacketSize: 4096,
-            bulkHighWaterMark: 8 * 1024,
-            chunkSize: 4096,
+        const harness = deviceWith([{ id: 4n, ride: longRide(30_000) }], {
+            packetSize: 4096,
+            streamHighWaterMark: 8 * 1024,
         });
         const ctx = context({
             at: (done, phase) => {
@@ -514,13 +420,14 @@ describe("when the export cannot finish", () => {
     }, 30_000);
 
     it("cancels mid-pull, and the next export on the same link is an ordinary one", async () => {
-        const harness = deviceWith([{ id: 4, ride: longRide(30_000) }], {
-            bulkPacketSize: 4096,
-            bulkHighWaterMark: 8 * 1024,
-            chunkSize: 4096,
+        const harness = deviceWith([{ id: 4n, ride: longRide(30_000) }], {
+            packetSize: 4096,
+            streamHighWaterMark: 8 * 1024,
         });
         const controller = new AbortController();
         try {
+            // Cancelled from inside the progress callback, not after a timer: the loopback moves
+            // half a megabyte in microtasks, so a wall-clock delay races the transfer it interrupts.
             const ctx = context({
                 signal: controller.signal,
                 at: (done) => {
@@ -530,8 +437,8 @@ describe("when the export cannot finish", () => {
             await expect(exportRide(harness.source, harness.entries[0], ctx)).rejects.toMatchObject({
                 code: "aborted",
             });
-            // §4.1's recovery property: after a cancel the device has cleared its gate and the pipe
-            // has been reset, so the retry is the first path again, not a repair path.
+            // §3.8's cancel is bilateral, so the device released its transfer slot while this side
+            // reset its channel — the retry is the first path again, not a repair path.
             const again = await exportRide(harness.source, harness.entries[0], context());
             expect(again.points).toBe(30_000);
         } finally {
@@ -541,11 +448,27 @@ describe("when the export cannot finish", () => {
 
     it("says the ride is gone when it was deleted on the device between listing and exporting", async () => {
         const ride = rideFromTrackLog(vector("track-log.obct"), TRACK_NAME, 1_783_598_400);
-        const { source, entries, close } = deviceWith([{ id: 4, ride }]);
+        const { source, entries, close } = deviceWith([{ id: 4n, ride }]);
         try {
-            const stale: RideListEntry = { ...entries[0], objectId: 99 };
+            const stale: CatalogEntry = { ...entries[0], objectId: 99n };
             const failure = await exportRide(source, stale, context()).catch((e: unknown) => e);
             expect((failure as DeviceError).code).toBe("not-found");
+        } finally {
+            await close();
+        }
+    });
+
+    it("is refused by the device for a ride it is still recording", async () => {
+        // §3.5: a `RECORDING` entry's length and CRC are zero until the commit that ends it, so
+        // serving one would report success over an empty payload. `recordedRides` is the filter that
+        // keeps a caller away from it — this pins that the device refuses anyway, so the filter is a
+        // convenience rather than the only thing standing between a rider and an empty GPX.
+        const { device, source, close } = deviceWith([]);
+        try {
+            const live = device.seed({ kind: ObjectKind.Ride, displayName: "In progress", flags: EntryFlags.Recording });
+            const failure = await exportRide(source, live, context()).catch((e: unknown) => e);
+            expect(failure).toBeInstanceOf(DeviceError);
+            expect((failure as DeviceError).code).toBe("invalid-request");
         } finally {
             await close();
         }
@@ -556,12 +479,12 @@ describe("when the export cannot finish", () => {
         // bytes are fine, the two ends disagree about the layout. Reporting that as a transfer
         // failure would send the rider to re-plug a cable that is working.
         const ride = rideFromTrackLog(vector("track-log.obct"), TRACK_NAME, 1_783_598_400);
-        const { device, source, close } = deviceWith([{ id: 4, ride }]);
+        const { device, source, close } = deviceWith([]);
         try {
             const future = encodeRideObject(ride);
             future[0] = 3;
-            device.seedRide(entryFor(4, ride, future), future);
-            const failure = await exportRide(source, (await source.listRides()).entries[0], context()).catch(
+            device.seed({ objectId: 4n, kind: ObjectKind.Ride, displayName: ride.name, bytes: future });
+            const failure = await exportRide(source, (await source.listRides())[0], context()).catch(
                 (e: unknown) => e,
             );
             expect(failure).toMatchObject({ name: "RideExportError", code: "unreadable-ride" });
@@ -572,9 +495,9 @@ describe("when the export cannot finish", () => {
     });
 
     it("explains an empty ride rather than failing inside the converter", async () => {
-        const { source, close } = deviceWith([{ id: 4, ride: { ...longRide(1), points: [] } }]);
+        const { source, close } = deviceWith([{ id: 4n, ride: { ...longRide(1), points: [] } }]);
         try {
-            const failure = await exportRide(source, (await source.listRides()).entries[0], context()).catch(
+            const failure = await exportRide(source, (await source.listRides())[0], context()).catch(
                 (e: unknown) => e,
             );
             expect(failure).toMatchObject({ name: "RideExportError", code: "empty-ride" });
@@ -588,19 +511,34 @@ describe("when the export cannot finish", () => {
 // --- what the panel shows --------------------------------------------------------
 
 describe("listing", () => {
-    it("pulls the whole catalog and surfaces the device's own truncation", async () => {
-        // The device caps its list and says so on the wire (`total > count`). The epic's rule is
-        // that the fetch side never filters — and it could not filter on `synced` even if it wanted
-        // to, because the 72-byte `rideList` entry has no such field.
-        const harness = deviceWith([]);
+    it("pages the whole catalog, because §3.3 drops nothing", async () => {
+        // The v1 wire capped a listing and reported `total > count`; a client's job was to surface
+        // the truncation. §3.3 pages instead — the client walks the `(ObjectId, Revision)` cursor to
+        // the end — so there is no truncated listing left to render, and a page size small enough to
+        // force three round trips must still produce every ride.
+        const harness = deviceWith([], { pageEntries: 2 });
         try {
             const ride = rideFromTrackLog(vector("track-log.obct"), TRACK_NAME, 1_783_598_400);
             const bytes = encodeRideObject(ride);
-            for (let id = 1; id <= 5; id++) harness.device.seedRide(entryFor(id, ride, bytes), bytes);
+            for (let id = 1n; id <= 5n; id++) {
+                harness.device.seed({ objectId: id, kind: ObjectKind.Ride, displayName: ride.name, bytes });
+            }
             const listed = await harness.source.listRides();
-            expect(listed.entries.map((e) => e.objectId)).toEqual([1, 2, 3, 4, 5]);
-            expect(listed.truncated).toBe(false);
-            expect(Object.keys(listed.entries[0])).not.toContain("synced");
+            expect(listed.map((entry) => entry.objectId)).toEqual([1n, 2n, 3n, 4n, 5n]);
+        } finally {
+            await harness.close();
+        }
+    });
+
+    it("offers every ride except the one being recorded", async () => {
+        const harness = deviceWith([]);
+        try {
+            const ride = rideFromTrackLog(vector("track-log.obct"), TRACK_NAME, 1_783_598_400);
+            harness.device.seed({ objectId: 1n, kind: ObjectKind.Ride, bytes: encodeRideObject(ride) });
+            harness.device.seed({ objectId: 2n, kind: ObjectKind.Ride, flags: EntryFlags.Recording });
+            const listed = await harness.source.listRides();
+            expect(listed.map((entry) => entry.objectId), "the listing itself hides nothing").toEqual([1n, 2n]);
+            expect(recordedRides(listed).map((entry) => entry.objectId)).toEqual([1n]);
         } finally {
             await harness.close();
         }
@@ -608,29 +546,49 @@ describe("listing", () => {
 });
 
 describe("ride identity", () => {
-    it("keys a ride by (serial, epoch, id), so a recycled id is a different ride", () => {
+    it("keys a ride by (serial, era, id), so a recycled id is a different ride", () => {
         const before = { serial: "0011223344556677", epoch: 0xa1b2c3d4 };
         const after = { serial: "0011223344556677", epoch: 0x00000001 };
-        expect(rideKey(before, 4)).not.toBe(rideKey(after, 4));
+        expect(rideKey(before, 4n)).not.toBe(rideKey(after, 4n));
         expect(scopeKey(before)).not.toBe(scopeKey(after));
-        // A device with no mounted card has *no* epoch — never epoch 0, which is a legal era.
+        // The wire's `u64` and the library index's JSON number stringify alike, which is what lets
+        // one key function serve both sides.
+        expect(rideKey(before, 4n)).toBe(rideKey(before, 4));
+        // A device with no readable card has *no* era — never era 0, which is a legal fingerprint.
         expect(scopeKey({ serial: "x", epoch: null })).not.toBe(scopeKey({ serial: "x", epoch: 0 }));
     });
 
-    it("names the file by date then ride, and drops the date when the clock was never set", () => {
-        const base: RideListEntry = {
-            objectId: 4,
-            byteLen: 140,
-            startTime: 1_783_598_400,
-            distanceM: 4210,
-            movingTimeS: 1284,
-            avgSpeedCms: 328,
-            climbM: 118,
-            name: "Schauinsland & back",
+    it("takes the era from the card's StoreId and the serial from §5.2.1's strings", () => {
+        // 32 bits of the 128-bit `StoreId`: a cache key, never an authorisation, and never sent
+        // anywhere — the desktop ride index stores it as a `u32` and both ends must agree.
+        expect(storeEra(REFERENCE_STORE_ID)).toBe(0x8f2c41d9);
+        const info = { firmwareRevision: "0.4.0", hardwareRevision: "obc-lm20-r1", serialNumber: "AABB" };
+        expect(rideScope(info, { storeId: REFERENCE_STORE_ID, commitSequence: 3n })).toEqual({
+            serial: "AABB",
+            epoch: 0x8f2c41d9,
+        });
+        expect(rideScope(info, null)).toEqual({ serial: "AABB", epoch: null });
+        expect(rideScope(null, null)).toEqual({ serial: "", epoch: null });
+    });
+
+    it("names the file by date then ride, taking the date from the payload", () => {
+        // §3.3's 88-byte entry is id, revision, length, CRC, kind, flags and a display name — there
+        // is no start time in it. So a caller naming a file before it has downloaded the ride gets
+        // the name alone, which is the honest half rather than a fabricated day.
+        const entry: CatalogEntry = {
+            objectId: 4n,
+            revision: 1n,
+            payloadLength: 140n,
+            payloadCrc32: 0,
+            kind: ObjectKind.Ride,
+            flags: 0,
+            displayName: TRACK_NAME,
         };
-        expect(rideFilename(base)).toBe("2026-07-09-schauinsland-back.gpx");
-        expect(rideFilename({ ...base, startTime: 0 })).toBe("schauinsland-back.gpx");
-        expect(rideFilename({ ...base, name: "" })).toBe("2026-07-09-ride-4.gpx");
+        const ride = { ...longRide(1), name: TRACK_NAME, startTime: 1_783_598_400 };
+        expect(rideFilename(entry)).toBe("schauinsland-back.gpx");
+        expect(rideFilename(entry, ride)).toBe("2026-07-09-schauinsland-back.gpx");
+        expect(rideFilename(entry, { ...ride, startTime: 0 })).toBe("schauinsland-back.gpx");
+        expect(rideFilename({ ...entry, displayName: "" }, { ...ride, name: "" })).toBe("2026-07-09-ride-4.gpx");
         // UTC, not the visitor's zone: the ride object's start_time is UTC seconds, and a local
         // rendering would file a late ride under the wrong day west of Greenwich.
         expect(rideDate(1_783_598_400)).toBe("2026-07-09");
@@ -642,11 +600,11 @@ describe("ride identity", () => {
 describe("the panel's flow", () => {
     it("reports downloading then converting, and ends with a file to save", async () => {
         const ride = rideFromTrackLog(vector("track-log.obct"), TRACK_NAME, 1_783_598_400);
-        const { source, close } = deviceWith([{ id: 4, ride }]);
+        const { source, close } = deviceWith([{ id: 4n, ride }]);
         try {
             const ctx = context();
             const listed = await source.listRides();
-            const exported = await exportRide(source, listed.entries[0], ctx);
+            const exported = await exportRide(source, listed[0], ctx);
             expect(ctx.phases).toEqual(["downloading", "converting"]);
             expect(exported.filename).toBe("2026-07-09-schauinsland-back.gpx");
             expect(exported.gpx).toContain("<gpx version=\"1.1\" creator=\"OpenBikeComputer\"");
@@ -655,4 +613,3 @@ describe("the panel's flow", () => {
         }
     });
 });
-

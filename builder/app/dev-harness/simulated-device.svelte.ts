@@ -2,10 +2,10 @@
  * A {@link DeviceSession} backed by the simulated device — **the dev harness only**.
  *
  * The LM20's USB peripheral does not exist yet (#889), so without this there is no way to click
- * through a map upload, a route drop or a firmware update at all. `loopback.ts` already models the
- * protocol properly (id assignment, dedup, `busy`, the abort handshake, packet-sized bulk reads),
- * so wiring it to a session drives the real UI against a real protocol conversation — the only
- * fiction is the cable.
+ * through a map upload, a route drop or a firmware update at all. `loopback.ts` already models
+ * protocol v4 properly (id allocation, compare-and-swap on revisions, `busy`, the cancel handshake,
+ * paged `LIST`s and packet-sized record reads), so wiring it to a session drives the real UI
+ * against a real protocol conversation — the only fiction is the cable.
  *
  * **Why it lives outside `src/`.** C3 drew a hard line: no shipping module may import
  * `lib/usb/loopback`, guarded twice — a source scan in `usb/vectors.test.ts` and a chunk assertion
@@ -17,15 +17,15 @@
  */
 
 import { gpxToObcr } from "../src/lib/convert/bridge";
-import { ProtocolClient } from "../src/lib/usb/client";
-import { Crc32 } from "../src/lib/usb/crc32";
+import { FlatStoreClient } from "../src/lib/usb/client";
 import { WatchedDeviceSession } from "../src/lib/usb/session.svelte";
 import { MockDevice, loopbackLink } from "../src/lib/usb/loopback";
 import { encodeRideObject, encodeTripObject, type RideObject, type RidePoint } from "../src/lib/usb/objects";
 import type { BytePipe, DeviceLink } from "../src/lib/usb/pipe";
+import { EntryFlags, ObjectKind } from "../src/lib/usb/protocol";
 import type { DeviceSession, DeviceState, DeviceWatcher } from "../src/lib/usb/session";
 
-const IDLE: DeviceState = { status: "idle", client: null, identity: null, info: null, error: null };
+const IDLE: DeviceState = { status: "idle", client: null, store: null, info: null, error: null };
 
 /**
  * The rate the simulated device moves bytes to and from its card.
@@ -45,9 +45,16 @@ const CARD_BYTES_PER_SECOND = 700 * 1024;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** The device end of a link, paced to {@link CARD_BYTES_PER_SECOND} in both directions. */
+/**
+ * The device end of a link, paced to {@link CARD_BYTES_PER_SECOND} in both directions.
+ *
+ * Only the **stream** channel is paced (§5.2's second endpoint pair): it is where payload bytes
+ * move, and it is the one whose speed any progress bar is a picture of. The control channel carries
+ * §3's request and response frames — a hundred bytes each, at most one in flight — so throttling it
+ * would only add latency to a `LIST` without making any surface more testable.
+ */
 function paced(link: DeviceLink): DeviceLink {
-    const bulk = link.bulk;
+    const stream = link.stream;
     /**
      * A leaky bucket: the wall-clock instant the card will have finished everything charged to it
      * so far. Charging forward from `max(budgetUntil, now)` rather than from a transfer's start
@@ -65,61 +72,75 @@ function paced(link: DeviceLink): DeviceLink {
         return start - now > 5 ? sleep(start - now) : null;
     }
 
-    const throttledBulk: BytePipe = {
-        transport: bulk.transport,
+    const throttledStream: BytePipe = {
+        transport: stream.transport,
         get open() {
-            return bulk.open;
+            return stream.open;
         },
         async read(signal) {
-            const slice = await bulk.read(signal);
+            const slice = await stream.read(signal);
             await charge(slice.length);
             return slice;
         },
         async write(bytes, signal) {
             await charge(bytes.length);
-            await bulk.write(bytes, signal);
+            await stream.write(bytes, signal);
         },
         reset: () => {
             budgetUntil = 0;
-            return bulk.reset();
+            return stream.reset();
         },
-        close: () => bulk.close(),
+        close: () => stream.close(),
     };
-    return { control: link.control, bulk: throttledBulk, close: () => link.close() };
+    return { control: link.control, stream: throttledStream, close: () => link.close() };
 }
 
 /**
- * Rides on the simulated card, so the export panel (C5 #904) has a catalog to render.
+ * The ids the seeds take.
+ *
+ * An `ObjectId` is **store-global** (`FLAT_Store_Format.md` §3): one allocation cursor for every
+ * kind, never reused. So the routes, the trip and the rides here share one numbering — under the v1
+ * wire each type had its own id space and a route 3 could sit beside a ride 3, which is exactly the
+ * assumption a harness would otherwise carry forward into a screen nobody could reproduce on glass.
+ */
+const ROUTE_IDS = { kaiserstuhl: 1n, leg1: 2n, leg2: 3n, leg3: 4n } as const;
+const TRIP_ID = 5n;
+const RIDE_IDS = { long: 6n, short: 7n, noClock: 8n, recording: 9n } as const;
+
+/**
+ * Rides on the simulated card, so the ride surfaces have a catalog to render.
  *
  * A device with nothing on it renders one empty-state line, which is not the screen worth looking
- * at. These three are shaped for the cases the panel has to get right rather than for plausibility:
+ * at. These are shaped for the cases the surfaces have to get right rather than for plausibility:
  * an 11-hour ride with sensors — long enough on the wire that the progress bar, the rate and the
- * Cancel button are real rather than a flash — a short one without, and one recorded before any
- * peer set the clock, which the device reports as `start_time = 0` and the panel must not render
- * as 1970.
+ * Cancel button are real rather than a flash — a short one without, one recorded before any peer
+ * set the clock, and one the device is **still recording**.
+ *
+ * The last is a metadata-only row on purpose. §3.5 refuses a `GET` of an entry carrying `RECORDING`
+ * — its payload length and CRC are zero until the commit that ends the ride — so seeding it with no
+ * bytes is what the device really holds, and it is what makes the "listed, not offered" path
+ * something a developer can look at rather than reason about.
  */
 function seedRides(device: MockDevice): void {
-    const rides: Array<{ id: number; ride: RideObject }> = [
-        { id: 3, ride: syntheticRide("Schauinsland & back", 1_783_598_400, 40_000, true) },
-        { id: 5, ride: syntheticRide("Kaiserstuhl loop", 1_783_339_200, 1_100, false) },
-        { id: 6, ride: syntheticRide("Shakedown", 0, 320, false) },
+    const rides: Array<{ id: bigint; ride: RideObject }> = [
+        { id: RIDE_IDS.long, ride: syntheticRide("Schauinsland & back", 1_783_598_400, 40_000, true) },
+        { id: RIDE_IDS.short, ride: syntheticRide("Kaiserstuhl loop", 1_783_339_200, 1_100, false) },
+        { id: RIDE_IDS.noClock, ride: syntheticRide("Shakedown", 0, 320, false) },
     ];
     for (const { id, ride } of rides) {
-        const bytes = encodeRideObject(ride);
-        device.seedRide(
-            {
-                objectId: id,
-                byteLen: bytes.length,
-                startTime: ride.startTime,
-                distanceM: ride.distanceM,
-                movingTimeS: ride.movingTimeS,
-                avgSpeedCms: ride.avgSpeedCms,
-                climbM: ride.climbM,
-                name: ride.name,
-            },
-            bytes,
-        );
+        device.seed({
+            objectId: id,
+            kind: ObjectKind.Ride,
+            displayName: ride.name,
+            bytes: encodeRideObject(ride),
+        });
     }
+    device.seed({
+        objectId: RIDE_IDS.recording,
+        kind: ObjectKind.Ride,
+        displayName: "Today",
+        flags: EntryFlags.Recording,
+    });
 }
 
 /**
@@ -130,46 +151,28 @@ function seedRides(device: MockDevice): void {
  * through, from the deterministic inline GPX below — not hand-forged bytes, so the preview's
  * read-back (`routeTrack` + `routeWaypoints`) decodes exactly what the converter stores, waypoint
  * placement and all. The wasm module is local to the bundle, so this stays offline-safe; it is
- * the same prerequisite the harness's route-drop flow already has. The catalog metrics are read
- * out of the OBCR's own header (spec §1) rather than typed in twice.
+ * the same prerequisite the harness's route-drop flow already has.
  */
 async function seedWaypointRoute(device: MockDevice): Promise<void> {
     try {
-        await seedGpxRoute(device, 1, "Kaiserstuhl loop", kaiserstuhlGpx());
+        await seedGpxRoute(device, ROUTE_IDS.kaiserstuhl, "Kaiserstuhl loop", kaiserstuhlGpx());
     } catch (cause) {
         // A missing wasm artifact breaks route drops too; keep the rest of the harness usable.
         console.warn("dev-harness: could not seed the waypoint route (is the wasm bridge built?)", cause);
     }
 }
 
-/** Convert one inline GPX through the real wasm bridge and put it on the card under `id`,
- *  catalog metrics read out of the OBCR's own header (spec §1). Returns the header's totals. */
-async function seedGpxRoute(
-    device: MockDevice,
-    id: number,
-    name: string,
-    gpx: string,
-): Promise<{ distanceM: number; ascentM: number }> {
+/**
+ * Convert one inline GPX through the real wasm bridge and put it on the card under `id`.
+ *
+ * The catalog entry is the whole of what a `LIST` carries — id, revision, payload length, payload
+ * CRC, kind, flags and a display name (§3.3) — and `MockDevice.seed` derives the length and the CRC
+ * from the bytes, so there is nothing else to state. A route's distance, ascent and point count are
+ * *payload* facts, in the OBCR header, and no seed here has to repeat them.
+ */
+async function seedGpxRoute(device: MockDevice, id: bigint, name: string, gpx: string): Promise<void> {
     const bytes = await gpxToObcr(new TextEncoder().encode(gpx), name);
-    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    const distanceM = view.getUint32(36, true);
-    const ascentM = view.getUint32(40, true);
-    device.seedRoute(
-        {
-            objectId: id,
-            byteLen: bytes.length,
-            distanceM,
-            ascentM,
-            pointCount: view.getUint32(32, true),
-            waypointCount: view.getUint16(116, true),
-            name,
-            crc32: Crc32.of(bytes),
-            expiresAt: 0,
-            retention: 0,
-        },
-        bytes,
-    );
-    return { distanceM, ascentM };
+    device.seed({ objectId: id, kind: ObjectKind.Route, displayName: name, bytes });
 }
 
 /**
@@ -179,37 +182,29 @@ async function seedGpxRoute(
  *
  * The stages are contiguous (each starts where the last ended), every stage has a real elevation
  * shape, and two of the three carry waypoints — so the merged card shows cumulative distances
- * across a stage that contributes none. The trip object and its catalog entry are seeded the way
- * the device would serve them: totals summed over the resolvable stages.
+ * across a stage that contributes none.
+ *
+ * The trip object names its stages in 16 bits (`objects.ts`), which is why the stage ids are
+ * narrowed to `Number` here: the ids are the store's `u64`s and this format is the one place they
+ * do not fit.
  */
 async function seedTour(device: MockDevice): Promise<void> {
     try {
-        const stages: Array<{ id: number; spec: TourLeg }> = [
-            { id: 2, spec: TOUR_LEGS[0] },
-            { id: 3, spec: TOUR_LEGS[1] },
-            { id: 4, spec: TOUR_LEGS[2] },
+        const stages: Array<{ id: bigint; spec: TourLeg }> = [
+            { id: ROUTE_IDS.leg1, spec: TOUR_LEGS[0] },
+            { id: ROUTE_IDS.leg2, spec: TOUR_LEGS[1] },
+            { id: ROUTE_IDS.leg3, spec: TOUR_LEGS[2] },
         ];
-        let distanceM = 0;
-        let ascentM = 0;
         for (const { id, spec } of stages) {
-            const totals = await seedGpxRoute(device, id, spec.name, legGpx(spec));
-            distanceM += totals.distanceM;
-            ascentM += totals.ascentM;
+            await seedGpxRoute(device, id, spec.name, legGpx(spec));
         }
         const name = "Black Forest traverse";
-        const bytes = encodeTripObject({ name, stages: stages.map((s) => s.id) });
-        device.seedTrip(
-            {
-                objectId: 1,
-                byteLen: bytes.length,
-                totalDistanceM: distanceM,
-                totalAscentM: ascentM,
-                stageCount: stages.length,
-                name,
-                crc32: Crc32.of(bytes),
-            },
-            bytes,
-        );
+        device.seed({
+            objectId: TRIP_ID,
+            kind: ObjectKind.Trip,
+            displayName: name,
+            bytes: encodeTripObject({ name, stages: stages.map((s) => Number(s.id)) }),
+        });
     } catch (cause) {
         console.warn("dev-harness: could not seed the tour (is the wasm bridge built?)", cause);
     }
@@ -375,7 +370,7 @@ class LoopbackWatcher implements DeviceWatcher {
         await seedWaypointRoute(device);
         await seedTour(device);
         void device.run();
-        const client = new ProtocolClient(link.host);
+        const client = new FlatStoreClient(link.host);
         this.open = {
             device,
             close: async () => {
@@ -384,9 +379,17 @@ class LoopbackWatcher implements DeviceWatcher {
                 await link.device.close();
             },
         };
-        const identity = await client.identity();
+        // The same two reads `WebUsbWatcher.connect` makes, in the same order: §5.2.1's strings over
+        // EP0, then the `LIST` page whose prefix carries the store's identity (§3.3).
         const info = await client.deviceInfo();
-        this.publish({ status: "ready", client, identity, info, error: null });
+        const page = await client.listPage({});
+        this.publish({
+            status: "ready",
+            client,
+            store: { storeId: page.storeId, commitSequence: page.commitSequence },
+            info,
+            error: null,
+        });
         return true;
     }
 

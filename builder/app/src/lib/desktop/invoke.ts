@@ -68,18 +68,6 @@ export interface UsbFault {
     message: string;
 }
 
-/** A file, as a transfer descriptor needs it (§4.2): length and whole-object CRC. */
-export interface UsbFileDigest {
-    len: number;
-    crc32: number;
-}
-
-/** How far a native file send has got. */
-export interface UsbSendProgress {
-    sent: number;
-    total: number;
-}
-
 export const desktop = {
     catalog: () => invoke<FetchedCatalog>("catalog"),
     /** Raw response path: catalog cells can be hundreds of MB, so a JSON byte
@@ -119,20 +107,26 @@ export const desktop = {
         invoke<void>("usb_cancel", { handle, plane, dir: dir ?? null }),
     usbReset: (handle: number, plane: UsbPlane) => invoke<void>("usb_reset", { handle, plane }),
 
-    usbFileDigest: (path: string) => invoke<UsbFileDigest>("usb_file_digest", { path }),
-    usbSendFile: (handle: number, path: string, onProgress: Channel<UsbSendProgress>) =>
-        invoke<number>("usb_send_file", { handle, path, onProgress }),
+    // There is no `usb_file_digest` / `usb_send_file` wrapper any more. They fed the disk → endpoint
+    // path, which `FLAT_Store_Protocol.md` §3.8 ends: every stream record carries a `RequestId`, an
+    // absolute offset and a length, and the protocol client is what frames them — so a backend
+    // writing raw file bytes into the endpoint produces records the device cannot read. The Rust
+    // commands are still registered and are now unreachable from this host; giving them a framed
+    // form is the change that would bring the path back.
 
     // --- the ride library (E2 #912) -----------------------------------------
     //
     // `ridesImport` is the one command in this file whose *timing* is part of a
     // contract: it resolves after the ride object, the GPX and the index have
-    // each been fsynced, and `pullRides` sends `ackRides` only afterwards. See
+    // each been fsynced, which is what makes `PullReport` true. See
     // apps/obc-desktop/src/rides.rs.
+    //
+    // `rides_ack_set` has no wrapper any more. It built the list of rides a pull acknowledged to the
+    // device, and §5.2.2 retires that command from the cable — a possession ack changes no object,
+    // so it keeps the BLE surface it had. The Rust command is still registered and unreachable.
 
     ridesIndex: () => invoke<RideIndexView>("rides_index"),
     ridesImport: (request: RideImportRequest) => invoke<RideImported>("rides_import", { request }),
-    ridesAckSet: (serial: string, epoch: number) => invoke<number[]>("rides_ack_set", { serial, epoch }),
     /** The stored ride object. Raw, like `usbRead` — a JSON number array would be 4× the bytes. */
     ridesRead: (key: string) => invoke<ArrayBuffer>("rides_read", { key }),
     ridesWriteGpx: (key: string, gpx: string) => invoke<string>("rides_write_gpx", { key, gpx }),

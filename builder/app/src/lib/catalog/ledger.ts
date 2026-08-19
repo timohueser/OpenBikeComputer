@@ -379,16 +379,3 @@ export function ledgerForRegion(catalog: Catalog, entry: RegionEntry): Ledger {
     };
 }
 
-/**
- * Does the map fit the card?
- *
- * §9/D4 replaced the old user-visible 4 GiB wall with this: a map is a volume
- * set of any number of files, so the only limit a rider ever sees is free space
- * on the SD card. The per-file ceiling still exists and is still absolute — it
- * is just the assembler's business and {@link Ledger.verdict}'s, not a number
- * anybody is shown.
- */
-export function fitsOnCard(ledger: Ledger, freeBytes: number): { fits: boolean; shortfallBytes: number } {
-    const need = Math.ceil(ledger.totalBytes * (1 + OVERHEAD_BUDGET));
-    return { fits: need <= freeBytes, shortfallBytes: Math.max(0, need - freeBytes) };
-}

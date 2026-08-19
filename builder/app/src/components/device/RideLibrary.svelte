@@ -18,16 +18,15 @@
 
   ## The one sentence that has to be on screen
 
-  Pulling a ride tells the device a durable copy exists here — that is what `synced` means (spec
-  §4.4), and it is what starts the device's auto-delete countdown for that ride (#638). A rider who
-  does not know that can be surprised by a ride disappearing from the device a week later. So the
-  disclosure is a permanent line under the list, not a tooltip, and it says both halves: what the
-  ack buys (the device stops warning about deleting the ride) and what it costs (the countdown
-  starts).
+  A pull copies; it does not tell the device anything. `FLAT_Store_Protocol.md` §5.2.2 retires the
+  v1 possession acknowledgement — an ack changes no object, so it has no store meaning and USB does
+  not carry it (the phone keeps its BLE surface, and still acks). The consequence belongs on screen
+  rather than in a changelog: a rider who syncs only over the cable has their rides here, and the
+  device still counts them as un-copied. So the disclosure is a permanent line under the list, not a
+  tooltip.
 
-  It cannot report the *device's* retention setting, and says so rather than guessing: the Config
-  object on the wire (§7.3) carries a name and a units flag and nothing else, so ride retention is
-  readable only on the device itself. Inventing "1 week" here because that is the firmware default
+  It cannot report the device's own retention setting either, and says so rather than guessing:
+  nothing in protocol v4 reads it. Inventing "1 week" here because that is the firmware default
   would be a number the app cannot stand behind.
 -->
 <script lang="ts">
@@ -43,9 +42,8 @@
         type LibraryView,
         type PullReport,
         type RideLibrary,
-        type RideSyncSource,
     } from "../../lib/device/library";
-    import { rideDistance, rideDuration, type RideScope } from "../../lib/device/rides";
+    import { rideDistance, rideDuration, type RideScope, type RideSource } from "../../lib/device/rides";
     import { initConvert } from "../../lib/convert/bridge";
 
     let {
@@ -54,9 +52,9 @@
         scope = null,
         onpreview = null,
     }: {
-        /** The device's ride reads + ack. Null while no device is connected — the library still
+        /** The device's two ride reads. Null while no device is connected — the library still
          *  renders and repairs; only the pull needs a cable. */
-        rides?: RideSyncSource | null;
+        rides?: RideSource | null;
         library: RideLibrary;
         scope?: RideScope | null;
         /** Open a preview of an archived ride (from disk, no cable). Null disables row clicks. */
@@ -266,10 +264,11 @@
                     {report.failed.map((f) => `${f.name} — ${f.message}`).join("; ")}
                 </p>
             {/if}
-            {#if report?.truncated}
+            {#if report && report.recording > 0}
                 <p class="small faint">
-                    The device listed its newest rides only; older ones are still on the card and were not
-                    pulled.
+                    {report.recording === 1 ? "One ride is" : `${report.recording} rides are`} still being
+                    recorded on the device and could not be copied. Finish
+                    {report.recording === 1 ? "it" : "them"} there, then pull again.
                 </p>
             {/if}
 
@@ -356,11 +355,11 @@
               after the device has deleted a ride has learned it too late.
             -->
             <p class="small muted disclosure">
-                Copying a ride here tells the device a durable copy exists off it. That is what lets you
-                delete the ride on the device without a warning — and it is also what starts the device's
-                auto-delete countdown for that ride. Check <strong>Settings → Rides</strong> on the device
-                for how long it keeps a synced ride; the app cannot read that setting over the cable. The
-                copies in this folder are yours and are never deleted by this app.
+                Copying a ride here does not tell the device anything — over the cable a ride is read and
+                nothing more, so the device still counts every ride as un-copied and keeps it under its own
+                rules. Check <strong>Settings → Rides</strong> on the device for how long it keeps one; the
+                app cannot read that setting. The copies in this folder are yours and are never deleted by
+                this app.
             </p>
 
             <TransferBar {job} />

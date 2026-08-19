@@ -1,24 +1,63 @@
 /**
- * Renaming routes and editing trips — the mutations the device page offers beyond delete.
+ * Renaming routes and editing trips — the mutations the device page offers beyond remove.
  *
- * Neither is a protocol feature, and that is the point: both ride on the one primitive the wire
- * already has, **upload to an existing id replaces the object atomically** (client.ts). A rename
- * downloads the OBCR, rewrites the 48-byte name field, and puts the same object back under the
- * same id — so its retention clock, its expiry and every reference to it survive. A trip edit
- * downloads a 56-byte-plus-two-per-stage object, mutates the stage list, and does the same.
+ * Neither is a protocol feature, and that is the point: both ride on the one primitive §3.6 already
+ * has, **a `PUT` naming an existing object replaces it in one commit**. A rename gets the OBCR,
+ * rewrites the 48-byte name field in the payload, and puts the same object back under the same
+ * `ObjectId` — so every reference to it survives. A trip edit gets a 56-byte-plus-two-per-stage
+ * object, mutates the stage list, and does the same.
  *
- * Nothing here talks to the store: callers run these inside `dashboard.enqueue` (each call is one
- * or two transfers) and refresh afterwards.
+ * **Every replace carries the revision it expects** (§3.6), and that is the substance rather than
+ * ceremony: the check runs at admission and again immediately before the commit, so an object
+ * something else replaced in between fails the compare-and-swap instead of silently clobbering. The
+ * caller supplies the entry it listed; a stale one earns `revisionConflict` and the page re-lists.
+ *
+ * A rename writes the name in **two** places, because the two are different fields with different
+ * readers: the OBCR header's name is what the device shows while navigating, and §3.6's display name
+ * is what a catalog listing shows. Writing only one of them would make the device page and the
+ * device disagree about what a route is called.
+ *
+ * Nothing here talks to the store: callers run these inside `dashboard.enqueue` (each call is one or
+ * two transfers) and refresh afterwards.
  */
 
-import type { ProtocolClient } from "../usb/client";
+import type { FlatStoreClient } from "../usb/client";
 import { truncateUtf8 } from "../format";
 import { decodeTripObject, encodeTripObject, type TripObject } from "../usb/objects";
-import { NEW_OBJECT_ID, ObjectType } from "../usb/protocol";
+import { ObjectKind, type CatalogEntry, type PutResponse } from "../usb/protocol";
 import { decodeRouteHeader, ROUTE_NAME_MAX } from "./route";
 
-/** The trip name field's cap — same 48-byte field as a route's (`objects.ts` §7.7). */
+/** The trip name field's cap — the same 48-byte field a route's name and §3.6's both use. */
 export const TRIP_NAME_MAX = 48;
+
+/**
+ * The largest route id a trip can name.
+ *
+ * A trip object stores its stages as `u16`, and an `ObjectId` is a `u64` allocated from a monotonic
+ * cursor that is never reused (`FLAT_Store_Format.md` §3). So a card whose cursor has passed 65,535
+ * can hold routes no trip object can reference. That is a **payload-format** limit, not a wire one,
+ * and it cannot be fixed from this side — the trip object is a device format. What this module does
+ * is refuse to write a stage that would truncate, rather than writing an id that silently names a
+ * different route.
+ */
+export const MAX_TRIP_STAGE_ID = 0xffff;
+
+/** A route this trip format cannot name. Its own error, because the fix is not "try again". */
+export class TripStageError extends Error {
+    constructor(objectId: bigint) {
+        super(
+            `Route ${objectId} cannot be put in a trip: a trip stores its stages in 16 bits and this ` +
+                `device's ids have grown past ${MAX_TRIP_STAGE_ID}.`,
+        );
+        this.name = "TripStageError";
+    }
+}
+
+/** Narrow an `ObjectId` to the trip object's 16-bit stage field, or refuse. */
+export function stageId(objectId: bigint): number {
+    if (objectId <= 0n || objectId > BigInt(MAX_TRIP_STAGE_ID)) throw new TripStageError(objectId);
+    return Number(objectId);
+}
 
 /**
  * The OBCR bytes with a new name in the header: length byte at offset 6, the null-padded 48-byte
@@ -36,46 +75,69 @@ export function renameRouteBytes(obcr: Uint8Array, name: string): Uint8Array {
     return out;
 }
 
-/** Download, rewrite the name, replace at the same id. The object id — and with it the route's
- *  retention and expiry — is exactly what this dance preserves. */
+/** Get, rewrite the name, replace at the same id. The `ObjectId` — and with it every reference to
+ *  the route — is exactly what this dance preserves. */
 export async function renameRoute(
-    client: ProtocolClient,
-    objectId: number,
+    client: FlatStoreClient,
+    route: Pick<CatalogEntry, "objectId" | "revision">,
     name: string,
     signal?: AbortSignal,
-): Promise<void> {
-    const obcr = await client.download(ObjectType.Route, objectId, { signal });
-    await client.upload(ObjectType.Route, objectId, renameRouteBytes(obcr, name), { signal });
+): Promise<PutResponse> {
+    const obcr = await client.get({ objectId: route.objectId, revision: route.revision }, { signal });
+    const clean = cleanName(name, ROUTE_NAME_MAX, "Route");
+    return client.put(
+        {
+            objectId: route.objectId,
+            expectedRevision: route.revision,
+            kind: ObjectKind.Route,
+            displayName: clean,
+        },
+        renameRouteBytes(obcr.bytes, clean),
+        { signal },
+    );
 }
 
-/** Create a trip over existing routes. Returns the id the device assigned. */
+/** Create a trip over existing routes. Returns what the commit published, id included. */
 export async function createTrip(
-    client: ProtocolClient,
+    client: FlatStoreClient,
     name: string,
-    stages: readonly number[],
+    stages: readonly bigint[],
     signal?: AbortSignal,
-): Promise<number> {
-    const bytes = encodeTripObject({ name: cleanName(name, TRIP_NAME_MAX, "Trip"), stages: [...stages] });
-    const { objectId } = await client.upload(ObjectType.Trip, NEW_OBJECT_ID, bytes, { signal });
-    return objectId;
+): Promise<PutResponse> {
+    const clean = cleanName(name, TRIP_NAME_MAX, "Trip");
+    const bytes = encodeTripObject({ name: clean, stages: stages.map(stageId) });
+    return client.put({ kind: ObjectKind.Trip, displayName: clean }, bytes, { signal });
 }
 
 /**
- * Edit a trip: download, apply `mutate`, replace at the same id. Returns what was written.
+ * Edit a trip: get, apply `mutate`, replace at the same id. Returns what was written.
  *
- * The read-modify-write is not raced against the device — it cannot change a trip on its own mid
- * session — but it *is* serialized against this page's other operations by the caller's queue.
+ * The read-modify-write is serialized against this page's other operations by the caller's queue,
+ * and against everything else by §3.6's compare-and-swap: the expected revision is the one the
+ * caller listed, so a trip that moved underneath this returns `revisionConflict` rather than
+ * overwriting the change.
  */
 export async function updateTrip(
-    client: ProtocolClient,
-    objectId: number,
+    client: FlatStoreClient,
+    trip: Pick<CatalogEntry, "objectId" | "revision">,
     mutate: (trip: TripObject) => TripObject,
     signal?: AbortSignal,
 ): Promise<TripObject> {
-    const current = decodeTripObject(await client.download(ObjectType.Trip, objectId, { signal }));
+    const current = decodeTripObject(
+        (await client.get({ objectId: trip.objectId, revision: trip.revision }, { signal })).bytes,
+    );
     const next = mutate(current);
     const written: TripObject = { ...next, name: cleanName(next.name, TRIP_NAME_MAX, "Trip") };
-    await client.upload(ObjectType.Trip, objectId, encodeTripObject(written), { signal });
+    await client.put(
+        {
+            objectId: trip.objectId,
+            expectedRevision: trip.revision,
+            kind: ObjectKind.Trip,
+            displayName: written.name,
+        },
+        encodeTripObject(written),
+        { signal },
+    );
     return written;
 }
 

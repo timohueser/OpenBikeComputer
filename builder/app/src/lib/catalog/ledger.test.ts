@@ -7,7 +7,7 @@
 // its coarse cells are — normally, unavoidably — partial.
 
 import { describe, expect, it } from "vitest";
-import { fitsOnCard, gib, ledgerFor, ledgerForRegion, MAX_FILE_BYTES, OVERHEAD_BUDGET } from "./ledger";
+import { gib, ledgerFor, ledgerForRegion, MAX_FILE_BYTES, OVERHEAD_BUDGET } from "./ledger";
 import type { RegionEntry } from "./manifest";
 import { resolveSelection, type BoxPart, type RegionPart, type SelectionContext } from "./selection";
 import { cellSquare, parseCellId } from "./grid";
@@ -298,14 +298,3 @@ describe("the core file's ceiling (OBCA §5.7)", () => {
     });
 });
 
-describe("fitsOnCard", () => {
-    it("measures against free space, not against any per-file limit", () => {
-        // §9/D4: maps are volume sets, so there is no user-visible file-size
-        // wall. The only question a rider is asked is whether the card has room.
-        const ledger = ledgerOf(overAB);
-        const need = Math.ceil(ledger.totalBytes * (1 + OVERHEAD_BUDGET));
-        expect(fitsOnCard(ledger, need)).toEqual({ fits: true, shortfallBytes: 0 });
-        expect(fitsOnCard(ledger, need - 100)).toEqual({ fits: false, shortfallBytes: 100 });
-        expect(fitsOnCard(ledger, 32 * GIB).fits).toBe(true);
-    });
-});

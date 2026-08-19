@@ -5,9 +5,10 @@
  * Same hard line as the simulated device (`simulated-device.svelte.ts`): this file lives outside
  * `src/`, no shipping module imports it, and the harness entry point injects it by overriding the
  * platform object (`main.ts`). The model is `library.test.ts`'s `RecordingLibrary`: real state,
- * not a mock — `import()` resolving is what makes a ride appear in `durableIds()`, `readObject`
- * hands back real §7.2 bytes (so the chart-room preview and the GPX auto-repair run the *actual*
- * decode + wasm export), and `writeGpx` flips `gpxPresent` like the real re-export does.
+ * not a mock — `import()` resolving is what makes a ride `present` on the next `view()`,
+ * `readObject` hands back real §7.2 bytes (so the chart-room preview and the GPX auto-repair run
+ * the *actual* decode + wasm export), and `writeGpx` flips `gpxPresent` like the real re-export
+ * does.
  *
  * The seeds are chosen for the map, not for realism: three rides around Freiburg and the
  * Kaiserstuhl (a cluster, when zoomed out) and one lone ride near Innsbruck (its own badge). One
@@ -23,7 +24,6 @@ import {
     type RideImport,
     type RideLibrary,
 } from "../src/lib/device/library";
-import type { RideScope } from "../src/lib/device/rides";
 import { encodeRideObject, type RideObject, type RidePoint } from "../src/lib/usb/objects";
 
 const FOLDER = "/Users/you/Documents/OpenBikeComputer/rides";
@@ -144,13 +144,6 @@ class HarnessRideLibrary implements RideLibrary {
         };
         this.held.set(key, { ride: landed, object: ride.object });
         return { ride: landed, imported: true };
-    }
-
-    async durableIds(scope: RideScope): Promise<number[]> {
-        return [...this.held.values()]
-            .filter((h) => h.ride.present && h.ride.serial === scope.serial && h.ride.epoch === scope.epoch)
-            .map((h) => h.ride.objectId)
-            .sort((a, b) => a - b);
     }
 
     async readObject(key: string): Promise<Uint8Array> {

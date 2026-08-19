@@ -1,8 +1,14 @@
 <!--
   One trip, as a full-width band above the route tiles: a combined multi-color track preview on
   the left (each stage in its own color, one shared projection so the stages join up), and on the
-  right the trip's name, totals, ⋯ menu, and the stage rows — colored dot matching the drawn
-  segment, per-stage facts, reorder and remove.
+  right the trip's name, stage count, ⋯ menu, and the stage rows — colored dot matching the drawn
+  segment, reorder and remove.
+
+  The band's numbers are the ones this side can know. A trip's stage list comes from the trip
+  object, which the page downloads (56 bytes plus two per stage); its distance and ascent do not
+  exist anywhere but in the stage routes' own payloads, and a `LIST` entry carries neither (§3.3).
+  So the band counts stages and leaves the totals to the preview, which downloads every stage
+  anyway — rather than printing a dash where a number used to be.
 
   The left preview is a real button: it opens the whole trip's preview (the page concatenates the
   same stage tracks that were drawn here). Each stage row's name is a button too, opening that
@@ -14,7 +20,7 @@
     import type { TripView } from "../../lib/device/dashboard.svelte";
     import { STAGE_COLORS, type Thumb } from "../../lib/device/thumbs.svelte";
     import { menuPick } from "../../lib/ui/menu";
-    import type { RouteListEntry } from "../../lib/usb/objects";
+    import type { CatalogEntry } from "../../lib/usb/protocol";
 
     let {
         trip,
@@ -30,15 +36,15 @@
     }: {
         trip: TripView;
         /** The trip's stage list resolved against the route list; `route` null = dangling id. */
-        stages: ReadonlyArray<{ id: number; route: RouteListEntry | null }>;
+        stages: ReadonlyArray<{ id: number; route: CatalogEntry | null }>;
         /** The thumbnail track of a stage route, or null while it is still on its way. */
-        trackFor: (routeId: number) => Thumb | null;
+        trackFor: (routeId: bigint) => Thumb | null;
         /** True while a preview download holds the cable. */
         busy?: boolean;
         /** Preview the whole trip — the combined track. */
         onopen: () => void;
         /** Preview one stage. */
-        onopenstage: (route: RouteListEntry) => void;
+        onopenstage: (route: CatalogEntry) => void;
         onrename: (name: string) => void;
         ondelete: () => void;
         onmovestage: (index: number, delta: number) => void;
@@ -59,7 +65,7 @@
      *  the page fetches the tracks itself (from cache, mostly) when the preview opens. */
     const openable = $derived(stages.some((stage) => stage.route !== null));
 
-    const name = $derived(trip.name || `Trip ${trip.objectId}`);
+    const name = $derived(trip.displayName || `Trip ${trip.objectId}`);
 
     /** The one name being edited inline. */
     let editing = $state<string | null>(null);
@@ -68,7 +74,7 @@
         const value = editing;
         editing = null;
         if (value === null || !value.trim()) return;
-        if (value.trim() !== trip.name) onrename(value);
+        if (value.trim() !== trip.displayName) onrename(value);
     }
 
     function onEditKey(event: KeyboardEvent) {
@@ -76,18 +82,9 @@
         if (event.key === "Escape") editing = null;
     }
 
-    function tripFacts(): string {
-        const count = trip.detail?.stages.length ?? trip.stageCount;
-        return [
-            `${count} stage${count === 1 ? "" : "s"}`,
-            `${(trip.totalDistanceM / 1000).toFixed(1)} km`,
-            `${trip.totalAscentM.toLocaleString()} m up`,
-        ].join(" · ");
-    }
-
-    function stageFacts(route: RouteListEntry): string {
-        return `${(route.distanceM / 1000).toFixed(1)} km · ${route.ascentM.toLocaleString()} m`;
-    }
+    /** Stages, from the trip object. Null where the object could not be read — the band then says
+     *  so in the rows' place rather than reporting a count of zero. */
+    const stageCount = $derived(trip.detail?.stages.length ?? null);
 </script>
 
 <div class="tripband">
@@ -119,9 +116,13 @@
             {:else}
                 <p class="name">{name}</p>
             {/if}
-            <p class="small faint grow">{tripFacts()}</p>
+            <p class="small faint grow">
+                {#if stageCount !== null}{stageCount} stage{stageCount === 1 ? "" : "s"}{/if}
+            </p>
             <PopMenu label="Trip actions">
-                <button type="button" onclick={(e) => menuPick(e, () => (editing = trip.name))}>Rename…</button>
+                <button type="button" onclick={(e) => menuPick(e, () => (editing = trip.displayName))}>
+                    Rename…
+                </button>
                 <button type="button" class="danger" onclick={(e) => menuPick(e, ondelete)}>Delete trip…</button>
             </PopMenu>
         </div>
@@ -139,8 +140,7 @@
                             disabled={busy}
                             onclick={() => onopenstage(route)}
                         >
-                            <span class="nm">{route.name || `Route ${stage.id}`}</span>
-                            <span class="small faint">{stageFacts(route)}</span>
+                            <span class="nm">{route.displayName || `Route ${stage.id}`}</span>
                         </button>
                     {:else}
                         <span class="stagebtn dangling">
