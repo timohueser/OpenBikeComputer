@@ -163,6 +163,8 @@ fn lane() -> &'static mut Lane {
 /// rebuilt, which is what keeps this plane's `.bss` footprint a property of the image instead of the
 /// cable cycle.
 pub(crate) async fn serve_objects(ctrl_in: EpIn, ctrl_out: EpOut, bulk_in: EpIn, bulk_out: EpOut) -> ! {
+    // Read once, before the loop: `flat_store::arm` runs at its spawn site in `main`, which is
+    // several statements ahead of this task's first poll on every boot path.
     let writer = crate::flat_store::writer();
     // SAFETY: sole writer of each buffer; `serve_objects` is the body of a task spawned once.
     let control_buf = unsafe { &mut *core::ptr::addr_of_mut!(CONTROL_RX) };
@@ -201,13 +203,10 @@ pub(crate) async fn serve_objects(ctrl_in: EpIn, ctrl_out: EpOut, bulk_in: EpIn,
             Timer::after_millis(500).await;
             continue;
         }
-        // Level state from the previous cable's point of view: a stale record must not be read
-        // against this one's buffers.
-        control.reset();
-        stream.reset();
-        CONTROL_IN.reset();
+        // The two hand-off releases are level state from the previous cable's point of view; the
+        // record streams themselves were reset on the way *out* of that cable, where §5.2 wants
+        // them (see below).
         CONTROL_TAKEN.reset();
-        STREAM_IN.reset();
         STREAM_TAKEN.reset();
 
         // **Three siblings, not a `select` the driver re-enters.** Each reader may have moved bytes
@@ -223,6 +222,16 @@ pub(crate) async fn serve_objects(ctrl_in: EpIn, ctrl_out: EpOut, bulk_in: EpIn,
         {
             Either3::First(reason) | Either3::Second(reason) | Either3::Third(reason) => reason,
         };
+        // **Reset the record streams, then report teardown — in that order**, because §5.2 puts them
+        // in it: a bad record length "is `invalidFrame` and resets that record stream *before*
+        // teardown is reported to the engine". A peer that has lost a record boundary cannot be
+        // re-synchronised by guessing where the next one starts, so what is buffered is dropped and
+        // the link goes with it. Both `select3` borrows end at the statement above, which is what
+        // makes the resets reachable here rather than at the top of the next pass.
+        control.reset();
+        stream.reset();
+        CONTROL_IN.reset();
+        STREAM_IN.reset();
         // §3.8's third form of cancel. On its own reply slot, so that an orphan the driver may have
         // left in `ENGINE_REPLY` stays where `Lane::reclaim` can find it.
         release_engine(&writer).await;
