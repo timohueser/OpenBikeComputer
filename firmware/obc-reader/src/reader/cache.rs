@@ -86,14 +86,14 @@ pub(in crate::reader) struct ChunkSlot {
     /// repeating the whole quadtree walk merely to reconstruct the same bbox.
     pub(in crate::reader) node: BBox,
     pub(in crate::reader) len: u16,
-    /// Which mounted file the bytes came from (a volume set's shard index, `0` for a single
-    /// map). Part of the key, not decoration: a set shares one cache and one parse generation
-    /// across its shards, so `(lod, cid)` alone would cross-serve one shard's chunk for
-    /// another's.
-    pub(in crate::reader) file: u8,
     /// Validity plus the four-bit LOD. Packing the former fields makes each slot four bytes smaller;
     /// across four slots that funds the scratch-cache tag below without growing `MapCache`.
     pub(in crate::reader) meta: u8,
+    /// The byte the shard tag used to be (FS7.5, #1420). It is spelled out rather than left to the
+    /// compiler because `ChunkSlot` is `repr(C)` with a pinned size: a map is one file, so the tag
+    /// had nothing left to range over, and dropping it frees a byte the alignment was already
+    /// paying for. Named padding keeps the const assert below reading as a fact about the layout.
+    _pad: u8,
     pub(in crate::reader) buf: [u8; CACHE_SLOT_BYTES],
 }
 
@@ -128,9 +128,8 @@ const SCRATCH_META_VALID: u8 = 0x80;
 #[repr(C)]
 struct ScratchSlot {
     cid: u32,
-    file: u8,
     meta: u8,
-    _reserved: [u8; 2],
+    _reserved: [u8; 3],
 }
 
 impl ScratchSlot {
@@ -155,9 +154,8 @@ impl ScratchSlot {
     }
 
     #[inline]
-    pub(in crate::reader) fn commit(&mut self, file: u8, lod: u8, rrpv: u8) {
+    pub(in crate::reader) fn commit(&mut self, lod: u8, rrpv: u8) {
         debug_assert!(lod <= SCRATCH_META_LOD_MASK);
-        self.file = file;
         self.meta = SCRATCH_META_VALID | (lod & SCRATCH_META_LOD_MASK) | ((rrpv & 0x03) << SCRATCH_META_RRPV_SHIFT);
     }
 }
@@ -165,14 +163,14 @@ impl ScratchSlot {
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(core::mem::size_of::<ScratchSlot>() == 8);
 
-const INDEX_META_FILE_MASK: u8 = 0x1f;
 const INDEX_META_RRPV_SHIFT: u8 = 5;
 const INDEX_META_VALID: u8 = 0x80;
 
 /// One quadtree-index cache block: a resident, block-aligned window of the index region. The
-/// validity bit, five-bit shard index, and two-bit RRIP prediction share `meta`; `len` is bounded
-/// by the 512-byte window. Compacting those tags pays for the leaf bbox stored in each chunk slot,
-/// so the pass-B fast path adds no net resident RAM.
+/// validity bit and the two-bit RRIP prediction share `meta`; `len` is bounded by the 512-byte
+/// window. Compacting those tags pays for the leaf bbox stored in each chunk slot, so the pass-B
+/// fast path adds no net resident RAM. (`meta`'s low five bits were the volume-set shard index
+/// until FS7.5, #1420 — one file, nothing to index.)
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub(in crate::reader) struct IndexBlock {
@@ -224,11 +222,6 @@ impl IndexBlock {
         self.meta & INDEX_META_VALID != 0
     }
 
-    #[inline]
-    pub(in crate::reader) fn file(&self) -> u8 {
-        self.meta & INDEX_META_FILE_MASK
-    }
-
     /// Re-reference prediction (0 = near, 3 = distant). A hit promotes to 0; most one-pass fills
     /// enter at 3 so an ordered tree scan churns one probation slot instead of flushing all seven.
     #[inline]
@@ -242,9 +235,8 @@ impl IndexBlock {
     }
 
     #[inline]
-    pub(in crate::reader) fn commit(&mut self, file: u8, rrpv: u8) {
-        debug_assert!(file <= INDEX_META_FILE_MASK);
-        self.meta = INDEX_META_VALID | (file & INDEX_META_FILE_MASK) | ((rrpv & 0x03) << INDEX_META_RRPV_SHIFT);
+    pub(in crate::reader) fn commit(&mut self, rrpv: u8) {
+        self.meta = INDEX_META_VALID | ((rrpv & 0x03) << INDEX_META_RRPV_SHIFT);
     }
 }
 
@@ -262,7 +254,6 @@ struct WalkCache {
     cover: BBox,
     entries: [WalkEntry; WALK_CACHE_ENTRIES],
     valid: bool,
-    file: u8,
     lod: u8,
     len: u8,
 }
@@ -424,16 +415,8 @@ impl MapCacheInner {
         self.bytes_read = self.bytes_read.saturating_add(bytes as u32);
     }
 
-    pub(in crate::reader) fn cached_walk(
-        &self,
-        file: u8,
-        lod: u8,
-        query: &BBox,
-    ) -> Option<Vec<WalkEntry, WALK_CACHE_ENTRIES>> {
-        let slot = self
-            .walks
-            .iter()
-            .find(|slot| slot.valid && slot.file == file && slot.lod == lod && bbox_contains(&slot.cover, query))?;
+    pub(in crate::reader) fn cached_walk(&self, lod: u8, query: &BBox) -> Option<Vec<WalkEntry, WALK_CACHE_ENTRIES>> {
+        let slot = self.walks.iter().find(|slot| slot.valid && slot.lod == lod && bbox_contains(&slot.cover, query))?;
         let mut out = Vec::new();
         for entry in slot.entries.iter().take(slot.len as usize) {
             let _ = out.push(*entry);
@@ -441,26 +424,22 @@ impl MapCacheInner {
         Some(out)
     }
 
-    pub(in crate::reader) fn store_walk(
-        &mut self,
-        file: u8,
-        lod: u8,
-        cover: BBox,
-        entries: &Vec<WalkEntry, WALK_CACHE_ENTRIES>,
-    ) {
+    pub(in crate::reader) fn store_walk(&mut self, lod: u8, cover: BBox, entries: &Vec<WalkEntry, WALK_CACHE_ENTRIES>) {
         let i = self
             .walks
             .iter()
-            .position(|slot| slot.valid && slot.file == file && slot.lod == lod)
+            .position(|slot| slot.valid && slot.lod == lod)
             .or_else(|| self.walks.iter().position(|slot| !slot.valid))
-            .unwrap_or(file as usize % WALK_CACHE_SLOTS);
+            // Neither a matching nor an empty slot: overwrite the first. It used to key off the
+            // shard index, which is what made the choice look considered; with one file there is
+            // nothing to spread over and the LOD-match arm above is what does the real work.
+            .unwrap_or(0);
         let slot = &mut self.walks[i];
         slot.valid = false;
         slot.cover = cover;
         for (dst, src) in slot.entries.iter_mut().zip(entries.iter()) {
             *dst = *src;
         }
-        slot.file = file;
         slot.lod = lod;
         slot.len = entries.len() as u8;
         slot.valid = true;
@@ -474,7 +453,6 @@ impl MapCacheInner {
     pub(in crate::reader) fn load_chunk(
         &mut self,
         src: &dyn ByteSource,
-        file: u8,
         lod: u8,
         cid: u32,
         start: u64,
@@ -488,20 +466,14 @@ impl MapCacheInner {
             self.count_read(len);
             return Ok(ChunkLoc::Scratch);
         }
-        if let Some(i) = self
-            .chunks
-            .iter()
-            .position(|s| s.valid() && s.file == file && s.lod() == lod && s.cid == cid && s.len as usize == len)
+        if let Some(i) =
+            self.chunks.iter().position(|s| s.valid() && s.lod() == lod && s.cid == cid && s.len as usize == len)
         {
             self.chunk_hits = self.chunk_hits.saturating_add(1);
             self.chunks[i].used = 0;
             return Ok(ChunkLoc::Slot(i));
         }
-        if self.scratch_slot.valid()
-            && self.scratch_slot.file == file
-            && self.scratch_slot.lod() == lod
-            && self.scratch_slot.cid == cid
-        {
+        if self.scratch_slot.valid() && self.scratch_slot.lod() == lod && self.scratch_slot.cid == cid {
             self.chunk_hits = self.chunk_hits.saturating_add(1);
             self.scratch_slot.set_rrpv(0);
             return Ok(ChunkLoc::Scratch);
@@ -522,7 +494,6 @@ impl MapCacheInner {
             ChunkVictim::Slot(i) => {
                 self.chunks[i].meta = 0;
                 src.read_at(start, &mut self.chunks[i].buf[..len])?;
-                self.chunks[i].file = file;
                 self.chunks[i].cid = cid;
                 self.chunks[i].len = len as u16;
                 self.chunks[i].node = *node;
@@ -534,7 +505,7 @@ impl MapCacheInner {
                 self.scratch_slot.meta = 0;
                 src.read_at(start, &mut self.scratch[..len])?;
                 self.scratch_slot.cid = cid;
-                self.scratch_slot.commit(file, lod, rrpv as u8);
+                self.scratch_slot.commit(lod, rrpv as u8);
                 ChunkLoc::Scratch
             }
         };
@@ -549,7 +520,6 @@ impl MapCacheInner {
     pub(in crate::reader) fn index_read(
         &mut self,
         src: &dyn ByteSource,
-        file: u8,
         off: u64,
         out: &mut [u8],
     ) -> Result<(), IoError> {
@@ -557,7 +527,7 @@ impl MapCacheInner {
         while filled < out.len() {
             let cur = off + filled as u64;
             let block_off = cur - cur % INDEX_BLOCK as u64;
-            let slot = self.index_block(src, file, block_off)?;
+            let slot = self.index_block(src, block_off)?;
             let within = (cur - block_off) as usize;
             let blen = self.index[slot].len as usize;
             if within >= blen {
@@ -571,18 +541,13 @@ impl MapCacheInner {
     }
 
     /// Ensure the `INDEX_BLOCK`-aligned block at `block_off` is resident, returning its slot.
-    pub(in crate::reader) fn index_block(
-        &mut self,
-        src: &dyn ByteSource,
-        file: u8,
-        block_off: u64,
-    ) -> Result<usize, IoError> {
+    pub(in crate::reader) fn index_block(&mut self, src: &dyn ByteSource, block_off: u64) -> Result<usize, IoError> {
         // Checked, not cast: the const assert on [`IndexBlock::block`] proves no *legal* file
         // reaches a block number past `u32`, but `block_off` is derived from directory bytes and a
         // corrupt one is not legal. A wrap here would alias two different windows of the file and
         // serve one for the other, which is the one failure a cache must never have.
         let tag = u32::try_from(block_off / INDEX_BLOCK as u64).map_err(|_| IoError::BadOffset)?;
-        if let Some(i) = self.index.iter().position(|b| b.valid() && b.file() == file && b.block == tag) {
+        if let Some(i) = self.index.iter().position(|b| b.valid() && b.block == tag) {
             self.index[i].set_rrpv(0);
             return Ok(i);
         }
@@ -607,7 +572,7 @@ impl MapCacheInner {
         // periodic 2 ages out stale protected blocks after the viewport genuinely moves. Stable
         // repeated scans keep their hit blocks at 0 and churn the probation slot.
         let rrpv = if empty.is_some() || self.sd_reads.is_multiple_of(8) { 2 } else { 3 };
-        self.index[i].commit(file, rrpv);
+        self.index[i].commit(rrpv);
         self.count_read(want);
         Ok(i)
     }

@@ -3003,7 +3003,9 @@ dependencies = [
  "obc-formats",
  "obc-link",
  "obc-ports",
+ "obc-reader",
  "obc-weather",
+ "obcm-testkit",
  "sha2",
 ]
 

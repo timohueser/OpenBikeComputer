@@ -145,21 +145,19 @@ impl NavTileCache {
     pub(super) fn index_node(
         &mut self,
         src: &dyn ByteSource,
-        file: u8,
         index: &dyn QuadIndex,
         idx: usize,
     ) -> Result<u32, IoError> {
         let byte_index = (idx as u64).checked_mul(4).ok_or(IoError::BadOffset)?;
         let off = index.index_offset().checked_add(byte_index).ok_or(IoError::BadOffset)?;
         let mut word = [0u8; 4];
-        self.index_read(src, file, off, &mut word)?;
+        self.index_read(src, off, &mut word)?;
         Ok(u32::from_le_bytes(word))
     }
 
     pub(in crate::reader) fn index_read(
         &mut self,
         src: &dyn ByteSource,
-        file: u8,
         off: u64,
         out: &mut [u8],
     ) -> Result<(), IoError> {
@@ -167,7 +165,7 @@ impl NavTileCache {
         while filled < out.len() {
             let cur = off.checked_add(filled as u64).ok_or(IoError::BadOffset)?;
             let block_off = cur - cur % INDEX_BLOCK as u64;
-            let slot = self.index_block(src, file, block_off)?;
+            let slot = self.index_block(src, block_off)?;
             let within = (cur - block_off) as usize;
             let blen = self.index[slot].len as usize;
             if within >= blen {
@@ -180,10 +178,10 @@ impl NavTileCache {
         Ok(())
     }
 
-    fn index_block(&mut self, src: &dyn ByteSource, file: u8, block_off: u64) -> Result<usize, IoError> {
+    fn index_block(&mut self, src: &dyn ByteSource, block_off: u64) -> Result<usize, IoError> {
         // See [`IndexBlock::block`]: a block number, checked rather than cast.
         let tag = u32::try_from(block_off / INDEX_BLOCK as u64).map_err(|_| IoError::BadOffset)?;
-        if let Some(i) = self.index.iter().position(|b| b.valid() && b.file() == file && b.block == tag) {
+        if let Some(i) = self.index.iter().position(|b| b.valid() && b.block == tag) {
             self.index[i].set_rrpv(0);
             self.index_hits = self.index_hits.saturating_add(1);
             return Ok(i);
@@ -201,7 +199,7 @@ impl NavTileCache {
         self.index[i].len = want as u16;
         self.index_misses = self.index_misses.saturating_add(1);
         let rrpv = if empty.is_some() || self.index_misses.is_multiple_of(8) { 2 } else { 3 };
-        self.index[i].commit(file, rrpv);
+        self.index[i].commit(rrpv);
         Ok(i)
     }
 }
@@ -273,12 +271,12 @@ mod tests {
         let mut word = [0u8; 4];
 
         for block in 0..WORKING_BLOCKS {
-            cache.index_read(&src, 0, (block * INDEX_BLOCK) as u64, &mut word).unwrap();
+            cache.index_read(&src, (block * INDEX_BLOCK) as u64, &mut word).unwrap();
         }
         assert_eq!(cache.stats().index_misses, WORKING_BLOCKS as u32);
 
         for block in 0..WORKING_BLOCKS {
-            cache.index_read(&src, 0, (block * INDEX_BLOCK) as u64, &mut word).unwrap();
+            cache.index_read(&src, (block * INDEX_BLOCK) as u64, &mut word).unwrap();
         }
         assert_eq!(cache.stats().index_hits, (WORKING_BLOCKS - 2) as u32);
         assert_eq!(cache.stats().index_misses, (WORKING_BLOCKS + 2) as u32);

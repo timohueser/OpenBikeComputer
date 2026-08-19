@@ -367,8 +367,9 @@ jobs:
       # task frames; the store is synchronous code that the app image does not link yet, so until the
       # DOS4 cutover nothing else in CI looks at it. It is gated because the regression is measured,
       # not hypothetical: a 56 KiB projection built in a return slot put 206,080 B of transient stack
-      # on this board and HardFaulted on MSPLIM, against a 51,576 B residual main stack in the
-      # shipping image. The fix took the largest OBC2 frame to 6,080 B; 8,192 is that with headroom.
+      # on this board and HardFaulted on MSPLIM, against the shipping image's residual main stack
+      # (51,576 B when this leg was written; 56,088 B since FS7.5-c2 — the authority is
+      # `residual_stack_measured` in resource_baseline.json, not this comment). The fix took the largest OBC2 frame to 6,080 B; 8,192 is that with headroom.
       - name: "obc-fw-nrf54l: OBC2 store frame ceiling"
         if: matrix.name == 'build (default = LS021/FLPR, release)'
         working-directory: firmware/obc-fw-nrf54l
@@ -383,11 +384,18 @@ jobs:
       # regression in `FlatStore::mount` underneath it.
       #
       # 1. The store: `FlatStore::mount` builds a ~10 KB store in a return slot, and is the largest
-      #    frame here at 14,016 B. 16,384 is that with 2,368 B of headroom, and it is the number that
-      #    matters — FS5 mounts this from the app, against the 51,576 B residual main stack the
-      #    shipping image has. (FS6 raised `MAX_OPEN_OBJECTS` 12 → 16 to cover the terrain, route and
-      #    weather opens the old count omitted; a hold row is 64 B, so both figures below moved by
-      #    256 B per store the frame carries.) The needle reaches the store's **trait** methods as well as its
+      #    frame here at 13,312 B. A hold row is 64 B and `mount` carries the store, so the figure
+      #    tracks `MAX_OPEN_OBJECTS`: FS6 raised it 12 -> 16 to cover the terrain, route and weather
+      #    opens the old count omitted, and FS7.5-c2 took it 16 -> 6 (one map is one file, so eleven
+      #    shard rows go and one swap row comes back) for 14,016 -> 13,312.
+      #
+      #    The limit stays 16,384 — the older figure with 2,368 B of headroom — deliberately: a frame
+      #    limit is a ratchet against growth, and re-tightening it on every saving would make each
+      #    future change a gate edit. It is the number that matters, because the app mounts this
+      #    against the shipping image's residual main stack, and `residual_stack_measured` in
+      #    resource_baseline.json is that number's authority rather than this comment.
+      #
+      #    The needle reaches the store's **trait** methods as well as its
       #    inherent ones only because `select_frames` canonicalises `..` to `::` first: llvm-objdump
       #    demangles a trait impl as `<obc_storage..flat..store..FlatStore<D> as ...>::commit`, and
       #    without that this needle silently skipped all six trait-impl symbols — `Store::commit`,
@@ -398,7 +406,9 @@ jobs:
       #    calls became `const { … }` blocks. Written plainly they cost 6,208 B here (20,224 against
       #    this 16,384 limit), because `RefCell::new` takes its 8 KiB argument by value and the
       #    temporary lands on this frame. The gate is what caught it; see `FlatStore::mount`'s docs.
-      # 2. The bench: 22,528 B in `initialize`, which chains three of those return slots. Pinned at
+      # 2. The bench: 21,120 B in `initialize`, which chains three of those return slots — 22,528
+      #    before the same `MAX_OPEN_OBJECTS` change, and it moved by three times as much for that
+      #    reason (three stores in the chain). Pinned at
       #    36,864 — the measurement it was set from was 33,024, and the pin is deliberately *not*
       #    tightened to the new figure: the ratchet exists against growth, and CI's toolchain is not
       #    the host these were measured on. On glass the whole phase-one run reached 58,096 B of
@@ -435,7 +445,8 @@ jobs:
       # `#[inline(never)]` now for exactly that reason, and these two needles are what says so.
       #
       # 16,384 is the bench's limit, deliberately: the same code, so the same ceiling — and the app has
-      # far less residual stack to spend it against (37,640 B) than the bench does.
+      # far less residual stack to spend it against (56,088 B since FS7.5-c2, 37,640 at c1) than the
+      # bench does.
       #
       # What keeps `mount_in_place` OUT OF LINE is not these needles — they only measure whichever
       # symbols happen to exist. It is `boot_chain_roots` in resource_baseline.json:

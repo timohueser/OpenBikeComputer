@@ -246,7 +246,7 @@ pub struct RideCheckpoint<'a> {
 /// The card, as everything above it sees it.
 ///
 /// **Every operation takes `&self`, the mutators included** (#1256, the owner ruling of 2026-08-18).
-/// A store is shared, not owned: a mounted map set holds a source per shard for the life of the
+/// A store is shared, not owned: the board holds a source over the mounted map for the life of the
 /// image while an upload commits and a ride journals, and `&mut` on the write half made that
 /// un-expressible. The resident state that moves lives behind cells — see
 /// [`store`](super::store)'s aliasing rules for which, and

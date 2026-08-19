@@ -20,23 +20,27 @@
 //! - **Short-lived** — [`FlatStore::with_source`]. Opens, runs the body, closes. Nothing to forget,
 //!   and the borrow checker never sees a source outlive its close. It does **not** close on a panic —
 //!   see its own docs.
-//! - **Session-long** — [`StoreSource`] + [`release`](StoreSource::release), for the eleven shards
-//!   and the terrain sidecar a mounted set holds from boot to unmount, where a scope is not
-//!   available (they live in `.bss`, across `await`s). Here the pairing is enforced twice over: the
-//!   source *owns* its handle and will only give it back through `release`, and dropping one that
-//!   still holds a handle trips a `debug_assert` — so a leak fails loudly in every test and every
-//!   host build rather than showing up as a card that will not mount a set after the third try.
+//! - **Session-long** — [`StoreSource`] + [`release`](StoreSource::release), for an object read
+//!   from boot to power-off across a hundred `await`s, where a scope is not available. **The map is
+//!   that object**: the board resolves one source over it at mount and every frame reads through it
+//!   for the life of the image (it lives in `.bss`, and a `with_source` scope cannot span the ride
+//!   loop). Here the pairing is enforced twice over: the source *owns* its handle and will only give
+//!   it back through `release`, and dropping one that still holds a handle trips a `debug_assert` —
+//!   so a leak fails loudly in every test and every host build rather than showing up as a card that
+//!   will not open its map after the third boot.
+//!
+//!   (Until FS7.5-c2 this shape was justified by the eleven shards and the terrain sidecar a mounted
+//!   volume set held. A map is one file now, so the *count* collapsed to one and the *lifetime*
+//!   argument — the only one that ever mattered — did not.)
 //!
 //! ## What a live source costs: a refcount, and no longer the store's mutability
 //!
 //! A `StoreSource` holds `&'a FlatStore`, and since #1256's owner ruling of 2026-08-18 **every seam
 //! operation takes `&self`** — `allocate`, `write`, `commit`, `journal`, `cancel` and `close`
-//! included. So sources and writers coexist: a mounted set can hold eleven `&'static` shard sources
-//! plus terrain for the life of the image while an upload commits and a ride journals. That is the
-//! board's actual shape, and it is the whole point of the ruling. (`obc_reader::MountedSet` borrows
-//! `&'a dyn ByteSource`, so a `&'static` borrow of the store is what a mount *is*; under the old
-//! `&mut` write half it pinned the store immutable forever, and `obc-link`'s mirror trait compounded
-//! it by taking `&mut self` even to `open` the next shard.) The two alternatives were rejected by
+//! included. So sources and writers coexist: the board holds a `&'static` source over the map for
+//! the life of the image while an upload commits and a ride journals. That is its actual shape, and
+//! it is the whole point of the ruling. (A mount *is* a `&'static` borrow of the store, so under the
+//! old `&mut` write half it pinned the store immutable forever.) The two alternatives were rejected by
 //! name — per-call store passing, because it cannot fit under `ByteSource::read_at(&self)` without
 //! threading context through the very consumers FS6 promised not to touch; and unsafe board-side
 //! aliasing, because it discards the guarantee exactly where it matters most.
@@ -578,6 +582,41 @@ mod tests {
         // The store itself is unharmed: a fresh listing is complete again, and one entry shorter.
         assert_eq!(Store::entries(&store).count(), 2);
         assert!(store.entries_ok());
+    }
+
+    /// **A full hold table is `Busy`, not `Invalid`.** The two shared a value until FS7.5-c2, and
+    /// the difference is the whole of a client's retry policy: `Invalid` is §3.5's `invalidRequest`
+    /// — *this request is wrong and will be wrong next time* — while every row being taken is a fact
+    /// about who else is reading right now.
+    ///
+    /// Exhaustion is reachable at all because the table is [`MAX_OPEN_OBJECTS`] rows, which FS7.5-c2
+    /// took from 16 to 6; the arm was unreachable in practice before, which is exactly why it went
+    /// six years without a test. `MAX_OPEN_OBJECTS + 1` **distinct** objects, because repeating one
+    /// would share a row by refcount and never fill the table.
+    #[test]
+    fn a_full_hold_table_is_refused_as_busy_rather_than_invalid() {
+        let (disk, ids) = fixture(MAX_OPEN_OBJECTS + 1);
+        let store = FlatStore::mount(&disk);
+
+        let mut open: vec::Vec<crate::flat::store::Handle> = vec::Vec::new();
+        for (index, id) in ids.iter().take(MAX_OPEN_OBJECTS).enumerate() {
+            open.push(Store::open(&store, *id, None).unwrap_or_else(|error| {
+                panic!("row {index} of {MAX_OPEN_OBJECTS} should still be free, got {error:?}")
+            }));
+        }
+        assert_eq!(
+            Store::open(&store, ids[MAX_OPEN_OBJECTS], None).unwrap_err(),
+            StoreError::Busy,
+            "the row after the last one is a transient refusal, not a malformed request"
+        );
+
+        // And it really was transient: give one row back and the same open succeeds.
+        store.close(open.pop().expect("a row to return"));
+        let handle = Store::open(&store, ids[MAX_OPEN_OBJECTS], None).expect("the freed row serves the next caller");
+        store.close(handle);
+        for handle in open {
+            store.close(handle);
+        }
     }
 
     /// The leak detector itself. Dropping a source that still holds its handle is the mistake it

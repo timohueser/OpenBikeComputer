@@ -99,22 +99,20 @@ pub const MAX_RESERVATIONS: usize = 2;
 /// active route and the weather bundle each hold one too and none of them was written down. A table
 /// that has to be edited is harder to be wrong about than a sentence in a doc comment.
 ///
-/// Rows are the *worst concurrent* case, not the typical one: a rider following a route across a
-/// fully sharded set, with terrain and weather mounted, while an upload runs.
+/// Rows are the *worst concurrent* case, not the typical one: a rider following a route, with
+/// weather mounted, while an upload runs.
 ///
 /// **The recording ride is deliberately not a row.** It is not an open object at all: it lives in
 /// [`RideState`], reached through [`journal`](Store::journal) and its own reservation (see
 /// [`MAX_RESERVATIONS`]), and it never takes a hold. A `RIDE` row here would be double-counting.
 pub mod open_objects {
-    /// The map shards a rendered set mounts. This is the board's ceiling, not the format's —
-    /// `OBCA_Spec.md` §5.2 allows `1..=32`, and `obc-fw-nrf54l`'s `SD_SET_MAX_SHARDS` is 11 because
-    /// that is what its FAT handle budget allowed (`SD_MAX_FILES - SD_RIDE_PEAK_FILES`). The flat
-    /// store inherits the number as this row's value only; nothing here derives it, and a board that
-    /// raises its own ceiling raises this row with it.
-    pub const SET_SHARDS: usize = 11;
-    /// The terrain sidecar, mounted beside the set and held for the session. It is a separate object
-    /// from the shards — `SetManifest::shards()` excludes it — so it is a separate row.
-    pub const TERRAIN: usize = 1;
+    /// **The map: one object, because a map is one file** (FS7.5, #1420).
+    ///
+    /// This row was `SET_SHARDS = 11` — the board's ceiling on a mounted volume set, inherited from
+    /// `obc-fw-nrf54l`'s `SD_MAX_FILES - SD_RIDE_PEAK_FILES` because a set held every shard's handle
+    /// open for the session. There are no shards, so there is no ceiling to inherit and nothing here
+    /// derives from a board constant any more.
+    pub const MAP: usize = 1;
     /// The active route's geometry, held from load until the ride ends.
     pub const ROUTE: usize = 1;
     /// The weather bundle, held for the session once mounted.
@@ -124,13 +122,52 @@ pub mod open_objects {
     /// One row that belongs to nobody, so a short-lived open — a menu reading a trip's header, a
     /// `STATUS` resolving an object — never has to wait for a session-long holder to let go.
     pub const SPARE: usize = 1;
+    /// **The row a safe swap needs**: one extra hold so a session-long holder can acquire its
+    /// replacement *before* releasing what it has.
+    ///
+    /// The rows above are a census of what is held at the worst moment, and they are right — but a
+    /// census misses the moment a holder is being *changed*. Adopting a computed detour swaps the
+    /// active route; adopting a freshly published bundle swaps the weather. Release-first makes
+    /// those two operations fallible in the worst possible way: if the new open fails — a media
+    /// glitch, a revision that moved — the rider is mid-ride with **no** route, and the object that
+    /// was working a microsecond ago has already been let go. Acquire-before-release cannot lose
+    /// what it has, and it needs one row that the census does not.
+    ///
+    /// **One row, not two.** A route swap and a weather swap overlapping is not budgeted: they are
+    /// both rider- or link-driven and neither is on a timer, so the second one to start finds the
+    /// table full and is refused [`Busy`](super::error::StoreError::Busy) — which is *ask again*,
+    /// and the honest answer for a device that is momentarily out of rows. Budgeting for two would
+    /// be provisioning for a coincidence nobody has measured.
+    pub const SWAP: usize = 1;
 
     /// The sum every row above owes.
-    pub const ACCOUNTED: usize = SET_SHARDS + TERRAIN + ROUTE + WEATHER + TRANSFER + SPARE;
+    pub const ACCOUNTED: usize = MAP + ROUTE + WEATHER + TRANSFER + SPARE + SWAP;
 }
 
+/// **Terrain is not a row, and its absence is the substantive half of this re-derivation.**
+///
+/// It used to be `TERRAIN = 1`: a `.obcd` sidecar mounted beside the map and held for the session,
+/// a separate object because `SetManifest::shards()` excluded it. OBCM v14 §1.3 puts the OBCT
+/// container **inside the map file**, so the board forms a byte window over the map's own source
+/// and parses through it. Same handle, same hold, same refcount — a second row would be counting
+/// one open twice, which is exactly the mistake the previous constant made in the other direction.
+///
+/// So `11 + 1 + 1 + 1 + 1 + 1 = 16` becomes `1 + 1 + 1 + 1 + 1 + 1 = 6`: five rows of census plus
+/// [`SWAP`](open_objects::SWAP), the row acquire-before-release needs and a census cannot see.
+///
+/// **The 5-vs-6 choice, recorded because it reverses a saving.** The census alone is 5, and 5 is
+/// provably the worst *legal concurrent* case — with zero margin. The sixth row buys back the safe
+/// swap pattern, which under the old 16-row table was free and unstated; taking the table to its
+/// exact census would have quietly made release-first the only affordable ordering, i.e. removed a
+/// cross-slice invariant nobody had written down. 64 B is the right price for that, and the row's
+/// own doc is where the invariant is now written down.
+///
+/// The ten rows that still go take **728 B** off a linked `FlatStore` on a part where every `.bss`
+/// byte is a main-stack byte. A `Hold` is 64 B, so 640 of that is the rows and the rest is padding a
+/// 16-row array carried — measured, because the arithmetic alone would have under-claimed it.
+///
 /// Open objects at once — the sum of [`open_objects`]'s rows, and nothing else.
-pub const MAX_OPEN_OBJECTS: usize = 16;
+pub const MAX_OPEN_OBJECTS: usize = 6;
 
 // Deliberately an anonymous module-level `const`, not an associated one: an associated `const` is
 // evaluated lazily, only when something names it, so a table that stopped adding up would compile
@@ -834,6 +871,18 @@ impl<D: BlockDevice> FlatStore<D> {
         let _free = self.free.borrow_mut();
         let mut block = [0u8; BLOCK];
         let _ = read_blocks(&self.dev, SUPERBLOCK[0], &mut block);
+    }
+
+    /// How many extent ranges the head revision of `id` holds — `None` when there is no such object.
+    ///
+    /// For the fixtures that need to *prove* an object is fragmented rather than assume it: an
+    /// allocator change that quietly handed out one contiguous run would leave a straddling-read
+    /// test passing while it had stopped straddling anything. Nothing else calls it, and it is
+    /// `cfg(test)`, so no device build has it — the same shape as
+    /// [`hold_free_across_a_command`](Self::hold_free_across_a_command) above.
+    #[cfg(test)]
+    pub(super) fn head_range_count(&self, id: ObjectId) -> Option<usize> {
+        self.find(id).ok()?.1.map(|entry| entry.ranges.len())
     }
 
     /// The one method that takes `&mut self`, and the reason `store`, `geometry` and `extents` need
@@ -1543,10 +1592,13 @@ impl<D: BlockDevice> Store for FlatStore<D> {
             hold.payload_len = hold.payload_len.max(entry.meta.payload_len);
             return Ok(Handle { slot: slot as u8, id: entry.meta.id, revision: entry.meta.revision });
         }
-        // A full table is transient: some other reader is holding every row, and the answer is
-        // to ask again rather than to reject the request. The wire face is `busy`, not
-        // `invalidRequest` — `StoreError` has no variant of its own for it.
-        let slot = holds.iter().position(Option::is_none).ok_or(StoreError::Invalid)?;
+        // A full table is transient: some other reader is holding every row, and the answer is to
+        // ask again rather than to reject the request. It now *says* so — `StoreError::Busy`, §3.9's
+        // `busy` with detail `holds 2`, rather than the `Invalid` this returned while the two shared
+        // a value. At `MAX_OPEN_OBJECTS = 16` the arm was unreachable and the difference was
+        // theoretical; at 6 it is a state a rider can reach, and a client that reads it as
+        // `invalidRequest` stops retrying something that would have worked a second later.
+        let slot = holds.iter().position(Option::is_none).ok_or(StoreError::Busy)?;
         holds[slot] = Some(Hold {
             id: entry.meta.id,
             revision: entry.meta.revision,

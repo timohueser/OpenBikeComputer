@@ -42,7 +42,6 @@ pub mod corridor;
 pub mod hours;
 pub mod reader;
 mod scene;
-pub mod volume;
 
 pub use color::rgb565_to_device64;
 pub use color::rgb565_to_rgb888;
@@ -59,10 +58,9 @@ pub use reader::{
     CacheError, CacheStats, CapacityError, DecodeStatus, FeatureDecodeError, FeatureReadError, FeatureRef, Lod,
     MapCache, MapProfile, MapReadError, MapTables, NavCacheStats, NavDirectory, NavEdgeCandidate, NavEdgeEndpoint,
     NavEdgePosition, NavEdgeSnap, NavNeighbor, NavNodeRef, NavTileCache, Poi, PoiCatEntry, PoiDirectory, Reader,
-    MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS, MAX_POI_RESULTS, NAV_MAX_CHUNK_BYTES, POI_MAX_CATEGORIES,
-    POI_MAX_CHUNK_BYTES,
+    TerrainRegion, MAX_CHUNK_BYTES, MAX_FEAT_PTS, MAX_FEAT_RINGS, MAX_POI_RESULTS, NAV_MAX_CHUNK_BYTES,
+    POI_MAX_CATEGORIES, POI_MAX_CHUNK_BYTES,
 };
-pub use volume::{FullSetShards, MountError, MountedSet, SetShards, ShardTables};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {

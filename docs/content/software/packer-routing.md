@@ -771,9 +771,13 @@ rider to decide something they have no way to decide well.
 An assembled map carries that raster **inside it**, in the map file's own terrain
 region, so there is nothing beside the `.obcm` to lose, mismatch, or leave behind when
 the map is replaced. A map that never went through the assembler — one packed straight
-from an extract for the simulator — has no such region, and its heights live in a plain
+from an extract — has no such region, and its heights live in a plain
 `.obcd` **sidecar** next to the `.obcm` under the same stem, which is what the committed
-fixtures use. The packer never embeds one, and the reason is the same distinction the
+fixtures and the simulator use. **The device does not**: it mounts terrain only from the
+map file's own region, so a packed-from-an-extract map has no elevation on glass —
+whether the packer should splice one is open on
+[#1420](https://github.com/timohueser/OpenBikeComputer/issues/1420).
+The packer never embeds one today, and the reason is the same distinction the
 `--terrain` flag hides: on that side a raster is an input the packer *samples* for
 per-edge ascent, not an artifact it carries.
 
