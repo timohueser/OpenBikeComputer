@@ -1348,12 +1348,12 @@ All four formats are read through one trait. No reader touches a filesystem dire
 
 ```rust
 pub trait ByteSource {
-    fn read_at(&self, offset: u32, buf: &mut [u8]) -> Result<(), Error>;
-    fn len(&self) -> u32;
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), Error>;
+    fn len(&self) -> u64;
 }
 ```
 
-On the host that's a slice of memory; on the device it's a file on the SD card. The reader holds a `&dyn ByteSource` and stays monomorphic, so the genericity never leaks into the renderer or the screen stack — it's [one of the project's four seams](../architecture/#two-hosts-one-core-and-the-seams-between-them). What changes between the formats is *how much* they keep resident.
+On the host that's a slice of memory; on the device it's an open object in the card's [flat store](src:specs/FLAT_Store_Format.md). The reader holds a `&dyn ByteSource` and stays monomorphic, so the genericity never leaks into the renderer or the screen stack — it's [one of the project's four seams](../architecture/#two-hosts-one-core-and-the-seams-between-them). The offsets are `u64` because this one trait is what every format parser reads through, so its width *is* the largest file the tree can open — a `u32` would put a 4 GiB wall in front of [a 64 GiB map interior](#one-map-one-file). What changes between the formats is *how much* they keep resident.
 
 <figure class="fig">
 <svg viewBox="0 0 720 270" role="img" aria-label="A large map file on the SD card, much bigger than RAM. When the file opens, only the small header, style table and LOD table are read resident; the quadtree index and geometry chunks are pulled on demand through small caches. A note contrasts the route, which keeps its whole small index resident and streams only geometry.">
