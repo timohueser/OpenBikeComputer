@@ -22,7 +22,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -55,6 +55,8 @@ import {
     encodeStreamRecord,
     isFailure,
     splitStreamRecord,
+    streamRecordFault,
+    type StreamRecordFault,
     type ControlFailure,
     type DecodedRequest,
     type Request,
@@ -72,6 +74,12 @@ function repoRoot(): string {
 }
 
 const SUITE = join(repoRoot(), "specs/vectors/flat-store-v4");
+
+/**
+ * The manifest's own digest. Re-pin this **deliberately**, in the same commit that changes a
+ * fixture and for the same stated reason — never because a test went red.
+ */
+const MANIFEST_SHA256 = "f4c7aaf3270893e42ca4170e268ccb0dc9d0a1480aa08fbafa9fc4fe710c29b8";
 const read = (relative: string): string => readFileSync(join(SUITE, relative), "utf8");
 
 interface ManifestRow {
@@ -184,6 +192,17 @@ describe("the manifest", () => {
         expect(MANIFEST.suite).toBe("flat-store-v4");
         expect(MANIFEST.wire_major).toBe(WIRE_MAJOR);
         expect(MANIFEST.format).toBe(1);
+    });
+
+    it("pins its own SHA-256, so the pinner cannot be edited into agreeing with a drifted fixture", () => {
+        // Every hash below lives *in* the manifest, so a change that rewrote a fixture and its row
+        // together would pass the next test silently. The manifest's own digest is checked into the
+        // producing crate (`obc-vectors`) and reproduced here; the two are the same discipline the
+        // Rust suite applies, one level up.
+        const digest = createHash("sha256").update(readFileSync(join(SUITE, "manifest.json"))).digest("hex");
+        expect(digest, "the manifest itself moved — re-pin this hash deliberately, never reflexively").toBe(
+            MANIFEST_SHA256,
+        );
     });
 
     it("pins the SHA-256 of every checked-in fixture file", () => {
@@ -441,6 +460,33 @@ function dispositionOf(bytes: Uint8Array): ControlFailure | DecodedRequest {
     return decodeRequest(bytes);
 }
 
+/**
+ * Which {@link StreamRecordFault} a §3.8 negative vector is *about*, taken from the vector's **name**.
+ *
+ * Deliberately not re-derived from the bytes: a mapping that read the reserved field and the length
+ * would be a second copy of the codec, and a test that agrees with the implementation by
+ * construction proves nothing. The name is the fixture's own statement of what it is for — it is
+ * what the manifest indexes and what a reviewer reads — so keying on it is what makes this an
+ * independent assertion rather than a mirror.
+ *
+ * A vector whose name this does not recognise fails loudly, because the alternative is a new
+ * negative fixture silently landing in whichever bucket the default happened to name.
+ */
+function streamFaultFor(vector: NegativeFixture): StreamRecordFault {
+    switch (vector.name) {
+        case "stream-nonzero-reserved-field":
+            return "reservedBits";
+        case "stream-zero-payload-length":
+            return "zeroLength";
+        case "stream-length-disagreeing-with-the-record":
+            return "lengthMismatch";
+        default:
+            throw new Error(
+                `${vector.name}: a §3.8 stream negative with no stated fault — name it in streamFaultFor`,
+            );
+    }
+}
+
 describe("negative vectors are refused with the contract's own code and detail", () => {
     it.each(rowsOf(MANIFEST.negative))("%s", (_name, row) => {
         const vector = fixture<NegativeFixture>(row);
@@ -450,7 +496,13 @@ describe("negative vectors are refused with the contract's own code and detail",
             // §3.8 gives a malformed stream record no answer of its own: it terminates the transfer
             // it claims to belong to, which on this side is the codec refusing to split it.
             expect(vector.expect.disposition).toBe("terminateTransfer");
+            // `toBeNull()` alone would pass whether the codec refused this record for the reason the
+            // fixture names or for some unrelated one — three different malformations collapsing to
+            // one indistinguishable assertion. The fault name is what makes each vector test itself.
             expect(splitStreamRecord(bytes), vector.name).toBeNull();
+            expect(streamRecordFault(bytes), `${vector.name}: refused, but not for the stated reason`).toBe(
+                streamFaultFor(vector),
+            );
             return;
         }
 
@@ -494,6 +546,22 @@ describe("the suite", () => {
     it("exercises every fixture the manifest lists", () => {
         const untouched = ALL_ROWS.map((row) => row.file).filter((file) => !exercised.has(file));
         expect(untouched).toEqual([]);
+    });
+
+    it("lists every fixture on disk, so a file added without a row cannot hide", () => {
+        // The guard above walks manifest → disk. On its own that is half a guard: a fixture checked
+        // in without a manifest row is exercised by nothing, hashed by nothing, and invisible to
+        // every assertion in this file. Walking disk → manifest is the other half, and the pair is
+        // what makes "the manifest is the index" true rather than aspirational.
+        const listed = new Set(ALL_ROWS.map((row) => row.file));
+        const onDisk: string[] = [];
+        for (const dir of ["controls", "streams", "errors", "negative"]) {
+            for (const name of readdirSync(join(SUITE, dir))) {
+                if (name.endsWith(".json")) onDisk.push(`${dir}/${name}`);
+            }
+        }
+        expect(onDisk.length).toBeGreaterThan(0);
+        expect(onDisk.filter((file) => !listed.has(file)).sort()).toEqual([]);
     });
 
     it("round-trips every fixture's hex through this file's own helpers", () => {

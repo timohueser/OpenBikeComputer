@@ -832,10 +832,16 @@ export class FlatStoreClient {
         if (this.closed || this.linkFailure) return;
         if (this.pending.get(requestId)?.answered === false) {
             try {
-                await this.cancel(requestId);
+                // **The signal bounds the WRITE; the fourth argument only bounds the wait for an
+                // answer.** Passing neither left the `CANCEL` send itself unbounded, so a device that
+                // is enumerated but hung — the endpoint NAKing forever rather than failing — parked
+                // here and never released `liveTransferId`. That is precisely the wedge the latch's
+                // own comment claims to have retired, reintroduced one call deeper.
+                await this.cancel(requestId, AbortSignal.timeout(CANCEL_ACK_TIMEOUT_MS));
             } catch {
-                // A device that is gone, or one that never answers, is no reason to hide the
-                // caller's original error — the reset below is the backstop either way.
+                // A device that is gone, one that never answers, and one that never even accepts the
+                // write are all the same thing here: no reason to hide the caller's original error,
+                // and the reset below is the backstop either way.
             }
         }
         await this.stream.reset().catch(() => undefined);

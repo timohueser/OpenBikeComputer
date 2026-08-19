@@ -60,15 +60,20 @@ const PID = OBC_USB_FILTERS[0].productId!;
  * packet boundaries no protocol meaning at all.
  */
 function configuration(
-    options: { packetSize?: number; interfaceProtocol?: number | null } = {},
+    options: { packetSize?: number; interfaceProtocol?: number | null; interfaceNumber?: number } = {},
 ): UsbConfigurationLike {
     const packetSize = options.packetSize ?? 512;
+    // Defaults to **2**, not 0. §5.2.1 puts the claimed interface number in `wIndex`, and a rig that
+    // always used interface 0 made that assertion unfalsifiable — `index: 0` passes whether the code
+    // reads the number or hard-codes a zero. The device really does enumerate interface 0 today;
+    // the point of the rig is to be able to tell the difference.
+    const interfaceNumber = options.interfaceNumber ?? 2;
     const protocol = options.interfaceProtocol === undefined ? WIRE_MAJOR : options.interfaceProtocol;
     return {
         configurationValue: 1,
         interfaces: [
             {
-                interfaceNumber: 0,
+                interfaceNumber,
                 alternate: {
                     interfaceClass: 0xff,
                     // `null` models a descriptor that states nothing — the field is optional in the
@@ -466,7 +471,7 @@ describe("the endpoint layout", () => {
         // are bulk endpoints, and calling one pair "bulk" said nothing while hiding that the stream
         // pair is the one carrying §3.8's 4,096-byte payloads.
         expect(discoverLayout(configuration())).toEqual({
-            interfaceNumber: 0,
+            interfaceNumber: 2,
             control: { in: 1, out: 1, packetSize: 512 },
             stream: { in: 2, out: 2, packetSize: 512 },
         });
@@ -494,7 +499,7 @@ describe("the pipe", () => {
     it("claims the interface and clears both halves on a reset", async () => {
         const { link, usbDevice } = rig();
         const webusb = await openWebUsbLink(usbDevice);
-        expect(usbDevice.claimed).toBe(0);
+        expect(usbDevice.claimed).toBe(2);
         await webusb.stream.reset();
         expect(usbDevice.halts).toEqual(["in2", "out2"]);
         await webusb.close();
@@ -674,7 +679,9 @@ describe("the EP0 device-info read", () => {
 
         expect(usbDevice.setups).toEqual([
             {
-                setup: { requestType: "vendor", recipient: "interface", request: 0x20, value: 0, index: 0 },
+                // `index` is the **claimed** interface number: the rig enumerates interface 2 so
+                // that a hard-coded zero would fail here rather than pass by coincidence.
+                setup: { requestType: "vendor", recipient: "interface", request: 0x20, value: 0, index: 2 },
                 length: DEVICE_INFO_MAX,
             },
         ]);

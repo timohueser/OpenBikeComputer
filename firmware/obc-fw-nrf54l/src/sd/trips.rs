@@ -87,10 +87,6 @@ impl<'a> Trips<'a> {
         self.storage.trip_catalog.row_count()
     }
 
-    pub(crate) fn observe_floor(&mut self, floor: u16) {
-        self.storage.trip_catalog.observe_floor(floor);
-    }
-
     pub(crate) fn candidate(&self) -> Option<u16> {
         self.storage.trip_catalog.candidate()
     }

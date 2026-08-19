@@ -119,9 +119,18 @@ impl ObjectType {
         })
     }
 
-    /// Whether this type is part of a map upload — the type the reference firmware streams straight
-    /// into its final file with the format magic held back, rather than through the invisible
-    /// `UPLOAD.TMP` every small object uses. Also the one type that is **USB only** (spec §10).
+    /// Whether this type is part of a map upload.
+    ///
+    /// **Nothing in the shipping image calls this any more** (FS7.5-c3b): it distinguished the types
+    /// the v1 firmware streamed straight into their final file with the magic held back from the
+    /// ones that staged through `UPLOAD.TMP`, and protocol v4 has neither shape — an object is bytes,
+    /// a kind, a name and a CRC, and the store's commit is what makes it visible.
+    ///
+    /// It survives as a **codec** fact rather than a firmware one: `obc-ble` is the shared wire
+    /// vocabulary that the iOS client and the vector oracles read, and `map` being the one USB-only
+    /// type is still true of the v1 descriptors those consumers decode. Its tests are in
+    /// `tests/vectors.rs` and are what keep it honest. When the last v1 descriptor consumer goes,
+    /// this goes with the whole type.
     pub const fn is_map_payload(self) -> bool {
         matches!(self, Self::Map)
     }

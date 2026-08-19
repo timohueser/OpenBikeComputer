@@ -989,12 +989,40 @@ export function encodeStreamRecord(transferRequestId: number, offset: bigint, pa
  * field. A record this cannot split names no offset the receiver can trust, so there is nothing to
  * answer with beyond terminating the transfer it claims to belong to.
  */
-export function splitStreamRecord(record: Uint8Array): { frame: StreamFrame; payload: Uint8Array } | null {
-    if (record.length < STREAM_HEADER_LEN) return null;
+/**
+ * Why a §3.8 record could not be split — the three distinguishable ways it can be malformed.
+ *
+ * `splitStreamRecord` answers `null` for all three, which is all a caller needs: §3.8 gives a
+ * malformed stream record no answer of its own, it terminates the transfer. A *test* needs more,
+ * because three fixtures that each assert `toBeNull()` pass identically whether the codec refused
+ * them for the stated reason or for any other one — which is how a rejection can be right by
+ * accident. {@link streamRecordFault} is that discrimination, and it exists for the vector suite.
+ */
+export type StreamRecordFault =
+    /** Shorter than the 16-byte frame: there is not even a header to read. */
+    | "short"
+    /** Bytes 14..16 are §3.8's reserved zero and are not zero. */
+    | "reservedBits"
+    /** A zero payload length, which §3.8 forbids outright. */
+    | "zeroLength"
+    /** The declared payload length disagrees with the record that carried it. */
+    | "lengthMismatch";
+
+/** Which of {@link StreamRecordFault} a record trips, or `null` when it splits cleanly. */
+export function streamRecordFault(record: Uint8Array): StreamRecordFault | null {
+    if (record.length < STREAM_HEADER_LEN) return "short";
     const view = viewOf(record);
-    if (view.getUint16(14, true) !== 0) return null;
+    if (view.getUint16(14, true) !== 0) return "reservedBits";
     const payloadLength = view.getUint16(12, true);
-    if (payloadLength === 0 || record.length !== STREAM_HEADER_LEN + payloadLength) return null;
+    if (payloadLength === 0) return "zeroLength";
+    if (record.length !== STREAM_HEADER_LEN + payloadLength) return "lengthMismatch";
+    return null;
+}
+
+export function splitStreamRecord(record: Uint8Array): { frame: StreamFrame; payload: Uint8Array } | null {
+    if (streamRecordFault(record) !== null) return null;
+    const view = viewOf(record);
+    const payloadLength = view.getUint16(12, true);
     return {
         frame: {
             transferRequestId: view.getUint32(0, true),

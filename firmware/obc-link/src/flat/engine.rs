@@ -107,8 +107,13 @@ pub struct Ceilings {
 
 impl Ceilings {
     /// The two ceilings, or `None` for a link below the protocol floor.
-    pub fn new(control: usize, stream: usize) -> Option<Self> {
-        (control >= CONTROL_FLOOR && stream > STREAM_HEADER_LEN).then_some(Ceilings { control, stream })
+    pub const fn new(control: usize, stream: usize) -> Option<Self> {
+        // `then_some` is not `const`; the `if` is the same statement and is.
+        if control >= CONTROL_FLOOR && stream > STREAM_HEADER_LEN {
+            Some(Ceilings { control, stream })
+        } else {
+            None
+        }
     }
 
     /// §5.1's ceilings for a BLE link, from what the link negotiated and what the adapter can hold.
@@ -149,17 +154,17 @@ impl Ceilings {
     ///
     /// `None` is §5.1's refusal, unchanged: a buffer too small for a single-entry page cannot carry
     /// this protocol, and truncating it is not on the table.
-    pub fn for_usb(record: usize) -> Option<Self> {
+    pub const fn for_usb(record: usize) -> Option<Self> {
         Ceilings::new(record, record)
     }
 
     /// The largest control record this link carries.
-    pub fn control(&self) -> usize {
+    pub const fn control(&self) -> usize {
         self.control
     }
 
     /// The largest stream record this link carries.
-    pub fn stream(&self) -> usize {
+    pub const fn stream(&self) -> usize {
         self.stream
     }
 }

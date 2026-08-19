@@ -1,10 +1,12 @@
 //! Device identity and the small read-only blobs, as **plain bytes**.
 //!
 //! On BLE these are separately-addressed GATT attributes (three DIS strings, `config`,
-//! `protocolVersion`); over USB they are the payloads of selector-routed control frames. Both are
-//! the same bytes, so the codecs live here and each transport only decides how to address and
-//! deliver them. `ble::gatt` wraps the results into trouble-host's heapless-0.9 attribute types;
-//! `usb::control` copies them straight into a frame.
+//! `protocolVersion`). Over USB, since FS7.5-c3b, the device strings are the payload of §5.2.1's one
+//! EP0 vendor request and the rest is not carried at all — `config` keeps the BLE characteristic it
+//! always had, and the wire major is a descriptor fact rather than a read. Both links serve the same
+//! bytes, so the codecs live here and each transport decides only how to address and deliver them.
+//! `ble::gatt` wraps the results into trouble-host's heapless-0.9 attribute types; `usb::device_info`
+//! writes them into an EP0 response.
 
 use core::cell::{Cell, RefCell};
 
