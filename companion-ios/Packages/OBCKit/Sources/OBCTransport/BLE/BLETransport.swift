@@ -977,7 +977,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         let serialValue = try await serial
         let storeID: String?
         if version == OBCProtocol.version {
-            storeID = try await transferClient.catalog().storeID.description
+            storeID = try await transferClient.storeID().description
         } else {
             storeID = nil
         }
@@ -1023,18 +1023,16 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     }
 
     public func listRoutes() async throws -> [RouteCatalogEntry] {
-        let entries = try await headEntries(kind: .route)
-        var result: [RouteCatalogEntry] = []
-        for entry in entries {
-            let payload = try await download(entry)
-            let route = try RouteObjectCodec.decode(payload)
-            result.append(RouteCatalogEntry(
+        // This catalog is reconcile-only: identity + CRC are its proof, and it never feeds route
+        // rows. Protocol v4 already carries both in LIST. Downloading every OBCR merely to rebuild
+        // legacy display fields creates an N+1 transfer storm (249 GETs on the flat-store bench
+        // card) and blocks a foreground PUT behind the TransferClient's operation gate.
+        try await headEntries(kind: .route).map { entry in
+            RouteCatalogEntry(
                 id: DeviceObjectID(entry.objectID.rawValue), name: entry.displayName,
-                distanceMeters: Double(route.totalDistanceMeters),
-                elevationGainMeters: Double(route.totalAscentMeters),
-                pointCount: route.points.count, crc32: entry.payloadCRC32))
+                distanceMeters: 0, elevationGainMeters: 0,
+                pointCount: 0, crc32: entry.payloadCRC32)
         }
-        return result
     }
 
     public func listRides() async throws -> RideCatalog {
@@ -1091,15 +1089,14 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     }
 
     public func listTrips() async throws -> [TripCatalogEntry] {
-        var result: [TripCatalogEntry] = []
-        for entry in try await headEntries(kind: .trip) {
-            let trip = try TripObjectCodec.decode(try await download(entry))
-            result.append(TripCatalogEntry(
+        // Like routes, this is badge/reconcile input. LIST already carries every field that input
+        // consumes; stage details are fetched only when a caller explicitly downloads the trip.
+        try await headEntries(kind: .trip).map { entry in
+            TripCatalogEntry(
                 id: DeviceObjectID(entry.objectID.rawValue), name: entry.displayName,
                 distanceMeters: 0, elevationGainMeters: 0,
-                stageCount: trip.stageObjectIDs.count, crc32: entry.payloadCRC32))
+                stageCount: 0, crc32: entry.payloadCRC32)
         }
-        return result
     }
 
     public func downloadTrip(_ id: DeviceObjectID) async throws -> TripObjectCodec.Decoded {

@@ -69,6 +69,20 @@ public actor TransferClient {
         }
     }
 
+    /// Establish the store identity from the first LIST page without walking the whole catalog.
+    /// A BLE page carries only two entries at the preferred MTU, so using `catalog()` merely to
+    /// learn the StoreId turns a full benchmark card into hundreds of needless control writes.
+    public func storeID() async throws -> StoreID {
+        await acquire()
+        defer { release() }
+        do { return try await identifyStore() }
+        catch is TransferLinkLost {
+            try await restoreAndRefreshStore()
+            guard let currentStoreID else { throw TransferClientError.unexpectedResponse }
+            return currentStoreID
+        }
+    }
+
     public func status(objectID: ObjectID, revision: Revision) async throws -> StatusResult {
         await acquire()
         defer { release() }
@@ -106,17 +120,6 @@ public actor TransferClient {
         defer { release() }
         try await ensureIntroduced()
         let crc = CRC32.checksum(payload)
-        let matchesBeforeCreate: Set<ObjectID>
-        if objectID == nil {
-            matchesBeforeCreate = Set(try await listAll(kind: kind).entries.lazy.filter {
-                !$0.flags.contains(.retained)
-                    && $0.payloadLength == UInt64(payload.count)
-                    && $0.payloadCRC32 == crc
-                    && $0.displayName == displayName
-            }.map(\.objectID))
-        } else {
-            matchesBeforeCreate = []
-        }
         let request = PutRequest(
             objectID: objectID, expectedRevision: expectedRevision,
             payloadLength: UInt64(payload.count), payloadCRC32: crc, kind: kind,
@@ -151,7 +154,6 @@ public actor TransferClient {
                     && $0.payloadLength == UInt64(payload.count)
                     && $0.payloadCRC32 == crc
                     && $0.displayName == displayName
-                    && !matchesBeforeCreate.contains($0.objectID)
             }
             guard let entry = matches.max(by: { $0.objectID < $1.objectID }) else {
                 return try await putOnLiveLink(request, payload: payload, progress: progress)
@@ -344,7 +346,7 @@ public actor TransferClient {
 
     private func ensureIntroduced() async throws {
         guard currentStoreID == nil else { return }
-        do { _ = try await listAll(kind: nil) }
+        do { _ = try await identifyStore() }
         catch is TransferLinkLost { try await restoreAndRefreshStore() }
     }
 
@@ -352,10 +354,23 @@ public actor TransferClient {
         let previous = currentStoreID
         currentStoreID = nil
         try await link.restore()
-        let refreshed = try await listAll(kind: nil)
-        if let previous, previous != refreshed.storeID {
-            throw TransferClientError.storeChanged(previous: previous, current: refreshed.storeID)
+        let refreshed = try await identifyStore()
+        if let previous, previous != refreshed {
+            throw TransferClientError.storeChanged(previous: previous, current: refreshed)
         }
+    }
+
+    /// One cursorless LIST is sufficient to introduce a store: every page carries the same
+    /// StoreId and commit sequence. Pagination belongs only to callers that need the entries.
+    private func identifyStore() async throws -> StoreID {
+        let response = try await request(.list(kind: nil, cursor: nil), opcode: .list)
+        guard case .list(let page) = response else { throw TransferClientError.unexpectedResponse }
+        if let currentStoreID, currentStoreID != page.storeID {
+            self.currentStoreID = page.storeID
+            throw TransferClientError.storeChanged(previous: currentStoreID, current: page.storeID)
+        }
+        currentStoreID = page.storeID
+        return page.storeID
     }
 
     private func listAll(kind: ObjectKind?) async throws -> (storeID: StoreID, entries: [CatalogEntry]) {
