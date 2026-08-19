@@ -46,7 +46,7 @@
 use embassy_time::Instant;
 use embedded_sdmmc::{
     Block, BlockCount, BlockDevice, BlockIdx, LfnBuffer, Mode, RawDirectory, RawFile, ShortFileName, TimeSource,
-    Timestamp, VolumeIdx, VolumeManager,
+    Timestamp, VolumeManager,
 };
 use heapless::{String, Vec};
 use obc_app::ride::{decode_synced_rides, encode_synced_rides, SyncedRides, SYNCED_RIDES_MAX_LEN};
@@ -98,20 +98,6 @@ pub enum SidecarWriteError {
 /// (host-tested), the direct analogue of the `SYNCED.SET` sidecar.
 const EPOCH_FILE: &str = "EPOCH.OBE";
 
-/// The **selected map** file in the card root (issue #927): the 8.3 filename of the `.obcm` the
-/// renderer streams from, in the same tiny CRC-framed shape as [`EPOCH_FILE`]. Card-resident rather
-/// than an RRAM setting because the thing it names lives on the card — swap in another card and it
-/// brings its own selection; an RRAM line would point at a file that may not be in the slot now.
-/// A missing/torn file reads as **no preference**, and [`Storage::open_map`] falls back to the first
-/// readable map, which is exactly the pre-#927 behaviour. Codec + torn semantics live in
-/// `obc-app::store_meta` (host-tested), like every other card sidecar.
-const MAP_SELECTED: &str = "MAP.SEL";
-
-/// How many maps one card's catalog scan reports (issue #927). Maps are hundreds of megabytes, so a
-/// card holding more than a handful is not a real configuration — this is a scan bound, not a store
-/// cap: an upload is never refused for exceeding it, the extra map simply isn't listed.
-pub const MAX_MAPS: usize = 8;
-
 /// The staged firmware update in the **card root** (epic #615, locked: 8.3-safe, no LFN — the
 /// same file contract the future LM20 USB-MSC epic exposes). Sideloaded by the user (or, S6, the
 /// phone); the armer only ever reads it.
@@ -126,14 +112,10 @@ const ROLLBACK_BIN: &str = "ROLLBACK.BIN";
 /// The concrete SD stack for this board: [`SemmcCard`] — the card in native 4-bit mode on the FLPR
 /// — under a 16-file/4-dir [`VolumeManager`].
 ///
-/// The manager keeps a larger-than-default handle budget for the remaining concurrent map, ride
-/// log, weather, update, and upload paths. Each slot is 64 bytes of `FileInfo`.
+/// The manager keeps a larger-than-default handle budget for the retained ride and update paths.
 type Sd = SemmcCard;
-/// What the manager actually owns: the card **by shared reference** ([`SharedBlockDevice`]), so
-/// the raw `&'static Sd` twin stays available for the map's extent-mapped direct block reads
-/// (#500) — `VolumeManager::device()` can't hand it back out (its 0.9 signature can only return
-/// the `TimeSource` type), so the share happens here, one level up. The card itself lives in
-/// [`SD_CARD`].
+/// What the retained legacy manager owns: the card by shared reference, leaving its raw handle
+/// available to the DFU extent resolver.
 type SdShared = SharedBlockDevice<'static, Sd>;
 /// The open-handle budget (see the file-count note above) — one set of consts so the manager and
 /// the `obc-platform` wrapper aliases below can never drift apart.
@@ -157,72 +139,8 @@ const SD_MAX_DIRS: usize = 4;
 const SD_MAX_FILES: usize = 16;
 const SD_MAX_VOLUMES: usize = 1;
 type Vmgr = VolumeManager<SdShared, NullTime, SD_MAX_DIRS, SD_MAX_FILES, SD_MAX_VOLUMES>;
-/// [`SdByteSource`] over this board's manager (the wrappers are generic over the handle budget).
-type Source<'a> = SdByteSource<'a, SdShared, NullTime, SD_MAX_DIRS, SD_MAX_FILES, SD_MAX_VOLUMES>;
 /// [`SdTrackSink`] over this board's manager.
 type TrackSinkT<'a> = SdTrackSink<'a, SdShared, NullTime, SD_MAX_DIRS, SD_MAX_FILES, SD_MAX_VOLUMES>;
-
-/// The block device's home — a `.bss` slot written once by [`init`] (the warm-reset-safe
-/// `init_static` pattern, see `main.rs`), so both the [`VolumeManager`] (via [`SdShared`]) and the
-/// extent read path can borrow it for `'static`. [`SemmcCard`] is a zero-sized handle (the driver
-/// state lives in `flpr_mux`), so this slot costs nothing; it stays because the `'static` borrow
-/// shape above it is what the extent fast path is built on.
-static mut SD_CARD: core::mem::MaybeUninit<Sd> = core::mem::MaybeUninit::uninit();
-
-/// One map on the card, as [`Storage::scan_maps_into`] reports it (issue #927) — **the map
-/// catalog**, and the reason there is no catalog *file*.
-///
-/// Every field here is derived from the card at scan time: the directory entry gives the name, the
-/// long-name stem and the byte length, and a single 40-byte header read gives the OBCM version and
-/// the global bbox. Nothing has to be written, so nothing can go stale, and a card that has never
-/// met this firmware enumerates exactly as one that has.
-///
-/// What is **not** here is equally deliberate. The 40-byte OBCM header carries no name, no build
-/// date and no source-snapshot date (`OBCM_Spec.md` §1), and a map upload is a stream of opaque
-/// bytes with a 12-byte descriptor in front of it — so the device is never *told* a display name or
-/// a build date and has nothing to record. That is a protocol gap, not a filesystem one; see the
-/// notes on #914/#915.
-#[derive(Debug, Clone)]
-pub struct MapSummary {
-    /// The durable object id, for a map this device received (`MP{id}.OBM`). `None` for a
-    /// side-loaded `.obcm`, which carries no device-assigned identity — the filename is all it has.
-    pub id: Option<u16>,
-    /// The 8.3 filename, which is what [`MAP_SELECTED`] records and what reopens the file.
-    pub file: ShortFileName,
-    /// The display name: the long filename's stem when the file has one, else the 8.3 stem. For an
-    /// uploaded map that is `MP{id}` — the honest consequence of having no name on the wire.
-    pub name: String<24>,
-    /// Size on the card, from the directory entry (no read). `u64` because a map is exactly the
-    /// thing that outgrows one `u32` file.
-    pub byte_len: u64,
-    /// The OBCM format version from header byte 4. Reported, never filtered: a map built for
-    /// another version is still on the card, and a consumer that wants to *flag* it (#915) needs
-    /// to see it.
-    pub obcm_version: u8,
-    /// Whether [`MAP_SELECTED`] names this map.
-    pub selected: bool,
-}
-
-/// What the retired FAT [`Storage::map_source`] hands out.
-pub enum MapSource<'a> {
-    Seek(Source<'a>),
-}
-
-impl ByteSource for MapSource<'_> {
-    // `inline(never)`: reached from the deepest render/nav frames — keep the dispatch (and both
-    // arms' machinery) out of those frames' locals, whatever the inliner decides later; a call
-    // per multi-ms SD read is free.
-    #[inline(never)]
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), obc_formats::io::Error> {
-        let MapSource::Seek(source) = self;
-        source.read_at(offset, buf)
-    }
-
-    fn len(&self) -> u64 {
-        let MapSource::Seek(source) = self;
-        source.len()
-    }
-}
 
 /// FAT timestamps need a clock; the device has none yet (see [`obc_ports::TrackPoint::t_ms`]),
 /// so every file gets the epoch. Real dates wait on a clock source.
@@ -251,26 +169,6 @@ pub struct Storage {
     /// — filename-encoded (`RD{id}.ORD`), the identity the app's ride-menu remap and the phone's
     /// synced/tombstone sets key on.
     ride_ids: Vec<u16, UI_RIDES_CAP>,
-    /// The map `.obcm`, opened once at startup and held open for the whole session: `(handle,
-    /// length)`. The map streams through this (issue #37) instead of being read resident into
-    /// RAM — `map_source` hands out a fresh source over it each redraw.
-    open_map: Option<(RawFile, u32)>,
-    /// The open map's 8.3 filename. Kept because embedded-sdmmc refuses every second open of an open
-    /// file (`FileAlreadyOpen`), so [`scan_maps_into`](Storage::scan_maps_into) must read the loaded
-    /// map's header **through this handle** — without the name it cannot tell which catalog entry is
-    /// the open one, and the loaded map would be the one map missing from its own catalog (#480).
-    open_map_name: Option<ShortFileName>,
-    /// The fault the boot must show when [`map_source`](Storage::map_source) has nothing to hand
-    /// out — `None` until [`open_map`](Storage::open_map) has run, then whatever
-    /// [`obc_app::boot_fault`] answers for the card that was actually scanned.
-    ///
-    /// It exists because *NO MAP* and *MAP UNREADABLE* are different sentences to a rider, and the
-    /// card cannot tell them apart from a failed `map_source` alone. Every path in `open_map` that
-    /// gives up **with a map-named file on the card** records it — a refused set mount, a chosen
-    /// map the FAT layer will not open, a zero-length one, and the scan's own rejects (a torn
-    /// magic, a file too short to hold a header). A card that genuinely holds nothing leaves the
-    /// answer at *NO MAP*.
-    map_boot_fault: Option<obc_app::BootFault>,
     /// The open ride log for the current tracking session.
     open_track: Option<OpenTrack>,
     /// A finished ride whose log → ride-object conversion hasn't run yet. Finish only closes the
@@ -286,10 +184,6 @@ pub struct Storage {
     /// makes a freshly-finished ride reach the Rides menu (and, on `ble`, the phone's catalog)
     /// without a reboot.
     ride_saved: bool,
-    /// The loaded map's display name — its filename stem, captured in [`open_map`](Storage::open_map)
-    /// (T8 item 6). Empty until a map opens; the System settings screen renders it (`grimsel · v10`)
-    /// via [`App::set_map_info`](obc_app::App::set_map_info).
-    map_name: String<24>,
 }
 
 /// One open `.obct` ride log: the session it belongs to, its file handle, and the save name
@@ -311,24 +205,8 @@ struct PendingSave {
 /// **Bring the card up, and mount nothing on it.** Boot the sEMMC soft peripheral and identify the
 /// card (4-bit, High Speed, 32 MHz reads).
 ///
-/// Split out of [`init`] by FS7.5-c1, because bring-up is the **only** step the two storage stacks
-/// share. What is on the card decides the rest: a flat store owns the raw card from LBA 0 and a FAT
-/// volume is a filesystem on it, so exactly one of them can be there. Boot therefore brings the card
-/// up once, lets `FlatStore::mount` classify it (`FLAT_Store_Format.md` §5.6 step 1 — see
-/// `crate::flat_store`), and only then mounts FAT with [`mount_fat`] on a card that is not a flat
-/// store.
-///
-/// **The order is about honest reporting, not about correctness.** The two classifiers are disjoint
-/// by construction — a flat card's zero MBR footer and this stack's `0xAA55` requirement, in both
-/// directions; `crate::flat_store`'s module docs carry the argument — so neither can accept the
-/// other's card whichever runs first. What the order buys is the *message*: mounting FAT first would
-/// have reported *STORAGE FAULT* for a perfectly good flat card, sending its owner to look at a
-/// filesystem that was never on it.
-///
-/// **That ordering is held structurally rather than by a test**: there is exactly one caller of
-/// each of these two functions, in `main`'s boot block, and no test harness exists in this crate to
-/// pin it. A second call site is what would break it, and the honest guard against that is that
-/// there is nowhere else in the image that wants one.
+/// Boot brings the card up once and hands its raw blocks directly to the flat store. Cards without
+/// a valid flat superblock are rejected by the boot composition; no filesystem fallback follows.
 ///
 /// Card identification is the slow part — the ACMD41 power-up poll is bounded at 1.5 s.
 /// [`flpr_mux::bring_up_storage`](crate::flpr_mux::bring_up_storage) is what holds the FLPR in
@@ -362,20 +240,6 @@ pub fn bring_up_card() -> Result<(), obc_app::BootFault> {
         crate::flpr_mux::mode_name()
     );
     Ok(())
-}
-
-/// **Mount the v1 FAT stack** on a card [`bring_up_card`] has already brought up and
-/// `crate::flat_store` has already classified as *not* a flat store.
-pub fn mount_fat() -> Result<Storage, obc_app::BootFault> {
-    // Into its `.bss` slot before anything else: the manager and the extent read path both want
-    // `'static` borrows of the one card.
-    // SAFETY: sole writer of SD_CARD; this runs once per boot on the one thread-mode executor,
-    // and a warm-reset re-run overwrites in place (no `Drop`), the `init_static` contract.
-    let card: &'static Sd = unsafe { crate::init_static(core::ptr::addr_of_mut!(SD_CARD), SemmcCard) };
-    Storage::mount(card).ok_or_else(|| {
-        defmt::error!("SD: the card is up but the FAT volume would not mount — STORAGE FAULT");
-        obc_app::BootFault::StorageFault
-    })
 }
 
 /// **Which fault screen a failed bring-up earns** — the honesty rule (#1163 review, P3): a fault
@@ -429,63 +293,6 @@ const BLOCK_LEN: usize = Block::LEN;
 /// sound. Pinned here because the whole bounce/fast-path split is built on it.
 const _: () = assert!(core::mem::size_of::<Block>() == BLOCK_LEN);
 
-/// **Report the mounted volume's cluster size, once, at mount.**
-///
-/// Purely diagnostic. The fast uploader coalesces adjacent FAT cluster calls into one physical
-/// write, so correctness and batching no longer depend on one exact cluster size; the line keeps
-/// an on-glass throughput result interpretable.
-///
-/// Read straight off the card rather than asked of `VolumeManager`, which does not expose it. The
-/// This diagnostic accepts either an MBR-partitioned volume or a superfloppy BPB because it does
-/// not drive any read-path decision.
-///
-/// **A boot signature alone does not tell an MBR from a BPB.** A *superfloppy* card — no partition
-/// table, the volume boot record directly in sector 0, common on SD — carries `0xAA55` at 510 too,
-/// so a signature check that then read bytes 0x1C6.. as a partition LBA would take part of the BPB
-/// or the boot code as a sector number. What separates them is what sector 0 looks like *as a BPB*:
-/// a real BPB declares `BPB_BytsPerSec == 512` and a non-zero `BPB_SecPerClus`. So: parse sector 0
-/// as a BPB first, and only go looking for a partition table when it is not one.
-///
-/// Two block reads at boot, and nothing downstream depends on the result.
-fn report_cluster_size() {
-    let mut block = [0u8; 512];
-    // `with_storage` answers `Err` when the FLPR is not in storage mode; the inner result is the
-    // card's. Either failure means "no answer", and no answer is not worth a fault here.
-    let read =
-        |lba: u32, buf: &mut [u8]| matches!(crate::flpr_mux::with_storage(|sd| sd.read_blocks(lba, buf)), Ok(Ok(())));
-    /// Does this block parse as a FAT BPB the volume manager would mount?
-    fn is_bpb(block: &[u8; 512]) -> bool {
-        u16::from_le_bytes([block[510], block[511]]) == 0xAA55
-            && u16::from_le_bytes([block[11], block[12]]) == 512
-            && block[13] != 0
-    }
-    if !read(0, &mut block) {
-        return;
-    }
-    if !is_bpb(&block) {
-        // Not a volume boot record, so sector 0 should be an MBR. Partition entry 0 is 16 B at
-        // 0x1BE; bytes 8..12 are the LBA of its first sector, and byte 4 its type — checked against
-        // the same FAT types the manager mounts, so a foreign first partition is reported as
-        // unknown rather than followed.
-        let part = &block[0x1BE..0x1BE + 16];
-        let fat_type = matches!(part[4], 0x01 | 0x04 | 0x06 | 0x0B | 0x0C | 0x0E);
-        let start = u32::from_le_bytes([part[8], part[9], part[10], part[11]]);
-        if (part[0] & 0x7F) != 0 || !fat_type || start == 0 || !read(start, &mut block) || !is_bpb(&block) {
-            defmt::warn!("SD: no FAT BPB in sector 0 or partition 0 — upload flush shape unknown");
-            return;
-        }
-    }
-    let bytes_per_sector = u16::from_le_bytes([block[11], block[12]]) as u32;
-    let sectors_per_cluster = block[13] as u32;
-    defmt::info!("SD: {=u32} B clusters", bytes_per_sector * sectors_per_cluster);
-}
-
-/// Log a failed transfer at the transport boundary, decoding an abort's `STATUS` word.
-///
-/// The FAT layer above swallows the error type into its own `Error::DeviceError`, so this is the
-/// last place the *reason* exists — and the reason is the difference between "the card is gone",
-/// "the clock is too high for this wiring" and "the firmware wedged", which is exactly the triage a
-/// bad card or a marginal harness needs from an RTT log.
 fn log_transfer_error(op: &'static str, lba: u32, blocks: usize, e: crate::semmc::SemmcError) {
     match e {
         crate::semmc::SemmcError::Aborted(status) => defmt::warn!(
@@ -589,46 +396,6 @@ impl Storage {
         let mut lfn_storage = [0u8; 256];
         let mut lfn = LfnBuffer::new(&mut lfn_storage);
         let _ = self.vmgr.iterate_dir_lfn(dir, &mut lfn, |e, long| f(e, long));
-    }
-
-    /// Mount the first FAT volume and open the root and `/tracks` directory.
-    fn mount(card: &'static Sd) -> Option<Storage> {
-        // `new()` is pinned to the 4,4,1 defaults — the custom budget goes through `new_with_limits`
-        // (5000 = the id offset `new()` itself uses).
-        let vmgr: Vmgr = VolumeManager::new_with_limits(SharedBlockDevice(card), NullTime, 5000);
-        let volume = match vmgr.open_raw_volume(VolumeIdx(0)) {
-            Ok(v) => v,
-            Err(e) => {
-                defmt::warn!("SD: no FAT volume: {}", defmt::Debug2Format(&e));
-                return None;
-            }
-        };
-        let root = vmgr.open_root_dir(volume).ok()?;
-        // `/tracks` must exist to save rides — create it if the card doesn't have one yet.
-        let tracks_dir = match vmgr.open_dir(root, "tracks") {
-            Ok(d) => Some(d),
-            Err(_) => {
-                let _ = vmgr.make_dir_in_dir(root, "tracks");
-                vmgr.open_dir(root, "tracks").ok()
-            }
-        };
-        defmt::info!("SD: mounted; /tracks {=bool}", tracks_dir.is_some());
-        report_cluster_size();
-        Some(Storage {
-            vmgr,
-            card,
-            root,
-            tracks_dir,
-            ride_files: Vec::new(),
-            ride_ids: Vec::new(),
-            open_map: None,
-            open_map_name: None,
-            map_boot_fault: None,
-            open_track: None,
-            pending_save: None,
-            ride_saved: false,
-            map_name: String::new(),
-        })
     }
 
     /// Scan `/tracks` for stored ride objects into the app's Rides menu (epic #447 P7 / #454):
@@ -922,10 +689,7 @@ impl Storage {
         let file = match self.vmgr.open_file_in_dir(dir, &name, Mode::ReadOnly) {
             Ok(f) => f,
             Err(_) => {
-                defmt::warn!(
-                    "SD: ride preview: cannot open {} — track page stays empty",
-                    defmt::Debug2Format(&name)
-                );
+                defmt::warn!("SD: ride preview: cannot open {} — track page stays empty", defmt::Debug2Format(&name));
                 return heapless::Vec::new();
             }
         };
@@ -933,259 +697,6 @@ impl Storage {
         let pts = ride_preview_polyline(&SdByteSource::new(&self.vmgr, file, len)).unwrap_or_default();
         let _ = self.vmgr.close_file(file);
         pts
-    }
-
-    /// Open the card's **selected** map and hold it open for the session, so the map can **stream**
-    /// from it (issue #37) rather than be read resident into RAM. Returns the file length on
-    /// success, or `None` if the card holds no map / it can't be opened. Call once at startup;
-    /// [`map_source`](Self::map_source) then hands out a reader over the open handle.
-    ///
-    /// Before #927 this was "the first `*.obcm` the directory scan yields", which was an answer only
-    /// while a card could hold one map. Now it is, in order:
-    ///
-    /// 1. the map [`MAP_SELECTED`] names, if it is still on the card;
-    /// 2. else the newest readable **volume set** (`MS{id}.OBS`), comparing only MS ids;
-    /// 3. else the newest readable single-file upload (`MP{id}.OBM`), comparing only MP ids;
-    /// 4. else the first readable map of any kind (a side-loaded `.obcm`);
-    /// 5. else the first map at all — so a card holding only a wrong-version map still reaches the
-    ///    **MAP UNREADABLE** fault screen rather than the indistinguishable **NO MAP** one.
-    ///
-    /// Every way this returns `None` also records [`boot_fault`](Self::boot_fault), by the one rule
-    /// in [`obc_app::boot_fault`]: giving up is not the same as an empty card, and a rider whose map
-    /// is sitting in the root must not be told to go and add one. That covers both open failures
-    /// and — via `scan_maps_into`'s count — files the catalog never
-    /// saw because their header would not parse.
-    pub fn open_map(&mut self) -> Option<u32> {
-        if let Some((_, len)) = self.open_map {
-            return Some(len);
-        }
-        let mut maps: Vec<MapSummary, MAX_MAPS> = Vec::new();
-        let unlistable = self.scan_maps_into(&mut maps);
-        let Some(keep) = choose_map_index(&maps) else {
-            // An empty *catalog* is not an empty *card*: a torn or unopenable map file is dropped by
-            // the scan and still sits in the root under a name the rider recognises. The rule gives
-            // NO MAP only when nothing at all was found, exactly as before.
-            self.map_boot_fault = Some(obc_app::boot_fault(&map_choices(&maps), unlistable));
-            return None;
-        };
-        let chosen = maps[keep].clone();
-        let (name, display) = (chosen.file.clone(), chosen.name.clone());
-        defmt::info!(
-            "SD: {=usize} map(s) on the card; loading {} (v{=u8}, {=u64} B)",
-            maps.len(),
-            defmt::Debug2Format(&name),
-            chosen.obcm_version,
-            chosen.byte_len
-        );
-        self.map_name = display;
-        // Both failures below are about a map the catalog *listed*: its header read fine minutes ago
-        // and the file is in the root under a name the rider knows. **MAP UNREADABLE** is the honest
-        // report — NO MAP would send them looking for a file that is right there.
-        let Ok(file) = self.vmgr.open_file_in_dir(self.root, &name, Mode::ReadOnly) else {
-            defmt::warn!("SD: the chosen map {} is on the card but will not open", defmt::Debug2Format(&name));
-            self.map_boot_fault = Some(obc_app::boot_fault(&map_choices(&maps), unlistable));
-            return None;
-        };
-        let len = self.vmgr.file_length(file).unwrap_or(0);
-        if len == 0 {
-            defmt::warn!("SD: the chosen map {} opened with zero length", defmt::Debug2Format(&name));
-            let _ = self.vmgr.close_file(file);
-            self.map_boot_fault = Some(obc_app::boot_fault(&map_choices(&maps), unlistable));
-            return None;
-        }
-        self.open_map = Some((file, len));
-        self.open_map_name = Some(name);
-        // Last, and only on the success path: the map that just opened is the survivor, so the
-        // uploads it superseded can go. Every early return above leaves the card untouched — a map
-        // that could not be opened has proved nothing, and deleting its predecessor on the strength
-        // of a failed open is how a rider ends up with no map at all.
-        self.retire_superseded_maps(&maps, Some(keep));
-        Some(len)
-    }
-
-    /// Which boot fault to put on glass when [`map_source`](Storage::map_source) hands out nothing.
-    ///
-    /// **NO MAP** unless [`open_map`](Storage::open_map) found a map-named file and could not stream
-    /// from it — see [`map_boot_fault`](Storage::map_boot_fault) and `obc_app::boot_fault`, where the
-    /// rule lives and is tested.
-    pub fn boot_fault(&self) -> obc_app::BootFault {
-        self.map_boot_fault.unwrap_or(obc_app::BootFault::NoMap)
-    }
-
-    /// Delete the uploaded maps the one just opened superseded — the card side of the **one map**
-    /// rule (#992). Returns how many were reclaimed.
-    ///
-    /// Which files are eligible is [`obc_app::is_superseded_upload`]'s decision, tested where tests
-    /// run; this is the binding, and it adds one board-only guard the pure rule cannot know about:
-    /// **never delete the file that is open**. That cannot trigger given the caller — `keep` is the
-    /// open one — and it is here because the cost of the two states disagreeing some day is a
-    /// deleted file under a live handle.
-    ///
-    /// **Timing, deliberately: at open, not at commit.** A map upload lands while the *previous*
-    /// map is held open for the session, and the renderer streams from that handle — so the moment
-    /// the replacement commits is exactly the moment its predecessor cannot be touched. This runs at
-    /// the next `open_map` instead, which is also when the new map takes effect. The consequence,
-    /// stated rather than discovered: between an upload and the next boot the card carries **both**
-    /// maps, and the free-space guard at announce (§4.1 rule 2) sees it — a replacement whose old
-    /// and new copies do not fit together is refused until the device is restarted once.
-    ///
-    /// **One delete removes the whole prefix.** A superseded volume set is a manifest plus up to 32
-    ///
-    /// `keep` is `None` only when nothing loaded, and then nothing is superseded.
-    fn retire_superseded_maps(&mut self, maps: &[MapSummary], keep: Option<usize>) -> usize {
-        let choices = map_choices(maps);
-        // Collected first because the scan borrow and the delete `&mut` cannot overlap.
-        let mut doomed: Vec<ShortFileName, MAX_MAPS> = Vec::new();
-        let Some(keeper) = keep else { return 0 };
-        for (i, m) in maps.iter().enumerate() {
-            if obc_app::is_superseded_upload(&choices, keeper, i) && !self.map_file_is(&m.file) {
-                let _ = doomed.push(m.file.clone());
-            }
-        }
-        let mut retired = 0;
-        for name in doomed {
-            match self.vmgr.delete_file_in_dir(self.root, &name) {
-                Ok(()) => {
-                    defmt::info!("SD: retired superseded map {}", defmt::Debug2Format(&name));
-                    retired += 1;
-                }
-                Err(e) => defmt::warn!(
-                    "SD: could not retire the superseded map {} ({}) — the next boot will try again",
-                    defmt::Debug2Format(&name),
-                    defmt::Debug2Format(&e)
-                ),
-            }
-        }
-        retired
-    }
-
-    /// Scan the card root into the **map catalog** (issue #927) — the "which maps are on this card"
-    /// surface the selection rule, the id allocator, and (later) the device dashboard all read.
-    ///
-    /// Every fact in a [`MapSummary`] is **derived from the card**: the filename and its long-name
-    /// stem come from the directory entry, the byte length from the entry too, and the OBCM version
-    /// plus the global bbox from **one 40-byte header read** per map. There is no sidecar and nothing
-    /// to keep in sync — which is also why the catalog carries no build date and no display name
-    /// beyond the filename: the OBCM header has neither, and no channel exists to deliver them (see
-    /// the module notes and #915).
-    ///
-    /// A file whose magic isn't `OBCM` is **not a map**: that is precisely the signature a torn
-    /// upload leaves (the held-back magic never patched in), so the scan is what makes an interrupted
-    /// transfer invisible instead of a half-map the renderer would try to parse.
-    ///
-    /// Returns how many map-named entries were dropped that way — the count
-    /// [`obc_app::boot_fault`] needs, and the *only* thing that looks at them. They stay out of the
-    /// catalog for every other consumer (the renderer must not parse one; `next_map_id_from_scan`
-    /// must stay free to reuse a torn upload's id), but a dropped entry is still a file the rider
-    /// sees in the card root, so a boot that finds nothing to stream from must say **MAP
-    /// UNREADABLE** rather than **NO MAP**.
-    ///
-    /// **A map is one `.OBM` file.** The volume set that used to complicate this — one logical map
-    /// listed from a manifest, its shards excluded by name so a shard opened alone could not be
-    /// mistaken for a map — is retired with OBCM v14 (#1420), and with it the per-shard opens this
-    /// scan used to pay.
-    pub fn scan_maps_into(&self, out: &mut Vec<MapSummary, MAX_MAPS>) -> usize {
-        out.clear();
-        let mut unlistable = 0usize;
-        let selected = self.load_selected_map();
-        // Two phases because the `iter_dir_lfn` callback borrows the manager and the identity read
-        // opens a file.
-        let mut entries: Vec<(ShortFileName, String<24>, u32), MAX_MAPS> = Vec::new();
-        self.iter_dir_lfn(self.root, |e, long| {
-            if !is_map_entry(e, long) {
-                return;
-            }
-            let _ = entries.push((e.name.clone(), map_display_name(&e.name, long), e.size));
-        });
-        for (file, name, byte_len) in entries {
-            let Some(obcm_version) = self.map_identity(&file) else {
-                unlistable += 1;
-                continue;
-            };
-            let (id, byte_len) = (uploaded_map_id(&file), byte_len as u64);
-            let selected = selected
-                .as_ref()
-                .is_some_and(|s| file.base_name() == s.base_name() && file.extension() == s.extension());
-            let entry = MapSummary { id, file, name, byte_len, obcm_version, selected };
-            if out.push(entry).is_err() {
-                defmt::warn!("SD: more than {=usize} maps on the card — the rest are not listed", MAX_MAPS);
-                break;
-            }
-        }
-        unlistable
-    }
-
-    /// One map's OBCM version from its 40-byte header, or `None` when the file is shorter than a
-    /// header, unreadable, or doesn't carry the `OBCM` magic (a torn upload, or clutter that happens
-    /// to sit on an `.OBM`/`.obcm` name).
-    ///
-    /// It used to return the header bbox too — the map's footprint, for coverage checks that were
-    /// never written. The one consumer was `open_volume_set`, which compared it against the
-    /// manifest's assembly bbox before mounting; that mount is gone (FS7.5-c2, #1420), and a field
-    /// no code reads is not a catalog, it is a header read nobody looks at.
-    ///
-    /// The **version is returned, not checked**: a map built for another OBCM version is still a map
-    /// and still belongs in the catalog — the consumer decides. Only the magic gates membership.
-    ///
-    /// The currently-open map is read **through its existing handle**: embedded-sdmmc refuses every
-    /// second open of an open file (`FileAlreadyOpen`), which would otherwise drop the loaded map out
-    /// of its own catalog (issue #480).
-    fn map_identity(&self, name: &ShortFileName) -> Option<u8> {
-        let mut header = [0u8; obc_formats::obcm::HEADER_LEN];
-        let read_through = |src: &dyn ByteSource, header: &mut [u8; obc_formats::obcm::HEADER_LEN]| {
-            (src.len() as usize >= header.len()) && src.read_at(0, header).is_ok()
-        };
-        let ok = match self.open_map {
-            Some((f, len)) if self.map_file_is(name) => {
-                read_through(&SdByteSource::new(&self.vmgr, f, len), &mut header)
-            }
-            _ => {
-                let file = self.vmgr.open_file_in_dir(self.root, name, Mode::ReadOnly).ok()?;
-                let len = self.vmgr.file_length(file).unwrap_or(0);
-                let ok = read_through(&SdByteSource::new(&self.vmgr, file, len), &mut header);
-                let _ = self.vmgr.close_file(file);
-                ok
-            }
-        };
-        if !ok || header[0..4] != obc_formats::obcm::MAGIC {
-            return None;
-        }
-        Some(header[4])
-    }
-
-    /// Whether `name` is the map file currently held open — the guard that routes
-    /// [`map_identity`](Self::map_identity) through the live handle instead of a refused second open.
-    fn map_file_is(&self, name: &ShortFileName) -> bool {
-        self.open_map.is_some() && self.open_map_name.as_ref() == Some(name)
-    }
-
-    /// **Read-only since FS7.5-c3b, and kept until FS11 (#1393) for one reason: cards in the field.**
-    ///
-    /// Nothing writes `MAP.SEL` any more — `save_selected_map` went with the v1 command surface that
-    /// set it (`FLAT_Store_Protocol.md` §5.2.2), and the flat store has no such file. A read whose
-    /// writer is gone would normally go too, by the standing rule about never-exercised paths. This
-    /// one stays because the rule is about capabilities nobody exercises, and this file **is**
-    /// exercised: a FAT card that has been in a device carries a `MAP.SEL` an earlier firmware
-    /// wrote, and a rider who chose a map expects that choice to survive the update that removed the
-    /// way to change it. Dropping the read would silently re-pick their map.
-    ///
-    /// **It dies with this module in FS11**, which retires the FAT read path entirely; there is no
-    /// second decision to make and no separate follow-up to file.
-    ///
-    /// The card's recorded map selection ([`MAP_SELECTED`]), or `None` for absent / torn / a name
-    /// this device would never have written — all of which mean **no preference**.
-    pub fn load_selected_map(&self) -> Option<ShortFileName> {
-        let name = ShortFileName::create_from_str(MAP_SELECTED).ok()?;
-        let file = self.vmgr.open_file_in_dir(self.root, &name, Mode::ReadOnly).ok()?;
-        let mut buf = [0u8; obc_app::store_meta::SELECTED_MAP_LEN];
-        let n = self.vmgr.read(file, &mut buf).unwrap_or(0);
-        let _ = self.vmgr.close_file(file);
-        ShortFileName::create_from_str(obc_app::store_meta::decode_selected_map(&buf[..n])?).ok()
-    }
-
-    /// The loaded map's display name (T8 item 6) — its filename stem, or `""` before a map opens.
-    pub fn map_name(&self) -> &str {
-        self.map_name.as_str()
     }
 
     /// Free space on the SD card in bytes (T8 item 6) — a bounded **FAT free-cluster** read: the
@@ -1227,27 +738,6 @@ impl Storage {
             return None;
         }
         Some(free_clusters as u64 * sec_per_clus * bytes_per_sec)
-    }
-
-    /// A [`ByteSource`](obc_formats::io::ByteSource) over the open map file, for reading the header
-    /// ([`obc_reader::MapTables::parse`]) or building a per-frame [`Reader`](obc_reader::Reader). `None` if
-    /// no map was opened ([`open_map`](Self::open_map) returned `None`). Cheap — the source just wraps
-    /// the already-open handle, so it's rebuilt every redraw, keeping no borrow across mutable
-    /// storage operations.
-    pub fn map_source(&self) -> Option<MapSource<'_>> {
-        let (f, len) = self.open_map?;
-        Some(MapSource::Seek(SdByteSource::new(&self.vmgr, f, len)))
-    }
-
-    /// FAT maps no longer provide a session-static terrain source.
-    #[cfg(has_nav)]
-    pub fn static_map_source(&self) -> Option<&'static dyn ByteSource> {
-        None
-    }
-
-    /// The retired FAT map path is never selected by a flat-only boot.
-    pub fn map_degraded(&self) -> bool {
-        false
     }
 
     /// Reconcile the open ride log to the app's tracking intent — call once per frame *before*
@@ -1442,52 +932,6 @@ impl Storage {
 }
 
 impl Storage {
-    /// Sweep abandoned map uploads from the card root (issue #927): delete every `MP*.OBM` whose
-    /// held-back magic was never patched in. Run once at boot so an interrupted transfer's hundreds
-    /// of megabytes do not sit on the card forever, invisible to every catalog that could explain
-    /// them. Returns how many were reclaimed.
-    pub fn sweep_aborted_maps(&mut self) -> usize {
-        let mut candidates: Vec<ShortFileName, MAX_MAPS> = Vec::new();
-        self.iter_dir_lfn(self.root, |e, long| {
-            if is_map_entry(e, long) && uploaded_map_id(&e.name).is_some() {
-                let _ = candidates.push(e.name.clone());
-            }
-        });
-        let mut swept = 0;
-        for name in candidates {
-            // Only the exact torn signature is sweepable: a *readable* header keeps the file, and so
-            // does an unreadable one whose magic is intact (a transient bus glitch, or a map for
-            // another OBCM version — neither is ours to delete).
-            if self.map_identity(&name).is_some() || !self.is_zero_magic_root(&name) {
-                continue;
-            }
-            if self.vmgr.delete_file_in_dir(self.root, &name).is_ok() {
-                defmt::info!("SD: swept abandoned map upload {}", defmt::Debug2Format(&name));
-                swept += 1;
-            }
-        }
-        swept
-    }
-
-    /// Whether a card-root file's first four bytes are zeros — the held-back-magic signature of a
-    /// commit that never finished. An unreadable or short file is **not** claimed (a bus glitch must
-    /// never green-light a delete).
-    ///
-    /// It used to answer through `obc_app::RootMagic`, a three-way verdict the *volume-set* sweep
-    /// needed all of — a file that opened and held fewer than four bytes was one this device created
-    /// and did not get to write, and had to be told apart from one the card refused. With the set
-    /// gone there is one caller and it wants a bool, so the three-way answer went with the sweep that
-    /// asked for it rather than staying behind as a shape nothing reads.
-    fn is_zero_magic_root(&self, name: &ShortFileName) -> bool {
-        let Ok(file) = self.vmgr.open_file_in_dir(self.root, name, Mode::ReadOnly) else {
-            return false;
-        };
-        let mut magic = [0u8; 4];
-        let read = self.vmgr.read(file, &mut magic);
-        let _ = self.vmgr.close_file(file);
-        matches!(read, Ok(4)) && magic == [0, 0, 0, 0]
-    }
-
     /// Whether a staged `/UPDATE.BIN` exists in the card root — the `installFw` `noStaged` cheap
     /// existence check (spec §4.4). Presence only (a directory scan, no read): the full CRC validation
     /// is the on-device confirm flow's, never a BLE command handler's.
@@ -1549,7 +993,6 @@ impl Storage {
         let _ = self.vmgr.close_file(file);
         Some((len, info?))
     }
-
 }
 
 // ==================== The DFU armer plane (epic #615 S4, #619) ====================
@@ -1814,99 +1257,6 @@ fn resolve_extents(
 /// synced-set and tombstones key on these ids across device reboots.
 pub fn stored_ride_id(name: &ShortFileName) -> Option<u16> {
     id_in_name(name, b"RD", b"ORD")
-}
-
-/// Whether a card-root directory entry belongs to the **map** catalog (issue #927): a side-loaded
-/// `.obcm` (long-filename match, as before) **or** a device-received `*.OBM`.
-///
-/// The 8.3 arm is the whole answer to "the firmware can read long filenames but cannot create them".
-/// embedded-sdmmc 0.9's `write_new_directory_entry` takes a `ShortFileName`, and the 4-char `.obcm`
-/// extension needs an LFN it can't write, so the catalog accepts a dedicated 3-char twin the device
-/// *can* create. `OBM` is unambiguous by construction.
-///
-/// Dot-prefixed clutter is excluded on both arms (a macOS `._x.OBM` AppleDouble also fails the
-/// header read, but why open it at all).
-///
-/// The rule itself is `obc_app::classify_map_entry` — pure, and therefore tested where tests run;
-/// this is the binding from a FAT directory entry to its three inputs. The board crate has no CI
-/// test harness (bare metal), so nothing decidable may be decided here.
-fn is_map_entry(e: &embedded_sdmmc::DirEntry, long: Option<&str>) -> bool {
-    classify_entry(e, long) == obc_app::MapEntry::Map
-}
-
-/// Bind one FAT directory entry to the pure classifier.
-fn classify_entry(e: &embedded_sdmmc::DirEntry, long: Option<&str>) -> obc_app::MapEntry {
-    obc_app::classify_map_entry(&short_name_bytes(&e.name), long, e.attributes.is_directory())
-}
-
-/// A short name as the `BASE.EXT` bytes the pure classifier takes. Both halves come back
-/// space-trimmed from embedded-sdmmc, so this is a straight join.
-fn short_name_bytes(name: &ShortFileName) -> heapless::Vec<u8, 12> {
-    let mut out: heapless::Vec<u8, 12> = heapless::Vec::new();
-    let _ = out.extend_from_slice(name.base_name());
-    let _ = out.push(b'.');
-    let _ = out.extend_from_slice(name.extension());
-    out
-}
-
-/// The **durable map object id** in a received map's filename — `MP{id}.OBM` → `id`. `None` for a
-/// side-loaded `.obcm`, which carries no id at all.
-pub fn uploaded_map_id(name: &ShortFileName) -> Option<u16> {
-    id_in_name(name, b"MP", b"OBM")
-}
-
-/// A map's display name: the **long** filename's stem when the entry has one (`freiburg.obcm` →
-/// `freiburg`), else the 8.3 base with its padding trimmed (`MP7.OBM` → `MP7`). Truncated to the
-/// [`MapSummary::name`] cap; never empty for a real entry.
-fn map_display_name(short: &ShortFileName, long: Option<&str>) -> String<24> {
-    let mut out: String<24> = String::new();
-    if let Some(long) = long {
-        let stem = long.rsplit_once('.').map(|(s, _)| s).unwrap_or(long);
-        for ch in stem.chars() {
-            if out.push(ch).is_err() {
-                break;
-            }
-        }
-    }
-    if out.is_empty() {
-        for &b in short.base_name().iter().take_while(|&&b| b != b' ') {
-            if out.push(b as char).is_err() {
-                break;
-            }
-        }
-    }
-    out
-}
-
-/// The scanned catalog as the host-tested classifiers want it — one [`obc_app::MapChoice`] per map,
-/// in scan order, so an index into this is an index into `maps`.
-///
-/// **A volume set is never readable** since FS7.5-c2 (#1420): the reader mounts one OBCM file, so a
-/// manifest names a shape this firmware has no way to open. It is still *listed* — the files are on
-/// the card, and `readable: false` is exactly what makes `obc_app::boot_fault` answer MAP
-/// UNREADABLE rather than sending a rider to look for a map that is right there.
-///
-/// A single map is readable when its OBCM version matches. The scan has already validated its
-/// header and bbox; `open_map` adds the extent checks before rendering a pixel.
-fn map_choices(maps: &[MapSummary]) -> Vec<obc_app::MapChoice, MAX_MAPS> {
-    let mut choices: Vec<obc_app::MapChoice, MAX_MAPS> = Vec::new();
-    for m in maps.iter().take(MAX_MAPS) {
-        let _ = choices.push(obc_app::MapChoice {
-            selected: m.selected,
-            uploaded_id: m.id,
-            readable: m.obcm_version == obc_formats::obcm::VERSION,
-            set: false,
-        });
-    }
-    choices
-}
-
-/// Pick the map [`Storage::open_map`] loads, by the rule documented there — the board's binding of
-/// the host-tested [`obc_app::choose_map`] classifier to the scanned catalog. Returns the **index**
-/// into `maps`, because the retirement rule that follows the choice
-/// ([`obc_app::is_superseded_upload`]) is stated in terms of the same indices.
-fn choose_map_index(maps: &[MapSummary]) -> Option<usize> {
-    obc_app::choose_map(&map_choices(maps))
 }
 
 /// Parse `{prefix}{decimal u16}.{ext}` from an 8.3 name; `None` for anything else.

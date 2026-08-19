@@ -678,14 +678,9 @@ pub(crate) async fn run_app(
     shared: &SharedStoreMutex,
     map_tables: &MapTables,
     map_cache: &MapCache,
-    // The **flat** arm's map bytes, when the card in the slot is a flat store: a `'static`
-    // `StoreSource` over the mounted store's map object, resolved once at boot and read **direct**
-    // (the storage task owns writes only). `None` on a FAT card, where the map source is rebuilt per
-    // redraw off `shared`'s `Storage`. Exactly one of the two serves any given boot.
-    flat_map: Option<&'static dyn obc_formats::io::ByteSource>,
-    // The mounted flat store on a flat-card boot. Routes/trips and the active route source are
-    // resolved directly from it; `None` only on the transitional FAT map arm.
-    flat: Option<&'static obc_storage::flat::FlatStore<crate::flat_store::FlatCard>>,
+    // The flat map source and store are mandatory: a non-flat card never reaches this loop.
+    flat_map: &'static dyn obc_formats::io::ByteSource,
+    flat: &'static obc_storage::flat::FlatStore<crate::flat_store::FlatCard>,
     route_cache: &RouteCache,
     // The router's resident half (epic #116 R4 + EL7): the map's terrain, threaded from `main`
     // (never a local — the #270/#419 discipline). Its A* table, tile cache and planner slot are the
@@ -741,10 +736,8 @@ pub(crate) async fn run_app(
     let mut weather_cache = obc_weather::WeatherCache::new();
     let mut weather_snapshot: Option<obc_app::WeatherSnapshot> = None;
     let mut weather_sample_key: Option<WeatherSampleKey> = None;
-    let mut weather_bundle = flat.and_then(|store| crate::flat_store::active_weather(store).ok().flatten());
-    if let Some(store) = flat {
-        crate::flat_store::reconcile_weather(store, weather_bundle);
-    }
+    let mut weather_bundle = crate::flat_store::active_weather(flat).ok().flatten();
+    crate::flat_store::reconcile_weather(flat, weather_bundle);
 
     // Per-frame ride-loop state:
     // - `prev_route` re-centres SynthLocation onto a freshly-loaded route's start (`synth` build only);
@@ -1414,20 +1407,18 @@ pub(crate) async fn run_app(
             // at the same id is decoded from its new revision. The legacy edge also covers FAT rides,
             // which are rescanned below until their flat slice lands.
             if host_pass.rescan {
-                if let Some(store) = flat {
-                    // Drop the held revision before rebuilding identity/index state. A replace at
-                    // the same ObjectId must reopen the new revision, not keep rendering the hold.
-                    crate::flat_store::reconcile_route(store, None);
-                    crate::flat_store::load_routes(store, app);
-                    crate::flat_store::load_trips(store, app);
-                    if let Ok(next) = crate::flat_store::active_weather(store) {
-                        if next != weather_bundle {
-                            weather_bundle = next;
-                            weather_sample_key = None;
-                        }
+                // Drop the held revision before rebuilding identity/index state. A replace at
+                // the same ObjectId must reopen the new revision, not keep rendering the hold.
+                crate::flat_store::reconcile_route(flat, None);
+                crate::flat_store::load_routes(flat, app);
+                crate::flat_store::load_trips(flat, app);
+                if let Ok(next) = crate::flat_store::active_weather(flat) {
+                    if next != weather_bundle {
+                        weather_bundle = next;
+                        weather_sample_key = None;
                     }
-                    crate::flat_store::reconcile_weather(store, weather_bundle);
                 }
+                crate::flat_store::reconcile_weather(flat, weather_bundle);
                 if let Some(s) = storage.as_mut() {
                     // The same edge covers rides (a phone-side ride delete, or a ride download that just
                     // flipped a synced flag): re-scan `/tracks` and re-feed the Rides menu, which remaps
@@ -1615,7 +1606,8 @@ pub(crate) async fn run_app(
                         NavIo::Ready => {
                             if run.cancel_requested {
                                 run.io = NavIo::NeedFinish(obc_route::Step::Failed(obc_route::NavError::NoPath));
-                            } else if let Some(map_src) = flat_map {
+                            } else {
+                                let map_src = flat_map;
                                 let mut bufs = NavBuffers { guard, elev: &mut *nav.elev };
                                 // The step's view over the arena arm + the resident terrain, alive only for
                                 // the length of these synchronous calls.
@@ -1646,8 +1638,6 @@ pub(crate) async fn run_app(
                                 } else {
                                     NavIo::Staged(step)
                                 };
-                            } else {
-                                run.io = NavIo::NeedFinish(obc_route::Step::Failed(obc_route::NavError::NoPath));
                             }
                         }
                         NavIo::Staged(step) => {
@@ -1724,10 +1714,8 @@ pub(crate) async fn run_app(
                                                 obc_route::Step::Done(stats) => stats.total_distance_m,
                                                 _ => 0,
                                             };
-                                            if let Some(store) = flat {
-                                                crate::flat_store::load_routes(store, app);
-                                                let _ = crate::flat_store::reconcile_route(store, Some(id.0));
-                                            }
+                                            crate::flat_store::load_routes(flat, app);
+                                            let _ = crate::flat_store::reconcile_route(flat, Some(id.0));
                                             finished = Some(Ok((id.0, len)));
                                         }
                                         _ => {
@@ -1877,9 +1865,7 @@ pub(crate) async fn run_app(
                 // anchor in the same frame, so the header matches the log's last points.
                 let stats = (action == Some(obc_app::TrackAction::Save)).then(|| app.ride_stats());
                 let active_id = active.and_then(|i| app.route_ids().get(i).copied());
-                if let Some(store) = flat {
-                    crate::flat_store::reconcile_route(store, active_id);
-                }
+                crate::flat_store::reconcile_route(flat, active_id);
                 // `storage` is `Option` (a card-less `ble` combined build still serves BLE, map idle); the
                 // map build always has `Some`. No card ⇒ nothing to reconcile.
                 if let Some(s) = storage.as_mut() {
@@ -1898,10 +1884,8 @@ pub(crate) async fn run_app(
                     Some(_) => {
                         // In place into the resident slot — see its declaration; a by-value build here
                         // is the stack-overflow footgun.
-                        let source = flat.and_then(|store| {
-                            let id = active.and_then(|i| app.route_ids().get(i).copied());
-                            crate::flat_store::reconcile_route(store, id)
-                        });
+                        let id = active.and_then(|i| app.route_ids().get(i).copied());
+                        let source = crate::flat_store::reconcile_route(flat, id);
                         if source.is_some_and(|source| route_index.read_into(source).is_ok()) {
                             route_index_valid = true;
                             index_route = active; // cached — no more rebuilds until the route changes
@@ -1920,10 +1904,8 @@ pub(crate) async fn run_app(
             // This frame's route reader = the cached index + a fresh geometry source (both cheap, no I/O —
             // the source just wraps the open handle). Geometry streams lazily where it's read: the matcher
             // on a fresh fix, the renderer on a redraw frame.
-            let route_src = flat.and_then(|store| {
-                let id = active.and_then(|i| app.route_ids().get(i).copied());
-                crate::flat_store::reconcile_route(store, id)
-            });
+            let id = active.and_then(|i| app.route_ids().get(i).copied());
+            let route_src = crate::flat_store::reconcile_route(flat, id);
             let route = match (route_index_valid.then_some(&route_index), route_src) {
                 (Some(idx), Some(src)) => Some(RouteReader::new_cached(idx, src, route_cache)),
                 _ => None,
@@ -2050,8 +2032,8 @@ pub(crate) async fn run_app(
             let next_weather_key =
                 weather_bundle.map(|bundle| (bundle, weather_pos, weather_projection_key, weather_projection_minute));
             if next_weather_key != weather_sample_key {
-                let next_snapshot = flat.zip(weather_bundle).and_then(|(store, bundle)| {
-                    let source = crate::flat_store::reconcile_weather(store, Some(bundle))?;
+                let next_snapshot = weather_bundle.and_then(|bundle| {
+                    let source = crate::flat_store::reconcile_weather(flat, Some(bundle))?;
                     let reader = bundle.validated.reader(source).ok()?;
                     let projection = route.as_ref().zip(weather_projection);
                     obc_app::WeatherSnapshot::sample_along(&reader, &mut weather_cache, weather_pos, projection).ok()
@@ -2191,20 +2173,9 @@ pub(crate) async fn run_app(
                 // style-table parse, no `Reader` build (so no stack spike), no map render — that screen
                 // draws just its own chrome. Such a frame costs only its own draw + the push.
                 let needs_map = app.base_needs_reader();
-                // The FAT arm rebuilds its cheap Reader view from the held-open handle each frame;
-                // the flat arm's source was resolved once at boot and is `'static`. Both are skipped
-                // on chrome-only frames — that is what keeps a menu redraw free of any map I/O.
-                let fat_src =
-                    if needs_map && flat_map.is_none() { storage.as_ref().and_then(|s| s.map_source()) } else { None };
-                let reader = if needs_map {
-                    match (flat_map, &fat_src) {
-                        (Some(source), _) => Some(Reader::new(source, map_tables, map_cache)),
-                        (None, Some(source)) => Some(Reader::new(source, map_tables, map_cache)),
-                        (None, None) => None,
-                    }
-                } else {
-                    None
-                };
+                // The flat map source is resolved once at boot and skipped on chrome-only frames,
+                // keeping menu redraws free of map I/O.
+                let reader = needs_map.then(|| Reader::new(flat_map, map_tables, map_cache));
                 if needs_map && reader.is_none() {
                     pending_map_redraw = true;
                     defmt::warn!(
@@ -2255,8 +2226,7 @@ pub(crate) async fn run_app(
                         // header/frame/tile reads during draw; the ordinary Map never receives a
                         // lease and therefore cannot be tinted by weather accidentally.
                         let weather_source = if app.base_wants_rain() {
-                            flat.zip(weather_bundle)
-                                .and_then(|(store, bundle)| crate::flat_store::reconcile_weather(store, Some(bundle)))
+                            weather_bundle.and_then(|bundle| crate::flat_store::reconcile_weather(flat, Some(bundle)))
                         } else {
                             None
                         };
