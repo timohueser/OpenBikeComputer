@@ -54,7 +54,7 @@ import OBCTransport
 
     /// A malformed `v2:` prefix (non-numeric epoch/object id) is not silently
     /// half-parsed — it reads as an opaque unscoped id.
-    @Test(arguments: ["v2:notanumber:3:S", "v2:1:notanumber:S", "v2:1:99999:S", "v2:1:3"])
+    @Test(arguments: ["v2:notanumber:3:S", "v2:1:notanumber:S", "v2:1:18446744073709551616:S", "v2:1:3"])
     func malformedScopedIDsReadAsUnscoped(raw: String) {
         let id = RideID(raw)
         #expect(id.scope == nil)
