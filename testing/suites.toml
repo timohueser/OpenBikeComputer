@@ -512,7 +512,7 @@ command = "cd builder/app && npm test"
 fixtures = ["checked-in-web-fixtures"]
 pull_request = "affected"
 scheduled = "none"
-extra_triggers = ["specs/vectors/**", "builder/app/vite.config.ts"]
+extra_triggers = ["builder/app/src/**", "builder/app/package.json", "builder/app/package-lock.json", "builder/app/vite.config.ts", "specs/vectors/**"]
 coverage_component = "web"
 ownership = [
   { kind = "path", source = "web-test", pattern = "builder/app/**/*.test.ts" },
@@ -528,12 +528,13 @@ command = "python3 -m unittest discover -s tools/tests -v"
 fixtures = []
 pull_request = "always"
 scheduled = "none"
-extra_triggers = ["testing/*.toml", "docs/testing.md", ".github/workflows/ci.yml"]
+extra_triggers = ["tools/*.py", "tools/**/*.py", "testing/*.toml", "docs/testing.md", ".github/workflows/**"]
 coverage_component = "dev-tools"
 ownership = [
   { kind = "path", source = "python-test", pattern = "tools/tests/test_*.py" },
   { kind = "workflow", pattern = "python3 -m unittest discover -s tools/tests -v" },
-  { kind = "workflow", pattern = "python3 tools/suite_registry.py check" },
+  { kind = "workflow", pattern = "python3 tools/suite_registry.py *" },
+  { kind = "workflow", pattern = "python3 tools/ci_aggregate.py" },
 ]
 sleep_exception = { reason = "The registry checker test contains a literal sleep example used only inside an isolated rejection fixture.", issue = "#1236" }
 
@@ -545,7 +546,7 @@ command = "python3 -m unittest discover -s firmware/tools/tests -v"
 fixtures = []
 pull_request = "affected"
 scheduled = "none"
-extra_triggers = []
+extra_triggers = ["firmware/tools/*.py", "firmware/tools/**/*.py"]
 coverage_component = "dev-tools"
 ownership = [
   { kind = "path", source = "python-test", pattern = "firmware/tools/tests/test_*.py" },
@@ -560,7 +561,7 @@ command = "python3 -m unittest discover -s ops/weather/tests -v"
 fixtures = []
 pull_request = "affected"
 scheduled = "none"
-extra_triggers = []
+extra_triggers = ["ops/weather/*.py", "ops/weather/**/*.py"]
 coverage_component = "dev-tools"
 ownership = [
   { kind = "path", source = "python-test", pattern = "ops/weather/tests/test_*.py" },
@@ -575,7 +576,7 @@ command = "PYTHONPATH=. python3 -m pytest builder/tests/ -v"
 fixtures = ["builder-corpus"]
 pull_request = "affected"
 scheduled = "none"
-extra_triggers = ["builder/presets/**"]
+extra_triggers = ["builder/presets/**", "builder/server/*.py", "builder/server/**/*.py", "builder/requirements*.txt"]
 coverage_component = "dev-tools"
 ownership = [
   { kind = "path", source = "python-test", pattern = "builder/tests/test_*.py" },
@@ -590,7 +591,7 @@ command = "cd tools/rain-radar-demo && npm test"
 fixtures = []
 pull_request = "affected"
 scheduled = "none"
-extra_triggers = []
+extra_triggers = ["tools/rain-radar-demo/**"]
 coverage_component = "web"
 ownership = [{ kind = "path", source = "rain-radar-test", pattern = "tools/rain-radar-demo/tests/*.test.ts" }]
 cadence_conflict = { reason = "The maintained demo tests have no current CI job; TS2 owns adding their selected route.", issue = "#1451" }
@@ -603,7 +604,7 @@ command = "swift test --package-path companion-ios/Packages/OBCKit"
 fixtures = ["captured-met", "legacy-library"]
 pull_request = "affected"
 scheduled = "none"
-extra_triggers = ["specs/vectors/**"]
+extra_triggers = ["companion-ios/Packages/OBCKit/Package.swift", "companion-ios/Packages/OBCKit/Sources/**", "specs/vectors/**"]
 platforms = ["macos"]
 coverage_component = "ios"
 ownership = [
@@ -628,7 +629,7 @@ command = "xcodebuild test -project companion-ios/OBCCompanion.xcodeproj -scheme
 fixtures = []
 pull_request = "affected"
 scheduled = "weekly"
-extra_triggers = ["companion-ios/project.yml"]
+extra_triggers = ["companion-ios/OBCCompanion/**", "companion-ios/project.yml"]
 platforms = ["macos"]
 coverage_component = "ios"
 ownership = [
@@ -645,7 +646,7 @@ command = "swift build --package-path companion-ios/EchoHarness"
 fixtures = []
 pull_request = "affected"
 scheduled = "none"
-extra_triggers = []
+extra_triggers = ["companion-ios/EchoHarness/Package.swift", "companion-ios/EchoHarness/Sources/**"]
 platforms = ["macos"]
 coverage_component = "ios"
 ownership = [{ kind = "swift-package", package = "companion-ios/EchoHarness/Package.swift" }]
@@ -700,7 +701,7 @@ fixtures = []
 pull_request = "affected"
 scheduled = "none"
 extra_triggers = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml"]
-ownership = [{ kind = "workflow", pattern = "cargo build *" }]
+ownership = [{ kind = "workflow", pattern = "*cargo build *" }]
 
 [[suite]]
 id = "ci.dependencies"
@@ -710,7 +711,7 @@ command = "python3 firmware/tools/check_dependencies.py"
 fixtures = []
 pull_request = "affected"
 scheduled = "none"
-extra_triggers = []
+extra_triggers = ["firmware/tools/check_dependencies.py", "deny.toml"]
 ownership = [
   { kind = "workflow", pattern = "python3 firmware/tools/check_dependencies.py" },
   { kind = "workflow", pattern = "cargo deny *" },
@@ -724,7 +725,7 @@ command = "python3 firmware/tools/resource_guard.py strict-align"
 fixtures = []
 pull_request = "affected"
 scheduled = "none"
-extra_triggers = ["firmware/tools/resource_baseline.json"]
+extra_triggers = ["firmware/tools/resource_baseline.json", "firmware/tools/resource_guard.py", "firmware/tools/strict_align_probe.rs"]
 ownership = [{ kind = "workflow", pattern = "python3 *resource_guard.py *" }]
 
 [[suite]]
@@ -735,7 +736,7 @@ command = "bash builder/build-wasm-bridges.sh"
 fixtures = []
 pull_request = "affected"
 scheduled = "none"
-extra_triggers = ["builder/app/package-lock.json"]
+extra_triggers = ["builder/app/package-lock.json", "builder/build-wasm-bridges.sh", "firmware/tools/wasm_size_guard.py"]
 coverage_component = "web"
 ownership = [
   { kind = "workflow", pattern = "bash builder/build-wasm-bridges.sh" },
@@ -751,7 +752,7 @@ command = "cd builder/app && npm run check && npm run build:all"
 fixtures = []
 pull_request = "affected"
 scheduled = "none"
-extra_triggers = ["builder/app/package-lock.json"]
+extra_triggers = ["builder/app/package.json", "builder/app/package-lock.json", "builder/app/src/**"]
 coverage_component = "web"
 ownership = [
   { kind = "workflow", pattern = "npm run check" },
@@ -777,7 +778,7 @@ command = "tools/licenses/gen-third-party.sh --check"
 fixtures = []
 pull_request = "affected"
 scheduled = "none"
-extra_triggers = ["Cargo.lock", "builder/app/package-lock.json"]
+extra_triggers = ["Cargo.lock", "builder/app/package-lock.json", "about.toml", "tools/licenses/**"]
 ownership = [{ kind = "workflow", pattern = "tools/licenses/gen-third-party.sh --check" }]
 
 [[suite]]
@@ -788,7 +789,7 @@ command = "python3 tools/check_fixture_policy.py"
 fixtures = []
 pull_request = "always"
 scheduled = "none"
-extra_triggers = ["fixtures/catalog.toml"]
+extra_triggers = ["fixtures/catalog.toml", "tools/check_fixture_policy.py", "tools/fixtures.py"]
 ownership = [
   { kind = "workflow", pattern = "python3 tools/check_fixture_policy.py" },
   { kind = "workflow", pattern = "python3 tools/fixtures.py sync test" },
@@ -802,7 +803,7 @@ command = "python3 tools/check_retired_map_stack.py"
 fixtures = []
 pull_request = "always"
 scheduled = "none"
-extra_triggers = []
+extra_triggers = ["tools/check_retired_map_stack.py"]
 ownership = [{ kind = "workflow", pattern = "python3 tools/check_retired_map_stack.py" }]
 
 [[suite]]
@@ -813,7 +814,7 @@ command = "xcodebuild build -project companion-ios/OBCCompanion.xcodeproj -schem
 fixtures = []
 pull_request = "affected"
 scheduled = "none"
-extra_triggers = ["companion-ios/project.yml"]
+extra_triggers = ["companion-ios/OBCCompanion/**", "companion-ios/project.yml"]
 platforms = ["macos"]
 coverage_component = "ios"
 ownership = [{ kind = "workflow", pattern = "xcodebuild build -project OBCCompanion.xcodeproj -scheme OBCCompanion" }]
