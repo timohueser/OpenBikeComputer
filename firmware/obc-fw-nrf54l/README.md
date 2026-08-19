@@ -632,6 +632,10 @@ On-glass checks this section is waiting for: a real phone and a real cable each 
 and a `GET`, the admission race (stream record ahead of its control record) surviving a ride-loop
 render pass, and a `CANCEL` landing mid-download.
 
+This section is the **transport cutover only**. It does not close FS6 or FS7: the remaining
+on-device map, route, trip, and weather consumers and their legacy FAT removal stay tracked by
+#1388 and #1389.
+
 ## The USB device plane (issue #889) — **in every build; cable-gated since #936**
 
 Every build ships a second transport for the *same* object protocol: the LM20's USBHS
