@@ -30,7 +30,7 @@
 //!
 //! The heavy work is one sync `#[inline(never)]` call ([`arm_update`]) at the ride loop's
 //! shallow drained-request depth: the ~850 B `StagedRef`s, the ~1.7 KB decoded `BootState`, and
-//! `sd.rs`'s transient ~2 KB `ExtentTable` all live in frames that pop on return — nothing new
+//! `sd.rs`'s small staging resolver state all lives in frames that pop on return — nothing new
 //! is resident, and nothing large is held across an `.await` (the loop only awaits the beat,
 //! holding a few words). CRC/copy staging stays on `sd.rs`'s existing 512-byte-chunk idiom.
 //!

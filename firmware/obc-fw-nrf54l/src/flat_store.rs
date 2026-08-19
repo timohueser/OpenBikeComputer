@@ -71,8 +71,8 @@ use embassy_sync::signal::Signal;
 use obc_link::flat::{Ceilings, Engine, Link, Policy, Reaction, RequestId};
 use obc_storage::flat::store::MAX_BATCH;
 use obc_storage::flat::{
-    Allocation, BlockDevice, EntryMeta, FlatStore, Handle, Mode, Mutation, ObjectId, ObjectKind, Revision,
-    RideCheckpoint, Store as _, StoreError,
+    Allocation, BlockDevice, DisplayName, EntryFlags, EntryMeta, FlatStore, Handle, Mode, Mutation, ObjectId,
+    ObjectKind, PutSource, Revision, RideCheckpoint, Store as _, StoreError,
 };
 
 use crate::semmc::{SemmcError, BLOCK_BYTES};
@@ -83,13 +83,13 @@ use crate::semmc::{SemmcError, BLOCK_BYTES};
 // sEMMC firmware's DMA wants 32-bit alignment; the store hands the device `[u8; 512]` frame locals
 // and its 2 KiB/4 KiB streaming windows, none of which carries an alignment attribute, so whether a
 // given call is aligned is a codegen accident and the binding has to be correct either way. It
-// borrows `sd`'s 4-block buffer for that (`sd::with_bounce`) rather than placing one.
+// borrows the raw-card layer's 4-block buffer for that (`card_io::with_bounce`) rather than placing one.
 //
 // A second buffer sized to §5.5's 8-block commit window would have cost 4 KiB — and on this part
 // every `.bss` byte is a main-stack byte (`_stack_start − __euninit`), taken out of the deep-ride
 // path's headroom, for a case that may never occur. What the shared 4-block buffer costs when it
 // *does* fire is one extra card command per commit-body window; a mount's 2 KiB window is one chunk
-// either way, so the figure c1 measures is unaffected. `sd::warn_bounce`'s one-shot line is how a run
+// either way, so the figure c1 measures is unaffected. The bounce's one-shot line is how a run
 // says which side of the alignment accident this build fell on — and if it fires and a measurement
 // says the commit cost matters, the flat binding places its own buffer then, with the number in hand.
 
@@ -126,14 +126,18 @@ impl BlockDevice for FlatCard {
     fn read(&self, lba: u64, buf: &mut [u8]) -> Result<(), SemmcError> {
         let start = FlatCard::lba(lba)?;
         let addr = buf.as_ptr() as usize;
-        crate::flpr_mux::with_storage(|sd| {
+        #[cfg(feature = "sd-bench")]
+        let blocks = buf.len() / BLOCK_BYTES;
+        #[cfg(feature = "sd-bench")]
+        let bench_started = embassy_time::Instant::now();
+        let result = crate::flpr_mux::with_storage(|sd| {
             if addr.is_multiple_of(4) {
                 return sd.read_blocks(start, buf);
             }
             // SAFETY: we are inside `with_storage`, which is where `with_bounce` requires its
             // caller to be, and nothing in this closure reaches another bounce user.
             unsafe {
-                crate::sd::with_bounce(addr, |bounce| {
+                crate::card_io::with_bounce(addr, |bounce| {
                     let mut done = 0usize;
                     while done < buf.len() {
                         let take = (buf.len() - done).min(bounce.len());
@@ -144,7 +148,10 @@ impl BlockDevice for FlatCard {
                     Ok(())
                 })
             }
-        })?
+        })?;
+        #[cfg(feature = "sd-bench")]
+        crate::card_io::note_read_perf(bench_started, addr, blocks);
+        result
     }
 
     fn write(&self, lba: u64, buf: &[u8]) -> Result<(), SemmcError> {
@@ -156,7 +163,7 @@ impl BlockDevice for FlatCard {
             }
             // SAFETY: as in `read`.
             unsafe {
-                crate::sd::with_bounce(addr, |bounce| {
+                crate::card_io::with_bounce(addr, |bounce| {
                     let mut done = 0usize;
                     while done < buf.len() {
                         let take = (buf.len() - done).min(bounce.len());
@@ -414,6 +421,12 @@ pub(crate) enum Request {
     /// Append to a reservation. Replies with the advanced [`Allocation`], because the seam takes it
     /// by `&mut` and a channel cannot lend one.
     Write { allocation: Allocation, bytes: &'static [u8] },
+    /// Backfill bytes in an unpublished reservation (the computed OBCR header).
+    Patch { allocation: Allocation, offset: u64, bytes: &'static [u8] },
+    /// Hash the final bytes in an unpublished reservation after its header backfill.
+    Checksum { allocation: Allocation },
+    /// Publish a freshly generated route under the store's next id.
+    PublishComputedRoute { allocation: Allocation, payload_crc: u32, name: DisplayName },
     /// §5.5's atomic batch. Replies with the commit sequence.
     Commit { batch: heapless::Vec<Mutation, MAX_BATCH> },
     /// §7.2's ride checkpoint.
@@ -477,6 +490,10 @@ pub(crate) enum Outcome {
     Allocated(Allocation),
     /// The allocation, advanced by the bytes written.
     Wrote(Allocation),
+    /// CRC-32/IEEE of a live allocation.
+    Checksummed(u32),
+    /// Object id assigned to a board-generated route.
+    Published(ObjectId),
     /// §5.5's commit sequence.
     Committed(u64),
     /// Nothing to hand back: `journal`, `cancel`, `close`.
@@ -852,6 +869,26 @@ fn serve(
         Request::Write { mut allocation, bytes } => {
             store.write(&mut allocation, bytes)?;
             Ok(Outcome::Wrote(allocation))
+        }
+        Request::Patch { allocation, offset, bytes } => {
+            store.patch_allocation(&allocation, offset, bytes)?;
+            Ok(Outcome::Done)
+        }
+        Request::Checksum { allocation } => store.allocation_crc(&allocation).map(Outcome::Checksummed),
+        Request::PublishComputedRoute { allocation, payload_crc, name } => {
+            let id = store.next_object_id();
+            let meta = EntryMeta {
+                id,
+                revision: Revision(1),
+                kind: ObjectKind::Route,
+                flags: EntryFlags::NONE,
+                payload_len: allocation.written_bytes(),
+                payload_crc,
+                name,
+            };
+            store
+                .commit(&[Mutation::Put { meta, source: PutSource::Fresh(allocation) }])
+                .map(|_| Outcome::Published(id))
         }
         Request::Commit { batch } => store.commit(&batch).map(Outcome::Committed),
         Request::Journal { checkpoint } => store.journal(checkpoint).map(|()| Outcome::Done),

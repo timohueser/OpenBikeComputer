@@ -41,6 +41,10 @@ use obc_platform::SynthLocation;
 // battery stand-in until the nPM1300 PMIC gauge is read.
 use obc_display::ls021::{FRAME_H, FRAME_W};
 use obc_display::FbDevice64;
+#[cfg(has_nav)]
+use obc_formats::io::{ByteSink, Error as ByteError};
+#[cfg(has_nav)]
+use obc_formats::obcr::HEADER_FULL_LEN;
 use obc_platform::StubFuelGauge;
 use obc_reader::{MapCache, MapTables, Reader};
 // The ride loop's route types: the decoded-route-geometry cache, the resident per-route chunk
@@ -264,16 +268,93 @@ struct NavBuffers<'a> {
 /// itself sits in the [`NavBuffers`] `.bss` slot this struct guards.
 #[cfg(has_nav)]
 struct NavRun {
-    file: embedded_sdmmc::RawFile,
+    allocation: obc_storage::flat::Allocation,
     /// Wall time when the request was drained — the RTT line's user-perceived `total_ms`.
     t0: Instant,
     /// Per-phase step time (µs), attributed by the planner's phase **before** each step:
     /// `[snap, search, emit]`.
     phase_us: [u64; 3],
+    /// Store-task time spent flushing bounded output stages before the final checksum/commit.
+    write_us: u64,
     /// Physical-card reads issued inside planner steps, split by the same phase. Unlike the cache
     /// counters this sees sector-splitting and alignment bounces at the block-device boundary.
     #[cfg(feature = "sd-bench")]
-    read_perf: [sd::ReadPerf; 3],
+    read_perf: [crate::card_io::ReadPerf; 3],
+}
+
+/// Maximum bytes a computed OBCR can emit: 128-byte header, 256 full 1,530-byte chunk bodies,
+/// and 256 44-byte index records. The flat store rounds this reservation to one extent and trims
+/// it to the actual streamed length at commit.
+#[cfg(has_nav)]
+const NAV_ROUTE_RESERVE: u64 = 128 + 256 * (1_530 + 44);
+
+#[cfg(has_nav)]
+static NAV_STORE_REPLY: crate::flat_store::Reply = embassy_sync::signal::Signal::new();
+
+#[cfg(has_nav)]
+struct NavStageSink<'a> {
+    stage: &'a mut [u8; crate::arena::NAV_OUTPUT_STAGE_BYTES],
+    appended: usize,
+    patch_len: usize,
+}
+
+#[cfg(has_nav)]
+impl ByteSink for NavStageSink<'_> {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), ByteError> {
+        let start = HEADER_FULL_LEN + self.appended;
+        let end = start.checked_add(bytes.len()).ok_or(ByteError::TooLarge)?;
+        let out = self.stage.get_mut(start..end).ok_or(ByteError::TooLarge)?;
+        out.copy_from_slice(bytes);
+        self.appended += bytes.len();
+        Ok(())
+    }
+
+    fn patch_at(&mut self, offset: u32, bytes: &[u8]) -> Result<(), ByteError> {
+        if offset != 0 || bytes.len() > HEADER_FULL_LEN {
+            return Err(ByteError::BadOffset);
+        }
+        self.stage[..bytes.len()].copy_from_slice(bytes);
+        self.patch_len = bytes.len();
+        Ok(())
+    }
+}
+
+#[cfg(has_nav)]
+struct NavStep {
+    outcome: obc_route::Step,
+    appended: usize,
+    patch_len: usize,
+}
+
+#[cfg(has_nav)]
+async fn flush_nav_stage(
+    writer: crate::flat_store::Writer,
+    guard: &mut crate::arena::NavGuard,
+    mut allocation: obc_storage::flat::Allocation,
+    appended: usize,
+    patch_len: usize,
+) -> Result<obc_storage::flat::Allocation, obc_storage::flat::StoreError> {
+    let base = guard.output.as_ptr();
+    if appended != 0 {
+        // SAFETY: the arena is static storage; `guard` is its sole owner and remains held until
+        // this awaited round trip returns. The storage task consumes the slice synchronously before
+        // answering, so the next planner step cannot overwrite it while it is borrowed.
+        let bytes = unsafe { core::slice::from_raw_parts(base.add(HEADER_FULL_LEN), appended) };
+        allocation =
+            match writer.call(crate::flat_store::Request::Write { allocation, bytes }, &NAV_STORE_REPLY).await? {
+                crate::flat_store::Outcome::Wrote(allocation) => allocation,
+                _ => return Err(obc_storage::flat::StoreError::Invalid),
+            };
+    }
+    if patch_len != 0 {
+        // SAFETY: same static-arena/round-trip argument as the append above.
+        let bytes = unsafe { core::slice::from_raw_parts(base, patch_len) };
+        match writer.call(crate::flat_store::Request::Patch { allocation, offset: 0, bytes }, &NAV_STORE_REPLY).await? {
+            crate::flat_store::Outcome::Done => {}
+            _ => return Err(obc_storage::flat::StoreError::Invalid),
+        }
+    }
+    Ok(allocation)
 }
 
 /// Construct + write a fresh request's planner into its `.bss` slot, in this immediately-popped
@@ -369,51 +450,38 @@ fn sensor_status_of(q: usize) -> obc_app::SensorStatus {
 }
 
 /// Run **one bounded planner step** at the ride loop's shallow per-pass depth (#270/#419: the
-/// step's frame carries only the cheap boot-parsed-tables `Reader` view, the SD sink over the
-/// held-open file, and the planner's own shallow call tree — the emitter lives in the planner's
+/// step's frame carries only the cheap boot-parsed-tables `Reader` view, the bounded staging sink,
+/// and the planner's own shallow call tree — the emitter lives in the planner's
 /// `.bss` slot, not this frame; the deepest transient is the one emitter-sized move when the
 /// emit phase constructs it). Everything long-running (render, input, the watchdog feed) runs
 /// normally **between** steps — that is the whole point of #499.
 ///
-/// The reader is `Reader::new` over the FAT map's per-call source (FS7.5-c2, #1420). There used to
-/// be a second case — a mounted volume set, whose reader had to come from `MountedSet::core_reader`
-/// because the set shared **one** `MapCache` across its shards and every cache key carried a shard
-/// index, so a `Reader::new` over the core's bytes was tagged file `0` and could collide with
-/// another shard's namespace. One map is one file: there is no index, no tag, and one way to build a
-/// reader.
-///
-/// **There is deliberately no flat arm here.** A plan writes its OBCR through the FAT route sink, so
-/// a step only ever runs with a `Storage`; a flat card has no `/routes` to emit into and cannot
-/// reach this function at all until c3 gives the store a writer. This took a `flat_map` parameter
-/// for one round and it was unreachable by its own docstring — a branch that cannot execute is not
-/// forward-compatibility, it is an untested path pretending to be one. c3 adds it when there is
-/// something to test it against.
+/// The reader is `Reader::new` over the flat map object. Emitted OBCR bytes are staged in the arena
+/// and flushed through the flat store's sole writer between steps, so no card write occurs inside
+/// the synchronous planner call and the arena remains the only route-output scratch owner.
 #[cfg(has_nav)]
 #[inline(never)]
 fn nav_step(
-    storage: &sd::Storage,
+    map_src: &dyn obc_formats::io::ByteSource,
     map_tables: &MapTables,
     map_cache: &MapCache,
-    nav: &mut NavBuffers,
-    file: embedded_sdmmc::RawFile,
-) -> obc_route::Step {
-    let Some(map_src) = storage.map_source() else {
-        return obc_route::Step::Failed(obc_route::NavError::NoPath);
-    };
-    let reader = Reader::new(&map_src, map_tables, map_cache);
-    let mut sink = storage.nav_sink(file);
+    nav: &mut NavBuffers<'_>,
+) -> NavStep {
+    let reader = Reader::new(map_src, map_tables, map_cache);
     // Only called while a `NavRun` is active, and a run is only created after the drain wrote the
     // planner — but the guard is what *knows* that, so ask it rather than assert it. An unwritten
     // slot answers the generic failure tier instead of stepping a planner nobody built.
-    let Some((planner, scratch, tiles)) = nav.guard.plan_parts() else {
+    let Some((planner, scratch, tiles, output)) = nav.guard.plan_parts() else {
         debug_assert!(false, "a plan step with no planner written — the run outlived (or preceded) its drain");
-        return obc_route::Step::Failed(obc_route::NavError::NoPath);
+        return NavStep { outcome: obc_route::Step::Failed(obc_route::NavError::NoPath), appended: 0, patch_len: 0 };
     };
-    planner.step(&reader, scratch, tiles, &mut *nav.elev, &mut sink)
+    let mut sink = NavStageSink { stage: output, appended: 0, patch_len: 0 };
+    let outcome = planner.step(&reader, scratch, tiles, &mut *nav.elev, &mut sink);
+    NavStep { outcome, appended: sink.appended, patch_len: sink.patch_len }
 }
 
-/// Finish a **completed** plan: flush/patch or delete the reserved file, rescan + re-feed the
-/// id-carrying catalog on success (sequential with — never nested under — the step frames, the
+/// Finish a **completed** plan: hash and publish or cancel the flat-store reservation, rescan +
+/// re-feed the id-carrying catalog on success (sequential with — never nested under — the step frames, the
 /// #496 de-nesting kept), emit the one `nav route:` RTT line with the per-phase breakdown
 /// (issue #499's DoD), and answer the app — the `NavPlanned` event activates the route and swaps
 /// the planning screen for the computed-route overview (or the failure card).
@@ -421,17 +489,18 @@ fn nav_step(
 /// The RTT line (grep `nav route:`): outcome; route length; `total_ms` = wall time from the
 /// request drain (it spans every pass the plan was spread over); `snap/search/emit_ms` = step
 /// time attributed to the planner's phase before each step (emit includes the finishing header
-/// patch); `write_ms` = the file flush/close; `rescan_ms` = the catalog rescan; `source_reads` =
+/// patch); `write_ms` = flat-store write/hash/commit time; `rescan_ms` = the catalog rescan; `source_reads` =
 /// logical graph-chunk plus index-window fills; `settles`; and the stackmeter high-water,
 /// force-rescanned here — sentinel evidence is permanent, so it still reads the in-step peak.
 /// With `sd-bench`, a second line reports the planner steps' physical card commands and time.
 #[cfg(has_nav)]
 #[inline(never)]
 #[allow(clippy::too_many_arguments)]
-fn nav_finish(
-    storage: &mut sd::Storage,
+async fn nav_finish(
+    writer: crate::flat_store::Writer,
+    flat: &'static obc_storage::flat::FlatStore<crate::flat_store::FlatCard>,
     app: &mut App,
-    nav: &mut NavBuffers,
+    nav: &mut NavBuffers<'_>,
     run: NavRun,
     outcome: obc_route::Step,
     now: u32,
@@ -443,14 +512,57 @@ fn nav_finish(
         obc_route::Step::Running => Err(NavError::NoPath), // unreachable: callers pass terminals
     };
     let tw = Instant::now();
-    storage.nav_route_finish(run.file, planned.is_ok());
-    let write_us = tw.elapsed().as_micros();
+    let result: Result<(u64, u32), NavError> = match planned {
+        Ok(len) => {
+            let name_len = usize::from(nav.guard.output[6]).min(48);
+            let name = core::str::from_utf8(&nav.guard.output[64..64 + name_len])
+                .ok()
+                .and_then(obc_storage::flat::DisplayName::new)
+                .ok_or(NavError::NoPath);
+            match name {
+                Ok(name) => {
+                    let crc = match writer
+                        .call(crate::flat_store::Request::Checksum { allocation: run.allocation }, &NAV_STORE_REPLY)
+                        .await
+                    {
+                        Ok(crate::flat_store::Outcome::Checksummed(crc)) => Ok(crc),
+                        _ => Err(NavError::NoPath),
+                    };
+                    match crc {
+                        Ok(payload_crc) => match writer
+                            .call(
+                                crate::flat_store::Request::PublishComputedRoute {
+                                    allocation: run.allocation,
+                                    payload_crc,
+                                    name,
+                                },
+                                &NAV_STORE_REPLY,
+                            )
+                            .await
+                        {
+                            Ok(crate::flat_store::Outcome::Published(id)) => Ok((id.0, len)),
+                            _ => Err(NavError::NoPath),
+                        },
+                        Err(error) => Err(error),
+                    }
+                }
+                Err(error) => Err(error),
+            }
+        }
+        Err(error) => Err(error),
+    };
+    if result.is_err() {
+        // A checksum, metadata, or commit failure must give the unpublished reservation back just
+        // like a planner failure does. `cancel` is harmless if a future response-shape bug reaches
+        // this branch after commit: the committed allocation token is no longer live.
+        let _ = writer.call(crate::flat_store::Request::Cancel { allocation: run.allocation }, &NAV_STORE_REPLY).await;
+    }
+    let write_us = run.write_us + tw.elapsed().as_micros();
     let tr = Instant::now();
-    let result: Result<(u16, u32), NavError> = planned.and_then(|len| {
-        load_routes(storage, app);
-        let id = storage.nav_route_id().ok_or(NavError::NoPath)?;
-        Ok((id, len))
-    });
+    if let Ok((id, _)) = result {
+        crate::flat_store::load_routes(flat, app);
+        let _ = crate::flat_store::reconcile_route(flat, Some(id));
+    }
     let rescan_us = tr.elapsed().as_micros();
     let cache = nav.guard.tiles.stats();
     // The ε rung the plan ended on (N8): 13/10 for a plain success or a fast no-path, 2/1 or 3/1 if
@@ -491,7 +603,7 @@ fn nav_finish(
     );
     #[cfg(feature = "sd-bench")]
     {
-        let mut total = sd::ReadPerf::ZERO;
+        let mut total = crate::card_io::ReadPerf::ZERO;
         for phase in run.read_perf {
             total.add_assign(phase);
         }
@@ -510,7 +622,7 @@ fn nav_finish(
             run.read_perf[2].commands
         );
     }
-    app.apply_event(obc_app::HostEvent::NavPlanned(result.map(|(id, _)| u64::from(id))));
+    app.apply_event(obc_app::HostEvent::NavPlanned(result.map(|(id, _)| id)));
 }
 
 /// The [`Gesture`](obc_app::Gesture) variant's name for the drained-input `defmt` breadcrumb
@@ -1096,7 +1208,7 @@ pub(crate) async fn run_app(
                     // flow holds the planned detour's OBCR **in RAM** from `DetourPlanned` until the
                     // rider commits, then stream-splices `original[0..anchor] + detour +
                     // original[rejoin..]` into a derived route. The host does both with a `Vec`; the
-                    // board has one reserved computed-route file (`_NAV.OBR`) and no heap, so the
+                    // board has one flat-store route reservation and no heap, so the
                     // splice has nowhere to read the detour from while it writes. That is a storage
                     // design, with its own on-glass acceptance — a separate issue.
                     //
@@ -1311,7 +1423,7 @@ pub(crate) async fn run_app(
                         // DR6 (#734): hand the confirm's carried scan ref to the arm (consumed
                         // either way). Absent ⇒ `run_install` re-scans (the `dfu-install` path).
                         Some(s) => crate::dfu::run_install(s, settings_store, &mut wdt, cached_staged.take()).await,
-                        None => {
+                        _ => {
                             crate::dfu::status("refused (no_card): no SD card");
                             Some(obc_app::DfuInstallError::NoCard)
                         }
@@ -1356,10 +1468,11 @@ pub(crate) async fn run_app(
         // map *render* that reads them all run under this guard; the block's close is the guard's
         // death — **before** the present phase below, so a BLE object operation waits behind at
         // most the render, never the ~44 ms FLPR scan on top of it (#270 → #809). The phase is
-        // fully synchronous — no `.await` between the lock and the block's close — and the render
-        // runs while the reader/source borrows of the open SD handles are live, which is exactly
-        // what keeps an upload/delete from invalidating a reader mid-render. Destructured into the
-        // two names the body uses (`storage`, `settings_store`).
+        // render runs while the reader/source borrows of the open SD handles are live, which is
+        // exactly what keeps an upload/delete from invalidating a reader mid-render. A route plan
+        // may await bounded calls to the independent flat-store writer in this block; neither that
+        // task nor the flat map reader borrows this legacy/settings mutex. Destructured into the two
+        // names the body uses (`storage`, `settings_store`).
         let (rendered, dirty_map, hold_p, store_held_us) = {
             let mut store_guard = shared.lock().await;
             let t_store = Instant::now();
@@ -1480,16 +1593,15 @@ pub(crate) async fn run_app(
             fill_ride_profile(storage, app);
 
             // ── The resumable route planner (#499), one bounded step per pass ──
-            // A drained create-route request opens the reserved file, (re)writes the `.bss` planner
+            // A drained create-route request allocates unpublished flat-store space, (re)writes the `.bss` planner
             // slot, and arms a `NavRun`; each subsequent pass runs **one** `nav_step` at this shallow
             // depth and then continues the normal pass (render, input, the pass-top watchdog feed) —
             // the UI stays live while the route computes. A drained cancel (Back on the planning
-            // screen) aborts: close + delete the partial file, answer nothing. On a terminal step,
-            // `nav_finish` flushes/patches (or deletes) the file, rescans the catalog (sequential,
+            // screen) aborts: cancel the reservation, answer nothing. On a terminal step,
+            // `nav_finish` hashes/publishes (or cancels) it, rescans the catalog (sequential,
             // never nested — the #496 de-nesting), emits the per-phase RTT line, and answers the app;
             // the positional state is then forced to re-derive, exactly like the store-changed rescan
-            // above (the plan closed the active geometry handle and may have rewritten bytes under
-            // the reserved name).
+            // above (the plan publishes a new object and may change the active geometry source).
             //
             // `not(has_nav)` (the `ble` build, whose image ships without the router — see build.rs):
             // the request is still drained and answered with the generic failure tier ("Couldn't find
@@ -1504,27 +1616,37 @@ pub(crate) async fn run_app(
                 if host_pass.plan_armed {
                     // The planner slot was already written from the request at the pass-top drain
                     // (`nav_begin`, no store lock) — which is also where the arena's nav arm was
-                    // claimed; here we just open the reserved file and arm the run against it. A
+                    // claimed; here we allocate the output object and arm the run against it. A
                     // request while a plan is somehow still in flight replaces it (can't happen
                     // through the UI — the planning screen blocks a second confirm — but stay safe;
                     // the drain already overwrote the slot for the new plan and kept the same guard).
-                    if let (Some(run), Some(s)) = (nav_run.take(), storage.as_mut()) {
-                        s.nav_route_finish(run.file, false);
+                    if let (Some(run), Some(writer)) = (nav_run.take(), crate::flat_store::writer()) {
+                        let _ = writer
+                            .call(crate::flat_store::Request::Cancel { allocation: run.allocation }, &NAV_STORE_REPLY)
+                            .await;
                     }
-                    match storage.as_mut().and_then(|s| s.nav_route_begin()) {
-                        Some(file) => {
+                    let allocated = match crate::flat_store::writer() {
+                        Some(writer) => writer
+                            .call(crate::flat_store::Request::Allocate { bytes: NAV_ROUTE_RESERVE }, &NAV_STORE_REPLY)
+                            .await
+                            .ok(),
+                        None => None,
+                    };
+                    match allocated {
+                        Some(crate::flat_store::Outcome::Allocated(allocation)) => {
                             nav_run = Some(NavRun {
-                                file,
+                                allocation,
                                 t0: Instant::now(),
                                 phase_us: [0; 3],
+                                write_us: 0,
                                 #[cfg(feature = "sd-bench")]
-                                read_perf: [sd::ReadPerf::ZERO; 3],
+                                read_perf: [crate::card_io::ReadPerf::ZERO; 3],
                             });
                         }
                         // No card / no dir: nothing to route against — the generic failure tier, and
                         // the arena goes straight back. A plan that never started must not leave the
                         // map frozen behind a search nobody is running.
-                        None => {
+                        _ => {
                             app.apply_event(obc_app::HostEvent::NavPlanned(Err(obc_route::NavError::NoPath)));
                             search_ended = true;
                         }
@@ -1537,8 +1659,13 @@ pub(crate) async fn run_app(
                 // the new search is about to step on.
                 if nav_cancel && !host_pass.plan_armed {
                     if let Some(run) = nav_run.take() {
-                        if let Some(s) = storage.as_mut() {
-                            s.nav_route_finish(run.file, false); // close + delete the partial file
+                        if let Some(writer) = crate::flat_store::writer() {
+                            let _ = writer
+                                .call(
+                                    crate::flat_store::Request::Cancel { allocation: run.allocation },
+                                    &NAV_STORE_REPLY,
+                                )
+                                .await;
                         }
                         defmt::info!("nav route: cancelled after {=u64} ms", run.t0.elapsed().as_millis());
                         // No notify: the planning screen is already gone (Back popped it).
@@ -1549,7 +1676,9 @@ pub(crate) async fn run_app(
                     search_ended = true;
                 }
                 if let Some(run) = nav_run.as_mut() {
-                    if let (Some(s), Some(guard)) = (storage.as_mut(), nav_guard.as_mut()) {
+                    if let (Some(map_src), Some(store), Some(writer), Some(guard)) =
+                        (flat_map, flat, crate::flat_store::writer(), nav_guard.as_mut())
+                    {
                         // The step's view over the arena arm + the resident terrain, alive only for
                         // the length of these synchronous calls.
                         let mut bufs = NavBuffers { guard, elev: &mut *nav.elev };
@@ -1563,16 +1692,27 @@ pub(crate) async fn run_app(
                             obc_route::NavPhase::Emit | obc_route::NavPhase::Done => 2,
                         };
                         #[cfg(feature = "sd-bench")]
-                        let reads_before = sd::read_perf_snapshot();
+                        let reads_before = crate::card_io::read_perf_snapshot();
                         let ts = Instant::now();
-                        let step = nav_step(s, map_tables, map_cache, &mut bufs, run.file);
+                        let step = nav_step(map_src, map_tables, map_cache, &mut bufs);
                         let us = ts.elapsed().as_micros();
                         run.phase_us[phase_idx] += us;
                         #[cfg(feature = "sd-bench")]
-                        run.read_perf[phase_idx].add_assign(sd::read_perf_snapshot().since(reads_before));
-                        if !matches!(step, obc_route::Step::Running) {
+                        run.read_perf[phase_idx].add_assign(crate::card_io::read_perf_snapshot().since(reads_before));
+                        let flush_started = Instant::now();
+                        let flushed =
+                            flush_nav_stage(writer, bufs.guard, run.allocation, step.appended, step.patch_len).await;
+                        run.write_us += flush_started.elapsed().as_micros();
+                        let outcome = match flushed {
+                            Ok(allocation) => {
+                                run.allocation = allocation;
+                                step.outcome
+                            }
+                            Err(_) => obc_route::Step::Failed(obc_route::NavError::NoPath),
+                        };
+                        if !matches!(outcome, obc_route::Step::Running) {
                             let run = nav_run.take().expect("just borrowed it");
-                            nav_finish(s, app, &mut bufs, run, step, now);
+                            nav_finish(writer, store, app, &mut bufs, run, outcome, now).await;
                             search_ended = true;
                             prev_active = None; // reopen geometry / rebuild the index off the fresh scan
                             index_route = None;
@@ -2096,7 +2236,7 @@ pub(crate) async fn run_app(
                             let weather_snapshot_ref = weather_snapshot.as_ref();
                             let weather_refreshing = weather_refresh_in_flight();
                             #[cfg(feature = "sd-bench")]
-                            let read_before = sd::read_perf_snapshot();
+                            let read_before = crate::card_io::read_perf_snapshot();
                             let (stats, render_us) = display.render_frame(|f: &mut crate::ls021_flpr::Frame64| {
                                 let mut fbdev = FbDevice64::new(f.bytes_mut(), FRAME_W as u32, FRAME_H as u32);
                                 if let Some(r) = clip {
@@ -2127,7 +2267,7 @@ pub(crate) async fn run_app(
                             });
                             #[cfg(feature = "sd-bench")]
                             if needs_map {
-                                let reads = sd::read_perf_snapshot().since(read_before);
+                                let reads = crate::card_io::read_perf_snapshot().since(read_before);
                                 defmt::info!(
                                 "map SD bench: {=u32} us | logical {=u32} read(s) / {=u32} B | physical {=u32} command(s) / {=u32} block(s) ({=u32} single + {=u32} multi)",
                                 reads.us,

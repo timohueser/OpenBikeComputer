@@ -1,19 +1,17 @@
-//! What a render pass and a route plan cost the card in **block reads**, pinned — and measured
-//! against the path they replace, in the same test session.
+//! What a render pass and a route plan cost the flat card in **physical block reads**, pinned.
 //!
 //! This is issue #500's guard rail. That bug was the map's scattered reads going through
 //! `embedded-sdmmc`'s O(offset) seek: FAT is a singly-linked list, every backward seek restarts at
 //! the file's first cluster, and the one-block FAT cache thrashed against the data reads — ~109 FAT
 //! sector reads per 2 KB nav chunk, 41k block reads for a 2 km plan, ~100% of a 56 s route
-//! computation. [`fat_extents`](crate::fat_extents) fixed it by resolving the chain once at open, so
-//! every later read is arithmetic plus the data blocks themselves.
+//! computation. The retired FAT extent path fixed it by resolving the chain once at open, so every
+//! later read was arithmetic plus the data blocks themselves.
 //!
-//! The flat store is that same arithmetic, one layer down and without the filesystem: `Ranges::locate`
-//! over at most 8 extent ranges, then one card command per contiguous run. So the claim this file has
-//! to make good is not "the flat path is fast" in the abstract — it is **"the flat path costs no more
-//! than `fat_extents` did, on the same access pattern, for the same object"**. Both columns are
-//! measured here, side by side, so the comparison cannot drift out of date the way a number copied
-//! into a commit message does.
+//! The flat store keeps that same arithmetic one layer down and without a filesystem:
+//! `Ranges::locate` over at most eight extent ranges, then one card command per contiguous run.
+//! FAT is no longer a shipping or test oracle, so this suite pins the flat path's literal command
+//! and block budgets. A regression fails against the accepted physical cost rather than preserving
+//! hundreds of lines of superseded filesystem code just to manufacture a comparison column.
 //!
 //! ## The two patterns
 //!
@@ -31,26 +29,19 @@
 //! ## What the numbers mean
 //!
 //! **What these pins do not cover: the cost of *getting* to a read.** Both columns start counting
-//! after the object is open — after `FlatStore::open`'s catalog binary search on one side, and after
-//! `ExtentTable::build`'s FAT chain walk on the other. That is the right boundary for comparing read
-//! paths, and it means an open-cost regression is **invisible here**: a store whose `open` grew a
+//! after the object is open — after `FlatStore::open`'s catalog binary search. That is the right
+//! boundary for pinning steady-state reads, and it means an open-cost regression is **invisible
+//! here**: a store whose `open` grew a
 //! chain walk would pass every assertion in this file. `cost.rs` pins the mount and the commit; the
 //! open is pinned by neither, and should be, when the board mount lands.
 //!
 //! `commands` is what the card charges a per-command handshake for and `blocks` is what it charges
-//! transfer time for; `cost.rs` fits both to glass measurements. The two paths do not have to be
-//! *equal* — the flat store issues fewer, wider commands, because
-//! [`READ_BATCH`](crate::fat_extents::READ_BATCH) caps a `fat_extents` command at 8 blocks and the
-//! flat read path is capped only by the extent run. Equal **blocks** with fewer **commands** is the
-//! expected shape, and strictly-not-worse on both is what the assertions enforce.
+//! transfer time for; `cost.rs` fits both to glass measurements. Both are pinned below.
 
 use std::vec;
 use std::vec::Vec;
 
 use obc_formats::io::ByteSource;
-
-use crate::fat_extents::tests::{mkfs_fat32, pattern, setup, RecordingDevice};
-use crate::fat_extents::{ExtentSource, ExtentTable};
 
 use super::layout::{Geometry, EXTENT_AREA};
 use super::seam::StoreId;
@@ -87,6 +78,10 @@ struct ReadCensus {
 /// The windows a pass reads, as `(offset, length)`.
 type Pass = Vec<(u64, usize)>;
 
+fn pattern(tag: u8, offset: usize, len: usize) -> Vec<u8> {
+    (offset..offset + len).map(|i| tag.wrapping_add(i as u8)).collect()
+}
+
 /// A\* expanding a frontier: 64 nav chunks at scattered ids. The ids are a fixed low-discrepancy walk
 /// (an odd stride over a power-of-two chunk count, so it visits each once without repeating) rather
 /// than a random sequence — a pinned count needs a pinned pattern.
@@ -115,20 +110,6 @@ fn read_pass(source: &dyn ByteSource, pass: &Pass, tag: u8) {
         source.read_at(offset, &mut got).expect("the pass stays inside the object");
         assert_eq!(got, pattern(tag, offset as usize, len), "read at ({offset}, {len}) served the wrong bytes");
     }
-}
-
-/// The `fat_extents` column: the same file, the same pass, counted at the block device.
-fn fat_census(pass: &Pass) -> ReadCensus {
-    let fs = setup(mkfs_fat32(), &["MAP.BIN"], OBJECT_BLOCKS);
-    let (entry_block, entry_offset, len) = fs.entry_facts("MAP.BIN");
-    assert_eq!(len as usize, OBJECT_LEN);
-    let table = ExtentTable::build(fs.disk, entry_block, entry_offset, len).expect("a contiguous file maps");
-    assert_eq!(table.extent_count(), 1, "the comparison object must be one run on the FAT side");
-
-    let dev = RecordingDevice { disk: fs.disk, reads: core::cell::RefCell::new(Vec::new()) };
-    read_pass(&ExtentSource::new(&dev, &table), pass, 0);
-    let reads = dev.reads.borrow();
-    ReadCensus { commands: reads.len() as u64, blocks: reads.iter().map(|(_, n)| *n as u64).sum() }
 }
 
 /// The flat-store column: the same bytes as one committed object, the same pass, counted at the same
@@ -168,10 +149,9 @@ fn flat_census(pass: &Pass) -> ReadCensus {
     census
 }
 
-/// The pin, and the comparison that gives it meaning. `fat_extents` is the bar because it is what
-/// #500 left behind; the flat path has to clear it on both counts.
+/// The accepted physical budgets for the two production-shaped passes.
 #[test]
-fn a_render_pass_and_a_route_plan_cost_no_more_than_the_path_they_replace() {
+fn a_render_pass_and_a_route_plan_stay_inside_the_flat_read_budgets() {
     // (name, pass, the flat census this pins)
     let cases = [
         ("route plan (64 × 512 B nav chunks)", route_plan_pass(), ReadCensus { commands: 128, blocks: 128 }),
@@ -179,31 +159,17 @@ fn a_render_pass_and_a_route_plan_cost_no_more_than_the_path_they_replace() {
     ];
 
     for (name, pass, expected) in cases {
-        let fat = fat_census(&pass);
         let flat = flat_census(&pass);
-        std::println!("{name}: fat_extents {fat:?} vs flat {flat:?}");
+        std::println!("{name}: flat {flat:?}");
 
         assert_eq!(flat, expected, "{name}: the flat read path no longer costs the pinned card reads");
-        assert!(
-            flat.blocks <= fat.blocks,
-            "{name}: the flat path reads {} blocks against fat_extents' {} — #500's regression, in the new path",
-            flat.blocks,
-            fat.blocks,
-        );
-        assert!(
-            flat.commands <= fat.commands,
-            "{name}: the flat path issues {} commands against fat_extents' {}",
-            flat.commands,
-            fat.commands,
-        );
     }
 }
 
 /// The property behind the pin: a read costs the blocks it spans and nothing else — no chain walk, no
 /// directory, no per-read fixed cost that scales with *offset*. That last one is #500 restated, and it
 /// is what a pinned total alone would not catch: a path that read a constant 40 extra blocks would
-/// still be "no worse than `fat_extents`" on a 64-chunk pass while being catastrophic on a 4,000-chunk
-/// one.
+/// still hit one aggregate pin while being catastrophic on a longer pass.
 ///
 /// So this reads one chunk at the front of the object and one at the back and requires them to cost
 /// the same. The two offsets are congruent mod 512 on purpose: a read's cost legitimately depends on

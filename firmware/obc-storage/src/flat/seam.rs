@@ -200,6 +200,12 @@ impl Allocation {
     pub fn reserved_bytes(&self) -> u64 {
         self.reserved
     }
+
+    /// Bytes appended so far. Producer adapters use this as the final payload length when they
+    /// publish an oversized reservation.
+    pub fn written_bytes(&self) -> u64 {
+        self.written
+    }
 }
 
 /// Where a `Put`'s extents come from.
