@@ -100,8 +100,7 @@
       "boot_chain_roots": [
         "link::init_store",
         "obc_fw_nrf54l::mount_terrain",
-        "mount_in_place",
-        "sd::mount_fat"
+        "mount_in_place"
       ],
       "boot_chain_measured_ci": 10784,
       "boot_chain_measured_pinned_host": 17312,
@@ -230,8 +229,7 @@
       "boot_chain_roots": [
         "link::init_store",
         "obc_fw_nrf54l::mount_terrain",
-        "mount_in_place",
-        "sd::mount_fat"
+        "mount_in_place"
       ],
       "boot_chain_measured_ci": 10784,
       "boot_chain_measured_pinned_host": 17312,
