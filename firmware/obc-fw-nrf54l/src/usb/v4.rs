@@ -53,7 +53,7 @@ use embassy_futures::select::{select3, Either3};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Timer};
-use obc_link::flat::{Admission, Ceilings, Channel, Reaction, RequestId};
+use obc_link::flat::{Admission, Ceilings, Channel, Link, Reaction, RequestId};
 
 use crate::flat_store::{Lane, Outcome, Reply, Request, Writer};
 
@@ -193,12 +193,12 @@ pub(crate) async fn serve_objects(ctrl_in: EpIn, ctrl_out: EpOut, bulk_in: EpIn,
         // A dropped call from the previous cable parks the buffer in the reply slot; take it back
         // before the first call of this one, because `Writer::call` would discard it.
         lane.reclaim().await;
-        if lane.call(&writer, |out| Request::Pump { out }).await.is_none() {
+        if lane.call(&writer, |out| Request::Pump { link: Link::Usb, out }).await.is_none() {
             warn!("usb: [v4] no reaction buffer — refusing this cable rather than half-serving it");
             Timer::after_millis(500).await;
             continue;
         }
-        if writer.call(Request::LinkUp { ceilings }, &ENGINE_REPLY).await.is_err() {
+        if writer.call(Request::LinkUp { link: Link::Usb, ceilings }, &ENGINE_REPLY).await.is_err() {
             warn!("usb: [v4] the engine refused the link");
             Timer::after_millis(500).await;
             continue;
@@ -249,7 +249,7 @@ pub(crate) async fn serve_objects(ctrl_in: EpIn, ctrl_out: EpOut, bulk_in: EpIn,
 /// cancel).
 async fn release_engine(writer: &Writer) {
     static TEARDOWN_REPLY: Reply = Signal::new();
-    if writer.call(Request::LinkLost, &TEARDOWN_REPLY).await.is_err() {
+    if writer.call(Request::LinkLost { link: Link::Usb }, &TEARDOWN_REPLY).await.is_err() {
         warn!("usb: [v4] the engine refused a link-lost teardown");
     }
 }
@@ -318,7 +318,7 @@ async fn driver(
 
 /// Hand one control record to the engine, then release the pump's buffer.
 async fn control_record(writer: &Writer, lane: &mut Lane, record: &'static [u8]) -> Option<Reaction> {
-    let reaction = lane.call(writer, |out| Request::Control { record, out }).await;
+    let reaction = lane.call(writer, |out| Request::Control { link: Link::Usb, record, out }).await;
     // **Released here and not a statement earlier.** The engine consumes the record synchronously
     // inside the storage task's `serve`, which is over by the time this call answers — so this is
     // the first instant at which the pump may read over bytes the queue still borrowed.
@@ -351,7 +351,7 @@ async fn stream_record(
             warn!("usb: [v4] a stream record arrived unadmitted — delivering after the hold window");
         }
     }
-    let reaction = lane.call(writer, |out| Request::Stream { record, out }).await;
+    let reaction = lane.call(writer, |out| Request::Stream { link: Link::Usb, record, out }).await;
     STREAM_TAKEN.signal(());
     reaction
 }
@@ -420,7 +420,7 @@ async fn pump(
             }
             continue;
         }
-        match lane.call(writer, |out| Request::Pump { out }).await {
+        match lane.call(writer, |out| Request::Pump { link: Link::Usb, out }).await {
             Some(next) => reaction = next,
             None => return Some("lane"),
         }
