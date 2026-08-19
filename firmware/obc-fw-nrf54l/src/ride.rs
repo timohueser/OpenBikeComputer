@@ -42,7 +42,7 @@ use obc_platform::SynthLocation;
 use obc_display::ls021::{FRAME_H, FRAME_W};
 use obc_display::FbDevice64;
 use obc_platform::StubFuelGauge;
-use obc_reader::{MapCache, MapTables, MountedSet, Reader};
+use obc_reader::{MapCache, MapTables, Reader};
 // The ride loop's route types: the decoded-route-geometry cache, the resident per-route chunk
 // index, and the streamed route reader the matcher + map render share.
 use obc_route::{RouteCache, RouteIndex, RouteReader};
@@ -412,34 +412,32 @@ fn sensor_status_of(q: usize) -> obc_app::SensorStatus {
 /// emit phase constructs it). Everything long-running (render, input, the watchdog feed) runs
 /// normally **between** steps — that is the whole point of #499.
 ///
-/// A mounted set gets its reader from [`MountedSet::core_reader`], exactly like the render and POI
-/// paths above — never a `Reader::new` over the core's bytes. The two are not interchangeable: a
-/// set shares **one** `MapCache` across its shards and every cache key carries the shard index, so
-/// a reader built with `Reader::new` is tagged file `0` whatever file it reads. `Core Shard` is a
-/// manifest field (`OBCA_Spec.md` §5.3 pins only `< Shard Count`), so on a set whose core is not
-/// shard 0 that tag is *another shard's* namespace, and the planner's quadtree reads and the
-/// renderer's would serve each other index blocks out of the same slots.
+/// The reader is `Reader::new` over the FAT map's per-call source (FS7.5-c2, #1420). There used to
+/// be a second case — a mounted volume set, whose reader had to come from `MountedSet::core_reader`
+/// because the set shared **one** `MapCache` across its shards and every cache key carried a shard
+/// index, so a `Reader::new` over the core's bytes was tagged file `0` and could collide with
+/// another shard's namespace. One map is one file: there is no index, no tag, and one way to build a
+/// reader.
+///
+/// **There is deliberately no flat arm here.** A plan writes its OBCR through the FAT route sink, so
+/// a step only ever runs with a `Storage`; a flat card has no `/routes` to emit into and cannot
+/// reach this function at all until c3 gives the store a writer. This took a `flat_map` parameter
+/// for one round and it was unreachable by its own docstring — a branch that cannot execute is not
+/// forward-compatibility, it is an untested path pretending to be one. c3 adds it when there is
+/// something to test it against.
 #[cfg(has_nav)]
 #[inline(never)]
 fn nav_step(
     storage: &sd::Storage,
-    mounted_set: Option<&MountedSet<'static>>,
     map_tables: &MapTables,
     map_cache: &MapCache,
     nav: &mut NavBuffers,
     file: embedded_sdmmc::RawFile,
 ) -> obc_route::Step {
-    // Built only for a single map: a set reads through the mount, and `map_source` would hand back
-    // the core's bytes untagged.
-    let map_src = match mounted_set {
-        Some(_) => None,
-        None => storage.map_source(),
+    let Some(map_src) = storage.map_source() else {
+        return obc_route::Step::Failed(obc_route::NavError::NoPath);
     };
-    let reader = match (mounted_set, &map_src) {
-        (Some(set), _) => set.core_reader(),
-        (None, Some(src)) => Reader::new(src, map_tables, map_cache),
-        (None, None) => return obc_route::Step::Failed(obc_route::NavError::NoPath),
-    };
+    let reader = Reader::new(&map_src, map_tables, map_cache);
     let mut sink = storage.nav_sink(file);
     // Only called while a `NavRun` is active, and a run is only created after the drain wrote the
     // planner — but the guard is what *knows* that, so ask it rather than assert it. An unwritten
@@ -685,7 +683,11 @@ pub(crate) async fn run_app(
     shared: &SharedStoreMutex,
     map_tables: &MapTables,
     map_cache: &MapCache,
-    mounted_set: Option<MountedSet<'static>>,
+    // The **flat** arm's map bytes, when the card in the slot is a flat store: a `'static`
+    // `StoreSource` over the mounted store's map object, resolved once at boot and read **direct**
+    // (the storage task owns writes only). `None` on a FAT card, where the map source is rebuilt per
+    // redraw off `shared`'s `Storage`. Exactly one of the two serves any given boot.
+    flat_map: Option<&'static dyn obc_formats::io::ByteSource>,
     route_cache: &RouteCache,
     // The router's resident half (epic #116 R4 + EL7): the map's terrain, threaded from `main`
     // (never a local — the #270/#419 discipline). Its A* table, tile cache and planner slot are the
@@ -1634,7 +1636,7 @@ pub(crate) async fn run_app(
                         #[cfg(feature = "sd-bench")]
                         let reads_before = sd::read_perf_snapshot();
                         let ts = Instant::now();
-                        let step = nav_step(s, mounted_set.as_ref(), map_tables, map_cache, &mut bufs, run.file);
+                        let step = nav_step(s, map_tables, map_cache, &mut bufs, run.file);
                         let us = ts.elapsed().as_micros();
                         run.phase_us[phase_idx] += us;
                         #[cfg(feature = "sd-bench")]
@@ -2102,19 +2104,17 @@ pub(crate) async fn run_app(
                 // style-table parse, no `Reader` build (so no stack spike), no map render — that screen
                 // draws just its own chrome. Such a frame costs only its own draw + the push.
                 let needs_map = app.base_needs_reader();
-                // A single map rebuilds its cheap Reader view from the held-open handle. A volume
-                // set was mounted once at boot: geometry uses the MountedSet directly and
-                // POI/hours use its core reader. Both are skipped on chrome-only frames.
-                let map_src = if needs_map && mounted_set.is_none() {
-                    storage.as_ref().and_then(|s| s.map_source())
-                } else {
-                    None
-                };
+                // The FAT arm rebuilds its cheap Reader view from the held-open handle each frame;
+                // the flat arm's source was resolved once at boot and is `'static`. Both are skipped
+                // on chrome-only frames — that is what keeps a menu redraw free of any map I/O.
+                let fat_src =
+                    if needs_map && flat_map.is_none() { storage.as_ref().and_then(|s| s.map_source()) } else { None };
                 let reader = if needs_map {
-                    mounted_set
-                        .as_ref()
-                        .map(MountedSet::core_reader)
-                        .or_else(|| map_src.as_ref().map(|source| Reader::new(source, map_tables, map_cache)))
+                    match (flat_map, &fat_src) {
+                        (Some(source), _) => Some(Reader::new(source, map_tables, map_cache)),
+                        (None, Some(source)) => Some(Reader::new(source, map_tables, map_cache)),
+                        (None, None) => None,
+                    }
                 } else {
                     None
                 };
@@ -2200,43 +2200,28 @@ pub(crate) async fn run_app(
                                 if let Some(r) = clip {
                                     fbdev.set_clip(r);
                                 }
-                                match mounted_set.as_ref() {
-                                    Some(set) => app.render_scene_map_rain_timed(
-                                        render_guard.as_deref_mut(),
-                                        &mut fbdev,
-                                        needs_map.then_some(set),
-                                        reader.as_ref(),
-                                        route.as_ref(),
-                                        rain_adapter
-                                            .as_mut()
-                                            .map(|adapter| adapter as &mut dyn obc_render::RainOverlaySource),
-                                        obc_app::WeatherFeed {
-                                            snapshot: weather_snapshot_ref,
-                                            refreshing: weather_refreshing,
-                                        },
-                                        FRAME_W as f32,
-                                        FRAME_H as f32,
-                                        color_fn,
-                                        &InstantClock,
-                                    ),
-                                    None => app.render_map_rain_timed(
-                                        render_guard.as_deref_mut(),
-                                        &mut fbdev,
-                                        reader.as_ref(),
-                                        route.as_ref(),
-                                        rain_adapter
-                                            .as_mut()
-                                            .map(|adapter| adapter as &mut dyn obc_render::RainOverlaySource),
-                                        obc_app::WeatherFeed {
-                                            snapshot: weather_snapshot_ref,
-                                            refreshing: weather_refreshing,
-                                        },
-                                        FRAME_W as f32,
-                                        FRAME_H as f32,
-                                        color_fn,
-                                        &InstantClock,
-                                    ),
-                                }
+                                // One scene, because there is one map file: the `Reader` is both the
+                                // geometry source and the POI/hours/nav one. The volume-set arm that
+                                // used to sit beside this — `render_scene_map_rain_timed` with a
+                                // `MountedSet` as the scene and the core `Reader` for everything else
+                                // — is gone with the set mount (FS7.5-c2, #1420).
+                                app.render_map_rain_timed(
+                                    render_guard.as_deref_mut(),
+                                    &mut fbdev,
+                                    reader.as_ref(),
+                                    route.as_ref(),
+                                    rain_adapter
+                                        .as_mut()
+                                        .map(|adapter| adapter as &mut dyn obc_render::RainOverlaySource),
+                                    obc_app::WeatherFeed {
+                                        snapshot: weather_snapshot_ref,
+                                        refreshing: weather_refreshing,
+                                    },
+                                    FRAME_W as f32,
+                                    FRAME_H as f32,
+                                    color_fn,
+                                    &InstantClock,
+                                )
                             });
                             #[cfg(feature = "sd-bench")]
                             if needs_map {

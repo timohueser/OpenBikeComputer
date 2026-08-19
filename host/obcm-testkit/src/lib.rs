@@ -46,11 +46,6 @@
 //! packed feature, [`seal`] closes a chunk with its single `0xFF` sentinel, and the file builders'
 //! `chunk_region` lays sealed chunks out behind their offset table.
 
-/// Hand-split OBCA volume-set fixtures (`OBCA_Spec.md` §5) — a monolithic file and the byte-level
-/// split of the same data into a manifest plus shards, so a differential render can assert the two
-/// are pixel-identical.
-pub mod set;
-
 /// Throwaway temp paths for tests — not an OBCM concern, but this crate is the one dev-dep every
 /// host tool and shell already shares, which makes it the cheapest common home (the alternative,
 /// `obc-host-core`, drags the whole device render path into a CLI tool's test build).

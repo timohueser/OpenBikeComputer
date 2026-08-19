@@ -133,6 +133,7 @@ fn error_out(error: StoreError) -> v4::StoreError {
         StoreError::Invalid => v4::StoreError::Invalid,
         StoreError::Media => v4::StoreError::Media,
         StoreError::ReadOnly => v4::StoreError::ReadOnly,
+        StoreError::Busy => v4::StoreError::Busy,
     }
 }
 
