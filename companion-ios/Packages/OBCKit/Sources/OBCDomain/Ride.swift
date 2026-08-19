@@ -27,13 +27,18 @@ public struct RideID: Hashable, Sendable {
     public let rawValue: String
     public init(_ rawValue: String) { self.rawValue = rawValue }
 
-    private static let scopedPrefix = "v2:"
+    private static let v2Prefix = "v2:"
+    private static let v4Prefix = "v4:"
 
     /// A ride id in one device's **current-era** namespace — what the
     /// transport mints from the device's ride catalog once the identity read
     /// has established the scope, and what the library then stores as-is.
     public init(deviceObjectID: DeviceObjectID, scope: LibraryScope) {
-        self.init("\(Self.scopedPrefix)\(scope.epoch):\(deviceObjectID.raw):\(scope.serial)")
+        if let storeID = scope.storeID {
+            self.init("\(Self.v4Prefix)\(storeID):\(deviceObjectID.raw):\(scope.serial)")
+        } else {
+            self.init("\(Self.v2Prefix)\(scope.epoch):\(deviceObjectID.raw):\(scope.serial)")
+        }
     }
 
     /// An **unscoped** ride id — the v1 shape (the bare device object id).
@@ -49,27 +54,35 @@ public struct RideID: Hashable, Sendable {
     /// they can never equal a scoped key, and scope-filtered writes (the
     /// possession ack) skip them.
     public var scope: LibraryScope? {
-        guard let (epoch, _, serial) = scopedComponents else { return nil }
-        return LibraryScope(serial: serial, epoch: epoch)
+        guard let components = scopedComponents else { return nil }
+        switch components.identity {
+        case .epoch(let epoch): return LibraryScope(serial: components.serial, epoch: epoch)
+        case .storeID(let storeID): return LibraryScope(serial: components.serial, storeID: storeID)
+        }
     }
 
     /// The device object id behind this ride id — parsed from either shape —
     /// or `nil` for an id that never came from a device catalog.
     public var deviceObjectID: DeviceObjectID? {
-        if let raw = UInt16(rawValue) { return DeviceObjectID(raw) }
-        guard let (_, objectID, _) = scopedComponents else { return nil }
-        return objectID
+        if let raw = UInt64(rawValue) { return DeviceObjectID(raw) }
+        return scopedComponents?.objectID
     }
 
     /// Decompose a `v2:<epoch>:<objectID>:<serial>` id; `nil` for any other
     /// shape. The serial is everything after the third `:` (it may itself
     /// contain `:`), and may be empty only in synthetic test scopes.
-    private var scopedComponents: (epoch: UInt32, objectID: DeviceObjectID, serial: String)? {
-        guard rawValue.hasPrefix(Self.scopedPrefix) else { return nil }
+    private enum ScopedIdentity { case epoch(UInt32), storeID(String) }
+    private var scopedComponents: (identity: ScopedIdentity, objectID: DeviceObjectID, serial: String)? {
         let parts = rawValue.split(separator: ":", maxSplits: 3, omittingEmptySubsequences: false)
-        guard parts.count == 4, let epoch = UInt32(parts[1]), let objectID = UInt16(parts[2])
-        else { return nil }
-        return (epoch, DeviceObjectID(objectID), String(parts[3]))
+        guard parts.count == 4, let objectID = UInt64(parts[2]) else { return nil }
+        if rawValue.hasPrefix(Self.v2Prefix), let epoch = UInt32(parts[1]) {
+            return (.epoch(epoch), DeviceObjectID(objectID), String(parts[3]))
+        }
+        if rawValue.hasPrefix(Self.v4Prefix), parts[1].count == 32,
+            parts[1].allSatisfy({ $0.isHexDigit }) {
+            return (.storeID(String(parts[1])), DeviceObjectID(objectID), String(parts[3]))
+        }
+        return nil
     }
 }
 

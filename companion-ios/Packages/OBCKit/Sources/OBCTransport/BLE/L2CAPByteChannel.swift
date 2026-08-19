@@ -132,6 +132,16 @@ public final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unc
         beginClose()?.resume(returning: Data())
     }
 
+    /// Cancel the one physical read waiter without closing the CoC. Protocol v4 uses this after
+    /// the GET result arrives behind the final stream record.
+    public func cancelRead() {
+        lock.lock()
+        let read = readWaiter
+        readWaiter = nil
+        lock.unlock()
+        read?.cont.resume(throwing: CancellationError())
+    }
+
     private func beginClose() -> CheckedContinuation<Data, Error>? {
         lock.lock()
         guard !closed else { lock.unlock(); return nil }

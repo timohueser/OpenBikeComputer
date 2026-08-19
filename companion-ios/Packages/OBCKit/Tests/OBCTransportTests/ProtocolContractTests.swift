@@ -7,8 +7,8 @@ import OBCDomain
 final class ProtocolContractTests: XCTestCase {
     func testProtocolVersionIsPinned() {
         // Bump deliberately, in lockstep with the firmware wire — not by accident.
-        // v2 is the one coordinated wire break (epic #632).
-        XCTAssertEqual(OBCProtocol.version, 2)
+        // v4 is the FLAT store wire contract.
+        XCTAssertEqual(OBCProtocol.version, 4)
     }
 
     func testDeviceInfoDefaultsToTheExpectedProtocolVersion() {
@@ -23,7 +23,7 @@ final class ProtocolContractTests: XCTestCase {
     }
 
     func testDeviceObjectIDCodesAsABareNumber() throws {
-        // Persisted DTOs stored the raw u16 — the typed wrapper must not
+        // Persisted DTOs stored a bare number — the typed wrapper must not
         // change their JSON shape (#359's no-schema-bump rule).
         XCTAssertEqual(
             String(decoding: try JSONEncoder().encode([DeviceObjectID(7)]), as: UTF8.self), "[7]")
