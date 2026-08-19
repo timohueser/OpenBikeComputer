@@ -1064,11 +1064,11 @@ mod tests {
     use obc_link::upload::Target;
 
     use super::*;
-    use crate::fat_extents::SharedBlockDevice;
     use crate::obc2::blocklog::WriteLog;
     use crate::obc2::fatsim::{fat32_card, geometry_sectors, touched, Layout, NullTime, SparseDisk};
     use crate::obc2::geometry::{self, Region};
     use crate::obc2::transaction::{AcceptEverything, KernelTransaction, NoHooks};
+    use crate::shared_device::SharedBlockDevice;
 
     type Vmgr = VolumeManager<SharedBlockDevice<'static, SparseDisk>, NullTime, 4, 16, 1>;
     type Fat = Adapter<'static, SharedBlockDevice<'static, SparseDisk>, NullTime, 4, 16, 1>;

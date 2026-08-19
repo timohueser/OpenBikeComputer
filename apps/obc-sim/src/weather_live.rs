@@ -4,7 +4,7 @@
 //! consumes** — `wx/v2/manifest.json` plus OBCG corridor Range reads plus MET hourly — assembles
 //! the **same OBCW bundle** the phone would upload, and hands it to the same [`SimWeather`] the
 //! deterministic fixtures use. Everything downstream of the bundle is untouched production code:
-//! the WX7 reader, the A/B selector, the WX10 renderer, the WX11 screens.
+//! the WX7 reader, the generation selector, the WX10 renderer, the WX11 screens.
 //!
 //! Two rules from the epic are visible here rather than assumed:
 //!

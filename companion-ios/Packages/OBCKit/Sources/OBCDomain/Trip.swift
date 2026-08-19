@@ -86,7 +86,7 @@ public struct TripRecord: Identifiable, Equatable, Sendable {
 
 /// A trip's derived statistics: distance + climb summed over its member routes,
 /// plus the stage count. **The one implementation** everything reads — the trip
-/// card, the trip page, and the device-parity `tripList` totals all sum here, so
+/// card, the trip page, and the device-parity catalog totals all sum here, so
 /// the phone and the device can never disagree about a trip's numbers.
 ///
 /// Sums over the ``RouteSummary``s of the **resolvable** stages the caller
@@ -117,7 +117,7 @@ public struct TripStats: Equatable, Sendable {
     }
 }
 
-/// One entry of the device's trip catalog (`tripList`, spec §7.4): the durable
+/// One entry of the device's protocol-v4 trip catalog: the durable
 /// trip object id plus the summed display fields the device computed over its
 /// resolvable stages. Deliberately **not** a `TripRecord` — the catalog is keyed
 /// by ``DeviceObjectID`` (per-connection reconcile state from the connected
@@ -135,7 +135,7 @@ public struct TripCatalogEntry: Identifiable, Equatable, Sendable {
     /// Every stored stage the device counts, **dangling refs included** (spec
     /// §7.4) — so it can exceed the number of stages the totals summed over.
     public var stageCount: Int
-    /// The stored trip object's whole-object CRC-32 (v2 `tripList` entry) — the
+    /// The stored trip object's whole-object CRC-32 from protocol-v4 catalog metadata — the
     /// content fingerprint that detects an outdated trip (a stage reorder changes
     /// neither `byte_len` nor `name`). `0` = unknown, read the same by spec (no
     /// special-casing).

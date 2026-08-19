@@ -176,7 +176,7 @@ pub(crate) fn publish_map_transfer(
     if let Some((ObjectKind::MapShard, end)) = ended {
         MAP_PHASE.store(
             match end {
-                UploadEnd::Committed => 2,
+                UploadEnd::Committed { .. } => 2,
                 // The payload arrived damaged: the whole-object CRC the `PUT` declared did not match
                 // what landed. Re-sending is the fix, and it is the one the card names.
                 UploadEnd::Refused(obc_link::flat::ErrorCode::ChecksumFailure) => 4,

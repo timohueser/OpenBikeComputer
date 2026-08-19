@@ -13,9 +13,7 @@
 /// `CBUUID` is immutable but not `Sendable`-audited; `nonisolated(unsafe)` states
 /// the (true) invariant that these constants are safe to share.
 ///
-/// `public` so host tooling that reuses the transport primitives — the A5 echo
-/// harness / A9 soak rig (`EchoHarness`), which drives its own `CBCentralManager`
-/// — scans + discovers against the *same* pinned UUIDs, not a copy that could drift.
+/// `public` so host tooling can reuse the same pinned UUIDs rather than a copy that could drift.
 public enum GATT {
     // MARK: SIG services (fixed)
     nonisolated(unsafe) public static let deviceInformation = CBUUID(string: "180A")
@@ -32,19 +30,13 @@ public enum GATT {
     nonisolated(unsafe) public static let obcControlService = CBUUID(string: "3C920000-9916-4EBA-ABC2-342FE08F6B10")
     /// Small imperative commands (delete object, …) — spec §4.4.
     nonisolated(unsafe) public static let command = CBUUID(string: "3C920001-9916-4EBA-ABC2-342FE08F6B10")
-    /// Typed device → app notifications (`StatusMessage`, incl. the download
-    /// announce as `msg = 4` and weather wake-up as `msg = 5`) — the **sole**
-    /// device → app channel, spec §4.3.
+    /// The surviving legacy command-result notification used by `weatherUnchanged`.
     nonisolated(unsafe) public static let status = CBUUID(string: "3C920002-9916-4EBA-ABC2-342FE08F6B10")
-    // `0003` (`objectStore`) is **retired in v2** — the change signal is
-    // `storeChanged` alone — and must not be reused.
+    // `0003` (`objectStore`) retired in v2 and must not be reused.
     /// The Config object, whole-blob read + write (incl. rename, Delta 1) — spec §7.3.
     nonisolated(unsafe) public static let config = CBUUID(string: "3C920004-9916-4EBA-ABC2-342FE08F6B10")
-    /// Open / abort a CoC transfer (`TransferControl`) — spec §4.2. **Write-only in
-    /// v2** (no CCCD): the download announce it once notified now rides `status`.
-    nonisolated(unsafe) public static let transferControl = CBUUID(string: "3C920005-9916-4EBA-ABC2-342FE08F6B10")
-    // `0006` (`diagnostics`) is **retired in v2** (it returned 0 bytes; real
-    // diagnostics cross the CoC as object type 4, spec §7.5) — must not be reused.
+    // `0005` (`transferControl`) retired with protocol v2 and must not be reused.
+    // `0006` (`diagnostics`) retired in v2 and must not be reused.
     /// The dynamically-assigned L2CAP CoC PSM the app opens the channel on.
     nonisolated(unsafe) public static let psm = CBUUID(string: "3C920007-9916-4EBA-ABC2-342FE08F6B10")
     /// Protocol-v4 wire major as one little-endian `u16`, readable without encryption. Store

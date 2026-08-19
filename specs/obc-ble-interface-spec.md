@@ -483,7 +483,7 @@ Every bulk payload is a typed **object**:
 | `6` | `routeList` | device → app | list object, §7.4 |
 | `7` | `rideList` | device → app | list object, §7.4 |
 | `8` | `echo` | both | dev/test only: device streams back what it received (A5's loopback) |
-| `9` | `trip` | app → device (upload), device → app (detail read) | trip object v1, §7.7 |
+| `9` | `trip` | app → device (upload), device → app (detail read) | trip object v2, §7.7 |
 | `10` | `tripList` | device → app | list object, §7.4 |
 | `11`–`15` | — | — | reserved (sensors, M4) |
 | `16` | `map` | host → device (upload) | an `.obcm` map — **USB only** (§10), see below |
@@ -1645,7 +1645,7 @@ reflects the newly-installed image on the next connect. The app displays that �
 there is no `fwImage` metadata object and no version field duplicated into the
 Config object (§7.3).
 
-### 7.7 `trip` — a trip object (v1)
+### 7.7 `trip` — a trip object (v2)
 
 A **trip** groups planned routes into one named unit (one folder on the device,
 one card in the app). It is a tiny metadata object that **references route object
@@ -1655,17 +1655,17 @@ firmware stores each trip as `TP{id}.OBT` beside the `RT{id}.OBR` route files (n
 FAT subdirectories); trip ids come from a separate device counter (§4.1).
 
 ```
-trip object v1 (56-byte header + 2 bytes/stage, little-endian):
-  version      u8   = 1
+trip object v2 (56-byte header + 8 bytes/stage, little-endian):
+  version      u8   = 2
   reserved     u8   = 0
   stage_count  u16
   name_len     u8   ≤ 48
   name         char[48]  UTF-8, zero-padded
   reserved     u8[3]  = 0
-  stages       stage_count × u16   route object ids, ride order
+  stages       stage_count × u64   flat-store ObjectIds, ride order
 ```
 
-The object length is fully determined by its header: `56 + 2·stage_count` bytes.
+The object length is fully determined by its header: `56 + 8·stage_count` bytes.
 
 **Semantics:**
 
@@ -2169,9 +2169,9 @@ Its placement in the type space and why it is neither USB-only nor map-shaped is
   phone's to fix. Answering the second case `crcMismatch` would hide a producer
   bug behind an infinite, blameless-looking retry ladder.
 - **Where it lands** is a device convention rather than a wire one, but it is why
-  an interrupted upload is harmless: the reference firmware holds **two** slots and
-  writes into the inactive one, so the bundle the rider is looking at survives a
-  torn transfer untouched. The slot rules are
+  an interrupted upload is harmless: the reference firmware publishes immutable
+  flat-store revisions atomically, so the bundle the rider is looking at survives
+  a torn transfer untouched. The storage rules are
   [`firmware/docs/WEATHER_STORAGE.md`](../firmware/docs/WEATHER_STORAGE.md).
 - **No download direction.** The device never serves a bundle back: the phone
   built it and can rebuild it, and the only thing the device knows that the phone
@@ -2189,14 +2189,14 @@ strand the device on a bundle from before the wrap. The decision is deliberately
 Serial arithmetic leaves two cases genuinely ambiguous — an **equal** generation,
 and generations exactly **half the range** apart — and in both the later
 `generated_at` decides. That tiebreak is not an embellishment: it is what
-`obc_weather`'s slot selector already uses to pick a bundle at boot, and the two
+`obc_weather`'s catalog selector already uses to pick a bundle at boot, and the two
 must agree or the device can answer `committed` and then quietly boot the *old*
 bundle. `obc-ble`'s classifier is tested against that selector directly across the
 whole matrix rather than trusting a comment that says they match.
 
 | Incoming vs. the active bundle | Disposition | `transferResult` |
 | :-- | :-- | :-- |
-| no valid bundle held | **commit** into the inactive slot and select it | `committed` |
+| no valid bundle held | **commit** and select the immutable revision | `committed` |
 | serially newer generation | **commit** | `committed` |
 | equal (or half-range) generation, later `generated_at` | **commit** | `committed` |
 | identical generation **and** `generated_at` | **duplicate — ignored** | `committed` (success) |

@@ -9,7 +9,7 @@
 //! and the upload is classified by `obc_ble::classify_upload`, exactly as the board classifies it.
 //!
 //! What this deliberately does **not** do: inject weather into the UI. A bundle only becomes
-//! visible by passing OBCW validation and winning the A/B generation comparison, so a simulator
+//! visible by passing OBCW validation and winning the generation comparison, so a simulator
 //! run exercises the same accept/reject decisions the device makes on the glass.
 
 use obc_ble::{
@@ -55,7 +55,7 @@ impl CompanionState {
     }
 }
 
-/// The active bundle as the §11.4 context describes it: the identity the A/B classifier compares
+/// The active bundle as the §11.4 context describes it: the identity the classifier compares
 /// **plus** the bundle CRC the context's last field carries. The board reads all three off its
 /// `obc_weather::Candidate`; the simulator reads them off the held bundle's own header, so the
 /// context it builds is the one the phone would actually receive.

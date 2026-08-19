@@ -37,7 +37,7 @@ const CANCEL: usize = 1;
 pub struct TripDeleteScreen {
     /// The trip's durable object id — drained verbatim by
     /// [`App::drain_host_commands`](crate::App::drain_host_commands).
-    trip_id: u16,
+    trip_id: crate::CatalogObjectId,
     name: heapless::String<NAME_CAP>,
     selected: usize,
 }
@@ -47,7 +47,7 @@ impl TripDeleteScreen {
     /// Delete row's *neighbour* — the cursor starts on Cancel so an accidental double-hold on the way
     /// in can't delete; the rider steps onto Delete deliberately, then holds (mirrors the Route
     /// overview / Pause-menu idiom, where entry never lands armed on the destructive row).
-    pub fn new(trip_id: u16, name: &str) -> Self {
+    pub fn new(trip_id: crate::CatalogObjectId, name: &str) -> Self {
         let mut n = heapless::String::new();
         let _ = n.push_str(fit_to_cap(name));
         TripDeleteScreen { trip_id, name: n, selected: CANCEL }

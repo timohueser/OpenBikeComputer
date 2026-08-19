@@ -15,8 +15,8 @@ obc-reader = { path = "../../firmware/obc-reader" }
 # (the headless one-shot planner builds its own scratch; the stepped NavPlan lives in obc-host-core).
 obc-route = { path = "../../firmware/obc-route", features = ["alloc"] }
 obc-formats = { path = "../../firmware/obc-formats" } # the byte-I/O seam (ByteSource/ByteSink/SliceSource/Error) — the authority, not via obc-route
-# Shared production OBCW reader/cache + A/B generation selector. WX7 adds only the file-backed
-# seam/tests here; WX14 owns simulator controls and companion behavior.
+# Shared production OBCW reader/cache + generation selector. The sim adds a direct fixture-file
+# seam; WX14 owns simulator controls and companion behavior.
 obc-weather = { path = "../../firmware/obc-weather" }
 # `--weather live` (WX14): the host weather client — manifest + OBCG corridor Range reads + MET,
 # assembled into the same OBCW bundle the phone uploads. Fixtures and CI never reach the network;

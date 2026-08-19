@@ -23,7 +23,7 @@ public enum OBCProtocol {
     }
 
     /// The device implements the **Weather Request** contract (spec §11): the secondary service,
-    /// the request context, object type 20 and the Config refresh field — bit 0 of the identity
+    /// the request context, protocol-v4 weather object and the Config refresh field — bit 0 of the identity
     /// read's trailing capability word (WX3 / #1188).
     ///
     /// One bit covers all four because they are useless apart: a phone that can read a request but

@@ -212,7 +212,7 @@ pub struct Activity {
     /// durable (its own device counter), the confirm screen carries it verbatim, and a trip that
     /// vanished in a racing rescan simply drains to a no-op at the host. The host deletes the
     /// `TP{id}.OBT` **and** every member route file, then rescans + re-feeds trips + routes.
-    delete_trip: Option<u16>,
+    delete_trip: Option<crate::CatalogObjectId>,
     /// A one-shot **route-planning request** (epic #116, R4), set by the POI create-route confirm
     /// and drained by the host via [`App::drain_host_commands`](crate::App::drain_host_commands), which
     /// steps the resumable router, writes the reserved nav route, rescans, and answers through
@@ -704,13 +704,13 @@ impl Activity {
     /// — set by the Route menu's long-press → confirm dialog, drained by
     /// [`App::drain_host_commands`](crate::App::drain_host_commands). The id (not an index) because a trip
     /// id is durable; the host deletes the `TP{id}.OBT` **and** every member route file.
-    pub(crate) fn request_trip_delete(&mut self, id: u16) {
+    pub(crate) fn request_trip_delete(&mut self, id: crate::CatalogObjectId) {
         self.delete_trip = Some(id);
     }
 
     /// Take (and clear) the pending trip-delete request's durable **object id**, if any — the host
     /// drains this and cascade-deletes the trip + its member routes.
-    pub(crate) fn take_trip_delete(&mut self) -> Option<u16> {
+    pub(crate) fn take_trip_delete(&mut self) -> Option<crate::CatalogObjectId> {
         self.delete_trip.take()
     }
 

@@ -5,7 +5,7 @@
   segment, reorder and remove.
 
   The band's numbers are the ones this side can know. A trip's stage list comes from the trip
-  object, which the page downloads (56 bytes plus two per stage); its distance and ascent do not
+  object, which the page downloads (56 bytes plus eight per stage); its distance and ascent do not
   exist anywhere but in the stage routes' own payloads, and a `LIST` entry carries neither (§3.3).
   So the band counts stages and leaves the totals to the preview, which downloads every stage
   anyway — rather than printing a dash where a number used to be.
@@ -36,7 +36,7 @@
     }: {
         trip: TripView;
         /** The trip's stage list resolved against the route list; `route` null = dangling id. */
-        stages: ReadonlyArray<{ id: number; route: CatalogEntry | null }>;
+        stages: ReadonlyArray<{ id: bigint; route: CatalogEntry | null }>;
         /** The thumbnail track of a stage route, or null while it is still on its way. */
         trackFor: (routeId: bigint) => Thumb | null;
         /** True while a preview download holds the cable. */

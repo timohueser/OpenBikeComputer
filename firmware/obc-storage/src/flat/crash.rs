@@ -1341,6 +1341,7 @@ fn an_exhausted_sequence_space_still_serves_reads() {
     let disk = card(11, &model, 0);
     let store = FlatStore::mount(&disk);
     assert_eq!(store.mode(), Mode::SequenceSpaceExhausted);
+    assert!(!store.has_commit_capacity(1));
 
     let handle = store.open(ObjectId(1), None).unwrap();
     let mut bytes = vec![0u8; 3_000];
@@ -1366,10 +1367,13 @@ fn the_commit_that_reaches_the_last_sequence_leaves_the_store_read_only() {
     let disk = card(44, &model, 0);
     let store = FlatStore::mount(&disk);
     assert_eq!(store.mode(), Mode::ReadWrite);
+    assert!(store.has_commit_capacity(1), "the final sequence can serve one ordinary commit");
+    assert!(!store.has_commit_capacity(2), "a publish that may need compensating removal must be refused");
 
     let sequence = store.commit(&[Mutation::Remove { id: ObjectId(2), revision: Revision(1) }]).unwrap();
     assert_eq!(sequence, u64::MAX);
     assert_eq!(store.mode(), Mode::SequenceSpaceExhausted, "a store with no sequence left still claimed to write");
+    assert!(!store.has_commit_capacity(1));
     assert_eq!(
         store.commit(&[Mutation::Remove { id: ObjectId(1), revision: Revision(1) }]).unwrap_err(),
         super::error::StoreError::ReadOnly,
@@ -1629,6 +1633,24 @@ fn a_fresh_put_may_not_re_use_an_object_id_the_cursor_has_passed() {
     assert_eq!(six, payload(600));
     store.close(second);
     store.close(handle);
+}
+
+/// Exact-revision removal is idempotent from a compensating caller's perspective. A later head may
+/// already have retired revision 1 before the queued compensation runs; `NotFound` proves that exact
+/// cancelled publication is absent and must not cause the caller to retry forever or remove revision
+/// 2 instead.
+#[test]
+fn removing_a_revision_already_retired_by_a_later_head_is_not_found() {
+    let later = entry(1, 2, ObjectKind::Route, EntryFlags::NONE, 3_000, "Replacement", &[(0, 1)]);
+    let disk = card(46, &holding(&[later], 5), 0);
+    let store = FlatStore::mount(&disk);
+
+    assert_eq!(
+        store.commit(&[Mutation::Remove { id: ObjectId(1), revision: Revision(1) }]),
+        Err(super::error::StoreError::NotFound),
+    );
+    let replacement = store.open(ObjectId(1), Some(Revision(2))).expect("the later revision remains live");
+    store.close(replacement);
 }
 
 /// The revision rule at the seam: `Revision` is the compare-and-swap token every mutation carries, so

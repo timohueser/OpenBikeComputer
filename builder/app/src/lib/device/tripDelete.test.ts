@@ -8,18 +8,19 @@ import { describe, expect, it } from "vitest";
 import { planTripDelete, type TripStages } from "./tripDelete";
 
 const trip = (objectId: number, name: string, stages: readonly number[] | null): TripStages => ({
-    objectId,
+    objectId: BigInt(objectId),
     name,
-    detail: stages === null ? null : { stages },
+    detail: stages === null ? null : { stages: stages.map(BigInt) },
 });
 
-const routes = (...ids: number[]) => new Set(ids);
+const routes = (...ids: number[]) => new Set(ids.map(BigInt));
+const ids = (...values: number[]) => values.map(BigInt);
 
 describe("planTripDelete", () => {
     it("offers both options with every unshared existing route deletable", () => {
         const t = trip(1, "Traverse", [2, 3, 4]);
         const plan = planTripDelete(t, [t], routes(2, 3, 4));
-        expect(plan).toEqual({ offer: "both", deletable: [2, 3, 4], routeCount: 3, note: null });
+        expect(plan).toEqual({ offer: "both", deletable: ids(2, 3, 4), routeCount: 3, note: null });
     });
 
     it("protects a route that is also a stage of another trip, and says so", () => {
@@ -28,7 +29,7 @@ describe("planTripDelete", () => {
         const plan = planTripDelete(t, [t, other], routes(2, 3, 4, 5, 77));
         expect(plan).toEqual({
             offer: "both",
-            deletable: [2, 4],
+            deletable: ids(2, 4),
             routeCount: 4,
             note: "2 of its 4 routes are also in “Other trip” and will stay.",
         });
@@ -47,7 +48,7 @@ describe("planTripDelete", () => {
         const t2 = trip(1, "Traverse", [2, 3, 4]);
         const plan2 = planTripDelete(t2, [t2, a, b], routes(2, 3, 4));
         expect(plan2).toMatchObject({
-            deletable: [4],
+            deletable: ids(4),
             note: "2 of its 3 routes are also in “Alps” and “Baltic” and will stay.",
         });
     });
@@ -55,13 +56,13 @@ describe("planTripDelete", () => {
     it("counts a duplicated stage id once", () => {
         const t = trip(1, "Loop twice", [2, 2, 3]);
         const plan = planTripDelete(t, [t], routes(2, 3));
-        expect(plan).toEqual({ offer: "both", deletable: [2, 3], routeCount: 2, note: null });
+        expect(plan).toEqual({ offer: "both", deletable: ids(2, 3), routeCount: 2, note: null });
     });
 
     it("ignores dangling stage ids — they are not routes", () => {
         const t = trip(1, "Traverse", [2, 3, 99]);
         const plan = planTripDelete(t, [t], routes(2, 3));
-        expect(plan).toEqual({ offer: "both", deletable: [2, 3], routeCount: 2, note: null });
+        expect(plan).toEqual({ offer: "both", deletable: ids(2, 3), routeCount: 2, note: null });
     });
 
     it("degrades to trip-only when another trip's stage list is unreadable", () => {

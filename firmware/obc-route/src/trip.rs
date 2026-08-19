@@ -1,26 +1,26 @@
-//! The **trip object** (v1) — the tiny metadata object that groups planned routes into one named
+//! The **trip object** (v2) — the tiny metadata object that groups planned routes into one named
 //! unit (`obc-ble-interface-spec.md` §7.7). A trip references route object ids in ride order; it
 //! never contains route bytes, so membership edits never touch a route payload. The reference
-//! firmware stores each trip as `TP{id}.OBT` beside the `RT{id}.OBR` route files.
+//! firmware stores each trip as an opaque flat-store object beside its route objects.
 //!
-//! Layout (little-endian; pinned by `specs/vectors/trip-v1.bin` against the Swift trip codec):
+//! Layout (little-endian; pinned by `specs/vectors/trip-v2.bin` against the Swift trip codec):
 //!
 //! ```text
 //! Header (56 bytes):
-//!   version      u8   = 1                 [0]
+//!   version      u8   = 2                 [0]
 //!   reserved     u8   = 0                 [1]
 //!   stage_count  u16                      [2..4]
 //!   name_len     u8   ≤ 48                [4]
 //!   name         char[48]  UTF-8, zero-padded   [5..53]
 //!   reserved     u8[3]  = 0               [53..56]
-//! Stages (2 bytes × stage_count):
-//!   stage_id     u16   route object id, ride order   [56..]
+//! Stages (8 bytes × stage_count):
+//!   stage_id     u64   flat-store ObjectId, ride order   [56..]
 //! ```
 //!
-//! The object length is fully determined by its header: `56 + 2·stage_count` bytes — a decoder
+//! The object length is fully determined by its header: `56 + 8·stage_count` bytes — a decoder
 //! rejects a payload whose length disagrees ([`Error::BadOffset`]), which is also this file's
 //! torn-write guard (a cut-short write leaves a shorter file). The reader is version-gated like the
-//! OBCR reader ([`Error::BadVersion`] on anything but v1).
+//! OBCR reader ([`Error::BadVersion`] on anything but v2).
 //!
 //! Two reads, mirroring [`RouteSummary`](crate::RouteSummary) / [`TripMeta`]:
 //! - [`TripSummary::read`] — the header alone (name + true `stage_count`), for a catalog scan.
@@ -39,7 +39,7 @@ use obc_formats::obcr::NAME_CAP;
 
 /// The trip-object version [`write_trip`] writes (spec §7.7). [`TripMeta::read`] / [`TripSummary::read`]
 /// accept only this version.
-pub const TRIP_VERSION: u8 = 1;
+pub const TRIP_VERSION: u8 = 2;
 /// The fixed trip-object header length (spec §7.7) — the stage ids follow immediately.
 pub const TRIP_HEADER_LEN: usize = 56;
 
@@ -63,7 +63,7 @@ pub struct TripSummary {
 impl TripSummary {
     /// Read + validate a stored trip object's header into a summary — cheap enough to call per file
     /// when building the trip catalog. Version-gated ([`Error::BadVersion`]) and length-checked
-    /// against the header-determined size (`56 + 2·stage_count`), the torn-write guard.
+    /// against the header-determined size (`56 + 8·stage_count`), the torn-write guard.
     pub fn read(src: &dyn ByteSource) -> Result<TripSummary, Error> {
         let h = read_header(src)?;
         Ok(TripSummary { name: h.name, stage_count: h.stage_count })
@@ -78,7 +78,7 @@ pub struct TripMeta {
     pub name: String<NAME_CAP>,
     /// The route object ids this trip references, ride order — dangling ids (a member route deleted
     /// individually) are carried verbatim; validation is the app's job, not the codec's.
-    pub stage_ids: Vec<u16, MAX_TRIP_STAGES>,
+    pub stage_ids: Vec<u64, MAX_TRIP_STAGES>,
     /// The stored `stage_count` exceeded [`MAX_TRIP_STAGES`], so `stage_ids` holds only the first
     /// [`MAX_TRIP_STAGES`] of them.
     pub truncated: bool,
@@ -94,16 +94,26 @@ impl TripMeta {
         let take = want.min(MAX_TRIP_STAGES);
         let mut stage_ids = Vec::new();
         // The stage table sits right after the fixed header; one small read pulls the whole windowed
-        // slice (≤ 2·MAX_TRIP_STAGES bytes). The length check in `read_header` already proved every
+        // slice (≤ 8·MAX_TRIP_STAGES bytes). The length check in `read_header` already proved every
         // stored stage is present, so this read cannot run short.
-        let mut buf = [0u8; 2 * MAX_TRIP_STAGES];
-        let bytes = &mut buf[..take * 2];
+        let mut buf = [0u8; 8 * MAX_TRIP_STAGES];
+        let bytes = &mut buf[..take * 8];
         if take > 0 {
             src.read_at(TRIP_HEADER_LEN as u64, bytes)?;
         }
         for k in 0..take {
             // Infallible: the loop count equals the pushed count, both ≤ MAX_TRIP_STAGES.
-            let _ = stage_ids.push(rd_u16(bytes, k * 2));
+            let at = k * 8;
+            let _ = stage_ids.push(u64::from_le_bytes([
+                bytes[at],
+                bytes[at + 1],
+                bytes[at + 2],
+                bytes[at + 3],
+                bytes[at + 4],
+                bytes[at + 5],
+                bytes[at + 6],
+                bytes[at + 7],
+            ]));
         }
         Ok(TripMeta { name: h.name, stage_ids, truncated: want > take })
     }
@@ -123,7 +133,7 @@ fn read_header(src: &dyn ByteSource) -> Result<Header, Error> {
     }
     let stage_count = rd_u16(&h, 2);
     // Length is fully determined by the header — a payload of any other size is torn or malformed.
-    if src.len() != u64::from(trip_object_len(stage_count)) {
+    if src.len() != trip_object_len(stage_count) {
         return Err(Error::BadOffset);
     }
     let name_len = (h[4] as usize).min(NAME_CAP);
@@ -132,9 +142,9 @@ fn read_header(src: &dyn ByteSource) -> Result<Header, Error> {
     Ok(Header { stage_count, name })
 }
 
-/// The whole encoded object's size for a given stage count: `56 + 2·stage_count`.
-pub const fn trip_object_len(stage_count: u16) -> u32 {
-    TRIP_HEADER_LEN as u32 + 2 * stage_count as u32
+/// The whole encoded object's size for a given stage count: `56 + 8·stage_count`.
+pub const fn trip_object_len(stage_count: u16) -> u64 {
+    TRIP_HEADER_LEN as u64 + 8 * stage_count as u64
 }
 
 /// The longest valid-UTF-8 prefix of `b` — a byte-capped name may have split a multi-byte char.
@@ -145,12 +155,12 @@ fn utf8_prefix(b: &[u8]) -> &str {
     }
 }
 
-/// Write a **trip object v1** (spec §7.7) to `sink`: the fixed 56-byte header then the stage ids,
+/// Write a **trip object v2** (spec §7.7) to `sink`: the fixed 56-byte header then the stage ids,
 /// one streaming pass. `stages` is truncated to `u16::MAX` (the format's own cap) and `name` to
 /// [`NAME_CAP`] bytes on a char boundary (the device's route-name cap). No placeholder-header dance
 /// — the length is header-determined, so a torn write simply fails [`TripSummary::read`]'s length
 /// check rather than masquerading as a valid trip.
-pub fn write_trip(name: &str, stages: &[u16], sink: &mut dyn ByteSink) -> Result<(), Error> {
+pub fn write_trip(name: &str, stages: &[u64], sink: &mut dyn ByteSink) -> Result<(), Error> {
     let mut end = name.len().min(NAME_CAP);
     while end > 0 && !name.is_char_boundary(end) {
         end -= 1;
@@ -168,15 +178,15 @@ pub fn write_trip(name: &str, stages: &[u16], sink: &mut dyn ByteSink) -> Result
     sink.write(&head)?;
 
     // Stream the stage ids in blocks so the whole table never has to be resident to write.
-    const BLOCK: usize = 64;
-    let mut buf = [0u8; BLOCK * 2];
+    const BLOCK: usize = 32;
+    let mut buf = [0u8; BLOCK * 8];
     let mut done = 0usize;
     while done < stage_count {
         let n = (stage_count - done).min(BLOCK);
         for i in 0..n {
-            buf[i * 2..i * 2 + 2].copy_from_slice(&stages[done + i].to_le_bytes());
+            buf[i * 8..i * 8 + 8].copy_from_slice(&stages[done + i].to_le_bytes());
         }
-        sink.write(&buf[..n * 2])?;
+        sink.write(&buf[..n * 8])?;
         done += n;
     }
     Ok(())

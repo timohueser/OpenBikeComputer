@@ -3,7 +3,7 @@
 //! shape identically; nothing above the store (`obc-app`, `obc-render`) knows the difference.
 
 use crate::{RideRepository, RouteRepository, TrackRepository};
-use obc_app::{RideSummary, TrackAction};
+use obc_app::{CatalogObjectId, RideSummary, TrackAction};
 use obc_formats::io::SliceSource;
 use obc_ports::TrackSink;
 use obc_route::{Profile, RideStats, RouteSummary};
@@ -11,13 +11,13 @@ use obc_route::{Profile, RideStats, RouteSummary};
 /// The in-memory route store's reserved id for the computed nav route (out of the small
 /// positional band the seeded catalog uses), so a re-plan replaces the previous computed route
 /// in place — the twin of the folder store's overwrite-in-place `_nav.obcr`.
-pub const MEM_NAV_ID: u16 = u16::MAX;
+pub const MEM_NAV_ID: CatalogObjectId = CatalogObjectId::MAX;
 
 /// An in-memory route store: a fixed seeded catalog (e.g. routes compiled into the wasm binary)
 /// plus the reserved slot the router's computed route lands in.
 pub struct MemRouteStore {
     catalog: Vec<RouteSummary>,
-    ids: Vec<u16>,
+    ids: Vec<CatalogObjectId>,
     bytes: Vec<Vec<u8>>,
     active: Option<usize>,
 }
@@ -31,7 +31,7 @@ impl MemRouteStore {
         for route in routes {
             if let Ok(sum) = RouteSummary::read(&SliceSource(route)) {
                 s.catalog.push(sum);
-                s.ids.push(s.ids.len() as u16);
+                s.ids.push(s.ids.len() as CatalogObjectId);
                 s.bytes.push(route.to_vec());
             }
         }
@@ -44,7 +44,7 @@ impl MemRouteStore {
     }
 
     /// Each catalog entry's id, parallel to [`catalog`](MemRouteStore::catalog) (fixed in memory).
-    pub fn ids(&self) -> &[u16] {
+    pub fn ids(&self) -> &[CatalogObjectId] {
         &self.ids
     }
 
@@ -72,7 +72,7 @@ impl MemRouteStore {
 
     /// Delete the route with id `id` (the on-device hold-to-delete, epic #447 P6). `true` =
     /// removed. The id isn't re-issued (the seeded catalog is fixed and positional).
-    pub fn delete_by_id(&mut self, id: u16) -> bool {
+    pub fn delete_by_id(&mut self, id: CatalogObjectId) -> bool {
         let Some(pos) = self.ids.iter().position(|&x| x == id) else { return false };
         self.catalog.remove(pos);
         self.ids.remove(pos);
@@ -93,17 +93,17 @@ impl RouteRepository for MemRouteStore {
         self.catalog()
     }
 
-    fn ids(&self) -> &[u16] {
+    fn ids(&self) -> &[CatalogObjectId] {
         self.ids()
     }
 
-    fn delete_by_id(&mut self, id: u16) -> bool {
+    fn delete_by_id(&mut self, id: CatalogObjectId) -> bool {
         self.delete_by_id(id)
     }
 
     /// The in-memory twin of the folder store's reserved `_nav.obcr` write: replace (or append)
     /// the computed route under the fixed [`MEM_NAV_ID`] and return it.
-    fn write_nav_route(&mut self, bytes: &[u8]) -> Option<u16> {
+    fn write_nav_route(&mut self, bytes: &[u8]) -> Option<CatalogObjectId> {
         let sum = RouteSummary::read(&SliceSource(bytes)).ok()?;
         match self.ids.iter().position(|&id| id == MEM_NAV_ID) {
             Some(pos) => {

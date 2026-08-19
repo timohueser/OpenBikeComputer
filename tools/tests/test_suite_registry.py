@@ -75,7 +75,6 @@ class SuiteRegistryTests(unittest.TestCase):
             "tools/rain-radar-demo/tests/radar.test.ts": "test('x', () => {})",
             "companion-ios/OBCCompanionUITests/SmokeTests.swift": "func testSmoke() {}",
             "companion-ios/Packages/OBCKit/Package.swift": '.testTarget(name: "OBCKitTests")',
-            "companion-ios/EchoHarness/Package.swift": "let package = Package(name: \"EchoHarness\")",
             ".github/workflows/ci.yml": "jobs:\n  test:\n    steps:\n      - run: cargo test --workspace --locked\n",
         }
         for relative, content in files.items():
@@ -93,7 +92,6 @@ class SuiteRegistryTests(unittest.TestCase):
                 "rain-radar-test",
                 "xcuitest",
                 "swift-target",
-                "swift-package",
                 "workflow-command",
             },
         )

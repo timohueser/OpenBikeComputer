@@ -71,8 +71,6 @@ def is_test_support(path: PurePosixPath) -> bool:
     text = path.as_posix()
     if any(text == prefix or text.startswith(prefix + "/") for prefix in TEST_SUPPORT_COMPONENTS):
         return True
-    if text.startswith("companion-ios/EchoHarness/"):
-        return True
     if any(
         part.lower() in {"test", "tests", "benches", "benchmarks", "fixtures", "scripts"}
         for part in path.parts
@@ -94,8 +92,6 @@ def ios_component(parts: tuple[str, ...]) -> str:
         return "iOS app"
     if len(parts) > 1 and parts[1] == "OBCCompanionUITests":
         return "iOS app"
-    if len(parts) > 1 and parts[1] == "EchoHarness":
-        return "Echo harness"
     return "Companion support"
 
 

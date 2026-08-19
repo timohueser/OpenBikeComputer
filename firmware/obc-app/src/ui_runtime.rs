@@ -35,7 +35,7 @@ use crate::settings::{DateTime, Settings};
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct UploadEvent {
     /// The committed route's durable object id — resolved to a catalog index at *delivery* time.
-    pub(crate) id: u16,
+    pub(crate) id: crate::CatalogObjectId,
     /// The upload replaced the **actively-navigated** route (snapshotted at arrival): the
     /// info-only "ROUTE UPDATED" card instead of a choice prompt — adoption already happened.
     pub(crate) active_replace: bool,
@@ -57,7 +57,7 @@ pub(crate) enum PendingUpload {
     /// The committed trip's durable object id — validated against the (already re-fed) trip
     /// catalog at delivery time.
     Trip {
-        id: u16,
+        id: crate::CatalogObjectId,
     },
 }
 
@@ -737,7 +737,12 @@ impl UiRuntime {
     /// deliver it — the tail of [`HostEvent::TripUploaded`](crate::host::HostEvent) handling. The
     /// trip commit always follows its member routes' commits, so this is what collapses the
     /// per-route popup burst into the one "TRIP RECEIVED" card.
-    pub(crate) fn post_trip_upload_event(&mut self, id: u16, catalogs: &CatalogState, tracking: bool) {
+    pub(crate) fn post_trip_upload_event(
+        &mut self,
+        id: crate::CatalogObjectId,
+        catalogs: &CatalogState,
+        tracking: bool,
+    ) {
         self.pending_upload = Some(PendingUpload::Trip { id });
         self.reconcile_upload_prompt(catalogs, tracking);
     }

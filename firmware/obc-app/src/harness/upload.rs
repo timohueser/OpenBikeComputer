@@ -14,7 +14,7 @@ use obc_map_scene::BBox;
 use obc_ports::{Button, InputClock};
 
 /// The drained `DeleteRoute` id, if one is pending.
-fn took_route_delete(app: &mut App) -> Option<u16> {
+fn took_route_delete(app: &mut App) -> Option<crate::CatalogObjectId> {
     let mut mb: HostMailbox = HostMailbox::new();
     let _ = app.drain_host_commands(&mut mb);
     core::iter::from_fn(|| mb.pop()).find_map(|c| match c {
@@ -25,7 +25,7 @@ fn took_route_delete(app: &mut App) -> Option<u16> {
 
 /// A three-route catalog with deliberately non-positional durable ids (10 / 11 / 12), so any test
 /// passing an *id* where an *index* is expected fails loudly.
-fn ids() -> [u16; 3] {
+fn ids() -> [crate::CatalogObjectId; 3] {
     [10, 11, 12]
 }
 

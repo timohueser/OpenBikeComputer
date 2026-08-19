@@ -61,17 +61,19 @@
 //! (#1390) — nothing records to a flat card yet — and FS11's (#1393) retirement of the FAT read
 //! path.
 
-use core::mem::MaybeUninit;
+use core::{cell::RefCell, mem::MaybeUninit};
 
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_futures::select::{select, Either};
+use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, Mutex};
 use embassy_sync::channel::{Channel, Receiver, Sender};
 use embassy_sync::signal::Signal;
+use heapless::Deque;
 
 use obc_link::flat::{Ceilings, Engine, Link, Policy, Reaction, RequestId};
 use obc_storage::flat::store::MAX_BATCH;
 use obc_storage::flat::{
-    Allocation, BlockDevice, EntryMeta, FlatStore, Handle, Mode, Mutation, ObjectKind, RideCheckpoint, Store as _,
-    StoreError,
+    Allocation, BlockDevice, DisplayName, EntryFlags, EntryMeta, FlatStore, Handle, Mode, Mutation, ObjectId,
+    ObjectKind, PutSource, Revision, RideCheckpoint, Store as _, StoreError,
 };
 
 use crate::semmc::{SemmcError, BLOCK_BYTES};
@@ -82,13 +84,13 @@ use crate::semmc::{SemmcError, BLOCK_BYTES};
 // sEMMC firmware's DMA wants 32-bit alignment; the store hands the device `[u8; 512]` frame locals
 // and its 2 KiB/4 KiB streaming windows, none of which carries an alignment attribute, so whether a
 // given call is aligned is a codegen accident and the binding has to be correct either way. It
-// borrows `sd`'s 4-block buffer for that (`sd::with_bounce`) rather than placing one.
+// borrows the raw-card layer's 4-block buffer for that (`card_io::with_bounce`) rather than placing one.
 //
 // A second buffer sized to §5.5's 8-block commit window would have cost 4 KiB — and on this part
 // every `.bss` byte is a main-stack byte (`_stack_start − __euninit`), taken out of the deep-ride
 // path's headroom, for a case that may never occur. What the shared 4-block buffer costs when it
 // *does* fire is one extra card command per commit-body window; a mount's 2 KiB window is one chunk
-// either way, so the figure c1 measures is unaffected. `sd::warn_bounce`'s one-shot line is how a run
+// either way, so the figure c1 measures is unaffected. The bounce's one-shot line is how a run
 // says which side of the alignment accident this build fell on — and if it fires and a measurement
 // says the commit cost matters, the flat binding places its own buffer then, with the number in hand.
 
@@ -125,14 +127,18 @@ impl BlockDevice for FlatCard {
     fn read(&self, lba: u64, buf: &mut [u8]) -> Result<(), SemmcError> {
         let start = FlatCard::lba(lba)?;
         let addr = buf.as_ptr() as usize;
-        crate::flpr_mux::with_storage(|sd| {
+        #[cfg(feature = "sd-bench")]
+        let blocks = buf.len() / BLOCK_BYTES;
+        #[cfg(feature = "sd-bench")]
+        let bench_started = embassy_time::Instant::now();
+        let result = crate::flpr_mux::with_storage(|sd| {
             if addr.is_multiple_of(4) {
                 return sd.read_blocks(start, buf);
             }
             // SAFETY: we are inside `with_storage`, which is where `with_bounce` requires its
             // caller to be, and nothing in this closure reaches another bounce user.
             unsafe {
-                crate::sd::with_bounce(addr, |bounce| {
+                crate::card_io::with_bounce(addr, |bounce| {
                     let mut done = 0usize;
                     while done < buf.len() {
                         let take = (buf.len() - done).min(bounce.len());
@@ -143,7 +149,10 @@ impl BlockDevice for FlatCard {
                     Ok(())
                 })
             }
-        })?
+        })?;
+        #[cfg(feature = "sd-bench")]
+        crate::card_io::note_read_perf(bench_started, addr, blocks);
+        result
     }
 
     fn write(&self, lba: u64, buf: &[u8]) -> Result<(), SemmcError> {
@@ -155,7 +164,7 @@ impl BlockDevice for FlatCard {
             }
             // SAFETY: as in `read`.
             unsafe {
-                crate::sd::with_bounce(addr, |bounce| {
+                crate::card_io::with_bounce(addr, |bounce| {
                     let mut done = 0usize;
                     while done < buf.len() {
                         let take = (buf.len() - done).min(bounce.len());
@@ -189,6 +198,7 @@ impl BlockDevice for FlatCard {
 /// `.bss`, and written **in place**: `FlatStore` is ~10.5 KB, most of it §6.2's 8 KiB free bitmap,
 /// and this board's rules about values that size are not stylistic. See [`mount_at_boot`].
 static mut FLAT_STORE: MaybeUninit<FlatStore<FlatCard>> = MaybeUninit::uninit();
+static FLAT_STORE_READY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// What this layer costs the resident budget: the store and the write queue. The alignment bounce
 /// is `sd`'s and is already counted there — see the note above [`FLAT_BOUNCE_WARNED`].
@@ -196,8 +206,13 @@ static mut FLAT_STORE: MaybeUninit<FlatStore<FlatCard>> = MaybeUninit::uninit();
 /// The recording caller's 32,256-byte ride tail (§7.1) is **not** here — no ride records to the flat
 /// store until FS8 (#1390), and a budget row for a buffer nothing allocates would be a lie in the other
 /// direction. It joins this sum in the slice that starts recording.
-pub(crate) const RESIDENT_BYTES: usize =
-    core::mem::size_of::<FlatStore<FlatCard>>() + REQUEST_QUEUE_BYTES + MAP_READ_BYTES + ENGINE_BYTES;
+pub(crate) const RESIDENT_BYTES: usize = core::mem::size_of::<FlatStore<FlatCard>>()
+    + REQUEST_QUEUE_BYTES
+    + CATALOG_UPLOAD_BYTES
+    + MAP_READ_BYTES
+    + ROUTE_READ_BYTES
+    + WEATHER_READ_BYTES
+    + ENGINE_BYTES;
 
 /// **Everything the read cutover keeps resident on this arm** (FS7.5-c2): the session-long
 /// [`MAP_SOURCE`] *and* the [`MAP_NAME`] the same boot step captures.
@@ -208,6 +223,13 @@ pub(crate) const RESIDENT_BYTES: usize =
 /// still called itself the whole cost; the review caught it.)
 pub(crate) const MAP_READ_BYTES: usize = core::mem::size_of::<obc_storage::flat::StoreSource<'static, FlatCard>>()
     + core::mem::size_of::<heapless::String<24>>();
+
+/// The active route's one held revision. It is released on selection or revision changes.
+pub(crate) const ROUTE_READ_BYTES: usize =
+    core::mem::size_of::<Option<obc_storage::flat::StoreSource<'static, FlatCard>>>();
+
+/// The active weather bundle's held immutable revision, refreshed on catalog movement.
+pub(crate) const WEATHER_READ_BYTES: usize = ROUTE_READ_BYTES;
 
 /// The store is the free bitmap plus its rows; if that ever stops being true the budget note above
 /// is wrong before anything else notices.
@@ -249,7 +271,18 @@ pub(crate) fn mount_at_boot() -> &'static FlatStore<FlatCard> {
     // borrow of the slot. The write is unconditional — no `StaticCell` one-shot flag a warm reset
     // could find already set — and `FlatStore` has no `Drop`, which is the `init_static` contract.
     let store = unsafe { FlatStore::mount_in_place(&mut *core::ptr::addr_of_mut!(FLAT_STORE), FlatCard) };
+    FLAT_STORE_READY.store(true, core::sync::atomic::Ordering::Release);
     &*store
+}
+
+/// The mounted store after boot initialization. Read-only callers use this instead of inventing a
+/// second global reference; all mutation still goes through [`storage_task`].
+pub(crate) fn mounted() -> Option<&'static FlatStore<FlatCard>> {
+    FLAT_STORE_READY.load(core::sync::atomic::Ordering::Acquire).then(|| unsafe {
+        // SAFETY: `Release` is stored only after `mount_in_place` fully initialized this slot; it is
+        // never overwritten during the boot session.
+        &*core::ptr::addr_of!(FLAT_STORE).cast::<FlatStore<FlatCard>>()
+    })
 }
 
 /// **What the probe found, in the terms boot has to act on.** The three outcomes are the three
@@ -387,9 +420,15 @@ pub(crate) const REQUEST_QUEUE_BYTES: usize =
 pub(crate) enum Request {
     /// §6's extent reservation.
     Allocate { bytes: u64 },
-    /// Append to a reservation. Replies with the advanced [`Allocation`], because the seam takes it
-    /// by `&mut` and a channel cannot lend one.
-    Write { allocation: Allocation, bytes: &'static [u8] },
+    /// Append a staged planner step and optionally backfill its completed OBCR header. Replies with
+    /// the advanced allocation. Patch-first ordering keeps the caller's old token cancellable if
+    /// the append fails.
+    WriteComputedRoute { allocation: Allocation, bytes: &'static [u8], header: &'static [u8] },
+    /// Publish a freshly generated route under the store's next id.
+    PublishComputedRoute { allocation: Allocation, name: DisplayName },
+    /// Compensate a cancellation that raced the synchronous publish. The exact revision is carried
+    /// so this can never remove a later replacement that happens to share the object id.
+    RemoveComputedRoute { id: ObjectId, revision: Revision },
     /// §5.5's atomic batch. Replies with the commit sequence.
     Commit { batch: heapless::Vec<Mutation, MAX_BATCH> },
     /// §7.2's ride checkpoint.
@@ -453,6 +492,8 @@ pub(crate) enum Outcome {
     Allocated(Allocation),
     /// The allocation, advanced by the bytes written.
     Wrote(Allocation),
+    /// Object id assigned to a board-generated route.
+    Published(ObjectId),
     /// §5.5's commit sequence.
     Committed(u64),
     /// Nothing to hand back: `journal`, `cancel`, `close`.
@@ -496,6 +537,24 @@ pub(crate) struct Job {
 /// The queue itself. One producer-agnostic channel: any task may send, exactly one task receives.
 static REQUESTS: Channel<CriticalSectionRawMutex, Job, REQUEST_QUEUE> = Channel::new();
 
+/// A menu-originated removal. Kept outside the protocol engine so the device UI does not have to
+/// impersonate a link, but consumed by the same one writer task.
+#[derive(Clone, Copy)]
+enum MenuDelete {
+    Route(ObjectId),
+    TripCascade(ObjectId),
+}
+
+static MENU_DELETES: Channel<CriticalSectionRawMutex, MenuDelete, 8> = Channel::new();
+
+pub(crate) fn request_route_delete(id: u64) -> bool {
+    MENU_DELETES.try_send(MenuDelete::Route(ObjectId(id))).is_ok()
+}
+
+pub(crate) fn request_trip_cascade(id: u64) -> bool {
+    MENU_DELETES.try_send(MenuDelete::TripCascade(ObjectId(id))).is_ok()
+}
+
 /// **The write half's front door**, handed to every plane that mutates the store.
 ///
 /// `Copy`, so it costs a caller nothing to hold, and it carries no store reference at all — which is
@@ -507,7 +566,29 @@ pub(crate) struct Writer {
     requests: Sender<'static, CriticalSectionRawMutex, Job, REQUEST_QUEUE>,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct Ticket(u32);
+
 impl Writer {
+    /// Enqueue one call without parking the ride loop. A full queue is retried by the caller on a
+    /// later pass; a successful ticket is polled with [`Writer::try_result`].
+    pub(crate) fn try_call(&self, request: Request, reply: &'static Reply) -> Result<Ticket, ()> {
+        let tag = NEXT_TAG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        self.requests.try_send(Job { request, reply, tag }).map(|()| Ticket(tag)).map_err(|_| ())
+    }
+
+    /// Take this ticket's answer without parking. Older orphaned answers are discarded exactly as
+    /// [`Writer::call`] does; `None` means the storage task has not answered yet.
+    pub(crate) fn try_result(&self, ticket: Ticket, reply: &'static Reply) -> Option<Result<Outcome, StoreError>> {
+        loop {
+            let (answered, outcome) = reply.try_take()?;
+            if answered == ticket.0 {
+                return Some(outcome);
+            }
+            debug_assert!(answered < ticket.0, "a reply slot answered a tag that has not been issued");
+        }
+    }
+
     /// Send `request` and wait for the store's answer.
     ///
     /// **The caller blocks here and nowhere else**, which is the ruling's "callers block only if
@@ -669,6 +750,126 @@ pub(crate) fn writer() -> Option<Writer> {
     ARMED.load(core::sync::atomic::Ordering::Relaxed).then(|| Writer { requests: REQUESTS.sender() })
 }
 
+static CATALOG_COMMITS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+static CATALOG_WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// One successful protocol-v4 route/trip upload waiting for the app's post-rescan event seam.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CatalogUpload {
+    id: [u8; 8],
+    flags: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CatalogUploadKind {
+    Route,
+    Trip,
+}
+
+impl CatalogUpload {
+    fn new(kind: CatalogUploadKind, id: u64, replaced: bool) -> Self {
+        let flags = (kind == CatalogUploadKind::Trip) as u8 | ((replaced as u8) << 1);
+        Self { id: id.to_le_bytes(), flags }
+    }
+
+    pub(crate) const fn kind(self) -> CatalogUploadKind {
+        if self.flags & 1 == 0 {
+            CatalogUploadKind::Route
+        } else {
+            CatalogUploadKind::Trip
+        }
+    }
+
+    pub(crate) const fn id(self) -> u64 {
+        u64::from_le_bytes(self.id)
+    }
+
+    pub(crate) const fn replaced(self) -> bool {
+        self.flags & 2 != 0
+    }
+
+    fn same_object(self, other: Self) -> bool {
+        (self.flags & 1) == (other.flags & 1) && self.id == other.id
+    }
+}
+
+const _: () = assert!(core::mem::size_of::<CatalogUpload>() == 9);
+
+/// A complete UI catalog's worth of upload facts. The engine serializes transfers, and the ride
+/// task drains these after the catalog rescan caused by the same commits. Bounding this to the
+/// menus' combined identity capacity keeps the resident cost explicit. Same-object commits
+/// coalesce; churn beyond one full snapshot retains the newest facts and raises the conservative
+/// active-route refresh below.
+const UPLOAD_EVENTS_CAP: usize = obc_app::MAX_ROUTES + obc_app::MAX_TRIPS;
+static UPLOAD_EVENTS: Mutex<CriticalSectionRawMutex, RefCell<Deque<CatalogUpload, UPLOAD_EVENTS_CAP>>> =
+    Mutex::new(RefCell::new(Deque::new()));
+static UPLOAD_EVENTS_LOSS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// The bounded route/trip commit handoff plus its one-bit conservative loss signal.
+pub(crate) const CATALOG_UPLOAD_BYTES: usize = core::mem::size_of::<
+    Mutex<CriticalSectionRawMutex, RefCell<Deque<CatalogUpload, UPLOAD_EVENTS_CAP>>>,
+>() + core::mem::size_of::<core::sync::atomic::AtomicBool>();
+
+/// Insert the latest fact for one object at the back of the queue. Repeated replaces must not spend
+/// another slot: remove the older fact, preserve every other fact's order, then append the final
+/// `replaced` value at its true commit position. Returns whether a distinct oldest fact had to be
+/// evicted because catalog churn left more queued identities than the UI can simultaneously hold.
+fn queue_catalog_upload(events: &mut Deque<CatalogUpload, UPLOAD_EVENTS_CAP>, upload: CatalogUpload) -> bool {
+    let queued = events.len();
+    let mut coalesced = false;
+    for _ in 0..queued {
+        if let Some(prior) = events.pop_front() {
+            if prior.same_object(upload) {
+                coalesced = true;
+            } else {
+                let _ = events.push_back(prior);
+            }
+        }
+    }
+    if coalesced {
+        let _ = events.push_back(upload);
+        return false;
+    }
+    if let Err(upload) = events.push_back(upload) {
+        let _ = events.pop_front();
+        let _ = events.push_back(upload);
+        return true;
+    }
+    false
+}
+
+fn note_catalog_upload(upload: CatalogUpload) {
+    UPLOAD_EVENTS.lock(|events| {
+        if queue_catalog_upload(&mut events.borrow_mut(), upload) {
+            UPLOAD_EVENTS_LOSS.store(true, core::sync::atomic::Ordering::Relaxed);
+            defmt::warn!("flat: upload-event queue saturated — oldest fact replaced; forcing active-route refresh");
+        }
+    });
+}
+
+pub(crate) fn take_catalog_upload() -> Option<CatalogUpload> {
+    UPLOAD_EVENTS.lock(|events| events.borrow_mut().pop_front())
+}
+
+pub(crate) fn take_catalog_upload_loss() -> bool {
+    UPLOAD_EVENTS_LOSS.swap(false, core::sync::atomic::Ordering::Relaxed)
+}
+
+fn note_catalog_commit() {
+    CATALOG_COMMITS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    CATALOG_WAKE.signal(());
+    #[cfg(feature = "ble")]
+    crate::ble::weather_catalog_changed();
+}
+
+pub(crate) fn take_catalog_commits() -> u32 {
+    CATALOG_COMMITS.swap(0, core::sync::atomic::Ordering::Relaxed)
+}
+
+pub(crate) async fn wait_catalog_commit() {
+    CATALOG_WAKE.wait().await
+}
+
 /// **The one task that writes.**
 ///
 /// It owns nothing: the store is `&'static` and every reader has one too. What it owns is the
@@ -707,13 +908,59 @@ pub(crate) async fn storage_task(
     let engine = engine_slot();
     let mut policy = BoardPolicy;
     loop {
-        let job = requests.receive().await;
-        // The FLPR is switched per card command by `flpr_mux::with_storage`, so nothing is held
-        // across this call and there is no mode session to acquire around the batch.
-        let outcome = serve(store, engine, &mut policy, job.request);
-        // The tag rides back with the answer: the caller may be gone, and the next user of this slot
-        // has to be able to tell that this value is not theirs. See `Reply`.
-        job.reply.signal((job.tag, outcome));
+        match select(requests.receive(), MENU_DELETES.receive()).await {
+            Either::First(job) => {
+                let before = store.sequence();
+                // The FLPR is switched per card command by `flpr_mux::with_storage`, so nothing is held
+                // across this call and there is no mode session to acquire around the batch.
+                let outcome = serve(store, engine, &mut policy, job.request);
+                if store.sequence() != before {
+                    note_catalog_commit();
+                }
+                // The tag rides back with the answer: the caller may be gone, and the next user of this slot
+                // has to be able to tell that this value is not theirs. See `Reply`.
+                job.reply.signal((job.tag, outcome));
+            }
+            Either::Second(delete) => serve_menu_delete(store, delete),
+        }
+    }
+}
+
+#[inline(never)]
+fn serve_menu_delete(store: &FlatStore<FlatCard>, delete: MenuDelete) {
+    let before = store.sequence();
+    match delete {
+        MenuDelete::Route(id) => remove_head(store, id, ObjectKind::Route),
+        MenuDelete::TripCascade(id) => {
+            let stages = store
+                .with_source(id, None, |source| obc_route::TripMeta::read(source).ok().map(|m| m.stage_ids))
+                .ok()
+                .flatten();
+            if let Some(stages) = stages {
+                for stage in stages {
+                    remove_head(store, ObjectId(stage), ObjectKind::Route);
+                }
+            }
+            remove_head(store, id, ObjectKind::Trip);
+        }
+    }
+    if store.sequence() != before {
+        note_catalog_commit();
+    }
+}
+
+fn remove_head(store: &FlatStore<FlatCard>, id: ObjectId, kind: ObjectKind) {
+    let Some(meta) = store.entries().find(|entry| entry.id == id && entry.kind == kind) else {
+        return;
+    };
+    if let Err(error) = store.commit(&[Mutation::Remove { id, revision: meta.revision }]) {
+        defmt::warn!(
+            "flat: menu removal of {} object {=u64} revision {=u64} failed: {}",
+            defmt::Debug2Format(&kind),
+            id.0,
+            meta.revision.0,
+            defmt::Debug2Format(&error)
+        );
     }
 }
 
@@ -743,9 +990,37 @@ fn serve(
 ) -> Result<Outcome, StoreError> {
     match request {
         Request::Allocate { bytes } => store.allocate(bytes).map(Outcome::Allocated),
-        Request::Write { mut allocation, bytes } => {
+        Request::WriteComputedRoute { mut allocation, bytes, header } => {
+            if !header.is_empty() {
+                store.patch_allocation(&allocation, 0, header)?;
+            }
             store.write(&mut allocation, bytes)?;
             Ok(Outcome::Wrote(allocation))
+        }
+        Request::PublishComputedRoute { allocation, name } => {
+            // Publishing can race a queued cancellation. Reserve one further catalog sequence for
+            // the exact-revision compensating remove before making the route visible; otherwise a
+            // publish at u64::MAX would succeed and leave a ghost that no later commit can retract.
+            if !store.has_commit_capacity(2) {
+                return Err(StoreError::ReadOnly);
+            }
+            let id = store.next_object_id();
+            let payload_crc = store.allocation_crc(&allocation)?;
+            let meta = EntryMeta {
+                id,
+                revision: Revision(1),
+                kind: ObjectKind::Route,
+                flags: EntryFlags::NONE,
+                payload_len: allocation.written_bytes(),
+                payload_crc,
+                name,
+            };
+            store
+                .commit(&[Mutation::Put { meta, source: PutSource::Fresh(allocation) }])
+                .map(|_| Outcome::Published(id))
+        }
+        Request::RemoveComputedRoute { id, revision } => {
+            store.commit(&[Mutation::Remove { id, revision }]).map(|_| Outcome::Done)
         }
         Request::Commit { batch } => store.commit(&batch).map(Outcome::Committed),
         Request::Journal { checkpoint } => store.journal(checkpoint).map(|()| Outcome::Done),
@@ -821,7 +1096,19 @@ fn serve(
 /// lands in a second and a weather bundle is invisible by design, so a progress bar for either would
 /// be a flicker asking to be dismissed. `crate::link` owns the mapping from these facts to a screen.
 fn publish_upload(engine: &mut BoardEngine) {
-    crate::link::publish_map_transfer(engine.live_upload(), engine.take_upload_end());
+    let live = engine.live_upload();
+    let ended = engine.take_upload_end();
+    if let Some((kind, obc_link::flat::UploadEnd::Committed { id, replaced })) = ended {
+        let kind = match kind {
+            obc_link::flat::ObjectKind::Route => Some(CatalogUploadKind::Route),
+            obc_link::flat::ObjectKind::Trip => Some(CatalogUploadKind::Trip),
+            _ => None,
+        };
+        if let Some(kind) = kind {
+            note_catalog_upload(CatalogUpload::new(kind, id.0, replaced));
+        }
+    }
+    crate::link::publish_map_transfer(live, ended);
 }
 
 // ══════════════════════════ the protocol-v4 engine ══════════════════════════
@@ -967,6 +1254,137 @@ pub(crate) fn first_of(store: &FlatStore<FlatCard>, kind: ObjectKind) -> Option<
     store.entries().find(|entry| entry.kind == kind)
 }
 
+// ═══════════════════════════════ weather ═══════════════════════════════
+
+/// One fully validated flat-store weather head.
+///
+/// The proof is safe to retain after the source closes: flat-store revisions are immutable, and
+/// [`with_weather`] always reopens this exact `(ObjectId, Revision)` before using it. A replacement
+/// gets a different revision and therefore a different value here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FlatWeather {
+    pub(crate) id: ObjectId,
+    pub(crate) revision: Revision,
+    pub(crate) validated: obc_weather::ValidatedBundle,
+}
+
+impl FlatWeather {
+    pub(crate) const fn header(self) -> obc_formats::obcw::Header {
+        self.validated.header()
+    }
+
+    /// The scheduler wire identity: serial generation, producer time and CRC are the protocol
+    /// facts, independent of the storage that holds the immutable revision.
+    pub(crate) const fn candidate(self) -> obc_weather::Candidate {
+        let header = self.header();
+        obc_weather::Candidate {
+            generation: header.generation,
+            generated_at: header.generated_at,
+            total_len: header.total_len,
+            bundle_crc32: header.crc32,
+        }
+    }
+}
+
+/// Select and fully validate the active weather head.
+///
+/// Malformed objects are omitted rather than poisoning a previously valid bundle. When more than
+/// one object id exists, OBCW's serial-generation rule chooses the newest producer result; an exact
+/// identity tie is broken by the larger store id so the result is deterministic.
+#[inline(never)]
+pub(crate) fn active_weather(store: &'static FlatStore<FlatCard>) -> Result<Option<FlatWeather>, ()> {
+    // The catalog orders a retained revision immediately before its head. Validate the retained
+    // copy as a fallback, but never let it outrank a valid head merely because its producer serial
+    // is newer: retention is continuity for a bad replacement, not a second active candidate.
+    let revisions = store.entries().filter(|entry| entry.kind == ObjectKind::WeatherBundle).map(|entry| {
+        obc_weather::CatalogRevision {
+            object_id: entry.id.0,
+            retained: entry.flags.has(obc_storage::flat::EntryFlags::RETAINED),
+            validation: validate_weather(store, entry),
+        }
+    });
+    let active = obc_weather::select_catalog(revisions, |incoming, current| {
+        obc_weather::candidate_is_newer(incoming.candidate(), current.candidate())
+            || (incoming.candidate() == current.candidate() && incoming.id > current.id)
+    })?;
+    if !store.entries_ok() {
+        defmt::warn!("flat: weather catalog listing crossed a commit — retrying on the next catalog edge");
+        return Err(());
+    }
+    Ok(active)
+}
+
+/// Validate one immutable weather revision while keeping media/open failures distinct from a
+/// malformed OBCW payload. A malformed head may fall back to its retained predecessor; a transient
+/// store failure must preserve the currently mounted source and retry later.
+fn validate_weather(store: &'static FlatStore<FlatCard>, entry: EntryMeta) -> Result<Option<FlatWeather>, ()> {
+    match store.with_source(entry.id, Some(entry.revision), |source| {
+        obc_weather::WeatherReader::open(source).map(|reader| reader.validated())
+    }) {
+        Ok(Ok(validated)) => Ok(Some(FlatWeather { id: entry.id, revision: entry.revision, validated })),
+        Ok(Err(_)) => {
+            defmt::warn!(
+                "flat: weather object {=u64} revision {=u64} is malformed — omitted",
+                entry.id.0,
+                entry.revision.0
+            );
+            Ok(None)
+        }
+        Err(error) => {
+            defmt::warn!(
+                "flat: weather object {=u64} revision {=u64} could not be read: {}",
+                entry.id.0,
+                entry.revision.0,
+                defmt::Debug2Format(&error)
+            );
+            Err(())
+        }
+    }
+}
+
+static mut WEATHER_SOURCE: Option<obc_storage::flat::StoreSource<'static, FlatCard>> = None;
+
+/// Reconcile the session-held weather source to the selected validated revision.
+#[inline(never)]
+pub(crate) fn reconcile_weather(
+    store: &'static FlatStore<FlatCard>,
+    wanted: Option<FlatWeather>,
+) -> Option<&'static dyn obc_formats::io::ByteSource> {
+    let wanted_key = wanted.map(|weather| (weather.id, weather.revision));
+    let slot = core::ptr::addr_of_mut!(WEATHER_SOURCE);
+    // SAFETY: the ride loop is the sole caller. It reconciles only between synchronous sampling
+    // and rendering operations, never while a reader borrowing the previous source is live.
+    unsafe {
+        let current = (*slot).as_ref().map(|source| (source.id(), source.revision()));
+        if current != wanted_key {
+            if let Some(weather) = wanted {
+                match store.source(weather.id, Some(weather.revision)) {
+                    Ok(source) => {
+                        // Acquire before release: the store budgets one SWAP hold precisely so a
+                        // transient open failure cannot discard the bundle the rider is using.
+                        let old = core::ptr::replace(slot, Some(source));
+                        if let Some(old) = old {
+                            store.close(old.release());
+                        }
+                    }
+                    Err(error) => defmt::warn!(
+                        "flat: weather object {=u64} revision {=u64} would not open: {}",
+                        weather.id.0,
+                        weather.revision.0,
+                        defmt::Debug2Format(&error)
+                    ),
+                }
+            } else {
+                let old = core::ptr::replace(slot, None);
+                if let Some(old) = old {
+                    store.close(old.release());
+                }
+            }
+        }
+        (*slot).as_ref().map(|source| source as &dyn obc_formats::io::ByteSource)
+    }
+}
+
 // ══════════════════════════ the map, as bytes ══════════════════════════
 
 /// The session-long source over the mounted card's map object.
@@ -1047,4 +1465,160 @@ pub(crate) fn open_map(store: &'static FlatStore<FlatCard>) -> Option<&'static d
             None
         }
     }
+}
+
+// ══════════════════════════ route + trip menus ══════════════════════════
+
+/// The active route's held revision. One route is streamed by the matcher/renderer at a time; this
+/// single slot replaces FAT's open file handle and spends one of the store's bounded hold rows.
+static mut ROUTE_SOURCE: Option<obc_storage::flat::StoreSource<'static, FlatCard>> = None;
+
+/// Reconcile the held route revision to the app's selected flat `ObjectId` and return its source.
+/// A replace at the same id reopens because the catalog revision is part of the key.
+#[inline(never)]
+pub(crate) fn reconcile_route(
+    store: &'static FlatStore<FlatCard>,
+    wanted: Option<u64>,
+) -> Option<&'static dyn obc_formats::io::ByteSource> {
+    let wanted = wanted.and_then(|id| {
+        store
+            .entries()
+            .find(|entry| entry.id == ObjectId(id) && entry.kind == ObjectKind::Route)
+            .map(|entry| (entry.id, entry.revision))
+    });
+    let slot = core::ptr::addr_of_mut!(ROUTE_SOURCE);
+    // SAFETY: the ride loop is the only caller and executes synchronously on thread mode. The
+    // returned shared source is consumed only until the next loop pass; reconciliation never runs
+    // while a reader from the previous pass is live.
+    unsafe {
+        let current = (*slot).as_ref().map(|source| (source.id(), source.revision()));
+        if current != wanted {
+            let old = core::ptr::read(slot);
+            core::ptr::write(slot, None);
+            if let Some(source) = old {
+                store.close(source.release());
+            }
+            if let Some((id, revision)) = wanted {
+                match store.source(id, Some(revision)) {
+                    Ok(source) => core::ptr::write(slot, Some(source)),
+                    Err(error) => defmt::warn!(
+                        "flat: route object {=u64} revision {=u64} would not open: {}",
+                        id.0,
+                        revision.0,
+                        defmt::Debug2Format(&error)
+                    ),
+                }
+            }
+        }
+        (*slot).as_ref().map(|source| source as &dyn obc_formats::io::ByteSource)
+    }
+}
+
+/// The only catalog fields a later object open needs. Keeping the full [`EntryMeta`] here retained
+/// 48-byte display names, flags, lengths, and CRCs for every menu slot at once; at 64 routes that
+/// made `load_routes` an 18 KiB frame. This 16-byte key preserves the exact selection/open contract
+/// without moving scratch into resident memory.
+#[derive(Clone, Copy)]
+struct CatalogHead {
+    id: ObjectId,
+    revision: Revision,
+}
+
+const _: () = assert!(core::mem::size_of::<CatalogHead>() <= 16);
+
+fn retain_newest<const N: usize>(entries: &mut heapless::Vec<CatalogHead, N>, entry: CatalogHead) {
+    let at = entries.iter().position(|old| entry.id > old.id).unwrap_or(entries.len());
+    if at >= N {
+        return;
+    }
+    if entries.is_full() {
+        let _ = entries.pop();
+    }
+    let _ = entries.insert(at, entry);
+}
+
+/// Rebuild the Route menu from one bounded catalog snapshot. The newest `MAX_ROUTES` ids win, so a
+/// fresh upload remains visible even on a benchmark card carrying hundreds of old ladder objects.
+#[inline(never)]
+pub(crate) fn load_routes(store: &'static FlatStore<FlatCard>, app: &mut obc_app::App) -> bool {
+    let mut heads: heapless::Vec<CatalogHead, { obc_app::MAX_ROUTES }> = heapless::Vec::new();
+    for entry in store.entries().filter(|entry| entry.kind == ObjectKind::Route) {
+        retain_newest(&mut heads, CatalogHead { id: entry.id, revision: entry.revision });
+    }
+    if !store.entries_ok() {
+        defmt::warn!("flat: route catalog listing failed — keeping the prior menu snapshot");
+        return false;
+    }
+
+    let mut routes: heapless::Vec<obc_route::RouteSummary, { obc_app::MAX_ROUTES }> = heapless::Vec::new();
+    let mut ids: heapless::Vec<u64, { obc_app::MAX_ROUTES }> = heapless::Vec::new();
+    for entry in heads {
+        match store.with_source(entry.id, Some(entry.revision), |source| obc_route::RouteSummary::read(source)) {
+            Ok(Ok(summary)) => {
+                let _ = routes.push(summary);
+                let _ = ids.push(entry.id.0);
+            }
+            Ok(Err(obc_formats::io::Error::Io)) | Err(_) => {
+                defmt::warn!(
+                    "flat: route object {=u64} revision {=u64} hit transient media I/O — keeping the prior menu snapshot",
+                    entry.id.0,
+                    entry.revision.0
+                );
+                return false;
+            }
+            Ok(Err(_)) => defmt::warn!(
+                "flat: route object {=u64} revision {=u64} is malformed — omitted from menu",
+                entry.id.0,
+                entry.revision.0
+            ),
+        }
+    }
+    app.set_routes_with_ids(&routes, &ids);
+    defmt::info!("flat: Route menu loaded {=usize} route(s)", routes.len());
+    true
+}
+
+/// Decode the newest bounded trip objects and resolve their full-width stage `ObjectId`s against
+/// the route snapshot already fed to the app.
+#[inline(never)]
+pub(crate) fn load_trips(store: &'static FlatStore<FlatCard>, app: &mut obc_app::App) -> bool {
+    let mut heads: heapless::Vec<CatalogHead, { obc_app::MAX_TRIPS }> = heapless::Vec::new();
+    for entry in store.entries().filter(|entry| entry.kind == ObjectKind::Trip) {
+        retain_newest(&mut heads, CatalogHead { id: entry.id, revision: entry.revision });
+    }
+    if !store.entries_ok() {
+        defmt::warn!("flat: trip catalog listing failed — keeping the prior menu snapshot");
+        return false;
+    }
+
+    let mut metas: heapless::Vec<obc_route::TripMeta, { obc_app::MAX_TRIPS }> = heapless::Vec::new();
+    let mut ids: heapless::Vec<u64, { obc_app::MAX_TRIPS }> = heapless::Vec::new();
+    for entry in heads {
+        match store.with_source(entry.id, Some(entry.revision), |source| obc_route::TripMeta::read(source)) {
+            Ok(Ok(meta)) => {
+                let _ = metas.push(meta);
+                let _ = ids.push(entry.id.0);
+            }
+            Ok(Err(obc_formats::io::Error::Io)) | Err(_) => {
+                defmt::warn!(
+                    "flat: trip object {=u64} revision {=u64} hit transient media I/O — keeping the prior menu snapshot",
+                    entry.id.0,
+                    entry.revision.0
+                );
+                return false;
+            }
+            Ok(Err(_)) => defmt::warn!(
+                "flat: trip object {=u64} revision {=u64} is malformed — omitted from menu",
+                entry.id.0,
+                entry.revision.0
+            ),
+        }
+    }
+    let mut inputs: heapless::Vec<obc_app::TripInput<'_>, { obc_app::MAX_TRIPS }> = heapless::Vec::new();
+    for (id, meta) in ids.iter().copied().zip(metas.iter()) {
+        let _ = inputs.push(obc_app::TripInput { id, name: meta.name.as_str(), stage_ids: &meta.stage_ids });
+    }
+    app.set_trips(&inputs);
+    defmt::info!("flat: Route menu loaded {=usize} trip folder(s)", inputs.len());
+    true
 }

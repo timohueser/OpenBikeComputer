@@ -67,9 +67,9 @@
         revision: entry.revision,
     });
 
-    /** The shape `tripDelete.ts` reasons over — plain numbers and a name, no protocol types. */
+    /** The shape `tripDelete.ts` reasons over — full-width ids and a name, no protocol types. */
     const asStages = (trip: TripView): TripStages => ({
-        objectId: Number(trip.objectId),
+        objectId: trip.objectId,
         name: trip.displayName,
         detail: trip.detail,
     });
@@ -112,8 +112,7 @@
             if (tripId === null) return createTrip(c, routeName(route), [route.objectId]);
             const trip = dashboard.trips.find((t) => t.objectId === tripId);
             if (!trip) throw new Error("That trip is no longer on the device.");
-            // `stageId` refuses an id a trip object cannot name in its 16-bit stage field, rather
-            // than writing one that truncates into a different route.
+            // `stageId` validates the route's full-width id before writing the trip payload.
             return updateTrip(c, trip, (t) => addStage(t, stageId(route.objectId)));
         });
 
@@ -182,7 +181,7 @@
         const c = client;
         if (!c) return;
         const name = tripName(trip);
-        const routeIds = () => new Set(dashboard.routes.map((r) => Number(r.objectId)));
+        const routeIds = () => new Set(dashboard.routes.map((r) => r.objectId));
         const plan = planTripDelete(asStages(trip), dashboard.trips.map(asStages), routeIds());
 
         if (plan.offer === "trip-only") {
@@ -231,7 +230,7 @@
             const deletable = freshPlan.offer === "both" ? freshPlan.deletable : [];
             // The routes as the refresh just listed them, so each remove carries the revision the
             // plan was computed against.
-            const byId = new Map(dashboard.routes.map((route) => [Number(route.objectId), route]));
+            const byId = new Map(dashboard.routes.map((route) => [route.objectId, route]));
             // The trip goes first: while it exists, its stages are what makes those routes shared.
             await dashboard.enqueue(() => removeIfPresent(c, refOf(fresh)));
             for (const id of deletable) {

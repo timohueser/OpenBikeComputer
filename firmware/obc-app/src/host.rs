@@ -51,6 +51,53 @@ use crate::activity::{DetourRequest, DfuAction, NavRequest, TrackAction};
 use crate::dfu::{DfuFailure, DfuInstallError, DfuScanError, DfuScanReport, Version};
 use crate::screen::WarningFlags;
 
+/// What the board host must do when a computed-route publication answers. Cancellation can arrive
+/// while the synchronous store task is committing, so the answer is not automatically a success:
+/// the just-published revision must be removed before the host reports the cancellation complete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NavPublishDisposition {
+    Activate(crate::CatalogObjectId),
+    Compensate(crate::CatalogObjectId),
+}
+
+pub const fn nav_publish_disposition(cancel_requested: bool, id: crate::CatalogObjectId) -> NavPublishDisposition {
+    if cancel_requested {
+        NavPublishDisposition::Compensate(id)
+    } else {
+        NavPublishDisposition::Activate(id)
+    }
+}
+
+/// Store-task result categories relevant to retracting a route whose publication raced cancel.
+/// Kept independent of a concrete store error type so the app/host state machine remains portable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NavCompensationStatus {
+    /// The exact published revision was removed.
+    Removed,
+    /// The exact revision is already absent (for example a later replacement removed it first).
+    Absent,
+    /// Media or scheduling failure that can succeed on a later pass.
+    Retry,
+    /// A permanent store refusal. The host must release its planner resources rather than spin
+    /// forever; the board logs this as a violated publish-capacity invariant.
+    Terminal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NavCompensationDisposition {
+    Cancelled,
+    Retry,
+    CancelledAfterTerminalFailure,
+}
+
+pub const fn nav_compensation_disposition(status: NavCompensationStatus) -> NavCompensationDisposition {
+    match status {
+        NavCompensationStatus::Removed | NavCompensationStatus::Absent => NavCompensationDisposition::Cancelled,
+        NavCompensationStatus::Retry => NavCompensationDisposition::Retry,
+        NavCompensationStatus::Terminal => NavCompensationDisposition::CancelledAfterTerminalFailure,
+    }
+}
+
 /// Everything the app can ask its host to do — the typed successor of the per-feature `take_*`
 /// latches. Drained in the fixed [`HostCommand::DRAIN_ORDER`] by
 /// [`App::drain_host_commands`](crate::App::drain_host_commands); each variant documents its
@@ -87,28 +134,28 @@ pub enum HostCommand {
     /// re-feeds the catalog. The pending state is the menu's catalog *index*, resolved to the id
     /// at drain against the live catalog — a request whose route vanished drains to nothing.
     /// One-shot, modal-flow-guarded (hold-to-delete → per-pass drain).
-    DeleteRoute { id: u16 },
+    DeleteRoute { id: crate::CatalogObjectId },
     /// Cascade-delete the trip with durable object id `id` **and every member route** (epic #526,
     /// TR3). Already id-shaped (a trip id is durable); a vanished trip is a host-side no-op.
     /// One-shot, modal-flow-guarded.
-    DeleteTrip { id: u16 },
+    DeleteTrip { id: crate::CatalogObjectId },
     /// Delete the ride with durable object id `id` (epic #447, P7) — the ride-namespace twin of
     /// [`DeleteRoute`](HostCommand::DeleteRoute), index-resolved at drain the same way.
     /// One-shot, modal-flow-guarded. Also the auto-expiry sweep's ride-delete (epic #638, S3):
     /// a synced-and-aged-out ride leaves through this exact command, so the host deletes it through
     /// the same store path (revision bump + `storeChanged`) and a connected phone reconciles it like
     /// any other delete.
-    DeleteRide { id: u16 },
+    DeleteRide { id: crate::CatalogObjectId },
     /// Stamp route `id`'s `last_used` to `utc` in the SD route-retention sidecar (auto-expiry epic
     /// #638, S3) — the sweep's "start the clock on an unknown stamp" and "re-stamp the active route
     /// so it never expires under a ride" writes, and the once-per-activation stamp. **Not** a store
     /// delete: it is a device-local sidecar write, no revision bump. Drained from the sweep queue,
     /// one per pass; the host applies it and the next scan re-feeds the app the fresh meta.
-    StampRouteUsed { id: u16, utc: u32 },
+    StampRouteUsed { id: crate::CatalogObjectId, utc: u32 },
     /// Stamp ride `id`'s `synced_at` to `utc` in the extended synced-set sidecar (auto-expiry epic
     /// #638, S3) — the sweep's "start the countdown on a legacy synced-without-stamp ride" write.
     /// Only ever fills a `0` stamp (the host never re-stamps). Sidecar write, no revision bump.
-    StampRideSynced { id: u16, utc: u32 },
+    StampRideSynced { id: crate::CatalogObjectId, utc: u32 },
     /// Close the open ride log: finalise it to the host's saved-ride artifact
     /// ([`TrackAction::Save`]) or throw it away ([`TrackAction::Discard`]). Persistence-critical
     /// one-shot; the host reads [`ride_stats`](crate::App::ride_stats) in the same pass so the
@@ -274,7 +321,7 @@ pub enum HostEvent {
     /// contract), `replaced` says the bytes of a stored route were swapped, `elevation` is the
     /// commit-time mini sparkline for the idle prompt. The advisory prompt keeps its documented
     /// single-slot **most-recent-wins** delivery.
-    RouteUploaded { id: u16, replaced: bool, elevation: Option<[u8; obc_route::SPARKLINE_BUCKETS]> },
+    RouteUploaded { id: crate::CatalogObjectId, replaced: bool, elevation: Option<[u8; obc_route::SPARKLINE_BUCKETS]> },
     /// A **trip** upload committed to the store (epic #526): `id` is the trip's durable object id,
     /// resolved against the **already re-fed** trip catalog (the same rescan-then-resolve ordering
     /// contract as [`RouteUploaded`](HostEvent::RouteUploaded)). A **fresh** trip (`replaced ==
@@ -285,20 +332,20 @@ pub enum HostEvent {
     /// upload *per click*), so announcing each would be a popup parade — the user just made the
     /// change and needs no card. Deliberately not the route family's behavior: a route replace can
     /// force adoption mid-ride, a trip replace changes no navigation state at all.
-    TripUploaded { id: u16, replaced: bool },
+    TripUploaded { id: crate::CatalogObjectId, replaced: bool },
     /// One or more device warnings were discovered (issue #504); flags accumulate onto the single
     /// dismissable card, each surfaced once per boot.
     Warning(WarningFlags),
     /// The answer to [`HostCommand::PlanRoute`]: the committed nav route's durable id, or the
     /// typed failure. Lands in the planning screen; dropped if the rider already cancelled.
-    NavPlanned(Result<u16, obc_route::nav::NavError>),
+    NavPlanned(Result<crate::CatalogObjectId, obc_route::nav::NavError>),
     /// The answer to [`HostCommand::PlanDetour`] (#882): the preview figures, or the typed
     /// failure (mapped to the "try a farther rejoin" presentation). The preview *polyline* rides
     /// its own [`set_detour_preview`](crate::App::set_detour_preview) feeder, never the event.
     DetourPlanned(Result<DetourPreview, obc_route::nav::NavError>),
     /// The answer to [`HostCommand::CommitDetour`] (#882): the spliced route's durable id (the
     /// re-adoption key), or the typed failure (the old route stays untouched).
-    DetourCommitted(Result<u16, obc_route::nav::NavError>),
+    DetourCommitted(Result<crate::CatalogObjectId, obc_route::nav::NavError>),
     /// The answer to [`HostCommand::ScanCardFree`]: free bytes, or `None` when the scan
     /// failed/is unavailable.
     CardScanned { free_bytes: Option<u64> },

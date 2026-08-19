@@ -79,7 +79,7 @@ enum Row {
 /// never move it, and a trip delete re-feeds the trip catalog separately).
 #[derive(Debug, Clone, Copy)]
 enum SelId {
-    Folder(u16),
+    Folder(crate::CatalogObjectId),
     Route(usize),
 }
 
@@ -110,7 +110,7 @@ enum RouteMenuScope {
     /// Inside one trip's folder: that trip's member routes only, keyed by the trip's **durable id**
     /// (resolved against the live trip catalog each frame, so a rescan that reorders trips can't
     /// mis-scope it, and a trip that vanished shows the empty state).
-    Trip { trip_id: u16 },
+    Trip { trip_id: crate::CatalogObjectId },
 }
 
 /// The route list. State is the highlighted row, its pinned identity (for the rescan remap), and
@@ -139,7 +139,7 @@ impl RouteMenuScreen {
 
     /// A stage list scoped to the trip with durable id `trip_id` — pushed when a folder row is
     /// pressed at the top level.
-    pub fn trip(trip_id: u16) -> Self {
+    pub fn trip(trip_id: crate::CatalogObjectId) -> Self {
         RouteMenuScreen { selected: 0, sel_id: None, scope: RouteMenuScope::Trip { trip_id } }
     }
 
@@ -420,8 +420,14 @@ mod tests {
 
     /// A resolved trip grouping the given catalog indices (stage ids == indices here — the positional
     /// id case), against a catalog whose ids equal their indices.
-    fn trip(id: u16, name: &str, stages: &[u16], catalog: &[RouteSummary]) -> TripSummary {
-        let ids: heapless::Vec<u16, { crate::route::MAX_ROUTES }> = (0..catalog.len() as u16).collect();
+    fn trip(
+        id: crate::CatalogObjectId,
+        name: &str,
+        stages: &[crate::CatalogObjectId],
+        catalog: &[RouteSummary],
+    ) -> TripSummary {
+        let ids: heapless::Vec<crate::CatalogObjectId, { crate::route::MAX_ROUTES }> =
+            (0..catalog.len() as crate::CatalogObjectId).collect();
         TripSummary::resolve(&TripInput { id, name, stage_ids: stages }, catalog, &ids)
     }
 

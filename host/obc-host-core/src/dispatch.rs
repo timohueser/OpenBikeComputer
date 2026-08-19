@@ -177,7 +177,7 @@ impl HostLoop {
                     }
                 }
                 HostCommand::DeleteRide { id } => {
-                    if rides.delete_by_id(id) {
+                    if u16::try_from(id).is_ok_and(|id| rides.delete_by_id(id)) {
                         app.set_rides(rides.catalog(), rides.ids());
                     }
                 }
@@ -195,7 +195,11 @@ impl HostLoop {
                 // Auto-expiry sidecar stamps (epic #638, S3): apply to the host's retention store —
                 // the app already mirrored the value optimistically, so no re-feed is needed here.
                 HostCommand::StampRouteUsed { id, utc } => routes.stamp_route_used(id, utc),
-                HostCommand::StampRideSynced { id, utc } => rides.stamp_synced_at(id, utc),
+                HostCommand::StampRideSynced { id, utc } => {
+                    if let Ok(id) = u16::try_from(id) {
+                        rides.stamp_synced_at(id, utc);
+                    }
+                }
                 HostCommand::CancelRoutePlan => {
                     if matches!(self.plan, Some(InflightPlan::Nav(_))) {
                         self.plan = None;

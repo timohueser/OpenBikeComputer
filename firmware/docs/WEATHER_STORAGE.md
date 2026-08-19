@@ -1,82 +1,65 @@
 # Weather storage architecture
 
 This document fixes the device-side storage and selection policy for OBCW v1 bundles. The wire
-format remains normative in [`specs/OBCW_Spec.md`](../../specs/OBCW_Spec.md); this policy is about
-how validated objects are published and read from a microSD card.
+format remains normative in [`specs/OBCW_Spec.md`](../../specs/OBCW_Spec.md); this policy describes
+how validated weather objects are published and read from a flat-store card.
 
 ## Boundaries
 
 - `obc-formats` owns the OBCW byte layout.
-- `obc-weather` owns allocation-free validation, timestamp/geographic lookup, the fixed lookup
-  cache, and pure dual-slot selection. It has no filesystem or transport dependency.
-- `obc-storage::weather` owns the transport-independent publication state machine through the
-  `WeatherSlotIo` trait.
-- `obc-fw-nrf54l::sd` and `obc-sim::weather_store` are filesystem adapters. Both hand stable
-`ByteSource`s to `obc-weather`, so simulator and firmware use exactly the same validator and
-selector. After that full validation, each host retains a `ValidatedBundle` proof beside the
-stable source; repeated sampling verifies only the header identity instead of CRC-walking and
-decoding every tile again.
+- `obc-weather` owns allocation-free validation, timestamp/geographic lookup and the fixed lookup
+  cache. It has no card-format or transport dependency.
+- `obc-storage::flat` owns immutable object revisions and atomic catalog commits.
+- `obc-link` carries protocol-v4 `PUT`/`GET`/`LIST`/`REMOVE` records without parsing OBCW.
+- `obc-fw-nrf54l::flat_store` selects, validates and holds the active kind-4 object for the ride and
+  weather scheduler planes.
 
-Provider clients, phone scheduling, BLE object routing, weather UI, and rendering are outside
-these layers. In particular, adding another provider does not change firmware storage.
+Provider clients, phone scheduling, weather UI and rendering stay outside those layers. Adding
+another provider does not change device storage.
 
-## Fixed slots and boot selection
+## Active object selection
 
-The card root contains exactly two eligible names: `WEATHER.A` and `WEATHER.B`. There is no
-weather `UPLOAD.TMP`, rename chain, or scan for alternate filenames. Boot fully validates both
-slots through `WeatherReader::open`; missing, unreadable, truncated, CRC-invalid, or structurally
-invalid files are never candidates.
+Every non-`RETAINED` `WeatherBundle` catalog head is a candidate. The board fully validates each
+candidate with `WeatherReader::open`; a truncated, CRC-invalid, structurally invalid or unreadable
+object is omitted.
 
-When both slots are valid, generation comparison uses wrapping RFC-1982-style serial arithmetic:
-
-- a non-zero difference other than `2^31` has an unambiguous serial-newer value;
-- equal generations use later `generated_at`, then slot A for an exact tie;
-- the exactly-`2^31` ambiguous difference also uses later `generated_at`, then slot A for an exact
-  tie.
-
-Publication is stricter than boot tie-breaking: an incoming equal/half-range generation replaces
-the active slot only when its `generated_at` is later. Exact ties are rejected as not newer.
+When multiple valid object ids exist, the OBCW generation is compared with wrapping
+RFC-1982-style serial arithmetic. Equal generations and the exactly-`2^31` ambiguous difference
+use the later `generated_at`; an exact OBCW identity tie uses the larger flat-store `ObjectId` for a
+stable result. The selected identity includes `(ObjectId, Revision)`, so replacing an object always
+invalidates the reader even if a producer repeats generation metadata.
 
 ## Crash-safe publication
 
-`WeatherUpload` receives the announced object length and an outer transport CRC, then performs
-this sequence:
+The protocol-v4 engine reserves fresh extents, writes the complete payload, verifies the transfer
+CRC and atomically commits the new catalog entry. A replacement can mark the displaced weather
+revision `RETAINED` in that same commit. Until the commit, readers continue to resolve the old
+head; after it, new opens resolve the new immutable revision. An interrupted transfer is never a
+catalog entry and cannot become active after reboot.
 
-1. Fully inspect both slots and choose only a proven-safe inactive slot. An unreadable slot is not
-   truncated because it might contain the only valid object.
-2. Truncate/create that exact inactive name and write four zero bytes at offset zero.
-3. Hold the incoming `OBCW` magic in memory, stream only bytes `4..`, and update the outer CRC.
-4. Flush and close the inactive body.
-5. Overlay the held magic while re-opening the closed file through the complete OBCW validator.
-   This proves its internal CRC, canonical layout, timestamps, directory entries, and every tile
-   payload without first making it boot-eligible.
-6. Reject a candidate that is not strictly newer than the active one.
-7. Patch the real four-byte magic, flush, and close. This is the eligibility point.
+The board validates OBCW after publication at the domain load seam. A well-formed transfer carrying
+the wrong bytes can therefore occupy an object revision but cannot become the active weather
+bundle. Removing or replacing it uses the ordinary flat-store operations; there are no held-magic
+files, inactive slots, temporary names or filesystem rename rules.
 
-Until step 7, any power cut leaves zero magic and boot ignores the partial slot. The old active
-slot is never modified. If the final magic write or its flush reports an error, storage semantics
-allow **either** of two legal media outcomes: the patch did not persist and boot selects the old
-slot, or the complete patch persisted and boot may select the new slot. Both are correct recovery
-outcomes because boot revalidates both complete objects and applies the deterministic selector.
-The upload API reports the I/O error rather than claiming which persistence outcome occurred.
+## Reader and scheduler lifecycle
 
-Transport abort, card-full, partial append, body-close failure, invalid outer/internal CRC, and
-card removal leave the old active bytes untouched. A retry always begins from byte zero in a newly
-selected inactive slot.
+`FlatWeather` retains the validated header proof beside the selected `(ObjectId, Revision)`. The
+ride plane holds that exact immutable revision open and reconstructs a reader with one matching
+header read for dashboard sampling and Rain Map rendering. A catalog movement revalidates the
+selection, releases the old hold and opens the new revision between synchronous reader uses.
+
+The due scheduler also wakes on catalog movement. It completes an outstanding request only when a
+new validated weather head contains that exact request id. Route, trip, map, delete and malformed
+weather commits therefore cannot falsely finish the retry ladder. A valid unrelated weather object
+can still become readable, but it does not acknowledge another request.
 
 ## Reader and I/O budgets
 
 `WeatherReader` never allocates a whole object or frame. `WeatherCache` retains one frame
-descriptor, a four-entry tile-directory window, and one decoded 16 x 16 tile. Every cache key uses
+descriptor, a four-entry tile-directory window and one decoded 16 x 16 tile. Every cache key uses
 both generation and validated bundle CRC, so a later object cannot inherit bytes from an
 equal-generation predecessor.
-
-On the board, the selected slot remains open read-only for the session. Upload inspection reuses
-that handle (the FAT layer rejects a second open of the same file), while publication writes only
-the inactive slot. A successful commit closes the old reader, re-runs deterministic A/B selection,
-fully validates the winner once, and installs its new handle and proof together. Dashboard/hourly
-sampling and Rain Map rendering then use the proof's one-header fast reopen; no full-bundle
-validation occurs in a render or GPS-sampling hot path.
 
 The Thumb target reports a representative reader plus cache at **472 bytes**. Compile-time checks
 keep that total below the 2 KiB target and hard 4 KiB ceiling. The 46,480-byte DWD-shaped fixture
@@ -84,5 +67,4 @@ pins a cold random tile lookup at at most **3 logical `read_at` calls** and **5 
 blocks**; an exact tile hit performs no reads, and another tile in the same four-entry directory
 window needs only its payload read. Tests exhaust all 324 tiles in the nine-frame fixture.
 
-These are logical source/block ceilings, not claims about a filesystem driver's internal cache or
-physical card command latency.
+These are logical source/block ceilings, not claims about card-command latency.

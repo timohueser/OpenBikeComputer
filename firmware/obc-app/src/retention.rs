@@ -372,17 +372,17 @@ pub fn decode_route_retention(bytes: &[u8]) -> RouteRetentionStore {
 pub enum SweepAction {
     /// Delete the expired route with this durable id (via the existing
     /// [`HostCommand::DeleteRoute`](crate::HostCommand::DeleteRoute)).
-    DeleteRoute(u16),
+    DeleteRoute(crate::CatalogObjectId),
     /// Stamp this route's `last_used` to now — start the clock on an unknown stamp, or re-stamp the
     /// active route so it never expires underneath a ride
     /// ([`HostCommand::StampRouteUsed`](crate::HostCommand::StampRouteUsed)).
-    StampRoute(u16),
+    StampRoute(crate::CatalogObjectId),
     /// Delete the synced-and-aged-out ride with this durable id
     /// ([`HostCommand::DeleteRide`](crate::HostCommand::DeleteRide)).
-    DeleteRide(u16),
+    DeleteRide(crate::CatalogObjectId),
     /// Stamp this ride's `synced_at` to now — start the countdown on a legacy synced-without-stamp
     /// ride ([`HostCommand::StampRideSynced`](crate::HostCommand::StampRideSynced)).
-    StampRide(u16),
+    StampRide(crate::CatalogObjectId),
 }
 
 /// One stored ride's **retention-relevant** facts — the compact, board-agnostic inventory the sweep
@@ -397,7 +397,7 @@ pub enum SweepAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RideRetentionRecord {
     /// The ride's durable object id.
-    pub id: u16,
+    pub id: crate::CatalogObjectId,
     /// Whether the phone has a durable copy (the synced-set flag). An unsynced ride is never touched.
     pub synced: bool,
     /// The UTC-seconds instant the ride was first synced (`0` = legacy synced-without-stamp — the
@@ -413,7 +413,7 @@ pub struct SweepInputs<'a> {
     /// Current UTC unix seconds (only ever passed when the clock is trusted — the caller gates it).
     pub now_utc: u32,
     /// Durable route ids, pairwise with [`route_metas`](SweepInputs::route_metas).
-    pub route_ids: &'a [u16],
+    pub route_ids: &'a [crate::CatalogObjectId],
     /// Each route's retention meta, pairwise with [`route_ids`](SweepInputs::route_ids).
     pub route_metas: &'a [RouteRetentionMeta],
     /// The active-navigation route's catalog index, or `None` — never deleted (re-stamped instead).
@@ -537,7 +537,7 @@ pub(crate) struct RetentionRuntime {
     /// `last_used` stamp fires when the active route *changes*, not every tick it stays active.
     /// Only advanced once the stamp is actually queued (never lost to capacity pressure —
     /// finding #876-1).
-    last_active_stamped: Option<u16>,
+    last_active_stamped: Option<crate::CatalogObjectId>,
     /// Per-kind in-flight **route** / **ride** delete: the dispatched candidate's id plus the
     /// map-plane-millis instant it may be re-dispatched (the bounded
     /// [`RETENTION_DELETE_BACKOFF_MS`] pacing); `None` = nothing of that kind is in flight, the head
@@ -548,8 +548,8 @@ pub(crate) struct RetentionRuntime {
     /// it) clears the slot — cancelling some *other* queued-but-never-dispatched candidate of the
     /// same kind (e.g. an activation retiring its own delete while a different route's delete is
     /// outstanding) must not re-open the dispatch window mid-flight.
-    route_delete_inflight: Option<(u16, u32)>,
-    ride_delete_inflight: Option<(u16, u32)>,
+    route_delete_inflight: Option<(crate::CatalogObjectId, u32)>,
+    ride_delete_inflight: Option<(crate::CatalogObjectId, u32)>,
 }
 
 impl RetentionRuntime {
@@ -566,7 +566,7 @@ impl RetentionRuntime {
 
     /// The per-kind in-flight slot (`None` for the non-delete kinds — the stamp classes are
     /// fire-and-forget and never paced).
-    fn inflight_slot(&mut self, kind: SweepKind) -> Option<&mut Option<(u16, u32)>> {
+    fn inflight_slot(&mut self, kind: SweepKind) -> Option<&mut Option<(crate::CatalogObjectId, u32)>> {
         match kind {
             SweepKind::DeleteRoute => Some(&mut self.route_delete_inflight),
             SweepKind::DeleteRide => Some(&mut self.ride_delete_inflight),
@@ -582,7 +582,7 @@ impl RetentionRuntime {
     /// Pop the first queued action of `kind`, or `None`. Removes it (each is a distinct one-shot).
     /// The **stamp** drain path — a delete candidate is never consumed this way (it is retained
     /// until confirmed; see [`peek`](Self::peek) / [`cancel`](Self::cancel)).
-    pub(crate) fn take(&mut self, kind: SweepKind) -> Option<u16> {
+    pub(crate) fn take(&mut self, kind: SweepKind) -> Option<crate::CatalogObjectId> {
         let pos = self.queue.iter().position(|a| kind.matches(*a))?;
         Some(self.queue.remove(pos).id())
     }
@@ -590,7 +590,7 @@ impl RetentionRuntime {
     /// The first queued candidate id of `kind` **without** removing it — the delete drain peeks,
     /// re-derives the live decision, and only then either [`cancel`](Self::cancel)s it (invalid /
     /// already applied) or dispatches it (kept for retry).
-    pub(crate) fn peek(&self, kind: SweepKind) -> Option<u16> {
+    pub(crate) fn peek(&self, kind: SweepKind) -> Option<crate::CatalogObjectId> {
         self.queue.iter().find(|a| kind.matches(**a)).map(|a| a.id())
     }
 
@@ -601,7 +601,7 @@ impl RetentionRuntime {
     /// while a *different* id's delete is outstanding) leaves the in-flight slot alone, preserving
     /// the per-kind one-in-flight property: the outstanding id is not re-dispatched mid-flight by an
     /// unrelated cancel. Returns whether anything was removed.
-    pub(crate) fn cancel(&mut self, kind: SweepKind, id: u16) -> bool {
+    pub(crate) fn cancel(&mut self, kind: SweepKind, id: crate::CatalogObjectId) -> bool {
         let Some(pos) = self.queue.iter().position(|a| kind.matches(*a) && a.id() == id) else {
             return false;
         };
@@ -621,7 +621,7 @@ impl RetentionRuntime {
     /// per kind. Cancellation of the dispatched id clears the slot, so the common success path
     /// (rescan drops the id within a frame or two) is never gated; only a genuinely-failing write
     /// waits out the backoff before it re-fires.
-    pub(crate) fn delete_dispatch_ready(&mut self, kind: SweepKind, id: u16, now_ms: u32) -> bool {
+    pub(crate) fn delete_dispatch_ready(&mut self, kind: SweepKind, id: crate::CatalogObjectId, now_ms: u32) -> bool {
         match self.inflight_slot(kind).and_then(|s| *s) {
             None => true,
             Some((inflight, at)) => inflight == id && now_ms.wrapping_sub(at) < 0x8000_0000,
@@ -632,7 +632,7 @@ impl RetentionRuntime {
     /// slot and arm the bounded re-dispatch backoff so a still-present (failed) object doesn't
     /// re-fire every frame. The candidate itself stays queued (retained until storage confirms it
     /// gone).
-    pub(crate) fn mark_delete_dispatched(&mut self, kind: SweepKind, id: u16, now_ms: u32) {
+    pub(crate) fn mark_delete_dispatched(&mut self, kind: SweepKind, id: crate::CatalogObjectId, now_ms: u32) {
         if let Some(slot) = self.inflight_slot(kind) {
             *slot = Some((id, now_ms.wrapping_add(RETENTION_DELETE_BACKOFF_MS)));
         }
@@ -649,7 +649,7 @@ impl RetentionRuntime {
     ///   live drain recheck is the primary guard; this closes the window belt-and-braces);
     /// - it advances `last_active_stamped` **only once the stamp is actually queued**, so a full
     ///   queue can never drop the activation stamp and then suppress the retry — a later tick re-tries.
-    pub(crate) fn note_active_route(&mut self, active_id: Option<u16>) {
+    pub(crate) fn note_active_route(&mut self, active_id: Option<crate::CatalogObjectId>) {
         match active_id {
             Some(id) => {
                 // Invariant 3: an activated route must never be deleted by an earlier sweep decision.
@@ -668,7 +668,7 @@ impl RetentionRuntime {
 
     /// Ensure a `StampRoute(id)` is queued (idempotent — skips a duplicate). Returns whether one is
     /// queued afterwards (`false` only when the queue was full and the push failed).
-    pub(crate) fn ensure_stamp_route(&mut self, id: u16) -> bool {
+    pub(crate) fn ensure_stamp_route(&mut self, id: crate::CatalogObjectId) -> bool {
         if self.queue.iter().any(|a| matches!(a, SweepAction::StampRoute(q) if *q == id)) {
             return true;
         }
@@ -683,7 +683,7 @@ impl RetentionRuntime {
     /// safe fallback). Idempotent: skips an id already queued (the drain mirrors `last_used` into the
     /// resident meta, so a stamped route stops re-enqueuing). Reuses the `StampRouteUsed` host path (the
     /// same sidecar write a sweep / activation stamp takes) — no new channel.
-    pub(crate) fn note_route_uploaded(&mut self, id: u16) {
+    pub(crate) fn note_route_uploaded(&mut self, id: crate::CatalogObjectId) {
         if !self.queue.iter().any(|a| matches!(a, SweepAction::StampRoute(q) if *q == id)) {
             let _ = self.queue.push(SweepAction::StampRoute(id));
         }
@@ -705,7 +705,7 @@ impl RetentionRuntime {
     }
 
     /// Whether a `StampRide` for `id` is already queued — the eager stamp's re-enqueue guard.
-    fn has_stamp_ride(&self, id: u16) -> bool {
+    fn has_stamp_ride(&self, id: crate::CatalogObjectId) -> bool {
         self.queue.iter().any(|a| matches!(a, SweepAction::StampRide(q) if *q == id))
     }
 
@@ -766,7 +766,7 @@ impl SweepKind {
 
 impl SweepAction {
     /// The durable object id this action targets.
-    fn id(self) -> u16 {
+    fn id(self) -> crate::CatalogObjectId {
         match self {
             SweepAction::DeleteRoute(id)
             | SweepAction::StampRoute(id)
@@ -916,13 +916,13 @@ mod tests {
         }
     }
 
-    fn ride(id: u16, synced: bool, synced_at_utc: u32) -> RideRetentionRecord {
+    fn ride(id: crate::CatalogObjectId, synced: bool, synced_at_utc: u32) -> RideRetentionRecord {
         RideRetentionRecord { id, synced, synced_at_utc }
     }
 
     #[test]
     fn sweep_deletes_expired_keeps_fresh_and_never() {
-        let ids = [10u16, 11, 12];
+        let ids = [10u64, 11, 12];
         let now = 1_000_000;
         let metas = [
             RouteRetentionMeta::new(Retention::Day1, now - 2 * DAY_SECS), // expired
@@ -937,7 +937,7 @@ mod tests {
 
     #[test]
     fn sweep_stamps_unknown_last_used() {
-        let ids = [10u16];
+        let ids = [10u64];
         let metas = [RouteRetentionMeta::new(Retention::Day1, 0)]; // retention set, clock not started
         let inputs = SweepInputs { now_utc: 1_000_000, route_ids: &ids, route_metas: &metas, ..ins() };
         let mut out: heapless::Vec<SweepAction, 8> = heapless::Vec::new();
@@ -947,7 +947,7 @@ mod tests {
 
     #[test]
     fn sweep_re_stamps_active_route_past_expiry() {
-        let ids = [10u16, 11];
+        let ids = [10u64, 11];
         let now = 1_000_000;
         let metas = [
             RouteRetentionMeta::new(Retention::Day1, now - 5 * DAY_SECS), // active + expired
@@ -1000,7 +1000,7 @@ mod tests {
         // Build an inventory larger than the UI cap: the newest UI_RIDES_CAP are fresh/unsynced, an
         // old one (index past the cap) is synced + expired, and another old one is legacy-unstamped.
         let mut recs: heapless::Vec<RideRetentionRecord, MAX_RIDES> = heapless::Vec::new();
-        for i in 0..UI_RIDES_CAP as u16 {
+        for i in 0..UI_RIDES_CAP as crate::CatalogObjectId {
             let _ = recs.push(ride(100 + i, false, 0)); // the "visible" newest 32: unsynced
         }
         let _ = recs.push(ride(7, true, now - 30 * DAY_SECS)); // old, synced long ago → expired
@@ -1067,7 +1067,7 @@ mod tests {
     fn activation_stamp_survives_capacity_pressure() {
         let mut rt = RetentionRuntime::new();
         // Saturate the queue with delete candidates.
-        for i in 0..SWEEP_QUEUE_CAP as u16 {
+        for i in 0..SWEEP_QUEUE_CAP as crate::CatalogObjectId {
             rt.test_push(SweepAction::DeleteRoute(i));
         }
         rt.note_active_route(Some(9_999));

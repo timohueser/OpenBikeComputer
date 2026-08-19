@@ -398,5 +398,5 @@ passes. A representative Thumb `WeatherReader` plus its generation-and-CRC-keyed
 512-byte blocks** over every tile of the DWD-shaped vector; an exact tile-cache hit performs no
 reads. These measured implementation budgets do not change the wire format.
 
-The device's dual-slot publication and generation-selection rules are intentionally outside the
+The device's flat-store publication and generation-selection rules are intentionally outside the
 wire format and are specified in [`firmware/docs/WEATHER_STORAGE.md`](../firmware/docs/WEATHER_STORAGE.md).

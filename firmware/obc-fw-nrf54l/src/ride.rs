@@ -41,6 +41,10 @@ use obc_platform::SynthLocation;
 // battery stand-in until the nPM1300 PMIC gauge is read.
 use obc_display::ls021::{FRAME_H, FRAME_W};
 use obc_display::FbDevice64;
+#[cfg(has_nav)]
+use obc_formats::io::{ByteSink, Error as ByteError};
+#[cfg(has_nav)]
+use obc_formats::obcr::HEADER_FULL_LEN;
 use obc_platform::StubFuelGauge;
 use obc_reader::{MapCache, MapTables, Reader};
 // The ride loop's route types: the decoded-route-geometry cache, the resident per-route chunk
@@ -74,7 +78,7 @@ const INPUT_HB_STALE_MS: u32 = 65_000;
 /// Inputs that make the resident weather snapshot materially different. Keeping this named makes
 /// the retry/cache rule below readable and avoids hiding its four independent invalidation axes
 /// inside a nested tuple type at the use site.
-type WeatherSampleKey = (obc_weather::Candidate, Option<(i32, i32)>, Option<(Option<usize>, u32, u32)>, i64);
+type WeatherSampleKey = (crate::flat_store::FlatWeather, Option<(i32, i32)>, Option<(Option<usize>, u32, u32)>, i64);
 /// Fixed-position weather has no clock input. This impossible minute bucket keeps the compact
 /// `i64` cache-key field (an `Option<i64>` costs another eight resident bytes on Thumb). It cannot
 /// collide with the projected key: dividing any cast `i64` wall time by 60 is strictly greater
@@ -131,10 +135,9 @@ const fn weather_refresh_in_flight() -> bool {
     false
 }
 
-/// The loop's third select arm: a sensor/host datapoint, **or** (`ble` builds) a store movement —
-/// a BLE route commit/delete wakes the loop so the live-catalog rescan (#450) lands now, not at
+/// The loop's third select arm: a sensor/host datapoint, or a flat-store movement on either link —
+/// a route/trip commit/delete wakes the loop so the live-catalog rescan (#450) lands now, not at
 /// the next timer/sensor wake (a parked device otherwise dozes up to the ~12 s watchdog-feed cap).
-#[cfg(feature = "ble")]
 async fn wait_host_or_sensor_event(
     #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))] consumer: SensorConsumer<'static>,
 ) {
@@ -143,19 +146,40 @@ async fn wait_host_or_sensor_event(
             #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
             consumer,
         ),
-        crate::object_store::wait_store_changed(),
+        embassy_futures::select::select(
+            crate::flat_store::wait_catalog_commit(),
+            crate::object_store::wait_store_changed(),
+        ),
     )
     .await;
 }
-#[cfg(not(feature = "ble"))]
-async fn wait_host_or_sensor_event(
-    #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))] consumer: SensorConsumer<'static>,
-) {
-    wait_sensor_event(
-        #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
-        consumer,
-    )
-    .await;
+
+/// Apply successful protocol-v4 route/trip uploads only after the catalog snapshots containing
+/// their committed heads have been fed to `App`. This ordering is what lets a same-id active route
+/// replacement invalidate geometry-derived state through `HostEvent::RouteUploaded`.
+fn apply_catalog_uploads(app: &mut App) {
+    // More than one full catalog of distinct facts can only happen when rapid remove/create churn
+    // leaves stale ids queued. If that exhausted the bounded handoff, conservatively refresh the
+    // active route first: even if its exact replace fact was the evicted oldest entry, no geometry
+    // derived from the displaced revision survives. Exact retained facts then land in commit order
+    // and retain the final advisory card.
+    if crate::flat_store::take_catalog_upload_loss() {
+        if let Some(id) = app.active_route_index().and_then(|i| app.route_ids().get(i).copied()) {
+            app.apply_event(obc_app::HostEvent::RouteUploaded { id, replaced: true, elevation: None });
+        }
+    }
+    while let Some(upload) = crate::flat_store::take_catalog_upload() {
+        match upload.kind() {
+            crate::flat_store::CatalogUploadKind::Route => app.apply_event(obc_app::HostEvent::RouteUploaded {
+                id: upload.id(),
+                replaced: upload.replaced(),
+                elevation: None,
+            }),
+            crate::flat_store::CatalogUploadKind::Trip => {
+                app.apply_event(obc_app::HostEvent::TripUploaded { id: upload.id(), replaced: upload.replaced() })
+            }
+        }
+    }
 }
 
 /// A `no_std` [`Clock`](obc_render::Clock) over embassy's monotonic `Instant`, in microseconds — the
@@ -168,29 +192,11 @@ impl obc_render::Clock for InstantClock {
     }
 }
 
-/// Scan the card's `/routes` catalog into the app's Route menu, carrying each entry's durable
-/// object id so the app can remap held indices by identity across rescans (#450). Called at boot
-/// (from `main`) and again on every store-changed edge (the live rescan below — same machinery).
-/// Deliberately its **own `#[inline(never)]` frame**: the ~5 KB [`Catalog`](obc_app::Catalog)
-/// (`Vec<RouteSummary, MAX_ROUTES>`, 64 × ~84 B) lives here and is popped on return, so it never
-/// sits resident *beneath* the long-lived [`run_app`] ride loop — where 5 KB would steal from the
-/// deep route-load render path's stack and overflow the 256 KB part. The mid-session call runs
-/// sequentially with (never under) that deep render path, so it adds nothing to the pass's peak.
-#[inline(never)]
-pub(crate) fn load_routes(storage: &mut sd::Storage, app: &mut App) {
-    let mut catalog = heapless::Vec::new();
-    storage.scan_routes_into(&mut catalog);
-    // Carry each route's device-local retention meta (auto-expiry epic #638, S3) from the
-    // `/routes` sidecar, pairwise with the ids, so the sweep reads device truth.
-    let metas = storage.route_retention_metas();
-    app.set_routes_with_meta(&catalog, storage.route_ids(), &metas);
-}
-
 /// Scan the card's `/tracks` into the app's Rides menu (epic #447 P7 / #454), carrying each ride's
 /// durable object id + its synced flag (from the `/tracks` synced-set sidecar). Called at boot and on
 /// every store-changed edge (a finished ride, an on-device or phone-side ride delete). Its own
-/// `#[inline(never)]` frame for the same stack reason as [`load_routes`]: the ride catalog is popped
-/// on return, never resident under the deep render path.
+/// `#[inline(never)]` frame so the ride catalog is popped on return, never resident under the deep
+/// render path.
 #[inline(never)]
 pub(crate) fn load_rides(storage: &mut sd::Storage, app: &mut App) {
     let mut catalog = heapless::Vec::new();
@@ -200,26 +206,6 @@ pub(crate) fn load_rides(storage: &mut sd::Storage, app: &mut App) {
     // just the newest-32 the menu shows, so the auto-delete sweep + eager stamp reach older synced
     // rides. Independent of the display catalog above; one extra synced-set read.
     app.set_ride_retention_inventory(&storage.ride_retention_inventory());
-}
-
-/// Perform the one boot-time media scan that seeds the canonical trip repository. Runtime trip
-/// commits/deletes mutate that repository directly; a route-only store edge must never rescan trip
-/// media behind the trip revision advertised to the phone. Keep its directory-name scratch in this
-/// popped frame rather than letting it become part of `main`'s async frame.
-#[inline(never)]
-pub(crate) fn scan_trips_at_boot(storage: &mut sd::Storage) {
-    storage.trips().scan();
-}
-
-/// Reload the app's trip folders from the canonical repository without scanning or mutating it.
-/// Called at boot and on every store-changed edge — **after** [`load_routes`], so a route deleted
-/// individually re-resolves trip stage totals against the fresh route catalog (a dangling stage
-/// then contributes nothing). Its own `#[inline(never)]` frame for the same stack reason as
-/// [`load_routes`]/[`load_rides`].
-#[inline(never)]
-pub(crate) fn load_trips(storage: &mut sd::Storage, app: &mut App) {
-    let trips = storage.trips();
-    app.set_trips(&trips.inputs());
 }
 
 /// Fill an open Ride detail's pending **track-profile request** (epic #678 T2 / #680): drain the
@@ -293,16 +279,95 @@ struct NavBuffers<'a> {
 /// itself sits in the [`NavBuffers`] `.bss` slot this struct guards.
 #[cfg(has_nav)]
 struct NavRun {
-    file: embedded_sdmmc::RawFile,
+    allocation: Option<obc_storage::flat::Allocation>,
+    io: NavIo,
+    cancel_requested: bool,
+    io_started: Instant,
     /// Wall time when the request was drained — the RTT line's user-perceived `total_ms`.
     t0: Instant,
     /// Per-phase step time (µs), attributed by the planner's phase **before** each step:
     /// `[snap, search, emit]`.
     phase_us: [u64; 3],
+    /// Store-task time spent flushing bounded output stages before the final checksum/commit.
+    write_us: u64,
     /// Physical-card reads issued inside planner steps, split by the same phase. Unlike the cache
     /// counters this sees sector-splitting and alignment bounces at the block-device boundary.
     #[cfg(feature = "sd-bench")]
-    read_perf: [sd::ReadPerf; 3],
+    read_perf: [crate::card_io::ReadPerf; 3],
+}
+
+#[cfg(has_nav)]
+enum NavIo {
+    NeedAllocate,
+    Allocating(crate::flat_store::Ticket),
+    Ready,
+    Staged(NavStep),
+    Flushing(crate::flat_store::Ticket, obc_route::Step),
+    NeedFinish(obc_route::Step),
+    Finishing { ticket: crate::flat_store::Ticket, outcome: obc_route::Step, publishing: bool },
+    NeedPublishCompensation(obc_storage::flat::ObjectId),
+    CompensatingPublish(crate::flat_store::Ticket, obc_storage::flat::ObjectId),
+}
+
+/// Maximum bytes a computed OBCR can emit: 128-byte header, 256 full 1,530-byte chunk bodies,
+/// and 256 44-byte index records. The flat store rounds this reservation to one extent and trims
+/// it to the actual streamed length at commit.
+#[cfg(has_nav)]
+const NAV_ROUTE_RESERVE: u64 = 128 + 256 * (1_530 + 44);
+
+#[cfg(has_nav)]
+static NAV_STORE_REPLY: crate::flat_store::Reply = embassy_sync::signal::Signal::new();
+
+#[cfg(has_nav)]
+struct NavStageSink<'a> {
+    stage: &'a mut [u8; crate::arena::NAV_OUTPUT_STAGE_BYTES],
+    appended: usize,
+    patch_len: usize,
+}
+
+#[cfg(has_nav)]
+impl ByteSink for NavStageSink<'_> {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), ByteError> {
+        let start = HEADER_FULL_LEN + self.appended;
+        let end = start.checked_add(bytes.len()).ok_or(ByteError::TooLarge)?;
+        let out = self.stage.get_mut(start..end).ok_or(ByteError::TooLarge)?;
+        out.copy_from_slice(bytes);
+        self.appended += bytes.len();
+        Ok(())
+    }
+
+    fn patch_at(&mut self, offset: u32, bytes: &[u8]) -> Result<(), ByteError> {
+        if offset != 0 || bytes.len() > HEADER_FULL_LEN {
+            return Err(ByteError::BadOffset);
+        }
+        self.stage[..bytes.len()].copy_from_slice(bytes);
+        self.patch_len = bytes.len();
+        Ok(())
+    }
+}
+
+#[cfg(has_nav)]
+#[derive(Clone, Copy)]
+struct NavStep {
+    outcome: obc_route::Step,
+    appended: usize,
+    patch_len: usize,
+}
+
+#[cfg(has_nav)]
+fn start_nav_flush(
+    writer: crate::flat_store::Writer,
+    guard: &mut crate::arena::NavGuard,
+    allocation: obc_storage::flat::Allocation,
+    step: NavStep,
+) -> Result<crate::flat_store::Ticket, NavStep> {
+    let base = guard.output.as_ptr();
+    // SAFETY: the arena is static storage; its guard stays held while this ticket is live, and the
+    // ride loop will not run another planner step until the storage task has answered.
+    let bytes = unsafe { core::slice::from_raw_parts(base.add(HEADER_FULL_LEN), step.appended) };
+    let header = unsafe { core::slice::from_raw_parts(base, step.patch_len) };
+    let request = crate::flat_store::Request::WriteComputedRoute { allocation, bytes, header };
+    writer.try_call(request, &NAV_STORE_REPLY).map_err(|_| step)
 }
 
 /// Construct + write a fresh request's planner into its `.bss` slot, in this immediately-popped
@@ -398,51 +463,38 @@ fn sensor_status_of(q: usize) -> obc_app::SensorStatus {
 }
 
 /// Run **one bounded planner step** at the ride loop's shallow per-pass depth (#270/#419: the
-/// step's frame carries only the cheap boot-parsed-tables `Reader` view, the SD sink over the
-/// held-open file, and the planner's own shallow call tree — the emitter lives in the planner's
+/// step's frame carries only the cheap boot-parsed-tables `Reader` view, the bounded staging sink,
+/// and the planner's own shallow call tree — the emitter lives in the planner's
 /// `.bss` slot, not this frame; the deepest transient is the one emitter-sized move when the
 /// emit phase constructs it). Everything long-running (render, input, the watchdog feed) runs
 /// normally **between** steps — that is the whole point of #499.
 ///
-/// The reader is `Reader::new` over the FAT map's per-call source (FS7.5-c2, #1420). There used to
-/// be a second case — a mounted volume set, whose reader had to come from `MountedSet::core_reader`
-/// because the set shared **one** `MapCache` across its shards and every cache key carried a shard
-/// index, so a `Reader::new` over the core's bytes was tagged file `0` and could collide with
-/// another shard's namespace. One map is one file: there is no index, no tag, and one way to build a
-/// reader.
-///
-/// **There is deliberately no flat arm here.** A plan writes its OBCR through the FAT route sink, so
-/// a step only ever runs with a `Storage`; a flat card has no `/routes` to emit into and cannot
-/// reach this function at all until c3 gives the store a writer. This took a `flat_map` parameter
-/// for one round and it was unreachable by its own docstring — a branch that cannot execute is not
-/// forward-compatibility, it is an untested path pretending to be one. c3 adds it when there is
-/// something to test it against.
+/// The reader is `Reader::new` over the flat map object. Emitted OBCR bytes are staged in the arena
+/// and flushed through the flat store's sole writer between steps, so no card write occurs inside
+/// the synchronous planner call and the arena remains the only route-output scratch owner.
 #[cfg(has_nav)]
 #[inline(never)]
 fn nav_step(
-    storage: &sd::Storage,
+    map_src: &dyn obc_formats::io::ByteSource,
     map_tables: &MapTables,
     map_cache: &MapCache,
-    nav: &mut NavBuffers,
-    file: embedded_sdmmc::RawFile,
-) -> obc_route::Step {
-    let Some(map_src) = storage.map_source() else {
-        return obc_route::Step::Failed(obc_route::NavError::NoPath);
-    };
-    let reader = Reader::new(&map_src, map_tables, map_cache);
-    let mut sink = storage.nav_sink(file);
+    nav: &mut NavBuffers<'_>,
+) -> NavStep {
+    let reader = Reader::new(map_src, map_tables, map_cache);
     // Only called while a `NavRun` is active, and a run is only created after the drain wrote the
     // planner — but the guard is what *knows* that, so ask it rather than assert it. An unwritten
     // slot answers the generic failure tier instead of stepping a planner nobody built.
-    let Some((planner, scratch, tiles)) = nav.guard.plan_parts() else {
+    let Some((planner, scratch, tiles, output)) = nav.guard.plan_parts() else {
         debug_assert!(false, "a plan step with no planner written — the run outlived (or preceded) its drain");
-        return obc_route::Step::Failed(obc_route::NavError::NoPath);
+        return NavStep { outcome: obc_route::Step::Failed(obc_route::NavError::NoPath), appended: 0, patch_len: 0 };
     };
-    planner.step(&reader, scratch, tiles, &mut *nav.elev, &mut sink)
+    let mut sink = NavStageSink { stage: output, appended: 0, patch_len: 0 };
+    let outcome = planner.step(&reader, scratch, tiles, &mut *nav.elev, &mut sink);
+    NavStep { outcome, appended: sink.appended, patch_len: sink.patch_len }
 }
 
-/// Finish a **completed** plan: flush/patch or delete the reserved file, rescan + re-feed the
-/// id-carrying catalog on success (sequential with — never nested under — the step frames, the
+/// Finish a **completed** plan: hash and publish or cancel the flat-store reservation, rescan +
+/// re-feed the id-carrying catalog on success (sequential with — never nested under — the step frames, the
 /// #496 de-nesting kept), emit the one `nav route:` RTT line with the per-phase breakdown
 /// (issue #499's DoD), and answer the app — the `NavPlanned` event activates the route and swaps
 /// the planning screen for the computed-route overview (or the failure card).
@@ -450,7 +502,7 @@ fn nav_step(
 /// The RTT line (grep `nav route:`): outcome; route length; `total_ms` = wall time from the
 /// request drain (it spans every pass the plan was spread over); `snap/search/emit_ms` = step
 /// time attributed to the planner's phase before each step (emit includes the finishing header
-/// patch); `write_ms` = the file flush/close; `rescan_ms` = the catalog rescan; `source_reads` =
+/// patch); `write_ms` = flat-store write/hash/commit time; `rescan_ms` = the catalog rescan; `source_reads` =
 /// logical graph-chunk plus index-window fills; `settles`; and the stackmeter high-water,
 /// force-rescanned here — sentinel evidence is permanent, so it still reads the in-step peak.
 /// With `sd-bench`, a second line reports the planner steps' physical card commands and time.
@@ -458,29 +510,15 @@ fn nav_step(
 #[inline(never)]
 #[allow(clippy::too_many_arguments)]
 fn nav_finish(
-    storage: &mut sd::Storage,
     app: &mut App,
-    nav: &mut NavBuffers,
+    nav: &mut NavBuffers<'_>,
     run: NavRun,
-    outcome: obc_route::Step,
+    result: Result<(u64, u32), obc_route::NavError>,
     now: u32,
 ) {
     use obc_route::NavError;
-    let planned = match outcome {
-        obc_route::Step::Done(stats) => Ok(stats.total_distance_m),
-        obc_route::Step::Failed(e) => Err(e),
-        obc_route::Step::Running => Err(NavError::NoPath), // unreachable: callers pass terminals
-    };
-    let tw = Instant::now();
-    storage.nav_route_finish(run.file, planned.is_ok());
-    let write_us = tw.elapsed().as_micros();
-    let tr = Instant::now();
-    let result: Result<(u16, u32), NavError> = planned.and_then(|len| {
-        load_routes(storage, app);
-        let id = storage.nav_route_id().ok_or(NavError::NoPath)?;
-        Ok((id, len))
-    });
-    let rescan_us = tr.elapsed().as_micros();
+    let write_us = run.write_us;
+    let rescan_us = 0;
     let cache = nav.guard.tiles.stats();
     // The ε rung the plan ended on (N8): 13/10 for a plain success or a fast no-path, 2/1 or 3/1 if
     // the ε-escalation ladder retried on exhaustion. `settles` is cumulative across the rungs. Both
@@ -520,7 +558,7 @@ fn nav_finish(
     );
     #[cfg(feature = "sd-bench")]
     {
-        let mut total = sd::ReadPerf::ZERO;
+        let mut total = crate::card_io::ReadPerf::ZERO;
         for phase in run.read_perf {
             total.add_assign(phase);
         }
@@ -586,23 +624,18 @@ struct RenderedFrame {
 struct HostPass {
     /// `RescanStore` — re-scan the object store and re-feed the catalogs. BLE-only: the
     /// store-changed edge is raised solely by the BLE plane's commit/delete path.
-    #[cfg(feature = "ble")]
     rescan: bool,
     /// `CancelRoutePlan` — abort the in-flight route plan.
     cancel_plan: bool,
     /// `DeleteRoute { id }` — the durable id (index-resolved at drain).
-    delete_route: Option<u16>,
+    delete_route: Option<u64>,
     /// `DeleteTrip { id }` — cascade-delete the trip and its member routes.
-    delete_trip: Option<u16>,
+    delete_trip: Option<u64>,
     /// `DeleteRide { id }` — the durable ride id (index-resolved at drain).
     delete_ride: Option<u16>,
-    /// `StampRouteUsed { id, utc }` — write route `id`'s `last_used` to the retention sidecar
-    /// (auto-expiry epic #638, S3). A device-local sidecar write (no store revision/notify), so the
-    /// ride loop applies it directly under the store lock in both builds — unlike a delete.
-    stamp_route: Option<(u16, u32)>,
     /// `StampRideSynced { id, utc }` — write ride `id`'s `synced_at` to the synced sidecar
     /// (auto-expiry epic #638, S3), the sweep's legacy-ride countdown start. Sidecar write, applied
-    /// directly like [`stamp_route`](HostPass::stamp_route).
+    /// directly against the still-FAT ride journal.
     stamp_ride: Option<(u16, u32)>,
     /// `FinishTrack(action)` — close the open ride log (Save / Discard).
     finish: Option<obc_app::TrackAction>,
@@ -675,11 +708,9 @@ pub(crate) async fn run_app(
     shared: &SharedStoreMutex,
     map_tables: &MapTables,
     map_cache: &MapCache,
-    // The **flat** arm's map bytes, when the card in the slot is a flat store: a `'static`
-    // `StoreSource` over the mounted store's map object, resolved once at boot and read **direct**
-    // (the storage task owns writes only). `None` on a FAT card, where the map source is rebuilt per
-    // redraw off `shared`'s `Storage`. Exactly one of the two serves any given boot.
-    flat_map: Option<&'static dyn obc_formats::io::ByteSource>,
+    // The flat map source and store are mandatory: a non-flat card never reaches this loop.
+    flat_map: &'static dyn obc_formats::io::ByteSource,
+    flat: &'static obc_storage::flat::FlatStore<crate::flat_store::FlatCard>,
     route_cache: &RouteCache,
     // The router's resident half (epic #116 R4 + EL7): the map's terrain, threaded from `main`
     // (never a local — the #270/#419 discipline). Its A* table, tile cache and planner slot are the
@@ -735,6 +766,8 @@ pub(crate) async fn run_app(
     let mut weather_cache = obc_weather::WeatherCache::new();
     let mut weather_snapshot: Option<obc_app::WeatherSnapshot> = None;
     let mut weather_sample_key: Option<WeatherSampleKey> = None;
+    let mut weather_bundle = crate::flat_store::active_weather(flat).ok().flatten();
+    crate::flat_store::reconcile_weather(flat, weather_bundle);
 
     // Per-frame ride-loop state:
     // - `prev_route` re-centres SynthLocation onto a freshly-loaded route's start (`synth` build only);
@@ -974,6 +1007,15 @@ pub(crate) async fn run_app(
         // steady state. Then drain the object-store movement edge and apply a `StoreChanged` event per
         // commit/delete (the same edge that notifies the phone). Both `ble`-only: the map build has no
         // radio and no `object_store`, so the app simply stays disconnected there.
+        for _ in 0..crate::flat_store::take_catalog_commits() {
+            app.apply_event(obc_app::HostEvent::StoreChanged);
+        }
+        // The FAT ride repository remains until FS8. Its save/delete/sync edge shares the same app
+        // event so the Rides menu still refreshes promptly while route/trip catalogs are flat-only.
+        for _ in 0..crate::object_store::take_store_changed() {
+            app.apply_event(obc_app::HostEvent::StoreChanged);
+        }
+
         #[cfg(feature = "ble")]
         {
             app.set_ble_status(crate::ble::app_ble_status());
@@ -990,9 +1032,6 @@ pub(crate) async fn run_app(
             crate::link::set_recording(app.activity.is_tracking());
             if crate::object_store::dfu_install_pending() && app.open_remote_dfu_check() {
                 let _ = crate::object_store::take_dfu_install_ble();
-            }
-            for _ in 0..crate::object_store::take_store_changed() {
-                app.apply_event(obc_app::HostEvent::StoreChanged);
             }
             // BLE setClock (auto-expiry epic #638 S2, #642): a validated `(utc, offset)` from the phone
             // is waiting to stamp the wall clock. `stamp_clock_ble` sets + persists the offset and marks
@@ -1062,14 +1101,17 @@ pub(crate) async fn run_app(
             let _ = app.drain_host_commands(&mut mailbox);
             while let Some(cmd) = mailbox.pop() {
                 match cmd {
-                    #[cfg(feature = "ble")]
                     obc_app::HostCommand::RescanStore { .. } => host_pass.rescan = true,
                     obc_app::HostCommand::CancelRoutePlan => host_pass.cancel_plan = true,
                     obc_app::HostCommand::DeleteRoute { id } => host_pass.delete_route = Some(id),
                     obc_app::HostCommand::DeleteTrip { id } => host_pass.delete_trip = Some(id),
-                    obc_app::HostCommand::DeleteRide { id } => host_pass.delete_ride = Some(id),
-                    obc_app::HostCommand::StampRouteUsed { id, utc } => host_pass.stamp_route = Some((id, utc)),
-                    obc_app::HostCommand::StampRideSynced { id, utc } => host_pass.stamp_ride = Some((id, utc)),
+                    obc_app::HostCommand::DeleteRide { id } => host_pass.delete_ride = u16::try_from(id).ok(),
+                    // Flat route retention deliberately stays inert until #1398 supplies its
+                    // ObjectId-keyed metadata kind; there is no FAT sidecar to stamp after FS7.
+                    obc_app::HostCommand::StampRouteUsed { .. } => {}
+                    obc_app::HostCommand::StampRideSynced { id, utc } => {
+                        host_pass.stamp_ride = u16::try_from(id).ok().map(|id| (id, utc));
+                    }
                     obc_app::HostCommand::FinishTrack(action) => host_pass.finish = Some(action),
                     obc_app::HostCommand::PlanRoute(_req) => {
                         // Write the planner slot from the request **now** (synchronously, no store
@@ -1119,7 +1161,7 @@ pub(crate) async fn run_app(
                     // flow holds the planned detour's OBCR **in RAM** from `DetourPlanned` until the
                     // rider commits, then stream-splices `original[0..anchor] + detour +
                     // original[rejoin..]` into a derived route. The host does both with a `Vec`; the
-                    // board has one reserved computed-route file (`_NAV.OBR`) and no heap, so the
+                    // board has one flat-store route reservation and no heap, so the
                     // splice has nowhere to read the detour from while it writes. That is a storage
                     // design, with its own on-glass acceptance — a separate issue.
                     //
@@ -1334,7 +1376,7 @@ pub(crate) async fn run_app(
                         // DR6 (#734): hand the confirm's carried scan ref to the arm (consumed
                         // either way). Absent ⇒ `run_install` re-scans (the `dfu-install` path).
                         Some(s) => crate::dfu::run_install(s, settings_store, &mut wdt, cached_staged.take()).await,
-                        None => {
+                        _ => {
                             crate::dfu::status("refused (no_card): no SD card");
                             Some(obc_app::DfuInstallError::NoCard)
                         }
@@ -1379,44 +1421,50 @@ pub(crate) async fn run_app(
         // map *render* that reads them all run under this guard; the block's close is the guard's
         // death — **before** the present phase below, so a BLE object operation waits behind at
         // most the render, never the ~44 ms FLPR scan on top of it (#270 → #809). The phase is
-        // fully synchronous — no `.await` between the lock and the block's close — and the render
-        // runs while the reader/source borrows of the open SD handles are live, which is exactly
-        // what keeps an upload/delete from invalidating a reader mid-render. Destructured into the
-        // two names the body uses (`storage`, `settings_store`).
+        // render runs while the reader/source borrows of the open SD handles are live, which is
+        // exactly what keeps an upload/delete from invalidating a reader mid-render. A route plan
+        // may await bounded calls to the independent flat-store writer in this block; neither that
+        // task nor the flat map reader borrows this legacy/settings mutex. Destructured into the two
+        // names the body uses (`storage`, `settings_store`).
         let (rendered, dirty_map, hold_p, store_held_us) = {
             let mut store_guard = shared.lock().await;
             let t_store = Instant::now();
             let SharedStore { storage, settings: settings_store } = &mut *store_guard;
 
-            // ── Live route catalog (#450), on the store-changed edge only ──
-            // A BLE commit/delete moved `/routes` under the app: re-run the boot scan (same
-            // `load_routes` machinery — its ~5 KB catalog lives in its own popped frame, sequential
-            // with, never under, the deep render path) and re-feed `set_routes_with_ids`, which
-            // remaps every held catalog index by durable object id — so the route being navigated
-            // (or highlighted, or pending in a swap prompt) can never silently shift. Then force the
-            // reconcile below to re-derive everything positional: the filename table was rebuilt (the
-            // open handle's index may now name a different file) and a replace-upload may have
-            // swapped the bytes under the open geometry handle — close it and let the reconcile
-            // reopen + re-index off the fresh scan.
-            #[cfg(feature = "ble")]
+            // ── Live catalogs, on the store-changed edge only ──
+            // Rebuild flat route/trip identities after any catalog commit and remap the app's held
+            // indices by durable ObjectId. Dropping the active flat hold first ensures a replacement
+            // at the same id is decoded from its new revision. The legacy edge also covers FAT rides,
+            // which are rescanned below until their flat slice lands.
             if host_pass.rescan {
+                // Drop the held revision before rebuilding identity/index state. A replace at
+                // the same ObjectId must reopen the new revision, not keep rendering the hold.
+                crate::flat_store::reconcile_route(flat, None);
+                let routes_loaded = crate::flat_store::load_routes(flat, app);
+                let trips_loaded = crate::flat_store::load_trips(flat, app);
+                if let Ok(next) = crate::flat_store::active_weather(flat) {
+                    if next != weather_bundle {
+                        weather_bundle = next;
+                        weather_sample_key = None;
+                    }
+                }
+                crate::flat_store::reconcile_weather(flat, weather_bundle);
+                if routes_loaded && trips_loaded {
+                    // The event's id resolves against the snapshots just fed above. In particular,
+                    // a same-id route replace now reaches `on_route_uploaded`, which drops all
+                    // geometry-derived state from the displaced revision before rendering resumes.
+                    apply_catalog_uploads(app);
+                } else {
+                    // A transient source/listing failure deliberately kept the previous whole
+                    // snapshot. Re-arm the typed rescan cue so recovery needs no unrelated future
+                    // catalog commit to happen first.
+                    app.apply_event(obc_app::HostEvent::StoreChanged);
+                }
                 if let Some(s) = storage.as_mut() {
-                    // Close the active route's geometry handle BEFORE the scan: embedded-sdmmc
-                    // refuses a second open of an open file (`FileAlreadyOpen`, even ReadOnly), so a
-                    // scan that met the still-open geometry silently omitted it — and the identity
-                    // remap then unloaded the navigated route and it vanished from the Route menu
-                    // until the next rescan (the #480 vanishing-routes bug). The forced reconcile
-                    // below reopens it off the fresh tables.
-                    s.reconcile_route(None);
-                    load_routes(s, app);
                     // The same edge covers rides (a phone-side ride delete, or a ride download that just
                     // flipped a synced flag): re-scan `/tracks` and re-feed the Rides menu, which remaps
                     // its highlight by id (#454). Cheap when nothing ride-related moved.
                     load_rides(s, app);
-                    // …and trips (epic #526 TR4): a trip upload/delete moved the trip store, or a member
-                    // route delete changed a trip's resolvable stage totals — rescan `/routes` for trips
-                    // and re-feed the folders (resolved against the freshly-scanned route catalog above).
-                    load_trips(s, app);
                 }
                 prev_active = None; // force reconcile_route/track to re-run against the new indexing
                 index_route = None; // and the chunk index to rebuild off the freshly-opened file
@@ -1435,8 +1483,7 @@ pub(crate) async fn run_app(
                 // A full channel DROPS the id (not observed backpressure — the app's dispatch
                 // bookkeeping already ran): warn, and rely on the app's retain-until-rescan
                 // candidate to re-dispatch it after the bounded backoff (finding #876-3).
-                #[cfg(feature = "ble")]
-                if !crate::object_store::request_route_delete(id) {
+                if !crate::flat_store::request_route_delete(id) {
                     defmt::warn!(
                         "ride: route-delete channel full — id {} dropped; the app's retained candidate retries",
                         id
@@ -1451,8 +1498,9 @@ pub(crate) async fn run_app(
             // `ObjectStore::delete_trip_cascade`, so both store revisions + both `storeChanged` edges
             // move coherently and the rescan returns on the STORE_CHANGED edge).
             if let Some(id) = host_pass.delete_trip {
-                #[cfg(feature = "ble")]
-                crate::object_store::request_trip_cascade(id);
+                if !crate::flat_store::request_trip_cascade(id) {
+                    defmt::warn!("ride: trip-delete queue full — object {=u64} retained for retry", id);
+                }
             }
 
             // The System settings screen's card-free scan (T8 item 6): a drained on-entry request runs
@@ -1489,11 +1537,6 @@ pub(crate) async fn run_app(
             // here under the store lock in both builds (the ride loop already holds the card this
             // phase), rather than routed through the BLE plane's `ObjectStore`. The app already
             // mirrored the value into its resident meta, so no re-feed is needed.
-            if let Some((id, utc)) = host_pass.stamp_route {
-                if let Some(s) = storage.as_mut() {
-                    s.stamp_route_last_used(id, utc);
-                }
-            }
             if let Some((id, utc)) = host_pass.stamp_ride {
                 if let Some(s) = storage.as_mut() {
                     s.stamp_ride_synced_at(id, utc);
@@ -1507,16 +1550,15 @@ pub(crate) async fn run_app(
             fill_ride_profile(storage, app);
 
             // ── The resumable route planner (#499), one bounded step per pass ──
-            // A drained create-route request opens the reserved file, (re)writes the `.bss` planner
+            // A drained create-route request allocates unpublished flat-store space, (re)writes the `.bss` planner
             // slot, and arms a `NavRun`; each subsequent pass runs **one** `nav_step` at this shallow
             // depth and then continues the normal pass (render, input, the pass-top watchdog feed) —
             // the UI stays live while the route computes. A drained cancel (Back on the planning
-            // screen) aborts: close + delete the partial file, answer nothing. On a terminal step,
-            // `nav_finish` flushes/patches (or deletes) the file, rescans the catalog (sequential,
+            // screen) aborts: cancel the reservation, answer nothing. On a terminal step,
+            // `nav_finish` hashes/publishes (or cancels) it, rescans the catalog (sequential,
             // never nested — the #496 de-nesting), emits the per-phase RTT line, and answers the app;
             // the positional state is then forced to re-derive, exactly like the store-changed rescan
-            // above (the plan closed the active geometry handle and may have rewritten bytes under
-            // the reserved name).
+            // above (the plan publishes a new object and may change the active geometry source).
             //
             // `not(has_nav)` (the `ble` build, whose image ships without the router — see build.rs):
             // the request is still drained and answered with the generic failure tier ("Couldn't find
@@ -1531,30 +1573,30 @@ pub(crate) async fn run_app(
                 if host_pass.plan_armed {
                     // The planner slot was already written from the request at the pass-top drain
                     // (`nav_begin`, no store lock) — which is also where the arena's nav arm was
-                    // claimed; here we just open the reserved file and arm the run against it. A
+                    // claimed; here we allocate the output object and arm the run against it. A
                     // request while a plan is somehow still in flight replaces it (can't happen
                     // through the UI — the planning screen blocks a second confirm — but stay safe;
                     // the drain already overwrote the slot for the new plan and kept the same guard).
-                    if let (Some(run), Some(s)) = (nav_run.take(), storage.as_mut()) {
-                        s.nav_route_finish(run.file, false);
-                    }
-                    match storage.as_mut().and_then(|s| s.nav_route_begin()) {
-                        Some(file) => {
-                            nav_run = Some(NavRun {
-                                file,
-                                t0: Instant::now(),
-                                phase_us: [0; 3],
-                                #[cfg(feature = "sd-bench")]
-                                read_perf: [sd::ReadPerf::ZERO; 3],
-                            });
+                    if nav_run.is_some() {
+                        // The UI cannot issue a second plan while its planning screen is active.
+                        // Keep the impossible case fail-closed instead of lending one reply slot to
+                        // two live tickets after the drain has already replaced the planner.
+                        debug_assert!(false, "a second route plan arrived while one was active");
+                        if let Some(run) = nav_run.as_mut() {
+                            run.cancel_requested = true;
                         }
-                        // No card / no dir: nothing to route against — the generic failure tier, and
-                        // the arena goes straight back. A plan that never started must not leave the
-                        // map frozen behind a search nobody is running.
-                        None => {
-                            app.apply_event(obc_app::HostEvent::NavPlanned(Err(obc_route::NavError::NoPath)));
-                            search_ended = true;
-                        }
+                    } else {
+                        nav_run = Some(NavRun {
+                            allocation: None,
+                            io: NavIo::NeedAllocate,
+                            cancel_requested: false,
+                            io_started: Instant::now(),
+                            t0: Instant::now(),
+                            phase_us: [0; 3],
+                            write_us: 0,
+                            #[cfg(feature = "sd-bench")]
+                            read_perf: [crate::card_io::ReadPerf::ZERO; 3],
+                        });
                     }
                 }
                 // `&& !plan_armed` because the canonical drain order puts a cancel *before* the plan
@@ -1563,48 +1605,253 @@ pub(crate) async fn run_app(
                 // Without the guard the cancel would close the new run's file and hand back the arena
                 // the new search is about to step on.
                 if nav_cancel && !host_pass.plan_armed {
-                    if let Some(run) = nav_run.take() {
-                        if let Some(s) = storage.as_mut() {
-                            s.nav_route_finish(run.file, false); // close + delete the partial file
-                        }
-                        defmt::info!("nav route: cancelled after {=u64} ms", run.t0.elapsed().as_millis());
-                        // No notify: the planning screen is already gone (Back popped it).
+                    if let Some(run) = nav_run.as_mut() {
+                        run.cancel_requested = true;
+                    } else {
+                        search_ended = true;
                     }
-                    // Outside the `if let`, not inside it: a cancel landing between the drain's claim
-                    // and the file open has no `NavRun` to close but does hold the arena, and a
-                    // freeze that outlives its search is a map that never redraws again.
-                    search_ended = true;
                 }
-                if let Some(run) = nav_run.as_mut() {
-                    if let (Some(s), Some(guard)) = (storage.as_mut(), nav_guard.as_mut()) {
-                        // The step's view over the arena arm + the resident terrain, alive only for
-                        // the length of these synchronous calls.
-                        let mut bufs = NavBuffers { guard, elev: &mut *nav.elev };
-                        // The run is active ⇒ the slot was written for this plan; a `None` here
-                        // would mean the bookkeeping and the arm disagree, and the step below
-                        // answers the failure tier for the same reason.
-                        let phase = bufs.guard.planner_ref().map_or(obc_route::NavPhase::Snap, |p| p.phase());
-                        let phase_idx = match phase {
-                            obc_route::NavPhase::Snap => 0,
-                            obc_route::NavPhase::Search => 1,
-                            obc_route::NavPhase::Emit | obc_route::NavPhase::Done => 2,
-                        };
-                        #[cfg(feature = "sd-bench")]
-                        let reads_before = sd::read_perf_snapshot();
-                        let ts = Instant::now();
-                        let step = nav_step(s, map_tables, map_cache, &mut bufs, run.file);
-                        let us = ts.elapsed().as_micros();
-                        run.phase_us[phase_idx] += us;
-                        #[cfg(feature = "sd-bench")]
-                        run.read_perf[phase_idx].add_assign(sd::read_perf_snapshot().since(reads_before));
-                        if !matches!(step, obc_route::Step::Running) {
-                            let run = nav_run.take().expect("just borrowed it");
-                            nav_finish(s, app, &mut bufs, run, step, now);
-                            search_ended = true;
-                            prev_active = None; // reopen geometry / rebuild the index off the fresh scan
-                            index_route = None;
+                if let (Some(mut run), Some(writer), Some(guard)) =
+                    (nav_run.take(), crate::flat_store::writer(), nav_guard.as_mut())
+                {
+                    let mut finished = None;
+                    let mut cancelled = false;
+                    match run.io {
+                        NavIo::NeedAllocate => {
+                            if run.cancel_requested {
+                                cancelled = true;
+                            } else if let Ok(ticket) = writer.try_call(
+                                crate::flat_store::Request::Allocate { bytes: NAV_ROUTE_RESERVE },
+                                &NAV_STORE_REPLY,
+                            ) {
+                                run.io_started = Instant::now();
+                                run.io = NavIo::Allocating(ticket);
+                            }
+                        }
+                        NavIo::Allocating(ticket) => {
+                            if let Some(answer) = writer.try_result(ticket, &NAV_STORE_REPLY) {
+                                run.write_us += run.io_started.elapsed().as_micros();
+                                match answer {
+                                    Ok(crate::flat_store::Outcome::Allocated(allocation)) => {
+                                        run.allocation = Some(allocation);
+                                        run.io = if run.cancel_requested {
+                                            NavIo::NeedFinish(obc_route::Step::Failed(obc_route::NavError::NoPath))
+                                        } else {
+                                            NavIo::Ready
+                                        };
+                                    }
+                                    _ => finished = Some(Err(obc_route::NavError::NoPath)),
+                                }
+                            }
+                        }
+                        NavIo::Ready => {
+                            if run.cancel_requested {
+                                run.io = NavIo::NeedFinish(obc_route::Step::Failed(obc_route::NavError::NoPath));
+                            } else {
+                                let map_src = flat_map;
+                                let mut bufs = NavBuffers { guard, elev: &mut *nav.elev };
+                                // The step's view over the arena arm + the resident terrain, alive only for
+                                // the length of these synchronous calls.
+                                // The run is active ⇒ the slot was written for this plan; a `None` here
+                                // would mean the bookkeeping and the arm disagree, and the step below
+                                // answers the failure tier for the same reason.
+                                let phase = bufs.guard.planner_ref().map_or(obc_route::NavPhase::Snap, |p| p.phase());
+                                let phase_idx = match phase {
+                                    obc_route::NavPhase::Snap => 0,
+                                    obc_route::NavPhase::Search => 1,
+                                    obc_route::NavPhase::Emit | obc_route::NavPhase::Done => 2,
+                                };
+                                #[cfg(feature = "sd-bench")]
+                                let reads_before = crate::card_io::read_perf_snapshot();
+                                let ts = Instant::now();
+                                let step = nav_step(map_src, map_tables, map_cache, &mut bufs);
+                                let us = ts.elapsed().as_micros();
+                                run.phase_us[phase_idx] += us;
+                                #[cfg(feature = "sd-bench")]
+                                run.read_perf[phase_idx]
+                                    .add_assign(crate::card_io::read_perf_snapshot().since(reads_before));
+                                run.io = if step.appended == 0 && step.patch_len == 0 {
+                                    if matches!(step.outcome, obc_route::Step::Running) {
+                                        NavIo::Ready
+                                    } else {
+                                        NavIo::NeedFinish(step.outcome)
+                                    }
+                                } else {
+                                    NavIo::Staged(step)
+                                };
+                            }
+                        }
+                        NavIo::Staged(step) => {
+                            if run.cancel_requested {
+                                run.io = NavIo::NeedFinish(obc_route::Step::Failed(obc_route::NavError::NoPath));
+                            } else if let Some(allocation) = run.allocation {
+                                match start_nav_flush(writer, guard, allocation, step) {
+                                    Ok(ticket) => {
+                                        run.io_started = Instant::now();
+                                        run.io = NavIo::Flushing(ticket, step.outcome);
+                                    }
+                                    Err(step) => run.io = NavIo::Staged(step),
+                                }
+                            }
+                        }
+                        NavIo::Flushing(ticket, outcome) => {
+                            if let Some(answer) = writer.try_result(ticket, &NAV_STORE_REPLY) {
+                                run.write_us += run.io_started.elapsed().as_micros();
+                                match answer {
+                                    Ok(crate::flat_store::Outcome::Wrote(allocation)) => {
+                                        run.allocation = Some(allocation);
+                                        run.io = if run.cancel_requested || !matches!(outcome, obc_route::Step::Running)
+                                        {
+                                            NavIo::NeedFinish(outcome)
+                                        } else {
+                                            NavIo::Ready
+                                        };
+                                    }
+                                    _ => {
+                                        run.io =
+                                            NavIo::NeedFinish(obc_route::Step::Failed(obc_route::NavError::NoPath));
+                                    }
+                                }
+                            }
+                        }
+                        NavIo::NeedFinish(outcome) => {
+                            if let Some(allocation) = run.allocation {
+                                let mut final_outcome = outcome;
+                                let mut publishing =
+                                    !run.cancel_requested && matches!(outcome, obc_route::Step::Done(_));
+                                let request = if publishing {
+                                    let name_len = usize::from(guard.output[6]).min(48);
+                                    let name = core::str::from_utf8(&guard.output[64..64 + name_len])
+                                        .ok()
+                                        .and_then(obc_storage::flat::DisplayName::new);
+                                    match name {
+                                        Some(name) => {
+                                            crate::flat_store::Request::PublishComputedRoute { allocation, name }
+                                        }
+                                        None => {
+                                            publishing = false;
+                                            final_outcome = obc_route::Step::Failed(obc_route::NavError::NoPath);
+                                            crate::flat_store::Request::Cancel { allocation }
+                                        }
+                                    }
+                                } else {
+                                    crate::flat_store::Request::Cancel { allocation }
+                                };
+                                if let Ok(ticket) = writer.try_call(request, &NAV_STORE_REPLY) {
+                                    run.io_started = Instant::now();
+                                    run.io = NavIo::Finishing { ticket, outcome: final_outcome, publishing };
+                                }
+                            } else {
+                                finished = Some(Err(obc_route::NavError::NoPath));
+                            }
+                        }
+                        NavIo::Finishing { ticket, outcome, publishing } => {
+                            if let Some(answer) = writer.try_result(ticket, &NAV_STORE_REPLY) {
+                                run.write_us += run.io_started.elapsed().as_micros();
+                                if publishing {
+                                    match answer {
+                                        Ok(crate::flat_store::Outcome::Published(id)) => {
+                                            run.allocation = None;
+                                            match obc_app::host::nav_publish_disposition(run.cancel_requested, id.0) {
+                                                obc_app::host::NavPublishDisposition::Activate(id) => {
+                                                    let len = match outcome {
+                                                        obc_route::Step::Done(stats) => stats.total_distance_m,
+                                                        _ => 0,
+                                                    };
+                                                    crate::flat_store::load_routes(flat, app);
+                                                    let _ = crate::flat_store::reconcile_route(flat, Some(id));
+                                                    finished = Some(Ok((id, len)));
+                                                }
+                                                obc_app::host::NavPublishDisposition::Compensate(id) => {
+                                                    run.io =
+                                                        NavIo::NeedPublishCompensation(obc_storage::flat::ObjectId(id));
+                                                }
+                                            }
+                                        }
+                                        _ => {
+                                            run.cancel_requested = false;
+                                            run.io =
+                                                NavIo::NeedFinish(obc_route::Step::Failed(obc_route::NavError::NoPath));
+                                        }
+                                    }
+                                } else if run.cancel_requested {
+                                    cancelled = true;
+                                } else {
+                                    finished = Some(Err(match outcome {
+                                        obc_route::Step::Failed(error) => error,
+                                        _ => obc_route::NavError::NoPath,
+                                    }));
+                                }
+                            }
+                        }
+                        NavIo::NeedPublishCompensation(id) => {
+                            let request = crate::flat_store::Request::RemoveComputedRoute {
+                                id,
+                                revision: obc_storage::flat::Revision(1),
+                            };
+                            if let Ok(ticket) = writer.try_call(request, &NAV_STORE_REPLY) {
+                                run.io_started = Instant::now();
+                                run.io = NavIo::CompensatingPublish(ticket, id);
+                            }
+                        }
+                        NavIo::CompensatingPublish(ticket, id) => {
+                            if let Some(answer) = writer.try_result(ticket, &NAV_STORE_REPLY) {
+                                run.write_us += run.io_started.elapsed().as_micros();
+                                use obc_app::host::{
+                                    nav_compensation_disposition, NavCompensationDisposition as Disposition,
+                                    NavCompensationStatus as Status,
+                                };
+                                let status = match answer {
+                                    Ok(crate::flat_store::Outcome::Done) => Status::Removed,
+                                    Err(obc_storage::flat::StoreError::NotFound) => Status::Absent,
+                                    Err(obc_storage::flat::StoreError::Media | obc_storage::flat::StoreError::Busy) => {
+                                        Status::Retry
+                                    }
+                                    // The exact id/revision makes every other refusal permanent or
+                                    // an invariant violation. Most importantly, ReadOnly cannot be
+                                    // repaired in-session. Publish reserved a second sequence, so
+                                    // seeing it here means another writer consumed that last slot.
+                                    _ => Status::Terminal,
+                                };
+                                match nav_compensation_disposition(status) {
+                                    Disposition::Cancelled => cancelled = true,
+                                    Disposition::Retry => {
+                                        defmt::warn!(
+                                            "nav route: cancellation compensation for object {=u64} hit transient media failure — retrying",
+                                            id.0
+                                        );
+                                        run.io = NavIo::NeedPublishCompensation(id);
+                                    }
+                                    Disposition::CancelledAfterTerminalFailure => {
+                                        // Never report route success, and never retain NavGuard/the
+                                        // planner arena forever. This should be unreachable under
+                                        // PublishComputedRoute's two-sequence admission invariant.
+                                        defmt::error!(
+                                            "nav route: terminal cancellation compensation failure for object {=u64}; releasing planner",
+                                            id.0
+                                        );
+                                        cancelled = true;
+                                    }
+                                }
+                            }
                         }
                     }
+                    if cancelled {
+                        defmt::info!("nav route: cancelled after {=u64} ms", run.t0.elapsed().as_millis());
+                        search_ended = true;
+                    } else if let Some(result) = finished {
+                        let mut bufs = NavBuffers { guard, elev: &mut *nav.elev };
+                        nav_finish(app, &mut bufs, run, result, now);
+                        search_ended = true;
+                        prev_active = None;
+                        index_route = None;
+                    } else {
+                        nav_run = Some(run);
+                    }
+                } else if nav_run.is_some() {
+                    app.apply_event(obc_app::HostEvent::NavPlanned(Err(obc_route::NavError::NoPath)));
+                    nav_run = None;
+                    search_ended = true;
                 }
                 if search_ended {
                     // Drop the guard (releasing the arena so the next frame can render the map
@@ -1620,42 +1867,6 @@ pub(crate) async fn run_app(
                 let _: &NavResident = &nav; // the unit stand-in — nothing to plan with
                                             // A `PlanRoute` was already answered with the failure tier at the pass-top drain (the
                                             // `ble` image ships no router), so nothing to do here.
-            }
-
-            // The upload-arrived event (#451), applied strictly **after** the rescan above so the id
-            // resolves against the fresh catalog. The `RouteUploaded` event raises the right popup
-            // (idle prompt / mid-ride swap / active-replaced info card) and — on a replace of the
-            // navigated route — drops the app's stale matcher progress + elevation profile, while the
-            // rescan block already closed the open geometry handle and the reconcile below reopens +
-            // re-indexes it off the new bytes: the full forced-adoption chain, one pass.
-            #[cfg(feature = "ble")]
-            if let Some((id, replaced)) = crate::object_store::take_route_uploaded() {
-                // Build the route's mini elevation band from the just-committed OBCR (#682) — one scoped
-                // stream at commit time — so the idle received card can draw it (the swap / active-
-                // replace variants ignore it). A missing store or a no-elevation route yields `None`.
-                let elevation = storage.as_mut().and_then(|s| s.route_elevation_sparkline(id));
-                app.apply_event(obc_app::HostEvent::RouteUploaded { id, replaced, elevation });
-            }
-
-            // The trip twin, drained strictly **after** the route event: a trip object commits after
-            // its member routes (it references their ids), so posting its event last hands the app's
-            // single most-recent-wins prompt slot to the "TRIP RECEIVED" card — one popup for the
-            // whole routes-then-trip transfer instead of a per-route parade. Only a *fresh* trip
-            // pops: the app suppresses `replaced` (a host-side trip edit — the desktop's rename /
-            // reorder replaces at the same id, one upload per click). The rescan above already
-            // re-fed the trip catalog (`load_trips`), so the id resolves; shared `ObjectStore` path,
-            // so BLE and USB uploads behave identically. (The `ble` gate matches the module's own —
-            // `object_store` only exists on `ble` builds, which every USB-carrying image is.)
-            //
-            // Known, accepted edge of the fixed route-then-trip drain order: arrival order inside
-            // one pass isn't recorded, so a fresh *route* commit landing in the same ~ms pass as a
-            // fresh trip commit gets its card buried under the trip's even if the route arrived
-            // later. Both cards are advisory and both objects are already in the menu, so the cost
-            // is a mis-ordered courtesy, not a lost object — not worth a cross-slot sequence
-            // counter.
-            #[cfg(feature = "ble")]
-            if let Some((id, replaced)) = crate::object_store::take_trip_uploaded() {
-                app.apply_event(obc_app::HostEvent::TripUploaded { id, replaced });
             }
 
             // Settings coherence, phone → device (#456): a BLE Config write persisted units + name to
@@ -1722,7 +1933,13 @@ pub(crate) async fn run_app(
             // POI-browser navigation needed. `has_nav` only (the router isn't in the `ble` image).
             #[cfg(all(feature = "debug-uart", has_nav))]
             if let Some((from, to)) = obc_platform::debug_link::take_nav() {
-                app.debug_start_nav(from, to, "Bench");
+                // `NavPlanning` normally mirrors this, but test the host's actual ownership too:
+                // Back may already have popped the screen while its cancellation is still queued.
+                // A debug N in that window must not become a replacement plan that overwrites the
+                // resident planner before the old run has released its allocation.
+                if nav_run.is_some() || !app.debug_start_nav(from, to, "Bench") {
+                    defmt::warn!("nav plan: ignored repeated debug N while a plan is active");
+                }
             }
 
             let active = app.active_route_index();
@@ -1754,10 +1971,11 @@ pub(crate) async fn run_app(
                 // A Save also writes the durable ride object: snapshot the app's ride totals + wall-clock
                 // anchor in the same frame, so the header matches the log's last points.
                 let stats = (action == Some(obc_app::TrackAction::Save)).then(|| app.ride_stats());
+                let active_id = active.and_then(|i| app.route_ids().get(i).copied());
+                crate::flat_store::reconcile_route(flat, active_id);
                 // `storage` is `Option` (a card-less `ble` combined build still serves BLE, map idle); the
                 // map build always has `Some`. No card ⇒ nothing to reconcile.
                 if let Some(s) = storage.as_mut() {
-                    s.reconcile_route(active);
                     s.reconcile_track(action, session, &name, stats.as_ref(), settings_store);
                 }
                 prev_active = active;
@@ -1773,14 +1991,16 @@ pub(crate) async fn run_app(
                     Some(_) => {
                         // In place into the resident slot — see its declaration; a by-value build here
                         // is the stack-overflow footgun.
-                        if storage.as_ref().is_some_and(|s| s.build_route_index_into(&mut route_index)) {
+                        let id = active.and_then(|i| app.route_ids().get(i).copied());
+                        let source = crate::flat_store::reconcile_route(flat, id);
+                        if source.is_some_and(|source| route_index.read_into(source).is_ok()) {
                             route_index_valid = true;
                             index_route = active; // cached — no more rebuilds until the route changes
                         } else {
                             // Transient SD glitch: leave the key mismatched so every frame retries, hiding
                             // the route this frame rather than the whole ride.
                             index_route = None;
-                            defmt::warn!("SD: route index read failed (flaky link?) — retrying next frame");
+                            defmt::warn!("flat: route index read failed — retrying next frame");
                         }
                     }
                     None => {
@@ -1791,8 +2011,9 @@ pub(crate) async fn run_app(
             // This frame's route reader = the cached index + a fresh geometry source (both cheap, no I/O —
             // the source just wraps the open handle). Geometry streams lazily where it's read: the matcher
             // on a fresh fix, the renderer on a redraw frame.
-            let route_src = storage.as_ref().and_then(|s| s.route_source());
-            let route = match (route_index_valid.then_some(&route_index), route_src.as_ref()) {
+            let id = active.and_then(|i| app.route_ids().get(i).copied());
+            let route_src = crate::flat_store::reconcile_route(flat, id);
+            let route = match (route_index_valid.then_some(&route_index), route_src) {
                 (Some(idx), Some(src)) => Some(RouteReader::new_cached(idx, src, route_cache)),
                 _ => None,
             };
@@ -1899,9 +2120,9 @@ pub(crate) async fn run_app(
             }
 
             // Stream the selected OBCW into the host-owned resident snapshot. Keying on the fully
-            // validated slot identity plus the live fix keeps this off ordinary redraws while still
-            // resampling at movement cadence; a commit changes the candidate even when A/B happens
-            // to keep the same filename. With no fix the hourly half remains useful and every rain
+            // validated flat revision plus the live fix keeps this off ordinary redraws while still
+            // resampling at movement cadence; a replacement changes the key even if an OBCW producer
+            // reuses its generation. With no fix the hourly half remains useful and every rain
             // sample is honestly no-data (the companion likewise refuses to build a *new* local
             // bundle without a device position).
             let weather_pos = app.has_live_fix(now).then(|| app.state.user_fix.map(|fix| (fix.lat, fix.lon))).flatten();
@@ -1915,13 +2136,12 @@ pub(crate) async fn run_app(
             // before the first fix), with byte-identical output.
             let weather_projection_minute =
                 weather_projection.map_or(WEATHER_TIME_INDEPENDENT, |_| app.wall_unix_now() as i64 / 60);
-            let weather_candidate = storage.as_ref().and_then(sd::Storage::weather_active);
-            let next_weather_key = weather_candidate
-                .map(|candidate| (candidate, weather_pos, weather_projection_key, weather_projection_minute));
+            let next_weather_key =
+                weather_bundle.map(|bundle| (bundle, weather_pos, weather_projection_key, weather_projection_minute));
             if next_weather_key != weather_sample_key {
-                let next_snapshot = storage.as_ref().and_then(|storage| {
-                    let source = storage.weather_source()?;
-                    let reader = storage.weather_mount()?.reader(&source).ok()?;
+                let next_snapshot = weather_bundle.and_then(|bundle| {
+                    let source = crate::flat_store::reconcile_weather(flat, Some(bundle))?;
+                    let reader = bundle.validated.reader(source).ok()?;
                     let projection = route.as_ref().zip(weather_projection);
                     obc_app::WeatherSnapshot::sample_along(&reader, &mut weather_cache, weather_pos, projection).ok()
                 });
@@ -2060,20 +2280,9 @@ pub(crate) async fn run_app(
                 // style-table parse, no `Reader` build (so no stack spike), no map render — that screen
                 // draws just its own chrome. Such a frame costs only its own draw + the push.
                 let needs_map = app.base_needs_reader();
-                // The FAT arm rebuilds its cheap Reader view from the held-open handle each frame;
-                // the flat arm's source was resolved once at boot and is `'static`. Both are skipped
-                // on chrome-only frames — that is what keeps a menu redraw free of any map I/O.
-                let fat_src =
-                    if needs_map && flat_map.is_none() { storage.as_ref().and_then(|s| s.map_source()) } else { None };
-                let reader = if needs_map {
-                    match (flat_map, &fat_src) {
-                        (Some(source), _) => Some(Reader::new(source, map_tables, map_cache)),
-                        (None, Some(source)) => Some(Reader::new(source, map_tables, map_cache)),
-                        (None, None) => None,
-                    }
-                } else {
-                    None
-                };
+                // The flat map source is resolved once at boot and skipped on chrome-only frames,
+                // keeping menu redraws free of map I/O.
+                let reader = needs_map.then(|| Reader::new(flat_map, map_tables, map_cache));
                 if needs_map && reader.is_none() {
                     pending_map_redraw = true;
                     defmt::warn!(
@@ -2123,16 +2332,15 @@ pub(crate) async fn run_app(
                         // and hourly screens still receive the resident snapshot, but pay zero SD
                         // header/frame/tile reads during draw; the ordinary Map never receives a
                         // lease and therefore cannot be tinted by weather accidentally.
-                        let weather_source = app
-                            .base_wants_rain()
-                            .then(|| storage.as_ref().and_then(sd::Storage::weather_source))
-                            .flatten();
-                        let weather_reader = weather_source
-                            .as_ref()
-                            .and_then(|source| storage.as_ref()?.weather_mount()?.reader(source).ok());
-                        let weather_bind_failed = app.base_wants_rain()
-                            && storage.as_ref().and_then(sd::Storage::weather_active).is_some()
-                            && weather_reader.is_none();
+                        let weather_source = if app.base_wants_rain() {
+                            weather_bundle.and_then(|bundle| crate::flat_store::reconcile_weather(flat, Some(bundle)))
+                        } else {
+                            None
+                        };
+                        let weather_reader =
+                            weather_source.and_then(|source| weather_bundle?.validated.reader(source).ok());
+                        let weather_bind_failed =
+                            app.base_wants_rain() && weather_bundle.is_some() && weather_reader.is_none();
                         if weather_bind_failed {
                             // A transient header read is not evidence of a dry map. Keep the last
                             // complete glass and retry rather than flashing a misleading rain-free
@@ -2150,7 +2358,7 @@ pub(crate) async fn run_app(
                             let weather_snapshot_ref = weather_snapshot.as_ref();
                             let weather_refreshing = weather_refresh_in_flight();
                             #[cfg(feature = "sd-bench")]
-                            let read_before = sd::read_perf_snapshot();
+                            let read_before = crate::card_io::read_perf_snapshot();
                             let (stats, render_us) = display.render_frame(|f: &mut crate::ls021_flpr::Frame64| {
                                 let mut fbdev = FbDevice64::new(f.bytes_mut(), FRAME_W as u32, FRAME_H as u32);
                                 if let Some(r) = clip {
@@ -2181,7 +2389,7 @@ pub(crate) async fn run_app(
                             });
                             #[cfg(feature = "sd-bench")]
                             if needs_map {
-                                let reads = sd::read_perf_snapshot().since(read_before);
+                                let reads = crate::card_io::read_perf_snapshot().since(read_before);
                                 defmt::info!(
                                 "map SD bench: {=u32} us | logical {=u32} read(s) / {=u32} B | physical {=u32} command(s) / {=u32} block(s) ({=u32} single + {=u32} multi)",
                                 reads.us,
