@@ -3,8 +3,8 @@
 //! The GATT table is the **real** control plane the iOS app discovers on connect (see
 //! `obc-ble-interface-spec.md`): **DIS** (real firmware revision / board id / FICR serial), **BAS**
 //! (battery, notify — fed from the `FuelGauge` seam), the custom **OBC Control** service
-//! ([`ObcControlService`]) with its six characteristics (protocol v2 retired the `objectStore`
-//! digest and reserved `diagnostics` characteristics), and the **Weather Request** service
+//! ([`ObcControlService`]) with its characteristics (protocol v2 retired the `objectStore` digest and
+//! reserved `diagnostics` blocks; protocol v4 retired `transferControl` and added `objectControl`), and the **Weather Request** service
 //! ([`WeatherRequestService`], spec §11) with its one authenticated read. This module owns the
 //! `#[gatt_server]`/`#[gatt_service]` tables and the BLE static-random address. The writes
 //! themselves are answered by [`super::control`].
@@ -90,25 +90,41 @@ pub(crate) struct ObcControlService {
     /// at boot, re-seeded canonical after every accepted write.
     #[characteristic(uuid = "3C920004-9916-4EBA-ABC2-342FE08F6B10", read, write, permissions(authenticated))]
     pub config: heapless09::Vec<u8, 128>,
-    /// Open / abort a CoC transfer — **write-only** in protocol v2 (no CCCD): a download's announce
-    /// now rides the `status` envelope (`downloadAnnounce`), so all device → app control traffic is
-    /// one notify characteristic. The written descriptor is 12 bytes (v2 dropped the offset field).
-    #[characteristic(uuid = "3C920005-9916-4EBA-ABC2-342FE08F6B10", write, permissions(authenticated), value = [0u8; 12])]
-    pub transfer_control: [u8; 12],
+    // `…0005` (the v2 `transferControl` descriptor write) is **retired** in protocol v4 — the
+    // control channel is `…0009` below and the descriptor it carried does not exist: a transfer is
+    // one `PUT` or `GET` request and its own `RequestId`. The UUID block is not reassigned, per the
+    // no-reuse convention of `obc-ble-interface-spec.md`.
     // `…0006` (the reserved `diagnostics` characteristic) is **retired** in protocol v2 — diagnostics
     // cross the CoC as object type 4. The UUID block is not reassigned.
-    /// The L2CAP CoC PSM the app opens the channel on.
+    /// The L2CAP CoC PSM the app opens the channel on — protocol v4's stream channel
+    /// (`FLAT_Store_Protocol.md` §5.1), one complete stream frame per SDU.
     #[characteristic(uuid = "3C920007-9916-4EBA-ABC2-342FE08F6B10", read, permissions(authenticated), value = OBC_PSM)]
     pub psm: u16,
-    /// `protocol_version` — read **without** encryption (the connect-time version check happens before
-    /// pairing). Protocol v2 widens it to the [`VersionRead`](obc_ble::VersionRead): `version u16 ·
-    /// store_epoch u32 · obcm_version u8` (the last byte E1 / #911). **Variable-length** (a `Vec`,
-    /// like `status`/`config`): with a mounted store the boot seed sets the full 7 bytes; with **no
-    /// store** (card-resident epoch #776 — no card ⇒ no epoch) it sets the 2-byte **version-only**
-    /// form, which the app decodes as `storeEpoch = nil` → ack fail-closed. Empty until the seed
-    /// runs (before advertising). See [`version_read_blob`].
-    #[characteristic(uuid = "3C920008-9916-4EBA-ABC2-342FE08F6B10", read)]
-    pub protocol_version: heapless09::Vec<u8, { obc_ble::VersionRead::ENCODED_LEN }>,
+    /// `protocolVersion` — read **without** encryption, because §5's "version before framing" makes
+    /// it the transport fact a peer reads before it can send a frame it would have to misparse, and
+    /// that check happens before pairing.
+    ///
+    /// **Two bytes, `u16` = 4** (§5.1). Protocol v2's wider [`VersionRead`](obc_ble::VersionRead)
+    /// blob — `version u16 · store_epoch u32 · obcm_version u8` — is retired on this link: v4 has no
+    /// store epoch, because a client learns the card's identity and the freshness of its cache from
+    /// the `StoreId` every `LIST` page carries (§3), and a `StoreId` it has not seen means the card
+    /// was re-initialized and everything it cached is void. A fixed `value` rather than a boot seed
+    /// follows: there is nothing card-dependent left in it.
+    #[characteristic(uuid = "3C920008-9916-4EBA-ABC2-342FE08F6B10", read, value = obc_link::flat::WIRE_MAJOR as u16)]
+    pub protocol_version: u16,
+    /// **The protocol-v4 control channel** (§5.1): one Write Request value carries one complete
+    /// control frame, and one confirmed indication carries its response.
+    ///
+    /// `…0009` keeps the meaning `Device_Object_Protocol_v3.md` gave it rather than being retired
+    /// and reassigned — the no-reuse convention forbids giving a *retired* UUID a new meaning, and
+    /// this one keeps the one it has. What changed across the major bump is the frames it carries,
+    /// which `protocolVersion` already announces.
+    ///
+    /// 244 bytes is `ATT_MTU - 3` at the device's preferred 247-byte MTU, which is the control
+    /// ceiling §5.1 names; the largest fixed message in §3 is the 100-byte `PUT`, and a `LIST` page
+    /// carries as many 88-byte entries as the ceiling allows.
+    #[characteristic(uuid = "3C920009-9916-4EBA-ABC2-342FE08F6B10", write, indicate, permissions(authenticated))]
+    pub object_control: heapless09::Vec<u8, 244>,
 }
 
 /// The **Weather Request** service (spec §11): the dedicated UUID the device advertises *instead of*
@@ -201,15 +217,5 @@ pub(crate) fn device_address() -> Address {
 /// every accepted write so reads always return canonical bytes.
 pub(crate) fn config_blob(store: &ObjectStore) -> heapless09::Vec<u8, 128> {
     let (buf, len) = identity::config_bytes(store);
-    gatt_vec(&buf[..len])
-}
-
-/// The `protocolVersion` read blob for the boot seed. The attribute is a variable-length `Vec`, so
-/// the read serves whichever length [`identity::version_read_bytes`] produced (7 with a mounted
-/// store, the 2-byte version-only form without).
-pub(crate) fn version_read_blob(
-    store_epoch: Option<u32>,
-) -> heapless09::Vec<u8, { obc_ble::VersionRead::ENCODED_LEN }> {
-    let (buf, len) = identity::version_read_bytes(store_epoch);
     gatt_vec(&buf[..len])
 }
