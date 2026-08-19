@@ -610,6 +610,7 @@ coverage_component = "ios"
 ownership = [
   { kind = "swift-target", package = "companion-ios/Packages/OBCKit/Package.swift", name = "OBCTransportTests" },
   { kind = "swift-target", package = "companion-ios/Packages/OBCKit/Package.swift", name = "OBCProtocolV3Tests" },
+  { kind = "swift-target", package = "companion-ios/Packages/OBCKit/Package.swift", name = "OBCProtocolV4Tests" },
   { kind = "swift-target", package = "companion-ios/Packages/OBCKit/Package.swift", name = "OBCWeatherWireTests" },
   { kind = "swift-target", package = "companion-ios/Packages/OBCKit/Package.swift", name = "OBCWeatherTests" },
   { kind = "swift-target", package = "companion-ios/Packages/OBCKit/Package.swift", name = "OBCFormatsTests" },
