@@ -1,37 +1,9 @@
-//! The device object store — the board half that turns the object plane into SD files and RRAM
-//! settings. `obc-ble` owns the wire (descriptors, CRC, transfer sequencing); [`crate::sd::Storage`]
-//! owns FatFs; this module owns the **catalog semantics** between them:
+//! The remaining legacy control-plane state: RRAM-backed settings and the FAT ride catalog.
 //!
-//! - **Object ids**: `u16`, **durable for uploaded objects** — the id is encoded in the SD filename
-//!   (`RT{id}.OBR`, see `sd.rs`), recovered at the mount scan, and fresh ids continue monotonically
-//!   past `max(highest stored one + 1, the persisted RRAM high-water floor)` (#450) — so an id is
-//!   **never reused**, even after a delete drops the highest stored file and the device reboots.
-//!   Durability matters because the phone persists the id an upload
-//!   commits under (`PlannedRouteRecord.deviceObjectID`) and uses it to badge-reconcile and
-//!   replace-in-place across device reboots. Side-loaded `.obcr` files carry no id in their name and
-//!   get a *session-scoped* one from the reserved [`SIDELOAD_ID_BASE`] band, handed out by the
-//!   registry in `sd.rs` that the ride loop's catalog scan shares (identical ids in both tables) —
-//!   the app never persists those.
-//! - **Store revision**: bumped on every commit/delete; the BLE plane stamps it into the
-//!   `storeChanged` status message — protocol v2's sole change signal (the `objectStore` digest
-//!   characteristic is retired).
-//! - **The upload state machine**: descriptor → [`Receiver`] (+ temp-file sink) → commit. Uploads are
-//!   not resumable: an interrupted upload (a drop or an `op=3` abort) is discarded and the app re-sends
-//!   the object from the start.
-//! - **Downloads**: the `routeList` / `rideList` objects are built into a resident buffer; a route or
-//!   ride detail is served straight off the card (CRC pre-pass, then chunk reads — a stored
-//!   `RD{id}.ORD` *is* the wire object, so a ride download is verbatim).
-//! - **Rides are read-only over the link**: recorded by the ride loop (which posts the saved-ride
-//!   edge so this catalog follows mid-session) and deleted only from the device's Rides screen
-//!   (#454) — never by a phone command; the app hides synced rides locally instead of deleting them.
-//! - **Config ↔ settings**: the Config blob reads from / writes through the persisted [`Settings`]
-//!   (`device_name` + `units`), so a rename survives a power cycle and feeds the advertised name.
-//!
-//! Everything here is synchronous SD I/O. The SD card + RRAM store are **not** owned here — they
-//! live in the shared [`crate::SharedStore`] (the async mutex the map plane's ride loop also locks,
-//! #270), passed as a `&mut SharedStore` into each storage/settings method; a BLE plane locks it per
-//! call and drops the guard before its next `await`. `ObjectStore` itself (catalog + settings cache)
-//! stays behind a `RefCell` the BLE planes borrow **never across an `await`** (single executor).
+//! Route and trip ownership moved completely to [`crate::flat_store`]. This module stays only for
+//! surfaces that have not moved yet: Config/bond state, locally recorded rides and their sync/delete
+//! edges, and the on-glass DFU request hand-off. It owns no route/trip catalog, identity allocator,
+//! upload receiver, or per-kind delete command.
 
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 

@@ -146,7 +146,10 @@ async fn wait_host_or_sensor_event(
             #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
             consumer,
         ),
-        crate::flat_store::wait_catalog_commit(),
+        embassy_futures::select::select(
+            crate::flat_store::wait_catalog_commit(),
+            crate::object_store::wait_store_changed(),
+        ),
     )
     .await;
 }
@@ -982,6 +985,11 @@ pub(crate) async fn run_app(
         // commit/delete (the same edge that notifies the phone). Both `ble`-only: the map build has no
         // radio and no `object_store`, so the app simply stays disconnected there.
         for _ in 0..crate::flat_store::take_catalog_commits() {
+            app.apply_event(obc_app::HostEvent::StoreChanged);
+        }
+        // The FAT ride repository remains until FS8. Its save/delete/sync edge shares the same app
+        // event so the Rides menu still refreshes promptly while route/trip catalogs are flat-only.
+        for _ in 0..crate::object_store::take_store_changed() {
             app.apply_event(obc_app::HostEvent::StoreChanged);
         }
 
