@@ -418,15 +418,12 @@ pub(crate) const REQUEST_QUEUE_BYTES: usize =
 pub(crate) enum Request {
     /// §6's extent reservation.
     Allocate { bytes: u64 },
-    /// Append to a reservation. Replies with the advanced [`Allocation`], because the seam takes it
-    /// by `&mut` and a channel cannot lend one.
-    Write { allocation: Allocation, bytes: &'static [u8] },
-    /// Backfill bytes in an unpublished reservation (the computed OBCR header).
-    Patch { allocation: Allocation, offset: u64, bytes: &'static [u8] },
-    /// Hash the final bytes in an unpublished reservation after its header backfill.
-    Checksum { allocation: Allocation },
+    /// Append a staged planner step and optionally backfill its completed OBCR header. Replies with
+    /// the advanced allocation. Patch-first ordering keeps the caller's old token cancellable if
+    /// the append fails.
+    WriteComputedRoute { allocation: Allocation, bytes: &'static [u8], header: &'static [u8] },
     /// Publish a freshly generated route under the store's next id.
-    PublishComputedRoute { allocation: Allocation, payload_crc: u32, name: DisplayName },
+    PublishComputedRoute { allocation: Allocation, name: DisplayName },
     /// §5.5's atomic batch. Replies with the commit sequence.
     Commit { batch: heapless::Vec<Mutation, MAX_BATCH> },
     /// §7.2's ride checkpoint.
@@ -490,8 +487,6 @@ pub(crate) enum Outcome {
     Allocated(Allocation),
     /// The allocation, advanced by the bytes written.
     Wrote(Allocation),
-    /// CRC-32/IEEE of a live allocation.
-    Checksummed(u32),
     /// Object id assigned to a board-generated route.
     Published(ObjectId),
     /// §5.5's commit sequence.
@@ -566,7 +561,31 @@ pub(crate) struct Writer {
     requests: Sender<'static, CriticalSectionRawMutex, Job, REQUEST_QUEUE>,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct Ticket(u32);
+
 impl Writer {
+    /// Enqueue one call without parking the ride loop. The returned request can be retried on a
+    /// full queue; a successful ticket is polled with [`Writer::try_result`] on later passes.
+    pub(crate) fn try_call(&self, request: Request, reply: &'static Reply) -> Result<Ticket, Request> {
+        let tag = NEXT_TAG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        self.requests.try_send(Job { request, reply, tag }).map(|()| Ticket(tag)).map_err(|error| match error {
+            embassy_sync::channel::TrySendError::Full(job) => job.request,
+        })
+    }
+
+    /// Take this ticket's answer without parking. Older orphaned answers are discarded exactly as
+    /// [`Writer::call`] does; `None` means the storage task has not answered yet.
+    pub(crate) fn try_result(&self, ticket: Ticket, reply: &'static Reply) -> Option<Result<Outcome, StoreError>> {
+        loop {
+            let (answered, outcome) = reply.try_take()?;
+            if answered == ticket.0 {
+                return Some(outcome);
+            }
+            debug_assert!(answered < ticket.0, "a reply slot answered a tag that has not been issued");
+        }
+    }
+
     /// Send `request` and wait for the store's answer.
     ///
     /// **The caller blocks here and nowhere else**, which is the ruling's "callers block only if
@@ -866,17 +885,16 @@ fn serve(
 ) -> Result<Outcome, StoreError> {
     match request {
         Request::Allocate { bytes } => store.allocate(bytes).map(Outcome::Allocated),
-        Request::Write { mut allocation, bytes } => {
+        Request::WriteComputedRoute { mut allocation, bytes, header } => {
+            if !header.is_empty() {
+                store.patch_allocation(&allocation, 0, header)?;
+            }
             store.write(&mut allocation, bytes)?;
             Ok(Outcome::Wrote(allocation))
         }
-        Request::Patch { allocation, offset, bytes } => {
-            store.patch_allocation(&allocation, offset, bytes)?;
-            Ok(Outcome::Done)
-        }
-        Request::Checksum { allocation } => store.allocation_crc(&allocation).map(Outcome::Checksummed),
-        Request::PublishComputedRoute { allocation, payload_crc, name } => {
+        Request::PublishComputedRoute { allocation, name } => {
             let id = store.next_object_id();
+            let payload_crc = store.allocation_crc(&allocation)?;
             let meta = EntryMeta {
                 id,
                 revision: Revision(1),

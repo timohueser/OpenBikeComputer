@@ -434,7 +434,7 @@ mod resource_report {
         entry("terrain_window", core::mem::size_of::<obc_formats::io::WindowSource<'static>>()),
     ];
 
-    const ENTRIES: usize = 34;
+    const ENTRIES: usize = 33;
 
     #[used]
     #[no_mangle]
