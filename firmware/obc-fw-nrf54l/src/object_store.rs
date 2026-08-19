@@ -250,12 +250,8 @@ impl ObjectStore {
     /// `RefCell::new(empty())` and stack the two ~13.6 KB temporaries again (the boot-chain guard
     /// caught it, as designed). A constant can't be duplicated onto the stack; everything that
     /// scans stays in [`hydrate`], operating on the slot directly.
-    pub const EMPTY: ObjectStore = ObjectStore {
-        settings: Settings::DEFAULT,
-        rides: Vec::new(),
-        revision: 1,
-        ride_total: 0,
-    };
+    pub const EMPTY: ObjectStore =
+        ObjectStore { settings: Settings::DEFAULT, rides: Vec::new(), revision: 1, ride_total: 0 };
 
     /// Mount-time fill of an [`EMPTY`](Self::EMPTY) store, **in place**: load settings and scan the
     /// legacy ride catalog. Route and trip objects are owned exclusively by the flat store.
