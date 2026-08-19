@@ -1868,11 +1868,14 @@ pub fn serialize_lods(
             poi_section_offset,
             nav_section_offset,
         ))?;
-        debug_assert_eq!(w.begin_section()?, STYLE_OFFSET as u64, "→ the style table");
+        let at = w.begin_section()?; // → the style table
+        debug_assert_eq!(at, STYLE_OFFSET as u64);
         w.put(&style_data)?;
-        debug_assert_eq!(w.begin_section()?, lod_table_offset as u64, "→ the LOD table the header names");
+        let at = w.begin_section()?; // → the LOD table
+        debug_assert_eq!(at, lod_table_offset as u64, "the header names the table the cursor reached");
         w.put(&table)?;
-        debug_assert_eq!(w.begin_section()?, payload_start as u64, "→ the first LOD's index");
+        let at = w.begin_section()?; // → the first LOD's index
+        debug_assert_eq!(at, payload_start as u64, "the first LOD entry names the index the cursor reached");
         for b in &blocks {
             w.put(&b.ib)?;
             w.put(&b.cb)?;
@@ -1955,16 +1958,19 @@ where
         // `STYLE_OFFSET` placeholders (any unit-aligned byte will do; `0` is not one the writer may
         // name, since `scaled` refuses a non-boundary) and patch them in step 5.
         u.put(&header_bytes(lod_count, marker_color, global_bbox, lod_table_offset, STYLE_OFFSET, STYLE_OFFSET))?;
-        debug_assert_eq!(u.begin_section()?, STYLE_OFFSET as u64, "→ the style table");
+        let at = u.begin_section()?; // → the style table
+        debug_assert_eq!(at, STYLE_OFFSET as u64);
 
         // 2. Style table, then a zeroed LOD table we patch in step 5. Both runs of filler behind
         // them are the boundaries their scaled offsets already promised — and the cursor arriving
         // where `prefix_offsets` said it would is what keeps the header's claim and the bytes one
         // statement.
         u.put(&style_data)?;
-        debug_assert_eq!(u.begin_section()?, lod_table_offset as u64, "→ the LOD table the header names");
+        let at = u.begin_section()?; // → the LOD table
+        debug_assert_eq!(at, lod_table_offset as u64, "the header names the table the cursor reached");
         u.put(&vec![0u8; lod_count * LOD_ENTRY_LEN])?;
-        debug_assert_eq!(u.begin_section()?, payload_start as u64, "→ the first LOD's index");
+        let at = u.begin_section()?; // → the first LOD's index
+        debug_assert_eq!(at, payload_start as u64, "the first LOD entry names the index the cursor reached");
 
         // 3. Per-LOD: build → serialize → stream payload → drop the tree.
         for i in 0..lod_count {
