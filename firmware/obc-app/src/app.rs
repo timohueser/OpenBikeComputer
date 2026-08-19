@@ -1212,9 +1212,9 @@ impl App {
     }
 
     pub fn set_routes(&mut self, summaries: &[RouteSummary]) {
-        let mut ids: heapless::Vec<u16, { crate::route::MAX_ROUTES }> = heapless::Vec::new();
+        let mut ids: heapless::Vec<crate::CatalogObjectId, { crate::route::MAX_ROUTES }> = heapless::Vec::new();
         for i in 0..summaries.len().min(crate::route::MAX_ROUTES) {
-            let _ = ids.push(i as u16);
+            let _ = ids.push(i as crate::CatalogObjectId);
         }
         self.set_routes_with_ids(summaries, &ids);
     }
@@ -1231,7 +1231,7 @@ impl App {
     /// matcher progress + profile dropped), a menu selection clamps near its old position, a
     /// preview/swap subject turns into its screen's own missing-route path. Dirties the map once —
     /// a store change is a repaint-worthy host event (the open menu refreshes in place).
-    pub fn set_routes_with_ids(&mut self, summaries: &[RouteSummary], ids: &[u16]) {
+    pub fn set_routes_with_ids(&mut self, summaries: &[RouteSummary], ids: &[crate::CatalogObjectId]) {
         // The catalog + trip replacement (and the id ↔ summary pairing) is `CatalogState`'s; the
         // old-id snapshot it returns drives the remap of everything held *outside* it.
         let old_ids = self.catalogs.replace_routes(summaries, ids);
@@ -1249,7 +1249,7 @@ impl App {
     pub fn set_routes_with_meta(
         &mut self,
         summaries: &[RouteSummary],
-        ids: &[u16],
+        ids: &[crate::CatalogObjectId],
         metas: &[crate::retention::RouteRetentionMeta],
     ) {
         self.set_routes_with_ids(summaries, ids);
@@ -1273,7 +1273,7 @@ impl App {
     /// Re-point every held catalog index after the catalog was replaced: old index → its id in
     /// `old_ids` → that id's new index (or `None` if the route vanished). See
     /// [`set_routes_with_ids`](App::set_routes_with_ids).
-    fn remap_route_indices(&mut self, old_ids: &[u16]) {
+    fn remap_route_indices(&mut self, old_ids: &[crate::CatalogObjectId]) {
         let App { catalogs, ride, activity, ui, .. } = self;
         let remap = |i: usize| -> Option<usize> { catalogs.remap_route(old_ids, i) };
 
@@ -1309,7 +1309,7 @@ impl App {
     /// Each catalog entry's durable object id, pairwise with [`routes`](App::routes) — as last fed
     /// to [`set_routes_with_ids`](App::set_routes_with_ids) (positional for plain
     /// [`set_routes`](App::set_routes)).
-    pub fn route_ids(&self) -> &[u16] {
+    pub fn route_ids(&self) -> &[crate::CatalogObjectId] {
         self.catalogs.route_ids()
     }
 
@@ -1693,7 +1693,7 @@ impl App {
     }
 
     /// [`HostEvent::NavPlanned`]: land the plan answer in the planning screen, or drop it.
-    fn on_nav_planned(&mut self, result: Result<u16, obc_route::nav::NavError>) {
+    fn on_nav_planned(&mut self, result: Result<crate::CatalogObjectId, obc_route::nav::NavError>) {
         use obc_route::nav::NavError;
         // The run is over whatever happens below — including for a *late* answer whose planning
         // screen the rider already cancelled away, which returns early two lines down.
@@ -1772,7 +1772,7 @@ impl App {
     /// RouteSwap precedent), queue the seam re-anchor (the tick that owns the `RouteReader`
     /// installs matcher progress + floor at the splice seam), then truncate the detour flow off
     /// the stack so the rider lands on the exact riding view they left.
-    fn on_detour_committed(&mut self, result: Result<u16, obc_route::nav::NavError>) {
+    fn on_detour_committed(&mut self, result: Result<crate::CatalogObjectId, obc_route::nav::NavError>) {
         let resolved = result.and_then(|id| self.catalogs.route_index_of(id).ok_or(obc_route::nav::NavError::NoPath));
         match resolved {
             Ok(idx) => {
@@ -1955,7 +1955,12 @@ impl App {
     }
 
     /// [`HostEvent::RouteUploaded`]: forced adoption on an active replace + the advisory prompt.
-    fn on_route_uploaded(&mut self, id: u16, replaced: bool, elevation: Option<[u8; obc_route::SPARKLINE_BUCKETS]>) {
+    fn on_route_uploaded(
+        &mut self,
+        id: crate::CatalogObjectId,
+        replaced: bool,
+        elevation: Option<[u8; obc_route::SPARKLINE_BUCKETS]>,
+    ) {
         let active_id = self.activity.active_route.and_then(|i| self.catalogs.route_id_at(i));
         let active_replace = replaced && active_id == Some(id);
         if active_replace {
@@ -1988,7 +1993,7 @@ impl App {
     /// pushed from the host (hosts edit a trip exclusively by replace-at-same-id — the desktop's
     /// rename / add / remove / reorder is one upload per click), so it is silent: the user just
     /// made the change, and a card per click would be the exact parade this event exists to kill.
-    fn on_trip_uploaded(&mut self, id: u16, replaced: bool) {
+    fn on_trip_uploaded(&mut self, id: crate::CatalogObjectId, replaced: bool) {
         if replaced {
             return;
         }
@@ -2261,7 +2266,11 @@ impl App {
             position,
             bearing_deg,
             speed_deci_ms,
-            route_id: self.activity.active_route.and_then(|i| self.catalogs.route_id_at(i)),
+            route_id: self
+                .activity
+                .active_route
+                .and_then(|i| self.catalogs.route_id_at(i))
+                .and_then(|id| u16::try_from(id).ok()),
             now_utc,
         }
     }
@@ -3136,7 +3145,7 @@ impl App {
             HostCommandClass::DeleteTrip => self.activity.take_trip_delete().map(|id| HostCommand::DeleteTrip { id }),
             HostCommandClass::DeleteRide => {
                 if let Some(idx) = self.activity.take_ride_delete() {
-                    Some(HostCommand::DeleteRide { id: self.catalogs.ride_entry(idx)?.id })
+                    Some(HostCommand::DeleteRide { id: u64::from(self.catalogs.ride_entry(idx)?.id) })
                 } else {
                     self.retention_delete_ride()
                 }
@@ -3155,8 +3164,10 @@ impl App {
                 // Mirror into both the resident summary (UI repaint) and the full retention inventory
                 // (finding #876-2) so a re-derivation before the host's rescan doesn't re-enqueue the
                 // stamp — including for a ride outside the newest-32 display catalog.
-                self.catalogs.stamp_ride_synced_at(id, utc);
-                self.catalogs.stamp_inventory_synced_at(id, utc);
+                if let Ok(id) = u16::try_from(id) {
+                    self.catalogs.stamp_ride_synced_at(id, utc);
+                    self.catalogs.stamp_inventory_synced_at(id, utc);
+                }
                 Some(HostCommand::StampRideSynced { id, utc })
             }
             HostCommandClass::FinishTrack => self.activity.take_track_action().map(HostCommand::FinishTrack),
@@ -3228,7 +3239,7 @@ impl App {
     /// legal auto-delete right now. Converts an active/unknown-stamp route into a re-stamp instead of
     /// a delete (so the safety stamp is never lost), and reports `false` for a route that vanished,
     /// went `Never`, or is no longer expired.
-    fn route_delete_still_due(&mut self, id: u16) -> bool {
+    fn route_delete_still_due(&mut self, id: crate::CatalogObjectId) -> bool {
         use crate::retention::Retention;
         let now = self.wall_unix_now();
         let Some(idx) = self.catalogs.route_ids().iter().position(|&x| x == id) else {
@@ -3278,7 +3289,7 @@ impl App {
     /// The just-in-time ride-delete predicate (finding #876-1/5): whether ride `id` is *still* a
     /// legal auto-delete — read from the full compact inventory, so a re-sync or a lengthened
     /// interval discovered after the sweep wins.
-    fn ride_delete_still_due(&self, id: u16) -> bool {
+    fn ride_delete_still_due(&self, id: crate::CatalogObjectId) -> bool {
         let now = self.wall_unix_now();
         let Some(rec) = self.catalogs.ride_records().iter().find(|r| r.id == id) else {
             return false; // gone from the inventory — already absent

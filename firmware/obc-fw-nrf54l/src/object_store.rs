@@ -742,7 +742,9 @@ impl ObjectStore {
         }
         if let Some(stages) = stages {
             for stage_id in stages {
-                let _ = self.delete_route(shared, stage_id); // dangling → false, skipped
+                if let Ok(stage_id) = u16::try_from(stage_id) {
+                    let _ = self.delete_route(shared, stage_id); // dangling → false, skipped
+                }
             }
         }
         self.delete_trip(shared, id)

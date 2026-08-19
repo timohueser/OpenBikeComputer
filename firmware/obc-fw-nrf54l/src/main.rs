@@ -1503,18 +1503,15 @@ async fn main(_spawner: Spawner) {
             &mut *slot
         };
         {
-            // These menu loaders still read the **FAT** catalog. Protocol-v4 clients can already
-            // write flat Route, Ride and Trip objects, but this image does not project those entries
-            // into the on-device menus yet; on a flat card the menus therefore remain empty until
-            // that read-path cutover lands. Do not mistake an empty menu for an empty flat catalog.
+            // Routes and trips are flat-store objects. One bounded snapshot seeds the menu, newest
+            // first so a fresh upload remains visible on a card with more than the UI cap.
+            if flat_map.is_some() {
+                flat_store::load_routes(flat, app);
+                flat_store::load_trips(flat, app);
+            }
+            // Ride recording remains FS8; FAT rides stay available during that separate cutover.
             if let Some(storage) = storage.as_mut() {
-                ride::load_routes(storage, app);
                 ride::load_rides(storage, app);
-                // Trip folders (epic #526 TR4): scan `TP{id}.OBT` and resolve each trip's stages
-                // against the route catalog just loaded — after `load_routes`, so the stage
-                // resolution sees it.
-                ride::scan_trips_at_boot(storage);
-                ride::load_trips(storage, app);
             }
             // Mirror the map's §8.6 routing-profile names into the app for the Bike-type settings
             // screen + created-route overview label (N5). Map metadata, so it runs on the `ble` image
@@ -1756,6 +1753,7 @@ async fn main(_spawner: Spawner) {
             map_tables,
             map_cache,
             flat_map,
+            flat_map.map(|_| flat),
             route_cache,
             nav,
             &mut led,
@@ -1774,6 +1772,7 @@ async fn main(_spawner: Spawner) {
             map_tables,
             map_cache,
             flat_map,
+            flat_map.map(|_| flat),
             route_cache,
             nav,
             &mut led,

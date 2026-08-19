@@ -1243,7 +1243,7 @@ impl Storage {
     pub fn ride_retention_inventory(&self) -> Vec<obc_app::RideRetentionRecord, MAX_RIDES> {
         let mut out = Vec::new();
         for (id, synced_at) in self.load_synced_set().entries() {
-            let _ = out.push(obc_app::RideRetentionRecord { id, synced: true, synced_at_utc: synced_at });
+            let _ = out.push(obc_app::RideRetentionRecord { id: u64::from(id), synced: true, synced_at_utc: synced_at });
         }
         out
     }
