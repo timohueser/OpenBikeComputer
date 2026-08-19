@@ -1,0 +1,95 @@
+schema = 1
+
+# Baselines are intentionally absent. TS5 will measure and accept them; "pending"
+# is not a number and must never be used as one.
+
+[[component]]
+id = "format-protocol-codecs"
+include = ["firmware/obc-formats/src/**", "firmware/obc-link/src/**"]
+exclude = []
+enforcement = "ratchet"
+
+[[component]]
+id = "crc"
+include = ["firmware/obc-crc/src/**"]
+exclude = []
+enforcement = "ratchet"
+
+[[component]]
+id = "storage"
+include = ["firmware/obc-storage/src/**"]
+exclude = []
+enforcement = "ratchet"
+
+[[component]]
+id = "dfu"
+include = ["firmware/obc-dfu/src/**"]
+exclude = []
+enforcement = "ratchet"
+
+[[component]]
+id = "boot"
+include = ["firmware/obc-boot/src/**"]
+exclude = []
+enforcement = "ratchet"
+
+[[component]]
+id = "firmware-app"
+include = ["firmware/obc-app/src/**", "firmware/obc-platform/src/**", "firmware/obc-ports/src/**"]
+exclude = []
+enforcement = "report"
+
+[[component]]
+id = "navigation-map"
+include = ["firmware/obc-map-scene/src/**", "firmware/obc-reader/src/**", "firmware/obc-route/src/**", "firmware/obc-render/src/**"]
+exclude = []
+enforcement = "report"
+
+[[component]]
+id = "weather"
+include = ["firmware/obc-weather/src/**", "host/obc-wx-bake/src/**", "host/obc-wx-client/src/**"]
+exclude = []
+enforcement = "report"
+
+[[component]]
+id = "device-drivers"
+include = ["firmware/obc-ble/src/**", "firmware/obc-display/src/**", "firmware/obc-sensors/src/**"]
+exclude = []
+enforcement = "report"
+
+[[component]]
+id = "host-tools"
+include = ["host/**/src/**", "apps/obc-sim/src/**"]
+exclude = [
+  { path = "host/obc-wx-bake/src/**", evidence = "Reported separately by the weather component." },
+  { path = "host/obc-wx-client/src/**", evidence = "Reported separately by the weather component." },
+]
+enforcement = "report"
+
+[[component]]
+id = "web"
+include = ["builder/app/src/**", "apps/obc-web-demo/src/**", "apps/obc-web-convert/src/**", "apps/obc-web-assemble/src/**", "apps/obc-skin-preview/src/**"]
+exclude = [
+  { path = "builder/app/src/lib/convert/pkg/**", evidence = "Generated bridge is covered at its Rust producer and by web byte-identity contract tests." },
+  { path = "builder/app/src/lib/assemble/pkg/**", evidence = "Generated bridge is covered at its Rust producer and by web byte-identity contract tests." },
+  { path = "builder/app/src/lib/skin/pkg/**", evidence = "Generated bridge is covered at its Rust producer and by web byte-identity contract tests." },
+]
+enforcement = "report"
+
+[[component]]
+id = "ios"
+include = ["companion-ios/Packages/OBCKit/Sources/**", "companion-ios/OBCCompanion/**"]
+exclude = []
+enforcement = "report"
+
+[[component]]
+id = "desktop"
+include = ["apps/obc-desktop/src/**"]
+exclude = []
+enforcement = "report"
+
+[[component]]
+id = "dev-tools"
+include = ["tools/*.py", "firmware/tools/*.py", "builder/server/*.py", "ops/weather/*.py"]
+exclude = []
+enforcement = "report"

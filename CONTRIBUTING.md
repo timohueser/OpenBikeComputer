@@ -1,5 +1,10 @@
 # Developing OpenBikeComputer
 
+The complete test taxonomy, suite-granularity rule, registry fields, exception policy, and change
+selection table live in [`docs/testing.md`](docs/testing.md). In short: unit, component, and
+contract suites are the fast hermetic tier; fixture, end-to-end, live, and hardware suites use
+explicit cadences; selection is per suite, never per test function.
+
 ## Verification is proportional to the change
 
 The normal development loop is **scoped verification**, not the complete repository gate. Every
@@ -18,6 +23,10 @@ cargo clippy -p obc-weather --all-targets -- -D warnings
 
 `obc test` deliberately requires a scope. It does not silently expand to the workspace. Multiple
 affected packages may be supplied with repeated `-p` arguments.
+
+Run `obc suites check` after changing test sources, validation commands, workflows, registries, or
+test policy. Use `obc suites list` and `obc suites explain SUITE_ID` to inspect the derived
+inventory; counts and durations do not belong in the registry.
 
 For a non-Rust surface, use that surface's native focused command from its README or package
 scripts. Do not run Rust gates for a Swift-, documentation-, or frontend-only change.
