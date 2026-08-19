@@ -19,7 +19,7 @@ fn route(name: &str, distance_km: u32, climb_m: u32) -> RouteSummary {
 }
 
 /// Three routes with durable ids 7, 8, 9 (distances 10/20/30 km, climbs 100/200/300 m).
-fn three_routes() -> ([RouteSummary; 3], [u16; 3]) {
+fn three_routes() -> ([RouteSummary; 3], [u64; 3]) {
     ([route("Alpha", 10, 100), route("Beta", 20, 200), route("Gamma", 30, 300)], [7, 8, 9])
 }
 
@@ -108,13 +108,13 @@ fn max_trips_overflow_keeps_first_n() {
     let mut app = app_with_three_routes();
     let names: Vec<String> = (0..MAX_TRIPS + 5).map(|i| format!("Trip {i}")).collect();
     let inputs: Vec<TripInput> =
-        (0..MAX_TRIPS + 5).map(|i| TripInput { id: i as u16, name: &names[i], stage_ids: &[7] }).collect();
+        (0..MAX_TRIPS + 5).map(|i| TripInput { id: i as u64, name: &names[i], stage_ids: &[7] }).collect();
     app.set_trips(&inputs);
 
     assert_eq!(app.trips().len(), MAX_TRIPS);
     // The first N survived, in order.
     assert_eq!(app.trips()[0].id, 0);
-    assert_eq!(app.trips()[MAX_TRIPS - 1].id, (MAX_TRIPS - 1) as u16);
+    assert_eq!(app.trips()[MAX_TRIPS - 1].id, (MAX_TRIPS - 1) as u64);
 }
 
 /// A trip resolves lazily against the *current* catalog: a stage id that dangles when the trip is

@@ -19,7 +19,7 @@ use obc_reader::{MapTables, SliceSource};
 use super::support::{build_min_obcm, build_min_obcm_profiles, keys, render_120, ReplayFix};
 
 /// The drained `DeleteRoute` id, if pending.
-fn took_route_delete(app: &mut App) -> Option<u16> {
+fn took_route_delete(app: &mut App) -> Option<crate::CatalogObjectId> {
     let mut mb: HostMailbox = HostMailbox::new();
     let _ = app.drain_host_commands(&mut mb);
     core::iter::from_fn(|| mb.pop()).find_map(|c| match c {
@@ -594,7 +594,7 @@ fn set_routes_replaces_the_previous_catalog() {
 // silently shift which route is navigated.
 
 /// Ids for [`test_routes`] — deliberately non-positional, so an index-as-id shortcut can't pass.
-const IDS3: [u16; 3] = [10, 20, 30];
+const IDS3: [crate::CatalogObjectId; 3] = [10, 20, 30];
 
 /// The DoD case: while navigating route X, a *different* route is uploaded/deleted → the app
 /// still navigates X, at its new index.

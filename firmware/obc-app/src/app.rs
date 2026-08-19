@@ -6458,8 +6458,8 @@ mod tests {
     #[test]
     fn batched_deletes_all_execute_exactly_once() {
         let (mut app, now) = trusted_app();
-        let mut live: heapless::Vec<u16, 4> = heapless::Vec::from_slice(&[10, 11, 12]).unwrap();
-        let rescan = |app: &mut App, live: &[u16]| {
+        let mut live: heapless::Vec<crate::CatalogObjectId, 4> = heapless::Vec::from_slice(&[10, 11, 12]).unwrap();
+        let rescan = |app: &mut App, live: &[crate::CatalogObjectId]| {
             let sums: heapless::Vec<RouteSummary, 4> = live.iter().map(|_| summary("x")).collect();
             let metas: heapless::Vec<RouteRetentionMeta, 4> = live.iter().map(|_| expired(now)).collect();
             app.set_routes_with_meta(&sums, live, &metas);
@@ -6467,7 +6467,7 @@ mod tests {
         rescan(&mut app, &live);
         app.retention_tick(); // three delete candidates queued at once
 
-        let mut deleted: heapless::Vec<u16, 8> = heapless::Vec::new();
+        let mut deleted: heapless::Vec<crate::CatalogObjectId, 8> = heapless::Vec::new();
         for _ in 0..12 {
             for c in &drain_once(&mut app) {
                 if let HostCommand::DeleteRoute { id } = c {
@@ -6484,7 +6484,7 @@ mod tests {
             }
         }
         assert_eq!(deleted.len(), 3, "every expired route was deleted: {deleted:?}");
-        for id in [10u16, 11, 12] {
+        for id in [10u64, 11, 12] {
             assert_eq!(deleted.iter().filter(|&&x| x == id).count(), 1, "id {id} executed exactly once");
         }
     }

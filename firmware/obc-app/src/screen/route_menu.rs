@@ -426,7 +426,8 @@ mod tests {
         stages: &[crate::CatalogObjectId],
         catalog: &[RouteSummary],
     ) -> TripSummary {
-        let ids: heapless::Vec<u16, { crate::route::MAX_ROUTES }> = (0..catalog.len() as u16).collect();
+        let ids: heapless::Vec<crate::CatalogObjectId, { crate::route::MAX_ROUTES }> =
+            (0..catalog.len() as crate::CatalogObjectId).collect();
         TripSummary::resolve(&TripInput { id, name, stage_ids: stages }, catalog, &ids)
     }
 

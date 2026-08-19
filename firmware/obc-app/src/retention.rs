@@ -916,13 +916,13 @@ mod tests {
         }
     }
 
-    fn ride(id: u16, synced: bool, synced_at_utc: u32) -> RideRetentionRecord {
+    fn ride(id: crate::CatalogObjectId, synced: bool, synced_at_utc: u32) -> RideRetentionRecord {
         RideRetentionRecord { id, synced, synced_at_utc }
     }
 
     #[test]
     fn sweep_deletes_expired_keeps_fresh_and_never() {
-        let ids = [10u16, 11, 12];
+        let ids = [10u64, 11, 12];
         let now = 1_000_000;
         let metas = [
             RouteRetentionMeta::new(Retention::Day1, now - 2 * DAY_SECS), // expired
@@ -937,7 +937,7 @@ mod tests {
 
     #[test]
     fn sweep_stamps_unknown_last_used() {
-        let ids = [10u16];
+        let ids = [10u64];
         let metas = [RouteRetentionMeta::new(Retention::Day1, 0)]; // retention set, clock not started
         let inputs = SweepInputs { now_utc: 1_000_000, route_ids: &ids, route_metas: &metas, ..ins() };
         let mut out: heapless::Vec<SweepAction, 8> = heapless::Vec::new();
@@ -947,7 +947,7 @@ mod tests {
 
     #[test]
     fn sweep_re_stamps_active_route_past_expiry() {
-        let ids = [10u16, 11];
+        let ids = [10u64, 11];
         let now = 1_000_000;
         let metas = [
             RouteRetentionMeta::new(Retention::Day1, now - 5 * DAY_SECS), // active + expired
@@ -1000,7 +1000,7 @@ mod tests {
         // Build an inventory larger than the UI cap: the newest UI_RIDES_CAP are fresh/unsynced, an
         // old one (index past the cap) is synced + expired, and another old one is legacy-unstamped.
         let mut recs: heapless::Vec<RideRetentionRecord, MAX_RIDES> = heapless::Vec::new();
-        for i in 0..UI_RIDES_CAP as u16 {
+        for i in 0..UI_RIDES_CAP as crate::CatalogObjectId {
             let _ = recs.push(ride(100 + i, false, 0)); // the "visible" newest 32: unsynced
         }
         let _ = recs.push(ride(7, true, now - 30 * DAY_SECS)); // old, synced long ago → expired
@@ -1067,7 +1067,7 @@ mod tests {
     fn activation_stamp_survives_capacity_pressure() {
         let mut rt = RetentionRuntime::new();
         // Saturate the queue with delete candidates.
-        for i in 0..SWEEP_QUEUE_CAP as u16 {
+        for i in 0..SWEEP_QUEUE_CAP as crate::CatalogObjectId {
             rt.test_push(SweepAction::DeleteRoute(i));
         }
         rt.note_active_route(Some(9_999));
