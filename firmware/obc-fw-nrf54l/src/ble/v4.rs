@@ -33,9 +33,12 @@
 //!   mid-`receive`. It is the channel's destruction, not the reader's timing, that makes the drop
 //!   harmless, and stating it the wrong way would license a refactor that kept the channel alive.) §5: "MUST NOT deliver it,
 //!   and MUST NOT drop it."
-//! - **Credit is withheld while a frame is held.** [`reader_pump`] receives one record, posts it,
-//!   and then waits for [`STREAM_TAKEN`] before receiving again. One frame in flight, never two, and
-//!   the CoC's own credit flow control is what pushes back on the peer meanwhile.
+//! - **Byte-stream fragments are reassembled before delivery.** CoreBluetooth exposes a CoC as
+//!   `InputStream` / `OutputStream`, and an output write may accept fewer bytes than requested. The
+//!   reader therefore uses §3.8's own header length to recover a complete record instead of treating
+//!   one incoming SDU as one record. It posts that record and waits for [`STREAM_TAKEN`] before
+//!   assembling another, so one frame is in flight, never two, and the CoC's own credit flow control
+//!   pushes back on the peer meanwhile.
 //! - **The admission race is closed with a real hold.** A control write and a CoC SDU can genuinely
 //!   arrive in either order — the GATT pump may be parked, so "no control record is pending" does
 //!   not mean "none was written". When a stream frame arrives and
@@ -74,7 +77,8 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{with_timeout, Duration, Timer};
 use nrf_sdc::{self as sdc};
-use obc_link::flat::{Admission, Ceilings, Channel, Opcode, Reaction, RequestId};
+use obc_link::flat::wire::{StreamAssembly, StreamRecordAssembler};
+use obc_link::flat::{Admission, Ceilings, Channel, Reaction, RequestId};
 use trouble_host::prelude::*;
 
 use crate::flat_store::{Outcome, Reply, Request, Writer};
@@ -328,8 +332,8 @@ pub(crate) async fn release_engine(writer: &Writer) {
 
 // ══════════════════════════ the driver ══════════════════════════
 
-/// **The engine driver.** Replaces the v1 `serve_coc`: the CoC no longer carries an unframed byte
-/// pipe, it carries §3.8 stream records, one per SDU.
+/// **The engine driver.** Replaces the v1 `serve_coc`: the CoC carries the byte stream formed by
+/// consecutive §3.8 stream records.
 pub(crate) async fn serve_objects(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
     server: &Server<'_>,
@@ -422,29 +426,47 @@ pub(crate) async fn serve_objects(
     }
 }
 
-/// Receive one stream record at a time and hand it over, waiting to be told the driver is done
-/// before receiving another.
+/// Recover stream records from the CoC byte stream and hand them over one at a time.
 ///
-/// **This is where §5's credit withholding lives.** One record is outstanding at a time, so the
-/// CoC's own credit flow control pushes back on the peer while a frame is held — there is no second
-/// buffer for a second frame to go to, and there does not need to be.
+/// CoreBluetooth's `OutputStream.write` returns the number of bytes it accepted, which may be less
+/// than the complete record the app supplied. Those pieces arrive here as separate SDUs. §3.8's
+/// payload length makes the byte stream self-framing, so [`StreamRecordAssembler`] joins pieces in
+/// the existing [`STREAM_RX`] buffer and also handles two records sharing an SDU. One record remains
+/// outstanding at a time, so this is still where §5's credit withholding lives.
 async fn reader_pump(
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
     reader: &mut L2capChannelReader<'_, DefaultPacketPool>,
 ) -> &'static str {
+    let mut assembler = StreamRecordAssembler::new();
     loop {
-        // SAFETY: the borrow is taken fresh per receive and released before `STREAM_IN` is signalled;
-        // the driver reads the buffer only between that signal and `STREAM_TAKEN`, which is exactly
-        // the window in which this future holds no reference to it.
-        let rx = unsafe { &mut *core::ptr::addr_of_mut!(STREAM_RX) };
-        let received = match reader.receive(stack, rx).await {
-            Ok(0) => continue,
-            Ok(n) => n,
+        let sdu = match reader.receive_sdu(stack).await {
+            Ok(sdu) if sdu.is_empty() => continue,
+            Ok(sdu) => sdu,
             Err(_) => return "channel",
         };
-        STREAM_TAKEN.reset();
-        STREAM_IN.signal(received);
-        STREAM_TAKEN.wait().await;
+        let bytes = sdu.as_ref();
+        let mut consumed = 0;
+        while consumed < bytes.len() {
+            // SAFETY: the mutable borrow ends before a complete record is signalled. The driver
+            // reads this buffer only between `STREAM_IN` and `STREAM_TAKEN`, when this future holds
+            // no reference to it.
+            let rx = unsafe { &mut *core::ptr::addr_of_mut!(STREAM_RX) };
+            let (used, state) = assembler.push(rx, &bytes[consumed..]);
+            consumed += used;
+            match state {
+                StreamAssembly::NeedMore => {}
+                StreamAssembly::Complete(len) => {
+                    STREAM_TAKEN.reset();
+                    STREAM_IN.signal(len);
+                    STREAM_TAKEN.wait().await;
+                    assembler.reset();
+                }
+                StreamAssembly::TooLarge(len) => {
+                    warn!("ble: [v4] stream record is {} B — above the adapter buffer", len);
+                    return "stream-framing";
+                }
+            }
+        }
     }
 }
 
@@ -465,7 +487,7 @@ async fn driver(
         // Control first when both are ready: a `CANCEL` or a `LIST` must not queue behind a stream
         // frame the engine may be about to refuse anyway.
         let reaction = match select(CONTROL_IN.wait(), STREAM_IN.wait()).await {
-            Either::First(len) => match control_record(writer, lane, &mut admission, len).await {
+            Either::First(len) => match control_record(writer, lane, len).await {
                 Some(reaction) => reaction,
                 None => return "lane",
             },
@@ -474,39 +496,19 @@ async fn driver(
                 None => return "lane",
             },
         };
-        if let Some(reason) = pump(writer, lane, &mut admission, stack, server, conn, tx, reaction).await {
+        if let Some(reason) = pump(writer, lane, stack, server, conn, tx, reaction).await {
             return reason;
         }
     }
 }
 
 /// Hand the staged control record to the engine, then release [`CONTROL_RX`].
-async fn control_record(writer: &Writer, lane: &mut Lane, admission: &mut Admission, len: usize) -> Option<Reaction> {
+async fn control_record(writer: &Writer, lane: &mut Lane, len: usize) -> Option<Reaction> {
     // SAFETY: `CONTROL_IN` has been taken, so `stage_control` will not write this buffer until
     // `CONTROL_TAKEN` is signalled below.
     let record: &'static [u8] =
         unsafe { core::slice::from_raw_parts(core::ptr::addr_of!(CONTROL_RX).cast::<u8>(), len) };
-    // PUT is the one control operation whose successful answer is deliberately deferred until its
-    // stream commits. Latch that admission at the hand-off which created it, while the exact
-    // control RequestId is still in hand. Waiting until the first CoC SDU to rediscover it makes
-    // the hot path depend on a second queue round trip across the control/stream race; on glass that
-    // left a successfully written PUT looking unadmitted and held every SDU for 750 ms until the
-    // controller packet pool exhausted.
-    let put_request = (len >= 16 && record.get(5).copied() == Some(Opcode::Put as u8))
-        .then(|| RequestId(u32::from_le_bytes([record[12], record[13], record[14], record[15]])));
     let reaction = lane.call(writer, |out| Request::Control { record, out }).await;
-    if let Some(request) = put_request {
-        let live = live_transfer(writer).await;
-        if admission.observed(request, live) {
-            warn!(
-                "ble: [v4] PUT request {} was not admitted (engine live request {})",
-                request.0,
-                live.map_or(0, |id| id.0)
-            );
-        } else {
-            info!("ble: [v4] PUT request {} admitted for stream", request.0);
-        }
-    }
     // **Released here and not a statement earlier.** The engine consumes `CONTROL_RX` synchronously
     // inside the storage task's `serve`, which is over by the time this call answers — so this is
     // the first instant at which the GATT task may stage another record without writing under a
@@ -544,7 +546,7 @@ async fn stream_record(writer: &Writer, lane: &mut Lane, admission: &mut Admissi
             let live = live_transfer(writer).await;
             if admission.observed(frame_id, live) {
                 if let Either::First(control_len) = select(CONTROL_IN.wait(), Timer::after(ADMISSION_WINDOW)).await {
-                    let reaction = control_record(writer, lane, admission, control_len).await?;
+                    let reaction = control_record(writer, lane, control_len).await?;
                     // Admission answered; the held frame goes next round, still un-dropped.
                     STREAM_IN.signal(len);
                     return Some(reaction);
@@ -591,7 +593,6 @@ async fn live_transfer(writer: &Writer) -> Option<obc_link::flat::RequestId> {
 async fn pump(
     writer: &Writer,
     lane: &mut Lane,
-    admission: &mut Admission,
     stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
     server: &Server<'_>,
     conn: &GattConnection<'_, '_, DefaultPacketPool>,
@@ -663,7 +664,7 @@ async fn pump(
         // large, and §3.8's cancel is bilateral: a `CANCEL` written mid-download has to reach the
         // engine while there is still something to cancel.
         if let Some(len) = CONTROL_IN.try_take() {
-            match control_record(writer, lane, admission, len).await {
+            match control_record(writer, lane, len).await {
                 Some(next) => reaction = next,
                 None => return Some("lane"),
             }

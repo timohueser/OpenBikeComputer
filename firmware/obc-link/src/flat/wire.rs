@@ -722,6 +722,75 @@ pub struct StreamFrame {
     pub len: u16,
 }
 
+/// Reassembles §3.8 stream records from a byte-oriented transport.
+///
+/// BLE's L2CAP binding is exposed by CoreBluetooth as `InputStream` / `OutputStream`: one logical
+/// write may be accepted in several pieces, so an adapter cannot treat an SDU boundary as a record
+/// boundary. The record's own 16-byte header is the framing authority. This type keeps only the
+/// cursor; the adapter supplies its already-budgeted record buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamRecordAssembler {
+    filled: usize,
+    expected: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamAssembly {
+    NeedMore,
+    Complete(usize),
+    TooLarge(usize),
+}
+
+impl StreamRecordAssembler {
+    pub const fn new() -> Self {
+        Self { filled: 0, expected: None }
+    }
+
+    /// Copy as much of `input` as belongs to the current record into `record`.
+    ///
+    /// Returns the number of input bytes consumed and whether the record is complete. Bytes after a
+    /// complete record are deliberately left to the caller, which can release the record to its
+    /// consumer, reset this cursor, and continue with the same transport chunk.
+    pub fn push(&mut self, record: &mut [u8], input: &[u8]) -> (usize, StreamAssembly) {
+        if record.len() < STREAM_HEADER_LEN {
+            return (0, StreamAssembly::TooLarge(STREAM_HEADER_LEN));
+        }
+
+        let mut consumed = 0;
+        while consumed < input.len() {
+            let target = self.expected.unwrap_or(STREAM_HEADER_LEN);
+            let take = (target - self.filled).min(input.len() - consumed);
+            record[self.filled..self.filled + take].copy_from_slice(&input[consumed..consumed + take]);
+            self.filled += take;
+            consumed += take;
+
+            if self.expected.is_none() && self.filled == STREAM_HEADER_LEN {
+                let expected = STREAM_HEADER_LEN + usize::from(u16_at(record, 12));
+                if expected > record.len() {
+                    return (consumed, StreamAssembly::TooLarge(expected));
+                }
+                self.expected = Some(expected);
+            }
+
+            if self.expected == Some(self.filled) {
+                return (consumed, StreamAssembly::Complete(self.filled));
+            }
+        }
+        (consumed, StreamAssembly::NeedMore)
+    }
+
+    pub fn reset(&mut self) {
+        self.filled = 0;
+        self.expected = None;
+    }
+}
+
+impl Default for StreamRecordAssembler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StreamFrame {
     /// The 16 header bytes.
     pub fn encode(&self) -> [u8; STREAM_HEADER_LEN] {
@@ -763,6 +832,8 @@ pub fn write_stream(out: &mut [u8], transfer: RequestId, offset: u64, len: usize
 
 #[cfg(test)]
 mod tests {
+    use std::vec::Vec;
+
     use super::super::ids::EntryFlags;
     use super::*;
 
@@ -1002,6 +1073,52 @@ mod tests {
         record[14] = 1;
         assert!(StreamFrame::split(&record).is_none(), "a nonzero reserved field");
         assert!(StreamFrame::split(&record[..8]).is_none(), "a record below the frame");
+    }
+
+    #[test]
+    fn the_stream_assembler_recovers_records_across_arbitrary_transport_chunks() {
+        let mut first = [0u8; STREAM_HEADER_LEN + 4];
+        let mut second = [0u8; STREAM_HEADER_LEN + 3];
+        write_stream(&mut first, RequestId(7), 0, 4).unwrap();
+        write_stream(&mut second, RequestId(7), 4, 3).unwrap();
+        first[STREAM_HEADER_LEN..].copy_from_slice(&[1, 2, 3, 4]);
+        second[STREAM_HEADER_LEN..].copy_from_slice(&[5, 6, 7]);
+
+        let mut wire = Vec::from(first);
+        wire.extend_from_slice(&second);
+        let mut record = [0u8; 32];
+        let mut assembler = StreamRecordAssembler::new();
+        let chunks = [1usize, 7, 3, 20, 2, 6];
+        let expected: [&[u8]; 2] = [&first, &second];
+        let (mut cursor, mut completed) = (0, 0);
+
+        for chunk in chunks {
+            let chunk_end = (cursor + chunk).min(wire.len());
+            while cursor < chunk_end {
+                let (used, state) = assembler.push(&mut record, &wire[cursor..chunk_end]);
+                assert!(used > 0);
+                cursor += used;
+                if let StreamAssembly::Complete(len) = state {
+                    assert_eq!(&record[..len], expected[completed]);
+                    completed += 1;
+                    assembler.reset();
+                }
+            }
+        }
+        assert_eq!(cursor, wire.len());
+        assert_eq!(completed, 2);
+    }
+
+    #[test]
+    fn the_stream_assembler_refuses_a_record_above_its_adapter_buffer() {
+        let mut header = [0u8; STREAM_HEADER_LEN];
+        header[12..14].copy_from_slice(&240u16.to_le_bytes());
+        let mut record = [0u8; 32];
+        let mut assembler = StreamRecordAssembler::new();
+        assert_eq!(
+            assembler.push(&mut record, &header),
+            (STREAM_HEADER_LEN, StreamAssembly::TooLarge(STREAM_HEADER_LEN + 240))
+        );
     }
 
     #[test]
