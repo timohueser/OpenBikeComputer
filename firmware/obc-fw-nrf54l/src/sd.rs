@@ -653,9 +653,16 @@ struct PendingSave {
     stats: RideStats,
 }
 
-/// Bring up the SD card: boot the sEMMC soft peripheral, identify the card (4-bit, High Speed,
-/// 32 MHz reads) and mount the FAT volume. Returns `None` on any failure (no card, not FAT,
-/// unreadable) so the caller degrades gracefully — never panicking (acceptance criterion).
+/// **Bring the card up, and mount nothing on it.** Boot the sEMMC soft peripheral and identify the
+/// card (4-bit, High Speed, 32 MHz reads).
+///
+/// Split out of [`init`] by FS7.5-c1, because bring-up is the **only** step the two storage stacks
+/// share. What is on the card decides the rest: a flat store owns the raw card from LBA 0 and a FAT
+/// volume is a filesystem on it, so exactly one of them can be there. Boot therefore brings the card
+/// up once, lets `FlatStore::mount` classify it (`FLAT_Store_Format.md` §5.6 step 1 — see
+/// `crate::flat_store`), and only then mounts FAT with [`mount_fat`] on a card that is not a flat
+/// store. Mounting FAT first would have reported *STORAGE FAULT* for a perfectly good flat card,
+/// which is the one honest-reporting mistake this split exists to prevent.
 ///
 /// Card identification is the slow part — the ACMD41 power-up poll is bounded at 1.5 s.
 /// [`flpr_mux::bring_up_storage`](crate::flpr_mux::bring_up_storage) is what holds the FLPR in
@@ -675,7 +682,7 @@ struct PendingSave {
 /// exist, and the panel's anti-DC-bias COM wave is on the P3 `InterruptExecutor` (or, on `com-hw`,
 /// on TIMER + DPPI + GPIOTE), so it preempts thread mode rather than competing with it. See
 /// `Semmc::start`'s note for the full accounting.
-pub fn init() -> Result<Storage, obc_app::BootFault> {
+pub fn bring_up_card() -> Result<(), obc_app::BootFault> {
     let info = match crate::flpr_mux::bring_up_storage() {
         Ok(info) => info,
         Err(e) => return Err(bring_up_fault(e)),
@@ -688,9 +695,15 @@ pub fn init() -> Result<Storage, obc_app::BootFault> {
         info.rca,
         crate::flpr_mux::mode_name()
     );
+    Ok(())
+}
+
+/// **Mount the v1 FAT stack** on a card [`bring_up_card`] has already brought up and
+/// `crate::flat_store` has already classified as *not* a flat store.
+pub fn mount_fat() -> Result<Storage, obc_app::BootFault> {
     // Into its `.bss` slot before anything else: the manager and the extent read path both want
     // `'static` borrows of the one card.
-    // SAFETY: sole writer of SD_CARD; `init` runs once per boot on the one thread-mode executor,
+    // SAFETY: sole writer of SD_CARD; this runs once per boot on the one thread-mode executor,
     // and a warm-reset re-run overwrites in place (no `Drop`), the `init_static` contract.
     let card: &'static Sd = unsafe { crate::init_static(core::ptr::addr_of_mut!(SD_CARD), SemmcCard) };
     Storage::mount(card).ok_or_else(|| {
@@ -1032,6 +1045,31 @@ fn warn_bounce(addr: usize) {
     if !WARNED_BOUNCE.swap(true, core::sync::atomic::Ordering::Relaxed) {
         defmt::warn!("SD: misaligned block buffer at 0x{=usize:08x} — bouncing (throughput cost)", addr);
     }
+}
+
+/// **Lend the alignment bounce to the flat store's binding** (FS7.5-c1, `crate::flat_store`).
+///
+/// One buffer for both stacks, and shared rather than duplicated because 2 KiB of `.bss` on this
+/// part is 2 KiB of main stack (`_stack_start − __euninit`) and the two can never want it at the
+/// same instant: every use — this stack's and the flat one's — is inside a
+/// [`flpr_mux::with_storage`](crate::flpr_mux::with_storage) closure, and that borrow is
+/// non-re-entrant by assertion. It also does not outlive the FAT stack the way a second buffer
+/// would: c4 deletes this module and the buffer with it, at which point the flat binding places its
+/// own — one line, and a decision made when there is a measurement to make it against.
+///
+/// The size is FAT's, not the flat store's: 4 blocks, where §5.5's commit window is 8. So a
+/// *misaligned* commit body moves in two card commands per window instead of one. It costs nothing
+/// when the store's buffers happen to be word-aligned, which `warn_bounce`'s one-shot line is how
+/// anyone finds out — and a mount, whose window is 2 KiB, is exactly one chunk either way.
+///
+/// # Safety
+/// The caller must be inside a `flpr_mux::with_storage` closure (which is where the exclusivity
+/// argument above comes from) and must not call any other bounce user from within `f`.
+pub(crate) unsafe fn with_bounce<R>(addr: usize, f: impl FnOnce(&mut [u8]) -> R) -> R {
+    warn_bounce(addr);
+    // SAFETY: the caller's obligation above makes this the sole live borrow.
+    let bounce = unsafe { &mut *core::ptr::addr_of_mut!(BOUNCE) };
+    f(&mut bounce.0)
 }
 
 /// **Report the mounted volume's cluster size, once, at mount.**

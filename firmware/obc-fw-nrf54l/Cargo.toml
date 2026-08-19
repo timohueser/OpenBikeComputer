@@ -90,6 +90,19 @@ resource-report = []
 # service the connected database does not contain is the trap this spike exists to avoid.
 ble-weather-request = []
 
+# The FS7.5-c1 on-glass write-path exercise (`src/flat_store.rs`). Spawned only on a card that
+# mounted as a flat store, it publishes one small object **through the storage task** while a reader
+# task probes an existing object on a fixed cadence, and reports the longest gap between two
+# completed reads — the scheduler half of the owner's per-card-command interleaving ruling, which
+# `obc_storage::flat::granularity` pins the store's half of off-board.
+#
+# **Off by default and never in a shipping image**: it writes to the card in the slot, and it is a
+# measurement. Both profiles `resource_guard.py board` gates are built without it, so the mount and
+# the storage task are what enter the image and the exercise is not. It is not a second bench either
+# — `bin/flat_store_bench.rs` measures the store far better with nothing else running; this measures
+# the one thing that needs a real scheduler.
+flat-exercise = []
+
 # The all-features stack (issue #270, epic #267): nrf-sdc/MPSL/TrouBLE folded into `main.rs`.
 # **Part of `default` since the LM20 retarget** — map + router + BLE run in one image, sharing
 # the SD + settings store. MPSL provides the critical-section impl (its radio timing forbids
