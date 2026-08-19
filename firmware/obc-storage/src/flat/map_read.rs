@@ -24,6 +24,7 @@ use obc_reader::{MapCache, MapTables, Reader};
 use obcm_testkit::{build_file, pack_line, pack_poly_hole, seal, splice_terrain, terrain_stub, LodSpec, Style};
 
 use crate::flat::layout::{Geometry, EXTENT_AREA};
+use crate::flat::seam::ObjectId;
 use crate::flat::seam::{DisplayName, EntryFlags, EntryMeta, Mutation, ObjectKind, PutSource, Revision, StoreId};
 use crate::flat::sim::SparseDisk;
 use crate::flat::store::FlatStore;
@@ -52,12 +53,8 @@ fn map_bytes() -> Vec<u8> {
     )
 }
 
-/// A card carrying `payload` as one committed map object, and the id it went in under.
-fn card_with_map(payload: &[u8]) -> (SparseDisk, crate::flat::seam::ObjectId) {
-    // Room for the map plus a few spare extents, so the commit is never the thing under test.
-    let extents = payload.len().div_ceil(Geometry::DEFAULT.extent_size() as usize) as u64 + 4;
-    let disk = SparseDisk::blank(EXTENT_AREA + Geometry::DEFAULT.extent_blocks() * extents, 3);
-    let store = FlatStore::initialize(&disk, STORE).expect("an expressible card");
+/// Publish `payload` as a committed object of `kind` under `name`, and hand back its id.
+fn publish(store: &FlatStore<&SparseDisk>, payload: &[u8], name: &str) -> ObjectId {
     let id = store.next_object_id();
     let mut allocation = store.allocate(payload.len() as u64).expect("the extents are free");
     store.write(&mut allocation, payload).expect("the payload fits");
@@ -68,10 +65,59 @@ fn card_with_map(payload: &[u8]) -> (SparseDisk, crate::flat::seam::ObjectId) {
         flags: EntryFlags::NONE,
         payload_len: payload.len() as u64,
         payload_crc: obc_crc::crc32(payload),
-        name: DisplayName::new("two-lod").expect("a short name"),
+        name: DisplayName::new(name).expect("a short name"),
     };
     store.commit(&[Mutation::Put { meta, source: PutSource::Fresh(allocation) }]).expect("the commit lands");
+    id
+}
+
+/// A card carrying `payload` as one committed map object, and the id it went in under.
+///
+/// **The map is laid down over a hole, on purpose.** A blank card would give it one contiguous run,
+/// and a contiguous run is the case `StoreSource` is *least* interesting for — the whole reason the
+/// adapter exists is that an object's bytes are a list of ranges and a read has to walk them. So
+/// this fills two extents, frees the first, and then publishes the map: the allocator takes the hole
+/// and continues past the survivor, leaving the map on **two non-adjacent ranges** with the seam at
+/// exactly one extent. Callers size their payload past [`Geometry::extent_size`] to be sure of it,
+/// and the reads below straddle that seam deliberately. (The same shape `crash.rs` uses to build a
+/// fragmented free map.)
+fn card_with_map(payload: &[u8]) -> (SparseDisk, ObjectId) {
+    let extent = Geometry::DEFAULT.extent_size() as usize;
+    // The map, the two spacers, and a few spare so the commit is never the thing under test.
+    let extents = payload.len().div_ceil(extent) as u64 + 6;
+    let disk = SparseDisk::blank(EXTENT_AREA + Geometry::DEFAULT.extent_blocks() * extents, 3);
+    let store = FlatStore::initialize(&disk, STORE).expect("an expressible card");
+
+    let free_before = store.free_extents();
+    let hole = publish(&store, &std::vec![0xA5u8; 8], "spacer-a");
+    let keep = publish(&store, &std::vec![0x5Au8; 8], "spacer-b");
+    assert_eq!(store.free_extents(), free_before - 2, "each spacer took one extent");
+    store.commit(&[Mutation::Remove { id: hole, revision: Revision(1) }]).expect("the spacer is removed");
+    assert_eq!(store.free_extents(), free_before - 1, "and the first extent is a hole again");
+
+    let id = publish(&store, payload, "two-lod");
+    assert!(payload.len() > extent, "the map must outgrow one extent, or the hole buys nothing");
+    // `keep` is never read; it exists to sit between the hole and the rest of the free map.
+    let _ = keep;
     (disk, id)
+}
+
+/// The map, padded past one extent so it is guaranteed to span the fragmented allocation
+/// [`card_with_map`] builds.
+///
+/// The padding is trailing bytes past every section OBCM's header points at, so the file parses and
+/// renders exactly as the unpadded one does — the reader bounds-checks each offset against the
+/// source's length and never reads the tail. What it buys is a *real* multi-extent object rather
+/// than a few hundred bytes that would fit any single range.
+fn padded_map_bytes() -> Vec<u8> {
+    let mut bytes = map_bytes();
+    let want = Geometry::DEFAULT.extent_size() as usize + 4_096;
+    let from = bytes.len();
+    bytes.resize(want, 0);
+    for (k, byte) in bytes[from..].iter_mut().enumerate() {
+        *byte = (k as u8).wrapping_mul(29).wrapping_add(11);
+    }
+    bytes
 }
 
 /// The whole point of the slice: **the map the store hands back is the map that went in.** Read
@@ -79,15 +125,27 @@ fn card_with_map(payload: &[u8]) -> (SparseDisk, crate::flat::seam::ObjectId) {
 /// bytes as an oracle.
 #[test]
 fn a_map_committed_to_the_store_reads_back_byte_for_byte() {
-    let bytes = map_bytes();
+    let bytes = padded_map_bytes();
     let (disk, id) = card_with_map(&bytes);
     let store = FlatStore::mount(&disk);
     let source = store.source(id, None).expect("the map object opens");
+    let extent = Geometry::DEFAULT.extent_size() as usize;
 
     assert_eq!(source.len(), bytes.len() as u64, "the source is as long as the map");
-    // Windows that matter to a reader: the header, a style-table read, a 512-byte block, an
-    // unaligned straddle, and the file's last byte.
-    for (offset, len) in [(0usize, 49usize), (49, 15), (64, 8), (0, bytes.len()), (bytes.len() - 1, 1)] {
+    // Windows that matter to a reader: the header, a style-table read, a 512-byte block, the file's
+    // last byte — and four that **straddle the extent seam**, which is the case a contiguous fixture
+    // cannot reach and the one the adapter's range walk exists for.
+    let windows = [
+        (0usize, 49usize),
+        (49, 15),
+        (64, 8),
+        (bytes.len() - 1, 1),
+        (extent - 1, 2),                        // one byte either side of the seam
+        (extent - 300, 600),                    // a window centred on it
+        (extent - 1, bytes.len() - extent + 1), // from just before the seam to the end
+        (0, bytes.len()),                       // the whole object, across both ranges
+    ];
+    for (offset, len) in windows {
         let mut through_store = std::vec![0u8; len];
         source.read_at(offset as u64, &mut through_store).expect("inside the object");
         assert_eq!(&through_store[..], &bytes[offset..offset + len], "the store changed bytes at ({offset}, {len})");
@@ -105,7 +163,7 @@ fn a_map_committed_to_the_store_reads_back_byte_for_byte() {
 /// adapter rather than the format.
 #[test]
 fn the_reader_parses_and_queries_a_map_through_the_store_exactly_as_over_a_slice() {
-    let bytes = map_bytes();
+    let bytes = padded_map_bytes();
     let (disk, id) = card_with_map(&bytes);
     let store = FlatStore::mount(&disk);
 
@@ -146,7 +204,9 @@ fn the_reader_parses_and_queries_a_map_through_the_store_exactly_as_over_a_slice
 /// (there is no filesystem to hang a sidecar off).
 #[test]
 fn the_embedded_terrain_region_windows_onto_the_same_store_object() {
-    let plain = map_bytes();
+    // Padded, so the region lands **past** the extent seam: the window's own arithmetic is then
+    // composed with the store's range walk, which is the shape the board actually reads terrain in.
+    let plain = padded_map_bytes();
     let stub = terrain_stub(300); // not a whole number of units — the window's tail is §1.2 filler
     let bytes = splice_terrain(&plain, &stub);
     let (disk, id) = card_with_map(&bytes);
@@ -159,6 +219,10 @@ fn the_embedded_terrain_region_windows_onto_the_same_store_object() {
             let window = WindowSource::new(source, region.offset, region.len).expect("the window is inside the object");
 
             assert_eq!(window.len(), region.len);
+            assert!(
+                region.offset > Geometry::DEFAULT.extent_size(),
+                "the region must sit past the extent seam, or the window never composes with a range walk"
+            );
             let mut container = std::vec![0u8; stub.len()];
             window.read_at(0, &mut container).expect("the container's own bytes, from its byte 0");
             assert_eq!(container, stub, "the window re-bases onto the container rather than the file");

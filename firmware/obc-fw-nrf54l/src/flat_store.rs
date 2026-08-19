@@ -195,12 +195,17 @@ static mut FLAT_STORE: MaybeUninit<FlatStore<FlatCard>> = MaybeUninit::uninit();
 /// store until c3, and a budget row for a buffer nothing allocates would be a lie in the other
 /// direction. It joins this sum in the slice that starts recording.
 pub(crate) const RESIDENT_BYTES: usize =
-    core::mem::size_of::<FlatStore<FlatCard>>() + REQUEST_QUEUE_BYTES + MAP_SOURCE_BYTES;
+    core::mem::size_of::<FlatStore<FlatCard>>() + REQUEST_QUEUE_BYTES + MAP_READ_BYTES;
 
-/// The session-long map source's slot (FS7.5-c2) — see [`MAP_SOURCE`]. Named rather than folded
-/// into the line above because it is the read cutover's whole resident cost on this arm, and a
-/// reader comparing it against the 20,732 B the set tables gave back should be able to find it.
-pub(crate) const MAP_SOURCE_BYTES: usize = core::mem::size_of::<obc_storage::flat::StoreSource<'static, FlatCard>>();
+/// **Everything the read cutover keeps resident on this arm** (FS7.5-c2): the session-long
+/// [`MAP_SOURCE`] *and* the [`MAP_NAME`] the same boot step captures.
+///
+/// Both, because this budget's discipline is that every resident byte is named — an itemization
+/// that quietly omits 28 B is worse than one that admits it, since the next reader has no way to
+/// know which of the two it is. (The first version of this constant counted only the source and
+/// still called itself the whole cost; the review caught it.)
+pub(crate) const MAP_READ_BYTES: usize = core::mem::size_of::<obc_storage::flat::StoreSource<'static, FlatCard>>()
+    + core::mem::size_of::<heapless::String<24>>();
 
 /// The store is the free bitmap plus its rows; if that ever stops being true the budget note above
 /// is wrong before anything else notices.
