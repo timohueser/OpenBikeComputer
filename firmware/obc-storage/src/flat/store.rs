@@ -99,22 +99,20 @@ pub const MAX_RESERVATIONS: usize = 2;
 /// active route and the weather bundle each hold one too and none of them was written down. A table
 /// that has to be edited is harder to be wrong about than a sentence in a doc comment.
 ///
-/// Rows are the *worst concurrent* case, not the typical one: a rider following a route across a
-/// fully sharded set, with terrain and weather mounted, while an upload runs.
+/// Rows are the *worst concurrent* case, not the typical one: a rider following a route, with
+/// weather mounted, while an upload runs.
 ///
 /// **The recording ride is deliberately not a row.** It is not an open object at all: it lives in
 /// [`RideState`], reached through [`journal`](Store::journal) and its own reservation (see
 /// [`MAX_RESERVATIONS`]), and it never takes a hold. A `RIDE` row here would be double-counting.
 pub mod open_objects {
-    /// The map shards a rendered set mounts. This is the board's ceiling, not the format's —
-    /// `OBCA_Spec.md` §5.2 allows `1..=32`, and `obc-fw-nrf54l`'s `SD_SET_MAX_SHARDS` is 11 because
-    /// that is what its FAT handle budget allowed (`SD_MAX_FILES - SD_RIDE_PEAK_FILES`). The flat
-    /// store inherits the number as this row's value only; nothing here derives it, and a board that
-    /// raises its own ceiling raises this row with it.
-    pub const SET_SHARDS: usize = 11;
-    /// The terrain sidecar, mounted beside the set and held for the session. It is a separate object
-    /// from the shards — `SetManifest::shards()` excludes it — so it is a separate row.
-    pub const TERRAIN: usize = 1;
+    /// **The map: one object, because a map is one file** (FS7.5, #1420).
+    ///
+    /// This row was `SET_SHARDS = 11` — the board's ceiling on a mounted volume set, inherited from
+    /// `obc-fw-nrf54l`'s `SD_MAX_FILES - SD_RIDE_PEAK_FILES` because a set held every shard's handle
+    /// open for the session. There are no shards, so there is no ceiling to inherit and nothing here
+    /// derives from a board constant any more.
+    pub const MAP: usize = 1;
     /// The active route's geometry, held from load until the ride ends.
     pub const ROUTE: usize = 1;
     /// The weather bundle, held for the session once mounted.
@@ -126,11 +124,24 @@ pub mod open_objects {
     pub const SPARE: usize = 1;
 
     /// The sum every row above owes.
-    pub const ACCOUNTED: usize = SET_SHARDS + TERRAIN + ROUTE + WEATHER + TRANSFER + SPARE;
+    pub const ACCOUNTED: usize = MAP + ROUTE + WEATHER + TRANSFER + SPARE;
 }
 
+/// **Terrain is not a row, and its absence is the substantive half of this re-derivation.**
+///
+/// It used to be `TERRAIN = 1`: a `.obcd` sidecar mounted beside the map and held for the session,
+/// a separate object because `SetManifest::shards()` excluded it. OBCM v14 §1.3 puts the OBCT
+/// container **inside the map file**, so the board forms a byte window over the map's own source
+/// and parses through it. Same handle, same hold, same refcount — a second row would be counting
+/// one open twice, which is exactly the mistake the previous constant made in the other direction.
+///
+/// So `11 + 1 + 1 + 1 + 1 + 1 = 16` becomes `1 + 1 + 1 + 1 + 1 = 5`, and the eleven rows that go
+/// take **792 B** off a linked `FlatStore` (10,728 -> 9,936) on a part where every `.bss` byte is a
+/// main-stack byte. A `Hold` is 64 B, so 704 of that is the rows and the other 88 is padding a
+/// 16-row array carried — measured, because the arithmetic alone would have under-claimed it.
+///
 /// Open objects at once — the sum of [`open_objects`]'s rows, and nothing else.
-pub const MAX_OPEN_OBJECTS: usize = 16;
+pub const MAX_OPEN_OBJECTS: usize = 5;
 
 // Deliberately an anonymous module-level `const`, not an associated one: an associated `const` is
 // evaluated lazily, only when something names it, so a table that stopped adding up would compile
