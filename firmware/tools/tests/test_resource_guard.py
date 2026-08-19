@@ -252,6 +252,46 @@ class BootChainTests(unittest.TestCase):
         )
         self.assertEqual(parsed.frames["obc_fw_nrf54l::mount_terrain::hda0"], 2_244)
 
+    def test_a_generic_root_resolves_from_either_demangler_spelling(self):
+        """**The FS7.5-c1 regression, pinned.** A boot-chain root was baselined as
+        `FlatStore$LT$D$GT$::mount_in_place` — the spelling one host's demangler produced — and on CI
+        it did not resolve: the guard went red as "stale" *and* the chain fell back to a ceiling with
+        the whole mount missing from it. A needle is spelled the way Rust spells a path; both
+        renderings must find the same symbol."""
+        parsed = resource_guard.parse_disassembly(
+            "00001000 <obc_storage::flat::store::FlatStore$LT$D$GT$::mount_in_place::h47f>:\n"
+            "    1000: b084          sub sp, #0x10\n"
+        )
+        rust_spelling = resource_guard.resolve_symbol(parsed, "FlatStore<D>::mount_in_place", "root")
+        escaped_spelling = resource_guard.resolve_symbol(parsed, "FlatStore$LT$D$GT$::mount_in_place", "root")
+        self.assertEqual(rust_spelling, escaped_spelling)
+        # And the name reported back is the one the tool emitted, not the normalised form.
+        self.assertIn("$LT$", rust_spelling)
+
+    def test_every_stale_boot_chain_root_is_reported_not_just_the_first(self):
+        """One stale root masking another is how a second blind spot survives the round opened to fix
+        the first: the reported ceiling is missing both chains either way, so a reader who fixes the
+        one name in the message would find the guard still wrong."""
+        parsed = resource_guard.parse_disassembly(
+            "00001000 <embassy_executor::raw::TaskStorage$LT$F$GT$::poll::h01>:\n"
+            "    1000: b084          sub sp, #0x10\n"
+            "00002000 <obc_fw_nrf54l::link::init_store::hd4>:\n"
+            "    2000: b082          sub sp, #0x8\n"
+        )
+        with mock.patch.object(resource_guard, "run_tool", return_value=""), mock.patch.object(
+            resource_guard, "parse_stack_bounds", return_value=(0x2007D000, 0x20071228)
+        ), mock.patch.object(
+            resource_guard, "select_task_body_frames", return_value={"main::task": 1_024}
+        ):
+            boot = resource_guard.measure_boot_chain(
+                parsed, Path("fake"), ["link::init_store", "gone::one", "gone::two"]
+            )
+        self.assertIsNotNone(boot.chain_error)
+        self.assertIn("gone::one", boot.chain_error)
+        self.assertIn("gone::two", boot.chain_error, "a second stale root must not be masked")
+        # The root that *did* resolve still contributes, so the ceiling is not silently zero.
+        self.assertGreater(boot.chain_ceiling, 1_024)
+
     def test_stack_bounds_are_the_residual_stack(self):
         output = "20071228 B __euninit\n2007d000 A _stack_start\n20000000 D __edata\n"
         stack_start, euninit = resource_guard.parse_stack_bounds(output)

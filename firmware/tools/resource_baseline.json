@@ -100,7 +100,7 @@
       "boot_chain_roots": [
         "link::init_store",
         "obc_fw_nrf54l::mount_terrain",
-        "FlatStore$LT$D$GT$::mount_in_place",
+        "FlatStore<D>::mount_in_place",
         "sd::mount_fat"
       ],
       "boot_chain_measured_ci": 10944,
@@ -220,7 +220,7 @@
       "boot_chain_roots": [
         "link::init_store",
         "obc_fw_nrf54l::mount_terrain",
-        "FlatStore$LT$D$GT$::mount_in_place",
+        "FlatStore<D>::mount_in_place",
         "sd::mount_fat"
       ],
       "boot_chain_measured_ci": 10944,
