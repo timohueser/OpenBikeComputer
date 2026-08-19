@@ -44,6 +44,11 @@
 
 mod board;
 mod sd;
+// The **flat store** on this board (FS7.5-c1, epic #1256): the card binding, the boot mount into a
+// `.bss` slot, and the one storage task the owner's hybrid topology puts the write half behind
+// (reads direct, writes serialized). This is the slice that first puts `obc_storage::flat` into the
+// shipping image; a card is a flat store *or* a FAT volume, never both, and boot classifies it.
+mod flat_store;
 // The microSD host over Nordic's sEMMC soft peripheral on the FLPR (epic #1158): the card in
 // native 4-bit SD mode, 32 MHz reads / 21.3 MHz writes. `sd.rs`'s whole transport.
 mod semmc;
@@ -299,7 +304,24 @@ const RESIDENT_BYTES: usize = FB_BYTES
     + MAP_RESIDENT
     + ARENA_RESIDENT
     + BLE_RESIDENT
-    + USB_RESIDENT;
+    + USB_RESIDENT
+    + FLAT_RESIDENT;
+
+/// The **flat store**'s residents (FS7.5-c1, `flat_store::RESIDENT_BYTES`): the mounted
+/// `FlatStore<FlatCard>` in its `.bss` slot — ~10.5 KB, of which §6.2's free bitmap is 8 KiB — plus
+/// the storage task's ~1 KB request queue. The alignment bounce its spans go through is `sd`'s,
+/// already counted in this sum's FAT half.
+///
+/// **Unconditional, and that is deliberate.** The store mounts on every boot, because §5.6 step 1 is
+/// how the board finds out which stack owns the card; a term that appeared only for flat cards would
+/// be a budget that moved with the card's contents, which is not a budget. It is also the term that
+/// makes the dev window's real cost legible: both stacks are linked at once until c4 closes it, and
+/// this is the price of that, itemized rather than hiding in anonymous `.bss`.
+///
+/// §7.1's 32,256-byte ride tail is **not** here. No ride journals to the flat store until c3, so
+/// nothing allocates the buffer — a row for it would be a lie in the other direction. It joins this
+/// sum in the slice that starts recording.
+const FLAT_RESIDENT: usize = flat_store::RESIDENT_BYTES;
 // ⚠️ **The budget has a cliff in it now** (#1146 P2), and it points both ways — read this before
 // "optimizing" any of the three arena arms, and before waving one through:
 //
@@ -316,7 +338,7 @@ const RESIDENT_BYTES: usize = FB_BYTES
 //     point every note here names the wrong arm.
 const _: () = assert!(
     RESIDENT_BYTES + STACK_RESERVE <= NRF_RAM_BYTES,
-    "nRF resident set (framebuffer + RowDiff + map plane [App/MapCache/MapTables/RouteCache/RouteIndex/terrain/volume-set tables] + the #1146 scratch arena [max of render/nav/usb] + BLE stack [MPSL/SDC mem/host arena] + the USB plane) + stack reserve overruns RAM — re-trim the `nrf-mem` caps, and mind the arena's max-of-arms cliff above: shrinking an arm that is not the largest frees nothing"
+    "nRF resident set (framebuffer + RowDiff + map plane [App/MapCache/MapTables/RouteCache/RouteIndex/terrain/volume-set tables] + the #1146 scratch arena [max of render/nav/usb] + BLE stack [MPSL/SDC mem/host arena] + the USB plane + the flat store) + stack reserve overruns RAM — re-trim the `nrf-mem` caps, and mind the arena's max-of-arms cliff above: shrinking an arm that is not the largest frees nothing"
 );
 
 // A report-only table of exact target-side allocation sizes. Keeping the table in this crate gives
@@ -390,7 +412,7 @@ mod resource_report {
         entry("terrain_extents", sd::TERRAIN_EXTENT_BYTES),
     ];
 
-    const ENTRIES: usize = 32;
+    const ENTRIES: usize = 34;
 
     #[used]
     #[no_mangle]
@@ -451,6 +473,15 @@ mod resource_report {
         // callers) and the `Semmc` host-driver state itself.
         entry("sd_bounce", sd::BOUNCE_BYTES),
         entry("semmc_driver", core::mem::size_of::<semmc::Semmc>()),
+        // The **flat store** (FS7.5-c1), itemized in two rows rather than one because they answer
+        // different questions. `flat_store` is the store type itself — §6.2's 8 KiB free bitmap plus
+        // the hold/reservation rows — so a change in `MAX_OPEN_OBJECTS` or an extent-index widening
+        // is legible here. `flat_requests` is the storage task's queue, the one part of that layer
+        // whose size is a design choice rather than a consequence: depth × the largest request. The
+        // binding's alignment buffer is not a third row — it is `sd_bounce`, shared (see
+        // `flat_store`'s note on why it places none of its own).
+        entry("flat_store", core::mem::size_of::<obc_storage::flat::FlatStore<flat_store::FlatCard>>()),
+        entry("flat_requests", flat_store::REQUEST_QUEUE_BYTES),
     ];
 }
 
@@ -1125,25 +1156,76 @@ async fn main(_spawner: Spawner) {
             interrupt::VPR00.set_priority(Priority::P1);
             interrupt::VPR00.enable();
         }
-        let storage = sd::init();
         // A missing/bad card is fatal — the map streams from it. The display is already up (brought
         // up above, before the card), so instead of failing silently we put an **undismissable**
         // fault screen on glass, then heartbeat-idle. (SharedStore keeps an Option seam for a future
         // card-less variant where BLE config/bond/diagnostics still serve.)
-        let mut storage = match storage {
-            Ok(s) => s,
-            Err(fault) => {
-                // The *reason* travels with the failure (#1163 review, P3): a reader that never
-                // booted and a card that is merely too small each get their own screen, because
-                // "NO SD CARD" would send the rider to the wrong fix. `sd::init` has already logged
-                // the specific class.
+        //
+        // The *reason* travels with the failure (#1163 review, P3): a reader that never booted and a
+        // card that is merely too small each get their own screen, because "NO SD CARD" would send
+        // the rider to the wrong fix. `sd::bring_up_card` has already logged the specific class.
+        if let Err(fault) = sd::bring_up_card() {
+            defmt::error!(
+                "SD: storage unusable — showing the {=str} fault screen, then heartbeat idle",
+                fault.copy().0
+            );
+            show_boot_fault(&mut display, fault).await;
+            idle_blink(&mut led).await
+        }
+
+        // ── Which stack owns this card (FS7.5-c1, #1420) ────────────────────────────────────────
+        //
+        // The flat store owns the raw card from LBA 0 and FAT is a filesystem *on* a card, so a card
+        // is one or the other and never both. `FLAT_Store_Format.md` §5.6 step 1 is the test, and
+        // `FlatStore::mount` **is** that test — it never fails, it classifies — so the board runs no
+        // second superblock reader of its own that could disagree with the store's rule. On a FAT
+        // card the whole probe is two block reads and `Mode::Unformatted`, and the v1 stack below
+        // takes over exactly as it did before this slice.
+        //
+        // `mount_at_boot` is `#[inline(never)]` into a `.bss` slot: a ~10.5 KB store must not become
+        // a permanent slot in this task's poll frame, and `mount`'s own ~14 KB constructor frame must
+        // stay a transient sibling step of the boot chain (#677/#1084/#1108, and the boot-chain root
+        // `resource_guard.py board` measures). Well inside the #729 watchdog invariant below: a mount
+        // is bounded by the catalog it reads — a few hundred milliseconds at the largest one §9 allows.
+        let flat_started = embassy_time::Instant::now();
+        let flat = flat_store::mount_at_boot();
+        flat_store::report(flat, flat_started.elapsed().as_micros());
+
+        let mut storage = match flat_store::classify(flat) {
+            flat_store::Card::Flat => {
+                // The card is a flat store and this build can read it. **c1 stops here on purpose**:
+                // the renderer and the router still read through `sd.rs` (c2) and every transport
+                // still writes through the v1 object store (c3), so there is nothing to hand a
+                // mounted store to yet. What does run is the write half's owner — one task, so that
+                // c2/c3 plug into a serialization that already exists and was measured on glass.
+                _spawner.spawn(defmt::unwrap!(flat_store::storage_task(flat, flat_store::receiver())));
+                #[cfg(feature = "flat-exercise")]
+                _spawner.spawn(defmt::unwrap!(flat_store::interleave_exercise(flat, flat_store::writer())));
+                // The honest fault, from `obc_app::boot_fault` rather than a screen of its own —
+                // see `flat_store::boot_fault_for`. The truth a dev window needs is on RTT above.
+                let fault = flat_store::boot_fault_for(flat);
                 defmt::error!(
-                    "SD: storage unusable — showing the {=str} fault screen, then heartbeat idle",
+                    "flat: mounted, and c1 cannot render from it — showing the {=str} fault screen, then heartbeat idle",
                     fault.copy().0
                 );
                 show_boot_fault(&mut display, fault).await;
                 idle_blink(&mut led).await
             }
+            flat_store::Card::FlatBroken(fault) => {
+                show_boot_fault(&mut display, fault).await;
+                idle_blink(&mut led).await
+            }
+            flat_store::Card::NotFlat => match sd::mount_fat() {
+                Ok(storage) => storage,
+                Err(fault) => {
+                    defmt::error!(
+                        "SD: storage unusable — showing the {=str} fault screen, then heartbeat idle",
+                        fault.copy().0
+                    );
+                    show_boot_fault(&mut display, fault).await;
+                    idle_blink(&mut led).await
+                }
+            },
         };
 
         // Reclaim any map upload that never committed (issue #927) before the catalog is read: a
