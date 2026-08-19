@@ -917,7 +917,10 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
                 if let waiter = weatherCommandWaiter, waiter.token == token {
                     weatherCommandWaiter = nil
                     waiter.continuation.resume(throwing: DeviceError.transferDropped)
-                } else {
+                } else if weatherUploadToken == token {
+                    // Cancellation can arrive after the result path completed and cleared the
+                    // attempt. Only remember a token while registration may still race with us;
+                    // completed attempts mint no future waiter and must not accumulate here.
                     cancelledWeatherCommandTokens.insert(token)
                 }
             }
