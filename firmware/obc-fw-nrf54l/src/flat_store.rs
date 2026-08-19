@@ -1168,38 +1168,53 @@ impl FlatWeather {
 /// identity tie is broken by the larger store id so the result is deterministic.
 #[inline(never)]
 pub(crate) fn active_weather(store: &'static FlatStore<FlatCard>) -> Result<Option<FlatWeather>, ()> {
-    let mut active: Option<FlatWeather> = None;
-    for entry in store.entries().filter(|entry| {
-        entry.kind == ObjectKind::WeatherBundle && !entry.flags.has(obc_storage::flat::EntryFlags::RETAINED)
-    }) {
-        let validated = store
-            .with_source(entry.id, Some(entry.revision), |source| {
-                obc_weather::WeatherReader::open(source).map(|reader| reader.validated())
-            })
-            .ok()
-            .and_then(Result::ok);
-        let Some(validated) = validated else {
-            defmt::warn!(
-                "flat: weather object {=u64} revision {=u64} is malformed or unreadable — omitted",
-                entry.id.0,
-                entry.revision.0
-            );
-            continue;
-        };
-        let incoming = FlatWeather { id: entry.id, revision: entry.revision, validated };
-        let replace = active.is_none_or(|current| {
-            obc_weather::candidate_is_newer(incoming.candidate(), current.candidate())
-                || (incoming.candidate() == current.candidate() && incoming.id > current.id)
-        });
-        if replace {
-            active = Some(incoming);
+    // The catalog orders a retained revision immediately before its head. Validate the retained
+    // copy as a fallback, but never let it outrank a valid head merely because its producer serial
+    // is newer: retention is continuity for a bad replacement, not a second active candidate.
+    let revisions = store.entries().filter(|entry| entry.kind == ObjectKind::WeatherBundle).map(|entry| {
+        obc_weather::CatalogRevision {
+            object_id: entry.id.0,
+            retained: entry.flags.has(obc_storage::flat::EntryFlags::RETAINED),
+            validation: validate_weather(store, entry),
         }
-    }
+    });
+    let active = obc_weather::select_catalog(revisions, |incoming, current| {
+        obc_weather::candidate_is_newer(incoming.candidate(), current.candidate())
+            || (incoming.candidate() == current.candidate() && incoming.id > current.id)
+    })?;
     if !store.entries_ok() {
         defmt::warn!("flat: weather catalog listing crossed a commit — retrying on the next catalog edge");
         return Err(());
     }
     Ok(active)
+}
+
+/// Validate one immutable weather revision while keeping media/open failures distinct from a
+/// malformed OBCW payload. A malformed head may fall back to its retained predecessor; a transient
+/// store failure must preserve the currently mounted source and retry later.
+fn validate_weather(store: &'static FlatStore<FlatCard>, entry: EntryMeta) -> Result<Option<FlatWeather>, ()> {
+    match store.with_source(entry.id, Some(entry.revision), |source| {
+        obc_weather::WeatherReader::open(source).map(|reader| reader.validated())
+    }) {
+        Ok(Ok(validated)) => Ok(Some(FlatWeather { id: entry.id, revision: entry.revision, validated })),
+        Ok(Err(_)) => {
+            defmt::warn!(
+                "flat: weather object {=u64} revision {=u64} is malformed — omitted",
+                entry.id.0,
+                entry.revision.0
+            );
+            Ok(None)
+        }
+        Err(error) => {
+            defmt::warn!(
+                "flat: weather object {=u64} revision {=u64} could not be read: {}",
+                entry.id.0,
+                entry.revision.0,
+                defmt::Debug2Format(&error)
+            );
+            Err(())
+        }
+    }
 }
 
 static mut WEATHER_SOURCE: Option<obc_storage::flat::StoreSource<'static, FlatCard>> = None;
@@ -1217,20 +1232,27 @@ pub(crate) fn reconcile_weather(
     unsafe {
         let current = (*slot).as_ref().map(|source| (source.id(), source.revision()));
         if current != wanted_key {
-            let old = core::ptr::read(slot);
-            core::ptr::write(slot, None);
-            if let Some(source) = old {
-                store.close(source.release());
-            }
             if let Some(weather) = wanted {
                 match store.source(weather.id, Some(weather.revision)) {
-                    Ok(source) => core::ptr::write(slot, Some(source)),
+                    Ok(source) => {
+                        // Acquire before release: the store budgets one SWAP hold precisely so a
+                        // transient open failure cannot discard the bundle the rider is using.
+                        let old = core::ptr::replace(slot, Some(source));
+                        if let Some(old) = old {
+                            store.close(old.release());
+                        }
+                    }
                     Err(error) => defmt::warn!(
                         "flat: weather object {=u64} revision {=u64} would not open: {}",
                         weather.id.0,
                         weather.revision.0,
                         defmt::Debug2Format(&error)
                     ),
+                }
+            } else {
+                let old = core::ptr::replace(slot, None);
+                if let Some(old) = old {
+                    store.close(old.release());
                 }
             }
         }
