@@ -152,7 +152,7 @@ use embassy_sync::mutex::Mutex;
 use obc_app::InputPlane;
 use obc_app::{App, AppState};
 use obc_display::ls021::{RowDiff, FRAME_H, FRAME_W};
-use obc_reader::{MapCache, MapTables, MountedSet};
+use obc_reader::{MapCache, MapTables};
 use obc_render::zoom_for_mpp;
 // The decoded-route-geometry cache — resident in `.bss`, handed to the ride loop.
 use obc_route::RouteCache;
@@ -210,10 +210,11 @@ use embassy_nrf::buffered_uarte::{BufferedUarteRx, BufferedUarteTx};
 //                  earlier by-value `RouteIndex::read` build put the ~6.7 KB on the stack at the ride
 //                  pass's deepest point, and the post-upload rescan's rebuild overflowed the main
 //                  stack the moment `.bss` crept 216 B (STKOF HardFault, 2026-07-12).
-//   - volume set   caller-placed `SetShards<11>` and one FAT extent table/source per possible
-//                  shard. These remain resident even for a single-file map so a later refactor
-//                  cannot silently move the cost into the async task frame. The parsed manifest is
-//                  mount-time-only and is dropped in a synchronous helper before the next await.
+//   - map extents  the open map's resolved FAT chain (#500) and the one `'static` source over it.
+//                  This block used to be **20,732 B** — a caller-placed `SetShards<11>` plus eleven
+//                  extent tables and eleven sources, resident even for a single-file map. FS7.5-c2
+//                  deleted the set mount that needed them (#1420): one map is one file, so one
+//                  table and one source is the whole of it.
 // plus `STACK_RESERVE` headroom for the main stack + embassy's executor/task arenas. The stack must
 // also absorb a per-redraw `Reader::new` (the OBCM style table → a ~2.4 KB `Reader` value built as a
 // stack temporary, plus its own ~4 KB read scratch): the ride loop rebuilds it each frame, so the
@@ -273,12 +274,8 @@ const MAP_RESIDENT: usize = core::mem::size_of::<obc_app::App>()
     + core::mem::size_of::<obc_reader::MapTables>()
     + core::mem::size_of::<obc_route::RouteCache>()
     + core::mem::size_of::<obc_route::RouteIndex>()
-    + SET_RESIDENT
+    + sd::MAP_EXTENT_BYTES
     + TERRAIN_RESIDENT;
-/// Device-native volume-set residents (#1033): the mount records are caller-placed here, while
-/// `sd.rs` owns the board-private direct-read tables/sources.
-const SET_RESIDENT: usize =
-    core::mem::size_of::<sd::SetShardStore>() + sd::SET_EXTENT_TABLES_BYTES + sd::SET_SOURCES_BYTES;
 /// The map's **terrain** (EL7, epic #1068): the [`TERRAIN`] slot (an OBCT reader + its four 512 B
 /// tiles, ~2.1 KB) and the sidecar's own extent table/source in `sd.rs` (~1.3 KB). Resident
 /// whether or not a terrain file is on the card, deliberately: the slot is what makes the emit
@@ -293,7 +290,7 @@ const SET_RESIDENT: usize =
 #[cfg(has_nav)]
 const TERRAIN_RESIDENT: usize = core::mem::size_of::<
     obc_elevation::TerrainElevation<'static, { obc_elevation::DEFAULT_TILE_SLOTS }>,
->() + sd::TERRAIN_EXTENT_BYTES;
+>() + core::mem::size_of::<obc_formats::io::WindowSource<'static>>();
 #[cfg(not(has_nav))]
 const TERRAIN_RESIDENT: usize = 0;
 /// The **scratch arena** (#1146 P2, `arena.rs`): `max(render, nav, usb)`, once — the single term
@@ -426,10 +423,13 @@ mod resource_report {
             "terrain",
             core::mem::size_of::<obc_elevation::TerrainElevation<'static, { obc_elevation::DEFAULT_TILE_SLOTS }>>(),
         ),
-        entry("terrain_extents", sd::TERRAIN_EXTENT_BYTES),
+        // The §1.3 window the OBCT container is parsed through, now that terrain lives **inside**
+        // the map file. It replaces the `terrain_extents` row — the sidecar's own extent table and
+        // source — because there is no sidecar file to extent-map any more.
+        entry("terrain_window", core::mem::size_of::<obc_formats::io::WindowSource<'static>>()),
     ];
 
-    const ENTRIES: usize = 34;
+    const ENTRIES: usize = 33;
 
     #[used]
     #[no_mangle]
@@ -441,9 +441,10 @@ mod resource_report {
         entry("app", core::mem::size_of::<App>()),
         entry("map_cache", core::mem::size_of::<MapCache>()),
         entry("map_tables", core::mem::size_of::<MapTables>()),
-        entry("set_shards", core::mem::size_of::<sd::SetShardStore>()),
-        entry("set_extent_tables", sd::SET_EXTENT_TABLES_BYTES),
-        entry("set_sources", sd::SET_SOURCES_BYTES),
+        // One map, one file: the `set_shards` / `set_extent_tables` / `set_sources` rows (6,432 +
+        // 14,212 + 88 = 20,732 B) were the volume-set mount's, and FS7.5-c2 deleted it. What a map
+        // costs to read is one resolved FAT chain and one source over it.
+        entry("map_extents", sd::MAP_EXTENT_BYTES),
         entry("route_cache", core::mem::size_of::<RouteCache>()),
         entry("route_index", core::mem::size_of::<obc_route::RouteIndex>()),
         // WX7's complete reader + generation-aware frame/directory/tile cache type. This is a
@@ -499,6 +500,10 @@ mod resource_report {
         // `flat_store`'s note on why it places none of its own).
         entry("flat_store", core::mem::size_of::<obc_storage::flat::FlatStore<flat_store::FlatCard>>()),
         entry("flat_requests", flat_store::REQUEST_QUEUE_BYTES),
+        // The read cutover's own resident cost on the flat arm (FS7.5-c2): the session-long
+        // `StoreSource` over the map object. Named beside the store it reads from so the two halves
+        // of "what does reading a flat card cost" are in one place.
+        entry("flat_map_source", flat_store::MAP_SOURCE_BYTES),
     ];
 }
 
@@ -525,9 +530,6 @@ static mut MAP_CACHE: MaybeUninit<MapCache> = MaybeUninit::uninit();
 /// no styles/LODs of its own — no per-frame style-table SD read, no ~4 KB parse stack spike on the deep
 /// render path (the lever that kept that path inside the 256 KB stack).
 static mut MAP_TABLES: MaybeUninit<MapTables> = MaybeUninit::uninit();
-/// The per-shard mount records for a volume set, caller-placed in `.bss` so the board never moves
-/// the ~5 KiB `SetShards<11>` through `main`'s async frame.
-static mut SET_SHARDS: sd::SetShardStore = sd::SetShardStore::new();
 static mut APP: MaybeUninit<App> = MaybeUninit::uninit();
 /// The decoded-route-geometry cache, placed in `.bss` and built in place like [`MAP_CACHE`]
 /// ([`RouteCache::new`](obc_route::RouteCache) is an all-zero `MaybeUninit::zeroed`). The session-long
@@ -547,33 +549,92 @@ static mut SHARED_STORE_SLOT: MaybeUninit<SharedStoreMutex> = MaybeUninit::unini
 /// The mounted map's **terrain** (EL7, epic #1068): the OBCT reader plus its `N = 4` tile cache —
 /// ~2.1 KB of resident raster + a 32-byte header, in `.bss` for exactly the reason the caches above
 /// are (`TerrainElevation` embeds the cache; a stack copy of one inside the emit path is precisely
-/// the #419/#501 fat local). Written once at boot **only when a terrain sidecar mounted**; the ride
-/// loop then holds a `&'static mut` to it (or to [`NULL_ELEV`]) and hands it to every planner step.
+/// the #419/#501 fat local). Written once at boot **only when the map carries a §1.3 terrain
+/// region**; the ride loop then holds a `&'static mut` to it (or to [`NULL_ELEV`]) and hands it to
+/// every planner step.
 #[cfg(has_nav)]
 static mut TERRAIN: MaybeUninit<obc_elevation::TerrainElevation<'static, { obc_elevation::DEFAULT_TILE_SLOTS }>> =
     MaybeUninit::uninit();
+/// The §1.3 window the OBCT container is read through — the map file's bytes, re-based so the
+/// container's first byte is byte `0`. `.bss` and `'static` because [`TERRAIN`]'s parsed reader
+/// borrows its source for the session, so the window must outlive every frame that samples it.
+#[cfg(has_nav)]
+static mut TERRAIN_WINDOW: MaybeUninit<obc_formats::io::WindowSource<'static>> = MaybeUninit::uninit();
 /// The no-terrain source (a ZST): what the ride loop hands the planner when no sidecar mounted, so
 /// the emit path has one uniform seam and no `Option` branch per point.
 #[cfg(has_nav)]
 static mut NULL_ELEV: obc_route::NullElevation = obc_route::NullElevation;
 
-/// Mount the map's terrain sidecar (EL7) into the `.bss` [`TERRAIN`] slot and hand back the
-/// resident sampler — `None` when no sidecar mounted or it won't parse (the ride loop then uses
-/// [`NULL_ELEV`] and a planned route is as flat as it was before the epic — never a fault; see
-/// `Storage::open_terrain`).
+/// Mount the map's **embedded terrain** (EL7 + FS7.5) into the `.bss` [`TERRAIN`] slot and hand back
+/// the resident sampler.
+///
+/// **Terrain is inside the map file now** (`OBCM_Spec.md` §1.3, #1420): the header names a byte
+/// window holding one OBCT container verbatim, and every offset inside that container is relative to
+/// its own first byte — so what the parse needs is a *window*, not a file. This forms one
+/// ([`obc_formats::io::WindowSource`]) over `map` and parses through it. There is no `.OBD` sidecar
+/// any more: no second file to open, no second FAT chain to resolve, no orphaned raster of a map
+/// that was replaced, and — the reason it matters here — **one arm instead of two**, because a flat
+/// card has no filesystem to hang a sidecar off in the first place.
+///
+/// `map` must be a `'static` source: [`TerrainElevation`](obc_elevation::TerrainElevation) borrows
+/// its source for the session. On the FAT arm that is `Storage::static_map_source` (the extent path
+/// only — see its docs); on the flat arm it is the mounted store's `StoreSource`.
+///
+/// **Every failure is `None`, and `None` is not a fault** — the rule the sidecar had, unchanged by
+/// the move: no region, a window the header places outside the file, or a container that will not
+/// parse all mean *this map has no terrain*, and the ride loop uses [`NULL_ELEV`] so routes plan and
+/// ride exactly as they did, flat. A rider whose raster is unreadable has the map they would have
+/// had without one.
 ///
 /// `#[inline(never)]` is load-bearing (#677): `TerrainElevation` embeds its tile cache, so the
 /// by-value parse temporary is ~2.1 KB. In this transient frame it pops with the call; inlined
 /// into the ride task's async block it became a permanent ~2 KB slot in the task's poll frame —
 /// allocated at entry on **every** poll — which is what tipped boot over the residual main stack
 /// (STKOF HardFault at `link::init_store`'s prologue, 2026-08-03).
+///
+/// `clippy::mut_from_ref` fires on the signature and is allowed here for a reason the lint cannot
+/// see: the `&'static mut` does not come from `map`. It comes from [`TERRAIN`], a `.bss` slot this
+/// function solely owns and writes at most once per boot — the same shape `mount_terrain` always
+/// had, and the lint only started firing because the input it used to take (`&mut sd::Storage`)
+/// happened to be mutable.
 #[cfg(has_nav)]
 #[inline(never)]
+#[allow(clippy::mut_from_ref)]
 fn mount_terrain(
-    storage: &mut sd::Storage,
+    flat_map: Option<&'static dyn obc_formats::io::ByteSource>,
+    storage: Option<&sd::Storage>,
+    tables: &MapTables,
 ) -> Option<&'static mut obc_elevation::TerrainElevation<'static, { obc_elevation::DEFAULT_TILE_SLOTS }>> {
-    let src = storage.open_terrain()?;
-    let terrain = obc_elevation::TerrainElevation::parse(src).ok()?;
+    // Resolving the arm is this function's, not `main`'s: everything between the two is a value in
+    // the boot task's coroutine, permanently, and there is no reason for the map's bytes to be one
+    // of them.
+    let map: &'static dyn obc_formats::io::ByteSource = match flat_map {
+        Some(source) => source,
+        None => storage?.static_map_source()?,
+    };
+    let region = tables.terrain()?;
+    let Some(window) = obc_formats::io::WindowSource::new(map, region.offset, region.len) else {
+        defmt::warn!(
+            "map: the §1.3 terrain region ({=u64}..+{=u64}) is not inside the file — routes stay flat",
+            region.offset,
+            region.len
+        );
+        return None;
+    };
+    // SAFETY: sole owner of TERRAIN_WINDOW, written at most once per boot before any reference
+    // escapes. `WindowSource` owns nothing to drop.
+    let window: &'static _ = unsafe { init_static(core::ptr::addr_of_mut!(TERRAIN_WINDOW), window) };
+    let terrain = match obc_elevation::TerrainElevation::parse(window) {
+        Ok(terrain) => terrain,
+        Err(error) => {
+            defmt::warn!(
+                "map: the embedded terrain container will not parse ({}) — routes stay flat",
+                defmt::Debug2Format(&error)
+            );
+            return None;
+        }
+    };
+    defmt::info!("map: terrain mounted from the §1.3 region ({=u64} B)", region.len);
     // SAFETY: sole owner of TERRAIN, written at most once per boot before any reference escapes.
     Some(unsafe { init_static(core::ptr::addr_of_mut!(TERRAIN), terrain) })
 }
@@ -701,12 +762,24 @@ async fn spawn_usb_stack(
 /// reduced boot path owns the same storage/settings/object-store values, starts only USB, and
 /// reserves the scratch arena for staging permanently (there is no render or route planner in the
 /// fault idle). The next successful upload becomes selectable on reboot.
+///
+/// **It takes the `Option`, not the `Storage`** (FS7.5-c2). USB map recovery re-uploads a `.obcm`
+/// through the v1 object store, so it is the FAT arm's and a flat card has none — but that is only
+/// half the reason. `main`'s binding is now an `Option<Storage>`, and a caller that did
+/// `storage.take()` to unwrap it put the `Storage` in a *second* permanent slot of the boot task's
+/// poll frame, beside the binding's own: **+2,304 B of `__embassy_main::POOL`**, measured. Moving
+/// the `Option` whole is one place, and `None` — a flat card, or a `Storage` already consumed — is
+/// simply no recovery plane, which is what boot then reports.
 async fn spawn_map_recovery_usb(
     spawner: Spawner,
     usb_p: embassy_nrf::Peri<'static, embassy_nrf::peripherals::USBHS>,
     rramc: embassy_nrf::Peri<'static, embassy_nrf::peripherals::RRAMC>,
-    mut storage: sd::Storage,
+    storage: Option<sd::Storage>,
 ) -> Option<arena::UsbGuard> {
+    let Some(mut storage) = storage else {
+        defmt::warn!("recovery: no FAT storage on this card — no USB map-recovery plane this boot");
+        return None;
+    };
     storage.prepare_map_recovery();
     let mut settings_store = settings::RramSettingsStore::new(rramc);
     dfu::seed_firmware_revision(&mut settings_store);
@@ -1208,77 +1281,98 @@ async fn main(_spawner: Spawner) {
         let flat = flat_store::mount_at_boot();
         let flat_catalog = flat_store::report(flat, flat_started.elapsed().as_micros());
 
-        let mut storage = match flat_store::classify(flat) {
-            flat_store::Card::Flat => {
-                // The card is a flat store and this build can read it. **c1 stops here on purpose**:
-                // the renderer and the router still read through `sd.rs` (c2) and every transport
-                // still writes through the v1 object store (c3), so there is nothing to hand a
-                // mounted store to yet. What does run is the write half's owner — one task, so that
-                // c2/c3 plug into a serialization that already exists and was measured on glass.
-                // `arm` is what makes `writer()` hand out senders at all — on a FAT card nothing
-                // drains the queue and a sender would wedge, so the two are one act. It runs here
-                // and nowhere else.
-                _spawner.spawn(defmt::unwrap!(flat_store::storage_task(flat, flat_store::arm())));
-                #[cfg(feature = "flat-exercise")]
-                match flat_store::writer() {
-                    Some(writer) => _spawner.spawn(defmt::unwrap!(flat_store::interleave_exercise(flat, writer))),
-                    // Unreachable — `arm()` ran one statement ago — and reported rather than
-                    // unwrapped, because a measurement harness must never be why the board panics.
-                    None => defmt::error!("flat/exercise: the write half is not armed; no exercise this boot"),
+        // ── Which stack serves the map (FS7.5-c2, #1420) ───────────────────────────────────────
+        //
+        // c1 classified the card and stopped; this is where the renderer's bytes come from. Exactly
+        // one of the two is `Some` for the life of the image, and which one is decided here and
+        // nowhere else — the ride loop below takes both and never re-derives the choice.
+        //
+        // **Reads go direct on both arms.** The flat arm's `&'static StoreSource` is a plain
+        // `ByteSource` a render calls straight through; the storage task spawned below owns *writes*
+        // only, and a render's `read_at` never touches its channel (the #1256 ruling of 2026-08-18,
+        // and `flat_store::storage_task`'s docs for what the store's per-card-command borrow
+        // granularity buys and what it does not).
+        //
+        // One `match`, one pair, **one `Storage` slot**: `mount_fat`'s value flows straight into the
+        // binding rather than being assigned into an already-live `Option` afterwards. The
+        // difference is not style — a `Storage` is kilobytes, this is an async block, and an
+        // assignment form put the manager's result in a *second* permanent poll-frame slot beside
+        // the binding's (measured at +2,304 B of `__embassy_main::POOL`; the #1084/#1108 mechanism,
+        // in its quiet form).
+        #[allow(clippy::type_complexity)]
+        let (mut storage, flat_map): (Option<sd::Storage>, Option<&'static dyn obc_formats::io::ByteSource>) =
+            match flat_store::classify(flat) {
+                flat_store::Card::Flat => {
+                    // The write half's owner. `arm` is what makes `writer()` hand out senders at all —
+                    // on a FAT card nothing drains the queue and a sender would wedge, so the two are
+                    // one act. It runs here and nowhere else.
+                    _spawner.spawn(defmt::unwrap!(flat_store::storage_task(flat, flat_store::arm())));
+                    #[cfg(feature = "flat-exercise")]
+                    match flat_store::writer() {
+                        Some(writer) => _spawner.spawn(defmt::unwrap!(flat_store::interleave_exercise(flat, writer))),
+                        // Unreachable — `arm()` ran one statement ago — and reported rather than
+                        // unwrapped, because a measurement harness must never be why the board panics.
+                        None => defmt::error!("flat/exercise: the write half is not armed; no exercise this boot"),
+                    }
+                    match flat_store::open_map(flat) {
+                        Some(source) => (None, Some(source)),
+                        None => {
+                            // The honest fault, from `obc_app::boot_fault` rather than a screen of its
+                            // own — see `flat_store::boot_fault_for`. NO MAP only for a catalog with no
+                            // map object in it; a map that is there and will not open is MAP UNREADABLE,
+                            // which is the same rule the FAT scan has followed since #1042.
+                            let fault = flat_store::boot_fault_for(flat_catalog);
+                            defmt::error!(
+                                "flat: no map to render from — showing the {=str} fault screen, then heartbeat idle",
+                                fault.copy().0
+                            );
+                            show_boot_fault(&mut display, fault).await;
+                            idle_blink(&mut led).await
+                        }
+                    }
                 }
-                // The honest fault, from `obc_app::boot_fault` rather than a screen of its own —
-                // see `flat_store::boot_fault_for`. The truth a dev window needs is on RTT above.
-                let fault = flat_store::boot_fault_for(flat_catalog);
-                defmt::error!(
-                    "flat: mounted, and c1 cannot render from it — showing the {=str} fault screen, then heartbeat idle",
-                    fault.copy().0
-                );
-                show_boot_fault(&mut display, fault).await;
-                idle_blink(&mut led).await
-            }
-            flat_store::Card::FlatBroken(fault) => {
-                show_boot_fault(&mut display, fault).await;
-                idle_blink(&mut led).await
-            }
-            flat_store::Card::NotFlat => match sd::mount_fat() {
-                Ok(storage) => storage,
-                Err(fault) => {
-                    defmt::error!(
-                        "SD: storage unusable — showing the {=str} fault screen, then heartbeat idle",
-                        fault.copy().0
-                    );
+                flat_store::Card::FlatBroken(fault) => {
                     show_boot_fault(&mut display, fault).await;
                     idle_blink(&mut led).await
                 }
-            },
-        };
+                flat_store::Card::NotFlat => match sd::mount_fat() {
+                    Ok(storage) => (Some(storage), None),
+                    Err(fault) => {
+                        defmt::error!(
+                            "SD: storage unusable — showing the {=str} fault screen, then heartbeat idle",
+                            fault.copy().0
+                        );
+                        show_boot_fault(&mut display, fault).await;
+                        idle_blink(&mut led).await
+                    }
+                },
+            };
 
-        // Reclaim any map upload that never committed (issue #927) before the catalog is read: a
-        // torn transfer leaves its final `MP{id}.OBM` with the held-back magic still zeroed, which
-        // every catalog refuses — so without this sweep its hundreds of megabytes would sit on the
-        // card forever, invisible to the one surface that could explain them. The map twin of the
-        // object store's `is_aborted_commit` sweep over `/routes`, and it must run **before**
-        // `open_map` so the selection never lands on a corpse.
-        storage.sweep_aborted_maps();
+        // The FAT arm's card housekeeping. None of it has a flat twin: a flat store's atomic commit
+        // is what the magic-last-write hack was faking, so there are no torn uploads to sweep, and
+        // the map object was already opened above.
+        if let Some(storage) = storage.as_mut() {
+            // Reclaim any map upload that never committed (issue #927) before the catalog is read: a
+            // torn transfer leaves its final `MP{id}.OBM` with the held-back magic still zeroed, which
+            // every catalog refuses — so without this sweep its hundreds of megabytes would sit on the
+            // card forever, invisible to the one surface that could explain them. The map twin of the
+            // object store's `is_aborted_commit` sweep over `/routes`, and it must run **before**
+            // `open_map` so the selection never lands on a corpse.
+            storage.sweep_aborted_maps();
 
-        // The same reclaim for a torn **volume set** (issue #1039): a set is `1..=32` shard files
-        // plus a manifest, so its abandoned upload is gigabytes rather than hundreds of megabytes,
-        // and the file that identifies it is the zero-magic `MS{id}.OBS` token the upload writes
-        // before the first shard. Runs before `open_map` for the same reason the map sweep does —
-        // and after it, so a card carrying both kinds of corpse is clean in one boot.
-        storage.sweep_aborted_sets();
+            // The same reclaim for a torn **volume set** (issue #1039): a set is `1..=32` shard files
+            // plus a manifest, so its abandoned upload is gigabytes rather than hundreds of megabytes,
+            // and the file that identifies it is the zero-magic `MS{id}.OBS` token the upload writes
+            // before the first shard. Runs before `open_map` for the same reason the map sweep does —
+            // and after it, so a card carrying both kinds of corpse is clean in one boot.
+            storage.sweep_aborted_sets();
 
-        // Open the selected `.obcm` and hold it open for the session — the map **streams** from it,
-        // never read resident into the 256 KB part. (The `/routes/*.obcr` catalog is scanned into the
-        // app's Route menu by `load_routes` *after* the app is built — in its own frame, so the ~5 KB
-        // `Catalog` never sits on `main`'s stack beneath the long-lived ride loop.)
-        storage.open_map();
-
-        // The map's terrain sidecar (EL7): mounted right behind the map, on the same one-open-at-boot
-        // rule, and folded into the `.bss` `TERRAIN` slot — via `mount_terrain`, whose
-        // `#[inline(never)]` keeps the ~2.1 KB parse temporary out of this task's poll frame.
-        #[cfg(has_nav)]
-        let terrain = mount_terrain(&mut storage);
+            // Open the selected `.obcm` and hold it open for the session — the map **streams** from it,
+            // never read resident into the 256 KB part. (The `/routes/*.obcr` catalog is scanned into the
+            // app's Route menu by `load_routes` *after* the app is built — in its own frame, so the ~5 KB
+            // `Catalog` never sits on `main`'s stack beneath the long-lived ride loop.)
+            storage.open_map();
+        }
 
         // Place the streamed-map geometry cache in `.bss`, built in place (an all-zero
         // `MaybeUninit::zeroed` → a `.bss` memset, never a stack temporary).
@@ -1296,26 +1390,38 @@ async fn main(_spawner: Spawner) {
         // (`&mut storage`) between frames.
         // SAFETY: sole owner of MAP_TABLES; single executor → no aliasing; written exactly once here.
         // Which fault a map-less boot deserves is the *card's* answer, not `map_source`'s: a volume
-        // set this build declines to mount, a listed map that will not open, a torn `MP{id}.OBM` the
+        // set this build declines to open, a listed map that will not open, a torn `MP{id}.OBM` the
         // scan could not parse — each leaves a map on the card, and NO MAP would send the rider
         // looking for a file that is right there. `Storage::boot_fault` is NO MAP only when the card
-        // held nothing; the rule itself is `obc_app::boot_fault`, tested where tests run. Read before
-        // the `map_source` borrow so the `else` arm is free of it.
-        let map_fault = storage.boot_fault();
+        // held nothing; the rule itself is `obc_app::boot_fault`, tested where tests run. On the flat
+        // arm this line is unreachable — `flat_store::open_map` already faulted above if it had
+        // nothing to hand back — so `NoMap` is the placeholder for a state that cannot occur rather
+        // than a second opinion about a card. Read before the `map_source` borrow so the `else` arm
+        // is free of it.
+        let map_fault = storage.as_ref().map_or(obc_app::BootFault::NoMap, sd::Storage::boot_fault);
         let map_tables: &MapTables = unsafe {
-            // Keep the source in a lexical scope: the recovery arm needs `&mut storage`, and the
+            // Keep the source in a lexical scope: the recovery arm needs `storage` by value, and the
             // temporary map source must have released its borrow before that async call begins.
             let parsed = {
-                let Some(init_src) = storage.map_source() else {
-                    defmt::error!(
-                        "SD: no map to stream from — showing the {} fault screen, then heartbeat idle",
-                        defmt::Debug2Format(&map_fault)
-                    );
-                    let _recovery_stage = spawn_map_recovery_usb(_spawner, p.USBHS, p.RRAMC, storage).await;
-                    show_boot_fault(&mut display, map_fault).await;
-                    idle_blink(&mut led).await
+                // The flat arm's source is `'static` and was resolved at classification; the FAT
+                // arm's borrows `storage` and is rebuilt per redraw. Both are a `&dyn ByteSource` by
+                // the time `MapTables::parse` sees one, which is the whole of the read cutover at
+                // this seam.
+                let fat_src = storage.as_ref().and_then(sd::Storage::map_source);
+                let init_src: &dyn obc_formats::io::ByteSource = match (flat_map, &fat_src) {
+                    (Some(source), _) => source,
+                    (None, Some(source)) => source,
+                    (None, None) => {
+                        defmt::error!(
+                            "SD: no map to stream from — showing the {} fault screen, then heartbeat idle",
+                            defmt::Debug2Format(&map_fault)
+                        );
+                        let _recovery_stage = spawn_map_recovery_usb(_spawner, p.USBHS, p.RRAMC, storage).await;
+                        show_boot_fault(&mut display, map_fault).await;
+                        idle_blink(&mut led).await
+                    }
                 };
-                MapTables::parse(&init_src)
+                MapTables::parse(init_src)
             };
             let slot = core::ptr::addr_of_mut!(MAP_TABLES) as *mut MapTables;
             match parsed {
@@ -1328,6 +1434,10 @@ async fn main(_spawner: Spawner) {
                         "map: not valid OBCM: {} — showing MAP UNREADABLE with USB recovery",
                         defmt::Debug2Format(&e)
                     );
+                    // USB map recovery is the FAT arm's: it re-uploads a `.obcm` through the v1
+                    // object store. The flat arm's transports arrive in c3; until they do, a flat
+                    // card with an unreadable map gets the screen and the RTT line, and the fix is a
+                    // re-upload from the host that wrote it.
                     let _recovery_stage = spawn_map_recovery_usb(_spawner, p.USBHS, p.RRAMC, storage).await;
                     show_boot_fault(&mut display, obc_app::BootFault::BadMap).await;
                     idle_blink(&mut led).await
@@ -1343,27 +1453,16 @@ async fn main(_spawner: Spawner) {
             (((b.min_lon as i64 + b.max_lon as i64) / 2) as i32, ((b.min_lat as i64 + b.max_lat as i64) / 2) as i32)
         };
 
-        // Mount a volume set exactly once, after the core tables/cache exist and before `storage`
-        // moves behind the shared-store mutex. Every source is a `'static` extent source whose FAT
-        // handle remains owned by `Storage::open_set`; the large per-shard records go straight into
-        // the caller-placed `SET_SHARDS` static. A single map leaves this `None` and keeps its
-        // existing per-frame reader path.
-        // SAFETY: sole writer/borrower for the program lifetime. `mount_set` fills the static in
-        // place and returns only a small view over it; its parsed manifest remains in the
-        // synchronous helper's shallow frame rather than becoming part of this async task.
-        let store: &'static mut sd::SetShardStore = unsafe { &mut *core::ptr::addr_of_mut!(SET_SHARDS) };
-        let mounted_set: Option<MountedSet<'static>> = match storage.mount_set(store, map_tables, map_cache) {
-            Ok(set) => set,
-            Err(error) => {
-                defmt::error!(
-                    "map: volume set failed mount ({}) — showing MAP UNREADABLE with USB recovery",
-                    defmt::Debug2Format(&error)
-                );
-                let _recovery_stage = spawn_map_recovery_usb(_spawner, p.USBHS, p.RRAMC, storage).await;
-                show_boot_fault(&mut display, obc_app::BootFault::BadMap).await;
-                idle_blink(&mut led).await
-            }
-        };
+        // The map's **embedded terrain** (EL7 + FS7.5 §1.3): mounted right behind the tables, which
+        // is where it has to be now — the region is a header field, so there is nothing to mount
+        // until the header is parsed. Folded into the `.bss` `TERRAIN` slot via `mount_terrain`,
+        // whose `#[inline(never)]` keeps the ~2.1 KB parse temporary out of this task's poll frame.
+        //
+        // Both arms hand it a `'static` source over the *map*: the flat arm's `StoreSource`, or the
+        // FAT arm's extent source. A FAT map that would not extent-map yields no terrain, which is
+        // exactly the rule the `.OBD` sidecar had — see `Storage::static_map_source`.
+        #[cfg(has_nav)]
+        let terrain = mount_terrain(flat_map, storage.as_ref(), map_tables);
 
         // Boot to **Home**: the user drives Home → Route menu → Map with the buttons. The opt-in
         // `sd-bench` image instead starts directly on the live Map so an unattended RTT run exercises
@@ -1381,12 +1480,20 @@ async fn main(_spawner: Spawner) {
             &mut *slot
         };
         {
-            ride::load_routes(&mut storage, app);
-            ride::load_rides(&mut storage, app);
-            // Trip folders (epic #526 TR4): scan `TP{id}.OBT` and resolve each trip's stages against
-            // the route catalog just loaded — after `load_routes`, so the stage resolution sees it.
-            ride::scan_trips_at_boot(&mut storage);
-            ride::load_trips(&mut storage, app);
+            // Routes, rides and trips are the **FAT** catalog's — every one of them is a file the v1
+            // object store wrote. Their flat-store twins arrive with the transports in c3, so a flat
+            // card boots to an empty Route menu and an empty ride list: c2 is the *read* cutover, and
+            // what it cuts over is the map. That is a stated limitation of the dev window, not a
+            // silent one — the menus are empty because nothing has written into that store yet.
+            if let Some(storage) = storage.as_mut() {
+                ride::load_routes(storage, app);
+                ride::load_rides(storage, app);
+                // Trip folders (epic #526 TR4): scan `TP{id}.OBT` and resolve each trip's stages
+                // against the route catalog just loaded — after `load_routes`, so the stage
+                // resolution sees it.
+                ride::scan_trips_at_boot(storage);
+                ride::load_trips(storage, app);
+            }
             // Mirror the map's §8.6 routing-profile names into the app for the Bike-type settings
             // screen + created-route overview label (N5). Map metadata, so it runs on the `ble` image
             // too — the setting renders there but is inert (no router in that build).
@@ -1399,13 +1506,20 @@ async fn main(_spawner: Spawner) {
                 let mut fw: heapless::String<32> = heapless::String::new();
                 let _ = write!(fw, "{}+{}", env!("CARGO_PKG_VERSION"), env!("OBC_FW_GIT"));
                 app.set_fw_version(&fw);
-                app.set_map_info(storage.map_name(), map_tables.version);
+                // The name is the map's own either way: the FAT arm's long filename stem, or the
+                // flat entry's §9 display name captured by `flat_store::open_map`.
+                let map_name = match &storage {
+                    Some(storage) => storage.map_name(),
+                    None => flat_store::map_name(),
+                };
+                app.set_map_info(map_name, map_tables.version);
             }
             // Issue #504: the map loaded but its extent table was refused (fragmented past the cap /
             // failed verification), so reads fall back to the slow FAT-seek path. Surface it once as a
             // dismissable notice — the `Warning` event pushes the card over Home; the ride loop shows it
-            // on the first frame. A contiguous map (the common case) sets nothing.
-            if storage.map_degraded() {
+            // on the first frame. A contiguous map (the common case) sets nothing. The flat arm has no
+            // FAT chain to be fragmented and no seek path to fall back to, so it never sets it.
+            if storage.as_ref().is_some_and(sd::Storage::map_degraded) {
                 app.apply_event(obc_app::HostEvent::Warning(obc_app::WarningFlags::MAP_SLOW));
             }
         }
@@ -1472,7 +1586,7 @@ async fn main(_spawner: Spawner) {
         let shared_store: &'static SharedStoreMutex = unsafe {
             init_static(
                 core::ptr::addr_of_mut!(SHARED_STORE_SLOT),
-                SharedStoreMutex::new(SharedStore { storage: Some(storage), settings: settings_store }),
+                SharedStoreMutex::new(SharedStore { storage, settings: settings_store }),
             )
         };
 
@@ -1618,7 +1732,7 @@ async fn main(_spawner: Spawner) {
             shared_store,
             map_tables,
             map_cache,
-            mounted_set,
+            flat_map,
             route_cache,
             nav,
             &mut led,
@@ -1636,7 +1750,7 @@ async fn main(_spawner: Spawner) {
             shared_store,
             map_tables,
             map_cache,
-            mounted_set,
+            flat_map,
             route_cache,
             nav,
             &mut led,

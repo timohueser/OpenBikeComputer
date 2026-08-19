@@ -73,9 +73,7 @@ use obc_route::{
     ride_elevation_profile, ride_preview_polyline, track_to_ride, Profile, RideInfo, RideStats, RouteIndex,
     RouteObjectInfo, RouteSummary, TripMeta, TripSummary,
 };
-use obc_storage::fat_extents::{
-    BuildError, ExtentSource, ExtentSourceWithCapacity, ExtentTable, ExtentTableWithCapacity, SharedBlockDevice,
-};
+use obc_storage::fat_extents::{BuildError, ExtentSource, ExtentTable, SharedBlockDevice};
 use obc_storage::weather::{self as weather_store, WeatherSlotIo};
 use obc_storage::{route_name, trip_name};
 use obc_storage::{SdByteSink, SdByteSource, SdTrackSink};
@@ -276,23 +274,9 @@ const SD_RIDE_PEAK_FILES: usize = 5;
 /// larger set with `MountError::Handles(11)` — an error that names *this device's* cap, which is
 /// the number a rider needs, rather than the format's.
 pub(crate) const SD_SET_MAX_SHARDS: usize = SD_MAX_FILES - SD_RIDE_PEAK_FILES;
-/// A set shard's FAT-run budget. Shards are generated and uploaded as a sequential publish tree,
-/// and are smaller than the standalone maps for which [`obc_storage::fat_extents::MAX_EXTENTS`]
-/// was sized. 64 still exceeds the reference card's worst measured map (46 runs) while avoiding
-/// eleven unnecessarily large 128-run tables in resident RAM. A more fragmented shard is refused
-/// with its true run count and can be fixed by re-copying the publish tree onto the card.
-const SET_MAX_EXTENTS: usize = 64;
-/// The per-shard mount records, sized to this board's ceiling. A device mount places one of these
-/// in `.bss` (never on a frame — 14 KB of `heapless::Vec` inside an embassy task frame is the #270
-/// trap) and mounts into it; see `obc_reader::volume`'s module docs.
-pub(crate) type SetShardStore = obc_reader::SetShards<'static, SD_SET_MAX_SHARDS>;
 type Vmgr = VolumeManager<SdShared, NullTime, SD_MAX_DIRS, SD_MAX_FILES, SD_MAX_VOLUMES>;
 /// [`SdByteSource`] over this board's manager (the wrappers are generic over the handle budget).
 type Source<'a> = SdByteSource<'a, SdShared, NullTime, SD_MAX_DIRS, SD_MAX_FILES, SD_MAX_VOLUMES>;
-/// The smaller resident extent table used only for published set shards; standalone maps retain
-/// [`ExtentTable`]'s 128-run default.
-type SetExtentTable = ExtentTableWithCapacity<SET_MAX_EXTENTS>;
-type SetExtentSource<'a> = ExtentSourceWithCapacity<'a, Sd, SET_MAX_EXTENTS>;
 /// [`SdByteSink`] over this board's manager — the router's OBCR emit writes through it.
 type Sink<'a> = SdByteSink<'a, SdShared, NullTime, SD_MAX_DIRS, SD_MAX_FILES, SD_MAX_VOLUMES>;
 /// [`SdTrackSink`] over this board's manager.
@@ -305,66 +289,38 @@ type TrackSinkT<'a> = SdTrackSink<'a, SdShared, NullTime, SD_MAX_DIRS, SD_MAX_FI
 /// shape above it is what the extent fast path is built on.
 static mut SD_CARD: core::mem::MaybeUninit<Sd> = core::mem::MaybeUninit::uninit();
 
-/// The mutually-exclusive homes of either one standalone map table or every mounted-set table.
-/// `open_map` makes that choice once per boot and never switches it: a single map initialises only
-/// `map`, while [`open_volume_set`](Storage::open_volume_set) initialises distinct `set` slots and
-/// retains their handles for the session. A union therefore saves the otherwise permanently idle
-/// standalone table without introducing reuse or lifetime transitions under a live reference.
+/// **The open map's resident extent table** — the one direct-read table this board keeps
+/// (`#500`), written once per boot by [`build_map_extents`](Storage::build_map_extents).
 ///
-/// This remains outside [`Storage`] because that value crosses `main`'s async frame by value; the
-/// old inline table measurably produced two extra resident copies (#270/#500). `ManuallyDrop` is
-/// only a union-field requirement — extent tables own no resources and are written once in place.
-union ExtentSlots {
-    map: core::mem::ManuallyDrop<core::mem::MaybeUninit<ExtentTable>>,
-    set: core::mem::ManuallyDrop<[core::mem::MaybeUninit<SetExtentTable>; SD_SET_MAX_SHARDS]>,
-}
-
-const _: () =
-    assert!(core::mem::size_of::<[SetExtentTable; SD_SET_MAX_SHARDS]>() >= core::mem::size_of::<ExtentTable>());
-const _: () = assert!(core::mem::align_of::<SetExtentTable>() >= core::mem::align_of::<ExtentTable>());
-const _: () =
-    assert!(core::mem::size_of::<ExtentSlots>() == core::mem::size_of::<[SetExtentTable; SD_SET_MAX_SHARDS]>());
-const _: () = assert!(core::mem::align_of::<ExtentSlots>() == core::mem::align_of::<SetExtentTable>());
-
-static mut EXTENT_SLOTS: ExtentSlots =
-    ExtentSlots { set: core::mem::ManuallyDrop::new([const { core::mem::MaybeUninit::uninit() }; SD_SET_MAX_SHARDS]) };
-
-/// One immutable direct-read source per mounted set shard. The source records stay separate from
-/// [`EXTENT_SLOTS`] because every one is needed together; their table pointers target distinct
-/// `set` slots for the session. Rebuilding one per viewport query would put a FAT walk in the
-/// render loop, and the open handles in [`OpenSet`] pin the chains they describe.
-static mut SET_SOURCES: [core::mem::MaybeUninit<SetExtentSource<'static>>; SD_SET_MAX_SHARDS] =
-    [const { core::mem::MaybeUninit::uninit() }; SD_SET_MAX_SHARDS];
-
-/// The terrain sidecar's resident extent table + direct-read source (EL7, epic #1068). A *second*
-/// file is open beside the map for the session, so these cannot share [`EXTENT_SLOTS`] (which is a
-/// union: one map **or** one set) — terrain gets its own pair, at the set shards' 64-run capacity
-/// rather than the map's 128, because a baked terrain artifact is a small, freshly-written file.
+/// It used to be one arm of an `ExtentSlots` union, whose other arm was eleven smaller tables — one
+/// per shard of a mounted volume set — because `open_map` made a one-map-**or**-one-set choice per
+/// boot and the two could never be live together. A map is one file (FS7.5, #1420), so there is no
+/// second arm, no `ManuallyDrop` union-field ceremony, and no four const asserts pinning the
+/// larger arm's size and alignment over the smaller. The union's whole size was the set's;
+/// what stays resident is the 128-run table a standalone map always needed.
 ///
-/// Only the seek-free path is admitted here, for the same reason a set refuses one: a terrain
-/// sample sits inside the nav emit loop, and reinserting a FAT walk per 512 B tile would put SD
-/// seeks under the router. A file that will not extent-map simply yields no terrain.
-#[cfg(has_nav)]
-static mut TERRAIN_EXTENTS: core::mem::MaybeUninit<SetExtentTable> = core::mem::MaybeUninit::uninit();
-#[cfg(has_nav)]
-static mut TERRAIN_SOURCE: core::mem::MaybeUninit<SetExtentSource<'static>> = core::mem::MaybeUninit::uninit();
+/// It stays **outside** [`Storage`] because that value crosses `main`'s async frame by value, and
+/// an inline table measurably produced two extra resident copies (#270/#500).
+static mut MAP_EXTENTS: core::mem::MaybeUninit<ExtentTable> = core::mem::MaybeUninit::uninit();
 
-/// The 8.3 extension of a terrain artifact (`OBCT_Spec.md` §4.6: `.obcd`, three-char twin `OBD` —
-/// deliberately not `.OBT`, which is a recorded ride log).
-#[cfg(has_nav)]
-const TERRAIN_EXT: &str = "OBD";
+/// The `'static` direct-read source over the open map, for the one consumer that needs the map's
+/// bytes to outlive a `&self` borrow: the **embedded terrain window** (`OBCM_Spec.md` §1.3).
+///
+/// [`map_source`](Storage::map_source) hands out a fresh, cheap source per redraw and borrows
+/// `self`, which is exactly right for the render loop and useless to `TerrainElevation`, whose
+/// parsed reader holds its source for the session. This slot is that source, placed once.
+///
+/// It is the **extent path only**, and that is the old rule kept rather than a new restriction: the
+/// terrain sidecar admitted no seek-path fallback either, because a terrain sample sits inside the
+/// nav emit loop and a FAT walk per 512 B tile would put SD seeks under the router. A map that will
+/// not extent-map simply yields no terrain, exactly as a sidecar that would not extent-map did.
+static mut MAP_STATIC_SOURCE: core::mem::MaybeUninit<ExtentSource<'static, Sd>> = core::mem::MaybeUninit::uninit();
 
-/// Exact target-side bytes of the terrain sidecar's board-private statics (table + source), for the
-/// compile-time RAM budget and the resource report in `main.rs`. Reported unconditionally, like the
-/// `nav_*` sizes: it is the *type*'s cost, and a profile that gates the router out still wants the
-/// number legible in its report.
-pub(crate) const TERRAIN_EXTENT_BYTES: usize =
-    core::mem::size_of::<SetExtentTable>() + core::mem::size_of::<SetExtentSource<'static>>();
-
-/// Exact target-side bytes of the board-private volume-set statics, exported numerically for the
-/// compile-time RAM budget and resource report in `main.rs` without exposing their concrete types.
-pub(crate) const SET_EXTENT_TABLES_BYTES: usize = core::mem::size_of::<ExtentSlots>();
-pub(crate) const SET_SOURCES_BYTES: usize = core::mem::size_of::<[SetExtentSource<'static>; SD_SET_MAX_SHARDS]>();
+/// Exact target-side bytes of the board-private map read statics — the extent table and the
+/// `'static` source over it — exported numerically for the compile-time RAM budget and the resource
+/// report in `main.rs` without exposing their concrete types.
+pub(crate) const MAP_EXTENT_BYTES: usize =
+    core::mem::size_of::<ExtentTable>() + core::mem::size_of::<ExtentSource<'static, Sd>>();
 
 /// One map on the card, as [`Storage::scan_maps_into`] reports it (issue #927) — **the map
 /// catalog**, and the reason there is no catalog *file*.
@@ -407,9 +363,6 @@ pub struct MapSummary {
     /// another version is still on the card, and a consumer that wants to *flag* it (#915) needs
     /// to see it.
     pub obcm_version: u8,
-    /// The global bounding box from header bytes 5..21 — the map's footprint, for coverage checks.
-    /// For a set, the manifest's assembly bbox (§4.2), which §5.3 pins equal to the core's header.
-    pub bbox: BBox,
     /// Whether [`MAP_SELECTED`] names this map.
     pub selected: bool,
     /// Directory-entry location, so a chosen map's extent table can be built without a second scan.
@@ -424,7 +377,6 @@ pub struct MapSummary {
 struct SetIdentity {
     shard_count: u8,
     obcm_version: u8,
-    bbox: BBox,
     /// Summed over every record the manifest carries — the OBCM shards **and** the terrain raster,
     /// as `OBCA_Spec.md` §5.4 requires of the one size figure a UI may show (#1044). The manifest's
     /// own bytes are added by the caller.
@@ -441,8 +393,6 @@ pub enum MapSource<'a> {
     Extent(ExtentSource<'a, Sd>),
     /// The plain seek path — correct on any card, O(offset) on backward seeks.
     Seek(Source<'a>),
-    /// A core shard of a mounted set. Its source is resident beside its per-shard extent table.
-    Set(&'a SetExtentSource<'static>),
 }
 
 impl ByteSource for MapSource<'_> {
@@ -454,7 +404,6 @@ impl ByteSource for MapSource<'_> {
         match self {
             MapSource::Extent(s) => s.read_at(offset, buf),
             MapSource::Seek(s) => s.read_at(offset, buf),
-            MapSource::Set(s) => s.read_at(offset, buf),
         }
     }
 
@@ -462,39 +411,8 @@ impl ByteSource for MapSource<'_> {
         match self {
             MapSource::Extent(s) => s.len(),
             MapSource::Seek(s) => s.len(),
-            MapSource::Set(s) => s.len(),
         }
     }
-}
-
-struct OpenSetShard {
-    file: RawFile,
-    len: u32,
-    source: &'static SetExtentSource<'static>,
-}
-
-/// A mounted set's session-long storage ownership. Every shard handle stays open, pinning its FAT
-/// chain and making every render dispatch a bbox test + direct block read, never a directory walk.
-struct OpenSet {
-    id: u16,
-    manifest_name: ShortFileName,
-    core_index: u8,
-    shards: Vec<OpenSetShard, SD_SET_MAX_SHARDS>,
-    /// The `Bytes` of the manifest's `terrain` record (`OBCA_Spec.md` §5.2), or `None` when the set
-    /// names no raster. Kept from the mount rather than re-read, so [`Storage::open_terrain`] never
-    /// has to parse the manifest a second time — and so a `MS<id>.OBD` the manifest does *not* name
-    /// is recognised as an orphan of a replaced set (§5.4) instead of being mounted.
-    terrain_bytes: Option<u32>,
-}
-
-/// Why the board could not turn its already-open shard handles into a reader mount. Kept separate
-/// from [`obc_reader::MountError`] because re-reading the small manifest from FAT is board policy,
-/// not part of the format reader.
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum DeviceMountError {
-    Manifest,
-    Sources,
-    Reader(#[allow(dead_code)] obc_reader::MountError),
 }
 
 /// FAT timestamps need a clock; the device has none yet (see [`obc_ports::TrackPoint::t_ms`]),
@@ -558,9 +476,6 @@ pub struct Storage {
     /// length)`. The map streams through this (issue #37) instead of being read resident into
     /// RAM — `map_source` hands out a fresh source over it each redraw.
     open_map: Option<(RawFile, u32)>,
-    /// The mutually-exclusive volume-set form of `open_map`: parsed manifest + every shard handle
-    /// and its resident extent source, all retained for the session.
-    open_set: Option<OpenSet>,
     /// The open map's 8.3 filename. Kept because embedded-sdmmc refuses every second open of an open
     /// file (`FileAlreadyOpen`), so [`scan_maps_into`](Storage::scan_maps_into) must read the loaded
     /// map's header **through this handle** — without the name it cannot tell which catalog entry is
@@ -573,12 +488,6 @@ pub struct Storage {
     /// the seek path still works, just slowly, and open_map logged why. A reference into the
     /// [`MAP_EXTENTS`] `.bss` slot — see its doc for why the table must not live in here by value.
     map_extents: Option<&'static ExtentTable>,
-    /// The map's **terrain sidecar** (EL7, epic #1068), when one opened: `(handle, length)`, held
-    /// open for the session exactly like the map so its FAT chain stays pinned under the resident
-    /// extent source. `None` = no `.OBD` beside the map, or it would not open / extent-map — every
-    /// one of which is a *no terrain* answer, never a fault (see [`open_terrain`](Storage::open_terrain)).
-    #[cfg(has_nav)]
-    open_terrain: Option<(RawFile, u32)>,
     /// The fault the boot must show when [`map_source`](Storage::map_source) has nothing to hand
     /// out — `None` until [`open_map`](Storage::open_map) has run, then whatever
     /// [`obc_app::boot_fault`] answers for the card that was actually scanned.
@@ -1340,11 +1249,9 @@ impl Storage {
             next_sideload: SIDELOAD_ID_BASE as u32,
             open_route: None,
             open_map: None,
-            open_set: None,
             open_map_name: None,
             map_extents: None,
             #[cfg(has_nav)]
-            open_terrain: None,
             map_boot_fault: None,
             open_track: None,
             pending_save: None,
@@ -1978,9 +1885,6 @@ impl Storage {
         if let Some((_, len)) = self.open_map {
             return Some(len);
         }
-        if let Some(open) = &self.open_set {
-            return open.shards.get(open.core_index as usize).map(|shard| shard.len);
-        }
         let mut maps: Vec<MapSummary, MAX_MAPS> = Vec::new();
         let unlistable = self.scan_maps_into(&mut maps);
         let Some(keep) = choose_map_index(&maps) else {
@@ -1991,27 +1895,22 @@ impl Storage {
             return None;
         };
         let chosen = maps[keep].clone();
-        if let Some(shards) = chosen.shards {
-            if shards as usize > SD_SET_MAX_SHARDS {
-                defmt::warn!(
-                    "SD: volume set {} has {=u8} shards; this board mounts at most {=usize}",
-                    defmt::Debug2Format(&chosen.file),
-                    shards,
-                    SD_SET_MAX_SHARDS
-                );
-                self.map_boot_fault = Some(obc_app::boot_fault(&map_choices(&maps), unlistable));
-                return None;
-            }
-            match self.open_volume_set(&chosen) {
-                Some(core_len) => {
-                    self.retire_superseded_maps(&maps, Some(keep));
-                    return Some(core_len);
-                }
-                None => {
-                    self.map_boot_fault = Some(obc_app::boot_fault(&map_choices(&maps), unlistable));
-                    return None;
-                }
-            }
+        // **A volume set is not a map this firmware can read** (FS7.5-c2, #1420). The reader's
+        // set-mount surface is gone — one map is one OBCM file — so a manifest on the card names a
+        // thing nothing here can open. It is refused *here*, at the open, rather than filtered out
+        // of the catalog: the files are on the card under names the rider recognises, and
+        // `map_choices` marks them unreadable so `obc_app::boot_fault` says **MAP UNREADABLE**
+        // instead of NO MAP. `choose_map` prefers a readable map, so this is only reached on a card
+        // whose *only* maps are sets. (The catalog, upload and delete halves of the set surface are
+        // still here and still work — a rider can list and remove one; they die with the transports
+        // in c3.)
+        if chosen.shards.is_some() {
+            defmt::warn!(
+                "SD: {} is a volume set; a map is one OBCM file since FS7.5 — this build cannot open it",
+                defmt::Debug2Format(&chosen.file)
+            );
+            self.map_boot_fault = Some(obc_app::boot_fault(&map_choices(&maps), unlistable));
+            return None;
         }
         let (name, display, entry_block, entry_offset) =
             (chosen.file.clone(), chosen.name.clone(), chosen.entry_block, chosen.entry_offset);
@@ -2051,214 +1950,6 @@ impl Storage {
         Some(len)
     }
 
-    /// **The terrain source for the mounted map** (EL7, epic #1068) — the board's half of the one
-    /// question a host answers in `obc_host_core::terrain`: open the `.OBD` sidecar named after the
-    /// map (`GRIMSEL.OBM` → `GRIMSEL.OBD`; a set's manifest `MS7.OBS` → `MS7.OBD`), resolve its FAT
-    /// chain to a resident extent source, and hand back a `'static` [`ByteSource`] over it. Call
-    /// once, right after [`open_map`](Self::open_map).
-    ///
-    /// **Every failure is `None`, and `None` is not a fault.** No sidecar, a name that will not
-    /// open, a chain that will not extent-map, a table that fails verification — all of them mean
-    /// *this map has no terrain*, which the whole elevation seam is built to handle (routes plan
-    /// and ride exactly as before, with flat profiles). Deliberately outside the NO MAP / MAP
-    /// UNREADABLE rules of #1042: those exist because a rider whose **map** is missing must not be
-    /// misled, and a missing terrain file takes nothing away that was ever there.
-    ///
-    /// **A set answers from its manifest** (EL4, #1072). The `terrain` role's presence decides
-    /// whether the set has a raster at all, and its `Bytes` is checked against the file — because
-    /// `MS<id>.OBD` may well exist on a card without belonging to the set that is mounted, as the
-    /// leftover of one it replaced (§5.4's orphan rule). The derived name is the same one either
-    /// way: `MS<id>.OBD` is exactly the sidecar of `MS<id>.OBS`, so the role lookup adds the
-    /// manifest's judgement without changing which file is opened.
-    #[cfg(has_nav)]
-    #[inline(never)]
-    pub fn open_terrain(&mut self) -> Option<&'static dyn ByteSource> {
-        // What the manifest says about a mounted set, and `None` (no terrain) when it says nothing.
-        let recorded = match &self.open_set {
-            Some(set) if self.open_map_name.is_none() => Some(set.terrain_bytes?),
-            _ => None,
-        };
-        let map_name =
-            self.open_map_name.clone().or_else(|| self.open_set.as_ref().map(|s| s.manifest_name.clone()))?;
-        let name = sidecar_name(&map_name)?;
-        let (entry_block, entry_offset, entry_len) = self.find_root_entry(&name)?;
-        if let Some(recorded) = recorded {
-            if entry_len != recorded {
-                defmt::warn!(
-                    "SD: terrain {} is {=u32} B but the manifest records {=u32} — routes stay flat",
-                    defmt::Debug2Format(&name),
-                    entry_len,
-                    recorded
-                );
-                return None;
-            }
-        }
-        let Ok(file) = self.vmgr.open_file_in_dir(self.root, &name, Mode::ReadOnly) else {
-            defmt::warn!("SD: terrain {} will not open — routes stay flat", defmt::Debug2Format(&name));
-            return None;
-        };
-        let len = self.vmgr.file_length(file).unwrap_or(0);
-        if len == 0 || len != entry_len {
-            let _ = self.vmgr.close_file(file);
-            return None;
-        }
-        let Ok(table) = SetExtentTable::build(self.card, entry_block, entry_offset, len) else {
-            defmt::warn!("SD: terrain {} will not extent-map — routes stay flat", defmt::Debug2Format(&name));
-            let _ = self.vmgr.close_file(file);
-            return None;
-        };
-        // SAFETY: boot calls this once, after `open_map`; both slots are written exactly once and
-        // the retained handle pins the chain the table describes for the session.
-        let (table, source) = unsafe {
-            let table = crate::init_static(core::ptr::addr_of_mut!(TERRAIN_EXTENTS), table);
-            let source =
-                crate::init_static(core::ptr::addr_of_mut!(TERRAIN_SOURCE), SetExtentSource::new(self.card, table));
-            (&*table, &*source)
-        };
-        if !self.verify_extents(table, file, len) {
-            defmt::warn!("SD: terrain {} failed extent verification — routes stay flat", defmt::Debug2Format(&name));
-            let _ = self.vmgr.close_file(file);
-            return None;
-        }
-        defmt::info!(
-            "SD: terrain {} mounted ({=u32} B, {=usize} extent(s))",
-            defmt::Debug2Format(&name),
-            len,
-            table.extent_count()
-        );
-        self.open_terrain = Some((file, len));
-        Some(source)
-    }
-
-    /// Open every shard of one validated volume set, resolve one resident extent table/source per
-    /// file, and retain every FAT handle for the session. No seek-path fallback is admitted for a
-    /// set: the renderer fans out across files, so one fragmented shard must not quietly reinsert
-    /// FAT walks into the hot dispatch path.
-    #[inline(never)]
-    fn open_volume_set(&mut self, chosen: &MapSummary) -> Option<u32> {
-        let id = chosen.id?;
-        let parsed = self.read_set_manifest(&chosen.file)?;
-        if parsed.shard_count() > SD_SET_MAX_SHARDS
-            || parsed.obcm_version != chosen.obcm_version
-            || set_identity_from_manifest(&parsed).bbox != chosen.bbox
-        {
-            return None;
-        }
-
-        let mut opened: Vec<OpenSetShard, SD_SET_MAX_SHARDS> = Vec::new();
-        for (index, record) in parsed.shards().iter().enumerate() {
-            let Some(name) = set_shard_name_for(id, index) else {
-                self.close_set_shards(&mut opened);
-                return None;
-            };
-            let Some((entry_block, entry_offset, entry_len)) = self.find_root_entry(&name) else {
-                self.close_set_shards(&mut opened);
-                return None;
-            };
-            let Ok(file) = self.vmgr.open_file_in_dir(self.root, &name, Mode::ReadOnly) else {
-                self.close_set_shards(&mut opened);
-                return None;
-            };
-            let len = self.vmgr.file_length(file).unwrap_or(0);
-            if len != record.bytes || entry_len != len {
-                let _ = self.vmgr.close_file(file);
-                self.close_set_shards(&mut opened);
-                return None;
-            }
-            let table = match SetExtentTable::build(self.card, entry_block, entry_offset, len) {
-                Ok(table) => table,
-                Err(error) => {
-                    defmt::warn!(
-                        "SD: set shard {} extent table unavailable ({}) — refusing the set",
-                        defmt::Debug2Format(&name),
-                        defmt::Debug2Format(&error)
-                    );
-                    let _ = self.vmgr.close_file(file);
-                    self.close_set_shards(&mut opened);
-                    return None;
-                }
-            };
-            // SAFETY: boot calls `open_map` once; every index addresses a distinct static slot,
-            // written exactly once before any reference escapes. The retained handle pins the FAT
-            // chain for the lifetime of both references.
-            let (table, source) = unsafe {
-                let table_slots =
-                    core::ptr::addr_of_mut!(EXTENT_SLOTS.set).cast::<core::mem::MaybeUninit<SetExtentTable>>();
-                let table = crate::init_static(table_slots.add(index), table);
-                let source_slots =
-                    core::ptr::addr_of_mut!(SET_SOURCES).cast::<core::mem::MaybeUninit<SetExtentSource<'static>>>();
-                let source = crate::init_static(source_slots.add(index), SetExtentSource::new(self.card, table));
-                (&*table, &*source)
-            };
-            if !self.verify_extents(table, file, len) {
-                defmt::warn!(
-                    "SD: set shard {} extent table failed verification — refusing the set",
-                    defmt::Debug2Format(&name)
-                );
-                let _ = self.vmgr.close_file(file);
-                self.close_set_shards(&mut opened);
-                return None;
-            }
-            // The manifest was capped before the loop, so the store has one slot for every source.
-            if let Err(shard) = opened.push(OpenSetShard { file, len, source }) {
-                let _ = self.vmgr.close_file(shard.file);
-                self.close_set_shards(&mut opened);
-                return None;
-            }
-        }
-
-        let core_index = parsed.core_shard();
-        let Some(core_len) = opened.get(core_index).map(|shard| shard.len) else {
-            self.close_set_shards(&mut opened);
-            return None;
-        };
-        self.map_name = chosen.name.clone();
-        defmt::info!(
-            "SD: mounting set {} ({=usize} shards, {=u64} B)",
-            defmt::Debug2Format(&chosen.file),
-            parsed.shard_count(),
-            parsed.total_bytes()
-        );
-        self.open_set = Some(OpenSet {
-            id,
-            manifest_name: chosen.file.clone(),
-            core_index: core_index as u8,
-            shards: opened,
-            terrain_bytes: parsed.terrain().map(|record| record.bytes),
-        });
-        Some(core_len)
-    }
-
-    fn close_set_shards(&self, shards: &mut Vec<OpenSetShard, SD_SET_MAX_SHARDS>) {
-        while let Some(shard) = shards.pop() {
-            let _ = self.vmgr.close_file(shard.file);
-        }
-    }
-
-    /// Mount the already-open set into the caller-placed reader store. The manifest and source-ref
-    /// vector live only in this synchronous frame and are gone before `main` reaches another
-    /// `.await`; [`obc_reader::MountedSet`] retains only the compact metadata it needs afterwards.
-    #[inline(never)]
-    pub(crate) fn mount_set(
-        &self,
-        store: &'static mut SetShardStore,
-        tables: &'static obc_reader::MapTables,
-        cache: &'static obc_reader::MapCache,
-    ) -> Result<Option<obc_reader::MountedSet<'static>>, DeviceMountError> {
-        let Some(open) = &self.open_set else { return Ok(None) };
-        let manifest = self.read_set_manifest(&open.manifest_name).ok_or(DeviceMountError::Manifest)?;
-        if manifest.core_shard() != open.core_index as usize {
-            return Err(DeviceMountError::Manifest);
-        }
-        let mut sources: Vec<&'static dyn ByteSource, SD_SET_MAX_SHARDS> = Vec::new();
-        for shard in &open.shards {
-            sources.push(shard.source as &dyn ByteSource).map_err(|_| DeviceMountError::Sources)?;
-        }
-        obc_reader::MountedSet::mount(store, &manifest, sources.as_slice(), tables, cache)
-            .map(Some)
-            .map_err(DeviceMountError::Reader)
-    }
-
     /// Which boot fault to put on glass when [`map_source`](Storage::map_source) hands out nothing.
     ///
     /// **NO MAP** unless [`open_map`](Storage::open_map) found a map-named file and could not stream
@@ -2274,15 +1965,8 @@ impl Storage {
     /// closing the handles simply returns their file slots and prevents a replacement upload from
     /// competing with the unreadable map it is replacing.
     pub fn prepare_map_recovery(&mut self) {
-        #[cfg(has_nav)]
-        if let Some((file, _)) = self.open_terrain.take() {
-            let _ = self.vmgr.close_file(file);
-        }
         if let Some((file, _)) = self.open_map.take() {
             let _ = self.vmgr.close_file(file);
-        }
-        if let Some(mut set) = self.open_set.take() {
-            self.close_set_shards(&mut set.shards);
         }
         self.open_map_name = None;
         self.map_extents = None;
@@ -2416,7 +2100,7 @@ impl Storage {
             ));
         });
         for (file, name, entry_block, entry_offset, byte_len, manifest) in entries {
-            let (id, shards, name, byte_len, obcm_version, bbox) = if manifest {
+            let (id, shards, name, byte_len, obcm_version) = if manifest {
                 let Some(id) = set_manifest_id(&file) else {
                     unlistable += 1;
                     continue;
@@ -2431,36 +2115,19 @@ impl Storage {
                 };
                 // The manifest carries a real display name; the 8.3 stem (`MS7`) is the fallback.
                 let display = if set.name.is_empty() { name } else { set.name };
-                (
-                    Some(id),
-                    Some(set.shard_count),
-                    display,
-                    set.total_bytes + byte_len as u64,
-                    set.obcm_version,
-                    set.bbox,
-                )
+                (Some(id), Some(set.shard_count), display, set.total_bytes + byte_len as u64, set.obcm_version)
             } else {
-                let Some((obcm_version, bbox)) = self.map_identity(&file) else {
+                let Some(obcm_version) = self.map_identity(&file) else {
                     unlistable += 1;
                     continue;
                 };
-                (uploaded_map_id(&file), None, name, byte_len as u64, obcm_version, bbox)
+                (uploaded_map_id(&file), None, name, byte_len as u64, obcm_version)
             };
             let selected = selected
                 .as_ref()
                 .is_some_and(|s| file.base_name() == s.base_name() && file.extension() == s.extension());
-            let entry = MapSummary {
-                id,
-                file,
-                shards,
-                name,
-                byte_len,
-                obcm_version,
-                bbox,
-                selected,
-                entry_block,
-                entry_offset,
-            };
+            let entry =
+                MapSummary { id, file, shards, name, byte_len, obcm_version, selected, entry_block, entry_offset };
             if out.push(entry).is_err() {
                 defmt::warn!("SD: more than {=usize} maps on the card — the rest are not listed", MAX_MAPS);
                 break;
@@ -2491,15 +2158,10 @@ impl Storage {
     #[inline(never)]
     fn set_identity(&self, manifest: &ShortFileName, id: u16) -> Option<SetIdentity> {
         let parsed = self.read_set_manifest(manifest)?;
-        // A mounted set already owns one open handle per shard, and embedded-sdmmc deliberately
-        // refuses opening the same file twice. Its manifest and every recorded size/header/bbox
-        // were validated immediately before those handles were retained, so later catalog scans
-        // may re-parse the small manifest but must not try to reopen its pinned shard files.
-        if self.open_set.as_ref().is_some_and(|open| open.id == id && &open.manifest_name == manifest) {
-            return Some(set_identity_from_manifest(&parsed));
-        }
         // Listed, not hidden — it is a real map on the card and the rider must be able to see it —
-        // but say now why it will never load, rather than at the failed open of shard 12.
+        // but say now why it will never load. Since FS7.5-c2 nothing mounts a set at all
+        // (`open_map` refuses one outright); this ceiling is the *upload* accept rule, which is
+        // still live until the transports cut over in c3.
         if parsed.shard_count() > SD_SET_MAX_SHARDS {
             defmt::warn!(
                 "SD: volume set {} names {=usize} shards; this board mounts at most {=usize} (OBCA §5.2 allows 32)",
@@ -2644,10 +2306,6 @@ impl Storage {
     ///
     /// Returns how many files were reclaimed.
     fn delete_set(&mut self, id: u16) -> usize {
-        if self.open_set.as_ref().is_some_and(|set| set.id == id) {
-            defmt::warn!("SD: refusing to delete mounted volume set MS{=u16}", id);
-            return 0;
-        }
         let Some(plan) = obc_formats::obcs::delete_plan(id) else {
             defmt::warn!("SD: volume set {=u16} has no derived 8.3 names — nothing to delete", id);
             return 0;
@@ -2680,9 +2338,14 @@ impl Storage {
         removed
     }
 
-    /// One map's `(obcm_version, bbox)` from its 40-byte header, or `None` when the file is shorter
-    /// than a header, unreadable, or doesn't carry the `OBCM` magic (a torn upload, or clutter that
-    /// happens to sit on an `.OBM`/`.obcm` name).
+    /// One map's OBCM version from its 40-byte header, or `None` when the file is shorter than a
+    /// header, unreadable, or doesn't carry the `OBCM` magic (a torn upload, or clutter that happens
+    /// to sit on an `.OBM`/`.obcm` name).
+    ///
+    /// It used to return the header bbox too — the map's footprint, for coverage checks that were
+    /// never written. The one consumer was `open_volume_set`, which compared it against the
+    /// manifest's assembly bbox before mounting; that mount is gone (FS7.5-c2, #1420), and a field
+    /// no code reads is not a catalog, it is a header read nobody looks at.
     ///
     /// The **version is returned, not checked**: a map built for another OBCM version is still a map
     /// and still belongs in the catalog — the consumer decides. Only the magic gates membership.
@@ -2690,7 +2353,7 @@ impl Storage {
     /// The currently-open map is read **through its existing handle**: embedded-sdmmc refuses every
     /// second open of an open file (`FileAlreadyOpen`), which would otherwise drop the loaded map out
     /// of its own catalog — the same trap `route_object_info` documents (issue #480).
-    fn map_identity(&self, name: &ShortFileName) -> Option<(u8, BBox)> {
+    fn map_identity(&self, name: &ShortFileName) -> Option<u8> {
         let mut header = [0u8; obc_formats::obcm::HEADER_LEN];
         let read_through = |src: &dyn ByteSource, header: &mut [u8; obc_formats::obcm::HEADER_LEN]| {
             (src.len() as usize >= header.len()) && src.read_at(0, header).is_ok()
@@ -2710,17 +2373,13 @@ impl Storage {
         if !ok || header[0..4] != obc_formats::obcm::MAGIC {
             return None;
         }
-        let rd = |o: usize| i32::from_le_bytes([header[o], header[o + 1], header[o + 2], header[o + 3]]);
-        // Header field order is lat, lon, lat, lon (OBCM_Spec.md §1) — not the order bbox code expects.
-        let bbox = BBox { min_lat: rd(5), min_lon: rd(9), max_lat: rd(13), max_lon: rd(17) };
-        Some((header[4], bbox))
+        Some(header[4])
     }
 
     /// Whether `name` is the map file currently held open — the guard that routes
     /// [`map_identity`](Self::map_identity) through the live handle instead of a refused second open.
     fn map_file_is(&self, name: &ShortFileName) -> bool {
-        (self.open_map.is_some() && self.open_map_name.as_ref() == Some(name))
-            || self.open_set.as_ref().is_some_and(|set| &set.manifest_name == name)
+        self.open_map.is_some() && self.open_map_name.as_ref() == Some(name)
     }
 
     /// The card's recorded map selection ([`MAP_SELECTED`]), or `None` for absent / torn / a name
@@ -2829,15 +2488,12 @@ impl Storage {
         self.map_extents = None;
         match ExtentTable::build(self.card, entry_block, entry_offset, len) {
             Ok(table) => {
-                // Into the union's `.bss` slot before it can be captured anywhere by value (see
-                // `EXTENT_SLOTS`). SAFETY: `open_map` makes one map-kind choice once per boot, so
-                // this is the sole write to the union and no set-slot reference can exist. It must
-                // never be overwritten after the `'static` reference escapes.
-                let table: &'static ExtentTable = unsafe {
-                    let table_slot =
-                        core::ptr::addr_of_mut!(EXTENT_SLOTS.map).cast::<core::mem::MaybeUninit<ExtentTable>>();
-                    crate::init_static(table_slot, table)
-                };
+                // Into the `.bss` slot before it can be captured anywhere by value (see
+                // `MAP_EXTENTS`). SAFETY: `open_map` opens one map once per boot, so this is the
+                // sole write to the slot; it must never be overwritten after the `'static`
+                // reference escapes.
+                let table: &'static ExtentTable =
+                    unsafe { crate::init_static(core::ptr::addr_of_mut!(MAP_EXTENTS), table) };
                 if self.verify_extents(table, file, len) {
                     defmt::info!(
                         "SD: map is {=usize} extent(s) over {=u32} bytes — direct block reads on",
@@ -2860,9 +2516,14 @@ impl Storage {
     /// window at the head and at the tail through **both** paths must agree byte-for-byte. Cheap
     /// (one-time, four short reads), and it turns any geometry slip into a loud fallback instead
     /// of wrong map bytes.
-    fn verify_extents<const N: usize>(&self, table: &ExtentTableWithCapacity<N>, file: RawFile, len: u32) -> bool {
+    ///
+    /// It was generic over the table's capacity while a mounted set had eleven 64-run tables beside
+    /// the map's 128-run one. One map, one table, one capacity (FS7.5-c2): the parameter had exactly
+    /// one instantiation left. `ExtentTableWithCapacity`'s own const generic is now in the same
+    /// position one layer down — noted for FS11, which is where `fat_extents` is scheduled to go.
+    fn verify_extents(&self, table: &ExtentTable, file: RawFile, len: u32) -> bool {
         let slow = Source::new(&self.vmgr, file, len);
-        let fast = ExtentSourceWithCapacity::new(self.card, table);
+        let fast = ExtentSource::new(self.card, table);
         let mut a = [0u8; 64];
         let mut b = [0u8; 64];
         for off in [0, len.saturating_sub(a.len() as u32)] {
@@ -2882,14 +2543,28 @@ impl Storage {
     /// route/track operations. Extent-mapped direct block reads when the table built (#500), the
     /// manager's seek path otherwise.
     pub fn map_source(&self) -> Option<MapSource<'_>> {
-        if let Some(set) = &self.open_set {
-            let core = set.shards.get(set.core_index as usize)?;
-            return Some(MapSource::Set(core.source));
-        }
         let (f, len) = self.open_map?;
         Some(match self.map_extents {
             Some(table) => MapSource::Extent(ExtentSource::new(self.card, table)),
             None => MapSource::Seek(SdByteSource::new(&self.vmgr, f, len)),
+        })
+    }
+
+    /// A **`'static`** [`ByteSource`](obc_formats::io::ByteSource) over the open map, or `None` when
+    /// the map reads through the FAT-seek path — see [`MAP_STATIC_SOURCE`] for why the seek path is
+    /// not offered and why this exists beside [`map_source`](Self::map_source).
+    ///
+    /// Call **once**, at boot, after [`open_map`](Self::open_map). The slot is written once per boot
+    /// and the reference handed out is the only one; a second call would overwrite bytes a live
+    /// `&'static` is reading.
+    #[cfg(has_nav)]
+    pub fn static_map_source(&self) -> Option<&'static dyn ByteSource> {
+        let table = self.map_extents?;
+        // SAFETY: the one call site is `main`'s boot path, before anything is spawned. The retained
+        // map handle pins the FAT chain `table` describes for the session, and `ExtentSource` owns
+        // nothing to drop.
+        Some(unsafe {
+            crate::init_static(core::ptr::addr_of_mut!(MAP_STATIC_SOURCE), ExtentSource::new(self.card, table))
         })
     }
 
@@ -4986,20 +4661,6 @@ pub fn set_manifest_id(name: &ShortFileName) -> Option<u16> {
     obc_formats::obcs::parse_manifest_name(&short_name_bytes(name))
 }
 
-/// The terrain sidecar's 8.3 name for a map file: the map's base name with [`TERRAIN_EXT`]
-/// (`GRIMSEL.OBM` → `GRIMSEL.OBD`, `MS7.OBS` → `MS7.OBD`). Derived, never stored — the same rule
-/// as a set's shard names, and the reason a rider can rename a map without breaking its terrain.
-#[cfg(has_nav)]
-fn sidecar_name(map: &ShortFileName) -> Option<ShortFileName> {
-    let mut text: String<16> = String::new();
-    for &b in map.base_name().iter().take_while(|&&b| b != b' ') {
-        text.push(b as char).ok()?;
-    }
-    text.push('.').ok()?;
-    text.push_str(TERRAIN_EXT).ok()?;
-    ShortFileName::create_from_str(text.as_str()).ok()
-}
-
 /// The 8.3 name of shard `index` of set `id`. Filenames are **derived, not stored** (§5.2): a
 /// stored name is a second source of truth that can disagree with the directory.
 fn set_shard_name_for(id: u16, index: usize) -> Option<ShortFileName> {
@@ -5052,12 +4713,6 @@ fn set_identity_from_manifest(parsed: &obc_formats::obcs::SetManifest) -> SetIde
     SetIdentity {
         shard_count: parsed.shard_count() as u8,
         obcm_version: parsed.obcm_version,
-        bbox: BBox {
-            min_lat: parsed.bbox.min_lat,
-            min_lon: parsed.bbox.min_lon,
-            max_lat: parsed.bbox.max_lat,
-            max_lon: parsed.bbox.max_lon,
-        },
         total_bytes: parsed.total_bytes(),
         name,
     }
@@ -5066,17 +4721,20 @@ fn set_identity_from_manifest(parsed: &obc_formats::obcs::SetManifest) -> SetIde
 /// The scanned catalog as the host-tested classifiers want it — one [`obc_app::MapChoice`] per map,
 /// in scan order, so an index into this is an index into `maps`.
 ///
-/// A set is readable when its OBCM version matches and its shard count fits this board's retained
-/// handle/store ceiling. The scan has already validated manifest presence, sizes, headers and
-/// bboxes; the boot mount adds ladder/style/extent checks before rendering a pixel.
+/// **A volume set is never readable** since FS7.5-c2 (#1420): the reader mounts one OBCM file, so a
+/// manifest names a shape this firmware has no way to open. It is still *listed* — the files are on
+/// the card, and `readable: false` is exactly what makes `obc_app::boot_fault` answer MAP
+/// UNREADABLE rather than sending a rider to look for a map that is right there.
+///
+/// A single map is readable when its OBCM version matches. The scan has already validated its
+/// header and bbox; `open_map` adds the extent checks before rendering a pixel.
 fn map_choices(maps: &[MapSummary]) -> Vec<obc_app::MapChoice, MAX_MAPS> {
     let mut choices: Vec<obc_app::MapChoice, MAX_MAPS> = Vec::new();
     for m in maps.iter().take(MAX_MAPS) {
         let _ = choices.push(obc_app::MapChoice {
             selected: m.selected,
             uploaded_id: m.id,
-            readable: m.obcm_version == obc_formats::obcm::VERSION
-                && m.shards.is_none_or(|count| count as usize <= SD_SET_MAX_SHARDS),
+            readable: m.obcm_version == obc_formats::obcm::VERSION && m.shards.is_none(),
             set: m.shards.is_some(),
         });
     }

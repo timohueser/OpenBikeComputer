@@ -194,7 +194,13 @@ static mut FLAT_STORE: MaybeUninit<FlatStore<FlatCard>> = MaybeUninit::uninit();
 /// The recording caller's 32,256-byte ride tail (§7.1) is **not** here — no ride records to the flat
 /// store until c3, and a budget row for a buffer nothing allocates would be a lie in the other
 /// direction. It joins this sum in the slice that starts recording.
-pub(crate) const RESIDENT_BYTES: usize = core::mem::size_of::<FlatStore<FlatCard>>() + REQUEST_QUEUE_BYTES;
+pub(crate) const RESIDENT_BYTES: usize =
+    core::mem::size_of::<FlatStore<FlatCard>>() + REQUEST_QUEUE_BYTES + MAP_SOURCE_BYTES;
+
+/// The session-long map source's slot (FS7.5-c2) — see [`MAP_SOURCE`]. Named rather than folded
+/// into the line above because it is the read cutover's whole resident cost on this arm, and a
+/// reader comparing it against the 20,732 B the set tables gave back should be able to find it.
+pub(crate) const MAP_SOURCE_BYTES: usize = core::mem::size_of::<obc_storage::flat::StoreSource<'static, FlatCard>>();
 
 /// The store is the free bitmap plus its rows; if that ever stops being true the budget note above
 /// is wrong before anything else notices.
@@ -627,12 +633,93 @@ pub(crate) fn report(store: &FlatStore<FlatCard>, mount_us: u64) -> Catalog {
     Catalog { maps: usize::from(maps), listing_complete }
 }
 
-/// The metadata of the first object of `kind`, or `None`. The one read helper c1 needs: the
-/// interleave exercise picks a victim to read while a commit runs, and c2's cutover will resolve the
-/// map the same way.
-#[cfg_attr(not(feature = "flat-exercise"), allow(dead_code))]
+/// The metadata of the first object of `kind`, or `None`. The one catalog helper the read path
+/// needs: [`open_map`] resolves the map with it, and the interleave exercise picks a victim to read
+/// while a commit runs.
 pub(crate) fn first_of(store: &FlatStore<FlatCard>, kind: ObjectKind) -> Option<EntryMeta> {
     store.entries().find(|entry| entry.kind == kind)
+}
+
+// ══════════════════════════ the map, as bytes ══════════════════════════
+
+/// The session-long source over the mounted card's map object.
+///
+/// `.bss`, and **session-long by construction**: `flat::source`'s two shapes are a scoped
+/// `with_source` and a `StoreSource` released by hand, and a map that is read from boot to power-off
+/// across a hundred `await`s cannot be a scope. So this is the second shape, and the hold row it
+/// spends is never given back — which is correct rather than a leak: §6.2's row is what keeps the
+/// revision the renderer is drawing from alive while an upload commits over it, and this image has
+/// no state in which the map stops being needed.
+static mut MAP_SOURCE: MaybeUninit<obc_storage::flat::StoreSource<'static, FlatCard>> = MaybeUninit::uninit();
+
+/// The open map's §9 display name, truncated to what the System-settings row shows.
+///
+/// Captured in [`open_map`] because the alternative is a **second catalog walk** — at 1,027 entries
+/// that is ~69 read commands and a tenth of a second, for a string. Same reasoning as
+/// [`boot_fault_for`]'s: one walk, both consumers.
+static mut MAP_NAME: heapless::String<24> = heapless::String::new();
+
+/// The open map's display name, or `""` before [`open_map`] has run / on a card with no map.
+pub(crate) fn map_name() -> &'static str {
+    // SAFETY: written once by `open_map` before anything is spawned; read-only afterwards.
+    unsafe { (*core::ptr::addr_of!(MAP_NAME)).as_str() }
+}
+
+/// **Open the card's map object and hand back a `'static` [`ByteSource`] over it** — the read
+/// cutover's one new boot step (FS7.5-c2, #1420).
+///
+/// `None` when the catalog holds no map object at all, which is the flat twin of a FAT card with no
+/// `.obcm` in the root: `flat_boot_fault` then says NO MAP, and it is the *only* input that makes it
+/// say so. Everything else — an object that will not open, a map whose header will not parse — is
+/// MAP UNREADABLE, decided further up exactly as it is on the FAT arm.
+///
+/// **The first map object wins, and there is deliberately no selection rule yet.** The FAT arm has
+/// one (`MAP.SEL`, then the newest upload, then anything readable) because a FAT card accumulates
+/// maps; nothing writes a second map to a flat store until c3's transports exist, so a rule here
+/// would be a policy with no case to decide. c3 brings the objects and the rule together.
+///
+/// `#[inline(never)]` for the reason every constructor on this boot path is: a `StoreSource` built
+/// by value inside the boot task's async block is a permanent slot in that task's poll frame
+/// (#1084/#1108). It is small — the store reference, a hold row token and a length — but the rule is
+/// about *where a value is built*, not how big it is, and the next thing to grow this type would do
+/// it silently.
+#[inline(never)]
+pub(crate) fn open_map(store: &'static FlatStore<FlatCard>) -> Option<&'static dyn obc_formats::io::ByteSource> {
+    let meta = first_of(store, ObjectKind::MapShard)?;
+    match store.source(meta.id, None) {
+        Ok(source) => {
+            defmt::info!(
+                "flat: map object {=u64} revision {=u64} open — {=u64} B, read direct (no channel)",
+                meta.id.0,
+                meta.revision.0,
+                meta.payload_len,
+            );
+            // SAFETY: sole writer of MAP_NAME; same once-per-boot argument as MAP_SOURCE below.
+            unsafe {
+                let name = &mut *core::ptr::addr_of_mut!(MAP_NAME);
+                name.clear();
+                for ch in meta.name.as_str().unwrap_or("").chars() {
+                    if name.push(ch).is_err() {
+                        break;
+                    }
+                }
+            }
+            // SAFETY: sole writer of MAP_SOURCE; `open_map` runs once per boot on the one
+            // thread-mode executor, before any task that could hold a reference exists. The write is
+            // unconditional (no `StaticCell` one-shot flag a warm reset could find set), and the
+            // `&'static` handed out is the only reference. `StoreSource`'s `Drop` is a
+            // `debug_assert` that never runs here: the value is never dropped.
+            Some(unsafe { crate::init_static(core::ptr::addr_of_mut!(MAP_SOURCE), source) })
+        }
+        Err(error) => {
+            defmt::error!(
+                "flat: the catalog names map object {=u64} and it will not open ({}) — MAP UNREADABLE",
+                meta.id.0,
+                defmt::Debug2Format(&error)
+            );
+            None
+        }
+    }
 }
 
 // ══════════════════════ the on-glass interleave exercise ══════════════════════
