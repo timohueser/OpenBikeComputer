@@ -1,7 +1,6 @@
 import Foundation
 
-/// The (device serial, store epoch) pair every id-keyed library fact is scoped
-/// by (protocol v2, #632 item 5 / #769).
+/// The device and store identity every id-keyed library fact is scoped by.
 ///
 /// Device object ids are durable only *within* an id era: an RRAM loss (full
 /// reflash, factory reset, torn id-marks line) reopens the id space, and two
@@ -18,10 +17,20 @@ public struct LibraryScope: Hashable, Sendable {
     public let serial: String
     /// The device's store-epoch nonce at the time the scope was read.
     public let epoch: UInt32
+    /// Protocol-v4's exact 128-bit `StoreId`, rendered as canonical lowercase hex. `nil` for a
+    /// persisted v2 epoch scope.
+    public let storeID: String?
 
     public init(serial: String, epoch: UInt32) {
         self.serial = serial
         self.epoch = epoch
+        self.storeID = nil
+    }
+
+    public init(serial: String, storeID: String) {
+        self.serial = serial
+        self.epoch = 0
+        self.storeID = storeID
     }
 }
 
@@ -41,24 +50,43 @@ public struct DeviceRouteLink: Hashable, Sendable {
     public let serial: String
     /// That device's store epoch at commit time.
     public let epoch: UInt32
+    public let storeID: String?
     /// The device object id the route is stored under (spec §4.1).
     public let objectID: DeviceObjectID
 
     public init(serial: String, epoch: UInt32, objectID: DeviceObjectID) {
         self.serial = serial
         self.epoch = epoch
+        self.storeID = nil
+        self.objectID = objectID
+    }
+
+    public init(serial: String, storeID: String, objectID: DeviceObjectID) {
+        self.serial = serial
+        self.epoch = 0
+        self.storeID = storeID
+        self.objectID = objectID
+    }
+
+    public init(scope: LibraryScope, objectID: DeviceObjectID) {
+        self.serial = scope.serial
+        self.epoch = scope.epoch
+        self.storeID = scope.storeID
         self.objectID = objectID
     }
 
     /// The scope half of the link.
-    public var scope: LibraryScope { LibraryScope(serial: serial, epoch: epoch) }
+    public var scope: LibraryScope {
+        if let storeID { return LibraryScope(serial: serial, storeID: storeID) }
+        return LibraryScope(serial: serial, epoch: epoch)
+    }
 
     /// The validity predicate (#769): the link speaks for the connected device
     /// only when **all** of serial and epoch match its current identity — a
     /// link minted on another device, or in a previous era of this one, is
     /// silent (no badge, no replace-by-id; V6 consumes this for both).
     public func matches(_ scope: LibraryScope) -> Bool {
-        serial == scope.serial && epoch == scope.epoch
+        serial == scope.serial && self.scope == scope
     }
 }
 
@@ -68,7 +96,9 @@ extension DeviceInfo {
     /// deliberately never defaulted) or an empty DIS serial. `nil` is the
     /// fail-closed input: no scope, no `ackRides`, no reconcile writes (#769).
     public var libraryScope: LibraryScope? {
-        guard let storeEpoch, !serial.isEmpty else { return nil }
+        guard !serial.isEmpty else { return nil }
+        if let storeID { return LibraryScope(serial: serial, storeID: storeID) }
+        guard let storeEpoch else { return nil }
         return LibraryScope(serial: serial, epoch: storeEpoch)
     }
 }

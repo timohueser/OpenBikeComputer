@@ -2,6 +2,7 @@
 # obc — thin wrapper around `just` for OpenBikeComputer dev tasks.
 # Runs the repo's justfile from wherever you are (so relative MAP/GPX paths still
 # resolve against your current directory). Try `obc` with no args for the task list.
+# Test levels, suite cadence, and proportional verification are defined in docs/testing.md.
 set -euo pipefail
 
 # Resolve this script's real directory, following symlinks (e.g. ~/.local/bin/obc).

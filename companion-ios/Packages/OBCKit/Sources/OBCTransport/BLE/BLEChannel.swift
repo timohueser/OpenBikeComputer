@@ -1,23 +1,15 @@
 import Foundation
+import OBCProtocolV4
 import OBCDomain
 
-/// The byte layer (Tier 2). Moves an object's **raw payload bytes** over a
-/// `ByteChannel` (the L2CAP CoC on the real path). There is **no per-chunk wire
-/// framing** — the transfer's metadata + whole-object CRC ride on the control plane
-/// (`TransferControl`/`StatusMessage` over GATT), so the MCU can sink bytes straight
-/// to flash and CRC them in one pass, with no reassembly buffer.
-///
-/// Chunking here is purely **write / progress granularity** (aligned to the CoC
-/// PDU), not framing. Interrupted transfers are not resumed at this layer — they
-/// restart whole (spec §1 principle 4) — so both directions are plain one-shot
-/// async calls, cancelable via task cancellation. `MockTransport` bypasses this
-/// entirely.
+/// The physical protocol-v4 stream channel over the L2CAP CoC. Each write is one complete
+/// `StreamRecord`; reads reassemble that same record from CoreBluetooth's partial `InputStream`
+/// delivery. Announce/result correlation and recovery live in `TransferClient`, not here.
 public struct BLEChannel: Sendable {
     private let channel: any ByteChannel
     private let chunkSize: Int
 
-    /// One CoC SDU on a 2M-PHY + DLE link (251-byte PDU − L2CAP header) — the write
-    /// and progress granularity. `OBCProtocol.md` → *Data plane*.
+    /// One CoC SDU on a 2M-PHY + DLE link (251-byte PDU − L2CAP header).
     public static let defaultChunkSize = 244
 
     public init(channel: any ByteChannel, chunkSize: Int = BLEChannel.defaultChunkSize) {
@@ -25,10 +17,47 @@ public struct BLEChannel: Sendable {
         self.chunkSize = max(1, chunkSize)
     }
 
-    /// Stream the whole object as raw bytes (app → device). The caller has already
-    /// announced the transfer (`TransferControl`, incl. the whole-object CRC) on the
-    /// control plane and awaits the device's closing `transferResult` afterwards —
-    /// returning from here only means every byte was handed to the channel.
+    /// Maximum protocol payload that leaves the 16-byte v4 stream header inside one CoC SDU.
+    public var maximumRecordPayload: Int { max(0, chunkSize - FlatStoreV4.streamHeaderLength) }
+
+    /// One complete protocol-v4 stream record in one CoC SDU.
+    public func sendRecord(_ record: Data) async throws {
+        guard record.count <= chunkSize else { throw DeviceError.transferRejected }
+        _ = try StreamRecord(decoding: record)
+        try await channel.write(record)
+    }
+
+    /// Reassembles one protocol-v4 stream record from CoreBluetooth's byte-stream presentation of
+    /// the CoC. The wire still carries exactly one record per SDU; this loop only handles partial
+    /// `InputStream` reads.
+    public func receiveRecord() async throws -> Data {
+        let header = try await readExactly(FlatStoreV4.streamHeaderLength)
+        let b = header.startIndex
+        let payloadLength = Int(header[b + 12]) | (Int(header[b + 13]) << 8)
+        guard payloadLength > 0, payloadLength <= maximumRecordPayload else {
+            throw DeviceError.transferRejected
+        }
+        let record = header + (try await readExactly(payloadLength))
+        _ = try StreamRecord(decoding: record)
+        return record
+    }
+
+    public func cancelReceive() {
+        channel.cancelRead()
+    }
+
+    private func readExactly(_ length: Int) async throws -> Data {
+        var out = Data(capacity: length)
+        while out.count < length {
+            let part = try await channel.read(maxLength: length - out.count)
+            if part.isEmpty { throw ChannelDropped() }
+            out.append(part)
+        }
+        return out
+    }
+
+    /// Legacy raw-byte seam retained for the in-package echo harness. The live companion path uses
+    /// `sendRecord(_:)` exclusively.
     /// Throws `ChannelDropped` on a dead link and `CancellationError` on cancel.
     public func send(
         _ object: Data, progress: @Sendable (TransferProgress) -> Void = { _ in }
@@ -43,9 +72,8 @@ public struct BLEChannel: Sendable {
         }
     }
 
-    /// Read `length` raw bytes (device → app), CRC-ing as they arrive and rejecting
-    /// on mismatch (`DeviceError.crcMismatch`) — the object is never committed on a
-    /// bad CRC. Throws `DeviceError.transferDropped` on EOF before `length`.
+    /// Legacy raw-byte seam retained for the in-package echo harness. The live companion path uses
+    /// `receiveRecord()` exclusively.
     public func receive(
         length: Int, expectedCRC: UInt32,
         progress: @Sendable (TransferProgress) -> Void = { _ in }

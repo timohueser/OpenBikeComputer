@@ -144,7 +144,7 @@ public struct RouteEntry: Sendable {
     public func record(addedAt: Date, scope: LibraryScope? = nil) -> PlannedRouteRecord {
         let link: DeviceRouteLink? =
             if let deviceObjectID, let scope {
-                DeviceRouteLink(serial: scope.serial, epoch: scope.epoch, objectID: deviceObjectID)
+                DeviceRouteLink(scope: scope, objectID: deviceObjectID)
             } else {
                 nil
             }

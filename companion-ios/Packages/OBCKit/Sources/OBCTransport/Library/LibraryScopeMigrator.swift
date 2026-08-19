@@ -58,7 +58,7 @@ public enum LibraryScopeMigrator {
         // Evidence: the connected device's listed object ids, with the start
         // time each id currently carries (first entry wins on a malformed
         // duplicate — ids are unique in a well-formed catalog).
-        var listedStart: [UInt16: Date] = [:]
+        var listedStart: [UInt64: Date] = [:]
         for ride in deviceRides {
             guard let objectID = ride.id.deviceObjectID else { continue }
             if listedStart[objectID.raw] == nil { listedStart[objectID.raw] = ride.date }

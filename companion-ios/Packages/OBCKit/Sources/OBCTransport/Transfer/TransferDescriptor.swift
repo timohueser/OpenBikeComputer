@@ -158,8 +158,8 @@ extension TransferControl {
         guard result.status == .committed,
               result.committedOffset == byteCount,
               let resultID = result.objectID else { return false }
-        if op == .download { return resultID.raw == objectID }
-        if op == .upload, objectID != Self.newObjectID { return resultID.raw == objectID }
+        if op == .download { return resultID.raw == UInt64(objectID) }
+        if op == .upload, objectID != Self.newObjectID { return resultID.raw == UInt64(objectID) }
         return op == .upload
     }
 }
@@ -213,7 +213,8 @@ public enum StatusMessage: Equatable, Sendable {
         switch self {
         case .transferResult(let r):
             data.append(1)
-            data.appendUInt16LE(r.objectID?.raw ?? TransferControl.newObjectID)
+            data.appendUInt16LE(
+                UInt16(truncatingIfNeeded: r.objectID?.raw ?? UInt64(TransferControl.newObjectID)))
             data.append(r.status.rawValue)
             data.appendUInt32LE(r.committedOffset)
         case .storeChanged(let s):

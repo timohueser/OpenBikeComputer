@@ -59,9 +59,9 @@ resolver = "2"
 embedded-sdmmc = { git = "https://github.com/timohueser/embedded-sdmmc-rs", branch = "cmd25-multiblock-write" }
 
 # The weather-bakery numeric suites (canonical mosaic, event-pack replay scoring) are
-# debug-hostile: unoptimized quantize/decode loops turned the CI `test` job from ~7 into
-# ~23 minutes (755 s for canonical_mosaic alone; 0.01 s optimized). Optimizing just these
-# packages' dev/test builds restores the budget without touching any test. `profile.test`
+# debug-hostile. Current durations come from test result artifacts; inspect the suite with
+# `python3 tools/suite_registry.py explain rust.obc-wx-bake`. Optimizing just these packages'
+# dev/test builds restores the budget without touching any test. `profile.test`
 # inherits these package overrides from `dev`.
 [profile.dev.package.obc-wx-bake]
 opt-level = 2
