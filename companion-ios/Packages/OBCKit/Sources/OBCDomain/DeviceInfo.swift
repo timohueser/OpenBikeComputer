@@ -32,6 +32,9 @@ public struct DeviceInfo: Equatable, Sendable {
     /// fabricated value. The (serial, epoch) library scoping that consumes it is
     /// V5 (#769); this field is the wire fact it stands on.
     public let storeEpoch: UInt32?
+    /// Protocol-v4 store identity learned from the mandatory first `LIST`, as 32 lowercase hex
+    /// digits. This replaces the v2 epoch for cache and library scoping.
+    public let storeID: String?
     /// The **OBCM map-format version** this device's firmware reads (the identity read's third
     /// field, E1 / #911) — `10` today. Not to be confused with `protocolVersion` beside it: that is
     /// the *wire* contract, a different number in a different sequence, and neither is derivable
@@ -71,6 +74,7 @@ public struct DeviceInfo: Equatable, Sendable {
         serial: String = "",
         protocolVersion: UInt16 = OBCProtocol.version,
         storeEpoch: UInt32? = nil,
+        storeID: String? = nil,
         obcmVersion: UInt8? = nil,
         featureBits: UInt32? = nil
     ) {
@@ -80,6 +84,7 @@ public struct DeviceInfo: Equatable, Sendable {
         self.serial = serial
         self.protocolVersion = protocolVersion
         self.storeEpoch = storeEpoch
+        self.storeID = storeID
         self.obcmVersion = obcmVersion
         self.featureBits = featureBits
     }

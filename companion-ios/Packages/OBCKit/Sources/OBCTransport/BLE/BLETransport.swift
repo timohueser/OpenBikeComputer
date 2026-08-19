@@ -2,6 +2,7 @@
 @preconcurrency import CoreBluetooth
 import Foundation
 import OBCDomain
+import OBCProtocolV4
 
 /// The **real** `DeviceTransport` (Tier 1 → CoreBluetooth). Scans for the OBC
 /// service, connects, discovers DIS/BAS/OBC Control, reads the PSM and opens the
@@ -14,11 +15,8 @@ import OBCDomain
 /// app's library ids never cross this boundary — the link between a library
 /// route and its device copy is the persisted `deviceObjectID`.
 ///
-/// Transfer discipline (spec §4.1/§4.2): **one transfer at a time** — every CoC
-/// exchange (upload or download) holds the transport's transfer slot, writes its
-/// descriptor only after the previous exchange's result landed, and treats the
-/// device's closing `transferResult` as the *only* success signal. Interrupted
-/// transfers **restart, not resume** (§1 principle 4).
+/// Protocol operation state lives in the one ``TransferClient``. This type supplies only the
+/// physical control-record inbox, CoC record channel, connection restoration, and BLE facts.
 ///
 /// All mutable state is confined to a single serial `queue` (the CoreBluetooth
 /// callback queue); async methods hop onto it and register continuations that the
@@ -39,29 +37,16 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     private let stateMulticast = AsyncMulticast<ConnectionState>(.disconnected)
     /// `nil` until the first real BAS value — the seed must not replay as "0%".
     private let batteryMulticast = AsyncMulticast<Int?>(nil)
-    /// `nil` seed = no replay: a `storeChanged` is an edge, not a state (the
-    /// `storeChanges` doc on the protocol) — only live movements fan out.
-    private let storeChangedMulticast = AsyncMulticast<StoreChanged?>(nil)
     private let weatherRequestMulticast = AsyncMulticast<WeatherRequestEvent?>(nil)
 
     private var peripheral: CBPeripheral?
     private var activeScanServices: Set<BLEDiscoveryIntentPolicy.Service> = []
     private var characteristics: [CBUUID: CBCharacteristic] = [:]
-    /// The `(serial, epoch)` identity of the connected device, cached from the
-    /// last successful `deviceInfo()` — what `listRides()` mints scoped
-    /// `RideID`s with (#769). `nil` before the first identity read of a
-    /// connection (and after a failed one): the catalog then mints legacy
-    /// unscoped ids, which every scope-gated write ignores — and in practice
-    /// the sync path can't reach `listRides()` in that state anyway, because
-    /// the model's fail-closed gate opens only after an identity read that
-    /// produced a scope. Cleared on disconnect: a reconnect may come back in a
-    /// **new era** (chip erase, factory reset while away), and a stale scope
-    /// must never key its catalog. Queue-confined like all mutable state.
-    private var lastLibraryScope: LibraryScope?
     /// The live CoC byte pipe (`nil` until opened, or after a teardown). The
     /// `BLEChannel` wrapper is rebuilt around it on every (re)open.
     private var byteChannel: L2CAPByteChannel?
     private var bleChannel: BLEChannel?
+    private lazy var transferClient = TransferClient(link: self)
     private var openingChannel = false
     private var channelWaiters: [CheckedContinuation<BLEChannel, Error>] = []
 
@@ -83,24 +68,6 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     /// instantly with no sheet). Once the read resolves, the watchdog re-arms
     /// at `phaseTimeout` for the machine-only openL2CAPChannel → didOpen tail.
     private static let pairingTimeout: DispatchTimeInterval = .seconds(90)
-    /// How long `forgetBond` waits for the device's `commandResult(ok)` before
-    /// giving up (#756). Short by design — the device acks then immediately drops
-    /// the link (which itself unblocks the ack waiter via the disconnect cleanup),
-    /// and the forget is best-effort: a device that never answers must not stall
-    /// the app's "Forget device" tap.
-    private static let forgetBondAckTimeout: DispatchTimeInterval = .seconds(3)
-    /// How long any slot-holding exchange waits for the device's answering
-    /// `status` notification (a transfer verdict, a download announce, a
-    /// command ack) before giving up. The firmware abandons a notify it can't
-    /// deliver in time (`notify_bounded`: "a lost notification is the app's to
-    /// recover by re-reading, never a reason to wedge the link") — so an
-    /// unbounded wait here parks its continuation forever *while holding the
-    /// transfer slot*, wedging every later list read, sync, and upload until
-    /// the app restarts. Generous: the longest legitimate quiet stretch is the
-    /// device's whole-object CRC + commit pass after an upload's last byte,
-    /// well under a second per megabyte.
-    private static let answerTimeout: DispatchTimeInterval = .seconds(15)
-
     // Outstanding operations (all touched only on `queue`). Connecting is a
     // two-phase flow (#297): `discover()` (un-gated) then `authenticate()` (gated,
     // raises the passkey sheet) — each parks its own continuation.
@@ -152,10 +119,6 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     /// superseded exchange keeps running against the live link and its verdict lands on whatever
     /// attempt happens to be registered when it arrives.
     private var weatherUploadExchange: Task<Void, Never>?
-    /// True while the exchange is parked in `acquireTransferSlot`'s FIFO behind another transfer.
-    /// A budget that expires *there* is the link being busy with someone else's transfer, not this
-    /// leg running long — it must not read as a timeout the job counts against its attempts.
-    private var weatherUploadAwaitingSlot = false
     /// When the current **weather-owned** connection came up. The connected budget belongs to the
     /// connection, not to a leg: a read that shared this link already spent part of it, so the
     /// upload's deadline is measured from here rather than from its own start (§11.3 — absolute
@@ -190,28 +153,10 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     private var pendingReads: [CBUUID: [CheckedContinuation<Data, Error>]] = [:]
     private var pendingWrites: [CBUUID: [CheckedContinuation<Void, Error>]] = [:]
 
-    // Device → app notifications, buffered so a waiter that registers just after a
-    // notification arrives still sees it (no race with the write that provokes it) —
-    // the same discipline the EchoHarness uses to drive this flow on glass. Only
-    // solicited messages (transfer/command results) are buffered — unsolicited ones
-    // (storeChanged) must not pile up for the session's life. Waiters fail and
-    // buffers clear on disconnect.
-    private var pendingStatuses: [StatusMessage] = []
-    private var statusWaiters: [(pred: @Sendable (StatusMessage) -> Bool, cont: CheckedContinuation<StatusMessage, Error>)] = []
-    private var pendingAnnounces: [TransferControl] = []
-    private var announceWaiter: CheckedContinuation<TransferControl, Error>?
-
-    // The one-transfer-at-a-time gate (spec §4.1) — reloads can't interleave a
-    // list download with a running upload and cross their status notifications.
-    private var transferBusy = false
-    /// Diagnostic ownership for the one-transfer gate. Besides making queue
-    /// handoffs visible, the token prevents a stray/duplicate release from
-    /// unlocking somebody else's exchange.
-    private var nextTransferSlotID: UInt64 = 1
-    private var transferOwner: (id: UInt64, label: String)?
-    private var transferWaiters: [(
-        id: UInt64, label: String, cont: CheckedContinuation<UInt64, Never>
-    )] = []
+    // Physical indication records for protocol v4. Correlation, operation lifetime and STATUS
+    // reconciliation belong to TransferClient; the transport only preserves received records.
+    private var pendingObjectControlRecords: [Data] = []
+    private var objectControlWaiters: [CheckedContinuation<Data, Error>] = []
 
     public override convenience init() {
         self.init(discoveryStore: UserDefaultsBLEDiscoveryStore())
@@ -248,18 +193,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     }
 
     public var storeChanges: AsyncStream<StoreChanged> {
-        // Same drop-the-seed pump as `battery`: subscribers see only movements
-        // that happen after they subscribed, never the `nil` seed or a replay.
-        let source = storeChangedMulticast.stream()
-        return AsyncStream { continuation in
-            let pump = Task {
-                for await value in source {
-                    if let value { continuation.yield(value) }
-                }
-                continuation.finish()
-            }
-            continuation.onTermination = { _ in pump.cancel() }
-        }
+        AsyncStream { $0.finish() }
     }
 
     /// Replays the latest one-shot result, including a read that completed after CoreBluetooth
@@ -570,7 +504,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     /// `beginWeatherUploadIfReady`).
     private func continueWeatherUploadOnSharedConnection() {
         dispatchPrecondition(condition: .onQueue(queue))
-        if characteristics[GATT.transferControl] != nil, characteristics[GATT.psm] != nil {
+        if characteristics[GATT.objectControl] != nil, characteristics[GATT.psm] != nil {
             beginWeatherUploadIfReady()
         } else if let peripheral, peripheral.state == .connected {
             peripheral.discoverServices([GATT.obcControlService, GATT.weatherRequestService])
@@ -744,7 +678,6 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         weatherUploadToken = token
         weatherUploadPayload = payload
         weatherUploadInFlight = false
-        weatherUploadAwaitingSlot = false
         if !adopted {
             weatherUploadReusedForeground = false
             weatherUploadStartedAt = weatherRequestClock.now
@@ -840,11 +773,8 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     /// rule as the read's (§11.3): re-arming per stage (or per leg) would let a slow gated phase
     /// plus a slow CoC send, or a read that shared this link, double the radio hold.
     ///
-    /// Two things it deliberately measures from something other than "now":
-    /// - on a weather-owned connection the base is `weatherOwnedConnectionUpAt`, so a shared
-    ///   read → upload sequence spends **one** 25 s window, not 8 + 25;
-    /// - the wait for the transfer slot is credited back (`creditWeatherUploadSlotWait`), because
-    ///   that hold belongs to whichever transfer is in the slot, not to this leg.
+    /// On a weather-owned connection the base is `weatherOwnedConnectionUpAt`, so a shared
+    /// read → upload sequence spends **one** 25 s window, not 8 + 25.
     private func armWeatherUploadConnectedDeadline() {
         dispatchPrecondition(condition: .onQueue(queue))
         weatherUploadConnectedDeadline?.cancel()
@@ -860,29 +790,8 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         queue.asyncAfter(deadline: deadline, execute: item)
     }
 
-    /// A budget that runs out while the exchange is queued behind another transfer is not this
-    /// leg timing out — the slot's FIFO is unbounded and a long foreground upload can hold it for
-    /// minutes. Reported as `deviceBusy`, which the job engine defers on instead of counting
-    /// against the request's attempt budget.
     private func expiryError() -> WeatherUploadError {
-        weatherUploadAwaitingSlot ? .deviceBusy : .timedOut
-    }
-
-    /// Push the connected deadline out by exactly the time spent waiting for the transfer slot.
-    /// Still absolute and still armed once — it is *moved past* a hold this leg did not cause,
-    /// never restarted.
-    private func creditWeatherUploadSlotWait(_ nanoseconds: UInt64, token: UUID) {
-        dispatchPrecondition(condition: .onQueue(queue))
-        // Token-guarded even for the flag: a dead exchange finally reaching the slot must not
-        // clear the *current* attempt's "still queued" state.
-        guard weatherUploadToken == token else { return }
-        weatherUploadAwaitingSlot = false
-        guard nanoseconds > 0 else { return }
-        guard let deadline = weatherUploadConnectedDeadlineAt else { return }
-        weatherUploadConnectedDeadlineAt = deadline + .nanoseconds(Int(min(nanoseconds, UInt64(Int.max))))
-        weatherUploadConnectedDeadline?.cancel()
-        weatherUploadConnectedDeadline = nil
-        armWeatherUploadConnectedDeadline()
+        .timedOut
     }
 
     /// Start the delivery once everything is in place: the intent has a bundle or no-change ACK,
@@ -898,11 +807,10 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         else { return }
         switch payload {
         case .bundle:
-            guard characteristics[GATT.transferControl] != nil, characteristics[GATT.psm] != nil
+            guard characteristics[GATT.objectControl] != nil, characteristics[GATT.psm] != nil
             else { return }
         case .unchanged:
-            guard characteristics[GATT.command] != nil, characteristics[GATT.status] != nil
-            else { return }
+            break
         }
         weatherUploadInFlight = true
         if weatherUploadConnectedAt == nil { weatherUploadConnectedAt = weatherRequestClock.now }
@@ -911,14 +819,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         // just as much as one that found it already up.
         weatherUploadReusedForeground = discoveryPolicy.connectionOwnership == .foreground
         armWeatherUploadConnectedDeadline()
-        // The gated notify carries the verdict. Arming it on an already-subscribed foreground
-        // link is a no-op; on the ephemeral weather connection it is the first gated op and (like
-        // the PSM read that follows) rides the silent bonded re-encrypt.
-        if let status = characteristics[GATT.status], let peripheral, !status.isNotifying {
-            peripheral.setNotifyValue(true, for: status)
-        }
         weatherUploadExchange?.cancel()
-        weatherUploadAwaitingSlot = true
         weatherUploadExchange = Task { [weak self] in
             await self?.runWeatherDeliveryExchange(payload, token: token)
         }
@@ -935,111 +836,33 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         }
     }
 
-    /// Command-only fast path for a request whose held bundle is still the newest available
-    /// revision. It still takes the shared transfer slot because command and transfer results use
-    /// the same status queue, but it never opens the CoC and sends only seven authenticated bytes.
+    /// V4 has no unchanged command. Nothing needs to be written when the held revision is already
+    /// current; complete the weather leg without inventing an opcode.
     private func runWeatherUnchangedExchange(
         requestID: UInt32, retryAfterSeconds: UInt16, token: UUID
     ) async {
-        let slotWaitStart = DispatchTime.now()
-        let slot = await acquireTransferSlot("weather unchanged request=\(requestID)")
-        let waited = DispatchTime.now().uptimeNanoseconds &- slotWaitStart.uptimeNanoseconds
-        guard !Task.isCancelled else {
-            releaseTransferSlot(slot)
-            return
-        }
-        queue.async { [weak self] in self?.creditWeatherUploadSlotWait(waited, token: token) }
-        do {
-            clearPendingStatuses()
-            try await write(
-                WeatherUnchangedCommand.encode(
-                    requestID: requestID, retryAfterSeconds: retryAfterSeconds
-                ),
-                to: GATT.command
-            )
-            let result = try await bounded { try await nextCommandResult() }
-            releaseTransferSlot(slot)
-            guard result.command == WeatherUnchangedCommand.commandByte else {
-                queue.async { [weak self] in
-                    self?.failWeatherUpload(.connectionDropped, token: token)
-                }
-                return
-            }
-            switch result.status {
-            case .ok:
-                queue.async { [weak self] in self?.completeWeatherUpload(token: token) }
-            case .busy:
-                queue.async { [weak self] in self?.failWeatherUpload(.deviceBusy, token: token) }
-            case .unknownCommand, .notFound, .error:
-                queue.async { [weak self] in self?.failWeatherUpload(.rejected, token: token) }
-            }
-        } catch {
-            releaseTransferSlot(slot)
-            queue.async { [weak self] in self?.failWeatherUpload(.connectionDropped, token: token) }
-        }
+        _ = requestID
+        _ = retryAfterSeconds
+        guard !Task.isCancelled else { return }
+        queue.async { [weak self] in self?.completeWeatherUpload(token: token) }
     }
 
-    /// The exchange itself — an ordinary §4.2 upload through the ordinary machinery: transfer
-    /// slot (serializing with route/ride/trip/DFU transfers on the one unframed CoC), descriptor,
-    /// payload, bounded verdict.
-    ///
-    /// Every hop back onto the queue carries `token`: the attempt this exchange belongs to. An
-    /// exchange the transport has already ended (deadline, drop, cancel) may still be mid-CoC when
-    /// the *next* attempt registers, and a `committed` from the dead one resolving the fresh one's
-    /// waiter would report a bundle that was never sent as delivered — the engine would clear the
-    /// checkpoint on it.
+    /// Weather is an ordinary retaining PUT through the one protocol-v4 client.
     private func runWeatherUploadExchange(_ payload: Data, token: UUID) async {
-        let descriptor = TransferControl(
-            op: .upload, type: .weatherBundle, objectID: 0,
-            totalLen: UInt32(payload.count), crc32: CRC32.checksum(payload)
-        )
-        let slotWaitStart = DispatchTime.now()
-        let slot = await acquireTransferSlot("upload weatherBundle len=\(payload.count)")
-        let waited = DispatchTime.now().uptimeNanoseconds &- slotWaitStart.uptimeNanoseconds
-        // A superseded attempt is cancelled while parked in the FIFO; the continuation cannot
-        // be interrupted, so unwind here instead of spending the slot and a radio window on an
-        // exchange nobody is waiting for (review F2 residual).
-        guard !Task.isCancelled else {
-            releaseTransferSlot(slot)
-            return
-        }
-        queue.async { [weak self] in self?.creditWeatherUploadSlotWait(waited, token: token) }
-        var exchangeOpened = false
         do {
-            let channel = try await readyChannel()
-            clearPendingStatuses()
-            logDescriptor(descriptor, slot: slot)
-            exchangeOpened = true
-            try await write(descriptor.encode(), to: GATT.transferControl)
-            try await channel.send(payload) { _ in }
-            let result = try await bounded { try await nextTransferResult() }
-            if result.status == .committed,
-               descriptor.acceptsCommittedResult(result, byteCount: descriptor.totalLen) {
-                exchangeOpened = false
-                releaseTransferSlot(slot)
-                queue.async { [weak self] in self?.completeWeatherUpload(token: token) }
-                return
-            }
-            // Any non-committed close leaves this exchange's queued bytes on the unframed CoC —
-            // reset the channel before anything else can use it (the UploadRunner rule).
-            await teardownChannel()
-            releaseTransferSlot(slot)
-            let failure: WeatherUploadError = switch result.status {
+            _ = try await performUpload(
+                payload: payload, kind: .weather, objectID: nil, displayName: "weather",
+                progress: { _ in })
+            queue.async { [weak self] in self?.completeWeatherUpload(token: token) }
+        } catch let error as DeviceError {
+            let failure: WeatherUploadError = switch error {
             case .crcMismatch: .crcMismatch
-            case .busy: .deviceBusy
-            // §11.5: `error` = arrived intact, not a bundle (reproducible, rebuild).
-            // `storageFull` / `notFound` are the device's *situation*, not a verdict on these
-            // bytes — folding them into `rejected` threw away a good bundle and paid for a whole
-            // corridor re-fetch, six times over.
-            case .error: .rejected
-            case .notFound: .notFound
             case .storageFull: .storageFull
-            case .committed, .aborted: .connectionDropped
+            case .transferRejected: .rejected
+            default: .connectionDropped
             }
             queue.async { [weak self] in self?.failWeatherUpload(failure, token: token) }
         } catch {
-            if exchangeOpened { await teardownChannel() }
-            releaseTransferSlot(slot)
             queue.async { [weak self] in self?.failWeatherUpload(.connectionDropped, token: token) }
         }
     }
@@ -1099,13 +922,10 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         weatherUploadConnectedDeadline = nil
         weatherUploadConnectedDeadlineAt = nil
         weatherUploadInFlight = false
-        weatherUploadAwaitingSlot = false
         weatherUploadRestoredConnectPending = false
         weatherUploadPayload = nil
         weatherUploadToken = nil
-        // Cancel, don't merely forget: a still-running exchange holds the transfer slot and the
-        // CoC, and its verdict would otherwise land on a later attempt (the token guard drops it,
-        // but the *second* exchange it enables would double-upload the bundle).
+        // Cancel, don't merely forget: a superseded weather task must not keep using the client.
         weatherUploadExchange?.cancel()
         weatherUploadExchange = nil
         discoveryStore.clearWeatherUploadRestoration()
@@ -1141,8 +961,9 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         // bytes that did arrive could claim a feature this device never announced —
         // a phone that then offered weather to a device without it.
         let versionData = try await read(GATT.protocolVersion)
+        guard versionData.count >= 2 else { throw DeviceError.readFailed }
         let b = versionData.startIndex
-        let version = versionData.count >= 2 ? UInt16(versionData[b]) | (UInt16(versionData[b + 1]) << 8) : OBCProtocol.version
+        let version = UInt16(versionData[b]) | (UInt16(versionData[b + 1]) << 8)
         let storeEpoch: UInt32? = versionData.count >= 6
             ? UInt32(versionData[b + 2]) | (UInt32(versionData[b + 3]) << 8)
                 | (UInt32(versionData[b + 4]) << 16) | (UInt32(versionData[b + 5]) << 24)
@@ -1153,15 +974,18 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
                 | (UInt32(versionData[b + 9]) << 16) | (UInt32(versionData[b + 10]) << 24)
             : nil
         let name = await currentPeripheralName() ?? "OBC"
+        let serialValue = try await serial
+        let storeID: String?
+        if version == OBCProtocol.version {
+            storeID = try await transferClient.catalog().storeID.description
+        } else {
+            storeID = nil
+        }
         let info = DeviceInfo(
             name: name, firmwareVersion: try await fw, hardwareVersion: try await hw,
-            serial: try await serial, protocolVersion: version, storeEpoch: storeEpoch,
+            serial: serialValue, protocolVersion: version, storeEpoch: storeEpoch, storeID: storeID,
             obcmVersion: obcmVersion, featureBits: featureBits
         )
-        // Cache the scope for `listRides()` minting (#769). A read that carried
-        // no epoch caches `nil` — deliberately: minting under a stale or absent
-        // scope is the aliasing this whole mechanism exists to prevent.
-        queue.async { [self] in lastLibraryScope = info.libraryScope }
         return info
     }
 
@@ -1174,141 +998,69 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     }
 
     public func readDiagnostics() async throws -> Data {
-        // Diagnostics are a CoC object (type 4, spec §7.5); the device serves it
-        // from A7 — until then it answers a typed reject, which throws here.
-        try await downloadObject(type: .diagnostics, objectID: 0)
+        // Protocol v4 has no diagnostics kind. Keep the capability's old surface fail-closed
+        // until a future registered kind replaces it.
+        throw DeviceError.readFailed
     }
 
     public func deleteRoute(_ id: DeviceObjectID) async throws {
-        // `deleteObject` (cmd 1): `cmd u8 · type u8 · object_id u16 LE` — spec §4.4.
-        let payload = Data([1, ObjectType.route.rawValue, UInt8(id.raw & 0xFF), UInt8(id.raw >> 8)])
-        // Hold the transfer slot (#302): `clearPendingStatuses` and `command` /
-        // `transfer` results share one `pendingStatuses` buffer, so an ungated
-        // delete could wipe a slot-holding transfer's buffered result out from
-        // under it and hang that transfer forever. Serialize like the CoC exchanges.
-        let slot = await acquireTransferSlot("command deleteRoute id=\(id.raw)")
-        defer { releaseTransferSlot(slot) }
-        clearPendingStatuses()
-        try await write(payload, to: GATT.command)
-        guard try await bounded({ try await nextCommandResult() }).status == .ok else {
-            throw DeviceError.writeFailed
-        }
+        try await remove(kind: .route, id: id)
     }
 
     public func ackRides(_ ids: [RideID]) async throws {
-        // `ackRides` (cmd 2): the possession list, chunked to the device's 64-byte
-        // command value — spec §4.4. Only device-namespace ids can be acked (mock/
-        // test ids that never came from a catalog have nothing to reconcile).
-        let chunks = AckRidesCommand.chunks(ids.compactMap(\.deviceObjectID))
-        guard !chunks.isEmpty else { return }
-        // Hold the transfer slot across the whole batch, for `deleteRoute`'s
-        // reason (#302): command results and transfer results share one
-        // `pendingStatuses` buffer, so an ungated command write could wipe a
-        // slot-holding transfer's buffered result out from under it.
-        let slot = await acquireTransferSlot("command ackRides chunks=\(chunks.count)")
-        defer { releaseTransferSlot(slot) }
-        clearPendingStatuses()
-        for chunk in chunks {
-            try await write(chunk, to: GATT.command)
-            // Each chunk is answered on its own; the command is idempotent, so a
-            // caller retrying after a mid-batch failure just re-sends everything.
-            guard try await bounded({ try await nextCommandResult() }).status == .ok else {
-                throw DeviceError.writeFailed
-            }
-        }
+        // Protocol v4 has no possession mutation. The library already owns downloaded bytes;
+        // keeping this compatibility capability as a no-op avoids inventing an unregistered frame.
     }
 
     public func setClock(_ sample: WallClockSample) async throws -> ClockSyncOutcome {
-        // `setClock` (cmd 5, spec §4.4, epic #638): stamp the device's trusted
-        // wall clock. Slot-held + `clearPendingStatuses` for `deleteRoute`'s reason
-        // (#302) — command and transfer results share one `pendingStatuses` buffer.
-        let slot = await acquireTransferSlot("command setClock")
-        defer { releaseTransferSlot(slot) }
-        clearPendingStatuses()
-        try await write(SetClockCommand.encode(sample), to: GATT.command)
-        switch try await bounded({ try await nextCommandResult() }).status {
-        case .ok: return .stamped
-        // A device predating expiry answers `unknownCommand` (§4.4 compat) — a
-        // supported peer, not a failure: the app degrades gracefully.
-        case .unknownCommand: return .unsupported
-        // `error` (bad length / bogus utc / out-of-range offset) is a real write
-        // failure — the sample is `WallClockSample`-clamped, so this shouldn't happen.
-        default: throw DeviceError.writeFailed
-        }
+        .unsupported
     }
 
     public func setRouteRetention(
         _ id: DeviceObjectID, _ retention: Retention
     ) async throws -> RetentionWriteOutcome {
-        // `setRouteRetention` (cmd 6, spec §4.4, epic #638): set a stored route's
-        // expiry policy without re-uploading. Slot-held for the same #302 reason.
-        let slot = await acquireTransferSlot("command setRouteRetention id=\(id.raw)")
-        defer { releaseTransferSlot(slot) }
-        clearPendingStatuses()
-        try await write(SetRouteRetentionCommand.encode(objectID: id, retention: retention), to: GATT.command)
-        switch try await bounded({ try await nextCommandResult() }).status {
-        case .ok: return .applied
-        case .notFound: return .notFound
-        case .unknownCommand: return .unsupported
-        default: throw DeviceError.writeFailed
-        }
+        .unsupported
     }
 
     public func listRoutes() async throws -> [RouteCatalogEntry] {
-        // The `routeList` object (type 6, spec §7.4) over the CoC → the catalog.
-        // Consumed for reconcile (the "on device" badge + the expiry display,
-        // epic #638), never as list rows — the Planned list is library-first (#289).
-        let entries = try RouteList.decode(try await downloadObject(type: .routeList, objectID: 0))
-        return entries.map { entry in
-            RouteCatalogEntry(
-                id: DeviceObjectID(entry.objectID),
-                name: entry.name,
-                distanceMeters: Double(entry.distanceMeters),
-                elevationGainMeters: Double(entry.ascentMeters),
-                pointCount: Int(entry.pointCount),
-                crc32: entry.crc32,
-                // The auto-expiry tail (nil for a pre-expiry 76-byte device); the
-                // retention byte is sanitised to `.never` if it's an unknown value.
-                expiresAt: entry.expiresAt.map { Date(timeIntervalSince1970: TimeInterval($0)) },
-                retention: entry.retention.map(Retention.init(safeRawValue:))
-            )
+        let entries = try await headEntries(kind: .route)
+        var result: [RouteCatalogEntry] = []
+        for entry in entries {
+            let payload = try await download(entry)
+            let route = try RouteObjectCodec.decode(payload)
+            result.append(RouteCatalogEntry(
+                id: DeviceObjectID(entry.objectID.rawValue), name: entry.displayName,
+                distanceMeters: Double(route.totalDistanceMeters),
+                elevationGainMeters: Double(route.totalAscentMeters),
+                pointCount: route.points.count, crc32: entry.payloadCRC32))
         }
+        return result
     }
 
     public func listRides() async throws -> RideCatalog {
-        // The `rideList` object (type 7, spec §7.4) — the ride catalog (empty
-        // until the firmware stores rides, A7). The v2 header's `total` surfaces
-        // truncation past the device's `MAX_RIDES` cap (`hiddenRideCount`).
-        //
-        // Ids are minted **scoped** to the connected device's (serial, epoch)
-        // identity (#769) — this is where the composite key enters the system;
-        // everything downstream (coordinator, library, sets) stays id-string
-        // driven. The scope comes from the identity read the connect flow runs
-        // before any sync can start (the fail-closed gate).
-        let scope = await withCheckedContinuation { (cont: CheckedContinuation<LibraryScope?, Never>) in
-            queue.async { [self] in cont.resume(returning: lastLibraryScope) }
+        // LIST is the catalog and its StoreId scopes every ride id minted here.
+        let catalog: (storeID: StoreID, entries: [CatalogEntry])
+        do { catalog = try await transferClient.catalog(kind: .ride) }
+        catch { throw deviceError(for: error) }
+        let scope = LibraryScope(
+            serial: try await readString(GATT.serialNumber), storeID: catalog.storeID.description)
+        var rides: [RideSummary] = []
+        for entry in catalog.entries where !entry.flags.contains(.retained)
+            && !entry.flags.contains(.reserved) && !entry.flags.contains(.recording) {
+            let id = RideID(
+                deviceObjectID: DeviceObjectID(entry.objectID.rawValue), scope: scope)
+            // FS8's footer is not frozen yet. Keep the fielded ride decoder behind the new GET
+            // path; replacing this decode is deliberately outside FS10's iOS half.
+            rides.append(try RideObjectCodec.decode(try await download(entry), id: id).summary)
         }
-        let decoded = try RideList.decode(try await downloadObject(type: .rideList, objectID: 0))
-        let rides = decoded.entries.map { entry in
-            RideSummary(
-                id: scope.map { RideID(deviceObjectID: DeviceObjectID(entry.objectID), scope: $0) }
-                    ?? RideID(deviceObjectID: DeviceObjectID(entry.objectID)),
-                name: entry.name,
-                date: Date(timeIntervalSince1970: TimeInterval(entry.startTime)),
-                distanceMeters: Double(entry.distanceMeters),
-                movingTime: TimeInterval(entry.movingTimeSeconds),
-                averageSpeedMps: Double(entry.averageSpeedCms) / 100,
-                climbMeters: Double(entry.climbMeters)
-            )
-        }
-        return RideCatalog(rides: rides, hiddenRideCount: decoded.hiddenCount)
+        return RideCatalog(rides: rides, hiddenRideCount: 0)
     }
 
     public func routeDetail(_ id: DeviceObjectID) async throws -> RouteDetail {
         // Pinned by S0 as "download the route object" (spec §7.1): the stored OBCR
         // v2 blob, decoded app-side for the waypoints + elevation profile — one
         // layout, one truth.
-        let decoded = try RouteObjectCodec.decode(try await downloadObject(type: .route, objectID: id.raw))
+        let decoded = try RouteObjectCodec.decode(try await download(kind: .route, id: id))
         // Header totals are exact (from the producer's raw-point pass); the profile
         // + max grade come from the stored geometry, as E2 renders them.
         let geometry = RouteStats.compute(from: decoded.points)
@@ -1339,57 +1091,100 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     }
 
     public func listTrips() async throws -> [TripCatalogEntry] {
-        // The `tripList` object (type 10, spec §7.4) over the CoC → the trip
-        // catalog. Reconcile-only (the trip card's "on device" badge, TR8), never
-        // list rows — trips are library-first like routes.
-        try TripList.catalog(try await downloadObject(type: .tripList, objectID: 0))
+        var result: [TripCatalogEntry] = []
+        for entry in try await headEntries(kind: .trip) {
+            let trip = try TripObjectCodec.decode(try await download(entry))
+            result.append(TripCatalogEntry(
+                id: DeviceObjectID(entry.objectID.rawValue), name: entry.displayName,
+                distanceMeters: 0, elevationGainMeters: 0,
+                stageCount: trip.stageObjectIDs.count, crc32: entry.payloadCRC32))
+        }
+        return result
     }
 
     public func downloadTrip(_ id: DeviceObjectID) async throws -> TripObjectCodec.Decoded {
         // "Download the trip object" (spec §7.7) — the stored trip blob, decoded
         // app-side for its name + stage ids. Reconcile falls back to it only when
         // the `tripList` `crc32` can't confirm the fingerprint.
-        try TripObjectCodec.decode(try await downloadObject(type: .trip, objectID: id.raw))
+        try TripObjectCodec.decode(try await download(kind: .trip, id: id))
     }
 
     public func deleteTrip(_ id: DeviceObjectID) async throws {
-        // `deleteObject` for a trip (cmd 1, type 9) — **non-cascading** (spec §4.4:
-        // the trip metadata goes, member routes stay); the "Delete trip & routes"
-        // cascade is composed by the caller. Same transfer-slot serialization as
-        // `deleteRoute` (#302 — command and transfer results share one buffer).
-        let payload = Data([1, ObjectType.trip.rawValue, UInt8(id.raw & 0xFF), UInt8(id.raw >> 8)])
-        let slot = await acquireTransferSlot("command deleteTrip id=\(id.raw)")
-        defer { releaseTransferSlot(slot) }
-        clearPendingStatuses()
-        try await write(payload, to: GATT.command)
-        guard try await bounded({ try await nextCommandResult() }).status == .ok else {
-            throw DeviceError.writeFailed
+        try await remove(kind: .trip, id: id)
+    }
+
+    private func headEntries(kind: ObjectKind) async throws -> [CatalogEntry] {
+        do {
+            return try await transferClient.list(kind: kind).filter {
+                !$0.flags.contains(.retained) && !$0.flags.contains(.reserved)
+            }
+        } catch { throw deviceError(for: error) }
+    }
+
+    private func headEntry(kind: ObjectKind, id: DeviceObjectID) async throws -> CatalogEntry {
+        guard let entry = try await headEntries(kind: kind).first(where: { $0.objectID.rawValue == id.raw })
+        else { throw DeviceError.readFailed }
+        return entry
+    }
+
+    private func download(_ entry: CatalogEntry) async throws -> Data {
+        do {
+            return try await transferClient.get(
+                objectID: entry.objectID, revision: entry.revision).payload
+        } catch { throw deviceError(for: error) }
+    }
+
+    fileprivate func download(kind: ObjectKind, id: DeviceObjectID) async throws -> Data {
+        try await download(headEntry(kind: kind, id: id))
+    }
+
+    private func remove(kind: ObjectKind, id: DeviceObjectID) async throws {
+        let entry = try await headEntry(kind: kind, id: id)
+        do { _ = try await transferClient.remove(objectID: entry.objectID, expectedRevision: entry.revision) }
+        catch { throw deviceError(for: error) }
+    }
+
+    private func deviceError(for error: Error) -> DeviceError {
+        if let error = error as? DeviceError { return error }
+        if error is TransferLinkLost { return .transferDropped }
+        if let error = error as? TransferClientError {
+            switch error {
+            case .checksumMismatch: return .crcMismatch
+            case .storeChanged, .outcomeNotCommitted: return .transferDropped
+            default: return .transferRejected
+            }
         }
+        if let wire = error as? WireError, case .remote(let body) = wire {
+            switch body.code {
+            case .noSpace: return .storageFull
+            case .checksumFailure: return .crcMismatch
+            case .cancelled: return .transferDropped
+            case .notFound: return .readFailed
+            default: return .transferRejected
+            }
+        }
+        return .transferRejected
     }
 
     // MARK: DeviceTransport — data plane
 
     /// The shared upload service for route, trip, and firmware objects. It borrows this
     /// transport's queue-confined connection/channel engine; it does not own another manager,
-    /// queue, channel, or transfer slot. Keeping descriptor construction and handle lifecycle in
-    /// one place also keeps restart/cancel semantics identical across every upload capability.
+    /// queue, or channel.
     private enum UploadService {
         static func start(
-            over transport: BLETransport, payload: Data, type: ObjectType,
-            objectID: UInt16, reportsAssignedID: Bool
+            over transport: BLETransport, payload: Data, kind: ObjectKind,
+            objectID: DeviceObjectID?, displayName: String, reportsAssignedID: Bool
         ) -> TransferHandle {
             guard !payload.isEmpty else {
                 return .immediatelyFinished(.failed(.transferRejected))
             }
-            let descriptor = TransferControl(
-                op: .upload, type: type, objectID: objectID,
-                totalLen: UInt32(payload.count), crc32: CRC32.checksum(payload)
-            )
             let (stream, continuation) = AsyncStream<TransferProgress>.makeStream()
             let outcome = AsyncPromise<TransferOutcome>()
             let assignedID = AsyncPromise<DeviceObjectID?>()
-            let runner = UploadRunner(
-                transport: transport, payload: payload, descriptor: descriptor,
+            let runner = V4UploadRunner(
+                transport: transport, payload: payload, kind: kind, objectID: objectID,
+                displayName: displayName,
                 progress: continuation, outcome: outcome, assignedID: assignedID
             )
             Task { await runner.start() }
@@ -1397,74 +1192,88 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
                 progress: stream, outcome: outcome,
                 assignedObjectID: reportsAssignedID ? assignedID : nil,
                 onCancel: { Task { await runner.cancel() } },
-                onResume: { Task { await runner.start() } }
+                onResume: {}
             )
         }
     }
 
     public func uploadRoute(_ route: RouteBlob) -> TransferHandle {
-        // A fresh upload sends objectID 0xFFFF = "new" (the device assigns one);
-        // re-uploading an edited route sends its stored id, which replaces that
-        // object in place (spec §4.1/§4.2). Success is the device's closing
-        // `transferResult` — never the local byte flush.
+        // A fresh upload sends ObjectId zero and keeps the id assigned by the PUT result.
+        // Re-uploading an edited route names its stored id and exact revision.
         UploadService.start(
-            over: self, payload: route.payload, type: .route,
-            objectID: route.targetObjectID?.raw ?? TransferControl.newObjectID,
+            over: self, payload: route.payload, kind: .route,
+            objectID: route.targetObjectID, displayName: route.summary.name,
             reportsAssignedID: true
         )
     }
 
     public func uploadTrip(_ trip: TripBlob) -> TransferHandle {
-        // The trip object (type 9) — the trip sibling of `uploadRoute`, reusing
-        // the same runner; only the descriptor's type differs. Fresh sends 0xFFFF
-        // (the device mints a trip id); a re-push / adoption sends the stored id
-        // to replace in place (spec §4.1/§4.2). Uploaded last in a whole-trip push.
+        // The trip sibling of `uploadRoute`, using the same v4 PUT path. It is uploaded last in a
+        // whole-trip push after its route stages.
         UploadService.start(
-            over: self, payload: trip.payload, type: .trip,
-            objectID: trip.targetObjectID?.raw ?? TransferControl.newObjectID,
+            over: self, payload: trip.payload, kind: .trip,
+            objectID: trip.targetObjectID, displayName: trip.name,
             reportsAssignedID: true
         )
     }
 
     public func uploadFirmware(_ container: Data) -> TransferHandle {
-        // A `fwImage` upload (spec §7.6): the whole OBCU container, the singleton
-        // object id `0` (the device assigns none and echoes `0`). Reuses the route
-        // upload's runner — the descriptor is the only difference. Success is the
-        // device's committed `transferResult`, which promotes the bytes to
-        // `/UPDATE.BIN`; staging never installs (that's `installFirmware`).
+        // The whole OBCU container is an ordinary update-kind create. Staging never installs;
+        // `installFirmware` performs the separate ARM request.
         UploadService.start(
-            over: self, payload: container, type: .firmware,
-            objectID: 0, reportsAssignedID: false
+            over: self, payload: container, kind: .update,
+            objectID: nil, displayName: "UPDATE.BIN", reportsAssignedID: false
         )
     }
 
     public func installFirmware() async throws -> FirmwareInstallResult {
-        // `installFw` (cmd 3): the `cmd` byte only — spec §4.4. Holds the transfer
-        // slot for `deleteRoute`'s reason (#302): command and transfer results
-        // share one `pendingStatuses` buffer, so an ungated command write could
-        // wipe a slot-holding transfer's buffered result. The command returns as
-        // soon as the request is accepted; it never waits for the on-glass confirm.
-        let slot = await acquireTransferSlot("command installFirmware")
-        defer { releaseTransferSlot(slot) }
-        clearPendingStatuses()
-        try await write(Data([3]), to: GATT.command)
-        return FirmwareInstallResult(
-            commandStatus: try await bounded({ try await nextCommandResult() }).status)
+        guard let package = try await headEntries(kind: .update).max(by: { $0.revision < $1.revision })
+        else { return .noStaged }
+        do {
+            _ = try await transferClient.arm(
+                packageObjectID: package.objectID, expectedRevision: package.revision)
+            return .accepted
+        } catch WireError.remote(let body) {
+            switch body.code {
+            case .notFound: return .noStaged
+            case .busy: return .busy
+            case .unsupported: return .unsupported
+            case .rejected: return .rejected
+            default: return .rejected
+            }
+        } catch {
+            throw deviceError(for: error)
+        }
+    }
+
+    fileprivate func performUpload(
+        payload: Data, kind: ObjectKind, objectID: DeviceObjectID?, displayName: String,
+        progress: @escaping @Sendable (TransferProgress) -> Void
+    ) async throws -> DeviceObjectID {
+        var target = objectID
+        if target == nil, kind == .update || kind == .weather {
+            target = try await headEntries(kind: kind).max(by: { $0.revision < $1.revision })
+                .map { DeviceObjectID($0.objectID.rawValue) }
+        }
+        let expected: Revision?
+        if let target {
+            expected = try await headEntry(kind: kind, id: target).revision
+        } else {
+            expected = nil
+        }
+        do {
+            let result = try await transferClient.put(
+                payload, objectID: target.map { ObjectID(rawValue: $0.raw) },
+                expectedRevision: expected, kind: kind,
+                retainPrevious: kind == .weather, displayName: displayName
+            ) { done, total in
+                progress(TransferProgress(bytesDone: done, total: total))
+            }
+            return DeviceObjectID(result.objectID.rawValue)
+        } catch { throw deviceError(for: error) }
     }
 
     public func forgetBond() async throws {
-        // `forgetBond` (cmd 4): the `cmd` byte only — spec §4.4. The app's "Forget
-        // device" asks the device to dissolve ITS side of the bond too, so a one-
-        // sided app forget doesn't leave the pair wedged: the device's reject-when-
-        // bonded posture (spec §8) would otherwise refuse every new pairing until
-        // the rider ran Forget phone on the device. Reachable only over the bonded,
-        // encrypted link (the gated `command` characteristic requires it), so a
-        // stranger can never issue it. Holds the transfer slot for `deleteRoute`'s
-        // reason (#302): command and transfer results share one `pendingStatuses`
-        // buffer. The device answers `commandResult(ok)` first, then drops the link
-        // — so we wait only briefly for the ack; a timeout or write failure throws,
-        // and the caller (Settings forget) treats this as best-effort and clears
-        // its local record regardless.
         // The opaque CoreBluetooth identifier is useful only while this bond is trusted. Clear it
         // even when the best-effort device command fails, so restoration can never act on a device
         // the app has locally forgotten.
@@ -1473,81 +1282,8 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
             discoveryStore.clearWeatherRestoration()
             discoveryStore.clearWeatherUploadRestoration()
         }
-        let slot = await acquireTransferSlot("command forgetBond")
-        defer { releaseTransferSlot(slot) }
-        clearPendingStatuses()
-        try await write(Data([4]), to: GATT.command)
-        // The ack timeout is a queue-confined one-shot (the watchdog idiom above),
-        // deliberately NOT a task-group race: `nextCommandResult()`'s parked
-        // continuation is not cancellation-responsive — it resolves only on a
-        // matching status or the disconnect cleanup — so a throwing group would
-        // sit un-drainable on the losing child exactly when the device never
-        // answers (the same wedge `LaunchFlowModel` documents for racing
-        // `connect()`). Instead the one-shot unwinds the waiter through the same
-        // resume-throwing path the disconnect cleanup uses. Failing ALL parked
-        // status waiters is safe here: every status-waiting op parks only while
-        // holding the transfer slot, and we hold it — the only parked waiter is
-        // ours. The defer cancels the one-shot before the slot is released (LIFO),
-        // and a lost race is harmless either way: on the serial `queue`, a fire
-        // after our waiter resolved finds `statusWaiters` empty and no-ops.
-        let ackTimeout = DispatchWorkItem { [weak self] in
-            self?.failStatusWaiters(DeviceError.writeFailed)
-        }
-        queue.asyncAfter(deadline: .now() + Self.forgetBondAckTimeout, execute: ackTimeout)
-        defer { ackTimeout.cancel() }
-        _ = try await nextCommandResult()
-    }
-
-    /// Unwind every parked `status` waiter with `error` — `forgetBond`'s ack
-    /// timeout. Queue-confined: called only from a work item already running on
-    /// `queue` (`asyncAfter` executes on its target).
-    private func failStatusWaiters(_ error: DeviceError) {
-        dispatchPrecondition(condition: .onQueue(queue))
-        let waiters = statusWaiters
-        statusWaiters.removeAll()
-        for waiter in waiters { waiter.cont.resume(throwing: error) }
-    }
-
-    /// `failStatusWaiters` plus the parked announce waiter — the answer
-    /// timeout's unwind (see `bounded`). Queue-confined like its sibling.
-    private func failSolicitedWaiters(_ error: DeviceError) {
-        failStatusWaiters(error)
-        announceWaiter?.resume(throwing: error)
-        announceWaiter = nil
-    }
-
-    /// Whether the link currently reads `.connected` — the transfer runners
-    /// consult this to classify a dead exchange: a stalled CoC or a lost answer
-    /// under a live link has no state edge coming to recover it (terminal),
-    /// while a genuine link drop stays unresolved-resumable as before.
-    fileprivate var isLinkUp: Bool { stateMulticast.value == .connected }
-
-    /// Await one solicited `status` answer under `answerTimeout` — the
-    /// `forgetBond` ack-timeout idiom, generalized to every slot-holding
-    /// exchange. The parked continuation is not cancellation-responsive (it
-    /// resolves only on a matching status or the disconnect cleanup), so a
-    /// device whose answering notify was abandoned under backpressure
-    /// (`notify_bounded`) would otherwise park it forever — with the transfer
-    /// slot held, wedging every later transfer until the app restarts. Failing
-    /// ALL solicited waiters is safe for `forgetBond`'s reason: every
-    /// status/announce-waiting op parks only while holding the transfer slot,
-    /// and the caller holds it — the only parked waiter is its own.
-    fileprivate func bounded<T: Sendable>(_ op: @Sendable () async throws -> T) async throws -> T {
-        let timeout = DispatchWorkItem { [weak self] in
-            self?.failSolicitedWaiters(DeviceError.transferDropped)
-        }
-        queue.asyncAfter(deadline: .now() + Self.answerTimeout, execute: timeout)
-        defer { timeout.cancel() }
-        return try await withTaskCancellationHandler {
-            try await op()
-        } onCancel: { [weak self] in
-            // Status continuations are queue-owned and otherwise ignore task
-            // cancellation. Unwind the current slot holder so its catch path can
-            // tear down the opened raw-byte exchange before handing off.
-            self?.queue.async { [weak self] in
-                self?.failSolicitedWaiters(DeviceError.transferDropped)
-            }
-        }
+        // Protocol v4 registers no remote bond mutation. Clearing the companion's trusted
+        // CoreBluetooth identity is the entire app-side operation.
     }
 
     public func downloadRides(_ ids: [RideID]) -> RideDownload {
@@ -1580,119 +1316,14 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         let handle = TransferHandle(
             progress: progressStream, outcome: outcome,
             onCancel: { Task { await runner.cancel() } },
-            onResume: { Task { await runner.start() } }
+            onResume: {}
         )
         return RideDownload(handle: handle, rides: rideStream)
     }
 
-    // MARK: One object over the CoC (queue-confined helpers around it)
+    // MARK: Physical CoC access
 
-    /// Download one object (spec §4.2 op 2): take the transfer slot, write the
-    /// request, await the device's announce descriptor (`total_len` + `crc32`) —
-    /// a typed reject resolves it as a throw — stream the payload off the CoC
-    /// verifying the whole-object CRC, then require the committed close.
-    fileprivate func downloadObject(type: ObjectType, objectID: UInt16) async throws -> Data {
-        let slot = await acquireTransferSlot("download type=\(type.rawValue) id=\(objectID)")
-        let descriptor = TransferControl(op: .download, type: type, objectID: objectID)
-        var exchangeOpened = false
-        do {
-            let channel = try await readyChannel()
-            clearPendingStatuses()
-            logDescriptor(descriptor, slot: slot)
-            // A failed write acknowledgement is ambiguous: the peripheral may
-            // already have armed it. Treat the exchange as open before writing.
-            exchangeOpened = true
-            try await write(descriptor.encode(), to: GATT.transferControl)
-            let announce = try await bounded { try await nextAnnounce() }
-            guard descriptor.acceptsDownloadAnnounce(announce) else {
-                throw DeviceError.readFailed
-            }
-            let bytes = try await channel.receive(length: Int(announce.totalLen), expectedCRC: announce.crc32)
-            let result = try await bounded { try await nextTransferResult() }
-            guard descriptor.acceptsCommittedResult(result, byteCount: announce.totalLen) else {
-                throw DeviceError.readFailed
-            }
-            exchangeOpened = false
-            releaseTransferSlot(slot)
-            return bytes
-        } catch {
-            // Once a descriptor may have landed, releasing the slot is safe only
-            // after closing the raw CoC. That discards an abandoned download or
-            // rejected upload's queued bytes on both peers.
-            if exchangeOpened { await teardownChannel() }
-            releaseTransferSlot(slot)
-            throw error
-        }
-    }
-
-    /// The transfer slot (spec §4.1: one transfer in flight). Holders release at
-    /// the end of each attempt, so a stalled (drop-waiting) upload doesn't starve
-    /// reconnect-time list reads.
-    fileprivate func acquireTransferSlot(_ label: String) async -> UInt64 {
-        await withCheckedContinuation { (cont: CheckedContinuation<UInt64, Never>) in
-            queue.async { [self] in
-                let id = nextTransferSlotID
-                nextTransferSlotID &+= 1
-                if transferBusy {
-                    let owner = transferOwner.map { "#\($0.id) \($0.label)" } ?? "unknown"
-                    print("[OBC BLE slot] queue #\(id) \(label) behind \(owner)")
-                    transferWaiters.append((id: id, label: label, cont: cont))
-                } else {
-                    transferBusy = true
-                    transferOwner = (id: id, label: label)
-                    print("[OBC BLE slot] acquire #\(id) \(label)")
-                    cont.resume(returning: id)
-                }
-            }
-        }
-    }
-
-    fileprivate func releaseTransferSlot(_ id: UInt64) {
-        queue.async { [self] in
-            guard transferOwner?.id == id else {
-                let owner = transferOwner.map { "#\($0.id) \($0.label)" } ?? "none"
-                print("[OBC BLE slot] RELEASE MISMATCH #\(id); current owner \(owner)")
-                return
-            }
-            if let owner = transferOwner {
-                print("[OBC BLE slot] release #\(owner.id) \(owner.label)")
-            }
-            if transferWaiters.isEmpty {
-                transferBusy = false
-                transferOwner = nil
-            } else {
-                let next = transferWaiters.removeFirst()
-                transferOwner = (id: next.id, label: next.label)
-                print("[OBC BLE slot] handoff -> #\(next.id) \(next.label)")
-                next.cont.resume(returning: next.id)
-            }
-        }
-    }
-
-    /// Print the exact descriptor associated with a slot token. Paired with the
-    /// firmware's decoded reject log, this tells us which logical owner crossed
-    /// the one-transfer boundary when the on-glass failure recurs.
-    fileprivate func logDescriptor(_ descriptor: TransferControl, slot: UInt64) {
-        print(
-            "[OBC BLE xfer] slot #\(slot) descriptor op=\(descriptor.op.rawValue) "
-                + "type=\(descriptor.type.rawValue) id=\(descriptor.objectID) "
-                + "len=\(descriptor.totalLen) crc=\(String(format: "%08X", descriptor.crc32))"
-        )
-    }
-
-    /// Drop buffered results/announces from a previous exchange before writing a
-    /// fresh descriptor — a stale `aborted` (e.g. from a canceled upload's channel
-    /// teardown) must never be read as this exchange's answer. Safe because the
-    /// device can't answer a descriptor before it is written.
-    fileprivate func clearPendingStatuses() {
-        queue.async { [self] in
-            pendingStatuses.removeAll()
-            pendingAnnounces.removeAll()
-        }
-    }
-
-    /// The live CoC channel, (re)opening it if the previous one was torn down
-    /// (a canceled transfer closes the channel so the device discards its partial).
+    /// The live CoC channel, opening it if necessary.
     fileprivate func readyChannel() async throws -> BLEChannel {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<BLEChannel, Error>) in
             queue.async { [self] in
@@ -1711,168 +1342,6 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
                     byteChannel = nil
                     bleChannel = nil
                     peripheral.readValue(for: psm)  // → PSM update → openL2CAPChannel → didOpen
-                }
-            }
-        }
-    }
-
-    /// Tear the CoC down (a canceled transfer): the device sees the drop, discards
-    /// its partial, and re-listens; the next transfer re-opens via `readyChannel`.
-    fileprivate func teardownChannel() async {
-        let channel: L2CAPByteChannel? = queue.sync {
-            // Closing an exchange is also its local control-plane reset. Resume
-            // any parked answer waiter before clearing buffers; the holder does
-            // not release its transfer slot until this method returns.
-            failSolicitedWaiters(DeviceError.transferDropped)
-            pendingStatuses.removeAll()
-            pendingAnnounces.removeAll()
-            let current = byteChannel
-            byteChannel = nil
-            bleChannel = nil
-            return current
-        }
-        await channel?.close()
-    }
-
-    // MARK: Status / announce notifications (queue-confined)
-
-    private func deliverStatus(_ message: StatusMessage) {
-        logStatus(message)
-        // A transferResult while a download announce is awaited IS the answer to
-        // that request — a typed reject (notFound / busy / error), spec §4.2.
-        if case .transferResult(let result) = message, let waiter = announceWaiter {
-            announceWaiter = nil
-            waiter.resume(throwing: rejectError(result.status))
-            return
-        }
-        // v2: the download announce rides `status` (`msg = 4`) — route it to the
-        // announce waiter/buffer, the single ordering domain folding it into
-        // `status` buys us (the split-CCCD failure mode is gone with the
-        // `transferControl` CCCD).
-        if case .downloadAnnounce(let descriptor) = message {
-            deliverAnnounce(descriptor)
-            return
-        }
-        if case .weatherRequest = message {
-            beginNotifiedWeatherRequestRead()
-            return
-        }
-        if let index = statusWaiters.firstIndex(where: { $0.pred(message) }) {
-            statusWaiters.remove(at: index).cont.resume(returning: message)
-            return
-        }
-        switch message {
-        case .transferResult, .commandResult:
-            pendingStatuses.append(message)
-        case .storeChanged(let change):
-            // Unsolicited → never buffered (it must not pile up for the
-            // session's life), but fanned out live so the main screen can
-            // re-reconcile its "on device" badges when the device's store
-            // moves under an open app (on-device delete, epic #447 P6).
-            storeChangedMulticast.send(change)
-        case .downloadAnnounce, .weatherRequest, .unknown:
-            break  // announce is handled above (unreachable here); unknowns aren't buffered
-        }
-    }
-
-    /// Log every inbound message in the status ordering domain. Together with
-    /// the slot token and outgoing descriptor logs this makes a crossed answer
-    /// visible without changing waiter selection or buffering.
-    private func logStatus(_ message: StatusMessage) {
-        switch message {
-        case .transferResult(let result):
-            let id = result.objectID?.raw ?? TransferControl.newObjectID
-            print(
-                "[OBC BLE status] transferResult id=\(id) status=\(result.status.rawValue) "
-                    + "offset=\(result.committedOffset)"
-            )
-        case .storeChanged(let change):
-            print("[OBC BLE status] storeChanged type=\(change.type.rawValue) revision=\(change.revision)")
-        case .commandResult(let result):
-            print(
-                "[OBC BLE status] commandResult command=\(result.command) "
-                    + "status=\(result.status.rawValue) detail=\(result.detail)"
-            )
-        case .downloadAnnounce(let descriptor):
-            print(
-                "[OBC BLE status] downloadAnnounce type=\(descriptor.type.rawValue) "
-                    + "id=\(descriptor.objectID) len=\(descriptor.totalLen) "
-                    + "crc=\(String(format: "%08X", descriptor.crc32))"
-            )
-        case .weatherRequest:
-            print("[OBC BLE status] weatherRequest")
-        case .unknown(let discriminator):
-            print("[OBC BLE status] unknown discriminator=\(discriminator)")
-        }
-    }
-
-    private func rejectError(_ status: TransferResult.Status) -> DeviceError {
-        switch status {
-        case .crcMismatch: .crcMismatch
-        case .storageFull: .storageFull
-        // committed/aborted aren't rejects; if one ever reaches here it's a
-        // generic device-side failure like the rest.
-        case .committed, .aborted, .error, .notFound, .busy: .transferRejected
-        }
-    }
-
-    private func deliverAnnounce(_ descriptor: TransferControl) {
-        if let waiter = announceWaiter {
-            announceWaiter = nil
-            waiter.resume(returning: descriptor)
-        } else {
-            pendingAnnounces.append(descriptor)
-        }
-    }
-
-    private func nextStatus(where predicate: @escaping @Sendable (StatusMessage) -> Bool) async throws -> StatusMessage {
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<StatusMessage, Error>) in
-            queue.async { [self] in
-                if let index = pendingStatuses.firstIndex(where: predicate) {
-                    cont.resume(returning: pendingStatuses.remove(at: index))
-                } else {
-                    statusWaiters.append((predicate, cont))
-                }
-            }
-        }
-    }
-
-    fileprivate func nextTransferResult() async throws -> TransferResult {
-        guard case .transferResult(let result) = try await nextStatus(where: {
-            if case .transferResult = $0 { true } else { false }
-        }) else { fatalError("predicate guarantees a transferResult") }
-        return result
-    }
-
-    private func nextCommandResult() async throws -> CommandResult {
-        guard case .commandResult(let result) = try await nextStatus(where: {
-            if case .commandResult = $0 { true } else { false }
-        }) else { fatalError("predicate guarantees a commandResult") }
-        return result
-    }
-
-    private func nextAnnounce() async throws -> TransferControl {
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<TransferControl, Error>) in
-            queue.async { [self] in
-                if !pendingAnnounces.isEmpty {
-                    cont.resume(returning: pendingAnnounces.removeFirst())
-                } else if let index = pendingStatuses.firstIndex(where: {
-                    if case .transferResult = $0 { true } else { false }
-                }) {
-                    // A buffered transferResult with no announce ahead of it is a
-                    // typed reject answering *this* download — a successful download
-                    // always notifies the announce first (spec §4.2). It lands in
-                    // `pendingStatuses` when the reject beats this waiter's
-                    // registration (the write-ack → nextAnnounce hop); `deliverStatus`
-                    // only resolves the announce-as-reject case when a waiter is
-                    // already parked, so without draining it here the reject sits
-                    // buffered forever and hangs `downloadObject`.
-                    guard case .transferResult(let result) = pendingStatuses.remove(at: index) else {
-                        fatalError("predicate guarantees a transferResult")
-                    }
-                    cont.resume(throwing: rejectError(result.status))
-                } else {
-                    announceWaiter = cont
                 }
             }
         }
@@ -1947,10 +1416,9 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
             failAuthenticate(.notConnected)
             return
         }
-        // v2's sole pairing-gated notify remains `status`; Weather Request uses msg 5 on this same
-        // ordering domain. A second CCCD would recreate split-CCCD ordering and retry complexity.
-        if let statusCharacteristic = characteristics[GATT.status] {
-            peripheral.setNotifyValue(true, for: statusCharacteristic)
+        // Protocol v4 answers every object request on the one indicated control characteristic.
+        if let objectControl = characteristics[GATT.objectControl] {
+            peripheral.setNotifyValue(true, for: objectControl)
         }
         // #753: the gated retry can begin with the CoC already up — a CCCD write
         // failed and resolved attempt 1 as retryable while attempt 1's PSM read
@@ -2119,8 +1587,8 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         return false
     }
 
-    /// #753 — the one shared retry proxy for a failed *gated op* (a `status` /
-    /// `transferControl` CCCD write or the PSM read), used by both delegate
+    /// #753 — the one shared retry proxy for a failed *gated op* (the `objectControl`
+    /// CCCD write or the PSM read), used by both delegate
     /// branches so they can't drift: retryable only when the failure is
     /// auth-class (`isAuthError`) **and** the peripheral is still connected
     /// **and** a fresh-pair `authenticate()` is parked. Auth-class while still
@@ -2174,20 +1642,16 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         pendingReads.removeAll()
         let writes = pendingWrites.values.flatMap { $0 }
         pendingWrites.removeAll()
-        let statuses = statusWaiters
-        statusWaiters.removeAll()
-        let announce = announceWaiter
-        announceWaiter = nil
         let channels = channelWaiters
         channelWaiters.removeAll()
-        pendingStatuses.removeAll()
-        pendingAnnounces.removeAll()
+        let objectControls = objectControlWaiters
+        objectControlWaiters.removeAll()
+        pendingObjectControlRecords.removeAll()
         openingChannel = false
         disarmChannelWatchdog()
         for cont in reads { cont.resume(throwing: DeviceError.notConnected) }
         for cont in writes { cont.resume(throwing: DeviceError.notConnected) }
-        for waiter in statuses { waiter.cont.resume(throwing: DeviceError.notConnected) }
-        announce?.resume(throwing: DeviceError.notConnected)
+        for waiter in objectControls { waiter.resume(throwing: TransferLinkLost()) }
         for cont in channels { cont.resume(throwing: DeviceError.notConnected) }
     }
 
@@ -2232,143 +1696,65 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
 
 // MARK: - The upload runner
 
-/// One route upload from `uploadRoute` to its terminal outcome. An interrupted
-/// attempt (link/CoC drop) leaves the outcome unresolved — the F sheet shows
-/// "interrupted" via `DeviceLink.state` — and `start()` (the handle's
-/// `resume()`) runs a **whole fresh attempt**: descriptor + all bytes from 0
-/// (uploads restart, not resume — spec §1 principle 4).
-private actor UploadRunner {
+/// One protocol-v4 upload task. TransferClient owns the live request and its STATUS/LIST
+/// reconciliation, so this adapter has no restart/resume state machine.
+private actor V4UploadRunner {
     private let transport: BLETransport
     private let payload: Data
-    private let descriptor: TransferControl
+    private let kind: ObjectKind
+    private let objectID: DeviceObjectID?
+    private let displayName: String
     private let progress: AsyncStream<TransferProgress>.Continuation
     private let outcome: AsyncPromise<TransferOutcome>
     private let assignedID: AsyncPromise<DeviceObjectID?>
     private var attempt: Task<Void, Never>?
-    /// True from the moment the descriptor may have reached the device until a
-    /// correlated committed close lands or the CoC reset completes.
-    private var exchangeOpened = false
+    private var started = false
 
     init(
-        transport: BLETransport, payload: Data, descriptor: TransferControl,
+        transport: BLETransport, payload: Data, kind: ObjectKind,
+        objectID: DeviceObjectID?, displayName: String,
         progress: AsyncStream<TransferProgress>.Continuation,
         outcome: AsyncPromise<TransferOutcome>, assignedID: AsyncPromise<DeviceObjectID?>
     ) {
         self.transport = transport
         self.payload = payload
-        self.descriptor = descriptor
+        self.kind = kind
+        self.objectID = objectID
+        self.displayName = displayName
         self.progress = progress
         self.outcome = outcome
         self.assignedID = assignedID
     }
 
-    /// Start (or restart after a drop). No-op while an attempt runs or after a
-    /// terminal outcome.
     func start() {
-        guard attempt == nil, outcome.current == nil else { return }
+        guard !started else { return }
+        started = true
         attempt = Task {
             await runAttempt()
             attempt = nil
         }
     }
 
-    /// Abort the attempt. Only the slot holder may tear down the shared CoC: an
-    /// upload still queued behind a list read must never close that list's
-    /// channel. If this attempt has opened its descriptor, resetting the channel
-    /// also unwinds its non-cancellation-aware status waiter.
     func cancel() async {
         attempt?.cancel()
-        if exchangeOpened {
-            await transport.teardownChannel()
-            exchangeOpened = false
-        }
         finish(.canceled)
     }
 
     private func runAttempt() async {
-        let slot = await transport.acquireTransferSlot(
-            "upload type=\(descriptor.type.rawValue) id=\(descriptor.objectID) len=\(descriptor.totalLen)"
-        )
-        defer { transport.releaseTransferSlot(slot) }
-        guard outcome.current == nil else { return }
-
-        // No channel and no way to open one = no link at all (H4): terminal.
-        let channel: BLEChannel
         do {
-            channel = try await transport.readyChannel()
-            try Task.checkCancellation()
-        } catch is CancellationError {
-            return
-        } catch {
-            finish(.failed((error as? DeviceError) ?? .notConnected))
-            return
-        }
-
-        do {
-            transport.clearPendingStatuses()
-            transport.logDescriptor(descriptor, slot: slot)
-            // The write acknowledgement can fail after the peripheral accepted
-            // the descriptor, so cleanup responsibility starts before the call.
-            exchangeOpened = true
-            try await transport.write(descriptor.encode(), to: GATT.transferControl)
             let ticks = progress
-            try await channel.send(payload) { ticks.yield($0) }
-            // Bytes flushed — now the only signal that counts: the device's
-            // verdict. Bounded: an abandoned notify must fail the attempt, not
-            // park it forever with the transfer slot held.
-            let result = try await transport.bounded { try await transport.nextTransferResult() }
-            if result.status == .committed {
-                guard descriptor.acceptsCommittedResult(result, byteCount: descriptor.totalLen) else {
-                    await resetOpenedExchange()
-                    finish(.failed(.transferRejected))
-                    return
-                }
-                exchangeOpened = false
-                assignedID.fulfill(result.objectID)
-                finish(.completed)
-                return
-            }
-
-            // A descriptor-open reject can arrive before the raw send finishes;
-            // those unconsumed bytes remain queued on this unframed CoC. Always
-            // reopen the channel before another descriptor can use it.
-            await resetOpenedExchange()
-            switch result.status {
-            case .committed:
-                finish(.failed(.transferRejected))  // handled above; defensive fallback
-            case .crcMismatch:
-                finish(.failed(.crcMismatch))
-            case .aborted:
-                finish(.canceled)  // our cancel raced the completion
-            case .storageFull:
-                finish(.failed(.storageFull))  // catalog full — a new-route reject
-            case .error, .notFound, .busy:
-                finish(.failed(.transferRejected))
-            }
+            let id = try await transport.performUpload(
+                payload: payload, kind: kind, objectID: objectID, displayName: displayName
+            ) { ticks.yield($0) }
+            assignedID.fulfill(id)
+            finish(.completed)
         } catch is CancellationError {
-            await resetOpenedExchange()
-        } catch DeviceError.writeFailed {
-            await resetOpenedExchange()
-            finish(.failed(.writeFailed))  // GATT rejected the descriptor, link up
+            finish(.canceled)
+        } catch let error as DeviceError {
+            finish(.failed(error))
         } catch {
-            await resetOpenedExchange()
-            // The CoC dropped or the device's answer never came. A genuine link
-            // drop stays unresolved — resumable; the sheet's drop watch offers
-            // Resume off the state edge. But the same failure under a link that
-            // still reads `.connected` (a stalled CoC, an abandoned verdict
-            // notify) has no edge coming to unstick the sheet — the
-            // stuck-at-99% wedge. Give a racing disconnect a beat to land, then
-            // classify: link still up → terminal (a retry is a whole fresh
-            // attempt anyway); link down → resumable as before.
-            try? await Task.sleep(for: .seconds(2))
-            if !Task.isCancelled, transport.isLinkUp { finish(.failed(.transferDropped)) }
+            finish(.failed(.transferRejected))
         }
-    }
-
-    private func resetOpenedExchange() async {
-        guard exchangeOpened else { return }
-        await transport.teardownChannel()
-        exchangeOpened = false
     }
 
     private func finish(_ terminal: TransferOutcome) {
@@ -2379,13 +1765,8 @@ private actor UploadRunner {
     }
 }
 
-/// Drives a ride-sync batch (A7): downloads each requested ride object over the
-/// CoC and yields it the instant its bytes are complete + CRC-verified, so a drop
-/// keeps every ride already yielded and `resume()` re-requests only the rest —
-/// whole rides are the batch's elementary unit (spec §1 principle 4, "multi-object
-/// flows resume at whole-object granularity"). The download-object plumbing
-/// (`downloadObject`) owns the per-ride transfer slot, so a stalled batch never
-/// starves reconnect-time list reads. Mirrors `UploadRunner`'s lifecycle.
+/// Drives a ride-sync batch through the same protocol-v4 client. A broken GET restarts itself on
+/// the restored link; the batch keeps no resume cursor or reconciliation cache.
 private actor RideDownloadRunner {
     private let transport: BLETransport
     /// Each requested ride with its device object id, resolved (and validated)
@@ -2394,8 +1775,8 @@ private actor RideDownloadRunner {
     private let rides: AsyncThrowingStream<DownloadedRide, Error>.Continuation
     private let progress: AsyncStream<TransferProgress>.Continuation
     private let outcome: AsyncPromise<TransferOutcome>
-    private var landed: Set<RideID> = []
     private var attempt: Task<Void, Never>?
+    private var started = false
     private var finished = false
 
     init(
@@ -2411,37 +1792,32 @@ private actor RideDownloadRunner {
         self.outcome = outcome
     }
 
-    /// Start (or restart after a drop). No-op while an attempt runs or after a
-    /// terminal outcome; a restart continues at the first not-yet-landed ride.
     func start() {
-        guard attempt == nil, !finished else { return }
+        guard !started else { return }
+        started = true
         attempt = Task {
             await runAttempt()
             attempt = nil
         }
     }
 
-    /// Abort the batch: stop the pump and tear the CoC down so the device discards
-    /// any in-flight partial. Terminal — rides already yielded stay landed.
     func cancel() async {
         attempt?.cancel()
-        await transport.teardownChannel()
         finish(.canceled)
     }
 
     private func runAttempt() async {
         guard !finished else { return }
         do {
-            for (id, objectID) in requests where !landed.contains(id) {
+            for (index, request) in requests.enumerated() {
                 try Task.checkCancellation()
-                let payload = try await transport.downloadObject(type: .ride, objectID: objectID.raw)
-                landed.insert(id)
-                rides.yield(DownloadedRide(id: id, payload: payload))
-                progress.yield(TransferProgress(bytesDone: landed.count, total: requests.count))
+                let payload = try await transport.download(kind: .ride, id: request.objectID)
+                rides.yield(DownloadedRide(id: request.id, payload: payload))
+                progress.yield(TransferProgress(bytesDone: index + 1, total: requests.count))
             }
             finish(.completed)
         } catch is CancellationError {
-            // cancel() resolves the outcome and tears the channel down.
+            finish(.canceled)
         } catch DeviceError.crcMismatch {
             // A corrupt ride object is a hard, non-retryable failure (the bytes on
             // the card are bad) — surface it into the stream and end the batch.
@@ -2452,19 +1828,7 @@ private actor RideDownloadRunner {
                 outcome.fulfill(.failed(.crcMismatch))
             }
         } catch {
-            // A link/CoC drop mid-batch (or a reconnect-needed): stay unresolved —
-            // resumable. What landed is kept (already yielded + persisted); the
-            // sync's drop watch raises H10 and `resume()` re-requests the rest.
-            // But the same failure with the link still up (a stalled CoC, an
-            // abandoned notify's answer timeout) has no state edge coming: the
-            // drop watch never fires and the sync would sit `.syncing` forever.
-            // Classify like the upload runner — give a racing disconnect a beat,
-            // then end the batch terminally when the link still reads connected;
-            // what landed is kept either way and the next sync fetches the rest.
-            try? await Task.sleep(for: .seconds(2))
-            if !Task.isCancelled, transport.isLinkUp {
-                finish(.failed((error as? DeviceError) ?? .transferDropped))
-            }
+            finish(.failed((error as? DeviceError) ?? .transferDropped))
         }
     }
 
@@ -2474,6 +1838,88 @@ private actor RideDownloadRunner {
         progress.finish()
         rides.finish()
         outcome.fulfill(terminal)
+    }
+}
+
+// MARK: - Protocol-v4 physical link
+
+extension BLETransport: TransferLink {
+    public nonisolated var maximumStreamPayload: Int {
+        BLEChannel.defaultChunkSize - FlatStoreV4.streamHeaderLength
+    }
+
+    public func sendControlRecord(_ record: Data) async throws {
+        do {
+            _ = try ControlFrame(decoding: record, direction: .request)
+            try await write(record, to: GATT.objectControl)
+        } catch is WireError {
+            throw DeviceError.writeFailed
+        } catch {
+            throw TransferLinkLost()
+        }
+    }
+
+    public func receiveControlRecord() async throws -> Data {
+        try await withCheckedThrowingContinuation { continuation in
+            queue.async { [self] in
+                if !pendingObjectControlRecords.isEmpty {
+                    continuation.resume(returning: pendingObjectControlRecords.removeFirst())
+                } else if peripheral?.state == .connected {
+                    objectControlWaiters.append(continuation)
+                } else {
+                    continuation.resume(throwing: TransferLinkLost())
+                }
+            }
+        }
+    }
+
+    public func sendStreamRecord(_ record: Data) async throws {
+        do {
+            let channel = try await readyChannel()
+            try await channel.sendRecord(record)
+        }
+        catch is CancellationError { throw CancellationError() }
+        catch { throw TransferLinkLost() }
+    }
+
+    public func receiveStreamRecord() async throws -> Data {
+        do {
+            let channel = try await readyChannel()
+            return try await withTaskCancellationHandler {
+                try await channel.receiveRecord()
+            } onCancel: {
+                channel.cancelReceive()
+            }
+        }
+        catch is CancellationError { throw CancellationError() }
+        catch { throw TransferLinkLost() }
+    }
+
+    public func cancelStreamReceive() async {
+        queue.sync { bleChannel?.cancelReceive() }
+    }
+
+    public func restore() async throws {
+        if stateMulticast.value != .connected {
+            enum RestoreBeat: Sendable { case connected, timedOut }
+            let states = state
+            let beat = await withTaskGroup(of: RestoreBeat.self) { group in
+                group.addTask {
+                    for await value in states where value == .connected { return .connected }
+                    return .timedOut
+                }
+                group.addTask {
+                    try? await Task.sleep(for: .seconds(20))
+                    return .timedOut
+                }
+                let first = await group.next() ?? .timedOut
+                group.cancelAll()
+                return first
+            }
+            guard case .connected = beat else { throw TransferLinkLost() }
+        }
+        do { _ = try await readyChannel() }
+        catch { throw TransferLinkLost() }
     }
 }
 
@@ -2648,8 +2094,8 @@ extension BLETransport: CBCentralManagerDelegate {
             // services, preserving the normal Control session when the weather UUID was on air.
             services = [GATT.deviceInformation, GATT.battery, GATT.obcControlService, GATT.weatherRequestService]
         } else if discoveryPolicy.weatherUploadPending {
-            // The upload leg needs the OBC Control plane (status / PSM / transferControl) for the
-            // ordinary CoC transfer; the weather service rides along for a read that may share
+            // The upload leg needs objectControl + PSM for the ordinary v4 transfer; the weather
+            // service rides along for a read that may share
             // this ephemeral connection.
             services = [GATT.obcControlService, GATT.weatherRequestService]
         } else {
@@ -2683,9 +2129,6 @@ extension BLETransport: CBCentralManagerDelegate {
         if discoveryPolicy.weatherUploadPending { failWeatherUpload(.connectionDropped) }
         discoveryPolicy.didDisconnect()
         characteristics.removeAll()
-        // The scope dies with the link: the device may come back in a new id
-        // era (#769) — the next connection's identity read re-establishes it.
-        lastLibraryScope = nil
         disarmDiscoveryWatchdog()  // the channel watchdog is disarmed by failAllPending below
         // Close the dead CoC, don't just drop the reference: an `L2CAPByteChannel`
         // owns a dedicated run-loop thread + stall `Timer` that only stop via
@@ -2764,7 +2207,7 @@ extension BLETransport: CBPeripheralDelegate {
         for characteristic in service.characteristics ?? [] {
             characteristics[characteristic.uuid] = characteristic
             // Only the **un-gated** BAS notify is armed here (#297). The gated
-            // `status` / `transferControl` notifies and the PSM read wait for
+            // the `objectControl` indication and the PSM read wait for
             // `authenticate()`, so first-time pairing doesn't raise the passkey
             // sheet before the D2 row tap. The device's connect-time battery notify
             // fires before this subscription lands (its next is ~30 s out) — read
@@ -2850,12 +2293,18 @@ extension BLETransport: CBPeripheralDelegate {
             }
             return
         }
-        // Typed device → app `status` messages — the sole device → app channel in
-        // v2 (transferResult / storeChanged / commandResult / **downloadAnnounce** /
-        // weatherRequest). `deliverStatus` routes msg 4 to the announce waiter and
-        // msg 5 to an authenticated Weather Request context read.
-        if uuid == GATT.status {
-            if let data = characteristic.value, let message = try? StatusMessage(decoding: data) { deliverStatus(message) }
+        if uuid == GATT.objectControl {
+            guard error == nil, let record = characteristic.value else {
+                let waiters = objectControlWaiters
+                objectControlWaiters.removeAll()
+                for waiter in waiters { waiter.resume(throwing: TransferLinkLost()) }
+                return
+            }
+            if objectControlWaiters.isEmpty {
+                pendingObjectControlRecords.append(record)
+            } else {
+                objectControlWaiters.removeFirst().resume(returning: record)
+            }
             return
         }
 
@@ -2867,22 +2316,20 @@ extension BLETransport: CBPeripheralDelegate {
         _ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?
     ) {
         // #753: on a fresh pair the FIRST gated op is a CCCD write, not the PSM
-        // read — `beginAuthenticate` arms the `status` notify before reading the
+        // read — `beginAuthenticate` arms the `objectControl` indication before reading the
         // PSM — so it's the CCCD write that raises the passkey sheet, and iOS's
         // post-passkey replay of the gated ops hits the CCCD write *first*. The
         // firmware's post-PairingComplete refusal window therefore most likely
         // clips the CCCD write; without this handler that failure was silently
         // swallowed — and if the window then drained before the PSM read,
-        // `authenticate()` resolved with a DEAD `status` notify (no transferResult
-        // or announce would ever arrive). Map it exactly like the PSM branch: the
+        // `authenticate()` resolved with a dead control indication. Map it exactly like the PSM branch: the
         // shared retryable proxy → resolve the parked authenticate as retryable,
         // and the retry's `beginAuthenticate` re-arms the gated ops. Everything
         // else keeps the pre-existing ignore: a background re-arm has no
         // authenticate pending, and a real decline tears the link down
         // (`didDisconnectPeripheral` owns that path). No notify-state bookkeeping
-        // beyond this. (v2: `transferControl` is write-only — only `status` is
-        // notified now, so it's the sole CCCD this window can clip.)
-        guard characteristic.uuid == GATT.status else { return }
+        // beyond this. `objectControl` is the sole gated CCCD this window can clip.
+        guard characteristic.uuid == GATT.objectControl else { return }
         guard Self.isRetryableGatedFailure(
             error, peripheralConnected: peripheral.state == .connected,
             authenticatePending: authenticateContinuation != nil

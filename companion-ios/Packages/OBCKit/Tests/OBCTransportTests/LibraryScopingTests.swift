@@ -20,6 +20,16 @@ import OBCTransport
         #expect(id.deviceObjectID == DeviceObjectID(42))
     }
 
+    @Test func flatStoreIDRoundTripsWithoutCollapsingToAnEpoch() {
+        let storeID = "8f2c41d96b074ea3b1559c207de83466"
+        let scope = LibraryScope(serial: "OBC-24-000317", storeID: storeID)
+        let id = RideID(deviceObjectID: DeviceObjectID(0x1_0000), scope: scope)
+        #expect(id.rawValue == "v4:\(storeID):65536:OBC-24-000317")
+        #expect(id.scope == scope)
+        #expect(id.deviceObjectID == DeviceObjectID(0x1_0000))
+        #expect(DeviceRouteLink(scope: scope, objectID: DeviceObjectID(7)).matches(scope))
+    }
+
     /// The serial rides last so a serial containing the separator needs no
     /// escaping — the encoding stays injective.
     @Test func serialContainingColonsRoundTrips() {
@@ -44,7 +54,7 @@ import OBCTransport
 
     /// A malformed `v2:` prefix (non-numeric epoch/object id) is not silently
     /// half-parsed — it reads as an opaque unscoped id.
-    @Test(arguments: ["v2:notanumber:3:S", "v2:1:notanumber:S", "v2:1:99999:S", "v2:1:3"])
+    @Test(arguments: ["v2:notanumber:3:S", "v2:1:notanumber:S", "v2:1:18446744073709551616:S", "v2:1:3"])
     func malformedScopedIDsReadAsUnscoped(raw: String) {
         let id = RideID(raw)
         #expect(id.scope == nil)

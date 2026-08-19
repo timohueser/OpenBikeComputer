@@ -42,7 +42,7 @@ let package = Package(
     platforms: [.iOS(.v17), .macOS(.v14)],
     products: [
         .library(name: "OBCDomain", targets: ["OBCDomain"]),
-        .library(name: "OBCProtocolV3", targets: ["OBCProtocolV3"]),
+        .library(name: "OBCProtocolV4", targets: ["OBCProtocolV4"]),
         .library(name: "OBCTransport", targets: ["OBCTransport"]),
         .library(name: "OBCWeatherWire", targets: ["OBCWeatherWire"]),
         .library(name: "OBCWeather", targets: ["OBCWeather"]),
@@ -55,13 +55,11 @@ let package = Package(
             name: "OBCDomain",
             swiftSettings: languageMode
         ),
-        // The Device Object Protocol v3 wire codec (DOS1). Deliberately standalone: it
-        // depends on nothing in this package, so it can only have been written from
-        // `specs/Device_Object_Protocol_v3.md` + `Device_Object_Registries_v2.md` and is
-        // judged solely by the shared vectors under `specs/vectors/device-object-v2/`.
-        // Nothing imports it yet — the transport cutover is a later DOS slice.
+        // FLAT store protocol v4, kept standalone and judged by the pinned records under
+        // `specs/vectors/flat-store-v4/`. The transfer client depends only on its physical-link
+        // seam, so its announce → stream → result and STATUS reconcile paths are host-testable.
         .target(
-            name: "OBCProtocolV3",
+            name: "OBCProtocolV4",
             swiftSettings: languageMode
         ),
         .target(
@@ -70,7 +68,7 @@ let package = Package(
             // WX9 job seam (`Weather/WeatherBLEDeviceLink.swift`) conforms the transport to
             // OBCWeather's `WeatherDeviceLink` protocol. The direction that matters is unchanged —
             // OBCWeather never imports OBCTransport, so no weather code can reach CoreBluetooth.
-            dependencies: ["OBCDomain", "OBCWeather"],
+            dependencies: ["OBCDomain", "OBCProtocolV4", "OBCWeather"],
             swiftSettings: languageMode
         ),
         // Provider-neutral OBCW bytes and wire DTOs. Deliberately separate from
@@ -127,11 +125,10 @@ let package = Package(
             resources: [.copy("Fixtures")],
             swiftSettings: languageMode
         ),
-        // Driven entirely by the checked-in shared vectors (resolved from `#filePath`,
-        // exactly as OBCTransportTests' legacy ProtocolVectorTests does).
+        // Driven entirely by the checked-in protocol-v4 vectors resolved from `#filePath`.
         .testTarget(
-            name: "OBCProtocolV3Tests",
-            dependencies: ["OBCProtocolV3"],
+            name: "OBCProtocolV4Tests",
+            dependencies: ["OBCProtocolV4"],
             swiftSettings: languageMode
         ),
         .testTarget(

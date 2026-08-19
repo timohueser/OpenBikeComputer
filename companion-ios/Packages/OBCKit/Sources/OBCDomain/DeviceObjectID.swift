@@ -1,6 +1,6 @@
 import Foundation
 
-/// A **device object id** (`obc-ble-interface-spec.md` §4.1): the durable `u16`
+/// A **device object id** (`FLAT_Store_Protocol.md` §3): the durable `u64`
 /// the device's object store names its routes and rides by — assigned on
 /// upload/record, stable across reboots for the life of the stored object.
 ///
@@ -11,14 +11,14 @@ import Foundation
 /// id belongs is a compile error, not a silent no-match (#359).
 ///
 /// Encodes/decodes as a **bare number**, so persisted DTOs that stored the raw
-/// `UInt16` keep their on-disk shape.
+/// number keep their on-disk shape while v4 ids can use the full store namespace.
 public struct DeviceObjectID: Hashable, Sendable, Codable {
-    public let raw: UInt16
+    public let raw: UInt64
 
-    public init(_ raw: UInt16) { self.raw = raw }
+    public init<T: BinaryInteger>(_ raw: T) { self.raw = UInt64(raw) }
 
     public init(from decoder: Decoder) throws {
-        raw = try decoder.singleValueContainer().decode(UInt16.self)
+        raw = try decoder.singleValueContainer().decode(UInt64.self)
     }
 
     public func encode(to encoder: Encoder) throws {

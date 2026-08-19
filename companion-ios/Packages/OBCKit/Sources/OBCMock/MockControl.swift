@@ -62,14 +62,14 @@ public final class MockControl: @unchecked Sendable {
     private var _fixtures: FixtureSet
     /// Monotonic stand-in for the device's object-id assignment on upload — starts
     /// above every fixture `deviceObjectID` so a fresh id can't collide.
-    private var _nextObjectID: UInt16 = 1000
+    private var _nextObjectID: UInt64 = 1000
     /// The device's **trip** object store (TR8) — trips uploaded this session,
     /// keyed by the id the device assigned. Empty at boot (a trip lands on the
     /// device only via a whole-trip upload); `listTrips()` serves its catalog.
     private var _deviceTrips: [DeviceTrip] = []
     /// The device's trip-id counter — its own namespace, distinct from route ids
     /// (spec §4.1). Any base works; the app never assumes a value.
-    private var _nextTripID: UInt16 = 1
+    private var _nextTripID: UInt64 = 1
     /// Device object ids the app asked the device to delete this session, in
     /// order — the "Delete trip & routes" cascade tests assert the per-route +
     /// trip delete commands landed (routes then trip, or however composed).
@@ -108,7 +108,7 @@ public final class MockControl: @unchecked Sendable {
     /// The device-side retention sidecar (epic #638): device object id → the level
     /// the phone last pushed. An override layered over each fixture route's
     /// declared `deviceRetention`; absent → `.never`.
-    private var _routeRetention: [UInt16: Retention] = [:]
+    private var _routeRetention: [UInt64: Retention] = [:]
     /// How many `setRouteRetention` commands the app has sent this session (test
     /// hook) — every call, regardless of outcome. Lets a test assert a redundant
     /// push was *not* made (idempotence) or that a skipped trip stage still got its
@@ -118,7 +118,7 @@ public final class MockControl: @unchecked Sendable {
     /// expiry countdown runs from. Stamped `now` at **upload commit** (the device's
     /// rule) and seeded from a fixture's `lastUsedDaysAgo`; **never** moved by a
     /// retention set (spec §4.4 — changing retention keeps the anchor).
-    private var _routeLastUsed: [UInt16: Date] = [:]
+    private var _routeLastUsed: [UInt64: Date] = [:]
     /// Every `setClock` sample the transport sent, in order — the connect-time
     /// clock-stamp tests assert the prologue landed one.
     private var _setClockSamples: [WallClockSample] = []
@@ -433,7 +433,7 @@ public final class MockControl: @unchecked Sendable {
         // slot is free — a multi-stage fresh trip then can't fit (issue #657).
         if lock.withLocked({ _routesNearlyFull }) {
             let used = Set(catalog.map(\.id.raw))
-            var filler = UInt16(50_000)
+            var filler = UInt64(50_000)
             while catalog.count < DeviceStorage.routeCapacity - 1 {
                 while used.contains(filler) { filler &+= 1 }
                 catalog.append(RouteCatalogEntry(
