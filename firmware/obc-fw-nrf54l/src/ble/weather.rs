@@ -7,8 +7,7 @@
 //!
 //! - **Inputs** cross the plane boundary the same way every other App fact does: the ride loop
 //!   distils an [`obc_app::ble::WeatherSnapshot`] once per pass ([`set_weather_inputs`], the reverse
-//!   direction of `app_ble_status`), the Config write path pokes [`note_settings_changed`], and a
-//!   committed bundle pokes [`note_commit`] from the store's finish path.
+//!   direction of `app_ble_status`), and the Config write path pokes [`note_settings_changed`].
 //! - **Outputs** are exactly two: `server.set` on the Weather Request context attribute (so the
 //!   next authenticated read serves this request), and [`super::state::arm_weather_request`] (the
 //!   bounded advertising swap the lifecycle loop already honours — budget expiry and the
@@ -16,6 +15,29 @@
 //!
 //! Nothing here is periodic: the task sleeps until the scheduler's own next instant or an event
 //! edge, so an idle, not-riding device costs no wakeups at all.
+//!
+//! # ⚠️ Parked for the c3a dev window (FS7.5-c3a, epic #1256)
+//!
+//! **This plane raises no requests right now, and that is deliberate rather than broken.** §11.5
+//! bound the OBCW exchange to the CoC, and the CoC now carries protocol-v4 stream records: a weather
+//! bundle is object kind 4 and arrives as an ordinary `PUT`. The v1 upload path — and with it
+//! `note_commit`, which was the **only** writer of the commit edge — was deleted by the radio's
+//! cutover.
+//!
+//! Left running, the consequences would all be lies told to the rider: `commit_succeeded` could
+//! never fire, so every request would run the retry ladder to exhaustion; [`refresh_in_flight`]
+//! would stick `true` and leave the ride UI showing a refresh that can never finish; and the phone
+//! would be woken, repeatedly, for an upload the device has nowhere to put. On a flat card a
+//! `WeatherBundle` `PUT` does land — but nothing reads it yet, because the reader still comes
+//! through the FAT weather slots.
+//!
+//! So [`run`] parks after one log line **and [`request_weather_now`] stops raising anything** — the
+//! consumer and the producer together, because parking only the consumer would leave the rider's
+//! dashboard visit raising an "Updating…" level whose only two clearers are inside the parked loop.
+//! That is the smallest honest state: no requests, no ladder, no stuck spinner, and nothing
+//! pretending to work. **Unparking is the weather cutover** — teaching
+//! the reader to take kind 4 out of the flat store and ringing the commit edge from wherever that
+//! lands — which is its own slice and deliberately not smuggled in here.
 
 use core::cell::{Cell, RefCell};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -96,21 +118,20 @@ pub fn set_weather_inputs(s: WeatherSnapshot) {
 /// loop calls this on the non-weather → Weather-dashboard transition; returning from one of the
 /// dashboard's child surfaces does not re-arm it.
 pub fn request_weather_now() {
-    IN_FLIGHT.store(true, Ordering::Relaxed);
-    URGENT.store(true, Ordering::Relaxed);
-    WAKE.signal(());
+    // **The producer is a no-op while the plane is parked** (FS7.5-c3a), and this is the half the
+    // park was missing. Raising `IN_FLIGHT` here would put "Updating…" on the ride UI, and **both**
+    // of its clearers live inside the loop that no longer runs — so one visit to the Weather
+    // dashboard would leave the indicator on for the rest of the boot. Parking the consumer while
+    // leaving the producer raising a level nothing lowers is worse than not parking at all: it turns
+    // a feature that does nothing into a UI that lies permanently.
+    //
+    // `URGENT` and the wake are pointless rather than harmful with no loop to receive them, and they
+    // go too, so that unparking is one edit in one place.
+    defmt::debug!("weather: dashboard opened — no request raised, the plane is parked for c3a");
 }
 
 pub fn refresh_in_flight() -> bool {
     IN_FLIGHT.load(Ordering::Relaxed)
-}
-
-/// A weather bundle committed (WX7 store, via `ObjectStore::weather_finish`): finish the pending
-/// request and re-anchor the schedule.
-pub(crate) fn note_commit() {
-    IN_FLIGHT.store(false, Ordering::Relaxed);
-    COMMITTED.store(true, Ordering::Relaxed);
-    WAKE.signal(());
 }
 
 /// Accept a compact phone-side "both sources unchanged" acknowledgement. The command handler calls
@@ -132,6 +153,14 @@ pub(crate) fn note_settings_changed() {
 /// The due-scheduler loop. Joined into `ble::run`'s task set for the stack's whole life; every
 /// local is small (the context is 52 bytes) so it adds no meaningful poll-frame weight (#677).
 pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, shared: &SharedStoreMutex) -> ! {
+    // See the module docs: the commit edge this scheduler needs died with the v1 CoC upload path,
+    // and every branch below would raise requests nothing can satisfy. Parking is what keeps the UI
+    // honest until the weather cutover lands.
+    warn!(
+        "ble: [weather] parked for the c3a dev window — the OBCW upload path is gone with the v1 CoC; no requests are raised and the refresh indicator stays clear"
+    );
+    core::future::pending::<()>().await;
+    #[allow(unreachable_code)]
     let mut sched = DueScheduler::new();
     // Whether the GATT attribute currently carries a live request (vs. the §11.4 resting value).
     let mut context_live = false;

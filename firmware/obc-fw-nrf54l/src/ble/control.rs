@@ -8,12 +8,11 @@
 //! - A `command` write ([`run_command`](crate::link::command::run_command)) — the §4.4 imperatives —
 //!   answers `commandResult` and, on a store movement, notifies `storeChanged` (status msg 2 —
 //!   protocol v2's sole change signal).
-//! - A `transfer_control` write is decoded +
-//!   [`classify_transfer`](crate::link::transfer::classify_transfer)-ed. A validated transfer is
-//!   **armed** — signalled to the CoC task ([`super::state::TRANSFER_ARM`]) and answered later by the
-//!   data plane; everything invalid (or an abort with nothing in flight) gets an immediate typed
-//!   [`obc_ble::TransferResult`] on `status`, and an abort aimed at the in-flight transfer is forwarded
-//!   to the data plane, which answers it.
+//! - An `objectControl` write is one complete **protocol-v4** control frame
+//!   (`FLAT_Store_Protocol.md` §5.1). It is *not* parsed here — §5 makes an adapter a thing that
+//!   owns record boundaries and nothing else — but staged for the engine driver
+//!   ([`super::v4::serve_objects`]), which answers it with a confirmed indication on the same
+//!   characteristic. The ATT response says only that the frame was taken.
 //! - A `config` write validates + persists the rename/units to the RRAM settings; the advertised name
 //!   follows on the next advertise cycle.
 //! - The pairing/bonding events drive the passkey card + the single stored bond.
@@ -32,15 +31,14 @@ use trouble_host::prelude::*;
 
 use crate::link::command::run_command;
 use crate::link::identity::apply_config_write;
-use crate::link::transfer::{classify_transfer, TransferDisposition};
-use crate::link::{StatusBytes, TRANSFER_ACTIVE};
+use crate::link::StatusBytes;
 use crate::object_store::ObjectStore;
 use crate::SharedStoreMutex;
 
 use super::data_plane::{notify_bounded, publish_store_change};
 use super::gatt::{config_blob, Server};
 use super::state;
-use super::state::{publish, TRANSFER_ABORT, TRANSFER_ARM};
+use super::state::publish;
 
 /// Serve GATT + connection events until the peer drops the link. Returns the disconnect reason (HCI
 /// status code); answers the OBC Control writes with the typed `status` envelope, publishes the link
@@ -58,6 +56,47 @@ pub(crate) async fn serve_connection(
         match conn.next().await {
             GattConnectionEvent::Disconnected { reason } => break reason,
             GattConnectionEvent::Gatt { event } => {
+                // **`objectControl` is served before the shared store is locked, and that ordering is
+                // load-bearing** (`FLAT_Store_Protocol.md` §5, FS7.5-c3a). The ride loop holds this
+                // lock across a render pass; parking here would let a `PUT`'s first CoC SDU reach the
+                // engine *before* the control frame that admits it, which is precisely the
+                // cross-channel ordering the specification makes the binding's job. This arm needs no
+                // store — the engine owns the card, one queue hop away — so it takes no lock, and the
+                // adapter's own admission hold covers the remaining window.
+                let event = match event {
+                    GattEvent::Write(e) if e.handle() == server.obc.object_control.handle => {
+                        let staging = e.with_data(|_off, data| super::v4::stage_control(data));
+                        let reply = match staging {
+                            super::v4::Staging::Taken => {
+                                info!("ble: [gatt] objectControl: control record staged for the engine");
+                                e.accept()
+                            }
+                            // A frame this link cannot carry. The length *is* the complaint.
+                            super::v4::Staging::BadLength => {
+                                warn!("ble: [gatt] objectControl write refused — outside the record bound");
+                                e.reject(AttErrorCode::INVALID_ATTRIBUTE_VALUE_LENGTH)
+                            }
+                            // The driver is busy with the previous record, or no stream channel is up
+                            // yet. Neither is a complaint about *these* bytes, so the length error
+                            // would be a lie: the client should retry, not re-encode.
+                            super::v4::Staging::Unavailable => {
+                                warn!("ble: [gatt] objectControl write refused — the driver cannot take it yet");
+                                e.reject(AttErrorCode::PROCEDURE_ALREADY_IN_PROGRESS)
+                            }
+                        };
+                        match reply {
+                            Ok(reply) => reply.send().await,
+                            Err(e) => warn!("ble: [gatt] error accepting objectControl: {:?}", e),
+                        }
+                        if matches!(staging, super::v4::Staging::Taken) {
+                            // The ATT response is out, so the peer may write again — but the engine
+                            // may not have consumed the staged record yet.
+                            super::v4::control_taken().await;
+                        }
+                        continue;
+                    }
+                    other => other,
+                };
                 // Lock the shared store for this event's synchronous store work (an SD delete / upload
                 // check / config persist), then drop the guard before the async status/store-change
                 // sends below (#270). The ride loop's map render can hold the same lock, so a control
@@ -96,56 +135,6 @@ pub(crate) async fn serve_connection(
                             store_changed = outcome.store_changed;
                             forget_after_ack = outcome.forget_bond;
                             info!("ble: [gatt] command write");
-                            e.accept()
-                        } else if handle == server.obc.transfer_control.handle {
-                            match e.with_data(|_off, data| {
-                                classify_transfer(data, store, &mut guard, crate::link::Transport::Ble)
-                            }) {
-                                TransferDisposition::Arm(armed) => {
-                                    // **The claim's answer is honoured** (#1146 P2) — the radio twin
-                                    // of the USB control plane's site, and for the same reason: the
-                                    // gate grew a second refuser (a live route search holding the
-                                    // scratch arena's nav arm) without this call site noticing.
-                                    // Nothing awaits between `classify_transfer` and this claim on
-                                    // the one cooperative executor, so a refusal is unreachable
-                                    // today; arming against it anyway would hand the CoC plane a
-                                    // store someone else owns.
-                                    if TRANSFER_ACTIVE.claim(crate::link::gate_owner(crate::link::Transport::Ble)) {
-                                        info!("ble: [gatt] transfer_control: transfer armed");
-                                        TRANSFER_ARM.signal(armed);
-                                    } else {
-                                        warn!("ble: [gatt] transfer_control lost the gate after classify — busy");
-                                        debug_assert!(
-                                            false,
-                                            "the gate moved between classify and claim with no await between them"
-                                        );
-                                        status_msg = Some(crate::link::transfer_result(
-                                            armed.object_id(),
-                                            obc_ble::TransferStatus::Busy,
-                                        ));
-                                    }
-                                }
-                                TransferDisposition::AbortActive => {
-                                    info!("ble: [gatt] transfer_control: abort → data plane");
-                                    TRANSFER_ABORT.signal(());
-                                }
-                                TransferDisposition::Answer(bytes) => {
-                                    info!("ble: [gatt] transfer_control: answered on status");
-                                    status_msg = Some(bytes);
-                                }
-                                // The *drain* half of an idle abort is a transport obligation the
-                                // radio does not have — it exists so a transport with an unrecallable
-                                // byte pipe can empty it before the peer retries (the cable's bulk
-                                // endpoint), and the CoC is closed and reopened around any failed
-                                // exchange, which *is* the discard and is the peer's to perform. The
-                                // **store** half is not transport-specific, so it still runs; there
-                                // is simply nothing to sequence it behind.
-                                TransferDisposition::AnswerIdleAbort(abort) => {
-                                    info!("ble: [gatt] transfer_control: idle abort answered on status");
-                                    crate::link::transfer::finish_idle_abort(store, &mut guard, &abort);
-                                    status_msg = Some(abort.bytes);
-                                }
-                            }
                             e.accept()
                         } else if handle == server.obc.config.handle {
                             // Validate + apply: units and rename persist to RRAM settings; the

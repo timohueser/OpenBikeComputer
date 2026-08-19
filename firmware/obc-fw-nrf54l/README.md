@@ -591,6 +591,40 @@ host-tested `obc-ble` crate (`cargo test -p obc-ble`, pinned to `specs/vectors/`
   device **Settings ▸ Bluetooth ▸ Forget phone** (hold) + app *Forget* + iOS Bluetooth forget → next
   contact pairs with a fresh passkey.
 
+## Protocol v4 on the radio (FS7.5-c3a, epic #1256) — what a phone sees on each card
+
+The BLE object surface is [`FLAT_Store_Protocol.md`](../../specs/FLAT_Store_Protocol.md) §5.1:
+`objectControl` (`3C920009`, Write Request + confirmed indication) carries control frames, the
+L2CAP CoC carries §3.8 stream records one per SDU, and `protocolVersion` reads two bytes, `4`.
+`command` / `status` / `config` are untouched and still governed by
+[`obc-ble-interface-spec.md`](../../specs/obc-ble-interface-spec.md). **USB is still on v2.**
+
+The engine lives in the flat store's `storage_task`, not in the radio — the store seam is
+synchronous, and the card has exactly one writing execution context. The transports are record
+shippers.
+
+**The storage task is spawned on every card**, and that is what makes the two cases below one code
+path rather than a branch:
+
+| Card in the slot | What a v4 client gets |
+| :-- | :-- |
+| **A flat store** | Full service: `LIST` from the catalog, `GET`, `PUT`, `REMOVE`, `CANCEL`. `ARM` answers `rejected` — this build has no update policy wired (§4 needs `obc-dfu`, the RRAM boot page and a reboot). |
+| **A FAT card** | Every opcode answers `readOnly` with detail `unformatted 3`. That is not a fallback or a stub: §5.6 step 1 classifies a FAT card as **not a flat store**, and §3.9 already specifies exactly this answer for one — including for the reads, because there is nothing to read. |
+| **A card that carries a broken flat store** | Boot shows STORAGE FAULT before any plane comes up; the honesty rules in `obc-app` are unchanged. |
+
+Two client-visible facts worth knowing before you debug a phone against this:
+
+- **Open the CoC before writing `objectControl`.** The driver owns the channel, so a control write
+  arriving with no channel up is refused at the ATT layer (`PROCEDURE_ALREADY_IN_PROGRESS`) rather
+  than staged for an answer that would arrive whenever a channel happened to open. Lifting this
+  needs the driver split from the channel owner and is a named follow-up.
+- **Ride recording is unavailable on a flat card** until FS8 (#1390) lands the tail-in-slot journal.
+  The FAT arm's ride path is untouched.
+
+On-glass checks this section is waiting for: a real phone completing a `PUT` and a `GET`, the
+admission race (stream frame ahead of its control write) surviving a ride-loop render pass, and a
+`CANCEL` landing mid-download.
+
 ## The USB device plane (issue #889) — **in every build; cable-gated since #936**
 
 Every build ships a second transport for the *same* companion protocol: the LM20's USBHS
