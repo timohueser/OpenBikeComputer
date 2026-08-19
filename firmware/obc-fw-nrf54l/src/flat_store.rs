@@ -408,9 +408,12 @@ pub(crate) enum Request {
     /// stalls a download.
     Pump { out: &'static mut [u8] },
     /// A link came up with these record ceilings (§5.1, §5.2). Releases whatever the previous link
-    /// held and re-pins the engine to what *this* link negotiated. `Err(StoreError::Invalid)` is
-    /// §5.1's "a link below the protocol floor is refused rather than truncated".
-    LinkUp { control: usize, stream: usize },
+    /// held and re-pins the engine to what *this* link negotiated.
+    ///
+    /// It carries a **validated** [`Ceilings`], not two numbers, so §5.1's floor refusal never
+    /// reaches this queue: [`Ceilings::for_ble`] is where a link is judged, the adapter closes the
+    /// channel on `None`, and nothing here has to answer a transport verdict with a `StoreError`.
+    LinkUp { ceilings: Ceilings },
     /// §3.8's third form of cancel: the link went away. Answers nobody, because there is nobody
     /// left to answer.
     LinkLost,
@@ -593,6 +596,20 @@ pub(crate) async fn storage_task(
 /// One request against the store. **Synchronous and out of line**: it is the whole write surface, so
 /// its frame is measured as its own symbol rather than folded into the task's poll frame — the same
 /// reason `mount_at_boot` is `#[inline(never)]`.
+///
+/// # ⚠️ Synchronous is a contract here, not an implementation detail
+///
+/// The v4 adapters hand this function `&'static` borrows of buffers **they** own — a staged control
+/// record, a received stream record, the reaction buffer — and they are free to reuse those buffers
+/// the instant the answer to their call arrives. That is sound for exactly one reason: `serve` never
+/// yields, so "the answer arrived" and "the engine is done with the bytes" are the same instant.
+///
+/// **The stepped-commit follow-up recorded on #1420 would break that.** A resumable commit, an async
+/// block device, or a per-command yield seam inside `Store::commit` all turn this into a function
+/// that can be suspended with an adapter's buffer borrowed — at which point the adapter may stage
+/// the next record over bytes the engine has not finished reading. Whoever lands that seam owes this
+/// module a different ownership story (a copy at the boundary, or a per-record token the adapter
+/// waits on), and this paragraph is the note that says so at the site rather than in an issue.
 #[inline(never)]
 fn serve(
     store: &FlatStore<FlatCard>,
@@ -628,18 +645,7 @@ fn serve(
             let reaction = engine.poll(store, out);
             Ok(Outcome::Reacted { reaction, out })
         }
-        Request::LinkUp { control, stream } => {
-            // §5.1: a link below the protocol floor cannot carry this protocol and the adapter
-            // refuses the connection rather than truncating. `Ceilings::new` returning `None` *is*
-            // that refusal, and it reaches the adapter as the one error it can act on.
-            let Some(ceilings) = Ceilings::new(control, stream) else {
-                defmt::warn!(
-                    "flat/v4: link offers control {=usize} B / stream {=usize} B — below the protocol floor, refused",
-                    control,
-                    stream
-                );
-                return Err(StoreError::Invalid);
-            };
+        Request::LinkUp { ceilings } => {
             // A new link has no live transfer, and the old one's holds must go back before the
             // engine forgets them: `on_link_lost` is the release, and the rebuild is what re-pins
             // the ceilings a *negotiated* ATT MTU decides. Rebuilding in place rather than mutating
@@ -647,7 +653,11 @@ fn serve(
             // live transfer would frame the rest of it against a link that no longer exists.
             engine.on_link_lost(store);
             *engine = Engine::new(ceilings);
-            defmt::info!("flat/v4: link up — control {=usize} B, stream {=usize} B", control, stream);
+            defmt::info!(
+                "flat/v4: link up — control {=usize} B, stream {=usize} B",
+                ceilings.control(),
+                ceilings.stream()
+            );
             Ok(Outcome::Done)
         }
         Request::LinkLost => {

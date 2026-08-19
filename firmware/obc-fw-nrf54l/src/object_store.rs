@@ -1273,6 +1273,12 @@ impl ObjectStore {
 
     // ==================== the map upload (issue #927) ====================
 
+    /// The active bundle's identity for the request context's bundle group (§11.4 validity bit 3)
+    /// and the scheduler's age input — the boot/commit-refreshed slot selection, no card I/O.
+    pub fn weather_active(&self, shared: &SharedStore) -> Option<obc_weather::Candidate> {
+        shared.storage.as_ref().and_then(|s| s.weather_active())
+    }
+
     /// Validate + arm a **map** upload (spec §4.2 / §10). Three refusals, all before a byte streams,
     /// because a map runs for minutes and a late failure costs the rider all of them:
     /// a named object id (maps are **new-only** — see `Storage`'s map section for why the device
@@ -1288,12 +1294,6 @@ impl ObjectStore {
     /// A map carries no catalog slot in this store: there is no `mapList` on the wire, and the card's
     /// map catalog is derived by a directory scan whenever it is wanted
     /// ([`Storage::scan_maps_into`](crate::sd::Storage::scan_maps_into)) rather than held resident.
-    /// The active bundle's identity for the request context's bundle group (§11.4 validity bit 3)
-    /// and the scheduler's age input — the boot/commit-refreshed slot selection, no card I/O.
-    pub fn weather_active(&self, shared: &SharedStore) -> Option<obc_weather::Candidate> {
-        shared.storage.as_ref().and_then(|s| s.weather_active())
-    }
-
     pub fn map_upload_open(
         &mut self,
         shared: &SharedStore,

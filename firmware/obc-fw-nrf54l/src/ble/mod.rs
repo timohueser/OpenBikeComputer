@@ -444,6 +444,13 @@ pub async fn run(
     // `protocolVersion` needs no boot seed since c3a: §5.1 makes it two fixed bytes (`u16` = 4),
     // declared as the characteristic's `value`. Protocol v2's store-epoch blob is retired — a v4
     // client learns the card's identity from the `StoreId` every `LIST` page carries.
+    // **The protocol-v4 reaction buffer, taken once for the life of the image** (FS7.5-c3a). Not
+    // per connection: the buffer crosses the write queue inside a request, so a call whose future is
+    // dropped at a supervision timeout leaves it parked in the engine's reply slot — and a
+    // per-connection take would then mint a *second* `&'static mut` to the same bytes. One lane,
+    // outliving every connection, makes that unconstructible; `Lane::reclaim` is how the parked
+    // buffer comes back.
+    let mut v4_lane = v4::Lane::take();
     // The resting value: a structurally valid "nothing is due" rather than a zeroed buffer, so a
     // peer that reads the characteristic out of turn cannot mistake it for a request at 0°N 0°E.
     // Seeded with the **stored** refresh byte, not `EMPTY`'s compile-time default (#1221 F2):
@@ -596,7 +603,7 @@ pub async fn run(
                         serve_connection(stack, server, &conn, store, shared),
                         join4(
                             negotiate_link(stack, &conn),
-                            v4::serve_objects(stack, server, &conn),
+                            v4::serve_objects(stack, server, &conn, &mut v4_lane),
                             battery_task(stack, server, &conn),
                             link_control(stack, server, &conn, store, shared, advertising_intent),
                         ),
@@ -606,15 +613,20 @@ pub async fn run(
                         Either::First(reason) => reason,
                         Either::Second(_) => unreachable!("the background futures never return"),
                     };
-                    // The drop may have cancelled the data plane mid-transfer (at an await): discard any
-                    // in-flight upload + release the store's open handles, clear the one-transfer gate, and
-                    // drain any latched arm/abort so the next connection starts clean (uploads restart).
-                    //
-                    // Everything here is scoped to **this** wire, and none of it is incidental
-                    // (issue #1039): the cable can be uploading while the phone drops off. The gate
-                    // is released only if the radio was the one holding it, `TRANSFER_ARM` /
-                    // `TRANSFER_ABORT` are this plane's own signals (USB has its own pair), and
-                    // `link_reset` closes the temp handle only if the temp is what is open.
+                    // **§3.8's third form of cancel, and it belongs here rather than in the driver**
+                    // (FS7.5-c3a). A peer disconnect resolves the `select` above and *drops*
+                    // `serve_objects`, so the driver's own teardown never runs: a live `PUT` would
+                    // keep its reservation and a live `GET` its hold — pinning a revision the store
+                    // cannot free — for as long as the rider stayed disconnected. Releasing from the
+                    // disconnect arm is what makes "the link went away" reach the engine on the path
+                    // that actually happens.
+                    if let Some(writer) = crate::flat_store::writer() {
+                        v4::release_engine(&writer).await;
+                    }
+                    // The v1 half of the same teardown: discard any in-flight upload and release the
+                    // store's open handles. Scoped to **this** wire (#1039) — the cable can be
+                    // uploading while the phone drops off — and `link_reset` closes the temp handle
+                    // only if the temp is what is open.
                     {
                         let mut guard = shared.lock().await;
                         store.borrow_mut().link_reset(&mut guard);

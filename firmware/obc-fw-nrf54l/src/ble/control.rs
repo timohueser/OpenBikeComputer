@@ -56,6 +56,47 @@ pub(crate) async fn serve_connection(
         match conn.next().await {
             GattConnectionEvent::Disconnected { reason } => break reason,
             GattConnectionEvent::Gatt { event } => {
+                // **`objectControl` is served before the shared store is locked, and that ordering is
+                // load-bearing** (`FLAT_Store_Protocol.md` §5, FS7.5-c3a). The ride loop holds this
+                // lock across a render pass; parking here would let a `PUT`'s first CoC SDU reach the
+                // engine *before* the control frame that admits it, which is precisely the
+                // cross-channel ordering the specification makes the binding's job. This arm needs no
+                // store — the engine owns the card, one queue hop away — so it takes no lock, and the
+                // adapter's own admission hold covers the remaining window.
+                let event = match event {
+                    GattEvent::Write(e) if e.handle() == server.obc.object_control.handle => {
+                        let staging = e.with_data(|_off, data| super::v4::stage_control(data));
+                        let reply = match staging {
+                            super::v4::Staging::Taken => {
+                                info!("ble: [gatt] objectControl: control record staged for the engine");
+                                e.accept()
+                            }
+                            // A frame this link cannot carry. The length *is* the complaint.
+                            super::v4::Staging::BadLength => {
+                                warn!("ble: [gatt] objectControl write refused — outside the record bound");
+                                e.reject(AttErrorCode::INVALID_ATTRIBUTE_VALUE_LENGTH)
+                            }
+                            // The driver is busy with the previous record, or no stream channel is up
+                            // yet. Neither is a complaint about *these* bytes, so the length error
+                            // would be a lie: the client should retry, not re-encode.
+                            super::v4::Staging::Unavailable => {
+                                warn!("ble: [gatt] objectControl write refused — the driver cannot take it yet");
+                                e.reject(AttErrorCode::PROCEDURE_ALREADY_IN_PROGRESS)
+                            }
+                        };
+                        match reply {
+                            Ok(reply) => reply.send().await,
+                            Err(e) => warn!("ble: [gatt] error accepting objectControl: {:?}", e),
+                        }
+                        if matches!(staging, super::v4::Staging::Taken) {
+                            // The ATT response is out, so the peer may write again — but the engine
+                            // may not have consumed the staged record yet.
+                            super::v4::control_taken().await;
+                        }
+                        continue;
+                    }
+                    other => other,
+                };
                 // Lock the shared store for this event's synchronous store work (an SD delete / upload
                 // check / config persist), then drop the guard before the async status/store-change
                 // sends below (#270). The ride loop's map render can hold the same lock, so a control
@@ -83,7 +124,6 @@ pub(crate) async fn serve_connection(
                 let mut status_msg: Option<StatusBytes> = None;
                 let mut store_changed: Option<ObjectType> = None;
                 let mut config_written = false;
-                let mut object_control_staged = false;
                 let mut forget_after_ack = false;
                 let mut secured_context_read = false;
                 let reply = match event {
@@ -96,27 +136,6 @@ pub(crate) async fn serve_connection(
                             forget_after_ack = outcome.forget_bond;
                             info!("ble: [gatt] command write");
                             e.accept()
-                        } else if handle == server.obc.object_control.handle {
-                            // **Protocol v4's control channel** (`FLAT_Store_Protocol.md` §5.1): one
-                            // Write Request value is one complete control frame, and the answer is a
-                            // confirmed indication the engine driver sends — not this reply.
-                            //
-                            // Nothing is parsed here, and that is the adapter rule rather than
-                            // laziness (§5: an adapter "never parses a payload"). The record is
-                            // staged for [`super::v4::serve_objects`], which owns the one engine
-                            // lane; the ATT response below says only that the frame was taken.
-                            if e.with_data(|_off, data| super::v4::stage_control(data)) {
-                                object_control_staged = true;
-                                info!("ble: [gatt] objectControl: control record staged for the engine");
-                                e.accept()
-                            } else {
-                                // A frame this link cannot carry, or a driver that has not taken the
-                                // previous one. An ATT error is the honest answer: the alternative is
-                                // a write the client believes landed and an indication that never
-                                // comes.
-                                warn!("ble: [gatt] objectControl write refused — record could not be staged");
-                                e.reject(AttErrorCode::INVALID_ATTRIBUTE_VALUE_LENGTH)
-                            }
                         } else if handle == server.obc.config.handle {
                             // Validate + apply: units and rename persist to RRAM settings; the
                             // advertised name follows on the next adv cycle.
@@ -184,12 +203,6 @@ pub(crate) async fn serve_connection(
                 }
                 if let Some(ty) = store_changed {
                     publish_store_change(stack, server, store, ty).await;
-                }
-                if object_control_staged {
-                    // The ATT response is out, so the peer may write again — but the driver may not
-                    // have copied the staged record yet. Waiting for its acknowledgement here is
-                    // what keeps `stage_control`'s single-record buffer honest without a queue.
-                    super::v4::control_taken().await;
                 }
                 if config_written {
                     // Re-seed the characteristic with the canonical blob (what a read serves).
