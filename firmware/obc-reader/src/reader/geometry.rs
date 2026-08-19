@@ -202,7 +202,7 @@ impl<'a> Reader<'a> {
     /// The parsed LOD pyramid (coarsest first).
     #[inline]
     pub fn lods(&self) -> &[Lod] {
-        self.shard_lods.unwrap_or(&self.tables.lods)
+        &self.tables.lods
     }
 
     /// Pick the finest LOD whose range still covers `mpp` (meters/pixel). The
@@ -240,7 +240,7 @@ impl<'a> Reader<'a> {
         self.cache
             .try_borrow_mut()
             .map_err(MapReadError::Cache)?
-            .index_read(self.src, self.file, entry, &mut b)
+            .index_read(self.src, entry, &mut b)
             .map_err(MapReadError::Source)?;
         // §5.1's four validity rules on the pair, restated for v14's units. The last one is the
         // interesting one: a chunk's *content* still may not exceed `Chunk Size`, but its **span**
@@ -297,8 +297,7 @@ impl<'a> Reader<'a> {
         // A successful prior expanded walk is a complete ordered leaf list for every query wholly
         // inside its cover. Copy it out before invoking the callback: a callback loads geometry and
         // therefore borrows this same RefCell.
-        let cached =
-            self.cache.try_borrow_mut().map_err(MapReadError::Cache)?.cached_walk(self.file, lod as u8, &query);
+        let cached = self.cache.try_borrow_mut().map_err(MapReadError::Cache)?.cached_walk(lod as u8, &query);
         if let Some(entries) = cached {
             for entry in entries {
                 if entry.node.intersects(&query) {
@@ -313,7 +312,7 @@ impl<'a> Reader<'a> {
         let mut cacheable = true;
         self.walk_geometry_prefetch(l, 0, self.bbox, &query, &cover, 0, &mut entries, &mut cacheable, &mut visit)?;
         if cacheable {
-            self.cache.try_borrow_mut().map_err(MapReadError::Cache)?.store_walk(self.file, lod as u8, cover, &entries);
+            self.cache.try_borrow_mut().map_err(MapReadError::Cache)?.store_walk(lod as u8, cover, &entries);
         }
         Ok(())
     }
@@ -440,7 +439,7 @@ impl<'a> Reader<'a> {
             return Err(MapReadError::Cache(CacheError::Busy));
         }
         let mut cache = self.cache.try_borrow_mut().map_err(MapReadError::Cache)?;
-        let loc = match cache.load_chunk(self.src, self.file, lod as u8, chunk_id, start, len, node) {
+        let loc = match cache.load_chunk(self.src, lod as u8, chunk_id, start, len, node) {
             Ok(loc) => loc,
             Err(error) => return Err(MapReadError::Source(error)),
         };
@@ -502,7 +501,7 @@ impl<'a> Reader<'a> {
         let mut cache =
             self.cache.try_borrow_mut().map_err(|error| FeatureReadError::Read(MapReadError::Cache(error)))?;
         let loc = cache
-            .load_chunk(self.src, self.file, lod as u8, cid, start, len, node)
+            .load_chunk(self.src, lod as u8, cid, start, len, node)
             .map_err(|error| FeatureReadError::Read(MapReadError::Source(error)))?;
         let chunk = match loc {
             ChunkLoc::Slot(i) => &cache.chunks[i].buf[..len],
@@ -536,10 +535,7 @@ impl<'a> Reader<'a> {
         }
         let mut cache =
             self.cache.try_borrow_mut().map_err(|error| FeatureReadError::Read(MapReadError::Cache(error)))?;
-        let Some(i) = cache
-            .chunks
-            .iter()
-            .position(|slot| slot.valid() && slot.file == self.file && slot.lod() == lod as u8 && slot.cid == cid)
+        let Some(i) = cache.chunks.iter().position(|slot| slot.valid() && slot.lod() == lod as u8 && slot.cid == cid)
         else {
             return Ok(None);
         };

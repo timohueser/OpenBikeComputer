@@ -349,31 +349,25 @@ impl<'a> NavNodeRef<'a> {
     }
 }
 
-/// The nav twin of [`EMPTY_POI_DIRECTORY`], kept a `static` for symmetry with it.
-static EMPTY_NAV_DIRECTORY: NavDirectory = NavDirectory::EMPTY;
-
 impl<'a> Reader<'a> {
     /// The parsed nav directory (spec §8.1). Always present in v9; `is_empty()` for a map with no
-    /// routable ways, and [`NavDirectory::EMPTY`] on a volume-set shard (see
-    /// [`Reader::is_set_shard`]) — the graph lives in the core file alone.
+    /// routable ways.
+    ///
+    /// It used to answer [`NavDirectory::EMPTY`] on a volume-set shard, because a shard reader
+    /// borrowed the **core's** tables and this directory's offsets would then have described the
+    /// core file against the shard's bytes. One file, one set of tables, one graph (FS7.5, #1420) —
+    /// there is no longer a reader whose `tables` are not its `src`'s, so the guard has nothing to
+    /// guard against and every nav, POI and hours accessor below simply answers.
     #[inline]
     pub fn nav_directory(&self) -> &NavDirectory {
-        if self.is_set_shard() {
-            return &EMPTY_NAV_DIRECTORY;
-        }
         &self.tables.nav
     }
 
     /// The map's §8.6 routing profiles (1..=8, always present even for an empty graph). N5 exposes
     /// their names on the device; N3 selects one by index and weights edges by
-    /// [`MapProfile::multiplier`]. Empty on a volume-set shard, which has no graph to profile —
-    /// the set's profiles are the core's, through
-    /// [`crate::volume::MountedSet::core_reader`].
+    /// [`MapProfile::multiplier`].
     #[inline]
     pub fn nav_profiles(&self) -> &[MapProfile] {
-        if self.is_set_shard() {
-            return &[];
-        }
         &self.tables.profiles
     }
 
@@ -398,7 +392,6 @@ impl<'a> Reader<'a> {
         scratch: &mut [u8],
         mut visit: impl FnMut(NavNodeRef),
     ) -> Result<(), Error> {
-        // A volume-set shard carries no nav graph (see `is_set_shard`).
         let dir = *self.nav_directory();
         if dir.is_empty() {
             return Ok(());
@@ -460,7 +453,6 @@ impl<'a> Reader<'a> {
     /// already own a [`NavTileCache`] and go through its working set, while [`Reader::nav_edge`]
     /// reads into 512 bytes of its own stack.
     fn nav_edge_chunk_start(&self, edge_id: u32) -> Option<u64> {
-        // A volume-set shard carries no edge pool (see `is_set_shard`).
         let dir = self.nav_directory();
         let cs = dir.chunk_size;
         if dir.edge_chunk_count == 0 || cs != NAV_CHUNK_SIZE {
@@ -547,7 +539,6 @@ impl<'a> Reader<'a> {
         tiles: &mut NavTileCache,
         mut visit: impl FnMut(NavNodeRef),
     ) -> Result<(), Error> {
-        // A volume-set shard carries no nav graph (see `is_set_shard`).
         let dir = *self.nav_directory();
         if dir.is_empty() {
             return Ok(());
@@ -885,7 +876,7 @@ impl<'a> Reader<'a> {
         if idx >= index.node_count() || depth > MAX_QUADTREE_DEPTH || !node.intersects(view) {
             return Ok(());
         }
-        let val = tiles.index_node(self.src, self.file, index, idx).map_err(MapReadError::Source)?;
+        let val = tiles.index_node(self.src, index, idx).map_err(MapReadError::Source)?;
         if val & BRANCH_BIT == 0 {
             if val != EMPTY_LEAF {
                 visit(tiles, val, node);
@@ -930,7 +921,6 @@ impl<'a> Reader<'a> {
         start: (i32, i32),
         mut emit: impl FnMut((i32, i32)),
     ) -> Option<u32> {
-        // A volume-set shard carries no edge pool (see `is_set_shard`).
         let dir = self.nav_directory();
         let cs = dir.chunk_size;
         if dir.edge_chunk_count == 0 || cs == 0 {

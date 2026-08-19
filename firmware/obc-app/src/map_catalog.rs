@@ -175,6 +175,34 @@ pub fn boot_fault(maps: &[MapChoice], unlistable: usize) -> crate::BootFault {
     }
 }
 
+/// **The same rule, for a card that mounted as a flat store** (FS7.5-c1, epic #1256).
+///
+/// The flat store has no directory and no filenames — it has a catalog of typed objects — so the
+/// board cannot hand [`boot_fault`] a `MapChoice` list built from a scan. What it *can* say is the
+/// two facts the rule turns on, and this is where that reduction is written down rather than being
+/// re-derived at a call site with no test harness. Same reason [`boot_fault`] itself lives here: the
+/// board crate is bare metal and CI runs no tests in it.
+///
+/// - `map_objects` — entries whose kind is a map (`MapShard` or `MapSetManifest` in
+///   `FLAT_Store_Format.md` §3.1's registry). Routes, rides and weather bundles are not maps and do
+///   not stop a card from being *NO MAP*.
+/// - `listing_complete` — false when the catalog walk stopped short (a commit moved the copy under
+///   the cursor). **A listing that stopped short is evidence of a map, not of an empty card**, which
+///   is the same thing `unlistable` means for the FAT scan: it is counted, not ignored.
+///
+/// Every map object is reported as *not readable*, and that is the whole of the dev window: c1
+/// mounts the store and does not cut the renderer over to it (that is c2), so a map in a flat
+/// catalog is a map on the card this build cannot draw — precisely what `MapChoice::readable = false`
+/// already means. So a flat card with maps says *MAP UNREADABLE* and a flat card with none says
+/// *NO MAP*, and neither answer needs a screen of its own.
+pub fn flat_boot_fault(map_objects: usize, listing_complete: bool) -> crate::BootFault {
+    // One entry is enough to change the answer, so the list does not have to be the catalog — it has
+    // to be non-empty exactly when the catalog holds a map.
+    let present = [MapChoice { selected: false, uploaded_id: None, readable: false, set: false }];
+    let maps = if map_objects == 0 { &present[..0] } else { &present[..] };
+    boot_fault(maps, usize::from(!listing_complete))
+}
+
 /// What a card-root directory entry is, as far as the map catalog is concerned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MapEntry {
@@ -421,6 +449,32 @@ mod tests {
         // the time this rule is consulted at all (the loop only asks when nothing streams).
         assert_eq!(boot_fault(&[uploaded(3, false)], 2), crate::BootFault::BadMap);
         assert_eq!(boot_fault(&[uploaded_set(7, false)], 1), crate::BootFault::BadMap);
+    }
+
+    /// **The flat store's card, under the same rule** (FS7.5-c1). A store that mounted is not a
+    /// reason to invent a screen; what matters is still whether the card holds a map the rider can
+    /// see, and the answers have to match the FAT ones case for case.
+    #[test]
+    fn a_flat_card_earns_the_same_two_answers_as_a_fat_one() {
+        // An empty catalog — or one holding only routes, rides and weather — is a card with no map.
+        assert_eq!(flat_boot_fault(0, true), crate::BootFault::NoMap, "no map objects is the only NO MAP");
+        // One map object this build cannot render is the whole dev window, and it is MAP UNREADABLE.
+        assert_eq!(flat_boot_fault(1, true), crate::BootFault::BadMap);
+        assert_eq!(flat_boot_fault(1_024, true), crate::BootFault::BadMap, "and a catalog full of them");
+    }
+
+    /// A catalog walk that stopped short is evidence of a map, not of an empty card — the flat twin
+    /// of `unlistable`. Getting this backwards would send a rider hunting for a map the device just
+    /// failed to finish listing.
+    #[test]
+    fn a_flat_listing_that_stopped_short_is_never_no_map() {
+        assert_eq!(
+            flat_boot_fault(0, false),
+            crate::BootFault::BadMap,
+            "an incomplete listing over an apparently empty catalog is MAP UNREADABLE, not NO MAP"
+        );
+        // And it never flips the answer the other way.
+        assert_eq!(flat_boot_fault(4, false), crate::BootFault::BadMap);
     }
 
     /// The safety-critical classification: a shard is a valid OBCM file and must still never be
