@@ -81,6 +81,23 @@ class Fs7BoardCompositionTests(unittest.TestCase):
         self.assertIn("if routes_loaded && trips_loaded", rescan)
         self.assertIn("app.apply_event(obc_app::HostEvent::StoreChanged)", rescan)
 
+    def test_menu_loader_retains_only_bounded_object_open_keys(self) -> None:
+        head = body(FLAT_STORE, "struct CatalogHead", "fn retain_newest")
+        self.assertIn("id: ObjectId", head)
+        self.assertIn("revision: Revision", head)
+        self.assertIn("size_of::<CatalogHead>() <= 16", head)
+        self.assertNotIn("DisplayName", head)
+        self.assertNotIn("EntryMeta", head)
+
+        for loader in ("pub(crate) fn load_routes", "pub(crate) fn load_trips"):
+            section = body(FLAT_STORE, loader, "///" if loader.endswith("load_routes") else None)
+            self.assertIn("heapless::Vec<CatalogHead", section)
+            self.assertNotIn(
+                "heapless::Vec<EntryMeta",
+                section,
+                "menu loaders must not put full catalog metadata for every slot on one frame",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

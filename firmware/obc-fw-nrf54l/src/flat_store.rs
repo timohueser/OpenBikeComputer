@@ -1514,7 +1514,19 @@ pub(crate) fn reconcile_route(
     }
 }
 
-fn retain_newest<const N: usize>(entries: &mut heapless::Vec<EntryMeta, N>, entry: EntryMeta) {
+/// The only catalog fields a later object open needs. Keeping the full [`EntryMeta`] here retained
+/// 48-byte display names, flags, lengths, and CRCs for every menu slot at once; at 64 routes that
+/// made `load_routes` an 18 KiB frame. This 16-byte key preserves the exact selection/open contract
+/// without moving scratch into resident memory.
+#[derive(Clone, Copy)]
+struct CatalogHead {
+    id: ObjectId,
+    revision: Revision,
+}
+
+const _: () = assert!(core::mem::size_of::<CatalogHead>() <= 16);
+
+fn retain_newest<const N: usize>(entries: &mut heapless::Vec<CatalogHead, N>, entry: CatalogHead) {
     let at = entries.iter().position(|old| entry.id > old.id).unwrap_or(entries.len());
     if at >= N {
         return;
@@ -1529,9 +1541,9 @@ fn retain_newest<const N: usize>(entries: &mut heapless::Vec<EntryMeta, N>, entr
 /// fresh upload remains visible even on a benchmark card carrying hundreds of old ladder objects.
 #[inline(never)]
 pub(crate) fn load_routes(store: &'static FlatStore<FlatCard>, app: &mut obc_app::App) -> bool {
-    let mut heads: heapless::Vec<EntryMeta, { obc_app::MAX_ROUTES }> = heapless::Vec::new();
+    let mut heads: heapless::Vec<CatalogHead, { obc_app::MAX_ROUTES }> = heapless::Vec::new();
     for entry in store.entries().filter(|entry| entry.kind == ObjectKind::Route) {
-        retain_newest(&mut heads, entry);
+        retain_newest(&mut heads, CatalogHead { id: entry.id, revision: entry.revision });
     }
     if !store.entries_ok() {
         defmt::warn!("flat: route catalog listing failed — keeping the prior menu snapshot");
@@ -1570,9 +1582,9 @@ pub(crate) fn load_routes(store: &'static FlatStore<FlatCard>, app: &mut obc_app
 /// the route snapshot already fed to the app.
 #[inline(never)]
 pub(crate) fn load_trips(store: &'static FlatStore<FlatCard>, app: &mut obc_app::App) -> bool {
-    let mut heads: heapless::Vec<EntryMeta, { obc_app::MAX_TRIPS }> = heapless::Vec::new();
+    let mut heads: heapless::Vec<CatalogHead, { obc_app::MAX_TRIPS }> = heapless::Vec::new();
     for entry in store.entries().filter(|entry| entry.kind == ObjectKind::Trip) {
-        retain_newest(&mut heads, entry);
+        retain_newest(&mut heads, CatalogHead { id: entry.id, revision: entry.revision });
     }
     if !store.entries_ok() {
         defmt::warn!("flat: trip catalog listing failed — keeping the prior menu snapshot");
