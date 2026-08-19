@@ -9,7 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
-use obc_app::{App, TripInput};
+use obc_app::{App, CatalogObjectId, TripInput};
 use obc_formats::io::SliceSource;
 use obc_route::TripMeta;
 
@@ -18,13 +18,13 @@ use obc_route::TripMeta;
 pub struct TripStore {
     dir: PathBuf,
     trips: Vec<TripMeta>,
-    ids: Vec<u16>,
+    ids: Vec<CatalogObjectId>,
     paths: Vec<PathBuf>,
     /// The session id registry (path → id) + the next fresh one, append-only so a file keeps its id
     /// across rescans — the sim's face of the device's `TP{id}` counter, used only for `.obt` files
     /// whose name doesn't already encode an id.
-    assigned: Vec<(PathBuf, u16)>,
-    next_id: u16,
+    assigned: Vec<(PathBuf, CatalogObjectId)>,
+    next_id: CatalogObjectId,
 }
 
 impl TripStore {
@@ -95,7 +95,7 @@ impl TripStore {
     /// The session id for `path`: from a `TP{id}.OBT` filename when present (the device's own naming),
     /// else the registered / freshly-assigned fake id. Append-only for the session — ids are never
     /// reused, matching the device's contract.
-    fn id_for(&mut self, path: &Path) -> u16 {
+    fn id_for(&mut self, path: &Path) -> CatalogObjectId {
         if let Some(id) = id_from_filename(path) {
             return id;
         }
@@ -111,7 +111,7 @@ impl TripStore {
     /// The member route object ids of the trip with session id `id` — its stage refs verbatim
     /// (dangling ids and all), ride order. Used by the on-device **cascade** delete (TR3): the host
     /// deletes each of these route files alongside the trip's `.obt`. Empty if the id is unknown.
-    pub fn member_route_ids(&self, id: u16) -> Vec<u16> {
+    pub fn member_route_ids(&self, id: CatalogObjectId) -> Vec<CatalogObjectId> {
         match self.ids.iter().position(|&x| x == id) {
             Some(pos) => self.trips[pos].stage_ids.iter().copied().collect(),
             None => Vec::new(),
@@ -121,7 +121,7 @@ impl TripStore {
     /// Delete the trip with session id `id` (the on-device trip delete): remove its `.obt` from the
     /// folder and rescan. `true` = a file was deleted. Non-cascading — member routes are untouched
     /// (spec §7.7); the caller then re-feeds [`App::set_trips`](obc_app::App::set_trips).
-    pub fn delete_by_id(&mut self, id: u16) -> bool {
+    pub fn delete_by_id(&mut self, id: CatalogObjectId) -> bool {
         let Some(pos) = self.ids.iter().position(|&x| x == id) else { return false };
         let path = self.paths[pos].clone();
         if std::fs::remove_file(&path).is_err() {
@@ -135,10 +135,10 @@ impl TripStore {
 /// The shared dispatcher ([`obc_host_core::HostLoop`]) drives the trip cascade delete + re-feed
 /// through this trait (the web demo plugs in the trip-less `()` instead).
 impl obc_host_core::TripCatalog for TripStore {
-    fn member_route_ids(&self, id: u16) -> Vec<u16> {
+    fn member_route_ids(&self, id: CatalogObjectId) -> Vec<CatalogObjectId> {
         self.member_route_ids(id)
     }
-    fn delete_by_id(&mut self, id: u16) -> bool {
+    fn delete_by_id(&mut self, id: CatalogObjectId) -> bool {
         self.delete_by_id(id)
     }
     fn rescan(&mut self) {
@@ -151,7 +151,7 @@ impl obc_host_core::TripCatalog for TripStore {
 
 /// Parse a `TP{id}.OBT` filename into its trip id (case-insensitive `.obt`), else `None` — a trip
 /// file the app named differently (or a side-loaded one) gets a fake session id instead.
-fn id_from_filename(path: &Path) -> Option<u16> {
+fn id_from_filename(path: &Path) -> Option<CatalogObjectId> {
     let stem = path.file_stem()?.to_str()?;
     let digits = stem.strip_prefix("TP").or_else(|| stem.strip_prefix("tp"))?;
     if digits.is_empty() {
