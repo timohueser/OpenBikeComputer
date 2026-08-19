@@ -438,19 +438,10 @@ pub async fn run(
     let _ = server.set(&server.dis.hardware_revision, &dis_hardware_revision());
     let _ = server.set(&server.dis.serial_number, &dis_serial_number());
     let _ = server.set(&server.obc.config, &config_blob(&store.borrow()));
-    // `protocolVersion` (V2 / #632; card-resident epoch #776): the pre-pairing read. `store_epoch` is
-    // the boot mint pass's outcome, threaded in (never re-read here) — the epoch lives on the card
-    // now, and a card swap must not silently change what this task serves. `Some(epoch)` → the full
     // `protocolVersion` needs no boot seed since c3a: §5.1 makes it two fixed bytes (`u16` = 4),
-    // declared as the characteristic's `value`. Protocol v2's store-epoch blob is retired — a v4
-    // client learns the card's identity from the `StoreId` every `LIST` page carries.
-    // **The protocol-v4 reaction buffer, taken once for the life of the image** (FS7.5-c3a). Not
-    // per connection: the buffer crosses the write queue inside a request, so a call whose future is
-    // dropped at a supervision timeout leaves it parked in the engine's reply slot — and a
-    // per-connection take would then mint a *second* `&'static mut` to the same bytes. One lane,
-    // outliving every connection, makes that unconstructible; `Lane::reclaim` is how the parked
-    // buffer comes back.
-    let mut v4_lane = v4::Lane::take();
+    // declared as the characteristic's `value`. Protocol v2's store-epoch blob — and with it the
+    // card-resident epoch of #776 — is retired on this link: a v4 client learns the card's identity
+    // from the `StoreId` every `LIST` page carries (§3).
     // The resting value: a structurally valid "nothing is due" rather than a zeroed buffer, so a
     // peer that reads the characteristic out of turn cannot mistake it for a request at 0°N 0°E.
     // Seeded with the **stored** refresh byte, not `EMPTY`'s compile-time default (#1221 F2):
@@ -603,7 +594,7 @@ pub async fn run(
                         serve_connection(stack, server, &conn, store, shared),
                         join4(
                             negotiate_link(stack, &conn),
-                            v4::serve_objects(stack, server, &conn, &mut v4_lane),
+                            v4::serve_objects(stack, server, &conn),
                             battery_task(stack, server, &conn),
                             link_control(stack, server, &conn, store, shared, advertising_intent),
                         ),
