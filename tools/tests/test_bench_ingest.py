@@ -493,12 +493,27 @@ class Gone(unittest.TestCase):
             await_ready(device, wait=5.0)
         self.assertIn("DESTRUCTIVE", str(caught.exception))
 
-    def test_an_erroring_line_points_at_the_baud(self):
+    def test_an_unframeable_line_points_at_a_second_talker_not_at_the_baud(self):
+        # The correction that matters: reason 4 is another talker on the tty. A `--baud` mismatch
+        # cannot produce it, because at the wrong rate this host never transmits at all — and could
+        # not have decoded this frame either.
         device = FakeDevice()
         device.stopped = True
         device.gone(4)
-        with self.assertRaisesRegex(DeviceGone, "--baud"):
+        with self.assertRaises(DeviceGone) as caught:
             await_ready(device, wait=5.0)
+        message = str(caught.exception)
+        self.assertIn("second talker", message)
+        self.assertIn("NOT a --baud mismatch", message)
+
+    def test_the_timeout_names_the_baud_before_the_wedge(self):
+        # A silent line is what a baud mismatch looks like, so the timeout — the only message an
+        # operator sees in that case — must put --baud ahead of the J-Link wedge, not after it.
+        with self.assertRaises(LinkTimeout) as caught:
+            await_ready(ScriptedLink(b""), wait=0.05)
+        message = str(caught.exception)
+        self.assertLess(message.index("--baud"), message.index("wedged"))
+        self.assertIn("nobody answered", message)
 
     def test_a_damaged_advertisement_does_not_end_the_wait(self):
         # One bad CRC is a glitched byte, not an absent board: the next advertisement is 500 ms away.
