@@ -383,7 +383,11 @@ jobs:
       # regression in `FlatStore::mount` underneath it.
       #
       # 1. The store: `FlatStore::mount` builds a ~10 KB store in a return slot, and is the largest
-      #    frame here at 14,016 B. 16,384 is that with 2,368 B of headroom, and it is the number that
+      #    frame here at 13,248 B — 14,016 until FS7.5-c2 took `MAX_OPEN_OBJECTS` from 16 to 5 (one
+      #    map is one file, so eleven shard rows go; 64 B a row, and `mount` carries the store).
+      #    16,384 is the older figure with 2,368 B of headroom, deliberately left where it is: the
+      #    limit is a ratchet against growth, and re-tightening it on every saving would make each
+      #    future change a gate edit. It is the number that
       #    matters — FS5 mounts this from the app, against the 51,576 B residual main stack the
       #    shipping image has. (FS6 raised `MAX_OPEN_OBJECTS` 12 → 16 to cover the terrain, route and
       #    weather opens the old count omitted; a hold row is 64 B, so both figures below moved by
@@ -398,7 +402,9 @@ jobs:
       #    calls became `const { … }` blocks. Written plainly they cost 6,208 B here (20,224 against
       #    this 16,384 limit), because `RefCell::new` takes its 8 KiB argument by value and the
       #    temporary lands on this frame. The gate is what caught it; see `FlatStore::mount`'s docs.
-      # 2. The bench: 22,528 B in `initialize`, which chains three of those return slots. Pinned at
+      # 2. The bench: 20,992 B in `initialize`, which chains three of those return slots — 22,528
+      #    before the same `MAX_OPEN_OBJECTS` change, and it moved by three times as much for that
+      #    reason (three stores in the chain). Pinned at
       #    36,864 — the measurement it was set from was 33,024, and the pin is deliberately *not*
       #    tightened to the new figure: the ratchet exists against growth, and CI's toolchain is not
       #    the host these were measured on. On glass the whole phase-one run reached 58,096 B of
