@@ -111,14 +111,21 @@ export const SINGLETON_OBJECT_ID = 0;
  * rather than any particular flow. It is exactly the boundary `obc_formats::obcs` sits on, for the
  * same reason and until the same slice (FS7.5c).
  *
- * The retention is scoped to what is actually **exercised**: `vectors.test.ts` decodes and
- * re-encodes `specs/vectors/transfer-set-{shard,manifest,terrain}.bin` — the same three checked-in
- * vectors `obc-vectors` and `obc-ble` decode on the Rust side — and those vectors reach exactly
- * these four symbols. The OBCT container constants and the OBCS layout constants that used to sit
- * here reached nothing once the mock device's announce validation went: they were kept by the same
- * "wire contract" sentence while having no consumer at all, which is the shape this epic keeps
- * deleting. A codec under test against shared bytes earns its place; a constant nothing reads does
- * not, however true it is.
+ * The retention is scoped to what is actually **exercised**, and the scoping is not uniform:
+ * `vectors.test.ts` decodes and re-encodes `specs/vectors/transfer-set-shard.bin` and
+ * `transfer-set-manifest.bin` — two of the three checked-in vectors `obc-vectors` and `obc-ble`
+ * decode on the Rust side — which reaches **three** of the symbols here: {@link setPartId},
+ * {@link ObjectType.MapShard} and {@link ObjectType.MapSet}.
+ *
+ * {@link ObjectType.TerrainShard} is the fourth and has **no** TypeScript coverage: the
+ * `transfer-set-terrain.bin` vector is decoded on the Rust side only. It stays as a member of the
+ * wire contract's kind space rather than as tested code — the number is spent, the firmware answers
+ * to it, and a gap in the kind enum would be worse than an untested constant.
+ *
+ * The OBCT container constants and the OBCS layout constants that used to sit here reached nothing
+ * at all once the mock device's announce validation went: they were kept by the same "wire contract"
+ * sentence while having no consumer, which is the shape this epic keeps deleting. A codec under test
+ * against shared bytes earns its place; a constant nothing reads does not, however true it is.
  */
 /** Pack a volume-set shard's `(shard_count, index)` into the descriptor's object id (§4.2). */
 export function setPartId(shardCount: number, index: number): number {
