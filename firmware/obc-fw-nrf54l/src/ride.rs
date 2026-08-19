@@ -161,31 +161,11 @@ impl obc_render::Clock for InstantClock {
     }
 }
 
-/// Scan the card's `/routes` catalog into the app's Route menu, carrying each entry's durable
-/// object id so the app can remap held indices by identity across rescans (#450). Called at boot
-/// (from `main`) and again on every store-changed edge (the live rescan below — same machinery).
-/// Deliberately its **own `#[inline(never)]` frame**: the ~5 KB [`Catalog`](obc_app::Catalog)
-/// (`Vec<RouteSummary, MAX_ROUTES>`, 64 × ~84 B) lives here and is popped on return, so it never
-/// sits resident *beneath* the long-lived [`run_app`] ride loop — where 5 KB would steal from the
-/// deep route-load render path's stack and overflow the 256 KB part. The mid-session call runs
-/// sequentially with (never under) that deep render path, so it adds nothing to the pass's peak.
-#[inline(never)]
-pub(crate) fn load_routes(storage: &mut sd::Storage, app: &mut App) {
-    let mut catalog = heapless::Vec::new();
-    storage.scan_routes_into(&mut catalog);
-    // Carry each route's device-local retention meta (auto-expiry epic #638, S3) from the
-    // `/routes` sidecar, pairwise with the ids, so the sweep reads device truth.
-    let metas = storage.route_retention_metas();
-    let ids: heapless::Vec<u64, { obc_app::MAX_ROUTES }> =
-        storage.route_ids().iter().map(|&id| u64::from(id)).collect();
-    app.set_routes_with_meta(&catalog, &ids, &metas);
-}
-
 /// Scan the card's `/tracks` into the app's Rides menu (epic #447 P7 / #454), carrying each ride's
 /// durable object id + its synced flag (from the `/tracks` synced-set sidecar). Called at boot and on
 /// every store-changed edge (a finished ride, an on-device or phone-side ride delete). Its own
-/// `#[inline(never)]` frame for the same stack reason as [`load_routes`]: the ride catalog is popped
-/// on return, never resident under the deep render path.
+/// `#[inline(never)]` frame so the ride catalog is popped on return, never resident under the deep
+/// render path.
 #[inline(never)]
 pub(crate) fn load_rides(storage: &mut sd::Storage, app: &mut App) {
     let mut catalog = heapless::Vec::new();
@@ -1420,16 +1400,11 @@ pub(crate) async fn run_app(
             let t_store = Instant::now();
             let SharedStore { storage, settings: settings_store } = &mut *store_guard;
 
-            // ── Live route catalog (#450), on the store-changed edge only ──
-            // A BLE commit/delete moved `/routes` under the app: re-run the boot scan (same
-            // `load_routes` machinery — its ~5 KB catalog lives in its own popped frame, sequential
-            // with, never under, the deep render path) and re-feed `set_routes_with_ids`, which
-            // remaps every held catalog index by durable object id — so the route being navigated
-            // (or highlighted, or pending in a swap prompt) can never silently shift. Then force the
-            // reconcile below to re-derive everything positional: the filename table was rebuilt (the
-            // open handle's index may now name a different file) and a replace-upload may have
-            // swapped the bytes under the open geometry handle — close it and let the reconcile
-            // reopen + re-index off the fresh scan.
+            // ── Live catalogs, on the store-changed edge only ──
+            // Rebuild flat route/trip identities after any catalog commit and remap the app's held
+            // indices by durable ObjectId. Dropping the active flat hold first ensures a replacement
+            // at the same id is decoded from its new revision. The legacy edge also covers FAT rides,
+            // which are rescanned below until their flat slice lands.
             if host_pass.rescan {
                 if let Some(store) = flat {
                     // Drop the held revision before rebuilding identity/index state. A replace at
