@@ -277,7 +277,7 @@ final class MainScreenModelTests: XCTestCase {
         let library = InMemoryLibraryStore()
         let (model, control) = makeModel(.happyPath, library: library, seedLibrary: false)
         // Reshape the ride catalog to match the wire: the list summary has no
-        // preview (like a real `rideList` entry), but the payload has real points.
+        // preview (like a real ride-catalog entry), but the payload has real points.
         var fixtures = control.fixtures
         let ridePoints = [
             RidePoint(timestamp: Date(timeIntervalSince1970: 0),
@@ -598,7 +598,7 @@ final class MainScreenModelTests: XCTestCase {
         }
         // Let the dirty follow-up pass drain as well; neither pass is cancelled.
         try? await Task.sleep(for: .milliseconds(500))
-        XCTAssertEqual(control.cancelledRouteListReadCount, 0)
+        XCTAssertEqual(control.cancelledRouteCatalogReadCount, 0)
     }
 
     /// The update lifecycle: an uploaded route is **up to date** (nothing to
@@ -669,7 +669,7 @@ final class MainScreenModelTests: XCTestCase {
     }
 
     /// #289's reconcile: a copy deleted out from under us (another phone, the
-    /// EchoHarness) clears the stored link — and the badge — on the next reload.
+    /// host tooling) clears the stored link — and the badge — on the next reload.
     func testReloadClearsTheBadgeWhenTheDeviceNoLongerHoldsTheRoute() async {
         let library = InMemoryLibraryStore()
         var record = importedRecord()
@@ -724,7 +724,7 @@ final class MainScreenModelTests: XCTestCase {
         await startLoaded(model)
         await waitFor("the fixture proves on-device") { model.isUploaded(RouteID("kettle-moraine-loop")) }
 
-        // The device loses the copy (another phone / the EchoHarness deleted
+        // The device loses the copy (another phone / host tooling deleted
         // object 7); nothing tells the model — the badge stays lit for now.
         try? await MockTransport(control: control).deleteRoute(DeviceObjectID(7))
         XCTAssertTrue(model.isUploaded(RouteID("kettle-moraine-loop")))

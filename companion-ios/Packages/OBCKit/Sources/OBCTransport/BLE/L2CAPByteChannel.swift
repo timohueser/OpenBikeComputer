@@ -18,9 +18,7 @@ import Foundation
 /// partial when the CoC closes, and the upload sheet offers Resume instead of
 /// hanging at N%.
 ///
-/// `public` so the A5 echo harness / A9 soak rig (`EchoHarness`) wraps its own
-/// `CBL2CAPChannel` into the *same* byte layer `BLETransport` uses, rather than
-/// re-implementing the stream bridging.
+/// `public` so host tooling can wrap a `CBL2CAPChannel` in the same byte layer as `BLETransport`.
 public final class L2CAPByteChannel: NSObject, ByteChannel, StreamDelegate, @unchecked Sendable {
     /// The CoreBluetooth channel itself — retained for the byte layer's whole lifetime because
     /// **CoreBluetooth closes the L2CAP channel when the `CBL2CAPChannel` is deallocated**. Holding

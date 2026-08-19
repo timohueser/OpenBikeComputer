@@ -72,7 +72,7 @@ public struct PlannedRouteRecord: Identifiable, Equatable, Sendable {
     /// ``Retention/appDefault`` (see the upload push). Distinct from the device's
     /// reported level below.
     public var retention: Retention?
-    /// Device truth from the last `routeList` reconcile: when the device will
+    /// Device truth from the last protocol-v4 catalog reconcile: when the device will
     /// auto-delete this route (`nil` = never / not started / pre-expiry firmware).
     /// **Display-only** — it goes stale gracefully (extend-on-use moves it), so S7
     /// shows day granularity, not a live countdown.

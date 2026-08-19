@@ -88,7 +88,7 @@ public struct RideID: Hashable, Sendable {
 
 /// Metadata for a device-recorded ride — the Tracked-tab row (C2) and sync list.
 /// Rides download over the CoC data plane as compact binary; this is the
-/// enumerable summary the `RideList` characteristic exposes.
+/// enumerable summary the protocol-v4 ride catalog exposes.
 ///
 /// **B1 finalization** of the B-S0 skeleton: adds moving time, average speed,
 /// climb, and the `TrackPreview`. New fields are defaulted so the B-S0 call sites
@@ -214,9 +214,8 @@ public struct RideSummary: Identifiable, Equatable, Sendable {
     }
 }
 
-/// The device's tracked-ride catalog (`listRides()` — the `rideList` object,
-/// spec §7.4): the enumerable summaries plus the **truncation** signal the v2
-/// list header carries.
+/// The device's tracked-ride catalog (`listRides()`): the enumerable summaries plus the bounded
+/// catalog's **truncation** signal.
 ///
 /// Past the device's `MAX_RIDES` cap the catalog scan drops the excess in
 /// FAT-arbitrary order, so the header states the full `total` and the list is

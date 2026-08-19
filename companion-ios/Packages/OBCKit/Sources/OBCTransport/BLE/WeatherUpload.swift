@@ -54,8 +54,8 @@ public enum WeatherUploadError: Error, Equatable, Sendable {
     /// The device has no room for the bundle right now (`storageFull`). Says nothing about the
     /// bytes — they stay valid and the retry re-sends them once the device has space.
     case storageFull
-    /// The device answered `notFound` for the singleton id `0` (§11.5). Also not a verdict on the
-    /// bytes: the object slot was unavailable, so the retry re-sends the same bundle.
+    /// The device answered `notFound` for the weather object. Also not a verdict on the bytes: the
+    /// catalog target was unavailable, so the retry re-sends the same bundle.
     case notFound
     /// CRC passed and the device refused the content (§11.5's `error`) — reproducible; the fix is
     /// the producer's, not a retry.

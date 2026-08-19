@@ -1,8 +1,8 @@
 import Foundation
 
 /// The fresh-pair gated-phase failure that `BLETransport.authenticate()`'s
-/// retry-once policy (#753) treats as *retryable*: a gated op — a `status` /
-/// `transferControl` CCCD write or the PSM read — failed **auth-class** (ATT
+/// retry-once policy (#753) treats as *retryable*: a gated op — the `status` / `objectControl`
+/// indication setup or the PSM read — failed **auth-class** (ATT
 /// insufficient-authentication / -encryption) while the peripheral was **still
 /// connected** (`BLETransport.isRetryableGatedFailure` is the one shared
 /// mapping).

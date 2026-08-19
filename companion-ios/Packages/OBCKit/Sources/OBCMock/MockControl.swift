@@ -44,9 +44,8 @@ public final class MockControl: @unchecked Sendable {
     // Live streams — thread-safe on their own; `connection`/`battery` are views onto them.
     let stateMulticast: AsyncMulticast<ConnectionState>
     let batteryMulticast: AsyncMulticast<Int>
-    /// `nil` seed = no replay, matching the real transport: a `storeChanged` is
-    /// an edge, not a state (see `DeviceObjects.storeChanges`).
-    let storeChangedMulticast = AsyncMulticast<StoreChanged?>(nil)
+    /// `nil` seed = no replay: a local catalog invalidation is an edge, not state.
+    let catalogChangedMulticast = AsyncMulticast<CatalogChange?>(nil)
 
     private let lock = NSLock()
     private var _scenario: Scenario
@@ -58,7 +57,7 @@ public final class MockControl: @unchecked Sendable {
     private var _pairingFail: PairingFail?
     private var _pendingFailures: [DeviceError]
     private var _dropFraction: Double?
-    private var _tripListFailure: DeviceError?
+    private var _tripCatalogFailure: DeviceError?
     private var _fixtures: FixtureSet
     /// Monotonic stand-in for the device's object-id assignment on upload — starts
     /// above every fixture `deviceObjectID` so a fresh id can't collide.
@@ -92,7 +91,7 @@ public final class MockControl: @unchecked Sendable {
     /// Test-only evidence that a catalog read was abandoned by its caller. A
     /// store-change burst must coalesce behind a live read instead of cancelling
     /// it halfway through the real transport's CoC exchange.
-    private var _cancelledRouteListReadCount = 0
+    private var _cancelledRouteCatalogReadCount = 0
     /// The version string of the firmware the phone staged this session (from the
     /// last completed `fwImage` upload) — what a modelled reboot reconnects on.
     /// `nil` until an upload completes.
@@ -272,15 +271,15 @@ public final class MockControl: @unchecked Sendable {
     /// link and made the next whole-trip upload mint a duplicate device trip).
     /// Targeted (unlike `failNextOp`) so a test can fail `listTrips` while the
     /// same reload's `listRoutes` succeeds — the exact on-glass sequence.
-    public func failNextTripList(_ error: DeviceError = .readFailed) {
-        lock.withLocked { _tripListFailure = error }
+    public func failNextTripCatalog(_ error: DeviceError = .readFailed) {
+        lock.withLocked { _tripCatalogFailure = error }
     }
 
-    /// Consume the armed `listTrips` failure, if any (one-shot).
-    func takeTripListFailure() throws {
+    /// Consume the armed `listTrips` catalog failure, if any (one-shot).
+    func takeTripCatalogFailure() throws {
         let error: DeviceError? = lock.withLocked {
-            defer { _tripListFailure = nil }
-            return _tripListFailure
+            defer { _tripCatalogFailure = nil }
+            return _tripCatalogFailure
         }
         if let error { throw error }
     }
@@ -395,7 +394,7 @@ public final class MockControl: @unchecked Sendable {
 
     /// The device's route catalog — the fixture routes it holds a copy of
     /// (`deviceObjectID != nil`), keyed by their device object ids, exactly the
-    /// shape the real `routeList` download produces. The app consumes this only
+    /// shape the protocol-v4 route catalog produces. The app consumes this only
     /// to reconcile the "on device" badge (#289) — never as list rows.
     func deviceRoutes() -> [RouteCatalogEntry] {
         let (routes, retentionOverrides, lastUsedOverrides, supportsExpiry) = lock.withLocked {
@@ -404,14 +403,14 @@ public final class MockControl: @unchecked Sendable {
         let now = Date()
         var catalog = routes.compactMap { entry -> RouteCatalogEntry? in
             guard let objectID = entry.deviceObjectID else { return nil }
-            // The v2 `routeList` carries the whole-object CRC (#770): a real
+            // The v4 catalog carries the whole-object CRC (#770): a real
             // upload pinned it (`recordDeviceCopy`); a seeded copy derives it
             // from the fixture geometry — the same OBCR encoding `seedLibrary`
             // fingerprints, so a device-held fixture boots proven up to date.
             let crc32 = entry.crc32 ?? RouteObjectCodec.payloadCRC(for: entry.record(addedAt: now))
             // The auto-expiry tail (epic #638). Omitted entirely on the
             // old-firmware knob — a pre-tail 76-byte device serves neither field
-            // (both read `nil`, exactly what `RouteList.decode` produces for it).
+            // (both read `nil`, exactly what a pre-expiry catalog entry produces).
             let retention: Retention? = supportsExpiry
                 ? (retentionOverrides[objectID.raw] ?? entry.deviceRetention ?? .never)
                 : nil
@@ -526,12 +525,12 @@ public final class MockControl: @unchecked Sendable {
         lock.withLocked { _weatherWatchArmed }
     }
 
-    public var cancelledRouteListReadCount: Int {
-        lock.withLocked { _cancelledRouteListReadCount }
+    public var cancelledRouteCatalogReadCount: Int {
+        lock.withLocked { _cancelledRouteCatalogReadCount }
     }
 
-    func recordCancelledRouteListReadIfNeeded() {
-        if Task.isCancelled { lock.withLocked { _cancelledRouteListReadCount += 1 } }
+    func recordCancelledRouteCatalogReadIfNeeded() {
+        if Task.isCancelled { lock.withLocked { _cancelledRouteCatalogReadCount += 1 } }
     }
 
     /// Delete a stored route by its device object id (the `deleteObject`
@@ -554,7 +553,7 @@ public final class MockControl: @unchecked Sendable {
     /// badge-reconcile input. Dev-panel/test hook.
     public func deviceDeletesRoute(_ id: DeviceObjectID) {
         removeRoute(id)
-        storeChangedMulticast.send(StoreChanged(type: .route, revision: 0))
+        catalogChangedMulticast.send(CatalogChange(kind: .route))
     }
 
     // MARK: Trips (TR8 — the device-side trip object store)
@@ -599,7 +598,7 @@ public final class MockControl: @unchecked Sendable {
         var crc32: UInt32
     }
 
-    /// The device's trip catalog (`tripList`, spec §7.4) — one entry per stored
+    /// The device's protocol-v4 trip catalog — one entry per stored
     /// trip, its stats **summed over resolvable stages** (a stage whose device
     /// route is gone is dangling: counted in `stageCount`, excluded from the
     /// totals), exactly as the firmware computes them. Reconcile input only.
@@ -730,15 +729,15 @@ public final class MockControl: @unchecked Sendable {
             return stages
         }
         for stageID in stageIDs { removeRoute(stageID) }
-        storeChangedMulticast.send(StoreChanged(type: .route, revision: 0))
-        storeChangedMulticast.send(StoreChanged(type: .trip, revision: 0))
+        catalogChangedMulticast.send(CatalogChange(kind: .route))
+        catalogChangedMulticast.send(CatalogChange(kind: .trip))
     }
 
     /// Simulate a device-side **trip-only** delete (no cascade) — clears the
     /// app's trip link at reconcile while the member routes stay.
     public func deviceDeletesTrip(_ id: DeviceObjectID) {
         lock.withLocked { _deviceTrips.removeAll { $0.id == id } }
-        storeChangedMulticast.send(StoreChanged(type: .trip, revision: 0))
+        catalogChangedMulticast.send(CatalogChange(kind: .trip))
     }
 
     /// Begin a simulated route upload. On commit it reports a device object id (a

@@ -364,7 +364,7 @@ final class RideSyncCoordinatorTests: XCTestCase {
 
     // MARK: v2 list truncation (spec §7.4)
 
-    /// The v2 `rideList` header's truncation signal: a truncated list read sets
+    /// The bounded ride catalog's truncation signal: a truncated read sets
     /// `hiddenRideCount` (the banner trigger), and a link edge back into
     /// `.connected` clears it **before** any new list read. A count carried
     /// across a reconnect could be stale (the rider freed space while away) or
@@ -375,7 +375,7 @@ final class RideSyncCoordinatorTests: XCTestCase {
         control.latency = .zero
         control.throughputBytesPerSec = 200_000_000
         let coordinator = RideSyncCoordinator(
-            transport: TruncatedRideListTransport(
+            transport: TruncatedRideCatalogTransport(
                 base: MockTransport(control: control), hiddenRideCount: 3),
             library: InMemoryLibraryStore(), timing: Self.stickyTiming)
         await startConnected(coordinator)
@@ -395,10 +395,10 @@ final class RideSyncCoordinatorTests: XCTestCase {
     }
 }
 
-/// Forwards everything to the mock, but reports the device's `rideList` as
+/// Forwards everything to the mock, but reports the device's ride catalog as
 /// **truncated** (`hiddenRideCount` rides beyond what the list carried) — the
 /// v2 header's `total > count` signal the mock's fixture catalog never trips.
-private struct TruncatedRideListTransport: DeviceLink, DeviceObjects {
+private struct TruncatedRideCatalogTransport: DeviceLink, DeviceObjects {
     let base: MockTransport
     let hiddenRideCount: Int
 

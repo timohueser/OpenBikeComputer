@@ -32,7 +32,7 @@ struct TripReconcileModelTests {
     }
 
     /// Simulate the **lost commit ack**: the trip object landed on the device but
-    /// the phone never saw the `transferResult` — its library trip carries no
+    /// the phone never saw the final commit result — its library trip carries no
     /// link, exactly as if `markTripUploaded` never ran.
     private func stripTripLink(_ library: InMemoryLibraryStore, _ model: MainScreenModel) {
         var trip = library.trips().first { $0.id == tripID }!
@@ -201,7 +201,7 @@ struct TripReconcileModelTests {
     /// Before the fix it dropped every trip's device link, and the next "Upload
     /// trip" minted a second device trip instead of replacing in place.
     @Test
-    func aFailedTripListReadKeepsTheLinkAndTheNextUploadStillReplaces() async {
+    func aFailedTripCatalogReadKeepsTheLinkAndTheNextUploadStillReplaces() async {
         let (model, control) = await makeMain()
         await uploadTrip(model)
         let deviceTripID = control.deviceTripObjectIDs.first!
@@ -209,13 +209,13 @@ struct TripReconcileModelTests {
         let stageDeviceID = model.plannedDeviceObjectID(for: stageA)!
 
         // The device deletes a member route; the reload this triggers reads
-        // `routeList` fine but the `tripList` read fails (a flaky link mid-read).
-        control.failNextTripList(.readFailed)
+        // The route catalog succeeds but the trip catalog fails (a flaky link mid-read).
+        control.failNextTripCatalog(.readFailed)
         control.deviceDeletesRoute(stageDeviceID)
         await poll("stage link cleared") { model.onDeviceState(stageA) == .notOnDevice }
 
         // The trip's link survived the failed read — the plan still replaces.
-        #expect(model.trip(tripID)?.deviceLink != nil, "a failed tripList read must not drop the link")
+        #expect(model.trip(tripID)?.deviceLink != nil, "a failed trip catalog read must not drop the link")
         let plan = model.planTripUpload(tripID)!
         #expect(plan.tripObject == .replace(deviceTripID))
 
@@ -223,7 +223,7 @@ struct TripReconcileModelTests {
         upload.start()
         upload.beginUpload()  // clear the epic #638 Auto-delete confirm (capable device)
         await poll("re-upload landed") { upload.phase == .done }
-        #expect(control.deviceTripCount == 1, "a failed tripList read must never cause a duplicate trip")
+        #expect(control.deviceTripCount == 1, "a failed trip catalog read must never cause a duplicate trip")
     }
 
     // MARK: Lost-ack recovery (the on-glass duplicate-trip bug, round 2)

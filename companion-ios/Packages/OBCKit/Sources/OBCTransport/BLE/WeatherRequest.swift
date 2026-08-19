@@ -10,8 +10,8 @@ import OBCDomain
 // device swaps its *advertised* service UUID to the Weather Request service while a refresh is due;
 // iOS wakes on the service match, connects, reads **one** `WeatherRequestContext` — where the rider
 // is, where they are heading, what bundle they already hold — and disconnects. BLE is not held
-// across the HTTP that follows. The bundle then rides back as `ObjectType.weatherBundle` on the
-// ordinary reliable CoC, stamped with `requestID` so the two connections correlate.
+// across the HTTP that follows. The bundle then rides back as protocol-v4 `ObjectKind.weather` on
+// the ordinary reliable CoC, stamped with `requestID` so the two connections correlate.
 
 /// Which optional groups of a `WeatherRequestContext` carry real values.
 ///

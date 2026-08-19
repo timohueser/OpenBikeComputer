@@ -143,10 +143,10 @@ public enum TripUploadPlanner {
     ///   - stages: the trip's stages, **in ride order**, each with its reconcile
     ///     snapshot.
     ///   - tripObjectID: the trip object's current device id when a valid scoped
-    ///     link points at a still-present `tripList` entry — a replace-by-id trip
+    ///     link points at a still-present trip-catalog entry — a replace-by-id trip
     ///     push; `nil` = a fresh trip object.
     ///   - deviceRouteCount / deviceTripCount: how many routes / trips the device
-    ///     currently stores (from the last `routeList` / `tripList`).
+    ///     currently stores (from the last route/trip catalog reconcile).
     ///   - routeCapacity / tripCapacity: the device catalog caps.
     public static func plan(
         stages: [StageInput],

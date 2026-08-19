@@ -265,31 +265,6 @@ struct WeatherRefreshTests {
     }
 }
 
-@Suite("Weather bundle object type")
-struct WeatherBundleObjectTypeTests {
-    @Test func theWeatherBundleTypeIsTwenty() throws {
-        #expect(ObjectType.weatherBundle.rawValue == 20)
-        #expect(ObjectType(rawValue: 20) == .weatherBundle)
-
-        // …and it survives a real 12-byte descriptor round-trip at the singleton id.
-        let control = TransferControl(
-            op: .upload, type: .weatherBundle, objectID: 0, totalLen: 46_000, crc32: 0xFEED_FACE
-        )
-        let bytes = control.encode()
-        #expect(bytes[bytes.startIndex + 1] == 20)
-        #expect(try TransferControl(decoding: bytes) == control)
-    }
-
-    /// The sensor band stays reserved (M4) and 21 is not allocated — a byte the app does not know
-    /// must not silently become a type it does.
-    @Test func theReservedAndUnallocatedBandsStillReject() {
-        for reserved in UInt8(11)...UInt8(15) {
-            #expect(ObjectType(rawValue: reserved) == nil, "\(reserved) stays reserved for sensors")
-        }
-        #expect(ObjectType(rawValue: 21) == nil)
-    }
-}
-
 // MARK: - Compatibility: #1188's acceptance criteria
 
 @Suite("Weather capability compatibility")
