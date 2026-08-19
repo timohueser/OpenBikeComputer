@@ -479,10 +479,4 @@ impl ObjectStore {
     pub fn update_staged(&self, shared: &SharedStore) -> bool {
         shared.storage.as_ref().is_some_and(|s| s.has_update_bin())
     }
-
-    /// The active bundle's identity for the request context's bundle group (§11.4 validity bit 3)
-    /// and the scheduler's age input — the boot/commit-refreshed slot selection, no card I/O.
-    pub fn weather_active(&self, shared: &SharedStore) -> Option<obc_weather::Candidate> {
-        shared.storage.as_ref().and_then(|s| s.weather_active())
-    }
 }

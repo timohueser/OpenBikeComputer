@@ -518,6 +518,11 @@ mod resource_report {
         // Named beside the store it reads from so the two halves of "what does reading a flat card
         // cost" are in one place, and named as one row because they are one boot step's residue.
         entry("flat_map_read", flat_store::MAP_READ_BYTES),
+        // The selected Route and WeatherBundle revisions each spend one bounded flat-store hold
+        // row and one `StoreSource`. They are released/reopened on catalog movement, unlike the map
+        // source which remains held for the whole boot.
+        entry("flat_route_read", flat_store::ROUTE_READ_BYTES),
+        entry("flat_weather_read", flat_store::WEATHER_READ_BYTES),
         // The protocol-v4 transfer engine (FS7.5-c3a), which lives in the storage task because that
         // is the one execution context allowed to write. Mostly its staging buffer, still the
         // 512-byte minimum after c3b brought USB — and that is a decision, not an omission: §5.2's
@@ -1641,9 +1646,6 @@ async fn main(_spawner: Spawner) {
         // every flavor regardless — only the served value is ble-specific.
         let _store_epoch: Option<u32> = {
             let mut guard = shared_store.lock().await;
-            if let Some(storage) = guard.storage.as_mut() {
-                storage.select_weather_at_boot();
-            }
             if guard.storage.is_none() {
                 defmt::info!("store-epoch: no mounted store — no epoch to mint or serve");
                 None

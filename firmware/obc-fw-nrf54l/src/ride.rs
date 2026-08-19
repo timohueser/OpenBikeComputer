@@ -74,7 +74,7 @@ const INPUT_HB_STALE_MS: u32 = 65_000;
 /// Inputs that make the resident weather snapshot materially different. Keeping this named makes
 /// the retry/cache rule below readable and avoids hiding its four independent invalidation axes
 /// inside a nested tuple type at the use site.
-type WeatherSampleKey = (obc_weather::Candidate, Option<(i32, i32)>, Option<(Option<usize>, u32, u32)>, i64);
+type WeatherSampleKey = (crate::flat_store::FlatWeather, Option<(i32, i32)>, Option<(Option<usize>, u32, u32)>, i64);
 /// Fixed-position weather has no clock input. This impossible minute bucket keeps the compact
 /// `i64` cache-key field (an `Option<i64>` costs another eight resident bytes on Thumb). It cannot
 /// collide with the projected key: dividing any cast `i64` wall time by 60 is strictly greater
@@ -172,7 +172,8 @@ pub(crate) fn load_routes(storage: &mut sd::Storage, app: &mut App) {
     // Carry each route's device-local retention meta (auto-expiry epic #638, S3) from the
     // `/routes` sidecar, pairwise with the ids, so the sweep reads device truth.
     let metas = storage.route_retention_metas();
-    let ids: heapless::Vec<u64, { obc_app::MAX_ROUTES }> = storage.route_ids().iter().map(|&id| u64::from(id)).collect();
+    let ids: heapless::Vec<u64, { obc_app::MAX_ROUTES }> =
+        storage.route_ids().iter().map(|&id| u64::from(id)).collect();
     app.set_routes_with_meta(&catalog, &ids, &metas);
 }
 
@@ -703,6 +704,10 @@ pub(crate) async fn run_app(
     let mut weather_cache = obc_weather::WeatherCache::new();
     let mut weather_snapshot: Option<obc_app::WeatherSnapshot> = None;
     let mut weather_sample_key: Option<WeatherSampleKey> = None;
+    let mut weather_bundle = flat.and_then(|store| crate::flat_store::active_weather(store).ok().flatten());
+    if let Some(store) = flat {
+        crate::flat_store::reconcile_weather(store, weather_bundle);
+    }
 
     // Per-frame ride-loop state:
     // - `prev_route` re-centres SynthLocation onto a freshly-loaded route's start (`synth` build only);
@@ -1377,6 +1382,13 @@ pub(crate) async fn run_app(
                     crate::flat_store::reconcile_route(store, None);
                     crate::flat_store::load_routes(store, app);
                     crate::flat_store::load_trips(store, app);
+                    if let Ok(next) = crate::flat_store::active_weather(store) {
+                        if next != weather_bundle {
+                            weather_bundle = next;
+                            weather_sample_key = None;
+                        }
+                    }
+                    crate::flat_store::reconcile_weather(store, weather_bundle);
                 }
                 if let Some(s) = storage.as_mut() {
                     // The same edge covers rides (a phone-side ride delete, or a ride download that just
@@ -1834,9 +1846,9 @@ pub(crate) async fn run_app(
             }
 
             // Stream the selected OBCW into the host-owned resident snapshot. Keying on the fully
-            // validated slot identity plus the live fix keeps this off ordinary redraws while still
-            // resampling at movement cadence; a commit changes the candidate even when A/B happens
-            // to keep the same filename. With no fix the hourly half remains useful and every rain
+            // validated flat revision plus the live fix keeps this off ordinary redraws while still
+            // resampling at movement cadence; a replacement changes the key even if an OBCW producer
+            // reuses its generation. With no fix the hourly half remains useful and every rain
             // sample is honestly no-data (the companion likewise refuses to build a *new* local
             // bundle without a device position).
             let weather_pos = app.has_live_fix(now).then(|| app.state.user_fix.map(|fix| (fix.lat, fix.lon))).flatten();
@@ -1850,13 +1862,12 @@ pub(crate) async fn run_app(
             // before the first fix), with byte-identical output.
             let weather_projection_minute =
                 weather_projection.map_or(WEATHER_TIME_INDEPENDENT, |_| app.wall_unix_now() as i64 / 60);
-            let weather_candidate = storage.as_ref().and_then(sd::Storage::weather_active);
-            let next_weather_key = weather_candidate
-                .map(|candidate| (candidate, weather_pos, weather_projection_key, weather_projection_minute));
+            let next_weather_key =
+                weather_bundle.map(|bundle| (bundle, weather_pos, weather_projection_key, weather_projection_minute));
             if next_weather_key != weather_sample_key {
-                let next_snapshot = storage.as_ref().and_then(|storage| {
-                    let source = storage.weather_source()?;
-                    let reader = storage.weather_mount()?.reader(&source).ok()?;
+                let next_snapshot = flat.zip(weather_bundle).and_then(|(store, bundle)| {
+                    let source = crate::flat_store::reconcile_weather(store, Some(bundle))?;
+                    let reader = bundle.validated.reader(source).ok()?;
                     let projection = route.as_ref().zip(weather_projection);
                     obc_app::WeatherSnapshot::sample_along(&reader, &mut weather_cache, weather_pos, projection).ok()
                 });
@@ -2058,16 +2069,16 @@ pub(crate) async fn run_app(
                         // and hourly screens still receive the resident snapshot, but pay zero SD
                         // header/frame/tile reads during draw; the ordinary Map never receives a
                         // lease and therefore cannot be tinted by weather accidentally.
-                        let weather_source = app
-                            .base_wants_rain()
-                            .then(|| storage.as_ref().and_then(sd::Storage::weather_source))
-                            .flatten();
-                        let weather_reader = weather_source
-                            .as_ref()
-                            .and_then(|source| storage.as_ref()?.weather_mount()?.reader(source).ok());
-                        let weather_bind_failed = app.base_wants_rain()
-                            && storage.as_ref().and_then(sd::Storage::weather_active).is_some()
-                            && weather_reader.is_none();
+                        let weather_source = if app.base_wants_rain() {
+                            flat.zip(weather_bundle)
+                                .and_then(|(store, bundle)| crate::flat_store::reconcile_weather(store, Some(bundle)))
+                        } else {
+                            None
+                        };
+                        let weather_reader =
+                            weather_source.and_then(|source| weather_bundle?.validated.reader(source).ok());
+                        let weather_bind_failed =
+                            app.base_wants_rain() && weather_bundle.is_some() && weather_reader.is_none();
                         if weather_bind_failed {
                             // A transient header read is not evidence of a dry map. Keep the last
                             // complete glass and retry rather than flashing a misleading rain-free
