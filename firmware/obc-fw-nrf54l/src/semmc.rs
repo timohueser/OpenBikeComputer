@@ -20,7 +20,7 @@
 //! handover and the two transfer calls. Every one of them is **synchronous**: `start` waits in
 //! milliseconds (the ACMD41 power-up poll) but blocks rather than yields, because awaiting it from
 //! `main` flattens the whole chain into `main`'s permanent task-body poll frame — the #677 / #1108
-//! trap, itemized in `sd::init`'s note.
+//! trap, itemized in `sd::bring_up_card`'s note.
 //! Boot, enable and card identification are private on purpose: law 1 is only a law if a caller
 //! cannot boot the firmware without powering it on.
 //!

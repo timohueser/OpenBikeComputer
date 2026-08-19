@@ -661,8 +661,19 @@ struct PendingSave {
 /// volume is a filesystem on it, so exactly one of them can be there. Boot therefore brings the card
 /// up once, lets `FlatStore::mount` classify it (`FLAT_Store_Format.md` §5.6 step 1 — see
 /// `crate::flat_store`), and only then mounts FAT with [`mount_fat`] on a card that is not a flat
-/// store. Mounting FAT first would have reported *STORAGE FAULT* for a perfectly good flat card,
-/// which is the one honest-reporting mistake this split exists to prevent.
+/// store.
+///
+/// **The order is about honest reporting, not about correctness.** The two classifiers are disjoint
+/// by construction — a flat card's zero MBR footer and this stack's `0xAA55` requirement, in both
+/// directions; `crate::flat_store`'s module docs carry the argument — so neither can accept the
+/// other's card whichever runs first. What the order buys is the *message*: mounting FAT first would
+/// have reported *STORAGE FAULT* for a perfectly good flat card, sending its owner to look at a
+/// filesystem that was never on it.
+///
+/// **That ordering is held structurally rather than by a test**: there is exactly one caller of
+/// each of these two functions, in `main`'s boot block, and no test harness exists in this crate to
+/// pin it. A second call site is what would break it, and the honest guard against that is that
+/// there is nowhere else in the image that wants one.
 ///
 /// Card identification is the slow part — the ACMD41 power-up poll is bounded at 1.5 s.
 /// [`flpr_mux::bring_up_storage`](crate::flpr_mux::bring_up_storage) is what holds the FLPR in

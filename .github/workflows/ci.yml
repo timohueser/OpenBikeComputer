@@ -302,6 +302,12 @@ jobs:
           # `--no-default-features --features ble` is the invocation the README documents and the one
           # a future optional feature would first break.
           - { name: "clippy (ble)", cmd: "cargo clippy --locked --no-default-features --features ble -- -D warnings" }
+          # flat-exercise = default + the FS7.5-c1 on-glass write-path harness (`src/flat_store.rs`).
+          # Never shipped and never resource-gated — it writes to the card in the slot — but it is the
+          # *only* vehicle for the interleaving measurement the storage task's design rests on, and an
+          # off-by-default feature that nothing builds is one that has already rotted. Lint-only for that
+          # reason: the image it produces is a bench, not an artifact.
+          - { name: "clippy (flat-exercise)", cmd: "cargo clippy --locked --features flat-exercise -- -D warnings" }
           - { name: "build (ble, release)", cmd: "cargo build --release --locked --no-default-features --features ble" }
     steps:
       - uses: actions/checkout@v4
@@ -430,6 +436,12 @@ jobs:
       #
       # 16,384 is the bench's limit, deliberately: the same code, so the same ceiling — and the app has
       # far less residual stack to spend it against (37,640 B) than the bench does.
+      #
+      # What keeps `mount_in_place` OUT OF LINE is not these needles — they only measure whichever
+      # symbols happen to exist. It is `boot_chain_roots` in resource_baseline.json:
+      # `resolve_symbol` raises a stale-root error when a baselined root stops being a symbol, which
+      # is exactly what inlining it away would do. These needles measure the frames; that check is
+      # what guarantees there is a frame here to measure at all.
       - name: "obc-fw-nrf54l: flat store frame ceiling (shipping image)"
         if: matrix.name == 'build (default = LS021/FLPR, release)'
         working-directory: firmware/obc-fw-nrf54l
