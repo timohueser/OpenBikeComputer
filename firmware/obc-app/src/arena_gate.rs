@@ -312,15 +312,14 @@ mod tests {
             assert_eq!(gate.release(ArenaOwner::Render), Ok(()));
         }
 
-        for foreign in [ArenaOwner::Nav] {
-            match foreign {
-                ArenaOwner::Nav => assert_eq!(gate.claim_nav(MapQuiesced::prove(false, false).unwrap()), Ok(())),
-                _ => unreachable!("two arms, and the match above covers both"),
-            }
-            assert_eq!(gate.release(foreign), Ok(()));
-            assert_eq!(gate.claim_render(), Ok(ArenaInit::Required), "{foreign:?} left its own bytes behind");
-            assert_eq!(gate.release(ArenaOwner::Render), Ok(()));
-        }
+        // **The nav arm, and there is only one other arm to check.** This was a loop over every
+        // foreign owner while the USB staging arm existed; with two arms the loop is the nav case
+        // written awkwardly, so it is written plainly. If a third arm is ever added, this becomes a
+        // loop again — and the const assert in `arena.rs` is what will say so first.
+        assert_eq!(gate.claim_nav(MapQuiesced::prove(false, false).unwrap()), Ok(()));
+        assert_eq!(gate.release(ArenaOwner::Nav), Ok(()));
+        assert_eq!(gate.claim_render(), Ok(ArenaInit::Required), "the nav arm left its own bytes behind");
+        assert_eq!(gate.release(ArenaOwner::Render), Ok(()));
     }
 
     /// The full ride-loop cycle the on-glass soak walks: frames render, a reroute takes over, the
