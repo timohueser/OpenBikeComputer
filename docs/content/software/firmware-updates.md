@@ -6,11 +6,12 @@ description: How OpenBikeComputer updates its own firmware in the field — the 
 # Firmware updates
 
 > The delivery half of this page describes the currently implemented legacy link while the
-> coordinated Device Object System v2 cutover is under development. Under v2 an update package is an
-> object like any other, staging is an upload or a card import, and installing is an authenticated
-> [`InstallUpdate`](src:specs/Device_Object_Protocol_v3.md) command rather than a press on the glass.
-> The trust model below — verify before erase, signed images, one trial boot then rollback — is
-> unchanged by that cutover and is where the safety actually lives.
+> coordinated **flat store** cutover is under development. Under the flat store an update package is
+> an object like any other — a `PUT` of kind `7` — and installing is a separate authenticated
+> [`ARM`](src:specs/FLAT_Store_Protocol.md) command rather than a press on the glass. The card stops
+> being user-accessible, so the sideload path below goes with it. The trust model — verify before
+> erase, signed images, one trial boot then rollback — is unchanged by that cutover and is where the
+> safety actually lives.
 
 For most of this project's life the only way to change the firmware was a
 debug probe over SWD — fine on a bench, useless in a tent. A bikepacking
@@ -333,7 +334,7 @@ refuses instead of guessing, and nobody's work-in-progress gets overwritten by a
 there.
 
 <figure class="fig">
-<svg viewBox="0 0 720 512" role="img" aria-label="How a tagged release reaches a device, drawn top to bottom. At the top left, a pushed git tag v1.3.0 feeds the release.yml workflow, which builds, objcopies, wraps and signs the image and then runs inspect as a gate — the signature must verify under the key compiled into the build. From the workflow one arrow goes right to the GitHub Release, labelled the source of truth: notes, ELFs, checksums, versioned archive. A second arrow goes down, labelled mirror, into a band for updates.openbikecomputer.com, the serving edge, which lists three objects: fw slash tag slash UPDATE.BIN, immutable and written for every tag; fw slash manifest.json, the latest pointer, written by stable tags only; and fw slash prerelease slash manifest.json, the opt-in channel that never moves latest. A note in the band explains that a GitHub release asset sends no CORS header, so a browser fetch cannot read it. Below, two arrows leave the manifest for two clients — the companion app, which downloads and checks the sha256 on the phone before sending over BLE, and the map builder, one parser across web and desktop, which does the same over USB — while a third dashed arrow runs from the GitHub Release straight to any computer, the by-hand path that copies UPDATE.BIN onto the card with no manifest and no network. All three converge on a band reading UPDATE.BIN on the card: staged, not installed. Under that a dashed coral line with a single gap marks the boundary: staging is not installing, and the one way through is the rider's Select press. A green arrow passes through the gap into the device, which confirms, arms and installs. The Select press drawn here is the legacy behaviour: under Device Object System v2 the same gap is crossed by an authenticated InstallUpdate command, with the package signature, the anti-rollback check and the trial boot as the safety boundary instead of the press.">
+<svg viewBox="0 0 720 512" role="img" aria-label="How a tagged release reaches a device, drawn top to bottom. At the top left, a pushed git tag v1.3.0 feeds the release.yml workflow, which builds, objcopies, wraps and signs the image and then runs inspect as a gate — the signature must verify under the key compiled into the build. From the workflow one arrow goes right to the GitHub Release, labelled the source of truth: notes, ELFs, checksums, versioned archive. A second arrow goes down, labelled mirror, into a band for updates.openbikecomputer.com, the serving edge, which lists three objects: fw slash tag slash UPDATE.BIN, immutable and written for every tag; fw slash manifest.json, the latest pointer, written by stable tags only; and fw slash prerelease slash manifest.json, the opt-in channel that never moves latest. A note in the band explains that a GitHub release asset sends no CORS header, so a browser fetch cannot read it. Below, two arrows leave the manifest for two clients — the companion app, which downloads and checks the sha256 on the phone before sending over BLE, and the map builder, one parser across web and desktop, which does the same over USB — while a third dashed arrow runs from the GitHub Release straight to any computer, the by-hand path that copies UPDATE.BIN onto the card with no manifest and no network. All three converge on a band reading UPDATE.BIN on the card: staged, not installed. Under that a dashed coral line with a single gap marks the boundary: staging is not installing, and the one way through is the rider's Select press. A green arrow passes through the gap into the device, which confirms, arms and installs. Both the dashed by-hand arrow and the Select press drawn here are legacy behaviour: under the flat store the card is not user-accessible, so that path is gone, and the same gap is crossed by an authenticated ARM command, with the package signature, the anti-rollback check and the trial boot as the safety boundary instead of the press.">
   <defs>
     <marker id="ota-a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
     <marker id="ota-g" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#9aa884" /></marker>
@@ -421,7 +422,7 @@ there.
   <text class="d-title" x="360" y="476" text-anchor="middle">the device</text>
   <text class="d-sub" x="360" y="492" text-anchor="middle">confirms, arms, installs</text>
 </svg>
-<figcaption>One build, two homes, one pointer, three clients — and a wall with a single door in it. The workflow is the only thing that signs, and the <code>inspect</code> gate means it cannot publish a container its own firmware would refuse. The <b>release</b> is the archive; the <b>bucket</b> is only where the bytes are served, which is why the manifest names a URL instead of the clients knowing one. The dashed path is the manual one, and it is deliberately still there: it needs no manifest, no network and no app. Every path converges on a <em>staged</em> file, and the only thing that turns staged into installed is a rider pressing Select — or, under Device Object System v2, an authenticated <code>InstallUpdate</code> command that passes the device's own signature, anti-rollback and runtime-safety checks.</figcaption>
+<figcaption>One build, two homes, one pointer, three clients — and a wall with a single door in it. The workflow is the only thing that signs, and the <code>inspect</code> gate means it cannot publish a container its own firmware would refuse. The <b>release</b> is the archive; the <b>bucket</b> is only where the bytes are served, which is why the manifest names a URL instead of the clients knowing one. The dashed path is the manual one, and it lasts only as long as the card is something a computer can write to: the flat store owns the raw card from block zero and puts no filesystem on it, which retires that arrow along with the sideload row above. Every path converges on a <em>staged</em> file, and the only thing that turns staged into installed is a rider pressing Select — or, under the flat store, an authenticated <code>ARM</code> command that passes the device's own signature, anti-rollback and runtime-safety checks.</figcaption>
 </figure>
 
 ## Three ways an update arrives
@@ -438,12 +439,12 @@ are three ways it gets there, and
   device scans and validates the file, shows what it found (the installed version
   → the staged version, plus a no-undo warning), and installs on a Select press.
   This is the primitive contract: a file on a card, nothing more. The row is
-  disabled while a ride is recording, because arming reboots the device. Under Device Object System
-  v2 the same idea survives with a fixed address: the file goes in `/OBC2/IMPORT` on the card, and at
-  the next mount the device *imports* it — copying it into an immutable generation, validating it,
-  and publishing it as a `VerifiedReady` update package. Importing is not installing; the explicit
-  `InstallUpdate` still has to come from the app or from the device's own UI. That is what keeps the
-  bare-card path alive for a device whose radio and cable are both unusable.
+  disabled while a ride is recording, because arming reboots the device. **The flat store retires
+  this path outright**: it owns the raw card from block zero, with no partition table and no
+  filesystem, so there is nowhere for a computer to drop a file and the card is not user-accessible
+  at all. The delivery routes become BLE, USB and the builder
+  ([`FLAT_Store_Protocol.md`](src:specs/FLAT_Store_Protocol.md) §4) — the cable being the one that
+  covers a device whose radio is unusable.
 - **BLE from the companion.** The [companion app](../companion-link/) can stage the
   same `UPDATE.BIN` over the link: it uploads a `fwImage` object (§7.6 of the BLE
   spec), the device writes it to the card verbatim, and then the app sends an
@@ -495,19 +496,19 @@ or reboot the device on its own. `installFw` merely posts a request; the device 
 and shows a **confirm card**, and the update proceeds only on a physical Select press by the rider,
 exactly like the pairing-passkey pattern.
 
-Under **Device Object System v2** staging and installing are still two separate acts, but the second
-one is a command rather than a press. An upload publishes the package as `VerifiedReady` and does
-nothing else; a separate authenticated and authorized
-[`InstallUpdate`](src:specs/Device_Object_Protocol_v3.md) may arm and reboot without a physical
-confirmation, once the device's own mandatory admission checks pass: the signature and digest, the
-hardware target, a **version monotonicity** check that refuses anything not strictly newer, and the
-enumerated runtime-safety checks — no ride being tracked, no unsaved ride data, and enough power.
-The safety boundary moves off the rider's thumb and onto the things that were always doing the work:
-the signature the device verifies itself, the anti-rollback check it will not let a peer override,
-and the trial boot with rollback behind it. Over USB the cable *is* the authorization boundary in
-v2, which is exactly why the signature and the anti-rollback check are mandatory rather than
-advisory. The device's own UI still installs — it does so as a local principal issuing the same
-command, so a rider confirming on the glass and an app sending `InstallUpdate` travel the same path.
+Under the **flat store** staging and installing are still two separate acts, but the second one is a
+command rather than a press. Uploading a package is an ordinary `PUT` and does nothing else; a
+separate authenticated [`ARM`](src:specs/FLAT_Store_Protocol.md), naming the package by object id
+and the revision it expects, may arm and reboot without a physical confirmation — once the device's
+own mandatory checks pass: the OBCU structure, the image CRC, the Ed25519 signature, a **version
+monotonicity** check that refuses anything not strictly newer, and the runtime-safety refusals (no
+ride recording, enough battery). The safety boundary moves off the rider's thumb and onto the things
+that were always doing the work: the signature the device verifies itself, the anti-rollback check
+it will not let a peer override, and the trial boot with rollback behind it. Over USB the cable *is*
+the authorization boundary, which is exactly why the signature and the anti-rollback check are
+mandatory rather than advisory. The device's own UI still installs — it does so as a local principal
+issuing the same command, so a rider confirming on the glass and an app sending `ARM` travel the
+same path.
 
 The running firmware's version a peer
 displays is read from the standard [DIS](../companion-link/) Firmware Revision
@@ -680,7 +681,7 @@ a frozen COM line would apply for the multi-ten-second install.
 ## Where this lives
 
 - The byte formats — the `UPDATE.BIN` container, the boot-state page, and the blob-stage carve — normative: [`OBCU_Spec.md`](src:specs/OBCU_Spec.md)
-- The Device Object System v2 install contract — the `InstallUpdate` command, its mandatory admission checks and its crash ordering: [`Device_Object_Protocol_v3.md`](src:specs/Device_Object_Protocol_v3.md) §9; the crash-safe A/B boot handoff, its per-cut recovery table and the `/OBC2/IMPORT` staging area: [`OBC2_Storage_Format.md`](src:specs/OBC2_Storage_Format.md) §10 and §12.1
+- The flat store's install contract — the `ARM` command, its mandatory checks, the rollback reserve it commits and the order it does everything in: [`FLAT_Store_Protocol.md`](src:specs/FLAT_Store_Protocol.md) §4; the card layout the reserve's extents come out of: [`FLAT_Store_Format.md`](src:specs/FLAT_Store_Format.md) §6
 - The shared `no_std` core: [`obc-dfu`](src:firmware/obc-dfu) — the container + state codecs ([`image.rs`](src:firmware/obc-dfu/src/image.rs) · [`state.rs`](src:firmware/obc-dfu/src/state.rs)), the bootloader's install engine ([`engine.rs`](src:firmware/obc-dfu/src/engine.rs)), and the app-side armer ([`armer.rs`](src:firmware/obc-dfu/src/armer.rs))
 - The bootloader itself, its LED codes and flash-once workflow: [`obc-boot`](src:firmware/obc-boot) ([README](src:firmware/obc-boot/README.md))
 - The host tool that builds and inspects `UPDATE.BIN`: [`obc-mkimage`](src:host/obc-mkimage) — the `objcopy → wrap` pipeline is in the [firmware README](src:firmware/README.md)
