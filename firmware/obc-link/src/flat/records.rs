@@ -247,3 +247,73 @@ mod tests {
         assert_eq!(r.take(&buf), Ok(None));
     }
 }
+
+#[cfg(test)]
+mod binding_boundaries {
+    extern crate std;
+    use std::vec;
+
+    use super::*;
+    use crate::flat::wire::{StreamAssembly, StreamRecordAssembler, STREAM_HEADER_LEN};
+
+    /// **The two bindings frame differently, and one assembler cannot serve both.**
+    ///
+    /// This exists because the obvious economy — "USB reassembles records, so route BLE through the
+    /// same code" — is wrong, and wrong in a way that would silently re-break a path the phone found
+    /// on glass:
+    ///
+    /// * **USB** (§5.2) prefixes every record with `record_length u16`. The framing is the
+    ///   binding's, sits *outside* the frame, and is what [`Reassembler`] reads.
+    /// * **BLE** (§5.1) prefixes nothing. The CoC carries §3.8 records back to back and the record's
+    ///   own 16-byte header is the only length there is, which is what
+    ///   [`StreamRecordAssembler`] reads.
+    ///
+    /// So the same bytes mean different things to the two, and this pins that: a §3.8 record fed to
+    /// the USB reassembler is read as a length prefix that is really the transfer's `RequestId`.
+    #[test]
+    fn a_ble_record_is_not_a_usb_record_and_the_assemblers_are_not_interchangeable() {
+        // One §3.8 stream record: RequestId 1, offset 0, 4 payload bytes. No length prefix.
+        let mut record = vec![0u8; STREAM_HEADER_LEN + 4];
+        record[0..4].copy_from_slice(&1u32.to_le_bytes());
+        record[12..14].copy_from_slice(&4u16.to_le_bytes());
+        record[STREAM_HEADER_LEN..].copy_from_slice(&[0xAA; 4]);
+
+        // BLE's assembler recovers it whole, from the header alone.
+        let mut ble = StreamRecordAssembler::new();
+        let mut into = vec![0u8; 256];
+        let (used, state) = ble.push(&mut into, &record);
+        assert_eq!((used, state), (record.len(), StreamAssembly::Complete(record.len())));
+
+        // USB's reads the first two bytes as a `record_length`, which here are the low half of the
+        // `RequestId` — a different number entirely. It is not a refusal, which is the point: it
+        // would quietly mis-frame rather than fail, so the mistake is unrecoverable at runtime.
+        let mut usb = Reassembler::new(4_112);
+        let mut buf = vec![0u8; buffer_len(4_112, 64)];
+        buf[..record.len()].copy_from_slice(&record);
+        usb.filled(record.len());
+        let declared = u16::from_le_bytes([record[0], record[1]]) as usize;
+        assert_eq!(declared, 1, "the RequestId's low half read as a length");
+        assert_eq!(usb.take(&buf), Ok(Some((PREFIX_LEN, 1))), "one byte, not a 20-byte record");
+    }
+
+    /// The case the phone actually hit: a record split across two CoC writes. `Reassembler` cannot
+    /// express it — there is no prefix to have been split — so BLE keeps its own assembler.
+    #[test]
+    fn a_ble_record_split_across_writes_is_rejoined_by_its_header() {
+        let mut record = vec![0u8; STREAM_HEADER_LEN + 8];
+        record[0..4].copy_from_slice(&7u32.to_le_bytes());
+        record[12..14].copy_from_slice(&8u16.to_le_bytes());
+        for (i, b) in record[STREAM_HEADER_LEN..].iter_mut().enumerate() {
+            *b = i as u8;
+        }
+        for split in 1..record.len() {
+            let mut ble = StreamRecordAssembler::new();
+            let mut into = vec![0u8; 256];
+            let (_, first) = ble.push(&mut into, &record[..split]);
+            let (_, second) = ble.push(&mut into, &record[split..]);
+            assert_eq!(first, StreamAssembly::NeedMore, "split at {split} completed early");
+            assert_eq!(second, StreamAssembly::Complete(record.len()), "split at {split} never completed");
+            assert_eq!(&into[..record.len()], &record[..], "split at {split} rejoined wrong");
+        }
+    }
+}

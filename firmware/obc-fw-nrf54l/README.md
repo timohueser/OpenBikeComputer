@@ -582,8 +582,10 @@ The object surface is [`FLAT_Store_Protocol.md`](../../specs/FLAT_Store_Protocol
 c3b that is true of the cable as well as the radio:
 
 - **BLE** is §5.1: `objectControl` (`3C920009`, Write Request + confirmed indication) carries
-  control frames, the L2CAP CoC carries §3.8 stream records one per SDU, and `protocolVersion` reads
-  two bytes, `4`. `command` / `status` / `config` are untouched and still governed by
+  control frames, the L2CAP CoC carries the byte stream of consecutive §3.8 stream records — a
+  record is recovered from its **own header** and may cross SDU boundaries, because CoreBluetooth
+  exposes a CoC as a stream whose write may be accepted in pieces — and `protocolVersion` reads two
+  bytes, `4`. `command` / `status` / `config` are untouched and still governed by
   [`obc-ble-interface-spec.md`](../../specs/obc-ble-interface-spec.md).
 - **USB** is §5.2: both bulk endpoint pairs carry §3 frames, each record a `record_length u16` in
   front of the frame bytes, and the version is settled by descriptor matching before a record moves
