@@ -60,8 +60,8 @@ toolchain and named-allocation table rather than updating a second copy here.
 
 | Profile | Linked resident | `.uninit` ceiling | Flash record | Poll frame | Main task | Residual stack | Boot-chain ceiling |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| default | 321,784 B / 321,864 B max | 132,096 B | 1,366,436 B | 9,728 / 12,288 B | 7,264 / 8,192 B | 37,640 B min | 28,672 B |
-| BLE | 321,784 B / 321,864 B max | 132,096 B | 1,366,444 B | 9,728 / 12,288 B | 7,264 / 8,192 B | 37,640 B min | 28,672 B |
+| default | 321,784 B / 321,864 B max | 132,096 B | 1,570,976 B | 9,728 / 12,288 B | 7,264 / 8,192 B | 37,640 B min | 24,576 B |
+| BLE | 321,784 B / 321,864 B max | 132,096 B | 1,570,960 B | 9,728 / 12,288 B | 7,264 / 8,192 B | 37,640 B min | 24,576 B |
 | bootloader | — | — | 16,708 / 32,768 B max | — | — | — | — |
 
 > ⚠️ **The residual stack is close to the measured deep-ride high-water and the gates cannot see
