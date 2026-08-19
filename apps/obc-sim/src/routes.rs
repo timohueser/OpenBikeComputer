@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use obc_app::{Retention, RouteRetentionMeta, RouteRetentionStore};
+use obc_app::{CatalogObjectId, Retention, RouteRetentionMeta, RouteRetentionStore};
 use obc_formats::io::SliceSource;
 use obc_route::gpx_to_obcr;
 use obc_route::{RouteStats, RouteSummary};
@@ -30,12 +30,12 @@ pub struct RouteStore {
     /// [`App::set_routes_with_ids`](obc_app::App::set_routes_with_ids) so a mid-session rescan
     /// (a dropped-in `.obcr`, a GPX import, the panel's store-changed button) exercises the same
     /// identity remap the firmware relies on.
-    ids: Vec<u16>,
+    ids: Vec<CatalogObjectId>,
     /// The session id registry (path → id) + the next fresh one. Append-only, so a file keeps its
     /// id across rescans no matter what is added or removed around it — the device's `RT{id}` /
     /// side-load-registry behaviour in miniature.
-    assigned: Vec<(PathBuf, u16)>,
-    next_id: u16,
+    assigned: Vec<(PathBuf, CatalogObjectId)>,
+    next_id: CatalogObjectId,
     active: Option<usize>,
     active_bytes: Option<Vec<u8>>,
     /// The in-memory route-retention sidecar (epic #638, S3): route id → (retention, last_used).
@@ -67,24 +67,30 @@ impl RouteStore {
     /// Each catalog entry's retention meta, parallel to [`ids`](RouteStore::ids) — fed to the app
     /// alongside the catalog so the auto-expiry sweep reads device-truth retention (epic #638, S3).
     pub fn retention_metas(&self) -> Vec<RouteRetentionMeta> {
-        self.ids.iter().map(|&id| self.retention.get(id)).collect()
+        self.ids
+            .iter()
+            .map(|&id| retention_id(id).map_or_else(RouteRetentionMeta::default, |id| self.retention.get(id)))
+            .collect()
     }
 
     /// Set route `id`'s retention level (the control panel's stand-in for the phone's
     /// `setRouteRetention` command until S4 gives it a wire), keeping any existing `last_used`.
-    pub fn set_retention(&mut self, id: u16, retention: Retention) {
+    pub fn set_retention(&mut self, id: CatalogObjectId, retention: Retention) {
+        let Some(id) = retention_id(id) else { return };
         let meta = RouteRetentionMeta { retention, last_used_utc: self.retention.get(id).last_used_utc };
         self.retention.set(id, meta);
     }
 
     /// This route's current retention meta (for the control-panel readout).
-    pub fn retention_of(&self, id: u16) -> RouteRetentionMeta {
-        self.retention.get(id)
+    pub fn retention_of(&self, id: CatalogObjectId) -> RouteRetentionMeta {
+        retention_id(id).map_or_else(RouteRetentionMeta::default, |id| self.retention.get(id))
     }
 
     /// Stamp route `id`'s `last_used` (the sweep / activation stamp the host applies to the sidecar).
-    pub fn stamp_route_used(&mut self, id: u16, utc: u32) {
-        self.retention.stamp_last_used(id, utc);
+    pub fn stamp_route_used(&mut self, id: CatalogObjectId, utc: u32) {
+        if let Some(id) = retention_id(id) {
+            self.retention.stamp_last_used(id, utc);
+        }
     }
 
     /// The route catalog (summaries), for [`App::set_routes_with_ids`](obc_app::App::set_routes_with_ids).
@@ -93,7 +99,7 @@ impl RouteStore {
     }
 
     /// Each catalog entry's session-stable id, parallel to [`catalog`](RouteStore::catalog).
-    pub fn ids(&self) -> &[u16] {
+    pub fn ids(&self) -> &[CatalogObjectId] {
         &self.ids
     }
 
@@ -130,12 +136,13 @@ impl RouteStore {
         }
         // Retire retention rows for routes that no longer exist (a delete/reshuffle) — the sidecar
         // never carries retention for a vanished route (ids never reuse, so belt-and-braces).
-        self.retention.retain_ids(&self.ids);
+        let sidecar_ids: Vec<u16> = self.ids.iter().filter_map(|&id| retention_id(id)).collect();
+        self.retention.retain_ids(&sidecar_ids);
     }
 
     /// The session id for `path`: registered, or freshly assigned. Append-only for the session —
     /// ids are never reused, matching the device's contract.
-    fn id_for(&mut self, path: &Path) -> u16 {
+    fn id_for(&mut self, path: &Path) -> CatalogObjectId {
         if let Some((_, id)) = self.assigned.iter().find(|(p, _)| p == path) {
             return *id;
         }
@@ -164,7 +171,7 @@ impl RouteStore {
     /// `.obcr` from the folder and rescan. `true` = a file was deleted. The registry is append-only,
     /// so the id is retired, not reused — mirroring the device's never-reuse contract. The caller then
     /// re-feeds [`App::set_routes_with_ids`](obc_app::App::set_routes_with_ids) so the app remaps.
-    pub fn delete_by_id(&mut self, id: u16) -> bool {
+    pub fn delete_by_id(&mut self, id: CatalogObjectId) -> bool {
         let Some(pos) = self.ids.iter().position(|&x| x == id) else { return false };
         let path = self.paths[pos].clone();
         if std::fs::remove_file(&path).is_err() {
@@ -177,7 +184,7 @@ impl RouteStore {
     /// Duplicate route `i`'s file under a fresh name — the control panel's "**new** upload"
     /// stand-in (a real upload writes a new file to `/routes`) — then rescan and return the new
     /// file's session id, ready for `App::apply_event(id, false)`.
-    pub fn duplicate_route(&mut self, i: usize) -> Option<u16> {
+    pub fn duplicate_route(&mut self, i: usize) -> Option<CatalogObjectId> {
         let src = self.paths.get(i)?.clone();
         let bytes = std::fs::read(&src).ok()?;
         let stem = src.file_stem()?.to_str()?.to_string();
@@ -192,7 +199,7 @@ impl RouteStore {
     /// "**replace-by-id** upload" stand-in (same id, the bytes on disk swapped under any open
     /// handle, as the device's replace-commit does). Returns the route's (unchanged) id for
     /// `App::apply_event(id, true)`.
-    pub fn touch_route(&mut self, i: usize) -> Option<u16> {
+    pub fn touch_route(&mut self, i: usize) -> Option<CatalogObjectId> {
         let path = self.paths.get(i)?.clone();
         let bytes = std::fs::read(&path).ok()?;
         std::fs::write(&path, bytes).ok()?;
@@ -203,7 +210,7 @@ impl RouteStore {
     /// `_nav.obcr`, overwritten in place so consecutive plans never accumulate — then rescan and
     /// return the file's session-stable id (stable across overwrites: the id registry keys on the
     /// path). `None` on an I/O failure — the caller degrades to the generic routing-failure tier.
-    pub fn write_nav_route(&mut self, bytes: &[u8]) -> Option<u16> {
+    pub fn write_nav_route(&mut self, bytes: &[u8]) -> Option<CatalogObjectId> {
         std::fs::create_dir_all(&self.dir).ok()?;
         let out = self.dir.join(NAV_ROUTE_FILE);
         std::fs::write(&out, bytes).ok()?;
@@ -216,7 +223,7 @@ impl RouteStore {
     /// bytes and stream them once through [`obc_route::elevation_sparkline`] — the host side of the
     /// route-upload seam, mirroring the board's build-at-commit-time. `None` when the id is unknown,
     /// the read fails, or the route carries no elevation.
-    pub fn elevation_sparkline(&self, id: u16) -> Option<[u8; obc_route::SPARKLINE_BUCKETS]> {
+    pub fn elevation_sparkline(&self, id: CatalogObjectId) -> Option<[u8; obc_route::SPARKLINE_BUCKETS]> {
         let pos = self.ids.iter().position(|&x| x == id)?;
         let bytes = std::fs::read(&self.paths[pos]).ok()?;
         obc_route::elevation_sparkline(&SliceSource(&bytes))
@@ -257,13 +264,13 @@ impl obc_host_core::RouteRepository for RouteStore {
     fn catalog(&self) -> &[RouteSummary] {
         self.catalog()
     }
-    fn ids(&self) -> &[u16] {
+    fn ids(&self) -> &[CatalogObjectId] {
         self.ids()
     }
-    fn delete_by_id(&mut self, id: u16) -> bool {
+    fn delete_by_id(&mut self, id: CatalogObjectId) -> bool {
         self.delete_by_id(id)
     }
-    fn write_nav_route(&mut self, bytes: &[u8]) -> Option<u16> {
+    fn write_nav_route(&mut self, bytes: &[u8]) -> Option<CatalogObjectId> {
         self.write_nav_route(bytes)
     }
     fn sync_active(&mut self, want: Option<usize>) -> bool {
@@ -278,9 +285,14 @@ impl obc_host_core::RouteRepository for RouteStore {
     fn retention_metas(&self) -> Vec<RouteRetentionMeta> {
         self.retention_metas()
     }
-    fn stamp_route_used(&mut self, id: u16, utc: u32) {
+    fn stamp_route_used(&mut self, id: CatalogObjectId, utc: u32) {
         self.stamp_route_used(id, utc)
     }
+}
+
+/// Retention sidecars remain their frozen u16 format; the simulator's object identity is wider.
+fn retention_id(id: CatalogObjectId) -> Option<u16> {
+    id.try_into().ok()
 }
 
 #[cfg(test)]

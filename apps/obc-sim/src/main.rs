@@ -72,7 +72,7 @@ enum NavFailure {
 enum Injection {
     NavFail(NavFailure),
     DetourFail(NavFailure),
-    Upload { id: u16, replaced: bool },
+    Upload { id: obc_app::CatalogObjectId, replaced: bool },
     Warning(obc_app::WarningFlags),
 }
 
@@ -465,7 +465,7 @@ fn parse_injection(s: &str) -> Result<Injection, String> {
         "nav-fail" => Ok(Injection::NavFail(parse_nav_failure(value, "--inject nav-fail")?)),
         "detour-fail" => Ok(Injection::DetourFail(parse_nav_failure(value, "--inject detour-fail")?)),
         "upload" | "upload-replace" => Ok(Injection::Upload {
-            id: value.parse().map_err(|_| "--inject upload needs a u16 object id")?,
+            id: value.parse().map_err(|_| "--inject upload needs a u64 object id")?,
             replaced: kind == "upload-replace",
         }),
         "warning" => Ok(Injection::Warning(parse_warning(value)?)),

@@ -384,8 +384,8 @@ impl SimGui {
         // leaves the member routes as top-level routes (non-cascading, spec §7.7). Stands in for the
         // on-device delete until the TR3 folder UI wires it to a hold gesture. Deleting drops the
         // folder, so its member routes fall back to the unfiled top level on the next re-group.
-        let mut delete_trip: Option<u16> = None;
-        let mut inject_trip: Option<u16> = None;
+        let mut delete_trip: Option<obc_app::CatalogObjectId> = None;
+        let mut inject_trip: Option<obc_app::CatalogObjectId> = None;
         {
             let trips = self.app.trips();
             if !trips.is_empty() {
@@ -463,7 +463,7 @@ impl SimGui {
         ui.separator();
 
         // Set a route's retention level (the setRouteRetention stand-in until S4).
-        let mut apply: Option<(u16, Retention)> = None;
+        let mut apply: Option<(obc_app::CatalogObjectId, Retention)> = None;
         {
             let routes = self.app.routes();
             if routes.is_empty() {
