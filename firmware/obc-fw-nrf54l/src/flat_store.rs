@@ -34,6 +34,25 @@
 //! card the whole probe is two block reads and [`Mode::Unformatted`]; the v1 stack then mounts
 //! exactly as it did before this slice, and the store sits in its slot inert.
 //!
+//! ## Why no card can answer to both classifiers
+//!
+//! The ordering above would still be a coin toss if a card could satisfy both tests, so it is worth
+//! writing down that **neither classifier can accept the other's card**, and that this holds in both
+//! directions from facts already in the tree rather than from the order boot happens to ask in:
+//!
+//! - **A flat card can never FAT-mount.** `FLAT_Store_Format.md` §2 makes block 0 *deliberately not
+//!   an MBR*: its bytes `510..511` are zero — the superblock CRC sits elsewhere precisely so that
+//!   footer can stay zero — and `superblock.rs`'s encoder asserts it. The vendored `embedded-sdmmc`
+//!   fork requires the `0xAA55` boot signature there before it will read a partition table or a BPB,
+//!   so it refuses a flat card at its first block.
+//! - **A FAT card can never flat-mount.** §5.6 step 1 validates a superblock magic and CRC at two
+//!   fixed blocks; an MBR or a volume boot record carries neither, so `mount` returns
+//!   [`Mode::Unformatted`].
+//!
+//! So the two are disjoint by construction, and the classification is a fact about the card rather
+//! than a policy of this module. What the *ordering* buys is only honest reporting — see
+//! [`crate::sd::bring_up_card`] for why FAT must not be tried first.
+//!
 //! ## What c1 does not do
 //!
 //! The renderer and the router still read through `sd.rs` (that is c2), and every transport still
@@ -238,7 +257,8 @@ pub(crate) enum Card {
     /// **Not a fall-through to FAT.** The superblock says a flat store was written here, so a FAT
     /// mount would fail anyway and report the failure of the stack that was never on this card.
     /// `StorageFault` is the honest superset — *"something below the filesystem broke, and it was
-    /// not the card's absence"* — and it is what `sd::init` already reports for the mirror case.
+    /// not the card's absence"* — and it is what [`crate::sd::mount_fat`] already reports for the
+    /// mirror case, a card whose FAT volume will not mount.
     FlatBroken(obc_app::BootFault),
 }
 
@@ -267,21 +287,30 @@ pub(crate) fn classify(store: &FlatStore<FlatCard>) -> Card {
 /// site would be a rule nothing checks. All this does is reduce the catalog to the two facts that
 /// rule takes — how many entries are map objects, and whether the walk finished.
 ///
-/// The counting deliberately does not stop at the first map. It is one pass over a listing the mount
-/// has already paid for and the body is a `matches!`; stopping early would only make [`report`] walk
-/// it a second time for the same numbers.
+/// It takes the counts rather than the store, because [`report`] has already walked the catalog once
+/// and a second walk is not free: a listing re-reads the live prefix off the card — at 1,027 entries
+/// that is ~69 read commands and about a tenth of a second of the boot this slice exists to measure.
+/// One walk, both consumers.
 ///
 /// Not a new `BootFault` variant, and that is a decision rather than an omission: the screen would
 /// have to say "this firmware cannot read this card yet", which is true for exactly the length of the
 /// dev window and would then be a dead string with a translation, a repertoire-test row and a
 /// `copy()` arm to delete. The truth that *is* durable — mode, entry count, sequence, free extents,
 /// what the mount cost — goes to RTT, where a dev-window fact belongs.
-pub(crate) fn boot_fault_for(store: &FlatStore<FlatCard>) -> obc_app::BootFault {
-    let maps =
-        store.entries().filter(|entry| matches!(entry.kind, ObjectKind::MapShard | ObjectKind::MapSetManifest)).count();
-    // `entries_ok()` is false when a commit moved the catalog under the walk (`flat::source`'s
-    // stale-listing rule) — the flat twin of the FAT scan's `unlistable`.
-    obc_app::flat_boot_fault(maps, store.entries_ok())
+pub(crate) fn boot_fault_for(catalog: Catalog) -> obc_app::BootFault {
+    obc_app::flat_boot_fault(catalog.maps, catalog.listing_complete)
+}
+
+/// What one walk of the catalog found. [`report`] produces it and [`boot_fault_for`] consumes it, so
+/// the mount's listing is paid for once.
+#[derive(Clone, Copy)]
+pub(crate) struct Catalog {
+    /// Entries whose kind is a map (§3.1's `MapShard` / `MapSetManifest`).
+    pub(crate) maps: usize,
+    /// False when the walk stopped short because a commit moved the catalog under its cursor
+    /// (`flat::source`'s stale-listing rule) — the flat twin of the FAT scan's `unlistable`, and
+    /// evidence of a map rather than of an empty card.
+    pub(crate) listing_complete: bool,
 }
 
 // ══════════════════════════ the storage task ══════════════════════════
@@ -363,15 +392,31 @@ pub(crate) enum Outcome {
     Done,
 }
 
-/// The caller's half of one round trip. A `Signal` rather than a reply channel: exactly one value is
-/// ever sent, and a caller that stopped waiting must not leave a queued reply behind for the next
-/// one to pick up.
-pub(crate) type Reply = Signal<CriticalSectionRawMutex, Result<Outcome, StoreError>>;
+/// The caller's half of one round trip: the answer, **tagged with the request it answers**.
+///
+/// The tag is what makes [`Writer::call`] cancellation-safe, and without it this seam is not.
+/// `call` is an `async fn`, so its future can be dropped between the send and the wait — by a
+/// `select`, a timeout, or an early `return` in a caller that is racing something else. The task
+/// has no idea; it serves the request and signals the slot anyway. The **next** caller to use that
+/// same slot would then wake on a value that answers a request it never made, and take a stale
+/// `Allocation` or a stale commit sequence for its own. Every transport in c3 is built on this call,
+/// so the failure would be a transfer publishing against another transfer's reservation.
+///
+/// A `Signal` rather than a channel is still right — exactly one value per round trip, and a
+/// dropped caller must not leave a *queued* reply behind either — but "the value in the slot is
+/// mine" has to be checked rather than assumed.
+pub(crate) type Reply = Signal<CriticalSectionRawMutex, (u32, Result<Outcome, StoreError>)>;
 
-/// A request and where its answer goes.
+/// Hands out [`Job::tag`]s. Monotonic and never reused in any window that matters: a collision needs
+/// 2^32 intervening calls *and* the same reply slot, on a device that issues a few writes a second.
+static NEXT_TAG: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(1);
+
+/// A request, where its answer goes, and which request that answer is for.
 pub(crate) struct Job {
     request: Request,
     reply: &'static Reply,
+    /// Matched by [`Writer::call`] against its own — see [`Reply`].
+    tag: u32,
 }
 
 /// The queue itself. One producer-agnostic channel: any task may send, exactly one task receives.
@@ -401,19 +446,44 @@ impl Writer {
     /// fire-and-forget variant, and c3 adds one when it has such a caller; c1 has none, so there is
     /// none to be dead.
     ///
-    /// `reply` is the caller's own `Signal` — one per call site, `'static`, and reset on entry so a
-    /// previous round trip's answer can never be mistaken for this one's.
+    /// **Cancellation-safe**: dropping this future between the send and the answer is legitimate
+    /// (a `select` lost, a caller that stopped caring), and the answer that arrives afterwards is
+    /// discarded by the *next* caller rather than mistaken for its own — see [`Reply`] for why that
+    /// is the whole reason a tag exists. The slot is never `reset`, only advanced past.
+    ///
+    /// `reply` is a `'static` slot the caller owns. Sharing one between two call sites is allowed
+    /// and safe — the tag is what sorts the answers out — but a slot per site keeps the waits short.
     pub(crate) async fn call(&self, request: Request, reply: &'static Reply) -> Result<Outcome, StoreError> {
-        reply.reset();
-        self.requests.send(Job { request, reply }).await;
-        reply.wait().await
+        let tag = NEXT_TAG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        self.requests.send(Job { request, reply, tag }).await;
+        loop {
+            let (answered, outcome) = reply.wait().await;
+            if answered == tag {
+                return outcome;
+            }
+            // Someone else's answer, left in this slot by a `call` whose future was dropped before
+            // it collected. Consuming it is the point — `Signal::wait` takes the value, so the slot
+            // is now empty and the next wait is for ours. Deliberately not a `warn!`: a dropped
+            // caller is a legitimate outcome of a `select`, not a fault.
+            debug_assert!(answered < tag, "a reply slot answered a tag that has not been issued");
+        }
     }
 }
 
-/// The [`Writer`] handle. Cheap and stateless — it is the channel's sender.
+/// True once [`arm`] has handed the receive end to the storage task.
+static ARMED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// **The [`Writer`], if there is anything on the other end** — `None` on a card that is not a flat
+/// store.
+///
+/// The `Option` is not defensive typing, it is the difference between an error and a hang. The
+/// queue is a `static`, so `REQUESTS.sender()` succeeds whether or not a task is draining it; on a
+/// FAT card no storage task is ever spawned, and a c3 caller that sent into that channel would fill
+/// two slots and then wait **forever** in `Sender::send` — no timeout, no error, no log. A write
+/// path that cannot run should say so at the first call, not wedge the plane that made it.
 #[cfg_attr(not(feature = "flat-exercise"), allow(dead_code))]
-pub(crate) fn writer() -> Writer {
-    Writer { requests: REQUESTS.sender() }
+pub(crate) fn writer() -> Option<Writer> {
+    ARMED.load(core::sync::atomic::Ordering::Relaxed).then(|| Writer { requests: REQUESTS.sender() })
 }
 
 /// **The one task that writes.**
@@ -449,7 +519,9 @@ pub(crate) async fn storage_task(
         // The FLPR is switched per card command by `flpr_mux::with_storage`, so nothing is held
         // across this call and there is no mode session to acquire around the batch.
         let outcome = serve(store, job.request);
-        job.reply.signal(outcome);
+        // The tag rides back with the answer: the caller may be gone, and the next user of this slot
+        // has to be able to tell that this value is not theirs. See `Reply`.
+        job.reply.signal((job.tag, outcome));
     }
 }
 
@@ -477,9 +549,19 @@ fn serve(store: &FlatStore<FlatCard>, request: Request) -> Result<Outcome, Store
     }
 }
 
-/// The receiver, for the one `spawn` in `main`. Separate from [`writer`] so a caller that only
-/// wants to send cannot accidentally take the receive end and make a second consumer.
-pub(crate) fn receiver() -> Receiver<'static, CriticalSectionRawMutex, Job, REQUEST_QUEUE> {
+/// **Take the receive end and arm the write half**, for the one `spawn` in `main`.
+///
+/// One function rather than two because the two facts are the same fact: there is a consumer, and
+/// therefore [`writer`] may hand out senders. Splitting them would allow an arming that never
+/// spawned (senders that wedge) or a spawn that never armed (a live task no one can reach), and
+/// both are silent.
+///
+/// Call it exactly once, at the spawn site. A second call would make a second consumer and the
+/// serialization this whole module exists for would be gone; the `debug_assert` is what says so on
+/// the host, and the single call site is what makes it true on the device.
+pub(crate) fn arm() -> Receiver<'static, CriticalSectionRawMutex, Job, REQUEST_QUEUE> {
+    let already = ARMED.swap(true, core::sync::atomic::Ordering::Relaxed);
+    debug_assert!(!already, "the flat store's write half was armed twice — that is a second consumer");
     REQUESTS.receiver()
 }
 
@@ -487,7 +569,10 @@ pub(crate) fn receiver() -> Receiver<'static, CriticalSectionRawMutex, Job, REQU
 
 /// What the mount found, on RTT. **This is where a flat card's truth lives in c1** — the glass gets
 /// the honest fault screen ([`boot_fault_for`]) and no dev-window prose.
-pub(crate) fn report(store: &FlatStore<FlatCard>, mount_us: u64) {
+///
+/// It returns the [`Catalog`] its walk produced, so `boot_fault_for` decides from this listing
+/// rather than taking a second one off the card.
+pub(crate) fn report(store: &FlatStore<FlatCard>, mount_us: u64) -> Catalog {
     defmt::info!(
         "flat: {} at sequence {=u64} — {=u16} entries, {=u32} free extents of {=u64} B, mount {=u64} us",
         defmt::Debug2Format(&store.mode()),
@@ -521,15 +606,19 @@ pub(crate) fn report(store: &FlatStore<FlatCard>, mount_us: u64) {
             _ => other += 1,
         }
     }
+    // Read once, after the walk: `entries_ok` reports whether the listing *just taken* crossed a
+    // commit, so reading it before the loop would answer about the previous one.
+    let listing_complete = store.entries_ok();
     defmt::info!(
         "flat: catalog holds {=u16} map object(s), {=u16} route(s), {=u16} ride(s), {=u16} other — listing complete: {=bool}",
         maps,
         routes,
         rides,
         other,
-        store.entries_ok(),
+        listing_complete,
     );
     defmt::warn!("flat: c1 mounts and does not render — the renderer and the transports cut over in c2/c3");
+    Catalog { maps: usize::from(maps), listing_complete }
 }
 
 /// The metadata of the first object of `kind`, or `None`. The one read helper c1 needs: the
