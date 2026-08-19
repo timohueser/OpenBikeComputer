@@ -36,6 +36,7 @@ STRICT_ALIGN_CONFIGS = (
     HERE.parent / "obc-fw-nrf54l" / ".cargo" / "config.toml",
     HERE.parent / "obc-boot" / ".cargo" / "config.toml",
 )
+ANSI_CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 class GuardError(RuntimeError):
@@ -867,9 +868,14 @@ def validate_build_rustflags(log: str, crate: str) -> None:
     """Prove the shipping crate's actual Cargo rustc command retained +strict-align."""
 
     crate_name = crate.replace("-", "_")
+    # CI deliberately keeps Cargo colour enabled. Cargo wraps the ``Running`` label in SGR
+    # sequences before tee writes the verbose build log, so matching the raw text would reject
+    # the exact production invocation it is meant to inspect. Strip CSI controls only; the rustc
+    # command and all of its arguments remain byte-for-byte visible to the checks below.
+    plain_log = ANSI_CSI_RE.sub("", log)
     invocations = [
         line
-        for line in log.splitlines()
+        for line in plain_log.splitlines()
         if "Running `" in line and f"--crate-name {crate_name}" in line and "rustc" in line
     ]
     require(invocations, f"verbose Cargo log contains no rustc invocation for `{crate}`")
