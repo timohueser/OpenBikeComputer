@@ -87,7 +87,7 @@ const _: () = assert!(SCALE.covers(FILE_CEILING), "and the scale still covers wh
 /// shard size") and a raster's (neither — it was one file per set). Those two remedies died with
 /// the files they named. One file has one remedy, and a caller that had to pick the right one for
 /// the reader can no longer pick wrong.
-pub const SIZE_REMEDY: &str = "reduce the coverage (OBCA §5.7)";
+pub const SIZE_REMEDY: &str = "reduce the coverage (OBCA §4.8)";
 
 /// Does a file of `bytes` fit the one wall a written map has to clear?
 ///
@@ -166,14 +166,25 @@ pub fn scaled(at: u64) -> Result<u32> {
 /// section boundaries, one 512-byte sector for §8.1's alignment runs. Sliced, never allocated.
 pub(crate) const FILLER_RUN: [u8; obc_formats::obcm::NAV_CHUNK_SIZE] = [FILLER; obc_formats::obcm::NAV_CHUNK_SIZE];
 
-/// Where a producer SHOULD warn (OBCA §5.7).
+/// Where a producer SHOULD warn (OBCA §5.7): seven eighths of the wall, i.e. "you are close".
 ///
-/// §5.7 wrote this as "≈ 3.5 GiB" against a `4 GiB − 1 B` ceiling — seven eighths of the wall, i.e.
-/// "you are close". Written as the **proportion** rather than the number, so it keeps meaning
-/// "close" wherever [`FILE_CEILING`] lands. It followed the ceiling up when FS7.5-seam widened the
-/// read seam and stayed put when the manifest's wall died, because the proportion never named a
-/// number to go stale: it is ≈56 GiB, and a literal 3.5 GiB would now warn about a map with sixteen
-/// times its own size in headroom.
+/// §5.7 wrote it as "≈ 3.5 GiB" against a `4 GiB − 1 B` ceiling. It is written here as the
+/// **proportion** rather than the number, so it keeps meaning "close" wherever [`FILE_CEILING`]
+/// lands — it followed the ceiling up through FS7.5-seam and again when the manifest's wall died,
+/// without anyone re-deriving it.
+///
+/// **It no longer fires for anything a rider can select, and that should be said plainly.** At the
+/// current ceiling it sits at ≈56 GiB, and the largest selection v1 contemplates — DACH — is ≈9 GiB.
+/// So this is a tripwire on the *format's* limit, not a usable size signal, and the thing a rider
+/// actually runs out of is card space, which this engine cannot see: §5.7 puts that projection on
+/// the catalog consumer, before the download, precisely because by the time the assembler holds the
+/// cells the download it should have prevented has already happened. The builder's own size meter
+/// against the card's free space is the live signal; this is the backstop that says a map is
+/// approaching the number the *file format* cannot express.
+///
+/// It stays rather than being deleted because it costs one comparison and the condition is real,
+/// just distant — and because a proportion that tracks the ceiling is exactly what does not go
+/// stale the next time the ceiling moves.
 pub const SIZE_WARN: u64 = FILE_CEILING / 8 * 7;
 const _: () = assert!(SIZE_WARN < FILE_CEILING, "a warning above the wall would never fire");
 

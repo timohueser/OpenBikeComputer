@@ -156,7 +156,7 @@ impl Clock for NoClock {
     }
 }
 
-/// How many shard bytes accumulate before [`ShardStore::write`] is called — the write-combining
+/// How many bytes accumulate before [`MapStore::write`] is called — the write-combining
 /// buffer in the shard loop. 1 MiB: big enough that a per-call cost of tens of microseconds (the
 /// wasm host's OPFS crossing) disappears into the stream, small enough to be noise against the
 /// engine's memory budget.
@@ -570,7 +570,7 @@ pub fn assemble_full(
     }
     if plan.bytes >= emit::SIZE_WARN {
         warnings.push(format!(
-            "the map projects to {} bytes, past the seven-eighths mark where OBCA §5.7 says to warn. One file holds \
+            "the map projects to {} bytes, past the seven-eighths mark where OBCA §4.8 says to warn. One file holds \
              the whole selection now, so the only thing that reduces it is reducing the coverage. The hard ceiling \
              is {FILE_CEILING} bytes.",
             plan.bytes

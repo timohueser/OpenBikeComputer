@@ -344,7 +344,9 @@ fn fill<'a, const N: usize>(
         let at = index as u8;
         // §5.2's `Bytes` is a `uint32`, so a manifest can only describe a shard the seam could
         // already reach before it widened; the widening is what makes the cast's direction matter
-        // rather than its width. See `obcm_assemble::shard::SET_SHARD_CEILING`.
+        // rather than its width. The host-side constant that used to name this wall is gone with
+        // the emitter (#1420 FS7.5b2) — nothing writes a manifest any more, so the only manifests
+        // this ever reads were written while that ceiling held.
         if src.len() != record.bytes as u64 {
             return Err(MountError::Size(at));
         }

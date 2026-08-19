@@ -103,12 +103,20 @@ async function openMapOutput(_name: string): Promise<MapOutputSession> {
         path: dir.name,
         async write(filename, body) {
             const file = await dir.getFileHandle(filename, { create: true });
+            // **Recorded before a byte is written, not after it succeeds.** `getFileHandle`
+            // with `create` has already put a map-named entry in the rider's directory, so
+            // from here on something exists that `discard` must be able to remove. Pushing
+            // after `close` meant a torn write — a full card partway through the ~9 GiB a
+            // country weighs — left an orphan the session did not know about: `discard`
+            // no-opped and the UI said nothing had been saved while a truncated map sat
+            // beside it. That is the boot-fault honesty rule upside down; a map-named file
+            // that is not a map must never be reported as an absence.
+            written.push(filename);
             const stream = await file.createWritable(); // truncates an old copy
             // The cast mirrors cells/store.ts: lib.dom's write chunk type is
             // pickier than a Uint8Array over an unshared buffer actually is.
             await stream.write(body as unknown as FileSystemWriteChunkType);
             await stream.close();
-            written.push(filename);
             return `${dir.name}/${filename}`;
         },
         async finish() {},

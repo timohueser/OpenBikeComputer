@@ -284,6 +284,9 @@ SDXC 64 GB), against the SPI path this replaced:
 
 The bulk number is not the whole map-rendering story. The 2026-08-07 on-device profile used the
 shipping FAT extent path and the actual `MS7.OBS` three-shard map (394,075,657 B, 32 KiB clusters)
+— **a card that predates the volume set's removal** (#1420 FS7.5b2), since nothing produces a set
+any more; repeating this measurement means keeping that card, or re-running it against a single-file
+map and recording that the shape of the read changed with it —
 while `SynthLocation` moved the camera. Counters at the `ByteSource` and concrete `BlockDevice`
 boundaries separate logical reader requests from physical sEMMC commands; the time includes FLPR
 mode acquisition, the card commands and any alignment-bounce copy.

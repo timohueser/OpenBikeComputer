@@ -130,7 +130,7 @@
 
     // --- the run ----------------------------------------------------------
 
-    type Phase = "idle" | "downloading" | "assembling" | "done" | "cancelled" | "error";
+    type Phase = "idle" | "downloading" | "assembling" | "saving" | "done" | "cancelled" | "error";
     let phase = $state<Phase>("idle");
     let dlProgress = $state<CellDownloadProgress | null>(null);
     let asmPhase = $state<AssemblePhase>("open");
@@ -172,8 +172,11 @@
     let outputCleanupFailed = $state(false);
     /** The name this run's file will be saved under, fixed when the run starts. Read
      *  once rather than at save time, so editing the selection mid-download cannot
-     *  rename the map that is already being built from the old one. */
-    let runFileName = "OBC map.obcm";
+     *  rename the map that is already being built from the old one.
+     *
+     *  `$state` because the saving row renders it: it is written during a run, and a
+     *  plain `let` would leave that row showing the previous run's name. */
+    let runFileName = $state("OBC map.obcm");
 
     const ASM_PHASE_LABEL: Record<AssemblePhase, string> = {
         open: "reading cells",
@@ -209,12 +212,19 @@
                 // go of it, and this is where it becomes a file someone has. The
                 // save is started here and awaited by `done`, because a multi-
                 // gigabyte write outlives this handler.
+                // **The phase moves before the delivery is assigned.** A ~9 GiB write
+                // outlives this handler, and while it ran the screen still said
+                // "assembling" — so a rider who pressed Cancel during the save was
+                // cancelling a thing that had already finished, and the button's own
+                // branch dispatched on the wrong phase.
+                phase = "saving";
                 delivery = saveStoredMap(msg.byteLength);
                 void delivery.catch(() => {});
                 break;
             case "file":
                 // No sink was available, so the bytes came across instead. Same
                 // delivery, one wrap earlier.
+                phase = "saving";
                 delivery = saveMap(new Blob([msg.bytes as unknown as BlobPart]), msg.byteLength, msg.bytes);
                 void delivery.catch(() => {});
                 break;
@@ -230,6 +240,13 @@
                     await failRun(cause);
                     break;
                 }
+                // A cancel that arrived *during* the save has already discarded the
+                // output and set the phase — `failRun` awaits this same delivery, so
+                // both paths resume here. Without this guard the later writer won:
+                // a discarded map could report "done", and the run that kept its file
+                // could report "Cancelled". `sinkClosed` is the fact that settles it,
+                // because it is set before the discard rather than after it.
+                if (sinkClosed) break;
                 phase = "done";
                 await cleanupTransientCells();
                 break;
@@ -241,7 +258,7 @@
                 // download that never started — it gets its own channel and
                 // its own retry, and never wedges the button behind a pending
                 // flag nothing will clear.
-                if (phase === "assembling") {
+                if (phase === "assembling" || phase === "saving") {
                     await failRun(new Error(msg.message));
                 } else {
                     estimateError = msg.message;
@@ -590,7 +607,7 @@
     function cancel() {
         if (phase === "downloading") {
             abortCtl?.abort();
-        } else if (phase === "assembling") {
+        } else if (phase === "assembling" || phase === "saving") {
             // The worker is blocked inside one synchronous wasm call and cannot
             // read a message — terminate IS the cancel (bridge threading
             // contract). Nothing usable is left behind: a partial `.obcm` fails
@@ -780,7 +797,7 @@
 
     // --- gating -----------------------------------------------------------
 
-    const running = $derived(phase === "downloading" || phase === "assembling");
+    const running = $derived(phase === "downloading" || phase === "assembling" || phase === "saving");
     const refusal = $derived.by(() => {
         const l = ledger;
         if (!l || l.cellCount === 0) return null;
@@ -936,12 +953,16 @@
                             assembling — {ASM_PHASE_LABEL[asmPhase]} · {Math.round(asmFraction * 100)}%{#if readMode}
                                 · cells {readMode}{/if}
                         </span>
+                    {:else if phase === "saving"}
+                        <span class="small muted">
+                            saving the map{#if runFileName} — {runFileName}{/if}
+                        </span>
                     {/if}
                 </div>
                 <div class="bar">
                     <span
                         style:width={`${phase === "downloading" ? dlPct : Math.round(asmFraction * 100)}%`}
-                        class:assembling={phase === "assembling"}
+                        class:assembling={phase === "assembling" || phase === "saving"}
                     ></span>
                 </div>
             {/if}

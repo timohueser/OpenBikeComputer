@@ -883,7 +883,7 @@ compile.
 
 ### Device and ride surfaces
 
-The assembled map can either be saved or streamed directly to a connected device.
+The assembled map is saved as one file, which the rider then sends to the device.
 Direct send is a single object: the page verifies the finished file's digest,
 announces its length before the first byte, and the device commits it whole or
 not at all — a cancelled or interrupted send leaves nothing a reader will open.
@@ -953,7 +953,7 @@ You plan a route elsewhere and upload a GPX. Converting it to an `.obcr` — dec
   <rect x="410" y="266" width="316" height="22" rx="7" style="fill:#eef2df;stroke:#9aa884;stroke-width:0.8" />
   <text x="568" y="281" text-anchor="middle" style="font-family:var(--mono);font-size:8.5px;fill:#3c6b39">one dead-band, shared: converter · profile · live baro climb</text>
 </svg>
-<figcaption>The GPX → OBCR conversion is one streaming pass. It <b>decimates</b> the geometry for storage — dropping any vertex within a metre of the line between its neighbours, keeping the corners (and one vertex at least every ~1.2 km, so a long straight still holds its shape and the deltas stay in <code>int16</code>) — but accumulates <b>distance and climb over every original point</b>, so the route's stats are exact even though the stored line is sparse. Climb runs through a <b>±3 m dead-band</b>: a move smaller than that books nothing and doesn't move the reference, so sampling jitter can't inflate the ascent. That one dead-band is shared by the converter, the elevation profile, the device's live barometric climb, and the on-device router's own route emit (which fills a planned route's heights from the terrain carried beside the map) — so those numbers can't drift apart.</figcaption>
+<figcaption>The GPX → OBCR conversion is one streaming pass. It <b>decimates</b> the geometry for storage — dropping any vertex within a metre of the line between its neighbours, keeping the corners (and one vertex at least every ~1.2 km, so a long straight still holds its shape and the deltas stay in <code>int16</code>) — but accumulates <b>distance and climb over every original point</b>, so the route's stats are exact even though the stored line is sparse. Climb runs through a <b>±3 m dead-band</b>: a move smaller than that books nothing and doesn't move the reference, so sampling jitter can't inflate the ascent. That one dead-band is shared by the converter, the elevation profile, the device's live barometric climb, and the on-device router's own route emit (which fills a planned route's heights from the terrain carried inside the map) — so those numbers can't drift apart.</figcaption>
 </figure>
 
 What's left is the interesting part of *following*: snapping each GPS fix onto that route.

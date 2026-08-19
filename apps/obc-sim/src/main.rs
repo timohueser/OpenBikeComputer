@@ -20,7 +20,7 @@ mod device_input;
 mod dfu;
 mod framebuffer;
 mod gui;
-mod map_set;
+mod map_file;
 mod palette;
 mod present;
 mod rides;
@@ -942,7 +942,7 @@ fn main() {
     }
 
     // One map is one `.obcm` file, read whole.
-    let map = map_set::MapSource::load_single(&args.map).unwrap_or_else(|e| {
+    let map = map_file::MapSource::load_single(&args.map).unwrap_or_else(|e| {
         eprintln!("{e}");
         std::process::exit(1);
     });
@@ -950,7 +950,7 @@ fn main() {
     // Parse the tables **once**, here, for the process lifetime — the shape the device uses (parse
     // at boot, hold for the session), not a per-frame rebuild. A file that does not parse is
     // refused before a single frame renders and the sim exits non-zero saying why.
-    let map = map_set::LoadedMap::open(map).unwrap_or_else(|e| {
+    let map = map_file::LoadedMap::open(map).unwrap_or_else(|e| {
         eprintln!("{e}");
         std::process::exit(1);
     });
@@ -1507,7 +1507,7 @@ fn main() {
         // Time the whole frame draw into `render_us` (the no_std renderer has no clock, so
         // the host fills it) — same field the live panel shows.
         let t0 = Instant::now();
-        let scene = map_set::Scene { reader: &reader, route: route.as_ref() };
+        let scene = map_file::Scene { reader: &reader, route: route.as_ref() };
         let mut scratch = Box::new(obc_render::RenderScratch::new());
         // `--weather` (WX10/WX11): the final frame renders through the production rain lease and
         // the production resident snapshot — the same adapter/feed pair the device and the GUI
@@ -1540,7 +1540,7 @@ fn main() {
                             app: &mut App,
                             fb: &mut Framebuffer,
                             scratch: &mut obc_render::RenderScratch| {
-            map_set::render_frame(
+            map_file::render_frame(
                 app,
                 scratch,
                 fb,

@@ -1118,11 +1118,17 @@ sector. Step 4 compares that number with the selected assembly plus its safety
 allowance before enabling Send; no guessed card capacity and no stale desktop
 setting stands in for the card that is actually connected.
 
-A cell-built map then crosses as what it is: one object. The assembler hands the
-page a single finished file, the page verifies its SHA-256 before a byte reaches
-the wire, and the upload is an ordinary transfer of that object — one announce,
-one progress line, one commit. Nothing about a map's size changes the shape of
-the exchange; it only changes how long the bar takes.
+A cell-built map then crosses as what it is: one object — one announce, one
+progress line, one commit, whatever the map weighs. What guarantees it arrived
+is the **whole-object CRC-32** the descriptor announces and the device checks
+before it commits; the page has nothing of its own to check a map against, which
+is the same position a rider's hand-picked `.obcm` is in.
+
+There is no assemble-and-send-in-one-motion path today: the builder saves the
+assembled file, and sending it is the ordinary file upload. The direct path is a
+real design — the map never touching the disk between the assembler and the card
+— and it returns with the board cutover, as a single-object `PUT` under protocol
+major 4 rather than as anything map-shaped.
 
 Everything else about the link is unchanged by the choice of wire: the same
 objects, the same restart-don't-resume rule, the same change signal, the same

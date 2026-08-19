@@ -2,7 +2,7 @@
 //!
 //! Everything here is I/O and argument parsing. The crate's rule is that the **engine** never
 //! touches a filesystem (it has to run in a browser tab, #1024/P4), so this file owns every
-//! `std::fs` call: it opens cell artifacts as [`ByteSource`]s, implements the [`ShardStore`] over
+//! `std::fs` call: it opens cell artifacts as [`ByteSource`]s, implements the [`MapStore`] over
 //! real files, and prints what the engine reports.
 //!
 //! ```text

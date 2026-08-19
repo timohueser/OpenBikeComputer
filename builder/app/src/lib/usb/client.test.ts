@@ -423,9 +423,9 @@ describe("stale results", () => {
         // predicate that merely declines to *match* the stale message leaves it there for the next
         // unfiltered take. That is the shape this pins: the message has to be consumed and dropped.
         //
-        // `aborted` is the worst code for it to arrive as: `sendAssembledSetFile` retries only
-        // `crc-mismatch`, so a set upload would die outright on a result the device never issued
-        // about it.
+        // `aborted` is the worst code for it to arrive as: a caller that retries only on
+        // `crc-mismatch` would give up outright on a result the device never issued about the
+        // transfer in front of it.
         await withDevice({ bulkPacketSize: 64, chunkSize: 61 }, async ({ client, device }) => {
             const statuses = (client as unknown as { statuses: { push: (v: unknown) => void } }).statuses;
             const bytes = payload(40_000);
