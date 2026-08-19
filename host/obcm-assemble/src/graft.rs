@@ -19,9 +19,9 @@ use std::collections::{HashMap, HashSet};
 
 use obc_formats::obcm::{BRANCH_BIT, EMPTY_LEAF};
 
+use crate::emit::{align_up, filler_len, scaled, FILLER_RUN, SCALE};
 use crate::grid::{quad_children, AlignedBox, CellId, UBox};
 use crate::input::Cell;
-use crate::shard::{align_up, filler_len, scaled, FILLER_RUN, SCALE};
 use crate::{Error, Result};
 
 /// One cell's contribution to one LOD region, with the two relocation constants of §4.3.

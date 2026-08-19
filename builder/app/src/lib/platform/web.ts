@@ -83,14 +83,16 @@ function fetchCatalog(): Promise<{ url: string; body: string }> {
 const catalogOnce = once(fetchCatalog);
 
 /**
- * The assembled set, written straight into a directory the user picks — the SD
- * card itself, when it is mounted. One permission prompt when the run starts,
- * zero download prompts when it ends; the browsers without the picker (Firefox,
- * Safari) export `null` here and get the single-archive download instead.
+ * The assembled map, written straight into a directory the user picks — the SD card
+ * itself, when it is mounted. One permission prompt when the run starts, no download
+ * prompt when it ends, and the ~9 GiB a country weighs are written once instead of
+ * being saved and then copied. The browsers without the picker (Firefox, Safari)
+ * export `null` here and get an ordinary download, which is a complete path — it
+ * just lands in the Downloads folder for the rider to move.
  *
- * Files land at the picked directory's top level, because that is where the
- * device reads a set from — a wrapping folder would only add a step the done
- * message would then have to explain away.
+ * The file lands at the picked directory's top level, because that is where the
+ * device looks for a map — a wrapping folder would only add a step the done message
+ * would then have to explain away.
  */
 async function openMapOutput(_name: string): Promise<MapOutputSession> {
     // `id` keys the browser's remembered location per purpose, so the second
@@ -101,17 +103,25 @@ async function openMapOutput(_name: string): Promise<MapOutputSession> {
         path: dir.name,
         async write(filename, body) {
             const file = await dir.getFileHandle(filename, { create: true });
+            // **Recorded before a byte is written, not after it succeeds.** `getFileHandle`
+            // with `create` has already put a map-named entry in the rider's directory, so
+            // from here on something exists that `discard` must be able to remove. Pushing
+            // after `close` meant a torn write — a full card partway through the ~9 GiB a
+            // country weighs — left an orphan the session did not know about: `discard`
+            // no-opped and the UI said nothing had been saved while a truncated map sat
+            // beside it. That is the boot-fault honesty rule upside down; a map-named file
+            // that is not a map must never be reported as an absence.
+            written.push(filename);
             const stream = await file.createWritable(); // truncates an old copy
             // The cast mirrors cells/store.ts: lib.dom's write chunk type is
             // pickier than a Uint8Array over an unshared buffer actually is.
             await stream.write(body as unknown as FileSystemWriteChunkType);
             await stream.close();
-            written.push(filename);
             return `${dir.name}/${filename}`;
         },
         async finish() {},
         async discard() {
-            // A failed or cancelled run takes its partial files with it. Every
+            // A failed or cancelled run takes its partial file with it. Every
             // removal is attempted even if one refuses (a lock, a pulled card).
             const results = await Promise.allSettled(written.map((f) => dir.removeEntry(f)));
             written.length = 0;
@@ -137,6 +147,9 @@ export const platform: Platform = {
     // Safari and Firefox the USB features gate on the *browser*, with their own
     // reason and their own remedy. The download-and-copy-to-the-card path is
     // unaffected and stays open (#901).
+    //
+    // The `openMapOutput` seam is gated separately, and on the API rather than the
+    // browser name: a Chromium can write the map straight to the card.
     usbViaWebUsb: true,
 
     catalog: catalogOnce,

@@ -187,7 +187,7 @@ whole-object checksum *and* the header have both checked out. The interrupted
 state is byte-for-byte the one the copy leaves — a magic-less file the map
 catalog refuses and a boot sweep reclaims.
 
-Four more rules fall out of the same size:
+Five more rules fall out of the same size:
 
 - **A map upload is new-only.** Writing into a stored map's file would destroy it
   as the replacement arrives, and "a failed checksum never touches the old copy"
@@ -213,87 +213,15 @@ Four more rules fall out of the same size:
   filename, size, format version, bounding box, all read off the card — and
   cannot say where any of them came from. That is a gap in the protocol, not in
   the filesystem, and closing it means a new command rather than a new object.
-
-### A big map arrives in pieces, and the last one is the one that counts
-
-> **Superseded — a map is one file and one transfer again.** OBCM v14
-> ([#1420](https://github.com/timohueser/OpenBikeComputer/issues/1420)) scaled the map format's
-> offsets to 16-byte units (64 GiB of interior) and moved the terrain raster inside the map file,
-> and the flat store replaced FAT32 and its 4 GiB cap. So the set, the packed shard counter, the
-> manifest written last and the torn-set cleanup below all retire together, and a map upload becomes
-> an ordinary single-object transfer. The accepted cost is stated plainly: a late break in a
-> multi-gigabyte send restarts from zero, inside the same twenty-minute worst case the
-> no-resume rule already accepted. Kept for the reasoning; the code goes in the slices that
-> implement v14.
-
-Past roughly Germany scale a map stops being a file. FAT32 caps one file at 4 GiB
-and the map format's own offsets are 32-bit, so a logical map becomes a **volume
-set**: a small manifest plus up to thirty-two other files — ordinary map files,
-and at most one [terrain raster](../terrain/) carrying the whole map's elevation
-([more on the shape](../formats/#one-map-several-files)). Every interface still
-shows one map — that part is a rule, not a convention.
-
-Sending one is therefore several transfers instead of one, and the order matters
-in a way nothing else on this link does. The manifest is what says those files
-are one map, so it goes **last**: until it lands there is no map, only some large
-files no reader will open. That is the whole atomicity story, and it is the same
-held-back-magic trick a single map uses, one level up — a file whose first four
-bytes are missing is not a map, and a *set* whose manifest is missing is not one
-either.
-
-The interesting part is what the device does with that rule, because a rule
-addressed to the sender is not a guarantee. So the device enforces it:
-
-- **A manifest sent early is refused, not stored.** If any shard the manifest
-  will name has not arrived and checked out, the device says no at the announce —
-  before a single byte of it streams. A host that gets the order wrong finds out
-  in milliseconds rather than after several gigabytes.
-- **Each piece says which piece it is, and how many there are.** The count rides
-  every one of them, not just the first, and that buys the refusal that matters
-  most: a device that cannot hold enough files open for a set that large says so
-  at *shard zero*. Learning it at the manifest would mean learning it after the
-  whole upload.
-- **The terrain raster is a piece too, and it is not a shard.** A map file's
-  announcement is "piece *k* of *n*", which is a sentence about the map files the
-  manifest lists first; the raster has no *k*, is not a map file, and lands under
-  a different name. So it travels as its own kind of object, after every map file
-  and before the manifest. That ordering is not tidiness: the manifest describes
-  every piece, raster included, so its length depends on whether the raster
-  arrived — and the device checks that length at the announce, against what this
-  upload actually delivered. Send the manifest for a set with elevation and skip
-  the elevation, and the two ends disagree by exactly one record, which is enough
-  to lose the whole upload at its final transfer.
-- **An interrupted set leaves nothing to explain.** The device writes the
-  manifest's name as a four-zero-byte placeholder before the first shard and fills
-  it in only at the very end, so a manifest whose first four bytes are *not* a
-  finished signature — all zeros, half-written, or not there yet — is proof the
-  device was the one writing it. A card reader never leaves that, because it
-  copies a manifest that is already complete, front to back. A pulled cable
-  deletes the set immediately; a power cut is cleaned up at the next start-up. A
-  rider half-way through copying a set by hand is left strictly alone — right
-  down to the id the next upload picks, which skips any name their copy has
-  already used. That is the direction to be wrong in: the alternative is deleting
-  a map that was minutes from working.
-- **Cancelling really cancels.** Because a set is several transfers, "stop" nearly
-  always arrives in the gap between two of them, where there is nothing in flight
-  to interrupt. The device takes it as abandoning the set: the staged pieces go
-  immediately, and the next set can start on the same connection.
-
-Because each piece is its own file, re-sending one that failed costs that one
-piece rather than the set — the only kind of resume this link offers, and the one
-that matches what actually goes wrong. Resuming after the cable is pulled is a
-different thing and is not pretended at: the device would have to be able to say
-which pieces of which set it already holds, and that is a question the protocol
-does not yet have.
-
-One limit is worth stating rather than leaving to be discovered. Each piece
-announces how many pieces there are, which is what catches a sender that changes
-its mind mid-upload — but only when the new set is a *different* size. Two sets
-of the same size look identical piece by piece, because nothing in a piece's
-announcement says which set it belongs to. What catches that is the manifest at
-the end, which is checked against the files actually on the card and refused if it
-does not describe them; the set is then deleted whole. Later than an announcement,
-but still before anything becomes a map.
+- **A break costs the whole map.** The link's [restart-not-resume
+  rule](#a-transfer-end-to-end) is free for an object measured in kilobytes and
+  expensive for one measured in gigabytes: a cable pulled at ninety per cent
+  starts again at zero. It is accepted rather than engineered around, because
+  resuming means the device can say which prefix of which map it already holds
+  *and prove it*, and a whole-object checksum cannot check a suffix. What bounds
+  the cost is the wire, not the rule — a country-scale map is about twenty
+  minutes over the cable, so the worst case is a second twenty minutes, not a
+  lost afternoon.
 
 Because the FAT layer the firmware uses creates 8.3 filenames only, a received
 map lands as `MP7.OBM` — the same trick the [reserved computed-route
@@ -438,12 +366,12 @@ and back.
 > upload; a data-plane stall under a live link is failed by a watchdog and
 > surfaces as a plain retryable failure, never a progress bar parked at 99 %.
 
-### Abort means two things, and the descriptor says which
+### Abort means two things, and neither of them deletes
 
 Cancelling is the obvious use of `abort`, and not the common one. The other is
 **quiescing**: after a transfer the device has already refused — a rejected
-descriptor, a shard whose checksum did not match — the host sends an abort not to
-stop anything but to get the channel *empty* before it retries. On an unframed
+descriptor, an object whose checksum did not match — the host sends an abort not
+to stop anything but to get the channel *empty* before it retries. On an unframed
 pipe the sender does not wait between chunks, so bytes it queued for the refused
 transfer are still arriving, and neither end can recall them; land them in front
 of the retry and the retry fails a checksum for reasons nothing in the exchange
@@ -451,14 +379,13 @@ explains. The abort handshake is the one moment both ends are synchronised — t
 host has stopped and is waiting for an answer — so it is the one moment the
 device can read the channel dry.
 
-Which makes the descriptor's **type** load-bearing when a volume set is staged.
-Giving up on a set deletes every file of it; quiescing after one refused shard
-must delete nothing at all, because the caller is about to re-send that shard and
-the rest of the set has to still be there. So abandonment names the *set*, and
-everything else is a quiesce. Getting that wrong is not a slow retry, it is a map
-that seals a manifest over no files. (Retired with the set — see the marker above: with one map in
-one object there is no multi-file staging to abandon, and the distinction collapses into the single
-transfer's own abort.)
+Which of the two an abort is, the device decides from what is in flight: with a
+transfer armed it discards that transfer's partial, and with nothing armed it
+drains the channel and stops there. Either way it touches nothing already stored,
+and that is a rule with no exception — an abort discards at most the bytes of the
+transfer it interrupted, and can never reach an object the rider already has.
+That is what lets the host send one as freely as a retry needs it: the drain is a
+routine part of failing a transfer, not a decision about what to keep.
 
 ### What actually limits an upload
 
@@ -500,11 +427,10 @@ stages:
   cache then absorbs the residual updates, and the card gets a best-effort
   pre-erase hint before each long run.
 
-The result measured on the LM20-DK is roughly **7.3–7.9 MB/s** for real map-set
-files, versus about 2.0 MB/s for the original synchronous path with a software
-CRC pass. A final 73.4 MB builder set measured 7.50, 7.27 and 7.85 MB/s for its
-three map shards and 7.65 MB/s for terrain. At that point the card and filesystem
-are again the visible ceiling, not USB framing or checksum work.
+The result measured on the LM20-DK is roughly **7.3–7.9 MB/s** for real builder
+output, versus about 2.0 MB/s for the original synchronous path with a software
+CRC pass. At that point the card and filesystem are again the visible ceiling,
+not USB framing or checksum work.
 
 ### When a route lands — the device's side
 
@@ -1192,16 +1118,17 @@ sector. Step 4 compares that number with the selected assembly plus its safety
 allowance before enabling Send; no guessed card capacity and no stale desktop
 setting stands in for the card that is actually connected.
 
-A cell-built map then crosses as the volume set it really is. The assembler
-hands the page **one file at a time**, the page verifies each shard's SHA-256,
-and the worker does not release the next buffer until the device has committed
-the current one. Shards go in index order and the manifest goes last, so an
-interrupted set is never visible as a map; Cancel sends the set-abandon edge
-even when it lands between two whole-file transfers. The progress line stays
-set-wide (`shard 3 of 8 · 62%`) rather than jumping back to zero per file.
-(Retired with the set — see the marker above: under OBCM v14 the assembler hands over one file, so
-the sequencing, the per-shard verify gate and the set-wide progress line all collapse into one
-transfer's own progress.)
+A cell-built map then crosses as what it is: one object — one announce, one
+progress line, one commit, whatever the map weighs. What guarantees it arrived
+is the **whole-object CRC-32** the descriptor announces and the device checks
+before it commits; the page has nothing of its own to check a map against, which
+is the same position a rider's hand-picked `.obcm` is in.
+
+There is no assemble-and-send-in-one-motion path today: the builder saves the
+assembled file, and sending it is the ordinary file upload. The direct path is a
+real design — the map never touching the disk between the assembler and the card
+— and it returns with the board cutover, as a single-object `PUT` under protocol
+major 4 rather than as anything map-shaped.
 
 Everything else about the link is unchanged by the choice of wire: the same
 objects, the same restart-don't-resume rule, the same change signal, the same

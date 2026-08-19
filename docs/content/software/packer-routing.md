@@ -746,7 +746,7 @@ downloading it again. Cancelling terminates the worker; there is no verification
 bypass. The gate on a big selection is therefore **disk quota, checked before the
 download starts**, not the memory the run would have needed.
 
-**A dropped connection costs one cell, not the run.** A set is hundreds of
+**A dropped connection costs one cell, not the run.** A selection is hundreds of
 objects and a CDN edge occasionally closes one part-way through, which arrives as
 a body that ends clean and short. Each object is therefore fetched up to four
 times with a widening backoff before its failure becomes the run's — and the
@@ -768,15 +768,14 @@ carries its own notice instead of leaving a stale string behind. There is delibe
 no toggle: elevation is roughly five per cent of a download, and a switch would ask a
 rider to decide something they have no way to decide well.
 
-An assembled map — even a one-shard one — names its raster in the manifest and writes
-it as `MS<id>.OBD`. A map that never went through the assembler, such as one packed
-straight from an extract for the simulator, gets the same file as a plain **sidecar**
-next to the `.obcm`, under the same stem. Those are deliberately the same convention
-seen from two sides: `MS<id>.OBD` *is* the sidecar of `MS<id>.OBS`, so a host that
-resolves terrain by looking beside the map and one that reads the manifest role open
-the same file. What the manifest adds is the two things a filename cannot say — that
-this set claims a raster, and how many bytes of one — which is what stops a leftover
-`.OBD` from a replaced set being read as this map's terrain.
+An assembled map carries that raster **inside it**, in the map file's own terrain
+region, so there is nothing beside the `.obcm` to lose, mismatch, or leave behind when
+the map is replaced. A map that never went through the assembler — one packed straight
+from an extract for the simulator — has no such region, and its heights live in a plain
+`.obcd` **sidecar** next to the `.obcm` under the same stem, which is what the committed
+fixtures use. The packer never embeds one, and the reason is the same distinction the
+`--terrain` flag hides: on that side a raster is an input the packer *samples* for
+per-edge ascent, not an artifact it carries.
 
 The same digest appears in each referenced object's published key. Cells,
 per-band indexes, region cell lists, and previews are therefore immutable below
@@ -827,7 +826,7 @@ or assembly algorithms.
 | Regions, boxes, lassos, GPX corridors | yes | yes | yes |
 | Shared wasm assembly | yes | yes | yes |
 | Product skin editor | yes | yes | yes |
-| Output | picked folder, or one zip | grouped local folder | one zip download |
+| Output | picked folder, or one download | grouped local folder | one download |
 | Advanced schema editor | no | no | yes |
 | Native fixed-crop schema preview | no | no | yes |
 | Product PBF build | no | no | no |
@@ -840,15 +839,12 @@ policy. The desktop writes the assembled map into a unique
 folder under `Documents/OpenBikeComputer`, using a temporary file and atomic
 rename. It closes the folder only after the assembler emits and
 verifies the file; cancellation or failure discards the incomplete folder.
-(This described a multi-file *volume set* and a manifest written last until
-[OBCM v14](src:specs/OBCM_Spec.md) made a map one file — the per-part machinery is deleted in the
-slices that implement it.)
 A browser with the File System Access API does the equivalent through a
-directory the user picks when the run starts — ideally the card itself — with
-files streamed in as they are verified and removed again if the run fails. A
-browser without the picker is handed the finished set as **one** stored-zip
-download at the very end: one save prompt for a map of any size, and a failed or
-cancelled run has handed the download manager nothing at all. Saving changes
+directory the user picks when the run starts — ideally the card itself — with the
+map streamed in as it is verified and removed again if the run fails. A
+browser without the picker is handed the finished map as **one** download at the
+very end: one save prompt for a map of any size, and a failed or cancelled run
+has handed the download manager nothing at all. Saving changes
 where bytes land, never what the assembler emitted.
 
 The local Python server remains useful while developing the one hosted schema.
@@ -887,10 +883,15 @@ compile.
 
 ### Device and ride surfaces
 
-The assembled multi-file set can either be saved or streamed directly to a
-connected device. Direct send keeps one verified shard in flight, waits for the
-device before releasing it, and commits the manifest last; cancellation abandons
-an incomplete set. Manual single-file upload remains for maps obtained elsewhere.
+The assembled map is saved as one file, which the rider then sends to the device.
+The send is a single object: its length is announced before the first byte, and
+the device commits it whole or not at all — a cancelled or interrupted send
+leaves nothing a reader will open. What guarantees it arrived is the
+**whole-object CRC-32** the device checks before committing; the page has no
+independent digest to compare a map against, which is the same position a map
+obtained elsewhere is in. Sending the assembler's output straight to the cable,
+without it touching the disk, returns with the board cutover as a single-object
+transfer under protocol major 4.
 There is no old whole-region catalog fallback hiding behind that button.
 
 Routes and firmware still use the shared object protocol. The cable also runs in
@@ -956,7 +957,7 @@ You plan a route elsewhere and upload a GPX. Converting it to an `.obcr` — dec
   <rect x="410" y="266" width="316" height="22" rx="7" style="fill:#eef2df;stroke:#9aa884;stroke-width:0.8" />
   <text x="568" y="281" text-anchor="middle" style="font-family:var(--mono);font-size:8.5px;fill:#3c6b39">one dead-band, shared: converter · profile · live baro climb</text>
 </svg>
-<figcaption>The GPX → OBCR conversion is one streaming pass. It <b>decimates</b> the geometry for storage — dropping any vertex within a metre of the line between its neighbours, keeping the corners (and one vertex at least every ~1.2 km, so a long straight still holds its shape and the deltas stay in <code>int16</code>) — but accumulates <b>distance and climb over every original point</b>, so the route's stats are exact even though the stored line is sparse. Climb runs through a <b>±3 m dead-band</b>: a move smaller than that books nothing and doesn't move the reference, so sampling jitter can't inflate the ascent. That one dead-band is shared by the converter, the elevation profile, the device's live barometric climb, and the on-device router's own route emit (which fills a planned route's heights from the terrain carried beside the map) — so those numbers can't drift apart.</figcaption>
+<figcaption>The GPX → OBCR conversion is one streaming pass. It <b>decimates</b> the geometry for storage — dropping any vertex within a metre of the line between its neighbours, keeping the corners (and one vertex at least every ~1.2 km, so a long straight still holds its shape and the deltas stay in <code>int16</code>) — but accumulates <b>distance and climb over every original point</b>, so the route's stats are exact even though the stored line is sparse. Climb runs through a <b>±3 m dead-band</b>: a move smaller than that books nothing and doesn't move the reference, so sampling jitter can't inflate the ascent. That one dead-band is shared by the converter, the elevation profile, the device's live barometric climb, and the on-device router's own route emit (which fills a planned route's heights from the terrain carried inside the map) — so those numbers can't drift apart.</figcaption>
 </figure>
 
 What's left is the interesting part of *following*: snapping each GPS fix onto that route.

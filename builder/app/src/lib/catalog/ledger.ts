@@ -7,12 +7,31 @@ import type { BandRole, Catalog, RegionEntry } from "./manifest";
 import type { CellIndexDocument } from "./satellites";
 import type { SelectionResolution } from "./selection";
 
-/** The hard per-file ceiling: FAT32's largest file, and also the largest offset
- *  an OBCM `uint32` can name. Two independent limits at the same number
- *  (`OBCA_Spec.md` §5.7). */
+/**
+ * The per-file ceiling this consumer refuses above — deliberately **not** the engine's.
+ *
+ * It was justified by two limits that landed on one number: FAT32's largest file, and the largest
+ * offset an OBCM `uint32` could name. Both are retired (OBCM v14's scaled offsets, and the flat
+ * store), and the assembler's own wall is now `emit::FILE_CEILING` at 64 GiB.
+ *
+ * **The gate stays at `4 GiB − 1` because the thing a rider actually puts a map on has not been cut
+ * over yet.** The device still mounts a FAT32 card, where a file cannot exceed this whatever the
+ * format can express — so for every device in existence today it is a live limit, not a historical
+ * one, and a builder that let a rider download 6 GiB it could not then write would be lying about
+ * the only number that matters to them. It lifts with the board cutover (FS7.5c), which is what
+ * replaces the card's filesystem; until then this is the honest ceiling for a *consumer* even
+ * though it is no longer the producer's.
+ *
+ * (A second thing waits for the same slice: this ledger judges the **core band** against the
+ * ceiling, which was the volume set's model — the core could not split and the geometry could. One
+ * file has no such split, so what should be judged is the whole assembly. Changing that means
+ * changing what the projection is *of*, and it is only meaningful once the card can hold more than
+ * this constant anyway.)
+ */
 export const MAX_FILE_BYTES = 4 * 1024 ** 3 - 1;
 
-/** Where the core file's warning starts (§5.7's "SHOULD warn above ≈ 3.5 GiB"). */
+/** Where the warning starts: seven eighths of {@link MAX_FILE_BYTES}, the proportion §5.7 has always
+ *  used for "you are close". */
 export const CORE_WARN_BYTES = 3.5 * 1024 ** 3;
 
 /**
@@ -217,9 +236,9 @@ function judge(core: BandLedger): LedgerVerdict {
             ...judged,
             limit: MAX_FILE_BYTES,
             message:
-                `This selection's navigation graph alone comes to ${cells} — past the 4 GiB a single map file ` +
-                "can hold. Reduce the coverage — fewer regions, a narrower corridor — and the rest of the map " +
-                "will follow.",
+                `This selection's navigation graph alone comes to ${cells} — past the 4 GiB a file on the ` +
+                "device's card can hold. Reduce the coverage — fewer regions, a narrower corridor — and the " +
+                "rest of the map will follow.",
         };
     }
     if (core.projectedBytes > CORE_WARN_BYTES) {
@@ -228,8 +247,8 @@ function judge(core: BandLedger): LedgerVerdict {
             ...judged,
             limit: CORE_WARN_BYTES,
             message:
-                `This selection's navigation graph is ${cells}, close to the 4 GiB one map file can hold. ` +
-                "A little less coverage would leave more room.",
+                `This selection's navigation graph is ${cells}, close to the 4 GiB a file on the device's ` +
+                "card can hold. A little less coverage would leave more room.",
         };
     }
     return { kind: "ok" };

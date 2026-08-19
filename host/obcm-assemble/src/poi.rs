@@ -16,10 +16,10 @@ use obc_formats::obcm::{
     POI_HOURS_REF_NONE, POI_RECORD_LEN,
 };
 
+use crate::emit::{align_up, filler_len, scaled, FILLER_RUN};
 use crate::grid::UBox;
 use crate::input::Cell;
 use crate::qtree::{self, Point};
-use crate::shard::{align_up, filler_len, scaled, FILLER_RUN};
 use crate::{Error, Result};
 
 /// Directory length: count byte + shared chunk size + one entry per category + the v7 pool fields.
@@ -326,10 +326,10 @@ mod tests {
         let bytes = serialize(&empty_layout((0, 0, 1_000_000, 1_000_000)), AT).expect("the section serialises");
         assert_eq!(bytes[0], POI_CATEGORY_COUNT);
         assert_eq!(u16::from_le_bytes([bytes[1], bytes[2]]) as usize, POI_CHUNK_SIZE);
-        let unit = crate::shard::SCALE.unit() as usize;
+        let unit = crate::emit::SCALE.unit() as usize;
         // Every category present, every one empty, and every `Index Offset` on a unit boundary just
         // past the directory's own filler — an empty category still has to be nameable.
-        let dir_end = crate::shard::align_up((AT + POI_DIR_LEN) as u64) as usize;
+        let dir_end = crate::emit::align_up((AT + POI_DIR_LEN) as u64) as usize;
         for c in 0..POI_CATEGORY_COUNT as usize {
             let at = 3 + c * POI_CAT_ENTRY_LEN;
             assert_eq!(bytes[at], c as u8 + 1);

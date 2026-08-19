@@ -2,9 +2,10 @@
 //! back through the **real reader** — the same crate the firmware runs — before anything is handed
 //! anywhere.
 //!
-//! This is a *precondition of writing a set*, not an optional extra, and the reason is stated in the
-//! spec's design principles: a catalog artifact was verified by the bakery, but an assembly was made
-//! on the rider's own machine, outside the manifest. Nothing self-made reaches a device unverified.
+//! This is a *precondition of handing the map anywhere*, not an optional extra, and the reason is
+//! stated in the spec's design principles: a catalog artifact was verified by the bakery, but an
+//! assembly was made on the rider's own machine, outside it. Nothing self-made reaches a device
+//! unverified.
 //!
 //! It is also the pass that catches the graft's characteristic failures. A mis-relocated index node
 //! produces geometry in the wrong place *and* an anchor that no longer fits its leaf, and a wrong
@@ -65,17 +66,16 @@ pub struct VerifyReport {
     pub largest_component_permille: u32,
 }
 
-/// Walk one finished shard: parse, decode every feature of every chunk, re-check the offset-table
+/// Walk the finished map: parse, decode every feature of every chunk, re-check the offset-table
 /// invariants, and validate nav integrity end to end.
 ///
 /// `scratch` is where the nav pass spills its claim stream and `budget` is
 /// [`crate::Options::merge_budget_bytes`] — the same number the §4.6 merge divides, because verify
 /// runs after the merge and the two never hold their buffers at the same time. Everything the pass
 /// sizes from the graph rather than the budget is listed in the module header.
-pub fn verify_shard(
+pub fn verify_map(
     src: &dyn ByteSource,
     expected_box: AlignedBox,
-    expect_sections: bool,
     scratch: &dyn ScratchStore,
     budget: usize,
 ) -> Result<VerifyReport> {
@@ -88,15 +88,15 @@ pub fn verify_shard(
     if (b.min_lon as i64, b.min_lat as i64, b.max_lon as i64, b.max_lat as i64) != (min_lon, min_lat, max_lon, max_lat)
     {
         return Err(Error::Verify(format!(
-            "shard header bbox ({}, {}, {}, {}) is not its planned box ({min_lon}, {min_lat}, {max_lon}, {max_lat})",
+            "the map's header bbox ({}, {}, {}, {}) is not its planned box ({min_lon}, {min_lat}, {max_lon}, {max_lat})",
             b.min_lon, b.min_lat, b.max_lon, b.max_lat
         )));
     }
-    if src.len() > crate::shard::FILE_CEILING {
+    if src.len() > crate::emit::FILE_CEILING {
         return Err(Error::Verify(format!(
-            "the shard is {} bytes, past the {}-byte interior its `Offset Scale` covers (OBCM §1.1)",
+            "the map is {} bytes, past the {}-byte interior its `Offset Scale` covers (OBCM §1.1)",
             src.len(),
-            crate::shard::FILE_CEILING
+            crate::emit::FILE_CEILING
         )));
     }
 
@@ -140,21 +140,60 @@ pub fn verify_shard(
 
     // 4/5. Nav integrity and the reachability report.
     let dir = reader.nav_directory();
-    if !expect_sections {
-        if !dir.is_empty() {
-            return Err(Error::Verify("a non-core shard carries a nav graph (OBCA §5.1)".into()));
-        }
-        if reader.poi_directory().entries.iter().any(|e| e.chunk_count > 0) {
-            return Err(Error::Verify("a non-core shard carries POIs (OBCA §5.1)".into()));
-        }
-    }
     if reader.nav_profiles().is_empty() {
-        return Err(Error::Verify("the shard carries no §8.6 profile table".into()));
+        return Err(Error::Verify("the map carries no §8.6 profile table".into()));
     }
     if !dir.is_empty() {
         verify_nav(&reader, &view, &mut report, scratch, budget)?;
     }
     Ok(report)
+}
+
+/// The §1.3 terrain window of a finished map, resolved through the **reader's own header parse**.
+///
+/// This is deliberately not "the bytes the assembler put at the offset it remembers". It re-reads
+/// the header a device would read, resolves the scaled region pointer the way a device would
+/// resolve it, and hands back the window a device would form — so what
+/// [`crate::TerrainRegion::verify`] then checks is the raster *as mounted*, not as intended. A
+/// header field the writer got wrong shows up here as a window over the wrong bytes rather than not
+/// at all.
+pub fn terrain_window(src: &dyn ByteSource) -> Result<TerrainWindow<'_>> {
+    let tables = MapTables::parse(src).map_err(|e| Error::Verify(format!("the output does not parse: {e:?}")))?;
+    let region = tables
+        .terrain()
+        .ok_or_else(|| Error::Verify("the map was written with a raster but its header names no §1.3 region".into()))?;
+    if region.offset + region.len > src.len() {
+        return Err(Error::Verify(format!(
+            "the §1.3 terrain region runs from {} for {} bytes, past the {}-byte file",
+            region.offset,
+            region.len,
+            src.len()
+        )));
+    }
+    Ok(TerrainWindow { src, offset: region.offset, len: region.len })
+}
+
+/// A byte source whose offset `0` is the terrain region's first byte (§1.3) — the window a reader
+/// hands its terrain consumer.
+pub struct TerrainWindow<'a> {
+    src: &'a dyn ByteSource,
+    offset: u64,
+    len: u64,
+}
+
+impl ByteSource for TerrainWindow<'_> {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> core::result::Result<(), obc_formats::io::Error> {
+        // The window is a *bound*, not merely a base: a container whose directory pointed past its
+        // own region would otherwise read the map's own bytes and look like raster.
+        let end = offset.checked_add(buf.len() as u64).ok_or(obc_formats::io::Error::BadOffset)?;
+        if end > self.len {
+            return Err(obc_formats::io::Error::BadOffset);
+        }
+        self.src.read_at(self.offset + offset, buf)
+    }
+    fn len(&self) -> u64 {
+        self.len
+    }
 }
 
 /// `OBCM_Spec.md` §5.1's offset-table invariants for every chunk of one LOD: `offsets[0] == 0`,
@@ -169,7 +208,7 @@ fn check_offset_table(
     i: usize,
     scale: obc_formats::obcm::OffsetScale,
 ) -> Result<()> {
-    // **The file's own scale, not this crate's.** `crate::shard::SCALE` is what the assembler
+    // **The file's own scale, not this crate's.** `crate::emit::SCALE` is what the assembler
     // *writes*; this pass reads a file back, and a verifier that resolves offsets against its own
     // constant agrees with itself no matter what byte 40 says. §1.1's whole point is that the unit
     // travels in the file.
@@ -213,7 +252,7 @@ fn check_offset_table(
     }
     // The chunks begin one rounding step past the table (§3), so the region's end is measured from
     // there and not from the table's own last byte.
-    let end = crate::shard::align_up(table_start + raw.len() as u64) + lod.chunk_units_total as u64 * unit;
+    let end = crate::emit::align_up(table_start + raw.len() as u64) + lod.chunk_units_total as u64 * unit;
     if end > src.len() {
         return Err(Error::Verify(format!("LOD {i}: the chunk region runs past the end of the file")));
     }

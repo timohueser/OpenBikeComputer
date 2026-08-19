@@ -2,11 +2,11 @@
 //!
 //! Everything here is I/O and argument parsing. The crate's rule is that the **engine** never
 //! touches a filesystem (it has to run in a browser tab, #1024/P4), so this file owns every
-//! `std::fs` call: it opens cell artifacts as [`ByteSource`]s, implements the [`ShardStore`] over
+//! `std::fs` call: it opens cell artifacts as [`ByteSource`]s, implements the [`MapStore`] over
 //! real files, and prints what the engine reports.
 //!
 //! ```text
-//! obcm-assemble --cells <cells.json> --skin <skin.json> --out <dir> [options]
+//! obcm-assemble --cells <cells.json> --skin <skin.json> --out <path.obcm> [options]
 //! ```
 //!
 //! `cells.json` is the cutter's provenance sidecar (`obc-pack cut`), which already states every
@@ -34,7 +34,7 @@
 //! cargo run --release -p obcm-assemble --features mem-profile -- \
 //!     --cells /tmp/obca/freiburg/cells.json \
 //!     --skin  /tmp/obca/freiburg/skin.json \
-//!     --out   /tmp/obca/freiburg/out --accept-holes
+//!     --out   /tmp/obca/freiburg.obcm --accept-holes
 //! ```
 
 use std::cell::RefCell;
@@ -48,8 +48,8 @@ use obc_formats::io::{ByteSource, Error as IoError};
 use obcm_assemble::grid::CellId;
 use obcm_assemble::schema::{Schema, Skin};
 use obcm_assemble::{
-    assemble_full, CellInput, Clock, Error, Options, Result, ScratchId, ScratchStore, ShardPlan, ShardStore,
-    TerrainCellInput, TerrainJob, TerrainParams,
+    assemble_full, CellInput, Clock, Error, MapStore, Options, Result, ScratchId, ScratchStore, TerrainCellInput,
+    TerrainJob, TerrainParams,
 };
 
 /// A cell artifact read on demand. Cell regions are copied in 256 KB blocks, so the whole tree never
@@ -82,89 +82,45 @@ impl ByteSource for FileSource {
     }
 }
 
-/// Shards as files under an output directory, with the §5.2 derived names. The manifest is written
-/// **last** (§5.4), so an interrupted run leaves files no reader will mount.
+/// The map as one file at a path the caller named.
+///
+/// It used to be a directory of derived `MS<id>S<kk>.OBM` names plus an `MS<id>.OBS` manifest
+/// written last, plus an orphan sweep for the shards a smaller re-assembly left behind. One file
+/// needs none of that: the name is the caller's, and replacing a map is truncating it.
 struct FileStore {
-    dir: PathBuf,
-    card_id: u16,
+    path: PathBuf,
     open: Option<std::io::BufWriter<File>>,
-    sealed: Vec<FileSource>,
-    manifest_path: PathBuf,
-    /// Whether this run wrote a terrain shard, so the manifest step knows whether an existing
-    /// `MS<id>.OBD` is this set's raster or an orphan of the one it replaced.
-    terrain_written: bool,
+    sealed: Option<FileSource>,
 }
 
 impl FileStore {
-    fn new(dir: &Path, card_id: u16) -> Result<FileStore> {
-        std::fs::create_dir_all(dir).map_err(|_| Error::Io(IoError::Io))?;
-        Ok(FileStore {
-            dir: dir.to_path_buf(),
-            card_id,
-            open: None,
-            sealed: Vec::new(),
-            manifest_path: dir.join(obcm_assemble::shard::manifest_filename(card_id)),
-            terrain_written: false,
-        })
+    fn new(path: &Path) -> Result<FileStore> {
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent).map_err(|_| Error::Io(IoError::Io))?;
+        }
+        Ok(FileStore { path: path.to_path_buf(), open: None, sealed: None })
     }
 }
 
-impl ShardStore for FileStore {
-    fn begin(&mut self, plan: &ShardPlan) -> Result<()> {
-        // A stale manifest must never point at shards being overwritten (§5.4).
-        let _ = std::fs::remove_file(&self.manifest_path);
-        let path = self.dir.join(obcm_assemble::shard::shard_filename(self.card_id, plan.index));
-        let file = File::create(&path).map_err(|_| Error::Io(IoError::Io))?;
+impl MapStore for FileStore {
+    fn begin(&mut self) -> Result<()> {
+        self.sealed = None;
+        let file = File::create(&self.path).map_err(|_| Error::Io(IoError::Io))?;
         self.open = Some(std::io::BufWriter::new(file));
         Ok(())
     }
     fn write(&mut self, buf: &[u8]) -> Result<()> {
-        self.open.as_mut().expect("a shard is open").write_all(buf).map_err(|_| Error::Io(IoError::Io))
+        self.open.as_mut().expect("the map is open").write_all(buf).map_err(|_| Error::Io(IoError::Io))
     }
     fn seal(&mut self) -> Result<()> {
-        let mut w = self.open.take().expect("a shard is open");
+        let mut w = self.open.take().expect("the map is open");
         w.flush().map_err(|_| Error::Io(IoError::Io))?;
         drop(w);
-        let path = self.dir.join(obcm_assemble::shard::shard_filename(self.card_id, self.sealed.len()));
-        self.sealed.push(FileSource::open(&path).map_err(|_| Error::Io(IoError::Io))?);
+        self.sealed = Some(FileSource::open(&self.path).map_err(|_| Error::Io(IoError::Io))?);
         Ok(())
     }
-    fn source(&self, index: usize) -> Result<&dyn ByteSource> {
-        self.sealed.get(index).map(|s| s as &dyn ByteSource).ok_or(Error::Io(IoError::BadOffset))
-    }
-    fn manifest(&mut self, bytes: &[u8]) -> Result<()> {
-        // §5.4: shard files no manifest references are **orphans**, and a writer replacing a set
-        // SHOULD delete them. Replacing a 12-shard set with an 8-shard one otherwise leaves four
-        // stale files on the card — invisible as a map, but holding gigabytes the rider cannot
-        // account for. Done here, immediately before the manifest, so the delete window is still
-        // the manifest-less one §5.4 already requires.
-        for index in self.sealed.len()..obcm_assemble::shard::MAX_SHARDS {
-            let _ = std::fs::remove_file(self.dir.join(obcm_assemble::shard::shard_filename(self.card_id, index)));
-        }
-        if !self.terrain_written {
-            // The same rule for the raster: a set re-assembled without terrain must not leave the
-            // old one behind for the next mount to find.
-            let _ = std::fs::remove_file(self.dir.join(obcm_assemble::shard::terrain_filename(self.card_id)));
-        }
-        std::fs::write(&self.manifest_path, bytes).map_err(|_| Error::Io(IoError::Io))
-    }
-}
-
-impl FileStore {
-    /// Open the terrain shard for writing. Read+write because the OBCT writer back-patches its
-    /// directory and §4.8 reads the file back through the real reader before the manifest names it.
-    fn terrain_file(&mut self) -> std::result::Result<File, String> {
-        let path = self.dir.join(obcm_assemble::shard::terrain_filename(self.card_id));
-        // Same §5.4 window as a shard: no manifest may point at a file being rewritten.
-        let _ = std::fs::remove_file(&self.manifest_path);
-        self.terrain_written = true;
-        File::options()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&path)
-            .map_err(|e| format!("create {}: {e}", path.display()))
+    fn source(&self) -> Result<&dyn ByteSource> {
+        self.sealed.as_ref().map(|s| s as &dyn ByteSource).ok_or(Error::Io(IoError::BadOffset))
     }
 }
 
@@ -403,8 +359,8 @@ mod mem_profile {
     /// The CLI's clock, plus a snapshot at every tick.
     ///
     /// The engine calls its [`Clock`] exactly once per phase boundary, in a documented order
-    /// (`assemble_full`): start, open, poi, nav, plan, then four ticks per shard, two for the
-    /// terrain shard if there is one, and one last for the total. [`ProfilingClock::report`] labels
+    /// (`assemble_full`): start, open, poi, nav, plan, then write, verify and the total.
+    /// [`ProfilingClock::report`] labels
     /// the samples against the summary it is handed, and falls back to positional labels if the
     /// engine ever ticks a different number of times than that arithmetic predicts — a wrong label
     /// on a real number is worse than an honest `tick N`.
@@ -423,7 +379,7 @@ mod mem_profile {
         /// yardstick: the section the whole rewrite exists to produce.
         pub fn report(&self, summary: &Summary) {
             let samples = self.samples.borrow();
-            let labels = labels_for(samples.len(), summary.shards.len(), summary.terrain.is_some());
+            let labels = labels_for(samples.len());
             eprintln!("\nmem-profile — peak heap per phase (the window resets at every phase boundary)");
             eprintln!("  {:<28}{:>14}{:>14}{:>12}", "phase", "peak", "live after", "at");
             for (s, label) in samples.iter().zip(&labels) {
@@ -462,23 +418,23 @@ mod mem_profile {
         format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
     }
 
-    /// The tick order `assemble_full` documents, expanded for this run's shard count.
-    fn labels_for(ticks: usize, shards: usize, terrain: bool) -> Vec<String> {
-        let mut out: Vec<String> = ["start (CLI: sidecar + open)", "open cells", "merge POIs", "merge nav", "plan set"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        for k in 0..shards {
-            out.push(format!("shard {k}: (pre-write)"));
-            out.push(format!("shard {k}: write"));
-            out.push(format!("shard {k}: (pre-verify)"));
-            out.push(format!("shard {k}: verify"));
-        }
-        if terrain {
-            out.push("terrain: (pre-write)".into());
-            out.push("terrain: write + verify".into());
-        }
-        out.push("manifest".into());
+    /// The tick order `assemble_full` documents. It is a fixed list now — one file means one write
+    /// and one verify, where a set meant four ticks per shard and two more for the raster.
+    fn labels_for(ticks: usize) -> Vec<String> {
+        let mut out: Vec<String> = [
+            "start (CLI: sidecar + open)",
+            "open cells",
+            "merge POIs",
+            "merge nav",
+            "plan map",
+            "(pre-write)",
+            "write",
+            "(pre-verify)",
+            "verify",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
         if out.len() != ticks {
             // The engine's tick order changed under us: number them rather than mislabel them.
             out = (0..ticks).map(|k| format!("tick {k}")).collect();
@@ -518,39 +474,29 @@ fn parse_sidecar(text: &str) -> std::result::Result<(Schema, Vec<SidecarCell>), 
 }
 
 const USAGE: &str = "\
-obcm-assemble — assemble baked OBCA cells into one .obcm or a volume set
+obcm-assemble — assemble baked OBCA cells into one .obcm
 
 USAGE:
-    obcm-assemble --cells <cells.json> --skin <skin.json> --out <dir> [OPTIONS]
+    obcm-assemble --cells <cells.json> --skin <skin.json> --out <path.obcm> [OPTIONS]
 
 REQUIRED:
     --cells <path>          the cutter's provenance sidecar (obc-pack cut)
     --skin <path>           the skin to stamp (OBCC §5, or an id-keyed style table)
-    --out <dir>             where the shards and the manifest are written
+    --out <path>            the map file to write
 
 OPTIONS:
     --schema <path>         schema document (OBCC v2 root or SchemaEntry); default: the sidecar's
     --terrain <path>        terrain sidecar: {posting_log2, cell_log2, cells:[{id, path, sha256?}]}.
-                            Writes the set's `MS<id>.OBD` terrain shard and the manifest's `terrain`
-                            role. Squares the selection covers but the list omits are canonically
-                            void and cost four directory bytes each (OBCC §13.6)
+                            Splices the raster into the map's OBCM §1.3 terrain region. Squares the
+                            selection covers but the list omits are canonically void and cost four
+                            directory bytes each (OBCC §13.6)
     --band <id>             only assemble these bands (repeatable)
     --cell <id>             only assemble these cells (repeatable, `<log2>/<i>/<j>`)
-    --name <text>           the set's display name (24 bytes on the card)
-    --card-id <n>           the id the derived filenames use, 0..=999 (default 1). `MS<id>S<kk>.OBM`
-                            is 8.3-safe only up to three digits, and the device's FAT layer creates
-                            short names only (OBCA §5.2)
-    --target-shard-bytes <n>  split the geometry tiling wherever a node exceeds this (default 1 GiB).
-                            It only takes effect once the map needs a set at all; below the 4 GiB
-                            single-file threshold the fast path wins unless --force-split is given
     --merge-budget-bytes <n>  the most memory the §4.6 merge's sorted passes may hold (default 64
                             MiB). Everything above it spills to scratch files under the system temp
                             directory, which are removed as the merge finishes with them. Lower it to
                             assemble a region on a small machine — or to prove that the map is the
                             same bytes at every budget, which is what it is here for
-    --force-split           write a role-partitioned set even when the whole map would fit one file.
-                            What each shard *contains* is unchanged — this only changes which files
-                            it is written to (a smaller file is a better resumable upload unit)
     --accept-holes          proceed although the selection has missing cells. The hole is legal — the
                             quadtree writes an empty leaf and the renderer paints backdrop — but
                             OBCA §4.1 requires the caller to say so rather than discover it
@@ -581,7 +527,7 @@ fn run() -> std::result::Result<(), String> {
     let mut terrain_path: Option<PathBuf> = None;
     let mut schema_path: Option<PathBuf> = None;
     let mut skin_path: Option<PathBuf> = None;
-    let mut out_dir: Option<PathBuf> = None;
+    let mut out_path: Option<PathBuf> = None;
     let mut only_bands: Vec<String> = Vec::new();
     let mut only_cells: Vec<CellId> = Vec::new();
     let mut json = false;
@@ -598,24 +544,15 @@ fn run() -> std::result::Result<(), String> {
             "--terrain" => terrain_path = Some(PathBuf::from(value(&mut i)?)),
             "--schema" => schema_path = Some(PathBuf::from(value(&mut i)?)),
             "--skin" => skin_path = Some(PathBuf::from(value(&mut i)?)),
-            "--out" => out_dir = Some(PathBuf::from(value(&mut i)?)),
+            "--out" => out_path = Some(PathBuf::from(value(&mut i)?)),
             "--band" => only_bands.push(value(&mut i)?),
             "--cell" => only_cells.push(CellId::parse(&value(&mut i)?)?),
-            "--name" => opts.name = value(&mut i)?,
-            "--card-id" => {
-                opts.card_id = value(&mut i)?.parse().map_err(|_| "--card-id takes a number")?;
-                obcm_assemble::shard::check_card_id(opts.card_id).map_err(|e| e.to_string())?;
-            }
-            "--target-shard-bytes" => {
-                opts.target_shard_bytes = value(&mut i)?.parse().map_err(|_| "--target-shard-bytes takes a number")?
-            }
             "--merge-budget-bytes" => {
                 opts.merge_budget_bytes = value(&mut i)?.parse().map_err(|_| "--merge-budget-bytes takes a number")?;
                 if opts.merge_budget_bytes == 0 {
                     return Err("--merge-budget-bytes must be at least one record".into());
                 }
             }
-            "--force-split" => opts.force_split = true,
             "--accept-holes" => opts.accept_holes = true,
             "--accept-partial" => opts.accept_partial = true,
             "--skip-verify" => opts.skip_verify = true,
@@ -627,7 +564,7 @@ fn run() -> std::result::Result<(), String> {
 
     let cells_path = cells_path.ok_or("--cells is required")?;
     let skin_path = skin_path.ok_or("--skin is required")?;
-    let out_dir = out_dir.ok_or("--out is required")?;
+    let out_path = out_path.ok_or("--out is required")?;
     let root = cells_path.parent().unwrap_or(Path::new(".")).to_path_buf();
     let sidecar = std::fs::read_to_string(&cells_path).map_err(|e| format!("read {}: {e}", cells_path.display()))?;
     let (sidecar_schema, listed) = parse_sidecar(&sidecar)?;
@@ -675,24 +612,16 @@ fn run() -> std::result::Result<(), String> {
         }
     }
 
-    let mut store = FileStore::new(&out_dir, opts.card_id).map_err(|e| e.to_string())?;
-    let mut terrain_file = match &terrain_sidecar {
-        None => None,
-        Some(_) => Some(store.terrain_file()?),
-    };
-    let job = match (&terrain_sidecar, terrain_file.as_mut()) {
-        (Some(sidecar), Some(file)) => Some(TerrainJob {
-            params: sidecar.params,
-            cells: sidecar
-                .cells
-                .iter()
-                .zip(&terrain_sources)
-                .map(|((id, _, sha256), src)| TerrainCellInput { id: *id, src, sha256: *sha256 })
-                .collect(),
-            sink: file,
-        }),
-        _ => None,
-    };
+    let mut store = FileStore::new(&out_path).map_err(|e| e.to_string())?;
+    let job = terrain_sidecar.as_ref().map(|sidecar| TerrainJob {
+        params: sidecar.params,
+        cells: sidecar
+            .cells
+            .iter()
+            .zip(&terrain_sources)
+            .map(|((id, _, sha256), src)| TerrainCellInput { id: *id, src, sha256: *sha256 })
+            .collect(),
+    });
 
     #[cfg(not(feature = "mem-profile"))]
     let clock = StdClock(Instant::now());
@@ -710,9 +639,9 @@ fn run() -> std::result::Result<(), String> {
         eprintln!("warning: {w}");
     }
     if json {
-        println!("{}", summary_json(&summary, &out_dir));
+        println!("{}", summary_json(&summary, &out_path));
     } else {
-        print_summary(&summary, &out_dir);
+        print_summary(&summary, &out_path);
     }
     // stderr, and last: the summary above is pinned by tests and by the builder's parser.
     #[cfg(feature = "mem-profile")]
@@ -720,36 +649,33 @@ fn run() -> std::result::Result<(), String> {
     Ok(())
 }
 
-fn print_summary(s: &obcm_assemble::Summary, out_dir: &Path) {
+fn print_summary(s: &obcm_assemble::Summary, out_path: &Path) {
     let (min_lon, min_lat, max_lon, max_lat) = s.assembly_box.ubox();
     println!(
         "assembly bbox: lat [{min_lat}, {max_lat}) × lon [{min_lon}, {max_lon})  (2^{} µdeg square)",
         s.assembly_box.span_log2
     );
-    println!("{} cell(s) → {} shard(s), {} bytes total", s.stats.cells, s.shards.len(), s.bytes);
-    for sh in &s.shards {
-        let v = sh
-            .verify
-            .as_ref()
-            .map(|r| {
-                format!(
-                    "  verified: {} chunk(s), {} feature(s), {} nav node(s), largest component {:.1}%",
-                    r.chunks,
-                    r.features,
-                    r.nav_nodes,
-                    r.largest_component_permille as f64 / 10.0
-                )
-            })
-            .unwrap_or_else(|| "  NOT VERIFIED (--skip-verify)".into());
-        println!("  [{}] {:8} {:>12} B  {}\n{v}", sh.index, sh.role.as_str(), sh.bytes, sh.filename);
-    }
+    println!("{} cell(s) → {} bytes", s.stats.cells, s.bytes);
+    let v = s
+        .verify
+        .as_ref()
+        .map(|r| {
+            format!(
+                "  verified: {} chunk(s), {} feature(s), {} nav node(s), largest component {:.1}%",
+                r.chunks,
+                r.features,
+                r.nav_nodes,
+                r.largest_component_permille as f64 / 10.0
+            )
+        })
+        .unwrap_or_else(|| "  NOT VERIFIED (--skip-verify)".into());
+    println!("  {}\n{v}", out_path.display());
     if let Some(t) = &s.terrain {
         println!(
-            "  [T] terrain  {:>12} B  {}\n  verified: {} of {} square(s) present, the rest canonically void",
-            t.bytes, t.filename, t.cells, t.slots
+            "  terrain region: {} B, {} of {} square(s) present, the rest canonically void",
+            t.bytes, t.cells, t.slots
         );
     }
-    println!("manifest: {}", out_dir.join(&s.manifest_filename).display());
     let st = &s.stats;
     println!(
         "phases (ms): open {:.1} · poi {:.1} · nav {:.1} · plan {:.1} · write(+graft) {:.1} · verify {:.1} · total \
@@ -780,20 +706,7 @@ fn print_summary(s: &obcm_assemble::Summary, out_dir: &Path) {
     );
 }
 
-fn summary_json(s: &obcm_assemble::Summary, out_dir: &Path) -> String {
-    let shards: Vec<serde_json::Value> = s
-        .shards
-        .iter()
-        .map(|sh| {
-            serde_json::json!({
-                "index": sh.index,
-                "role": sh.role.as_str(),
-                "file": sh.filename,
-                "bytes": sh.bytes,
-                "sha256": sh.sha256.iter().map(|b| format!("{b:02x}")).collect::<String>(),
-            })
-        })
-        .collect();
+fn summary_json(s: &obcm_assemble::Summary, out_path: &Path) -> String {
     let st = &s.stats;
     serde_json::to_string_pretty(&serde_json::json!({
         "assembly_bbox_udeg": {
@@ -802,16 +715,14 @@ fn summary_json(s: &obcm_assemble::Summary, out_dir: &Path) -> String {
             "span_log2": s.assembly_box.span_log2,
         },
         "cells": st.cells,
+        "file": out_path.display().to_string(),
         "bytes": s.bytes,
-        "shards": shards,
+        "sha256": s.sha256.iter().map(|b| format!("{b:02x}")).collect::<String>(),
         "terrain": s.terrain.as_ref().map(|t| serde_json::json!({
-            "file": t.filename,
             "bytes": t.bytes,
-            "sha256": t.sha256.iter().map(|b| format!("{b:02x}")).collect::<String>(),
             "cells": t.cells,
             "slots": t.slots,
         })),
-        "manifest": out_dir.join(&s.manifest_filename).display().to_string(),
         "phases_us": {
             "open": st.open_us, "poi": st.poi_us, "nav": st.nav_us,
             "plan": st.plan_us, "write": st.write_us, "verify": st.verify_us, "total": st.total_us,

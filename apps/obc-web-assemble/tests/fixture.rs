@@ -15,20 +15,21 @@
 //!     --cells   apps/obc-web-assemble/tests/fixture/cells.json \
 //!     --terrain apps/obc-web-assemble/tests/fixture/terrain.json \
 //!     --skin    apps/obc-web-assemble/tests/fixture/skin.json \
-//!     --out     apps/obc-web-assemble/tests/fixture/expected \
-//!     --name "Bridge Fixture" --accept-partial
-//! # 3. …and again as a volume set, which is the multi-file shape the bridge hands on
+//!     --out     apps/obc-web-assemble/tests/fixture/expected/map.obcm \
+//!     --accept-partial
+//! # 3. …and again with no raster, which is `expected/flat.obcm`: the same selection with an empty
+//! #    §1.3 region, and the file this crate's output was byte-identical to before the raster was
+//! #    spliced in (it was a separate `.OBD` then, so the map itself is unchanged).
 //! cargo run --release -p obcm-assemble -- \
 //!     --cells   apps/obc-web-assemble/tests/fixture/cells.json \
-//!     --terrain apps/obc-web-assemble/tests/fixture/terrain.json \
 //!     --skin    apps/obc-web-assemble/tests/fixture/skin.json \
-//!     --out     apps/obc-web-assemble/tests/fixture/expected-split \
-//!     --name "Bridge Fixture" --accept-partial --force-split
+//!     --out     apps/obc-web-assemble/tests/fixture/expected/flat.obcm \
+//!     --accept-partial
 //! ```
 //!
-//! Step 2 is deliberately the real CLI rather than a library call from step 1: the pin's claim is
-//! "the browser produces what the command line produces", and a fixture generated through the same
-//! entry point the test uses would only prove the engine agrees with itself.
+//! Steps 2 and 3 are deliberately the real CLI rather than a library call from step 1: the pin's
+//! claim is "the browser produces what the command line produces", and a fixture generated through
+//! the same entry point the test uses would only prove the engine agrees with itself.
 //!
 //! **This crate does not depend on `obc-pack`** except here, as a dev-dependency, exactly as
 //! `obcm-assemble`'s own oracle does: the cutter carries libGEOS and must never enter the bridge's
@@ -113,15 +114,16 @@ pub const T_CELL_LOG2: u8 = 19;
 /// `2^19` squares.
 const T_MIN_I: u32 = 602;
 const T_MIN_J: u32 = 526;
-/// The square left **unpublished**: the fixture's known-empty terrain, which must reach the shard as
-/// a `0` directory slot and cost four bytes (`OBCC_Spec.md` §13.6, `OBCT_Spec.md` §4.3).
+/// The square left **unpublished**: the fixture's known-empty terrain, which must reach the map's
+/// §1.3 region as a `0` directory slot and cost four bytes (`OBCC_Spec.md` §13.6, `OBCT_Spec.md`
+/// §4.3).
 const T_ABSENT: (u32, u32) = (603, 527);
 
 /// The surface: a plane with **different** coefficients per axis, so a transposed latitude/longitude
 /// produces different numbers rather than a plausible-looking one. Indexed by lattice offsets from
 /// each cell's own base sample, which is what makes each cell a pure function of its id — the same
-/// property the real bakery's `bake_cell` has, and the reason a cell inside a shard is byte-for-byte
-/// the cell published on its own.
+/// property the real bakery's `bake_cell` has, and the reason a cell inside the assembled region is
+/// byte-for-byte the cell published on its own.
 fn t_height(ci: u32, cj: u32) -> impl Fn(u32, u32) -> i16 {
     let per_cell = 1u32 << (T_CELL_LOG2 - T_POSTING_LOG2);
     move |di, dj| {
@@ -338,5 +340,5 @@ fn regenerate() {
         println!("  {:8} {:20} {:>7} B", c.band, c.path, c.bytes);
     }
     regenerate_terrain(&dir);
-    println!("\nnow run the native CLI to write tests/fixture/expected/ — see the module header.");
+    println!("\nnow run the native CLI twice to write tests/fixture/expected/ — see the module header.");
 }

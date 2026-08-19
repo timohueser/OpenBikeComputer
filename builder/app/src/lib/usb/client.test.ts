@@ -9,7 +9,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import { DEFAULT_TIMEOUT_MS, DeviceError, ProtocolClient, commitTimeoutMs } from "./client";
+import { DeviceError, ProtocolClient } from "./client";
 import { Crc32 } from "./crc32";
 import { MockDevice, loopbackDevice, loopbackLink } from "./loopback";
 import { PipeError, type BytePipe } from "./pipe";
@@ -423,9 +423,9 @@ describe("stale results", () => {
         // predicate that merely declines to *match* the stale message leaves it there for the next
         // unfiltered take. That is the shape this pins: the message has to be consumed and dropped.
         //
-        // `aborted` is the worst code for it to arrive as: `sendAssembledSetFile` retries only
-        // `crc-mismatch`, so a set upload would die outright on a result the device never issued
-        // about it.
+        // `aborted` is the worst code for it to arrive as: a caller that retries only on
+        // `crc-mismatch` would give up outright on a result the device never issued about the
+        // transfer in front of it.
         await withDevice({ bulkPacketSize: 64, chunkSize: 61 }, async ({ client, device }) => {
             const statuses = (client as unknown as { statuses: { push: (v: unknown) => void } }).statuses;
             const bytes = payload(40_000);
@@ -448,44 +448,6 @@ describe("stale results", () => {
             expect(injected, "the stale result was never injected — the test proves nothing").toBe(true);
             expect(device.stored(ObjectType.Route, result.objectId)).toEqual(bytes);
         });
-    });
-});
-
-describe("commitTimeoutMs", () => {
-    it("is opt-in: an ordinary upload keeps the default answer budget", async () => {
-        // The regression this pins is a quiet one — routing every upload through the scaled budget
-        // makes a wedged device take 4-40x longer to surface, and nothing about the happy path
-        // changes. So assert on the wait the client actually applies.
-        await withDevice({ bulkPacketSize: 64, chunkSize: 61 }, async ({ client }) => {
-            const timeouts: number[] = [];
-            const client_ = client as unknown as {
-                statuses: { take: (ms: number, signal: unknown, what: string) => Promise<unknown> };
-            };
-            const realTake = client_.statuses.take.bind(client_.statuses);
-            vi.spyOn(client_.statuses, "take").mockImplementation((ms, signal, what) => {
-                if (what.includes("upload")) timeouts.push(ms);
-                return realTake(ms, signal, what);
-            });
-            await client.upload(ObjectType.Route, NEW_OBJECT_ID, payload(4096));
-            expect(timeouts).toEqual([DEFAULT_TIMEOUT_MS]);
-
-            timeouts.length = 0;
-            await client.upload(ObjectType.Route, NEW_OBJECT_ID, payload(4097), {
-                commitBytes: 300 * 1024 * 1024,
-            });
-            expect(timeouts).toEqual([commitTimeoutMs(300 * 1024 * 1024)]);
-        });
-    });
-
-    it("scales with the bytes the device has to re-read, and is capped", () => {
-        // A set manifest is ~2 KB but its commit walks the whole set, which is what `commitBytes`
-        // exists to say. The cap is what stops a mis-announced length becoming a forever spinner.
-        expect(commitTimeoutMs(0)).toBe(60_000);
-        expect(commitTimeoutMs(1)).toBe(60_200);
-        expect(commitTimeoutMs(300 * 1024 * 1024)).toBe(60_000 + 300 * 200);
-        expect(commitTimeoutMs(Number.MAX_SAFE_INTEGER)).toBe(10 * 60_000);
-        // Never below the ordinary budget, whatever it is given.
-        expect(commitTimeoutMs(-1)).toBeGreaterThanOrEqual(DEFAULT_TIMEOUT_MS);
     });
 });
 

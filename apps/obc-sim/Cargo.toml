@@ -65,6 +65,6 @@ obc-display = { path = "../../firmware/obc-display", features = ["conformance"] 
 # Already in the tree (eframe → wgpu pull it), so this reuses the resolved 0.3 rather than adding a
 # new executor dep.
 pollster = "0.3"
-# Hand-built OBCM / OBCA fixtures for the `--set` loader tests. An independent oracle that calls no
-# production serializer, so a set the simulator mounts was not built by the code under test.
+# Hand-built OBCM fixtures for the map-loader tests. An independent oracle that calls no production
+# serializer, so a map the simulator opens was not built by the code under test.
 obcm-testkit = { path = "../../host/obcm-testkit" }

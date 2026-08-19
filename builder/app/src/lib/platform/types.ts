@@ -39,21 +39,32 @@ export interface Caps {
 export type { DeviceSession, RideLibrary };
 
 /**
- * Grouped file output for an assembled set — a native folder on the desktop, a
+ * A place on disk to put the assembled map — a native folder on the desktop, a
  * picked directory on a browser that has `showDirectoryPicker`. Hosts without
  * either export `openMapOutput: null` and the UI falls back to its downloader.
  *
- * `openMapOutput` must be called **under the user gesture that starts the
- * run**: the browser implementation opens a directory picker, and a picker not
- * backed by a fresh activation is refused by the browser. A dismissed picker
- * rejects with an `AbortError`, which callers treat as "changed my mind", not
- * as a failure.
+ * **Why this exists at all, now that a map is one file.** A browser can save one
+ * file without any of this: the assembled `.obcm` is an OPFS-backed `Blob`, so the
+ * plain downloader streams it to disk without the tab's heap ever holding it. What
+ * the downloader cannot do is choose *where*. A country-scale map is ~9 GiB, and
+ * "save to Downloads, then copy it to the card" means writing those 9 GiB twice and
+ * needing the room for both at once. A picked directory is the card itself, and the
+ * write happens once. That is the whole argument, and at this size it is decisive.
+ *
+ * The session is opened once and written once — a map is one file — but `write`
+ * still names it, because the destination is a *folder* and the file needs a name in
+ * it. The name comes from the caller: the assembler names nothing.
+ *
+ * `openMapOutput` must be called **under the user gesture that starts the run**: the
+ * browser implementation opens a directory picker, and a picker not backed by a
+ * fresh activation is refused by the browser. A dismissed picker rejects with an
+ * `AbortError`, which callers treat as "changed my mind", not as a failure.
  */
 export interface MapOutputSession {
     readonly path: string;
-    /** Accepts a `Blob` so an OPFS-backed shard can stream to disk without
-     *  entering the tab's heap; hosts that need contiguous bytes (the desktop
-     *  IPC) do their own conversion — the residency is theirs to own. */
+    /** Accepts a `Blob` so the OPFS-backed map can stream to disk without entering
+     *  the tab's heap; hosts that need contiguous bytes (the desktop IPC) do their
+     *  own conversion — the residency is theirs to own. */
     write(name: string, body: Uint8Array | Blob): Promise<string>;
     finish(): Promise<void>;
     discard(): Promise<void>;

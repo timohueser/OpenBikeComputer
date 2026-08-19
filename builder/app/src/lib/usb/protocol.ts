@@ -101,37 +101,32 @@ export const NEW_OBJECT_ID = 0xffff;
 /** Object id of the singletons: the list objects, diagnostics, and the `fwImage` staging slot. */
 export const SINGLETON_OBJECT_ID = 0;
 
-/** The OBCT terrain container's fixed header width (`OBCT_Spec.md` §4) — the floor a
- *  {@link ObjectType.TerrainShard} announce has to clear, as an OBCM header is for a map. */
-export const OBCT_HEADER_LEN = 32;
-/** `b"OBCT"` — the terrain container's magic, and the version this firmware reads. */
-export const OBCT_MAGIC = "OBCT";
-export const OBCT_VERSION = 1;
-
-/** The OBCS set manifest's fixed header width (`OBCA_Spec.md` §5.2). Unmoved by v3. */
-export const OBCS_HEADER_LEN = 72;
-/** The OBCS manifest's fixed per-record width (§5.2) — `64` since v3 appended the member id. */
-export const OBCS_RECORD_LEN = 64;
-/** The one manifest version a reader accepts — `3` since every record carries its member's
- *  `ObjectId` (§5.2, #1389). A hard cut: v2's records are 56 bytes, so a reader that guessed would
- *  find every record but the first at the wrong offset. */
-export const OBCS_VERSION = 3;
-/** Offset of the member `ObjectId` inside a record (§5.2). */
-export const OBCS_MEMBER_ID_OFFSET = 56;
-
 /**
- * The exact byte length of a set manifest carrying `records` records — `72 + 64 × Shard Count`.
+ * The volume-set corner of this codec: {@link setPartId} and the {@link ObjectType.MapShard} /
+ * {@link ObjectType.MapSet} / {@link ObjectType.TerrainShard} kinds.
  *
- * **`records` is not the shard count** (#1044). §5.2's `Shard Count` field counts *every* record,
- * and a set with elevation carries one more: the `terrain` role's. A device refuses a `mapSet`
- * announce whose `total_len` is anything else, before a byte streams — so a host that sends every
- * OBCM shard and skips the raster announces a manifest one record longer than the device can expect,
- * and loses the whole upload at its last transfer.
+ * **Nothing in this app sends one any more, and these stay anyway.** A map is one OBCM object since
+ * OBCM v14 (#1420), so the flows that spoke this are deleted — but the *firmware* still accepts
+ * these kinds from a card written before the cut, and this file transcribes the wire contract
+ * rather than any particular flow. It is exactly the boundary `obc_formats::obcs` sits on, for the
+ * same reason and until the same slice (FS7.5c).
+ *
+ * The retention is scoped to what is actually **exercised**, and the scoping is not uniform:
+ * `vectors.test.ts` decodes and re-encodes `specs/vectors/transfer-set-shard.bin` and
+ * `transfer-set-manifest.bin` — two of the three checked-in vectors `obc-vectors` and `obc-ble`
+ * decode on the Rust side — which reaches **three** of the symbols here: {@link setPartId},
+ * {@link ObjectType.MapShard} and {@link ObjectType.MapSet}.
+ *
+ * {@link ObjectType.TerrainShard} is the fourth and has **no** TypeScript coverage: the
+ * `transfer-set-terrain.bin` vector is decoded on the Rust side only. It stays as a member of the
+ * wire contract's kind space rather than as tested code — the number is spent, the firmware answers
+ * to it, and a gap in the kind enum would be worse than an untested constant.
+ *
+ * The OBCT container constants and the OBCS layout constants that used to sit here reached nothing
+ * at all once the mock device's announce validation went: they were kept by the same "wire contract"
+ * sentence while having no consumer, which is the shape this epic keeps deleting. A codec under test
+ * against shared bytes earns its place; a constant nothing reads does not, however true it is.
  */
-export function manifestLen(records: number): number {
-    return OBCS_HEADER_LEN + OBCS_RECORD_LEN * records;
-}
-
 /** Pack a volume-set shard's `(shard_count, index)` into the descriptor's object id (§4.2). */
 export function setPartId(shardCount: number, index: number): number {
     if (!Number.isInteger(shardCount) || shardCount < 1 || shardCount > 32) {

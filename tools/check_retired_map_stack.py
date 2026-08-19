@@ -26,6 +26,18 @@ RETIRED = [
     re.compile(r"--" + r"v2\b"),
     re.compile(r"\bcatalog" + r"Root\b"),
     re.compile(r"maps\.openbikecomputer\." + r"org/catalog\.json"),
+    # The volume set (#1420 FS7.5b2). A map is one OBCM file: no manifest, no shards, no roles,
+    # no archive to bundle several files into, and no 32-slot sink to write them through. These
+    # are the producer-side spellings, so none of them may come back — the *reader* side
+    # (`obc_formats::obcs`, the board's mount, the three wire kinds) is deliberately alive until
+    # the board cutover and is therefore not listed here.
+    re.compile(r"\bsendAssembled" + r"SetFile\b"),
+    re.compile(r"\babandonAssembled" + r"Set\b"),
+    re.compile(r"\bopenShard" + r"Sink\b"),
+    re.compile(r"\bSET_SHARD_" + r"CEILING\b"),
+    re.compile(r"\bstore" + r"Zip\b"),
+    re.compile(r"\bzip" + r"Layout\b"),
+    re.compile(r"\bforce_" + r"split\b"),
 ]
 
 

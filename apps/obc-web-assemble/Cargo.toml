@@ -3,7 +3,7 @@ name = "obc-web-assemble"
 version = "0.1.0"
 edition = "2021"
 publish = false # internal bridge crate — not published to crates.io
-description = "The hosted builder's wasm assembly bridge (epic #1016, P4b): downloaded OBCA cells → one .obcm or a volume set, in the browser, through the exact obcm-assemble engine the CLI runs."
+description = "The hosted builder's wasm assembly bridge (epic #1016, P4b): downloaded OBCA cells → one .obcm, in the browser, through the exact obcm-assemble engine the CLI runs."
 
 # `cdylib` is what wasm-bindgen links; `rlib` keeps the crate a normal workspace library so
 # `cargo test`/`clippy` exercise the assembly driver on the host target too — which is how the
@@ -15,7 +15,7 @@ crate-type = ["cdylib", "rlib"]
 # The assembly engine itself (#1024/P3). `default-features = false` drops the `cli` feature, which
 # is where every `std::fs` call in that crate lives — the same surface CI's `wasm` job compiles for
 # wasm32. This bridge adds no format knowledge: it is a byte-buffer adapter, a progress/abort seam
-# over the engine's own `Clock` + `ShardStore` traits, and an error vocabulary.
+# over the engine's own `Clock` + `MapStore` traits, and an error vocabulary.
 obcm-assemble = { path = "../../host/obcm-assemble", default-features = false }
 # The byte-I/O seam (`ByteSource`/`Error`) the engine reads through — imported directly rather than
 # through the engine, because the abort path constructs one of its errors.
@@ -24,11 +24,10 @@ obc-formats = { path = "../../firmware/obc-formats" }
 # output and the browser's are one document to learn. serde_json is already in the engine's graph
 # (it parses the schema and the skin), so this costs the bundle nothing.
 serde_json = "1"
-# The digest a shard is handed over with when the caller evicts it mid-run (#1116 B1): the store must
-# name and digest a file *before* the run's `Summary` exists. Same crate and version the engine
-# already hashes its shards with, so it is code the wasm bundle carries either way — and hashing the
-# bytes the store actually holds is what makes the end-of-run comparison against the engine's own
-# digest a check rather than a restatement. Only paid for when `Hooks::wants_shards` says so.
+# The digest of a map written through a host sink (#1116 D1). The host never sees those bytes, so
+# hashing them here as they cross is the only thing that can be compared against the engine's own
+# figure at the end — a check rather than a restatement. Same crate and version the engine hashes
+# with, so it is code the wasm bundle carries either way, and only paid for when a sink is wired.
 sha2 = "0.11"
 
 # --- Web (wasm32) surface — the only target this crate actually ships on. The driver above stays

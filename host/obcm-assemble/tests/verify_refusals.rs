@@ -30,7 +30,7 @@ use obc_pack::serialize::Style;
 use obc_pack::{serialize_lods, LodLayer};
 use obc_reader::{MapCache, MapTables, Reader};
 use obcm_assemble::grid::AlignedBox;
-use obcm_assemble::verify::verify_shard;
+use obcm_assemble::verify::verify_map;
 use obcm_assemble::{Error, MemoryScratch, MemorySource, VerifyReport, DEFAULT_MERGE_BUDGET};
 
 // --- the fixture ------------------------------------------------------------------------------
@@ -131,7 +131,7 @@ const BUDGETS: [usize; 2] = [DEFAULT_MERGE_BUDGET, 64];
 /// refusal that leaves its spill behind would fill a host's disk one broken map at a time.
 fn verify_at(bytes: &[u8], budget: usize) -> Result<VerifyReport, Error> {
     let scratch = MemoryScratch::new();
-    let out = verify_shard(&MemorySource(bytes.to_vec()), BOX, true, &scratch, budget);
+    let out = verify_map(&MemorySource(bytes.to_vec()), BOX, &scratch, budget);
     assert_eq!(scratch.resident_bytes(), 0, "the pass removed every scratch file it created ({out:?})");
     out
 }
@@ -402,7 +402,7 @@ fn a_header_bbox_that_is_not_the_planned_box_is_refused() {
     let bytes = map();
     let wrong = AlignedBox { min_lat: BOX.min_lat, min_lon: BOX.min_lon + (1 << BOX.span_log2), ..BOX };
     let scratch = MemoryScratch::new();
-    let err = verify_shard(&MemorySource(bytes), wrong, true, &scratch, DEFAULT_MERGE_BUDGET)
+    let err = verify_map(&MemorySource(bytes), wrong, &scratch, DEFAULT_MERGE_BUDGET)
         .expect_err("the header states the box it was packed over");
     assert!(format!("{err:?}").contains("is not its planned box"), "{err:?}");
 }
@@ -429,7 +429,7 @@ fn a_header_scale_that_is_not_the_writers_is_refused() {
         let mut broken = bytes.clone();
         broken[HEADER_OFFSET_SCALE_OFF] = scale;
         let scratch = MemoryScratch::new();
-        let err = verify_shard(&MemorySource(broken), BOX, true, &scratch, DEFAULT_MERGE_BUDGET)
+        let err = verify_map(&MemorySource(broken), BOX, &scratch, DEFAULT_MERGE_BUDGET)
             .expect_err("scale {scale} does not describe these bytes");
         assert!(
             !format!("{err:?}").contains("Version"),
@@ -440,6 +440,5 @@ fn a_header_scale_that_is_not_the_writers_is_refused() {
     let mut past = bytes.clone();
     past[HEADER_OFFSET_SCALE_OFF] = 10;
     let scratch = MemoryScratch::new();
-    verify_shard(&MemorySource(past), BOX, true, &scratch, DEFAULT_MERGE_BUDGET)
-        .expect_err("scale 10 is not a legal unit");
+    verify_map(&MemorySource(past), BOX, &scratch, DEFAULT_MERGE_BUDGET).expect_err("scale 10 is not a legal unit");
 }

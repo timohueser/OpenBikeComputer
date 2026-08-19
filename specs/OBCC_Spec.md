@@ -452,11 +452,19 @@ cell bytes, skin, and assembler. Host-specific file saving MUST NOT alter the
 assembled bytes.
 
 A consumer MAY stream assembler output directly to a connected device instead
-of first saving it. It MUST verify the emitted file's announced length and SHA-256 before transfer.
+of first saving it, and MUST verify the emitted file's announced length before transfer. (No
+consumer does today — the browser saves the file and the rider sends it; the direct path returns
+with the board cutover. The rule is written for the day one exists, so it names only what a
+streaming consumer can actually check: it has no independent digest to compare the bytes against,
+and what guarantees delivery is the transport's own whole-object CRC-32, which the device verifies
+before it commits.)
 Cancellation or failure MUST abandon the incomplete transfer and MUST NOT leave anything selectable
 as a map. (Before OBCM v14 / #1420 this rule sequenced several files and committed a volume-set
-manifest last; with one file the store's own commit is the sequencing, and FS7.5b/c is where the
-multi-file client path is deleted — `FLAT_Store_Protocol.md`.)
+manifest last; with one file the store's own commit is the sequencing. The *producing* halves of the
+multi-file client path — the assembler's emitter, the browser's delivery, the device upload flows —
+were deleted in FS7.5b2. What still reads a set is the board's own mount and the host-side helper
+that resolves a card's terrain sidecar by manifest name; both go in FS7.5c —
+`FLAT_Store_Protocol.md`.)
 
 ## 13. Terrain artifacts
 
