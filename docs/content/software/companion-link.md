@@ -7,7 +7,7 @@ description: How the OpenBikeComputer device and its phone companion app talk ov
 
 > This page describes the currently implemented legacy link while the coordinated **flat store**
 > cutover is under development. The replacement contract is
-> [`FLAT_Store_Protocol.md`](src:specs/FLAT_Store_Protocol.md) — wire major **4**, six object
+> [`FLAT_Store_Protocol.md`](src:specs/FLAT_Store_Protocol.md) — wire major **4**, six
 > opcodes (`LIST`, `STATUS`, `GET`, `PUT`, `REMOVE`, `CANCEL`) plus `ARM` for a firmware install,
 > one transfer at a time, no resume and no operation ids: the card's catalog *is* the result, and
 > [`FLAT_Store_Format.md`](src:specs/FLAT_Store_Format.md) is what that catalog is made of. (An
