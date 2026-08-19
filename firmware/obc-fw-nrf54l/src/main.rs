@@ -388,7 +388,7 @@ mod resource_report {
     }
 
     #[cfg(feature = "ble")]
-    const BLE_ENTRIES: [Entry; 10] = [
+    const BLE_ENTRIES: [Entry; 11] = [
         entry("ble_total", ble::RESIDENT_BYTES),
         entry("ble_mpsl", ble::MPSL_BYTES),
         entry("ble_sdc_memory", ble::SDC_MEM_SIZE),
@@ -399,10 +399,14 @@ mod resource_report {
         entry("ble_server", ble::SERVER_BYTES),
         entry("ble_gap_name", ble::GAP_NAME_BYTES),
         entry("ble_sensor_manager", ble::SENSOR_MANAGER_BYTES),
+        // The protocol-v4 adapter's three buffers (FS7.5-c3a): the reaction buffer, one staged
+        // control record and one held stream record. Named because the middle one is what §5's
+        // cross-channel hold is made of, and a change in it is a change in that guarantee.
+        entry("ble_v4_adapter", ble::V4_ADAPTER_BYTES),
     ];
 
     #[cfg(not(feature = "ble"))]
-    const BLE_ENTRIES: [Entry; 10] = [
+    const BLE_ENTRIES: [Entry; 11] = [
         entry("ble_total", 0),
         entry("ble_mpsl", 0),
         entry("ble_sdc_memory", 0),
@@ -413,6 +417,7 @@ mod resource_report {
         entry("ble_server", 0),
         entry("ble_gap_name", 0),
         entry("ble_sensor_manager", 0),
+        entry("ble_v4_adapter", 0),
     ];
 
     /// The terrain seam's entries (EL7). Unconditional, like the `nav_*` ones: these are the
@@ -429,7 +434,7 @@ mod resource_report {
         entry("terrain_window", core::mem::size_of::<obc_formats::io::WindowSource<'static>>()),
     ];
 
-    const ENTRIES: usize = 33;
+    const ENTRIES: usize = 35;
 
     #[used]
     #[no_mangle]
@@ -478,6 +483,7 @@ mod resource_report {
         BLE_ENTRIES[7],
         BLE_ENTRIES[8],
         BLE_ENTRIES[9],
+        BLE_ENTRIES[10],
         // The USB device plane's named statics (#889). Unconditional since USB stopped being a
         // feature, so it is itemized here for the same reason the BLE arenas are: it is the newest
         // resident block, and a growth in it should be legible in the report rather than only as a
