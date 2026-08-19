@@ -565,13 +565,11 @@ pub(crate) struct Writer {
 pub(crate) struct Ticket(u32);
 
 impl Writer {
-    /// Enqueue one call without parking the ride loop. The returned request can be retried on a
-    /// full queue; a successful ticket is polled with [`Writer::try_result`] on later passes.
-    pub(crate) fn try_call(&self, request: Request, reply: &'static Reply) -> Result<Ticket, Request> {
+    /// Enqueue one call without parking the ride loop. A full queue is retried by the caller on a
+    /// later pass; a successful ticket is polled with [`Writer::try_result`].
+    pub(crate) fn try_call(&self, request: Request, reply: &'static Reply) -> Result<Ticket, ()> {
         let tag = NEXT_TAG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        self.requests.try_send(Job { request, reply, tag }).map(|()| Ticket(tag)).map_err(|error| match error {
-            embassy_sync::channel::TrySendError::Full(job) => job.request,
-        })
+        self.requests.try_send(Job { request, reply, tag }).map(|()| Ticket(tag)).map_err(|_| ())
     }
 
     /// Take this ticket's answer without parking. Older orphaned answers are discarded exactly as
