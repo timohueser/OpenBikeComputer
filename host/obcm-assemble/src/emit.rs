@@ -378,71 +378,81 @@ pub fn write(
     }
 
     let mut hasher = Sha256::new();
-    let mut out = |buf: &[u8]| -> Result<()> {
-        hasher.update(buf);
-        sink(buf)
+    // The bytes the sink actually received, counted independently of where the cursor thinks it is.
+    // The two are the same number unless a writer below reached for `UnitWriter::advance`, which is
+    // a projection's tool and would leave a hole in the file — §4.8.6 below is what catches that.
+    let mut delivered: u64 = 0;
+    // Scoped so the cursor gives `hasher` and `delivered` back before they are read.
+    let ended_at = {
+        let mut out = |buf: &[u8]| -> Result<()> {
+            hasher.update(buf);
+            delivered += buf.len() as u64;
+            sink(buf)
+        };
+        let mut w = MapWriter::new(SCALE, 0, &mut out);
+
+        // 1. Header (bbox stored lat, lon, lat, lon — `OBCM_Spec.md` §1), then the §1.2 filler that
+        //    carries the 49-byte header to the style table's unit boundary.
+        w.put(&header_bytes(
+            plan.box_,
+            plan.lods.len(),
+            marker_color,
+            l.lod_table_offset,
+            l.poi_offset,
+            l.nav_offset,
+            l.terrain_offset,
+            l.terrain_len,
+        )?)?;
+        w.begin_section()?;
+
+        // 2. Style table (the skin, §4.7) and 3. the LOD table, each followed by the filler that lands
+        //    the next scaled-offset-named structure on its boundary.
+        w.put(&style_bytes)?;
+        w.begin_section()?;
+        let mut table = Vec::with_capacity(plan.lods.len() * LOD_ENTRY_LEN);
+        for (p, &offset) in plan.lods.iter().zip(&l.lod_offsets) {
+            push_lod_entry(&mut table, p.max_mpp, scaled(offset)?, p.node_count, p.chunk_size, p.chunk_count);
+        }
+        w.put(&table)?;
+        w.begin_section()?;
+
+        // 4. Each LOD region: fresh upper tree, relocated cell blocks, offset table, chunk bytes.
+        for p in &plan.lods {
+            graft::emit_lod(p, cells, &mut w)?;
+        }
+
+        // 5/6. The POI and nav sections.
+        //
+        // The nav writer takes a `usize` base. That is a 32-bit type in the wasm32 `--lib` build this
+        // engine actually ships in, so the conversion is checked rather than cast: a layout past `usize`
+        // would otherwise wrap and address a section that is not there. `FILE_CEILING` keeps it
+        // unreachable today, but a ceiling is a policy and a cast is forever.
+        let nav_base = usize::try_from(l.nav_offset).map_err(|_| plan.past_usize("nav", l.nav_offset))?;
+        crate::poi::emit(poi, &mut w)?;
+        crate::nav::serialize(nav, profile_table, nav_base, nav_cells, scratch, &mut w)?;
+
+        // 7. The raster (§1.3): the filler that carries the nav section to the region's unit boundary,
+        //    the OBCT container verbatim, then the filler `Terrain Length`'s unit count rounds up to.
+        if let Some(region) = terrain {
+            w.begin_section()?;
+            region.emit(&mut w)?;
+            w.begin_section()?;
+        }
+
+        w.at()
     };
-    let mut w = MapWriter::new(SCALE, 0, &mut out);
-
-    // 1. Header (bbox stored lat, lon, lat, lon — `OBCM_Spec.md` §1), then the §1.2 filler that
-    //    carries the 49-byte header to the style table's unit boundary.
-    w.put(&header_bytes(
-        plan.box_,
-        plan.lods.len(),
-        marker_color,
-        l.lod_table_offset,
-        l.poi_offset,
-        l.nav_offset,
-        l.terrain_offset,
-        l.terrain_len,
-    )?)?;
-    w.begin_section()?;
-
-    // 2. Style table (the skin, §4.7) and 3. the LOD table, each followed by the filler that lands
-    //    the next scaled-offset-named structure on its boundary.
-    w.put(&style_bytes)?;
-    w.begin_section()?;
-    let mut table = Vec::with_capacity(plan.lods.len() * LOD_ENTRY_LEN);
-    for (p, &offset) in plan.lods.iter().zip(&l.lod_offsets) {
-        push_lod_entry(&mut table, p.max_mpp, scaled(offset)?, p.node_count, p.chunk_size, p.chunk_count);
-    }
-    w.put(&table)?;
-    w.begin_section()?;
-
-    // 4. Each LOD region: fresh upper tree, relocated cell blocks, offset table, chunk bytes.
-    for p in &plan.lods {
-        graft::emit_lod(p, cells, &mut w)?;
-    }
-
-    // 5/6. The POI and nav sections.
-    //
-    // The nav writer takes a `usize` base. That is a 32-bit type in the wasm32 `--lib` build this
-    // engine actually ships in, so the conversion is checked rather than cast: a layout past `usize`
-    // would otherwise wrap and address a section that is not there. `FILE_CEILING` keeps it
-    // unreachable today, but a ceiling is a policy and a cast is forever.
-    let nav_base = usize::try_from(l.nav_offset).map_err(|_| plan.past_usize("nav", l.nav_offset))?;
-    crate::poi::emit(poi, &mut w)?;
-    crate::nav::serialize(nav, profile_table, nav_base, nav_cells, scratch, &mut w)?;
-
-    // 7. The raster (§1.3): the filler that carries the nav section to the region's unit boundary,
-    //    the OBCT container verbatim, then the filler `Terrain Length`'s unit count rounds up to.
-    if let Some(region) = terrain {
-        w.begin_section()?;
-        region.emit(&mut w)?;
-        w.begin_section()?;
-    }
 
     // §4.8.6: the write must land exactly where §5.7's projection said it would. A `debug_assert`
     // would leave a release build emitting a file whose header offsets are a sentence about a
     // layout that does not exist.
-    let written = w.at();
-    if written != l.total {
+    if delivered != l.total || ended_at != l.total {
         return Err(Error::Verify(format!(
-            "the map projected to {} bytes but wrote {written} — the §5.7 projection and the write disagree",
+            "the map projected to {} bytes, the cursor ended at {ended_at} and {delivered} were written — the §5.7 \
+             projection and the write disagree",
             l.total
         )));
     }
-    Ok((written, hasher.finalize().into()))
+    Ok((delivered, hasher.finalize().into()))
 }
 
 /// The 49-byte v14 OBCM header (`OBCM_Spec.md` §1), byte-for-byte the packer's `header_bytes`. Split
