@@ -526,8 +526,62 @@ impl<D: BlockDevice> FlatStore<D> {
     /// straight into its field. `Default::default()` does *not* fix it — the temporary is inside the
     /// impl. This is the same failure `resource_guard.py frames` was written for, one layer down from
     /// #1359's return slots, and the reason `FreeMap::BLANK` exists at all.
+    ///
+    /// **`#[inline(never)]` is load bearing too, and it was added when the board first mounted one
+    /// (FS7.5-c1).** Two things depend on this symbol existing:
+    ///
+    /// 1. **The frame gate can only see what it can name.** CI holds `obc_storage::flat` to 16,384 B
+    ///    of frame. Inlined into its caller, this function's frame is charged to *that* caller's
+    ///    symbol and the gate watching the store measures whatever is left — in the board image, the
+    ///    largest `obc_storage::flat` frame read 6,336 B while the board helper that had absorbed
+    ///    `mount` read 22,656. The gate was green and blind at the same time.
+    /// 2. **A caller can place the store where it wants it.** A ~10.5 KB return value uses the
+    ///    indirect-return ABI, so the caller hands in the destination and this function builds there.
+    ///    That is what lets the board write straight into its `.bss` slot with no copy on the boot
+    ///    frame; inlined, LLVM built the store as a local and memcpy'd it, which is the #1084 shape.
+    ///
+    /// The cost is one call and no duplicated body — this is a boot-path constructor, not a hot path.
+    #[inline(never)]
     pub fn mount(dev: D) -> Self {
-        let mut store = FlatStore {
+        let mut store = Self::blank(dev);
+        store.bring_up();
+        store
+    }
+
+    /// **[`mount`](Self::mount), into a slot the caller owns** — for a caller that cannot afford a
+    /// ~10.5 KB value to exist on a stack even for the length of a move.
+    ///
+    /// `mount` returns by value, and a caller that then writes the result into a `static` gets two
+    /// copies of the store on its own frame in practice, not one: LLVM builds the return value as a
+    /// local and `memcpy`s it into the destination. Measured on the board when it first mounted one
+    /// (FS7.5-c1): the helper doing `slot.write(FlatStore::mount(card))` carried a 10,688 B frame of
+    /// its own, on top of `mount`'s 14,016 — a boot-chain cost of 25 KB against a residual main stack
+    /// under 40. Through this constructor the caller's frame carries the pointer and nothing else.
+    ///
+    /// The shape is `obc2::Transaction::mount_in_place`'s, one layer down and for the same reason —
+    /// and it is the shape `resource_guard.py`'s own failure text points a caller at.
+    ///
+    /// `#[inline(never)]` for both of `mount`'s reasons: a caller that inlined this would be back to
+    /// building the store in its own frame, and the frame gate would stop being able to name it.
+    #[inline(never)]
+    pub fn mount_in_place(slot: &mut core::mem::MaybeUninit<Self>, dev: D) -> &mut Self {
+        // `blank` is `#[inline(always)]`, so the literal is written **through** this pointer rather
+        // than built beside it — the same reason the board's `init_static` is `inline(always)`.
+        let store = slot.write(Self::blank(dev));
+        store.bring_up();
+        store
+    }
+
+    /// The struct literal, before [`bring_up`](Self::bring_up) has read a single block: an
+    /// `Unformatted` store over `dev`, with an empty free map and no rows.
+    ///
+    /// Split out of [`mount`] so [`mount_in_place`](Self::mount_in_place) can place it, and
+    /// `#[inline(always)]` so that placement is a write through the caller's pointer rather than a
+    /// build-then-copy. The three `const` blocks are the frame-cost note above; they matter here
+    /// rather than at either call site.
+    #[inline(always)]
+    fn blank(dev: D) -> Self {
+        FlatStore {
             dev,
             store: StoreId([0; 16]),
             geometry: Geometry::DEFAULT,
@@ -547,9 +601,7 @@ impl<D: BlockDevice> FlatStore<D> {
             ride: Cell::new(None),
             recovered: Cell::new(None),
             listing_failed: Cell::new(false),
-        };
-        store.bring_up();
-        store
+        }
     }
 
     /// §8: explicit, destructive, and the only transition into this format. The superblocks are
