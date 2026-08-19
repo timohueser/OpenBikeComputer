@@ -7,8 +7,7 @@
 use core::cell::RefCell;
 
 use defmt::{info, warn};
-use obc_app::Retention;
-use obc_ble::{CommandResult, CommandStatus, ObjectType, SetClock, SetRouteRetention, StatusMessage, WeatherUnchanged};
+use obc_ble::{CommandResult, CommandStatus, ObjectType, SetClock, StatusMessage, WeatherUnchanged};
 
 use crate::object_store::ObjectStore;
 use crate::SharedStore;
@@ -27,50 +26,16 @@ pub(crate) struct CommandOutcome {
     pub(crate) forget_bond: bool,
 }
 
-/// Execute a `command`. `deleteObject` (cmd 1: `type u8 · object_id u16`) deletes a stored route
-/// through the [`ObjectStore`]. Ride deletion over the link is **deliberately not implemented**
-/// (`notFound`): rides are deleted only from the device's Rides screen (#454) — the app hides synced
-/// rides locally (tombstones) rather than deleting them here, so a re-sync can never resurrect them.
-/// `ackRides` (cmd 2: `count u8 · count × object_id u16`) reconciles the synced sidecar from the
+/// Execute a legacy control-plane command. Route/trip mutation moved to the flat-store object
+/// protocol; rides remain device-deleted only. `ackRides` reconciles the synced sidecar from the
 /// peer's possession list ([`ObjectStore::ack_rides`]); its `commandResult.detail` reports the
 /// newly-flagged count. `setClock` (cmd 5: `utc u32 · offset_min i16`, epic #638 S2) validates the
-/// peer's clock and crosses it to the ride loop to stamp — no store movement. `setRouteRetention`
-/// (cmd 6: `object_id u16 · retention u8`, epic #638 S4) sets a stored route's retention level
-/// through the S3 sidecar (not touching `last_used`), bumping the route revision on a real change.
+/// peer's clock and crosses it to the ride loop to stamp — no store movement.
 /// Any other command byte is `unknownCommand`.
 pub(crate) fn run_command(data: &[u8], store: &RefCell<ObjectStore>, shared: &mut SharedStore) -> CommandOutcome {
     let cmd = data.first().copied().unwrap_or(0);
     let mut forget_bond = false;
     let (status, detail, store_changed) = match (cmd, data) {
-        (obc_ble::CMD_DELETE_OBJECT, [_, ty, lo, hi, ..]) => {
-            let id = u16::from_le_bytes([*lo, *hi]);
-            match ObjectType::from_u8(*ty) {
-                Ok(ObjectType::Route) => {
-                    if store.borrow_mut().delete_route(shared, id) {
-                        info!("link: [cmd] deleted route object {}", id);
-                        (CommandStatus::Ok, 0, Some(ObjectType::Route))
-                    } else {
-                        (CommandStatus::NotFound, 0, None)
-                    }
-                }
-                // A trip delete is **non-cascading** (spec §7.7): remove only the trip object — its
-                // member routes become top-level routes. Bumps the *trip* store revision → the caller
-                // notifies `storeChanged(trip)` (§4.3, its own counter). A cascade "delete trip &
-                // routes" is the initiating UI's composition (individual route deletes + this), never
-                // a wire verb.
-                Ok(ObjectType::Trip) => {
-                    if store.borrow_mut().delete_trip(shared, id) {
-                        info!("link: [cmd] deleted trip object {}", id);
-                        (CommandStatus::Ok, 0, Some(ObjectType::Trip))
-                    } else {
-                        (CommandStatus::NotFound, 0, None)
-                    }
-                }
-                // Rides are never deleted over the link (see the fn doc); nothing else deletes.
-                _ => (CommandStatus::NotFound, 0, None),
-            }
-        }
-        (obc_ble::CMD_DELETE_OBJECT, _) => (CommandStatus::Error, 0, None), // truncated arg list
         (obc_ble::CMD_ACK_RIDES, _) => match obc_ble::AckRides::decode(data) {
             Ok(ack) => {
                 let newly = store.borrow_mut().ack_rides(shared, &ack);
@@ -134,60 +99,6 @@ pub(crate) fn run_command(data: &[u8], store: &RefCell<ObjectStore>, shared: &mu
                 }
                 Err(_) => {
                     warn!("link: [cmd] setClock rejected: malformed / out-of-range ({} B)", data.len());
-                    (CommandStatus::Error, 0, None)
-                }
-            }
-        }
-        (obc_ble::CMD_SET_ROUTE_RETENTION, _) => {
-            // setRouteRetention (auto-expiry epic #638 S4, #644): set a stored route's retention level
-            // without re-uploading it. `SetRouteRetention::decode` owns the whole §4.4 validation
-            // (exact 4-byte length, `retention` ≤ 5) so a bad write never mutates the store: any `Err`
-            // → `error`. A known id writes the level through the S3 retention sidecar **without
-            // touching `last_used`** (changing retention never resets the usage clock) and bumps the
-            // **route** store revision only on a *real* change — so `storeChanged(route)` + the ride
-            // loop's rescan re-feed `set_routes_with_meta`, and the peer sees the fresh expiry in the
-            // next `routeList`. Setting the same value twice is `ok` with no bump (the idempotence
-            // pin); an unknown `object_id` is `notFound`.
-            match SetRouteRetention::decode(data) {
-                Ok(srr) => {
-                    use crate::object_store::SetRetentionResult;
-                    match store.borrow_mut().set_route_retention(
-                        shared,
-                        srr.object_id,
-                        Retention::from_u8(srr.retention),
-                    ) {
-                        SetRetentionResult::NotFound => {
-                            info!("link: [cmd] setRouteRetention: unknown route {}", srr.object_id);
-                            (CommandStatus::NotFound, 0, None)
-                        }
-                        // `ok` only after durable persistence; the store revision (→ storeChanged) moved
-                        // inside `set_route_retention` on a real change, so notify Route then.
-                        SetRetentionResult::Changed => {
-                            info!(
-                                "link: [cmd] setRouteRetention: route {} -> retention {} (changed)",
-                                srr.object_id, srr.retention
-                            );
-                            (CommandStatus::Ok, 0, Some(ObjectType::Route))
-                        }
-                        SetRetentionResult::Unchanged => {
-                            info!(
-                                "link: [cmd] setRouteRetention: route {} already retention {}",
-                                srr.object_id, srr.retention
-                            );
-                            (CommandStatus::Ok, 0, None)
-                        }
-                        // Finding #876-5: the write did not reach the card — never claim `ok`.
-                        SetRetentionResult::WriteFailed => {
-                            warn!(
-                                "link: [cmd] setRouteRetention: route {} sidecar write failed — reporting Error",
-                                srr.object_id
-                            );
-                            (CommandStatus::Error, 0, None)
-                        }
-                    }
-                }
-                Err(_) => {
-                    warn!("link: [cmd] setRouteRetention rejected: malformed / out-of-range ({} B)", data.len());
                     (CommandStatus::Error, 0, None)
                 }
             }

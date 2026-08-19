@@ -41,27 +41,10 @@ use embassy_sync::signal::Signal;
 use embedded_sdmmc::ShortFileName;
 use heapless::Vec;
 use obc_app::settings::DeviceName;
-use obc_app::{Retention, Settings, MAX_ROUTES};
+use obc_app::Settings;
 use obc_ports::SettingsStore;
-use obc_storage::route_name;
 
 use crate::SharedStore;
-
-/// The outcome of a `setRouteRetention` command (finding #876-5) — replaces the old `Option<bool>`
-/// so a durable-write failure is distinguishable from success. The BLE handler maps it to a
-/// [`CommandStatus`](obc_ble::CommandStatus): `Changed`/`Unchanged` → `Ok` (bump only on `Changed`),
-/// `NotFound` → `NotFound`, `WriteFailed` → `Error` — never a false `ok` ahead of durability.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SetRetentionResult {
-    /// No stored route has this id (or the card is absent) — the handler answers `notFound`.
-    NotFound,
-    /// The route already had this level — `ok`, **no** revision bump (the idempotence pin).
-    Unchanged,
-    /// A real change persisted durably — `ok`, revision bumped, `storeChanged(route)` fires.
-    Changed,
-    /// The route exists but the retention sidecar rewrite did not reach the card — `Error`, no bump.
-    WriteFailed,
-}
 
 /// Store-movement edge for the app UI (epic #447): [`bump_revision`](ObjectStore::bump_revision) —
 /// the single chokepoint for every commit/delete — increments this, the same edge that notifies the
@@ -81,51 +64,6 @@ pub fn take_store_changed() -> u32 {
     STORE_CHANGED.swap(0, Ordering::Relaxed)
 }
 
-/// The latest **committed route upload** for the app UI (epic #447, P4): which durable id landed
-/// and whether it replaced a stored slot — what the store-changed edge alone can't say, and what
-/// the upload popups key their variant on. Packed `present-bit | replaced-bit | id` (`0` = none);
-/// deliberately a **single latest-wins slot**, which *is* the locked popup rule (consecutive
-/// uploads replace the prompt, most recent wins), so a burst between passes needs no queue.
-///
-/// Published before the revision bump that follows it, so the pass the
-/// [`STORE_WAKE`] pulls out of warm sleep sees the rescan edge and this event together; the ride
-/// loop drains the rescan **first** (the id must resolve against the fresh catalog), then rings
-/// [`App::apply_event`](obc_app::App::apply_event). Same module-static
-/// hand-off pattern as [`STORE_CHANGED`] — the store lives behind the BLE planes' `RefCell`, the
-/// app in the ride loop; both are cooperative tasks on the one executor, so `Relaxed` suffices.
-static UPLOAD_EVENT: AtomicU32 = AtomicU32::new(0);
-const UPLOAD_EVENT_PRESENT: u32 = 1 << 17;
-const UPLOAD_EVENT_REPLACED: u32 = 1 << 16;
-
-/// Drain the latest committed route upload since the last call: `(object_id, replaced_existing)`,
-/// or `None` when nothing landed. The ride loop calls this once per pass, strictly *after* it has
-/// serviced [`take_store_changed`] (see [`UPLOAD_EVENT`]).
-pub(crate) fn take_route_uploaded() -> Option<(u16, bool)> {
-    let v = UPLOAD_EVENT.swap(0, Ordering::Relaxed);
-    (v & UPLOAD_EVENT_PRESENT != 0).then_some((v as u16, v & UPLOAD_EVENT_REPLACED != 0))
-}
-
-/// The latest **committed trip upload** for the app UI — the trip twin of [`UPLOAD_EVENT`], packed
-/// identically (`present-bit | replaced-bit | id`). The replaced-bit matters more here than for
-/// routes: the desktop app *edits* a trip exclusively by replace-at-same-id (rename, add/remove/
-/// move stage — one upload per click), so the app **suppresses the popup on a replace** and only a
-/// *fresh* trip — a delivery — is announced. Published before the revision bump that follows it,
-/// and drained by the ride loop strictly *after* the route event so the
-/// pass's popup order matches the wire's routes-then-trip commit order — the trip popup then wins
-/// the app's single most-recent-wins prompt slot, which is exactly what collapses a trip
-/// transfer's per-route popup parade into one "TRIP RECEIVED" card. Same latest-wins single-slot +
-/// `Relaxed` hand-off rationale as [`UPLOAD_EVENT`]: of two fresh trips committing between passes,
-/// only the newest pops — the same policy routes have always had.
-static TRIP_UPLOAD_EVENT: AtomicU32 = AtomicU32::new(0);
-
-/// Drain the latest committed trip upload since the last call: `(trip_id, replaced_existing)`, or
-/// `None` when none landed. The ride loop calls this once per pass, after [`take_store_changed`]
-/// (the id must resolve against the freshly re-fed trip catalog) and after [`take_route_uploaded`].
-pub(crate) fn take_trip_uploaded() -> Option<(u16, bool)> {
-    let v = TRIP_UPLOAD_EVENT.swap(0, Ordering::Relaxed);
-    (v & UPLOAD_EVENT_PRESENT != 0).then_some((v as u16, v & UPLOAD_EVENT_REPLACED != 0))
-}
-
 /// Wakes the **event-driven** ride loop on a store movement (#450): a parked device (Home, GPS
 /// asleep) otherwise dozes up to the watchdog-feed cap (~12 s) before its next pass would notice
 /// [`STORE_CHANGED`] — an upload from the phone should hit the Route menu now, not "eventually". A
@@ -139,57 +77,14 @@ pub(crate) async fn wait_store_changed() {
     STORE_WAKE.wait().await
 }
 
-/// On-device route-delete request (epic #447, P6): the durable object id of a route the Route menu's
-/// hold-to-delete footer asked to remove, or the auto-expiry sweep's next expired route. The **ride
-/// loop** posts it, and the **BLE plane** — the sole owner of the `RefCell<ObjectStore>` — executes
-/// it via [`ObjectStore::delete_route`], so the delete goes through the same catalog + revision +
-/// `storeChanged` path a phone-initiated delete does (never raw SD).
-///
-/// It lives as a module static, like [`STORE_CHANGED`], because the `ObjectStore` is trapped behind
-/// the BLE task's `RefCell` while the app lives in the ride loop — this is the lock-free hand-off
-/// from the loop that owns the *intent* to the plane that owns the *store*.
-///
-/// A bounded **[`Channel`]**, not a coalescing `Signal` (finding #876-3): the old overwriting
-/// `Signal` held only the newest id, so a retention batch dispatched faster than the SD delete task
-/// drained silently lost the earlier ids until a later sweep. The channel never *overwrites* a
-/// queued id — but be precise about what it does and does not guarantee: a full channel drops the
-/// posted id ([`request_route_delete`] reports `false`), and the app's dispatch bookkeeping ran
-/// *before* this post, so a drop is **not observed backpressure**. End-to-end losslessness rests on
-/// the app's **retain-until-rescan** ownership instead: a retention delete candidate stays queued in
-/// `obc-app` until the store rescan confirms the id gone, so a dropped post is simply re-dispatched
-/// after the bounded backoff. With one retention delete in flight per kind plus at most one manual
-/// delete, depth [`DELETE_CHANNEL_CAP`] means a full channel is effectively unreachable — and when
-/// it isn't, the cost is a delay, never a lost delete. Manual (UI hold-to-delete) and retention
-/// deletes share this one executor.
-static ROUTE_DELETE_REQ: Channel<CriticalSectionRawMutex, u16, DELETE_CHANNEL_CAP> = Channel::new();
-
-/// The bounded delete-request channel depth. The app dispatches **one retention delete per kind in
-/// flight** (retained until the store confirms it gone) plus at most one manual delete, so at most a
-/// couple of ids are ever outstanding; a small depth is ample. A full channel drops the post (the
-/// caller warns) and the app's retained candidate re-dispatches it after the backoff — a delay,
-/// never a lost delete (see [`ROUTE_DELETE_REQ`]).
+/// The bounded ride-delete request channel depth.
 const DELETE_CHANNEL_CAP: usize = 8;
 
-/// Post a route-delete request from the ride loop (epic #447, P6) — the BLE plane drains it and runs
-/// the `ObjectStore` delete. Returns `false` when the channel is full and the id was **dropped**;
-/// the caller must surface that (a warn), and recovery is the app's retain-until-rescan retry — the
-/// candidate is still owned app-side and re-dispatches after its bounded backoff (finding #876-3).
-pub(crate) fn request_route_delete(id: u16) -> bool {
-    ROUTE_DELETE_REQ.try_send(id).is_ok()
-}
-
-/// The BLE plane's route-delete arm: resolves with the next id to delete once the ride loop posts
-/// one. Folded into the BLE lifetime `join` so it drains whether the phone is connected or the device
-/// is parked advertising (see `ble::run`).
-pub(crate) async fn wait_route_delete() -> u16 {
-    ROUTE_DELETE_REQ.receive().await
-}
-
 /// On-device **ride**-delete request (epic #447, P7 / #454) — the ride-namespace twin of
-/// [`ROUTE_DELETE_REQ`]. The ride loop's Rides-menu hold posts a ride's durable object id; the BLE
+/// the removed route channel. The ride loop's Rides-menu hold posts a ride's durable object id; the BLE
 /// plane drains it and runs [`ObjectStore::delete_ride`], so an on-device ride delete goes through
 /// the same catalog + revision + `storeChanged` path a phone-initiated delete does.
-/// A bounded [`Channel`] like [`ROUTE_DELETE_REQ`] (finding #876-3): the ride retention sweep can
+/// A bounded [`Channel`] (finding #876-3): the ride retention sweep can
 /// discover several synced+aged rides at once, and the old overwriting `Signal` lost all but the
 /// newest. Same contract as the route channel: never an overwrite, but a full channel **drops** the
 /// post — end-to-end losslessness rests on the app's retain-until-rescan retry, not on observed
@@ -197,8 +92,7 @@ pub(crate) async fn wait_route_delete() -> u16 {
 static RIDE_DELETE_REQ: Channel<CriticalSectionRawMutex, u16, DELETE_CHANNEL_CAP> = Channel::new();
 
 /// Post a ride-delete request from the ride loop (epic #447, P7). Returns `false` when the channel
-/// is full and the id was **dropped** — the caller warns, and the app's retained candidate
-/// re-dispatches after its bounded backoff (see [`request_route_delete`]).
+/// is full and the id was **dropped** — the caller warns, and the app's retained candidate retries.
 pub(crate) fn request_ride_delete(id: u16) -> bool {
     RIDE_DELETE_REQ.try_send(id).is_ok()
 }
@@ -206,24 +100,6 @@ pub(crate) fn request_ride_delete(id: u16) -> bool {
 /// The BLE plane's ride-delete arm: resolves with the next ride id to delete once the ride loop posts one.
 pub(crate) async fn wait_ride_delete() -> u16 {
     RIDE_DELETE_REQ.receive().await
-}
-
-/// On-device trip **cascade**-delete request (epic #526, TR3/TR4) — the trip-namespace sibling of
-/// [`ROUTE_DELETE_REQ`]. The Route menu's long-press → confirm posts the trip's durable object id
-/// (`App::drain_host_commands` in the ride loop); the BLE plane drains it and runs
-/// [`ObjectStore::delete_trip_cascade`] — member routes first, then the trip object — so both the
-/// route and the trip store revisions move and the phone gets **both** `storeChanged` edges (§4.3).
-static TRIP_CASCADE_REQ: Signal<CriticalSectionRawMutex, u16> = Signal::new();
-
-/// Post a trip cascade-delete from the ride loop (epic #526, TR3). Overwrites any un-drained request
-/// (one delete in flight at a time — the confirm dialog fires one and the drain runs promptly).
-pub(crate) fn request_trip_cascade(id: u16) {
-    TRIP_CASCADE_REQ.signal(id);
-}
-
-/// The BLE plane's trip-cascade arm: resolves with the trip id once the ride loop posts one.
-pub(crate) async fn wait_trip_cascade() -> u16 {
-    TRIP_CASCADE_REQ.wait().await
 }
 
 /// A locally-finished ride committed its `RD{id}.ORD` (the ride loop drained
@@ -359,20 +235,14 @@ pub(crate) fn take_ble_clock() -> Option<(u32, i16)> {
     BLE_CLOCK_SET.try_take()
 }
 
-/// One catalog slot: the object id and where its bytes live (routes and rides alike).
+/// One ride-catalog slot: the object id and where its bytes live.
 struct ObjectSlot {
     id: u16,
     file: ShortFileName,
 }
 
-/// Ride catalog capacity. Rides accumulate — the device keeps every tracked ride until a (future)
-/// manual delete — so this is roomier than [`MAX_ROUTES`]; past it the newest rides stop being listed
-/// (warned at scan) until the card is tidied.
+/// Ride catalog capacity. Past it the newest rides stop being listed until the card is tidied.
 pub const MAX_RIDES: usize = 128;
-
-// The side-load id band base lives in `sd.rs` beside the session registry both scanners share
-// (the ride loop's catalog scan assigns the *same* session ids — see `Storage::sideload_id`).
-use crate::sd::SIDELOAD_ID_BASE;
 
 pub struct ObjectStore {
     /// The persisted settings, loaded once at boot — the config plane's read/modify cache. The SD
@@ -381,23 +251,13 @@ pub struct ObjectStore {
     /// (#270). Keeping only the catalog + this cache in `ObjectStore` lets the BLE planes hold it
     /// through a `RefCell` (never across an `await`) while the card is locked separately per call.
     settings: Settings,
-    routes: Vec<ObjectSlot, MAX_ROUTES>,
     /// The stored rides: scanned at boot and re-scanned on the saved-ride edge ([`RIDE_SAVED`]) —
     /// since the de-split the `ble` build *is* the map build, so the ride loop records new rides
     /// mid-session and this catalog must follow (it feeds the `rideList` object the phone syncs
     /// against).
     rides: Vec<ObjectSlot, MAX_RIDES>,
-    /// The next fresh-upload object id (ids are never reused within a boot).
-    next_id: u16,
-    /// The store revision: monotonic per boot, bumped on every route/ride commit/delete.
+    /// The ride store revision: monotonic per boot, bumped on every ride commit/delete.
     revision: u32,
-    /// The **trip** store revision — monotonic per boot, its own counter (spec §4.3: a trip
-    /// commit/delete bumps the trip store, never the route store). Stamped into `storeChanged(trip)`.
-    trip_revision: u32,
-    /// Full route-catalog size **before** the [`MAX_ROUTES`] cap — the `routeList` header's `total`
-    /// (epic #632 item 7). Equal to `routes.len()` when the card fits the cap; greater when the scan
-    /// dropped the excess, which the app surfaces as a truncation warning.
-    route_total: u16,
     /// Full ride-catalog size before the [`MAX_RIDES`] cap — the `rideList` header's `total`.
     ride_total: u16,
 }
@@ -420,99 +280,16 @@ impl ObjectStore {
     /// scans stays in [`hydrate`], operating on the slot directly.
     pub const EMPTY: ObjectStore = ObjectStore {
         settings: Settings::DEFAULT,
-        routes: Vec::new(),
         rides: Vec::new(),
-        next_id: 0,
         revision: 1,
-        trip_revision: 1,
-        route_total: 0,
         ride_total: 0,
     };
 
-    /// Mount-time fill of an [`EMPTY`](Self::EMPTY) store, **in place**: load settings, scan
-    /// `/routes` into the id table, and sweep aborted commits (files whose held-back magic never
-    /// got patched — see `sd.rs`). Runs under a boot-time lock of the shared store (`shared`),
-    /// which it borrows for the settings load + scans.
+    /// Mount-time fill of an [`EMPTY`](Self::EMPTY) store, **in place**: load settings and scan the
+    /// legacy ride catalog. Route and trip objects are owned exclusively by the flat store.
     pub fn hydrate(&mut self, shared: &mut SharedStore) {
         self.settings = shared.settings.load().unwrap_or_default();
-        self.rescan(shared);
         self.rescan_rides(shared);
-        // Seed the canonical trip repository for every link-store composition point. Normal boot
-        // already scanned once to build the pre-link App, but map-recovery USB calls `init_store`
-        // before App construction and depends on this scan for trip visibility and id recovery.
-        // Both scans finish before a link plane is published; runtime App reloads stay scan-free.
-        if let Some(storage) = &mut shared.storage {
-            storage.trips().scan();
-        }
-        // The durable id floor (#450): fresh upload ids start at `max(scan_max + 1, stored floor)`,
-        // so an id deleted last session can't be re-issued (the phone's persisted `deviceObjectID`s
-        // key on it). A blank/torn line is "no floor" → exactly the old scan-derived start.
-        if let Some(m) = shared.settings.load_id_marks() {
-            self.next_id = self.next_id.max(m.next_route_id);
-        }
-        // **There is no trip-id floor any more.** It drew from its own RRAM line, written by the
-        // `deviceObjectID`-minting path that arrived over the cable — and that writer went with the
-        // v1 command surface (FS7.5-c3b). A read whose writer is deleted answers the blank line
-        // forever, which is not a floor, it is a decode of nothing; the standing rule is that a
-        // never-exercised capability goes rather than lingering as a call that always returns
-        // `None`. When trips come back over a link that can carry them, so does the line.
-        if let Some(storage) = &mut shared.storage {
-            let trips = storage.trips();
-            let len = trips.len();
-            let candidate = trips.candidate().unwrap_or(SIDELOAD_ID_BASE);
-            defmt::info!("store: {=usize} trip object(s), next trip id {=u16}", len, candidate);
-        }
-    }
-
-    /// (Re)build the id table from the card. Uploaded files carry their **durable id in the
-    /// filename** (`RT{id}.OBR`); side-loaded `.obcr` files get session ids from the
-    /// [`SIDELOAD_ID_BASE`] band. `next_id` resumes past the highest stored upload id, so a
-    /// fresh upload can't alias a stored object across reboots.
-    fn rescan(&mut self, shared: &mut SharedStore) {
-        self.routes.clear();
-        self.route_total = 0;
-        let Some(storage) = &mut shared.storage else { return };
-        let mut names: Vec<ShortFileName, MAX_ROUTES> = Vec::new();
-        // Count how many route files the cap dropped (epic #632 item 7): `route_total` = listed +
-        // dropped, so the `routeList` header's `total` exceeds `count` exactly when the scan
-        // truncated — the app then warns instead of silently answering "up to date".
-        let mut over_cap: u16 = 0;
-        storage.for_each_route_file(|n| {
-            if names.push(n.clone()).is_err() {
-                over_cap = over_cap.saturating_add(1);
-            }
-        });
-        for name in &names {
-            match storage.route_object_info(name) {
-                Some(_) => {
-                    let id = match route_name::uploaded_id(name.base_name(), name.extension()) {
-                        Some(id) => {
-                            self.next_id = self.next_id.max(id.saturating_add(1));
-                            id
-                        }
-                        // Side-loads draw from the session registry shared with the ride loop's
-                        // catalog scan (`Storage::sideload_id`) so both tables carry identical
-                        // ids; `None` = band/registry exhausted → not listed rather than aliased.
-                        None => match storage.sideload_id(name) {
-                            Some(id) => id,
-                            None => continue,
-                        },
-                    };
-                    let _ = self.routes.push(ObjectSlot { id, file: name.clone() });
-                }
-                // Unreadable: reclaim it only if it carries the aborted-commit signature (the
-                // zeroed magic) — transiently unreadable real routes must be kept.
-                None => {
-                    if storage.is_aborted_commit(name) {
-                        defmt::info!("store: sweeping aborted commit {}", defmt::Debug2Format(name));
-                        let _ = storage.delete_route_file(name);
-                    }
-                }
-            }
-        }
-        // `total` = listed entries + those the cap dropped (see `over_cap` above).
-        self.route_total = (self.routes.len() as u16).saturating_add(over_cap);
-        defmt::info!("store: {=usize} route object(s), next id {=u16}", self.routes.len(), self.next_id);
     }
 
     /// Scan `/tracks` for stored ride objects (`RD{id}.ORD`) — the id is durable in the filename, like
@@ -569,34 +346,6 @@ impl ObjectStore {
         self.revision
     }
 
-    /// Bump the **trip** store's own revision (epic #526 TR4; spec §4.3 — separate from the route
-    /// revision) and raise the same app-side rescan edge a route/ride move does (the ride loop rescans
-    /// routes + rides + trips off one `STORE_CHANGED` counter).
-    fn bump_trip_revision(&mut self) -> u32 {
-        self.trip_revision = self.trip_revision.wrapping_add(1);
-        STORE_CHANGED.fetch_add(1, Ordering::Relaxed);
-        STORE_WAKE.signal(());
-        self.trip_revision
-    }
-
-    /// The trip store's revision — stamped into `storeChanged(trip)` (spec §4.3).
-    pub fn trip_revision(&self) -> u32 {
-        self.trip_revision
-    }
-
-    /// Whether a trip object with this id exists (the control plane's cheap `notFound` check).
-    pub fn has_trip(&self, shared: &mut SharedStore, id: u16) -> bool {
-        shared.storage.as_mut().is_some_and(|storage| storage.trips().contains(id))
-    }
-
-    fn slot_index(&self, id: u16) -> Option<usize> {
-        self.routes.iter().position(|s| s.id == id)
-    }
-
-    /// Whether a route object with this id exists (the control plane's cheap `notFound` check).
-    pub fn has_route(&self, id: u16) -> bool {
-        self.slot_index(id).is_some()
-    }
 
     // ==================== config ↔ settings ====================
 
@@ -671,24 +420,6 @@ impl ObjectStore {
 
     // ==================== delete ====================
 
-    /// Delete a stored route by object id. `true` = deleted (revision bumped).
-    pub fn delete_route(&mut self, shared: &mut SharedStore, id: u16) -> bool {
-        let Some(idx) = self.slot_index(id) else { return false };
-        let Some(storage) = &mut shared.storage else { return false };
-        if !storage.delete_route_file(&self.routes[idx].file) {
-            return false;
-        }
-        // Retire the route's content-CRC sidecar entry (epic #632 item 6) — ids never reuse, so this
-        // is belt-and-braces tidiness that keeps the sidecar from carrying a stale fingerprint.
-        storage.forget_route_crc(id);
-        // …and its retention entry (auto-expiry epic #638, S3), same never-reuse tidiness.
-        storage.forget_route_retention(id);
-        self.routes.remove(idx);
-        self.route_total = self.route_total.saturating_sub(1);
-        self.bump_revision();
-        true
-    }
-
     /// Delete a stored **ride** by object id (epic #447, P7 / #454) — the ride-namespace twin of
     /// [`delete_route`](Self::delete_route). Routes the delete through the store (revision bump +
     /// `storeChanged`) so the phone's device-rides reconcile; retires the ride's synced-set flag too.
@@ -705,49 +436,6 @@ impl ObjectStore {
         self.ride_total = self.ride_total.saturating_sub(1);
         self.bump_revision();
         true
-    }
-
-    /// Delete a stored **trip** object by id (epic #526 TR4) — the `deleteObject` trip type (spec
-    /// §4.4). **Non-cascading**: removes only the trip object; its member routes become top-level
-    /// routes (spec §7.7). Retires the trip's CRC sidecar entry and bumps the **trip** store revision
-    /// (never the route store, §4.3). `true` = deleted; an unknown id → `false` (the handler answers
-    /// `notFound`).
-    pub fn delete_trip(&mut self, shared: &mut SharedStore, id: u16) -> bool {
-        let Some(storage) = &mut shared.storage else { return false };
-        if !storage.trips().delete(id) {
-            return false;
-        }
-        self.bump_trip_revision();
-        true
-    }
-
-    /// The on-device long-press **cascade** delete (epic #526 TR3/TR4): the trip object **and** its
-    /// member route objects — the "delete trip & routes" the device's Route-folder hold composes. The
-    /// wire protocol's `deleteObject` is non-cascading ([`delete_trip`](Self::delete_trip)); this
-    /// composes it, exactly as the app expresses the same intent as individual deletes (spec §7.7).
-    /// Each member route is deleted through [`delete_route`](Self::delete_route) so the **route** store
-    /// revision + `storeChanged(route)` move, then the trip through [`delete_trip`](Self::delete_trip)
-    /// so the **trip** store revision + `storeChanged(trip)` move — both edges emitted, as §4.3
-    /// requires. A dangling stage id (already-deleted member) is skipped. `true` = the trip was deleted.
-    ///
-    /// Driven by the ride loop's TR3 drain: `App::drain_host_commands` → [`request_trip_cascade`] →
-    /// the BLE plane's `trip_cascade_task`, mirroring the `request_route_delete` →
-    /// [`delete_route`](Self::delete_route) seam.
-    pub fn delete_trip_cascade(&mut self, shared: &mut SharedStore, id: u16) -> bool {
-        // Snapshot member ids before any route delete re-borrows Storage; the Trips view never
-        // survives a nested repository mutation (and never crosses an await).
-        let stages = shared.storage.as_mut().and_then(|storage| storage.trips().stage_ids(id));
-        if stages.is_none() && !self.has_trip(shared, id) {
-            return false;
-        }
-        if let Some(stages) = stages {
-            for stage_id in stages {
-                if let Ok(stage_id) = u16::try_from(stage_id) {
-                    let _ = self.delete_route(shared, stage_id); // dangling → false, skipped
-                }
-            }
-        }
-        self.delete_trip(shared, id)
     }
 
     /// Reconcile the synced sidecar from the phone's possession ack (`ackRides`, spec §4.4 cmd 2):
@@ -775,45 +463,6 @@ impl ObjectStore {
             self.bump_revision();
         }
         added.min(u8::MAX as usize) as u8
-    }
-
-    /// Set a stored route's retention level from the `setRouteRetention` command (§4.4 cmd 6 /
-    /// epic #638 S4). Writes the level through the S3 route-retention sidecar **without touching
-    /// `last_used`** (changing retention never resets the usage clock). Returns:
-    ///
-    /// - `None` — the id names no stored route → the handler answers `notFound` (2). No sidecar write.
-    /// - `Some(true)` — a real change; the sidecar was rewritten and the **route** store revision
-    ///   bumped, so the phone's `storeChanged(route)` fires and the ride loop's `STORE_CHANGED` rescan
-    ///   re-feeds `set_routes_with_meta` with the fresh retention (the app displays device truth).
-    /// - `Some(false)` — the value was already that level; `ok` with **no** revision bump (the
-    ///   idempotence pin: only a real change moves the store).
-    ///
-    /// A missing card is treated as "no such route" ([`NotFound`](SetRetentionResult::NotFound)) —
-    /// nothing to write. A sidecar write that does not reach the card is
-    /// [`WriteFailed`](SetRetentionResult::WriteFailed) — the revision is **not** bumped and the
-    /// handler replies `command` `Error`, never a false `ok` (finding #876-5).
-    pub fn set_route_retention(
-        &mut self,
-        shared: &mut SharedStore,
-        id: u16,
-        retention: Retention,
-    ) -> SetRetentionResult {
-        if !self.has_route(id) {
-            return SetRetentionResult::NotFound;
-        }
-        let Some(storage) = shared.storage.as_mut() else {
-            return SetRetentionResult::NotFound;
-        };
-        match storage.set_route_retention_level(id, retention) {
-            Ok(false) => SetRetentionResult::Unchanged, // already that level — `ok`, no bump (idempotence pin)
-            Ok(true) => {
-                // Durable success only: bump the route revision so `storeChanged(route)` + the ride
-                // loop's rescan re-feed the fresh retention.
-                self.bump_revision();
-                SetRetentionResult::Changed
-            }
-            Err(_) => SetRetentionResult::WriteFailed, // torn persist — no bump, surfaced as `Error`
-        }
     }
 
     /// Adopt locally-saved rides into the live catalog: re-scan `/tracks` and bump the revision, so

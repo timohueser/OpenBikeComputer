@@ -63,22 +63,20 @@ use obc_app::retention::{
 use obc_app::ride::{decode_synced_rides, encode_synced_rides, SyncedRides, SYNCED_RIDES_MAX_LEN};
 use obc_app::route::{decode_route_crcs, encode_route_crcs, RouteCrcs, ROUTE_CRCS_MAX_LEN};
 use obc_app::store_meta::{decode_store_epoch, encode_store_epoch, STORE_EPOCH_LEN};
-use obc_app::{Retention, TripInput, MAX_RIDES, MAX_ROUTES, MAX_TRIPS, UI_RIDES_CAP};
+use obc_app::{Retention, MAX_RIDES, MAX_ROUTES, UI_RIDES_CAP};
 use obc_dfu::armer::{ExtentsError, ScanError, StageIo};
 use obc_formats::io::ByteSource;
 use obc_formats::obcr::NAME_CAP;
 use obc_route::{
     ride_elevation_profile, ride_preview_polyline, track_to_ride, Profile, RideInfo, RideStats, RouteIndex,
-    RouteObjectInfo, RouteSummary, TripMeta, TripSummary,
+    RouteObjectInfo, RouteSummary,
 };
 use obc_storage::fat_extents::{BuildError, ExtentSource, ExtentTable, SharedBlockDevice};
 use obc_storage::weather::{self as weather_store, WeatherSlotIo};
-use obc_storage::{route_name, trip_name};
+use obc_storage::route_name;
 use obc_storage::{SdByteSink, SdByteSource, SdTrackSink};
 use obc_weather::{Candidate as WeatherCandidate, Slot as WeatherSlot, SlotSelection, SlotValidation};
 
-mod trips;
-pub(crate) use trips::Trips;
 
 /// The in-progress ride log on the card — a header-less array of fixed track records (8.3
 /// name). Truncated-and-reused per ride, converted to the `RD{id}.ORD` ride object, then
@@ -408,11 +406,6 @@ pub struct Storage {
     /// — filename-encoded (`RD{id}.ORD`), the identity the app's ride-menu remap and the phone's
     /// synced/tombstone sets key on.
     ride_ids: Vec<u16, UI_RIDES_CAP>,
-    /// The one trip catalog shared by the on-device folders and companion-link repository. The
-    /// three aligned columns have exactly the same size/layout as the former `trip_ids` /
-    /// `trip_files` / `trip_metas` fields; an optional metadata niche lets a just-committed trip
-    /// remain addressable through a transient metadata reread failure until the live rescan.
-    trip_catalog: obc_storage::TripCatalog<Option<TripMeta>, MAX_TRIPS, SIDELOAD_ID_BASE>,
     /// The session's side-load id registry: filename → assigned [`SIDELOAD_ID_BASE`]-band id.
     /// **Append-only** (a delete leaves a tombstone), so a name keeps one id for the whole session
     /// no matter how often — or in which order — the ride loop and the BLE `ObjectStore` rescan;
@@ -985,7 +978,6 @@ impl Storage {
             route_ids: Vec::new(),
             ride_files: Vec::new(),
             ride_ids: Vec::new(),
-            trip_catalog: obc_storage::TripCatalog::new(),
             sideload_ids: Vec::new(),
             next_sideload: SIDELOAD_ID_BASE as u32,
             open_route: None,
@@ -1104,12 +1096,6 @@ impl Storage {
     /// [`App::set_routes_with_ids`](obc_app::App::set_routes_with_ids).
     pub fn route_ids(&self) -> &[u16] {
         &self.route_ids
-    }
-
-    /// Borrow the sole trip repository. The view cannot outlive this storage lock and callers drop
-    /// it before any `await`.
-    pub(crate) fn trips(&mut self) -> Trips<'_> {
-        Trips::new(self)
     }
 
     /// Scan `/tracks` for stored ride objects into the app's Rides menu (epic #447 P7 / #454):
@@ -2955,15 +2941,6 @@ fn is_route_entry(e: &embedded_sdmmc::DirEntry, long: Option<&str>) -> bool {
 /// device reboots.
 pub fn stored_ride_id(name: &ShortFileName) -> Option<u16> {
     id_in_name(name, b"RD", b"ORD")
-}
-
-/// Bind a FAT entry to the host-tested trip filename classifier. The ride log's `TRACK.OBT` lives
-/// in `/tracks`, so it never reaches this `/routes` binding.
-fn is_trip_entry(e: &embedded_sdmmc::DirEntry, long: Option<&str>) -> bool {
-    if e.attributes.is_directory() {
-        return false;
-    }
-    trip_name::is_admitted(e.name.extension(), long)
 }
 
 /// Whether a card-root directory entry belongs to the **map** catalog (issue #927): a side-loaded

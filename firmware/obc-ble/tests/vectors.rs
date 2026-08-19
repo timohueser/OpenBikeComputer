@@ -838,7 +838,7 @@ fn weather_request_status_is_a_one_byte_hint() {
 fn trip_list_vector() {
     use obc_ble::{ListHeader, TripListEntry};
 
-    let trip = fixture("trip-v1.bin");
+    let trip = fixture("trip-v2.bin");
     let bytes = fixture("trip-list.bin");
     let (h, entry_len) = ListHeader::decode(&bytes).unwrap();
     assert_eq!(h.count, 1);

@@ -629,22 +629,22 @@ pub fn route_list(entries: &[Vec<u8>], total: u16) -> Vec<u8> {
 /// Trip fixture name (also the trip object header name field).
 pub const TRIP_NAME: &str = "Alpen Traverse";
 
-/// The two resolvable stage route ids in `trip-v1.bin` — the ids of the two `route-list.bin`
+/// The two resolvable stage route ids in `trip-v2.bin` — the ids of the two `route-list.bin`
 /// entries, so the `tripList` totals sum their distance/ascent.
-pub const TRIP_STAGE_IDS: [u16; 2] = [7, 8];
+pub const TRIP_STAGE_IDS: [u64; 2] = [7, 8];
 
-/// The deliberately **dangling** third stage id in `trip-v1.bin`: a route id no fixture holds, so the
+/// The deliberately **dangling** third stage id in `trip-v2.bin`: a route id no fixture holds, so the
 /// device tolerates it on read and the `tripList` totals skip it (spec §7.7 / §7.4).
-pub const TRIP_DANGLING_STAGE: u16 = 99;
+pub const TRIP_DANGLING_STAGE: u64 = 0x1_0000_0063;
 
 /// The trip's own device-assigned object id (its counter is separate from routes/rides, §4.1).
 pub const TRIP_ID: u16 = 1;
 
-/// Trip object v1 (spec §7.7): a 56-byte header (`version 1 · stage_count u16 · name ≤ 48`) followed
-/// by `stage_count × u16` route object ids in ride order. Length = `56 + 2·stage_count`.
-pub fn trip_v1(name: &str, stages: &[u16]) -> Vec<u8> {
+/// Trip object v2 (spec §7.7): a 56-byte header (`version 2 · stage_count u16 · name ≤ 48`) followed
+/// by `stage_count × u64` route object ids in ride order. Length = `56 + 8·stage_count`.
+pub fn trip_v2(name: &str, stages: &[u64]) -> Vec<u8> {
     let mut v = Vec::new();
-    v.push(1); // version
+    v.push(2); // version
     v.push(0); // reserved
     v.extend_from_slice(&le16(stages.len() as u16)); // stage_count
     v.push(name.len() as u8); // name_len
@@ -654,7 +654,7 @@ pub fn trip_v1(name: &str, stages: &[u16]) -> Vec<u8> {
     v.extend_from_slice(&[0u8; 3]); // reserved
     assert_eq!(v.len(), 56, "trip object header is 56 bytes");
     for &id in stages {
-        v.extend_from_slice(&le16(id)); // stage route id, ride order
+        v.extend_from_slice(&id.to_le_bytes()); // full-width flat-store ObjectId, ride order
     }
     v
 }
@@ -712,7 +712,7 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
     let route_plain = build_route(&route_gpx_plain());
     let (len, crc) = (route_wp.len() as u32, crc32(&route_wp));
     let (plain_len, plain_crc) = (route_plain.len() as u32, crc32(&route_plain));
-    let trip = trip_v1(TRIP_NAME, &[TRIP_STAGE_IDS[0], TRIP_STAGE_IDS[1], TRIP_DANGLING_STAGE]);
+    let trip = trip_v2(TRIP_NAME, &[TRIP_STAGE_IDS[0], TRIP_STAGE_IDS[1], TRIP_DANGLING_STAGE]);
     let (trip_len, trip_crc) = (trip.len() as u32, crc32(&trip));
     let terrain = terrain_shard();
     let mut fixtures = vec![
@@ -879,8 +879,8 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
             ),
         ),
         // A trip (§7.7): "Alpen Traverse", 3 stages referencing route ids 7 and 8 (both stored in
-        // route-list.bin) plus one deliberately dangling id (99) that pins read-tolerance.
-        ("trip-v1.bin", trip),
+        // route-list.bin) plus one deliberately dangling full-width id that pins read-tolerance.
+        ("trip-v2.bin", trip),
         // The catalog for that one trip (§7.4): byte_len = the trip file; totals summed over the two
         // resolvable stages only (2×2207 m, 2×76 m); stage_count = 3 as stored (incl. the dangling
         // ref); trailing crc32 = the trip file's whole-object CRC-32. total = count (nothing dropped).

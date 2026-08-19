@@ -74,7 +74,7 @@ use core::mem::MaybeUninit;
 
 use defmt::{info, unwrap, warn};
 use embassy_executor::Spawner;
-use embassy_futures::join::{join, join3, join4, join5};
+use embassy_futures::join::{join, join4, join5};
 use embassy_futures::select::{select, select3, Either, Either3};
 use embassy_nrf::mode::Blocking;
 use embassy_nrf::{cracen, peripherals, Peri};
@@ -468,14 +468,7 @@ pub async fn run(
         sensors::run(stack, server, sensor_injector),
         join5(
             host_task(runner),
-            // The trip cascade + the weather due plane ride the route-delete slot (`join5` is
-            // embassy's ceiling): all three are rare, edge/deadline-driven arms, so sharing a slot
-            // costs nothing.
-            join3(
-                route_delete_task(stack, server, store, shared),
-                trip_cascade_task(stack, server, store, shared),
-                weather::run(server, store, shared),
-            ),
+            weather::run(server, store, shared),
             ride_delete_task(stack, server, store, shared),
             ride_saved_task(stack, server, store, shared),
             async {
@@ -805,72 +798,6 @@ async fn host_task<C: Controller, P: PacketPool>(mut runner: Runner<'_, C, P>) -
         if let Err(e) = runner.run_with_handler(&sensors::ScanEventHandler).await {
             let e = defmt::Debug2Format(&e);
             defmt::panic!("ble: host runner error: {:?}", e);
-        }
-    }
-}
-
-/// Drain on-device route-delete requests (epic #447, P6) for the whole `ble::run` lifetime — folded
-/// into the top-level `join`, so it runs whether the phone is connected or the device is parked
-/// advertising. The ride loop's Route-menu hold posts a route's durable id
-/// ([`request_route_delete`](crate::object_store::request_route_delete)); this executes it through
-/// [`ObjectStore::delete_route`] — the same catalog + revision + `storeChanged` path a phone
-/// `deleteObject` command takes — so the on-device delete is coherent with the wire.
-///
-/// The `RefCell<ObjectStore>` borrow never spans an `await` (it ends before `publish_store_change`),
-/// matching the store's single-executor discipline. `publish_store_change` notifies a *connected*
-/// phone's `storeChanged`; when disconnected the notify fails harmlessly (no subscriber), and the
-/// revision bump makes the next `storeChanged`/reconnect reflect the deletion. The `ObjectStore`'s
-/// own `bump_revision` rings the `STORE_CHANGED` edge the ride loop drains for the live catalog
-/// rescan + P3 remap.
-async fn route_delete_task(
-    stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
-    server: &Server<'_>,
-    store: &core::cell::RefCell<ObjectStore>,
-    shared: &'static SharedStoreMutex,
-) -> ! {
-    loop {
-        let id = crate::object_store::wait_route_delete().await;
-        let deleted = {
-            let mut guard = shared.lock().await;
-            store.borrow_mut().delete_route(&mut guard, id)
-        };
-        if deleted {
-            info!("ble: [delete] on-device delete of route object {}", id);
-            // Notify a connected phone's `storeChanged` (harmless no-op when disconnected).
-            data_plane::publish_store_change(stack, server, store, obc_ble::ObjectType::Route).await;
-        } else {
-            warn!("ble: [delete] on-device delete of route object {} found nothing", id);
-        }
-    }
-}
-
-/// Drain on-device trip **cascade**-delete requests (epic #526, TR3/TR4) for the whole `ble::run`
-/// lifetime — the trip sibling of [`route_delete_task`]. The Route menu's long-press → confirm posts
-/// the trip's durable id ([`request_trip_cascade`](crate::object_store::request_trip_cascade)); this
-/// executes [`ObjectStore::delete_trip_cascade`] — each member route through `delete_route`, then the
-/// trip object — and notifies **both** `storeChanged` edges (§4.3): the member deletes moved the
-/// route store, the trip delete its own store. The same borrow discipline as the route arm: the
-/// `RefCell` borrow ends before any `await`.
-async fn trip_cascade_task(
-    stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
-    server: &Server<'_>,
-    store: &core::cell::RefCell<ObjectStore>,
-    shared: &'static SharedStoreMutex,
-) -> ! {
-    loop {
-        let id = crate::object_store::wait_trip_cascade().await;
-        let deleted = {
-            let mut guard = shared.lock().await;
-            store.borrow_mut().delete_trip_cascade(&mut guard, id)
-        };
-        if deleted {
-            info!("ble: [delete] on-device cascade delete of trip object {}", id);
-            // Both edges (§4.3): member routes moved the route store, the trip its own. Harmless
-            // no-ops when disconnected; the revision bumps carry the change to the next connect.
-            data_plane::publish_store_change(stack, server, store, obc_ble::ObjectType::Route).await;
-            data_plane::publish_store_change(stack, server, store, obc_ble::ObjectType::Trip).await;
-        } else {
-            warn!("ble: [delete] on-device cascade delete of trip object {} found nothing", id);
         }
     }
 }

@@ -483,7 +483,7 @@ Every bulk payload is a typed **object**:
 | `6` | `routeList` | device → app | list object, §7.4 |
 | `7` | `rideList` | device → app | list object, §7.4 |
 | `8` | `echo` | both | dev/test only: device streams back what it received (A5's loopback) |
-| `9` | `trip` | app → device (upload), device → app (detail read) | trip object v1, §7.7 |
+| `9` | `trip` | app → device (upload), device → app (detail read) | trip object v2, §7.7 |
 | `10` | `tripList` | device → app | list object, §7.4 |
 | `11`–`15` | — | — | reserved (sensors, M4) |
 | `16` | `map` | host → device (upload) | an `.obcm` map — **USB only** (§10), see below |
@@ -1645,7 +1645,7 @@ reflects the newly-installed image on the next connect. The app displays that �
 there is no `fwImage` metadata object and no version field duplicated into the
 Config object (§7.3).
 
-### 7.7 `trip` — a trip object (v1)
+### 7.7 `trip` — a trip object (v2)
 
 A **trip** groups planned routes into one named unit (one folder on the device,
 one card in the app). It is a tiny metadata object that **references route object
@@ -1655,17 +1655,17 @@ firmware stores each trip as `TP{id}.OBT` beside the `RT{id}.OBR` route files (n
 FAT subdirectories); trip ids come from a separate device counter (§4.1).
 
 ```
-trip object v1 (56-byte header + 2 bytes/stage, little-endian):
-  version      u8   = 1
+trip object v2 (56-byte header + 8 bytes/stage, little-endian):
+  version      u8   = 2
   reserved     u8   = 0
   stage_count  u16
   name_len     u8   ≤ 48
   name         char[48]  UTF-8, zero-padded
   reserved     u8[3]  = 0
-  stages       stage_count × u16   route object ids, ride order
+  stages       stage_count × u64   flat-store ObjectIds, ride order
 ```
 
-The object length is fully determined by its header: `56 + 2·stage_count` bytes.
+The object length is fully determined by its header: `56 + 8·stage_count` bytes.
 
 **Semantics:**
 

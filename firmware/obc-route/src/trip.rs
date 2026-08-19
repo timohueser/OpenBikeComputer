@@ -1,9 +1,9 @@
 //! The **trip object** (v2) — the tiny metadata object that groups planned routes into one named
 //! unit (`obc-ble-interface-spec.md` §7.7). A trip references route object ids in ride order; it
 //! never contains route bytes, so membership edits never touch a route payload. The reference
-//! firmware stores each trip as `TP{id}.OBT` beside the `RT{id}.OBR` route files.
+//! firmware stores each trip as an opaque flat-store object beside its route objects.
 //!
-//! Layout (little-endian; pinned by `specs/vectors/trip-v1.bin` against the Swift trip codec):
+//! Layout (little-endian; pinned by `specs/vectors/trip-v2.bin` against the Swift trip codec):
 //!
 //! ```text
 //! Header (56 bytes):
@@ -20,7 +20,7 @@
 //! The object length is fully determined by its header: `56 + 8·stage_count` bytes — a decoder
 //! rejects a payload whose length disagrees ([`Error::BadOffset`]), which is also this file's
 //! torn-write guard (a cut-short write leaves a shorter file). The reader is version-gated like the
-//! OBCR reader ([`Error::BadVersion`] on anything but v1).
+//! OBCR reader ([`Error::BadVersion`] on anything but v2).
 //!
 //! Two reads, mirroring [`RouteSummary`](crate::RouteSummary) / [`TripMeta`]:
 //! - [`TripSummary::read`] — the header alone (name + true `stage_count`), for a catalog scan.
@@ -63,7 +63,7 @@ pub struct TripSummary {
 impl TripSummary {
     /// Read + validate a stored trip object's header into a summary — cheap enough to call per file
     /// when building the trip catalog. Version-gated ([`Error::BadVersion`]) and length-checked
-    /// against the header-determined size (`56 + 2·stage_count`), the torn-write guard.
+    /// against the header-determined size (`56 + 8·stage_count`), the torn-write guard.
     pub fn read(src: &dyn ByteSource) -> Result<TripSummary, Error> {
         let h = read_header(src)?;
         Ok(TripSummary { name: h.name, stage_count: h.stage_count })
@@ -94,7 +94,7 @@ impl TripMeta {
         let take = want.min(MAX_TRIP_STAGES);
         let mut stage_ids = Vec::new();
         // The stage table sits right after the fixed header; one small read pulls the whole windowed
-        // slice (≤ 2·MAX_TRIP_STAGES bytes). The length check in `read_header` already proved every
+        // slice (≤ 8·MAX_TRIP_STAGES bytes). The length check in `read_header` already proved every
         // stored stage is present, so this read cannot run short.
         let mut buf = [0u8; 8 * MAX_TRIP_STAGES];
         let bytes = &mut buf[..take * 8];
@@ -155,7 +155,7 @@ fn utf8_prefix(b: &[u8]) -> &str {
     }
 }
 
-/// Write a **trip object v1** (spec §7.7) to `sink`: the fixed 56-byte header then the stage ids,
+/// Write a **trip object v2** (spec §7.7) to `sink`: the fixed 56-byte header then the stage ids,
 /// one streaming pass. `stages` is truncated to `u16::MAX` (the format's own cap) and `name` to
 /// [`NAME_CAP`] bytes on a char boundary (the device's route-name cap). No placeholder-header dance
 /// — the length is header-determined, so a torn write simply fails [`TripSummary::read`]'s length

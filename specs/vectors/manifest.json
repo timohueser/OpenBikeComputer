@@ -499,25 +499,25 @@
       "total_len": 308,
       "crc32": "0x1BFB6E3C"
     },
-    "trip-v1.bin": {
-      "format": "trip object v1 (spec 7.7) \u2014 56-byte header + 2 bytes/stage, references route ids",
-      "byte_len": 62,
-      "version": 1,
+    "trip-v2.bin": {
+      "format": "trip object v2 (spec 7.7) \u2014 56-byte header + 8 bytes/stage, references flat ObjectIds",
+      "byte_len": 80,
+      "version": 2,
       "name": "Alpen Traverse",
       "stage_count": 3,
       "stages": [
         7,
         8,
-        99
+        4294967395
       ],
       "resolvable_stages": [
         7,
         8
       ],
       "dangling_stages": [
-        99
+        4294967395
       ],
-      "crc32": "0xA3C5D591"
+      "crc32": "0x5B1C1606"
     },
     "trip-list.bin": {
       "format": "tripList object (spec 7.4) \u2014 6-byte v2 header + 76-byte entries (mirrors routeList's v2 core; no expiry tail)",
@@ -528,12 +528,12 @@
       "entries": [
         {
           "object_id": 1,
-          "byte_len": 62,
+          "byte_len": 80,
           "total_distance_m": 4414,
           "total_ascent_m": 152,
           "stage_count": 3,
           "name": "Alpen Traverse",
-          "crc32": "0xA3C5D591"
+          "crc32": "0x5B1C1606"
         }
       ],
       "total": 1

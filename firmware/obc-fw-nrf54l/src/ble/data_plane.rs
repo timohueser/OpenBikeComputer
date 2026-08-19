@@ -40,9 +40,9 @@ pub(crate) async fn publish_store_change(
     store: &RefCell<ObjectStore>,
     ty: ObjectType,
 ) {
-    // Each store keeps its own monotonic-per-boot revision (spec §4.3): a trip move stamps the trip
-    // store's counter, a route/ride move the shared route/ride counter.
-    let revision = if ty == ObjectType::Trip { store.borrow().trip_revision() } else { store.borrow().revision() };
+    // Only the legacy ride catalog still uses this status-plane edge. Route and trip mutations are
+    // announced by the flat-store protocol's catalog sequence.
+    let revision = store.borrow().revision();
     let msg = StatusMessage::StoreChanged(StoreChanged { ty, revision });
     let (buf, len) = msg.encode();
     notify_bounded(stack, server, server.obc.status.handle, &buf[..len], "status").await;
