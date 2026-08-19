@@ -14,19 +14,31 @@
 //! decoding, no idea what an object id is. Search the non-test code for `0x` and every hit is USB's
 //! own vocabulary: a vendor id, a product id, an interface class, an endpoint-address direction bit.
 //!
-//! The single exception is [`sendfile::digest`], and it is not one: the transfer descriptor has to
-//! announce a CRC-32 before the first byte moves, and the alternative would be pulling 300 MB
-//! through the IPC boundary purely to checksum it. It calls [`obc_ble::Crc32`] — the code the
-//! *device* runs, which `lib/usb/crc32.ts` was ported from — so there is no second implementation
-//! to drift.
+//! It had one exception and no longer does — see *The disk → endpoint path is gone* below.
 //!
 //! ## The plane split
 //!
 //! | plane | carries | route |
 //! | :-- | :-- | :-- |
-//! | control | one framed message per operation, ≤ ~131 bytes | IPC, byte-for-byte |
-//! | bulk, small | routes, rides, catalogs, firmware images | IPC, raw `ArrayBuffer` bodies |
-//! | bulk, by path | maps and anything else hundreds of megabytes | [`sendfile`] — disk → endpoint |
+//! | control | `FLAT_Store_Protocol.md` §3 control records | IPC, byte-for-byte |
+//! | stream | §3.8 stream records — every object, a map included | IPC, raw `ArrayBuffer` bodies |
+//!
+//! ## The disk → endpoint path is gone (FS7.5-c3b, #1420)
+//!
+//! There used to be a third route: `usb_send_file` streamed a map straight from disk into the bulk
+//! endpoint, with `usb_file_digest` computing its CRC-32 on this side so 300 MB never crossed the
+//! IPC boundary purely to be checksummed, and `sendable_path` deciding which files the webview was
+//! allowed to name. All three are deleted, because the frontend that called them is.
+//!
+//! §5.2 frames every record as `record_length u16` + frame bytes, and this side does not know that
+//! framing — deliberately, per the paragraph above: the wire lives once, in TypeScript. A raw byte
+//! streamer cannot produce a framed record stream, so the desktop sends the same way the browser
+//! does, through the chunked pipe. **No rider-visible capability is lost today**: the desktop
+//! already assembled a map into a `File` and sent it through that pipe, and the by-path route was
+//! the optimisation, not the feature. Re-earning it means teaching this side §5.2's framing, which
+//! is a second implementation of a wire contract — the thing this module's first paragraph exists
+//! to refuse. If a measurement ever says the IPC boundary is the bottleneck, the honest shape is a
+//! Rust-side *record* sender that shares the codec, not a raw one that guesses.
 //!
 //! Both IPC directions carry **raw binary**, not JSON: a command result is
 //! [`tauri::ipc::Response`] (an `ArrayBuffer` on the JS side) and a write arrives as
@@ -37,24 +49,22 @@
 //! ## Where the policy lives
 //!
 //! Same discipline as the rest of this crate (see the crate docs): the window has no filesystem
-//! capability, so "which files may be streamed to a device" is Rust code — [`sendable_path`] — and
-//! not a path the webview gets to name freely.
+//! capability. The one place that mattered here was "which files may be streamed to a device", and
+//! with the by-path route gone there is no such question on this plane — a file the rider picks
+//! arrives through the webview as a `File` with no path at all, exactly as it does on the web.
 
 pub mod link;
 pub mod runtime_guard;
-pub mod sendfile;
 pub mod watch;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tauri::ipc::{Channel, InvokeBody, Request, Response};
-use tauri::{Manager, State};
+use tauri::State;
 
 use link::{Dir, OpenLink, OpenedLink, PipeFault, Plane};
-use sendfile::{FileDigest, SendProgress};
 use watch::{DeviceSummary, UsbEvent};
 
 /// **Development** USB vendor / product id — see [`watch::matches`] for what moves when a real one
@@ -237,59 +247,6 @@ pub fn usb_cancel(state: State<'_, Arc<UsbState>>, handle: u32, plane: Plane, di
 #[tauri::command]
 pub async fn usb_reset(state: State<'_, Arc<UsbState>>, handle: u32, plane: Plane) -> Result<(), PipeFault> {
     state.link(handle)?.plane(plane).reset().await
-}
-
-// ============================ The bulk plane, by file path ============================
-
-/// Length and whole-object CRC-32 of a file the app is willing to send.
-#[tauri::command]
-pub async fn usb_file_digest(app: tauri::AppHandle, path: String) -> Result<FileDigest, String> {
-    let path = sendable_path(&app, &path).map_err(|e| e.message)?;
-    tauri::async_runtime::spawn_blocking(move || sendfile::digest(&path)).await.map_err(|e| e.to_string())?
-}
-
-/// Stream a file straight into the device's bulk endpoint.
-///
-/// The frontend has already written the transfer descriptor on the control plane and will read the
-/// device's verdict there; this is only the bytes.
-#[tauri::command]
-pub async fn usb_send_file(
-    app: tauri::AppHandle,
-    state: State<'_, Arc<UsbState>>,
-    handle: u32,
-    path: String,
-    on_progress: Channel<SendProgress>,
-) -> Result<u64, PipeFault> {
-    let path = sendable_path(&app, &path)?;
-    let link = state.link(handle)?;
-    sendfile::send(link, path, on_progress).await
-}
-
-/// Which files this app will read on the frontend's say-so.
-///
-/// The window is granted `core:default` and nothing else, so a command that took any path would be
-/// the filesystem capability the crate deliberately does not hand out. The rule is therefore the
-/// same shape as `reveal_file`'s: the **canonicalised** path must be a regular file inside a
-/// directory the app itself owns — the maps folder it assembles into. Canonicalising both sides
-/// is what stops a symlink from pointing out of it.
-///
-/// This is deliberately narrower than "anything the user could pick". A file chosen through the
-/// webview's own `<input type=file>` has no path at all — it arrives as a `File`, and that flow
-/// keeps working over the ordinary chunked pipe, exactly as it does on the web. Widening this to
-/// arbitrary user selections wants a *native* file dialog, which is the point at which the choice
-/// is the OS's and not a string the frontend made up; that lands with the flows that need it (E3
-/// #913).
-fn sendable_path(app: &tauri::AppHandle, raw: &str) -> Result<PathBuf, PipeFault> {
-    let path = std::fs::canonicalize(raw).map_err(|e| PipeFault::device(format!("{raw} could not be opened: {e}")))?;
-    if !path.is_file() {
-        return Err(PipeFault::device(format!("{raw} is not a file.")));
-    }
-    if let Ok(root) = std::fs::canonicalize(crate::paths::maps_dir(app.path().document_dir().ok())) {
-        if path.starts_with(root) {
-            return Ok(path);
-        }
-    }
-    Err(PipeFault::device(format!("{raw} is outside the maps folder this app streams from.")))
 }
 
 #[cfg(test)]

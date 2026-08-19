@@ -211,7 +211,7 @@ use embassy_nrf::buffered_uarte::{BufferedUarteRx, BufferedUarteTx};
 //                  pass's deepest point, and the post-upload rescan's rebuild overflowed the main
 //                  stack the moment `.bss` crept 216 B (STKOF HardFault, 2026-07-12).
 //   - map extents  the open map's resolved FAT chain (#500) and the one `'static` source over it.
-//                  This block used to be **20,732 B** — a caller-placed `SetShards<11>` plus eleven
+//                  This block used to be **20,732 B** — a caller-placed eleven-shard table plus eleven
 //                  extent tables and eleven sources, resident even for a single-file map. FS7.5-c2
 //                  deleted the set mount that needed them (#1420): one map is one file, so one
 //                  table and one source is the whole of it.

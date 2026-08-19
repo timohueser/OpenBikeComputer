@@ -5,7 +5,6 @@
 //! `builder/app/src/lib/usb/`, once, for both tiers (see [`super`]).
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use nusb::transfer::{Buffer, Bulk, Completion, In, Out, TransferError};
 use nusb::{Device, DeviceInfo, Endpoint, Interface};
@@ -292,15 +291,6 @@ impl Pipe {
             self.cancel_out.send_modify(|epoch| *epoch += 1);
         }
     }
-
-    /// The OUT endpoint and its cancel signal, for the file streamer ([`super::sendfile`]).
-    ///
-    /// Handing out the mutex rather than a per-transfer method is the point: a file send holds the
-    /// endpoint for the whole object, which is what keeps several transfers in flight and is also
-    /// exactly the §4.1 "one transfer at a time" rule the client already enforces above it.
-    pub(super) fn out_for_streaming(&self) -> (&Mutex<Endpoint<Bulk, Out>>, watch::Receiver<u64>) {
-        (&self.ep_out, self.cancel_out.subscribe())
-    }
 }
 
 /// Cancel every pending transfer on an endpoint and consume the completions.
@@ -437,9 +427,6 @@ fn permission_hint(error: &nusb::Error) -> &'static str {
         _ => "",
     }
 }
-
-/// How long the send loop waits between progress reports. See [`super::sendfile`].
-pub const PROGRESS_INTERVAL: Duration = Duration::from_millis(80);
 
 #[cfg(test)]
 mod tests {

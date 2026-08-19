@@ -209,8 +209,9 @@ pub(crate) const SIDELOAD_ID_BASE: u16 = 0xFF00;
 /// log. A BLE route upload adds its temp (4), and `upload_commit`'s copy-promote (embedded-sdmmc
 /// can't rename, see the note above [`Storage::upload_commit`]) holds the reopened temp **and**
 /// the final `.OBR` at once — a 5-handle peak, which the 4-slot default answered with a failed
-/// commit exactly and only mid-ride. A mounted volume set adds one handle per shard on top of
-/// that (see [`SD_MAX_FILES`]); each slot is 64 bytes of `FileInfo`, so the RAM cost is noise.
+/// commit exactly and only mid-ride. Each slot is 64 bytes of `FileInfo`, so the RAM cost is
+/// noise — which is why the budget below was never trimmed back after the set that forced it up
+/// was deleted.
 type Sd = SemmcCard;
 /// What the manager actually owns: the card **by shared reference** ([`SharedBlockDevice`]), so
 /// the raw `&'static Sd` twin stays available for the map's extent-mapped direct block reads
@@ -221,14 +222,16 @@ type SdShared = SharedBlockDevice<'static, Sd>;
 /// The open-handle budget (see the file-count note above) — one set of consts so the manager and
 /// the `obc-platform` wrapper aliases below can never drift apart.
 const SD_MAX_DIRS: usize = 4;
-/// **Why 16.** The pre-volume-set budget was 6: the 5-handle mid-ride peak documented above plus
-/// one slot of headroom. `OBCA_Spec.md` §5 makes one logical map 1..32 physical files, and the
-/// epic's device-cost review requires a mounted set to hold **every** shard's handle open for the
-/// mount lifetime — re-opening per query would put a FAT directory walk in the render loop. A DACH
-/// set is core + coarse + ~6 geometry = 8 handles, so the budget is that 8 plus the unchanged
-/// 5-handle peak (of which the map's own slot is now the set's), plus one session-long weather
-/// bundle reader and no unused margin. The 11-shard ceiling therefore still fits exactly at the
-/// worst ride/upload/weather peak rather than failing only when rain data is mounted.
+/// **Why 16, and why it is not 6 again.** The pre-volume-set budget was 6: the 5-handle mid-ride
+/// peak documented above plus one slot of headroom. A mounted volume set then needed one handle per
+/// shard for the mount lifetime, and 16 is where that landed.
+///
+/// The set is gone (FS7.5-c3b, #1420) and this is **deliberately not reverted to 6**. The cost is
+/// 640 B of `.bss` that the resource baseline already accounts for, and the reason to leave it is
+/// that this whole module is FS11's to delete (#1393) — shrinking a budget inside a stack that is
+/// being retired trades a measured, harmless allocation for a fresh chance to under-size the one
+/// thing that fails *only* mid-ride. If FS11 slips, this is a two-line change with a number
+/// already attached.
 ///
 /// The cost is measured, not guessed: the fork's `FileInfo` (`filesystem/files.rs`) is `RawFile`
 /// 4 · `RawVolume` 4 · `current_cluster` 8 · `current_offset` 4 · `Mode` 1 · `DirEntry` 40 ·
@@ -322,12 +325,10 @@ pub struct MapSummary {
     /// The display name: the long filename's stem when the file has one, else the 8.3 stem. For an
     /// uploaded map that is `MP{id}` — the honest consequence of having no name on the wire.
     pub name: String<24>,
-    /// Size on the card, from the directory entry (no read). For a volume set, the **sum** over
-    /// every shard plus the manifest — the only size figure a UI may show (§5.4), and `u64`
-    /// because a set is exactly the thing that outgrows one `u32` file.
+    /// Size on the card, from the directory entry (no read). `u64` because a map is exactly the
+    /// thing that outgrows one `u32` file.
     pub byte_len: u64,
-    /// The OBCM format version from header byte 4 (from the manifest's `OBCM Version` for a set,
-    /// which §5.3 pins equal across every shard). Reported, never filtered: a map built for
+    /// The OBCM format version from header byte 4. Reported, never filtered: a map built for
     /// another version is still on the card, and a consumer that wants to *flag* it (#915) needs
     /// to see it.
     pub obcm_version: u8,
@@ -706,132 +707,14 @@ fn note_read_perf(started: Instant, commands: usize, blocks: usize, single_comma
     READ_MULTI_COMMANDS.fetch_add((commands - single_commands) as u32, Relaxed);
 }
 
-// ═══════════════════════ map-upload write pipeline ═══════════════════════
-
-/// One USB map append's raw writes, collected until the FAT call returns.
-///
-/// `VolumeManager::write` deliberately stops a device write at every cluster, even when the
-/// pre-allocated chain continues at the next LBA. During a staged map upload those calls all point
-/// into one immutable arena half. Coalescing adjacent `(LBA, pointer)` spans here turns them back
-/// into the single CMD25 the card can execute efficiently, without teaching the generic FAT layer
-/// anything board-specific.
-#[derive(Clone, Copy)]
-struct QueuedUploadWrite {
-    lba: u32,
-    ptr: *const u8,
-    len: usize,
-}
-
-#[repr(C, align(4))]
-struct UploadCacheBlock([u8; BLOCK_LEN]);
-
-struct UploadWritePipe {
-    enabled: bool,
-    queued: Option<QueuedUploadWrite>,
-    active_lba: u32,
-    active_blocks: u32,
-    cache_lba: u32,
-    cache_valid: bool,
-    cache: UploadCacheBlock,
-}
-
-impl UploadWritePipe {
-    const fn new() -> Self {
-        Self {
-            enabled: false,
-            queued: None,
-            active_lba: 0,
-            active_blocks: 0,
-            cache_lba: 0,
-            cache_valid: false,
-            cache: UploadCacheBlock([0; BLOCK_LEN]),
-        }
-    }
-}
-
-/// Solely accessed while the cooperative executor holds the shared store. The USB stage is the
-/// only code that enables it, and it disables it before releasing the upload handle. No ISR reads
-/// this state (the VPR IRQ only sets `semmc::COMPLETION`).
-static mut UPLOAD_WRITE_PIPE: UploadWritePipe = UploadWritePipe::new();
-
-#[inline(always)]
-fn upload_pipe() -> &'static mut UploadWritePipe {
-    // SAFETY: the shared-store/one-executor rule above provides the unique access; references are
-    // never retained across an await or returned to a caller.
-    unsafe { &mut *core::ptr::addr_of_mut!(UPLOAD_WRITE_PIPE) }
-}
-
-fn upload_pipe_enabled() -> bool {
-    upload_pipe().enabled
-}
-
-fn upload_pipe_finish_active() -> Result<(), crate::semmc::SemmcError> {
-    let (lba, blocks) = {
-        let pipe = upload_pipe();
-        if pipe.active_blocks == 0 {
-            return Ok(());
-        }
-        let out = (pipe.active_lba, pipe.active_blocks);
-        // Clear before entering the driver so an error path cannot leave a phantom DMA owner.
-        pipe.active_blocks = 0;
-        out
-    };
-    let result = crate::flpr_mux::with_storage(|sd| sd.finish_write_blocks())?;
-    if let Err(e) = result {
-        log_transfer_error("deferred write", lba, blocks as usize, e);
-    }
-    result
-}
-
-fn upload_pipe_start_queued() -> Result<(), crate::semmc::SemmcError> {
-    let queued = match upload_pipe().queued.take() {
-        Some(queued) => queued,
-        None => return Ok(()),
-    };
-    debug_assert!(queued.len.is_multiple_of(BLOCK_LEN));
-    let blocks = (queued.len / BLOCK_LEN) as u32;
-    // SAFETY: the queue was formed from a currently borrowed immutable staging slice. Stage does
-    // not reuse that arena half until the next append has joined this write; the pipe stores no
-    // slice, only the DMA address needed to start the transfer here.
-    let bytes = unsafe { core::slice::from_raw_parts(queued.ptr, queued.len) };
-    let result = crate::flpr_mux::with_storage(|sd| {
-        // SAFETY: the double-buffer lifetime rule above holds until `upload_pipe_finish_active`.
-        unsafe { sd.start_write_blocks(queued.lba, bytes) }
-    })?;
-    if result.is_ok() {
-        let pipe = upload_pipe();
-        pipe.active_lba = queued.lba;
-        pipe.active_blocks = blocks;
-    }
-    result
-}
-
-fn upload_pipe_flush() -> Result<(), crate::semmc::SemmcError> {
-    upload_pipe_finish_active()?;
-    upload_pipe_start_queued()?;
-    upload_pipe_finish_active()
-}
-
-fn upload_cache_read(blocks: &mut [Block], lba: u32) -> bool {
-    if blocks.len() != 1 {
-        return false;
-    }
-    let pipe = upload_pipe();
-    if !pipe.enabled || !pipe.cache_valid || pipe.cache_lba != lba {
-        return false;
-    }
-    blocks[0].contents.copy_from_slice(&pipe.cache.0);
-    true
-}
-
-fn upload_cache_note_read(blocks: &[Block], lba: u32) {
-    if blocks.len() == 1 && upload_pipe_enabled() {
-        let pipe = upload_pipe();
-        pipe.cache.0.copy_from_slice(&blocks[0].contents);
-        pipe.cache_lba = lba;
-        pipe.cache_valid = true;
-    }
-}
+// ═══════════════════════ the alignment bounce ═══════════════════════
+//
+// **The map-upload write pipeline that used to live here is gone** (FS7.5-c3b, #1420). It coalesced
+// a `VolumeManager::write`'s per-cluster calls back into one CMD25 while a staged USB upload
+// streamed through the scratch arena, and it was enabled by exactly one thing — that stage. Protocol
+// v4 writes each 4 KiB stream record straight to the flat store, so nothing enables it and nothing
+// ever could; what is left below is the alignment bounce, which the ride path and the flat binding
+// both still need.
 
 /// **The alignment bounce** (epic #1158).
 ///
@@ -981,15 +864,6 @@ impl BlockDevice for SemmcCard {
         if blocks.is_empty() {
             return Ok(());
         }
-        if upload_pipe_enabled() {
-            if upload_cache_read(blocks, start_block_idx.0) {
-                return Ok(());
-            }
-            // A real card command cannot overlap the queued/deferred write. A FAT-sector hit above
-            // is RAM-only and intentionally can: that is what lets one `VolumeManager::write`
-            // coalesce across its cluster boundaries.
-            upload_pipe_flush()?;
-        }
         let (addr, n) = (blocks.as_ptr() as usize, blocks.len());
         #[cfg(feature = "sd-bench")]
         let bench_started = Instant::now();
@@ -1027,8 +901,6 @@ impl BlockDevice for SemmcCard {
         }
         if let Err(e) = r {
             log_transfer_error("read", start_block_idx.0, n, e);
-        } else {
-            upload_cache_note_read(blocks, start_block_idx.0);
         }
         r
     }
@@ -1064,9 +936,6 @@ impl BlockDevice for SemmcCard {
     }
 
     fn num_blocks(&self) -> Result<BlockCount, Self::Error> {
-        if upload_pipe_enabled() {
-            upload_pipe_flush()?;
-        }
         crate::flpr_mux::with_storage(|sd| sd.num_blocks())?.map(BlockCount)
     }
 }
@@ -1728,8 +1597,8 @@ impl Storage {
     ///
     /// Every way this returns `None` also records [`boot_fault`](Self::boot_fault), by the one rule
     /// in [`obc_app::boot_fault`]: giving up is not the same as an empty card, and a rider whose map
-    /// is sitting in the root must not be told to go and add one. That covers a failed set mount,
-    /// both single-file open failures, and — via `scan_maps_into`'s count — files the catalog never
+    /// is sitting in the root must not be told to go and add one. That covers both open failures
+    /// and — via `scan_maps_into`'s count — files the catalog never
     /// saw because their header would not parse.
     pub fn open_map(&mut self) -> Option<u32> {
         if let Some((_, len)) = self.open_map {
@@ -1808,19 +1677,8 @@ impl Storage {
     /// and new copies do not fit together is refused until the device is restarted once.
     ///
     /// **One delete removes the whole prefix.** A superseded volume set is a manifest plus up to 32
-    /// shards, and reclaiming only the manifest would leave gigabytes of orphans behind; the set
-    /// goes through [`Storage::delete_set`], which removes the manifest first (§5.4) and then every
-    /// derived shard name. The returned count is files, not maps, for the same reason.
     ///
-    /// **A set is retired against the mounted set when one loaded, otherwise against its own
-    /// keeper.** A selected older set is an explicit choice and its retained handles make deleting
-    /// it actively invalid. When a single-file map loaded instead, `obc_app::newest_set` names the
-    /// independent `MS{id}` namespace's survivor. That claim is backed by proof: a set is listed
-    /// only after `set_identity` validated the whole thing (§5.3), and a half-uploaded one has no
-    /// manifest and is invisible (§5.4).
-    ///
-    /// `keep` is `None` only when nothing loaded. No single map is superseded then; a complete set
-    /// may still retire an older set in its own namespace.
+    /// `keep` is `None` only when nothing loaded, and then nothing is superseded.
     fn retire_superseded_maps(&mut self, maps: &[MapSummary], keep: Option<usize>) -> usize {
         let choices = map_choices(maps);
         // Collected first because the scan borrow and the delete `&mut` cannot overlap.
@@ -2837,7 +2695,7 @@ impl WeatherSlotIo for Storage {
     }
 
     fn begin_slot(&mut self, slot: WeatherSlot) -> Result<(), Self::Error> {
-        if self.open_upload.is_some() || upload_pipe_enabled() {
+        if self.open_upload.is_some() {
             return Err(WeatherIoError::Busy);
         }
         let file = self
