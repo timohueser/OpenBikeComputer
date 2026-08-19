@@ -11,7 +11,14 @@ session needs a real packed map on a real flat store, and on this rig no transpo
         --kind map --name monaco.obcm
 
 Start this **before** flashing: it blocks on the device's READY advertisement, so the natural order
-is to leave it waiting and then `probe-rs run` the bench in another shell.
+is to leave it waiting and then `cargo run --release --bin flat_store_bench` in another shell.
+
+One failure mode is worth knowing before it happens, because it is silent on both sides and it ends
+with a wiped card. This host transmits **only after decoding a valid READY**, so if `--baud` does not
+match the device's `INGEST_BAUD` it decodes nothing, sends nothing, and simply waits — while the
+device sees an idle line, concludes nobody is there, and starts its destructive measurement run. The
+signature is exactly that pair: RTT saying `nobody answered` while this script says it is waiting.
+Check `--baud` first, not the cable.
 
 Everything above `Link` is pure framing with no pyserial in it, which is what
 `tools/tests/test_bench_ingest.py` drives against a fake device.
@@ -86,8 +93,14 @@ REASONS = {
 
 # Failures the device recovered from cleanly — it cancelled the reservation and went back to
 # advertising — so sending the whole object again is the right response and costs nothing but time.
-# A refused *commit* is deliberately not here: the device ends the session and holds the extents
-# until a remount, so a retry would fail differently and for the wrong reason.
+#
+# Two reasons are deliberately NOT here, for opposite causes:
+#   - a refused commit (10) is not self-cleaning: the device ends the session holding the extents
+#     until a remount, so a retry fails differently and for the wrong reason;
+#   - a refused chunk (8) IS self-cleaning — the device cancels and carries on — but retrying it is
+#     pointless. It means the store would not take those bytes at that offset, and the retry sends
+#     the identical bytes to the identical offset. Only a different card or a different payload
+#     changes the answer, so the operator should see the refusal rather than watch it repeat.
 RETRIABLE = frozenset({REASON_PAYLOAD_CRC, REASON_LINK})
 
 # Why the device stopped listening. `GONE` is READY's shape with another tag, sent on every exit
@@ -97,7 +110,9 @@ GONE_REASONS = {
     "board now, then re-run this",
     2: "the session is over (the device took its last object and parked) — reset to re-arm it",
     3: "a commit was refused and its extents are held until a remount — reset before retrying",
-    4: "the line was erroring — check that --baud matches INGEST_BAUD in flat_store_bench.rs",
+    4: "bytes arrived that the device could not frame, so it refused the measurement run — something "
+    "else is on this tty (a screen/minicom at another rate, a second talker, a failing cable). Note "
+    "this is NOT a --baud mismatch: at the wrong baud this host never transmits at all",
 }
 
 
@@ -310,11 +325,17 @@ def await_ready(link: Link, wait: float) -> int:
         if remaining <= 0:
             raise LinkTimeout(
                 f"no frame of any kind in {wait:.0f} s — not even the GONE the device sends on every "
-                "exit path. Is the bench running (`cargo run --release --bin flat_store_bench`), and "
-                "is this the VCOM tty rather than its dead twin? If RTT shows the bench advertising "
-                "while this waits, the J-Link's VCOM has wedged: host writes succeed, RTT keeps "
-                "flowing, nothing reaches the device, and only a physical power-cycle of the DK "
-                "clears it (`probe-rs reset` does not)."
+                "exit path. In order of likelihood:\n"
+                "  1. --baud disagrees with INGEST_BAUD in flat_store_bench.rs. This is the one to "
+                "check first, and its signature is RTT saying `nobody answered` while this waits: "
+                "nothing decodes here, so this host never transmits, so the device sees an idle "
+                "line and runs the DESTRUCTIVE measurement suite. Nothing errors on either side.\n"
+                "  2. the bench is not running — start it with `cargo run --release --bin "
+                "flat_store_bench`.\n"
+                "  3. wrong tty — the DK exposes two and only one is live (`ls /dev/cu.usbmodem*`).\n"
+                "  4. the J-Link's VCOM has wedged: writes succeed, RTT keeps flowing, nothing "
+                "reaches the device. Only a physical power-cycle of the DK clears it (`probe-rs "
+                "reset` does not). Suspect this only once 1-3 are ruled out."
             )
         try:
             byte = link.read_exact(1, min(remaining, 1.0))[0]
@@ -423,7 +444,9 @@ def main(argv: list[str] | None = None) -> int:
         "--baud",
         type=int,
         default=115200,
-        help="must match INGEST_BAUD in flat_store_bench.rs (default: 115200)",
+        help="must match INGEST_BAUD in flat_store_bench.rs. A mismatch fails SILENTLY on both "
+        "sides — this host never decodes a READY so it never transmits, and the device sees an idle "
+        "line and runs its destructive measurement suite (default: 115200)",
     )
     parser.add_argument(
         "--wait",

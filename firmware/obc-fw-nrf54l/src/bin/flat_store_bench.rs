@@ -137,16 +137,30 @@
 //! 63 s** on the wire (10 bits a byte, plus ~2 ms of USB turnaround per 8 KiB chunk). Raising
 //! [`INGEST_BAUD`] to `Baudrate::Baud1m` takes that to about 7.5 s and needs `--baud 1000000` on the
 //! host; 115,200 is the default because it is the rate this rig's VCOM is *proven* at, and a board
-//! session is not the place to find out that a J-Link CDC will not do a megabaud. A host that gets
-//! this wrong is not left guessing: the device sees undecodable bytes, ends the window
-//! [`Advertised::Erroring`], and names its own baud on RTT.
+//! session is not the place to find out that a J-Link CDC will not do a megabaud.
+//!
+//! ## A baud mismatch looks like a QUIET line, not a loud one
+//!
+//! Worth stating plainly, because the intuition is wrong and the consequence is a wiped card. The
+//! host transmits **only after it has decoded a valid READY** — so at a mismatched baud it decodes
+//! nothing, sends nothing, and stays silent. This device therefore sees an idle line, ends the
+//! window [`Advertised::Quiet`], sends a GONE the host cannot decode either, and runs phase one.
+//! Nothing errors, and nothing warns.
+//!
+//! **So: if RTT says `nobody answered` while the host says it is still waiting, suspect `--baud`
+//! first.** That pair of symptoms is the signature, and it is the only one there is.
+//!
+//! [`Advertised::Erroring`] covers the other shape — bytes actually arriving that this device cannot
+//! frame — which in practice means a second talker on the tty (a stray `screen` or `minicom` at
+//! another rate), a cable on its way out, or electrical noise. Real, worth refusing the destructive
+//! run over, but *not* the baud case.
 //!
 //! When the host reports no device, the [`TAG_GONE`] frame it printed says which of four unrelated
 //! things happened — the window closed and the destructive run is starting, the session ended, a
 //! commit refusal is holding extents, or the line was erroring. **Only when no GONE arrives at all**
 //! and RTT shows the bench advertising is it the J-Link VCOM wedge, whose one fix is a physical
-//! power-cycle of the DK. (A foreign `StoreId` is a fifth case that never reaches the wire: `run`
-//! refuses before the ingest is offered, and only RTT says so.)
+//! power-cycle of the DK. (Two cases never reach the wire at all: a mismatched baud, above, and a
+//! foreign `StoreId` — `run` refuses that before the ingest is offered, and only RTT says so.)
 #![no_std]
 #![no_main]
 
@@ -506,9 +520,21 @@ fn run(p: embassy_nrf::Peripherals) {
     // Before anything destructive: offer the ingest. A session that took it does not get the
     // measurement run afterwards — phase one would allocate the whole card out from under the object
     // it just accepted, which is a card wiped between "map ingested" and the rider seeing it.
-    if ingest_offer(p, &boot) {
-        info!("INGEST session over — the measurement run is deliberately SKIPPED so the ingested objects survive");
-        return;
+    match ingest_offer(p, &boot) {
+        Offer::Ingested => {
+            info!("INGEST session over — the measurement run is deliberately SKIPPED so the ingested objects survive");
+            return;
+        }
+        // No session happened and nothing was written. The measurements are refused anyway, because
+        // what ended the window was evidence of another talker rather than of an idle cable.
+        Offer::Refused => {
+            error!(
+                "INGEST no session took place and nothing was written — the measurement run is REFUSED, not skipped"
+            );
+            error!("INGEST the card is untouched. Clear the line (or the second talker on it) and reset to try again.");
+            return;
+        }
+        Offer::Declined => {}
     }
     if ours && boot.recording.is_some() && !FORCE_REINIT {
         phase_two(&boot);
@@ -1498,7 +1524,9 @@ mod gone {
     pub const SESSION_OVER: u32 = 2;
     /// A commit was refused and its extents are held until a remount. Reset before retrying.
     pub const RESERVATION_HELD: u32 = 3;
-    /// The line was erroring. The measurements are refused; check the baud.
+    /// Bytes arrived that the device could not frame, so the measurements were refused. Something
+    /// else is on the tty. (A host at the wrong baud is *not* this — it would be silent, and it
+    /// could not decode this frame either.)
     pub const LINE_ERRORING: u32 = 4;
 }
 /// The two status bytes, ASCII ACK and NAK.
@@ -1599,9 +1627,13 @@ enum Advertised {
 
 /// Consecutive UARTE errors that end a window as [`Advertised::Erroring`].
 ///
-/// One error is line noise on a cable being plugged in. Thirty-two in a row is a host transmitting
-/// at a rate this device is not configured for, which is exactly what a `--baud 1000000` run against
-/// the 115,200 default looks like from here.
+/// One error is line noise on a cable being plugged in. Thirty-two in a row is something *else*
+/// driving this tty at a rate or framing the device is not configured for — a `screen` or `minicom`
+/// left open at another baud, a second talker, a cable degrading.
+///
+/// **Not** a `bench_ingest.py` baud mismatch: that host never transmits at all, because it only
+/// sends after decoding a valid READY. See the module docs — a mismatched baud is a *silent* line,
+/// and it ends the window [`Advertised::Quiet`].
 const INGEST_UART_FAULT_LIMIT: u32 = 32;
 
 /// The one payload buffer. A chunk is 8 KiB and lives here, in `.bss`, exactly as the read path's
@@ -1609,13 +1641,23 @@ const INGEST_UART_FAULT_LIMIT: u32 = 32;
 /// so is a chunk-sized one on a poll frame.
 static mut INGEST_BUF: Aligned<INGEST_CHUNK> = Aligned([0; INGEST_CHUNK]);
 
-/// Advertise on the VCOM, and run the ingest if a host answers. `true` when one did.
+/// How the offer ended. Three outcomes, and only one of them lets the measurements run.
+enum Offer {
+    /// A host answered and a session ran. The measurements are skipped so its objects survive.
+    Ingested,
+    /// Nothing was ingested, but the line was not idle either. The measurements are refused.
+    Refused,
+    /// The line was idle. The bench is what it always was.
+    Declined,
+}
+
+/// Advertise on the VCOM, and run the ingest if a host answers.
 ///
 /// The UARTE is built here and dropped here, so a bench run that nobody answered leaves the
 /// peripheral exactly as it found it and the measurements that follow are the measurements this
 /// bench has always made.
 #[inline(never)]
-fn ingest_offer(p: embassy_nrf::Peripherals, boot: &Boot) -> bool {
+fn ingest_offer(p: embassy_nrf::Peripherals, boot: &Boot) -> Offer {
     let mut config = uarte::Config::default();
     config.baudrate = INGEST_BAUD;
     let uart = Uarte::new(p.SERIAL20, p.P1_17, p.P1_16, UartIrqs, config);
@@ -1627,30 +1669,39 @@ fn ingest_offer(p: embassy_nrf::Peripherals, boot: &Boot) -> bool {
     match ingest_wait(&mut tx, &mut rx, INGEST_WINDOW_MS) {
         Advertised::Answered => {
             ingest_session(&mut tx, &mut rx, boot);
-            true
+            Offer::Ingested
         }
         Advertised::Quiet => {
             // The last thing this device says before it starts destroying the card. A host that
             // arrived late reads it instead of timing out and blaming the cable.
             ingest_gone(&mut tx, gone::WINDOW_CLOSED);
             info!("INGEST nobody answered — running the measurements");
-            false
+            // The one symptom pair that has no other signature, said where the operator is looking.
+            // `bench_ingest.py` transmits only after decoding a READY, so at the wrong baud it never
+            // sends a byte and this device sees an idle cable — exactly what it sees when no host is
+            // there at all. If the host claims to be waiting, this line is the evidence.
+            info!(
+                "INGEST if a host says it is still waiting, that is a BAUD MISMATCH, not a dead cable — this build is at {=u32} baud (a mismatched host is silent, never noisy)",
+                INGEST_BAUD_HZ
+            );
+            Offer::Declined
         }
-        // The one case that is neither. Something is transmitting and this device cannot read it, so
-        // there is very likely a host at the other end of the cable that believes it is sending a
-        // map. Falling through here would run phase one and destroy the card it was aimed at.
+        // Bytes are arriving that this device cannot frame. That is not `bench_ingest.py` at the
+        // wrong rate — that host would be silent — but a second talker on the tty, or a cable going.
+        // Either way the line is not idle, and running phase one on the strength of a line we
+        // demonstrably cannot read would be guessing with the card.
         Advertised::Erroring => {
             ingest_gone(&mut tx, gone::LINE_ERRORING);
             error!(
-                "INGEST the VCOM reported {=u32} consecutive errors during the window — bytes are arriving that this device cannot decode",
+                "INGEST the VCOM reported {=u32} consecutive receive errors during the window — bytes are arriving that this device cannot frame",
                 INGEST_UART_FAULT_LIMIT
             );
             error!(
-                "INGEST the likeliest cause is a baud mismatch: this build is at {=u32} baud, so the host needs `--baud {=u32}`",
-                INGEST_BAUD_HZ, INGEST_BAUD_HZ
+                "INGEST something else is driving this tty (a `screen`/`minicom` at another rate, a second talker, a failing cable) — this build is at {=u32} baud",
+                INGEST_BAUD_HZ
             );
-            error!("INGEST REFUSING to run the measurements — they would destroy the card a host is aiming at");
-            true
+            error!("INGEST REFUSING to run the measurements — the line is not idle, and they would destroy the card");
+            Offer::Refused
         }
     }
 }

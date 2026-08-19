@@ -291,20 +291,32 @@ probe-rs run      --chip nRF54LM20A target/thumbv8m.main-none-eabihf/release/fla
 at the cost of finding out mid-session whether this J-Link's CDC will carry a megabaud. RTT prints
 the `ObjectId` and a full catalog census after every commit, which is the acceptance evidence.
 
-**If the host reports the device is not answering**, the device tells you which of these it is
-before it stops listening — it sends a `GONE` frame on every exit path, and the host prints the
-reason. The four causes, none of which is the same fix:
+**A `--baud` mismatch is silent, and it wipes the card.** Check it first. The host transmits only
+after it has decoded a valid READY, so at the wrong rate it decodes nothing, sends nothing, and
+waits — while the device sees an idle line, concludes nobody is there, and starts the destructive
+run. Neither side errors. The signature is that exact pair: **RTT says `nobody answered` while the
+host says it is still waiting.** Nothing else produces it, and the device prints a line naming its
+own baud right next to `nobody answered` for this reason.
 
-- the host started after the ten-second window closed (`GONE: the window closed`) — and the bench is
-  now running the **destructive** measurement suite, so reset it immediately;
-- the board already finished a session and parked (`GONE: the session is over`) — reset to re-arm;
-- a commit was refused and its extents are held until a remount (`GONE: reservation held`) — reset;
-- the card carries a foreign `StoreId`, so `run` refused before the ingest was ever offered — RTT
-  says so, and `FORCE_REINIT` is the override.
+**If the host reports the device is not answering** and RTT does *not* say `nobody answered`, the
+device sends a `GONE` frame on every exit path and the host prints its reason. Four causes, four
+different fixes:
 
-Only if **no** `GONE` arrives and RTT shows the bench advertising has the J-Link's VCOM wedged: host
-writes succeed, RTT keeps flowing, nothing reaches the device. A physical power-cycle of the DK is
-the only fix; `probe-rs reset` does not clear it.
+- `the window closed` — the host started after the ten-second window, and the bench is now running
+  the **destructive** measurement suite. Reset it immediately;
+- `the session is over` — the board took its last object and parked. Reset to re-arm;
+- `reservation held` — a commit was refused and its extents are held until a remount. Reset;
+- `could not frame` — something else is driving this tty (a `screen`/`minicom` at another rate, a
+  second talker, a failing cable). The bench **refused** the measurement run, so the card is
+  untouched; clear the line and reset. Note this is *not* the baud case above — a mismatched host is
+  silent, not noisy.
+
+Two more never reach the wire at all: the baud mismatch, and a card carrying a foreign `StoreId`
+(`run` refuses before the ingest is ever offered — RTT says so, and `FORCE_REINIT` is the override).
+
+Only if **no** `GONE` arrives, RTT shows the bench advertising, and the baud is confirmed has the
+J-Link's VCOM wedged: host writes succeed, RTT keeps flowing, nothing reaches the device. A physical
+power-cycle of the DK is the only fix; `probe-rs reset` does not clear it.
 
 (The standalone FLPR waveform bench bin `ls021_flpr_bringup` was retired in #177 once the app drove
 the LS021 on glass; the M33-direct `ls021_bringup` bench was retired earlier in #176; the A1 BLE
