@@ -1,7 +1,7 @@
 //! The **scratch seam** — where the engine puts bookkeeping it is not allowed to keep in memory.
 //!
 //! The engine never touches a filesystem: it has to run in a browser tab, so every byte it reads
-//! crosses [`obc_formats::io::ByteSource`] and every byte it writes crosses [`crate::ShardStore`].
+//! crosses [`obc_formats::io::ByteSource`] and every byte it writes crosses [`crate::MapStore`].
 //! That rule is what this module extends rather than breaks. A country-scale merge's *bookkeeping*
 //! — not its output, not its input — is measured in gigabytes at DACH scale (#1116 phase D), and
 //! none of it is information that has to be resident: every global step has a sorted-pass

@@ -25,7 +25,7 @@ use obc_route::RouteReader;
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 
 use crate::device_input::DeviceInput;
-use crate::map_set::LoadedMap;
+use crate::map_file::LoadedMap;
 use crate::present::Present;
 use crate::rides::RideStore;
 use crate::routes::RouteStore;
@@ -614,7 +614,7 @@ impl SimGui {
         let t0 = std::time::Instant::now();
         let (dev_w, dev_h) = (self.dev_w, self.dev_h);
         let mut fbdev = FbDevice64::new(&mut self.fb, dev_w, dev_h);
-        let scene = crate::map_set::Scene { reader: &reader, route: route.as_ref() };
+        let scene = crate::map_file::Scene { reader: &reader, route: route.as_ref() };
         // WX14 live mode: one pass of the §11 lifecycle before the frame. The scheduler decides;
         // when it raises, the companion fetches over HTTP (synchronously — the GUI stalls for the
         // second or two a real phone would spend with BLE off) and the upload is committed only
@@ -666,7 +666,7 @@ impl SimGui {
                       app: &mut App,
                       scratch: &mut obc_render::RenderScratch,
                       fbdev: &mut FbDevice64<'_>| {
-            crate::map_set::render_frame(app, scratch, fbdev, scene, rain, feed, (dev_w as f32, dev_h as f32), |c| {
+            crate::map_file::render_frame(app, scratch, fbdev, scene, rain, feed, (dev_w as f32, dev_h as f32), |c| {
                 Rgb565::from(RawU16::new(c))
             })
         };

@@ -28,17 +28,23 @@
 //! **Binding edits a staging buffer, and only a staging buffer.** §5.2 makes that normative:
 //! binding MUST complete before the manifest is committed, and a committed manifest MUST NOT be
 //! patched. The reason is that this is the one rule here a validator cannot enforce — an interrupted
-//! 8-byte id write leaves a value that is neither `0` nor a duplicate, so [`validate`] accepts it,
-//! [`SetManifest::is_bound`] answers `true`, and the mount resolves a member to an `ObjectId` naming
-//! nothing or the wrong object. §5.4's magic-last-write is safe precisely because its torn shape *is*
-//! recognisable; an id's is not.
+//! 8-byte id write leaves a value that is neither `0` nor a duplicate, so [`validate`] accepts it
+//! and a mount resolving by identity would follow it to an `ObjectId` naming nothing or the wrong
+//! object. §5.4's magic-last-write is safe precisely because its torn shape *is* recognisable; an
+//! id's is not.
 //!
 //! A half-bound manifest is refused ([`ManifestError::Members`]): it would name some members and
 //! silently lose the rest. Per §5.2 it means **the set never existed** — a reader treats it as §5.4
 //! treats any failed validation (not a map, no partial acceptance), and a client discards the whole
 //! set and sends it again rather than repairing it. Which of the two *legal* states a mount will
-//! accept is the mount's rule, not the codec's, and it depends on how that reader resolves members —
-//! see [`SetManifest::is_bound`].
+//! accept is the mount's rule, not the codec's, and it depends on how that reader resolves members.
+//!
+//! **The accessors that read member ids are gone** (#1420 FS7.5b2). `is_bound`, `shard_ids` and
+//! `terrain_id` were built by #1389 for a flat-store mount that resolved a set *by identity*; that
+//! mount was never written and is now cancelled, because a map is one object and the board's own
+//! mount resolves members by their derived §5.2 filenames — a path that needs no id at all. The
+//! field and its half-bound refusal stay: a torn manifest on a card is worth rejecting whoever
+//! reads it. Zero callers is what made them go, not the id's irrelevance.
 //!
 //! Member ids are deliberately **not** in the `Set Id` digest chain. `Set Id` is a *content*
 //! identity (§5.2: the same cells and skin produce the same id), and ids are properties of one
@@ -301,37 +307,6 @@ impl SetManifest {
         self.core_shard as usize
     }
 
-    /// Whether every member id names an object (§5.2). `false` means every id is
-    /// [`MEMBER_ID_NONE`] — the manifest is **unbound**; a half-bound one never parses.
-    ///
-    /// This is the precondition of resolving a set *by identity*, and therefore the one thing a
-    /// flat-store mount must check that a §5.3 validation does not: an unbound manifest is a valid
-    /// manifest that simply names no objects, and opening it would mean opening id `0` eight times.
-    /// A reader that resolves members by their derived §5.2 filenames instead — the FAT path the
-    /// board still runs — needs no id and is unaffected either way.
-    #[inline]
-    pub fn is_bound(&self) -> bool {
-        self.records().iter().all(|record| record.object_id != MEMBER_ID_NONE)
-    }
-
-    /// The **OBCM** shards' member ids, in index order — the ids a mount opens as map files.
-    ///
-    /// This and [`terrain_id`](Self::terrain_id) are the whole set-resolution seam: they are pure,
-    /// they read only an already-validated value, and between them they say which ids a mount needs
-    /// *with the raster held separately*, so a caller cannot hand it to an OBCM parser by looping
-    /// over one list. Both are `MEMBER_ID_NONE` throughout on an unbound manifest, which
-    /// [`is_bound`](Self::is_bound) is there to ask about first.
-    #[inline]
-    pub fn shard_ids(&self) -> impl Iterator<Item = u64> + '_ {
-        self.shards().iter().map(|shard| shard.object_id)
-    }
-
-    /// The terrain shard's member id, or `None` when the set carries no raster.
-    #[inline]
-    pub fn terrain_id(&self) -> Option<u64> {
-        self.terrain().map(|shard| shard.object_id)
-    }
-
     /// The core shard's record (§5.1) — nav and POI queries always go here.
     ///
     /// Total by construction *and* by code: `core_shard` is private and both constructors reject
@@ -353,14 +328,6 @@ impl SetManifest {
             return None;
         }
         core::str::from_utf8(raw).ok()
-    }
-
-    /// Whether this is the single-file fast path (§5.5): one **OBCM** shard, which is the core
-    /// and carries everything. A terrain sidecar beside it does not change that — terrain is
-    /// always its own file, so the fast path is about the map, not about the file count.
-    #[inline]
-    pub fn is_single_file(&self) -> bool {
-        self.shard_count() == 1
     }
 
     /// Total bytes of the set — the only size figure a UI may show (§5.4). Terrain included:
@@ -667,7 +634,7 @@ pub fn serialize(manifest: &SetManifest, digests: &[[u8; DIGEST_LEN]], out: &mut
 /// **`bytes` MUST be a buffer the client still owns, never a committed manifest.** §5.2 makes that
 /// normative and it is not a style preference: a committed manifest is bytes a reader may resolve a
 /// set through, and an id write interrupted halfway leaves a value neither `0` nor duplicated —
-/// which [`validate`] accepts, [`SetManifest::is_bound`] calls bound, and a mount follows to an
+/// which [`validate`] accepts and a mount resolving by identity would follow to an
 /// object that is not there. Bind every record first; commit once, afterwards.
 ///
 /// The bytes are otherwise unexamined — this reads `Shard Count` to bound the index and nothing
@@ -988,7 +955,6 @@ mod tests {
         .expect("core + terrain is the single-file fast path with a raster beside it");
         assert_eq!(solo.shard_count(), 1, "one OBCM shard");
         assert_eq!(solo.record_count(), 2, "…and two records on the wire");
-        assert!(solo.is_single_file(), "terrain is always its own file, so the fast path still applies");
         assert_eq!(solo.shards().len(), 1);
         assert_eq!(solo.shards()[0].role, Role::Core);
         assert_eq!(solo.terrain().map(|t| t.bytes), Some(6_192));
@@ -1058,7 +1024,6 @@ mod tests {
         .expect("a split set with terrain");
         assert_eq!(manifest.shard_count(), 4);
         assert_eq!(manifest.record_count(), 5);
-        assert!(!manifest.is_single_file());
     }
 
     #[test]
@@ -1098,16 +1063,20 @@ mod tests {
         assert_eq!(&bytes[base + MEMBER_ID_OFFSET..base + SHARD_RECORD_LEN], &91u64.to_le_bytes());
     }
 
-    /// The v3 contract end to end: ids survive a round trip, the mount seam hands them back with
-    /// the raster held separately, and neither of them is in `Set Id`.
+    /// The v3 contract end to end: ids survive a round trip, the raster's is held on its own
+    /// record, and neither of them is in `Set Id`.
+    ///
+    /// The accessors this used to go through (`is_bound`, `shard_ids`, `terrain_id`) are deleted —
+    /// they had no caller once the identity mount was cancelled — so it reads the records, which is
+    /// what the codec actually promises to carry.
     #[test]
-    fn member_ids_round_trip_and_the_mount_seam_separates_the_raster() {
+    fn member_ids_round_trip_and_the_raster_keeps_its_own() {
         let mut parts =
             [Shard { object_id: 5, ..core(WORLD, 1) }, Shard { object_id: 6, ..part(Role::Terrain, WORLD, 2) }];
         let bound = build(11, 0, 1, WORLD, [0; SET_ID_LEN], name_field("Grimsel"), &parts).unwrap();
-        assert!(bound.is_bound());
-        assert!(bound.shard_ids().eq([5u64]), "one OBCM shard, named by its id");
-        assert_eq!(bound.terrain_id(), Some(6), "the raster is reached separately, never as a shard");
+        assert_eq!(bound.shards().len(), 1, "one OBCM shard");
+        assert_eq!(bound.shards()[0].object_id, 5, "…named by its id");
+        assert_eq!(bound.terrain().map(|t| t.object_id), Some(6), "the raster is a record of its own");
 
         let bytes = encode(&bound);
         assert_eq!(parse(&bytes[..bound.encoded_len()]).unwrap(), bound);
@@ -1116,8 +1085,7 @@ mod tests {
         parts[0].object_id = MEMBER_ID_NONE;
         parts[1].object_id = MEMBER_ID_NONE;
         let unbound = build(11, 0, 1, WORLD, [0; SET_ID_LEN], name_field("Grimsel"), &parts).unwrap();
-        assert!(!unbound.is_bound(), "what an assembler writes");
-        assert_eq!(unbound.terrain_id(), Some(MEMBER_ID_NONE));
+        assert!(unbound.records().iter().all(|r| r.object_id == MEMBER_ID_NONE), "what an assembler writes");
         let mut raw = encode(&unbound);
         let len = unbound.encoded_len();
         assert_eq!(&raw[32..48], &bytes[32..48], "Set Id does not depend on the member ids");
@@ -1154,7 +1122,7 @@ mod tests {
 
         // Non-ascending ids are legal: a set that reuses a shard already on the card carries an
         // older id beside newer ones, which is the dedup working.
-        assert!(split_set().shard_ids().eq([90u64, 12, 91, 92]));
+        assert!(split_set().records().iter().map(|r| r.object_id).eq([90u64, 12, 91, 92]));
     }
 
     /// `bind_member` refuses everything that would leave bytes a parse must then reject.
@@ -1189,13 +1157,13 @@ mod tests {
         assert_eq!(parsed.name(), Some("Alpen"));
         assert_eq!(parsed.total_bytes(), 10_000);
         assert_eq!(parsed.core().role, Role::Core);
-        assert!(!parsed.is_single_file());
+        assert_eq!(parsed.shard_count(), 4);
     }
 
     #[test]
     fn the_single_file_fast_path_is_a_set_of_one() {
         let manifest = build(11, 0, 1, WORLD, [0; SET_ID_LEN], name_field("Solo"), &[core(WORLD, 42)]).unwrap();
-        assert!(manifest.is_single_file());
+        assert_eq!(manifest.shard_count(), 1);
         let bytes = encode(&manifest);
         let parsed = parse(&bytes[..manifest_len(1)]).unwrap();
         assert_eq!(parsed.shard_count(), 1);
