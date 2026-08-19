@@ -406,9 +406,13 @@ jobs:
       #    calls became `const { … }` blocks. Written plainly they cost 6,208 B here (20,224 against
       #    this 16,384 limit), because `RefCell::new` takes its 8 KiB argument by value and the
       #    temporary lands on this frame. The gate is what caught it; see `FlatStore::mount`'s docs.
-      # 2. The bench: 21,120 B in `initialize`, which chains three of those return slots — 22,528
-      #    before the same `MAX_OPEN_OBJECTS` change, and it moved by three times as much for that
-      #    reason (three stores in the chain). Pinned at
+      # 2. The bench: the peak is **`ingest_session` at 20,352 B** since the serial map ingest landed
+      #    — it holds one mounted store for the whole session, and the `mount` / `initialize` arms
+      #    that build it each get a store-sized return slot in the same frame. It is *below* the
+      #    19,968–21,120 B `initialize` has carried, so the ingest did not raise this binary's
+      #    ceiling; `initialize` (which chains three of those return slots — 22,528 before the
+      #    `MAX_OPEN_OBJECTS` change, and it moved by three times as much for that reason) is the
+      #    runner-up. Pinned at
       #    36,864 — the measurement it was set from was 33,024, and the pin is deliberately *not*
       #    tightened to the new figure: the ratchet exists against growth, and CI's toolchain is not
       #    the host these were measured on. On glass the whole phase-one run reached 58,096 B of

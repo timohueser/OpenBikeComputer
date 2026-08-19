@@ -33,6 +33,7 @@ MAGIC = b"OBCI"
 VERSION = 1
 
 TAG_READY = ord("R")
+TAG_GONE = ord("G")
 TAG_HEADER = ord("H")
 TAG_DONE = ord("D")
 TAG_FAIL = ord("E")
@@ -45,6 +46,10 @@ HEADER_BYTES = 72
 RESULT_BYTES = 42
 
 NAME_CAPACITY = 48
+
+# What a retry waits for the device, against its ten-second inter-object window. The first attempt
+# uses `--wait` instead: that one is waiting for a person to flash the board.
+RETRY_WAIT = 15.0
 
 # `FLAT_Store_Format.md` §3.1. The device decodes the same table and refuses anything else, so this
 # is a convenience for the command line rather than a second authority.
@@ -60,6 +65,10 @@ KINDS = {
 }
 
 # The device's refusal reasons, by their wire number.
+REASON_PAYLOAD_CRC = 9
+REASON_COMMIT = 10
+REASON_LINK = 11
+
 REASONS = {
     0: "no reason given",
     1: "the device does not speak this wire version",
@@ -70,9 +79,25 @@ REASONS = {
     6: "the card did not come up writable and initialization cannot repair it",
     7: "the payload does not fit the card's free extents",
     8: "the store refused a chunk",
-    9: "the payload CRC did not match — nothing was committed",
-    10: "the publishing commit was refused",
-    11: "the link timed out or the UARTE reported an error",
+    REASON_PAYLOAD_CRC: "the payload CRC did not match — nothing was committed",
+    REASON_COMMIT: "the publishing commit was refused",
+    REASON_LINK: "the link timed out or the UARTE reported an error",
+}
+
+# Failures the device recovered from cleanly — it cancelled the reservation and went back to
+# advertising — so sending the whole object again is the right response and costs nothing but time.
+# A refused *commit* is deliberately not here: the device ends the session and holds the extents
+# until a remount, so a retry would fail differently and for the wrong reason.
+RETRIABLE = frozenset({REASON_PAYLOAD_CRC, REASON_LINK})
+
+# Why the device stopped listening. `GONE` is READY's shape with another tag, sent on every exit
+# path, so a host that would otherwise time out learns which of these it is.
+GONE_REASONS = {
+    1: "the ten-second window closed and THE DESTRUCTIVE MEASUREMENT RUN IS STARTING — reset the "
+    "board now, then re-run this",
+    2: "the session is over (the device took its last object and parked) — reset to re-arm it",
+    3: "a commit was refused and its extents are held until a remount — reset before retrying",
+    4: "the line was erroring — check that --baud matches INGEST_BAUD in flat_store_bench.rs",
 }
 
 
@@ -80,8 +105,20 @@ class IngestError(RuntimeError):
     """The transfer did not complete. The device has cancelled whatever it held."""
 
 
-class LinkTimeout(IngestError):
+class RetriableError(IngestError):
+    """A failure the device cleaned up after, so sending the object again is worth doing."""
+
+
+class LinkTimeout(RetriableError):
     pass
+
+
+class DeviceGone(IngestError):
+    """The device said it has stopped listening, and why. Retrying will not help until it is reset."""
+
+    def __init__(self, reason: int):
+        self.reason = reason
+        super().__init__(f"the device has stopped listening: {GONE_REASONS.get(reason, f'reason {reason}')}")
 
 
 def crc32(data: bytes) -> int:
@@ -120,17 +157,24 @@ def ready_frame(chunk: int) -> bytes:
     return bytes(frame)
 
 
-def parse_ready(frame: bytes) -> int:
-    """The chunk size a READY advertises."""
+def parse_short(frame: bytes) -> tuple[int, int]:
+    """A 14-byte READY or GONE, as `(tag, value)`. They share a shape so one reader decodes both."""
     if len(frame) != READY_BYTES or frame[:4] != MAGIC:
-        raise IngestError("not a READY frame")
+        raise IngestError("not a 14-byte framed message")
     if frame[4] != VERSION:
         raise IngestError(f"the device speaks wire version {frame[4]}, this host speaks {VERSION}")
-    if frame[5] != TAG_READY:
-        raise IngestError(f"expected a READY frame, got tag {frame[5]:#04x}")
     if int.from_bytes(frame[10:14], "little") != crc32(frame[:10]):
-        raise IngestError("the READY frame's CRC did not check")
-    chunk = int.from_bytes(frame[6:10], "little")
+        raise IngestError("the frame's CRC did not check")
+    return frame[5], int.from_bytes(frame[6:10], "little")
+
+
+def parse_ready(frame: bytes) -> int:
+    """The chunk size a READY advertises."""
+    tag, chunk = parse_short(frame)
+    if tag == TAG_GONE:
+        raise DeviceGone(chunk)
+    if tag != TAG_READY:
+        raise IngestError(f"expected a READY frame, got tag {tag:#04x}")
     if not 0 < chunk <= 1 << 20:
         raise IngestError(f"the device advertised an implausible chunk size of {chunk}")
     return chunk
@@ -161,6 +205,8 @@ def parse_result(frame: bytes) -> Result:
     """The 42-byte RESULT that closes an object out."""
     if len(frame) != RESULT_BYTES or frame[:4] != MAGIC:
         raise IngestError("not a RESULT frame")
+    if frame[4] != VERSION:
+        raise IngestError(f"the device speaks wire version {frame[4]}, this host speaks {VERSION}")
     if int.from_bytes(frame[38:42], "little") != crc32(frame[:38]):
         raise IngestError("the RESULT frame's CRC did not check")
     if frame[5] not in (TAG_DONE, TAG_FAIL):
@@ -200,9 +246,6 @@ class Link:
         """Exactly `count` bytes, or `LinkTimeout`."""
         raise NotImplementedError
 
-    def drain(self) -> None:
-        """Discard whatever is already buffered. Called once before a handshake."""
-
 
 class SerialLink(Link):
     def __init__(self, port: str, baud: int):
@@ -213,7 +256,16 @@ class SerialLink(Link):
                 "pyserial is not installed. `uv venv && uv pip install pyserial`, then run this "
                 "with that venv's python (the repo's .venv has no pip)."
             ) from error
-        self._port = serial.Serial(port, baud, timeout=0.05, rtscts=False, dsrdtr=False)
+        try:
+            self._port = serial.Serial(port, baud, timeout=0.05, rtscts=False, dsrdtr=False)
+        except OSError as error:  # pragma: no cover — environment, not logic
+            # `serial.SerialException` is an OSError. A traceback here tells an operator nothing they
+            # can act on; the two things that are actually wrong are the tty name and the cable.
+            raise IngestError(
+                f"cannot open {port}: {error}. On macOS the DK exposes two CDC ttys and only one is "
+                "live — try the other (`ls /dev/cu.usbmodem*`), use `cu.*` rather than `tty.*`, and "
+                "check nothing else (a `screen`, another run of this) is holding the port."
+            ) from error
 
     def write(self, data: bytes) -> None:
         self._port.write(data)
@@ -227,9 +279,6 @@ class SerialLink(Link):
             if len(got) < count and time.monotonic() >= deadline:
                 raise LinkTimeout(f"wanted {count} bytes, got {len(got)} in {timeout:.1f} s")
         return bytes(got)
-
-    def drain(self) -> None:
-        self._port.reset_input_buffer()
 
     def close(self) -> None:
         self._port.close()
@@ -246,7 +295,13 @@ def await_ready(link: Link, wait: float) -> int:
     conversation back up rather than insisting the device was rebooted for it.
 
     A read that comes back empty is **not** a failure here: the device advertises about twice a
-    second, so quiet is the normal state of this line and only the outer deadline ends the wait.
+    second, so quiet is the normal state of this line and only the outer deadline ends the wait. A
+    frame that arrives damaged is not a failure either — the next advertisement is 500 ms away, and
+    giving up on one bad CRC would turn a single glitched byte into "the board is not there".
+
+    A `GONE` frame is the one thing that ends the wait early, and it is the whole reason this does
+    not have to guess: the device says which of four unrelated things happened, one of which is "the
+    destructive measurement run is starting right now".
     """
     deadline = time.monotonic() + wait
     matched = 0
@@ -254,10 +309,12 @@ def await_ready(link: Link, wait: float) -> int:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise LinkTimeout(
-                f"no READY in {wait:.0f} s. Is the bench running (`probe-rs run --chip nRF54LM20A "
-                "…/flat_store_bench`), and is this the VCOM tty rather than its dead twin? If RTT "
-                "shows the bench advertising while this waits, the J-Link's VCOM has wedged and only "
-                "a physical power-cycle of the DK clears it."
+                f"no frame of any kind in {wait:.0f} s — not even the GONE the device sends on every "
+                "exit path. Is the bench running (`cargo run --release --bin flat_store_bench`), and "
+                "is this the VCOM tty rather than its dead twin? If RTT shows the bench advertising "
+                "while this waits, the J-Link's VCOM has wedged: host writes succeed, RTT keeps "
+                "flowing, nothing reaches the device, and only a physical power-cycle of the DK "
+                "clears it (`probe-rs reset` does not)."
             )
         try:
             byte = link.read_exact(1, min(remaining, 1.0))[0]
@@ -277,17 +334,32 @@ def await_ready(link: Link, wait: float) -> int:
             except LinkTimeout:
                 continue  # a truncated frame; the next advertisement is 500 ms away
             frame = MAGIC + rest
-            if frame[5] != TAG_READY:
+            if frame[5] not in (TAG_READY, TAG_GONE):
                 continue  # a stale RESULT or STATUS from an earlier attempt; keep looking
-            return parse_ready(frame)
+            try:
+                return parse_ready(frame)
+            except DeviceGone:
+                raise  # the device told us why; that answer is not improved by waiting
+            except IngestError:
+                continue  # a damaged advertisement; another is 500 ms away
 
 
 def expect_ack(link: Link, timeout: float, what: str) -> None:
+    """One STATUS byte pair.
+
+    A NAK whose reason is in `RETRIABLE` is raised as a `RetriableError`, not a plain one: the most
+    likely mid-transfer failure on this cable is the device's own chunk deadline expiring (reason
+    11), and treating that as fatal would mean a manual re-run that has to land inside the device's
+    ten-second inter-object window. That is the difference between `--attempts` meaning what its
+    help text says and meaning nothing.
+    """
     status = link.read_exact(2, timeout)
     if status[0] == STATUS_ACK:
         return
     if status[0] == STATUS_NAK:
-        raise IngestError(f"the device refused {what}: {REASONS.get(status[1], f'reason {status[1]}')}")
+        reason = status[1]
+        message = f"the device refused {what}: {REASONS.get(reason, f'reason {reason}')}"
+        raise (RetriableError if reason in RETRIABLE else IngestError)(message)
     raise IngestError(f"the device answered {what} with {status[0]:#04x}, which is not a status byte")
 
 
@@ -301,8 +373,14 @@ def send(
     timeout: float = 30.0,
     progress=None,
 ) -> Result:
-    """One object, handshake to RESULT. Raises `IngestError` if it did not get there."""
-    link.drain()
+    """One object, handshake to RESULT. Raises `IngestError` if it did not get there.
+
+    **The input buffer is deliberately not flushed first.** An earlier version cleared it to be tidy,
+    which threw away the one frame this tool most needs to see: the device sends `GONE` once, and a
+    re-run started after that would discard it and then wait out its whole timeout blaming the
+    cable. `await_ready`'s magic scan already skips stale bytes correctly, so there is nothing for a
+    flush to fix and a real diagnostic to lose.
+    """
     chunk = await_ready(link, wait)
     link.write(header_frame(kind, name, payload))
     expect_ack(link, timeout, "the header")
@@ -347,18 +425,29 @@ def main(argv: list[str] | None = None) -> int:
         default=115200,
         help="must match INGEST_BAUD in flat_store_bench.rs (default: 115200)",
     )
-    parser.add_argument("--wait", type=float, default=60.0, help="seconds to wait for the device's READY")
+    parser.add_argument(
+        "--wait",
+        type=float,
+        default=60.0,
+        help="seconds to wait for the device on the FIRST attempt — generous, because the intended "
+        "order is to start this and then flash the board (default: 60)",
+    )
     parser.add_argument("--timeout", type=float, default=30.0, help="seconds to wait for any one ack")
     parser.add_argument(
         "--attempts",
         type=int,
         default=2,
-        help="retries on a link failure. A failed attempt was cancelled on the device, so a retry is "
-        "a fresh put with a new ObjectId and never a half-written object (default: 2)",
+        help="retries after a failure the device cleaned up after — a link timeout or a payload-CRC "
+        "mismatch. The failed attempt was cancelled, so a retry is a fresh put with a new ObjectId "
+        "and never a half-written object (default: 2)",
     )
     args = parser.parse_args(argv)
 
-    payload = args.file.read_bytes()
+    try:
+        payload = args.file.read_bytes()
+    except OSError as error:
+        print(f"cannot read {args.file}: {error.strerror}", file=sys.stderr)
+        return 2
     name = args.name or os.path.basename(args.file)
     kind = KINDS[args.kind]
     print(
@@ -367,38 +456,53 @@ def main(argv: list[str] | None = None) -> int:
         file=sys.stderr,
     )
 
-    link = SerialLink(args.port, args.baud)
+    try:
+        link = SerialLink(args.port, args.baud)
+    except IngestError as error:
+        print(f"{error}", file=sys.stderr)
+        return 2
+
     try:
         for attempt in range(1, args.attempts + 1):
+            # The first attempt waits for a human to flash the board; a retry is racing the device's
+            # ten-second inter-object window, and waiting a minute for a board that stopped listening
+            # forty seconds ago helps nobody.
+            wait = args.wait if attempt == 1 else min(args.wait, RETRY_WAIT)
             try:
                 print(f"waiting for the device (attempt {attempt} of {args.attempts})…", file=sys.stderr)
                 started = time.monotonic()
-                result = send(
-                    link,
-                    kind,
-                    name,
-                    payload,
-                    wait=args.wait,
-                    timeout=args.timeout,
-                    progress=_progress(started),
-                )
-            except LinkTimeout as error:
-                print(f"link failure: {error}", file=sys.stderr)
+                result = send(link, kind, name, payload, wait=wait, timeout=args.timeout, progress=_progress(started))
+            except DeviceGone as error:
+                print(f"{error}", file=sys.stderr)
+                return 1
+            except RetriableError as error:
+                print(f"attempt {attempt} failed: {error}", file=sys.stderr)
                 if attempt == args.attempts:
                     return 1
+                print("retrying — the device cancelled that attempt and is advertising again", file=sys.stderr)
                 continue
             except IngestError as error:
                 print(f"{error}", file=sys.stderr)
                 return 1
             print(result.describe(), file=sys.stderr)
-            if not result.ok:
+            if result.ok:
+                if result.payload_crc != crc32(payload):
+                    print("the device committed a CRC this host did not send — investigate", file=sys.stderr)
+                    return 1
+                print(f"done in {time.monotonic() - started:.1f} s", file=sys.stderr)
+                return 0
+            if result.reason == REASON_COMMIT:
+                # The device has ended its session and is holding those extents until a remount.
+                print("reset the board before retrying — the reservation is freed by the mount", file=sys.stderr)
                 return 1
-            if result.payload_crc != crc32(payload):
-                print("the device committed a CRC this host did not send — investigate", file=sys.stderr)
-                return 1
-            print(f"done in {time.monotonic() - started:.1f} s", file=sys.stderr)
-            return 0
+            if result.reason in RETRIABLE and attempt < args.attempts:
+                print("retrying — the device cancelled that attempt and is advertising again", file=sys.stderr)
+                continue
+            return 1
         return 1
+    except KeyboardInterrupt:
+        print("\ninterrupted — the device will cancel the attempt and go back to advertising", file=sys.stderr)
+        return 130
     finally:
         link.close()
 

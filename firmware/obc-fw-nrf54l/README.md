@@ -266,10 +266,23 @@ python3 tools/bench_ingest.py --port /dev/cu.usbmodem*133 \
     --file "$(python3 tools/fixtures.py resolve monaco-upahead | awk '/^map/ {print $2}')" \
     --kind map --name monaco.obcm
 
-# shell 2, from this directory. NOT `cargo run --verify` — that is broken on this rig.
+# shell 2, from this directory. The committed runner is `probe-rs run --chip nRF54LM20A --verify`,
+# so this flashes WITH the RRAM read-back check .cargo/config.toml explains — keep it.
 pkill probe-rs
-cargo build --release --bin flat_store_bench
-probe-rs download --chip nRF54LM20A target/thumbv8m.main-none-eabihf/release/flat_store_bench
+cargo run --release --bin flat_store_bench
+```
+
+`--verify` is not optional on this part: probe-rs 0.31's program path corrupts the first write after
+a code change often enough to matter, and on an RRAM device that is a boot HardFault at a random PC.
+The check turns it into an immediate, loud failure — if it trips, just run it again. (There is no
+`cargo run --verify`; `--verify` lives in the runner string, not in cargo's argument list. To pass
+anything to probe-rs from cargo it would have to be `cargo run -- …`.)
+
+If you would rather flash and attach as two steps — reflashing without dropping an RTT session, say
+— run probe-rs directly and keep the flag:
+
+```bash
+probe-rs download --chip nRF54LM20A --verify target/thumbv8m.main-none-eabihf/release/flat_store_bench
 probe-rs run      --chip nRF54LM20A target/thumbv8m.main-none-eabihf/release/flat_store_bench
 ```
 
@@ -278,8 +291,20 @@ probe-rs run      --chip nRF54LM20A target/thumbv8m.main-none-eabihf/release/fla
 at the cost of finding out mid-session whether this J-Link's CDC will carry a megabaud. RTT prints
 the `ObjectId` and a full catalog census after every commit, which is the acceptance evidence.
 
-If the host sits waiting while RTT shows the bench advertising, the J-Link's VCOM has wedged: only a
-physical power-cycle of the DK clears it, and no amount of `probe-rs reset` will.
+**If the host reports the device is not answering**, the device tells you which of these it is
+before it stops listening — it sends a `GONE` frame on every exit path, and the host prints the
+reason. The four causes, none of which is the same fix:
+
+- the host started after the ten-second window closed (`GONE: the window closed`) — and the bench is
+  now running the **destructive** measurement suite, so reset it immediately;
+- the board already finished a session and parked (`GONE: the session is over`) — reset to re-arm;
+- a commit was refused and its extents are held until a remount (`GONE: reservation held`) — reset;
+- the card carries a foreign `StoreId`, so `run` refused before the ingest was ever offered — RTT
+  says so, and `FORCE_REINIT` is the override.
+
+Only if **no** `GONE` arrives and RTT shows the bench advertising has the J-Link's VCOM wedged: host
+writes succeed, RTT keeps flowing, nothing reaches the device. A physical power-cycle of the DK is
+the only fix; `probe-rs reset` does not clear it.
 
 (The standalone FLPR waveform bench bin `ls021_flpr_bringup` was retired in #177 once the app drove
 the LS021 on glass; the M33-direct `ls021_bringup` bench was retired earlier in #176; the A1 BLE
