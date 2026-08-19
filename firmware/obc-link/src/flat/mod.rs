@@ -32,7 +32,7 @@ pub mod wire;
 pub mod vectors;
 
 pub use engine::{
-    Admission, CancelCause, Ceilings, Channel, Engine, Reaction, UploadEnd, UploadProgress, DEFAULT_STAGE,
+    Admission, CancelCause, Ceilings, Channel, Engine, Link, Reaction, UploadEnd, UploadProgress, DEFAULT_STAGE,
 };
 pub use ids::{DisplayName, EntryFlags, EntryMeta, ObjectId, ObjectKind, Revision, StoreId};
 pub use store::{Mode, Mutation, OpenPolicy, Policy, PutSource, Store, StoreError};

@@ -67,7 +67,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Channel, Receiver, Sender};
 use embassy_sync::signal::Signal;
 
-use obc_link::flat::{Ceilings, Engine, Policy, Reaction, RequestId};
+use obc_link::flat::{Ceilings, Engine, Link, Policy, Reaction, RequestId};
 use obc_storage::flat::store::MAX_BATCH;
 use obc_storage::flat::{
     Allocation, BlockDevice, EntryMeta, FlatStore, Handle, Mode, Mutation, ObjectKind, RideCheckpoint, Store as _,
@@ -414,23 +414,27 @@ pub(crate) enum Request {
     /// borrow rather than a copy for the same reason [`Request::Write`]'s bytes are: a request
     /// outlives the statement that sent it, and a `LIST` page or a stream record is up to a link
     /// ceiling of bytes that would otherwise be memcpy'd twice per record.
-    Control { record: &'static [u8], out: &'static mut [u8] },
+    Control { link: Link, record: &'static [u8], out: &'static mut [u8] },
     /// One whole stream record (§3.8): the 16-byte frame followed by exactly its payload.
-    Stream { record: &'static [u8], out: &'static mut [u8] },
+    Stream { link: Link, record: &'static [u8], out: &'static mut [u8] },
     /// Pump the engine once — a live `GET`'s next record, or an error owed to a dropped transfer.
     /// An adapter repeats this until the reaction is [`Reaction::Idle`]; a driver that stops pumping
     /// stalls a download.
-    Pump { out: &'static mut [u8] },
-    /// A link came up with these record ceilings (§5.1, §5.2). Releases whatever the previous link
-    /// held and re-pins the engine to what *this* link negotiated.
+    Pump { link: Link, out: &'static mut [u8] },
+    /// **This** link came up with these record ceilings (§5.1, §5.2).
+    ///
+    /// It re-pins `link`'s ceilings and releases `link`'s transfer if it had one — and touches
+    /// nothing belonging to the other link, which is the point. See the arm in [`serve`] for the
+    /// bug that shape exists to prevent.
     ///
     /// It carries a **validated** [`Ceilings`], not two numbers, so §5.1's floor refusal never
     /// reaches this queue: [`Ceilings::for_ble`] is where a link is judged, the adapter closes the
     /// channel on `None`, and nothing here has to answer a transport verdict with a `StoreError`.
-    LinkUp { ceilings: Ceilings },
-    /// §3.8's third form of cancel: the link went away. Answers nobody, because there is nobody
-    /// left to answer.
-    LinkLost,
+    LinkUp { link: Link, ceilings: Ceilings },
+    /// §3.8's third form of cancel: **this** link went away. Answers nobody, because there is nobody
+    /// left to answer — and releases only what that link held, so an unplugged cable is not a reason
+    /// to kill a phone's download.
+    LinkLost { link: Link },
     /// The live transfer's `RequestId`, if one owns the engine.
     ///
     /// The one *read* on this queue, and it earns its place: §5's cross-channel ordering makes an
@@ -753,38 +757,50 @@ fn serve(
             store.close(handle);
             Ok(Outcome::Done)
         }
-        Request::Control { record, out } => {
-            let reaction = engine.on_control(store, policy, record, out);
+        Request::Control { link, record, out } => {
+            let reaction = engine.on_control(link, store, policy, record, out);
             publish_upload(engine);
             Ok(Outcome::Reacted { reaction, out })
         }
-        Request::Stream { record, out } => {
-            let reaction = engine.on_stream(store, policy, record, out);
+        Request::Stream { link, record, out } => {
+            let reaction = engine.on_stream(link, store, policy, record, out);
             publish_upload(engine);
             Ok(Outcome::Reacted { reaction, out })
         }
-        Request::Pump { out } => {
-            let reaction = engine.poll(store, out);
+        Request::Pump { link, out } => {
+            let reaction = engine.poll(link, store, out);
             publish_upload(engine);
             Ok(Outcome::Reacted { reaction, out })
         }
-        Request::LinkUp { ceilings } => {
-            // A new link has no live transfer, and the old one's holds must go back before the
-            // engine forgets them: `on_link_lost` is the release, and the rebuild is what re-pins
-            // the ceilings a *negotiated* ATT MTU decides. Rebuilding in place rather than mutating
-            // is deliberate — `Ceilings` has no setter, and an engine whose ceilings changed under a
-            // live transfer would frame the rest of it against a link that no longer exists.
-            engine.on_link_lost(store);
-            *engine = Engine::new(ceilings);
+        Request::LinkUp { link, ceilings } => {
+            // **Scoped to `link`, and that is the whole of FS7.5-c3b's P1 fix.** This used to
+            // release the live transfer and rebuild the engine outright, which was right while one
+            // link existed: there was nothing else for it to disturb. With two — a phone in a pocket
+            // and a cable in J3, both spawned side by side in `main` — it meant a reconnecting
+            // radio destroyed a cable's twenty-minute map upload with no answer to the client
+            // sending it, *and* re-pinned the shared stream ceiling to the radio's 245 bytes so the
+            // cable's next 4,112-byte record died as over-ceiling. The reverse direction broke the
+            // radio's framing the same way.
+            //
+            // `Engine::on_link_up` now touches only this link's ceilings and only this link's
+            // transfer, and every transfer carries the ceilings it was admitted under. The
+            // newcomer's own `PUT` then meets §1's one-at-a-time rule the ordinary way — `busy`,
+            // with the live `RequestId` as context, whichever wire asked, which is exactly what the
+            // spec commit's §10 sentence promises.
+            engine.on_link_up(link, store, ceilings);
             defmt::info!(
-                "flat/v4: link up — control {=usize} B, stream {=usize} B",
+                "flat/v4: link up ({}) — control {=usize} B, stream {=usize} B",
+                match link {
+                    Link::Ble => "ble",
+                    Link::Usb => "usb",
+                },
                 ceilings.control(),
                 ceilings.stream()
             );
             Ok(Outcome::Done)
         }
-        Request::LinkLost => {
-            engine.on_link_lost(store);
+        Request::LinkLost { link } => {
+            engine.on_link_lost(link, store);
             publish_upload(engine);
             Ok(Outcome::Done)
         }
@@ -838,27 +854,21 @@ pub(crate) const ENGINE_BYTES: usize = core::mem::size_of::<BoardEngine>();
 ///
 /// `#[inline(never)]` so the constructor's frame is a transient sibling rather than part of the
 /// task's poll frame. It is small — [`ENGINE_STAGE`] is 512 B and the rest is a live-transfer record
-/// — but the rule is about *where a value is built*, not how big it is, and c3b raises the stage.
+/// — but the rule is about *where a value is built*, not how big it is.
 ///
-/// The initial ceilings are the device's **preferred** BLE link (§5.1: `ATT_MTU - 3` at the
-/// preferred 247-byte MTU, and a CoC SDU of the packet pool's MTU − 6). They are re-pinned per
-/// connection by [`Request::LinkUp`], which is what makes a link that negotiated something smaller
-/// correct rather than merely usual.
+/// **It comes up with no link up and therefore no ceilings**, which is the honest starting state of
+/// a device nobody has connected to: each adapter announces itself with [`Request::LinkUp`] and is
+/// served only while it has. The engine used to be built with the radio's preferred numbers, which
+/// was a guess that happened to be right for one link and wrong for the other the moment USB
+/// arrived.
 ///
 /// # Safety
 /// Sole writer of [`ENGINE`]; called exactly once, from [`storage_task`], which is spawned once.
 #[inline(never)]
 fn engine_slot() -> &'static mut BoardEngine {
-    let ceilings = Ceilings::new(PREFERRED_CONTROL_CEILING, PREFERRED_STREAM_CEILING)
-        .expect("the device's preferred link is above the protocol floor");
     // SAFETY: sole writer; `storage_task` is spawned exactly once and nothing else names this slot.
-    unsafe { crate::init_static(core::ptr::addr_of_mut!(ENGINE), Engine::new(ceilings)) }
+    unsafe { crate::init_static(core::ptr::addr_of_mut!(ENGINE), Engine::new()) }
 }
-
-/// §5.1's control ceiling at the device's preferred 247-byte ATT MTU.
-pub(crate) const PREFERRED_CONTROL_CEILING: usize = 244;
-/// The CoC SDU the packet pool yields (`DefaultPacketPool::MTU - 6`).
-pub(crate) const PREFERRED_STREAM_CEILING: usize = 245;
 
 /// The two decisions the engine cannot make for itself (`FLAT_Store_Protocol.md` §3.6, §4).
 ///

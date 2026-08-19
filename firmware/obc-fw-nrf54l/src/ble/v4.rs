@@ -74,10 +74,10 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{with_timeout, Duration, Timer};
 use nrf_sdc::{self as sdc};
-use obc_link::flat::{Admission, Ceilings, Channel, Reaction, RequestId};
+use obc_link::flat::{Admission, Ceilings, Channel, Link, Reaction, RequestId};
 use trouble_host::prelude::*;
 
-use crate::flat_store::{Outcome, Reply, Request, Writer};
+use crate::flat_store::{Lane, Outcome, Reply, Request, Writer};
 
 use super::gatt::Server;
 
@@ -208,16 +208,38 @@ pub(crate) async fn control_taken() {
 
 // ══════════════════════════ the lane ══════════════════════════
 
-/// The adapter's half of one round trip to the engine: the buffer it lends the engine, and nothing
-/// else.
+/// **The one lane, for the life of the image.**
 ///
-/// The buffer is lent rather than copied — it crosses the queue inside the request and comes back
-/// inside the answer — so a `None` here means a previous call's future was dropped between the send
-/// and the answer, which a supervision timeout during a long finalizing commit can genuinely do.
-/// [`Lane::reclaim`] is how that is recovered, and it is recovered *provably* rather than by
-/// scheduling luck: see there.
-pub(crate) struct Lane {
-    out: Option<&'static mut [u8]>,
+/// The type, the buffer-lending and the orphan recovery are
+/// [`crate::flat_store::Lane`]'s — shared with the cable's adapter rather than written twice, which
+/// is what makes the argument at `Lane::reclaim` have one home. c3a's version of that argument was
+/// about the *queue*'s FIFO service and carried a note saying a second sender would owe it a
+/// re-establishment; the shared one is re-established for both links at once, and this module no
+/// longer carries a copy that could drift from it.
+///
+/// What stays here is the two things that are genuinely this link's: the buffer ([`OUT`], sized to
+/// §5.1's ceilings rather than §5.2's) and the reply slot ([`ENGINE_REPLY`]).
+///
+/// Reached from inside [`serve_objects`] rather than passed in, and that is not tidiness: carried as
+/// a local across `ble::run`'s awaits it cost that task's poll frame **8,628 B** — 1,036 → 9,664 —
+/// by changing the coroutine's liveness enough that LLVM stopped sinking `init_resources`' and
+/// `init_server`'s construction temporaries out of the frame. Eight bytes of value, three orders of
+/// magnitude of frame; the #677/#1084 trap exactly.
+///
+/// # Safety
+/// One caller: [`serve_objects`], and there is one BLE connection.
+#[inline(never)]
+pub(crate) fn lane() -> &'static mut Lane {
+    // SAFETY: sole writer of `LANE`; the flag makes the build happen exactly once, before any driver
+    // exists, and `Lane` has no `Drop`.
+    unsafe {
+        if !LANE_BUILT.swap(true, Ordering::Relaxed) {
+            let out: &'static mut [u8] =
+                core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(OUT).cast::<u8>(), OUT_LEN);
+            return crate::init_static(core::ptr::addr_of_mut!(LANE), Lane::new(out, &ENGINE_REPLY, "ble"));
+        }
+        &mut *(*core::ptr::addr_of_mut!(LANE)).as_mut_ptr()
+    }
 }
 
 /// True once [`lane`] has built [`LANE`].
@@ -225,92 +247,6 @@ static LANE_BUILT: AtomicBool = AtomicBool::new(false);
 
 /// The lane itself, in `.bss`.
 static mut LANE: core::mem::MaybeUninit<Lane> = core::mem::MaybeUninit::uninit();
-
-/// **The one lane, for the life of the image.**
-///
-/// Two properties, and both were bought by review findings rather than chosen up front:
-///
-/// - **The buffer is taken once.** A `Lane` built per connection could mint a second `&'static mut`
-///   to [`OUT`] while a dropped call still had the first parked in [`ENGINE_REPLY`]. Here there is
-///   one `Lane`, its state lives in `.bss`, and a connection that finds `out: None` calls
-///   [`Lane::reclaim`] rather than conjuring a second reference.
-/// - **`ble::run` holds nothing.** The lane is reached from inside [`serve_objects`], so the value
-///   never becomes a local of the BLE task. That is not tidiness: carried as a local across that
-///   task's awaits it cost the poll frame **8,628 B** — 1,036 → 9,664 — by changing the coroutine's
-///   liveness enough that LLVM stopped sinking `init_resources`' and `init_server`'s construction
-///   temporaries out of the frame. Eight bytes of value, three orders of magnitude of frame; the
-///   #677/#1084 trap exactly, and the reason this returns a reference from a slot.
-///
-/// # Safety
-/// One caller at a time: [`serve_objects`] is the only one and there is one BLE connection. The
-/// `&'static mut` it hands out is re-derived per call, and no two live at once.
-#[inline(never)]
-pub(crate) fn lane() -> &'static mut Lane {
-    // SAFETY: sole writer of `LANE`; the flag makes the build happen exactly once, before any driver
-    // exists, and `Lane` has no `Drop`.
-    unsafe {
-        if !LANE_BUILT.swap(true, Ordering::Relaxed) {
-            let out: Option<&'static mut [u8]> =
-                Some(core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(OUT).cast::<u8>(), OUT_LEN));
-            return crate::init_static(core::ptr::addr_of_mut!(LANE), Lane { out });
-        }
-        &mut *(*core::ptr::addr_of_mut!(LANE)).as_mut_ptr()
-    }
-}
-
-impl Lane {
-    /// **Recover the buffer from a call whose future was dropped.**
-    ///
-    /// Sound because of the queue's own ordering rather than a timing argument: requests are served
-    /// FIFO by one consumer, so once *any* later call has been answered, every earlier job has run
-    /// and an orphaned answer can only be sitting in [`ENGINE_REPLY`]. The caller therefore reclaims
-    /// **before** issuing the next call — `Writer::call` discards a mismatched reply, which would
-    /// throw the buffer away with it.
-    ///
-    /// **That inference needs one more thing than FIFO service: the later call must have been
-    /// *enqueued* after the orphan.** It holds while BLE is the only sender, which is true today.
-    /// FS8's ride journal and c3b's USB adapter both add senders, and each owes this argument a
-    /// re-establishment — a second sender can interleave a job between the orphan and the reclaiming
-    /// call, and then "a later answer arrived" no longer implies "the orphan has been served".
-    fn reclaim(&mut self) {
-        if self.out.is_some() {
-            return;
-        }
-        match ENGINE_REPLY.try_take() {
-            Some((_, Ok(Outcome::Reacted { out, .. }))) => {
-                info!("ble: [v4] reclaimed the reaction buffer from an abandoned call");
-                self.out = Some(out);
-            }
-            Some(_) => warn!("ble: [v4] an abandoned call left no buffer to reclaim"),
-            None => warn!("ble: [v4] the reaction buffer is outstanding — this link cannot serve"),
-        }
-    }
-
-    /// Hand one request to the engine and take the buffer back with its answer.
-    async fn call(&mut self, writer: &Writer, make: impl FnOnce(&'static mut [u8]) -> Request) -> Option<Reaction> {
-        let out = self.out.take()?;
-        match writer.call(make(out), &ENGINE_REPLY).await {
-            Ok(Outcome::Reacted { reaction, out }) => {
-                self.out = Some(out);
-                Some(reaction)
-            }
-            // `serve` answers these three requests with `Reacted` and nothing else, so the buffer is
-            // gone only if that stopped being true. Report rather than panic: this is a radio task.
-            _ => {
-                warn!("ble: [v4] the engine answered a record with the wrong shape — lane closed");
-                None
-            }
-        }
-    }
-
-    /// The bytes a [`Reaction::Send`] named.
-    fn sent(&self, len: usize) -> &[u8] {
-        match &self.out {
-            Some(out) => &out[..len.min(out.len())],
-            None => &[],
-        }
-    }
-}
 
 /// **Release whatever the engine still holds for a link that has gone away** (§3.8's third form of
 /// cancel).
@@ -320,7 +256,7 @@ impl Lane {
 /// thing it cleans up after has happened.
 pub(crate) async fn release_engine(writer: &Writer) {
     static TEARDOWN_REPLY: Reply = Signal::new();
-    if writer.call(Request::LinkLost, &TEARDOWN_REPLY).await.is_err() {
+    if writer.call(Request::LinkLost { link: Link::Ble }, &TEARDOWN_REPLY).await.is_err() {
         warn!("ble: [v4] the engine refused a link-lost teardown");
     }
     DRIVER_READY.store(false, Ordering::Relaxed);
@@ -377,14 +313,14 @@ pub(crate) async fn serve_objects(
         info!("ble: [v4] channel up — control {} B, stream {} B", ceilings.control(), ceilings.stream());
         // A dropped call from the previous link parks the buffer in the reply slot; take it back
         // before the first call of this one, because `Writer::call` would discard it.
-        lane.reclaim();
-        if lane.call(&writer, |out| Request::Pump { out }).await.is_none() {
+        lane.reclaim().await;
+        if lane.call(&writer, |out| Request::Pump { link: Link::Ble, out }).await.is_none() {
             // The lane has no buffer and cannot get one. Serving would mean answering nothing.
             warn!("ble: [v4] no reaction buffer — refusing this channel rather than half-serving it");
             writer_half.disconnect();
             continue;
         }
-        if writer.call(Request::LinkUp { ceilings }, &ENGINE_REPLY).await.is_err() {
+        if writer.call(Request::LinkUp { link: Link::Ble, ceilings }, &ENGINE_REPLY).await.is_err() {
             warn!("ble: [v4] the engine refused the link — closing the channel");
             writer_half.disconnect();
             continue;
@@ -486,7 +422,7 @@ async fn control_record(writer: &Writer, lane: &mut Lane, len: usize) -> Option<
     // `CONTROL_TAKEN` is signalled below.
     let record: &'static [u8] =
         unsafe { core::slice::from_raw_parts(core::ptr::addr_of!(CONTROL_RX).cast::<u8>(), len) };
-    let reaction = lane.call(writer, |out| Request::Control { record, out }).await;
+    let reaction = lane.call(writer, |out| Request::Control { link: Link::Ble, record, out }).await;
     // **Released here and not a statement earlier.** The engine consumes `CONTROL_RX` synchronously
     // inside the storage task's `serve`, which is over by the time this call answers — so this is
     // the first instant at which the GATT task may stage another record without writing under a
@@ -537,7 +473,7 @@ async fn stream_record(writer: &Writer, lane: &mut Lane, admission: &mut Admissi
     // `reader_pump` holds no reference to it across that window.
     let record: &'static [u8] =
         unsafe { core::slice::from_raw_parts(core::ptr::addr_of!(STREAM_RX).cast::<u8>(), len) };
-    let reaction = lane.call(writer, |out| Request::Stream { record, out }).await;
+    let reaction = lane.call(writer, |out| Request::Stream { link: Link::Ble, record, out }).await;
     // The engine has consumed the bytes; the reader may take the next SDU.
     STREAM_TAKEN.signal(());
     reaction
@@ -644,7 +580,7 @@ async fn pump(
             }
             continue;
         }
-        match lane.call(writer, |out| Request::Pump { out }).await {
+        match lane.call(writer, |out| Request::Pump { link: Link::Ble, out }).await {
             Some(next) => reaction = next,
             None => return Some("lane"),
         }
