@@ -7,27 +7,31 @@ const seams = vi.hoisted(() => ({
     sendMapBlob: vi.fn(),
     sendMapBytes: vi.fn(),
     readMapOutput: vi.fn(async () => new Blob([Uint8Array.of(1, 2, 3, 4)])),
+    cellStoreWritable: vi.fn(async () => false),
+    openCellStore: vi.fn(async () => null),
+    downloadCells: vi.fn(),
     discardCellStore: vi.fn(async () => undefined),
     discardMapOutput: vi.fn(async () => undefined),
     saveBlob: vi.fn(),
     workerOutput: "stored" as "stored" | "file",
+    workerAssemble: 0,
 }));
 
 vi.mock("../../lib/cells/store", () => ({
     cellStoreRevision: () => "test-revision",
-    cellStoreWritable: vi.fn(async () => false),
+    cellStoreWritable: seams.cellStoreWritable,
     clearCellStores: vi.fn(async () => undefined),
     clearMapWorkStorage: vi.fn(async () => undefined),
     discardCellStore: seams.discardCellStore,
     discardMapOutput: seams.discardMapOutput,
     hasRoomFor: vi.fn(async () => false),
-    openCellStore: vi.fn(),
+    openCellStore: seams.openCellStore,
     readMapOutput: seams.readMapOutput,
 }));
 
 vi.mock("../../lib/catalog/download", () => ({
     planCells: () => ({ items: [], totalBytes: 0, knownEmpty: [] }),
-    downloadCells: vi.fn(
+    downloadCells: seams.downloadCells.mockImplementation(
         async (
             _plan: unknown,
             options: { onProgress?: (progress: Record<string, number>) => void },
@@ -48,9 +52,11 @@ vi.mock("../../lib/device/write", () => ({
 }));
 vi.mock("../../lib/download", () => ({ saveBlob: seams.saveBlob }));
 
-import { DeviceJob } from "../../lib/device/job.svelte";
+import { DeviceJob, jobRegistry } from "../../lib/device/job.svelte";
 import { deviceHolder } from "../../lib/device/session.svelte";
+import type { SendAssembledMap } from "../../lib/device/write";
 import { DeviceError, type FlatStoreClient } from "../../lib/usb/client";
+import MapSend from "../device/MapSend.svelte";
 import DownloadStep from "./DownloadStep.svelte";
 
 class AssembleWorker {
@@ -80,6 +86,7 @@ class AssembleWorker {
                 ),
             );
         } else if (request.type === "assemble") {
+            seams.workerAssemble += 1;
             queueMicrotask(() => {
                 this.onmessage?.(
                     new MessageEvent("message", {
@@ -113,10 +120,14 @@ describe("direct assembler delivery", () => {
         vi.stubGlobal("Worker", AssembleWorker);
         seams.sendMapBlob.mockReset();
         seams.sendMapBytes.mockReset();
+        seams.cellStoreWritable.mockReset().mockResolvedValue(false);
+        seams.openCellStore.mockReset().mockResolvedValue(null);
+        seams.downloadCells.mockClear();
         seams.discardCellStore.mockReset().mockResolvedValue(undefined);
         seams.discardMapOutput.mockClear();
         seams.saveBlob.mockClear();
         seams.workerOutput = "stored";
+        seams.workerAssemble = 0;
     });
 
     afterEach(() => {
@@ -299,6 +310,119 @@ describe("direct assembler delivery", () => {
         expect(first.phase).toBe("done");
         expect(target.textContent).toContain("Assembled and sent");
         await unmount(component);
+    });
+
+    it("keeps committed success when the real TransferBar is cancelled and unmounted during cleanup", async () => {
+        let commit!: (result: { objectId: bigint }) => void;
+        seams.sendMapBlob.mockImplementation(
+            () => new Promise((resolve) => (commit = resolve)),
+        );
+        let releaseCleanup!: () => void;
+        const cleanup = new Promise<undefined>((resolve) => (releaseCleanup = () => resolve(undefined)));
+        seams.discardMapOutput.mockImplementationOnce(() => cleanup);
+        const built = await mountReadyStep();
+        const transferTarget = document.createElement("div");
+        document.body.append(transferTarget);
+        let success: unknown = null;
+        let failure: unknown = null;
+        const send: SendAssembledMap = async (client, ctx) => {
+            try {
+                success = await built.component.sendToDevice(client, ctx);
+                return success as Awaited<ReturnType<SendAssembledMap>>;
+            } catch (cause) {
+                failure = cause;
+                throw cause;
+            }
+        };
+        const mapSend = mount(MapSend, {
+            target: transferTarget,
+            props: {
+                client: {} as FlatStoreClient,
+                ledger: ledger as never,
+                sendAssembled: send,
+                sendReady: true,
+            },
+        });
+
+        (transferTarget.querySelector("button.primary") as HTMLButtonElement).click();
+        for (let attempt = 0; attempt < 20 && typeof commit !== "function"; attempt++) {
+            await Promise.resolve();
+            await tick();
+        }
+        const staleCancel = [...transferTarget.querySelectorAll("button")].find(
+            (button) => button.textContent === "Cancel",
+        ) as HTMLButtonElement;
+        expect(staleCancel).toBeDefined();
+
+        commit({ objectId: 1n });
+        for (let attempt = 0; attempt < 20 && !transferTarget.textContent?.includes("Removing temporary"); attempt++) {
+            await Promise.resolve();
+            await tick();
+        }
+        const job = jobRegistry.active;
+        expect(job?.phase).toBe("finalizing");
+        expect(transferTarget.textContent).toContain("Removing temporary map data");
+        expect(transferTarget.textContent).not.toContain("Cancel");
+
+        // Exercise both stale UI cancellation and the surface's onDestroy cancellation after the
+        // durable commit. Neither may reach DownloadStep's detached abort listener.
+        staleCancel.click();
+        await unmount(mapSend);
+        expect(job?.running).toBe(true);
+        releaseCleanup();
+        for (let attempt = 0; attempt < 20 && job?.running; attempt++) {
+            await Promise.resolve();
+            await tick();
+        }
+
+        expect(success).toEqual({ objectId: 1n });
+        expect(failure).toBeNull();
+        expect(job?.phase).toBe("done");
+        expect(seams.discardMapOutput).toHaveBeenCalledOnce();
+        expect(built.target.textContent).toContain("Assembled and sent");
+        expect(built.target.textContent).not.toContain("Cancelled");
+        expect(built.target.textContent).not.toContain("Nothing was saved");
+        await unmount(built.component);
+    });
+
+    it("does not let a cancelled storage preflight resume into a stale run", async () => {
+        const built = await mountReadyStep();
+        let releaseProbe!: (writable: boolean) => void;
+        seams.cellStoreWritable.mockImplementationOnce(
+            () => new Promise<boolean>((resolve) => (releaseProbe = resolve)),
+        );
+        seams.downloadCells.mockClear();
+        seams.openCellStore.mockClear();
+        seams.readMapOutput.mockClear();
+        seams.discardMapOutput.mockClear();
+        seams.workerAssemble = 0;
+        const job = new DeviceJob("map");
+        const running = job.run(
+            (ctx) => built.component.sendToDevice({} as FlatStoreClient, ctx),
+            () => "sent",
+        );
+        for (let attempt = 0; attempt < 20 && typeof releaseProbe !== "function"; attempt++) {
+            await Promise.resolve();
+            await tick();
+        }
+
+        job.cancel();
+        await running;
+        expect(job.phase).toBe("idle");
+        expect(seams.discardMapOutput).toHaveBeenCalledOnce();
+        const cleanupCalls = seams.discardMapOutput.mock.calls.length;
+        releaseProbe(true);
+        for (let turn = 0; turn < 5; turn++) {
+            await Promise.resolve();
+            await tick();
+        }
+
+        expect(seams.openCellStore).not.toHaveBeenCalled();
+        expect(seams.downloadCells).not.toHaveBeenCalled();
+        expect(seams.readMapOutput).not.toHaveBeenCalled();
+        expect(seams.workerAssemble).toBe(0);
+        expect(seams.discardMapOutput).toHaveBeenCalledTimes(cleanupCalls);
+        await unmount(built.component);
     });
 
     it("keeps the ordinary download path and does not delete its source early", async () => {

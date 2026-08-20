@@ -20,6 +20,7 @@
         assembling: "Assembling the map",
         sending: "Writing to the device",
         committing: "Finishing on the device",
+        finalizing: "Removing temporary map data",
     };
 
     const heading = $derived(PHASES[job.phase] ?? label ?? "Working");
@@ -36,7 +37,9 @@
                     ? ` · ${formatRate(job.rate)}`
                     : ""}{eta ? ` · about ${formatDuration(eta)} left` : ""}
             </span>
-            <button type="button" class="btn ghost" onclick={() => job.cancel()}>Cancel</button>
+            {#if job.phase !== "finalizing"}
+                <button type="button" class="btn ghost" onclick={() => job.cancel()}>Cancel</button>
+            {/if}
         </div>
     </div>
 {/if}
