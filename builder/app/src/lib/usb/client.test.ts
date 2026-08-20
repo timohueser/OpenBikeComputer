@@ -84,6 +84,37 @@ describe("what a connection learns before anything else", () => {
     });
 });
 
+// ----------------------------------------------------------------- FORMAT
+
+describe("FORMAT", () => {
+    it("erases the catalog and starts the replacement store era", async () => {
+        await withDevice({ storeId: REFERENCE_STORE_ID, commitSequence: 7n }, async ({ client, device }) => {
+            device.seed({ kind: ObjectKind.Route, displayName: "erase me", bytes: payload(64) });
+            const replacement = "2a7b16c4903145d8a6e2730fb94c5811";
+            await expect(client.format(REFERENCE_STORE_ID, { replacementStoreId: replacement })).resolves.toEqual({
+                storeId: replacement,
+            });
+            expect(device.entries).toEqual([]);
+            expect(device.requestLog.at(-1)?.opcode).toBe(Opcode.Format);
+            const page = await client.listPage({});
+            expect(page.storeId).toBe(replacement);
+            expect(page.commitSequence).toBe(1n);
+        });
+    });
+
+    it("does not erase a card whose identity changed under the confirmation", async () => {
+        await withDevice({ storeId: REFERENCE_STORE_ID }, async ({ client, device }) => {
+            device.seed({ kind: ObjectKind.Route, displayName: "keep me", bytes: payload(16) });
+            await expect(
+                client.format("11111111111111111111111111111111", {
+                    replacementStoreId: "2a7b16c4903145d8a6e2730fb94c5811",
+                }),
+            ).rejects.toMatchObject({ code: "invalid-request" });
+            expect(device.entries).toHaveLength(1);
+        });
+    });
+});
+
 // ------------------------------------------------------------------- LIST
 
 describe("LIST", () => {

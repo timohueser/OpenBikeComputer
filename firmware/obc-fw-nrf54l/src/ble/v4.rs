@@ -610,12 +610,25 @@ async fn pump(
                     return Some("send");
                 }
             }
-            Reaction::SendAndReboot { .. } => {
-                // §4 step 4. `ARM` is refused by this build's policy (`flat_store::BoardPolicy`), so
-                // the engine never reaches this reaction; it is answered rather than ignored so that
-                // the slice which fills the policy finds a driver that already handles it.
-                warn!("ble: [v4] the engine asked for a reboot, which this build cannot arm");
-                return Some("arm");
+            Reaction::SendAndReboot { len } => {
+                // The terminal answer is still a confirmed indication: the client must know that
+                // FORMAT reached durable media before the link disappears. A brief beat lets the
+                // controller finish the confirmation exchange, then boot remounts the empty store.
+                match with_timeout(
+                    INDICATE_TIMEOUT,
+                    server.obc.object_control.indicate_raw(conn, lane.sent(len), false),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        warn!("ble: [v4] terminal indication failed: {:?}", defmt::Debug2Format(&e));
+                    }
+                    Err(_) => warn!("ble: [v4] terminal indication timed out"),
+                }
+                info!("ble: [v4] terminal response complete — rebooting");
+                Timer::after_millis(50).await;
+                cortex_m::peripheral::SCB::sys_reset();
             }
         }
         // **Between iterations, not only when idle.** A `GET` streams for as long as the object is

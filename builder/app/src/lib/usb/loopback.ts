@@ -49,6 +49,7 @@ import {
     encodeArmResponse,
     encodeCancelResponse,
     encodeErrorResponse,
+    encodeFormatResponse,
     encodeGetResponse,
     encodeListResponse,
     encodePutResponse,
@@ -317,6 +318,8 @@ export interface MockDeviceOptions {
     storeId?: string;
     /** The commit sequence a freshly mounted store reports. */
     commitSequence?: bigint;
+    /** Start with no readable flat catalog; only FORMAT with an all-zero expected identity recovers it. */
+    formatRecovery?: "unformatted" | "catalog-unreadable";
     deviceInfo?: DeviceInfo;
     /** Total payload bytes the card can hold. A `PUT` past it is `noSpace` with the bytes required. */
     cardBytes?: number;
@@ -350,13 +353,14 @@ export class MockDevice {
     private readonly control: RecordChannel;
     private readonly stream: RecordChannel;
 
-    readonly storeId: string;
+    storeId: string;
     private commitSequence: bigint;
     private readonly cardBytes: number;
     private readonly pageEntries: number;
     private readonly streamPayload: number;
     private readonly armPolicy: "refuse" | "allow";
     private readonly sinkUploads: boolean;
+    private formatRecovery: "unformatted" | "catalog-unreadable" | null;
 
     /** The catalog, kept in `(ObjectId, Revision)` order — the order §3.3 pages in. */
     private readonly catalog: Stored[] = [];
@@ -377,6 +381,7 @@ export class MockDevice {
         this.stream = new RecordChannel(link.stream, MAX_DEVICE_RECORD, MAX_HOST_STREAM_RECORD);
         this.storeId = options.storeId ?? REFERENCE_STORE_ID;
         this.commitSequence = options.commitSequence ?? 1n;
+        this.formatRecovery = options.formatRecovery ?? null;
         this.cardBytes = options.cardBytes ?? 8 * 1024 ** 3;
         this.pageEntries = options.pageEntries ?? LIST_PAGE_ENTRIES;
         this.streamPayload = Math.min(options.streamPayload ?? MAX_STREAM_PAYLOAD, MAX_STREAM_PAYLOAD);
@@ -500,6 +505,9 @@ export class MockDevice {
             case Opcode.Arm:
                 await this.serveArm(requestId, request.body);
                 return;
+            case Opcode.Format:
+                await this.serveFormat(requestId, request.body);
+                return;
             case Opcode.Get:
             case Opcode.Put:
                 await this.startTransfer(requestId, request);
@@ -518,6 +526,14 @@ export class MockDevice {
     // --- LIST (§3.3) ------------------------------------------------------------
 
     private async serveList(requestId: number, request: Extract<Request, { opcode: 0x01 }>["body"]): Promise<void> {
+        if (this.formatRecovery) {
+            const detail =
+                this.formatRecovery === "unformatted"
+                    ? Detail.readOnly.unformatted
+                    : Detail.readOnly.catalogUnreadable;
+            await this.refuse(Opcode.List, requestId, refusal(ErrorCode.ReadOnly, detail));
+            return;
+        }
         if (request.cursor && request.cursor.commitSequence !== this.commitSequence) {
             await this.refuse(
                 Opcode.List,
@@ -651,6 +667,29 @@ export class MockDevice {
         await this.send(
             encodeArmResponse(requestId, { rollbackObjectId: reserve.objectId, commitSequence: this.commitSequence }),
         );
+    }
+
+    // --- FORMAT (§3.10) --------------------------------------------------------
+
+    private async serveFormat(
+        requestId: number,
+        request: { expectedStoreId: string; replacementStoreId: string },
+    ): Promise<void> {
+        const expected = this.formatRecovery ? "00000000000000000000000000000000" : this.storeId;
+        if (request.expectedStoreId !== expected) {
+            await this.refuse(
+                Opcode.Format,
+                requestId,
+                refusal(ErrorCode.InvalidRequest, Detail.invalidRequest.badCombination),
+            );
+            return;
+        }
+        this.catalog.length = 0;
+        this.nextObjectId = 1n;
+        this.commitSequence = 1n;
+        this.storeId = request.replacementStoreId;
+        this.formatRecovery = null;
+        await this.send(encodeFormatResponse(requestId, this.storeId));
     }
 
     // --- transfers (§3.5, §3.6) --------------------------------------------------

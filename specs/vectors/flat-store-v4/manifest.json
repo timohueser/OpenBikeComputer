@@ -118,13 +118,23 @@
       "name": "arm-response",
       "file": "controls/arm-response.json",
       "sha256": "c6c37fbe25b3f9596a15bf725169fda84232da11383b63a7428eb04e08e0693d"
+    },
+    {
+      "name": "format-request",
+      "file": "controls/format-request.json",
+      "sha256": "be86a3fbc40685f368a43f6e7b071790e0208dd56d9ec6287eb98bc3662da9af"
+    },
+    {
+      "name": "format-response",
+      "file": "controls/format-response.json",
+      "sha256": "8fa0c96f1c33c21d36084253508d16c28efaa2237024601a545c0d59a07d8385"
     }
   ],
   "streams": [
     {
-      "name": "stream-frame-of-section-3-10",
-      "file": "streams/stream-frame-of-section-3-10.json",
-      "sha256": "e01742f4826001bb97613d6e4b1dcb95c7d48fa39877e941c7ce6efb6e9dc9fb"
+      "name": "stream-frame-of-section-3-11",
+      "file": "streams/stream-frame-of-section-3-11.json",
+      "sha256": "91c1675379ef9e216757d58022628d2148dda715ee9227ed66978c6149129f1e"
     },
     {
       "name": "stream-first-frame",

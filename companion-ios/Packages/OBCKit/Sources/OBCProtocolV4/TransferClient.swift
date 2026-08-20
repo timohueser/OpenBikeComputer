@@ -209,6 +209,19 @@ public actor TransferClient {
         return result
     }
 
+    /// Destructively initialize the card as a new empty flat store. No iOS product surface exposes
+    /// this today; keeping it in the shared v4 client makes FORMAT transport-neutral rather than a
+    /// USB-only dialect.
+    public func format(expectedStoreID: StoreID, replacementStoreID: StoreID) async throws -> FormatResult {
+        await acquire()
+        defer { release() }
+        try await ensureIntroduced()
+        let response = try await request(
+            .format(expectedStoreID: expectedStoreID, replacementStoreID: replacementStoreID), opcode: .format)
+        guard case .format(let result) = response else { throw TransferClientError.unexpectedResponse }
+        return result
+    }
+
     private func getOnLiveLink(
         objectID: ObjectID, revision: Revision?,
         progress: @escaping @Sendable (Int, Int) -> Void

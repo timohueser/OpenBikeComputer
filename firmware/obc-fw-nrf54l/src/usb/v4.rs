@@ -425,13 +425,16 @@ async fn pump(
                     return Some("send");
                 }
             }
-            Reaction::SendAndReboot { .. } => {
-                // §4 steps 4 and 5. `ARM` is refused by this build's policy
-                // (`flat_store::BoardPolicy`), so the engine never reaches this reaction; it is
-                // answered rather than ignored so that the slice which fills the policy finds a
-                // driver that already handles it.
-                warn!("usb: [v4] the engine asked for a reboot, which this build cannot arm");
-                return Some("arm");
+            Reaction::SendAndReboot { len } => {
+                // FORMAT invalidates the mounted store before it answers. Complete the USB record,
+                // give the controller one short drain beat, then remount the new empty store from a
+                // clean boot. ARM uses this same terminal reaction once board policy enables it.
+                if !control_tx.send(lane.sent(len)).await {
+                    return Some("send-reboot");
+                }
+                info!("usb: [v4] terminal response sent — rebooting");
+                Timer::after_millis(50).await;
+                cortex_m::peripheral::SCB::sys_reset();
             }
         }
         // **Between iterations, not only when idle.** A `GET` streams for as long as the object is

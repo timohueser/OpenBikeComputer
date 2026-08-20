@@ -769,7 +769,7 @@ async fn spawn_usb_stack(spawner: Spawner, usb_p: embassy_nrf::Peri<'static, emb
     spawner.spawn(defmt::unwrap!(usb::run(usb_p)));
 }
 
-/// Keep map replacement available when boot cannot parse the map.
+/// Keep card provisioning and map replacement available when boot cannot open a map.
 ///
 /// The ordinary composition point sits after map parsing because the ride loop needs the parsed
 /// tables. A damaged map must not make the very cable used to replace it disappear, though. This
@@ -779,10 +779,9 @@ async fn spawn_usb_stack(spawner: Spawner, usb_p: embassy_nrf::Peri<'static, emb
 ///
 /// **It is card-agnostic since FS7.5-c3b**, where it used to be the FAT arm's. A v4 `PUT` goes to
 /// the flat store, so this needs no `Storage`, no object store, no shared mutex and no arena arm —
-/// and on a FAT card the honest outcome is the engine's own: every opcode answers `readOnly` with
-/// detail `unformatted 3`, because a card that is not a flat store is not one this build can write.
-/// A FAT card whose map will not parse is therefore replaced by writing a new card, not over the
-/// cable, and this plane says so rather than accepting bytes it cannot commit.
+/// and on an unformatted card the honest outcome is the engine's own: ordinary object operations
+/// answer `readOnly/unformatted`, while the explicit destructive `FORMAT` operation can initialize
+/// it over this recovery link.
 ///
 /// The one thing it must still do is seed the firmware revision, because §5.2.1's EP0 device-info
 /// request serves it and "an update is available" compares against it.
@@ -794,7 +793,7 @@ async fn spawn_map_recovery_usb(
     let mut settings_store = settings::RramSettingsStore::new(rramc);
     dfu::seed_firmware_revision(&mut settings_store);
     spawner.spawn(defmt::unwrap!(spawn_usb_stack(spawner, usb_p)));
-    defmt::warn!("usb: map-recovery plane active — upload a replacement map and reboot");
+    defmt::warn!("usb: card-recovery plane active — format if needed, then upload a map and reboot");
 }
 
 /// Idle camera zoom for the boot map, in ground metres-per-pixel (the 0.5–4 mpp riding band). A
@@ -1287,8 +1286,9 @@ async fn main(_spawner: Spawner) {
         //
         // The reason is `FLAT_Store_Protocol.md` §3.9, not convenience. A FAT card is a card that is
         // **not a flat store** — §5.6 step 1, `Mode::Unformatted` — and the protocol already has the
-        // honest answer for one: every opcode returns `readOnly` with detail `unformatted 3`,
-        // including the reads, because there is nothing to read. Mounting the engine against the
+        // honest answer for one: ordinary opcodes return `readOnly` with detail `unformatted 3`,
+        // including the reads, because there is nothing to read; explicit FORMAT is the one
+        // recovery exception. Mounting the engine against the
         // store that is always mounted therefore makes a FAT card answer the truth about itself,
         // where a build that only armed on flat cards would have the BLE adapter holding a record it
         // had no engine to answer with. One code path, two cards, and neither of them a special
@@ -1304,16 +1304,19 @@ async fn main(_spawner: Spawner) {
                         "flat: no map to render from — showing the {=str} fault screen, then heartbeat idle",
                         fault.copy().0
                     );
+                    spawn_map_recovery_usb(_spawner, p.USBHS, p.RRAMC).await;
                     show_boot_fault(&mut display, fault).await;
                     idle_blink(&mut led).await
                 }
             },
             flat_store::Card::FlatBroken(fault) => {
+                spawn_map_recovery_usb(_spawner, p.USBHS, p.RRAMC).await;
                 show_boot_fault(&mut display, fault).await;
                 idle_blink(&mut led).await
             }
             flat_store::Card::NotFlat => {
                 defmt::error!("flat: card is not formatted as a flat store — FAT compatibility is retired");
+                spawn_map_recovery_usb(_spawner, p.USBHS, p.RRAMC).await;
                 show_boot_fault(&mut display, obc_app::BootFault::StorageFault).await;
                 idle_blink(&mut led).await
             }
