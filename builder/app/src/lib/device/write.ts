@@ -48,6 +48,11 @@ import type { PreparedRoute } from "./route";
 /** §3.6's display-name field: at most 48 UTF-8 bytes. */
 export const DISPLAY_NAME_MAX = 48;
 
+/** The coverage builder's one-click sink, kept as a type-only seam so the USB
+ * implementation stays out of the builder entry chunk until a connected rider
+ * actually presses Send. */
+export type SendAssembledMap = (client: FlatStoreClient, ctx: JobContext) => Promise<PutResponse>;
+
 /** A name the wire will take, trimmed on a byte boundary and never empty. */
 export function displayName(name: string, fallback: string): string {
     return truncateUtf8(name.trim() || fallback, DISPLAY_NAME_MAX);
@@ -57,21 +62,25 @@ export function displayName(name: string, fallback: string): string {
 // with the transport that pays for it: `DEFAULT_BATCH_BYTES` / `UPLOAD_WINDOW` in `../usb/client`.
 
 /**
- * Send a `.obcm` the rider already has.
+ * Send a `.obcm` Blob, either selected by the rider or produced by the assembler.
  *
- * No staging: a `File` is *already* a handle to bytes on disk, so it is read twice straight from
- * there — once for the CRC §3.6 declares, once to send — and nothing is copied anywhere. That is
- * what `blobSource` is for, and it is why this path costs nothing extra despite being the one a
- * 300 MB file is most likely to arrive on.
+ * No staging: a picked `File` and the assembler's OPFS-backed `Blob` are already handles to bytes
+ * on disk, so either is read twice straight from there — once for the CRC §3.6 declares, once to
+ * send — and nothing is copied anywhere. That is what `blobSource` is for.
  *
  * Replaces the map the device will select: the active (non-retained) `MapShard` with the lowest
  * `ObjectId`. That is the firmware's deterministic selection rule, so a second send moves the map
  * the rider is actually using instead of accumulating an unreachable sibling. A card with no map
  * creates one. `LIST` supplies both compare-and-swap fields immediately before `PUT`.
  */
-export async function sendMapFile(client: FlatStoreClient, file: File, ctx: JobContext): Promise<PutResponse> {
-    ctx.phase("reading", file.size);
-    const source = await blobSource(file);
+export async function sendMapBlob(
+    client: FlatStoreClient,
+    blob: Blob,
+    filename: string,
+    ctx: JobContext,
+): Promise<PutResponse> {
+    ctx.phase("reading", blob.size);
+    const source = await blobSource(blob);
     const maps = await client.list({ kind: ObjectKind.MapShard, signal: ctx.signal });
     const current = maps.entries
         .filter((entry) => (entry.flags & EntryFlags.Retained) === 0)
@@ -86,7 +95,7 @@ export async function sendMapFile(client: FlatStoreClient, file: File, ctx: JobC
             objectId: current?.objectId,
             expectedRevision: current?.revision,
             kind: ObjectKind.MapShard,
-            displayName: displayName(file.name.replace(/\.obcm$/i, ""), "Map"),
+            displayName: displayName(filename.replace(/\.obcm$/i, ""), "Map"),
         },
         source,
         {
@@ -98,6 +107,11 @@ export async function sendMapFile(client: FlatStoreClient, file: File, ctx: JobC
             onSent: () => ctx.phase("committing"),
         },
     );
+}
+
+/** Send a `.obcm` the rider selected from disk. */
+export function sendMapFile(client: FlatStoreClient, file: File, ctx: JobContext): Promise<PutResponse> {
+    return sendMapBlob(client, file, file.name, ctx);
 }
 
 /**

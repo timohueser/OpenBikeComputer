@@ -32,7 +32,7 @@ import type { BytePipe, DeviceLink } from "../usb/pipe";
 import { ObjectKind } from "../usb/protocol";
 import { initConvert } from "../convert/bridge";
 import { prepareRoute } from "./route";
-import { armUpdate, sendMapFile, sendRoute, stageFirmware } from "./write";
+import { armUpdate, sendMapBlob, sendMapFile, sendRoute, stageFirmware } from "./write";
 import type { JobContext, JobPhase } from "./progress";
 
 // --- fixtures -----------------------------------------------------------------
@@ -103,6 +103,19 @@ async function withDevice<T>(
 // --- the flows ----------------------------------------------------------------
 
 describe("map upload from a file", () => {
+    it("streams an assembler Blob without requiring a picked File", async () => {
+        await withDevice({}, async ({ client, device }) => {
+            const bytes = syntheticBytes(200_000);
+            const blob = new Blob([bytes]);
+            const result = await sendMapBlob(client, blob, "built-monaco.obcm", context());
+
+            expect(result.payloadLength).toBe(BigInt(bytes.length));
+            expect(result.payloadCrc32).toBe(Crc32.of(bytes));
+            expect(device.payloadOf(result.objectId)).toEqual(bytes);
+            expect(device.entries[0].displayName).toBe("built-monaco");
+        });
+    });
+
     it("commits one object and reports the id the device assigned", async () => {
         await withDevice({}, async ({ client, device }) => {
             const bytes = syntheticBytes(200_000);

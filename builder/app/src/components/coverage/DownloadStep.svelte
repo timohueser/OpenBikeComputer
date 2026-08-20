@@ -1,12 +1,11 @@
 <script lang="ts">
-    // Final coverage proof, then the download: cells fetched and verified against
-    // the catalog, assembled into ONE `.obcm` by wasm in a Worker, and saved.
+    // Final coverage proof, then delivery: cells fetched and verified against
+    // the catalog, assembled into ONE `.obcm` by wasm in a Worker, and either
+    // downloaded normally or streamed straight to a connected device.
     //
     // A map is one file, which decides the shape of this screen's second half. There
     // is nothing to order, nothing to package and nothing to acknowledge: the run
-    // produces a single object, and the only question left is where it lands —
-    // straight into a directory the rider picked (the card, ideally), or in the
-    // Downloads folder for them to move.
+    // produces a single object, and the only question left is where it lands.
 
     import { onDestroy, onMount } from "svelte";
     import type { AssemblePhase, MemoryEstimate } from "../../lib/assemble/bridge";
@@ -44,7 +43,11 @@
     import type { UBox } from "../../lib/catalog/grid";
     import { detailBandId, mergeMixedCellRects, parseCells, patchCount } from "../../lib/coverage/shape";
     import type { CoverageStore } from "../../lib/coverage/store.svelte";
+    import type { JobContext } from "../../lib/device/progress";
+    import type { SendAssembledMap } from "../../lib/device/write";
     import { formatBytes, truncateUtf8 } from "../../lib/format";
+    import type { FlatStoreClient } from "../../lib/usb/client";
+    import type { PutResponse } from "../../lib/usb/protocol";
 
     let { store }: { store: CoverageStore } = $props();
 
@@ -142,7 +145,7 @@
      *  set the moment the map is delivered, and a cancel that raced the delivery
      *  must not tell someone to go and discard a file nobody has. */
     let persisted = $state(false);
-    /** The one delivery, so `done` can wait for a save that is still running rather
+    /** The one delivery, so `done` can wait for a save/send that is still running rather
      *  than declare the map finished behind it. */
     let delivery: Promise<void> = Promise.resolve();
     /** Set by `failRun`: a delivery that has not started must not write into an
@@ -177,6 +180,21 @@
      *  `$state` because the saving row renders it: it is written during a run, and a
      *  plain `let` would leave that row showing the previous run's name. */
     let runFileName = $state("OBC map.obcm");
+
+    interface DeviceOutput {
+        readonly kind: "device";
+        readonly client: FlatStoreClient;
+        readonly ctx: JobContext;
+        readonly resolve: (result: PutResponse) => void;
+        readonly reject: (cause: unknown) => void;
+        removeAbort: () => void;
+        result: PutResponse | null;
+        settled: boolean;
+        failing: boolean;
+    }
+    type Output = { readonly kind: "download" } | DeviceOutput;
+    let output = $state.raw<Output | null>(null);
+    let lastRunKind = $state<Output["kind"]>("download");
 
     const ASM_PHASE_LABEL: Record<AssemblePhase, string> = {
         open: "reading cells",
@@ -218,14 +236,18 @@
                 // cancelling a thing that had already finished, and the button's own
                 // branch dispatched on the wrong phase.
                 phase = "saving";
-                delivery = saveStoredMap(msg.byteLength);
+                delivery = deliverStoredMap(msg.byteLength);
                 void delivery.catch(() => {});
                 break;
             case "file":
                 // No sink was available, so the bytes came across instead. Same
                 // delivery, one wrap earlier.
                 phase = "saving";
-                delivery = saveMap(new Blob([msg.bytes as unknown as BlobPart]), msg.byteLength, msg.bytes);
+                delivery = deliverMap(
+                    new Blob([msg.bytes as unknown as BlobPart]),
+                    msg.byteLength,
+                    msg.bytes,
+                );
                 void delivery.catch(() => {});
                 break;
             case "done":
@@ -249,6 +271,14 @@
                 if (sinkClosed) break;
                 phase = "done";
                 await cleanupTransientCells();
+                if (output?.kind === "device") {
+                    if (!output.result) {
+                        await failRun(new Error("The device did not commit the assembled map."));
+                        break;
+                    }
+                    settleDevice(output.result);
+                }
+                output = null;
                 break;
             case "error":
                 // Two conversations share this worker, and their failures are
@@ -279,7 +309,7 @@
      * host always had; the saving D1 is here for is on the *assembly*, and it is
      * unaffected.
      */
-    async function saveStoredMap(byteLength: number) {
+    async function deliverStoredMap(byteLength: number) {
         const blob = await readMapOutput();
         if (blob.size !== byteLength) {
             throw new Error(
@@ -287,14 +317,24 @@
                     `assembler wrote. Free some disk space and try again.`,
             );
         }
-        await saveMap(blob, byteLength, null);
+        await deliverMap(blob, byteLength, null);
     }
 
-    /** The two hosts' save, shared: a Blob for the browser, bytes for the desktop. */
-    async function saveMap(blob: Blob, byteLength: number, bytes: Uint8Array | null) {
+    /** Deliver the verified one-file result without ever materialising an OPFS
+     * map in the tab heap. Device PUT reads the Blob twice in bounded slices
+     * (CRC then transfer); browser download hands the same Blob to the browser. */
+    async function deliverMap(blob: Blob, byteLength: number, bytes: Uint8Array | null) {
         if (sinkClosed) return;
+        if (blob.size !== byteLength) {
+            throw new Error(
+                `The assembler announced ${byteLength} bytes but delivered ${blob.size}; the map was not sent.`,
+            );
+        }
         const name = runFileName;
-        if (downloadOutput) {
+        if (output?.kind === "device") {
+            const { sendMapBlob } = await import("../../lib/device/write");
+            output.result = await sendMapBlob(output.client, blob, name, output.ctx);
+        } else if (downloadOutput) {
             // A picked directory (or the desktop's native folder) takes the map
             // where the rider wants it — the card itself, when that is what they
             // picked. The session streams a Blob without buffering it; only a host
@@ -306,7 +346,16 @@
             saveBlob(blob, name);
             savedFile = { name, byteLength };
         }
-        persisted = true;
+        if (output?.kind !== "device") persisted = true;
+    }
+
+    function settleDevice(result: PutResponse | unknown, failed = false) {
+        const current = output;
+        if (current?.kind !== "device" || current.settled) return;
+        current.settled = true;
+        current.removeAbort();
+        if (failed) current.reject(result);
+        else current.resolve(result as PutResponse);
     }
 
     async function closeDownloadOutput(discard: boolean) {
@@ -357,6 +406,10 @@
     }
 
     async function failRun(cause: unknown) {
+        if (output?.kind === "device") {
+            if (output.failing || output.settled) return;
+            output.failing = true;
+        }
         const cancelled = cause instanceof DOMException && cause.name === "AbortError";
         abortCtl?.abort();
         worker?.terminate();
@@ -370,6 +423,8 @@
         await cleanupTransientCells();
         errorMessage = cause instanceof Error ? cause.message : String(cause);
         phase = cancelled ? "cancelled" : "error";
+        settleDevice(cause, true);
+        output = null;
     }
 
     /**
@@ -407,7 +462,7 @@
         return { ...plan, items: wanted, totalBytes: bytes };
     }
 
-    /** What the selection is called, for the folder picker and the filename. */
+    /** What the selection is called in the file and on the device. */
     function mapName(): string {
         const parts = store.selection.parts;
         const base = parts.length === 0 ? "OBC map" : parts[0].name;
@@ -428,20 +483,18 @@
         return `${stem.length > 0 ? stem : "OBC map"}.obcm`;
     }
 
-    async function begin() {
+    async function begin(out: Output) {
         const resolution = store.resolution;
         const indices = store.indices;
         const l = ledger;
         if (!resolution || !indices || !l || running) {
             throw new Error("This map is not ready to assemble yet.");
         }
-        // The output directory opens under the click that started the run: the
-        // browser's implementation is a directory picker, and a picker without
-        // a fresh user activation is refused (the platform contract). A
-        // dismissed picker is "changed my mind" — the run never starts, and
-        // the screen stays exactly as it was.
+        // Native desktop saving still opens its output session under the click
+        // that started a download. Direct device delivery never opens a save
+        // destination, and the web host uses an ordinary browser download.
         let picked: MapOutputSession | null = null;
-        if (platform.openMapOutput) {
+        if (out.kind === "download" && platform.openMapOutput) {
             try {
                 picked = await platform.openMapOutput(mapName());
             } catch (cause) {
@@ -449,6 +502,8 @@
                 throw cause;
             }
         }
+        output = out;
+        lastRunKind = out.kind;
         runFileName = mapFileName();
         errorMessage = null;
         savedFile = null;
@@ -466,6 +521,7 @@
         cachedCells = 0;
         cachedBytes = 0;
         phase = "downloading";
+        if (out.kind === "device") out.ctx.phase("downloading", l.totalBytes);
 
         const plan = planCells(resolution, store.catalog, indices, store.terrain);
         const cells: WorkerCell[] = [];
@@ -536,6 +592,7 @@
                 },
                 onProgress: (p) => {
                     dlProgress = p;
+                    if (out.kind === "device") out.ctx.progress(p.receivedBytes, p.totalBytes);
                 },
                 signal: abortCtl.signal,
             });
@@ -560,6 +617,7 @@
         }
 
         phase = "assembling";
+        if (out.kind === "device") out.ctx.phase("assembling");
         asmPhase = "open";
         const req: AssembleWorkerRequest = {
             type: "assemble",
@@ -601,8 +659,39 @@
     }
 
     function run() {
-        void begin().catch((cause) => failRun(cause));
+        void begin({ kind: "download" }).catch((cause) => failRun(cause));
     }
+
+    /** Assemble this selection and stream its verified OPFS-backed `.obcm`
+     * directly into the connected device's v4 flat-store PUT. */
+    export const sendToDevice: SendAssembledMap = (client, ctx) =>
+        new Promise<PutResponse>((resolve, reject) => {
+            const onAbort = () => void failRun(ctx.signal.reason ?? new DOMException("cancelled", "AbortError"));
+            const device: DeviceOutput = {
+                kind: "device",
+                client,
+                ctx,
+                resolve,
+                reject,
+                removeAbort: () => ctx.signal.removeEventListener("abort", onAbort),
+                result: null,
+                settled: false,
+                failing: false,
+            };
+            ctx.signal.addEventListener("abort", onAbort, { once: true });
+            if (ctx.signal.aborted) {
+                device.removeAbort();
+                reject(ctx.signal.reason);
+                return;
+            }
+            void begin(device).catch((cause) => {
+                if (output === device) void failRun(cause);
+                else {
+                    device.removeAbort();
+                    reject(cause);
+                }
+            });
+        });
 
     function cancel() {
         if (phase === "downloading") {
@@ -955,7 +1044,8 @@
                         </span>
                     {:else if phase === "saving"}
                         <span class="small muted">
-                            saving the map{#if runFileName} — {runFileName}{/if}
+                            {output?.kind === "device" ? "sending the map" : "saving the map"}{#if runFileName}
+                                — {runFileName}{/if}
                         </span>
                     {/if}
                 </div>
@@ -969,16 +1059,18 @@
 
             {#if phase === "done"}
                 <div class="done">
-                    <p class="line small">
-                        {#if outputPath}
-                            Saved <span class="mono">{savedFile?.name}</span> in
-                            <span class="mono">{outputPath}</span> — if that folder isn't the device's
-                            card, copy it to the card's top level.
-                        {:else}
-                            Saved <span class="mono">{savedFile?.name}</span> — copy it to the top level
-                            of the device's card.
-                        {/if}
-                    </p>
+                    {#if lastRunKind === "device"}
+                        <p class="line small">Assembled and sent <span class="mono">{runFileName}</span>.</p>
+                    {:else}
+                        <p class="line small">
+                            {#if outputPath}
+                                Saved <span class="mono">{savedFile?.name}</span> in
+                                <span class="mono">{outputPath}</span>.
+                            {:else}
+                                Downloaded <span class="mono">{savedFile?.name}</span>.
+                            {/if}
+                        </p>
+                    {/if}
                     {#if savedFile}
                         <p class="line faint small mono">{formatBytes(savedFile.byteLength)}</p>
                     {/if}
