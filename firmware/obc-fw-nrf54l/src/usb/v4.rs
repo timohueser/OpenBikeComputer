@@ -422,8 +422,8 @@ async fn stream_record(
     // §5's admission hold. Reading four bytes of the §3.8 frame header is not "parsing a payload":
     // it is the record boundary information the binding is explicitly responsible for, and a record
     // too short to carry one is not decoded here — it goes to the engine, which owns that refusal.
-    let frame_id = (record.len() >= 4)
-        .then(|| RequestId(u32::from_le_bytes([record[0], record[1], record[2], record[3]])));
+    let frame_id =
+        (record.len() >= 4).then(|| RequestId(u32::from_le_bytes([record[0], record[1], record[2], record[3]])));
     if let Some(frame_id) = frame_id {
         if admission.needs_query(frame_id) && admission.observed(frame_id, live_transfer(writer).await) {
             if let embassy_futures::select::Either::First(control) =
@@ -470,9 +470,10 @@ async fn stream_record(
 /// Deliberately **not** a `Lane` call: it borrows no buffer, so it cannot be the thing that loses
 /// one. Its own reply slot for the reason the contract states — one slot per concurrently live
 /// call is a property of the types here rather than of call ordering.
+static LIVE_QUERY_REPLY: Reply = Signal::new();
+
 async fn live_transfer(writer: &Writer) -> Option<RequestId> {
-    static LIVE_REPLY: Reply = Signal::new();
-    match writer.call(Request::LiveTransfer, &LIVE_REPLY).await {
+    match writer.call(Request::LiveTransfer, &LIVE_QUERY_REPLY).await {
         Ok(Outcome::Live(live)) => live,
         _ => None,
     }
@@ -481,8 +482,9 @@ async fn live_transfer(writer: &Writer) -> Option<RequestId> {
 /// The storage-owned admission proof for the cable-only scratch arm. The app's map progress state
 /// deliberately omits link ownership and therefore cannot distinguish a BLE map PUT from USB.
 async fn usb_owns_map_upload(writer: &Writer, request: RequestId) -> bool {
-    static USB_MAP_REPLY: Reply = Signal::new();
-    match writer.call(Request::UsbMapUpload { request }, &USB_MAP_REPLY).await {
+    // Sequential in this one USB driver with `live_transfer`; reusing the slot avoids paying a
+    // second Signal (72 linked resident bytes) for two mutually-exclusive engine queries.
+    match writer.call(Request::UsbMapUpload { request }, &LIVE_QUERY_REPLY).await {
         Ok(Outcome::UsbMap(owns)) => owns,
         _ => false,
     }
