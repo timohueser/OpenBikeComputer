@@ -1127,11 +1127,9 @@ fn serve(
             Ok(Outcome::Done)
         }
         Request::LiveTransfer => Ok(Outcome::Live(engine.live_transfer())),
-        Request::UsbMapUpload { request } => Ok(Outcome::UsbMap(engine.upload_matches(
-            Link::Usb,
-            request,
-            obc_link::flat::ObjectKind::MapShard,
-        ))),
+        Request::UsbMapUpload { request } => {
+            Ok(Outcome::UsbMap(engine.upload_matches(Link::Usb, request, obc_link::flat::ObjectKind::MapShard)))
+        }
     }
 }
 
