@@ -3,47 +3,49 @@
 import { mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+interface TestCellStore {
+    revision: string;
+    alive: boolean;
+    has: ReturnType<typeof vi.fn<() => Promise<boolean>>>;
+    put: ReturnType<typeof vi.fn<(key: string, bytes: Uint8Array) => Promise<undefined>>>;
+}
+
 const seams = vi.hoisted(() => ({
     sendMapBlob: vi.fn(),
     sendMapBytes: vi.fn(),
     readMapOutput: vi.fn(async () => new Blob([Uint8Array.of(1, 2, 3, 4)])),
     cellStoreWritable: vi.fn(async () => false),
-    openCellStore: vi.fn(async () => null),
+    clearCellStores: vi.fn(async () => undefined),
+    hasRoomFor: vi.fn(async () => false),
+    openCellStore: vi.fn<() => Promise<TestCellStore | null>>(async () => null),
     downloadCells: vi.fn(),
     discardCellStore: vi.fn(async () => undefined),
     discardMapOutput: vi.fn(async () => undefined),
     saveBlob: vi.fn(),
     workerOutput: "stored" as "stored" | "file",
     workerAssemble: 0,
+    plan: { items: [], totalBytes: 0, knownEmpty: [] } as {
+        items: Array<{ band: string | null; cell: { id: string; sha256: string; bytes: number; partial?: boolean } }>;
+        totalBytes: number;
+        knownEmpty: never[];
+    },
 }));
 
 vi.mock("../../lib/cells/store", () => ({
     cellStoreRevision: () => "test-revision",
     cellStoreWritable: seams.cellStoreWritable,
-    clearCellStores: vi.fn(async () => undefined),
+    clearCellStores: seams.clearCellStores,
     clearMapWorkStorage: vi.fn(async () => undefined),
     discardCellStore: seams.discardCellStore,
     discardMapOutput: seams.discardMapOutput,
-    hasRoomFor: vi.fn(async () => false),
+    hasRoomFor: seams.hasRoomFor,
     openCellStore: seams.openCellStore,
     readMapOutput: seams.readMapOutput,
 }));
 
 vi.mock("../../lib/catalog/download", () => ({
-    planCells: () => ({ items: [], totalBytes: 0, knownEmpty: [] }),
-    downloadCells: seams.downloadCells.mockImplementation(
-        async (
-            _plan: unknown,
-            options: { onProgress?: (progress: Record<string, number>) => void },
-        ) => {
-            options.onProgress?.({
-                completedCells: 0,
-                totalCells: 0,
-                receivedBytes: 0,
-                totalBytes: 0,
-            });
-        },
-    ),
+    planCells: () => seams.plan,
+    downloadCells: seams.downloadCells,
 }));
 
 vi.mock("../../lib/device/write", () => ({
@@ -121,13 +123,28 @@ describe("direct assembler delivery", () => {
         seams.sendMapBlob.mockReset();
         seams.sendMapBytes.mockReset();
         seams.cellStoreWritable.mockReset().mockResolvedValue(false);
+        seams.clearCellStores.mockReset().mockResolvedValue(undefined);
+        seams.hasRoomFor.mockReset().mockResolvedValue(false);
         seams.openCellStore.mockReset().mockResolvedValue(null);
-        seams.downloadCells.mockClear();
+        seams.downloadCells.mockReset().mockImplementation(
+            async (
+                _plan: unknown,
+                options: { onProgress?: (progress: Record<string, number>) => void },
+            ) => {
+                options.onProgress?.({
+                    completedCells: 0,
+                    totalCells: 0,
+                    receivedBytes: 0,
+                    totalBytes: 0,
+                });
+            },
+        );
         seams.discardCellStore.mockReset().mockResolvedValue(undefined);
         seams.discardMapOutput.mockClear();
         seams.saveBlob.mockClear();
         seams.workerOutput = "stored";
         seams.workerAssemble = 0;
+        seams.plan = { items: [], totalBytes: 0, knownEmpty: [] };
     });
 
     afterEach(() => {
@@ -385,43 +402,174 @@ describe("direct assembler delivery", () => {
         await unmount(built.component);
     });
 
-    it("does not let a cancelled storage preflight resume into a stale run", async () => {
+    it("keeps run 2 blocked until a cancelled destructive clear has returned", async () => {
         const built = await mountReadyStep();
-        let releaseProbe!: (writable: boolean) => void;
-        seams.cellStoreWritable.mockImplementationOnce(
-            () => new Promise<boolean>((resolve) => (releaseProbe = resolve)),
+        let releaseClear!: () => void;
+        seams.clearCellStores.mockImplementationOnce(
+            () => new Promise<undefined>((resolve) => (releaseClear = () => resolve(undefined))),
         );
-        seams.downloadCells.mockClear();
-        seams.openCellStore.mockClear();
-        seams.readMapOutput.mockClear();
-        seams.discardMapOutput.mockClear();
-        seams.workerAssemble = 0;
-        const job = new DeviceJob("map");
-        const running = job.run(
+        const first = new DeviceJob("map");
+        const running = first.run(
             (ctx) => built.component.sendToDevice({} as FlatStoreClient, ctx),
             () => "sent",
         );
-        for (let attempt = 0; attempt < 20 && typeof releaseProbe !== "function"; attempt++) {
+        for (let attempt = 0; attempt < 20 && typeof releaseClear !== "function"; attempt++) {
             await Promise.resolve();
             await tick();
         }
 
-        job.cancel();
+        first.cancel();
+        await expectSecondRunRefused(built.component);
+        expect(first.running).toBe(true);
+        expect(built.target.textContent).not.toContain("Cancelled");
+        releaseClear();
         await running;
-        expect(job.phase).toBe("idle");
-        expect(seams.discardMapOutput).toHaveBeenCalledOnce();
-        const cleanupCalls = seams.discardMapOutput.mock.calls.length;
-        releaseProbe(true);
-        for (let turn = 0; turn < 5; turn++) {
+        expect(first.phase).toBe("idle");
+
+        await waitForReady(built.target);
+        seams.sendMapBlob.mockResolvedValueOnce({ objectId: 2n });
+        const second = new DeviceJob("map");
+        await expect(
+            second.run(
+                (ctx) => built.component.sendToDevice({} as FlatStoreClient, ctx),
+                () => "second survived",
+            ),
+        ).resolves.toMatchObject({ objectId: 2n });
+        expect(second.result).toBe("second survived");
+        await unmount(built.component);
+    });
+
+    it("keeps run 2 blocked through a cancelled store open and its stale cleanup", async () => {
+        const built = await mountReadyStep();
+        seams.cellStoreWritable.mockResolvedValue(true);
+        seams.hasRoomFor.mockResolvedValue(true);
+        let current: { alive: boolean } | null = null;
+        seams.discardCellStore.mockImplementation(async () => {
+            if (current) current.alive = false;
+        });
+        const firstStore = testCellStore();
+        let releaseOpen!: () => void;
+        seams.openCellStore.mockImplementationOnce(
+            () =>
+                new Promise((resolve) => {
+                    releaseOpen = () => {
+                        current = firstStore;
+                        resolve(firstStore);
+                    };
+                }),
+        );
+        const first = new DeviceJob("map");
+        const cancelled = first.run(
+            (ctx) => built.component.sendToDevice({} as FlatStoreClient, ctx),
+            () => "unreachable",
+        );
+        for (let attempt = 0; attempt < 20 && typeof releaseOpen !== "function"; attempt++) {
             await Promise.resolve();
             await tick();
         }
 
-        expect(seams.openCellStore).not.toHaveBeenCalled();
-        expect(seams.downloadCells).not.toHaveBeenCalled();
-        expect(seams.readMapOutput).not.toHaveBeenCalled();
-        expect(seams.workerAssemble).toBe(0);
-        expect(seams.discardMapOutput).toHaveBeenCalledTimes(cleanupCalls);
+        first.cancel();
+        await expectSecondRunRefused(built.component);
+        expect(first.running).toBe(true);
+        releaseOpen();
+        await cancelled;
+        expect(firstStore.alive).toBe(false);
+        expect(seams.discardCellStore).toHaveBeenCalledOnce();
+
+        const secondStore = testCellStore();
+        seams.openCellStore.mockImplementation(async () => {
+            current = secondStore;
+            return secondStore;
+        });
+        await waitForReady(built.target);
+        let commit!: (result: { objectId: bigint }) => void;
+        seams.sendMapBlob.mockImplementationOnce(() => new Promise((resolve) => (commit = resolve)));
+        const second = new DeviceJob("map");
+        const survived = second.run(
+            (ctx) => built.component.sendToDevice({} as FlatStoreClient, ctx),
+            () => "second survived",
+        );
+        for (let attempt = 0; attempt < 20 && typeof commit !== "function"; attempt++) {
+            await Promise.resolve();
+            await tick();
+        }
+        expect(secondStore.alive).toBe(true);
+        expect(seams.discardCellStore).toHaveBeenCalledOnce();
+        commit({ objectId: 2n });
+        await expect(survived).resolves.toMatchObject({ objectId: 2n });
+        await unmount(built.component);
+    });
+
+    it("keeps run 2 blocked until a cancelled cell write and its cleanup have settled", async () => {
+        const built = await mountReadyStep();
+        seams.cellStoreWritable.mockResolvedValue(true);
+        seams.hasRoomFor.mockResolvedValue(true);
+        seams.plan = {
+            items: [{ band: "fine", cell: { id: "cell-1", sha256: "digest", bytes: 4 } }],
+            totalBytes: 4,
+            knownEmpty: [],
+        };
+        let current: ReturnType<typeof testCellStore> | null = null;
+        seams.discardCellStore.mockImplementation(async () => {
+            if (current) current.alive = false;
+        });
+        const firstStore = testCellStore();
+        let releasePut!: () => void;
+        firstStore.put.mockImplementationOnce(
+            () => new Promise<undefined>((resolve) => (releasePut = () => resolve(undefined))),
+        );
+        seams.openCellStore.mockImplementation(async () => {
+            current = firstStore;
+            return firstStore;
+        });
+        seams.downloadCells.mockImplementationOnce(async (plan, options) => {
+            const item = (plan as typeof seams.plan).items[0];
+            await options.onCell(item, Uint8Array.of(1, 2, 3, 4));
+        });
+        const first = new DeviceJob("map");
+        const cancelled = first.run(
+            (ctx) => built.component.sendToDevice({} as FlatStoreClient, ctx),
+            () => "unreachable",
+        );
+        for (let attempt = 0; attempt < 20 && typeof releasePut !== "function"; attempt++) {
+            await Promise.resolve();
+            await tick();
+        }
+
+        first.cancel();
+        await expectSecondRunRefused(built.component);
+        expect(first.running).toBe(true);
+        releasePut();
+        await cancelled;
+        expect(firstStore.alive).toBe(false);
+        const firstCleanupCount = seams.discardCellStore.mock.calls.length;
+
+        const secondStore = testCellStore();
+        seams.openCellStore.mockImplementation(async () => {
+            current = secondStore;
+            return secondStore;
+        });
+        seams.downloadCells.mockImplementationOnce(async (plan, options) => {
+            const item = (plan as typeof seams.plan).items[0];
+            await options.onCell(item, Uint8Array.of(5, 6, 7, 8));
+        });
+        await waitForReady(built.target);
+        let commit!: (result: { objectId: bigint }) => void;
+        seams.sendMapBlob.mockImplementationOnce(() => new Promise((resolve) => (commit = resolve)));
+        const second = new DeviceJob("map");
+        const survived = second.run(
+            (ctx) => built.component.sendToDevice({} as FlatStoreClient, ctx),
+            () => "second survived",
+        );
+        for (let attempt = 0; attempt < 20 && typeof commit !== "function"; attempt++) {
+            await Promise.resolve();
+            await tick();
+        }
+        expect(secondStore.alive).toBe(true);
+        expect(secondStore.put).toHaveBeenCalledWith("digest", Uint8Array.of(5, 6, 7, 8));
+        expect(seams.discardCellStore).toHaveBeenCalledTimes(firstCleanupCount);
+        commit({ objectId: 2n });
+        await expect(survived).resolves.toMatchObject({ objectId: 2n });
         await unmount(built.component);
     });
 
@@ -482,4 +630,34 @@ async function mountReadyStep(
     await tick();
     vi.useRealTimers();
     return { component, target };
+}
+
+function testCellStore(): TestCellStore {
+    return {
+        revision: "test-revision",
+        alive: true,
+        has: vi.fn(async () => false),
+        put: vi.fn(async (_key: string, _bytes: Uint8Array) => undefined),
+    };
+}
+
+async function expectSecondRunRefused(component: { sendToDevice: SendAssembledMap }) {
+    const second = new DeviceJob("map");
+    await expect(
+        second.run(
+            (ctx) => component.sendToDevice({} as FlatStoreClient, ctx),
+            () => "must stay blocked",
+        ),
+    ).resolves.toBeNull();
+    expect(second.error).toContain("not ready");
+}
+
+async function waitForReady(target: HTMLElement) {
+    for (let attempt = 0; attempt < 40; attempt++) {
+        const button = [...target.querySelectorAll("button")].find((candidate) => candidate.textContent === "Download map");
+        if (button && !(button as HTMLButtonElement).disabled) return;
+        await new Promise<void>((resolve) => setTimeout(resolve, 20));
+        await tick();
+    }
+    throw new Error("the map builder did not become ready for the next run");
 }
