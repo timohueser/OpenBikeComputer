@@ -27,6 +27,26 @@ pub mod otg_v1;
 #[cfg(feature = "host")]
 pub mod host;
 
+// ===== OpenBikeComputer investigation probe (temporary) =====
+/// How buffer-DMA OUT reads complete: woken (XFRC/activity satisfied the poll) vs. published by
+/// the idle-timeout path. Diagnostic only — dies with the USB throughput investigation.
+pub mod read_probe {
+    use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
+    pub static WOKEN: AtomicU32 = AtomicU32::new(0);
+    pub static TIMEOUT_PUBLISHED: AtomicU32 = AtomicU32::new(0);
+    pub static TIMEOUT_FIRES: AtomicU32 = AtomicU32::new(0);
+    /// XFRC events the ISR actually saw on a non-EP0 OUT endpoint.
+    pub static ISR_XFRC_OUT: AtomicU32 = AtomicU32::new(0);
+    pub fn take() -> (u32, u32, u32, u32) {
+        (
+            WOKEN.swap(0, Relaxed),
+            TIMEOUT_PUBLISHED.swap(0, Relaxed),
+            TIMEOUT_FIRES.swap(0, Relaxed),
+            ISR_XFRC_OUT.swap(0, Relaxed),
+        )
+    }
+}
+
 use otg_v1::{Otg, regs, vals};
 
 /// Handle interrupts.
@@ -242,6 +262,9 @@ pub unsafe fn on_interrupt(r: Otg, state: &State<'_>) {
                     }
 
                     if ep_ints.xfrc() && !is_setup {
+                        if ep_num != 0 {
+                            read_probe::ISR_XFRC_OUT.fetch_add(1, Ordering::Relaxed);
+                        }
                         let ep = &state.ep_states[ep_num];
                         if let Some(alloc) = state.ep_alloc_get(Direction::Out, ep_num) {
                             let remaining = r.doeptsiz(ep_num).read().xfrsiz() as usize;
@@ -1725,7 +1748,12 @@ impl<'d> Endpoint<'d, Out> {
     /// full-size packets but before the programmed burst count has no completion interrupt, so
     /// [`EndpointOut::read`] also polls this at a low-rate timer and publishes the committed DMA
     /// prefix. `out_read` keeps that prefix live until the eventual completion/re-arm.
-    fn poll_dma_read(&mut self, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<Result<usize, EndpointError>> {
+    fn poll_dma_read(
+        &mut self,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+        allow_partial: bool,
+    ) -> Poll<Result<usize, EndpointError>> {
         let index = self.info.addr.index();
         self.state.out_waker.register(cx.waker());
 
@@ -1748,6 +1776,14 @@ impl<'d> Endpoint<'d, Out> {
         let available = filled.saturating_sub(read);
         if available > buf.len() {
             return Poll::Ready(Err(EndpointError::BufferOverflow));
+        }
+
+        // Endpoint activity can wake the task before XFRC. That wake is not permission to publish
+        // a partial continuously-arriving burst: doing so turns every packet group into another
+        // host/device credit round trip. Only a completed transfer/full arm, or the explicit short
+        // transfer timeout below, may expose the prefix to the caller.
+        if available != 0 && !done && filled < capacity && !allow_partial {
+            return Poll::Pending;
         }
 
         if available != 0 {
@@ -1799,18 +1835,43 @@ impl<'d> embassy_usb_driver::EndpointOut for Endpoint<'d, Out> {
         }
 
         if self.buffer_dma {
-            // XFRC wakes every complete/short transfer. The timeout covers the one case DWC2 has
-            // no event for: the host pauses after a full-size packet before spending the whole
-            // programmed burst. It is tail latency only; a streaming burst never waits for it.
+            // XFRC wakes every completed transfer — full bursts included: the ISR counted one
+            // XFRC per endpoint read across a 480 MB upload (probe, 2026-08-20). The timeout is
+            // therefore tail-latency insurance only, for the one case DWC2 has no event for: a
+            // host that pauses after full-size packets mid-burst. 5 ms keeps that insurance while
+            // taking the timer churn out of the hot path (594k timer fires per upload at the
+            // earlier 500 µs, nearly all of them the idle control endpoint).
+            let mut last_filled = self.state.out_read.load(Ordering::Acquire) as usize;
             loop {
                 match embassy_time::with_timeout(
-                    Duration::from_millis(1),
-                    poll_fn(|cx| self.poll_dma_read(cx, buf)),
+                    Duration::from_millis(5),
+                    poll_fn(|cx| self.poll_dma_read(cx, buf, false)),
                 )
                 .await
                 {
-                    Ok(result) => return result,
-                    Err(_) => continue,
+                    Ok(result) => {
+                        read_probe::WOKEN.fetch_add(1, Ordering::Relaxed);
+                        return result;
+                    }
+                    Err(_) => {
+                        read_probe::TIMEOUT_FIRES.fetch_add(1, Ordering::Relaxed);
+                        // A growing prefix is a live burst: reset the idle window and keep waiting.
+                        // Only an unchanged non-empty prefix is a short transfer.
+                        let capacity = self.burst_packets as usize * self.info.max_packet_size as usize;
+                        let remaining = self.regs.doeptsiz(self.info.addr.index()).read().xfrsiz() as usize;
+                        let observed = capacity.saturating_sub(remaining);
+                        let published = self.state.out_fill.load(Ordering::Acquire) as usize;
+                        let filled = observed.max(published);
+                        let read = self.state.out_read.load(Ordering::Acquire) as usize;
+                        if filled > last_filled {
+                            last_filled = filled;
+                            continue;
+                        }
+                        if filled > read {
+                            read_probe::TIMEOUT_PUBLISHED.fetch_add(1, Ordering::Relaxed);
+                            return poll_fn(|cx| self.poll_dma_read(cx, buf, true)).await;
+                        }
+                    }
                 }
             }
         }

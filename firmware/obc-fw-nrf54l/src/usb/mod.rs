@@ -124,13 +124,13 @@ const MAX_PACKET: u16 = 512;
 ///
 /// # The number, and how to sweep it
 ///
-/// **8, for 4 KiB bursts.** Two bounds meet there. Below it the serialisation term is still the
+/// **16, for 8 KiB bursts.** One burst carries a complete USB stream record, so the storage owner
+/// is crossed once per 8 KiB rather than once per 4 KiB. Below it the serialisation term is still the
 /// biggest one (it falls as 240/N µs per packet: N=4 leaves ~60 µs, N=8 ~30 µs, against the ~99 µs
 /// of card write + transfer bookkeeping + UI that remains after it). Above it the return shrinks — at N=8 the
 /// serialisation is already a fifth of the residue — while the RAM cost stays strictly linear at
 /// **two** buffers of `N × 512 B` (this crate's [`BULK_BUF`] and the driver's own per-endpoint
-/// staging area inside [`EP_BUFFER`]), so N=16 would cost another 8 KiB of `.bss` for a few
-/// percent. It must also stay within the core's RX FIFO: 3040 words total, of which a bursting
+/// staging area inside [`EP_BUFFER`]). It must also stay within the core's RX FIFO: 3040 words total, of which a bursting
 /// endpoint takes `N × 129`, so N=16 (2064 words) is the last rung that fits beside everything else.
 ///
 /// To sweep it: change this one line, re-pin `compile_time_allocations.usb_named` +
@@ -138,12 +138,12 @@ const MAX_PACKET: u16 = 512;
 /// (down by the same) in `firmware/tools/resource_baseline.json` on **both** profiles, then read the
 /// `~{} kB/s` line `run_upload` prints at the end of every transfer over RTT. Prediction, not a
 /// measurement: ~4–5 MB/s, where the card's busy-polled write becomes the ceiling (#1174).
-const BULK_OUT_BURST_PACKETS: u16 = 8;
+const BULK_OUT_BURST_PACKETS: u16 = 16;
 
 /// One burst: what [`BULK_BUF`] holds and what the bulk OUT endpoint arms.
 const BULK_BURST_LEN: usize = BULK_OUT_BURST_PACKETS as usize * MAX_PACKET as usize;
 
-/// Payload bytes combined before the flat store sees one card write. This is sixteen protocol-v4
+/// Payload bytes combined before the flat store sees one card write. This is eight protocol-v4
 /// stream records and one 128-block CMD25, matching the measured efficient width of the sEMMC
 /// path. The bytes are an arm of the existing scratch arena, not additional resident RAM.
 pub(crate) const STAGE_HALF_LEN: usize = 64 * 1024;

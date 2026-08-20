@@ -14,6 +14,10 @@ description = "nRF54LM20-DK board firmware for OpenBikeComputer — the real har
 # Built for thumbv8m.main-none-eabihf via the crate-local .cargo/config.toml. Its
 # own Cargo.lock is committed.
 [workspace]
+# The vendored OTG driver keeps its own empty [workspace] marker (as vendored). While it is also a
+# direct dependency (the investigation's read_probe), it must be excluded here or cargo sees two
+# roots in one workspace.
+exclude = ["vendor/embassy-usb-synopsys-otg"]
 
 [features]
 # Default build = the **real map/ride app on the reflective LS021B7DD02 panel** (issues #165 / #173),
@@ -122,6 +126,10 @@ name = "ble_central_repro"
 required-features = ["ble"]
 
 [dependencies]
+# Direct handle on the vendored OTG driver, ONLY for the upload investigation's read_probe
+# counters; dies with the probe. The [patch.crates-io] stanza below is what routes embassy-nrf's
+# own dependency to the same vendored copy.
+embassy-usb-synopsys-otg = { path = "vendor/embassy-usb-synopsys-otg" }
 # embassy HAL for the nRF54L15 app core. `nrf54lm20-app-s` selects the secure-app die
 # (the only partition we use — no TF-M split, BLE deferred); `time-driver-grtc` backs
 # embassy-time with the GRTC (the nRF54L has no legacy RTC time-driver); `gpiote` is the
