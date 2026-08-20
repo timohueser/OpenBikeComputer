@@ -215,8 +215,9 @@ static FLAT_STORE_READY: core::sync::atomic::AtomicBool = core::sync::atomic::At
 /// What this layer costs the resident budget: the store and the write queue. The alignment bounce
 /// is `sd`'s and is already counted there — see the note above [`FLAT_BOUNCE_WARNED`].
 ///
-/// The recording caller's full-page tail is not here: [`crate::flat_ride`] owns and reports that
-/// buffer separately because the ride loop, rather than the storage task, lends its bytes.
+/// The recording caller's bounded append buffer is not here: [`crate::flat_ride`] owns and reports
+/// it separately because the ride loop, rather than the storage task, lends its bytes. Durable
+/// full-page tail snapshots remain card-resident and storage reconstructs them media-to-media.
 pub(crate) const RESIDENT_BYTES: usize = core::mem::size_of::<FlatStore<FlatCard>>()
     + REQUEST_QUEUE_BYTES
     + CATALOG_UPLOAD_BYTES

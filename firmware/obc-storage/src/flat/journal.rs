@@ -95,6 +95,7 @@ impl Slot {
 
     /// The header block as it goes on the card, with the slot CRC over the whole slot — the header
     /// with its CRC field zero, then `tail`, then the zero pad to 16,384 tail bytes.
+    #[cfg(test)]
     pub fn seal(&self, store: &StoreId, tail: &[u8]) -> [u8; BLOCK] {
         let mut digest = header_digest(&self.encode_with(0, store));
         digest.update(tail);

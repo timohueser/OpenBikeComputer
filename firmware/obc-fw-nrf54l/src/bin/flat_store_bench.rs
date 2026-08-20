@@ -230,10 +230,10 @@ const EXTENT_SIZE: u64 = 1 << 20;
 const EXTENT_AREA: u64 = 4_096;
 /// The media program page, and the granule §7.2 flushes ride payload in (§1, §2).
 const PROGRAM_PAGE: usize = 16_384;
-/// Tail bytes held by the shipping recorder: one 16 KiB journal payload plus sixteen samples of
-/// bounded spill while a checkpoint request is serviced. The durable slot itself is exactly one
-/// [`PROGRAM_PAGE`]; the spill is never part of a slot.
-const RIDE_TAIL_CAPACITY: usize = PROGRAM_PAGE + 16 * SAMPLE_LEN;
+/// Bytes held by the shipping recorder: sixteen in-flight samples plus the fixed final footer.
+/// The store owns the durable 16 KiB tail snapshot and reconstructs it media-to-media; the recorder
+/// lends only the bytes appended since its last successful logical checkpoint.
+const RIDE_DELTA_CAPACITY: usize = 16 * SAMPLE_LEN + FOOTER_LEN;
 /// The resident free bitmap (§9). Named here only to decompose the footprint report.
 const FREE_BITMAP: usize = 8 * 1_024;
 
@@ -467,9 +467,8 @@ impl BlockDevice for Card {
 static mut PATTERN: Aligned<CHUNK> = Aligned([0; CHUNK]);
 /// Where a read comes back for the byte comparison.
 static mut READBACK: Aligned<CHUNK> = Aligned([0; CHUNK]);
-/// The recording caller's tail buffer. Only the first 16 KiB is durable slot payload; the final
-/// sixteen records are the same bounded in-flight spill the shipping recorder carries.
-static mut RIDE_TAIL: Aligned<RIDE_TAIL_CAPACITY> = Aligned([0; RIDE_TAIL_CAPACITY]);
+/// The recording caller's bounded append buffer. The durable tail snapshot remains store-owned.
+static mut RIDE_DELTA: Aligned<RIDE_DELTA_CAPACITY> = Aligned([0; RIDE_DELTA_CAPACITY]);
 
 /// One deterministic semantic sample. Encoding always goes through the production 20-byte codec;
 /// the bench never substitutes a byte pattern for a ride point.
@@ -1056,8 +1055,8 @@ fn ride() {
         counted.write_blocks
     );
 
-    // SAFETY: sole borrow of the tail slot; nothing else reads it.
-    let tail = unsafe { &mut (*core::ptr::addr_of_mut!(RIDE_TAIL)).0 };
+    // SAFETY: sole borrow of the append buffer; nothing else reads it.
+    let delta = unsafe { &mut (*core::ptr::addr_of_mut!(RIDE_DELTA)).0 };
     let mut payload_len = 0u64;
     let mut flushed = 0u64;
     let mut digest = Crc32::new();
@@ -1067,20 +1066,21 @@ fn ride() {
     let mut flushes = 0u64;
     let mut worst = 0u64;
     for checkpoint_number in 1..=RIDE_CHECKPOINTS {
+        let mut delta_len = 0usize;
         for _ in 0..SAMPLES_PER_CHECKPOINT {
             let point = (payload_len / SAMPLE_LEN as u64) as u32;
             let sample = ride_sample(point);
-            let at = (payload_len - flushed) as usize;
-            tail[at..at + SAMPLE_LEN].copy_from_slice(&sample);
+            delta[delta_len..delta_len + SAMPLE_LEN].copy_from_slice(&sample);
+            delta_len += SAMPLE_LEN;
             digest.update(&sample);
             payload_len += SAMPLE_LEN as u64;
         }
-        let held = (payload_len - flushed) as usize;
+        debug_assert_eq!(delta_len, CHECKPOINT_SAMPLE_BYTES);
         let resume = resume_image((payload_len / SAMPLE_LEN as u64) as u32);
         let checkpoint = RideCheckpoint {
             id,
             revision: Revision(1),
-            tail: &tail[..held],
+            append: &delta[..delta_len],
             payload_crc: digest.finalize(),
             resume: &resume,
         };
@@ -1093,12 +1093,12 @@ fn ride() {
             error!("RIDE  checkpoint {=u64} refused ({})", checkpoint_number, defmt::Debug2Format(&error));
             return;
         }
-        // §7.2 flushes whole payload pages out of the front of the tail, and the caller drops exactly
-        // those bytes from its own — the one bookkeeping the seam leaves to the rider.
-        let pages = held / PROGRAM_PAGE;
+        // Storage owns the accumulated tail snapshot. The caller consumes exactly this interval's
+        // delta after success; a page boundary is visible only in the measured I/O and sequence.
+        let next_flushed = payload_len / PROGRAM_PAGE as u64 * PROGRAM_PAGE as u64;
+        let pages = ((next_flushed - flushed) / PROGRAM_PAGE as u64) as usize;
         if pages > 0 {
-            tail.copy_within(pages * PROGRAM_PAGE..held, 0);
-            flushed += (pages * PROGRAM_PAGE) as u64;
+            flushed = next_flushed;
             flush_total += elapsed;
             flushes += 1;
             info!(
@@ -1366,9 +1366,9 @@ fn amplification(label: &str, counted: &Counters, required: u64, elapsed: u64) {
 
 /// The resident total used by this bench. §9 normatively fixes the 8 KiB free bitmap and each
 /// *card-resident* slot's 16 KiB payload, but it does not state a 42 KiB combined RAM budget. The
-/// caller addend below is therefore the shipping recorder's one-page-plus-spill buffer, reported as
+/// caller addend below is therefore the shipping recorder's bounded append buffer, reported as
 /// a fact rather than compared with a plan figure that the format does not contain.
-const RESIDENT: usize = core::mem::size_of::<FlatStore<Card>>() + RIDE_TAIL_CAPACITY;
+const RESIDENT: usize = core::mem::size_of::<FlatStore<Card>>() + RIDE_DELTA_CAPACITY;
 
 const _: () = assert!(core::mem::size_of::<FlatStore<Card>>() > FREE_BITMAP);
 
@@ -1380,13 +1380,13 @@ fn report_footprint() {
         store, FREE_BITMAP, MAX_RESERVATIONS, MAX_OPEN_OBJECTS
     );
     info!(
-        "RAM   [addend 2] shipping recording tail: {=usize} B = one {=usize} B journal payload + sixteen × {=usize} B in-flight samples",
-        RIDE_TAIL_CAPACITY, PROGRAM_PAGE, SAMPLE_LEN
+        "RAM   [addend 2] shipping recording delta: {=usize} B = sixteen × {=usize} B in-flight samples + {=usize} B final footer",
+        RIDE_DELTA_CAPACITY, SAMPLE_LEN, FOOTER_LEN
     );
     info!("RAM   [component] one open Handle: {=usize} B; the entry array is never resident (§5.1)", handle);
     info!("RAM   [component] this bench's own buffers, which are not the store's: {=usize} B", CHUNK * 2 + 4_096);
     info!(
-        "RAM   TOTAL for one mounted store plus the shipping ride tail: {=usize} B. §9 states the component geometry, not a combined RAM budget; this is reported without a fabricated plan verdict",
+        "RAM   TOTAL for one mounted store plus the shipping ride delta: {=usize} B. §9 states the component geometry, not a combined RAM budget; this is reported without a fabricated plan verdict",
         RESIDENT
     );
 }
@@ -1483,7 +1483,7 @@ struct FinishCensus {
     counters: Counters,
 }
 
-/// Continue the reset ride from its recovered CRC/tail, append the fixed footer, issue the one final
+/// Continue the reset ride from its recovered CRC, append the fixed footer, issue the one final
 /// commit that clears `RECORDING`, and prove the ordinary object is exactly the bytes recorded.
 #[inline(never)]
 fn ride_end(entry: &EntryMeta, recovered: RideRecovery) -> Option<FinishCensus> {
@@ -1493,45 +1493,22 @@ fn ride_end(entry: &EntryMeta, recovered: RideRecovery) -> Option<FinishCensus> 
         return None;
     }
     // SAFETY: sole borrows.
-    let tail = unsafe { &mut (*core::ptr::addr_of_mut!(RIDE_TAIL)).0 };
+    let delta = unsafe { &mut (*core::ptr::addr_of_mut!(RIDE_DELTA)).0 };
     let readback = unsafe { &mut (*core::ptr::addr_of_mut!(READBACK)).0 };
 
-    let len = match store.recovered_tail(&mut tail[..RIDE_TAIL_LEN as usize]) {
-        Ok(len) => len,
-        Err(error) => {
-            error!("RCVR  the tail would not come back ({})", defmt::Debug2Format(&error));
-            return None;
-        }
-    };
-    let bad = tail[..len]
-        .iter()
-        .enumerate()
-        .find(|(at, byte)| **byte != sample_byte(RIDE_FLUSHED + *at as u64))
-        .map(|(at, _)| at);
-    if len != RIDE_TAIL_LEN as usize || bad.is_some() {
-        error!(
-            "RCVR  recovered tail is not the exact {=u32} B suffix (got {=usize} B; first bad offset {=usize})",
-            RIDE_TAIL_LEN,
-            len,
-            bad.unwrap_or(usize::MAX)
-        );
-        return None;
-    }
-    info!("RCVR  the {=usize} B tail came back out of the slot byte for byte", len);
-
     // Continue from the recovered checksum rather than re-hashing the prefix. This is the board's
-    // reset path: the recovered tail stays at the front, new sample bytes follow it, and the footer
-    // is appended once as final recorded bytes before the final checkpoint.
+    // reset path: durable tail bytes remain store-owned, and only new sample/footer bytes occupy the
+    // recorder's bounded append buffer before the final checkpoint.
     let mut digest = Crc32::from_checksum(recovered.payload_crc);
-    let mut held = len;
+    let mut held = 0;
     for point in RIDE_POINTS..FINAL_POINTS {
         let sample = ride_sample(point);
-        tail[held..held + SAMPLE_LEN].copy_from_slice(&sample);
+        delta[held..held + SAMPLE_LEN].copy_from_slice(&sample);
         held += SAMPLE_LEN;
         digest.update(&sample);
     }
     let footer = final_footer();
-    tail[held..held + FOOTER_LEN].copy_from_slice(&footer);
+    delta[held..held + FOOTER_LEN].copy_from_slice(&footer);
     held += FOOTER_LEN;
     digest.update(&footer);
     let final_crc = digest.finalize();
@@ -1542,7 +1519,7 @@ fn ride_end(entry: &EntryMeta, recovered: RideRecovery) -> Option<FinishCensus> 
     if let Err(error) = store.journal(RideCheckpoint {
         id: entry.id,
         revision: entry.revision,
-        tail: &tail[..held],
+        append: &delta[..held],
         payload_crc: final_crc,
         resume: &resume,
     }) {
@@ -1680,24 +1657,28 @@ fn short_ride() -> Option<FinishCensus> {
     }
 
     // SAFETY: sole borrow after the long finish has returned.
-    let tail = unsafe { &mut (*core::ptr::addr_of_mut!(RIDE_TAIL)).0 };
+    let delta = unsafe { &mut (*core::ptr::addr_of_mut!(RIDE_DELTA)).0 };
     let mut digest = Crc32::new();
     let mut held = 0usize;
     for point in 0..SHORT_SAMPLES {
         let sample = ride_sample(point);
-        tail[held..held + SAMPLE_LEN].copy_from_slice(&sample);
+        delta[held..held + SAMPLE_LEN].copy_from_slice(&sample);
         held += SAMPLE_LEN;
         digest.update(&sample);
     }
     let footer = short_footer();
-    tail[held..held + FOOTER_LEN].copy_from_slice(&footer);
+    delta[held..held + FOOTER_LEN].copy_from_slice(&footer);
     held += FOOTER_LEN;
     digest.update(&footer);
     let payload_crc = digest.finalize();
     let resume = resume_image(SHORT_SAMPLES);
-    if let Err(error) =
-        store.journal(RideCheckpoint { id, revision: Revision(1), tail: &tail[..held], payload_crc, resume: &resume })
-    {
+    if let Err(error) = store.journal(RideCheckpoint {
+        id,
+        revision: Revision(1),
+        append: &delta[..held],
+        payload_crc,
+        resume: &resume,
+    }) {
         error!("FINISH short checkpoint was refused ({})", defmt::Debug2Format(&error));
         return None;
     }
@@ -2193,7 +2174,7 @@ fn ingest_object(tx: &mut UarteTx<'_>, rx: &mut UarteRx<'_>, store: &FlatStore<C
     ingest_status(tx, STATUS_ACK, reason::NONE);
 
     // SAFETY: sole borrow of the chunk slot; the session is single-threaded and nothing else reads
-    // it. Same discipline as PATTERN / READBACK / RIDE_TAIL above.
+    // it. Same discipline as PATTERN / READBACK / RIDE_DELTA above.
     let buf = unsafe { &mut (*core::ptr::addr_of_mut!(INGEST_BUF)).0 };
     let mut digest = Crc32::new();
     let mut received = 0u64;
