@@ -21,14 +21,16 @@ use obc_storage::flat::{
 use crate::flat_store::{FlatCard, Outcome, Reply, Request, Writer};
 
 const CHECKPOINT_MS: u32 = 10_000;
-const PAYLOAD_PAGE: usize = 16 * 1024;
 const RIDE_RESERVE: u64 = 32 * 1024 * 1024;
 // At the minimum 1 s fix cadence, one checkpoint interval contributes at most ten records. Six
-// extra records cover a delayed pass without spending the full journal slot twice in RAM.
-const TAIL_BYTES: usize = PAYLOAD_PAGE + 16 * SAMPLE_LEN;
+// extra records cover a delayed pass, and the fixed footer always keeps its own reserved space.
+// The store owns the durable partial 16 KiB page; the board retains only bytes appended since the
+// last successful logical checkpoint.
+const DELTA_SAMPLES: usize = 16;
+const DELTA_BYTES: usize = DELTA_SAMPLES * SAMPLE_LEN + FOOTER_LEN;
 
 static REPLY: Reply = Signal::<CriticalSectionRawMutex, _>::new();
-static mut TAIL: [u8; TAIL_BYTES] = [0; TAIL_BYTES];
+static mut DELTA: [u8; DELTA_BYTES] = [0; DELTA_BYTES];
 static mut RESUME: [u8; RIDE_RESUME_LEN] = [0; RIDE_RESUME_LEN];
 
 const RESUME_MAGIC: [u8; 4] = *b"OBRC";
@@ -46,7 +48,7 @@ struct Live {
     id: ObjectId,
     revision: Revision,
     name: DisplayName,
-    tail_len: usize,
+    delta_len: usize,
     points: u32,
     first_t_ms: Option<u32>,
     last_t_ms: Option<u32>,
@@ -60,7 +62,7 @@ struct Live {
     can_upgrade_start: bool,
     clock_rebase: Option<ClockRebase>,
     continuation: obc_app::RideContinuation,
-    /// A failed checkpoint blocks further samples until the exact same tail has been retried. This
+    /// A failed checkpoint blocks further samples until the exact same append has been retried. This
     /// preserves storage's already-gated rollover recovery anchor and bounds loss under repeated
     /// media faults instead of letting the caller mutate the retry payload.
     journal_blocked: bool,
@@ -73,7 +75,7 @@ struct Finalising {
     id: ObjectId,
     revision: Revision,
     name: DisplayName,
-    tail_len: usize,
+    delta_len: usize,
     payload_len: u64,
     payload_crc: u32,
     journaled: bool,
@@ -83,6 +85,11 @@ struct Finalising {
 enum State {
     Idle,
     Live(Live),
+    /// Finish was requested while an ordinary checkpoint was blocked. The footer is staged after
+    /// `live.delta_len` but is not part of that length or CRC yet: storage must first see the exact
+    /// failed append + resume again. Once repair succeeds the footer moves to offset zero and the
+    /// normal final checkpoint publishes it.
+    FinaliseAfterRepair(Live),
     /// A durable `RECORDING` object whose bytes are not a provable ride-v3 boundary. It remains
     /// visible to recovery diagnostics but is never attached to a session or appended to.
     Faulted {
@@ -108,17 +115,6 @@ impl Recorder {
             None => State::Idle,
             Some(recovered) => {
                 let total = recovered.payload_len();
-                let tail_len = match store.recovered_tail(unsafe { tail_mut() }) {
-                    Ok(len) => len,
-                    Err(error) => {
-                        defmt::error!("flat ride: recovered tail read failed: {}", defmt::Debug2Format(&error));
-                        return Self {
-                            state: State::Faulted { id: recovered.id, revision: recovered.revision },
-                            writer,
-                            warning_pending: true,
-                        };
-                    }
-                };
                 let first_t_ms = read_sample_time(store, 0, total);
                 let last_t_ms = total.checked_sub(SAMPLE_LEN as u64).and_then(|at| read_sample_time(store, at, total));
                 let mut catalog_name = None;
@@ -153,7 +149,7 @@ impl Recorder {
                                         id: recovered.id,
                                         revision: recovered.revision,
                                         name,
-                                        tail_len,
+                                        delta_len: 0,
                                         payload_len: total,
                                         payload_crc: recovered.payload_crc,
                                         journaled: true,
@@ -167,10 +163,7 @@ impl Recorder {
                 }
 
                 let sample_anchors_valid = total == 0 || (first_t_ms.is_some() && last_t_ms.is_some());
-                if total.is_multiple_of(SAMPLE_LEN as u64)
-                    && tail_len == recovered.tail_len as usize
-                    && sample_anchors_valid
-                {
+                if total.is_multiple_of(SAMPLE_LEN as u64) && sample_anchors_valid {
                     let resumed = if total == 0 {
                         Some((obc_app::RideContinuation::default(), None))
                     } else {
@@ -189,7 +182,7 @@ impl Recorder {
                         id: recovered.id,
                         revision: recovered.revision,
                         name: catalog_name,
-                        tail_len,
+                        delta_len: 0,
                         points: (total / SAMPLE_LEN as u64) as u32,
                         first_t_ms,
                         last_t_ms,
@@ -239,7 +232,7 @@ impl Recorder {
         match self.state {
             State::Idle => session.is_some(),
             State::Live(live) => live.session.is_none() && session.is_some(),
-            State::Finalising(_) | State::Discarding { .. } => true,
+            State::FinaliseAfterRepair(_) | State::Finalising(_) | State::Discarding { .. } => true,
             State::Faulted { .. } => false,
         }
     }
@@ -271,11 +264,20 @@ impl Recorder {
         match action {
             Some(obc_app::TrackAction::Save) => {
                 if let (State::Live(live), Some(stats)) = (self.state, stats) {
-                    self.begin_finalise(live, name, stats);
+                    if live.journal_blocked {
+                        self.stage_finalise_after_repair(live, name, stats);
+                    } else {
+                        self.begin_finalise(live, name, stats);
+                    }
                 }
             }
             Some(obc_app::TrackAction::Discard) => match self.state {
-                State::Live(live) => {
+                State::Live(live) | State::FinaliseAfterRepair(live) => {
+                    // Deletion deliberately does not repair a blocked checkpoint. `Remove` never
+                    // enters storage's final-tail flush: the atomic catalog mutation first makes
+                    // the ride/proof unreachable, then `settle_ride` clears its pending recovery
+                    // state and invalidates the journal headers. Repair would add fallible I/O to
+                    // an object the rider explicitly asked to destroy.
                     self.state = State::Discarding { id: live.id, revision: live.revision };
                 }
                 State::Faulted { id, revision } => {
@@ -321,28 +323,68 @@ impl Recorder {
         if !self.checkpoint_is_due(now_ms) {
             return;
         }
-        let stable_start = live
-            .start_time
-            .or_else(|| (live.can_upgrade_start && stats.clock_trusted).then(|| start_time(stats, live.first_t_ms)));
-        let resume = encode_resume(continuation, stable_start);
+        // Once an attempt fails, storage's equality contract requires the *entire* logical
+        // checkpoint to be replayed: append, CRC and opaque resume. App totals can keep moving even
+        // while samples are frozen, so never rebuild resume from the current app on a retry.
+        let (resume, attempted_continuation, attempted_start) = if live.journal_blocked {
+            (unsafe { *resume_slice() }, live.continuation, live.start_time)
+        } else {
+            let stable_start = live.start_time.or_else(|| {
+                (live.can_upgrade_start && stats.clock_trusted).then(|| start_time(stats, live.first_t_ms))
+            });
+            (encode_resume(continuation, stable_start), continuation, stable_start)
+        };
         match self.journal(live, &resume).await {
             Ok(()) => {
                 let mut next = live;
-                compact_tail(&mut next.tail_len);
+                unsafe { delta_mut()[..next.delta_len].fill(0) };
+                next.delta_len = 0;
                 next.last_checkpoint_ms = now_ms;
-                next.start_time = stable_start;
-                next.continuation = continuation;
+                next.start_time = attempted_start;
+                next.continuation = attempted_continuation;
                 next.journal_blocked = false;
                 self.state = State::Live(next);
             }
             Err(error) => {
                 let mut blocked = live;
+                // These now name the staged resume, not the last durable one. Keeping them beside
+                // `journal_blocked` makes a later successful retry advance the in-RAM state to the
+                // exact snapshot storage just accepted rather than to newer app totals.
+                blocked.start_time = attempted_start;
+                blocked.continuation = attempted_continuation;
                 blocked.journal_blocked = true;
                 self.state = State::Live(blocked);
                 self.warning_pending = true;
                 defmt::warn!("flat ride: checkpoint failed: {}", defmt::Debug2Format(&error));
             }
         }
+    }
+
+    fn stage_finalise_after_repair(&mut self, mut live: Live, fallback_name: &str, stats: &obc_route::RideStats) {
+        if live.name.is_empty() {
+            live.name = DisplayName::new(fallback_name).unwrap_or_default();
+        }
+        let mut footer_stats = *stats;
+        let stable_start = live
+            .start_time
+            .or_else(|| (live.can_upgrade_start && stats.clock_trusted).then(|| start_time(stats, live.first_t_ms)))
+            .unwrap_or(0);
+        footer_stats.unix_at_anchor = stable_start;
+        footer_stats.anchor_ms = live.first_t_ms.unwrap_or(0);
+        footer_stats.clock_trusted = live.start_time.is_some() || (live.can_upgrade_start && stats.clock_trusted);
+        let footer = obc_route::encode_summary_footer(
+            live.name.as_str().unwrap_or(""),
+            &footer_stats,
+            live.points,
+            live.first_t_ms,
+        );
+        if live.delta_len + footer.len() > DELTA_BYTES {
+            self.warning_pending = true;
+            defmt::error!("flat ride: staged footer does not fit after blocked checkpoint delta");
+            return;
+        }
+        unsafe { delta_mut()[live.delta_len..live.delta_len + footer.len()].copy_from_slice(&footer) };
+        self.state = State::FinaliseAfterRepair(live);
     }
 
     fn begin_finalise(&mut self, live: Live, fallback_name: &str, stats: &obc_route::RideStats) {
@@ -360,18 +402,18 @@ impl Recorder {
         footer_stats.clock_trusted = live.start_time.is_some() || (live.can_upgrade_start && stats.clock_trusted);
         let footer =
             obc_route::encode_summary_footer(name.as_str().unwrap_or(""), &footer_stats, live.points, live.first_t_ms);
-        if live.tail_len + footer.len() > TAIL_BYTES {
-            defmt::error!("flat ride: footer does not fit the bounded tail");
+        if live.delta_len + footer.len() > DELTA_BYTES {
+            defmt::error!("flat ride: footer does not fit the bounded delta");
             return;
         }
-        unsafe { tail_mut()[live.tail_len..live.tail_len + footer.len()].copy_from_slice(&footer) };
+        unsafe { delta_mut()[live.delta_len..live.delta_len + footer.len()].copy_from_slice(&footer) };
         let mut crc = live.crc;
         crc.update(&footer);
         self.state = State::Finalising(Finalising {
             id: live.id,
             revision: live.revision,
             name,
-            tail_len: live.tail_len + footer.len(),
+            delta_len: live.delta_len + footer.len(),
             payload_len: u64::from(live.points) * SAMPLE_LEN as u64 + FOOTER_LEN as u64,
             payload_crc: crc.finalize(),
             journaled: false,
@@ -405,13 +447,13 @@ impl Recorder {
         batch.push(Mutation::Put { meta, source: PutSource::Fresh(allocation) }).map_err(|_| StoreError::Invalid)?;
         match self.writer.call(Request::Commit { batch }, &REPLY).await {
             Ok(Outcome::Committed(_)) => {
-                unsafe { tail_mut().fill(0) };
+                unsafe { delta_mut().fill(0) };
                 self.state = State::Live(Live {
                     session,
                     id,
                     revision,
                     name,
-                    tail_len: 0,
+                    delta_len: 0,
                     points: 0,
                     first_t_ms: None,
                     last_t_ms: None,
@@ -438,7 +480,7 @@ impl Recorder {
         let checkpoint = RideCheckpoint {
             id: live.id,
             revision: live.revision,
-            tail: unsafe { tail_slice(live.tail_len) },
+            append: unsafe { delta_slice(live.delta_len) },
             payload_crc: live.crc.finalize(),
             resume: unsafe { resume_slice() },
         };
@@ -450,12 +492,44 @@ impl Recorder {
 
     async fn service_terminal(&mut self) {
         match self.state {
+            State::FinaliseAfterRepair(mut live) => {
+                // `RESUME` is the image staged by the failed ordinary checkpoint. The footer lives
+                // just beyond `delta_len`, so this retry lends only the original sample delta.
+                let resume = unsafe { *resume_slice() };
+                match self.journal(live, &resume).await {
+                    Ok(()) => {
+                        let old_len = live.delta_len;
+                        unsafe {
+                            let delta = delta_mut();
+                            delta.copy_within(old_len..old_len + FOOTER_LEN, 0);
+                            delta[FOOTER_LEN..old_len + FOOTER_LEN].fill(0);
+                        }
+                        live.delta_len = 0;
+                        live.journal_blocked = false;
+                        let mut crc = live.crc;
+                        crc.update(unsafe { delta_slice(FOOTER_LEN) });
+                        self.state = State::Finalising(Finalising {
+                            id: live.id,
+                            revision: live.revision,
+                            name: live.name,
+                            delta_len: FOOTER_LEN,
+                            payload_len: u64::from(live.points) * SAMPLE_LEN as u64 + FOOTER_LEN as u64,
+                            payload_crc: crc.finalize(),
+                            journaled: false,
+                        });
+                    }
+                    Err(error) => {
+                        self.warning_pending = true;
+                        defmt::warn!("flat ride: pre-finish checkpoint repair failed: {}", defmt::Debug2Format(&error));
+                    }
+                }
+            }
             State::Finalising(mut finalising) => {
                 if !finalising.journaled {
                     let checkpoint = RideCheckpoint {
                         id: finalising.id,
                         revision: finalising.revision,
-                        tail: unsafe { tail_slice(finalising.tail_len) },
+                        append: unsafe { delta_slice(finalising.delta_len) },
                         payload_crc: finalising.payload_crc,
                         resume: unsafe { resume_slice() },
                     };
@@ -518,15 +592,15 @@ impl TrackSink for Recorder {
         // Keep the fixed footer's space reserved even through repeated checkpoint failures. Finish
         // is a one-shot UI edge; accepting a sample that displaced the footer would strand the
         // durable RECORDING object after the app had already ended its session.
-        if live.session.is_none() || live.journal_blocked || live.tail_len + SAMPLE_LEN + FOOTER_LEN > TAIL_BYTES {
+        if live.session.is_none() || live.journal_blocked || live.delta_len + SAMPLE_LEN + FOOTER_LEN > DELTA_BYTES {
             return Err(TrackError);
         }
         if let Some(clock) = live.clock_rebase {
             point.t_ms = clock.logical_anchor.wrapping_add(point.t_ms.wrapping_sub(clock.source_anchor));
         }
         let sample = obc_formats::track::encode_record(&point);
-        unsafe { tail_mut()[live.tail_len..live.tail_len + SAMPLE_LEN].copy_from_slice(&sample) };
-        live.tail_len += SAMPLE_LEN;
+        unsafe { delta_mut()[live.delta_len..live.delta_len + SAMPLE_LEN].copy_from_slice(&sample) };
+        live.delta_len += SAMPLE_LEN;
         live.points = live.points.checked_add(1).ok_or(TrackError)?;
         live.first_t_ms.get_or_insert(point.t_ms);
         live.last_t_ms = Some(point.t_ms);
@@ -534,20 +608,6 @@ impl TrackSink for Recorder {
         self.state = State::Live(live);
         Ok(())
     }
-}
-
-fn compact_tail(len: &mut usize) {
-    let flushed = *len / PAYLOAD_PAGE * PAYLOAD_PAGE;
-    if flushed == 0 {
-        return;
-    }
-    let remain = *len - flushed;
-    unsafe {
-        let tail = tail_mut();
-        tail.copy_within(flushed..*len, 0);
-        tail[remain..*len].fill(0);
-    }
-    *len = remain;
 }
 
 fn read_sample_time(store: &FlatStore<FlatCard>, offset: u64, total: u64) -> Option<u32> {
@@ -635,12 +695,12 @@ fn decode_resume(bytes: &[u8; RIDE_RESUME_LEN]) -> Option<(obc_app::RideContinua
 /// The ride loop is the only mutable owner. A journal request lends the storage task an immutable
 /// view and waits for its reply before the loop can touch the buffer again. These raw-slice helpers
 /// express that cross-task handoff without manufacturing a permanent Rust borrow of a `static mut`.
-unsafe fn tail_mut() -> &'static mut [u8; TAIL_BYTES] {
-    &mut *addr_of_mut!(TAIL)
+unsafe fn delta_mut() -> &'static mut [u8; DELTA_BYTES] {
+    &mut *addr_of_mut!(DELTA)
 }
 
-unsafe fn tail_slice(len: usize) -> &'static [u8] {
-    core::slice::from_raw_parts(addr_of!(TAIL).cast::<u8>(), len)
+unsafe fn delta_slice(len: usize) -> &'static [u8] {
+    core::slice::from_raw_parts(addr_of!(DELTA).cast::<u8>(), len)
 }
 
 unsafe fn resume_mut() -> &'static mut [u8; RIDE_RESUME_LEN] {
@@ -651,4 +711,4 @@ unsafe fn resume_slice() -> &'static [u8; RIDE_RESUME_LEN] {
     &*addr_of!(RESUME)
 }
 
-pub(crate) const RESIDENT_BYTES: usize = TAIL_BYTES + RIDE_RESUME_LEN;
+pub(crate) const RESIDENT_BYTES: usize = DELTA_BYTES + RIDE_RESUME_LEN;

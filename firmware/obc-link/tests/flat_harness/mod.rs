@@ -350,7 +350,7 @@ impl<D: BlockDevice> Device<D> {
             RideCheckpoint {
                 id: ObjectId(id),
                 revision: Revision(revision),
-                tail: bytes,
+                append: bytes,
                 payload_crc: crc32(bytes),
                 resume: &resume,
             },

@@ -336,9 +336,9 @@ const RESIDENT_BYTES: usize = FB_BYTES
 ///
 const FLAT_RESIDENT: usize = flat_store::RESIDENT_BYTES;
 
-/// FS8's one recorder-owned payload-page tail, present in every shipping build and separate from
-/// the store so the ride task can lend it across a serialized journal request without growing its
-/// poll frame.
+/// FS8's recorder-owned append delta, present in every shipping build and separate from the store
+/// so the ride task can lend it across a serialized journal request without growing its poll frame.
+/// The store owns the durable partial 16 KiB page; this is only ~10 s of samples plus the footer.
 const RIDE_RESIDENT: usize = flat_ride::RESIDENT_BYTES;
 // ⚠️ **The budget has a cliff in it now** (#1146 P2), and it points both ways — read this before
 // "optimizing" any of the three arena arms, and before waving one through:
@@ -517,9 +517,9 @@ mod resource_report {
         entry("flat_store", core::mem::size_of::<obc_storage::flat::FlatStore<flat_store::FlatCard>>()),
         entry("flat_requests", flat_store::REQUEST_QUEUE_BYTES),
         entry("flat_catalog_uploads", flat_store::CATALOG_UPLOAD_BYTES),
-        // FS8's one live-ride tail. It is static rather than a ride-task local so the 16 KiB
-        // write-once payload page never becomes part of the task poll frame.
-        entry("flat_ride_tail", flat_ride::RESIDENT_BYTES),
+        // FS8's live-ride append delta + recovery summary. The store owns the durable partial
+        // 16 KiB page; this static retains only ~10 s of samples plus the final footer.
+        entry("flat_ride_delta", flat_ride::RESIDENT_BYTES),
         // The read cutover's own resident cost on the flat arm (FS7.5-c2): the session-long
         // `StoreSource` over the map object **and** the display name the same boot step captures.
         // Named beside the store it reads from so the two halves of "what does reading a flat card

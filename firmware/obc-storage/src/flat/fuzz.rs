@@ -197,7 +197,7 @@ fn the_seam_never_panics_on_hostile_arguments() {
         let _ = store.journal(RideCheckpoint {
             id: meta.id,
             revision: meta.revision,
-            tail: &[0xCD; 300],
+            append: &[0xCD; 300],
             payload_crc: meta.payload_crc,
             resume: &[0; super::seam::RIDE_RESUME_LEN],
         });
