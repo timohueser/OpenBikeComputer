@@ -33,6 +33,7 @@ const chromium = envOf(web.platform, true);
 const safari = envOf(web.platform, false);
 const desktopApp = envOf(desktop.platform, false);
 const devServer = envOf(dev.platform, true);
+const devSafari = envOf(dev.platform, false);
 
 describe("the reason table", () => {
     it("covers every requirement, in a listed order", () => {
@@ -71,12 +72,16 @@ describe("tier gating", () => {
         for (const need of REQUIREMENTS) expect(unmetIn(desktopApp, need)).toBeNull();
     });
 
-    it("keeps device features out of the maintainer dev server", () => {
-        expect(unmetIn(devServer, "deviceUsb")).toBe("deviceUsb");
+    it("keeps desktop-only device features out of the maintainer dev server", () => {
+        expect(unmetIn(devServer, "deviceDashboard")).toBe("deviceDashboard");
     });
 
-    it("reports the first unmet requirement, so the sentence matches the cause", () => {
-        expect(unmetIn(devServer, ["deviceUsb", "webUsb"])).toBe("deviceUsb");
+    it("offers WebUSB from the maintainer dev server in Chromium", () => {
+        expect(unmetIn(devServer, ["deviceUsb", "webUsb"])).toBeNull();
+    });
+
+    it("reports the browser limitation from the dev server when WebUSB is absent", () => {
+        expect(unmetIn(devSafari, ["deviceUsb", "webUsb"])).toBe("webUsb");
     });
 
     it("blocks a control whose platform member is null even where the cap says yes", () => {
