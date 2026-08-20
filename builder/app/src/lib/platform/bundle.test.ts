@@ -119,6 +119,11 @@ describe("bundle split", () => {
             modules.filter((id) => re.test(id)).map((id) => `${what}: ${id}`),
         );
         expect(strays).toEqual([]);
+
+        // `obc web` serves this target. Localhost is a secure WebUSB context,
+        // so the build must retain the same lazy browser transport as the
+        // static web host instead of rendering a desktop-only dead end.
+        expect(modules.some((id) => id.endsWith("/src/lib/usb/webusb.ts"))).toBe(true);
     }, 180_000);
 
     it("wires the desktop target to the Tauri backend", async () => {
