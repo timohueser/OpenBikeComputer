@@ -1069,12 +1069,12 @@ fn serve(
                         engine.on_stream_staged(Link::Usb, store, policy, record, &mut *out, bank, stage)
                     })
                 })
-            .unwrap_or_else(|| {
-                // Losing the arm invalidates the staged prefix. Cancel rather than switching to the
-                // resident 512-byte buffer and writing unrelated bytes under the same cursor.
-                engine.on_link_lost(Link::Usb, store);
-                Reaction::Close(obc_link::flat::Channel::Stream)
-            });
+                .unwrap_or_else(|| {
+                    // Losing the arm invalidates the staged prefix. Cancel rather than switching to the
+                    // resident 512-byte buffer and writing unrelated bytes under the same cursor.
+                    engine.on_link_lost(Link::Usb, store);
+                    Reaction::Close(obc_link::flat::Channel::Stream)
+                });
             publish_upload(engine);
             Ok(Outcome::Reacted { reaction, out })
         }
