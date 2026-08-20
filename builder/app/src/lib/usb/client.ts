@@ -158,11 +158,12 @@ export function isFormatRecoveryState(cause: unknown): cause is DeviceError {
 /**
  * Payload bytes handed to the transport per `write`, batched into whole stream records.
  *
- * §5.2 fixes the *record* at 4,096 payload bytes — that is one card write on the device and is not a
+ * §5.2 fixes a full stream record at 8,192 payload bytes — eight of them fill one 64 KiB card stage
+ * on the device, and the record size is not a
  * tuning knob. This is a different number: how many of those records go into one `transferOut`.
- * Records concatenate on the wire (each carries its own length prefix), so batching costs nothing on
+ * Records concatenate on the wire (each carries its own length prefix and padding), so batching costs nothing on
  * the device and saves the renderer → USB-service round trip WebUSB pays per transfer. 64 KiB is
- * sixteen records.
+ * eight records.
  *
  * Sweep it together with {@link UPLOAD_WINDOW}: the bytes the browser keeps queued at the endpoint
  * are their product (256 KiB today), which is what has to cover a device-side flush without the wire
@@ -974,8 +975,8 @@ export class FlatStoreClient {
                     const payload = chunk.subarray(at, Math.min(at + MAX_STREAM_PAYLOAD, chunk.length));
                     // Framed here rather than through `RecordChannel.send`, because several records
                     // go out in one transport write and the channel sends one at a time. The framing
-                    // is the same two bytes either way; what is saved is a renderer → USB-service
-                    // round trip per 4 KiB.
+                    // is the same aligned binding record either way; what is saved is a renderer →
+                    // USB-service round trip per 8 KiB.
                     batch.push(frameRecord(encodeStreamRecord(requestId, offset, payload)));
                     batchPayload += payload.length;
                     offset += BigInt(payload.length);

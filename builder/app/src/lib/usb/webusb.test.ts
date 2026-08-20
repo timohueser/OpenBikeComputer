@@ -5,7 +5,7 @@
  * {@link MockDevice} behind it. So `WebUsbWatcher.start()`, `openWebUsbLink`, the endpoint
  * discovery, §5.2's record framing and the pipe's transfer translation all run for real, and what
  * the tests assert is the behaviour that only the browser layer can get wrong: the permission
- * model, the descriptor match that settles the wire major, hot-plug, and settling promptly when the
+ * model, the descriptor match that settles the USB-binding major, hot-plug, and settling promptly when the
  * cable comes out.
  *
  * The transport-shaped half of `FLAT_Store_Protocol.md` §5.2 is what most of this file is about, and
@@ -29,15 +29,16 @@ import {
     MAX_HOST_CONTROL_RECORD,
     MAX_HOST_STREAM_RECORD,
     RecordChannel,
+    USB_BINDING_MAJOR,
     decodeDeviceInfo,
     frameRecord,
     type DeviceInfo,
 } from "./records";
-import { HEAD_REVISION, ObjectKind, WIRE_MAJOR } from "./protocol";
+import { HEAD_REVISION, ObjectKind } from "./protocol";
 import {
     OBC_USB_FILTERS,
     WebUsbWatcher,
-    checkWireMajor,
+    checkUsbBindingMajor,
     discoverLayout,
     openWebUsbLink,
     webUsb,
@@ -68,7 +69,7 @@ function configuration(
     // reads the number or hard-codes a zero. The device really does enumerate interface 0 today;
     // the point of the rig is to be able to tell the difference.
     const interfaceNumber = options.interfaceNumber ?? 2;
-    const protocol = options.interfaceProtocol === undefined ? WIRE_MAJOR : options.interfaceProtocol;
+    const protocol = options.interfaceProtocol === undefined ? USB_BINDING_MAJOR : options.interfaceProtocol;
     return {
         configurationValue: 1,
         interfaces: [
@@ -133,7 +134,7 @@ class FakeUsbDevice implements UsbDeviceLike {
         this.options = options;
         this.vendorId = options.vendorId ?? VID;
         this.productId = options.productId ?? PID;
-        const major = options.deviceVersionMajor === undefined ? WIRE_MAJOR : options.deviceVersionMajor;
+        const major = options.deviceVersionMajor === undefined ? USB_BINDING_MAJOR : options.deviceVersionMajor;
         if (major !== null) this.deviceVersionMajor = major;
     }
 
@@ -368,15 +369,19 @@ describe("the permission model", () => {
     });
 });
 
-describe("the wire major, settled by matching", () => {
+describe("the USB-binding major, settled by matching", () => {
     // §5.2: the descriptors state the major and the host refuses a device that contradicts it,
     // before a record moves. There is no version *read* on this link — putting one back would be
     // the duplication the major bump removed.
 
-    it("accepts a device that states 4 in both places", () => {
+    it("accepts a device that states 5 in both places", () => {
         const layout = discoverLayout(configuration());
         expect(() =>
-            checkWireMajor({ deviceVersionMajor: WIRE_MAJOR } as UsbDeviceLike, layout, configuration()),
+            checkUsbBindingMajor(
+                { deviceVersionMajor: USB_BINDING_MAJOR } as UsbDeviceLike,
+                layout,
+                configuration(),
+            ),
         ).not.toThrow();
     });
 
@@ -386,23 +391,27 @@ describe("the wire major, settled by matching", () => {
         // contradiction: it is left to fail on the first exchange, where the failure names an actual
         // message rather than a missing field.
         const config = configuration({ interfaceProtocol: null });
-        expect(() => checkWireMajor({} as UsbDeviceLike, discoverLayout(config), config)).not.toThrow();
+        expect(() => checkUsbBindingMajor({} as UsbDeviceLike, discoverLayout(config), config)).not.toThrow();
     });
 
-    it("refuses a device whose `bcdDevice` contradicts 4", () => {
+    it("refuses a device whose `bcdDevice` contradicts 5", () => {
         const config = configuration();
-        expect(() => checkWireMajor({ deviceVersionMajor: 3 } as UsbDeviceLike, discoverLayout(config), config)).toThrow(
-            /speaks protocol v3; this page speaks v4\. Update the device firmware, or reload the page/,
-        );
+        expect(() =>
+            checkUsbBindingMajor({ deviceVersionMajor: 4 } as UsbDeviceLike, discoverLayout(config), config),
+        ).toThrow(/uses USB binding v4; this page uses v5\. Update the device firmware, or reload the page/);
     });
 
-    it("refuses a device whose `bInterfaceProtocol` contradicts 4", () => {
+    it("refuses a device whose `bInterfaceProtocol` contradicts 5", () => {
         // The other statement, checked independently: a device that got its `bcdDevice` right and
         // its interface descriptor wrong is still a device this page must not exchange records with.
-        const config = configuration({ interfaceProtocol: 5 });
+        const config = configuration({ interfaceProtocol: 4 });
         expect(() =>
-            checkWireMajor({ deviceVersionMajor: WIRE_MAJOR } as UsbDeviceLike, discoverLayout(config), config),
-        ).toThrow(/speaks protocol v5; this page speaks v4/);
+            checkUsbBindingMajor(
+                { deviceVersionMajor: USB_BINDING_MAJOR } as UsbDeviceLike,
+                discoverLayout(config),
+                config,
+            ),
+        ).toThrow(/uses USB binding v4; this page uses v5/);
     });
 
     it("never claims the interface of a device that contradicts it", async () => {
@@ -414,7 +423,7 @@ describe("the wire major, settled by matching", () => {
         const watcher = new WebUsbWatcher({ usb });
         expect(await watcher.start()).toBe(false);
         expect(watcher.current.status).toBe("error");
-        expect(watcher.current.error).toMatch(/protocol v3/);
+        expect(watcher.current.error).toMatch(/USB binding v3/);
         expect(watcher.current.error).toMatch(/Update the device firmware, or reload the page/);
         expect(usbDevice.claimed).toBeNull();
         await watcher.close();
@@ -482,7 +491,7 @@ describe("the endpoint layout", () => {
     it("takes the lowest IN/OUT pair as control and the next as stream", () => {
         // The channels are named after what §5 puts on them, not after the endpoint type: all four
         // are bulk endpoints, and calling one pair "bulk" said nothing while hiding that the stream
-        // pair is the one carrying §3.8's 4,096-byte payloads.
+        // pair is the one carrying §3.8's 8,192-byte payloads.
         expect(discoverLayout(configuration())).toEqual({
             interfaceNumber: 2,
             control: { in: 1, out: 1, packetSize: 512 },
@@ -524,8 +533,9 @@ describe("the pipe", () => {
         // The v1 rule this replaces refused any frame at or above the endpoint's packet size,
         // because a frame *was* a transfer and one at exactly the packet size could not be told from
         // one that had not ended. §5.2 makes the record self-delimiting instead, and the ordinary
-        // stream record — §3.8's 16-byte frame plus a 4,096-byte payload, one whole card write — is
-        // eight 512-byte packets and a short one. Refusing it would kill every upload.
+        // stream frame — §3.8's 16-byte header plus an 8,192-byte payload — spans sixteen
+        // 512-byte packets and a short one once the binding prefix is included. Refusing it would
+        // kill every upload.
         const { link, usbDevice } = bareLink();
         const webusb = await openWebUsbLink(usbDevice);
         const record = Uint8Array.from({ length: MAX_HOST_STREAM_RECORD }, (_, i) => (i * 13) & 0xff);
@@ -540,7 +550,7 @@ describe("the pipe", () => {
             seen.push(slice);
             got += slice.length;
         }
-        expect(seen.length, "a 4,112-byte record must span packets").toBeGreaterThan(1);
+        expect(seen.length, "an 8,208-byte frame must span packets").toBeGreaterThan(1);
         const joined = new Uint8Array(got);
         let at = 0;
         for (const slice of seen) {
@@ -556,7 +566,7 @@ describe("the pipe", () => {
         // §5.2's other half, in the reading direction: the length prefix is the only thing that says
         // where a record ends, so a reader has to accumulate. Eight-byte packets are absurd for a
         // high-speed endpoint and exactly the right size to make the arithmetic visible — a
-        // 102-byte record is thirteen transfers, and a reader that stopped at the first would hand
+        // 104-byte padded record is thirteen transfers, and a reader that stopped at the first would hand
         // the client eight bytes of a frame.
         const { link, usbDevice } = bareLink({ packetSize: 8 });
         const webusb = await openWebUsbLink(usbDevice);
@@ -565,8 +575,37 @@ describe("the pipe", () => {
         void link.device.control.write(frameRecord(frame));
 
         expect(await channel.next()).toEqual(frame);
-        expect(usbDevice.reads, "13 packets carry a 102-byte record at 8 bytes each").toBe(13);
+        expect(usbDevice.reads, "13 packets carry a 104-byte record at 8 bytes each").toBe(13);
         expect(channel.buffered, "nothing may be left over after a record that fits exactly").toBe(0);
+        await webusb.close();
+        await link.host.close();
+    });
+
+    it("pads odd-sized frames so the following record remains word aligned", async () => {
+        const frame = Uint8Array.from({ length: 5 }, (_, i) => i + 1);
+        const record = frameRecord(frame);
+        expect(record.length).toBe(12);
+        expect([...record.subarray(0, 4)]).toEqual([5, 0, 0, 0]);
+        expect([...record.subarray(9)]).toEqual([0, 0, 0]);
+
+        const { link, usbDevice } = bareLink({ packetSize: 8 });
+        const webusb = await openWebUsbLink(usbDevice);
+        const channel = new RecordChannel(webusb.control, MAX_HOST_CONTROL_RECORD);
+        void link.device.control.write(record);
+        expect(await channel.next()).toEqual(frame);
+        expect(channel.buffered).toBe(0);
+        await webusb.close();
+        await link.host.close();
+    });
+
+    it("rejects non-zero record padding", async () => {
+        const record = frameRecord(new Uint8Array([0xaa]));
+        record[record.length - 1] = 1;
+        const { link, usbDevice } = bareLink();
+        const webusb = await openWebUsbLink(usbDevice);
+        const channel = new RecordChannel(webusb.control, MAX_HOST_CONTROL_RECORD);
+        void link.device.control.write(record);
+        await expect(channel.next()).rejects.toThrow(/non-zero USB record padding/);
         await webusb.close();
         await link.host.close();
     });

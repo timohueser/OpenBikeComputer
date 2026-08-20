@@ -301,8 +301,8 @@ describe("the native pipe's transport contract", () => {
     it("sends a record that spans packets instead of refusing it", async () => {
         // The rule this replaces: under the v1 envelope a frame was one transfer, so anything at or
         // above the endpoint's packet size was refused before it left the page. §5.2 makes a record
-        // self-delimiting — `record_length u16` and then that many bytes, across as many packets as
-        // it takes — so the ordinary 4,112-byte stream record (§3.8's frame plus one 4,096-byte card
+        // self-delimiting — `record_length u32`, frame bytes and alignment padding, across as many packets as
+        // it takes — so the ordinary 8,208-byte stream frame (§3.8's header plus one 8,192-byte
         // write) has to go out, and so does a control record that lands on the 512-byte boundary.
         wire = loopbackLink();
         attached = [DEVICE];

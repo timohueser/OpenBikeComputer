@@ -27,26 +27,6 @@ pub mod otg_v1;
 #[cfg(feature = "host")]
 pub mod host;
 
-// ===== OpenBikeComputer investigation probe (temporary) =====
-/// How buffer-DMA OUT reads complete: woken (XFRC/activity satisfied the poll) vs. published by
-/// the idle-timeout path. Diagnostic only — dies with the USB throughput investigation.
-pub mod read_probe {
-    use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
-    pub static WOKEN: AtomicU32 = AtomicU32::new(0);
-    pub static TIMEOUT_PUBLISHED: AtomicU32 = AtomicU32::new(0);
-    pub static TIMEOUT_FIRES: AtomicU32 = AtomicU32::new(0);
-    /// XFRC events the ISR actually saw on a non-EP0 OUT endpoint.
-    pub static ISR_XFRC_OUT: AtomicU32 = AtomicU32::new(0);
-    pub fn take() -> (u32, u32, u32, u32) {
-        (
-            WOKEN.swap(0, Relaxed),
-            TIMEOUT_PUBLISHED.swap(0, Relaxed),
-            TIMEOUT_FIRES.swap(0, Relaxed),
-            ISR_XFRC_OUT.swap(0, Relaxed),
-        )
-    }
-}
-
 use otg_v1::{Otg, regs, vals};
 
 /// Handle interrupts.
@@ -262,9 +242,6 @@ pub unsafe fn on_interrupt(r: Otg, state: &State<'_>) {
                     }
 
                     if ep_ints.xfrc() && !is_setup {
-                        if ep_num != 0 {
-                            read_probe::ISR_XFRC_OUT.fetch_add(1, Ordering::Relaxed);
-                        }
                         let ep = &state.ep_states[ep_num];
                         if let Some(alloc) = state.ep_alloc_get(Direction::Out, ep_num) {
                             let remaining = r.doeptsiz(ep_num).read().xfrsiz() as usize;
@@ -1835,8 +1812,8 @@ impl<'d> embassy_usb_driver::EndpointOut for Endpoint<'d, Out> {
         }
 
         if self.buffer_dma {
-            // XFRC wakes every completed transfer — full bursts included: the ISR counted one
-            // XFRC per endpoint read across a 480 MB upload (probe, 2026-08-20). The timeout is
+            // XFRC wakes every completed transfer — full bursts included: one XFRC per endpoint
+            // read was observed across a 480 MB LM20 upload (2026-08-20). The timeout is
             // therefore tail-latency insurance only, for the one case DWC2 has no event for: a
             // host that pauses after full-size packets mid-burst. 5 ms keeps that insurance while
             // taking the timer churn out of the hot path (594k timer fires per upload at the
@@ -1849,12 +1826,8 @@ impl<'d> embassy_usb_driver::EndpointOut for Endpoint<'d, Out> {
                 )
                 .await
                 {
-                    Ok(result) => {
-                        read_probe::WOKEN.fetch_add(1, Ordering::Relaxed);
-                        return result;
-                    }
+                    Ok(result) => return result,
                     Err(_) => {
-                        read_probe::TIMEOUT_FIRES.fetch_add(1, Ordering::Relaxed);
                         // A growing prefix is a live burst: reset the idle window and keep waiting.
                         // Only an unchanged non-empty prefix is a short transfer.
                         let capacity = self.burst_packets as usize * self.info.max_packet_size as usize;
@@ -1868,7 +1841,6 @@ impl<'d> embassy_usb_driver::EndpointOut for Endpoint<'d, Out> {
                             continue;
                         }
                         if filled > read {
-                            read_probe::TIMEOUT_PUBLISHED.fetch_add(1, Ordering::Relaxed);
                             return poll_fn(|cx| self.poll_dma_read(cx, buf, true)).await;
                         }
                     }

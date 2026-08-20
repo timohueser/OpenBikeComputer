@@ -252,7 +252,7 @@ describe("PUT", () => {
     });
 
     it("reassembles across packet boundaries in both directions", async () => {
-        // 64-byte packets: a 4,112-byte stream record is 65 of them, and a `LIST` page is many. The
+        // 64-byte packets: an 8,208-byte stream frame spans many of them, and a `LIST` page is many. The
         // v1 envelope made this impossible by construction (one frame, one transfer); §5.2 makes it
         // the ordinary case, so it is the ordinary case here too.
         await withDevice({ packetSize: 64 }, async ({ client, device }) => {

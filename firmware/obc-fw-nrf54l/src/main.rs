@@ -109,9 +109,6 @@ mod ble;
 // model directly. **In every build** (there is no `usb` feature): the plane is part of the device,
 // not an option of it. Spawned beside the ride loop (see `spawn_usb_stack`).
 mod usb;
-// Investigation scaffolding: the one-summary-per-upload throughput probe for the staged USB map
-// path. Dies with the USB throughput investigation.
-mod upload_probe;
 // The transport-free companion-link core: the §4.4 command handler, descriptor classification, the
 // cross-transport one-transfer gate, the identity blobs, and the one shared `ObjectStore`. Both the
 // radio and the USB plane call into it, which is what keeps "USB is a second transport, not a second

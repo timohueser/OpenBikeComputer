@@ -1,10 +1,11 @@
 //! **§5.2's record reassembly**, as a pure state machine over a caller's buffer.
 //!
-//! The USB binding frames every record as `record_length u16` followed by exactly that many frame
-//! bytes, and — the part that makes this a state machine rather than a length check — **packet
-//! boundaries carry no protocol meaning**. A record may span packets; several may arrive in one
-//! read; a read may end mid-length-prefix. The v1 envelope made one frame exactly one USB transfer
-//! and needed none of this.
+//! USB binding v5 frames every record as `record_length u32`, exactly that many frame bytes, and
+//! zero padding to the next four-byte boundary. The alignment is part of the binding: the frame's
+//! 16-byte header and every following payload stay word aligned even when records are concatenated.
+//! Packet boundaries still carry no protocol meaning: a record may span packets; several may
+//! arrive in one read; a read may end mid-length-prefix. The v1 envelope made one frame exactly one
+//! USB transfer and needed none of this.
 //!
 //! It lives in `obc-link` for the same reason [`Ceilings`](super::Ceilings) and
 //! [`Admission`](super::Admission) do: it is a **rule of the binding**, stated in §5.2, and the
@@ -29,19 +30,35 @@ pub enum RecordFault {
         /// What the channel accepts.
         ceiling: usize,
     },
+    /// The binding-level bytes that align the next record were not zero.
+    NonZeroPadding,
 }
 
-/// The `record_length` prefix, in bytes.
-pub const PREFIX_LEN: usize = 2;
+/// The USB binding version advertised in `bInterfaceProtocol` and `bcdDevice`.
+///
+/// This is deliberately separate from §3's application-protocol major. Changing record framing is
+/// a USB-binding break; it does not change the frames BLE and USB carry.
+pub const USB_BINDING_MAJOR: u8 = 5;
 
-/// **The buffer one reader needs**: a whole record, its prefix, and one armed read on top.
+/// The `record_length` prefix, in bytes.
+pub const PREFIX_LEN: usize = 4;
+
+/// The record alignment guaranteed by USB binding v5.
+pub const RECORD_ALIGNMENT: usize = 4;
+
+/// Frame bytes plus the binding-level zero padding that follows them.
+pub const fn padded_len(frame_len: usize) -> usize {
+    (frame_len + (RECORD_ALIGNMENT - 1)) & !(RECORD_ALIGNMENT - 1)
+}
+
+/// **The buffer one reader needs**: a whole padded record, its prefix, and one armed read on top.
 ///
 /// The `+ armed` term is what makes compaction *sufficient* rather than merely usual. A partial
 /// record can be one byte short of a whole one, so the worst case after compaction is
-/// `PREFIX_LEN + ceiling - 1` bytes held — and the free tail must still take a full armed transfer,
-/// or the driver refuses the read and the reader stalls with the peer still sending.
+/// `PREFIX_LEN + padded_len(ceiling) - 1` bytes held — and the free tail must still take a full
+/// armed transfer, or the driver refuses the read and the reader stalls with the peer still sending.
 pub const fn buffer_len(ceiling: usize, armed: usize) -> usize {
-    PREFIX_LEN + ceiling + armed
+    PREFIX_LEN + padded_len(ceiling) + armed
 }
 
 /// Reassembles §5.2 records out of a byte stream. Owns no bytes — the caller's buffer is passed in,
@@ -77,7 +94,8 @@ impl Reassembler {
     /// armed transfer. Returns the offset into `buf`; the caller reads into `buf[offset..]`.
     ///
     /// Compaction is a `copy_within` of at most one partial record, and it happens only when it has
-    /// to — a steady stream of whole records never moves a byte.
+    /// to. Every consumed wire span is a multiple of four, so every partial record starts word
+    /// aligned and remains so when moved back to offset zero.
     pub fn read_offset(&mut self, buf: &mut [u8], armed: usize) -> usize {
         if buf.len() - self.filled < armed {
             buf.copy_within(self.at..self.filled, 0);
@@ -101,18 +119,22 @@ impl Reassembler {
         if self.buffered() < PREFIX_LEN {
             return Ok(None);
         }
-        let len = usize::from(u16::from_le_bytes([buf[self.at], buf[self.at + 1]]));
+        let len = u32::from_le_bytes([buf[self.at], buf[self.at + 1], buf[self.at + 2], buf[self.at + 3]]) as usize;
         if len == 0 {
             return Err(RecordFault::ZeroLength);
         }
         if len > self.ceiling {
             return Err(RecordFault::OverCeiling { declared: len, ceiling: self.ceiling });
         }
-        if self.buffered() < PREFIX_LEN + len {
+        let padded = padded_len(len);
+        if self.buffered() < PREFIX_LEN + padded {
             return Ok(None);
         }
         let start = self.at + PREFIX_LEN;
-        self.at += PREFIX_LEN + len;
+        if buf[start + len..start + padded].iter().any(|&byte| byte != 0) {
+            return Err(RecordFault::NonZeroPadding);
+        }
+        self.at += PREFIX_LEN + padded;
         Ok(Some((start, len)))
     }
 }
@@ -132,8 +154,7 @@ mod tests {
     #[test]
     fn a_record_spanning_reads_is_reassembled_whatever_the_split() {
         const CEILING: usize = 64;
-        let record: Vec<u8> =
-            core::iter::once(40u8).chain(core::iter::once(0u8)).chain((0..40u8).map(|b| b.wrapping_add(1))).collect();
+        let record: Vec<u8> = (40u32).to_le_bytes().into_iter().chain((0..40u8).map(|b| b.wrapping_add(1))).collect();
         for split in 1..record.len() {
             let mut buf = vec![0u8; buffer_len(CEILING, 16)];
             let mut r = Reassembler::new(CEILING);
@@ -151,7 +172,7 @@ mod tests {
             }
             let (start, len) = got.unwrap_or_else(|| panic!("split at {split} never completed after {fed} B"));
             assert_eq!(len, 40, "split at {split}");
-            assert_eq!(&buf[start..start + len], &record[2..], "split at {split}");
+            assert_eq!(&buf[start..start + len], &record[PREFIX_LEN..], "split at {split}");
         }
     }
 
@@ -161,9 +182,10 @@ mod tests {
     fn several_records_in_one_read_come_out_one_at_a_time() {
         const CEILING: usize = 64;
         let mut stream: Vec<u8> = Vec::new();
-        for len in [8usize, 16, 8] {
-            stream.extend_from_slice(&(len as u16).to_le_bytes());
+        for len in [7usize, 16, 9] {
+            stream.extend_from_slice(&(len as u32).to_le_bytes());
             stream.extend(core::iter::repeat_n(len as u8, len));
+            stream.resize(stream.len() + padded_len(len) - len, 0);
         }
         let mut buf = vec![0u8; buffer_len(CEILING, stream.len())];
         let mut r = Reassembler::new(CEILING);
@@ -171,7 +193,7 @@ mod tests {
         buf[at..at + stream.len()].copy_from_slice(&stream);
         r.filled(stream.len());
 
-        for expected in [8usize, 16, 8] {
+        for expected in [7usize, 16, 9] {
             let (start, len) = r.take(&buf).expect("well formed").expect("a whole record");
             assert_eq!(len, expected);
             assert!(buf[start..start + len].iter().all(|&b| b as usize == expected));
@@ -180,7 +202,7 @@ mod tests {
         assert_eq!(r.buffered(), 0);
     }
 
-    /// §5.2's two framing faults, told apart. A zero length and an over-ceiling one are both
+    /// §5.2's length faults, told apart. A zero length and an over-ceiling one are both
     /// `invalidFrame` on the wire, but a device that cannot tell them apart in its log cannot tell a
     /// broken client from a client talking to the wrong channel.
     #[test]
@@ -188,20 +210,32 @@ mod tests {
         const CEILING: usize = 64;
         let mut buf = vec![0u8; buffer_len(CEILING, 16)];
         let mut r = Reassembler::new(CEILING);
-        buf[0..2].copy_from_slice(&0u16.to_le_bytes());
-        r.filled(2);
+        buf[0..PREFIX_LEN].copy_from_slice(&0u32.to_le_bytes());
+        r.filled(PREFIX_LEN);
         assert_eq!(r.take(&buf), Err(RecordFault::ZeroLength));
 
         let mut r = Reassembler::new(CEILING);
-        buf[0..2].copy_from_slice(&65u16.to_le_bytes());
-        r.filled(2);
+        buf[0..PREFIX_LEN].copy_from_slice(&65u32.to_le_bytes());
+        r.filled(PREFIX_LEN);
         assert_eq!(r.take(&buf), Err(RecordFault::OverCeiling { declared: 65, ceiling: CEILING }));
 
         // …and a length exactly at the ceiling is legal, which is the boundary a `>=` would break.
         let mut r = Reassembler::new(CEILING);
-        buf[0..2].copy_from_slice(&(CEILING as u16).to_le_bytes());
-        r.filled(2 + CEILING);
-        assert_eq!(r.take(&buf), Ok(Some((2, CEILING))));
+        buf[0..PREFIX_LEN].copy_from_slice(&(CEILING as u32).to_le_bytes());
+        r.filled(PREFIX_LEN + CEILING);
+        assert_eq!(r.take(&buf), Ok(Some((PREFIX_LEN, CEILING))));
+    }
+
+    /// Padding belongs to the binding, not the frame, and cannot be used as a hidden side channel.
+    #[test]
+    fn nonzero_alignment_padding_is_a_framing_fault() {
+        let mut buf = vec![0u8; buffer_len(64, 16)];
+        let mut r = Reassembler::new(64);
+        buf[0..PREFIX_LEN].copy_from_slice(&1u32.to_le_bytes());
+        buf[PREFIX_LEN] = 0xaa;
+        buf[PREFIX_LEN + 1] = 1;
+        r.filled(PREFIX_LEN + padded_len(1));
+        assert_eq!(r.take(&buf), Err(RecordFault::NonZeroPadding));
     }
 
     /// Compaction always leaves room for a whole armed read — the property [`buffer_len`] is sized
@@ -216,19 +250,20 @@ mod tests {
         // Fill the buffer with whole records, then a partial one as long as it can be.
         let at = r.read_offset(&mut buf, ARMED);
         assert_eq!(at, 0);
-        buf[0..2].copy_from_slice(&4u16.to_le_bytes());
-        r.filled(6);
-        assert_eq!(r.take(&buf).expect("well formed"), Some((2, 4)));
+        buf[0..PREFIX_LEN].copy_from_slice(&4u32.to_le_bytes());
+        r.filled(PREFIX_LEN + 4);
+        assert_eq!(r.take(&buf).expect("well formed"), Some((PREFIX_LEN, 4)));
 
-        // A partial record of `PREFIX_LEN + CEILING - 1` bytes: the worst case.
-        let partial = PREFIX_LEN + CEILING - 1;
+        // A partial padded record one byte short of whole: the worst case.
+        let partial = PREFIX_LEN + padded_len(CEILING) - 1;
         let at = r.read_offset(&mut buf, partial);
-        buf[at..at + 2].copy_from_slice(&(CEILING as u16).to_le_bytes());
+        buf[at..at + PREFIX_LEN].copy_from_slice(&(CEILING as u32).to_le_bytes());
         r.filled(partial);
         assert_eq!(r.take(&buf).expect("well formed"), None, "one byte short of whole");
 
         let at = r.read_offset(&mut buf, ARMED);
         assert_eq!(at, partial, "the partial record moved to the front");
+        assert_eq!(&buf[..PREFIX_LEN], &(CEILING as u32).to_le_bytes(), "compaction kept the partial record");
         assert!(buf.len() - at >= ARMED, "and the tail still takes a whole armed read");
     }
 
@@ -239,7 +274,7 @@ mod tests {
     fn a_reset_drops_a_partial_record() {
         let mut buf = vec![0u8; buffer_len(64, 16)];
         let mut r = Reassembler::new(64);
-        buf[0..2].copy_from_slice(&40u16.to_le_bytes());
+        buf[0..PREFIX_LEN].copy_from_slice(&40u32.to_le_bytes());
         r.filled(10);
         assert_eq!(r.buffered(), 10);
         r.reset();
@@ -262,8 +297,9 @@ mod binding_boundaries {
     /// same code" — is wrong, and wrong in a way that would silently re-break a path the phone found
     /// on glass:
     ///
-    /// * **USB** (§5.2) prefixes every record with `record_length u16`. The framing is the
-    ///   binding's, sits *outside* the frame, and is what [`Reassembler`] reads.
+    /// * **USB** (§5.2) prefixes every record with `record_length u32` and pads its wire span to
+    ///   four bytes. The framing is the binding's, sits *outside* the frame, and is what
+    ///   [`Reassembler`] reads.
     /// * **BLE** (§5.1) prefixes nothing. The CoC carries §3.8 records back to back and the record's
     ///   own 16-byte header is the only length there is, which is what
     ///   [`StreamRecordAssembler`] reads.
@@ -284,15 +320,15 @@ mod binding_boundaries {
         let (used, state) = ble.push(&mut into, &record);
         assert_eq!((used, state), (record.len(), StreamAssembly::Complete(record.len())));
 
-        // USB's reads the first two bytes as a `record_length`, which here are the low half of the
-        // `RequestId` — a different number entirely. It is not a refusal, which is the point: it
+        // USB reads the first four bytes as a `record_length`, which here are the `RequestId` — a
+        // different number entirely. It is not a refusal, which is the point: it
         // would quietly mis-frame rather than fail, so the mistake is unrecoverable at runtime.
         let mut usb = Reassembler::new(4_112);
         let mut buf = vec![0u8; buffer_len(4_112, 64)];
         buf[..record.len()].copy_from_slice(&record);
         usb.filled(record.len());
-        let declared = u16::from_le_bytes([record[0], record[1]]) as usize;
-        assert_eq!(declared, 1, "the RequestId's low half read as a length");
+        let declared = u32::from_le_bytes(record[0..4].try_into().expect("four bytes")) as usize;
+        assert_eq!(declared, 1, "the RequestId read as a length");
         assert_eq!(usb.take(&buf), Ok(Some((PREFIX_LEN, 1))), "one byte, not a 20-byte record");
     }
 

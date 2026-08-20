@@ -1,9 +1,10 @@
 /**
- * §5.2's record framing: the two bytes that turn a byte pipe back into protocol v4 frames.
+ * §5.2's USB binding v5 framing: the aligned records that carry protocol-v4 frames over a byte pipe.
  *
  * [`FLAT_Store_Protocol.md`](../../../../../specs/FLAT_Store_Protocol.md) §5.2 gives USB two bulk
- * endpoint pairs and one rule for both: *each record is `record_length u16` followed by exactly that
- * many frame bytes*. Everything interesting about this file follows from the sentence after it —
+ * endpoint pairs and one rule for both: *each record is `record_length u32`, exactly that many frame
+ * bytes, then zero padding to a four-byte boundary*. Everything interesting about this file follows
+ * from the sentence after it —
  * **packet boundaries carry no protocol meaning; a record may span packets** — because that is
  * precisely the property a naive reader gets wrong.
  *
@@ -30,8 +31,19 @@
 
 import { PipeError, throwIfAborted, type BytePipe } from "./pipe";
 
-/** The two-byte length prefix every record carries (§5.2). */
-export const RECORD_PREFIX_LEN = 2;
+/** The USB-binding version advertised before a record is exchanged (§5.2). */
+export const USB_BINDING_MAJOR = 5;
+
+/** The four-byte length prefix every record carries (§5.2). */
+export const RECORD_PREFIX_LEN = 4;
+
+/** The word alignment guaranteed for every prefix, frame, and following record. */
+export const RECORD_ALIGNMENT = 4;
+
+/** Frame bytes plus the binding-level zero padding that follows them. */
+export function paddedRecordLen(frameLen: number): number {
+    return Math.ceil(frameLen / RECORD_ALIGNMENT) * RECORD_ALIGNMENT;
+}
 
 /**
  * Device → host, either channel: §3.8's 16-byte stream frame plus 8,192 payload bytes.
@@ -67,14 +79,16 @@ export class RecordError extends Error {
     }
 }
 
-/** Prefix `frame` with its `u16` length. The whole of §5.2's host-side framing. */
+/** Prefix and pad `frame` according to USB binding v5. The whole of §5.2's host-side framing. */
 export function frameRecord(frame: Uint8Array): Uint8Array {
-    if (frame.length === 0 || frame.length > 0xffff) {
-        throw new RecordError(`a record carries 1..=65535 frame bytes, this one has ${frame.length}.`);
+    if (frame.length === 0 || frame.length > 0xffffffff) {
+        throw new RecordError(`a record carries 1..=4294967295 frame bytes, this one has ${frame.length}.`);
     }
-    const out = new Uint8Array(RECORD_PREFIX_LEN + frame.length);
+    const out = new Uint8Array(RECORD_PREFIX_LEN + paddedRecordLen(frame.length));
     out[0] = frame.length & 0xff;
-    out[1] = (frame.length >> 8) & 0xff;
+    out[1] = (frame.length >>> 8) & 0xff;
+    out[2] = (frame.length >>> 16) & 0xff;
+    out[3] = (frame.length >>> 24) & 0xff;
     out.set(frame, RECORD_PREFIX_LEN);
     return out;
 }
@@ -92,10 +106,10 @@ export class RecordChannel {
     /**
      * Both ceilings measure the **frame**, not the frame plus its prefix.
      *
-     * §5.2's table is stated in the frame's own terms — "§3.8's 16-byte stream frame plus 4,096
-     * payload bytes" is 4,112 — and the two length bytes are the binding's own overhead on top. A
-     * ceiling that counted them would refuse the largest legal record by exactly two bytes, which is
-     * the one number this protocol is built around.
+     * §5.2's table is stated in the frame's own terms — "§3.8's 16-byte stream frame plus 8,192
+     * payload bytes" is 8,208 — and the prefix/padding are the binding's own overhead on top. A
+     * ceiling that counted them would refuse the largest legal record by exactly four bytes, which
+     * is the one number this protocol is built around.
      */
     constructor(
         private readonly pipe: BytePipe,
@@ -130,7 +144,12 @@ export class RecordChannel {
     async next(signal?: AbortSignal): Promise<Uint8Array> {
         for (;;) {
             if (this.pending.length >= RECORD_PREFIX_LEN) {
-                const length = this.pending[0] | (this.pending[1] << 8);
+                const length =
+                    (this.pending[0] |
+                        (this.pending[1] << 8) |
+                        (this.pending[2] << 16) |
+                        (this.pending[3] << 24)) >>>
+                    0;
                 // §5.2: "A zero, out-of-range, truncated or overrun record length is `invalidFrame`
                 // and resets that record stream." A host that kept reading past one would be
                 // assembling frames out of the middle of somebody else's record.
@@ -141,9 +160,14 @@ export class RecordChannel {
                             `${this.receiveCeiling}-byte ceiling of §5.2.`,
                     );
                 }
-                if (this.pending.length >= RECORD_PREFIX_LEN + length) {
+                const padded = paddedRecordLen(length);
+                if (this.pending.length >= RECORD_PREFIX_LEN + padded) {
                     const frame = this.pending.slice(RECORD_PREFIX_LEN, RECORD_PREFIX_LEN + length);
-                    this.pending = this.pending.slice(RECORD_PREFIX_LEN + length);
+                    const padding = this.pending.subarray(RECORD_PREFIX_LEN + length, RECORD_PREFIX_LEN + padded);
+                    if (padding.some((byte) => byte !== 0)) {
+                        throw new RecordError("the device sent non-zero USB record padding.");
+                    }
+                    this.pending = this.pending.slice(RECORD_PREFIX_LEN + padded);
                     return frame;
                 }
             }

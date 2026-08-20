@@ -599,9 +599,10 @@ c3b that is true of the cable as well as the radio:
   exposes a CoC as a stream whose write may be accepted in pieces — and `protocolVersion` reads two
   bytes, `4`. `command` / `status` / `config` are untouched and still governed by
   [`obc-ble-interface-spec.md`](../../specs/obc-ble-interface-spec.md).
-- **USB** is §5.2: both bulk endpoint pairs carry §3 frames, each record a `record_length u16` in
-  front of the frame bytes, and the version is settled by descriptor matching before a record moves
-  (`bInterfaceProtocol = 4`, `bcdDevice = 0x0400`). The cable's non-object surface is one EP0 vendor
+- **USB** is §5.2: both bulk endpoint pairs carry §3 frames, each USB-binding-v5 record a
+  `record_length u32`, frame bytes and zero alignment padding. The binding is settled by descriptor
+  matching before a record moves (`bInterfaceProtocol = 5`, `bcdDevice = 0x0500`), independently of
+  §3's protocol-v4 frame major. The cable's non-object surface is one EP0 vendor
   request (§5.2.1); it carries nothing else. The endpoint section further down has the board detail.
 
 Over the cable a device therefore serves **object transfer and device information, and nothing
@@ -694,13 +695,14 @@ not a second protocol. What is **board-specific** and worth knowing:
   bus waker) — bound in one `bind_interrupts!` arm. Ours reads and clears nothing, so the order
   between them does not matter; dropping embassy's would leave the events uncleared and storm.
 - **Endpoint layout** (the host reads it off the descriptors): one interface, class `0xFF` with
-  `bInterfaceProtocol = 4`, four bulk endpoints at the high-speed-mandated 512 B — `0x81/0x01` §3
+  `bInterfaceProtocol = 5`, four bulk endpoints at the high-speed-mandated 512 B — `0x81/0x01` §3
   control records, `0x82/0x02` §3.8 stream records. **Both pairs carry the same framing**: a
-  `record_length u16` and then exactly that many frame bytes. A packet boundary means nothing to the
-  protocol — a 4 KiB stream record simply spans nine of them, which is why `MAX_PACKET` is no longer
-  a frame ceiling. The ceilings are constants of the binding (§5.2): 4,112 B device→host on either
-  channel and host→device on the stream channel (a 16-byte stream frame plus 4,096 payload bytes,
-  one whole card write, and the `LIST` page ceiling at 46 entries), and 256 B for a host→device
+  `record_length u32`, exactly that many frame bytes, then zero padding to four-byte alignment. A
+  packet boundary means nothing to the protocol — an 8 KiB stream payload spans seventeen packets
+  with its header and prefix, which is why `MAX_PACKET` is no longer a frame ceiling. The ceilings
+  are constants of the binding (§5.2): 8,208 B device→host on either channel and host→device on the
+  stream channel (a 16-byte stream frame plus 8,192 payload bytes, and the `LIST` page ceiling at 92
+  entries), and 256 B for a host→device
   control record, because §3's widest request is the 100-byte `PUT`. Device identity and the
   firmware/hardware/serial strings are **not** on these endpoints: they are one EP0 vendor request,
   `bmRequestType 0xC1`, `bRequest 0x20` (§5.2.1), readable the moment the interface is claimed.
@@ -728,7 +730,7 @@ not a second protocol. What is **board-specific** and worth knowing:
   a record whose length is an **exact multiple of 512** (no short packet anywhere, so the final
   burst stays armed across the gap to the next record), and an **unplug** in the middle of a burst.
 - **Uploads use DMA at both ends.** The vendored OTG driver runs in buffer-DMA mode, including
-  aligned IN bounce storage and burst-sized OUT DMA. For a map `PUT`, sixteen 4 KiB v4 records fill
+  aligned IN bounce storage and burst-sized OUT DMA. For a map `PUT`, eight 8 KiB v4 records fill
   one of two 64 KiB scratch-arena banks; the flat store then starts one 128-block deferred card DMA
   while USB reception and CRC folding fill the other bank. The storage task borrows only the
   inactive bank — never the whole arm while DMA owns its opposite half — and every completion,

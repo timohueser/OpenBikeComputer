@@ -1,4 +1,5 @@
-//! The **USB device plane** (issues #889, #1420): the nRF54LM20's USBHS carrying protocol v4, so a
+//! The **USB device plane** (issues #889, #1420): the nRF54LM20's USBHS binding v5 carrying §3
+//! protocol-v4 frames, so a
 //! browser (WebUSB) or the desktop app can push a map, a route or a firmware image straight to a
 //! plugged-in device.
 //!
@@ -9,26 +10,26 @@
 //! decides what a message *means* — that is the engine's, and the engine lives beside the card in
 //! [`crate::flat_store::storage_task`].
 //!
-//! What USB adds is one thing and it is small: §5.2's `record_length u16` in front of every frame,
-//! because a bulk endpoint is a byte pipe and BLE's channels are already message-shaped. See
-//! [`records`]. The one thing that is *not* a §3 frame — the device information a host reads before
-//! it exchanges a record — is an EP0 vendor request, which is USB's own place for identity. See
-//! [`device_info`] and §5.2.1.
+//! What USB adds is one thing and it is small: §5.2's `record_length u32` plus alignment padding
+//! around every frame, because a bulk endpoint is a byte pipe and BLE's channels are already
+//! message-shaped. See [`records`]. The one thing that is *not* a §3 frame — the device information
+//! a host reads before it exchanges a record — is an EP0 vendor request, which is USB's own place
+//! for identity. See [`device_info`] and §5.2.1.
 //!
 //! ## Endpoint layout (the host contract)
 //!
-//! One vendor-specific interface (class `0xFF`, `bInterfaceProtocol = 4`), four bulk endpoints,
+//! One vendor-specific interface (class `0xFF`, `bInterfaceProtocol = 5`), four bulk endpoints,
 //! allocated in this order so the host's "lowest IN/OUT pair is control, the next is stream" rule
 //! (`builder/app/src/lib/usb/webusb.ts::discoverLayout`) reads them correctly:
 //!
 //! | Endpoint | Direction | Carries |
 //! | :-- | :-- | :-- |
-//! | 0x81 / 0x01 | IN / OUT | §3 control records, each `record_length u16` + frame |
+//! | 0x81 / 0x01 | IN / OUT | §3 control records, each `record_length u32` + frame + padding |
 //! | 0x82 / 0x02 | IN / OUT | §3.8 stream records, same framing |
 //!
 //! The USBHS is a **high-speed** core (`PhyType::InternalHighSpeed`), so every bulk endpoint is
 //! 512 bytes by USB rule; there is no full-speed fallback to size for. Packet boundaries carry no
-//! protocol meaning (§5.2) — a record may span them, which is what lets a 4 KiB stream record exist
+//! protocol meaning (§5.2) — a record may span them, which is what lets an 8 KiB stream payload exist
 //! on a 512-byte endpoint at all.
 //!
 //! ## VBUS is a hard gate, not a convenience (#936)
@@ -74,7 +75,7 @@ use embassy_usb::{Builder, Config, UsbDevice};
 
 use crate::init_static;
 use crate::link::identity;
-use obc_link::flat::WIRE_MAJOR;
+use obc_link::flat::USB_BINDING_MAJOR;
 
 use device_info::{DeviceInfoHandler, MAX_DEVICE_INFO};
 
@@ -124,20 +125,21 @@ const MAX_PACKET: u16 = 512;
 ///
 /// # The number, and how to sweep it
 ///
-/// **16, for 8 KiB bursts.** One burst carries a complete USB stream record, so the storage owner
-/// is crossed once per 8 KiB rather than once per 4 KiB. Below it the serialisation term is still the
-/// biggest one (it falls as 240/N µs per packet: N=4 leaves ~60 µs, N=8 ~30 µs, against the ~99 µs
-/// of card write + transfer bookkeeping + UI that remains after it). Above it the return shrinks — at N=8 the
-/// serialisation is already a fifth of the residue — while the RAM cost stays strictly linear at
-/// **two** buffers of `N × 512 B` (this crate's [`BULK_BUF`] and the driver's own per-endpoint
-/// staging area inside [`EP_BUFFER`]). It must also stay within the core's RX FIFO: 3040 words total, of which a bursting
-/// endpoint takes `N × 129`, so N=16 (2064 words) is the last rung that fits beside everything else.
+/// **16, for 8 KiB bursts.** One burst carries a complete USB stream record, so the endpoint is
+/// re-armed once per record rather than halfway through it. Together with binding v5's aligned
+/// record spans this measured 6,528 kB/s for an 850,824,480-byte real map and 7,112 kB/s for the
+/// sparse acceptance fixture on the LM20 board (2026-08-20). The RAM cost stays strictly linear at
+/// **two** buffers of `N × 512 B` (the adapter reassembly tail and the driver's per-endpoint staging
+/// area inside [`EP_BUFFER`]), and is itemized in `resource_baseline.json`. The setting must also
+/// fit the core's RX FIFO: 3040 words total, of which a bursting endpoint takes `N × 129`, so N=16
+/// (2064 words) is the last rung that fits beside everything else.
 ///
 /// To sweep it: change this one line, re-pin `compile_time_allocations.usb_named` +
 /// `resident_ram_max`/`measured_resident` (they move by `2 × 512 × ΔN`) and `residual_stack_min`
 /// (down by the same) in `firmware/tools/resource_baseline.json` on **both** profiles, then read the
-/// `~{} kB/s` line `run_upload` prints at the end of every transfer over RTT. Prediction, not a
-/// measurement: ~4–5 MB/s, where the card's busy-polled write becomes the ceiling (#1174).
+/// `~{} kB/s` line the v4 adapter prints at the end of every transfer over RTT. Do not
+/// re-pin from a host progress estimate: the device-side interval includes the binding, engine and
+/// card path this dial changes.
 const BULK_OUT_BURST_PACKETS: u16 = 16;
 
 /// One burst: what [`BULK_BUF`] holds and what the bulk OUT endpoint arms.
@@ -510,11 +512,11 @@ fn build_plane(usb_p: Peri<'static, peripherals::USBHS>) -> UsbPlane {
     config.device_class = 0xFF;
     config.device_sub_class = 0x00;
     config.device_protocol = 0x00;
-    // §5.2: "the device descriptor's `bcdDevice` carries the major in its high byte, `0x0400`".
-    // This is half of how a client settles the wire version **before** a record is exchanged; the
-    // other half is `bInterfaceProtocol` on the alt setting below. Neither is a read — matching is
-    // the version check, which is why v4 has no identity request.
-    config.device_release = 0x0400;
+    // §5.2: the device descriptor's `bcdDevice` carries the USB-binding major in its high byte.
+    // This is half of how a client settles the binding **before** a record is exchanged; the other
+    // half is `bInterfaceProtocol` on the alt setting below. §3's frame major remains 4 and is
+    // checked independently after record reassembly.
+    config.device_release = u16::from(USB_BINDING_MAJOR) << 8;
     config.composite_with_iads = false;
     // Bus-powered from the host, like every other small USB peripheral; 100 mA is the pre-enumeration
     // budget every host grants unconditionally. (`bcd_usb` stays at the 2.1 default — declaring 2.1
@@ -544,8 +546,8 @@ fn build_plane(usb_p: Peri<'static, peripherals::USBHS>) -> UsbPlane {
         let mut function = builder.function(0xFF, 0x00, 0x00);
         let mut interface = function.interface();
         let interface_number = interface.interface_number();
-        // §5.2: `bInterfaceProtocol = 4`. The one place the wire major is stated on this link.
-        let mut alt = interface.alt_setting(0xFF, 0x00, WIRE_MAJOR, None);
+        // §5.2: the one place the USB-binding major is stated on the interface.
+        let mut alt = interface.alt_setting(0xFF, 0x00, USB_BINDING_MAJOR, None);
         let ctrl_in = alt.endpoint_bulk_in(None, MAX_PACKET);
         let ctrl_out = alt.endpoint_bulk_out(None, MAX_PACKET);
         let bulk_in = alt.endpoint_bulk_in(None, MAX_PACKET);
