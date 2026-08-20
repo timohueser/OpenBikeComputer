@@ -434,7 +434,7 @@ mod resource_report {
         entry("terrain_window", core::mem::size_of::<obc_formats::io::WindowSource<'static>>()),
     ];
 
-    const ENTRIES: usize = 36;
+    const ENTRIES: usize = 37;
 
     #[used]
     #[no_mangle]
@@ -460,15 +460,13 @@ mod resource_report {
         // reported beside it precisely so a reader can see *which* arm sets the total and how much
         // free headroom the other still has (the growth asymmetry; see `arena.rs`).
         //
-        // **`arena_usb` is gone** (FS7.5-c3b): the v1 cable upload staged 128 KiB of map bytes
-        // through this block before writing them to a FAT file, and protocol v4 stages 512 bytes
-        // inside the engine and writes each stream record straight to the card. The row leaves
-        // rather than reading zero, because a zero would suggest an arm that exists and is empty.
-        // It set the ceiling and the render arm matches it exactly, so the total does **not** move
-        // — the whole saving of removing it is the two exclusion rules it took with it.
+        // Protocol v4 restores the USB arm as two 64 KiB halves: one is an aligned FLPR DMA source
+        // while USB and CRC fill the other. Render already sets the same 128 KiB arena ceiling, so
+        // this is an arm-composition change and not another resident allocation.
         entry("arena_total", arena::ARENA_BYTES),
         entry("arena_render", arena::RENDER_ARM_BYTES),
         entry("arena_nav", arena::NAV_ARM_BYTES),
+        entry("arena_usb", arena::USB_ARM_BYTES),
         // The terrain seam's two statics (EL7 + FS7.5 §1.3): the sampler + tile cache, and the byte
         // window the OBCT container is parsed through — no longer a sidecar's extent table, because
         // there is no sidecar. Named because a change in the tile-slot count must be legible here
@@ -789,11 +787,17 @@ async fn spawn_map_recovery_usb(
     spawner: Spawner,
     usb_p: embassy_nrf::Peri<'static, embassy_nrf::peripherals::USBHS>,
     rramc: embassy_nrf::Peri<'static, embassy_nrf::peripherals::RRAMC>,
-) {
+) -> Option<arena::UsbGuard> {
     let mut settings_store = settings::RramSettingsStore::new(rramc);
     dfu::seed_firmware_revision(&mut settings_store);
+    // No ride loop, map render or route search exists on this boot path. Retain the arena guard in
+    // the caller's diverging fault scope and pre-grant it, so the first post-FORMAT map upload gets
+    // the same double-buffer DMA path as an ordinary mounted boot.
+    let stage = obc_app::TransferReady::prove(true, false).and_then(|ready| arena::claim_usb(ready).ok());
+    usb::set_stage_granted(stage.is_some());
     spawner.spawn(defmt::unwrap!(spawn_usb_stack(spawner, usb_p)));
     defmt::warn!("usb: card-recovery plane active — format if needed, then upload a map and reboot");
+    stage
 }
 
 /// Idle camera zoom for the boot map, in ground metres-per-pixel (the 0.5–4 mpp riding band). A
@@ -1304,19 +1308,19 @@ async fn main(_spawner: Spawner) {
                         "flat: no map to render from — showing the {=str} fault screen, then heartbeat idle",
                         fault.copy().0
                     );
-                    spawn_map_recovery_usb(_spawner, p.USBHS, p.RRAMC).await;
+                    let _recovery_stage = spawn_map_recovery_usb(_spawner, p.USBHS, p.RRAMC).await;
                     show_boot_fault(&mut display, fault).await;
                     idle_blink(&mut led).await
                 }
             },
             flat_store::Card::FlatBroken(fault) => {
-                spawn_map_recovery_usb(_spawner, p.USBHS, p.RRAMC).await;
+                let _recovery_stage = spawn_map_recovery_usb(_spawner, p.USBHS, p.RRAMC).await;
                 show_boot_fault(&mut display, fault).await;
                 idle_blink(&mut led).await
             }
             flat_store::Card::NotFlat => {
                 defmt::error!("flat: card is not formatted as a flat store — FAT compatibility is retired");
-                spawn_map_recovery_usb(_spawner, p.USBHS, p.RRAMC).await;
+                let _recovery_stage = spawn_map_recovery_usb(_spawner, p.USBHS, p.RRAMC).await;
                 show_boot_fault(&mut display, obc_app::BootFault::StorageFault).await;
                 idle_blink(&mut led).await
             }
@@ -1350,7 +1354,7 @@ async fn main(_spawner: Spawner) {
                     );
                     // USB map recovery speaks protocol v4 against the flat store, so a replacement
                     // can still be uploaded when the current map will not parse.
-                    spawn_map_recovery_usb(_spawner, p.USBHS, p.RRAMC).await;
+                    let _recovery_stage = spawn_map_recovery_usb(_spawner, p.USBHS, p.RRAMC).await;
                     show_boot_fault(&mut display, obc_app::BootFault::BadMap).await;
                     idle_blink(&mut led).await
                 }

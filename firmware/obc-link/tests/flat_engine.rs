@@ -1046,6 +1046,29 @@ fn a_record_of_whole_stages_reaches_the_card_in_one_write() {
     assert_eq!(of_this_record[0].1, 8, "and the one command carried all eight blocks");
 }
 
+/// USB record framing must not dictate the card command width. The board lends the engine a 64 KiB
+/// arena arm for a map `PUT`, so sixteen ordinary 4 KiB records become one 128-block CMD25-shaped
+/// write instead of sixteen short program cycles.
+#[test]
+fn an_adapter_stage_coalesces_records_and_alternates_disjoint_banks() {
+    let disk = formatted_card(94);
+    let mut device = boot_on(&disk, Ceilings::for_usb(4_112).expect("§5.2's USB ceiling"));
+    let bytes = payload(2 * 64 * 1_024);
+    let mut stage = vec![0; 2 * 64 * 1_024];
+
+    device.control_on(Link::Ble, &client::put(1, 0, 0, &bytes, ROUTE, false, "wide stage"));
+    let before = disk.write_widths().len();
+    for offset in (0..bytes.len()).step_by(4 * 1_024) {
+        let end = offset + 4 * 1_024;
+        device.stream_on_staged(Link::Ble, &client::stream(1, offset as u64, &bytes[offset..end]), &mut stage);
+    }
+
+    let widths = disk.write_widths();
+    let staged = &widths[before..];
+    let wide = staged.iter().filter(|(_, blocks)| *blocks == 128).count();
+    assert_eq!(wide, 2, "thirty-two records did not become two 64 KiB card writes: {staged:?}");
+}
+
 // ══════════════════════ two links, one engine (FS7.5-c3b) ══════════════════════
 
 /// **A link coming up does not touch the other link's transfer**, and the newcomer meets §1's

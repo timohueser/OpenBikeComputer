@@ -188,7 +188,7 @@ obc-storage = { path = "../obc-storage" }
 # `ClaimIntent`, `ObjectKind` and the identity types. Transport-free and storage-free by
 # construction, so this is a foundation dependency and not a second link stack — the only consumer
 # today is the `obc2_store_bench` binary (#1359); the live v1 link path is untouched.
-obc-link = { path = "../obc-link" }
+obc-link = { path = "../obc-link", features = ["fast-crc"] }
 obc-crc = { path = "../obc-crc" }
 # Shared no_std OBCW reader/cache and deterministic generation selector. The board supplies only
 # the flat-store adapter; no provider, UI or BLE policy enters this edge.

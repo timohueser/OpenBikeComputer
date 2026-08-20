@@ -1089,7 +1089,9 @@ fn read_path(bytes: u64) {
         }
     };
 
-    // The write, with the CRC fold on its own clock: `obc-crc` is a byte-at-a-time table fold, and
+    // The write, with the CRC fold on its own clock. The board enables obc-crc's slicing-by-8
+    // implementation so this is also the acceptance measurement for the upload pipeline's CRC
+    // worker; compact consumers such as the bootloader retain the single-table implementation.
     // rolling it into the write's rate would report the M33 rather than the card.
     arm();
     let mut digest = Crc32::new();
