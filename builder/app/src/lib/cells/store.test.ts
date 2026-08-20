@@ -259,6 +259,22 @@ describe("the write side", () => {
         expect([...root.dirs.keys()]).toEqual([]);
     });
 
+    it("discards only assembled output after direct delivery", async () => {
+        const root = opfs();
+        const { discardMapOutput, openCellStore } = await withOpfs(root);
+        const store = (await openCellStore("kept"))!;
+        await store.put(KEY_A, new Uint8Array([1, 2, 3, 4]));
+        await root.getDirectoryHandle("obc-out", { create: true });
+        await root.getDirectoryHandle("obc-scratch", { create: true });
+
+        await discardMapOutput();
+
+        expect(root.dirs.has("obc-out")).toBe(false);
+        expect(root.dirs.has("obc-cells")).toBe(true);
+        expect(root.dirs.has("obc-scratch")).toBe(true);
+        await expect(discardMapOutput()).resolves.toBeUndefined();
+    });
+
     it("reports no store where the browser has no OPFS", async () => {
         const { openCellStore, cellStoreWritable } = await withOpfs(null);
         expect(await openCellStore("r1")).toBeNull();

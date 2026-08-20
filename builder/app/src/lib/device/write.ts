@@ -38,7 +38,8 @@
  * answers, and a stale one by the time the bytes arrive.
  */
 
-import { blobSource, type FlatStoreClient } from "../usb/client";
+import { blobSource, type FlatStoreClient, type ObjectSource } from "../usb/client";
+import { Crc32 } from "../usb/crc32";
 import { EntryFlags, ObjectKind, type PutResponse } from "../usb/protocol";
 import { truncateUtf8 } from "../format";
 import { readUpdateImage, type UpdateImage } from "../firmware/obcu";
@@ -85,6 +86,55 @@ export async function sendMapBlob(
         signal: ctx.signal,
         onProgress: (done, total) => ctx.progress(done, total),
     });
+    return sendMapSource(client, source, filename, ctx);
+}
+
+/** Send an assembler's already-resident fallback without wrapping/snapshotting it as a Blob. */
+export async function sendMapBytes(
+    client: FlatStoreClient,
+    bytes: Uint8Array,
+    filename: string,
+    ctx: JobContext,
+): Promise<PutResponse> {
+    ctx.phase("reading", bytes.length);
+    const source = await residentMapSource(bytes, ctx);
+    return sendMapSource(client, source, filename, ctx);
+}
+
+/** CRC an in-memory fallback cooperatively while retaining only the worker's transferred buffer. */
+async function residentMapSource(bytes: Uint8Array, ctx: JobContext): Promise<ObjectSource> {
+    const crc = new Crc32();
+    const sliceBytes = 4 * 1024 * 1024;
+    for (let at = 0; at < bytes.length; at += sliceBytes) {
+        ctx.signal.throwIfAborted();
+        const end = Math.min(at + sliceBytes, bytes.length);
+        crc.update(bytes.subarray(at, end));
+        ctx.progress(end, bytes.length);
+        if (end < bytes.length) {
+            // Give cancellation, rendering and the browser's disconnect event a turn between
+            // bounded CRC slices. No bytes are copied: every view names the transferred buffer.
+            await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        }
+    }
+    ctx.signal.throwIfAborted();
+    return {
+        totalLen: bytes.length,
+        crc32: crc.value(),
+        async *chunks(chunkSize: number) {
+            for (let at = 0; at < bytes.length; at += chunkSize) {
+                ctx.signal.throwIfAborted();
+                yield bytes.subarray(at, Math.min(at + chunkSize, bytes.length));
+            }
+        },
+    };
+}
+
+async function sendMapSource(
+    client: FlatStoreClient,
+    source: ObjectSource,
+    filename: string,
+    ctx: JobContext,
+): Promise<PutResponse> {
     const maps = await client.list({ kind: ObjectKind.MapShard, signal: ctx.signal });
     const current = maps.entries
         .filter((entry) => (entry.flags & EntryFlags.Retained) === 0)
