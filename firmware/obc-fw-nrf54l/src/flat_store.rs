@@ -22,17 +22,15 @@
 //! can be laid out side by side, and any arrangement that tried would have `sd.rs`'s
 //! `VolumeManager` and this store writing the same blocks with different meanings.
 //!
-//! So the dev window's "coexistence" is **coexistence of two code paths in one image, over
-//! whichever card is in the slot** — not of two structures on one card. Boot classifies the card and
-//! takes exactly one path, and §5.6 step 1 is already precisely that test:
+//! Boot classifies the card once, and §5.6 step 1 is precisely that test:
 //!
 //! > *Read superblock A block 0; on failure read superblock B. Neither valid ⇒ the card is not a
 //! > flat store.*
 //!
 //! `FlatStore::mount` **is** the probe — it never fails, it classifies — so the board does not need a
-//! second, board-private superblock reader that could disagree with the store's own rule. On a FAT
-//! card the whole probe is two block reads and [`Mode::Unformatted`]; the v1 stack then mounts
-//! exactly as it did before this slice, and the store sits in its slot inert.
+//! second, board-private superblock reader that could disagree with the store's own rule. A FAT or
+//! otherwise unformatted card costs two block reads and is rejected; there is no compatibility
+//! mount or ride-recording fallback.
 //!
 //! ## Why no card can answer to both classifiers
 //!
@@ -57,9 +55,8 @@
 //!
 //! c1 mounted and stopped; c2 pointed the renderer at [`open_map`]; c3a and c3b put both links'
 //! protocol-v4 engine inside [`storage_task`], which is why the engine is a field of the one task
-//! that writes rather than a value a transport owns. What is still owed is FS8's ride journal
-//! (#1390) — nothing records to a flat card yet — and FS11's (#1393) retirement of the FAT read
-//! path.
+//! that writes rather than a value a transport owns. FS8 adds the tail-in-slot ride journal through
+//! that same task; the raw flat store is now the only supported card layout.
 
 use core::{cell::RefCell, mem::MaybeUninit};
 
@@ -218,9 +215,9 @@ static FLAT_STORE_READY: core::sync::atomic::AtomicBool = core::sync::atomic::At
 /// What this layer costs the resident budget: the store and the write queue. The alignment bounce
 /// is `sd`'s and is already counted there — see the note above [`FLAT_BOUNCE_WARNED`].
 ///
-/// The recording caller's 32,256-byte ride tail (§7.1) is **not** here — no ride records to the flat
-/// store until FS8 (#1390), and a budget row for a buffer nothing allocates would be a lie in the other
-/// direction. It joins this sum in the slice that starts recording.
+/// The recording caller's bounded append buffer is not here: [`crate::flat_ride`] owns and reports
+/// it separately because the ride loop, rather than the storage task, lends its bytes. Durable
+/// full-page tail snapshots remain card-resident and storage reconstructs them media-to-media.
 pub(crate) const RESIDENT_BYTES: usize = core::mem::size_of::<FlatStore<FlatCard>>()
     + REQUEST_QUEUE_BYTES
     + CATALOG_UPLOAD_BYTES
@@ -307,8 +304,8 @@ pub(crate) enum Card {
     /// A flat store this build can read (`Mode::readable()` — read-write, or read-only because a
     /// revision or sequence space is exhausted). The flat path takes the card.
     Flat,
-    /// §5.6 step 1: neither superblock is valid, so **this is not a flat store**. Two block reads
-    /// and out; the v1 FAT stack owns the card exactly as it did before this slice.
+    /// §5.6 step 1: neither superblock is valid, so **this is not a supported flat store**. Two
+    /// block reads and out; boot reports the card as unformatted/unsupported.
     NotFlat,
     /// A card that *is* a flat store and will not serve one: `CatalogUnreadable` (no well-formed
     /// gate, or no candidate body validated — §5.6 steps 2–3 call this media damage, since no state
@@ -376,11 +373,12 @@ pub(crate) struct Catalog {
 
 // ══════════════════════════ the storage task ══════════════════════════
 
-/// **How many tasks hold a [`Writer`]** — the BLE v4 adapter and the USB v4 adapter.
+/// **How many tasks hold a [`Writer`]** — the BLE v4 adapter, USB v4 adapter, and ride loop.
 ///
-/// A census, not a guess, and [`REQUEST_QUEUE`] is derived from it. FS8's ride journal is the next
-/// entry.
-const SENDERS: usize = 2;
+/// The ride loop's two possible outstanding jobs are its resumable nav ticket and its recorder
+/// call; they share this one two-job allowance because the task cannot be polled in two places at
+/// once. A census, not a guess, and [`REQUEST_QUEUE`] is derived from it.
+const SENDERS: usize = 3;
 
 /// Write requests queued at once.
 ///
@@ -420,10 +418,9 @@ pub(crate) const REQUEST_QUEUE_BYTES: usize =
 /// write's bytes come from a `'static` staging buffer — which is what c3's transports already have
 /// (the USB plane stages into the scratch arena).
 ///
-/// **`Journal` and `Close` still have no caller, and are here anyway.** The ride journal is FS8's
-/// (#1390) and nothing this image opens outlives its `with_source` scope. They stay because the
-/// seam is six operations and a task that served four of them would not be the write half; with no
-/// caller the linker keeps neither, so the cost is zero bytes.
+/// `Journal` is FS8's live ride checkpoint path. `Close` currently has no caller because every
+/// image reader stays inside `with_source`; it remains the explicit hold-return operation for a
+/// future reader that outlives that scope.
 ///
 /// The variants also differ in size by an order of magnitude — a `Commit` carries up to
 /// [`MAX_BATCH`] `Mutation`s and each embeds an `EntryMeta` with §9's 48-byte display name, so the
@@ -569,6 +566,7 @@ static REQUESTS: Channel<CriticalSectionRawMutex, Job, REQUEST_QUEUE> = Channel:
 #[derive(Clone, Copy)]
 enum MenuDelete {
     Route(ObjectId),
+    Ride(ObjectId),
     TripCascade(ObjectId),
 }
 
@@ -576,6 +574,10 @@ static MENU_DELETES: Channel<CriticalSectionRawMutex, MenuDelete, 8> = Channel::
 
 pub(crate) fn request_route_delete(id: u64) -> bool {
     MENU_DELETES.try_send(MenuDelete::Route(ObjectId(id))).is_ok()
+}
+
+pub(crate) fn request_ride_delete(id: u64) -> bool {
+    MENU_DELETES.try_send(MenuDelete::Ride(ObjectId(id))).is_ok()
 }
 
 pub(crate) fn request_trip_cascade(id: u64) -> bool {
@@ -1007,6 +1009,7 @@ fn serve_menu_delete(store: &FlatStore<FlatCard>, delete: MenuDelete) {
     let before = store.sequence();
     match delete {
         MenuDelete::Route(id) => remove_head(store, id, ObjectKind::Route),
+        MenuDelete::Ride(id) => remove_head(store, id, ObjectKind::Ride),
         MenuDelete::TripCascade(id) => {
             let stages = store
                 .with_source(id, None, |source| obc_route::TripMeta::read(source).ok().map(|m| m.stage_ids))
@@ -1750,4 +1753,94 @@ pub(crate) fn load_trips(store: &'static FlatStore<FlatCard>, app: &mut obc_app:
     app.set_trips(&inputs);
     defmt::info!("flat: Route menu loaded {=usize} trip folder(s)", inputs.len());
     true
+}
+
+/// Rebuild the finished-ride menu from the same catalog the v4 engine serves. `RECORDING` is never
+/// listed or opened: the journal owns those bytes until the one finishing commit clears the flag.
+#[inline(never)]
+pub(crate) fn load_rides(store: &'static FlatStore<FlatCard>, app: &mut obc_app::App) -> bool {
+    let mut heads: heapless::Vec<CatalogHead, { obc_app::UI_RIDES_CAP }> = heapless::Vec::new();
+    let mut inventory: heapless::Vec<obc_app::RideRetentionRecord, { obc_app::MAX_RIDES }> = heapless::Vec::new();
+    for entry in store
+        .entries()
+        .filter(|entry| entry.kind == ObjectKind::Ride && entry.flags.bits() & EntryFlags::RECORDING.bits() == 0)
+    {
+        retain_newest(&mut heads, CatalogHead { id: entry.id, revision: entry.revision });
+        // Synced/retention metadata moves to an ObjectId-keyed flat-store kind in #1398. Until that
+        // boundary lands, finished flat rides are conservatively unsynced and therefore ineligible
+        // for automatic deletion.
+        let _ = inventory.push(obc_app::RideRetentionRecord { id: entry.id.0, synced: false, synced_at_utc: 0 });
+    }
+    if !store.entries_ok() {
+        defmt::warn!("flat: ride catalog listing failed — keeping the prior menu snapshot");
+        return false;
+    }
+
+    let mut rides: heapless::Vec<obc_app::RideSummary, { obc_app::UI_RIDES_CAP }> = heapless::Vec::new();
+    let mut ids: heapless::Vec<u64, { obc_app::UI_RIDES_CAP }> = heapless::Vec::new();
+    for entry in heads {
+        match store.with_source(entry.id, Some(entry.revision), |source| obc_route::RideInfo::read(source)) {
+            Ok(Ok(info)) => {
+                let _ = rides.push(obc_app::RideSummary::from_info(&info, false, 0));
+                let _ = ids.push(entry.id.0);
+            }
+            Ok(Err(obc_formats::io::Error::Io)) | Err(_) => {
+                defmt::warn!(
+                    "flat: ride object {=u64} revision {=u64} hit transient media I/O — keeping the prior menu snapshot",
+                    entry.id.0,
+                    entry.revision.0
+                );
+                return false;
+            }
+            Ok(Err(_)) => defmt::warn!(
+                "flat: ride object {=u64} revision {=u64} is malformed — omitted from menu",
+                entry.id.0,
+                entry.revision.0
+            ),
+        }
+    }
+    app.set_rides(&rides, &ids);
+    app.set_ride_retention_inventory(&inventory);
+    defmt::info!("flat: Rides menu loaded {=usize} finished ride(s)", rides.len());
+    true
+}
+
+/// Answer the detail screen's level-triggered profile and preview request from one immutable flat
+/// object revision. The two consumers stream the exact recorded sample bytes; neither rewrites or
+/// converts the object.
+#[inline(never)]
+pub(crate) fn fill_ride_track(store: &'static FlatStore<FlatCard>, app: &mut obc_app::App) {
+    let Some(id) = app.ride_track_request() else { return };
+    let id = ObjectId(id);
+    fill_ride_profile(store, app, id);
+    fill_ride_preview(store, app, id);
+}
+
+// Keep the returned ~5 KiB profile and the independent preview/source walk out of one combined
+// caller frame. The shipping flat-store frame guard is 16 KiB because this path runs inside the
+// ride task's already-live stack; inlining both readers made LLVM reserve 22+ KiB at once even
+// though their results are consumed sequentially.
+#[inline(never)]
+fn fill_ride_profile(store: &'static FlatStore<FlatCard>, app: &mut obc_app::App, id: ObjectId) {
+    let valid = {
+        let profile = app.begin_ride_profile_fill();
+        matches!(
+            store.with_source(id, None, |source| obc_route::ride_elevation_profile_into(source, profile)),
+            Ok(Ok(()))
+        )
+    };
+    if !valid {
+        defmt::warn!("flat: ride profile fill for object {=u64} failed", id.0);
+    }
+    app.finish_ride_profile_fill(valid);
+}
+
+#[inline(never)]
+fn fill_ride_preview(store: &'static FlatStore<FlatCard>, app: &mut obc_app::App, id: ObjectId) {
+    let preview = store
+        .with_source(id, None, |source| {
+            obc_route::ride_preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>(source).unwrap_or_default()
+        })
+        .unwrap_or_default();
+    app.set_ride_preview(&preview);
 }

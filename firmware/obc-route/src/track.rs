@@ -1,10 +1,10 @@
 //! Recorded-track format: the fixed-record ride log + its GPX export (`no_std`).
 //!
-//! While riding, the device appends one [`TrackPoint`](obc_ports::TrackPoint) per accepted GPS fix to an SD-card
-//! file as a **fixed 20-byte record** — *no header*, so the file is just a record array
-//! and truncating to a 20-byte boundary is always valid (the worst a power-loss can cost
-//! is the in-flight record). On **Finish** the log is converted to a `.gpx`
-//! ([`track_to_gpx`]) in one streaming pass and the temp log is dropped.
+//! While riding, the device appends one [`TrackPoint`](obc_ports::TrackPoint) per accepted GPS fix
+//! as a fixed 20-byte record. Finalize appends the ride-v3 footer; it does not convert or rewrite
+//! the samples. [`track_to_gpx`] accepts only a finished ride-v3 object and excludes the footer
+//! from its streamed point walk; the retired headerless/partial-log path is not a compatibility
+//! input.
 //!
 //! This is deliberately *not* the [`OBCR`](crate) route format: a route is decimated for
 //! compact drawing, whereas a recorded track wants full GPS fidelity. The log keeps every
@@ -16,18 +16,15 @@ use heapless::String;
 use obc_formats::io::{ByteSink, ByteSource, Error};
 use obc_formats::track::{decode_record, RECORD_LEN as TRACK_RECORD_LEN};
 
-/// Records read per [`ByteSource`] call — one SD read fills a block rather than a record,
-/// keeping the one-shot Finish conversion fast on the device.
+/// Records read per [`ByteSource`] call, amortizing storage reads during a requested GPX export.
 const BLOCK_RECORDS: usize = 64;
 
-/// Convert a recorded `.obct` log (`src`, a flat array of [`TRACK_RECORD_LEN`]-byte records)
-/// into a GPX 1.1 track written to `sink`, naming the track `name`.
+/// Convert a finished ride-v3 object into GPX 1.1.
 ///
 /// One streaming pass: a fresh `<trkseg>` opens on each
 /// [`segment_start`](obc_ports::TrackPoint::segment_start)
 /// (and on the first point), so pauses/gaps become honest segment breaks. `<time>` is
-/// intentionally omitted until the device has a real clock. A trailing partial record (a
-/// power-loss mid-write) is ignored — the log stays valid at any 20-byte boundary.
+/// intentionally omitted until the device has a real clock.
 pub fn track_to_gpx(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) -> Result<(), Error> {
     // Widest point line = `<trkpt>` + negative lat/lon + `<ele>-32768</ele>` + the full sensor
     // extensions block (`gpxtpx:TrackPointExtension` hr+cad, a bare `<power>`) ≈ 224 chars. Sized
@@ -44,7 +41,7 @@ pub fn track_to_gpx(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) -
     write_escaped(sink, name)?;
     put(sink, b"</name>\n")?;
 
-    let total = (src.len() as usize) / TRACK_RECORD_LEN;
+    let total = sample_count(src)?;
     let mut buf = [0u8; BLOCK_RECORDS * TRACK_RECORD_LEN];
     let mut seg_open = false;
     let mut done = 0usize;
@@ -103,6 +100,11 @@ pub fn track_to_gpx(src: &dyn ByteSource, name: &str, sink: &mut dyn ByteSink) -
     }
     put(sink, b"</trk>\n</gpx>\n")?;
     Ok(())
+}
+
+/// Count only sample records after validating the one supported finished format.
+fn sample_count(src: &dyn ByteSource) -> Result<usize, Error> {
+    usize::try_from(crate::RideInfo::read(src)?.point_count).map_err(|_| Error::TooLarge)
 }
 
 fn put(sink: &mut dyn ByteSink, b: &[u8]) -> Result<(), Error> {

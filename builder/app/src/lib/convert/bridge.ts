@@ -1,7 +1,7 @@
 /**
  * The browser side of the conversion bridge (epic #894, A2 — issue #896).
  *
- * GPX -> OBCR and recorded ride log -> GPX, run client-side by `apps/obc-web-convert`
+ * GPX -> OBCR and finished ride-v3 -> GPX, run client-side by `apps/obc-web-convert`
  * compiled to wasm. There is no TypeScript re-implementation here on purpose: the bytes a
  * visitor downloads are produced by the same `obc-route` code the device and the CLI run, and
  * `bridge.test.ts` pins that equality against the checked-in `specs/vectors/` fixtures.
@@ -25,8 +25,8 @@ import type { InitInput } from "./pkg/obc_web_convert.js";
  * - `not-gpx` — the route file is not XML at all (a `.fit`/`.tcx` export, a zip, an image).
  * - `gpx-no-track-points` — valid GPX with no `<trkpt>`: waypoints or a `<rte>` route only.
  * - `gpx-too-many-points` — past the OBCR storage ceiling even after decimation.
- * - `not-track-log` — an XML document handed to the ride-log direction (usually a GPX).
- * - `track-no-points` — the ride log is shorter than one 20-byte record.
+ * - `not-ride` — the bytes are not one complete ride-v3 object.
+ * - `ride-no-points` — the finished ride has no recorded samples.
  * - `input-truncated` — a read ran off the end of the file.
  * - `not-route` — the bytes handed to the route read-back are not an OBCR route.
  * - `internal` — a defect in the bridge, or the module failed to load. The message says so.
@@ -36,8 +36,8 @@ export type ConvertErrorCode =
     | "not-gpx"
     | "gpx-no-track-points"
     | "gpx-too-many-points"
-    | "not-track-log"
-    | "track-no-points"
+    | "not-ride"
+    | "ride-no-points"
     | "input-truncated"
     | "not-route"
     | "internal";
@@ -118,14 +118,14 @@ export async function gpxToObcr(gpx: Uint8Array, name: string): Promise<Uint8Arr
 }
 
 /**
- * Convert a recorded `.obct` ride log's bytes into a GPX 1.1 document naming the track `name`.
+ * Convert a finished ride-v3 object's bytes into a GPX 1.1 document naming the track `name`.
  *
  * @throws {ConvertError} with an actionable message; see {@link ConvertErrorCode}.
  */
-export async function trackToGpx(log: Uint8Array, name: string): Promise<string> {
+export async function trackToGpx(ride: Uint8Array, name: string): Promise<string> {
     const mod = await ensure();
     try {
-        return mod.obc_convert_track_to_gpx(log, name);
+        return mod.obc_convert_track_to_gpx(ride, name);
     } catch (cause) {
         throw asConvertError(cause);
     }
@@ -212,8 +212,8 @@ const CODES: ReadonlySet<string> = new Set<ConvertErrorCode>([
     "not-gpx",
     "gpx-no-track-points",
     "gpx-too-many-points",
-    "not-track-log",
-    "track-no-points",
+    "not-ride",
+    "ride-no-points",
     "input-truncated",
     "not-route",
     "internal",

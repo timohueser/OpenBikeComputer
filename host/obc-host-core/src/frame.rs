@@ -85,7 +85,7 @@ impl DrawTarget for RgbaFrame {
         for y in y0..y1 {
             let start = ((y as u32 * self.width + x0 as u32) * 4) as usize;
             let row = &mut self.buf[start..start + ((x1 - x0) as usize) * 4];
-            for chunk in row.chunks_exact_mut(4) {
+            for chunk in row.as_chunks_mut::<4>().0 {
                 chunk.copy_from_slice(&px);
             }
         }

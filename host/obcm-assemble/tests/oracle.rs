@@ -1062,7 +1062,7 @@ fn a_spliced_raster_is_readable_through_the_headers_window() {
     // reads as *some* elevation either way — only varying data can tell the difference.
     let block_len = obc_formats::obct::cell_block_len(params.posting_log2, params.cell_log2).expect("a legal pairing");
     let mut raster = vec![0u8; block_len as usize];
-    for (k, sample) in raster.chunks_exact_mut(2).enumerate() {
+    for (k, sample) in raster.as_chunks_mut::<2>().0.iter_mut().enumerate() {
         sample.copy_from_slice(&(1000i16 + (k % 500) as i16).to_le_bytes());
     }
     let mut w = obc_dem::container::ShardWriter::new(
@@ -1360,7 +1360,9 @@ fn the_skin_is_stamped_onto_the_output() {
     let dashed = style_id(&cfg, "highway", "path");
     let t = table(&grafted);
     let at = 1 + t[1..]
-        .chunks_exact(obc_formats::obcm::STYLE_RECORD_LEN)
+        .as_chunks::<{ obc_formats::obcm::STYLE_RECORD_LEN }>()
+        .0
+        .iter()
         .position(|r| r[0] == dashed)
         .expect("the dashed style is in the table")
         * obc_formats::obcm::STYLE_RECORD_LEN;

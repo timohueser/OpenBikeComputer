@@ -8,45 +8,20 @@
 //! went with that wire: protocol v4 has no descriptor to classify and no per-runner shape, because a
 //! transfer is a `PUT` or a `GET` and the engine is generic over object kinds.
 //!
-//! Two things stayed, and they stayed because neither was ever part of the object surface:
-//!
-//! - [`publish_store_change`] — the `storeChanged` status message (msg 2), still the v2 control
-//!   plane's change signal for the characteristics `obc-ble-interface-spec.md` continues to govern.
-//! - [`battery_task`] — the BAS level push, which is a SIG service and no business of ours.
+//! [`battery_task`] stayed because BAS level push is a SIG service and no business of the object
+//! protocol.
 //!
 //! [`notify_bounded`] is the shared send both use: one host notify, [`HOST_OP_TIMEOUT`]-bounded so a
 //! peer that stops draining its ATT queue cannot stall a plane past the link's supervision timeout.
 
-use core::cell::RefCell;
-
 use defmt::warn;
 use embassy_time::{with_timeout, Timer};
 use nrf_sdc::{self as sdc};
-use obc_ble::{ObjectType, StatusMessage, StoreChanged};
 use trouble_host::prelude::*;
-
-use crate::object_store::ObjectStore;
 
 use super::gatt::Server;
 use super::lifecycle::HOST_OP_TIMEOUT;
 use super::state::battery;
-
-/// Notify the store movement after a commit/delete: the `storeChanged` status message (which store,
-/// new revision). Protocol v2 retired the `objectStore` digest characteristic — `storeChanged`
-/// (status msg 2) is the sole change signal.
-pub(crate) async fn publish_store_change(
-    stack: &Stack<'_, sdc::SoftdeviceController<'_>, DefaultPacketPool>,
-    server: &Server<'_>,
-    store: &RefCell<ObjectStore>,
-    ty: ObjectType,
-) {
-    // Only the legacy ride catalog still uses this status-plane edge. Route and trip mutations are
-    // announced by the flat-store protocol's catalog sequence.
-    let revision = store.borrow().revision();
-    let msg = StatusMessage::StoreChanged(StoreChanged { ty, revision });
-    let (buf, len) = msg.encode();
-    notify_bounded(stack, server, server.obc.status.handle, &buf[..len], "status").await;
-}
 
 /// One host notify, [`HOST_OP_TIMEOUT`]-bounded so a peer that stops draining its ATT queue can't stall
 /// a plane's task past the link's supervision timeout — the structural backstop beneath the hardware

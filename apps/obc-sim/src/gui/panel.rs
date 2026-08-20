@@ -334,8 +334,8 @@ impl SimGui {
             // the menu. Fed after the routes so the stage ids resolve against the fresh catalog.
             self.trip_store.rescan();
             self.app.set_trips(&self.trip_store.inputs());
-            // The same edge covers the ride catalog (#454): a dropped-in `RD{id}.ORD` or an edited
-            // `SYNCED.SET` shows up on the Rides screen without a relaunch.
+            // The same edge covers the simulator ride catalog (#454): a dropped-in fixture shows
+            // up on the Rides screen without a relaunch.
             self.ride_store.rescan();
             self.app.set_rides(self.ride_store.catalog(), self.ride_store.ids());
         }
@@ -511,7 +511,7 @@ impl SimGui {
         ui.separator();
 
         // Mark a ride synced (the ackRides stand-in) so the sweep can auto-delete it.
-        let mut mark: Option<u16> = None;
+        let mut mark: Option<obc_app::CatalogObjectId> = None;
         {
             let rides = self.app.rides();
             if rides.is_empty() {

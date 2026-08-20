@@ -95,6 +95,11 @@ impl Model {
         }
         self.sequence = self.high_water + 1;
         self.high_water = self.sequence;
+        self.ride = if self.entries.iter().any(|entry| entry.meta.flags.has(EntryFlags::RECORDING)) {
+            self.ride.or(Some((0, 0)))
+        } else {
+            None
+        };
         self
     }
 

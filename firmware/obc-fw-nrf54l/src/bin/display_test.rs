@@ -164,7 +164,7 @@ async fn main(spawner: Spawner) {
             // Colour bars: 6 vertical bands (R,G,B,yellow-ish,cyan-ish,white) — one frame that
             // shows every data line and the odd/even column split at once.
             const BANDS: [u8; 6] = [0x03, 0x0C, 0x30, 0x0F, 0x3C, 0x3F];
-            for row in frame.bytes_mut().chunks_exact_mut(FB_W) {
+            for row in frame.bytes_mut().as_chunks_mut::<FB_W>().0 {
                 for (x, px) in row.iter_mut().enumerate() {
                     *px = BANDS[x * BANDS.len() / FB_W];
                 }

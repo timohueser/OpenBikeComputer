@@ -751,7 +751,7 @@ private struct RideSummaryDTO: Codable {
     var averageSpeedMps: Double
     var climbMeters: Double
     var preview: TrackPreviewDTO?
-    // Per-ride BLE-sensor summary (ride object v2, epic #707) — optional, so a
+    // Per-ride BLE-sensor summary (ride object v3 footer) — optional, so a
     // pre-#707 `summary.json` (written without these keys) still decodes with
     // every field nil.
     var avgHeartRate: Int?

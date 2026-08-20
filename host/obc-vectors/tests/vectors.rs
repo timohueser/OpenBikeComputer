@@ -4,12 +4,12 @@
 
 use obc_elevation::{TerrainReader, TileCache};
 use obc_formats::io::{ByteSink, Error, SliceSource};
-use obc_formats::track::RECORD_LEN as TRACK_RECORD_LEN;
+use obc_formats::{ride::FOOTER_LEN as RIDE_FOOTER_LEN, track::RECORD_LEN as TRACK_RECORD_LEN};
 use obc_route::{for_each_waypoint, track_to_gpx, RouteIndex, RouteObjectInfo, RouteReader, MAX_POINTS_PER_CHUNK};
 use obc_vectors::{
-    all, crc32, dir, ride_v1, ride_v2, terrain_coord, terrain_height, terrain_shard, TERRAIN_CELL_LOG2,
-    TERRAIN_CELL_MIN_I, TERRAIN_CELL_MIN_J, TERRAIN_COLS, TERRAIN_NODATA_AT, TERRAIN_POSTING_LOG2, TERRAIN_ROWS,
-    TRACK_NAME, TRIP_DANGLING_STAGE, TRIP_ID, TRIP_NAME, TRIP_STAGE_IDS,
+    all, crc32, dir, ride_v3, terrain_coord, terrain_height, terrain_shard, TERRAIN_CELL_LOG2, TERRAIN_CELL_MIN_I,
+    TERRAIN_CELL_MIN_J, TERRAIN_COLS, TERRAIN_NODATA_AT, TERRAIN_POSTING_LOG2, TERRAIN_ROWS, TRACK_NAME,
+    TRIP_DANGLING_STAGE, TRIP_ID, TRIP_NAME, TRIP_STAGE_IDS,
 };
 use obc_weather::WeatherReader;
 
@@ -337,19 +337,15 @@ fn route_vectors_load_and_ride_identically() {
     assert_eq!(RouteObjectInfo::read(&src_p).unwrap().waypoint_count, 0);
 }
 
-/// The recorded-track pair (A2, #896). `track-log.obct` is a flat 20-byte-record array with a
-/// deliberate partial tail, and `track-export.gpx` is what the production exporter writes from it
-/// — the pair the browser conversion bridge must reproduce byte-for-byte in wasm. Pinned here
-/// from the other side: the log decodes through the production record codec back to the fields
-/// the builder wrote, and the export re-derives from the checked-in log (not from the builder's
-/// own in-memory copy), so a drift in either file fails.
+/// The sample-codec vector and the finished-ride GPX export. `track-log.obct` is exactly five
+/// complete 20-byte records used only to pin the sample codec. The exporter consumes
+/// `ride-v3.bin`; unfinished/headerless arrays are deliberately not a ride input.
 #[test]
 fn track_vectors_pin_the_log_and_its_export() {
     let log = fixture("track-log.obct");
     let gpx = String::from_utf8(fixture("track-export.gpx")).expect("the export is UTF-8");
 
-    // Length is self-describing: whole records plus the truncated tail a power-loss leaves.
-    assert_eq!(log.len() % TRACK_RECORD_LEN, 7, "the fixture keeps a partial trailing record");
+    assert_eq!(log.len() % TRACK_RECORD_LEN, 0);
     let whole = log.len() / TRACK_RECORD_LEN;
     assert_eq!(whole, 5);
 
@@ -374,26 +370,25 @@ fn track_vectors_pin_the_log_and_its_export() {
     assert_eq!((point(0).segment_start, point(3).segment_start), (true, true), "two segments");
     assert_eq!((point(3).lon, point(3).lat, point(3).ele), (-122_419_400, -37_774_900, -12), "negative signs");
 
-    // The export re-derives from the checked-in log: same bytes, so the .obct and the .gpx cannot
-    // drift apart independently.
+    // The export re-derives from the checked-in finished ride-v3 object.
     let mut sink = VecSink::default();
-    track_to_gpx(&SliceSource(&log), TRACK_NAME, &mut sink).unwrap();
-    assert_eq!(String::from_utf8(sink.buf).unwrap(), gpx, "track-export.gpx drifted from track-log.obct");
+    track_to_gpx(&SliceSource(&fixture("ride-v3.bin")), TRACK_NAME, &mut sink).unwrap();
+    assert_eq!(String::from_utf8(sink.buf).unwrap(), gpx, "track-export.gpx drifted from ride-v3.bin");
 
     // The shapes the exporter's branches produce, spelled out once (the browser bridge reproduces
     // this exact text, so a change here is a change to a cross-language contract).
     assert_eq!(gpx.matches("<trkseg>").count(), 2, "the pause opens a second segment");
-    assert_eq!(gpx.matches("<trkpt").count(), whole, "the partial trailing record is ignored");
+    assert_eq!(gpx.matches("<trkpt").count(), 3);
     assert!(gpx.contains("<trk><name>Schauinsland &amp; back</name>"), "the name is XML-escaped");
-    assert!(gpx.contains("lat=\"-37.774900\" lon=\"-122.419400\"><ele>-12</ele>"), "negative fixed-6 degrees");
-    assert!(gpx.contains("lat=\"0.000000\" lon=\"0.000000\""), "zero keeps all six decimals");
     assert!(
-        gpx.contains("<extensions><power>240</power></extensions>"),
-        "power alone skips the TrackPointExtension wrapper"
+        gpx.contains(
+            "<gpxtpx:hr>140</gpxtpx:hr><gpxtpx:cad>84</gpxtpx:cad></gpxtpx:TrackPointExtension><power>205</power>"
+        ),
+        "the first point carries the full sensor extension"
     );
     assert!(
-        gpx.contains("<gpxtpx:hr>138</gpxtpx:hr></gpxtpx:TrackPointExtension><power>190</power>"),
-        "an absent cadence drops only its element"
+        gpx.contains("<gpxtpx:hr>150</gpxtpx:hr></gpxtpx:TrackPointExtension><power>215</power>"),
+        "an absent cadence drops only its element on the final segment"
     );
     assert!(!gpx.contains("<time>"), "no fabricated timestamps");
 }
@@ -430,51 +425,23 @@ fn upload_transcript_is_self_consistent() {
     assert_eq!(u32::from_le_bytes([result[4], result[5], result[6], result[7]]) as usize, route.len());
 }
 
-/// Each ride object's length is fully determined by its header + version (spec §7.2).
+/// A ride-v3 object's length is exactly its verbatim samples plus one fixed footer.
 #[test]
 fn ride_vector_length_is_self_describing() {
-    let v1 = ride_v1();
-    assert_eq!(fixture("ride-v1.bin"), v1);
-    let name_len = u16::from_le_bytes([v1[1], v1[2]]) as usize;
-    let count_off = 19 + name_len; // version + name_len + name + the five stat fields
-    let point_count = u32::from_le_bytes(v1[count_off..count_off + 4].try_into().unwrap());
-    // v1 header is 23 bytes + name; each point 14.
-    assert_eq!(v1.len(), 23 + name_len + 14 * point_count as usize);
-
-    let v2 = ride_v2();
-    assert_eq!(fixture("ride-v2.bin"), v2);
-    let name_len = u16::from_le_bytes([v2[1], v2[2]]) as usize;
-    let point_count = u32::from_le_bytes(v2[19 + name_len..23 + name_len].try_into().unwrap());
-    // v2 header is 31 bytes + name; each point 18.
-    assert_eq!(v2.len(), 31 + name_len + 18 * point_count as usize);
+    let v3 = ride_v3();
+    assert_eq!(fixture("ride-v3.bin"), v3);
+    let footer = &v3[v3.len() - RIDE_FOOTER_LEN..];
+    assert_eq!(&footer[..5], b"OBRF\x03");
+    let point_count = u32::from_le_bytes(footer[24..28].try_into().unwrap());
+    assert_eq!(v3.len(), TRACK_RECORD_LEN * point_count as usize + RIDE_FOOTER_LEN);
 }
 
-/// Both ride vectors read through the production header reader (`obc_route::RideInfo`) with the
-/// manifest's values, and the production layout agrees byte-for-byte with the hand-built fixtures.
-/// The v1 fixture pins the legacy decode (all sensor fields absent); v2 pins the sensor summary +
-/// the version-keyed length.
+/// The independent vector reads through the production footer and detail codecs.
 #[test]
 fn ride_vector_reads_through_the_production_codec() {
-    let v1 = fixture("ride-v1.bin");
-    let info = obc_route::RideInfo::read(&SliceSource(&v1)).unwrap();
-    assert_eq!(info.version, 1);
-    assert_eq!(info.name.as_str(), "Höhenweg");
-    assert_eq!(info.start_time, 1_751_450_000);
-    assert_eq!(info.distance_m, 42_500);
-    assert_eq!(info.moving_time_s, 9_000);
-    assert_eq!(info.avg_speed_cms, 472);
-    assert_eq!(info.climb_m, 810);
-    assert_eq!(info.point_count, 3);
-    assert_eq!(
-        (info.avg_hr, info.max_hr, info.avg_cadence, info.avg_power, info.max_power),
-        (None, None, None, None, None),
-        "a v1 object has no sensor summary"
-    );
-    assert_eq!(v1.len() as u32, obc_formats::ride::object_len(info.version, info.name.len(), info.point_count));
-
-    let v2 = fixture("ride-v2.bin");
-    let info = obc_route::RideInfo::read(&SliceSource(&v2)).unwrap();
-    assert_eq!(info.version, 2);
+    let v3 = fixture("ride-v3.bin");
+    let info = obc_route::RideInfo::read(&SliceSource(&v3)).unwrap();
+    assert_eq!(info.version, 3);
     assert_eq!(info.name.as_str(), "Sensor Ride");
     assert_eq!(info.start_time, 1_751_460_000);
     assert_eq!(info.distance_m, 12_345);
@@ -485,13 +452,14 @@ fn ride_vector_reads_through_the_production_codec() {
     assert_eq!(
         (info.avg_hr, info.max_hr, info.avg_cadence, info.avg_power, info.max_power),
         (Some(142), Some(176), Some(85), Some(210), Some(480)),
-        "v2 carries the per-ride sensor summary"
+        "v3 carries the per-ride sensor summary"
     );
-    assert_eq!(v2.len() as u32, obc_formats::ride::object_len(info.version, info.name.len(), info.point_count));
+    assert_eq!(v3.len() as u64, obc_formats::ride::checked_object_len(info.point_count).unwrap());
 
-    // The elevation profile reader streams the v2 object's points (p2's ele sentinel is skipped).
-    let p = obc_route::ride_elevation_profile(&SliceSource(&v2)).unwrap();
-    assert_eq!((p.min_ele_m, p.max_ele_m), (214, 219), "the ele-sentinel point contributes no sample");
+    let p = obc_route::ride_elevation_profile(&SliceSource(&v3)).unwrap();
+    assert_eq!((p.min_ele_m, p.max_ele_m), (214, 225));
+    let preview = obc_route::ride_preview_polyline::<3>(&SliceSource(&v3)).unwrap();
+    assert_eq!(preview.as_slice(), &[(7_800_000, 48_000_000), (7_801_200, 48_001_000), (7_803_000, 48_002_000)]);
 }
 
 /// The trip vectors pin §7.7 (the trip object) and the §7.4 `tripList` addition, and tie together:

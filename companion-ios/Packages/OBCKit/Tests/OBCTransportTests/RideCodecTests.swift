@@ -2,9 +2,7 @@ import XCTest
 import OBCDomain
 @testable import OBCTransport
 
-/// The provisional device ride codec (Codecs/RideCodec.swift) — round-trip,
-/// quantization contract, and malformed-input behavior. Layout is S0-owned;
-/// when it's repinned these tests are the single spot that must move with it.
+/// Ride-object v3 round-trip, quantization contract, and malformed-input behavior.
 final class RideCodecTests: XCTestCase {
     /// A ride whose values sit exactly on the wire grid (whole seconds/metres,
     /// 1e-7° coordinates, cm/s speed) so the round-trip compares exactly.
@@ -13,13 +11,15 @@ final class RideCodecTests: XCTestCase {
         let points: [RidePoint] = (0..<pointCount).map { (i: Int) -> RidePoint in
             // Built exactly the way decode rebuilds them (i32 grid ÷ 1e7),
             // so the round-trip compares bit-for-bit.
-            let lat: Double = Double(430_000_000 + i * 11_000) / 1e7
-            let lon: Double = Double(-885_000_000 + i * 7_000) / 1e7
-            return RidePoint(
+            let lat: Double = Double(43_000_000 + i * 1_100) / 1e6
+            let lon: Double = Double(-88_500_000 + i * 700) / 1e6
+            var point = RidePoint(
                 timestamp: start.addingTimeInterval(Double(i) * 60),
                 coordinate: Coordinate(latitude: lat, longitude: lon),
-                elevationMeters: i == 2 ? nil : Double(300 + i)
+                elevationMeters: Double(300 + i)
             )
+            point.segmentStart = i == 0 || i == 3
+            return point
         }
         let summary = RideSummary(
             id: RideID(id), name: "Kettle Moraine Loop", date: start,
@@ -45,11 +45,10 @@ final class RideCodecTests: XCTestCase {
         XCTAssertTrue(decoded.points.isEmpty)
     }
 
-    func testMissingElevationSurvivesAsNilNotZero() throws {
+    func testSegmentBoundariesSurviveTheCodec() throws {
         let ride = quantizedRide()
         let decoded = try RideObjectCodec.decode(RideObjectCodec.encode(ride), id: ride.id)
-        XCTAssertNil(decoded.points[2].elevationMeters)
-        XCTAssertEqual(decoded.points[0].elevationMeters, 300)
+        XCTAssertEqual(decoded.points.map(\.segmentStart), [true, false, false, true, false])
     }
 
     func testQuantizationStaysWithinTheWireGrid() throws {
@@ -68,10 +67,11 @@ final class RideCodecTests: XCTestCase {
         let decoded = try RideObjectCodec.decode(RideObjectCodec.encode(ride), id: ride.id)
         XCTAssertEqual(decoded.summary.distanceMeters, 1000, accuracy: 0.5)
         XCTAssertEqual(decoded.summary.averageSpeedMps, 5.678, accuracy: 0.005)
-        XCTAssertEqual(decoded.points[0].coordinate.latitude, 43.12345678, accuracy: 1e-7)
-        XCTAssertEqual(decoded.points[0].coordinate.longitude, -88.98765432, accuracy: 1e-7)
+        XCTAssertEqual(decoded.points[0].coordinate.latitude, 43.12345678, accuracy: 1e-6)
+        XCTAssertEqual(decoded.points[0].coordinate.longitude, -88.98765432, accuracy: 1e-6)
         XCTAssertEqual(decoded.points[0].elevationMeters ?? 0, 300.49, accuracy: 0.5)
-        XCTAssertEqual(decoded.points[0].timestamp.timeIntervalSince(decoded.summary.date), 60, accuracy: 0.5)
+        // The footer dates the first recorded sample, so a one-point ride starts at offset zero.
+        XCTAssertEqual(decoded.points[0].timestamp.timeIntervalSince(decoded.summary.date), 0, accuracy: 0.5)
     }
 
     func testDecodeRebuildsTheTrackPreviewFromPoints() throws {
@@ -85,8 +85,10 @@ final class RideCodecTests: XCTestCase {
     func testMalformedPayloadsThrowNotCrash() {
         let good = RideObjectCodec.encode(quantizedRide())
         XCTAssertThrowsError(try RideObjectCodec.decode(Data(), id: RideID("x")))
-        XCTAssertThrowsError(try RideObjectCodec.decode(Data([0xFF]), id: RideID("x")),
-                             "unknown version must be rejected")
+        var wrongVersion = good
+        wrongVersion[wrongVersion.count - RideObjectCodec.footerLength + 4] = 0xFF
+        XCTAssertThrowsError(try RideObjectCodec.decode(wrongVersion, id: RideID("x")),
+                             "unknown footer version must be rejected")
         XCTAssertThrowsError(try RideObjectCodec.decode(good.prefix(good.count / 2), id: RideID("x")),
                              "a truncated tracklog must not decode")
         var extra = good

@@ -29,7 +29,7 @@
 
 use std::vec::Vec;
 
-use super::crash::{entry, install_catalog, payload};
+use super::crash::{entry, install_catalog, install_slot, payload};
 use super::layout::{Geometry, EXTENT_AREA, SUPERBLOCK};
 use super::model::Model;
 use super::seam::{EntryFlags, Mutation, ObjectKind, PutSource, Store, StoreId};
@@ -164,6 +164,36 @@ fn mount_census(entries: u16) -> Census {
     Census::of(&disk.ledger(), u64::from(entries))
 }
 
+/// Finalise a recording with `flushed` bytes already in write-once payload pages and a fixed tail.
+/// Setup writes are installed directly and do not enter the census; only the footer/tail flush and
+/// the one catalog commit the rider waits for are measured.
+fn finish_census(flushed: u64) -> Census {
+    const TAIL: usize = 5_000;
+    let extents = 64u32;
+    let blocks = EXTENT_AREA + Geometry::DEFAULT.extent_blocks() * extents as u64;
+    let ride = entry(1, 1, ObjectKind::Ride, EntryFlags::RECORDING, 0, "", &[(0, 32)]);
+    let mut model = Model::empty(STORE, extents);
+    model.entries.push(ride);
+    model.next_object = 2;
+    model.sequence = 4;
+    model.high_water = 4;
+
+    let disk = SparseDisk::blank(blocks, 23);
+    let superblock = Superblock::for_card(STORE, blocks).unwrap().encode();
+    disk.install(SUPERBLOCK[0], &superblock);
+    disk.install(SUPERBLOCK[1], &superblock);
+    install_catalog(&disk, &model, 0);
+    let tail = payload(TAIL);
+    install_slot(&disk, STORE, &ride, 1, flushed, &tail);
+
+    let store = FlatStore::mount(&disk);
+    assert_eq!(store.recovered_ride().unwrap().flushed, flushed);
+    let finalised = entry(1, 1, ObjectKind::Ride, EntryFlags::NONE, flushed + TAIL as u64, "finished", &[(0, 1)]);
+    let before = disk.ledger().len();
+    store.commit(&[Mutation::Put { meta: finalised.meta, source: PutSource::Amend }]).unwrap();
+    Census::of(&disk.ledger()[before..], 1)
+}
+
 /// §5.5's commit, at an empty catalog, at the few hundred entries the budget is quoted for, and at the
 /// 1,024 the bench's worst case used. Each case publishes the *next* object, so the body it writes holds
 /// `entries + 1` — the bench's 79 write blocks at 300 entries and this case's 80 are the same figure one
@@ -239,6 +269,22 @@ fn a_mount_costs_the_pinned_card_commands() {
     assert!(projected <= 140_000, "a mount projects {projected} µs, above the 140 ms this case allows");
     // And the part of it this change could reach: the reading, which was 261 commands and is now 69.
     assert!(census.io_micros() <= 35_000, "a mount reads {} µs, above the 35 ms this case allows", census.io_micros());
+}
+
+/// FS8's finish is O(1) in ride length: it copies only the selected tail slot and commits one
+/// catalog. One page and one thousand pages already recorded therefore issue exactly the same card
+/// commands and blocks. This is a measured simulator census, not an asymptotic comment.
+#[test]
+fn finishing_io_is_constant_in_the_ride_length() {
+    let short = finish_census(super::layout::PROGRAM_PAGE as u64);
+    let long = finish_census(1_000 * super::layout::PROGRAM_PAGE as u64);
+    std::println!("ride finish: {short:?}");
+    assert_eq!(short, long, "finish I/O grew with the flushed ride prefix");
+    assert_eq!(
+        short,
+        Census { reads: 27, read_blocks: 55, writes: 29, write_blocks: 30, syncs: 5, entries: 1 },
+        "the fixed finish census changed",
+    );
 }
 
 /// The model, held to the measurements it came from. Applied to the census the store *used* to produce

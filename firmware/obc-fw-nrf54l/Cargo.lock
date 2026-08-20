@@ -1470,7 +1470,6 @@ dependencies = [
  "obc-crc",
  "obc-formats",
  "obc-link",
- "obc-ports",
 ]
 
 [[package]]

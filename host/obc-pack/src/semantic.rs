@@ -552,7 +552,7 @@ fn raster_polygon(
             }
         }
         crossings.sort_by(f64::total_cmp);
-        for pair in crossings.chunks_exact(2) {
+        for pair in crossings.as_chunks::<2>().0 {
             let x0 = (pair[0] - 0.5).ceil().max(0.0) as usize;
             let x1 = (pair[1] - 0.5).ceil().max(0.0).min(width as f64) as usize;
             if x0 < x1 {

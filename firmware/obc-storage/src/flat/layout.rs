@@ -72,10 +72,10 @@ pub const MOUNT_STREAM_BLOCKS: usize = 4;
 /// One mount scan window, in bytes. A whole number of entries, as [`STREAM_WINDOW`] is.
 pub const MOUNT_STREAM_WINDOW: usize = MOUNT_STREAM_BLOCKS * BLOCK;
 
-/// The ride journal (§2), 16 slots of 32 KiB.
+/// The ride journal (§2): 16 full-page tail slots followed by 16 page-isolated header records.
 pub const JOURNAL: u64 = 1_088;
-/// Blocks in one journal slot: two program pages.
-pub const SLOT_BLOCKS: u64 = 64;
+/// Blocks in one 16 KiB tail slot, and in the isolated page reserved for its header.
+pub const SLOT_BLOCKS: u64 = 32;
 /// Journal slots (§7).
 pub const SLOTS: usize = 16;
 
@@ -174,6 +174,14 @@ pub fn catalog_gate(copy: usize) -> u64 {
 /// The first block of journal slot `slot` (§7).
 pub fn slot_block(slot: usize) -> u64 {
     JOURNAL + SLOT_BLOCKS * slot as u64
+}
+
+/// The header block certifying journal tail slot `slot` (§7).
+///
+/// Each header occupies the first block of a program page of its own. A cut while replacing one
+/// header can therefore corrupt neither a tail slot nor another slot's header.
+pub fn slot_header_block(slot: usize) -> u64 {
+    JOURNAL + SLOT_BLOCKS * SLOTS as u64 + SLOT_BLOCKS * slot as u64
 }
 
 /// Bytes the body of a catalog copy holding `entries` entries covers (§5.1). The store never needs
@@ -370,8 +378,8 @@ mod tests {
         assert_eq!(CATALOG[0], SUPERBLOCK[1] + 32);
         assert_eq!(CATALOG[1], CATALOG[0] + CATALOG_BLOCKS);
         assert_eq!(JOURNAL, CATALOG[1] + CATALOG_BLOCKS);
-        assert_eq!(SLOT_BLOCKS * SLOTS as u64, 1_024);
-        assert_eq!(EXTENT_AREA - (JOURNAL + SLOT_BLOCKS * SLOTS as u64), 1_984);
+        assert_eq!(SLOT_BLOCKS * SLOTS as u64 * 2, 1_024);
+        assert_eq!(EXTENT_AREA - (JOURNAL + SLOT_BLOCKS * SLOTS as u64 * 2), 1_984);
         // The extent area starts at 2 MiB, and what that has to be a multiple of is the **program
         // page**: that is what makes §6.1's page-alignment property hold at every size §8 can pick.
         // It is not a claim that an extent is aligned to its own size — at 8 MiB extents, extent 0
@@ -379,7 +387,8 @@ mod tests {
         assert_eq!(EXTENT_AREA * BLOCK as u64 % PROGRAM_PAGE as u64, 0);
         assert_eq!(catalog_gate(0), 544);
         assert_eq!(catalog_gate(1), 1_056);
-        assert_eq!(slot_block(3), 1_280);
+        assert_eq!(slot_block(3), 1_184);
+        assert_eq!(slot_header_block(3), 1_696);
     }
 
     /// §5.1: `512 + 1916 × 128 = 245,760` fills blocks `0..480` exactly.

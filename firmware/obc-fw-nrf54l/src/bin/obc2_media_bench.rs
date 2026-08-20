@@ -148,7 +148,7 @@ impl BlockDevice for Card {
             for (chunk_index, chunk) in blocks.chunks_mut(4).enumerate() {
                 let len = chunk.len() * BLOCK_BYTES;
                 sd.read_blocks(start.0 + (chunk_index * 4) as u32, &mut bounce.0[..len])?;
-                for (block, src) in chunk.iter_mut().zip(bounce.0[..len].chunks_exact(BLOCK_BYTES)) {
+                for (block, src) in chunk.iter_mut().zip(bounce.0[..len].as_chunks::<BLOCK_BYTES>().0) {
                     block.contents.copy_from_slice(src);
                 }
             }
@@ -171,7 +171,7 @@ impl BlockDevice for Card {
             let bounce = unsafe { &mut *core::ptr::addr_of_mut!(BOUNCE) };
             for (chunk_index, chunk) in blocks.chunks(4).enumerate() {
                 let len = chunk.len() * BLOCK_BYTES;
-                for (block, dst) in chunk.iter().zip(bounce.0[..len].chunks_exact_mut(BLOCK_BYTES)) {
+                for (block, dst) in chunk.iter().zip(bounce.0[..len].as_chunks_mut::<BLOCK_BYTES>().0) {
                     dst.copy_from_slice(&block.contents);
                 }
                 sd.write_blocks(start.0 + (chunk_index * 4) as u32, &bounce.0[..len])?;

@@ -236,17 +236,27 @@ impl Mutation {
     }
 }
 
-/// One ride checkpoint: the tail past the last flushed page, and the running payload CRC.
+/// Fixed opaque recorder state carried by every logical ride checkpoint.
+pub const RIDE_RESUME_LEN: usize = 96;
+
+/// One ride checkpoint: the bytes appended since the last successful checkpoint, the running
+/// payload CRC, and the recorder's fixed resume image. Storage reconstructs the next full tail-slot
+/// snapshot from the previous durable slot plus `append`; the recorder never keeps that snapshot in
+/// RAM. Storage CRC-protects `resume` but never interprets it.
 #[derive(Debug, Clone, Copy)]
 pub struct RideCheckpoint<'a> {
     /// The entry carrying `RECORDING`; the store rejects a checkpoint naming anything else.
     pub id: ObjectId,
     pub revision: Revision,
-    /// Payload bytes past the last flushed page, oldest first. The store flushes whole pages out of
-    /// the front of this and journals whatever remains.
-    pub tail: &'a [u8],
-    /// CRC-32 of the whole ride payload through `flushed length + tail.len()`.
+    /// Bytes after the previous successful logical checkpoint, oldest first. A successful call
+    /// consumes the whole slice. After an error the caller must retry these exact bytes before it
+    /// appends more, recomputes the resume image, or appends terminal/footer bytes; this is what
+    /// keeps a gated rollover repair idempotent. Discard may instead remove the `RECORDING` entry.
+    pub append: &'a [u8],
+    /// CRC-32 of the whole ride payload after `append`.
     pub payload_crc: u32,
+    /// Versioned recorder-owned continuation state for precisely this logical checkpoint.
+    pub resume: &'a [u8; RIDE_RESUME_LEN],
 }
 
 /// The card, as everything above it sees it.
@@ -290,8 +300,8 @@ pub trait Store {
     fn entries(&self) -> impl Iterator<Item = EntryMeta> + '_;
 
     /// The ride exception, and the only way bytes become durable without a commit. Performs both
-    /// halves of `FLAT_Store_Format.md` §7.2: flush whole 16 KiB payload pages from the tail into
-    /// the recording entry's own extents, then write one journal slot.
+    /// halves of `FLAT_Store_Format.md` §7.2: gate each whole 16 KiB prefix in a tail slot before
+    /// copying it to the recording entry's extents, then gate the remainder when one exists.
     fn journal(&self, checkpoint: RideCheckpoint) -> core::result::Result<(), StoreError>;
 }
 

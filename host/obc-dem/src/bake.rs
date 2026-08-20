@@ -136,7 +136,7 @@ pub fn bake_cell(mosaic: &DemMosaic, ci: u32, cj: u32, posting_log2: u8, cell_lo
 /// Count the `NODATA` samples in a block — the operator's coverage number, read back from the bytes
 /// that were actually written rather than tallied while writing them.
 fn nodata_in(block: &[u8]) -> u64 {
-    block.chunks_exact(2).filter(|s| i16::from_le_bytes([s[0], s[1]]) == NODATA).count() as u64
+    block.as_chunks::<2>().0.iter().filter(|s| i16::from_le_bytes([s[0], s[1]]) == NODATA).count() as u64
 }
 
 /// Bake every cell the box selects into **one** container on `out` — the terrain *shard* a rider

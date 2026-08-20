@@ -510,7 +510,10 @@ mod tests {
         assert_eq!(p.stats.spans, 1);
         // The texture reconstructs every pixel from the device-64 byte.
         let (r, g, b) = expect_px(0x15);
-        assert!(p.texture().chunks_exact(3).all(|px| px == [r, g, b]), "texture reconstructs the whole frame");
+        assert!(
+            p.texture().as_chunks::<3>().0.iter().all(|px| *px == [r, g, b]),
+            "texture reconstructs the whole frame"
+        );
     }
 
     #[test]

@@ -55,10 +55,9 @@ shot, its gate. Never the command count.
 
 Two consequences are used throughout and stated once here:
 
-- A record written **in one shot and covered by one CRC over all of its pages** is all or nothing to
-  a reader: a cut corrupts one of those pages, the CRC fails, and the record is skipped. It does not
-  matter how many pages the record spans, only that no reader ever sees a subset of the write. This
-  is why ride journal slots — two pages, one write, one CRC — need no gate of their own (§7).
+- A ride-journal tail is one program page and its header is a gate in a different program page. The
+  tail is synchronized first; the header is written and synchronized second. The header's CRC covers
+  both records, so a cut during either write leaves no header/tail pair recovery accepts (§7).
 - A record too large to write in one shot needs a **gate**: a separate, later, single-block write
   that certifies the body. The gate sits in a page of its own so that programming it can never
   damage the body it certifies. This is the catalog (§5).
@@ -74,7 +73,8 @@ the extent area is everything after it.
 | `32 .. 64` | 32 | 16 KiB | superblock copy B (§4) |
 | `64 .. 576` | 512 | 256 KiB | catalog copy A (§5) |
 | `576 .. 1088` | 512 | 256 KiB | catalog copy B (§5) |
-| `1088 .. 2112` | 1024 | 512 KiB | ride journal, 16 slots × 32 KiB (§7) |
+| `1088 .. 1600` | 512 | 256 KiB | ride journal, 16 tail slots × 16 KiB (§7) |
+| `1600 .. 2112` | 512 | 256 KiB | 16 page-isolated ride-journal headers (§7) |
 | `2112 .. 4096` | 1984 | 992 KiB | reserved; never written and never read |
 | `4096 .. ` | — | rest of card | extent area, extents of the recorded size (§6) |
 
@@ -437,8 +437,8 @@ thing to work around.
    succeeds is the one the store **serves**, and §5.5's next commit targets the other one.
 4. Build the free-extent bitmap: every extent free, then mark the ranges of every entry used. An
    overlap is a structural failure of that copy.
-5. If exactly one entry carries `RECORDING`, read the 16 ride journal slots and recover the ride
-   (§7.3). Otherwise the journal is not read at all.
+5. If exactly one entry carries `RECORDING`, read the 16 ride-journal headers and validate candidate
+   tail slots to recover the ride (§7.3). Otherwise the journal is not read at all.
 
 Those five steps are the whole of mount. There is **no journal replay** — the catalog copy *is* the
 commit; **no garbage collection** — an extent is free exactly when no entry names it; and **no
@@ -600,13 +600,18 @@ outright, and not committing it at all would risk hours of track. The journal is
 that resolves that, and it is the only place in this format where bytes become durable without a
 commit.
 
-The region is 16 slots of 32 KiB at LBA 1088, slot `k` at LBA `1088 + 64 × k`. A slot is two program
-pages, written in one shot and covered by one CRC: a cut corrupts a page, the CRC fails, and the slot
-is skipped. There is no gate.
+The region holds 16 **16 KiB tail slots** followed by 16 page-isolated headers. Each slot is a full
+snapshot of the ride bytes after the flushed payload prefix; the recorder does not keep that snapshot
+in RAM. Tail slot `k` is the
+32 blocks at LBA `1088 + 32 × k`; its header is block 0 of the program page at
+`1600 + 32 × k`. A checkpoint writes and synchronizes the tail first, then writes and synchronizes
+the header. The header is the gate and its CRC covers itself plus the full tail slot. A cut while
+replacing either record therefore leaves no new valid pair, and no header shares a program page with
+a tail or another header.
 
 ### 7.1 Slot
 
-Block 0 of the slot is the header; blocks `1..64` are the tail, 32,256 bytes.
+The header is a 512-byte record in its own program page:
 
 | Offset | Size | Field |
 | --: | --: | :-- |
@@ -616,18 +621,34 @@ Block 0 of the slot is the header; blocks `1..64` are the tail, 32,256 bytes.
 | 8 | 16 | `StoreId` |
 | 24 | 8 | ride `ObjectId` |
 | 32 | 8 | ride entry `Revision` |
-| 40 | 8 | checkpoint sequence, from `1` |
+| 40 | 8 | checkpoint sequence, from `1`; `sequence mod 16` equals the slot index |
 | 48 | 8 | flushed length, a multiple of 16,384 |
-| 56 | 4 | tail length, `0..=32256` |
+| 56 | 4 | tail length, `0..=16384` |
 | 60 | 4 | payload CRC-32 over `[0, flushed length + tail length)` |
 | 64 | 32 | 8 × extent range, copied verbatim from the ride's catalog entry |
-| 96 | 408 | zero |
-| 504 | 4 | slot CRC-32 over the whole 32,768-byte slot with this field zero |
+| 96 | 96 | opaque, versioned recorder resume image |
+| 192 | 2 | flags: bit 0 `PROOF`; all other bits zero |
+| 194 | 6 | zero |
+| 200 | 8 | referenced proof sequence for a logical rollover gate; zero otherwise |
+| 208 | 296 | zero |
+| 504 | 4 | slot CRC-32 over this header with the field zero, followed by the full 16,384-byte tail slot |
 | 508 | 4 | zero |
-| 512 | 32,256 | tail bytes, then zero to the end of the slot |
 
-The ride's payload at this checkpoint is `extents[0 .. flushed length]` followed by the slot's first
-`tail length` tail bytes. The total is `flushed length + tail length`; it is derived, not stored.
+The corresponding 16,384-byte tail slot contains the tail bytes followed by zero to the end of the
+page. Space after the 512-byte header record in its isolated page is outside the record and is never
+read.
+
+For a logical slot, the ride's payload at this checkpoint is `extents[0 .. flushed length]` followed
+by the slot's first `tail length` tail bytes. The total is `flushed length + tail length`; it is
+derived, not stored. The 96-byte resume image belongs to the recorder, not storage: storage preserves
+it byte-for-byte and CRC-protects it as part of precisely this logical checkpoint, but never decodes
+it.
+
+A `PROOF` slot has exactly 16,384 tail bytes, a zero referenced-proof sequence and a zero resume
+image. It is immutable source evidence for one payload-page copy and is **never itself a logical
+checkpoint**. A non-proof slot normally has a zero referenced-proof sequence. During rollover it
+instead names the immediately preceding proof sequence (`proof + 1 == logical sequence`); recovery
+requires both records before it can expose that logical slot.
 
 The extent ranges are copied into the slot as a **cross-check**, not to save a lookup — recovery has
 the catalog entry in hand already, since that entry's `RECORDING` flag is what sent it here. A slot
@@ -644,42 +665,89 @@ than recording into a budget it might outgrow.
 
 Then, on a fixed cadence of **10 seconds**:
 
-1. Append the new points to the in-RAM tail.
-2. While the tail holds at least 16,384 bytes, write one 16,384-byte payload page at payload offset
-   `flushed length` — page-aligned by §6.1, written once, never rewritten — synchronize, and move
-   those bytes from the tail to `flushed length`.
-3. Write slot `checkpoint sequence mod 16` in one shot; synchronize.
+1. The recorder lends only the points appended since the last checkpoint that returned success,
+   together with the running payload CRC and resume image. The production bound is sixteen 20-byte
+   samples plus the 84-byte final footer: **404 bytes**, independent of the durable tail length.
+2. Storage reads the previous logical slot in bounded chunks, folds its CRC while copying it into the
+   next slot, appends the lent bytes, and zero-pads to 16,384 bytes. A bad source CRC refuses the
+   checkpoint before its header is written. If the reconstructed tail is shorter than 16,384 bytes,
+   synchronize it, then write and synchronize its page-isolated header. The checkpoint is complete.
+3. If the reconstructed tail reaches 16,384 bytes, first write and synchronize a `PROOF` tail slot
+   containing **exactly its first 16,384 bytes**, then write and synchronize that proof header.
+4. Before touching the payload page, write and synchronize the next, **logical** slot: advance its
+   flushed length by 16,384, put the remainder (possibly empty) in its tail, copy the checkpoint's
+   payload CRC and resume image, and name the proof sequence in its header.
+5. Only after both gates are durable, copy the proof slot's identical 16,384 bytes to the payload page
+   at the old flushed length and synchronize. A successful call consumes the complete lent append;
+   the recorder clears its 404-byte buffer. The seam admits at most one page crossing per call, so
+   this is at most one proof/logical pair.
 
-Step 2 before step 3 is the ordering that matters: a payload page is written only when every byte in
-it is already in a slot on the card, and once written it is never touched again. Step 3 then records
-that it is durable. A cut between the two leaves the previous slot authoritative — its `flushed
-length` is one page behind, its tail still holds those bytes, and recovery simply rewrites the page.
+The rare boundary is a **two-slot rollover**, including when the remainder is empty: one checkpoint
+sequence gates the exact full page and the next gates the aligned, recorder-visible state. Checkpoint
+sequence counts durable headers, not timer ticks. In ordinary riding this extra slot is consumed only
+when the tail crosses a 16 KiB boundary.
 
-A checkpoint that fails partway — a refused write, not a power cut — leaves the `flushed length` where
-it was, at the last one a durable slot accounts for. The caller still holds the whole tail, since it
-drops the flushed prefix only against a checkpoint that reported one, so its retry writes the same bytes
-to the same payload offsets. That is the same rewrite recovery performs, and it is admissible for the
-same reason: the payload of a flushed prefix cannot change. A `flushed length` left one page ahead of
-the card's would put the retry's page past the bytes it repeats, and publish a ride longer than the one
-that was recorded.
+Checkpoint sequence never wraps. Before writing any tail or header, the writer verifies that the
+ordinary slot's following sequence—or both rollover slots and their following sequence—is
+representable. Exhaustion refuses without touching media. Recovery likewise rejects a restamped
+logical slot at `u64::MAX`, because no writer following this rule can have produced it.
 
-The binding limit on the tail is the slot's 32,256-byte tail area, not the `u32` field that measures
-it. Step 2 leaves at most 16,383 bytes behind, so an interval may add **15,873 bytes** before the tail
-would not fit — three orders of magnitude above the roughly 200 bytes ten seconds of riding produces.
-A slot claiming a tail above 32,256 is invalid.
+The two headers before the payload write are the ordering that makes write-once exact without ever
+exposing a recorder-invalid 16,384-byte boundary (the ride sample is 20 bytes). Every payload page is
+byte-for-byte present in a valid proof before its extent page is touched, while the paired logical
+gate preserves the spill, payload CRC and resume state. A cut before the logical gate falls back to
+the previous logical checkpoint; a lone proof never advances recovery. A cut during or after the
+payload write selects the logical gate only after recovery has verified the proof and completed or
+repaired the page from those **same bytes**. No later point can change what is written at that offset.
+
+Within each slot transaction, the tail precedes its header. A cut while replacing a tail may leave
+the old header intact, but its CRC no longer matches the tail and recovery skips it. A cut while
+writing the header tears only that header's isolated page. Only after the final synchronization can
+the new header/tail pair be selected.
+
+A checkpoint that fails before its logical gate leaves the caller holding the exact bounded append and
+retries from the last call that reported success. The recorder accepts no more samples while that call
+is unresolved. If the proof and logical gates are durable but the payload copy fails, the resident
+store records that pending proof: the exact retry first completes the identical copy without rewriting
+either authoritative header, recognizes that the logical gate already includes the append, and returns
+success without applying it twice. The recorder must not recompute its resume image or append the final
+footer until that exact retry succeeds. It may instead discard the ride with an atomic catalog remove;
+the proof and payload bytes are then unreachable. A reboot follows the same repair rule from the two
+headers.
+
+An ordinary checkpoint therefore performs at most one bounded 16 KiB source read and one 16 KiB slot
+write, plus its header gate; rollover performs the fixed proof/logical pair and one payload-page copy.
+The extra media read replaces a 16 KiB recorder allocation and does not change the on-card format,
+the loss cap, or finish I/O.
+
+The binding limit on the tail is the slot's 16,384-byte page, not the `u32` field that measures it.
+Step 2 leaves at most 16,383 bytes behind, so every possible page remainder fits; there is no header
+inside the tail page consuming payload capacity. A header claiming a tail above 16,384 is invalid.
 
 Ride end: flush whatever the tail still holds — a partial page, whose bytes are all in the last slot,
-so a cut during it is recovered by rewriting — then one commit that clears `RECORDING`, sets the
+so a cut during it is recovered by comparing each destination block and repairing only mismatches —
+then one commit that clears `RECORDING`, sets the
 final length and payload CRC, and trims the ranges to `ceil(length / E)` extents, freeing the
 rest of the reserve. The 16 slot headers are then zeroed. A cut during that zeroing is harmless: no
 entry carries `RECORDING`, so §5.6 never reads them.
 
+Finish I/O is independent of ride length. The simulator census for both one flushed page and one
+thousand flushed pages is 27 read commands / 55 blocks, 29 write commands / 30 blocks and 5
+synchronizations: it validates and copies only the selected 16 KiB tail slot, commits one catalog,
+then clears the fixed header ring. No finish-time conversion or prefix scan is permitted.
+
 ### 7.3 Recovery
 
-Read the 16 slots. A slot is a candidate when its magic, version, slot index, `StoreId`, slot CRC and
-tail-length bound all check, and its `ObjectId`, `Revision` and ranges equal those of the entry
-carrying `RECORDING`. Take the candidate with the greatest checkpoint sequence. That is the whole
-mandatory decision: at most 16 slot reads, performed only when an entry says a ride was recording.
+Read the 16 headers. A logical slot is a candidate when its magic, version, slot index, `StoreId` and
+tail-length bound all check, its `ObjectId`, `Revision` and ranges equal those of the entry carrying
+`RECORDING`, and its CRC checks over the header plus its full tail page. A proof is never a candidate.
+A logical slot that references a proof is a candidate only if that exact proof header and tail also
+validate, its old flushed length is exactly one page behind, and recovery has compared and, when
+needed, copied and synchronized the proof bytes at that payload offset. A repair read, write or sync
+failure makes the mount fail closed; it does not fall back to an empty or older ride and it is retried
+on the next boot. Take the valid logical candidate with the greatest checkpoint sequence. Recovery
+reads all 16 one-block headers but reads tail pages only from newest to oldest until one validates,
+and only when an entry says a ride was recording.
 
 **The payload CRC is a seed, not a verification obligation.** Its normative role is to give the
 resumed session the running CRC it needs so that the commit ending the ride can state the whole ride's
@@ -690,10 +758,17 @@ is tens of megabytes, and a full-prefix read on every boot is exactly the recove
 does not have. A device that does check SHOULD bound the read to the last flushed page, which is the
 only region a cut can have damaged.
 
-Recovery then hands the store the recovered tail and `flushed length`, and recording resumes from
-there or the rider finalises it. **Recording resumes at checkpoint sequence `recovered + 1`**, never
+Recovery leaves the durable tail snapshot store-owned and hands the recorder only the recovered total
+length, payload CRC and opaque resume image; its append buffer starts empty. Random access to recovered
+bytes remains available for the fixed-size validation reads needed by continuation or finalisation.
+**Recording resumes at checkpoint sequence `recovered + 1`**, never
 at `1`: restarting the count would leave the stale slots of this same ride carrying greater sequences
 than the resumed session's, and the next recovery would pick one of them and roll the ride back.
+
+A catalog entry carrying `RECORDING` with no valid logical slot is the durable state between the ride
+start commit and its first checkpoint. Recovery exposes it as a zero-length ride at checkpoint
+sequence zero, with zero CRC and zero resume image, so the recorder can continue or discard it. The
+presence of an unpaired proof does not change that state.
 
 ### 7.4 Loss cap
 
@@ -705,22 +780,31 @@ already holds and is never rewritten.
 
 ### 7.5 Vector
 
-Slot 3 of a ride under `ObjectId 2`, `Revision 1`, checkpoint sequence 41, 245,760 bytes flushed (15
+Slot 9 of a ride under `ObjectId 2`, `Revision 1`, checkpoint sequence 41, 245,760 bytes flushed (15
 pages), 3,712 bytes of tail, ranges as in §5.7. The tail bytes of this vector are
 `tail[i] = (i × 7 + 3) mod 256` for `i < 3712` and zero after.
 
+Header record:
+
 ```
-0000  46 53 52 4A 01 00 03 00 8F 2C 41 D9 6B 07 4E A3
+0000  46 53 52 4A 01 00 09 00 8F 2C 41 D9 6B 07 4E A3
 0010  B1 55 9C 20 7D E8 34 66 02 00 00 00 00 00 00 00
 0020  01 00 00 00 00 00 00 00 29 00 00 00 00 00 00 00
 0030  00 C0 03 00 00 00 00 00 80 0E 00 00 C7 03 1B 5E
 0040  0D 00 20 00 00 00 00 00 00 00 00 00 00 00 00 00
 0050  ..                                        (zero to 504)
-01F8  D6 6B E5 66 00 00 00 00
-0200  03 0A 11 18 1F 26 2D 34 3B 42 49 50 57 5E 65 6C   (tail begins)
+01F8  EF 78 91 7D 00 00 00 00
 ```
 
-The slot CRC-32 over the whole 32,768 bytes, with bytes `504..508` zero, is `0x66E56BD6`. The payload
+Tail slot:
+
+```
+0000  03 0A 11 18 1F 26 2D 34 3B 42 49 50 57 5E 65 6C
+0010  ..                                        (tail to 3712, then zero to 16384)
+```
+
+The slot CRC-32 over the header with bytes `504..508` zero followed by the 16,384-byte tail slot is
+`0x7D9178EF`. The payload
 CRC field `0x5E1B03C7` is a declared value covering payload bytes `[0, 249472)`, which this vector
 does not carry.
 
@@ -742,7 +826,7 @@ already a valid flat store is never written to implicitly.
    past `65,536 × 2 GiB`, or 128 TiB, which no SD standard defines: a superblock recording a size that
    cannot cover its own card would not mount, and initialization must not write one.
 3. Zero the gate block of catalog copy B; synchronize.
-4. Zero the 16 ride-journal slot header blocks; synchronize.
+4. Zero the 16 page-isolated ride-journal header records; synchronize.
 5. Write catalog copy A's body — header with commit sequence `1`, next `ObjectId` `1`, entry count
    `0` — then its gate; synchronize each.
 6. Write superblock copy A, then copy B, both carrying `E`; synchronize.
@@ -778,9 +862,11 @@ defines it, not here.
 | Catalog entry | 128 bytes |
 | Extent ranges per object | 8 |
 | Display name | 48 UTF-8 bytes |
-| Ride journal slots | 16 × 32 KiB |
-| Ride journal tail per slot | 32,256 bytes |
+| Ride journal tail slots | 16 × 16 KiB |
+| Ride journal headers | 16 × 512-byte records, each isolated in one 16 KiB page |
+| Ride journal tail per slot | 16,384 bytes |
 | Ride checkpoint cadence | 10 s |
+| Ride recorder append buffer | 404 bytes (16 × 20-byte samples + 84-byte footer) |
 | Ride reserve at start | 32 MiB (32 extents at the 1 MiB minimum) |
 | Rides recording at once | 1 |
 | Retained previous revisions per object | 1 |

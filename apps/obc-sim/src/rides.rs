@@ -1,35 +1,38 @@
-//! The simulator's ride store — a stand-in for the device's `/tracks` folder (issue #454).
+//! The simulator's file-backed stand-in for the flat Ride catalog.
 //!
-//! The **host** side of the Rides screen's catalog: stored rides live as `RD{id}.ORD` files in the
-//! tracks folder (written by [`TrackStore`](crate::track::TrackStore) at Finish, exactly as the
-//! device does), and the phone's "downloaded at least once" flags live in the same folder's
-//! `SYNCED.SET` sidecar. This scans both into a [`RideSummary`] catalog for
-//! [`App::set_rides`](obc_app::App::set_rides), and deletes a ride (file + sidecar flag) for the
-//! hold-to-delete footer. The firmware provides the identical surface over FatFs.
+//! The **host** side of the Rides screen's catalog: stored rides live as `ride-{id}.obcr` files in
+//! the tracks folder (written by [`TrackStore`](crate::track::TrackStore) at Finish). That namespace
+//! is explicitly a desktop fixture convention, not a device filename. The device records and lists
+//! flat objects. Synced stamps are process-local until #1398 supplies the shared flat ride-domain
+//! metadata boundary.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use obc_app::ride::{decode_synced_rides, encode_synced_rides, SyncedRides, SYNCED_RIDES_MAX_LEN};
-use obc_app::RideSummary;
+use obc_app::{CatalogObjectId, RideSummary};
 use obc_formats::io::SliceSource;
 use obc_route::{ride_elevation_profile, ride_preview_polyline, Profile, RideInfo};
 
-/// The synced-ride sidecar filename in the tracks folder — matches the device's `SYNCED_SET`.
-const SYNCED_SET: &str = "SYNCED.SET";
-
 /// The folder-backed ride store: the catalog of ride summaries (newest first) plus, parallel to it,
-/// each ride's durable object id and `RD{id}.ORD` path.
+/// each ride's full-width object id and desktop `ride-{id}.obcr` path.
 pub struct RideStore {
     dir: PathBuf,
     catalog: Vec<RideSummary>,
-    ids: Vec<u16>,
+    ids: Vec<CatalogObjectId>,
     paths: Vec<PathBuf>,
+    synced: HashMap<CatalogObjectId, u32>,
 }
 
 impl RideStore {
     /// Open and scan the tracks folder (a missing folder scans to an empty catalog).
     pub fn open(dir: impl Into<PathBuf>) -> Self {
-        let mut s = RideStore { dir: dir.into(), catalog: Vec::new(), ids: Vec::new(), paths: Vec::new() };
+        let mut s = RideStore {
+            dir: dir.into(),
+            catalog: Vec::new(),
+            ids: Vec::new(),
+            paths: Vec::new(),
+            synced: HashMap::new(),
+        };
         s.rescan();
         s
     }
@@ -40,26 +43,25 @@ impl RideStore {
     }
 
     /// Each catalog entry's durable object id, parallel to [`catalog`](RideStore::catalog).
-    pub fn ids(&self) -> &[u16] {
+    pub fn ids(&self) -> &[CatalogObjectId] {
         &self.ids
     }
 
-    /// Re-read the folder's `RD{id}.ORD` files into the catalog (newest first by `start_time`), each
-    /// stamped with its synced flag from the `SYNCED.SET` sidecar. A torn/missing sidecar reads as
-    /// "nothing synced" (the codec's contract).
+    /// Re-read the folder's `ride-{id}.obcr` files into the catalog (newest first by `start_time`),
+    /// each stamped with this simulator process's synced fact.
     pub fn rescan(&mut self) {
         self.catalog.clear();
         self.ids.clear();
         self.paths.clear();
-        let synced = self.load_synced();
-        let mut rows: Vec<(u16, PathBuf, RideSummary)> = Vec::new();
+        let mut rows: Vec<(CatalogObjectId, PathBuf, RideSummary)> = Vec::new();
         if let Ok(rd) = std::fs::read_dir(&self.dir) {
             for e in rd.flatten() {
                 let p = e.path();
-                let Some(id) = ride_id_in(&p) else { continue };
+                let Some(id) = fixture_object_id_in(&p) else { continue };
                 if let Ok(bytes) = std::fs::read(&p) {
                     if let Ok(info) = RideInfo::read(&SliceSource(&bytes)) {
-                        let sum = RideSummary::from_info(&info, synced.contains(id), synced.synced_at(id));
+                        let synced_at = self.synced.get(&id).copied().unwrap_or(0);
+                        let sum = RideSummary::from_info(&info, synced_at != 0, synced_at);
                         rows.push((id, p, sum));
                     }
                 }
@@ -73,19 +75,16 @@ impl RideStore {
         }
     }
 
-    /// Delete the ride with durable id `id` (the hold-to-delete, #454): remove its `RD{id}.ORD` and
-    /// retire its synced flag, then rescan. `true` = a file was deleted. The caller re-feeds
-    /// [`App::set_rides`](obc_app::App::set_rides) so the app remaps.
-    pub fn delete_by_id(&mut self, id: u16) -> bool {
+    /// Delete the ride with durable id `id` (the hold-to-delete, #454): remove its desktop fixture
+    /// object and retire its process-local synced flag, then rescan. `true` = a file was deleted.
+    /// The caller re-feeds [`App::set_rides`](obc_app::App::set_rides) so the app remaps.
+    pub fn delete_by_id(&mut self, id: CatalogObjectId) -> bool {
         let Some(pos) = self.ids.iter().position(|&x| x == id) else { return false };
         let path = self.paths[pos].clone();
         if std::fs::remove_file(&path).is_err() {
             return false;
         }
-        let mut set = self.load_synced();
-        if set.remove(id) {
-            self.save_synced(&set);
-        }
+        self.synced.remove(&id);
         self.rescan();
         true
     }
@@ -93,10 +92,10 @@ impl RideStore {
     /// Build the ride with durable id `id`'s recorded-track elevation [`Profile`] — the Ride
     /// detail's band fill (epic #678 T2 / #680), answering
     /// [`App::ride_track_request`](obc_app::App::ride_track_request). One read of the
-    /// stored `RD{id}.ORD` through the shared `ride_elevation_profile` (the firmware streams the
-    /// same bytes off SD in chunks). `None` = unknown id / unreadable file — the caller parks the
+    /// stored `ride-{id}.obcr` through the shared `ride_elevation_profile` (the firmware streams the
+    /// same object bytes in chunks). `None` = unknown id / unreadable file — the caller parks the
     /// failure via `set_ride_profile(None)`.
-    pub fn profile_by_id(&self, id: u16) -> Option<Profile> {
+    pub fn profile_by_id(&self, id: CatalogObjectId) -> Option<Profile> {
         let pos = self.ids.iter().position(|&x| x == id)?;
         let bytes = std::fs::read(&self.paths[pos]).ok()?;
         ride_elevation_profile(&SliceSource(&bytes)).ok()
@@ -105,10 +104,10 @@ impl RideStore {
     /// Build the ride with durable id `id`'s decimated recorded-track shape polyline (#678
     /// rework 3), answering the preview half of the same
     /// [`App::ride_track_request`](obc_app::App::ride_track_request) drain — one more
-    /// read of the stored `RD{id}.ORD` through the shared `ride_preview_polyline` (the firmware
-    /// streams the same bytes off SD in blocks). Empty = unknown id / unreadable file — the Ride
+    /// read of the stored `ride-{id}.obcr` through the shared `ride_preview_polyline` (the firmware
+    /// streams the same object bytes in blocks). Empty = unknown id / unreadable file — the Ride
     /// detail's track page just leaves its slot blank.
-    pub fn preview_by_id(&self, id: u16) -> Vec<(i32, i32)> {
+    pub fn preview_by_id(&self, id: CatalogObjectId) -> Vec<(i32, i32)> {
         let Some(pos) = self.ids.iter().position(|&x| x == id) else { return Vec::new() };
         let Ok(bytes) = std::fs::read(&self.paths[pos]) else { return Vec::new() };
         ride_preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>(&SliceSource(&bytes))
@@ -116,41 +115,20 @@ impl RideStore {
             .unwrap_or_default()
     }
 
-    /// Mark ride `id` as synced at `utc` (the phone `ackRides` stand-in, epic #638 S3): insert it
-    /// into the sidecar with a `synced_at` stamp so the auto-expiry sweep can later delete it. A
-    /// no-op if already synced (first-sync time is kept). Rescans so the summary reflects it.
-    pub fn mark_synced(&mut self, id: u16, utc: u32) {
-        let mut set = self.load_synced();
-        if set.insert(id, utc) {
-            self.save_synced(&set);
+    /// Mark ride `id` as synced for this simulator process. The first nonzero stamp wins.
+    pub fn mark_synced(&mut self, id: CatalogObjectId, utc: u32) {
+        if utc != 0 && !self.synced.contains_key(&id) {
+            self.synced.insert(id, utc);
             self.rescan();
         }
     }
 
-    /// Stamp a **legacy** synced-without-timestamp ride's `synced_at` (the sweep's countdown-start,
-    /// [`StampRideSynced`](obc_app::HostCommand::StampRideSynced)). Only ever fills a `0` stamp.
-    pub fn stamp_synced_at(&mut self, id: u16, utc: u32) {
-        let mut set = self.load_synced();
-        if set.stamp_synced_at(id, utc) {
-            self.save_synced(&set);
+    /// Start the process-local retention countdown if this ride has no stamp yet.
+    pub fn stamp_synced_at(&mut self, id: CatalogObjectId, utc: u32) {
+        if utc != 0 && !self.synced.contains_key(&id) {
+            self.synced.insert(id, utc);
             self.rescan();
         }
-    }
-
-    /// Read the synced-ride sidecar into a [`SyncedRides`] set (empty on a missing/torn file).
-    fn load_synced(&self) -> SyncedRides {
-        match std::fs::read(self.dir.join(SYNCED_SET)) {
-            Ok(bytes) => decode_synced_rides(&bytes),
-            Err(_) => SyncedRides::new(),
-        }
-    }
-
-    /// Persist the synced-ride sidecar (creating the folder if needed).
-    fn save_synced(&self, set: &SyncedRides) {
-        let mut buf = [0u8; SYNCED_RIDES_MAX_LEN];
-        let n = encode_synced_rides(set, &mut buf);
-        let _ = std::fs::create_dir_all(&self.dir);
-        let _ = std::fs::write(self.dir.join(SYNCED_SET), &buf[..n]);
     }
 }
 
@@ -160,34 +138,35 @@ impl obc_host_core::RideRepository for RideStore {
     fn catalog(&self) -> &[RideSummary] {
         self.catalog()
     }
-    fn ids(&self) -> &[u16] {
+    fn ids(&self) -> &[CatalogObjectId] {
         self.ids()
     }
-    fn delete_by_id(&mut self, id: u16) -> bool {
+    fn delete_by_id(&mut self, id: CatalogObjectId) -> bool {
         self.delete_by_id(id)
     }
-    fn profile_by_id(&self, id: u16) -> Option<Profile> {
+    fn profile_by_id(&self, id: CatalogObjectId) -> Option<Profile> {
         self.profile_by_id(id)
     }
-    fn preview_by_id(&self, id: u16) -> Vec<(i32, i32)> {
+    fn preview_by_id(&self, id: CatalogObjectId) -> Vec<(i32, i32)> {
         self.preview_by_id(id)
     }
-    /// A `Save` just wrote a fresh `RD{id}.ORD`; re-scan so it appears in the Rides menu live.
+    /// A `Save` just wrote a fresh desktop ride object; re-scan so it appears in the Rides menu live.
     fn refresh(&mut self) {
         self.rescan();
     }
-    fn stamp_synced_at(&mut self, id: u16, utc: u32) {
+    fn stamp_synced_at(&mut self, id: CatalogObjectId, utc: u32) {
         self.stamp_synced_at(id, utc)
     }
 }
 
-/// The durable object id in an `RD{id}.ORD` path, or `None` for any other file.
-fn ride_id_in(p: &Path) -> Option<u16> {
+/// The full-width object id in a desktop `ride-{id}.obcr` fixture path, or `None` for every other
+/// file. There is deliberately no compatibility parser for historical device filenames.
+fn fixture_object_id_in(p: &Path) -> Option<CatalogObjectId> {
     p.file_name()
         .and_then(|n| n.to_str())
-        .and_then(|n| n.strip_prefix("RD"))
-        .and_then(|n| n.strip_suffix(".ORD"))
-        .and_then(|n| n.parse::<u16>().ok())
+        .and_then(|n| n.strip_prefix("ride-"))
+        .and_then(|n| n.strip_suffix(".obcr"))
+        .and_then(|n| n.parse::<CatalogObjectId>().ok())
 }
 
 #[cfg(test)]
@@ -198,9 +177,9 @@ mod tests {
     use obc_ports::TrackPoint;
     use obc_route::RideStats;
 
-    /// Record and save one short ride into `dir` (session `id`), producing a real `RD{id}.ORD` with
-    /// elevation + geometry — the folder ride store's conformance fixture, built through the same
-    /// public `TrackStore` path the app drives.
+    /// Record and save one short ride into `dir` (session `id`), producing a real v3 desktop object
+    /// with elevation + geometry — the folder ride store's conformance fixture, built through the
+    /// same public `TrackStore` path the app drives.
     fn record_ride(dir: &Path, session: u32, name: &str) {
         let mut ts = TrackStore::open(dir);
         ts.reconcile(None, Some(session), Some(name), None);
@@ -226,6 +205,7 @@ mod tests {
             climb_m: 50,
             unix_at_anchor: 1_700_000_000,
             anchor_ms: 0,
+            clock_trusted: true,
             avg_hr: None,
             max_hr: None,
             avg_cadence: None,
@@ -248,5 +228,14 @@ mod tests {
         assert_eq!(store.catalog().len(), 2, "two saved rides scanned");
         obc_host_core::conformance::ride_repository_suite(&mut store, true);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn desktop_fixture_names_are_full_width_and_do_not_accept_the_fat_spelling() {
+        assert_eq!(fixture_object_id_in(Path::new("ride-18446744073709551615.obcr")), Some(u64::MAX));
+        assert_eq!(fixture_object_id_in(Path::new("ride-42.obcr")), Some(42));
+        for unrelated in ["ride-42.bin", "other-42.obcr", "ride-x.obcr"] {
+            assert_eq!(fixture_object_id_in(Path::new(unrelated)), None, "unrelated fixture {unrelated} is ignored");
+        }
     }
 }

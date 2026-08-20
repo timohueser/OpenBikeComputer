@@ -181,8 +181,7 @@ obc-display = { path = "../obc-display" }
 # The pure sensor chip/protocol decoders (#807): UBX / BMP581 / ICM-20948 / compass. The board owns
 # the concrete `Twim` transactions in `sensors.rs`; these decode the bytes. No embassy, host-tested.
 obc-sensors = { path = "../obc-sensors" }
-# The board-agnostic SD storage adapters (#807): `SdByteSource`/`SdByteSink`/`SdTrackSink` + the
-# FAT-extent map fast path — only the concrete SPIM bus type is board-specific here.
+# The board-agnostic flat store and retained FAT byte adapters (#807).
 obc-storage = { path = "../obc-storage" }
 # The DOS2 wire/effect contract the OBC2 kernel transaction is defined against: `Command`,
 # `ClaimIntent`, `ObjectKind` and the identity types. Transport-free and storage-free by
@@ -200,19 +199,18 @@ obc-render = { path = "../obc-render" }
 # colour + target types unify across the path.
 embedded-graphics = "0.8"
 
-# microSD map storage (issue #123). The card stores the map/routes/tracks; the board-agnostic FatFs
-# byte adapters live in obc-storage (`SdByteSource`/`SdByteSink`/`SdTrackSink`) and the format
-# parsers in obc-reader/obc-route — only the concrete SPIM bus type is board-specific here.
+# microSD storage (issue #123). The board-agnostic raw-card mechanics and retained updater byte
+# adapters live in obc-storage; format parsers live in obc-reader/obc-route.
 # `nrf-mem` (issue #124) is the constrained memory profile and forwards to obc-render/reader/route,
 # so this single edge trims every shared crate's resident buffers for the 256 KB part; Cargo's
 # feature unification then applies it to the obc-render/obc-reader/obc-route edges below (and
 # obc-platform's transitive ones) too. The board crate is the nRF, so it's always on.
-obc-app = { path = "../obc-app" } # App/init_map + render_map (#125); MAX_ROUTES / TrackAction / TrackSink for the SD `Storage`; the budget assert's App/cache sizes
+obc-app = { path = "../obc-app" } # App/init_map + render_map (#125) and the budget assert's App/cache sizes
 obc-ports = { path = "../obc-ports" } # Semantic sensor/input/track/settings contracts implemented by board composition.
-obc-formats = { path = "../obc-formats" } # OBCR `NAME_CAP` (route/ride name cap) for the SD store's resident name buffers.
+obc-formats = { path = "../obc-formats" } # Shared object codecs used by board composition.
 obc-map-scene = { path = "../obc-map-scene" } # Shared map bounds used by the streamed map catalog.
 obc-reader = { path = "../obc-reader" } # the streamed `Reader` + `.bss` `MapCache` the N4 map path renders from (#125)
-obc-route = { path = "../obc-route" } # RouteSummary / RouteIndex / track_to_gpx for the `/routes` catalog + GPX (SD `Storage`)
+obc-route = { path = "../obc-route" } # Route and finished-ride readers used by board composition.
 # The OBCT terrain reader + its `.bss` tile cache (EL7, epic #1068): the board mounts the map's
 # `.OBD` sidecar into the `ElevationSource` the router fills a planned route's elevation from.
 obc-elevation = { path = "../obc-elevation" }

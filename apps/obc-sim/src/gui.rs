@@ -181,11 +181,11 @@ struct SimGui {
     /// The `.obt` trips beside the routes (epic #526, TR2): the grouped-route folders. Rescanned +
     /// re-fed alongside the route catalog so a rescan re-resolves the trips' stage ids.
     trip_store: TripStore,
-    /// The tracks folder as the **ride catalog** (device-SD `/tracks` stand-in): the `RD{id}.ORD`
-    /// summaries + synced flags the Rides screen lists (#454). Rescanned when a ride is saved/deleted.
+    /// The tracks folder as the simulator's **ride catalog**: v3 fixture files and process-local
+    /// synced flags for the Rides screen (#454). Rescanned when a ride is saved/deleted.
     ride_store: RideStore,
-    /// The tracks folder (device-SD `/tracks` stand-in): the `.obct` ride log + saved `RD{id}.ORD` /
-    /// `.gpx`. Reconciled to the app's tracking session each frame.
+    /// The simulator's temporary sample log plus saved v3/GPX conveniences, reconciled to the app's
+    /// tracking session each frame. The shipping device records directly into the flat journal.
     tracks: TrackStore,
     /// The persisted-settings store (device-RRAM stand-in): seeds the app at boot, written on
     /// each settings change so they survive a relaunch.
@@ -482,8 +482,8 @@ impl SimGui {
         // Host reconciliation through the shared dispatcher (`obc-host-core`): drain the typed
         // command protocol in canonical order and apply it against the sim's folder-backed stores —
         // the route/ride/trip deletes + catalog re-feeds, the resumable planner's lifecycle (one
-        // bounded step per frame), the ride-track fill, and the ride log's session reconcile
-        // (finalising a `Save` writes `RD{id}.ORD` and re-feeds the Rides menu). The handful of
+        // bounded step per frame), the ride-track fill, and the ride recorder's session reconcile
+        // (finalising a `Save` writes a desktop `ride-{id}.obcr` and re-feeds the Rides menu). The handful of
         // genuinely host-specific commands go to the closure: the card-free scan (a fixed ~1.2 GB
         // stand-in — the sim has no FAT to scan), the Bluetooth Forget (the "bond" is the injected
         // panel flag), settings persistence (the RRAM stand-in file), and DFU (no real flash in the

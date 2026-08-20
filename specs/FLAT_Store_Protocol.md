@@ -114,8 +114,8 @@ pub trait Store {
     fn next_object_id(&self) -> ObjectId;
 
     /// The ride exception, and the only way bytes become durable without a commit. Performs both
-    /// halves of `FLAT_Store_Format.md` §7.2: flush whole 16 KiB payload pages from the tail into
-    /// the recording entry's own extents, then write one journal slot.
+    /// halves of `FLAT_Store_Format.md` §7.2: reconstruct the store-owned 16 KiB tail snapshot from
+    /// its previous slot plus the bounded append, and gate any whole payload-page rollover.
     fn journal(&self, checkpoint: RideCheckpoint) -> Result<(), StoreError>;
 }
 
@@ -134,16 +134,24 @@ pub enum PutSource {
     Amend,
 }
 
+pub const RIDE_RESUME_LEN: usize = 96;
+
 pub struct RideCheckpoint<'a> {
     /// The entry carrying RECORDING; the store rejects a checkpoint naming anything else.
     pub id: ObjectId,
     pub revision: Revision,
-    /// Payload bytes past the last flushed page, oldest first. The store flushes whole pages
-    /// out of the front of this and journals whatever remains.
-    pub tail: &'a [u8],
-    /// CRC-32 of the whole ride payload through `flushed length + tail.len()`, carried by the
-    /// caller across checkpoints and recovered from the journal after a cut.
+    /// Bytes appended after the last `journal` call that returned `Ok`, oldest first. Success
+    /// consumes the complete slice; after `Err` the caller blocks new samples and retries these
+    /// exact bytes before recomputing resume state or adding terminal/footer bytes. A discard may
+    /// instead remove the RECORDING entry. Storage reconstructs the full durable tail snapshot
+    /// media-to-media.
+    pub append: &'a [u8],
+    /// CRC-32 of the whole ride payload after `append`, carried by the caller across checkpoints
+    /// and recovered from the journal after a cut.
     pub payload_crc: u32,
+    /// Versioned recorder-owned continuation state for precisely this logical checkpoint. Storage
+    /// CRC-protects these bytes but never interprets them.
+    pub resume: &'a [u8; RIDE_RESUME_LEN],
 }
 
 /// Why a mounted store refuses writes, or refuses everything (`FLAT_Store_Format.md` §5.6). The
@@ -234,10 +242,13 @@ destructive and explicit.
   owes one of them.
 - `read` is arithmetic on the entry's ranges: cost is one media read, with no chain walk and no
   indirection block. A reader that needs many small reads pays for the media, not for the format.
-- A `journal` that returns `Ok` has flushed exactly `tail.len() / 16_384` whole pages, and the caller
-  may drop that prefix from its own tail. A `journal` that returns `Err` has flushed **none** of it: the
-  caller keeps the whole tail and retries with the same bytes, or with a tail that extends them. The
-  flushed length moves only when the store says it did.
+- A `journal` that returns `Ok` has consumed exactly `append` once, including when it completed a
+  payload-page repair left by an earlier failed call; the caller clears its bounded append buffer. A
+  `journal` that returns `Err` may have durably gated that logical checkpoint, but never reports it as
+  consumed: the caller keeps the exact append and resume image, accepts no new samples, and retries.
+  It also defers terminal/footer mutation until that retry succeeds. The retry repairs rather than
+  rewriting authoritative gates and cannot apply the append twice; a discard may atomically remove
+  the recording without repairing payload bytes that will then be unreachable.
 - A `write` that returns `Err` has advanced the allocation by nothing: the caller may retry the same
   bytes — a fragmented allocation is several media writes, and the ones that landed are the bytes the
   retry writes there again — or abandon the transfer, and a `cancel` of an allocation a `write` failed on
