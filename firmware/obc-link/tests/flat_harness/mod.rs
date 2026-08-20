@@ -11,7 +11,7 @@
 use obc_link::flat::store::Policy;
 use obc_link::flat::wire::{flags, HEADER_LEN, STREAM_HEADER_LEN};
 use obc_link::flat::{
-    CancelCause, Ceilings, Channel, Engine, Link, ObjectKind, OpenPolicy, Reaction, RequestId, UploadStage,
+    CancelCause, Ceilings, Channel, Engine, Link, ObjectKind, OpenPolicy, Reaction, RequestId, StreamBuffers,
 };
 use obc_storage::flat::sim::{FaultOnce, SparseDisk};
 use obc_storage::flat::{
@@ -166,9 +166,9 @@ impl<D: BlockDevice> Device<D> {
             link,
             &self.store,
             &mut OpenPolicy,
-            record,
-            &mut self.out,
-            UploadStage::new(bank, &mut stage[bank * half..(bank + 1) * half]),
+            StreamBuffers::new(record, &mut self.out),
+            bank,
+            &mut stage[bank * half..(bank + 1) * half],
         );
         self.drive_on(link, first, usize::MAX)
     }
