@@ -364,6 +364,33 @@ fn a_payload_that_fails_its_crc_commits_nothing() {
 }
 
 #[test]
+fn a_usb_map_relies_on_the_cables_integrity_instead_of_rehashing_the_payload() {
+    let disk = formatted_card(111);
+    let usb = Ceilings::for_usb(4_112).expect("§5.2's USB ceiling");
+    let mut device = boot_on(&disk, usb);
+    device.link_up(Link::Usb, usb);
+    let bytes = body();
+    let announced = client::put(1, 0, 0, &bytes, MAP, false, "cable map");
+
+    device.control_on(Link::Usb, &announced);
+    let mut changed = bytes.clone();
+    changed[7] ^= 0xFF;
+    let mut answer = None;
+    for record in client::stream_all(1, &changed, 1_008) {
+        let wire = device.stream_on(Link::Usb, &record);
+        if !wire.control.is_empty() {
+            answer = Some(Answer::of(wire.answer()));
+        }
+    }
+
+    let answer = answer.expect("the final record commits the map");
+    assert!(!answer.is_error(), "USB packet CRC/retry is the cable map's integrity boundary: {answer:?}");
+    let entries = device.entries();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].payload_crc, crc32(&bytes), "the host checksum remains catalog metadata");
+}
+
+#[test]
 fn a_gap_or_an_overlap_in_the_stream_terminates_the_transfer() {
     for (name, offset) in [("a gap", 2_016u64), ("an overlap", 0)] {
         let disk = formatted_card(12);

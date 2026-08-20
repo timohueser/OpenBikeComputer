@@ -134,7 +134,7 @@ class NativePipe implements BytePipe {
      * the v1 envelope a frame was one transfer, so a frame at exactly the packet size was
      * indistinguishable from one that had not ended and the host refused to send it. §5.2 replaces
      * that with a length prefix: records span packets by design, and the only thing that says where
-     * a record ends is its own first two bytes. The old check would refuse the ordinary 4,112-byte
+     * a record ends is its own four-byte prefix. The old check would refuse the ordinary 8,208-byte
      * stream record this protocol is built around.
      */
     async write(bytes: Uint8Array, signal?: AbortSignal): Promise<void> {

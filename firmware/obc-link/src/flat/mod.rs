@@ -2,8 +2,8 @@
 //!
 //! [`FLAT_Store_Protocol.md`] is the normative contract — §2 is the store seam, §3 is what crosses
 //! the link, §4 is the firmware update, §5 binds §3 to BLE and USB — and
-//! [`FLAT_Store_Format.md`] is what the card holds. Nothing in this module is negotiated: the major
-//! is a transport fact, every message is a fixed layout, and there is no Hello, no capability page
+//! [`FLAT_Store_Format.md`] is what the card holds. Nothing in this module is negotiated: the §3
+//! application major and each binding version are fixed facts, every message is a fixed layout, and there is no Hello, no capability page
 //! and no minor.
 //!
 //! [`FLAT_Store_Protocol.md`]: ../../../../specs/FLAT_Store_Protocol.md
@@ -34,9 +34,12 @@ pub mod vectors;
 
 pub use engine::{
     Admission, CancelCause, Ceilings, Channel, Engine, Link, Reaction, StreamBuffers, UploadEnd, UploadProgress,
-    DEFAULT_STAGE,
+    UsbMapBatch, DEFAULT_STAGE,
 };
 pub use ids::{DisplayName, EntryFlags, EntryMeta, ObjectId, ObjectKind, Revision, StoreId};
-pub use records::{buffer_len as record_buffer_len, Reassembler, RecordFault, PREFIX_LEN as RECORD_PREFIX_LEN};
+pub use records::{
+    buffer_len as record_buffer_len, padded_len as padded_record_len, Reassembler, RecordFault,
+    PREFIX_LEN as RECORD_PREFIX_LEN, USB_BINDING_MAJOR,
+};
 pub use store::{Mode, Mutation, OpenPolicy, Policy, PutSource, Store, StoreError};
 pub use wire::{ErrorCode, Opcode, Refusal, RequestId, WIRE_MAJOR};
