@@ -181,8 +181,6 @@
     let keepCells = $state(loadKeepCells());
     let clearingCells = $state(false);
     let cellStorageNotice = $state<string | null>(null);
-    /** A revision this run must remove after every reader has closed. */
-    let transientCellRevision: string | null = null;
     let outputPath = $state<string | null>(null);
     let runWarnings = $state<string[]>([]);
     let errorMessage = $state<string | null>(null);
@@ -208,10 +206,14 @@
         settled: boolean;
         failing: boolean;
         runId: number | null;
+        transientCellRevision: string | null;
+        readonly operations: Set<Promise<unknown>>;
     }
     interface DownloadOutput {
         readonly kind: "download";
         runId: number | null;
+        transientCellRevision: string | null;
+        readonly operations: Set<Promise<unknown>>;
     }
     type Output = DownloadOutput | DeviceOutput;
     let output = $state.raw<Output | null>(null);
@@ -416,9 +418,9 @@
         if (current) await (discard ? current.discard() : current.finish());
     }
 
-    async function cleanupTransientCells() {
-        const revision = transientCellRevision;
-        transientCellRevision = null;
+    async function cleanupTransientCells(owner: Output | null = output) {
+        const revision = owner?.transientCellRevision ?? null;
+        if (owner) owner.transientCellRevision = null;
         if (!revision) return;
         try {
             await discardCellStore(revision);
@@ -477,16 +479,23 @@
             if (output.failing || output.settled) return;
             output.failing = true;
         }
+        const owner = output;
         activeRunId = 0;
         const controller = abortCtl;
         abortCtl = null;
         controller?.abort();
         worker?.terminate();
         worker = null;
+        // Close the logical sink before the first await. A PUT can finish on the same microtask
+        // turn as cancellation; its `done` handler must already know that failure teardown won.
+        sinkClosed = true;
+        // `clearCellStores`, OPFS probes/opens and cell writes cannot be interrupted. Keep the
+        // surface in its running state until every operation owned by this run has physically
+        // returned; only then may cleanup run and the next map action become available.
+        await waitForRunOperations(owner);
         // A delivery that has not begun is now a no-op, but one may already be in
         // flight — let it land before the output is discarded, or the discard races
         // the write into the folder it removes. It is bounded by one file's write.
-        sinkClosed = true;
         const deliveryCause = await delivery.then(
             () => null,
             (error: unknown) => error,
@@ -496,7 +505,7 @@
         if ((deliveryCause as { code?: unknown } | null)?.code === "link") cause = deliveryCause;
         const cancelled = cause instanceof DOMException && cause.name === "AbortError";
         await closeDownloadOutput(true).catch(() => (outputCleanupFailed = true));
-        await cleanupTransientCells();
+        await cleanupTransientCells(owner);
         if (direct) await cleanupDirectOutput();
         errorMessage = cause instanceof Error ? cause.message : String(cause);
         phase = cancelled ? "cancelled" : "error";
@@ -512,6 +521,47 @@
             controller.signal.aborted
         ) {
             throw controller.signal.reason ?? new DOMException("the map run is no longer active", "AbortError");
+        }
+    }
+
+    async function runOperation<T>(
+        runId: number,
+        out: Output,
+        controller: AbortController,
+        operation: () => Promise<T>,
+        onStale?: (value: T) => Promise<void>,
+    ): Promise<T> {
+        assertRunActive(runId, out, controller);
+        let tracked!: Promise<T>;
+        tracked = (async () => {
+            try {
+                const value = await operation();
+                try {
+                    assertRunActive(runId, out, controller);
+                } catch (cause) {
+                    // Some operations create an artifact before cancellation can be observed.
+                    // Their caller owns the value/revision needed to remove it, and that cleanup
+                    // remains inside this tracked promise so failRun's barrier includes it.
+                    await onStale?.(value);
+                    throw cause;
+                }
+                return value;
+            } finally {
+                out.operations.delete(tracked);
+            }
+        })();
+        out.operations.add(tracked);
+        return tracked;
+    }
+
+    async function waitForRunOperations(owner: Output) {
+        // Operations can start nested work (download callbacks start OPFS writes), so drain until
+        // the owned set remains empty after a microtask turn rather than trusting one snapshot.
+        for (;;) {
+            const pending = [...owner.operations];
+            if (pending.length > 0) await Promise.allSettled(pending);
+            await Promise.resolve();
+            if (owner.operations.size === 0) return;
         }
     }
 
@@ -531,15 +581,14 @@
     async function skipCached(
         plan: CellDownloadPlan,
         cells: CellStore,
-        assertActive: () => void,
+        runOp: <T>(operation: () => Promise<T>) => Promise<T>,
     ): Promise<CellDownloadPlan> {
         const wanted: typeof plan.items = [];
         let bytes = 0;
         let have = 0;
         let haveBytes = 0;
         for (const item of plan.items) {
-            const present = item.band !== null && (await cells.has(item.cell.sha256, item.cell.bytes));
-            assertActive();
+            const present = item.band !== null && (await runOp(() => cells.has(item.cell.sha256, item.cell.bytes)));
             if (present) {
                 have += 1;
                 haveBytes += item.cell.bytes;
@@ -624,6 +673,8 @@
         const runAbort = new AbortController();
         abortCtl = runAbort;
         const assertActive = () => assertRunActive(runId, out, runAbort);
+        const runOp = <T>(operation: () => Promise<T>, onStale?: (value: T) => Promise<void>) =>
+            runOperation(runId, out, runAbort, operation, onStale);
 
         // Cells go to disk when this browser will take them, which keeps a country's
         // worth out of the tab's heap. With the opt-in above, the same store also lets
@@ -637,33 +688,35 @@
         // Unchecked means no reuse in either direction. OPFS still carries this run when available,
         // because that working disk is what makes country-sized assembly possible.
         if (!keepCells) {
-            await clearCellStores();
-            assertActive();
+            await runOp(clearCellStores);
         }
-        const writable = await cellStoreWritable();
-        assertActive();
-        let cellStore = writable ? await openCellStore(revision) : null;
-        try {
-            assertActive();
-        } catch (cause) {
-            // `openCellStore` cannot take a signal and may have created the revision after the
-            // cancelling run's teardown already swept it. The stale continuation owns that one
-            // possible artifact, so it removes it without touching any newer run's state.
-            if (cellStore && !keepCells) await discardCellStore(revision).catch(() => {});
-            throw cause;
-        }
-        transientCellRevision = cellStore && !keepCells ? revision : null;
+        const writable = await runOp(cellStoreWritable);
+        out.transientCellRevision = writable && !keepCells ? revision : null;
+        let cellStore = writable
+            ? await runOp(
+                  () => openCellStore(revision),
+                  async () => {
+                      if (!out.transientCellRevision) return;
+                      try {
+                          await discardCellStore(out.transientCellRevision);
+                          out.transientCellRevision = null;
+                      } catch {
+                          // failRun owns the same revision and retries after this barrier drains.
+                      }
+                  },
+              )
+            : null;
+        if (!cellStore) out.transientCellRevision = null;
         let fetchPlan = plan;
         if (cellStore) {
-            fetchPlan = await skipCached(plan, cellStore, assertActive);
+            fetchPlan = await skipCached(plan, cellStore, runOp);
             // Asked once, before a byte is fetched, and asked about the WHOLE
             // run — cells, the map the sink writes, the merge's spill — because
             // after phase D all three live in OPFS: a store with room for the
             // cells but not the output would fail at the first write, after the
             // download. Falling back now costs disk-backed input and any selected
             // reuse, but avoids a quota failure after the download.
-            const hasRoom = await hasRoomFor(runDiskNeed(l));
-            assertActive();
+            const hasRoom = await runOp(() => hasRoomFor(runDiskNeed(l)));
             if (!hasRoom) {
                 cellStore = null;
                 fetchPlan = plan;
@@ -673,43 +726,45 @@
         }
 
         try {
-            await downloadCells(fetchPlan, {
-                fetchImpl: store.client.fetchImpl,
-                onCell: async (item, bytes) => {
-                    // `band === null` is what a terrain cell is (`OBCC_Spec.md`
-                    // §13: a second artifact class, not a band), and it is the
-                    // only thing that decides which door it goes in.
-                    if (item.band === null) {
-                        terrainCells.push({ id: item.cell.id, sha256: item.cell.sha256, bytes });
-                    } else if (cellStore) {
-                        // Verified once, on the way in: the file's name is the
-                        // digest `fetchVerified` just checked. Awaited, so a slow
-                        // disk applies backpressure instead of letting the
-                        // download queue gigabytes behind it.
-                        await cellStore.put(item.cell.sha256, bytes).catch((cause: unknown) => {
-                            throw new Error(
-                                `The map could not be saved to this browser's storage (${
-                                    cause instanceof Error ? cause.message : String(cause)
-                                }). Free some disk space and try again.`,
+            await runOp(() =>
+                downloadCells(fetchPlan, {
+                    fetchImpl: store.client.fetchImpl,
+                    onCell: async (item, bytes) => {
+                        // `band === null` is what a terrain cell is (`OBCC_Spec.md`
+                        // §13: a second artifact class, not a band), and it is the
+                        // only thing that decides which door it goes in.
+                        if (item.band === null) {
+                            terrainCells.push({ id: item.cell.id, sha256: item.cell.sha256, bytes });
+                        } else if (cellStore) {
+                            // Verified once, on the way in: the file's name is the
+                            // digest `fetchVerified` just checked. Awaited, so a slow
+                            // disk applies backpressure instead of letting the
+                            // download queue gigabytes behind it.
+                            await runOp(() =>
+                                cellStore.put(item.cell.sha256, bytes).catch((cause: unknown) => {
+                                    throw new Error(
+                                        `The map could not be saved to this browser's storage (${
+                                            cause instanceof Error ? cause.message : String(cause)
+                                        }). Free some disk space and try again.`,
+                                    );
+                                }),
                             );
-                        });
-                        assertActive();
-                    } else {
-                        cells.push({
-                            id: item.cell.id,
-                            band: item.band,
-                            partial: "partial" in item.cell && item.cell.partial,
-                            bytes,
-                        });
-                    }
-                },
-                onProgress: (p) => {
-                    dlProgress = p;
-                    if (out.kind === "device") out.ctx.progress(p.receivedBytes, p.totalBytes);
-                },
-                signal: runAbort.signal,
-            });
-            assertActive();
+                        } else {
+                            cells.push({
+                                id: item.cell.id,
+                                band: item.band,
+                                partial: "partial" in item.cell && item.cell.partial,
+                                bytes,
+                            });
+                        }
+                    },
+                    onProgress: (p) => {
+                        dlProgress = p;
+                        if (out.kind === "device") out.ctx.progress(p.receivedBytes, p.totalBytes);
+                    },
+                    signal: runAbort.signal,
+                }),
+            );
             // In the plan's order, not the network's — cached and fetched cells
             // are one list, and which of the two a cell came from must not be
             // able to reach the bytes.
@@ -774,7 +829,12 @@
     }
 
     function run() {
-        const out: DownloadOutput = { kind: "download", runId: null };
+        const out: DownloadOutput = {
+            kind: "download",
+            runId: null,
+            transientCellRevision: null,
+            operations: new Set(),
+        };
         void begin(out).catch((cause) => failRun(cause, out.runId ?? 0));
     }
 
@@ -799,6 +859,8 @@
                 settled: false,
                 failing: false,
                 runId: null,
+                transientCellRevision: null,
+                operations: new Set(),
             };
             ctx.signal.addEventListener("abort", onAbort, { once: true });
             if (ctx.signal.aborted) {
