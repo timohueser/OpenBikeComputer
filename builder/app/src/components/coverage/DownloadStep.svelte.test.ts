@@ -25,6 +25,7 @@ const seams = vi.hoisted(() => ({
     saveBlob: vi.fn(),
     workerOutput: "stored" as "stored" | "file",
     workerAssemble: 0,
+    workerTerminate: 0,
     plan: { items: [], totalBytes: 0, knownEmpty: [] } as {
         items: Array<{ band: string | null; cell: { id: string; sha256: string; bytes: number; partial?: boolean } }>;
         totalBytes: number;
@@ -114,7 +115,9 @@ class AssembleWorker {
         }
     }
 
-    terminate() {}
+    terminate() {
+        seams.workerTerminate += 1;
+    }
 }
 
 describe("direct assembler delivery", () => {
@@ -146,6 +149,7 @@ describe("direct assembler delivery", () => {
         seams.saveBlob.mockClear();
         seams.workerOutput = "stored";
         seams.workerAssemble = 0;
+        seams.workerTerminate = 0;
         seams.plan = { items: [], totalBytes: 0, knownEmpty: [] };
     });
 
@@ -262,6 +266,16 @@ describe("direct assembler delivery", () => {
         expect(seams.sendMapBlob).not.toHaveBeenCalled();
         expect(seams.discardMapOutput).toHaveBeenCalledOnce();
         await unmount(component);
+    });
+
+    it("terminates the idle estimate worker when the step unmounts", async () => {
+        const { component } = await mountReadyStep();
+
+        expect(seams.workerAssemble).toBe(0);
+        expect(seams.workerTerminate).toBe(0);
+        await unmount(component);
+
+        expect(seams.workerTerminate).toBe(1);
     });
 
     it("preserves a physical link failure when teardown cancels direct delivery", async () => {
@@ -402,6 +416,35 @@ describe("direct assembler delivery", () => {
         expect(built.target.textContent).not.toContain("Cancelled");
         expect(built.target.textContent).not.toContain("Nothing was saved");
         await unmount(built.component);
+    });
+
+    it("finishes committed cleanup before terminating the worker after its step unmounts", async () => {
+        let releaseCleanup!: () => void;
+        seams.discardMapOutput.mockImplementationOnce(
+            () => new Promise<undefined>((resolve) => (releaseCleanup = () => resolve(undefined))),
+        );
+        seams.sendMapBlob.mockResolvedValue({ objectId: 1n });
+        const built = await mountReadyStep();
+        const job = new DeviceJob("map");
+        const running = job.run(
+            (ctx) => built.component.sendToDevice({} as FlatStoreClient, ctx),
+            () => "sent",
+        );
+        for (let attempt = 0; attempt < 20 && !built.target.textContent?.includes("finishing up"); attempt++) {
+            await Promise.resolve();
+            await tick();
+        }
+        expect(job.phase).toBe("finalizing");
+
+        await unmount(built.component);
+        expect(job.running).toBe(true);
+        expect(seams.workerTerminate).toBe(0);
+        releaseCleanup();
+        await running;
+
+        expect(job.phase).toBe("done");
+        expect(seams.discardMapOutput).toHaveBeenCalledOnce();
+        expect(seams.workerTerminate).toBe(1);
     });
 
     it("keeps run 2 blocked until a cancelled destructive clear has returned", async () => {

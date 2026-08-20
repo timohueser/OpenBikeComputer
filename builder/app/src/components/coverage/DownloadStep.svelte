@@ -140,6 +140,13 @@
             if (output?.kind === "device" && !output.settled) output.ctx.cancel(cause);
             else void failRun(cause);
         }
+        // With no run owner, the worker only serves the background estimate and can be dropped
+        // immediately. A finalizing owner still needs it to finish its `done` continuation, so
+        // that path terminates below only after cleanup and settlement.
+        if (!output) {
+            worker?.terminate();
+            worker = null;
+        }
         onSendReadyChange?.(false);
     });
 
@@ -336,6 +343,10 @@
                 abortCtl = null;
                 activeRunId = 0;
                 phase = "done";
+                if (destroyed) {
+                    worker?.terminate();
+                    worker = null;
+                }
                 break;
             case "error":
                 // Two conversations share this worker, and their failures are
@@ -676,6 +687,7 @@
                 throw cause;
             }
         }
+        if (destroyed) throw new DOMException("the map builder was closed", "AbortError");
         const runId = ++nextRunId;
         out.runId = runId;
         activeRunId = runId;
@@ -983,6 +995,7 @@
             // a stale answer is overwritten, never kept.
             void (async () => {
                 const onDisk = (await cellStoreWritable()) && (await hasRoomFor(diskNeed));
+                if (destroyed) return;
                 ensureWorker().postMessage({
                     type: "estimate",
                     networkBandBytes,
