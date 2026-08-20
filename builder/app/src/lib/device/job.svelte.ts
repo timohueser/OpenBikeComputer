@@ -140,6 +140,9 @@ export class DeviceJob {
 
     /** Cancel the running task. Safe to call when nothing is running. */
     cancel(): void {
+        // `finalizing` starts only after the device's commit is durable. There is no transfer left
+        // to cancel, and aborting now would let surface teardown mislabel success as cancellation.
+        if (this.phase === "finalizing") return;
         this.controller?.abort(new DOMException("cancelled by the rider", "AbortError"));
     }
 

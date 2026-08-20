@@ -207,10 +207,17 @@
         result: PutResponse | null;
         settled: boolean;
         failing: boolean;
+        runId: number | null;
     }
-    type Output = { readonly kind: "download" } | DeviceOutput;
+    interface DownloadOutput {
+        readonly kind: "download";
+        runId: number | null;
+    }
+    type Output = DownloadOutput | DeviceOutput;
     let output = $state.raw<Output | null>(null);
     let lastRunKind = $state<Output["kind"]>("download");
+    let nextRunId = 0;
+    let activeRunId = 0;
 
     const ASM_PHASE_LABEL: Record<AssemblePhase, string> = {
         open: "reading cells",
@@ -272,6 +279,15 @@
                 runWarnings = msg.warnings;
                 try {
                     await delivery;
+                    // A direct PUT is durable now. Detach its abort listener synchronously, before
+                    // even a no-op output-session await: TransferBar/unmount cancellation after
+                    // commit must not race `failRun` against host-side cleanup and turn success
+                    // into "cancelled".
+                    if (!sinkClosed && output?.kind === "device") {
+                        output.removeAbort();
+                        output.ctx.phase("finalizing");
+                        phase = "finalizing";
+                    }
                     await closeDownloadOutput(false);
                 } catch (cause) {
                     await failRun(cause);
@@ -299,6 +315,8 @@
                     settleDevice(output.result);
                 }
                 output = null;
+                abortCtl = null;
+                activeRunId = 0;
                 phase = "done";
                 break;
             case "error":
@@ -450,13 +468,19 @@
         }
     }
 
-    async function failRun(cause: unknown) {
+    async function failRun(cause: unknown, runId = activeRunId) {
+        // A cancelled preflight may resume after an unabortable OPFS call. Its
+        // continuation no longer owns any shared run state and must be a no-op.
+        if (runId === 0 || activeRunId !== runId || output?.runId !== runId) return;
         const direct = output?.kind === "device";
         if (output?.kind === "device") {
             if (output.failing || output.settled) return;
             output.failing = true;
         }
-        abortCtl?.abort();
+        activeRunId = 0;
+        const controller = abortCtl;
+        abortCtl = null;
+        controller?.abort();
         worker?.terminate();
         worker = null;
         // A delivery that has not begun is now a no-op, but one may already be in
@@ -480,6 +504,17 @@
         output = null;
     }
 
+    function assertRunActive(runId: number, out: Output, controller: AbortController) {
+        if (
+            activeRunId !== runId ||
+            output !== out ||
+            abortCtl !== controller ||
+            controller.signal.aborted
+        ) {
+            throw controller.signal.reason ?? new DOMException("the map run is no longer active", "AbortError");
+        }
+    }
+
     /**
      * The same plan minus every cell already in the store, and the tally of what
      * that saved.
@@ -496,13 +531,16 @@
     async function skipCached(
         plan: CellDownloadPlan,
         cells: CellStore,
+        assertActive: () => void,
     ): Promise<CellDownloadPlan> {
         const wanted: typeof plan.items = [];
         let bytes = 0;
         let have = 0;
         let haveBytes = 0;
         for (const item of plan.items) {
-            if (item.band !== null && (await cells.has(item.cell.sha256, item.cell.bytes))) {
+            const present = item.band !== null && (await cells.has(item.cell.sha256, item.cell.bytes));
+            assertActive();
+            if (present) {
                 have += 1;
                 haveBytes += item.cell.bytes;
                 continue;
@@ -555,6 +593,9 @@
                 throw cause;
             }
         }
+        const runId = ++nextRunId;
+        out.runId = runId;
+        activeRunId = runId;
         output = out;
         lastRunKind = out.kind;
         runFileName = mapFileName();
@@ -580,7 +621,9 @@
         const cells: WorkerCell[] = [];
         const sourceCells: WorkerSourceCell[] = [];
         const terrainCells: WorkerTerrainCell[] = [];
-        abortCtl = new AbortController();
+        const runAbort = new AbortController();
+        abortCtl = runAbort;
+        const assertActive = () => assertRunActive(runId, out, runAbort);
 
         // Cells go to disk when this browser will take them, which keeps a country's
         // worth out of the tab's heap. With the opt-in above, the same store also lets
@@ -593,19 +636,35 @@
         const revision = cellStoreRevision(store.catalog);
         // Unchecked means no reuse in either direction. OPFS still carries this run when available,
         // because that working disk is what makes country-sized assembly possible.
-        if (!keepCells) await clearCellStores();
-        let cellStore = (await cellStoreWritable()) ? await openCellStore(revision) : null;
+        if (!keepCells) {
+            await clearCellStores();
+            assertActive();
+        }
+        const writable = await cellStoreWritable();
+        assertActive();
+        let cellStore = writable ? await openCellStore(revision) : null;
+        try {
+            assertActive();
+        } catch (cause) {
+            // `openCellStore` cannot take a signal and may have created the revision after the
+            // cancelling run's teardown already swept it. The stale continuation owns that one
+            // possible artifact, so it removes it without touching any newer run's state.
+            if (cellStore && !keepCells) await discardCellStore(revision).catch(() => {});
+            throw cause;
+        }
         transientCellRevision = cellStore && !keepCells ? revision : null;
         let fetchPlan = plan;
         if (cellStore) {
-            fetchPlan = await skipCached(plan, cellStore);
+            fetchPlan = await skipCached(plan, cellStore, assertActive);
             // Asked once, before a byte is fetched, and asked about the WHOLE
             // run — cells, the map the sink writes, the merge's spill — because
             // after phase D all three live in OPFS: a store with room for the
             // cells but not the output would fail at the first write, after the
             // download. Falling back now costs disk-backed input and any selected
             // reuse, but avoids a quota failure after the download.
-            if (!(await hasRoomFor(runDiskNeed(l))))  {
+            const hasRoom = await hasRoomFor(runDiskNeed(l));
+            assertActive();
+            if (!hasRoom) {
                 cellStore = null;
                 fetchPlan = plan;
                 cachedCells = 0;
@@ -634,6 +693,7 @@
                                 }). Free some disk space and try again.`,
                             );
                         });
+                        assertActive();
                     } else {
                         cells.push({
                             id: item.cell.id,
@@ -647,8 +707,9 @@
                     dlProgress = p;
                     if (out.kind === "device") out.ctx.progress(p.receivedBytes, p.totalBytes);
                 },
-                signal: abortCtl.signal,
+                signal: runAbort.signal,
             });
+            assertActive();
             // In the plan's order, not the network's — cached and fetched cells
             // are one list, and which of the two a cell came from must not be
             // able to reach the bytes.
@@ -665,7 +726,7 @@
                 }
             }
         } catch (e) {
-            await failRun(e);
+            await failRun(e, runId);
             return;
         }
 
@@ -708,11 +769,13 @@
                 acceptPartial: true,
             },
         };
+        assertActive();
         ensureWorker().postMessage(req, { transfer: requestTransferList(req) });
     }
 
     function run() {
-        void begin({ kind: "download" }).catch((cause) => failRun(cause));
+        const out: DownloadOutput = { kind: "download", runId: null };
+        void begin(out).catch((cause) => failRun(cause, out.runId ?? 0));
     }
 
     /** Assemble this selection and stream its verified `.obcm` directly into
@@ -720,7 +783,11 @@
      * this host passed the writable-storage probe, and memory-priced otherwise. */
     export const sendToDevice: SendAssembledMap = (client, ctx) =>
         new Promise<PutResponse>((resolve, reject) => {
-            const onAbort = () => void failRun(ctx.signal.reason ?? new DOMException("cancelled", "AbortError"));
+            const onAbort = () =>
+                void failRun(
+                    ctx.signal.reason ?? new DOMException("cancelled", "AbortError"),
+                    device.runId ?? 0,
+                );
             const device: DeviceOutput = {
                 kind: "device",
                 client,
@@ -731,6 +798,7 @@
                 result: null,
                 settled: false,
                 failing: false,
+                runId: null,
             };
             ctx.signal.addEventListener("abort", onAbort, { once: true });
             if (ctx.signal.aborted) {
@@ -739,7 +807,7 @@
                 return;
             }
             void begin(device).catch((cause) => {
-                if (output === device) void failRun(cause);
+                if (output === device) void failRun(cause, device.runId ?? 0);
                 else {
                     device.removeAbort();
                     reject(cause);
