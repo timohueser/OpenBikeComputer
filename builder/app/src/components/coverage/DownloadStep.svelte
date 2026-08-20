@@ -31,6 +31,7 @@
         readMapOutput,
         type CellStore,
     } from "../../lib/cells/store";
+    import { acquireMapWorkStorage } from "../../lib/cells/workBarrier";
     import { saveBlob } from "../../lib/download";
     import { platform } from "../../lib/platform";
     import type { MapOutputSession } from "../../lib/platform/types";
@@ -123,20 +124,29 @@
         );
     }
 
+    let destroyed = false;
+
     onDestroy(() => {
+        destroyed = true;
         const cause = new DOMException("the map builder was closed", "AbortError");
-        if (output?.kind === "device" && !output.settled) output.ctx.cancel(cause);
-        else abortCtl?.abort(cause);
-        worker?.terminate();
-        void closeDownloadOutput(true);
-        void cleanupTransientCells();
+        // Finalization starts only after the map is durable and its abort listener has been
+        // detached. Let that owner finish its cleanup. Every earlier teardown goes through the
+        // same barrier-owning failure path; independent close/discard calls here could race the
+        // owner's outstanding put or a newly mounted component.
+        if (phase !== "finalizing") {
+            // Direct delivery is cancelled through the DeviceJob so the same signal reaches the
+            // in-flight PUT; its one abort listener enters failRun. Browser/desktop delivery has
+            // no outer controller, so it enters that owner path directly.
+            if (output?.kind === "device" && !output.settled) output.ctx.cancel(cause);
+            else void failRun(cause);
+        }
         onSendReadyChange?.(false);
     });
 
     // Releases before the opt-in retained cells automatically. The first visit to this step after
     // the change removes that legacy cache unless the rider has explicitly enabled reuse.
     onMount(() => {
-        if (!keepCells) void clearStoredCells(false);
+        void initializeStorage();
     });
 
     // --- the run ----------------------------------------------------------
@@ -179,7 +189,9 @@
     let cachedBytes = $state(0);
     /** Opt-in reuse. OPFS may still be the active run's necessary working disk when false. */
     let keepCells = $state(loadKeepCells());
-    let clearingCells = $state(false);
+    // Starts true so the first rendered/effected readiness cannot briefly enable a run before
+    // mount maintenance has joined the origin-global map-work barrier.
+    let clearingCells = $state(true);
     let cellStorageNotice = $state<string | null>(null);
     let outputPath = $state<string | null>(null);
     let runWarnings = $state<string[]>([]);
@@ -207,12 +219,14 @@
         failing: boolean;
         runId: number | null;
         transientCellRevision: string | null;
+        releaseWork: (() => void) | null;
         readonly operations: Set<Promise<unknown>>;
     }
     interface DownloadOutput {
         readonly kind: "download";
         runId: number | null;
         transientCellRevision: string | null;
+        releaseWork: (() => void) | null;
         readonly operations: Set<Promise<unknown>>;
     }
     type Output = DownloadOutput | DeviceOutput;
@@ -316,6 +330,8 @@
                     await cleanupDirectOutput();
                     settleDevice(output.result);
                 }
+                output?.releaseWork?.();
+                if (output) output.releaseWork = null;
                 output = null;
                 abortCtl = null;
                 activeRunId = 0;
@@ -454,9 +470,24 @@
         if (!checked && !running) await clearStoredCells(true);
     }
 
+    async function initializeStorage() {
+        const release = await acquireMapWorkStorage();
+        try {
+            if (destroyed) return;
+            if (!keepCells) await clearMapWorkStorage();
+        } catch {
+            // Startup maintenance is best-effort, as it was before serialization. A later run's
+            // own probes give the actionable storage error.
+        } finally {
+            release();
+            if (!destroyed) clearingCells = false;
+        }
+    }
+
     async function clearStoredCells(announce = true) {
         clearingCells = true;
         if (announce) cellStorageNotice = null;
+        const release = await acquireMapWorkStorage();
         try {
             await clearMapWorkStorage();
             if (announce) cellStorageNotice = "Stored map downloads deleted.";
@@ -466,6 +497,7 @@
                     "Stored map downloads could not be deleted. Close other builder tabs and try again.";
             }
         } finally {
+            release();
             clearingCells = false;
         }
     }
@@ -507,6 +539,8 @@
         await closeDownloadOutput(true).catch(() => (outputCleanupFailed = true));
         await cleanupTransientCells(owner);
         if (direct) await cleanupDirectOutput();
+        owner.releaseWork?.();
+        owner.releaseWork = null;
         errorMessage = cause instanceof Error ? cause.message : String(cause);
         phase = cancelled ? "cancelled" : "error";
         settleDevice(cause, true);
@@ -676,6 +710,10 @@
         const runOp = <T>(operation: () => Promise<T>, onStale?: (value: T) => Promise<void>) =>
             runOperation(runId, out, runAbort, operation, onStale);
 
+        // Component readiness only covers this instance. The lease also waits for an older,
+        // already-unmounted instance's put/finalization before this run touches shared OPFS.
+        out.releaseWork = await runOp(acquireMapWorkStorage, async (release) => release());
+
         // Cells go to disk when this browser will take them, which keeps a country's
         // worth out of the tab's heap. With the opt-in above, the same store also lets
         // a later build reuse them. The raster deliberately does not:
@@ -833,6 +871,7 @@
             kind: "download",
             runId: null,
             transientCellRevision: null,
+            releaseWork: null,
             operations: new Set(),
         };
         void begin(out).catch((cause) => failRun(cause, out.runId ?? 0));
@@ -860,6 +899,7 @@
                 failing: false,
                 runId: null,
                 transientCellRevision: null,
+                releaseWork: null,
                 operations: new Set(),
             };
             ctx.signal.addEventListener("abort", onAbort, { once: true });
@@ -1096,6 +1136,7 @@
             l.cellCount > 0 &&
             refusal === null &&
             !running &&
+            !clearingCells &&
             !estimatePending &&
             // An unanswered projection keeps the mandatory pre-download check
             // honest: the button waits for the retry, not forever (A3).
