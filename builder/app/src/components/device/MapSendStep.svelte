@@ -12,9 +12,11 @@
     let {
         ledger = null,
         sendAssembled = null,
+        sendReady = false,
     }: {
         ledger?: Ledger | null;
         sendAssembled?: SendAssembledMap | null;
+        sendReady?: boolean;
     } = $props();
 
     let mapSend: Promise<typeof import("./MapSend.svelte")> | undefined;
@@ -31,7 +33,7 @@
     {#await loadMapSend()}
         <p class="small muted">Loading…</p>
     {:then { default: MapSend }}
-        <MapSend client={session.client} {ledger} {sendAssembled} />
+        <MapSend client={session.client} {ledger} {sendAssembled} {sendReady} />
     {:catch}
         <p class="note error small" role="alert">
             The device tools could not be loaded. Check your connection and reload the page.

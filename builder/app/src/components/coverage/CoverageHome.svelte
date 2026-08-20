@@ -34,6 +34,7 @@
 
     const partCount = $derived(store.selection.parts.length);
     let downloadStep = $state<{ sendToDevice: SendAssembledMap }>();
+    let sendReady = $state(false);
     const sendAssembled: SendAssembledMap = (device, ctx) => {
         if (!downloadStep) throw new Error("The map assembler is not ready yet.");
         return downloadStep.sendToDevice(device, ctx);
@@ -74,7 +75,7 @@
                 <span class="num">3</span>
                 <h3>Download</h3>
             </div>
-            <DownloadStep bind:this={downloadStep} {store} />
+            <DownloadStep bind:this={downloadStep} {store} onSendReadyChange={(ready) => (sendReady = ready)} />
         </section>
 
         <section class="card">
@@ -83,9 +84,9 @@
                 <h3>{available("deviceDashboard") ? "Send to device" : "Device"}</h3>
             </div>
             {#if available("deviceDashboard")}
-                <MapSendStep ledger={store.ledger} {sendAssembled} />
+                <MapSendStep ledger={store.ledger} {sendAssembled} {sendReady} />
             {:else}
-                <DeviceStep ledger={store.ledger} {sendAssembled} />
+                <DeviceStep ledger={store.ledger} {sendAssembled} {sendReady} />
             {/if}
         </section>
     </div>

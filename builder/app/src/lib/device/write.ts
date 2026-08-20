@@ -64,9 +64,10 @@ export function displayName(name: string, fallback: string): string {
 /**
  * Send a `.obcm` Blob, either selected by the rider or produced by the assembler.
  *
- * No staging: a picked `File` and the assembler's OPFS-backed `Blob` are already handles to bytes
- * on disk, so either is read twice straight from there — once for the CRC §3.6 declares, once to
- * send — and nothing is copied anywhere. That is what `blobSource` is for.
+ * No second staging copy: a picked `File` and the assembler's Blob are read twice in bounded
+ * chunks — once for the CRC §3.6 declares, once to send. The assembler Blob is disk-backed when
+ * writable OPFS had room for the run; its explicitly memory-priced fallback remains bounded by
+ * the builder's preflight instead. That is what `blobSource` is for.
  *
  * Replaces the map the device will select: the active (non-retained) `MapShard` with the lowest
  * `ObjectId`. That is the firmware's deterministic selection rule, so a second send moves the map
@@ -80,7 +81,10 @@ export async function sendMapBlob(
     ctx: JobContext,
 ): Promise<PutResponse> {
     ctx.phase("reading", blob.size);
-    const source = await blobSource(blob);
+    const source = await blobSource(blob, {
+        signal: ctx.signal,
+        onProgress: (done, total) => ctx.progress(done, total),
+    });
     const maps = await client.list({ kind: ObjectKind.MapShard, signal: ctx.signal });
     const current = maps.entries
         .filter((entry) => (entry.flags & EntryFlags.Retained) === 0)

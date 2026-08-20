@@ -19,9 +19,11 @@
     let {
         ledger = null,
         sendAssembled = null,
+        sendReady = false,
     }: {
         ledger?: Ledger | null;
         sendAssembled?: SendAssembledMap | null;
+        sendReady?: boolean;
     } = $props();
 
     // The write surfaces reach the protocol client, the codecs and the transport — the ~24 kB C3
@@ -80,6 +82,7 @@
                     store={session.store}
                     {ledger}
                     {sendAssembled}
+                    {sendReady}
                 />
             {:catch}
                 <p class="note error small" role="alert">

@@ -71,6 +71,7 @@ function context(options: { signal?: AbortSignal; at?: (done: number, phase: Job
     let last: [number, number] = [0, 0];
     return {
         signal: options.signal ?? new AbortController().signal,
+        cancel() {},
         phases,
         get last() {
             return last;

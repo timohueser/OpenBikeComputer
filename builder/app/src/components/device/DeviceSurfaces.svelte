@@ -32,12 +32,14 @@
         store = null,
         ledger = null,
         sendAssembled = null,
+        sendReady = false,
     }: {
         client: FlatStoreClient;
         info: DeviceInfo | null;
         store?: StoreIdentity | null;
         ledger?: Ledger | null;
         sendAssembled?: SendAssembledMap | null;
+        sendReady?: boolean;
     } = $props();
 
     const rides = $derived(rideAccess(client));
@@ -48,7 +50,7 @@
 </script>
 
 {#if store}
-    <MapSend {client} {ledger} {sendAssembled} />
+    <MapSend {client} {ledger} {sendAssembled} {sendReady} />
     <RouteDrop {client} />
     <RideExport {rides} {scope} />
     <FirmwareCard {client} {info} />

@@ -453,9 +453,11 @@ assembled bytes.
 
 A consumer MAY stream assembler output directly to a connected device instead
 of first saving it, and MUST verify the emitted file's announced length before transfer. The web
-and desktop builder do so from the assembler's OPFS-backed `Blob`: the map remains disk-backed and
-the flat-store v4 client reads it in bounded slices, rather than materialising a country-sized file
-in the webview heap. A streaming consumer has no independent digest to compare the bytes against;
+and desktop builder do so from the assembler's `Blob`. Where the host provides writable OPFS with
+enough room, that Blob remains disk-backed and the flat-store v4 client reads it in bounded slices,
+rather than materialising a country-sized file in the webview heap. A host without that working
+storage may use the assembler's explicitly memory-priced fallback. A streaming consumer has no
+independent digest to compare the bytes against;
 delivery is guaranteed by the transport's whole-object CRC-32, which the device verifies before it
 commits.
 Cancellation or failure MUST abandon the incomplete transfer and MUST NOT leave anything selectable

@@ -42,9 +42,10 @@ export type { DeviceSession, RideLibrary };
  * A place on disk to put the assembled map in a native host. Web exports
  * `openMapOutput: null` and uses the browser's ordinary one-file downloader.
  *
- * The assembled `.obcm` is an OPFS-backed `Blob`, so the web downloader streams it
- * to disk without the tab's heap ever holding it. Native hosts retain this session
- * because a webview does not provide a useful browser download destination.
+ * The assembled `.obcm` is an OPFS-backed `Blob` when the host's writable-storage
+ * probe succeeds, so the web downloader can stream it without the tab's heap holding
+ * the map. The explicitly memory-priced fallback is a Blob too. Native hosts retain
+ * this session because a webview does not provide a useful browser destination.
  *
  * The session is opened once and written once — a map is one file — but `write`
  * still names it, because the destination is a *folder* and the file needs a name in

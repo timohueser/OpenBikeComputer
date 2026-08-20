@@ -40,6 +40,9 @@ export type JobPhase =
 export interface JobContext {
     /** Fires on cancel. Pass it to every await that can block, or Cancel is a lie. */
     readonly signal: AbortSignal;
+    /** Cancel this whole job, including work owned by a component outside the
+     * transport surface that created the context. */
+    cancel(reason?: unknown): void;
     /** Move to a phase, optionally starting a fresh byte count for it. */
     phase(phase: JobPhase, total?: number): void;
     progress(done: number, total: number): void;

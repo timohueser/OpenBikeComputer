@@ -49,7 +49,10 @@
     import type { FlatStoreClient } from "../../lib/usb/client";
     import type { PutResponse } from "../../lib/usb/protocol";
 
-    let { store }: { store: CoverageStore } = $props();
+    let {
+        store,
+        onSendReadyChange,
+    }: { store: CoverageStore; onSendReadyChange?: (ready: boolean) => void } = $props();
 
     const KEEP_CELLS_KEY = "obcm.keepMapCells";
 
@@ -120,9 +123,13 @@
     }
 
     onDestroy(() => {
+        const cause = new DOMException("the map builder was closed", "AbortError");
+        if (output?.kind === "device" && !output.settled) output.ctx.cancel(cause);
+        else abortCtl?.abort(cause);
         worker?.terminate();
         void closeDownloadOutput(true);
         void cleanupTransientCells();
+        onSendReadyChange?.(false);
     });
 
     // Releases before the opt-in retained cells automatically. The first visit to this step after
@@ -662,8 +669,9 @@
         void begin({ kind: "download" }).catch((cause) => failRun(cause));
     }
 
-    /** Assemble this selection and stream its verified OPFS-backed `.obcm`
-     * directly into the connected device's v4 flat-store PUT. */
+    /** Assemble this selection and stream its verified `.obcm` directly into
+     * the connected device's v4 flat-store PUT. The Blob is OPFS-backed when
+     * this host passed the writable-storage probe, and memory-priced otherwise. */
     export const sendToDevice: SendAssembledMap = (client, ctx) =>
         new Promise<PutResponse>((resolve, reject) => {
             const onAbort = () => void failRun(ctx.signal.reason ?? new DOMException("cancelled", "AbortError"));
@@ -694,15 +702,24 @@
         });
 
     function cancel() {
+        const cause = new DOMException("cancelled", "AbortError");
+        // Direct assembly and PUT are one DeviceJob. Ask its controller to
+        // cancel so both this button and TransferBar cancel the same signal;
+        // merely aborting the cell downloader would let a live PUT commit and
+        // only then paint the run as cancelled.
+        if (output?.kind === "device") {
+            output.ctx.cancel(cause);
+            return;
+        }
         if (phase === "downloading") {
-            abortCtl?.abort();
+            abortCtl?.abort(cause);
         } else if (phase === "assembling" || phase === "saving") {
             // The worker is blocked inside one synchronous wasm call and cannot
             // read a message — terminate IS the cancel (bridge threading
             // contract). Nothing usable is left behind: a partial `.obcm` fails
             // its own header checks, and the file is only saved once the run says
             // it finished.
-            void failRun(new DOMException("cancelled", "AbortError"));
+            void failRun(cause);
         }
     }
 
@@ -907,6 +924,7 @@
             estimateError === null
         );
     });
+    $effect(() => onSendReadyChange?.(ready));
     /** Whether a failed run left a file behind that someone has to delete. Counted
      *  from what actually reached the disk, and only where nothing cleaned it up:
      *  a picked directory's session removes what it wrote, so there is something to
