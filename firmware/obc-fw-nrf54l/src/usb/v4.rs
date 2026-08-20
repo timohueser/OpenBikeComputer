@@ -248,10 +248,8 @@ pub(crate) async fn serve_objects(ctrl_in: EpIn, ctrl_out: EpOut, bulk_in: EpIn,
         STREAM_IN.reset();
         // §3.8's third form of cancel. On its own reply slot, so that an orphan the driver may have
         // left in `ENGINE_REPLY` stays where `Lane::reclaim` can find it.
-        release_engine(&writer).await;
-        // `release_engine` joins deferred FLPR DMA first. Only now may the ride loop drop UsbGuard
-        // and let render/navigation overwrite the two arena halves.
-        crate::usb::release_stage();
+        let joined = release_engine(&writer).await;
+        release_joined_stage(joined);
         info!("usb: [v4] link down ({}) — engine released", reason);
         if reason != RecordEnd::LinkDown.reason() {
             // Not an unplug: a framing error or a driver failure with the endpoints still up. Back
@@ -264,20 +262,32 @@ pub(crate) async fn serve_objects(ctrl_in: EpIn, ctrl_out: EpOut, bulk_in: EpIn,
 
 /// **Release whatever the engine still holds for a link that has gone away** (§3.8's third form of
 /// cancel).
-async fn release_engine(writer: &Writer) {
+async fn release_engine(writer: &Writer) -> JoinedUsbStage {
     static TEARDOWN_REPLY: Reply = Signal::new();
     if writer.call(Request::LinkLost { link: Link::Usb }, &TEARDOWN_REPLY).await.is_err() {
         warn!("usb: [v4] the engine refused a link-lost teardown");
     }
-    finish_usb_stage(writer).await;
+    finish_usb_stage(writer).await
 }
 
+/// Proof that the storage task answered `FinishUsbStage`. Its constructor is private to the await
+/// below, so no granted-stage terminal path can compile a release before the DMA join.
+struct JoinedUsbStage;
+
 /// Join a deferred card write before the ride loop may hand the arena to render or navigation.
-async fn finish_usb_stage(writer: &Writer) {
+async fn finish_usb_stage(writer: &Writer) -> JoinedUsbStage {
     static FINISH_REPLY: Reply = Signal::new();
     if writer.call(Request::FinishUsbStage, &FINISH_REPLY).await.is_err() {
         warn!("usb: [v4] could not join the final staged card write");
     }
+    // Even an error answer is produced only after `finish_write_blocks` returns: the transfer has
+    // stopped borrowing the source, although the card operation itself failed.
+    JoinedUsbStage
+}
+
+fn release_joined_stage(_joined: JoinedUsbStage) {
+    crate::usb::STAGE_REQ.store(false, core::sync::atomic::Ordering::Relaxed);
+    crate::usb::STAGE_WAKE.signal(());
 }
 
 /// Read control records and hand them over one at a time.
@@ -334,15 +344,8 @@ async fn driver(
                 None => return "lane",
             },
             embassy_futures::select::Either::Second(record) => {
-                let result = stream_record(
-                    writer,
-                    lane,
-                    &mut admission,
-                    record,
-                    &mut stage_attempted,
-                    &mut stage_granted,
-                )
-                .await;
+                let result =
+                    stream_record(writer, lane, &mut admission, record, &mut stage_attempted, &mut stage_granted).await;
                 if stage_granted {
                     staged_started.get_or_insert_with(Instant::now);
                     staged_bytes += record.len().saturating_sub(obc_link::flat::wire::STREAM_HEADER_LEN) as u64;
@@ -355,18 +358,18 @@ async fn driver(
         };
         if let Some(reason) = pump(writer, lane, control_tx, stream_tx, reaction).await {
             if stage_granted {
-                finish_usb_stage(writer).await;
+                let joined = finish_usb_stage(writer).await;
+                release_joined_stage(joined);
                 log_staged_rate(staged_started, staged_bytes);
             }
-            crate::usb::release_stage();
             return reason;
         }
         if stage_attempted && !crate::link::map_transfer_state().is_some_and(|state| state.is_receiving()) {
             if stage_granted {
-                finish_usb_stage(writer).await;
+                let joined = finish_usb_stage(writer).await;
+                release_joined_stage(joined);
                 log_staged_rate(staged_started, staged_bytes);
             }
-            crate::usb::release_stage();
             stage_attempted = false;
             stage_granted = false;
             staged_started = None;

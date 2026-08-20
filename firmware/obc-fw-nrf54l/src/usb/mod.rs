@@ -153,14 +153,10 @@ pub(crate) const STAGE_LEN: usize = 2 * STAGE_HALF_LEN;
 // bits are the truth and signals only wake the other side, so an edge cannot be lost.
 static STAGE_REQ: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 static STAGE_GRANTED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-static STAGE_WAKE: embassy_sync::signal::Signal<
-    embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-    (),
-> = embassy_sync::signal::Signal::new();
-static STAGE_EDGE: embassy_sync::signal::Signal<
-    embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex,
-    (),
-> = embassy_sync::signal::Signal::new();
+static STAGE_WAKE: embassy_sync::signal::Signal<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, ()> =
+    embassy_sync::signal::Signal::new();
+static STAGE_EDGE: embassy_sync::signal::Signal<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, ()> =
+    embassy_sync::signal::Signal::new();
 
 pub(crate) fn stage_requested() -> bool {
     STAGE_REQ.load(core::sync::atomic::Ordering::Relaxed)
@@ -184,7 +180,7 @@ pub(crate) async fn request_stage() -> bool {
     let deadline = embassy_time::Instant::now() + embassy_time::Duration::from_secs(1);
     while !STAGE_GRANTED.load(core::sync::atomic::Ordering::Relaxed) {
         if embassy_time::with_deadline(deadline, STAGE_EDGE.wait()).await.is_err() {
-            release_stage();
+            cancel_stage_request();
             warn!("usb: [v4] no upload staging arm granted — using narrow card writes");
             return false;
         }
@@ -192,7 +188,9 @@ pub(crate) async fn request_stage() -> bool {
     true
 }
 
-pub(crate) fn release_stage() {
+/// Withdraw a request that never received a grant. Once a grant exists, only v4's joined-stage
+/// typestate path may clear it; this seam therefore cannot release DMA-owned arena bytes.
+fn cancel_stage_request() {
     STAGE_REQ.store(false, core::sync::atomic::Ordering::Relaxed);
     STAGE_WAKE.signal(());
 }

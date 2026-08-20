@@ -492,6 +492,5 @@ pub(crate) fn usb_stage_contains(address: usize, len: usize) -> bool {
         return false;
     }
     let start = arena_ptr() as usize;
-    address >= start
-        && address.checked_add(len).is_some_and(|end| end <= start + crate::usb::STAGE_LEN)
+    address >= start && address.checked_add(len).is_some_and(|end| end <= start + crate::usb::STAGE_LEN)
 }
