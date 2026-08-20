@@ -6,8 +6,7 @@
 //! envelope, never a hang or a bare ATT failure:
 //!
 //! - A `command` write ([`run_command`](crate::link::command::run_command)) — the §4.4 imperatives —
-//!   answers `commandResult` and, on a store movement, notifies `storeChanged` (status msg 2 —
-//!   protocol v2's sole change signal).
+//!   answers `commandResult`; listed-object movement is exclusively protocol-v4 catalog state.
 //! - An `objectControl` write is one complete **protocol-v4** control frame
 //!   (`FLAT_Store_Protocol.md` §5.1). It is *not* parsed here — §5 makes an adapter a thing that
 //!   owns record boundaries and nothing else — but staged for the engine driver
@@ -26,7 +25,6 @@ use core::cell::RefCell;
 
 use defmt::{info, warn};
 use nrf_sdc::{self as sdc};
-use obc_ble::ObjectType;
 use trouble_host::prelude::*;
 
 use crate::link::command::run_command;
@@ -35,7 +33,7 @@ use crate::link::StatusBytes;
 use crate::object_store::ObjectStore;
 use crate::SharedStoreMutex;
 
-use super::data_plane::{notify_bounded, publish_store_change};
+use super::data_plane::notify_bounded;
 use super::gatt::{config_blob, Server};
 use super::state;
 use super::state::publish;
@@ -122,7 +120,6 @@ pub(crate) async fn serve_connection(
                 // validated transfer instead arms the CoC data plane (`serve_coc`), which answers when
                 // it ends. Store borrows stay inside the sync `with_data` closures — never across an await.
                 let mut status_msg: Option<StatusBytes> = None;
-                let mut store_changed: Option<ObjectType> = None;
                 let mut config_written = false;
                 let mut forget_after_ack = false;
                 let mut secured_context_read = false;
@@ -132,7 +129,6 @@ pub(crate) async fn serve_connection(
                         if handle == server.obc.command.handle {
                             let outcome = e.with_data(|_off, data| run_command(data, store, &mut guard));
                             status_msg = Some(outcome.result);
-                            store_changed = outcome.store_changed;
                             forget_after_ack = outcome.forget_bond;
                             info!("ble: [gatt] command write");
                             e.accept()
@@ -169,8 +165,8 @@ pub(crate) async fn serve_connection(
                     GattEvent::Other(e) => e.accept(),
                 };
                 // Store work for this event is done; release the shared lock before the async sends
-                // (the RefCell borrows above already ended with `reply`). `config_blob`/storeChanged below
-                // read only the catalog + the settings cache, no card.
+                // (the RefCell borrows above already ended with `reply`). `config_blob` below reads
+                // only the settings cache, no card.
                 drop(guard);
                 let reply_sent = match reply {
                     Ok(reply) => {
@@ -200,9 +196,6 @@ pub(crate) async fn serve_connection(
                     // ordering the spec pins: ack first, then forget + disconnect (§4.4, race-free —
                     // we never disconnect before the ack is out).
                     state::request_forget_bond();
-                }
-                if let Some(ty) = store_changed {
-                    publish_store_change(stack, server, store, ty).await;
                 }
                 if config_written {
                     // Re-seed the characteristic with the canonical blob (what a read serves).

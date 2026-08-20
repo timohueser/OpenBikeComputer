@@ -269,7 +269,7 @@ fn a_source_void_propagates_all_the_way_to_none() {
 
     // And the sentinel really is in the bytes, not merely refused by the reader.
     assert!(
-        bytes.chunks_exact(2).any(|s| i16::from_le_bytes([s[0], s[1]]) == NODATA),
+        bytes.as_chunks::<2>().0.iter().any(|s| i16::from_le_bytes([s[0], s[1]]) == NODATA),
         "a voided sample must be written as the NODATA sentinel"
     );
 }

@@ -50,10 +50,11 @@ function loopRide(
         // A slightly dented loop so no two rides are the same squiggle.
         const wobble = 1 + 0.18 * Math.sin(a * 3 + centerLon);
         points.push({
-            tOffsetS: i * 10,
-            lat1e7: Math.round((centerLat + radiusDeg * wobble * Math.sin(a)) * 1e6) * 10,
-            lon1e7: Math.round((centerLon + radiusDeg * 1.4 * wobble * Math.cos(a)) * 1e6) * 10,
-            eleM: 260 + Math.round(climbM * Math.max(0, Math.sin(a * 1.5 + 0.4))),
+            tMs: i * 10_000,
+            latMicrodegrees: Math.round((centerLat + radiusDeg * wobble * Math.sin(a)) * 1e6),
+            lonMicrodegrees: Math.round((centerLon + radiusDeg * 1.4 * wobble * Math.cos(a)) * 1e6),
+            elevationM: 260 + Math.round(climbM * Math.max(0, Math.sin(a * 1.5 + 0.4))),
+            segmentStart: i === 0,
             hrBpm: 120 + (i % 40),
             cadenceRpm: 78,
             powerW: null,
@@ -61,7 +62,7 @@ function loopRide(
     }
     const distanceM = Math.round(radiusDeg * 111_000 * 2 * Math.PI * 1.2);
     return {
-        version: 2,
+        version: 3,
         name,
         startTime,
         distanceM,

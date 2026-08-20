@@ -518,7 +518,7 @@ mod tests {
         let bytes = emitted(&region);
         assert_eq!(bytes.len() as u64, region.bytes());
         assert_eq!(&bytes[..4], b"OBCT");
-        let dir: Vec<u32> = bytes[32..48].chunks_exact(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect();
+        let dir: Vec<u32> = bytes[32..48].as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect();
         // Row-major with latitude as the row: (602, 526) is slot 0, (602, 527) slot 1, row 181 empty.
         assert_eq!(dir, vec![48, 48 + BLOCK as u32, 0, 0]);
         assert!(bytes[48..48 + BLOCK].iter().all(|&b| b == 0xB2), "each block landed in its own slot");

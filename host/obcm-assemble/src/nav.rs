@@ -2388,7 +2388,7 @@ mod tests {
     #[allow(clippy::type_complexity)]
     fn merged_nodes(nav: &Merged) -> Vec<(i32, i32, u32, Vec<(u32, u32, u16, u8, u16)>)> {
         let mut out = Vec::new();
-        for chunk in nav.chunks().chunks_exact(NAV_CHUNK_SIZE) {
+        for chunk in nav.chunks().as_chunks::<NAV_CHUNK_SIZE>().0 {
             let mut at = 0usize;
             while at + NAV_NODE_FIXED_LEN <= chunk.len() && chunk[at + 12] != CHUNK_END {
                 let lat = i32::from_le_bytes(chunk[at..at + 4].try_into().unwrap());

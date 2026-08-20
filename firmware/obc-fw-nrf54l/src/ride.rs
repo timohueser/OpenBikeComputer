@@ -21,7 +21,7 @@ use embedded_graphics::primitives::Rectangle;
 // `SettingsStore` (the load/save trait) is the ride loop's seam over the RRAM store; the `ble`
 // build's store lives inside `object_store` (which imports it itself).
 use obc_app::App;
-use obc_ports::{InputClock, RideClock, Sensors, SettingsStore, TrackSink};
+use obc_ports::{InputClock, RideClock, Sensors, SettingsStore};
 // The instance-owned sensor hub's control handle + GPS power enum (#808): the ride loop sets the
 // rate/power latches the `sensors::sensor_task` awaits. Real-sensor build only.
 #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
@@ -53,7 +53,7 @@ use obc_route::{RouteCache, RouteIndex, RouteReader};
 
 use crate::input_plane::{GESTURES, INPUT_HB_MS, INPUT_WAKE, LOOP_MS};
 use crate::map_plane::MapDisplay;
-use crate::{sd, stackmeter, SharedStore, SharedStoreMutex};
+use crate::{stackmeter, SharedStore, SharedStoreMutex};
 
 // ── Hardware watchdog (#349): the last-resort net under a wedged plane. The ride loop feeds it,
 // gated on the input plane's heartbeat, so **either** plane wedging trips the dog — not just
@@ -193,49 +193,6 @@ impl obc_render::Clock for InstantClock {
     fn now_us(&self) -> u64 {
         Instant::now().as_micros()
     }
-}
-
-/// Scan the card's `/tracks` into the app's Rides menu (epic #447 P7 / #454), carrying each ride's
-/// durable object id + its synced flag (from the `/tracks` synced-set sidecar). Called at boot and on
-/// every store-changed edge (a finished ride, an on-device or phone-side ride delete). Its own
-/// `#[inline(never)]` frame so the ride catalog is popped on return, never resident under the deep
-/// render path.
-#[inline(never)]
-pub(crate) fn load_rides(storage: &mut sd::Storage, app: &mut App) {
-    let mut catalog = heapless::Vec::new();
-    storage.scan_rides_into(&mut catalog);
-    app.set_rides(&catalog, storage.ride_ids());
-    // Feed the **full** compact ride-retention inventory (finding #876-2): every synced ride, not
-    // just the newest-32 the menu shows, so the auto-delete sweep + eager stamp reach older synced
-    // rides. Independent of the display catalog above; one extra synced-set read.
-    app.set_ride_retention_inventory(&storage.ride_retention_inventory());
-}
-
-/// Fill an open Ride detail's pending **track-profile request** (epic #678 T2 / #680): drain the
-/// ride's durable id, stream its `RD{id}.ORD` once (chunked SD reads — no whole-track buffer),
-/// and answer `App::set_ride_profile` — a stream failure (or no card) answers `None`, so a dead
-/// file isn't ground against every pass and the band just keeps its loading note. A no-op on the
-/// dominant pass (no detail open / already answered).
-///
-/// Its **own `#[inline(never)]` frame**, the `load_routes`/`load_rides` stack discipline: the
-/// builder's column scratch + the returned profile (a few KB on the nrf-mem build) live here and
-/// are popped on return — never resident in [`run_app`]'s poll frame under the deep render path
-/// (the fill runs sequentially with, never beneath, the render).
-#[inline(never)]
-fn fill_ride_profile(storage: &mut Option<sd::Storage>, app: &mut App) {
-    // The `LoadRideTrack` derived fill level, answered off the pure predicate (#812): nothing is
-    // consumed, so a missed pass re-asks and the cue clears the moment `set_ride_profile` lands.
-    let Some(id) = app.ride_track_request() else { return };
-    let profile = storage.as_mut().and_then(|s| s.ride_profile_by_id(id));
-    if profile.is_none() {
-        defmt::warn!("ride profile: fill for id {=u16} failed — the detail's band stays empty", id);
-    }
-    app.set_ride_profile(profile);
-    // The track-shape preview (#678 rework 3) rides the same drain: a second forward stream of
-    // the `RD{id}.ORD` into the ≤ 64-point resident (a 512 B copy + the ~448 B block buffer in
-    // this same popped frame — small next to the profile builder's column scratch above).
-    let preview = storage.as_mut().map(|s| s.ride_preview_by_id(id)).unwrap_or_default();
-    app.set_ride_preview(&preview);
 }
 
 /// The router's **resident** half (epic #116 R4 + EL7, #1068) — everything the planner needs that
@@ -635,12 +592,11 @@ struct HostPass {
     /// `DeleteTrip { id }` — cascade-delete the trip and its member routes.
     delete_trip: Option<u64>,
     /// `DeleteRide { id }` — the durable ride id (index-resolved at drain).
-    delete_ride: Option<u16>,
-    /// `StampRideSynced { id, utc }` — write ride `id`'s `synced_at` to the synced sidecar
-    /// (auto-expiry epic #638, S3), the sweep's legacy-ride countdown start. Sidecar write, applied
-    /// directly against the still-FAT ride journal.
-    stamp_ride: Option<(u16, u32)>,
-    /// `FinishTrack(action)` — close the open ride log (Save / Discard).
+    delete_ride: Option<u64>,
+    /// `StampRideSynced { id, utc }` — retained app intent for #1398's flat ride-domain metadata
+    /// boundary. FS8 deliberately has no FAT sidecar fallback.
+    stamp_ride: Option<(u64, u32)>,
+    /// `FinishTrack(action)` — finish or discard the open ride object.
     finish: Option<obc_app::TrackAction>,
     /// `PlanRoute` was drained — the router should begin a plan this pass. The 44-byte `NavRequest`
     /// itself is **not** staged across the pass's awaits (it would dominate this struct and re-inflate
@@ -682,15 +638,13 @@ fn desired_gps_power(app: &App) -> GpsPower {
 /// The shared map plane + ride loop, driving present through [`MapDisplay`] so it carries **no backend
 /// `#[cfg]`**. Each tick: drain the gestures the input plane recognised, advance the visible screens'
 /// timed content, reconcile the card to the app's intent (open the selected route's geometry; begin /
-/// finalise the ride log), feed the sensors → `tick` (integrate the fix, map-match, log the
+/// finalise the ride object), feed the sensors → `tick` (integrate the fix, map-match, record the
 /// track point), then re-render the map only on `dirty.map` and present it. A static screen does zero
 /// map renders. LED0 keeps a ~1 Hz heartbeat. Never returns.
 ///
-/// A finished ride persists as the durable ride object `RD{id}.ORD` only — the device writes no
-/// GPX (the phone owns human-format export after sync). The conversion is **deferred**: Finish
-/// stashes it and the loop runs it once the confirm pop has left the glass (see
-/// `Storage::run_pending_save`), so the save's blocking SD stretch never freezes the hold
-/// animation.
+/// A finished ride is the flat object's recorded 20-byte samples followed by one summary footer —
+/// the device writes no GPX (the phone owns human-format export after sync). Finish journals that
+/// bounded footer tail and clears `RECORDING` in one commit; it never rereads or converts the ride.
 ///
 /// The remaining `#[cfg]`s here are the orthogonal `debug-uart` *feature* (a host sensor feed +
 /// telemetry vs. the `SynthLocation` stand-in), not the display backend — that is wholly behind
@@ -705,7 +659,7 @@ pub(crate) async fn run_app(
     app: &mut App,
     // The SD card + RRAM settings behind one async mutex (#193, #270). The loop takes it in two
     // short scopes per pass — the store phase (reconcile + sources + the sync render) and the
-    // post-present tail (trial confirm + deferred save) — and **never holds it across the present
+    // post-present tail (trial confirm) — and **never holds it across the present
     // await** (#809), so the BLE object plane reaches the card during the FLPR scan and between
     // passes alike. Replaces the by-value `Storage`/settings store this fn used to own.
     shared: &SharedStoreMutex,
@@ -771,6 +725,23 @@ pub(crate) async fn run_app(
     let mut weather_sample_key: Option<WeatherSampleKey> = None;
     let mut weather_bundle = crate::flat_store::active_weather(flat).ok().flatten();
     crate::flat_store::reconcile_weather(flat, weather_bundle);
+    let mut ride_recorder = crate::flat_ride::Recorder::new(
+        flat,
+        crate::flat_store::writer().expect("the flat storage task is armed before the ride loop"),
+        Instant::now().as_millis() as u32,
+    );
+    // A reset may have landed after the footer checkpoint but before the single clearing commit.
+    // Service that terminal state before the first UI pass; it must not wait for a later route or
+    // session edge, and it must never expose a footer-bearing object as resumable samples.
+    ride_recorder.reconcile(flat, None, None, "", None, Instant::now().as_millis() as u32).await;
+    let recovery_warning = ride_recorder.take_warning();
+    if let Some(continuation) = ride_recorder.recovered_continuation() {
+        let _ = app.offer_recovered_ride(continuation);
+    } else if ride_recorder.recovery_faulted() {
+        let _ = app.offer_damaged_ride();
+    } else if recovery_warning {
+        app.apply_event(obc_app::HostEvent::Warning(obc_app::WarningFlags::REC_ERROR));
+    }
 
     // Per-frame ride-loop state:
     // - `prev_route` re-centres SynthLocation onto a freshly-loaded route's start (`synth` build only);
@@ -1017,12 +988,6 @@ pub(crate) async fn run_app(
         for _ in 0..crate::flat_store::take_catalog_commits() {
             app.apply_event(obc_app::HostEvent::StoreChanged);
         }
-        // The FAT ride repository remains until FS8. Its save/delete/sync edge shares the same app
-        // event so the Rides menu still refreshes promptly while route/trip catalogs are flat-only.
-        for _ in 0..crate::object_store::take_store_changed() {
-            app.apply_event(obc_app::HostEvent::StoreChanged);
-        }
-
         #[cfg(feature = "ble")]
         {
             app.set_ble_status(crate::ble::app_ble_status());
@@ -1131,12 +1096,12 @@ pub(crate) async fn run_app(
                     obc_app::HostCommand::CancelRoutePlan => host_pass.cancel_plan = true,
                     obc_app::HostCommand::DeleteRoute { id } => host_pass.delete_route = Some(id),
                     obc_app::HostCommand::DeleteTrip { id } => host_pass.delete_trip = Some(id),
-                    obc_app::HostCommand::DeleteRide { id } => host_pass.delete_ride = u16::try_from(id).ok(),
+                    obc_app::HostCommand::DeleteRide { id } => host_pass.delete_ride = Some(id),
                     // Flat route retention deliberately stays inert until #1398 supplies its
                     // ObjectId-keyed metadata kind; there is no FAT sidecar to stamp after FS7.
                     obc_app::HostCommand::StampRouteUsed { .. } => {}
                     obc_app::HostCommand::StampRideSynced { id, utc } => {
-                        host_pass.stamp_ride = u16::try_from(id).ok().map(|id| (id, utc));
+                        host_pass.stamp_ride = Some((id, utc));
                     }
                     obc_app::HostCommand::FinishTrack(action) => host_pass.finish = Some(action),
                     obc_app::HostCommand::PlanRoute(_req) => {
@@ -1333,8 +1298,7 @@ pub(crate) async fn run_app(
             Some(obc_app::DfuAction::Install) => {
                 // The irreversible arm-and-reboot. Guards mirror what the System menu greys out:
                 // never mid-recording (the arm ends in a reboot — a live ride would be lost) and
-                // never over an unconverted ride save (`pending_save` is RAM state; rebooting drops
-                // it and the next fresh ride would truncate the unconverted TRACK.OBT). On success
+                // never while the flat recorder still owns an active `RECORDING` object. On success
                 // `run_install` never returns (it resets into the bootloader); on any non-reboot
                 // outcome — a refusal here or an arm failure inside `run_install` — we get the typed
                 // reason and land the error card (issue #755) so the confirm's "Preparing update..."
@@ -1343,14 +1307,9 @@ pub(crate) async fn run_app(
                 let refusal = {
                     // First short store guard: just the go/no-go checks.
                     let store_guard = shared.lock().await;
-                    if app.activity.is_tracking() {
+                    if app.activity.is_tracking() || ride_recorder.is_recording() {
                         crate::dfu::status("refused (is_tracking): a ride is recording -- finish it first");
                         Some(obc_app::DfuInstallError::Recording)
-                    } else if store_guard.storage.as_ref().is_some_and(sd::Storage::has_pending_save) {
-                        crate::dfu::status(
-                            "refused (has_pending_save): a ride save is pending -- try again in a moment",
-                        );
-                        Some(obc_app::DfuInstallError::PendingSave)
                     } else if store_guard.storage.is_none() {
                         crate::dfu::status("refused (no_card): no SD card");
                         Some(obc_app::DfuInstallError::NoCard)
@@ -1460,8 +1419,7 @@ pub(crate) async fn run_app(
             // ── Live catalogs, on the store-changed edge only ──
             // Rebuild flat route/trip identities after any catalog commit and remap the app's held
             // indices by durable ObjectId. Dropping the active flat hold first ensures a replacement
-            // at the same id is decoded from its new revision. The legacy edge also covers FAT rides,
-            // which are rescanned below until their flat slice lands.
+            // at the same id is decoded from its new revision.
             if host_pass.rescan {
                 // Drop the held revision before rebuilding identity/index state. A replace at
                 // the same ObjectId must reopen the new revision, not keep rendering the hold.
@@ -1486,11 +1444,9 @@ pub(crate) async fn run_app(
                     // catalog commit to happen first.
                     app.apply_event(obc_app::HostEvent::StoreChanged);
                 }
-                if let Some(s) = storage.as_mut() {
-                    // The same edge covers rides (a phone-side ride delete, or a ride download that just
-                    // flipped a synced flag): re-scan `/tracks` and re-feed the Rides menu, which remaps
-                    // its highlight by id (#454). Cheap when nothing ride-related moved.
-                    load_rides(s, app);
+                let rides_loaded = crate::flat_store::load_rides(flat, app);
+                if !rides_loaded {
+                    app.apply_event(obc_app::HostEvent::StoreChanged);
                 }
                 prev_active = None; // force reconcile_route/track to re-run against the new indexing
                 index_route = None; // and the chunk index to rebuild off the freshly-opened file
@@ -1498,13 +1454,8 @@ pub(crate) async fn run_app(
 
             // ── On-device route delete (epic #447, P6), on the hold-to-delete edge only ──
             // The Route menu's guarded hold recorded a delete request; the app resolves it to the route's
-            // durable object id. Route it to storage **through `ObjectStore`** (never raw SD) so the
-            // catalog, revision, digest, and phone `storeChanged` notify all move together, exactly as a
-            // phone-initiated delete does — then the store-changed edge (next pass) brings the live
-            // rescan + P3 remap around, so `active_route` and the menu highlight follow by identity.
-            //
-            // `ObjectStore` lives behind the BLE task's `RefCell`, so post the id to that plane. It
-            // owns the coherent catalog revision, notification, and rescan path.
+            // durable object id and post it to the flat-store writer. The resulting catalog-commit
+            // edge brings the live rescan + identity remap around on the next pass.
             if let Some(id) = host_pass.delete_route {
                 // A full channel DROPS the id (not observed backpressure — the app's dispatch
                 // bookkeeping already ran): warn, and rely on the app's retain-until-rescan
@@ -1519,10 +1470,8 @@ pub(crate) async fn run_app(
 
             // ── On-device trip cascade delete (epic #526, TR3/TR4), from the folder long-press confirm ──
             // The Route menu's long-press → confirm recorded the trip's durable object id; the cascade
-            // deletes the trip AND every member route (locked: post-trip cleanup). Same seam shape as the
-            // route delete above: `ble` builds post to the BLE plane (`request_trip_cascade` →
-            // `ObjectStore::delete_trip_cascade`, so both store revisions + both `storeChanged` edges
-            // move coherently and the rescan returns on the STORE_CHANGED edge).
+            // deletes the trip AND every member route (locked: post-trip cleanup). The flat-store
+            // writer commits the cascade and its catalog edge drives the rescan.
             if let Some(id) = host_pass.delete_trip {
                 if !crate::flat_store::request_trip_cascade(id) {
                     defmt::warn!("ride: trip-delete queue full — object {=u64} retained for retry", id);
@@ -1539,17 +1488,14 @@ pub(crate) async fn run_app(
             }
 
             // ── On-device ride delete (epic #447, P7 / #454), on the Rides-menu hold-to-delete edge ──
-            // The same seam as the route delete, in the ride namespace: the app resolves the highlighted
-            // ride's durable object id. On `ble`, post it to the BLE plane (it owns the `ObjectStore`
-            // `RefCell`) so the delete goes through the store — revision bump + `storeChanged`, coherent
-            // with a phone-initiated delete; the rescan returns on the resulting store-changed edge above.
-            // The greying while recording already keeps the delete legal (no open TRACK.OBT / pending
-            // save collides).
+            // The same flat-writer seam as route delete, in the ride namespace: the app resolves the
+            // highlighted ride's durable object id and the catalog-commit edge drives the rescan.
+            // The greying while recording already keeps the delete legal: an active journal object
+            // is never a menu candidate.
             if let Some(id) = host_pass.delete_ride {
                 // Same contract as the route delete above: a full channel drops the id — warn and
                 // rely on the app's retained candidate to re-dispatch after the backoff.
-                #[cfg(feature = "ble")]
-                if !crate::object_store::request_ride_delete(id) {
+                if !crate::flat_store::request_ride_delete(id) {
                     defmt::warn!(
                         "ride: ride-delete channel full — id {} dropped; the app's retained candidate retries",
                         id
@@ -1558,22 +1504,17 @@ pub(crate) async fn run_app(
             }
 
             // ── Auto-expiry sidecar stamps (epic #638, S3), on the sweep / activation edge ──
-            // `last_used` (routes) / `synced_at` (rides) are **device-local** sidecar writes — no
-            // store revision, no phone `storeChanged` — so unlike a delete they're applied directly
-            // here under the store lock in both builds (the ride loop already holds the card this
-            // phase), rather than routed through the BLE plane's `ObjectStore`. The app already
-            // mirrored the value into its resident meta, so no re-feed is needed.
-            if let Some((id, utc)) = host_pass.stamp_ride {
-                if let Some(s) = storage.as_mut() {
-                    s.stamp_ride_synced_at(id, utc);
-                }
+            // Ride sync metadata is deliberately deferred to #1398's ObjectId-keyed kind.
+            if let Some((_id, _utc)) = host_pass.stamp_ride {
+                // #1398 supplies ObjectId-keyed ride sync/retention metadata. FS8 has deliberately
+                // removed the FAT sidecar and keeps flat rides conservatively unsynced meanwhile.
             }
 
             // ── The Ride detail's track-profile fill (epic #678 T2 / #680), on the detail-entry edge ──
             // An open detail wants its recorded track profiled for the elevation band: stream the
-            // `RD{id}.ORD` once into the app's resident buffer, in this pass, under the store lock —
+            // flat ride object once into the app's resident buffer, in this pass —
             // sequential with (never under) the render below, and a no-op on every other pass.
-            fill_ride_profile(storage, app);
+            crate::flat_store::fill_ride_track(flat, app);
 
             // ── The resumable route planner (#499), one bounded step per pass ──
             // A drained create-route request allocates unpublished flat-store space, (re)writes the `.bss` planner
@@ -1988,7 +1929,11 @@ pub(crate) async fn run_app(
             // top; reading it here is equivalent to the old peek-then-take (a drained action is consumed
             // exactly once, this pass, only when the reconcile runs).
             let session = app.activity.session();
-            if active != prev_active || session != prev_session || host_pass.finish.is_some() {
+            if active != prev_active
+                || session != prev_session
+                || host_pass.finish.is_some()
+                || ride_recorder.needs_reconcile(session)
+            {
                 let action = host_pass.finish;
                 let mut name: heapless::String<64> = heapless::String::new();
                 if let Some(r) = active.and_then(|i| app.routes().get(i)) {
@@ -1999,10 +1944,9 @@ pub(crate) async fn run_app(
                 let stats = (action == Some(obc_app::TrackAction::Save)).then(|| app.ride_stats());
                 let active_id = active.and_then(|i| app.route_ids().get(i).copied());
                 crate::flat_store::reconcile_route(flat, active_id);
-                // `storage` is `Option` (a card-less `ble` combined build still serves BLE, map idle); the
-                // map build always has `Some`. No card ⇒ nothing to reconcile.
-                if let Some(s) = storage.as_mut() {
-                    s.reconcile_track(action, session, &name, stats.as_ref(), settings_store);
+                ride_recorder.reconcile(flat, action, session, &name, stats.as_ref(), now).await;
+                if ride_recorder.take_warning() {
+                    app.apply_event(obc_app::HostEvent::Warning(obc_app::WarningFlags::REC_ERROR));
                 }
                 prev_active = active;
                 prev_session = session;
@@ -2056,10 +2000,9 @@ pub(crate) async fn run_app(
                     app.set_nav_preview(&pts);
                 }
             }
-            // The ride-log sink, built every tick (it only wraps the open log handle, no I/O), so a fresh
-            // fix is written to the `.obt` log the moment it arrives, at the fix rate.
-            let mut tsink = storage.as_ref().and_then(|s| s.track_sink());
-            let track_dyn = tsink.as_mut().map(|t| t as &mut dyn TrackSink);
+            // The flat recorder appends the exact final 20-byte sample bytes to its bounded tail.
+            // Card I/O happens only at the ~10 s checkpoint below, never in `App::tick`.
+            let track_dyn = ride_recorder.track_sink(session);
 
             // Feed the sensors → integrate the fix → map-match to the route → log the track point. Three
             // builds: the VCOM-streamed GPS + altimeter + compass (`debug-uart`); the real SAM-M10Q +
@@ -2113,6 +2056,15 @@ pub(crate) async fn run_app(
                 Sensors { track: track_dyn, fuel: Some(&mut fuel), ..Sensors::new(&mut synth) },
                 route.as_ref(),
             );
+
+            if ride_recorder.checkpoint_is_due(now) {
+                let checkpoint_stats = app.ride_stats();
+                let continuation = app.activity.ride_continuation();
+                ride_recorder.checkpoint_due(now, &checkpoint_stats, continuation).await;
+                if ride_recorder.take_warning() {
+                    app.apply_event(obc_app::HostEvent::Warning(obc_app::WarningFlags::REC_ERROR));
+                }
+            }
 
             // The **map-referenced altimeter** (elevation epic #1068, EL8): one terrain sample per
             // fresh fix, feeding the offset estimator that turns the BMP581's weather-drifting
@@ -2521,10 +2473,10 @@ pub(crate) async fn run_app(
         // ═══ Store tail (#809): a second short guard for the store work that must FOLLOW the
         // present — the trial confirm is anchored on a frame having reached glass, and the
         // deferred ride save must grind against an already-presented screen, not delay it. ═══
-        let (save_pending, tail_held_us) = {
+        let tail_held_us = {
             let mut store_guard = shared.lock().await;
             let t_tail = Instant::now();
-            let SharedStore { storage, settings: settings_store } = &mut *store_guard;
+            let SharedStore { storage: _, settings: settings_store } = &mut *store_guard;
 
             // ── DFU trial confirm (epic #615 S4, #619), once, at the health anchor ──
             // A frame just landed on glass and the SD mounted at boot: if this boot is a
@@ -2541,34 +2493,7 @@ pub(crate) async fn run_app(
                 }
             }
 
-            // A deferred ride save (Finish stashed it — see `Storage::run_pending_save`): run it only
-            // once the hold bulge is fully quiet, i.e. the confirm pop and its trailing clear have
-            // played out. The ORD conversion is the one long blocking SD stretch left in this loop, so
-            // it grinds against a static, already-presented screen instead of freezing the animation.
-            // `animating` below keeps the loop's short cadence while a save is still pending.
-            if overlay_span.is_none() && !overlay_dirty {
-                if let Some(s) = storage.as_mut() {
-                    s.run_pending_save(settings_store);
-                }
-            }
-            // A ride object landed this pass (the deferred Finish above, or a back-to-back flush inside
-            // `begin_track`/`reconcile_track` earlier in the pass) — raise the store edge so a fresh
-            // `RD{id}.ORD` is visible *now*, not after a reboot (the boot scan used to be the only
-            // reader). `ble`: post the saved-ride edge to the BLE plane, which owns the `ObjectStore`
-            // — it re-scans its catalog + bumps the revision (phone `storeChanged(ride)` + digest), and
-            // the resulting `STORE_CHANGED` edge re-feeds the Rides menu next pass: one edge, every
-            // consumer, exactly like an upload or delete. Map-only: re-feed the Rides menu directly
-            // (`load_rides` is its own popped frame — see its stack note — called sequentially here,
-            // never under the deep render path).
-            if storage.as_mut().is_some_and(sd::Storage::take_ride_saved) {
-                #[cfg(feature = "ble")]
-                crate::object_store::note_ride_saved();
-                #[cfg(not(feature = "ble"))]
-                if let Some(s) = storage.as_mut() {
-                    load_rides(s, app);
-                }
-            }
-            (storage.as_ref().is_some_and(|s| s.has_pending_save()), t_tail.elapsed().as_micros())
+            t_tail.elapsed().as_micros()
         };
 
         // #809 instrumentation — debug level, outside the timed render/push spans: the pass's two
@@ -2609,7 +2534,7 @@ pub(crate) async fn run_app(
         // button or that minute tick.
         // While something is **actively animating** — a live hold bulge (`overlay_*`, incl. its retract),
         // a charging hold on either button (`charging`), a redraw a flaky SD glitch couldn't service
-        // (`pending_map_redraw`), or a deferred ride save (`save_pending`) — keep the short cadence so
+        // (`pending_map_redraw`) — keep the short cadence so
         // it stays fluid; otherwise arm the app's single next-wake deadline, or sleep indefinitely
         // until input/sensor.
         let charging = hold_p > 0.0 || display.hold_charging();
@@ -2617,8 +2542,7 @@ pub(crate) async fn run_app(
         let planning = nav_run.is_some();
         #[cfg(not(has_nav))]
         let planning = false;
-        let animating =
-            charging || planning || pending_map_redraw || overlay_dirty || overlay_span.is_some() || save_pending;
+        let animating = charging || planning || pending_map_redraw || overlay_dirty || overlay_span.is_some();
         let next_ms = if animating { Some(LOOP_MS as u32) } else { app.ms_until_next_wake(now) };
         // debug-uart host build: keep a ~2 Hz floor so streamed telemetry / `Z` zoom commands stay
         // responsive even on an otherwise-quiet screen (well under the WDT feed cap).

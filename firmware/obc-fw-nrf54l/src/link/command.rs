@@ -7,18 +7,16 @@
 use core::cell::RefCell;
 
 use defmt::{info, warn};
-use obc_ble::{CommandResult, CommandStatus, ObjectType, SetClock, StatusMessage, WeatherUnchanged};
+use obc_ble::{CommandResult, CommandStatus, SetClock, StatusMessage, WeatherUnchanged};
 
 use crate::object_store::ObjectStore;
 use crate::SharedStore;
 
 use super::StatusBytes;
 
-/// What a `command` did: the `commandResult` to send back, plus which store (if any) it moved
-/// (→ the caller also sends `storeChanged`, typed accordingly).
+/// What a control-plane `command` did.
 pub(crate) struct CommandOutcome {
     pub(crate) result: StatusBytes,
-    pub(crate) store_changed: Option<ObjectType>,
     /// `forgetBond` (§4.4 cmd 4): the peer asked the device to dissolve its own BLE bond. Deferred,
     /// not done inline — the caller rings [`crate::ble::request_forget_bond`] **after** the
     /// `commandResult` ack has gone out, so the ack reaches the peer before the forget machinery
@@ -26,25 +24,16 @@ pub(crate) struct CommandOutcome {
     pub(crate) forget_bond: bool,
 }
 
-/// Execute a legacy control-plane command. Route/trip mutation moved to the flat-store object
-/// protocol; rides remain device-deleted only. `ackRides` reconciles the synced sidecar from the
-/// peer's possession list ([`ObjectStore::ack_rides`]); its `commandResult.detail` reports the
-/// newly-flagged count. `setClock` (cmd 5: `utc u32 · offset_min i16`, epic #638 S2) validates the
-/// peer's clock and crosses it to the ride loop to stamp — no store movement.
+/// Execute a legacy control-plane command. Route/trip/ride mutation moved to the flat-store object
+/// protocol. Ride sync/retention returns with its ObjectId-keyed metadata boundary in #1398; the
+/// former FAT `ackRides` sidecar command is intentionally no longer accepted here. `setClock`
+/// (cmd 5: `utc u32 · offset_min i16`, epic #638 S2) validates the peer's clock and crosses it to
+/// the ride loop to stamp — no store movement.
 /// Any other command byte is `unknownCommand`.
 pub(crate) fn run_command(data: &[u8], store: &RefCell<ObjectStore>, shared: &mut SharedStore) -> CommandOutcome {
     let cmd = data.first().copied().unwrap_or(0);
     let mut forget_bond = false;
-    let (status, detail, store_changed) = match (cmd, data) {
-        (obc_ble::CMD_ACK_RIDES, _) => match obc_ble::AckRides::decode(data) {
-            Ok(ack) => {
-                let newly = store.borrow_mut().ack_rides(shared, &ack);
-                info!("link: [cmd] ackRides: {} acked, {} newly flagged", ack.count(), newly);
-                // Only an actual flag change moved the store (and only the ride side of it).
-                (CommandStatus::Ok, newly, (newly > 0).then_some(ObjectType::Ride))
-            }
-            Err(_) => (CommandStatus::Error, 0, None), // count promises more ids than the message carries
-        },
+    let (status, detail) = match (cmd, data) {
         (obc_ble::CMD_INSTALL_FW, _) => {
             // installFw (epic #615 S6, #621): request the on-glass-confirmed install of the staged
             // /UPDATE.BIN. Answer from cheaply-knowable edge state only — `busy` (a ride recording or an
@@ -65,7 +54,7 @@ pub(crate) fn run_command(data: &[u8], store: &RefCell<ObjectStore>, shared: &mu
             } else {
                 info!("link: [cmd] installFw rejected: {}", status.as_u8());
             }
-            (status, 0, None)
+            (status, 0)
         }
         (obc_ble::CMD_FORGET_BOND, _) => {
             // forgetBond (#756): the app's "Forget device" asks the device to dissolve its side of
@@ -81,7 +70,7 @@ pub(crate) fn run_command(data: &[u8], store: &RefCell<ObjectStore>, shared: &mu
             // lowers `paired`, drops the link, and re-opens pairing on the next connection.
             forget_bond = true;
             info!("link: [cmd] forgetBond — ack first, then clear bond + drop link");
-            (CommandStatus::Ok, 0, None)
+            (CommandStatus::Ok, 0)
         }
         (obc_ble::CMD_SET_CLOCK, _) => {
             // setClock (auto-expiry epic #638 S2, #642): the peer stamps the device's UTC clock +
@@ -90,16 +79,16 @@ pub(crate) fn run_command(data: &[u8], store: &RefCell<ObjectStore>, shared: &mu
             // trusted-but-stale set-point the retention sweep would honour: any `Err` → `error`. On
             // success the validated pair crosses to the ride loop (`post_ble_clock`), which stamps it
             // through `App::stamp_clock_ble` (sets + persists the offset, marks trust `Ble`). The clock
-            // is not a listed object — **no store revision bump**, so `store_changed` stays `None`.
+            // is not a listed object and produces no flat-catalog movement.
             match SetClock::decode(data) {
                 Ok(sc) => {
                     crate::object_store::post_ble_clock(sc.utc, sc.offset_min);
                     info!("link: [cmd] setClock: utc {} offset {} min — posted to ride loop", sc.utc, sc.offset_min);
-                    (CommandStatus::Ok, 0, None)
+                    (CommandStatus::Ok, 0)
                 }
                 Err(_) => {
                     warn!("link: [cmd] setClock rejected: malformed / out-of-range ({} B)", data.len());
-                    (CommandStatus::Error, 0, None)
+                    (CommandStatus::Error, 0)
                 }
             }
         }
@@ -111,18 +100,17 @@ pub(crate) fn run_command(data: &[u8], store: &RefCell<ObjectStore>, shared: &mu
                 let accepted = false;
                 if accepted {
                     info!("link: [cmd] weatherUnchanged: request {} checked", ack.request_id);
-                    (CommandStatus::Ok, 0, None)
+                    (CommandStatus::Ok, 0)
                 } else {
-                    (CommandStatus::NotFound, 0, None)
+                    (CommandStatus::NotFound, 0)
                 }
             }
-            Err(_) => (CommandStatus::Error, 0, None),
+            Err(_) => (CommandStatus::Error, 0),
         },
-        _ => (CommandStatus::UnknownCommand, 0, None),
+        _ => (CommandStatus::UnknownCommand, 0),
     };
     CommandOutcome {
         result: StatusMessage::CommandResult(CommandResult::with_detail(cmd, status, detail)).encode(),
-        store_changed,
         forget_bond,
     }
 }

@@ -114,7 +114,7 @@ describe("gpxToObcr", () => {
 
 describe("trackToGpx", () => {
     it("reproduces the native exporter's GPX byte-for-byte", async () => {
-        const gpx = await trackToGpx(vector("track-log.obct"), TRACK_NAME);
+        const gpx = await trackToGpx(vector("ride-v3.bin"), TRACK_NAME);
         const expected = new TextDecoder().decode(vector("track-export.gpx"));
         // Compared as text so a failure diffs readably; the fixture is ASCII apart from nothing,
         // so text equality here *is* byte equality.
@@ -217,22 +217,14 @@ describe("failures", () => {
         expect(noTrack.code).toBe("gpx-no-track-points");
     });
 
-    it("tells an empty ride log from a mis-dropped GPX", async () => {
+    it("tells an empty file from bytes that are not a finished ride", async () => {
         expect((await failure(() => trackToGpx(new Uint8Array(), "x"))).code).toBe("empty-file");
-        expect((await failure(() => trackToGpx(bytes("<?xml?><gpx/>"), "x"))).code).toBe("not-track-log");
-        expect((await failure(() => trackToGpx(new Uint8Array(9), "x"))).code).toBe("track-no-points");
+        expect((await failure(() => trackToGpx(bytes("<?xml?><gpx/>"), "x"))).code).toBe("not-ride");
+        expect((await failure(() => trackToGpx(new Uint8Array(9), "x"))).code).toBe("not-ride");
     });
 
-    it("does not mistake a ride log that happens to start with '<' for XML", async () => {
-        // A `.obct` is headerless: byte 0 is a longitude's low byte, so ~1 log in 256 opens with
-        // 0x3C. Rejecting those as "XML" would refuse a perfectly good recording — hence the
-        // ride-log guard demands a real `<?xml`/`<gpx` opening. Byte-swap the fixture's first
-        // record longitude to 7_841_852 (0x0077A83C) and it must still convert.
-        const log = vector("track-log.obct").slice();
-        new DataView(log.buffer, log.byteOffset).setInt32(0, 7_841_852, true);
-        expect(log[0]).toBe("<".charCodeAt(0));
-        const gpx = await trackToGpx(log, TRACK_NAME);
-        expect(gpx).toContain('lon="7.841852"');
+    it("rejects the retired headerless sample stream", async () => {
+        expect((await failure(() => trackToGpx(vector("track-log.obct"), TRACK_NAME))).code).toBe("not-ride");
     });
 
     /**
@@ -249,7 +241,7 @@ describe("failures", () => {
         expect(notGpx.message).toMatch(/\.fit|\.tcx/);
 
         const shortLog = await failure(() => trackToGpx(new Uint8Array(9), "x"));
-        expect(shortLog.message).toContain("9 bytes");
+        expect(shortLog.message).toContain("ride-v3");
 
         for (const e of [noTrack, notGpx, shortLog]) {
             expect(e.message.length, `"${e.message}" is too terse to be actionable`).toBeGreaterThan(60);

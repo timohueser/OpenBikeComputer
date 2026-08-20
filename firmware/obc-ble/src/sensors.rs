@@ -336,7 +336,7 @@ pub fn classify_advertisement(ad: &[u8]) -> Option<AdvMatch<'_>> {
         match ad_type {
             // Incomplete / Complete list of 16-bit Service Class UUIDs (LE pairs).
             0x02 | 0x03 => {
-                for pair in payload.chunks_exact(2) {
+                for pair in payload.as_chunks::<2>().0 {
                     let uuid = u16::from_le_bytes([pair[0], pair[1]]);
                     let hit = if uuid == UUID_HEART_RATE_SERVICE {
                         Some(SensorKind::HeartRate)

@@ -363,7 +363,9 @@ impl RideEngine {
             // A new tracking session on the same route is a new navigation pass too: discard a
             // previous session's floor before the first match.
             self.route_match.reset();
-            activity.reset_ride();
+            if !activity.take_resume_session() {
+                activity.reset_ride();
+            }
             self.breadcrumb.clear();
             // A new session is a new pace too (WX12's projection window restarts with the ride).
             self.speed_win.clear();

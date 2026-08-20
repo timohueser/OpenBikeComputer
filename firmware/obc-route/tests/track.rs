@@ -2,6 +2,7 @@
 //! (coordinate formatting, `<trkseg>` splitting on `segment_start`, well-formedness).
 
 use obc_formats::io::SliceSource;
+use obc_formats::ride::{encode_footer, Footer};
 use obc_formats::track::{decode_record, encode_record};
 use obc_formats::track::{
     CAD_NONE as TRACK_CAD_NONE, HR_NONE as TRACK_HR_NONE, PWR_NONE as TRACK_PWR_NONE, RECORD_LEN as TRACK_RECORD_LEN,
@@ -58,7 +59,7 @@ fn record_roundtrip() {
 }
 
 /// The record is exactly 20 bytes and the sensor tail sits at the documented offsets, with the
-/// sentinels encoding `None`. Pins the v2 wire layout the ride converter + iOS both mirror.
+/// sentinels encoding `None`. Pins the sample prefix the v3 ride and clients share.
 #[test]
 fn record_is_20_bytes_with_sensor_tail() {
     assert_eq!(TRACK_RECORD_LEN, 20);
@@ -94,8 +95,24 @@ fn log_of(pts: &[TrackPoint]) -> Vec<u8> {
 }
 
 fn to_gpx(log: &[u8], name: &str) -> String {
+    assert_eq!(log.len() % TRACK_RECORD_LEN, 0);
+    let mut ride = log.to_vec();
+    ride.extend_from_slice(&encode_footer(&Footer::new(
+        name,
+        1_700_000_000,
+        0,
+        0,
+        0,
+        0,
+        (log.len() / TRACK_RECORD_LEN) as u32,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )));
     let mut sink = VecSink::default();
-    track_to_gpx(&SliceSource(log), name, &mut sink).unwrap();
+    track_to_gpx(&SliceSource(&ride), name, &mut sink).unwrap();
     String::from_utf8(sink.buf).unwrap()
 }
 
@@ -140,12 +157,37 @@ fn gpx_handles_negative_degrees_and_escapes_name() {
 }
 
 #[test]
-fn gpx_ignores_trailing_partial_record() {
-    // A power-loss mid-write leaves a partial record; the log stays valid to the boundary.
+fn gpx_rejects_the_retired_unfinished_sample_log() {
     let mut log = log_of(&[pt(5, 6, 7, 8, true)]);
-    log.extend_from_slice(&[0xAB; TRACK_RECORD_LEN - 3]); // a truncated trailing record
-    let gpx = to_gpx(&log, "partial");
-    assert_eq!(gpx.matches("<trkpt").count(), 1);
+    log.extend_from_slice(&[0xAB; TRACK_RECORD_LEN - 3]);
+    let mut sink = VecSink::default();
+    assert!(track_to_gpx(&SliceSource(&log), "partial", &mut sink).is_err());
+}
+
+#[test]
+fn gpx_reads_finished_v3_samples_and_skips_footer() {
+    let points = [pt(5, 6, 7, 8, true), pt(15, 16, 17, 18, false)];
+    let mut ride = log_of(&points);
+    ride.extend_from_slice(&encode_footer(&Footer::new(
+        "finished",
+        1_700_000_000,
+        1,
+        2,
+        3,
+        4,
+        2,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )));
+    let mut sink = VecSink::default();
+    track_to_gpx(&SliceSource(&ride), "finished", &mut sink).unwrap();
+    let gpx = String::from_utf8(sink.buf).unwrap();
+    assert_eq!(gpx.matches("<trkpt").count(), 2, "the footer never becomes fake points");
+    assert!(gpx.contains("lat=\"0.000006\" lon=\"0.000005\""));
+    assert!(gpx.contains("lat=\"0.000016\" lon=\"0.000015\""));
 }
 
 /// A point with all three sensor fields emits the full extensions block: `gpxtpx:hr`/`gpxtpx:cad`

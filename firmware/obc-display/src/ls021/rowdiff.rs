@@ -61,14 +61,14 @@ pub fn row_hash(row: &[u8]) -> u32 {
         k ^ (k >> 15)
     }
     let mut h: u32 = 0x811c_9dc5; // FNV-1a offset basis
-    let mut words = row.chunks_exact(4);
-    for w in &mut words {
+    let (words, remainder) = row.as_chunks::<4>();
+    for w in words {
         h ^= premix(u32::from_le_bytes([w[0], w[1], w[2], w[3]]));
         h = h.wrapping_mul(0x0100_0193); // FNV prime
     }
     // Byte tail for strides that aren't a multiple of 4 — generality only; the device stride (240)
     // and the simulator stride (720) are both exact.
-    for &b in words.remainder() {
+    for &b in remainder {
         h ^= premix(b as u32);
         h = h.wrapping_mul(0x0100_0193);
     }
@@ -347,12 +347,12 @@ mod tests {
         /// The pre-fix hash (plain word-folded FNV-1a, no premix) — the #350 baseline.
         fn old_row_hash(row: &[u8]) -> u32 {
             let mut h: u32 = 0x811c_9dc5;
-            let mut words = row.chunks_exact(4);
-            for w in &mut words {
+            let (words, remainder) = row.as_chunks::<4>();
+            for w in words {
                 h ^= u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
                 h = h.wrapping_mul(0x0100_0193);
             }
-            for &b in words.remainder() {
+            for &b in remainder {
                 h ^= b as u32;
                 h = h.wrapping_mul(0x0100_0193);
             }
@@ -376,7 +376,7 @@ mod tests {
             for _ in 0..REPS {
                 let t0 = Instant::now();
                 let mut acc = 0u32;
-                for row in plane.chunks_exact(STRIDE) {
+                for row in plane.as_chunks::<STRIDE>().0 {
                     acc = acc.wrapping_add(hash(black_box(row)));
                 }
                 black_box(acc);

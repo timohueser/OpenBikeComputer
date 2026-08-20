@@ -8,5 +8,6 @@ description = "Shared native USB byte transport and maintenance CLI for OpenBike
 [dependencies]
 getrandom = "0.4"
 nusb = { version = "=0.2.5", features = ["tokio"] }
+obc-link = { path = "../../firmware/obc-link" }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }

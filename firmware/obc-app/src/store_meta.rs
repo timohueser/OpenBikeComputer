@@ -1,4 +1,4 @@
-//! Store **identity metadata** — the durable object-id floors and the id-era epoch nonce.
+//! Store identity metadata — the remaining FAT route-id floor and the id-era epoch nonce.
 //!
 //! These codecs protect the *object store's identity* invariants (ids never reuse; an id-era reset
 //! is phone-detectable), not the rider's settings. They live together because the mint rule couples
@@ -22,11 +22,11 @@ pub(crate) fn crc16(data: &[u8]) -> u16 {
 
 // ==================== durable object-id high-water marks (#450) ====================
 //
-// The device names stored objects by durable `u16` ids (`RT{id}.OBR` routes, `RD{id}.ORD` rides);
-// the phone persists those ids (`deviceObjectID`, ride synced/tombstone sets), so an id must
+// The remaining FAT route reader names routes by durable `u16` ids (`RT{id}.OBR`). The phone
+// persists those ids, so an id must
 // **never be reused** — even after the file it named is deleted and a reboot re-scans the card.
 // `scan-max + 1` alone re-issues a deleted id; these high-water marks are the durable floor:
-// one CRC-checked 16-byte RRAM line holding the next fresh id per namespace, bumped on every
+// one CRC-checked 16-byte RRAM line holding the next fresh route id, bumped on every
 // assignment. Allocation = `max(scan_max + 1, stored_next)`.
 //
 // The codec lives here — beside the settings blob codec, the established precedent — because the
@@ -34,7 +34,7 @@ pub(crate) fn crc16(data: &[u8]) -> u16 {
 
 /// The id high-water line's fixed length: one RRAM write line (16 bytes), like the bond and
 /// boot-counter lines. Layout: `magic(4) · version(1) · pad(1) · next_route_id u16 LE ·
-/// next_ride_id u16 LE · pad(2) · crc16 LE · pad(2)` — CRC-16 over bytes `[0..12]`.
+/// reserved(4) · crc16 LE · pad(2)` — CRC-16 over bytes `[0..12]`.
 pub const ID_MARKS_LEN: usize = 16;
 /// The id-marks line's tag; anything else there (blank page, torn write, older layout) decodes to
 /// "no floor" and allocation falls back to scan-max + 1 (exactly today's behaviour).
@@ -44,14 +44,12 @@ const ID_MARKS_VERSION: u8 = 1;
 /// CRC-covered prefix of the id-marks line.
 const ID_MARKS_PAYLOAD: usize = 12;
 
-/// The durable id floors: the next fresh **route** and **ride** object id the store may hand out.
-/// `Default` (both 0) is "no floor" — a fresh device / reflash allocates from the scan alone.
+/// The durable FAT route-id floor. Flat-store rides use the catalog's u64 `next_object` cursor and
+/// have no RRAM/FAT filename floor.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct IdMarks {
     /// One past the highest route object id ever assigned (`RT{id}.OBR` uploads).
     pub next_route_id: u16,
-    /// One past the highest ride object id ever assigned (`RD{id}.ORD` saves).
-    pub next_ride_id: u16,
 }
 
 impl IdMarks {
@@ -60,14 +58,6 @@ impl IdMarks {
     pub fn alloc_route(&mut self, scan_next: u16) -> u16 {
         let id = self.next_route_id.max(scan_next);
         self.next_route_id = id.saturating_add(1);
-        id
-    }
-
-    /// Allocate the next fresh **ride** id — the ride-namespace twin of
-    /// [`alloc_route`](IdMarks::alloc_route).
-    pub fn alloc_ride(&mut self, scan_next: u16) -> u16 {
-        let id = self.next_ride_id.max(scan_next);
-        self.next_ride_id = id.saturating_add(1);
         id
     }
 }
@@ -79,7 +69,6 @@ pub fn encode_id_marks(m: &IdMarks) -> [u8; ID_MARKS_LEN] {
     b[0..4].copy_from_slice(&ID_MARKS_MAGIC);
     b[4] = ID_MARKS_VERSION;
     b[6..8].copy_from_slice(&m.next_route_id.to_le_bytes());
-    b[8..10].copy_from_slice(&m.next_ride_id.to_le_bytes());
     let crc = crc16(&b[0..ID_MARKS_PAYLOAD]);
     b[ID_MARKS_PAYLOAD..ID_MARKS_PAYLOAD + 2].copy_from_slice(&crc.to_le_bytes());
     b
@@ -100,7 +89,10 @@ pub fn decode_id_marks(bytes: &[u8]) -> Option<IdMarks> {
     if crc != crc16(&b[0..ID_MARKS_PAYLOAD]) {
         return None;
     }
-    Some(IdMarks { next_route_id: u16::from_le_bytes([b[6], b[7]]), next_ride_id: u16::from_le_bytes([b[8], b[9]]) })
+    if b[8..12].iter().any(|byte| *byte != 0) {
+        return None;
+    }
+    Some(IdMarks { next_route_id: u16::from_le_bytes([b[6], b[7]]) })
 }
 
 // ==================== store-epoch nonce (protocol v2, #632/#767; card-resident #776) ====================
@@ -121,8 +113,8 @@ pub fn decode_id_marks(bytes: &[u8]) -> Option<IdMarks> {
 // The mint decision ([`store_epoch_mint`]) is a pure function so the subtle rule is host-tested
 // without the board crate; the board glue reads the card epoch file + the RRAM id-marks line, draws
 // one TRNG word, and writes back (epoch → card, id-marks → RRAM). Torn/absent/foreign file → `None`,
-// exactly the id-marks (and other sidecar) conventions. The file carries no RRAM line-size padding —
-// it is idiomatic with the `SYNCED.SET` / `ROUTES.CRC` card sidecars, not the retired RRAM line.
+// exactly the id-marks (and other sidecar) conventions. The file carries no RRAM line-size padding;
+// like `ROUTES.CRC`, it is a card record rather than the retired RRAM line.
 
 /// The store-epoch file's fixed length: 12 bytes, `magic(4) · version(1) · pad(1) · epoch u32 LE ·
 /// crc16 LE` — CRC-16 over bytes `[0..10]`. A card sidecar, not an RRAM line, so no 16-byte write-line
@@ -291,7 +283,7 @@ mod tests {
     /// `None` — "no floor", the fall-back-to-scan-max behaviour.
     #[test]
     fn id_marks_codec_round_trips_and_rejects_torn_lines() {
-        let m = IdMarks { next_route_id: 7, next_ride_id: 41 };
+        let m = IdMarks { next_route_id: 7 };
         assert_eq!(decode_id_marks(&encode_id_marks(&m)), Some(m));
         assert_eq!(decode_id_marks(&encode_id_marks(&IdMarks::default())), Some(IdMarks::default()));
 
@@ -383,7 +375,7 @@ mod tests {
     #[test]
     fn store_epoch_mint_rule() {
         const FRESH: u32 = 0x1234_5678;
-        let floor = IdMarks { next_route_id: 9, next_ride_id: 4 };
+        let floor = IdMarks { next_route_id: 9 };
 
         // Steady state: a valid card epoch + valid floors → keep the card's epoch, write nothing.
         assert_eq!(store_epoch_mint(Some(0xABCD), Some(floor), FRESH), None);
@@ -408,7 +400,7 @@ mod tests {
     #[test]
     fn store_epoch_card_swap_transplants_the_era() {
         const FRESH: u32 = 0xDEAD_0001; // never consumed: every step below is a "keep"
-        let floor = IdMarks { next_route_id: 3, next_ride_id: 2 };
+        let floor = IdMarks { next_route_id: 3 };
         let e_a = 0xAAAA_1111u32; // card A's epoch
         let e_b = 0xBBBB_2222u32; // card B's epoch
 
@@ -448,7 +440,7 @@ mod tests {
         let epoch_line = encode_store_epoch(epoch);
         let marks_line = encode_id_marks(&marks);
 
-        // Boots 2..N with no rides/uploads: both read back valid, so the decision is "keep" —
+        // Boots 2..N with no route allocations: both read back valid, so the decision is "keep" —
         // a *different* TRNG word each boot is irrelevant because the function never reaches it.
         for boot_fresh in [0x1111_1111u32, 0x2222_2222, 0x3333_3333] {
             let e = decode_store_epoch(&epoch_line);
@@ -458,18 +450,17 @@ mod tests {
         assert_eq!(decode_store_epoch(&epoch_line), Some(epoch), "and the epoch is stable across boots");
     }
 
-    /// The DoD guarantee: with the marks persisted across "reboots", an id is **never reused after
-    /// a delete** — even when the delete lowers the card's scan-max below an already-issued id.
-    /// Simulates the store as the set of live filename-encoded ids, exactly what a mount scan sees.
+    /// The remaining FAT route floor never reuses a deleted filename id. Rides are intentionally
+    /// absent: their full-width ids come from the flat catalog cursor.
     #[test]
     fn id_allocation_never_reuses_after_delete() {
-        let mut card: heapless::Vec<u16, 8> = heapless::Vec::new(); // the live RD{id}/RT{id} files
+        let mut card: heapless::Vec<u16, 8> = heapless::Vec::new(); // live RT{id} files
         let mut marks = IdMarks::default(); // fresh device: no floor
         let scan_next = |card: &[u16]| card.iter().max().map_or(0, |m| m + 1);
 
-        // Three rides saved: 0, 1, 2 — identical to scan-max+1 while nothing deletes.
+        // Three routes saved: 0, 1, 2 — identical to scan-max+1 while nothing deletes.
         for want in 0..3u16 {
-            let id = marks.alloc_ride(scan_next(&card));
+            let id = marks.alloc_route(scan_next(&card));
             assert_eq!(id, want);
             let _ = card.push(id);
         }
@@ -478,21 +469,15 @@ mod tests {
         card.retain(|&id| id != 2);
         // "Reboot": the floor survives in RRAM (marks kept), the scan is rebuilt from the card.
         let mut rebooted = decode_id_marks(&encode_id_marks(&marks)).expect("persisted floor survives");
-        let id = rebooted.alloc_ride(scan_next(&card));
+        let id = rebooted.alloc_route(scan_next(&card));
         assert_eq!(id, 3, "the deleted id 2 is never reused");
         let _ = card.push(id);
 
         // A torn floor line falls back cleanly: allocation degrades to scan-max+1 (no floor) —
         // ids can collide with tombstones again, but only exactly as they did before the marks.
         let mut torn = encode_id_marks(&rebooted);
-        torn[9] ^= 0x55;
+        torn[7] ^= 0x55;
         let mut no_floor = decode_id_marks(&torn).unwrap_or_default();
-        assert_eq!(no_floor.alloc_ride(scan_next(&card)), 4, "torn line → scan-max+1");
-
-        // The two namespaces are independent: route allocations never disturb ride marks.
-        let mut m = IdMarks::default();
-        assert_eq!(m.alloc_route(5), 5);
-        assert_eq!(m.next_ride_id, 0, "route allocation leaves the ride floor untouched");
-        assert_eq!(m.alloc_route(0), 6, "and the route floor advanced past the assignment");
+        assert_eq!(no_floor.alloc_route(scan_next(&card)), 4, "torn line → scan-max+1");
     }
 }

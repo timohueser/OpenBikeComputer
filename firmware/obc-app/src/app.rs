@@ -573,6 +573,9 @@ pub struct App {
     /// ([`take_card_scan_request`](App::drain_host_commands) → [`set_card_free`](App::apply_event)).
     /// `None` until the host answers — the screen shows `--`.
     card_free_bytes: Option<u64>,
+    /// Whether a recovered-ride offer has already reached the screen this boot. A recorder may
+    /// report the same resumable object on every host pass; the rider sees one decision card.
+    recovered_ride_offered: bool,
 }
 
 /// Cap on the computed route's shape-preview polyline (#685 §4): the host decimates the planned
@@ -666,6 +669,7 @@ impl App {
         map_name: heapless::String::new(),
         map_obcm_version: 0,
         card_free_bytes: None,
+        recovered_ride_offered: false,
     );
 
     /// Build the **map-first** [`App`] in place at `slot` — the by-reference twin of
@@ -698,8 +702,8 @@ impl App {
     /// Loading or swapping a route resets the matcher and ride totals here, once per load.
     pub fn tick(&mut self, clock: RideClock, sensors: Sensors, route: Option<&RouteReader>) {
         let now_ms = clock.0;
-        // BLE-sensor freshness is judged on the `RideClock` (`now_ms`) — the clock samples record on
-        // and the summaries + track log read on. Remember it so the stat tiles, which render *after*
+        // BLE-sensor freshness is judged on the `RideClock` (`now_ms`) — the clock ride samples and
+        // summaries use. Remember it so the stat tiles, which render *after*
         // this tick against the map-plane clock `self.ui.now_ms`, judge staleness on the same timebase.
         // On the board `self.ui.now_ms == now_ms` (the ride loop drives `advance_animations` and `tick`
         // off one monotonic `now`); in the simulator they differ (`RideClock` is GPX-playback time,
@@ -1363,7 +1367,7 @@ impl App {
     /// appears/disappears without a reboot. Clones up to [`MAX_RIDES`](crate::MAX_RIDES); any beyond
     /// that are ignored. Sorted-by-`start_time` is the host's job (the board scan and the sim store
     /// both hand newest-first). Dirties the map once — a store change is a repaint-worthy event.
-    pub fn set_rides(&mut self, summaries: &[RideSummary], ids: &[u16]) {
+    pub fn set_rides(&mut self, summaries: &[RideSummary], ids: &[crate::CatalogObjectId]) {
         // Re-point every held ride index by identity (its id in `old_ids` → new index), the
         // ride-namespace twin of the route remap: `replace_rides` moves its own view-cache keys
         // (the profile/preview the detail's band hangs off — identity survives → the resident
@@ -1402,7 +1406,7 @@ impl App {
 
     /// Each ride-catalog entry's durable object id, parallel to [`rides`](App::rides) — as last fed to
     /// [`set_rides`](App::set_rides).
-    pub fn ride_ids(&self) -> &[u16] {
+    pub fn ride_ids(&self) -> &[crate::CatalogObjectId] {
         self.catalogs.ride_ids()
     }
 
@@ -1412,6 +1416,18 @@ impl App {
     /// Dirties the map once — the open detail's band appears with the answer.
     pub fn set_ride_profile(&mut self, profile: Option<Profile>) {
         self.catalogs.set_ride_profile(profile, self.activity.viewed_ride);
+        self.ui.map_dirty = true;
+    }
+
+    /// Borrow the app's one resident ride-profile buffer for an in-place host fill.
+    /// Finish with [`finish_ride_profile_fill`](App::finish_ride_profile_fill), including on error.
+    pub fn begin_ride_profile_fill(&mut self) -> &mut Profile {
+        self.catalogs.begin_ride_profile_fill()
+    }
+
+    /// Publish or reject an in-place ride-profile fill for the currently viewed ride.
+    pub fn finish_ride_profile_fill(&mut self, valid: bool) {
+        self.catalogs.finish_ride_profile_fill(valid, self.activity.viewed_ride);
         self.ui.map_dirty = true;
     }
 
@@ -2015,6 +2031,56 @@ impl App {
         self.ui.stack.len()
     }
 
+    /// Offer one journaled ride recovered at boot to the rider.
+    ///
+    /// The host calls this after it has reconstructed `continuation` from the durable sample
+    /// prefix. The first successful call restores the accumulators and roots the UI at the explicit
+    /// Continue / hold-to-Discard card. Repeated calls are no-ops, so a level-style recorder status
+    /// may be fed every pass without reopening the decision after it has been made.
+    ///
+    /// Returns `true` exactly when the card was raised. An already-tracking app refuses the offer;
+    /// recovery is a boot decision, never something that can replace a live session.
+    pub fn offer_recovered_ride(&mut self, continuation: crate::RideContinuation) -> bool {
+        if self.recovered_ride_offered || self.activity.is_tracking() {
+            return false;
+        }
+        self.activity.restore_ride_continuation(continuation);
+        self.activity.end_session();
+        self.activity.mode = Mode::Idle;
+        self.activity.active_route = None;
+        screen::apply(
+            &mut self.ui.stack,
+            screen::Transition::Root(Screen::RideRecovery(crate::screen::RideRecoveryScreen::new())),
+        );
+        self.recovered_ride_offered = true;
+        self.ui.map_dirty = true;
+        self.ui.input.cancel_holds();
+        self.ui.hold_cancel_pending = true;
+        true
+    }
+
+    /// Surface a durable recording whose journal bytes or continuation metadata failed domain
+    /// validation. The fail-closed card has no Continue action; the rider may only hold-to-Discard,
+    /// and Back cannot silently strand the object behind Home.
+    pub fn offer_damaged_ride(&mut self) -> bool {
+        if self.recovered_ride_offered || self.activity.is_tracking() {
+            return false;
+        }
+        self.activity.restore_ride_continuation(crate::RideContinuation::default());
+        self.activity.end_session();
+        self.activity.mode = Mode::Idle;
+        self.activity.active_route = None;
+        screen::apply(
+            &mut self.ui.stack,
+            screen::Transition::Root(Screen::RideRecovery(crate::screen::RideRecoveryScreen::damaged())),
+        );
+        self.recovered_ride_offered = true;
+        self.ui.map_dirty = true;
+        self.ui.input.cancel_holds();
+        self.ui.hold_cancel_pending = true;
+        true
+    }
+
     pub fn top_screen(&self) -> &Screen {
         self.ui.stack.last().expect("the stack always has the Home root")
     }
@@ -2268,6 +2334,8 @@ impl App {
             position,
             bearing_deg,
             speed_deci_ms,
+            // The weather request's legacy compact route id remains optional until that protocol
+            // moves to the flat store's full-width ObjectId. Never truncate a valid catalog id.
             route_id: self
                 .activity
                 .active_route
@@ -2288,7 +2356,8 @@ impl App {
             climb_m: self.activity.climb_m() as u16,
             unix_at_anchor: self.wall_unix_now(),
             anchor_ms: self.ui.now_ms,
-            // The per-ride BLE-sensor summary heads the v2 ride object (epic #707, SE3). Each is
+            clock_trusted: self.clock_trusted(),
+            // The per-ride BLE-sensor summary is captured in the v3 footer (epic #707, SE3). Each is
             // `None` (→ sentinel) when the ride saw no fresh sample of that quantity.
             avg_hr: self.activity.avg_hr(),
             max_hr: self.activity.max_hr(),
@@ -3147,7 +3216,7 @@ impl App {
             HostCommandClass::DeleteTrip => self.activity.take_trip_delete().map(|id| HostCommand::DeleteTrip { id }),
             HostCommandClass::DeleteRide => {
                 if let Some(idx) = self.activity.take_ride_delete() {
-                    Some(HostCommand::DeleteRide { id: u64::from(self.catalogs.ride_entry(idx)?.id) })
+                    Some(HostCommand::DeleteRide { id: self.catalogs.ride_entry(idx)?.id })
                 } else {
                     self.retention_delete_ride()
                 }
@@ -3166,10 +3235,8 @@ impl App {
                 // Mirror into both the resident summary (UI repaint) and the full retention inventory
                 // (finding #876-2) so a re-derivation before the host's rescan doesn't re-enqueue the
                 // stamp — including for a ride outside the newest-32 display catalog.
-                if let Ok(id) = u16::try_from(id) {
-                    self.catalogs.stamp_ride_synced_at(id, utc);
-                    self.catalogs.stamp_inventory_synced_at(id, utc);
-                }
+                self.catalogs.stamp_ride_synced_at(id, utc);
+                self.catalogs.stamp_inventory_synced_at(id, utc);
                 Some(HostCommand::StampRideSynced { id, utc })
             }
             HostCommandClass::FinishTrack => self.activity.take_track_action().map(HostCommand::FinishTrack),
@@ -3318,7 +3385,7 @@ impl App {
     /// re-derived *after* the drain (a same-pass `nav_finish` creating a fresh
     /// [`RefreshNavPreview`](crate::HostCommand::RefreshNavPreview) need) must still be seen this
     /// pass (#812).
-    pub fn ride_track_request(&self) -> Option<u16> {
+    pub fn ride_track_request(&self) -> Option<crate::CatalogObjectId> {
         let viewed = self.activity.viewed_ride?;
         if self.catalogs.ride_profile_answered_for(viewed) {
             return None; // already answered for this ride (profile or a recorded failure)
@@ -5455,7 +5522,7 @@ mod tests {
 
         // No progress spinner up → dropped.
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        app.apply_event(crate::HostEvent::DfuInstallFailed(DfuInstallError::PendingSave));
+        app.apply_event(crate::HostEvent::DfuInstallFailed(DfuInstallError::NoCard));
         assert!(!app.ui.stack.iter().any(|s| matches!(s, Screen::DfuError(_))), "no spinner ⇒ answer dropped");
 
         // A refusal replaces the spinner with the error card, carrying the reason.

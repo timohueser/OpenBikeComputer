@@ -65,7 +65,7 @@ pub mod weather;
 pub mod weather_alerts;
 pub mod weather_rain;
 
-pub use activity::{Activity, DetourRequest, DfuAction, Mode, NavRequest, TrackAction};
+pub use activity::{Activity, DetourRequest, DfuAction, Mode, NavRequest, RideContinuation, TrackAction};
 pub use altitude::AltitudeFusion;
 pub use app::{App, AppState, CameraMode, ClockTrust, Pan, PanBasis, PanTool, NAV_PREVIEW_MAX};
 pub use arena_gate::{ArenaError, ArenaGate, ArenaInit, ArenaOwner, MapQuiesced, TransferReady};

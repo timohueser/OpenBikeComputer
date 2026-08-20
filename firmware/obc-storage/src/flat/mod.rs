@@ -73,7 +73,7 @@ pub use device::BlockDevice;
 pub use error::{DecodeError, Reason, Record, StoreError};
 pub use seam::{
     Allocation, DisplayName, EntryFlags, EntryMeta, Mutation, ObjectId, ObjectKind, PutSource, Revision,
-    RideCheckpoint, Store, StoreId,
+    RideCheckpoint, Store, StoreId, RIDE_RESUME_LEN,
 };
 pub use source::StoreSource;
 pub use store::{FlatStore, Handle, Mode, RideRecovery};

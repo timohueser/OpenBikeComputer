@@ -584,7 +584,7 @@ impl<'a> AckRides<'a> {
 
     /// The acked ride ids, in write order.
     pub fn iter(&self) -> impl Iterator<Item = u16> + 'a {
-        self.ids.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]]))
+        self.ids.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]]))
     }
 
     /// Encode `ids` into `out` (must be ≥ [`encoded_len`](Self::encoded_len)); returns the written

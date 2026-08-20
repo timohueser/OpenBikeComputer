@@ -476,7 +476,7 @@ Every bulk payload is a typed **object**:
 | `type` | Object | Direction | Payload |
 |---|---|---|---|
 | `1` | `route` | app → device (upload), device → app (detail read) | an OBCR v3 file, §7.1 |
-| `2` | `ride` | device → app | ride object v1 or v2, §7.2 |
+| `2` | `ride` | device → app | ride object v3, §7.2 |
 | `3` | `config` | — | reserved on the CoC; Config crosses GATT (§3.3) |
 | `4` | `diagnostics` | device → app | diagnostics blob, §7.5 |
 | `5` | `fwImage` | app → device (upload) | a complete `UPDATE.BIN` OBCU update image, §7.6 |
@@ -810,23 +810,14 @@ holds — id, filename, size, OBCM version, bounding box, all derivable from the
 card — but not describe where any of them came from. Closing that gap needs a
 new §4.4 command, not a change to this section.
 
-**Object ids** are `u16`, assigned by the device, **stable for the life of the
-stored object — including across device reboots** — and enumerated by the list
-objects. Durability is what lets the phone persist the id an upload committed
-under and later reconcile ("is my copy still on the device?") or replace that
-object in place — and, for rides, what the app's synced-set and delete
-tombstones key on. Ids mint at `max(card-scan max + 1, RRAM floor)`: the
-reference firmware encodes the id in the stored filename (routes `RT{id}.OBR`,
-rides `RD{id}.ORD`, trips `TP{id}.OBT`) — **SD filenames guard stored ids** — and an RRAM floor
-guards **deleted** ids. **Within a store epoch, an id the device minted is never
-re-issued to a different object.** The era events that legitimately reopen the id
-space are a lost RRAM floor (reflash / factory reset / torn id-marks write) or an
-absent/torn **card-resident** epoch file; each mints a fresh `store_epoch` (§1) —
-so the app scopes id-keyed state per epoch and an era change never silently aliases
-a stale id. Because the epoch rides the card, a card swap transplants the era, and
-a card written by a *different* device presents *its own* epoch — a distinct
-`(serial, epoch)` scope on this device, which is what **closes** the former
-foreign-card hole (#776). Conventions:
+**Flat-store object ids** are opaque `u64` values, assigned from the catalog's
+monotonic `next_object` cursor and stable for the life of the object, including
+across reboots. The cursor is committed with the catalog, so deletion never
+reissues an id and neither filenames nor an RRAM ride-id floor participate.
+Protocol-v4 LIST/GET/PUT/REMOVE carry these `u64` ids. The legacy BLE control
+surface below still has `u16` route/trip fields until its own migration boundary;
+rides recorded by FS8 are flat objects and do not fall back to that filename
+scheme.
 
 - `0xFFFF` on an upload means "new" — the device assigns an id and reports it
   in the `transferResult` (§4.3). Uploading to an existing id replaces that
@@ -1379,67 +1370,52 @@ There is no separate detail codec — the app decodes waypoints and the
 elevation profile from the OBCR bytes it (in the upload direction) encoded
 itself. One layout, one truth.
 
-### 7.2 `ride` — ride object (v1 / v2)
+### 7.2 `ride` — ride object v3
 
-The compact tracked-ride layout (ratified from the app's B7 codec, byte-for-
-byte). Coordinates are stored as **degrees × 1e7** (units of 10⁻⁷ °) and the
-point order is `lat, lon` — this object is *not* OBCR and deliberately keeps
-the layout the app already pins; the extra digit over OBCR's microdegrees
-costs nothing and buys a ~1 cm grid.
+A ride payload is the sample stream the device recorded, followed by one fixed summary footer.
+There is no leading header and no finish-time conversion. Protocol-v4 `GET` serves the stored bytes
+unchanged.
 
-**v2 (epic #707)** adds recorded BLE-sensor data — a per-ride heart-rate /
-cadence / power summary in the header and per-point `hr`/`cad`/`pwr` samples.
-It is a pure **additive object version** (§1 point 5): the version byte goes
-`1 → 2`, the header and point record each grow a fixed sensor tail, and there
-is **no `protocolVersion` bump**. **A device may serve either version and the
-app MUST accept both** — a device that has never seen a sensor keeps writing
-v1, and old v1 rides already on the card must still list, download and delete.
+Each sample is the existing 20-byte little-endian record:
 
-```
-Header (v1: 23 bytes + name  ·  v2: 31 bytes + name):
-  version      u8   = 1 or 2
-  name_len     u16  · name UTF-8 (name_len bytes follow immediately)
-  start_time   u32  unix seconds
-  distance     u32  meters
-  moving_time  u32  seconds
-  avg_speed    u16  cm/s
-  climb        u16  meters
-  point_count  u32
-  -- v2 only, the per-ride sensor summary: --
-  avg_hr       u8   bpm    · 0xFF   = no HR data this ride
-  max_hr       u8   bpm    · 0xFF   = no HR data
-  avg_cad      u8   rpm    · 0xFF   = no cadence data
-  pad          u8   = 0    (reserved)
-  avg_pwr      u16  watts  · 0xFFFF = no power data
-  max_pwr      u16  watts  · 0xFFFF = no power data
+| Offset | Size | Field |
+| --: | --: | :-- |
+| 0 | 4 | longitude, `i32` microdegrees |
+| 4 | 4 | latitude, `i32` microdegrees |
+| 8 | 2 | elevation, `i16` metres |
+| 10 | 2 | flags; bit 0 is `segment_start`, all other bits are zero |
+| 12 | 4 | monotonic timestamp, `u32` milliseconds |
+| 16 | 1 | heart rate, bpm; `0xFF` = absent/stale |
+| 17 | 1 | cadence, rpm; `0xFF` = absent/stale |
+| 18 | 2 | power, watts; `0xFFFF` = absent/stale |
 
-Point record (v1: 14 bytes · v2: 18 bytes, × point_count):
-  t_offset  u32  seconds since start_time
-  lat       i32  degrees × 1e7
-  lon       i32  degrees × 1e7
-  ele       i16  meters · INT16_MIN (-32768) = no elevation
-  -- v2 only, the per-point sensor samples: --
-  hr        u8   bpm · 0xFF   = absent (no strap / stale)
-  cad       u8   rpm · 0xFF   = absent
-  pwr       u16  watts · 0xFFFF = absent
-```
+The final 84 bytes are the summary footer:
 
-The byte length is fully determined **per version**: v1
-`23 + name_len + 14 × point_count`, v2 `31 + name_len + 18 × point_count` —
-a decoder reads the version byte first, then rejects a payload whose length
-disagrees for that version.
+| Offset | Size | Field |
+| --: | --: | :-- |
+| 0 | 4 | magic `OBRF` (`4F 42 52 46`) |
+| 4 | 1 | version, `3` |
+| 5 | 1 | UTF-8 name length, `0..=48` |
+| 6 | 2 | footer length, `84` |
+| 8 | 4 | start time, Unix seconds |
+| 12 | 4 | total distance, metres |
+| 16 | 4 | moving time, seconds |
+| 20 | 2 | average speed, cm/s |
+| 22 | 2 | climb, metres |
+| 24 | 4 | point count |
+| 28 | 1 | average heart rate; `0xFF` = absent |
+| 29 | 1 | maximum heart rate; `0xFF` = absent |
+| 30 | 1 | average cadence; `0xFF` = absent |
+| 31 | 1 | reserved, zero |
+| 32 | 2 | average power; `0xFFFF` = absent |
+| 34 | 2 | maximum power; `0xFFFF` = absent |
+| 36 | 48 | UTF-8 name followed by zero padding |
 
-Sensor values are **raw** (no zones / smoothing / NP / TSS); an absent value —
-a quantity with no sensor, or a per-point sample whose strap had dropped or
-gone stale (>5 s) — encodes as its sentinel (`0xFF` for the `u8` fields, `0xFFFF`
-for the `u16` fields), and decodes back to "no data". `pad` is a reserved `0`
-byte keeping the `u16` sensor fields 2-byte aligned.
-
-The reference firmware stores each tracked ride as **exactly these bytes**
-(`/tracks/RD{id}.ORD`, encoded once at ride Finish), so a ride download is a
-verbatim file stream — the §7.1 discipline in the device → app direction.
-`specs/vectors/ride-v1.bin` and `ride-v2.bin` pin the two layouts (the v2
-fixture mixes present and absent sensor fields across its header and points).
+The footer is last because the flat-store payload pages are write-once. A list row reads precisely
+84 bytes at `object length − 84`; a full reader requires
+`object length == point_count × 20 + 84`. Finalize appends this footer and performs one store commit
+that publishes the final length/CRC and clears `RECORDING`. `specs/vectors/ride-v3.bin` pins three
+sample records—including sensor sentinels and segment flags—and the footer.
 
 ### 7.3 `config` — the Config object
 

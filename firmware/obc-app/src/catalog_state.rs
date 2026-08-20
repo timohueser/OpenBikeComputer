@@ -41,7 +41,7 @@ pub struct RouteEntry<'a> {
 #[derive(Debug, Clone, Copy)]
 pub struct RideEntry<'a> {
     /// The ride's durable object id.
-    pub id: u16,
+    pub id: CatalogObjectId,
     /// The resident summary the Rides screen renders.
     pub summary: &'a RideSummary,
 }
@@ -52,7 +52,7 @@ pub struct RideEntry<'a> {
 /// and `Activity` keys with the exact mapping the component itself used.
 pub(crate) type OldRouteIds = heapless::Vec<CatalogObjectId, MAX_ROUTES>;
 /// The ride twin of [`OldRouteIds`].
-pub(crate) type OldRideIds = heapless::Vec<u16, UI_RIDES_CAP>;
+pub(crate) type OldRideIds = heapless::Vec<CatalogObjectId, UI_RIDES_CAP>;
 
 /// The resident catalogs + identity-keyed view caches. See the module docs.
 pub(crate) struct CatalogState {
@@ -76,7 +76,7 @@ pub(crate) struct CatalogState {
     /// The resident ride catalog (summaries) — what the Rides screen lists (epic #447, P7).
     rides: RideCatalog,
     /// Each ride's durable object id, pairwise with [`rides`](CatalogState::rides).
-    ride_ids: heapless::Vec<u16, UI_RIDES_CAP>,
+    ride_ids: heapless::Vec<CatalogObjectId, UI_RIDES_CAP>,
     /// The **full** compact ride-retention inventory (finding #876-2): every stored ride's
     /// `id + synced + synced_at`, up to [`MAX_RIDES`], independent of the newest-[`UI_RIDES_CAP`]
     /// display catalog above. The retention sweep + eager `synced_at` stamp read this — so an older
@@ -87,7 +87,11 @@ pub(crate) struct CatalogState {
     ride_inventory: heapless::Vec<RideRetentionRecord, MAX_RIDES>,
     /// The **viewed ride's** recorded-track elevation profile (epic #678 T2 / #680) — the Ride
     /// detail's band source, host-filled once per detail entry. `None` while unanswered.
-    ride_profile: Option<Profile>,
+    ride_profile: Profile,
+    /// Whether [`ride_profile`](CatalogState::ride_profile) contains a successful host answer.
+    /// Kept separate so the board can stream directly into the resident buffer without returning
+    /// a ~5 KiB value through its task frame.
+    ride_profile_present: bool,
     /// The ride index [`ride_profile`](CatalogState::ride_profile) was **answered** for (a failed
     /// fill parks `None` under the same key so a dead file isn't re-streamed), remapped by
     /// identity across rescans like every held ride index.
@@ -126,7 +130,8 @@ impl CatalogState {
             rides: RideCatalog::new(),
             ride_ids: heapless::Vec::new(),
             ride_inventory: heapless::Vec::new(),
-            ride_profile: None,
+            ride_profile: Profile::EMPTY,
+            ride_profile_present: false,
             ride_profile_for: None,
             ride_preview: heapless::Vec::new(),
             ride_preview_for: None,
@@ -155,7 +160,8 @@ impl CatalogState {
             addr_of_mut!((*slot).rides).write(RideCatalog::new());
             addr_of_mut!((*slot).ride_ids).write(heapless::Vec::new());
             addr_of_mut!((*slot).ride_inventory).write(heapless::Vec::new());
-            addr_of_mut!((*slot).ride_profile).write(None);
+            addr_of_mut!((*slot).ride_profile).write(Profile::EMPTY);
+            addr_of_mut!((*slot).ride_profile_present).write(false);
             addr_of_mut!((*slot).ride_profile_for).write(None);
             addr_of_mut!((*slot).ride_preview).write(heapless::Vec::new());
             addr_of_mut!((*slot).ride_preview_for).write(None);
@@ -174,6 +180,7 @@ impl CatalogState {
                 ride_ids: _,
                 ride_inventory: _,
                 ride_profile: _,
+                ride_profile_present: _,
                 ride_profile_for: _,
                 ride_preview: _,
                 ride_preview_for: _,
@@ -319,7 +326,7 @@ impl CatalogState {
     }
 
     /// Each ride's durable id, pairwise with [`rides`](CatalogState::rides).
-    pub(crate) fn ride_ids(&self) -> &[u16] {
+    pub(crate) fn ride_ids(&self) -> &[CatalogObjectId] {
         &self.ride_ids
     }
 
@@ -345,8 +352,8 @@ impl CatalogState {
     /// [`stamp_ride_synced_at`](CatalogState::stamp_ride_synced_at)) so a re-derivation before the
     /// host's rescan lands doesn't re-enqueue the same stamp for a ride outside the display catalog.
     /// Only ever fills a `0` stamp. A no-op if the id isn't in the inventory.
-    pub(crate) fn stamp_inventory_synced_at(&mut self, id: u16, utc: u32) {
-        if let Some(r) = self.ride_inventory.iter_mut().find(|r| r.id == u64::from(id) && r.synced_at_utc == 0) {
+    pub(crate) fn stamp_inventory_synced_at(&mut self, id: CatalogObjectId, utc: u32) {
+        if let Some(r) = self.ride_inventory.iter_mut().find(|r| r.id == id && r.synced_at_utc == 0) {
             r.synced_at_utc = utc;
         }
     }
@@ -366,7 +373,7 @@ impl CatalogState {
     /// ignored) and remap this component's own identity-keyed view caches — the answered-profile
     /// and preview keys move with the ride they were filled for, and drop (buffer cleared) when it
     /// vanished. Returns the old id column for the caller's screen/`Activity` remap.
-    pub(crate) fn replace_rides(&mut self, summaries: &[RideSummary], ids: &[u16]) -> OldRideIds {
+    pub(crate) fn replace_rides(&mut self, summaries: &[RideSummary], ids: &[CatalogObjectId]) -> OldRideIds {
         let old_ids = self.ride_ids.clone();
         self.rides.clear();
         self.ride_ids.clear();
@@ -379,17 +386,14 @@ impl CatalogState {
         for (s, &id) in summaries.iter().zip(ids).take(UI_RIDES_CAP) {
             let _ = self.rides.push(s.clone());
             let _ = self.ride_ids.push(id);
-            let _ = self.ride_inventory.push(RideRetentionRecord {
-                id: u64::from(id),
-                synced: s.synced,
-                synced_at_utc: s.synced_at_utc,
-            });
+            let _ =
+                self.ride_inventory.push(RideRetentionRecord { id, synced: s.synced, synced_at_utc: s.synced_at_utc });
         }
         // The view caches follow their subject's identity (identity survives → the resident
         // profile moves with it, no re-stream; vanished → the buffer drops).
         self.ride_profile_for = self.ride_profile_for.and_then(|i| self.remap_ride(&old_ids, i));
         if self.ride_profile_for.is_none() {
-            self.ride_profile = None; // the profiled ride vanished (or none was profiled)
+            self.ride_profile_present = false; // the profiled ride vanished (or none was profiled)
         }
         self.ride_preview_for = self.ride_preview_for.and_then(|i| self.remap_ride(&old_ids, i));
         if self.ride_preview_for.is_none() {
@@ -400,7 +404,7 @@ impl CatalogState {
 
     /// Old ride index → new ride index by durable identity — the ride twin of
     /// [`remap_route`](CatalogState::remap_route).
-    pub(crate) fn remap_ride(&self, old_ids: &[u16], idx: usize) -> Option<usize> {
+    pub(crate) fn remap_ride(&self, old_ids: &[CatalogObjectId], idx: usize) -> Option<usize> {
         let id = *old_ids.get(idx)?;
         self.ride_ids.iter().position(|&x| x == id)
     }
@@ -409,7 +413,7 @@ impl CatalogState {
     /// the host's sidecar write) so a re-derivation before the host's rescan lands doesn't re-enqueue
     /// the same stamp. Only ever fills a `0` stamp (never re-stamps). A no-op if the id isn't
     /// resident. Returns whether it changed a summary (drives the map repaint).
-    pub(crate) fn stamp_ride_synced_at(&mut self, id: u16, utc: u32) -> bool {
+    pub(crate) fn stamp_ride_synced_at(&mut self, id: CatalogObjectId, utc: u32) -> bool {
         if let Some(p) = self.ride_ids.iter().position(|&x| x == id) {
             if self.rides[p].synced_at_utc == 0 {
                 self.rides[p].synced_at_utc = utc;
@@ -424,16 +428,34 @@ impl CatalogState {
     /// Park the host's ride-track answer in the single resident ride-profile buffer, keyed to
     /// `viewed_ride` (`None` profile = the stream failed; the cue stops re-firing).
     pub(crate) fn set_ride_profile(&mut self, profile: Option<Profile>, viewed_ride: Option<usize>) {
-        self.ride_profile = profile;
+        if let Some(profile) = profile {
+            self.ride_profile = profile;
+            self.ride_profile_present = true;
+        } else {
+            self.ride_profile_present = false;
+        }
+        self.ride_profile_for = viewed_ride;
+    }
+
+    /// Borrow the one resident profile buffer for an in-place host fill. The matching
+    /// [`finish_ride_profile_fill`](Self::finish_ride_profile_fill) call publishes or rejects it.
+    pub(crate) fn begin_ride_profile_fill(&mut self) -> &mut Profile {
+        self.ride_profile_present = false;
+        &mut self.ride_profile
+    }
+
+    /// Complete an in-place profile fill, including a failed answer so the level-triggered request
+    /// does not grind on malformed media every pass.
+    pub(crate) fn finish_ride_profile_fill(&mut self, valid: bool, viewed_ride: Option<usize>) {
+        self.ride_profile_present = valid;
         self.ride_profile_for = viewed_ride;
     }
 
     /// The resident ride profile **iff** it was answered for `viewed_ride` (a `None` key never
     /// matches — the buffer is only reachable through the identity it was filled for).
     pub(crate) fn ride_profile_for(&self, viewed_ride: Option<usize>) -> Option<&Profile> {
-        (self.ride_profile_for.is_some() && self.ride_profile_for == viewed_ride)
-            .then_some(self.ride_profile.as_ref())
-            .flatten()
+        (self.ride_profile_present && self.ride_profile_for.is_some() && self.ride_profile_for == viewed_ride)
+            .then_some(&self.ride_profile)
     }
 
     /// Whether the ride-profile buffer is answered for `viewed_ride` — the derived
@@ -467,7 +489,7 @@ impl CatalogState {
     /// detail exited or moved subjects. Filling is the host's; only the drop lives here.
     pub(crate) fn drop_stale_ride_views(&mut self, viewed_ride: Option<usize>) {
         if self.ride_profile_for != viewed_ride {
-            self.ride_profile = None;
+            self.ride_profile_present = false;
             self.ride_profile_for = None;
         }
         if self.ride_preview_for != viewed_ride {

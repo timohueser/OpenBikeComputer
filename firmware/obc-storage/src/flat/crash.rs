@@ -30,17 +30,24 @@ use std::vec::Vec;
 
 use super::catalog::{Entry, Gate};
 use super::layout::{
-    catalog_gate, slot_block, Geometry, Ranges, BLOCK, CATALOG, EXTENT_AREA, PROGRAM_PAGE, SLOTS, SUPERBLOCK,
+    catalog_gate, slot_block, slot_header_block, Geometry, Ranges, BLOCK, CATALOG, EXTENT_AREA, PROGRAM_PAGE, SLOTS,
+    SUPERBLOCK,
 };
 use super::model::{self, Change, Model, Snapshot};
 use super::raw::crc32;
 use super::seam::{
     DisplayName, EntryFlags, EntryMeta, Mutation, ObjectId, ObjectKind, PutSource, Revision, RideCheckpoint, Store,
-    StoreId,
+    StoreId, RIDE_RESUME_LEN,
 };
 use super::sim::{FaultOnce, FaultPlan, MediaOp, SparseDisk, When, EVERY_WHEN};
 use super::store::{FlatStore, Mode, RideRecovery};
 use super::superblock::Superblock;
+
+const RESUME: [u8; RIDE_RESUME_LEN] = [0x5A; RIDE_RESUME_LEN];
+
+fn ride_checkpoint<'a>(append: &'a [u8], resume: &'a [u8; RIDE_RESUME_LEN]) -> RideCheckpoint<'a> {
+    RideCheckpoint { id: ObjectId(1), revision: Revision(1), append, payload_crc: crc32(append), resume }
+}
 
 /// A card with 64 extents: enough for a 32 MiB ride reserve and small enough that several hundred of
 /// them cost nothing.
@@ -226,7 +233,7 @@ fn matrix(
     build: impl Fn(u64) -> SparseDisk,
     scenario: impl Fn(&mut Card),
 ) {
-    matrix_admitting(name, cuts, &[before.snapshot(), after.snapshot()], after, build, scenario);
+    matrix_admitting(name, cuts, &[before.snapshot(), after.snapshot()], None, after, build, scenario);
 }
 
 /// The same, for the one scenario whose cut points admit a third state §5.5 names.
@@ -234,6 +241,7 @@ fn matrix_admitting(
     name: &str,
     cuts: usize,
     admissible: &[Snapshot],
+    resident_expected: Option<Snapshot>,
     expected: &Model,
     build: impl Fn(u64) -> SparseDisk,
     scenario: impl Fn(&mut Card),
@@ -291,7 +299,11 @@ fn matrix_admitting(
     let disk = build(99);
     let mut store = FlatStore::mount(&disk);
     scenario(&mut store);
-    assert_eq!(snapshot(&mut store), after.snapshot(), "{name}: fault-free run, resident state");
+    assert_eq!(
+        snapshot(&mut store),
+        resident_expected.unwrap_or_else(|| after.snapshot()),
+        "{name}: fault-free run, resident state"
+    );
     disk.reboot();
     assert_eq!(snapshot(&mut FlatStore::mount(&disk)), after.snapshot(), "{name}: fault-free run, remounted");
 }
@@ -426,7 +438,7 @@ fn a_commit_after_a_fallback_targets_the_copy_it_is_not_serving() {
         model.snapshot()
     };
     let admissible = [served.snapshot(), mark_erased, after.snapshot()];
-    matrix_admitting("fallback commit", 39, &admissible, &after, build, |store: &mut Card| {
+    matrix_admitting("fallback commit", 39, &admissible, None, &after, build, |store: &mut Card| {
         let Ok(mut allocation) = store.allocate(600) else { return };
         if store.write(&mut allocation, &payload(600)).is_err() {
             return;
@@ -662,7 +674,7 @@ fn a_card_the_index_cannot_reach_at_one_mib_gets_bigger_extents() {
 #[test]
 fn a_ride_records_and_recovers_on_a_card_scaled_geometry() {
     let disk = SparseDisk::blank((512 << 30) / BLOCK as u64, 11);
-    let mut store = FlatStore::initialize(&disk, STORE).expect("a 512 GiB card formats");
+    let store = FlatStore::initialize(&disk, STORE).expect("a 512 GiB card formats");
     assert_eq!(store.extent_size(), 8 << 20, "§8: 512 GiB / 65,536 is 8 MiB");
     assert_eq!(store.free_extents(), 65_535);
 
@@ -672,22 +684,25 @@ fn a_ride_records_and_recovers_on_a_card_scaled_geometry() {
     store.commit(&[Mutation::Put { meta: ride.meta, source: PutSource::Fresh(allocation) }]).unwrap();
     assert_eq!(store.free_extents(), 65_531, "§7.2's 32 MiB reserve is four extents at this size");
 
-    // Two checkpoints, the second past a whole payload page, so §7.2 step 2 flushes one into the
+    // Two checkpoints, the second past a whole payload page, so §7.2's rollover flushes one into the
     // ride's own extents at an address derived from the 8 MiB stride.
     let mut rider = Rider::new();
     rider.grow(200);
-    assert!(rider.checkpoint(&mut store));
-    rider.grow(PROGRAM_PAGE + 300);
-    assert!(rider.checkpoint(&mut store));
-    assert_eq!(rider.flushed, PROGRAM_PAGE, "the checkpoint flushed no page");
+    assert!(rider.checkpoint(&store));
+    rider.grow(PROGRAM_PAGE - 100);
+    assert!(rider.checkpoint(&store));
+    assert_eq!(rider.durable / PROGRAM_PAGE * PROGRAM_PAGE, PROGRAM_PAGE, "the checkpoint flushed no page");
 
     disk.reboot();
     let store = FlatStore::mount(&disk);
-    let (expected, tail) = rider.expect(2);
+    // The rollover checkpoint used sequence 2 for the exact full-page tail, then sequence 3 for
+    // the advanced flushed offset and remainder.
+    let (expected, payload) = rider.expect(3);
     assert_eq!(store.recovered_ride(), Some(expected), "§7.3 recovered the wrong checkpoint");
-    let mut recovered = vec![0u8; tail.len()];
-    assert_eq!(store.recovered_tail(&mut recovered).unwrap(), tail.len());
-    assert_eq!(recovered, tail);
+    let expected_tail = &payload[expected.flushed as usize..];
+    let mut recovered = vec![0u8; expected_tail.len()];
+    assert_eq!(store.read_recovered(expected.flushed, &mut recovered).unwrap(), expected_tail.len());
+    assert_eq!(recovered, expected_tail);
     // And the flushed page is where §6.1 says it is: payload offset 0 of extent 0.
     assert_eq!(disk.block(EXTENT_AREA)[..8], rider.payload[..8], "the flushed page missed the extent area");
 }
@@ -817,15 +832,28 @@ fn starting_a_ride_recovers_the_old_or_the_new_catalog() {
     let ride = recording();
     let before = empty();
     let after = empty().apply(&[Change::Put(ride)]).clone();
-    matrix_both_copies("ride start", 27, &before, &after, |store: &mut Card| {
-        let Ok(allocation) = store.allocate(32 << 20) else { return };
-        let _ = store.commit(&[Mutation::Put { meta: ride.meta, source: PutSource::Fresh(allocation) }]);
-    });
+    let mut resident = after.snapshot();
+    resident.ride = None;
+    let admissible = [before.snapshot(), after.snapshot()];
+    for copy in [0, 1] {
+        matrix_admitting(
+            "ride start",
+            27,
+            &admissible,
+            Some(resident.clone()),
+            &after,
+            builder(&before, copy),
+            |store: &mut Card| {
+                let Ok(allocation) = store.allocate(32 << 20) else { return };
+                let _ = store.commit(&[Mutation::Put { meta: ride.meta, source: PutSource::Fresh(allocation) }]);
+            },
+        );
+    }
 }
 
 /// Installs one journal slot, uncounted: the state a ride that has been recording leaves behind, and
 /// what a finalising commit has to move into the ride's extents.
-fn install_slot(disk: &SparseDisk, ride: &Entry, sequence: u64, flushed: u64, tail: &[u8]) {
+pub(super) fn install_slot(disk: &SparseDisk, store: StoreId, ride: &Entry, sequence: u64, flushed: u64, tail: &[u8]) {
     let slot = super::journal::Slot {
         slot: (sequence % SLOTS as u64) as u16,
         id: ride.meta.id,
@@ -834,14 +862,17 @@ fn install_slot(disk: &SparseDisk, ride: &Entry, sequence: u64, flushed: u64, ta
         flushed,
         tail_len: tail.len() as u32,
         payload_crc: crc32(&payload((flushed + tail.len() as u64) as usize)),
+        resume: RESUME,
+        proof: false,
+        proof_sequence: 0,
         ranges: ride.ranges,
         slot_crc: 0,
     };
     let base = slot_block(slot.slot as usize);
-    disk.install(base, &slot.seal(&STORE, tail));
     let mut padded = tail.to_vec();
     padded.resize(super::journal::TAIL_CAPACITY, 0);
-    disk.install(base + 1, &padded);
+    disk.install(base, &padded);
+    disk.install(slot_header_block(slot.slot as usize), &slot.seal(&store, tail));
 }
 
 /// A card carrying a ride that has recorded `flushed + tail` bytes: the catalog entry, and the slot
@@ -857,7 +888,7 @@ fn recording_card<'m>(
         let disk = card(seed, model, 0);
         // The pages §7.2 already flushed are in the ride's extents; the rest is in the newest slot.
         install_payload(&disk, model.geometry, ride, &whole[..flushed as usize]);
-        install_slot(&disk, ride, 1, flushed, &whole[flushed as usize..]);
+        install_slot(&disk, model.store, ride, 1, flushed, &whole[flushed as usize..]);
         disk
     }
 }
@@ -881,7 +912,7 @@ fn finalising_a_ride_publishes_the_bytes_it_claims() {
         model.apply(&[Change::Put(finalised)]);
         model
     };
-    matrix("ride end", 147, &before, &after, recording_card(&before, &ride, FLUSHED, TAIL), |store: &mut Card| {
+    matrix("ride end", 189, &before, &after, recording_card(&before, &ride, FLUSHED, TAIL), |store: &mut Card| {
         let _ = store.commit(&[Mutation::Put { meta: finalised.meta, source: PutSource::Amend }]);
     });
 }
@@ -899,7 +930,7 @@ fn finalising_a_ride_shorter_than_one_page_publishes_all_of_it() {
         model.apply(&[Change::Put(finalised)]);
         model
     };
-    matrix("short ride end", 99, &before, &after, recording_card(&before, &ride, 0, 900), |store: &mut Card| {
+    matrix("short ride end", 117, &before, &after, recording_card(&before, &ride, 0, 900), |store: &mut Card| {
         let _ = store.commit(&[Mutation::Put { meta: finalised.meta, source: PutSource::Amend }]);
     });
 }
@@ -935,16 +966,115 @@ fn a_finalisation_that_outruns_the_journal_is_refused() {
     );
 }
 
-/// The rider's side of §7.2: the whole payload recorded so far, and how much of it the store has
-/// flushed into the ride's extents. A checkpoint hands over everything past that.
+/// Finalisation trusts neither the catalog mutation nor stale journal identity. The selected logical
+/// slot must still be intact, and the final entry must publish the exact running payload CRC that
+/// slot gated; otherwise no payload or catalog write is issued.
+#[test]
+fn finalisation_rejects_corrupt_tail_header_and_wrong_crc() {
+    let ride = recording();
+    let mut before = holding(&[ride], 6);
+    before.ride = Some((0, 900));
+    let build = recording_card(&before, &ride, 0, 900);
+
+    for (name, corrupt) in [("tail", slot_block(1)), ("header", slot_header_block(1))] {
+        let disk = build(40);
+        let mut damaged = disk.block(corrupt);
+        damaged[17] ^= 0x80;
+        disk.install(corrupt, &damaged);
+        let store = FlatStore::mount(&disk);
+        let baseline = disk.ledger().len();
+        let finalised = entry(1, 1, ObjectKind::Ride, EntryFlags::NONE, 900, "Tuesday", &[(0, 1)]);
+        assert_eq!(
+            store.commit(&[Mutation::Put { meta: finalised.meta, source: PutSource::Amend }]).unwrap_err(),
+            super::error::StoreError::Invalid,
+            "a finalisation using a corrupt {name} was accepted",
+        );
+        assert!(
+            disk.ledger()[baseline..].iter().all(|(_, op, _)| *op != MediaOp::Write),
+            "a refused {name} finalisation wrote media",
+        );
+        assert_eq!(store.entries().collect::<Vec<_>>(), [ride.meta]);
+    }
+
+    let disk = build(41);
+    let store = FlatStore::mount(&disk);
+    let baseline = disk.ledger().len();
+    let mut finalised = entry(1, 1, ObjectKind::Ride, EntryFlags::NONE, 900, "Tuesday", &[(0, 1)]);
+    finalised.meta.payload_crc ^= 1;
+    assert_eq!(
+        store.commit(&[Mutation::Put { meta: finalised.meta, source: PutSource::Amend }]).unwrap_err(),
+        super::error::StoreError::Invalid,
+        "a finalisation publishing the wrong payload CRC was accepted",
+    );
+    assert!(
+        disk.ledger()[baseline..].iter().all(|(_, op, _)| *op != MediaOp::Write),
+        "a refused wrong-CRC finalisation wrote media",
+    );
+    assert_eq!(store.entries().collect::<Vec<_>>(), [ride.meta]);
+}
+
+/// A cut after the final tail reached the payload extent but before the catalog gate leaves the ride
+/// recording. The retry validates the slot again, but an already identical payload block is
+/// write-once: compare it and proceed directly to the catalog instead of programming it twice.
+#[test]
+fn finalisation_retry_does_not_rewrite_an_intact_tail() {
+    let ride = recording();
+    let mut before = holding(&[ride], 6);
+    before.ride = Some((0, 900));
+    let build = recording_card(&before, &ride, 0, 900);
+    let finalised = entry(1, 1, ObjectKind::Ride, EntryFlags::NONE, 900, "Tuesday", &[(0, 1)]);
+
+    // Locate the first non-payload write in an ordinary finalisation. Cutting before it means every
+    // final-tail block and their synchronization completed, while no catalog byte did.
+    let probe = build(42);
+    let probe_store = FlatStore::mount(&probe);
+    let probe_base = probe.ops();
+    probe_store.commit(&[Mutation::Put { meta: finalised.meta, source: PutSource::Amend }]).unwrap();
+    let catalog_write = probe
+        .write_log()
+        .into_iter()
+        .find(|(op, lba, _)| *op > probe_base && *lba < EXTENT_AREA)
+        .expect("finalisation never reached its catalog");
+    let cut_at = catalog_write.0 - probe_base;
+
+    let disk = build(43);
+    let store = FlatStore::mount(&disk);
+    let baseline = disk.ops();
+    disk.plan(FaultPlan { op: baseline + cut_at, when: When::Before });
+    assert_eq!(
+        store.commit(&[Mutation::Put { meta: finalised.meta, source: PutSource::Amend }]),
+        Err(super::error::StoreError::Media),
+    );
+    disk.reboot();
+
+    let store = FlatStore::mount(&disk);
+    assert!(store.recovered_ride().is_some(), "the cut catalog unexpectedly finished the ride");
+    let writes_before_retry = disk.write_log().len();
+    store.commit(&[Mutation::Put { meta: finalised.meta, source: PutSource::Amend }]).unwrap();
+    let payload_end = EXTENT_AREA + 900u64.div_ceil(BLOCK as u64);
+    assert!(
+        disk.write_log()[writes_before_retry..]
+            .iter()
+            .all(|(_, lba, blocks)| *lba >= payload_end || lba + blocks <= EXTENT_AREA),
+        "finalisation retry reprogrammed an already intact payload-tail block",
+    );
+
+    let handle = store.open(ObjectId(1), Some(Revision(1))).unwrap();
+    let mut bytes = vec![0; 900];
+    assert_eq!(store.read(&handle, 0, &mut bytes).unwrap(), bytes.len());
+    assert_eq!(bytes, payload(900));
+}
+
+/// The rider's side of §7.2: the whole payload recorded so far, and how much a successful logical
+/// checkpoint has consumed. A checkpoint hands over only the bytes added since then.
 struct Rider {
     payload: Vec<u8>,
-    flushed: usize,
+    durable: usize,
 }
 
 impl Rider {
     fn new() -> Self {
-        Rider { payload: Vec::new(), flushed: 0 }
+        Rider { payload: Vec::new(), durable: 0 }
     }
 
     fn grow(&mut self, bytes: usize) {
@@ -952,23 +1082,24 @@ impl Rider {
         self.payload.extend((from..from + bytes).map(|index| (index * 7 + 11) as u8));
     }
 
-    fn tail(&self) -> &[u8] {
-        &self.payload[self.flushed..]
+    fn append(&self) -> &[u8] {
+        &self.payload[self.durable..]
     }
 
-    /// One checkpoint. On success the store flushed every whole page out of the front of the tail, so
-    /// the rider drops the same bytes from its own — the one thing the seam leaves to the caller.
-    fn checkpoint(&mut self, store: &mut Card) -> bool {
+    /// One checkpoint. Success consumes the complete delta; an error leaves it for an identical
+    /// retry.
+    fn checkpoint(&mut self, store: &Card) -> bool {
         let checkpoint = RideCheckpoint {
             id: ObjectId(1),
             revision: Revision(1),
-            tail: self.tail(),
+            append: self.append(),
             payload_crc: crc32(&self.payload),
+            resume: &RESUME,
         };
         if store.journal(checkpoint).is_err() {
             return false;
         }
-        self.flushed += self.tail().len() / PROGRAM_PAGE * PROGRAM_PAGE;
+        self.durable = self.payload.len();
         true
     }
 
@@ -978,12 +1109,13 @@ impl Rider {
             id: ObjectId(1),
             revision: Revision(1),
             checkpoint_sequence: sequence,
-            flushed: self.flushed as u64,
-            tail_len: self.tail().len() as u32,
+            flushed: (self.durable / PROGRAM_PAGE * PROGRAM_PAGE) as u64,
+            tail_len: (self.durable % PROGRAM_PAGE) as u32,
             payload_crc: crc32(&self.payload),
+            resume: RESUME,
             slot: (sequence % SLOTS as u64) as u16,
         };
-        (recovery, self.tail().to_vec())
+        (recovery, self.payload.clone())
     }
 }
 
@@ -991,30 +1123,53 @@ impl Rider {
 /// never a mixture, and never a ride that rolled back further than one interval — §7.4's loss cap.
 fn checkpoint_matrix(name: &str, cuts: usize, growths: &[usize]) {
     let start = holding(&[recording()], 6);
-    let mut admissible: Vec<Option<(RideRecovery, Vec<u8>)>> = vec![None];
+    let last = growths.len() - 1;
+    let mut expected: Vec<Option<(RideRecovery, Vec<u8>)>> = Vec::new();
     let mut rider = Rider::new();
+    let mut sequence = 1u64;
+    let mut previous: Option<(RideRecovery, Vec<u8>)> = Some((
+        RideRecovery {
+            id: ObjectId(1),
+            revision: Revision(1),
+            checkpoint_sequence: 0,
+            flushed: 0,
+            tail_len: 0,
+            payload_crc: 0,
+            resume: [0; RIDE_RESUME_LEN],
+            slot: u16::MAX,
+        },
+        Vec::new(),
+    ));
     for (index, growth) in growths.iter().enumerate() {
         rider.grow(*growth);
-        // The rider's own model of the flush, which is what makes this an expectation rather than an
-        // echo of what the store did.
-        rider.flushed += rider.tail().len() / PROGRAM_PAGE * PROGRAM_PAGE;
-        admissible.push(Some(rider.expect(index as u64 + 1)));
+        let mut produced = Vec::new();
+        let combined = rider.durable % PROGRAM_PAGE + rider.append().len();
+        if combined >= PROGRAM_PAGE {
+            sequence += 1; // the proof slot is physical evidence, never a logical recovery
+        }
+        rider.durable = rider.payload.len();
+        produced.push(rider.expect(sequence));
+        sequence += 1;
+        if index == last {
+            expected.push(previous.clone());
+            expected.extend(produced.iter().cloned().map(Some));
+        }
+        previous = produced.last().cloned().or(previous);
     }
-    let last = growths.len() - 1;
 
     let run = |disk: &SparseDisk, cut: Option<FaultPlan>| {
-        let mut store = FlatStore::mount(disk);
+        let store = FlatStore::mount(disk);
         let mut rider = Rider::new();
         for growth in &growths[..last] {
             rider.grow(*growth);
-            assert!(rider.checkpoint(&mut store), "{name}: the setup checkpoints must succeed");
+            assert!(rider.checkpoint(&store), "{name}: the setup checkpoints must succeed");
         }
         let baseline = disk.ops();
         if let Some(plan) = cut {
             disk.plan(FaultPlan { op: baseline + plan.op, when: plan.when });
         }
         rider.grow(growths[last]);
-        rider.checkpoint(&mut store);
+        rider.checkpoint(&store);
         // The operations of the checkpoint under test alone: the setup ones are the card this scenario
         // starts from, not part of what it is cut inside.
         let widths = disk
@@ -1039,27 +1194,34 @@ fn checkpoint_matrix(name: &str, cuts: usize, growths: &[usize]) {
         let recovered_state = Snapshot { ride: None, ..snapshot(&mut store) };
         assert_eq!(recovered_state, start.snapshot(), "{name}: a checkpoint changed the catalog");
         let recovered = store.recovered_ride();
-        let expected = &admissible[last..];
         assert!(
             expected.iter().any(|state| state.as_ref().map(|(recovery, _)| *recovery) == recovered),
             "{name}: cut at op {op} {when:?} recovered {recovered:?}, neither admissible checkpoint",
         );
         if let Some(recovered) = recovered {
-            let (_, tail) = expected
+            assert_eq!(recovered.payload_len() % 20, 0, "{name}: exposed a partial 20-byte sample");
+            let (_, payload) = expected
                 .iter()
                 .flatten()
                 .find(|(recovery, _)| *recovery == recovered)
                 .expect("the recovered state was just matched");
             let mut read = vec![0u8; recovered.tail_len as usize];
-            store.recovered_tail(&mut read).unwrap();
-            assert_eq!(&read, tail, "{name}: the recovered tail is not that checkpoint's bytes");
+            store.read_recovered(recovered.flushed, &mut read).unwrap();
+            assert_eq!(
+                &read,
+                &payload[recovered.flushed as usize..],
+                "{name}: the recovered tail is not that checkpoint's bytes",
+            );
+            let mut whole = vec![0u8; recovered.payload_len() as usize];
+            assert_eq!(store.read_recovered(0, &mut whole).unwrap(), whole.len());
+            assert_eq!(&whole, payload, "{name}: recovery changed a complete 20-byte sample");
         }
     }
 }
 
 #[test]
 fn a_checkpoint_recovers_the_previous_one_or_itself() {
-    checkpoint_matrix("checkpoint", 219, &[200, 200]);
+    checkpoint_matrix("checkpoint", 132, &[200, 200]);
 }
 
 /// The page flush and the slot, in the order §7.2 fixes: a payload page is written only when every
@@ -1068,14 +1230,143 @@ fn a_checkpoint_recovers_the_previous_one_or_itself() {
 /// recovery simply rewrites the page.
 #[test]
 fn a_checkpoint_that_flushes_a_page_recovers_either_side_of_the_flush() {
-    checkpoint_matrix("checkpoint with flush", 321, &[100, PROGRAM_PAGE + 200]);
+    // Both logical sides are exact 20-byte sample boundaries: 100 before, 16,400 after. The
+    // intermediate 16,384-byte proof is deliberately not an admissible recovery.
+    checkpoint_matrix("checkpoint with flush", 636, &[100, PROGRAM_PAGE - 84]);
 }
 
 /// The first checkpoint of a ride: the admissible states are "no slot at all" — a ride start commits
 /// its entry before any checkpoint exists — and this one.
 #[test]
 fn the_first_checkpoint_recovers_nothing_or_itself() {
-    checkpoint_matrix("first checkpoint", 219, &[300]);
+    checkpoint_matrix("first checkpoint", 117, &[300]);
+}
+
+/// A proof is physical write-once evidence, not a recorder state. Until its paired logical gate is
+/// durable, the ride start remains the only recoverable state and reads are an empty logical object.
+#[test]
+fn a_lone_rollover_proof_does_not_advance_recovery() {
+    let ride = recording();
+    let disk = card(8, &holding(&[ride], 6), 0);
+    let page = payload(PROGRAM_PAGE);
+    let proof = super::journal::Slot {
+        slot: 1,
+        id: ride.meta.id,
+        revision: ride.meta.revision,
+        sequence: 1,
+        flushed: 0,
+        tail_len: PROGRAM_PAGE as u32,
+        payload_crc: crc32(&page),
+        resume: [0; RIDE_RESUME_LEN],
+        proof: true,
+        proof_sequence: 0,
+        ranges: ride.ranges,
+        slot_crc: 0,
+    };
+    disk.install(slot_block(1), &page);
+    disk.install(slot_header_block(1), &proof.seal(&STORE, &page));
+
+    let store = FlatStore::mount(&disk);
+    let recovered = store.recovered_ride().expect("the RECORDING catalog entry is recoverable at zero length");
+    assert_eq!(recovered.checkpoint_sequence, 0);
+    assert_eq!(recovered.payload_len(), 0);
+    assert_eq!(recovered.resume, [0; RIDE_RESUME_LEN]);
+    assert_eq!(recovered.slot, u16::MAX);
+    let mut byte = [0xA5];
+    assert_eq!(store.read_recovered(0, &mut byte).unwrap(), 0);
+    assert_eq!(byte, [0xA5]);
+}
+
+/// Recorder continuation bytes are covered by the slot CRC. A changed resume byte without a new
+/// seal invalidates that logical slot rather than handing mismatched app state to recovery.
+#[test]
+fn resume_metadata_is_crc_covered_and_corresponds_to_the_checkpoint() {
+    let disk = card(10, &holding(&[recording()], 6), 0);
+    let store = FlatStore::mount(&disk);
+    let tail = payload(300);
+    store.journal(ride_checkpoint(&tail, &RESUME)).unwrap();
+    disk.reboot();
+    assert_eq!(FlatStore::mount(&disk).recovered_ride().unwrap().resume, RESUME);
+
+    let mut header = disk.block(slot_header_block(1));
+    header[96] ^= 1;
+    disk.install(slot_header_block(1), &header);
+    let recovered = FlatStore::mount(&disk).recovered_ride().unwrap();
+    assert_eq!(recovered.checkpoint_sequence, 0);
+    assert_eq!(recovered.payload_len(), 0);
+    assert_eq!(recovered.resume, [0; RIDE_RESUME_LEN]);
+}
+
+/// The split-slot durability order is visible in the media ledger: a full 16 KiB tail page (the
+/// live prefix plus zero-pad) is durable before the one-block header gate is issued. The crash matrix
+/// above cuts before/during/after every one of these operations; this pins which operations are the
+/// tail write, its sync, the header write, and its final sync so a later batching change cannot
+/// accidentally reverse them while leaving the recovered happy-path bytes unchanged.
+#[test]
+fn a_checkpoint_durably_orders_the_tail_before_its_header() {
+    let disk = card(9, &holding(&[recording()], 6), 0);
+    let store = FlatStore::mount(&disk);
+    let before = disk.ledger().len();
+    let tail = payload(200);
+    store
+        .journal(RideCheckpoint {
+            id: ObjectId(1),
+            revision: Revision(1),
+            append: &tail,
+            payload_crc: crc32(&tail),
+            resume: &RESUME,
+        })
+        .unwrap();
+
+    let operations = disk.ledger()[before..].iter().map(|(_, kind, blocks)| (*kind, *blocks)).collect::<Vec<_>>();
+    assert_eq!(
+        operations,
+        [
+            (MediaOp::Write, 8),
+            (MediaOp::Write, 8),
+            (MediaOp::Write, 8),
+            (MediaOp::Write, 8),
+            (MediaOp::Sync, 0),
+            (MediaOp::Write, 1),
+            (MediaOp::Sync, 0),
+        ],
+        "the tail page must be synchronized before the header gate",
+    );
+}
+
+/// Reconstructing a snapshot must authenticate the previous durable slot, not merely trust the
+/// resident CRC seed. A damaged source may leave uncommitted bytes in the target tail page, but it
+/// must refuse the checkpoint before the target header gate makes those bytes recoverable.
+#[test]
+fn a_corrupted_source_slot_refuses_reconstruction_without_gating_the_target() {
+    let disk = card(17, &holding(&[recording()], 6), 0);
+    let store = FlatStore::mount(&disk);
+    let first = payload(300);
+    store.journal(ride_checkpoint(&first, &RESUME)).unwrap();
+
+    let mut damaged = disk.block(slot_block(1));
+    damaged[7] ^= 0x80;
+    disk.install(slot_block(1), &damaged);
+    let target_header_before = disk.block(slot_header_block(2));
+
+    let mut whole = first;
+    let from = whole.len();
+    whole.extend_from_slice(&payload(400)[from..]);
+    assert_eq!(
+        store.journal(RideCheckpoint {
+            id: ObjectId(1),
+            revision: Revision(1),
+            append: &whole[from..],
+            payload_crc: crc32(&whole),
+            resume: &RESUME,
+        }),
+        Err(super::error::StoreError::Invalid),
+    );
+    assert_eq!(
+        disk.block(slot_header_block(2)),
+        target_header_before,
+        "a bad source snapshot was nevertheless gated as the next logical checkpoint",
+    );
 }
 
 /// §7.3's optional prefix check, done here because the spec says a host harness should: the flushed
@@ -1084,15 +1375,23 @@ fn the_first_checkpoint_recovers_nothing_or_itself() {
 fn the_recovered_payload_crc_covers_the_prefix_on_the_card() {
     let disk = card(11, &holding(&[recording()], 6), 0);
     let store = FlatStore::mount(&disk);
-    let tail = payload(3 * PROGRAM_PAGE + 777);
+    let tail = payload(PROGRAM_PAGE + 777);
+    let first = 1_000;
+    store.journal(ride_checkpoint(&tail[..first], &RESUME)).unwrap();
     store
-        .journal(RideCheckpoint { id: ObjectId(1), revision: Revision(1), tail: &tail, payload_crc: crc32(&tail) })
+        .journal(RideCheckpoint {
+            id: ObjectId(1),
+            revision: Revision(1),
+            append: &tail[first..],
+            payload_crc: crc32(&tail),
+            resume: &RESUME,
+        })
         .unwrap();
     disk.reboot();
 
     let store = FlatStore::mount(&disk);
     let recovered = store.recovered_ride().unwrap();
-    assert_eq!(recovered.flushed, 3 * PROGRAM_PAGE as u64);
+    assert_eq!(recovered.flushed, PROGRAM_PAGE as u64);
     assert_eq!(recovered.payload_len(), tail.len() as u64);
 
     // The prefix is read off the card by extent arithmetic — the reserve starts at extent 0.
@@ -1100,11 +1399,27 @@ fn the_recovered_payload_crc_covers_the_prefix_on_the_card() {
     for block in 0..recovered.flushed / BLOCK as u64 {
         whole.extend_from_slice(&disk.block(EXTENT_AREA + block));
     }
-    let mut recovered_tail = vec![0u8; recovered.tail_len as usize];
-    store.recovered_tail(&mut recovered_tail).unwrap();
-    whole.extend_from_slice(&recovered_tail);
+    let mut suffix = vec![0u8; recovered.tail_len as usize];
+    store.read_recovered(recovered.flushed, &mut suffix).unwrap();
+    whole.extend_from_slice(&suffix);
     assert_eq!(whole, tail, "the flushed prefix on the card is not the ride's payload");
     assert_eq!(crc32(&whole), recovered.payload_crc);
+
+    // Recovery policy reads bounded records, not the whole prefix. This slice crosses from the last
+    // ten bytes of the write-once prefix into thirty bytes of the selected tail slot.
+    let offset = recovered.flushed - 10;
+    let mut across = [0u8; 40];
+    assert_eq!(store.read_recovered(offset, &mut across).unwrap(), across.len());
+    assert_eq!(&across, &tail[offset as usize..offset as usize + across.len()]);
+
+    let mut first_sample = [0u8; 20];
+    assert_eq!(store.read_recovered(0, &mut first_sample).unwrap(), first_sample.len());
+    assert_eq!(&first_sample, &tail[..20]);
+
+    let mut end = [0u8; 84];
+    assert_eq!(store.read_recovered(recovered.payload_len() - 84, &mut end).unwrap(), end.len());
+    assert_eq!(&end, &tail[tail.len() - 84..]);
+    assert_eq!(store.read_recovered(recovered.payload_len(), &mut end).unwrap(), 0);
 }
 
 /// §7.3: "Recording resumes at checkpoint sequence `recovered + 1`", never at `1` — restarting the
@@ -1114,11 +1429,10 @@ fn the_recovered_payload_crc_covers_the_prefix_on_the_card() {
 fn recording_resumes_at_the_recovered_sequence_plus_one() {
     let disk = card(13, &holding(&[recording()], 6), 0);
     let store = FlatStore::mount(&disk);
+    let mut rider = Rider::new();
     for step in 1..=20u64 {
-        let tail = payload(100 + step as usize);
-        store
-            .journal(RideCheckpoint { id: ObjectId(1), revision: Revision(1), tail: &tail, payload_crc: crc32(&tail) })
-            .unwrap();
+        rider.grow(100 + step as usize);
+        assert!(rider.checkpoint(&store));
     }
     disk.reboot();
 
@@ -1127,12 +1441,200 @@ fn recording_resumes_at_the_recovered_sequence_plus_one() {
     assert_eq!(recovered.checkpoint_sequence, 20, "the greatest sequence did not win the wrapped ring");
     assert_eq!(recovered.slot, 4, "checkpoint 20 belongs in slot 20 mod 16");
 
-    let tail = payload(500);
+    let mut whole = rider.payload;
+    let from = whole.len();
+    whole.extend((from..from + 500).map(|index| (index * 7 + 11) as u8));
     store
-        .journal(RideCheckpoint { id: ObjectId(1), revision: Revision(1), tail: &tail, payload_crc: crc32(&tail) })
+        .journal(RideCheckpoint {
+            id: ObjectId(1),
+            revision: Revision(1),
+            append: &whole[from..],
+            payload_crc: crc32(&whole),
+            resume: &RESUME,
+        })
         .unwrap();
     disk.reboot();
     assert_eq!(FlatStore::mount(&disk).recovered_ride().unwrap().checkpoint_sequence, 21);
+}
+
+/// A restamped logical slot at `u64::MAX` has no representable continuation sequence. Production
+/// preflight never writes one, and recovery must not wrap it to zero or let it outrank the newest
+/// continuable checkpoint.
+#[test]
+fn recovery_skips_a_logical_slot_whose_sequence_cannot_advance() {
+    let ride = recording();
+    let disk = card(14, &holding(&[ride], 6), 0);
+    install_slot(&disk, STORE, &ride, u64::MAX - 1, 0, &payload(200));
+    install_slot(&disk, STORE, &ride, u64::MAX, 0, &payload(400));
+
+    let store = FlatStore::mount(&disk);
+    let recovered = store.recovered_ride().unwrap();
+    assert_eq!(recovered.checkpoint_sequence, u64::MAX - 1);
+    assert_eq!(recovered.payload_len(), 200);
+    let mut bytes = [0u8; 200];
+    assert_eq!(store.read_recovered(0, &mut bytes).unwrap(), bytes.len());
+    assert_eq!(bytes, payload(200).as_slice());
+}
+
+/// Sequence exhaustion is decided before any tail or header write. This covers both the ordinary
+/// one-slot path and the two-slot rollover path whose logical gate would otherwise land at MAX and
+/// discover only afterwards that it had no resident `next_sequence`.
+#[test]
+fn journal_sequence_exhaustion_is_preflighted_before_media_writes() {
+    let ride = recording();
+
+    let ordinary_disk = card(16, &holding(&[ride], 6), 0);
+    install_slot(&ordinary_disk, STORE, &ride, u64::MAX - 1, 0, &payload(200));
+    let ordinary = FlatStore::mount(&ordinary_disk);
+    let whole = payload(220);
+    let before = ordinary_disk.write_log().len();
+    assert_eq!(
+        ordinary.journal(RideCheckpoint {
+            id: ObjectId(1),
+            revision: Revision(1),
+            append: &whole[200..],
+            payload_crc: crc32(&whole),
+            resume: &RESUME,
+        }),
+        Err(super::error::StoreError::ReadOnly),
+    );
+    assert_eq!(ordinary_disk.write_log().len(), before, "ordinary sequence exhaustion wrote media before refusal");
+
+    let rollover_disk = card(18, &holding(&[ride], 6), 0);
+    install_slot(&rollover_disk, STORE, &ride, u64::MAX - 2, 0, &payload(PROGRAM_PAGE - 4));
+    let rollover = FlatStore::mount(&rollover_disk);
+    let whole = payload(PROGRAM_PAGE + 16);
+    let before = rollover_disk.write_log().len();
+    assert_eq!(
+        rollover.journal(RideCheckpoint {
+            id: ObjectId(1),
+            revision: Revision(1),
+            append: &whole[PROGRAM_PAGE - 4..],
+            payload_crc: crc32(&whole),
+            resume: &RESUME,
+        }),
+        Err(super::error::StoreError::ReadOnly),
+    );
+    assert_eq!(rollover_disk.write_log().len(), before, "rollover sequence exhaustion wrote a proof or gate");
+}
+
+/// A rollover itself may wrap the 16-slot ring: sequence 16 gates the exact page in slot 0, copies
+/// those bytes to the payload extent, and sequence 17 gates the remainder in slot 1. Recovery must
+/// take 17, while the byte-for-byte comparison between slot 0 and the extent proves the payload page
+/// was written only from the durable image and cannot be rewritten differently after a cut.
+#[test]
+fn a_rollover_wraps_the_ring_and_copies_the_durable_page_exactly() {
+    let disk = card(15, &holding(&[recording()], 6), 0);
+    let store = FlatStore::mount(&disk);
+    let mut rider = Rider::new();
+    for step in 1..=15usize {
+        rider.grow(100 + step);
+        assert!(rider.checkpoint(&store));
+    }
+    let append = PROGRAM_PAGE - rider.payload.len() + 77;
+    rider.grow(append);
+    assert!(rider.checkpoint(&store));
+
+    for block in 0..super::layout::SLOT_BLOCKS {
+        assert_eq!(
+            disk.block(slot_block(0) + block),
+            disk.block(EXTENT_AREA + block),
+            "rollover block {block} differed between its durable slot and payload page",
+        );
+    }
+    disk.reboot();
+    let recovered = FlatStore::mount(&disk).recovered_ride().unwrap();
+    assert_eq!(recovered.checkpoint_sequence, 17);
+    assert_eq!(recovered.slot, 1);
+    assert_eq!(recovered.flushed, PROGRAM_PAGE as u64);
+    assert_eq!(recovered.tail_len, 77);
+}
+
+fn corrupted_rollover(seed: u64) -> (SparseDisk, Vec<u8>) {
+    let disk = card(seed, &holding(&[recording()], 6), 0);
+    let tail = payload(PROGRAM_PAGE + 296); // 16,680 bytes: 834 complete ride samples
+    let store = FlatStore::mount(&disk);
+    store.journal(ride_checkpoint(&tail[..300], &RESUME)).unwrap();
+    store
+        .journal(RideCheckpoint {
+            id: ObjectId(1),
+            revision: Revision(1),
+            append: &tail[300..],
+            payload_crc: crc32(&tail),
+            resume: &RESUME,
+        })
+        .unwrap();
+    disk.install(EXTENT_AREA, &[0xE7; BLOCK]);
+    disk.reboot();
+    (disk, tail)
+}
+
+fn assert_repaired_rollover(disk: &SparseDisk, tail: &[u8]) {
+    let store = FlatStore::mount(disk);
+    assert_eq!(store.mode(), Mode::ReadWrite);
+    let recovered = store.recovered_ride().unwrap();
+    assert_eq!(recovered.payload_len(), tail.len() as u64);
+    assert_eq!(recovered.payload_len() % 20, 0);
+    let mut bytes = vec![0; tail.len()];
+    assert_eq!(store.read_recovered(0, &mut bytes).unwrap(), tail.len());
+    assert_eq!(bytes, tail);
+}
+
+/// Required boot repair fails closed on a read, write, or sync refusal. A later mount retries the
+/// same proof and returns read-write only after the exact logical payload is durable.
+#[test]
+fn rollover_boot_repair_failures_are_loud_and_retryable() {
+    let (probe, _) = corrupted_rollover(30);
+    let before = probe.ledger().len();
+    let _ = FlatStore::mount(&probe);
+    let operations = &probe.ledger()[before..];
+    let reads_before_repair_write = operations
+        .iter()
+        .take_while(|(_, kind, _)| *kind != MediaOp::Write)
+        .filter(|(_, kind, _)| *kind == MediaOp::Read)
+        .count() as u32;
+    assert!(reads_before_repair_write > 0);
+
+    for (seed, op, skip) in
+        [(31, MediaOp::Read, reads_before_repair_write - 1), (32, MediaOp::Write, 0), (33, MediaOp::Sync, 0)]
+    {
+        let (disk, tail) = corrupted_rollover(seed);
+        let faulty = FaultOnce::new(&disk);
+        faulty.fault_after(op, skip);
+        let failed = FlatStore::mount(&faulty);
+        assert!(faulty.fired(), "{op:?} probe did not reach boot repair");
+        assert_eq!(failed.mode(), Mode::CatalogUnreadable, "{op:?} repair failure was not fail-closed");
+        assert_repaired_rollover(&disk, &tail);
+        disk.reboot();
+        assert_repaired_rollover(&disk, &tail);
+    }
+}
+
+/// Every cut inside boot repair is followed by another boot. The second mount must either find the
+/// already exact page or repair it again from the immutable proof before exposing the logical slot.
+#[test]
+fn rollover_boot_repair_is_idempotent_at_every_media_cut() {
+    let (probe, _) = corrupted_rollover(34);
+    let baseline = probe.ops();
+    let _ = FlatStore::mount(&probe);
+    let widths = probe
+        .write_widths()
+        .into_iter()
+        .filter(|(op, _)| *op > baseline)
+        .map(|(op, blocks)| (op - baseline, blocks))
+        .collect::<Vec<_>>();
+    let total = probe.ops() - baseline;
+    let points = cut_points(total, &widths);
+    assert_eq!(points.len(), 474, "boot-repair cut-point census changed");
+
+    for (op, when) in points {
+        let (disk, tail) = corrupted_rollover(seed(u64::from(op) * 73 + 19, when));
+        let baseline = disk.ops();
+        disk.plan(FaultPlan { op: baseline + op, when });
+        let _ = FlatStore::mount(&disk);
+        disk.reboot();
+        assert_repaired_rollover(&disk, &tail);
+    }
 }
 
 /// §7.2's ride end zeroes the sixteen slot headers, and §5.6 never reads them afterwards — so a stale
@@ -1143,16 +1645,56 @@ fn ending_a_ride_leaves_no_slot_behind() {
     let store = FlatStore::mount(&disk);
     let tail = payload(1_000);
     store
-        .journal(RideCheckpoint { id: ObjectId(1), revision: Revision(1), tail: &tail, payload_crc: crc32(&tail) })
+        .journal(RideCheckpoint {
+            id: ObjectId(1),
+            revision: Revision(1),
+            append: &tail,
+            payload_crc: crc32(&tail),
+            resume: &RESUME,
+        })
         .unwrap();
     let finalised = entry(1, 1, ObjectKind::Ride, EntryFlags::NONE, 1_000, "Tuesday", &[(0, 1)]);
     store.commit(&[Mutation::Put { meta: finalised.meta, source: PutSource::Amend }]).unwrap();
     assert_eq!(store.free_extents(), EXTENTS - 1, "the rest of the reserve was not freed");
     for slot in 0..SLOTS {
-        assert_eq!(disk.block(slot_block(slot)), [0u8; BLOCK], "slot {slot} was not zeroed");
+        assert_eq!(disk.block(slot_header_block(slot)), [0u8; BLOCK], "slot {slot} header was not zeroed");
     }
     disk.reboot();
     assert_eq!(FlatStore::mount(&disk).recovered_ride(), None);
+}
+
+/// A recovery offer belongs to the mount that discovered it, not to every later `RECORDING`
+/// catalog entry. Finishing the recovered ride clears that offer; starting another ride in the
+/// same boot must not manufacture a second recovery screen. A real reset before the new ride's
+/// first checkpoint still recovers it at zero length through §7.3's mount fallback.
+#[test]
+fn a_new_ride_after_recovery_and_finish_is_not_a_same_boot_recovery() {
+    let disk = card(18, &holding(&[recording()], 6), 0);
+    let store = FlatStore::mount(&disk);
+    assert_eq!(store.recovered_ride().unwrap().id, ObjectId(1), "the interrupted ride was not offered");
+
+    let tail = payload(1_000);
+    store
+        .journal(RideCheckpoint {
+            id: ObjectId(1),
+            revision: Revision(1),
+            append: &tail,
+            payload_crc: crc32(&tail),
+            resume: &RESUME,
+        })
+        .unwrap();
+    let finalised = entry(1, 1, ObjectKind::Ride, EntryFlags::NONE, 1_000, "Recovered", &[(0, 1)]);
+    store.commit(&[Mutation::Put { meta: finalised.meta, source: PutSource::Amend }]).unwrap();
+    assert_eq!(store.recovered_ride(), None, "finishing left the boot recovery offer live");
+
+    let allocation = store.allocate(32 << 20).unwrap();
+    let next = entry(2, 1, ObjectKind::Ride, EntryFlags::RECORDING, 0, "Next", &[(1, 32)]);
+    store.commit(&[Mutation::Put { meta: next.meta, source: PutSource::Fresh(allocation) }]).unwrap();
+    assert_eq!(store.recovered_ride(), None, "a fresh same-boot ride was re-offered as recovered");
+
+    disk.reboot();
+    let recovered = FlatStore::mount(&disk).recovered_ride().expect("the reset recording start is recoverable");
+    assert_eq!((recovered.id, recovered.payload_len()), (ObjectId(2), 0));
 }
 
 /// An amend changes an entry's metadata under its own key, so a reader that opens it afterwards gets the
@@ -1250,7 +1792,13 @@ fn a_slot_from_another_ride_is_not_this_ones() {
     let store = FlatStore::mount(&disk);
     let tail = payload(1_000);
     store
-        .journal(RideCheckpoint { id: ObjectId(1), revision: Revision(1), tail: &tail, payload_crc: crc32(&tail) })
+        .journal(RideCheckpoint {
+            id: ObjectId(1),
+            revision: Revision(1),
+            append: &tail,
+            payload_crc: crc32(&tail),
+            resume: &RESUME,
+        })
         .unwrap();
     disk.reboot();
 
@@ -1259,7 +1807,9 @@ fn a_slot_from_another_ride_is_not_this_ones() {
     install_catalog(&disk, &holding(&[other], 7), 1);
     let store = FlatStore::mount(&disk);
     assert_eq!(store.serving_copy(), 1);
-    assert_eq!(store.recovered_ride(), None, "a slot naming another ride was accepted");
+    let recovered = store.recovered_ride().expect("the recording start is recoverable");
+    assert_eq!(recovered.id, ObjectId(2));
+    assert_eq!(recovered.payload_len(), 0, "a slot naming another ride was accepted");
 }
 
 // -------------------------------------------------------------------------------------------
@@ -1821,12 +2371,9 @@ fn a_commit_at_capacity_never_programs_the_gate_as_body() {
 // Transient media failures — the error paths, and what a caller retries against
 // -------------------------------------------------------------------------------------------
 
-/// §7.2's flushed length is durable state, and a checkpoint that fails partway has not moved it. The
-/// caller still holds every byte of its tail — the seam leaves dropping the flushed prefix to the
-/// caller, and a failed checkpoint reported no prefix — so its retry hands over the same tail, and the
-/// store has to put the same bytes at the same payload offsets. A resident flushed length one page
-/// ahead of the card's would put the retry's page past the bytes it repeats and publish a ride nearly
-/// twice the length it recorded.
+/// Once both rollover gates are durable, a payload-copy failure leaves the store pending. The caller
+/// keeps its exact delta and retries it; repair must return success without applying those bytes a
+/// second time or rewriting either authoritative gate.
 #[test]
 fn a_checkpoint_that_fails_after_its_page_flush_does_not_advance_the_flushed_length() {
     let ride = recording();
@@ -1834,32 +2381,121 @@ fn a_checkpoint_that_fails_after_its_page_flush_does_not_advance_the_flushed_len
     let faulty = FaultOnce::new(&disk);
     let store = FlatStore::mount(&faulty);
 
-    let tail = payload(PROGRAM_PAGE + 300);
+    let tail = payload(PROGRAM_PAGE + 296);
+    store.journal(ride_checkpoint(&tail[..300], &RESUME)).unwrap();
+    let append = &tail[300..];
     let checkpoint =
-        || RideCheckpoint { id: ObjectId(1), revision: Revision(1), tail: &tail, payload_crc: crc32(&tail) };
+        RideCheckpoint { id: ObjectId(1), revision: Revision(1), append, payload_crc: crc32(&tail), resume: &RESUME };
+    // Ten writes reconstruct and gate the proof and logical slots. The following payload write
+    // fails, leaving a pending resident rollover whose retry must not rewrite either gate.
+    faulty.fault_after(MediaOp::Write, 10);
+    assert_eq!(store.journal(checkpoint), Err(super::error::StoreError::Media));
+    assert!(faulty.fired(), "the probe never reached the payload page write");
+    let proof_header = disk.block(slot_header_block(1));
+    let logical_header = disk.block(slot_header_block(2));
 
-    // One whole page and a bit: the page flush is the first write, the slot header the second.
-    faulty.fault_after(MediaOp::Write, 1);
-    assert_eq!(store.journal(checkpoint()), Err(super::error::StoreError::Media));
-    assert!(faulty.fired(), "the probe never reached the slot write");
-    store.journal(checkpoint()).unwrap();
+    let shorter = RideCheckpoint { append: &append[..append.len() - 20], ..checkpoint };
+    assert_eq!(store.journal(shorter), Err(super::error::StoreError::Invalid));
+    let mut changed = append.to_vec();
+    changed[0] ^= 0x80;
+    let changed = RideCheckpoint { append: &changed, ..checkpoint };
+    assert_eq!(store.journal(changed), Err(super::error::StoreError::Invalid));
+    assert_eq!(disk.block(slot_header_block(1)), proof_header);
+    assert_eq!(disk.block(slot_header_block(2)), logical_header);
+
+    store.journal(checkpoint).unwrap();
+    assert_eq!(disk.block(slot_header_block(1)), proof_header);
+    assert_eq!(disk.block(slot_header_block(2)), logical_header);
     disk.reboot();
 
     let store = FlatStore::mount(&disk);
     let recovered = store.recovered_ride().unwrap();
     assert_eq!(recovered.flushed, PROGRAM_PAGE as u64, "the refused checkpoint's page flush was counted twice");
     assert_eq!(recovered.payload_len(), tail.len() as u64, "the retry published a length the ride never recorded");
+    assert_eq!(recovered.resume, RESUME);
 
     // And the bytes are the ride's, in order: the flushed prefix off the card, then the recovered tail.
     let mut whole = Vec::new();
     for block in 0..recovered.flushed / BLOCK as u64 {
         whole.extend_from_slice(&disk.block(EXTENT_AREA + block));
     }
-    let mut recovered_tail = vec![0u8; recovered.tail_len as usize];
-    store.recovered_tail(&mut recovered_tail).unwrap();
-    whole.extend_from_slice(&recovered_tail);
+    let mut suffix = vec![0u8; recovered.tail_len as usize];
+    store.read_recovered(recovered.flushed, &mut suffix).unwrap();
+    whole.extend_from_slice(&suffix);
     assert_eq!(whole, tail, "the retry left the payload out of order on the card");
     assert_eq!(crc32(&whole), recovered.payload_crc);
+}
+
+/// A pending proof repair may itself fail repeatedly. It remains retryable from the same immutable
+/// proof and never rewrites either gate or loses the logical checkpoint.
+#[test]
+fn pending_rollover_survives_a_second_repair_failure() {
+    let disk = card(43, &holding(&[recording()], 6), 0);
+    let faulty = FaultOnce::new(&disk);
+    let store = FlatStore::mount(&faulty);
+    let tail = payload(PROGRAM_PAGE + 296);
+    store.journal(ride_checkpoint(&tail[..300], &RESUME)).unwrap();
+    let checkpoint = RideCheckpoint {
+        id: ObjectId(1),
+        revision: Revision(1),
+        append: &tail[300..],
+        payload_crc: crc32(&tail),
+        resume: &RESUME,
+    };
+
+    faulty.fault_after(MediaOp::Write, 10);
+    assert_eq!(store.journal(checkpoint), Err(super::error::StoreError::Media));
+    let proof_header = disk.block(slot_header_block(1));
+    let logical_header = disk.block(slot_header_block(2));
+
+    // Refuse the first repair write. The authoritative proof and rollover gate remain unchanged.
+    faulty.fault_after(MediaOp::Write, 0);
+    assert_eq!(store.journal(checkpoint), Err(super::error::StoreError::Media));
+    assert!(faulty.fired(), "the second fault did not reach proof repair");
+    assert_eq!(disk.block(slot_header_block(1)), proof_header);
+    assert_eq!(disk.block(slot_header_block(2)), logical_header);
+
+    store.journal(checkpoint).unwrap();
+    disk.reboot();
+    let store = FlatStore::mount(&disk);
+    let recovered = store.recovered_ride().unwrap();
+    assert_eq!(recovered.payload_len(), tail.len() as u64);
+    assert_eq!(recovered.payload_len() % 20, 0);
+    assert_eq!(recovered.resume, RESUME);
+    let mut whole = vec![0; tail.len()];
+    assert_eq!(store.read_recovered(0, &mut whole).unwrap(), whole.len());
+    assert_eq!(whole, tail);
+}
+
+/// Discard is not finalisation: once the catalog atomically removes the recording, neither its
+/// possibly torn payload page nor its pending proof is reachable. It therefore need not satisfy the
+/// exact checkpoint-retry contract before removing the ride.
+#[test]
+fn a_pending_rollover_may_be_discarded_without_repairing_it() {
+    let disk = card(45, &holding(&[recording()], 6), 0);
+    let faulty = FaultOnce::new(&disk);
+    let store = FlatStore::mount(&faulty);
+    let tail = payload(PROGRAM_PAGE + 296);
+    store.journal(ride_checkpoint(&tail[..300], &RESUME)).unwrap();
+    faulty.fault_after(MediaOp::Write, 10);
+    assert_eq!(
+        store.journal(RideCheckpoint {
+            id: ObjectId(1),
+            revision: Revision(1),
+            append: &tail[300..],
+            payload_crc: crc32(&tail),
+            resume: &RESUME,
+        }),
+        Err(super::error::StoreError::Media),
+    );
+
+    store.commit(&[Mutation::Remove { id: ObjectId(1), revision: Revision(1) }]).unwrap();
+    assert!(store.recovered_ride().is_none());
+    assert!(store.entries().all(|entry| entry.id != ObjectId(1)));
+    disk.reboot();
+    let store = FlatStore::mount(&disk);
+    assert!(store.recovered_ride().is_none());
+    assert!(store.entries().all(|entry| entry.id != ObjectId(1)));
 }
 
 /// §6.2's hold rule asks the catalog which of a closing hold's extents an entry still names. A read

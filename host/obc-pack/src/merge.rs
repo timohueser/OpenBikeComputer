@@ -479,7 +479,7 @@ fn merge_edge_covering_trails(lines: &[&Geom]) -> Option<Vec<Geom>> {
     for component in &components {
         let odd: Vec<_> = component.iter().copied().filter(|&vertex| adjacency[vertex].len() % 2 == 1).collect();
         debug_assert_eq!(odd.len() % 2, 0);
-        for pair in odd.chunks_exact(2) {
+        for pair in odd.as_chunks::<2>().0 {
             let edge = edges.len();
             edges.push(Edge { ends: (pair[0], pair[1]), points: None });
             adjacency[pair[0]].push(edge);

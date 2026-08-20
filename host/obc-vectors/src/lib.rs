@@ -94,8 +94,8 @@ pub const TRACK_NAME: &str = "Schauinsland & back";
 /// than through `encode_record`, so the fixture pins the record independently of the production
 /// codec — the same rule the rest of this module follows.
 ///
-/// Shaped for **coverage, not plausibility** (it teleports between hemispheres): five points
-/// spanning every branch the GPX exporter has —
+/// Shaped for **codec coverage, not plausibility** (it teleports between hemispheres): five points
+/// spanning signed coordinates, segment flags, and sensor sentinel combinations —
 ///
 /// | # | why it is here |
 /// | :-- | :-- |
@@ -104,9 +104,6 @@ pub const TRACK_NAME: &str = "Schauinsland & back";
 /// | 2 | every sensor absent — no `<extensions>` block at all |
 /// | 3 | `segment_start` after a pause (a second `<trkseg>`), negative lat/lon/elevation, and **power only** (no wrapper) |
 /// | 4 | zeroes everywhere: `0.000000` coordinate formatting, and `hr`/`cad`/`pwr` = 0 as real values, distinct from the `0xFF`/`0xFFFF` absent sentinels |
-///
-/// …plus a deliberate **7-byte partial record** at the end: a power-loss mid-write leaves one, and
-/// the log stays valid to the 20-byte boundary, so the exporter must ignore it.
 pub fn track_log() -> Vec<u8> {
     /// One record's fields, named after the layout they serialize into. `0xFF` / `0xFFFF` in the
     /// sensor fields are the "absent" sentinels.
@@ -128,7 +125,7 @@ pub fn track_log() -> Vec<u8> {
         rec(-122_419_400, -37_774_900, -12, 1, 63_000, 0xFF, 0xFF, 240),
         rec(0, 0, 0, 0, 64_000, 0, 0, 0),
     ];
-    let mut v = Vec::with_capacity(points.len() * 20 + 7);
+    let mut v = Vec::with_capacity(points.len() * 20);
     for p in points {
         v.extend_from_slice(&p.lon.to_le_bytes()); // 0..4
         v.extend_from_slice(&p.lat.to_le_bytes()); // 4..8
@@ -139,11 +136,10 @@ pub fn track_log() -> Vec<u8> {
         v.push(p.cad); // 17
         v.extend_from_slice(&le16(p.pwr)); // 18..20
     }
-    v.extend_from_slice(&[0xAB; 7]); // the truncated trailing record
     v
 }
 
-/// The GPX 1.1 export of [`track_log`], through the production converter (`track_to_gpx`).
+/// The GPX 1.1 export of [`ride_v3`], through the production converter (`track_to_gpx`).
 ///
 /// Unlike the binary fixtures there is no independent spec to rebuild this from — the exporter's
 /// serialization *is* the contract — so this goes through the real code, exactly like
@@ -151,7 +147,7 @@ pub fn track_log() -> Vec<u8> {
 /// (`obc-web-convert`, compiled to wasm) must reproduce these bytes character-for-character.
 pub fn track_export_gpx() -> Vec<u8> {
     let mut sink = VecSink(Vec::new());
-    obc_route::track_to_gpx(&SliceSource(&track_log()), TRACK_NAME, &mut sink).unwrap();
+    obc_route::track_to_gpx(&SliceSource(&ride_v3()), TRACK_NAME, &mut sink).unwrap();
     sink.0
 }
 
@@ -162,93 +158,45 @@ fn le32(v: u32) -> [u8; 4] {
     v.to_le_bytes()
 }
 
-/// Ride object v1 (spec §7.2): "Höhenweg", 3 points, the last without elevation.
-pub fn ride_v1() -> Vec<u8> {
-    let name = "Höhenweg".as_bytes(); // 9 UTF-8 bytes
+/// Ride object v3: three exact 20-byte recorded samples followed by the fixed 84-byte footer.
+/// Built field-by-field from the specification rather than through the production codec.
+pub fn ride_v3() -> Vec<u8> {
     let mut v = Vec::new();
-    v.push(1); // version
-    v.extend_from_slice(&le16(name.len() as u16));
-    v.extend_from_slice(name);
-    v.extend_from_slice(&le32(1_751_450_000)); // start_time
-    v.extend_from_slice(&le32(42_500)); // distance m
-    v.extend_from_slice(&le32(9_000)); // moving_time s
-    v.extend_from_slice(&le16(472)); // avg_speed cm/s
-    v.extend_from_slice(&le16(810)); // climb m
-    v.extend_from_slice(&le32(3)); // point_count
-                                   // (t_offset, lat ×1e7, lon ×1e7, ele)
-    for (t, lat, lon, ele) in [
-        (0u32, 480_000_000i32, 78_000_000i32, 214i16),
-        (60, 480_010_000, 78_012_000, 219),
-        (120, 480_020_000, 78_030_000, i16::MIN),
+    // lon µdeg, lat µdeg, ele m, flags, t_ms, hr, cadence, power.
+    for (lon, lat, ele, flags, t_ms, hr, cad, pwr) in [
+        (7_800_000i32, 48_000_000i32, 214i16, 1u16, 0u32, 140u8, 84u8, 205u16),
+        (7_801_200, 48_001_000, 219, 0, 60_000, 0xFF, 0xFF, 0xFFFF),
+        (7_803_000, 48_002_000, 225, 1, 120_000, 150, 0xFF, 215),
     ] {
-        v.extend_from_slice(&le32(t));
-        v.extend_from_slice(&lat.to_le_bytes());
         v.extend_from_slice(&lon.to_le_bytes());
+        v.extend_from_slice(&lat.to_le_bytes());
         v.extend_from_slice(&ele.to_le_bytes());
+        v.extend_from_slice(&flags.to_le_bytes());
+        v.extend_from_slice(&t_ms.to_le_bytes());
+        v.push(hr);
+        v.push(cad);
+        v.extend_from_slice(&pwr.to_le_bytes());
     }
-    v
-}
 
-/// Ride object v2 (spec §7.2, epic #707): "Sensor Ride", 3 points, with the BLE-sensor summary +
-/// per-point sensor fields — a mix of present and absent values (the cross-language contract SE4's
-/// iOS codec mirror-pins).
-///
-/// Byte layout (little-endian):
-/// ```text
-/// Header (31 bytes + 11-byte name):
-///   version      u8   = 2
-///   name_len     u16  = 11 · name "Sensor Ride"
-///   start_time   u32  = 1_751_460_000
-///   distance     u32  = 12_345 m
-///   moving_time  u32  = 3_600 s
-///   avg_speed    u16  = 343 cm/s
-///   climb        u16  = 120 m
-///   point_count  u32  = 3
-///   avg_hr       u8   = 142
-///   max_hr       u8   = 176
-///   avg_cad      u8   = 85
-///   pad          u8   = 0
-///   avg_pwr      u16  = 210
-///   max_pwr      u16  = 480
-/// Points (18 bytes × 3):     t   lat_1e7      lon_1e7    ele    hr    cad   pwr
-///   p0 (all present):        0   480_000_000  78_000_000 214    140   84    205
-///   p1 (all absent):        60   480_010_000  78_012_000 219    0xFF  0xFF  0xFFFF
-///   p2 (hr+pwr, cad absent):120  480_020_000  78_030_000 i16MIN 150   0xFF  215
-/// ```
-/// Total = 31 + 11 + 3×18 = 96 bytes.
-pub fn ride_v2() -> Vec<u8> {
-    let name = "Sensor Ride".as_bytes(); // 11 ASCII bytes
-    let mut v = Vec::new();
-    v.push(2); // version
-    v.extend_from_slice(&le16(name.len() as u16));
-    v.extend_from_slice(name);
+    let name = b"Sensor Ride";
+    v.extend_from_slice(b"OBRF");
+    v.push(3); // version
+    v.push(name.len() as u8);
+    v.extend_from_slice(&le16(84)); // fixed footer length
     v.extend_from_slice(&le32(1_751_460_000)); // start_time
     v.extend_from_slice(&le32(12_345)); // distance m
     v.extend_from_slice(&le32(3_600)); // moving_time s
     v.extend_from_slice(&le16(343)); // avg_speed cm/s
     v.extend_from_slice(&le16(120)); // climb m
     v.extend_from_slice(&le32(3)); // point_count
-                                   // Per-ride sensor summary: avg_hr, max_hr, avg_cad, pad, avg_pwr, max_pwr.
     v.push(142); // avg_hr
     v.push(176); // max_hr
     v.push(85); // avg_cad
-    v.push(0); // pad
+    v.push(0); // reserved
     v.extend_from_slice(&le16(210)); // avg_pwr
     v.extend_from_slice(&le16(480)); // max_pwr
-                                     // (t_offset, lat ×1e7, lon ×1e7, ele, hr, cad, pwr) — 0xFF/0xFFFF = absent.
-    for (t, lat, lon, ele, hr, cad, pwr) in [
-        (0u32, 480_000_000i32, 78_000_000i32, 214i16, 140u8, 84u8, 205u16),
-        (60, 480_010_000, 78_012_000, 219, 0xFF, 0xFF, 0xFFFF),
-        (120, 480_020_000, 78_030_000, i16::MIN, 150, 0xFF, 215),
-    ] {
-        v.extend_from_slice(&le32(t));
-        v.extend_from_slice(&lat.to_le_bytes());
-        v.extend_from_slice(&lon.to_le_bytes());
-        v.extend_from_slice(&ele.to_le_bytes());
-        v.push(hr);
-        v.push(cad);
-        v.extend_from_slice(&le16(pwr));
-    }
+    v.extend_from_slice(name);
+    v.resize(3 * 20 + 84, 0); // fixed 48-byte name slot
     v
 }
 
@@ -718,9 +666,8 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
     let mut fixtures = vec![
         ("route-waypoints.obcr", route_wp),
         ("route-plain.obcr", route_plain),
-        // The recorded-track pair (epic #894, A2): the device's 20-byte-record ride log and the
-        // GPX its Finish conversion writes from it. Checked in together because the *pair* is the
-        // contract the browser conversion bridge must reproduce byte-for-byte in wasm.
+        // The sample-codec fixture remains a codec vector only. GPX export is pinned from the
+        // finished ride-v3 object; headerless sample arrays are not accepted as rides.
         ("track-log.obct", track_log()),
         ("track-export.gpx", track_export_gpx()),
         // The OBCT terrain shard (`OBCT_Spec.md`, epic #1068): a 2 × 2 cell rectangle with a hole
@@ -729,8 +676,7 @@ pub fn all() -> Vec<(&'static str, Vec<u8>)> {
         // (the device, the `obc-dem` baker's cross-check, and eventually the browser), and the
         // spec's guarantee is that they agree bit-for-bit on the same coordinate.
         ("terrain-shard.obcd", terrain.clone()),
-        ("ride-v1.bin", ride_v1()),
-        ("ride-v2.bin", ride_v2()),
+        ("ride-v3.bin", ride_v3()),
         ("config-v1.bin", config_v1()),
         // The same object with the WX3 (#1188) refresh byte appended — the *pair* is the fixture.
         // Config is append-only, so the only thing that can go wrong is the offset: a reader that

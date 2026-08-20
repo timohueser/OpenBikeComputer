@@ -81,7 +81,7 @@ impl HostLoop {
     }
 
     /// Drain every pending host command in the canonical [`HostCommand::DRAIN_ORDER`], apply the
-    /// repository ones here, then step an in-flight plan once and reconcile the track log to the
+    /// repository ones here, then step an in-flight plan once and reconcile the ride recorder to the
     /// app's session. Host-specific commands ([`ScanCardFree`](HostCommand::ScanCardFree),
     /// [`ForgetBond`](HostCommand::ForgetBond), [`PersistSettings`](HostCommand::PersistSettings),
     /// [`Dfu`](HostCommand::Dfu)) are handed to `host` — pass `|_, _| {}` for a host that has none.
@@ -177,7 +177,7 @@ impl HostLoop {
                     }
                 }
                 HostCommand::DeleteRide { id } => {
-                    if u16::try_from(id).is_ok_and(|id| rides.delete_by_id(id)) {
+                    if rides.delete_by_id(id) {
                         app.set_rides(rides.catalog(), rides.ids());
                     }
                 }
@@ -195,11 +195,7 @@ impl HostLoop {
                 // Auto-expiry sidecar stamps (epic #638, S3): apply to the host's retention store —
                 // the app already mirrored the value optimistically, so no re-feed is needed here.
                 HostCommand::StampRouteUsed { id, utc } => routes.stamp_route_used(id, utc),
-                HostCommand::StampRideSynced { id, utc } => {
-                    if let Ok(id) = u16::try_from(id) {
-                        rides.stamp_synced_at(id, utc);
-                    }
-                }
+                HostCommand::StampRideSynced { id, utc } => rides.stamp_synced_at(id, utc),
                 HostCommand::CancelRoutePlan => {
                     if matches!(self.plan, Some(InflightPlan::Nav(_))) {
                         self.plan = None;
@@ -293,16 +289,16 @@ impl HostLoop {
     }
 }
 
-/// Phase 3 — reconcile the track log: the drained finish action + the live session, with the save
-/// name (the active route) and totals (for a `Save`). A `Save` writes a fresh `RD{id}.ORD`, so
-/// refresh + re-feed the ride catalog so it appears without a relaunch.
+/// Phase 3 — reconcile the ride recorder: the drained finish action + the live session, with the save
+/// name (the active route) and totals (for a `Save`). Refresh + re-feed the simulator catalog so a
+/// saved ride appears without a relaunch.
 fn reconcile_track(
     app: &mut App,
     rides: &mut dyn RideRepository,
     tracks: &mut dyn TrackRepository,
     finish: Option<TrackAction>,
 ) {
-    // The save name is only consumed when a log is (re)opened or finalised, both of which need a
+    // The save name is only consumed when a ride is opened or finalised, both of which need a
     // session or a drained action — skip the small String copy on the idle no-ride path. During an
     // active ride it's one ≤48-byte name clone per pass, deliberately not cached: the active route
     // (and thus the save name a mid-ride swap would freeze) can change between passes.

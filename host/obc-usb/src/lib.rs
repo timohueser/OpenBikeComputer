@@ -20,18 +20,15 @@ pub const PRODUCT_ID: u16 = 0x0001;
 const VENDOR_CLASS: u8 = 0xff;
 
 /// The one object-protocol major this host implements (§5.2).
-const WIRE_MAJOR: u8 = 4;
+/// USB record-binding major. Distinct from protocol v4 inside each control frame: binding v5 is
+/// the throughput framing shipped by #1459.
+const USB_BINDING_MAJOR: u8 = 5;
 
 /// How much of a bulk IN stream one transfer asks for.
 ///
-/// **This is the read size the terminating ZLP bought us.** A USB IN transfer ends when the request
-/// is filled *or* a short packet arrives, so asking for more than one packet from a device that
-/// stops on an exact packet boundary would wait forever — which is why C3's WebUSB pipe reads
-/// exactly one max packet. #889 closed that hole from the device side: `run_download` and `run_echo`
-/// send an explicit zero-length packet when an object is an exact multiple of the max packet, so a
-/// larger request always terminates. 16 KB is 32 packets, which cuts the URB count per megabyte
-/// from ~2000 to ~64 without making a mid-object pause any more visible (the device streams
-/// continuously; a pause simply lets the transfer keep accumulating).
+/// USB binding v5 is a byte stream: record prefixes, frames and alignment padding may all cross
+/// packet boundaries. A 16 KiB request amortizes host URBs while the binding-level decoder above
+/// this byte pipe recovers complete records independently of how each read is split.
 ///
 /// Rounded down to a whole number of packets at construction: nusb rejects an IN request that is
 /// not a multiple of the endpoint's max packet size.
@@ -146,17 +143,17 @@ pub fn split_layout(interface: u8, endpoints: &[EndpointFacts]) -> Result<Endpoi
     })
 }
 
-/// Refuse descriptor statements that contradict the wire major before the interface is claimed.
+/// Refuse descriptor statements that contradict the USB binding major before the interface is claimed.
 ///
 /// USB states the same major twice: `bInterfaceProtocol` and the high byte of `bcdDevice`. Checking
 /// both here keeps the native path aligned with WebUSB and, importantly, leaves a mismatched device
 /// unclaimed so another compatible app can still open it.
-fn check_wire_major(interface_protocol: u8, device_release: u16) -> Result<(), PipeFault> {
+fn check_binding_major(interface_protocol: u8, device_release: u16) -> Result<(), PipeFault> {
     let device_major = (device_release >> 8) as u8;
-    let wrong = [interface_protocol, device_major].into_iter().find(|major| *major != WIRE_MAJOR);
+    let wrong = [interface_protocol, device_major].into_iter().find(|major| *major != USB_BINDING_MAJOR);
     if let Some(wrong) = wrong {
         return Err(PipeFault::device(format!(
-            "This device speaks protocol v{wrong}; this app speaks v{WIRE_MAJOR}. \
+            "This device speaks USB binding v{wrong}; this app speaks v{USB_BINDING_MAJOR}. \
              Update the device firmware, or install a newer app build."
         )));
     }
@@ -411,15 +408,15 @@ pub async fn open(info: &DeviceInfo, device_id: String) -> Result<(Arc<OpenLink>
 
     // Matching settles §5.2's version before we take ownership of the interface. A rejection after
     // `claim_interface` would needlessly make an incompatible device busy for every other host.
-    check_wire_major(vendor.protocol(), info.device_version())?;
+    check_binding_major(vendor.protocol(), info.device_version())?;
 
     let interface = device.claim_interface(layout.interface).await.map_err(|e| {
         PipeFault::device(format!("Interface {} could not be claimed: {e}{}", layout.interface, permission_hint(&e)))
     })?;
 
-    // The control plane is message-oriented: one frame is exactly one transfer, so it reads exactly
-    // one max packet and a short packet delimits the frame. The bulk plane is a stream, so it reads
-    // as much as the ZLP contract allows.
+    // Both endpoint pairs are byte streams under binding v5. A control frame is small, so one-packet
+    // reads keep request latency low while the record decoder joins them; the stream plane uses
+    // larger reads to amortize URBs. Neither path assigns meaning to packet boundaries.
     let control = Pipe::new(&interface, layout.control.0, layout.control.1, layout.control.2)?;
     let bulk = Pipe::new(&interface, layout.bulk.0, layout.bulk.1, BULK_READ_TARGET)?;
 
@@ -481,14 +478,14 @@ mod tests {
     }
 
     #[test]
-    fn a_wrong_wire_major_is_refused_before_open_can_claim_it() {
-        check_wire_major(4, 0x0400).unwrap();
+    fn a_wrong_usb_binding_major_is_refused_before_open_can_claim_it() {
+        check_binding_major(5, 0x0500).unwrap();
 
-        for (interface, release, reported) in [(3, 0x0400, "v3"), (4, 0x0500, "v5")] {
-            let fault = check_wire_major(interface, release).unwrap_err();
+        for (interface, release, reported) in [(4, 0x0500, "v4"), (5, 0x0400, "v4")] {
+            let fault = check_binding_major(interface, release).unwrap_err();
             assert_eq!(fault.code, "device-error");
             assert!(fault.message.contains(reported), "{}", fault.message);
-            assert!(fault.message.contains("v4"), "{}", fault.message);
+            assert!(fault.message.contains("v5"), "{}", fault.message);
         }
     }
 

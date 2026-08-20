@@ -1,19 +1,16 @@
-//! FatFs byte adapters over a microSD card — the board-agnostic half of "map/route/track on SD".
+//! FatFs byte adapters over a microSD card.
 //!
 //! The shared format code (in `obc-route`/`obc-reader`) never touches a filesystem: it reads through a
-//! [`ByteSource`], writes through a [`ByteSink`], and logs the ride through an
-//! [`obc_ports::TrackSink`]. On the host those seams are backed by `std::fs`; here by an
-//! [`embedded_sdmmc`] FatFs file. Only these thin adapters are platform-specific.
+//! [`ByteSource`] and writes through a [`ByteSink`]. On the host those seams are backed by
+//! `std::fs`; here by an [`embedded_sdmmc`] FatFs file. Only these thin adapters are
+//! platform-specific.
 //!
-//! All three are generic over [`BlockDevice`] + [`TimeSource`], so they pull in no bus types. They
-//! borrow the [`VolumeManager`] shared (`&'a`) and hold a [`RawFile`]: the manager has interior
-//! mutability (every method takes `&self`), so a board can hold an [`SdByteSource`] over the route
-//! and an [`SdTrackSink`] over the track log at once and feed both to one app tick.
+//! Both are generic over [`BlockDevice`] + [`TimeSource`], so they pull in no bus types. They borrow
+//! the [`VolumeManager`] shared (`&'a`) and hold a [`RawFile`]; the manager has interior mutability
+//! because every method takes `&self`.
 
 use embedded_sdmmc::{BlockDevice, RawFile, TimeSource, VolumeManager};
 use obc_formats::io::{ByteSink, ByteSource, Error};
-use obc_formats::track::encode_record;
-use obc_ports::{TrackError, TrackPoint, TrackSink};
 
 /// A random-access [`ByteSource`] over an open FatFs file — the device backing for
 /// `obc-route`'s `RouteReader` / `RouteSummary::read`. Each
@@ -83,9 +80,7 @@ impl<D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: usiz
 /// body then patch the header" flow. Writes append at the file's current offset;
 /// [`patch_at`](ByteSink::patch_at) seeks back, overwrites, and returns to the append point.
 ///
-/// `patch_at` is unused by the on-device flow (the `.obct` log is append-only and `track_to_gpx`
-/// writes front-to-back); it's implemented for `ByteSink` completeness + the host-side route
-/// conversion that does patch a header.
+/// `patch_at` is implemented for `ByteSink` completeness and conversions that patch a header.
 pub struct SdByteSink<
     'a,
     D: BlockDevice,
@@ -122,43 +117,5 @@ impl<D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: usiz
         self.vmgr.write(self.file, buf).map_err(|_| Error::Io)?;
         self.vmgr.file_seek_from_start(self.file, end).map_err(|_| Error::BadOffset)?;
         Ok(())
-    }
-}
-
-/// An [`obc_ports::TrackSink`] writing each accepted fix to the open `.obct` ride log. The app encodes
-/// a [`TrackPoint`] and hands it here; this appends its fixed 20-byte record ([`encode_record`]).
-///
-/// A failed SD write is reported straight back through [`record`](TrackSink::record)'s
-/// `Result` — the app owns the reaction (it raises the "recording error" indicator so the rider
-/// knows the log dropped points; see issue #11). So this sink is a pure per-fix adapter with no
-/// state of its own, safe to rebuild each tick over the open handle.
-pub struct SdTrackSink<
-    'a,
-    D: BlockDevice,
-    T: TimeSource,
-    const MAX_DIRS: usize = 4,
-    const MAX_FILES: usize = 4,
-    const MAX_VOLUMES: usize = 1,
-> {
-    vmgr: &'a VolumeManager<D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>,
-    file: RawFile,
-}
-
-impl<'a, D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: usize, const MAX_VOLUMES: usize>
-    SdTrackSink<'a, D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>
-{
-    /// Wrap the open, append-mode `.obct` log file.
-    pub fn new(vmgr: &'a VolumeManager<D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>, file: RawFile) -> Self {
-        SdTrackSink { vmgr, file }
-    }
-}
-
-impl<D: BlockDevice, T: TimeSource, const MAX_DIRS: usize, const MAX_FILES: usize, const MAX_VOLUMES: usize> TrackSink
-    for SdTrackSink<'_, D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>
-{
-    fn record(&mut self, p: TrackPoint) -> Result<(), TrackError> {
-        // A card pull / write error surfaces as `Err`; the app raises the recording-error indicator.
-        // Never `panic!` here — a hard fault mid-ride is never the right answer to a bad SD write.
-        self.vmgr.write(self.file, &encode_record(&p)).map_err(|_| TrackError)
     }
 }

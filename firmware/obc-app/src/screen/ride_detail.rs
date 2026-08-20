@@ -12,17 +12,17 @@
 //! The band's profile **and** the track shape come from the host: entering the screen sets
 //! [`Activity::viewed_ride`](crate::Activity::viewed_ride) (the Rides screen's press does), the
 //! host drains [`App::ride_track_request`](crate::App::ride_track_request), streams
-//! the ride's `RD{id}.ORD` into the app's resident ride-profile + ride-preview buffers
+//! the Ride object into the app's resident ride-profile + ride-preview buffers
 //! ([`App::set_ride_profile`](crate::App::set_ride_profile) /
 //! [`App::set_ride_preview`](crate::App::set_ride_preview)), and Back/delete clears `viewed_ride`
 //! so both invalidate on exit — filled on entry, one buffer each, never rebuilt per frame.
 //!
 //! **Delete** is the ride_control-pattern guarded row: the completed hold *is* the confirmation
-//! (its fill the live feedback), the host deletes `RD{id}.ORD` + its synced-set entry, and the
-//! screen pops back to the refreshed Rides list. While a ride is being recorded the row is
-//! **hidden** (owner review round 1 — no greyed face): a live session holds `TRACK.OBT` open and
-//! its `RD{id}.ORD` isn't written until Finish, so deleting is neither meaningful nor legal then,
-//! and the `delete_enabled` guard keeps a hold a no-op regardless.
+//! (its fill the live feedback), the host removes the catalog object, and the screen pops back to
+//! the refreshed Rides list. While a ride is being recorded the row is
+//! **hidden** (owner review round 1 — no greyed face): a live session owns a `RECORDING` object and
+//! it is hidden from the servable catalog, so deleting is neither meaningful nor legal then, and
+//! the `delete_enabled` guard keeps a hold a no-op regardless.
 //!
 //! Fit note (reworked in owner review round 2 — "very busy"): the four ledger rows don't fit
 //! beside a readable band, so they auto-flip as the Route overview's **two-row pager** (5 s fixed
@@ -125,8 +125,8 @@ impl RideDetailScreen {
         match g {
             // A completed hold over the live Delete row requests the ride's deletion — the guarded
             // hold is the confirmation (no popup), the row's fill its live feedback. Records the
-            // delete by index; the host resolves it to the durable object id, deletes `RD{id}.ORD`
-            // + its synced-set entry, and the rescan re-feeds the catalog — while this pops back to
+            // delete by index; the host resolves it to the durable object id, removes the flat
+            // catalog object, and the rescan re-feeds the catalog — while this pops back to
             // the Rides list (its remap keeps the highlight sane). A hold while recording (greyed
             // row) does nothing.
             Gesture::Hold if self.delete_enabled(cx.activity, cx.rides.len()) => {

@@ -25,7 +25,7 @@ use obc_formats::io::SliceSource;
 use obc_route::{ElevationSource, NullElevation};
 
 /// The terrain artifact's extension (`OBCT_Spec.md` §4.6 — `.obcd`, *not* `.obct`, which is the
-/// recorded ride log).
+/// recorded ride samples).
 pub(crate) const TERRAIN_EXT: &str = "obcd";
 
 /// The sidecar path for a map file: the same path with [`TERRAIN_EXT`].

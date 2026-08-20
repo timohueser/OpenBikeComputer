@@ -73,13 +73,22 @@ impl Crc32 {
         Self { state: 0xFFFF_FFFF }
     }
 
+    /// Resume after a durable checkpoint that stored [`finalize`](Self::finalize)'s value.
+    ///
+    /// CRC-32's xor-out is reversible, so this restores the exact incremental state without
+    /// rereading the already-checkpointed prefix. The flat ride journal uses it to continue a
+    /// recovered recording in O(1) mount I/O.
+    pub const fn from_checksum(checksum: u32) -> Self {
+        Self { state: checksum ^ 0xFFFF_FFFF }
+    }
+
     /// Fold `bytes` into the running CRC.
     pub fn update(&mut self, bytes: &[u8]) {
         let mut c = self.state;
         #[cfg(feature = "slice-by-8")]
         let bytes = {
-            let mut chunks = bytes.chunks_exact(8);
-            for chunk in &mut chunks {
+            let (chunks, remainder) = bytes.as_chunks::<8>();
+            for chunk in chunks {
                 let first = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) ^ c;
                 let second = u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
                 c = TABLES[7][(first & 0xff) as usize]
@@ -91,7 +100,7 @@ impl Crc32 {
                     ^ TABLES[1][((second >> 16) & 0xff) as usize]
                     ^ TABLES[0][(second >> 24) as usize];
             }
-            chunks.remainder()
+            remainder
         };
         for &b in bytes {
             c = TABLE[((c ^ b as u32) & 0xFF) as usize] ^ (c >> 8);
@@ -165,6 +174,16 @@ mod tests {
         let snapshot = h;
         let mut resumed = snapshot;
         resumed.update(&data[50..]);
+        assert_eq!(resumed.finalize(), Crc32::checksum(&data));
+    }
+
+    #[test]
+    fn final_checksum_resumes_without_rereading_the_prefix() {
+        let data: [u8; 128] = core::array::from_fn(|i| (i * 11 + 5) as u8);
+        let mut prefix = Crc32::new();
+        prefix.update(&data[..73]);
+        let mut resumed = Crc32::from_checksum(prefix.finalize());
+        resumed.update(&data[73..]);
         assert_eq!(resumed.finalize(), Crc32::checksum(&data));
     }
 }
