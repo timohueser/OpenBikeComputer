@@ -445,6 +445,27 @@ fn the_device_owned_kinds_and_the_flagged_entries_are_refused() {
 }
 
 #[test]
+fn a_finished_journal_ride_is_the_exact_v3_object_served_by_normal_get() {
+    let disk = formatted_card(140);
+    let mut device = boot(&disk);
+    let bytes = include_bytes!("../../../specs/vectors/ride-v3.bin");
+    let (id, revision) = device.finish_recording(bytes, "FS8 vector");
+
+    let entry = device.entry(id).expect("the final catalog names the ride");
+    assert!(!entry.flags.has(obc_storage::flat::EntryFlags::RECORDING));
+    assert_eq!(entry.payload_len, bytes.len() as u64);
+    assert_eq!(entry.payload_crc, crc32(bytes));
+
+    let wire = device.control(&client::get(141, id, revision));
+    assert_eq!(wire.payload(), bytes, "the journaled bytes are the v4 GET bytes");
+    let answer = Answer::of(wire.answer());
+    assert!(!answer.is_error(), "{answer:?}");
+    assert_eq!(answer.u64_at(0), revision);
+    assert_eq!(answer.u64_at(8), bytes.len() as u64);
+    assert_eq!(answer.u32_at(16), crc32(bytes));
+}
+
+#[test]
 fn an_object_with_no_bytes_is_a_remove_and_never_a_put() {
     let disk = formatted_card(15);
     let mut device = boot(&disk);

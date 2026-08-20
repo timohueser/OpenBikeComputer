@@ -100,13 +100,15 @@ public struct RidePoint: Hashable, Sendable {
     /// Elevation in metres, when the device recorded one.
     public let elevationMeters: Double?
     /// Heart rate (bpm) at this fix, when a strap was reporting fresh data —
-    /// `nil` when absent/stale (ride object v2, epic #707). Independent of
+    /// `nil` when absent/stale (ride object v3 sensor sentinel). Independent of
     /// `elevationMeters`: a point can carry sensors without elevation.
     public let heartRate: Int?
     /// Crank cadence (rpm) at this fix, or `nil` when absent/stale.
     public let cadence: Int?
     /// Power (W) at this fix, or `nil` when absent/stale.
     public let power: Int?
+    /// Whether this sample starts a new recorded track segment (ride object v3 flag bit 0).
+    public var segmentStart: Bool = false
 
     public init(
         timestamp: Date,
@@ -122,6 +124,20 @@ public struct RidePoint: Hashable, Sendable {
         self.heartRate = heartRate
         self.cadence = cadence
         self.power = power
+    }
+
+    public init(
+        timestamp: Date,
+        coordinate: Coordinate,
+        elevationMeters: Double? = nil,
+        heartRate: Int? = nil,
+        cadence: Int? = nil,
+        power: Int? = nil,
+        segmentStart: Bool
+    ) {
+        self.init(timestamp: timestamp, coordinate: coordinate, elevationMeters: elevationMeters,
+                  heartRate: heartRate, cadence: cadence, power: power)
+        self.segmentStart = segmentStart
     }
 }
 
@@ -174,9 +190,8 @@ public struct RideSummary: Identifiable, Equatable, Sendable {
     /// is decoded.
     public var trackPreview: TrackPreview?
 
-    /// Per-ride BLE-sensor summary (ride object v2, epic #707). Each is `nil`
-    /// when the ride saw no fresh sample of that quantity — the ride-detail
-    /// screen shows a row only for the ones present. Always `nil` for a v1 ride.
+    /// Per-ride BLE-sensor summary from the v3 footer. Each is `nil` when the ride saw no fresh
+    /// sample of that quantity — the ride-detail screen shows a row only for the ones present.
     public var avgHeartRate: Int?
     public var maxHeartRate: Int?
     public var avgCadence: Int?

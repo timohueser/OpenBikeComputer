@@ -34,14 +34,13 @@ OUT="${1:-ui-snapshots}"
 mkdir -p "$OUT"
 
 # A deterministic /tracks fixture for the Rides screen (#454): two stored ride objects. The pinned
-# `ride-v1.bin` protocol vector *is* a valid `RD{id}.ORD` (the stored file == the wire object), so we
-# copy it under two ids. RD1 gets its header `distance` patched (u32 LE at byte 16 = 3 + name_len 9 +
-# 4; 42500 → 17800 m) so the two same-day rides are visually distinct on the redesigned rows'
+# `ride-v3.bin` protocol vector is a valid ride object, so we copy it under two simulator-only
+# `ride-{id}.obcr` fixture ids. `ride-1` gets its footer `distance` patched (u32 LE at byte 72 = 60-byte sample
+# stream + footer offset 12; 12345 → 17800 m) so the two same-day rides are visually distinct on the redesigned rows'
 # `D MON · distance` line (#680's C1 re-cut) — the exact ambiguity the re-cut exists to prevent.
 # Distance isn't part of the object's length validation, so the patched copy still reads as a valid
-# ride. A `SYNCED.SET` sidecar lists RD0's id (the obc-app codec: `OBCS` v1, count 1, id 0 LE, then
-# CRC-16/CCITT-FALSE over the first 10 bytes = 0x6388 LE), so the rows pin BOTH sync states — RD0
-# synced, RD1 not (owner review round 2's mark redesign). Staged in a temp dir cleaned on exit.
+# ride. Both fixture rows are conservatively unsynced; flat synced/retention metadata belongs to
+# the later ride-domain boundary (#1398). Staged in a temp dir cleaned on exit.
 TRACKS="$(mktemp -d)"
 # A scratch routes dir for the create-route sweep below — the router writes its reserved
 # `_nav.obcr` there instead of littering a `routes/` in the working directory.
@@ -66,10 +65,9 @@ cp "$GRIMSEL_FIXTURES/routes/grimsel-climb.obcr" "$ETAROUTE/"
 sed 's#<ele>[^<]*</ele>#<ele>0</ele>#g' "$GPX" > "$ETAFLAT/grimsel-flat.gpx"
 "$SIM" --import "$ETAFLAT/grimsel-flat.gpx" --routes-dir "$ETAFLAT" > /dev/null
 rm "$ETAFLAT/grimsel-flat.gpx"
-cp "$ROUTES/ride-v1.bin" "$TRACKS/RD0.ORD"
-cp "$ROUTES/ride-v1.bin" "$TRACKS/RD1.ORD"
-printf '\x88\x45\x00\x00' | dd of="$TRACKS/RD1.ORD" bs=1 seek=16 conv=notrunc status=none
-printf 'OBCS\x01\x00\x01\x00\x00\x00\x88\x63' > "$TRACKS/SYNCED.SET"
+cp "$ROUTES/ride-v3.bin" "$TRACKS/ride-0.obcr"
+cp "$ROUTES/ride-v3.bin" "$TRACKS/ride-1.obcr"
+printf '\x88\x45\x00\x00' | dd of="$TRACKS/ride-1.obcr" bs=1 seek=72 conv=notrunc status=none
 cp "$ROUTES/route-plain.obcr"     "$TRIPDIR/1-plain.obcr"
 cp "$ROUTES/route-waypoints.obcr" "$TRIPDIR/2-waypoints.obcr"
 cp "$ROUTES/route-plain.obcr" "$PLAINROUTE/"
@@ -98,12 +96,12 @@ cp "$GRIMSEL_FIXTURES/routes/TP1.OBT" "$TRIPDIR/TP1.OBT"
 "$SIM" "$MAP" --boot --script "p p h" --routes-dir "$TRIPDIR" --png "$OUT/trip-delete-confirm.png"
 "$SIM" "$MAP" --boot --battery 45 --script "B w"          --png "$OUT/menu.png"
 # Rides screen (#454, rows redesigned by #680, polished in owner review round 2): inset name rows
-# over the olive `D MON · distance` line — the fixture pins both sync states: RD0 (synced via the
-# staged SYNCED.SET) draws the small check inside the row box, RD1 (unsynced) draws nothing there.
+# over the olive `D MON · distance` line. Both fixtures are unsynced until the later flat
+# synced/retention metadata boundary lands.
 # `p` presses into the Rides screen from the Menu (one `d` step + `w` settle).
 "$SIM" "$MAP" --boot --tracks-dir "$TRACKS" --script "B d w p"     --png "$OUT/rides.png"
 # The Ride detail (#680, repaged in owner review round 2, content-paired in round 3): press the
-# highlighted ride (the unsynced RD1) — RIDE bar with the "not synced" slot, name, date · time, the
+# highlighted ride (the unsynced `ride-1` fixture) — RIDE bar with the "not synced" slot, name, date · time, the
 # content-paired pager on its entry page (page A: the recorded track's shape preview, host-filled —
 # start disc + end diamond — over DISTANCE + RIDE TIME), and the guarded Delete-ride row.
 "$SIM" "$MAP" --boot --tracks-dir "$TRACKS" --script "B d w p p"   --png "$OUT/ride-detail.png"

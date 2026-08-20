@@ -108,6 +108,9 @@ pub struct SparseDisk {
     /// enumerate the interior cut points of the writes that moved more than a block, and the cost tests,
     /// to count card *commands* rather than blocks.
     ledger: RefCell<Vec<(u32, MediaOp, u64)>>,
+    /// Physical spans of counted writes, as `(operation, first LBA, block count)`. Crash tests use
+    /// this to distinguish an idempotent compare from an identical rewrite.
+    write_log: RefCell<Vec<(u32, u64, u64)>>,
     powered: Cell<bool>,
     rng: Cell<u64>,
 }
@@ -122,6 +125,7 @@ impl SparseDisk {
             plan: Cell::new(None),
             ops: Cell::new(0),
             ledger: RefCell::new(Vec::new()),
+            write_log: RefCell::new(Vec::new()),
             powered: Cell::new(true),
             rng: Cell::new(seed | 1),
         }
@@ -156,6 +160,10 @@ impl SparseDisk {
             .filter(|(_, kind, _)| *kind == MediaOp::Write)
             .map(|(at, _, blocks)| (*at, *blocks))
             .collect()
+    }
+
+    pub fn write_log(&self) -> Vec<(u32, u64, u64)> {
+        self.write_log.borrow().clone()
     }
 
     /// Restores power and drops everything that was never synced — which is what a reboot does. The
@@ -283,6 +291,7 @@ impl BlockDevice for &SparseDisk {
             return Err(DiskError);
         }
         self.ledger.borrow_mut().push((op, MediaOp::Write, blocks));
+        self.write_log.borrow_mut().push((op, lba, blocks));
         if self.cut_is(op, When::Before) {
             self.power_off();
             return Err(DiskError);

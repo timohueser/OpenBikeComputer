@@ -4,7 +4,7 @@
  * Two things are being decided here, and only one of them is "does the flow work".
  *
  * The first is **byte identity**: the GPX a visitor saves has to be the file the device itself would
- * have written. The pinned pair is `specs/vectors/track-log.obct` → `track-export.gpx`, produced
+ * have written. The pinned pair is `specs/vectors/ride-v3.bin` → `track-export.gpx`, produced
  * by the real `obc_route::track_to_gpx`, and the export path has to land on those exact bytes after
  * a full round trip through the wire's ride object — with one documented exception the wire format
  * makes unavoidable, asserted as *the only* exception rather than waved at.
@@ -31,7 +31,7 @@ import {
     type LoopbackOptions,
     type MockDeviceOptions,
 } from "../usb/loopback";
-import { encodeRideObject, type RideObject, type RidePoint } from "../usb/objects";
+import { decodeRideObject, encodeRideObject, type RideObject, type RidePoint } from "../usb/objects";
 import type { BytePipe, DeviceLink } from "../usb/pipe";
 import { EntryFlags, ObjectKind, type CatalogEntry } from "../usb/protocol";
 import type { JobContext, JobPhase } from "./progress";
@@ -43,7 +43,6 @@ import {
     rideFilename,
     rideKey,
     rideScope,
-    rideToTrackLog,
     scopeKey,
     storeEra,
     type RideSource,
@@ -77,17 +76,11 @@ beforeAll(async () => {
 const TRACK_RECORD_LEN = 20;
 
 /**
- * The device's own Finish-time conversion, `obc_route::track_to_ride`, restated in the test.
- *
- * It is the *producer* of every ride object that ever crosses this wire, so the honest way to test
- * the pull side is to hand it exactly what the device would have sent — a ride object built from the
- * checked-in log by the same four rules (µdeg × 10, `lat, lon` order, whole-second offsets from the
- * first record, sensors 1:1) — rather than a ride object shaped to make the export pass.
+ * Build a v3 ride around the exact checked-in recorded samples. Finish appends only the footer.
  */
 function rideFromTrackLog(log: Uint8Array, name: string, startTime: number): RideObject {
     const view = new DataView(log.buffer, log.byteOffset, log.byteLength);
     const total = Math.floor(log.length / TRACK_RECORD_LEN); // a trailing partial record is ignored
-    const t0 = total > 0 ? view.getUint32(12, true) : 0;
     const points: RidePoint[] = [];
     for (let i = 0; i < total; i++) {
         const at = i * TRACK_RECORD_LEN;
@@ -95,17 +88,18 @@ function rideFromTrackLog(log: Uint8Array, name: string, startTime: number): Rid
         const cadence = log[at + 17];
         const power = view.getUint16(at + 18, true);
         points.push({
-            tOffsetS: Math.floor((view.getUint32(at + 12, true) - t0) / 1000),
-            lat1e7: view.getInt32(at + 4, true) * 10,
-            lon1e7: view.getInt32(at, true) * 10,
-            eleM: view.getInt16(at + 8, true),
+            lonMicrodegrees: view.getInt32(at, true),
+            latMicrodegrees: view.getInt32(at + 4, true),
+            elevationM: view.getInt16(at + 8, true),
+            segmentStart: (view.getUint16(at + 10, true) & 1) !== 0,
+            tMs: view.getUint32(at + 12, true),
             hrBpm: hr === 0xff ? null : hr,
             cadenceRpm: cadence === 0xff ? null : cadence,
             powerW: power === 0xffff ? null : power,
         });
     }
     return {
-        version: 2,
+        version: 3,
         name,
         startTime,
         distanceM: 4210,
@@ -126,17 +120,18 @@ function longRide(points: number): RideObject {
     const list: RidePoint[] = [];
     for (let i = 0; i < points; i++) {
         list.push({
-            tOffsetS: i,
-            lat1e7: 479_950_000 + i * 100,
-            lon1e7: 78_420_000 + i * 100,
-            eleM: 300 + (i % 200),
+            tMs: i * 1000,
+            latMicrodegrees: 47_995_000 + i * 10,
+            lonMicrodegrees: 7_842_000 + i * 10,
+            elevationM: 300 + (i % 200),
+            segmentStart: i === 0,
             hrBpm: 120 + (i % 40),
             cadenceRpm: 80,
             powerW: 200,
         });
     }
     return {
-        version: 2,
+        version: 3,
         name: "Long Way Round",
         startTime: 1_783_598_400,
         distanceM: points * 8,
@@ -201,29 +196,8 @@ function deviceWith(
 // --- byte identity --------------------------------------------------------------
 
 describe("the exported GPX", () => {
-    /**
-     * The one thing the wire cannot carry.
-     *
-     * `track_to_gpx` opens a fresh `<trkseg>` on every point flagged `segment_start`, so the pinned
-     * fixture — a log with a pause in it — has two. The ride object (§7.2) has no segment flag:
-     * the device drops it at Finish, in `track_to_ride`, for *every* peer. The phone's exporter says
-     * the same thing ("The ride object carries no segment breaks, so the track is one `<trkseg>`").
-     *
-     * Collapsing exactly that one break — and nothing else — is what "byte-identical to the native
-     * path for the same track" can honestly mean on this side of the wire. Deriving the expectation
-     * from the fixture rather than hand-writing it means every other byte still has to match:
-     * coordinates, elevations, the sensor extension shape, the XML escaping, the name.
-     */
-    function withoutSegmentBreak(gpx: string): string {
-        const joined = gpx.replace("</trkseg>\n<trkseg>\n", "");
-        expect(joined, "the fixture is expected to have exactly one mid-track segment break").not.toBe(gpx);
-        expect(joined.match(/<trkseg>/g), "and only one after collapsing it").toHaveLength(1);
-        return joined;
-    }
-
     it("reproduces the native exporter byte-for-byte, pulled from the device", async () => {
-        const log = vector("track-log.obct");
-        const ride = rideFromTrackLog(log, TRACK_NAME, 1_783_598_400);
+        const ride = { ...decodeRideObject(vector("ride-v3.bin")), name: TRACK_NAME };
         const { entries, source, close } = deviceWith([{ id: 4n, ride }]);
         try {
             // The catalog is what a rider picks from, so the export starts where they do.
@@ -232,8 +206,8 @@ describe("the exported GPX", () => {
 
             const exported = await exportRide(source, listed[0], context());
             const expected = new TextDecoder().decode(vector("track-export.gpx"));
-            expect(exported.gpx).toBe(withoutSegmentBreak(expected));
-            expect(exported.points).toBe(5);
+            expect(exported.gpx).toBe(expected);
+            expect(exported.points).toBe(3);
             expect(BigInt(exported.bytes)).toBe(entries[0].payloadLength);
         } finally {
             await close();
@@ -257,62 +231,52 @@ describe("the exported GPX", () => {
     });
 });
 
-describe("the ride object -> track log transcode", () => {
-    /**
-     * The inverse of `track_to_ride`, pinned field by field.
-     *
-     * Round-tripping the checked-in log through the wire's ride object and back must return the
-     * same 20-byte records — *except* the two fields the ride object provably cannot carry. Naming
-     * them as byte ranges rather than asserting "close enough" means a coordinate that started
-     * rounding, an elevation that picked up a sentinel, or a sensor that lost its absence would fail
-     * here with the record and the offset that moved.
-     */
-    it("returns every field the ride object carries, and only loses the two it does not", () => {
-        const log = vector("track-log.obct");
-        const ride = rideFromTrackLog(log, TRACK_NAME, 1_783_598_400);
-        const back = rideToTrackLog(ride);
-
-        const records = Math.floor(log.length / TRACK_RECORD_LEN);
-        expect(back.length).toBe(records * TRACK_RECORD_LEN); // the trailing partial record is gone
-        for (let i = 0; i < records; i++) {
-            const at = i * TRACK_RECORD_LEN;
-            const original = log.subarray(at, at + TRACK_RECORD_LEN);
-            const roundTripped = back.subarray(at, at + TRACK_RECORD_LEN);
-            // lon, lat, ele — exact: the device multiplied µdeg by 10, so every value divides back.
-            expect(roundTripped.subarray(0, 10), `record ${i} coordinates/elevation`).toEqual(
-                original.subarray(0, 10),
-            );
-            // hr, cadence, power — exact, sentinels and all.
-            expect(roundTripped.subarray(16, 20), `record ${i} sensors`).toEqual(original.subarray(16, 20));
-        }
-
-        // The two losses, stated: the segment flag is gone (the ride object has no such field), and
-        // the timestamp is whole seconds since the first point rather than the device's raw ms clock.
-        const flagsAt = 10;
-        expect(new DataView(log.buffer, log.byteOffset).getUint16(3 * TRACK_RECORD_LEN + flagsAt, true)).toBe(1);
-        for (let i = 0; i < records; i++) {
-            expect(new DataView(back.buffer).getUint16(i * TRACK_RECORD_LEN + flagsAt, true)).toBe(0);
-        }
-        expect(new DataView(back.buffer).getUint32(3 * TRACK_RECORD_LEN + 12, true)).toBe(63_000);
+describe("the v3 sample stream", () => {
+    it("decodes and re-encodes the cross-language v3 vector byte-for-byte", () => {
+        const bytes = vector("ride-v3.bin");
+        const ride = decodeRideObject(bytes);
+        expect(ride).toMatchObject({
+            version: 3,
+            name: "Sensor Ride",
+            startTime: 1_751_460_000,
+            distanceM: 12_345,
+            movingTimeS: 3_600,
+            avgSpeedCms: 343,
+            climbM: 120,
+            avgHr: 142,
+            maxHr: 176,
+            avgCadence: 85,
+            avgPower: 210,
+            maxPower: 480,
+        });
+        expect(ride.points).toHaveLength(3);
+        expect(ride.points[0]).toMatchObject({
+            lonMicrodegrees: 7_800_000,
+            latMicrodegrees: 48_000_000,
+            elevationM: 214,
+            segmentStart: true,
+            tMs: 0,
+            hrBpm: 140,
+            cadenceRpm: 84,
+            powerW: 205,
+        });
+        expect(encodeRideObject(ride)).toEqual(bytes);
     });
 
-    it("writes the device's own 'no barometer yet' value rather than a sentinel altitude", () => {
-        // The firmware never emits `ELE_NONE`; it stamps 0 until the first baro sample. Another
-        // encoder can, and `<ele>-32768</ele>` in a rider's GPX would be worse than 0.
+    it("keeps a zero elevation as the device's 'no barometer yet' value", () => {
         const ride: RideObject = {
             ...longRide(1),
-            points: [{ tOffsetS: 0, lat1e7: 479_950_000, lon1e7: 78_420_000, eleM: null, hrBpm: null, cadenceRpm: null, powerW: null }],
+            points: [{ tMs: 0, latMicrodegrees: 47_995_000, lonMicrodegrees: 7_842_000, elevationM: 0, segmentStart: true, hrBpm: null, cadenceRpm: null, powerW: null }],
         };
-        const log = rideToTrackLog(ride);
-        expect(new DataView(log.buffer).getInt16(8, true)).toBe(0);
+        const bytes = encodeRideObject(ride);
+        expect(new DataView(bytes.buffer).getInt16(8, true)).toBe(0);
     });
 });
 
 // --- the surface the export path is given -----------------------------------------
 //
-// This used to be a four-test suite about the ride acknowledgement — that the browser never sends
-// one, asserted against the device's command log and its `/tracks/SYNCED.SET` bytes. There is no ack
-// on the cable any more: §5.2.2 retires the v1 `command` selector outright, because a possession ack
+// The browser does not send a possession acknowledgement on the cable. §5.2.2 has no `command`
+// selector because an acknowledgement
 // changes no object and so has no store meaning. It keeps the BLE control surface it had; USB does
 // not carry it, and neither does anything below. What survives is the narrowing itself, which is
 // still load-bearing because §3.6 and §3.7 *are* on this cable.
@@ -483,7 +447,7 @@ describe("when the export cannot finish", () => {
         const { device, source, close } = deviceWith([]);
         try {
             const future = encodeRideObject(ride);
-            future[0] = 3;
+            future[future.length - 80] = 4;
             device.seed({ objectId: 4n, kind: ObjectKind.Ride, displayName: ride.name, bytes: future });
             const failure = await exportRide(source, (await source.listRides())[0], context()).catch(
                 (e: unknown) => e,

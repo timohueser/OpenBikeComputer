@@ -118,11 +118,11 @@
       ]
     },
     "track-log.obct": {
-      "format": "recorded track log \u2014 a flat array of 20-byte records, no header",
-      "byte_len": 107,
+      "format": "sample-codec vector \u2014 five complete 20-byte records, not a ride object",
+      "byte_len": 100,
       "record_len": 20,
       "whole_records": 5,
-      "partial_tail_bytes": 7,
+      "partial_tail_bytes": 0,
       "points": [
         {
           "t_ms": 0,
@@ -177,49 +177,18 @@
       ]
     },
     "track-export.gpx": {
-      "format": "GPX 1.1 export of track-log.obct (obc_route::track_to_gpx)",
-      "byte_len": 1069,
+      "format": "GPX 1.1 export of ride-v3.bin (obc_route::track_to_gpx)",
+      "byte_len": 755,
       "track_name": "Schauinsland & back",
       "segments": 2,
-      "track_points": 5,
+      "track_points": 3,
       "creator": "OpenBikeComputer",
-      "note": "the partial trailing record contributes no <trkpt>; hr/cad/pwr = 0 are values, not the absent sentinels"
+      "note": "the exporter accepts only a validated finished v3 ride; headerless sample arrays are rejected"
     },
-    "ride-v1.bin": {
-      "format": "ride object v1 (spec 7.2)",
-      "byte_len": 74,
-      "version": 1,
-      "name": "H\u00f6henweg",
-      "start_time_unix": 1751450000,
-      "distance_m": 42500,
-      "moving_time_s": 9000,
-      "avg_speed_cms": 472,
-      "climb_m": 810,
-      "points": [
-        {
-          "t_offset_s": 0,
-          "lat_1e7": 480000000,
-          "lon_1e7": 78000000,
-          "ele_m": 214
-        },
-        {
-          "t_offset_s": 60,
-          "lat_1e7": 480010000,
-          "lon_1e7": 78012000,
-          "ele_m": 219
-        },
-        {
-          "t_offset_s": 120,
-          "lat_1e7": 480020000,
-          "lon_1e7": 78030000,
-          "ele_m": null
-        }
-      ]
-    },
-    "ride-v2.bin": {
-      "format": "ride object v2 (spec 7.2, epic #707) \u2014 BLE-sensor summary + per-point sensor fields; device may serve v1 or v2, the app must accept both",
-      "byte_len": 96,
-      "version": 2,
+    "ride-v3.bin": {
+      "format": "ride object v3 (spec 7.2): verbatim 20-byte samples plus fixed 84-byte footer",
+      "byte_len": 144,
+      "version": 3,
       "name": "Sensor Ride",
       "start_time_unix": 1751460000,
       "distance_m": 12345,
@@ -240,28 +209,31 @@
       },
       "points": [
         {
-          "t_offset_s": 0,
-          "lat_1e7": 480000000,
-          "lon_1e7": 78000000,
+          "t_ms": 0,
+          "lon_udeg": 7800000,
+          "lat_udeg": 48000000,
           "ele_m": 214,
+          "segment_start": true,
           "hr": 140,
           "cad": 84,
           "pwr": 205
         },
         {
-          "t_offset_s": 60,
-          "lat_1e7": 480010000,
-          "lon_1e7": 78012000,
+          "t_ms": 60000,
+          "lon_udeg": 7801200,
+          "lat_udeg": 48001000,
           "ele_m": 219,
+          "segment_start": false,
           "hr": null,
           "cad": null,
           "pwr": null
         },
         {
-          "t_offset_s": 120,
-          "lat_1e7": 480020000,
-          "lon_1e7": 78030000,
-          "ele_m": null,
+          "t_ms": 120000,
+          "lon_udeg": 7803000,
+          "lat_udeg": 48002000,
+          "ele_m": 225,
+          "segment_start": true,
           "hr": 150,
           "cad": null,
           "pwr": 215

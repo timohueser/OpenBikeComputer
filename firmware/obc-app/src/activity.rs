@@ -49,10 +49,33 @@ pub enum Mode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrackAction {
     /// Finalise the open log to the host's saved-ride artifact (Finish, or "Save & start new")
-    /// — a `.gpx` on the sim, the durable `RD{id}.ORD` ride object on the device.
+    /// — a `.gpx` convenience artifact on the sim, a durable flat Ride object on the device.
     Save,
     /// Throw the open log away (Discard).
     Discard,
+}
+
+/// The accumulator state that must cross a reset when a journaled ride is continued.
+///
+/// This is deliberately the raw integration state, not just the rounded footer summary: averages
+/// need their numerators and denominators in order to merge post-reset samples without drift.
+/// Position/elevation anchors are intentionally absent; a reboot is a sampling gap, so the first
+/// post-boot fix and altitude re-anchor instead of booking movement across power-off time.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct RideContinuation {
+    pub ridden_m: f32,
+    pub moving_m: f32,
+    pub moving_s: f32,
+    pub climb_m: f32,
+    pub descent_m: f32,
+    pub hr_ms_sum: u64,
+    pub hr_ms: u32,
+    pub max_hr: u16,
+    pub power_ms_sum: u64,
+    pub power_ms: u32,
+    pub max_power: u16,
+    pub cadence_ms_sum: u64,
+    pub cadence_ms: u32,
 }
 
 /// A **seam re-anchor** waiting for the next route-aware tick: after a detour commit re-adopts
@@ -173,8 +196,8 @@ pub struct Activity {
     /// Index into the ride catalog of the ride whose **detail screen** is open, or `None` (epic
     /// #678 T2 / #680) — the ride namespace's `active_route`: set on detail entry, cleared on
     /// exit, and the key the host's one-shot track-profile fill hangs off
-    /// ([`App::ride_track_request`](crate::App::ride_track_request) → the host streams
-    /// `RD{id}.ORD` once → [`App::set_ride_profile`](crate::App::set_ride_profile)).
+    /// ([`App::ride_track_request`](crate::App::ride_track_request) → the host streams the Ride
+    /// object once → [`App::set_ride_profile`](crate::App::set_ride_profile)).
     pub(crate) viewed_ride: Option<usize>,
 
     // tracking session (distinct from the navigated route)
@@ -186,6 +209,9 @@ pub struct Activity {
     /// Monotonic id source for [`session`](Activity::session); only increments, so a new session
     /// can't collide with a just-finished one.
     session_seq: u32,
+    /// One session edge is a recovered continuation, so [`RideEngine`](crate::ride_engine::RideEngine)
+    /// must preserve the restored accumulators instead of applying the fresh-session reset.
+    resume_session: bool,
     /// A one-shot disposition for the open log, drained by the host via
     /// [`take_track_action`](Activity::take_track_action).
     track_action: Option<TrackAction>,
@@ -524,6 +550,20 @@ impl Activity {
     pub fn start_session(&mut self) {
         self.session_seq = self.session_seq.wrapping_add(1);
         self.session = Some(self.session_seq);
+        self.resume_session = false;
+    }
+
+    /// Begin a session that continues a restored journal checkpoint.
+    pub(crate) fn continue_session(&mut self) {
+        self.session_seq = self.session_seq.wrapping_add(1);
+        self.session = Some(self.session_seq);
+        self.resume_session = true;
+    }
+
+    /// Consume the recovered-session edge. Only the ride engine calls this while reconciling the
+    /// session id; leaving the flag set any longer could preserve stale totals for a later session.
+    pub(crate) fn take_resume_session(&mut self) -> bool {
+        core::mem::take(&mut self.resume_session)
     }
 
     /// End the tracking session (Finish / Discard). The disposition of the open log is set
@@ -858,6 +898,44 @@ impl Activity {
         self.max_power = 0;
         self.cadence_ms_sum = 0;
         self.cadence_ms = 0;
+    }
+
+    /// Snapshot every accumulator needed to continue footer totals exactly after a reset.
+    pub fn ride_continuation(&self) -> RideContinuation {
+        RideContinuation {
+            ridden_m: self.ridden_m,
+            moving_m: self.moving_m,
+            moving_s: self.moving_s,
+            climb_m: self.climb.ascent(),
+            descent_m: self.climb.descent(),
+            hr_ms_sum: self.hr_ms_sum,
+            hr_ms: self.hr_ms,
+            max_hr: self.max_hr,
+            power_ms_sum: self.power_ms_sum,
+            power_ms: self.power_ms,
+            max_power: self.max_power,
+            cadence_ms_sum: self.cadence_ms_sum,
+            cadence_ms: self.cadence_ms,
+        }
+    }
+
+    /// Restore a checkpoint before the explicit Continue action creates its session edge.
+    pub fn restore_ride_continuation(&mut self, state: RideContinuation) {
+        self.ridden_m = state.ridden_m;
+        self.moving_m = state.moving_m;
+        self.moving_s = state.moving_s;
+        self.climb = DeadBand::from_totals(state.climb_m, state.descent_m);
+        self.last_fix = None;
+        self.last_ms = None;
+        self.segment_break = true;
+        self.hr_ms_sum = state.hr_ms_sum;
+        self.hr_ms = state.hr_ms;
+        self.max_hr = state.max_hr;
+        self.power_ms_sum = state.power_ms_sum;
+        self.power_ms = state.power_ms;
+        self.max_power = state.max_power;
+        self.cadence_ms_sum = state.cadence_ms_sum;
+        self.cadence_ms = state.cadence_ms;
     }
 
     /// Store the latest map-match result (cursor + off-route readout).
@@ -1419,6 +1497,36 @@ mod tests {
         a.record_hr(120, 11_000);
         a.record_motion(Fix::at(BASE_LAT + STEP_UD, LON), 11_000);
         assert_eq!(a.avg_hr(), Some(120), "ride two measures its own samples");
+    }
+
+    #[test]
+    fn recovered_continuation_restores_raw_summary_state_and_marks_one_session_edge() {
+        let state = RideContinuation {
+            ridden_m: 12_345.5,
+            moving_m: 12_000.25,
+            moving_s: 2_400.0,
+            climb_m: 321.0,
+            descent_m: 123.0,
+            hr_ms_sum: 150 * 90_000,
+            hr_ms: 90_000,
+            max_hr: 188,
+            power_ms_sum: 245 * 80_000,
+            power_ms: 80_000,
+            max_power: 901,
+            cadence_ms_sum: 87 * 70_000,
+            cadence_ms: 70_000,
+        };
+        let mut activity = Activity::new(Mode::Idle);
+        activity.restore_ride_continuation(state);
+        assert_eq!(activity.ride_continuation(), state);
+        assert_eq!(activity.avg_hr(), Some(150));
+        assert_eq!(activity.avg_power(), Some(245));
+        assert_eq!(activity.avg_cadence(), Some(87));
+
+        activity.continue_session();
+        assert!(activity.take_resume_session());
+        assert!(!activity.take_resume_session(), "the preservation edge is one-shot");
+        assert_eq!(activity.ride_continuation(), state);
     }
 
     /// Before any sample every summary accessor is `None` (the header codec maps that to its

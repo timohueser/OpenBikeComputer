@@ -59,30 +59,30 @@ pub trait RideRepository {
     /// The ride catalog (summaries, newest first), for [`App::set_rides`](obc_app::App::set_rides).
     fn catalog(&self) -> &[RideSummary];
     /// Each catalog entry's durable id, parallel to [`catalog`](RideRepository::catalog).
-    fn ids(&self) -> &[u16];
+    fn ids(&self) -> &[CatalogObjectId];
     /// Delete the ride with durable id `id` (the hold-to-delete). `true` = removed.
-    fn delete_by_id(&mut self, id: u16) -> bool;
+    fn delete_by_id(&mut self, id: CatalogObjectId) -> bool;
     /// The ride's recorded-track elevation [`Profile`] — the Ride detail's band fill (answers the
     /// [`LoadRideTrack`](obc_app::HostCommand::LoadRideTrack) cue). `None` = unknown/unreadable.
-    fn profile_by_id(&self, id: u16) -> Option<Profile>;
+    fn profile_by_id(&self, id: CatalogObjectId) -> Option<Profile>;
     /// The ride's decimated recorded-track shape polyline (the detail's track page). Empty =
     /// unknown/unreadable.
-    fn preview_by_id(&self, id: u16) -> Vec<(i32, i32)>;
-    /// Re-scan the catalog after a ride was just saved (a folder store picks up the new `RD{id}.ORD`);
-    /// a static in-memory catalog is a no-op.
+    fn preview_by_id(&self, id: CatalogObjectId) -> Vec<(i32, i32)>;
+    /// Re-scan after a ride was just saved. Folder-backed simulator stores use this hook; a static
+    /// in-memory catalog is a no-op.
     fn refresh(&mut self) {}
     /// Stamp ride `id`'s `synced_at` to `utc` in the synced sidecar (epic #638, S3) — the sweep's
     /// legacy synced-without-stamp countdown start
     /// ([`StampRideSynced`](obc_app::HostCommand::StampRideSynced)). Default no-op.
-    fn stamp_synced_at(&mut self, id: u16, utc: u32) {
+    fn stamp_synced_at(&mut self, id: CatalogObjectId, utc: u32) {
         let _ = (id, utc);
     }
 }
 
-/// The open ride log the app records into while riding — reconciled to the app's tracking intent
+/// The open ride object the app records into while riding — reconciled to the app's tracking intent
 /// each pass, exposing its [`TrackSink`] when recording.
 pub trait TrackRepository {
-    /// Reconcile the open log to the app's tracking intent: finalise/abandon the current log for the
+    /// Reconcile the open ride to the app's tracking intent: finalise/abandon the current object for the
     /// drained `action`, then (re)open a log to match `session`. `name`/`stats` are the save
     /// filename + ride totals for a `Save` (a memory store ignores both).
     fn reconcile(
@@ -92,7 +92,7 @@ pub trait TrackRepository {
         name: Option<&str>,
         stats: Option<RideStats>,
     );
-    /// The [`TrackSink`] for the open log, or `None` when nothing is recording.
+    /// The [`TrackSink`] for the open ride, or `None` when nothing is recording.
     fn sink(&mut self) -> Option<&mut dyn TrackSink>;
 }
 

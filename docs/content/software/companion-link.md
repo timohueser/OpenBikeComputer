@@ -214,7 +214,7 @@ Every bulk payload is a typed **object**. The set is small and closed:
 | `type` | Object | Direction | Payload |
 |--------|--------|-----------|---------|
 | `1` | `route` | app → device (upload) · device → app (detail read) | an [OBCR](../formats/) route file, verbatim |
-| `2` | `ride` | device → app | the compact [ride object](../formats/#recorded-rides-the-track-log-and-the-ride-object) (a tracked ride) — **v1**, or **v2** when it carries recorded sensor data |
+| `2` | `ride` | device → app | the [ride-v3 object](../formats/#recorded-rides-the-v3-ride-object): exact 20-byte recorded samples followed by its fixed summary footer |
 | `4` | `diagnostics` | device → app | an opaque text blob (boot count, link + storage counters, stack high-water…) |
 | `6` / `7` | `routeList` / `rideList` | device → app | the store catalogs — fixed-size entries (`routeList` **84 B**, `rideList` **72 B**) |
 | `9` | `trip` | app → device (upload) · device → app (detail read) | a **trip** — tiny metadata that *references* member routes by object id in ride order (spec §7.7); routes stay standalone OBCR files |
@@ -325,14 +325,11 @@ The whole trust model, the three delivery paths, how a tagged release is publish
 served so the phone can find it at all, and the RRAM layout are on the
 [firmware updates](../firmware-updates/) page.
 
-**Object ids are durable.** Each stored object has a `u16` id the device assigns
-and keeps **stable across reboots** — the reference firmware encodes it right in
-the filename (`RT{id}.OBR` for routes, `RD{id}.ORD` for rides). Durability is
-what lets the phone remember *"I uploaded route 7"* and later ask *"is 7 still
-there?"* or replace it in place — and it's what a ride sync's
-already-have-this-one set keys on. That promise holds **within an id era**; when
-the id space itself resets, a **store epoch** names the new era so the phone never
-mistakes a reused id for the old object — see [Store epochs](#store-epochs-which-id-era-youre-talking-to).
+**Object ids are durable.** Each flat-store object has an opaque `u64` id minted
+from the catalog's monotonic cursor and kept stable across reboots. Durability is
+what lets the phone remember an upload and later reconcile or replace it. The
+store's identity scopes that catalog, so a different/reformatted card cannot
+silently alias an id from the previous store.
 
 ## A transfer, end to end
 
@@ -1115,11 +1112,11 @@ its last reading into the log.
 **Where the values go.** Live, they drive three [stat tiles](../ui/#the-sensors-screen) —
 heart rate, power, cadence — plus per-ride averages and maxima. Recorded, they
 widen the ride's on-disk records: the freshest sample is stamped onto each logged
-track point and, at Finish, carried into the **ride object v2** — the very object
-the phone downloads. There is deliberately **no live sensor streaming to the
-phone**; like everything else, the phone gets the numbers *after* the ride, inside
-the ride object it syncs. Those recording formats — the track log and the v1/v2
-ride object — are the [recorded-rides section](../formats/#recorded-rides-the-track-log-and-the-ride-object)
+track point and summarized in the **ride-v3 footer** — the same object the phone
+downloads. There is deliberately **no live sensor streaming to the phone**; like
+everything else, the phone gets the numbers *after* the ride, inside the ride
+object it syncs. The samples are already their final served bytes while recording;
+Finish appends only the footer. The format is the [recorded-rides section](../formats/#recorded-rides-the-v3-ride-object)
 of the data-formats page (normative bytes in the
 [BLE interface spec §7.2](src:specs/obc-ble-interface-spec.md)).
 

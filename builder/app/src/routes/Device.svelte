@@ -479,7 +479,7 @@
             const object = decodeRideObject((await dashboard.enqueue(() => c.get(refOf(ride)))).bytes);
             preview = {
                 title: object.name || ride.displayName || `Ride ${ride.objectId}`,
-                points: object.points.map((p) => ({ lat: p.lat1e7 / 1e7, lon: p.lon1e7 / 1e7, ele: p.eleM })),
+                points: object.points.map((p) => ({ lat: p.latMicrodegrees / 1e6, lon: p.lonMicrodegrees / 1e6, ele: p.elevationM })),
                 segments: null,
                 // The ride object's own summary fields (§7.2) — the device computed these at Finish.
                 stats: [

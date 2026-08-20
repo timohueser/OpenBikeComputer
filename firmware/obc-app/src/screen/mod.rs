@@ -47,6 +47,7 @@ pub(crate) mod poi_menu;
 mod ride_control;
 mod ride_detail;
 mod ride_menu;
+mod ride_recovery;
 mod ride_start;
 mod rides;
 mod route_menu;
@@ -83,6 +84,7 @@ pub use poi_menu::PoiMenuScreen;
 pub use ride_control::RideControl;
 pub use ride_detail::RideDetailScreen;
 pub use ride_menu::RideMenuScreen;
+pub use ride_recovery::RideRecoveryScreen;
 pub use ride_start::RideStartScreen;
 pub use rides::RidesScreen;
 pub use route_menu::RouteMenuScreen;
@@ -813,6 +815,9 @@ screens! {
     /// The route-less start card (Menu → Map → press): "Start ride" / "Back". *Start ride* begins a
     /// tracking session with no route via [`start_ride_routeless`].
     RideStart(RideStartScreen) => Caps::nav(),
+    /// The one-shot boot decision for a durable recording recovered after reset. Back cannot
+    /// dismiss it; Continue preserves restored totals, while Discard is hold-guarded.
+    RideRecovery(RideRecoveryScreen) => Caps::modal().hold_fill(),
     Menu(MenuScreen) => Caps::nav().timed(),
     /// The five-station mid-ride compass: Up ahead / Detour / POIs / Routes / Main menu.
     RideMenu(RideMenuScreen) => Caps::nav().timed(),
@@ -1014,6 +1019,7 @@ impl Screen {
     ) -> bool {
         match self {
             Screen::RideControl(s) => s.selection_is_guarded(),
+            Screen::RideRecovery(s) => s.selection_is_guarded(),
             Screen::RouteSwap(s) => s.selection_is_guarded(),
             Screen::Reset(s) => s.hold_fill_active(),
             Screen::StatFields(s) => s.selection_is_deletable(settings),

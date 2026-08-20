@@ -73,11 +73,13 @@ use super::device::BlockDevice;
 use super::error::StoreError;
 use super::journal::{self, Slot, TAIL_CAPACITY, ZERO_PAD};
 use super::layout::{
-    catalog_gate, slot_block, Geometry, Ranges, BLOCK, CATALOG, ENTRIES_PER_BLOCK, ENTRY_CAPACITY, ENTRY_STRIDE,
-    MOUNT_STREAM_BLOCKS, MOUNT_STREAM_WINDOW, PROGRAM_PAGE, SLOTS, SLOT_BLOCKS, STREAM_WINDOW, SUPERBLOCK,
+    catalog_gate, slot_block, slot_header_block, Geometry, Ranges, BLOCK, CATALOG, ENTRIES_PER_BLOCK, ENTRY_CAPACITY,
+    ENTRY_STRIDE, MOUNT_STREAM_BLOCKS, MOUNT_STREAM_WINDOW, PROGRAM_PAGE, SLOTS, SLOT_BLOCKS, STREAM_WINDOW,
+    SUPERBLOCK,
 };
 use super::seam::{
     Allocation, EntryFlags, EntryMeta, Mutation, ObjectId, PutSource, Revision, RideCheckpoint, Store, StoreId,
+    RIDE_RESUME_LEN,
 };
 use super::superblock::Superblock;
 
@@ -192,7 +194,8 @@ pub enum Mode {
     /// continue to. Reads are still served, and the wire face is the same
     /// `revisionSpaceExhausted 2`: from a client's side both are "this card's counters ran out".
     SequenceSpaceExhausted,
-    /// No gate is well-formed, or no candidate body validated. Evidence preserved, no repair.
+    /// No catalog gate is well-formed, no candidate body validated, or required ride rollover
+    /// repair failed. Evidence is preserved for the next mount; no incomplete recovery is exposed.
     /// Wire face: `readOnly` / `catalogUnreadable 1`.
     CatalogUnreadable,
     /// §5.6 step 1 classified the card as not a flat store. Initialization is the only transition.
@@ -247,6 +250,8 @@ pub struct RideRecovery {
     pub flushed: u64,
     pub tail_len: u32,
     pub payload_crc: u32,
+    /// Recorder-owned state CRC-covered by the selected logical checkpoint.
+    pub resume: [u8; RIDE_RESUME_LEN],
     /// The physical slot it came from, which is `checkpoint_sequence mod 16`.
     pub(super) slot: u16,
 }
@@ -287,6 +292,24 @@ struct RideState {
     ranges: Ranges,
     flushed: u64,
     next_sequence: u64,
+    /// Tail bytes and payload CRC of the newest durable header. A caller may only append to that
+    /// tail; these anchors let `journal` derive and verify rollover CRCs without rereading the ride.
+    tail_len: u32,
+    payload_crc: u32,
+    resume: [u8; RIDE_RESUME_LEN],
+    /// Nonzero after both rollover gates are durable but before their proof page is confirmed in
+    /// the payload extent. A retry repairs from this proof without rewriting either gate.
+    pending_proof: u64,
+}
+
+struct SlotWrite<'a> {
+    sequence: u64,
+    flushed: u64,
+    tail: &'a [u8],
+    payload_crc: u32,
+    proof: bool,
+    proof_sequence: u64,
+    resume: &'a [u8; RIDE_RESUME_LEN],
 }
 
 /// The catalog the store is serving, and the counters that move with it.
@@ -745,7 +768,7 @@ impl<D: BlockDevice> FlatStore<D> {
         sync(dev)?;
 
         for slot in 0..SLOTS {
-            write_blocks(dev, slot_block(slot), &INVALIDATED)?;
+            write_blocks(dev, slot_header_block(slot), &INVALIDATED)?;
         }
         sync(dev)?;
 
@@ -844,6 +867,45 @@ impl<D: BlockDevice> FlatStore<D> {
         self.recovered.get()
     }
 
+    /// Random access over the checkpoint-durable bytes of the recording ride.
+    ///
+    /// This is deliberately separate from [`Store::open`]: an entry carrying `RECORDING` still has
+    /// the catalog length from ride start and is not a normally served object. Recovery policy needs
+    /// bounded reads of the first sample and a possible final footer, though, and either can straddle
+    /// the boundary between write-once payload pages and the selected journal tail. This follows that
+    /// one logical byte range without scanning the ride prefix.
+    pub fn read_recovered(&self, offset: u64, buf: &mut [u8]) -> Result<usize, StoreError> {
+        let recovered = self.recovered.get().ok_or(StoreError::NotFound)?;
+        let ride = self.ride.get().filter(|ride| (ride.id, ride.revision) == (recovered.id, recovered.revision));
+        let ride = ride.ok_or(StoreError::Invalid)?;
+        let length = recovered.payload_len();
+        if offset >= length {
+            return Ok(0);
+        }
+        let want = (buf.len() as u64).min(length - offset) as usize;
+        let mut done = 0usize;
+        let mut block = [0u8; BLOCK];
+
+        while done < want && offset + (done as u64) < recovered.flushed {
+            let at = offset + done as u64;
+            let located = ride.ranges.locate(self.geometry, at).ok_or(StoreError::Invalid)?;
+            let take = ((want - done) as u64).min(recovered.flushed - at).min((BLOCK - located.offset) as u64) as usize;
+            read_blocks(&self.dev, located.block, &mut block)?;
+            buf[done..done + take].copy_from_slice(&block[located.offset..located.offset + take]);
+            done += take;
+        }
+
+        while done < want {
+            let tail_at = offset + done as u64 - recovered.flushed;
+            let within = tail_at as usize % BLOCK;
+            read_blocks(&self.dev, slot_block(recovered.slot as usize) + tail_at / BLOCK as u64, &mut block)?;
+            let take = (want - done).min(BLOCK - within);
+            buf[done..done + take].copy_from_slice(&block[within..within + take]);
+            done += take;
+        }
+        Ok(want)
+    }
+
     /// Copies the recovered tail into `buf`. The bytes are the ride's payload past `flushed`.
     pub fn recovered_tail(&self, buf: &mut [u8]) -> Result<usize, StoreError> {
         let Some(recovered) = self.recovered.get() else { return Err(StoreError::NotFound) };
@@ -851,16 +913,7 @@ impl<D: BlockDevice> FlatStore<D> {
         if buf.len() < want {
             return Err(StoreError::Invalid);
         }
-        let base = slot_block(recovered.slot as usize) + 1;
-        let mut block = [0u8; BLOCK];
-        let mut done = 0;
-        while done < want {
-            read_blocks(&self.dev, base + (done / BLOCK) as u64, &mut block)?;
-            let take = (want - done).min(BLOCK);
-            buf[done..done + take].copy_from_slice(&block[..take]);
-            done += take;
-        }
-        Ok(want)
+        self.read_recovered(recovered.flushed, &mut buf[..want])
     }
 
     /// Releases a reservation without publishing it. The bytes written into it are unreachable and
@@ -1121,7 +1174,7 @@ impl<D: BlockDevice> FlatStore<D> {
     }
 
     /// §7.3: read the 16 slots, take the candidate with the greatest checkpoint sequence. That is the
-    /// whole mandatory decision. The slot CRC is checked from the greatest sequence down, so the 32
+    /// whole mandatory decision. The slot CRC is checked from the greatest sequence down, so the 16
     /// KiB of tail bytes are only ever read for a slot that is about to be selected.
     ///
     /// A recording entry with no valid slot is the state a ride start leaves before its first
@@ -1130,7 +1183,7 @@ impl<D: BlockDevice> FlatStore<D> {
         let mut candidates: [Option<Slot>; SLOTS] = [None; SLOTS];
         let mut block = [0u8; BLOCK];
         for (slot, candidate) in candidates.iter_mut().enumerate() {
-            if read_blocks(&self.dev, slot_block(slot), &mut block).is_err() {
+            if read_blocks(&self.dev, slot_header_block(slot), &mut block).is_err() {
                 continue;
             }
             *candidate =
@@ -1142,11 +1195,15 @@ impl<D: BlockDevice> FlatStore<D> {
             ranges: entry.ranges,
             flushed: 0,
             next_sequence: 1,
+            tail_len: 0,
+            payload_crc: 0,
+            resume: [0; RIDE_RESUME_LEN],
+            pending_proof: 0,
         };
         while let Some(index) = candidates
             .iter()
             .enumerate()
-            .filter_map(|(index, slot)| slot.map(|slot| (index, slot.sequence)))
+            .filter_map(|(index, slot)| slot.filter(|slot| !slot.proof).map(|slot| (index, slot.sequence)))
             .max_by_key(|(_, sequence)| *sequence)
             .map(|(index, _)| index)
         {
@@ -1154,8 +1211,35 @@ impl<D: BlockDevice> FlatStore<D> {
             if !self.slot_intact(&slot) {
                 continue;
             }
+            if slot.proof_sequence != 0 {
+                let Some(proof) = candidates
+                    .iter()
+                    .flatten()
+                    .copied()
+                    .find(|proof| proof.proof && proof.sequence == slot.proof_sequence)
+                else {
+                    continue;
+                };
+                if proof.flushed.checked_add(PROGRAM_PAGE as u64) != Some(slot.flushed) || !self.slot_intact(&proof) {
+                    continue;
+                }
+                // The logical gate is durable before this copy. A cut here leaves the same logical
+                // gate and proof for the next boot to retry; until repair succeeds no recovery is
+                // exposed and `journal` has no resident ride state to append through.
+                if self.repair_rollover(entry.ranges, &proof).is_err() {
+                    let mut served = self.served.get();
+                    served.mode = Mode::CatalogUnreadable;
+                    self.served.set(served);
+                    self.ride.set(None);
+                    self.recovered.set(None);
+                    return;
+                }
+            }
             ride.flushed = slot.flushed;
             ride.next_sequence = slot.sequence + 1;
+            ride.tail_len = slot.tail_len;
+            ride.payload_crc = slot.payload_crc;
+            ride.resume = slot.resume;
             self.recovered.set(Some(RideRecovery {
                 id: slot.id,
                 revision: slot.revision,
@@ -1163,22 +1247,66 @@ impl<D: BlockDevice> FlatStore<D> {
                 flushed: slot.flushed,
                 tail_len: slot.tail_len,
                 payload_crc: slot.payload_crc,
+                resume: slot.resume,
                 slot: slot.slot,
             }));
             break;
         }
+        if self.recovered.get().is_none() {
+            // Ride start is itself durable. Before its first checkpoint the logical recording is
+            // exactly empty, and exposing that fact lets the board continue or discard it.
+            self.recovered.set(Some(RideRecovery {
+                id: entry.meta.id,
+                revision: entry.meta.revision,
+                checkpoint_sequence: 0,
+                flushed: 0,
+                tail_len: 0,
+                payload_crc: 0,
+                resume: [0; RIDE_RESUME_LEN],
+                slot: u16::MAX,
+            }));
+        }
         self.ride.set(Some(ride));
     }
 
-    /// The other half of a slot's candidacy: the slot CRC over all 32,768 bytes. The 63 tail blocks are
-    /// read in chunks, because this is a digest fold with nothing to decode block by block.
+    /// Ensure a rollover's already-gated proof page is present byte-for-byte in the ride extent.
+    /// An intact page is not rewritten. A torn page is repaired only from the immutable proof slot;
+    /// cuts during repair are harmless because the same comparison and copy repeat on the next boot.
+    fn repair_rollover(&self, ranges: Ranges, proof: &Slot) -> Result<(), StoreError> {
+        let located = ranges
+            .locate(self.geometry, proof.flushed)
+            .filter(|located| located.offset == 0 && located.contiguous >= PROGRAM_PAGE as u64)
+            .ok_or(StoreError::Invalid)?;
+        let mut source = [0u8; BLOCK];
+        let mut target = [0u8; BLOCK];
+        let mut differs = false;
+        for block in 0..SLOT_BLOCKS {
+            read_blocks(&self.dev, slot_block(proof.slot as usize) + block, &mut source)?;
+            read_blocks(&self.dev, located.block + block, &mut target)?;
+            differs |= source != target;
+        }
+        if !differs {
+            // Also closes the uncertainty window of a prior sync that returned an error: the page
+            // may read back through volatile cache while still needing this retry's durability gate.
+            return sync(&self.dev);
+        }
+        for block in 0..SLOT_BLOCKS {
+            read_blocks(&self.dev, slot_block(proof.slot as usize) + block, &mut source)?;
+            write_blocks(&self.dev, located.block + block, &source)?;
+        }
+        sync(&self.dev)
+    }
+
+    /// The other half of a slot's candidacy: the slot CRC over its header and full 16 KiB tail page.
+    /// The 32 tail blocks are read in chunks, because this is a digest fold with nothing to decode
+    /// block by block.
     fn slot_intact(&self, slot: &Slot) -> bool {
         let mut digest = journal::header_digest(&slot.header_bytes(&self.store));
-        let base = slot_block(slot.slot as usize) + 1;
+        let base = slot_block(slot.slot as usize);
         let mut chunk = [0u8; ZERO_PAD.len()];
         let mut read = 0u64;
-        while read < SLOT_BLOCKS - 1 {
-            let blocks = (SLOT_BLOCKS - 1 - read).min(chunk.len() as u64 / BLOCK as u64) as usize;
+        while read < SLOT_BLOCKS {
+            let blocks = (SLOT_BLOCKS - read).min(chunk.len() as u64 / BLOCK as u64) as usize;
             if read_blocks(&self.dev, base + read, &mut chunk[..blocks * BLOCK]).is_err() {
                 return false;
             }
@@ -1553,6 +1681,11 @@ impl<D: BlockDevice> Store for FlatStore<D> {
         if written != header.entry_count {
             return Err(StoreError::Invalid);
         }
+        if self.ride.get().is_some_and(|ride| {
+            ride.pending_proof != 0 && plan.iter().any(|resolved| resolved.key == (ride.id, ride.revision))
+        }) {
+            return Err(StoreError::Invalid);
+        }
 
         // The payload is durable before the commit begins: whatever a `write` left in a staging
         // block goes to the card now.
@@ -1761,9 +1894,10 @@ impl<D: BlockDevice> Store for FlatStore<D> {
         }
     }
 
-    /// §7.2 steps 2 and 3: flush whole payload pages out of the front of the tail into the recording
-    /// entry's own extents, then write one slot. A payload page is written only when every byte in it
-    /// is already in a slot on the card, and once written it is never touched again.
+    /// §7.2's ordinary checkpoint or rare rollover. A short tail consumes one logical slot. A
+    /// rollover gates its full-page proof, then gates the advanced logical remainder, and only then
+    /// copies the proof page to the payload extent. Thus no cut exposes the 16 KiB proof as a logical
+    /// checkpoint, and boot can complete the identical copy before exposing the remainder.
     ///
     /// The ride state is a `Cell`, so the page flushes and the slot write below hold no borrow at all
     /// — rule 2 — and the local `ride` this advances is the same local it always was.
@@ -1775,51 +1909,175 @@ impl<D: BlockDevice> Store for FlatStore<D> {
         if (checkpoint.id, checkpoint.revision) != (ride.id, ride.revision) {
             return Err(StoreError::Invalid);
         }
-        // The flushed length advances in this local and becomes resident only once the slot that
-        // accounts for those bytes is durable, below. A checkpoint that fails partway has flushed
-        // nothing as far as the store is concerned: the caller still holds the whole tail, and its retry
-        // rewrites the same pages with the same bytes at the same offsets (§7.2 — the payload of a
-        // flushed prefix cannot change, which is why recovery is allowed to rewrite a page too). A
-        // flushed length left one page ahead of the card's would put the retry's bytes at the wrong
-        // payload offset and publish a ride twice the length it recorded.
-        let mut tail = checkpoint.tail;
-        while tail.len() >= PROGRAM_PAGE {
-            let located = ride
-                .ranges
-                .locate(self.geometry, ride.flushed)
-                .filter(|located| located.contiguous >= PROGRAM_PAGE as u64)
-                .ok_or(StoreError::NoSpace { required: ride.flushed + PROGRAM_PAGE as u64 })?;
-            write_blocks(&self.dev, located.block, &tail[..PROGRAM_PAGE])?;
-            sync(&self.dev)?;
-            ride.flushed += PROGRAM_PAGE as u64;
-            tail = &tail[PROGRAM_PAGE..];
+        if ride.pending_proof != 0 {
+            return self.finish_pending_rollover(ride, checkpoint);
         }
-        // The loop above leaves less than one program page, which is well inside §7.1's 32,256-byte
-        // tail area — so the slot's bound needs no check here, only on the way back in.
+        // The frozen recorder holds at most one page plus its bounded sample spill. Keeping that
+        // bound at the seam makes one proof + one logical gate sufficient and reviewable.
+        if checkpoint.tail.len() >= 2 * PROGRAM_PAGE {
+            return Err(StoreError::Invalid);
+        }
+        let durable = ride.tail_len as usize;
+        if checkpoint.tail.len() < durable {
+            return Err(StoreError::Invalid);
+        }
+        // The caller may append to the durable tail and may not alter it. Continuing from the prior
+        // checksum makes that rule checkable without rereading the flushed ride prefix.
+        let mut expected = Crc32::from_checksum(ride.payload_crc);
+        expected.update(&checkpoint.tail[durable..]);
+        if expected.finalize() != checkpoint.payload_crc {
+            return Err(StoreError::Invalid);
+        }
 
+        if checkpoint.tail.len() >= PROGRAM_PAGE {
+            let proof_sequence = ride.next_sequence;
+            let logical_sequence = proof_sequence.checked_add(1).ok_or(StoreError::ReadOnly)?;
+            let mut page_crc = Crc32::from_checksum(ride.payload_crc);
+            page_crc.update(&checkpoint.tail[durable..PROGRAM_PAGE]);
+            self.write_ride_slot(
+                &ride,
+                SlotWrite {
+                    sequence: proof_sequence,
+                    flushed: ride.flushed,
+                    tail: &checkpoint.tail[..PROGRAM_PAGE],
+                    payload_crc: page_crc.finalize(),
+                    proof: true,
+                    proof_sequence: 0,
+                    resume: &[0; RIDE_RESUME_LEN],
+                },
+            )?;
+            let remainder = &checkpoint.tail[PROGRAM_PAGE..];
+            let advanced = ride.flushed + PROGRAM_PAGE as u64;
+            self.write_ride_slot(
+                &ride,
+                SlotWrite {
+                    sequence: logical_sequence,
+                    flushed: advanced,
+                    tail: remainder,
+                    payload_crc: checkpoint.payload_crc,
+                    proof: false,
+                    proof_sequence,
+                    resume: checkpoint.resume,
+                },
+            )?;
+            ride.flushed = advanced;
+            ride.next_sequence = logical_sequence.checked_add(1).ok_or(StoreError::ReadOnly)?;
+            ride.tail_len = remainder.len() as u32;
+            ride.payload_crc = checkpoint.payload_crc;
+            ride.resume = *checkpoint.resume;
+            ride.pending_proof = proof_sequence;
+            // Both gates are now authoritative. Publish the pending state before the fallible page
+            // copy so a same-boot retry repairs from the proof without touching either gate.
+            self.ride.set(Some(ride));
+            self.write_payload_page(&ride, ride.flushed - PROGRAM_PAGE as u64, &checkpoint.tail[..PROGRAM_PAGE])?;
+            ride.pending_proof = 0;
+        } else {
+            self.write_ride_slot(
+                &ride,
+                SlotWrite {
+                    sequence: ride.next_sequence,
+                    flushed: ride.flushed,
+                    tail: checkpoint.tail,
+                    payload_crc: checkpoint.payload_crc,
+                    proof: false,
+                    proof_sequence: 0,
+                    resume: checkpoint.resume,
+                },
+            )?;
+            ride.next_sequence = ride.next_sequence.checked_add(1).ok_or(StoreError::ReadOnly)?;
+            ride.tail_len = checkpoint.tail.len() as u32;
+        }
+        ride.payload_crc = checkpoint.payload_crc;
+        ride.resume = *checkpoint.resume;
+        ride.pending_proof = 0;
+
+        self.ride.set(Some(ride));
+        Ok(())
+    }
+}
+
+impl<D: BlockDevice> FlatStore<D> {
+    fn finish_pending_rollover(&self, mut ride: RideState, checkpoint: RideCheckpoint) -> Result<(), StoreError> {
+        if checkpoint.tail.len() >= 2 * PROGRAM_PAGE {
+            return Err(StoreError::Invalid);
+        }
+        let durable = PROGRAM_PAGE + ride.tail_len as usize;
+        if checkpoint.tail.len() < durable {
+            return Err(StoreError::Invalid);
+        }
+        let mut expected = Crc32::from_checksum(ride.payload_crc);
+        expected.update(&checkpoint.tail[durable..]);
+        if expected.finalize() != checkpoint.payload_crc {
+            return Err(StoreError::Invalid);
+        }
+        let proof_index = (ride.pending_proof % SLOTS as u64) as usize;
+        let mut header = [0u8; BLOCK];
+        read_blocks(&self.dev, slot_header_block(proof_index), &mut header)?;
+        let proof = Slot::decode(&header, proof_index, &self.store, self.extents).map_err(|_| StoreError::Invalid)?;
+        if !proof.proof
+            || proof.sequence != ride.pending_proof
+            || proof.flushed + PROGRAM_PAGE as u64 != ride.flushed
+            || proof.id != ride.id
+            || proof.revision != ride.revision
+            || proof.ranges != ride.ranges
+            || !self.slot_intact(&proof)
+        {
+            return Err(StoreError::Invalid);
+        }
+        self.repair_rollover(ride.ranges, &proof)?;
+        let pending = ride;
+        ride.pending_proof = 0;
+        self.ride.set(Some(ride));
+        if checkpoint.tail.len() == durable
+            && checkpoint.payload_crc == ride.payload_crc
+            && checkpoint.resume == &ride.resume
+        {
+            return Ok(());
+        }
+        // The recorder may have appended while the failed copy awaited its next checkpoint. The
+        // page prefix is now flushed; journal the current logical tail (durable remainder + append)
+        // from the already-gated anchor without touching the proof or rollover gate again.
+        let result = self.journal(RideCheckpoint {
+            id: checkpoint.id,
+            revision: checkpoint.revision,
+            tail: &checkpoint.tail[PROGRAM_PAGE..],
+            payload_crc: checkpoint.payload_crc,
+            resume: checkpoint.resume,
+        });
+        if result.is_err() {
+            // The caller cannot compact its tail until this whole retry reports success. Keep the
+            // original PAGE+remainder shape recognizable if journaling the appended logical tail
+            // fails after the proof repair; the next retry repairs idempotently and tries the same
+            // compaction again instead of CRC-checking the page prefix as a new append.
+            self.ride.set(Some(pending));
+        }
+        result
+    }
+
+    /// Write and gate one tail slot. Its caller decides whether this is a normal checkpoint, a full
+    /// rollover page, or the remainder after one; the physical transaction is identical for all.
+    fn write_ride_slot(&self, ride: &RideState, write: SlotWrite<'_>) -> Result<(), StoreError> {
         let slot = Slot {
-            slot: (ride.next_sequence % SLOTS as u64) as u16,
+            slot: (write.sequence % SLOTS as u64) as u16,
             id: ride.id,
             revision: ride.revision,
-            sequence: ride.next_sequence,
-            flushed: ride.flushed,
-            tail_len: tail.len() as u32,
-            payload_crc: checkpoint.payload_crc,
+            sequence: write.sequence,
+            flushed: write.flushed,
+            tail_len: write.tail.len() as u32,
+            payload_crc: write.payload_crc,
+            resume: *write.resume,
+            proof: write.proof,
+            proof_sequence: write.proof_sequence,
             ranges: ride.ranges,
             slot_crc: 0,
         };
-        // §7.1 calls a slot "written in one shot": what that requires is that no reader ever sees a
-        // subset of it, and the single sync below is what provides it. The header, the tail and the pad
-        // are separate writes because the tail is the caller's slice and the pad is in rodata — but they
-        // are all pending until that sync, and a cut that commits any subset of them leaves bytes the
-        // whole-slot CRC does not cover. A torn slot is skipped, exactly as a torn one-write slot is.
         let base = slot_block(slot.slot as usize);
-        write_blocks(&self.dev, base, &slot.seal(&self.store, tail))?;
+        let tail = write.tail;
         let whole = tail.len() / BLOCK;
         if whole > 0 {
-            write_blocks(&self.dev, base + 1, &tail[..whole * BLOCK])?;
+            write_blocks(&self.dev, base, &tail[..whole * BLOCK])?;
         }
-        let mut next = 1 + whole as u64;
+        let mut next = whole as u64;
         if !tail.len().is_multiple_of(BLOCK) {
             let mut partial = [0u8; BLOCK];
             partial[..tail.len() - whole * BLOCK].copy_from_slice(&tail[whole * BLOCK..]);
@@ -1832,14 +2090,20 @@ impl<D: BlockDevice> Store for FlatStore<D> {
             next += step;
         }
         sync(&self.dev)?;
-
-        ride.next_sequence += 1;
-        self.ride.set(Some(ride));
+        write_blocks(&self.dev, slot_header_block(slot.slot as usize), &slot.seal(&self.store, tail))?;
+        sync(&self.dev)?;
         Ok(())
     }
-}
 
-impl<D: BlockDevice> FlatStore<D> {
+    fn write_payload_page(&self, ride: &RideState, offset: u64, page: &[u8]) -> Result<(), StoreError> {
+        let located = ride
+            .ranges
+            .locate(self.geometry, offset)
+            .filter(|located| located.offset == 0 && located.contiguous >= PROGRAM_PAGE as u64)
+            .ok_or(StoreError::NoSpace { required: offset + PROGRAM_PAGE as u64 })?;
+        write_blocks(&self.dev, located.block, page)?;
+        sync(&self.dev)
+    }
     /// The entry a batch is finalising the live ride with: the `Put` that names the recording entry's
     /// key and clears `RECORDING`. A `Remove` of that key is not one — the object is going away, and
     /// so are its bytes.
@@ -1859,7 +2123,7 @@ impl<D: BlockDevice> FlatStore<D> {
     /// Everything up to `flushed length` is already there — §7.2 wrote it a page at a time — and the
     /// remainder is the partial page no checkpoint ever flushes, because a checkpoint only ever writes
     /// whole 16 KiB pages. The slot is where those bytes live, so the slot is where they come from:
-    /// re-reading it costs 63 blocks once per ride and needs no buffer of its own.
+    /// re-reading it costs at most 32 blocks once per ride and needs no buffer of its own.
     ///
     /// `&self`, which it always could have been: it moves bytes on the card and settles no resident
     /// state — that is [`settle_ride`](Self::settle_ride)'s job, after the gate. Saying so is now load
@@ -1869,6 +2133,9 @@ impl<D: BlockDevice> FlatStore<D> {
         let Some((ride, entry)) = self.finalising(plan) else { return Ok(false) };
         let length = entry.meta.payload_len;
         if length == ride.flushed {
+            if entry.meta.payload_crc != ride.payload_crc || ride.tail_len != 0 {
+                return Err(StoreError::Invalid);
+            }
             return Ok(false);
         }
         // A shorter object than the ride already flushed cannot be a finalisation of it, and neither
@@ -1882,30 +2149,41 @@ impl<D: BlockDevice> FlatStore<D> {
         }
         let slot_index = ((ride.next_sequence - 1) % SLOTS as u64) as usize;
         let mut block = [0u8; BLOCK];
-        read_blocks(&self.dev, slot_block(slot_index), &mut block)?;
+        read_blocks(&self.dev, slot_header_block(slot_index), &mut block)?;
         let slot = Slot::decode(&block, slot_index, &self.store, self.extents).map_err(|_| StoreError::Invalid)?;
         // The slot has to be this ride's, at this flush point, holding exactly the tail the caller is
         // publishing a length for. Anything else and the commit would describe bytes it cannot produce.
         // The comparison is against the *reserve* the ride is recording into, not against the entry
         // being written — that one's ranges are already trimmed to the finalised payload.
         if (slot.id, slot.revision, slot.ranges) != (ride.id, ride.revision, ride.ranges)
+            || slot.proof
+            || slot.sequence.checked_add(1) != Some(ride.next_sequence)
             || slot.flushed != ride.flushed
             || u64::from(slot.tail_len) != tail_len
+            || slot.payload_crc != ride.payload_crc
+            || slot.payload_crc != entry.meta.payload_crc
+            || !self.slot_intact(&slot)
         {
             return Err(StoreError::Invalid);
         }
 
-        let base = slot_block(slot_index) + 1;
+        let base = slot_block(slot_index);
         let mut done = 0u64;
+        let mut target = [0u8; BLOCK];
+        let mut wrote = false;
         while done < tail_len {
             read_blocks(&self.dev, base + done / BLOCK as u64, &mut block)?;
             let located = ride.ranges.locate(self.geometry, ride.flushed + done).ok_or(StoreError::Invalid)?;
             // A whole block goes out even for a partial tail: the bytes past `payload_len` are slack
             // inside the ride's last extent, which nothing reads and no CRC covers.
-            write_blocks(&self.dev, located.block, &block)?;
+            read_blocks(&self.dev, located.block, &mut target)?;
+            if target != block {
+                write_blocks(&self.dev, located.block, &block)?;
+                wrote = true;
+            }
             done += BLOCK as u64;
         }
-        Ok(true)
+        Ok(wrote)
     }
 
     /// The resident ride state after a commit that started, amended or ended the ride.
@@ -1925,7 +2203,27 @@ impl<D: BlockDevice> FlatStore<D> {
                 ranges: entry.ranges,
                 flushed: same.map_or(0, |ride| ride.flushed),
                 next_sequence: same.map_or(1, |ride| ride.next_sequence),
+                tail_len: same.map_or(0, |ride| ride.tail_len),
+                payload_crc: same.map_or(0, |ride| ride.payload_crc),
+                resume: same.map_or([0; RIDE_RESUME_LEN], |ride| ride.resume),
+                pending_proof: same.map_or(0, |ride| ride.pending_proof),
             }));
+            if self
+                .recovered
+                .get()
+                .is_none_or(|recovered| (recovered.id, recovered.revision) != (entry.meta.id, entry.meta.revision))
+            {
+                self.recovered.set(Some(RideRecovery {
+                    id: entry.meta.id,
+                    revision: entry.meta.revision,
+                    checkpoint_sequence: 0,
+                    flushed: 0,
+                    tail_len: 0,
+                    payload_crc: 0,
+                    resume: [0; RIDE_RESUME_LEN],
+                    slot: u16::MAX,
+                }));
+            }
             return;
         }
         let Some(ride) = self.ride.get() else { return };
@@ -1935,7 +2233,7 @@ impl<D: BlockDevice> FlatStore<D> {
         self.ride.set(None);
         self.recovered.set(None);
         for slot in 0..SLOTS {
-            if write_blocks(&self.dev, slot_block(slot), &INVALIDATED).is_err() {
+            if write_blocks(&self.dev, slot_header_block(slot), &INVALIDATED).is_err() {
                 return;
             }
         }

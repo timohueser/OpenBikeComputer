@@ -76,15 +76,13 @@ impl RouteOverlaySource for RouteOverlay<'_, '_> {
 // The route-identity content fingerprint (epic #632 item 6, device half): the whole-object CRC-32
 // of each stored route's OBCR bytes, keyed by durable object id, so the `routeList` entry can carry
 // it and the app can verify *what* a linked id points at (identity-verified badges) and adopt an
-// identical unlinked copy. Persisted in a small SD **sidecar in /routes** (`ROUTES.CRC`) — the
-// direct analogue of the `/tracks` `SYNCED.SET` synced-ride sidecar — so it survives a reflash and
-// travels with the card/routes, and is *not* the RRAM settings carve. A BLE upload writes the entry
+// identical unlinked copy. Persisted in a small SD **sidecar in /routes** (`ROUTES.CRC`) so it
+// survives a reflash and travels with the card/routes, and is *not* the RRAM settings carve. A BLE upload writes the entry
 // at commit (the CRC is already verified there); a side-loaded / pre-v2 route with no entry is filled
 // lazily at first list build (one streaming CRC pass, then persisted).
 //
-// The codec lives here — beside the synced-set + id-marks codecs, the host-testable precedent — so
-// the "torn/missing sidecar = empty map, never a crash" contract is unit-tested without the board
-// crate. Same shape as `SYNCED.SET`: a magic + version + a `u16` count + that many
+// The codec lives here so the "torn/missing sidecar = empty map, never a crash" contract is
+// unit-tested without the board crate: a magic + version + a `u16` count + that many
 // `(id u16, crc32 u32)` little-endian pairs + a trailing CRC-16 over everything before it. A blank
 // page, a short slice, a torn write, an unknown version, an overrunning count, or a CRC mismatch all
 // decode to the **empty** map — which serves `0 = unknown` for every route (the safe default; the

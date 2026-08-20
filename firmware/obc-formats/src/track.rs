@@ -1,9 +1,9 @@
 //! Recorded-track fixed-record constants and the fixed 20-byte record codec.
 //!
 //! The normative constants and the `encode_record`/`decode_record` primitives are the byte
-//! authority; the streaming `.obct` → GPX conversion (`track_to_gpx`) is an algorithm and stays in
-//! `obc-route`. This crate owns only the record layout so a storage adapter can encode/decode a
-//! track record without depending on `obc-route` (#807/#812 severed `obc-storage -> obc-route`).
+//! authority; streaming GPX export from a validated finished ride-v3 object (`track_to_gpx`) stays
+//! in `obc-route`. This crate owns only the record layout so a recorder or reader can encode/decode
+//! one sample without depending on `obc-route`.
 
 use obc_ports::TrackPoint;
 

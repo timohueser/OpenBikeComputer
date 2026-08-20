@@ -30,7 +30,8 @@
 //! IPC boundary purely to be checksummed, and `sendable_path` deciding which files the webview was
 //! allowed to name. All three are deleted, because the frontend that called them is.
 //!
-//! §5.2 frames every record as `record_length u16` + frame bytes, and this side does not know that
+//! §5.2 frames every record as `record_length u32` + frame bytes + zero padding to four-byte
+//! alignment, and this side does not know that
 //! framing — deliberately, per the paragraph above: the wire lives once, in TypeScript. A raw byte
 //! streamer cannot produce a framed record stream, so the desktop sends the same way the browser
 //! does, through the chunked pipe. **No rider-visible capability is lost today**: the desktop

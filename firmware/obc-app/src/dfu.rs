@@ -91,9 +91,6 @@ pub enum DfuInstallError {
     /// Refused: a ride is recording. Arming ends in a reboot that would lose the live ride, so the
     /// drain declines (the board's `is_tracking` guard).
     Recording,
-    /// Refused: a finished ride's save is still pending (the #438 deferred ORD-only save is RAM
-    /// state a reboot would drop). The board's `has_pending_save` guard.
-    PendingSave,
     /// Refused: no SD card is mounted, so there is nothing to install from.
     NoCard,
     /// The arm re-scanned `UPDATE.BIN` (the confirm carried no validated ref) and it failed

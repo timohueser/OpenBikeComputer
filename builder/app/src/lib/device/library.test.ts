@@ -18,9 +18,8 @@
  *
  * ## What is not here any more
  *
- * The acknowledgement. Four of this file's tests used to be about telling the device which rides
- * were now held durably, asserted against its synced set and `/tracks/SYNCED.SET` bytes.
- * `FLAT_Store_Protocol.md` §5.2.2 retires the v1 `command` selector: a possession ack changes no
+ * A possession acknowledgement is deliberately absent from this cable surface.
+ * `FLAT_Store_Protocol.md` §5.2.2 has no `command` selector: a possession ack changes no
  * object, so it has no store meaning and USB does not carry it. It keeps the BLE control surface it
  * already had, which is why the phone still acks and the cable does not. The ordering discipline the
  * ack needed — an import resolves only after fsync — is kept regardless, because it is what makes
@@ -83,18 +82,18 @@ function rideObject(name: string, startTime: number, points = 24): RideObject {
     const track: RidePoint[] = [];
     for (let i = 0; i < points; i++) {
         track.push({
-            tOffsetS: i * 5,
-            // The device writes µdeg × 10, so every value it emits is a multiple of 10 (§7.2).
-            lat1e7: Math.round((47.9 + i * 0.0012) * 1e6) * 10,
-            lon1e7: Math.round((7.85 + i * 0.0009) * 1e6) * 10,
-            eleM: 300 + i * 4,
+            tMs: i * 5_000,
+            latMicrodegrees: Math.round((47.9 + i * 0.0012) * 1e6),
+            lonMicrodegrees: Math.round((7.85 + i * 0.0009) * 1e6),
+            elevationM: 300 + i * 4,
+            segmentStart: i === 0,
             hrBpm: 140 + (i % 7),
             cadenceRpm: 80,
             powerW: null,
         });
     }
     return {
-        version: 2,
+        version: 3,
         name,
         startTime,
         distanceM: 12_340,
@@ -478,13 +477,13 @@ describe("the track preview", () => {
         expect(track.length).toBeLessThanOrEqual(PREVIEW_POINTS);
         expect(track.length).toBeGreaterThan(2);
         expect(track[0]).toEqual([
-            Math.round((ride.points[0].lat1e7 / 1e7) * 1e6) / 1e6,
-            Math.round((ride.points[0].lon1e7 / 1e7) * 1e6) / 1e6,
+            ride.points[0].latMicrodegrees / 1e6,
+            ride.points[0].lonMicrodegrees / 1e6,
         ]);
         const last = ride.points[ride.points.length - 1];
         expect(track[track.length - 1]).toEqual([
-            Math.round((last.lat1e7 / 1e7) * 1e6) / 1e6,
-            Math.round((last.lon1e7 / 1e7) * 1e6) / 1e6,
+            last.latMicrodegrees / 1e6,
+            last.lonMicrodegrees / 1e6,
         ]);
     });
 

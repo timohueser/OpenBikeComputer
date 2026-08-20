@@ -191,39 +191,42 @@ fn catalog_gate_vector() {
     assert_eq!(Gate::decode(&bytes, 0, &STORE).unwrap(), gate);
 }
 
-/// §7.5: slot 3, checkpoint 41, 15 pages flushed, 3,712 tail bytes.
+/// §7.5: slot 9, checkpoint 41, 15 pages flushed, 3,712 tail bytes.
 #[test]
 fn ride_journal_slot_vector() {
     let tail: Vec<u8> = (0..3_712).map(|index| (index * 7 + 3) as u8).collect();
     let mut ranges = Ranges::default();
     ranges.push(13, 32).unwrap();
     let slot = Slot {
-        slot: 3,
+        slot: 9,
         id: ObjectId(2),
         revision: Revision(1),
         sequence: 41,
         flushed: 245_760,
         tail_len: 3_712,
         payload_crc: 0x5E1B_03C7,
+        resume: [0; super::seam::RIDE_RESUME_LEN],
+        proof: false,
+        proof_sequence: 0,
         ranges,
         slot_crc: 0,
     };
     let header = slot.seal(&STORE, &tail);
     assert_prefix_then_zero(
         &header[..504],
-        "46 53 52 4A 01 00 03 00 8F 2C 41 D9 6B 07 4E A3
+        "46 53 52 4A 01 00 09 00 8F 2C 41 D9 6B 07 4E A3
          B1 55 9C 20 7D E8 34 66 02 00 00 00 00 00 00 00
          01 00 00 00 00 00 00 00 29 00 00 00 00 00 00 00
          00 C0 03 00 00 00 00 00 80 0E 00 00 C7 03 1B 5E
          0D 00 20 00 00 00 00 00 00 00 00 00 00 00 00 00",
     );
-    assert_eq!(u32_at(&header, 504), 0x66E5_6BD6, "§7.5's CRC over the whole 32,768-byte slot");
+    assert_eq!(u32_at(&header, 504), 0x7D91_78EF, "§7.5's CRC over the header and 16 KiB tail slot");
     assert!(header[508..].iter().all(|&byte| byte == 0));
 
     // The tail's first sixteen bytes, as the fence states them.
     assert_eq!(&tail[..16], &hex("03 0A 11 18 1F 26 2D 34 3B 42 49 50 57 5E 65 6C")[..]);
     assert_eq!(slot.payload_len(), 249_472, "§7.5: the total is derived, not stored");
-    assert_eq!(TAIL_CAPACITY, 32_256);
+    assert_eq!(TAIL_CAPACITY, 16_384);
 }
 
 /// §9's capacities, gathered: each is normative where it is defined, and this is the table.
@@ -245,8 +248,8 @@ fn capacity_table() {
     assert_eq!(MAX_RANGES, 8);
     assert_eq!(super::seam::NAME_CAPACITY, 48);
     assert_eq!(SLOTS, 16);
-    assert_eq!(super::journal::SLOT_LEN, 32_768);
-    assert_eq!(TAIL_CAPACITY, 32_256);
+    assert_eq!(super::journal::SLOT_LEN, 16_384);
+    assert_eq!(TAIL_CAPACITY, 16_384);
 }
 
 /// `FLAT_Store_Protocol.md` §3.10's `LIST` response carries §5.7's two objects. Its 88-byte entries
@@ -367,6 +370,7 @@ fn a_card_built_from_the_vectors_mounts_to_the_vectors() {
     assert_eq!(store.read(&handle, 40_960, &mut buf).unwrap(), 16);
     assert_eq!(buf, [0xAB; 16]);
 
-    // A recording ride with no valid slot resumes at checkpoint 1 with nothing flushed.
-    assert_eq!(store.recovered_ride(), None);
+    // A recording ride with no valid slot exposes its durable zero-length start state.
+    let recovered = store.recovered_ride().unwrap();
+    assert_eq!((recovered.checkpoint_sequence, recovered.payload_len()), (0, 0));
 }

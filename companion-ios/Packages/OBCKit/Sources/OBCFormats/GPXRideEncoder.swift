@@ -7,13 +7,12 @@ import OBCDomain
 /// and per point a `gpxtpx:TrackPointExtension` carrying `<gpxtpx:hr>` / `<gpxtpx:cad>`
 /// plus a bare `<power>` (the de-facto Strava form). Each element is omitted when
 /// its field is absent; the whole `<extensions>` block when all three are — so a
-/// sensor-less ride (a v1 download) produces exactly the plain track a
-/// pre-sensor export did (no regression).
+/// sensor-less ride produces a plain track with no extension blocks.
 ///
 /// The app export encodes from the canonical `Ride` (decoded from the ride
-/// object), so — unlike the device, which reads the raw track log — a point may
+/// object), so — unlike the device exporter, which reads fixed samples from ride-v3 — a point may
 /// carry no elevation (`nil`): `<ele>` is omitted then, never a sentinel. The
-/// ride object carries no segment breaks, so the track is one `<trkseg>`.
+/// v3 preserves the recorded segment-start flag, so exports retain pause boundaries.
 public struct GPXRideEncoder: RideFileEncoder {
     public let fileExtension = "gpx"
 
@@ -28,7 +27,10 @@ public struct GPXRideEncoder: RideFileEncoder {
         xml += "<trk><name>\(Self.escaped(ride.summary.name))</name>\n"
         xml += "<trkseg>\n"
 
-        for point in ride.points {
+        for (index, point) in ride.points.enumerated() {
+            if index > 0 && point.segmentStart {
+                xml += "</trkseg>\n<trkseg>\n"
+            }
             xml += "<trkpt lat=\"\(Self.degrees(point.coordinate.latitude))\""
             xml += " lon=\"\(Self.degrees(point.coordinate.longitude))\">"
             if let ele = point.elevationMeters {
@@ -61,16 +63,14 @@ public struct GPXRideEncoder: RideFileEncoder {
         return block
     }
 
-    /// Fixed 7-decimal degrees via exact integer math on the ride object's
-    /// `1e-7°` grid — no float-formatting drift (mirrors the firmware's
-    /// integer-exact `write_deg`, at the ride object's finer precision).
+    /// Fixed 6-decimal degrees on the v3 sample's microdegree grid, matching firmware.
     private static func degrees(_ value: Double) -> String {
-        let scaled = Int64((value * 1e7).rounded())
+        let scaled = Int64((value * 1e6).rounded())
         let sign = scaled < 0 ? "-" : ""
         let magnitude = scaled.magnitude
-        let whole = magnitude / 10_000_000
-        let fracDigits = String(magnitude % 10_000_000)
-        let frac = String(repeating: "0", count: 7 - fracDigits.count) + fracDigits
+        let whole = magnitude / 1_000_000
+        let fracDigits = String(magnitude % 1_000_000)
+        let frac = String(repeating: "0", count: 6 - fracDigits.count) + fracDigits
         return "\(sign)\(whole).\(frac)"
     }
 

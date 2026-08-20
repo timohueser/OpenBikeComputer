@@ -15,7 +15,8 @@ use obc_link::flat::{
 };
 use obc_storage::flat::sim::{FaultOnce, SparseDisk};
 use obc_storage::flat::{
-    BlockDevice, DisplayName, EntryFlags, EntryMeta, FlatStore, Mutation, ObjectId, PutSource, Revision, StoreId,
+    BlockDevice, DisplayName, EntryFlags, EntryMeta, FlatStore, Mutation, ObjectId, PutSource, Revision,
+    RideCheckpoint, StoreId, RIDE_RESUME_LEN,
 };
 
 /// `FLAT_Store_Format.md` §2: the fixed region is 2 MiB and the extent area starts on the block
@@ -337,6 +338,36 @@ impl<D: BlockDevice> Device<D> {
         Store::commit(&self.store, &[Mutation::Put { meta, source: PutSource::Fresh(allocation) }])
             .expect("the ride starts");
         (id.0, 1)
+    }
+
+    /// Exercise the exact device-owned FS8 path: start a `RECORDING` reserve, journal the final
+    /// bytes, then publish those same extents by clearing `RECORDING` in one amend commit.
+    pub fn finish_recording(&mut self, bytes: &[u8], name: &str) -> (u64, u64) {
+        let (id, revision) = self.seed_recording(1024 * 1024);
+        let resume = [0u8; RIDE_RESUME_LEN];
+        Store::journal(
+            &self.store,
+            RideCheckpoint {
+                id: ObjectId(id),
+                revision: Revision(revision),
+                tail: bytes,
+                payload_crc: crc32(bytes),
+                resume: &resume,
+            },
+        )
+        .expect("the final ride bytes journal");
+        let meta = EntryMeta {
+            id: ObjectId(id),
+            revision: Revision(revision),
+            kind: obc_storage::flat::ObjectKind::Ride,
+            flags: EntryFlags::NONE,
+            payload_len: bytes.len() as u64,
+            payload_crc: crc32(bytes),
+            name: DisplayName::new(name).expect("a ride name"),
+        };
+        Store::commit(&self.store, &[Mutation::Put { meta, source: PutSource::Amend }])
+            .expect("one final commit publishes the ride");
+        (id, revision)
     }
 
     /// Takes a reservation row out from under the engine, which is how a full table is produced.

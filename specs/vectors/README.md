@@ -2,8 +2,8 @@
 
 Binary fixtures pinning the byte layouts of
 [`obc-ble-interface-spec.md`](../obc-ble-interface-spec.md), the OBCR v3
-waypoint extension ([`OBCR_Spec.md`](../OBCR_Spec.md)), the device's own
-recorded-track log, and the OBCT terrain raster
+waypoint extension ([`OBCR_Spec.md`](../OBCR_Spec.md)), the 20-byte ride-sample codec and complete
+ride-v3 object, and the OBCT terrain raster
 ([`OBCT_Spec.md`](../OBCT_Spec.md)), consumed by **four** implementations:
 
 - **Firmware**: `cargo test -p obc-vectors` (workspace `firmware/`) verifies every
@@ -14,7 +14,7 @@ recorded-track log, and the OBCT terrain raster
   same files.
 - **Browser**: two consumers, for two different reasons.
   - The wasm conversion bridge (`apps/obc-web-convert`, #896) must reproduce
-    the route and track fixtures byte-for-byte from the same inputs —
+    the route and finished-ride fixtures byte-for-byte from the same inputs —
     `builder/app/src/lib/convert/bridge.test.ts`. That is what keeps
     client-side conversion honest: the file a visitor downloads is the file the
     device would have written.
@@ -45,10 +45,9 @@ A drift on any side fails that side's tests — the files are the contract.
 |---|---|---|
 | `route-waypoints.obcr` | OBCR v3 | "Vector Loop", 9-point track at 48°N, 2 waypoints (`Brunnen` @ 0 m with ele 238, `<sym>Drinking Water</sym>` → category 1, 13 m left of travel; `Pass Summit` mid-route without ele, an unmapped `<type>Viewpoint</type>` → generic, on-route) |
 | `route-plain.obcr` | OBCR v3 | the same track, no waypoints — must ride identically |
-| `track-log.obct` | recorded track log (flat 20-byte records, no header — `obc-formats/src/track.rs`) | 5 points shaped for coverage, not plausibility: two `<trkseg>`s, sensor presence walking all → one-absent → none → power-only → all-zero, one point at negative lat/lon/elevation, plus a **7-byte partial trailing record** (what a power-loss leaves) that the exporter must ignore |
-| `track-export.gpx` | GPX 1.1, `obc_route::track_to_gpx` | the export of `track-log.obct` as "Schauinsland & back" — the name's `&` pins XML escaping. Not spec-derived: the exporter's serialization *is* the contract, so this file is its output, and its value is cross-implementation |
-| `ride-v1.bin` | ride object v1 (spec §7.2) | "Höhenweg", 3 points, the last without elevation |
-| `ride-v2.bin` | ride object v2 (spec §7.2, epic #707) | "Sensor Ride", 3 points, BLE-sensor summary + per-point hr/cad/pwr with mixed present/absent (0xFF/0xFFFF sentinels) — the app must accept v1 **and** v2 |
+| `track-log.obct` | sample-codec vector (five complete 20-byte records, no header) | shaped for sensor/signed-coordinate coverage only; it is not accepted as a ride or recovery input |
+| `track-export.gpx` | GPX 1.1, `obc_route::track_to_gpx` | the export of finished `ride-v3.bin` as "Schauinsland & back" — the name's `&` pins XML escaping. Not spec-derived: the exporter's serialization *is* the contract, so this file is its output, and its value is cross-implementation |
+| `ride-v3.bin` | ride object v3 (spec §7.2) | "Sensor Ride": three exact 20-byte recorded samples (including segment flags and mixed sensor presence), followed by the fixed 84-byte summary footer |
 | `config-v1.bin` | Config v1 (spec §7.3) | name "OBC Tourer", metric, **no** trailing refresh byte — what an app predating WX3 writes to rename the device. The absent field must read as *unspecified* (device default), never `Off` |
 | `config-weather-refresh.bin` | Config §7.3 + the WX3 (#1188) trailing field | name "OBC Alpine", **imperial**, `weather_refresh` = `3` (60 min). The pair with `config-v1.bin` is the fixture: the same object one appended byte apart, so an off-by-one — which reads the shorter file correctly — fails here. Imperial on purpose, so the new byte follows a *nonzero* `units` rather than a zero a misaligned reader could take for padding |
 | `config-weather-refresh-unknown.bin` | Config §7.3 + a WX3 trailing field naming an interval **no version defines** | name "OBC Horizon", metric, `weather_refresh` = `200`. One blob, read twice, two right answers (§11.8, #1214): as a phone → device **write** it is **rejected** — a device cannot honour an interval it does not know, and storing the default, `Off`, or the previous value would all tell the rider their choice was applied when it was discarded. As a device → phone **read** it is **unknown, never fatal** — a value arriving *from* a device is a *newer* device, and a direction-blind reject would mean appending a fifth interval broke every shipped app, down to renaming it. Unknown is its own state: not `Off`, not the default, and distinguishable from *absent*, so the raw byte is kept and round-trips verbatim. Metric on purpose — an off-by-one reader lands on that zero and decodes a perfectly *known* `Off`, so the misalignment is a wrong answer rather than another "unknown" the tolerant path would have swallowed. The 11-byte name is a third distinct length across the three Config fixtures |

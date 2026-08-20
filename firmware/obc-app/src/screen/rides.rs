@@ -10,10 +10,8 @@
 //! would collide at the pane width the **rightmost** item drops (the distance, in a pathological
 //! overflow) rather than any gap shrinking — the date never yields.
 //!
-//! Rides come from the app's ride catalog ([`Render::rides`]/[`Ctx::rides`]), populated by the host
-//! from `/tracks/RD{id}.ORD` headers — the same source the BLE `rideList` serves. Each summary
-//! carries a `synced` flag (whether the phone has downloaded the ride at least once, persisted in
-//! the `/tracks` synced-set sidecar) — the glyph's fact.
+//! Rides come from the app's ride catalog ([`Render::rides`]/[`Ctx::rides`]), populated from v3
+//! footers in the flat catalog. Each summary carries the host's `synced` fact for the check glyph.
 //!
 //! **Press opens the [Ride detail](super::ride_detail)** (#680) — the recorded sibling of the
 //! Route overview: elevation band, stat ledger, and the guarded *Delete ride* row. Deleting moved
@@ -73,8 +71,8 @@ impl RidesScreen {
         match g {
             Gesture::Step(n) => list::on_step(&mut self.selected, n, len),
             // Press opens the highlighted ride's detail (#680). `viewed_ride` keys the host's
-            // track-profile fill — the detail's elevation band streams the ride's `RD{id}.ORD`
-            // once while the page is up (the Route overview's `active_route` idiom).
+            // track-profile fill — the detail streams the Ride object once while the page is up
+            // (the Route overview's `active_route` idiom).
             Gesture::Press if len > 0 => {
                 let i = self.selected.min(len - 1);
                 cx.activity.viewed_ride = Some(i);

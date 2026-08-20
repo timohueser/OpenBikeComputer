@@ -48,6 +48,7 @@ mod sd;
 // `.bss` slot, and the one storage task the owner's hybrid topology puts the write half behind
 // (reads direct, writes serialized). This is the slice that first puts `obc_storage::flat` into the
 // shipping image; a card is a flat store *or* a FAT volume, never both, and boot classifies it.
+mod flat_ride;
 mod flat_store;
 // The microSD host over Nordic's sEMMC soft peripheral on the FLPR (epic #1158): the card in
 // native 4-bit SD mode, 32 MHz reads / 21.3 MHz writes. `sd.rs`'s whole transport.
@@ -319,7 +320,8 @@ const RESIDENT_BYTES: usize = FB_BYTES
     + ARENA_RESIDENT
     + BLE_RESIDENT
     + USB_RESIDENT
-    + FLAT_RESIDENT;
+    + FLAT_RESIDENT
+    + RIDE_RESIDENT;
 
 /// The **flat store**'s residents (FS7.5-c1, `flat_store::RESIDENT_BYTES`): the mounted
 /// `FlatStore<FlatCard>` in its `.bss` slot — ~10.5 KB, of which §6.2's free bitmap is 8 KiB — plus
@@ -332,10 +334,12 @@ const RESIDENT_BYTES: usize = FB_BYTES
 /// makes the dev window's real cost legible: both stacks are linked at once until c4 closes it, and
 /// this is the price of that, itemized rather than hiding in anonymous `.bss`.
 ///
-/// §7.1's 32,256-byte ride tail is **not** here. No ride journals to the flat store until FS8 (#1390), so
-/// nothing allocates the buffer — a row for it would be a lie in the other direction. It joins this
-/// sum in the slice that starts recording.
 const FLAT_RESIDENT: usize = flat_store::RESIDENT_BYTES;
+
+/// FS8's one recorder-owned payload-page tail, present in every shipping build and separate from
+/// the store so the ride task can lend it across a serialized journal request without growing its
+/// poll frame.
+const RIDE_RESIDENT: usize = flat_ride::RESIDENT_BYTES;
 // ⚠️ **The budget has a cliff in it now** (#1146 P2), and it points both ways — read this before
 // "optimizing" any of the three arena arms, and before waving one through:
 //
@@ -434,7 +438,7 @@ mod resource_report {
         entry("terrain_window", core::mem::size_of::<obc_formats::io::WindowSource<'static>>()),
     ];
 
-    const ENTRIES: usize = 37;
+    const ENTRIES: usize = 38;
 
     #[used]
     #[no_mangle]
@@ -513,6 +517,9 @@ mod resource_report {
         entry("flat_store", core::mem::size_of::<obc_storage::flat::FlatStore<flat_store::FlatCard>>()),
         entry("flat_requests", flat_store::REQUEST_QUEUE_BYTES),
         entry("flat_catalog_uploads", flat_store::CATALOG_UPLOAD_BYTES),
+        // FS8's one live-ride tail. It is static rather than a ride-task local so the 16 KiB
+        // write-once payload page never becomes part of the task poll frame.
+        entry("flat_ride_tail", flat_ride::RESIDENT_BYTES),
         // The read cutover's own resident cost on the flat arm (FS7.5-c2): the session-long
         // `StoreSource` over the map object **and** the display name the same boot step captures.
         // Named beside the store it reads from so the two halves of "what does reading a flat card
@@ -1021,8 +1028,8 @@ async fn main(_spawner: Spawner) {
 
     // load → ride → save: stream the SD `.obcm` into the resident RGB222 framebuffer through the
     // shared `obc-app`, pick a route from the card catalog, ride it (VCOM-streamed GPS or the
-    // `SynthLocation` square loop), map-match + log the track, and write the `RD{id}.ORD` ride
-    // object to `/tracks` on Finish (GPX export happens phone-side after sync).
+    // `SynthLocation` square loop), map-match + record the final ride sample bytes, and append the
+    // flat object's footer on Finish (GPX export happens phone-side after sync).
     {
         // --- VCOM debug-sensor stream, behind `debug-uart`. Bring it up first so the J-Link VCOM is
         // live while the SD card + panel come up; the parsed fixes land in obc-platform's signals, ready
@@ -1393,9 +1400,9 @@ async fn main(_spawner: Spawner) {
             App::init_map(slot, AppState::new(cam_lon, cam_lat, zoom_for_mpp(INIT_MPP)));
             &mut *slot
         };
-        // FS8/FS9 still own the legacy ride/update implementation. It remains an explicit empty
-        // seam until those slices move it to flat objects; map and terrain never consult it.
-        let mut storage: Option<sd::Storage> = None;
+        // FS9 still owns the legacy update implementation. Ride objects are flat-store-native;
+        // this optional FAT seam is retained only for the staged updater until that later slice.
+        let storage: Option<sd::Storage> = None;
         {
             // Routes and trips are flat-store objects. One bounded snapshot seeds the menu, newest
             // first so a fresh upload remains visible on a card with more than the UI cap.
@@ -1406,9 +1413,9 @@ async fn main(_spawner: Spawner) {
                 // read must not require another catalog commit before the first menu can appear.
                 app.apply_event(obc_app::HostEvent::StoreChanged);
             }
-            // Ride recording remains FS8; FAT rides stay available during that separate cutover.
-            if let Some(storage) = storage.as_mut() {
-                ride::load_rides(storage, app);
+            let rides_loaded = flat_store::load_rides(flat, app);
+            if !rides_loaded {
+                app.apply_event(obc_app::HostEvent::StoreChanged);
             }
             // Mirror the map's §8.6 routing-profile names into the app for the Bike-type settings
             // screen + created-route overview label (N5). Map metadata, so it runs on the `ble` image

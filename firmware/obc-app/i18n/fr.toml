@@ -449,6 +449,14 @@ ride_time = "DURÉE"
 distance = "DISTANCE"
 climb = "MONTÉE"
 
+# --- Sortie récupérée au démarrage ---
+[ride_recovery]
+title = "SORTIE RÉCUPÉRÉE"
+body = "Enregistrement récupéré"
+damaged = "Enregistrement endommagé"
+continue_ride = "Continuer la sortie"
+discard = "Abandonner"
+
 # --- Route-less ride start card ---
 [ride_start]
 title = "SORTIE"
