@@ -777,19 +777,25 @@ static random address, bonding and reconnect are unchanged.
 ### 5.2 USB
 
 The vendor interface keeps `bInterfaceClass = 0xFF`, `bInterfaceSubClass = 0x00`, and reports
-`bInterfaceProtocol = 4`; the device descriptor's `bcdDevice` carries the major in its high byte,
-`0x0400`. Matching therefore settles the version before a record is exchanged. Enumeration is the
+`bInterfaceProtocol = 5`; the device descriptor's `bcdDevice` carries the **USB-binding** major in
+its high byte, `0x0500`. Matching therefore settles the USB record binding before a record is
+exchanged. This binding version is deliberately separate from §3's application-protocol major,
+which remains 4 in every frame and on BLE. Enumeration is the
 authorization boundary on this link: physical possession of the port is the trust decision, and the
 package signature and version check are what bound what may run on the device.
 
-- One control bulk endpoint pair and one stream bulk endpoint pair. Each record is `record_length
-  u16` followed by exactly that many frame bytes. Packet boundaries carry no protocol meaning; a
-  record may span packets, but records are neither interleaved nor concatenated without their
-  prefixes.
+- One control bulk endpoint pair and one stream bulk endpoint pair. Each USB-binding-v5 record is
+  `record_length u32` little-endian, exactly that many frame bytes, then `0..=3` zero bytes until the
+  total frame extent is a multiple of four. Packet boundaries carry no protocol meaning; a record
+  may span packets, but records are neither interleaved nor concatenated without their prefixes.
+- The four-byte prefix and zero padding are an alignment contract, not reserved application fields.
+  A record starts on a word boundary, its 16-byte §3 header and following stream payload therefore
+  start on word boundaries, and the padded wire span keeps the next record aligned. A receiver MUST
+  reject non-zero padding rather than assign it a meaning.
 - **The control bulk pair carries §3 control frames and nothing else.** There is no selector, no
   envelope and no second framing on either pair; a record's bytes are a §3 frame from its first byte.
-- A zero, out-of-range, truncated or overrun record length is `invalidFrame` and resets that record
-  stream before teardown is reported to the engine.
+- A zero, out-of-range, truncated or overrun record length, or non-zero alignment padding, is
+  `invalidFrame` and resets that record stream before teardown is reported to the engine.
 - Before an `ARM` reboot, the response record and every earlier IN record must complete at the
   device-controller layer, or the drain timeout must expire.
 
@@ -799,11 +805,11 @@ packet size, and §5.2's records span packets by design. So the number is fixed 
 
 | Direction / channel | Ceiling | Why this number |
 | :-- | --: | :-- |
-| device → host, either channel | 4,112 B | §3.8's 16-byte stream frame plus 4,096 payload bytes — one whole card write. It is also the `LIST` page ceiling, which makes a page 46 entries. |
-| host → device, stream channel | 4,112 B | the same, so a client frames uploads and downloads against one number |
+| device → host, either channel | 8,208 B | §3.8's 16-byte stream frame plus 8,192 payload bytes. It is also the `LIST` page ceiling, which makes a page 92 entries. |
+| host → device, stream channel | 8,208 B | the same, so a client frames uploads and downloads against one number |
 | host → device, control channel | 256 B | §3's largest request is the 100-byte `PUT`; the device sizes this buffer to the protocol rather than to the ceiling, and a longer control record is `invalidFrame` with detail `length` |
 
-A client MUST NOT send a stream record whose payload exceeds 4,096 bytes; §3.8 already makes a
+A client MUST NOT send a stream record whose payload exceeds 8,192 bytes; §3.8 already makes a
 length above the link's ceiling terminate the transfer.
 
 #### 5.2.1 Identity and device information: EP0 vendor requests
@@ -838,9 +844,10 @@ MS OS 2.0 descriptor request (`bRequest = 0x01`, `wIndex = 7`) the same device a
 **There is no identity request, and that is the point of Option A rather than an omission.** The two
 things a v1 identity read carried are both already answerable without one:
 
-- *Which protocol does this device speak?* — the interface descriptor's `bInterfaceProtocol` and the
-  device descriptor's `bcdDevice`, per §5.2's opening paragraph. The version is settled by matching,
-  before a record moves.
+- *Which USB record binding does this device speak?* — the interface descriptor's
+  `bInterfaceProtocol` and the device descriptor's `bcdDevice`, per §5.2's opening paragraph. The
+  binding is settled by matching before a record moves; §3 independently validates application
+  protocol major 4 in the first complete frame.
 - *Which store is this, and is my cache still valid?* — `LIST`'s `StoreId` and commit sequence (§3.3),
   which every client issues first anyway.
 

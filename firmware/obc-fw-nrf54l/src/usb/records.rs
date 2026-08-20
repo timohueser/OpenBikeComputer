@@ -1,8 +1,8 @@
-//! **§5.2's record framing**: `record_length u16` followed by exactly that many frame bytes, in
-//! both directions, on both bulk endpoint pairs.
+//! **§5.2's USB binding v5 record framing**: `record_length u32`, exactly that many frame bytes,
+//! then zero padding to a four-byte boundary, in both directions on both bulk endpoint pairs.
 //!
 //! This is the whole of what USB adds to `FLAT_Store_Protocol.md` §3, and the change from the v1
-//! envelope it replaces is not the two bytes — it is that **packet boundaries carry no protocol
+//! envelope it replaces is not the prefix — it is that **packet boundaries carry no protocol
 //! meaning**. The v1 control plane made one frame exactly one USB transfer, which capped a frame at
 //! one max packet and made "which frame is this" a byte the transport had to invent. §5.2 instead
 //! says a record may span packets and that records are never interleaved and never concatenated
@@ -36,7 +36,7 @@
 
 use defmt::warn;
 use embassy_usb::driver::{Endpoint as _, EndpointError, EndpointIn, EndpointOut};
-use obc_link::flat::{Reassembler, RecordFault};
+use obc_link::flat::{padded_record_len, Reassembler, RecordFault};
 
 use super::{EpIn, EpOut, MAX_PACKET};
 
@@ -47,8 +47,8 @@ pub(crate) use obc_link::flat::record_buffer_len as buffer_len;
 pub(crate) enum RecordEnd {
     /// The endpoint was disabled — an unplug, or a configuration change.
     LinkDown,
-    /// §5.2's framing error: a length of zero, or one above this channel's ceiling.
-    BadLength,
+    /// §5.2's framing error: a bad length or non-zero alignment padding.
+    BadFraming,
     /// A driver-level failure with the endpoint still up.
     Driver,
 }
@@ -57,7 +57,7 @@ impl RecordEnd {
     pub(crate) fn reason(self) -> &'static str {
         match self {
             RecordEnd::LinkDown => "link-down",
-            RecordEnd::BadLength => "bad-record-length",
+            RecordEnd::BadFraming => "bad-record-framing",
             RecordEnd::Driver => "endpoint",
         }
     }
@@ -116,18 +116,15 @@ impl RecordReader {
                         RecordFault::OverCeiling { declared, ceiling } => {
                             warn!("usb: [rec] record length {} is above this channel's ceiling {}", declared, ceiling)
                         }
+                        RecordFault::NonZeroPadding => warn!("usb: [rec] record padding is not zero"),
                     }
-                    return Err(RecordEnd::BadLength);
+                    return Err(RecordEnd::BadFraming);
                 }
             }
             let at = self.frames.read_offset(self.buf, self.armed);
-            let probe_started = embassy_time::Instant::now();
             match self.ep.read(&mut self.buf[at..]).await {
                 Ok(0) => {}
-                Ok(n) => {
-                    crate::upload_probe::ep_read(n, probe_started);
-                    self.frames.filled(n);
-                }
+                Ok(n) => self.frames.filled(n),
                 Err(EndpointError::Disabled) => return Err(RecordEnd::LinkDown),
                 Err(e) => {
                     // Not a disable — a driver-level failure with the endpoint still up. The driver
@@ -145,8 +142,8 @@ impl RecordReader {
 ///
 /// The prefix goes out as its own transfer rather than being copied in front of the frame, and that
 /// is a consequence of where the frame lives: it is the engine's reaction buffer, lent through the
-/// storage queue, and the two bytes in front of it would have to be either a second copy of a
-/// 4 KiB record or a reserved head the engine would have to be taught about. Packet boundaries
+/// storage queue, and the four bytes in front of it would have to be either a second copy of a
+/// 8 KiB record or a reserved head the engine would have to be taught about. Packet boundaries
 /// carry no protocol meaning here (§5.2), and this endpoint has exactly one writer — the driver —
 /// so nothing can interleave between the two transfers.
 pub(crate) struct RecordWriter {
@@ -160,8 +157,8 @@ impl RecordWriter {
 
     /// Send one record. `false` means the endpoint failed and the link is over.
     pub(crate) async fn send(&mut self, frame: &[u8]) -> bool {
-        let Ok(len) = u16::try_from(frame.len()) else {
-            warn!("usb: [rec] a {}-byte frame cannot carry a u16 length prefix — dropping", frame.len());
+        let Ok(len) = u32::try_from(frame.len()) else {
+            warn!("usb: [rec] a {}-byte frame cannot carry a u32 length prefix — dropping", frame.len());
             return false;
         };
         if self.write(&len.to_le_bytes()).await.is_err() {
@@ -173,6 +170,10 @@ impl RecordWriter {
             if self.write(chunk).await.is_err() {
                 return false;
             }
+        }
+        let padding = padded_record_len(frame.len()) - frame.len();
+        if padding != 0 && self.write(&[0; 3][..padding]).await.is_err() {
+            return false;
         }
         true
     }

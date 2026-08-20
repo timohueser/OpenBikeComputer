@@ -70,11 +70,12 @@ What that changes on this page, concretely:
   `version · store_epoch · obcm_version · feature_bits` read is retired with the
   store epoch itself: a v4 client learns the card's identity and the freshness of
   its cache from the `StoreId` every `LIST` page carries. On the cable there is no
-  version read at all — the major is settled by descriptor matching
-  (`bInterfaceProtocol = 4`) before a record is exchanged.
+  version read at all — USB binding v5 is settled by descriptor matching
+  (`bInterfaceProtocol = 5`) before a record is exchanged, independently of
+  the protocol-v4 major inside each frame.
 - **USB's control endpoint pair carries §3 control frames and nothing else.** The
   leading selector byte described at the foot of this page is gone; each record is
-  a `record_length u16` and then the frame, and a record spans packets freely. The
+  a `record_length u32`, the frame and zero padding to four-byte alignment, and a record spans packets freely. The
   one thing that is not a §3 frame — the firmware, hardware and serial strings a
   host reads before it exchanges a record — moved to an **EP0 vendor request**,
   which is where every USB device's identity already lives.
@@ -161,8 +162,8 @@ itself — [`FLAT_Store_Protocol.md`](src:specs/FLAT_Store_Protocol.md) §5 give
 adapter "record boundaries, pacing, timeouts, drain, and nothing else", and the
 frame bytes are identical on both links. What each transport adds is only what its
 own shape lacks: BLE's channels are already message-shaped, while a bulk endpoint
-is a byte pipe, so USB puts a `record_length u16` in front of every frame and a
-record spans as many packets as it needs. The host half lives in the web builder's
+is a byte pipe, so USB puts a `record_length u32` in front of every frame and pads
+the wire span to keep every following record word aligned. A record spans as many packets as it needs. The host half lives in the web builder's
 [USB client](src:builder/app/src/lib/usb), which drives the whole contract over an
 in-memory device; the device half is
 [`obc-fw-nrf54l/src/usb/`](src:firmware/obc-fw-nrf54l/src/usb), and it ships in
@@ -489,8 +490,8 @@ stages:
   card — per packet, so what a transfer really wants is few large writes. On the
   filesystem this was bought with a double buffer: two **64 KiB halves**, one
   filling from the cable while DMA wrote the other into coalesced FAT clusters.
-  The flat-store path now uses the same width without bringing FAT back: sixteen
-  4 KiB v4 records fill one arena-backed half, then one 128-block card DMA starts
+  The flat-store path now uses the same width without bringing FAT back: eight
+  8 KiB v4 records fill one arena-backed half, then one 128-block card DMA starts
   while USB and CRC fill the other. Only the inactive half is borrowed by Rust;
   teardown joins the card DMA before the arena can return to rendering or routing.
 - **Filesystem bookkeeping.** Extending a file by one cluster costs several
@@ -1139,11 +1140,12 @@ owns "record boundaries, pacing, timeouts, drain, and nothing else".
 
 What the cable adds is one field, and it is there because of the one way a bulk
 endpoint is *not* a CoC: an SDU is a message and a byte pipe is not, so a USB
-record is a `record_length u16` followed by exactly that many frame bytes. Packet
-boundaries carry no protocol meaning — a 4 KiB stream record simply spans nine of
-them. The ceilings are constants of the binding rather than a negotiation, because
-there is nothing on USB to derive one from: 4,112 bytes for a stream record (a
-16-byte frame plus 4,096 payload bytes — one whole card write), and 256 for a
+record is a `record_length u32` followed by exactly that many frame bytes and zero
+padding to the next four-byte boundary. Packet boundaries carry no protocol meaning
+— an 8 KiB stream payload simply spans seventeen of them with its header and prefix.
+The ceilings are constants of the binding rather than a negotiation, because there
+is nothing on USB to derive one from: 8,208 bytes for a stream frame (a
+16-byte header plus 8,192 payload bytes), and 256 for a
 host→device control record, whose widest message is a 100-byte `PUT`.
 
 The **control plane** is where the two links used to differ most, and the

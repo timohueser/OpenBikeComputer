@@ -28,11 +28,11 @@
 > a client implementer will otherwise trust:
 >
 > - **The `selector u8` envelope is gone.** Both bulk endpoint pairs carry §3 frames, each record
->   framed as `record_length u16` + frame bytes, and a record spans packets freely. §10's "one frame
+>   framed as `record_length u32` + frame bytes + zero alignment padding, and a record spans packets freely. §10's "one frame
 >   is one USB transfer" rule and its seven-selector table describe nothing that exists.
 > - **The identity read (selector 4) and the device-information read (selector 5) are not
->   replaced by frames.** The version is settled by descriptor matching (`bInterfaceProtocol = 4`,
->   `bcdDevice = 0x0400`) before a record moves, and the three device-information strings are one EP0
+>   replaced by frames.** USB binding v5 is settled by descriptor matching (`bInterfaceProtocol = 5`,
+>   `bcdDevice = 0x0500`) before a record moves, and the three device-information strings are one EP0
 >   vendor request (§5.2.1 of that document). There is **no** identity read on this link any more.
 > - **Object types `17`–`19` (`mapShard` / `mapSet` / `terrainShard`) are deleted from the tree**,
 >   reader side included, and their values are not reissued. The "Volume sets" section of §4.1 is
@@ -1873,8 +1873,8 @@ a pre-expiry 76-byte device and an 84-byte device both decode.
 >
 > | This section says | What is true now |
 > | :-- | :-- |
-> | four bulk endpoints, `0x81/0x01` control and `0x82/0x02` stream | unchanged, and the only clause that survives — but the interface now reports `bInterfaceProtocol = 4` and the device descriptor's `bcdDevice` carries `0x0400`, which is what settles the version before a record is exchanged |
-> | "one frame is one USB transfer", strictly shorter than a max packet | **false.** Each record is `record_length u16` + that many frame bytes; packet boundaries carry no protocol meaning and a record spans as many as it needs. The ceilings are constants of the binding: 4,112 B device→host on either channel and host→device on the stream channel, 256 B for a host→device control record (§5.2) |
+> | four bulk endpoints, `0x81/0x01` control and `0x82/0x02` stream | unchanged, and the only clause that survives — but the interface now reports `bInterfaceProtocol = 5` and the device descriptor's `bcdDevice` carries `0x0500`, which settles USB binding v5 before a record is exchanged |
+> | "one frame is one USB transfer", strictly shorter than a max packet | **false.** Each record is `record_length u32` + that many frame bytes + zero alignment padding; packet boundaries carry no protocol meaning and a record spans as many as it needs. The ceilings are constants of the binding: 8,208 B device→host on either channel and host→device on the stream channel, 256 B for a host→device control record (§5.2) |
 > | the seven-selector table, and the "sole unsolicited channel" rule under it | **gone.** The control endpoint pair carries §3 control frames from the first byte, and §3.1 has no unsolicited control frames at all: a transfer's outcome is the answer to its own request. §5.2.2 maps each retired selector to its successor |
 > | selector 4, the §1 identity read | **not replaced.** The protocol major is a descriptor fact and the store's identity is `LIST`'s `StoreId` plus its commit sequence (§3.3) |
 > | selector 5 / device→host 3, the §3.1 device-information read | moved to **EP0**: one vendor control request, `bmRequestType 0xC1`, `bRequest 0x20`, answering `len u8 · UTF-8` ×3 — firmware revision, hardware revision, serial number (§5.2.1) |

@@ -268,6 +268,26 @@ impl<'record, 'out> StreamBuffers<'record, 'out> {
     }
 }
 
+/// One adapter-assembled map batch and the arena bank that owns its bytes.
+///
+/// Keeping the continuity fields beside the borrowed stage makes the batch one value at the engine
+/// seam: an adapter cannot accidentally pass a bank from one handoff with the offset or length from
+/// another.
+pub struct UsbMapBatch<'stage> {
+    request: RequestId,
+    offset: u64,
+    len: usize,
+    bank: usize,
+    stage: &'stage mut [u8],
+}
+
+impl<'stage> UsbMapBatch<'stage> {
+    /// Bind one validated adapter batch to the arena bank containing its bytes.
+    pub fn new(request: RequestId, offset: u64, len: usize, bank: usize, stage: &'stage mut [u8]) -> Self {
+        Self { request, offset, len, bank, stage }
+    }
+}
+
 /// **How the last upload ended**, latched once and taken once.
 ///
 /// Latched rather than reported live for the same reason the progress above is read rather than
@@ -294,7 +314,7 @@ pub enum UploadEnd {
 ///
 /// Three things do need to know, and each is a fact about a *link* rather than about the store:
 ///
-/// - **Ceilings are per link** (§5.1 vs §5.2): 245 bytes of CoC SDU against 4,112 bytes of USB
+/// - **Ceilings are per link** (§5.1 vs §5.2): 245 bytes of CoC SDU against 8,208 bytes of USB
 ///   record. One shared number would have each link framing against the other's.
 /// - **A link coming up may not disturb the other one's transfer.** It is a new peer on one wire,
 ///   not a new state of the device.
@@ -611,13 +631,10 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         &mut self,
         store: &S,
         policy: &mut P,
-        request: RequestId,
-        offset: u64,
-        len: usize,
+        batch: UsbMapBatch<'_>,
         out: &mut [u8],
-        bank: usize,
-        stage: &mut [u8],
     ) -> Reaction {
+        let UsbMapBatch { request, offset, len, bank, stage } = batch;
         if stage.len() < 512
             || !stage.len().is_multiple_of(512)
             || self.upload_stage_bank() != Some(bank)
@@ -775,7 +792,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
     /// release the live transfer and rebuild the whole engine — which was correct while one link
     /// existed and became a bug the moment two did: a phone reconnecting destroyed a cable's
     /// twenty-minute map upload, with no answer to the client that was sending it, and re-pinned the
-    /// stream ceiling to the radio's 245 bytes so the cable's next 4,112-byte record terminated
+    /// stream ceiling to the radio's 245 bytes so the cable's next 8,208-byte record terminated
     /// over-ceiling. Neither peer had done anything wrong.
     ///
     /// So: a link coming up is a **new peer on one wire**, not a new state of the device. If this
@@ -1238,7 +1255,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         let base = 0;
         // An oddly-sized record could otherwise fill this bank and need the next one in the same
         // call. The board cannot safely borrow that next bank until this borrow ends because the
-        // write starts deferred DMA. Production 4 KiB records divide the 64 KiB bank exactly; a
+        // write starts deferred DMA. Production 8 KiB records divide the 64 KiB bank exactly; a
         // final short record cannot cross it.
         if external && upload.staged + payload.len() > stage_len {
             return Err(StoreError::Invalid);
@@ -1252,12 +1269,10 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
             // A record at or above one stage goes straight to the card: the copy through staging
             // would buy nothing, and this is the path a bulk USB record takes.
             //
-            // **The whole aligned prefix, in one call.** Splitting at exactly `STAGE` would hand a
-            // 4,096-byte USB record to the card as eight separate 512-byte writes, and on this card
-            // a write command costs about the same whether it carries one block or a hundred
-            // (`FLAT_Store_Format.md` §5.5) — so the split, not the copy, was the cost. §5.2's
-            // ceiling is chosen to make a full USB stream record exactly 4,096 payload bytes for
-            // this reason, and the remainder below is the transfer's last, short record.
+            // **The whole aligned prefix, in one call.** Splitting a large transport record into
+            // 512-byte card writes would pay one command per packet, and on this card a write
+            // command costs about the same whether it carries one block or a hundred
+            // (`FLAT_Store_Format.md` §5.5). The remainder below is the transfer's last short span.
             if upload.staged == 0 && input.len() >= stage_len {
                 let (chunk, rest) = input.split_at(input.len() - input.len() % stage_len);
                 store.write(&mut upload.allocation, chunk)?;

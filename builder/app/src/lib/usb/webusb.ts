@@ -35,11 +35,11 @@
  * `FLAT_Store_Protocol.md` §5.2 lets a record span packets, and `records.ts` is what reassembles
  * them.
  *
- * **The wire major is settled by matching, before a record moves** (§5.2). The vendor interface
- * reports `bInterfaceProtocol = 4` and the device descriptor's `bcdDevice` carries the major in its
- * high byte, `0x0400`. {@link checkWireMajor} reads both and refuses a device that says anything
- * else — there is no version *read* on this link, and adding one back would be the duplication the
- * major bump removed.
+ * **The USB-binding major is settled by matching, before a record moves** (§5.2). The vendor
+ * interface reports `bInterfaceProtocol = 5` and the device descriptor's `bcdDevice` carries that
+ * binding major in its high byte. {@link checkUsbBindingMajor} reads both and refuses a device that
+ * says anything else. This is deliberately separate from the protocol-v4 major inside each §3
+ * frame: changing USB record framing does not change the transport-agnostic application protocol.
  *
  * The **VID/PID is still provisional on purpose** — see {@link OBC_USB_FILTERS}. Allocating a real
  * product id is an owner action, not a code change; when it happens, this constant and the
@@ -48,8 +48,7 @@
 
 import { PipeError, withAbort, type BytePipe, type DeviceLink } from "./pipe";
 import { FlatStoreClient, isFormatRecoveryState, type ClientOptions } from "./client";
-import type { DeviceInfo } from "./records";
-import { WIRE_MAJOR } from "./protocol";
+import { USB_BINDING_MAJOR, type DeviceInfo } from "./records";
 
 // --- the slice of WebUSB this file uses ---------------------------------------
 //
@@ -80,7 +79,7 @@ export interface UsbInterfaceLike {
     interfaceNumber: number;
     alternate: {
         interfaceClass: number;
-        /** §5.2's `bInterfaceProtocol` — the wire major, readable before a record is exchanged. */
+        /** §5.2's `bInterfaceProtocol` — the USB-binding major, readable before record exchange. */
         interfaceProtocol?: number;
         endpoints: UsbEndpointLike[];
     };
@@ -109,7 +108,7 @@ export interface UsbConfigurationLike {
 export interface UsbDeviceLike {
     readonly vendorId: number;
     readonly productId: number;
-    /** `bcdDevice`'s high byte — §5.2's other statement of the wire major. */
+    /** `bcdDevice`'s high byte — §5.2's other statement of the USB-binding major. */
     readonly deviceVersionMajor?: number;
     readonly serialNumber?: string;
     readonly productName?: string;
@@ -242,8 +241,8 @@ class WebUsbPipe implements BytePipe {
      * control frame was one transfer and a frame at exactly the packet size was indistinguishable
      * from one that had not ended, so the host refused to send it. §5.2 replaces that with a length
      * prefix: packet boundaries carry no protocol meaning, records span packets by design, and the
-     * only thing that says where a record ends is its own first two bytes. Keeping the old check
-     * would refuse the ordinary 4,112-byte stream record this protocol is built around.
+     * only thing that says where a record ends is its own four-byte prefix. Keeping the old check
+     * would refuse the ordinary 8,208-byte stream frame this protocol is built around.
      */
     async write(bytes: Uint8Array, signal?: AbortSignal): Promise<void> {
         this.check();
@@ -492,7 +491,7 @@ export function discoverLayout(configuration: UsbConfigurationLike): EndpointLay
 }
 
 /**
- * Refuse a device that does not announce wire major {@link WIRE_MAJOR} (§5.2).
+ * Refuse a device that does not announce {@link USB_BINDING_MAJOR} (§5.2).
  *
  * Both statements are checked, and neither is required to be present: WebUSB exposes
  * `deviceVersionMajor` everywhere but `interfaceProtocol` only on `alternate`, and a test harness
@@ -503,16 +502,20 @@ export function discoverLayout(configuration: UsbConfigurationLike): EndpointLay
  * The message shape is the one the v1 identity read used, because the rider's two options have not
  * changed: the device is behind, or the page is.
  */
-export function checkWireMajor(device: UsbDeviceLike, layout: EndpointLayout, configuration: UsbConfigurationLike): void {
+export function checkUsbBindingMajor(
+    device: UsbDeviceLike,
+    layout: EndpointLayout,
+    configuration: UsbConfigurationLike,
+): void {
     const iface = configuration.interfaces.find((i) => i.interfaceNumber === layout.interfaceNumber);
     const stated = [device.deviceVersionMajor, iface?.alternate.interfaceProtocol].filter(
         (value): value is number => typeof value === "number",
     );
-    const wrong = stated.find((value) => value !== WIRE_MAJOR);
+    const wrong = stated.find((value) => value !== USB_BINDING_MAJOR);
     if (wrong !== undefined) {
         throw new PipeError(
             "device-error",
-            `This device speaks protocol v${wrong}; this page speaks v${WIRE_MAJOR}. ` +
+            `This device uses USB binding v${wrong}; this page uses v${USB_BINDING_MAJOR}. ` +
                 "Update the device firmware, or reload the page for a newer build.",
         );
     }
@@ -542,7 +545,7 @@ export async function openWebUsbLink(device: UsbDeviceLike, layout?: EndpointLay
     const configuration = device.configuration;
     if (!configuration) throw new PipeError("device-error", "The device offers no USB configuration.");
     const chosen = layout ?? discoverLayout(configuration);
-    checkWireMajor(device, chosen, configuration);
+    checkUsbBindingMajor(device, chosen, configuration);
     await device.claimInterface(chosen.interfaceNumber);
 
     const control = new WebUsbPipe("control", device, chosen.control.in, chosen.control.out, chosen.control.packetSize);

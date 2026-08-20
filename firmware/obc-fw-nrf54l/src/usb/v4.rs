@@ -87,7 +87,7 @@ static CEILINGS: Ceilings = match Ceilings::for_usb(RECORD_CEILING) {
 /// §5.2's narrower bound on a **host → device control** record.
 ///
 /// §3's largest request is the 100-byte `PUT`. Sizing this buffer to [`RECORD_CEILING`] would be
-/// sizing it to nothing — 4 KiB of `.bss` for a channel whose widest message is a tenth of a
+/// sizing it to nothing — 8 KiB of `.bss` for a channel whose widest message is a small fraction of a
 /// packet — so the binding states the narrowing instead, and a longer record ends the record stream
 /// exactly as §5.2 says a length above the ceiling does.
 pub(crate) const CONTROL_RECORD_CEILING: usize = 256;
@@ -111,9 +111,10 @@ const ADMISSION_WINDOW: Duration = Duration::from_millis(250);
 /// Where a reaction's bytes land, and the ceiling both channels are pinned under.
 static mut OUT: [u8; RECORD_CEILING] = [0; RECORD_CEILING];
 
-/// A word-aligned reassembly buffer. A bare `[u8; N]` static may be linked at any byte address
-/// (the stream buffer landed at 0x…865), which put *every* copy touching it on memcpy's
-/// misaligned path; a word base at least anchors the offsets the reassembler produces.
+/// A word-aligned reassembly buffer. USB binding v5 makes every record span a multiple of four and
+/// places its frame after a four-byte prefix, so this base alignment is the invariant that keeps
+/// every §3.8 payload on memcpy's fast path. Do not weaken it as a storage-only detail: it is a
+/// measured throughput property on the strict-align LM20 target.
 #[repr(C, align(4))]
 struct RxBuffer<const N: usize>([u8; N]);
 
@@ -345,7 +346,6 @@ async fn driver(
     loop {
         // Control first when both are ready: a `CANCEL` or a `LIST` must not queue behind a stream
         // record the engine may be about to refuse anyway.
-        let wait_started = Instant::now();
         let reaction = match embassy_futures::select::select(CONTROL_IN.wait(), STREAM_IN.wait()).await {
             embassy_futures::select::Either::First(record) => {
                 // A deferred batch owns the lane; its answer comes first. A non-idle answer ended
@@ -365,7 +365,6 @@ async fn driver(
                 }
             }
             embassy_futures::select::Either::Second(record) => {
-                crate::upload_probe::recv_wait(wait_started);
                 let result =
                     stream_record(writer, lane, &mut admission, record, &mut staged_request, &mut usb_stage).await;
                 if usb_stage.is_some() {
@@ -429,7 +428,6 @@ async fn driver(
 }
 
 fn log_staged_rate(started: Option<Instant>, bytes: u64) {
-    crate::upload_probe::finish();
     let Some(started) = started else { return };
     let us = started.elapsed().as_micros().max(1);
     info!(
@@ -528,7 +526,6 @@ async fn stream_record(
             if let Some(declared) = usb_map_upload(writer, frame_id).await {
                 *staged_request = Some(frame_id);
                 if crate::usb::request_stage().await {
-                    crate::upload_probe::begin();
                     *usb_stage = Some(UsbStage::new(frame_id, declared));
                 }
             }
@@ -545,11 +542,8 @@ async fn stream_record(
         // lane before any fallback `lane.call` below.
         if stage.fill == 0 {
             if let Some(ticket) = stage.pending.take() {
-                let collect_started = Instant::now();
                 match lane.collect(writer, ticket).await {
-                    Some(Reaction::Idle) => {
-                        crate::upload_probe::batch_wait(collect_started);
-                    }
+                    Some(Reaction::Idle) => {}
                     Some(reaction) => {
                         STREAM_IN.signal(record);
                         return Some(reaction);
@@ -576,18 +570,10 @@ async fn stream_record(
             STREAM_TAKEN.signal(());
             return reaction;
         }
-        crate::upload_probe::copy_triangulate(payload, stage.bank, stage.fill, stage.received % (128 * 8_192) == 0);
-        let copy_started = Instant::now();
-        // Plain `copy_from_slice`, deliberately: the payload source is misaligned by construction
-        // (§5.2's 2-byte prefix + 16-byte frame) and this copy measures ~0.9 ms per 8 KiB — but an
-        // explicit unaligned-word loop measured the SAME, and the probe's triangulation pins the
-        // cost on *reading this RAM region* (883 µs from the RX buffer vs 138 µs from low RAM,
-        // identical instructions). Until that is understood, cleverer copies are noise.
         let copied = crate::arena::with_usb_stage_bank(stage.bank, |bank| {
             bank[stage.fill..stage.fill + payload.len()].copy_from_slice(payload);
         })
         .is_some();
-        let copy_us = copy_started.elapsed().as_micros() as u32;
         if !copied {
             STREAM_TAKEN.signal(());
             return Some(Reaction::Close(Channel::Stream));
@@ -598,18 +584,15 @@ async fn stream_record(
         // one-per-bank storage request below starts the deferred card write.
         STREAM_TAKEN.signal(());
         if stage.fill < crate::usb::STAGE_HALF_LEN && stage.received < stage.declared {
-            crate::upload_probe::staged_record(copy_us, 0);
             return Some(Reaction::Idle);
         }
         let offset = stage.received - stage.fill as u64;
         let len = stage.fill;
         let request = stage.request;
-        let call_started = Instant::now();
         if stage.received >= stage.declared {
             // The final batch produces the `PUT` answer, so it is awaited inline — on an idle
             // pipeline, the previous batch having been collected at this bank's first record.
             let reaction = lane.call(writer, |out| Request::StreamStagedBatch { request, offset, len, out }).await;
-            crate::upload_probe::staged_record(copy_us, call_started.elapsed().as_micros() as u32);
             stage.bank ^= 1;
             stage.fill = 0;
             return reaction;
@@ -620,7 +603,6 @@ async fn stream_record(
         stage.pending =
             lane.call_deferred(writer, |out| Request::StreamStagedBatch { request, offset, len, out }).await;
         stage.pending?;
-        crate::upload_probe::staged_record(copy_us, call_started.elapsed().as_micros() as u32);
         stage.bank ^= 1;
         stage.fill = 0;
         return Some(Reaction::Idle);

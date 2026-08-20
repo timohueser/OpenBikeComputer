@@ -69,7 +69,7 @@ use embassy_sync::channel::{Channel, Receiver, Sender};
 use embassy_sync::signal::Signal;
 use heapless::Deque;
 
-use obc_link::flat::{Ceilings, Engine, Link, Policy, Reaction, RequestId, StreamBuffers};
+use obc_link::flat::{Ceilings, Engine, Link, Policy, Reaction, RequestId, StreamBuffers, UsbMapBatch};
 use obc_storage::flat::store::MAX_BATCH;
 use obc_storage::flat::{
     Allocation, BlockDevice, DisplayName, EntryFlags, EntryMeta, FlatStore, Handle, Mode, Mutation, ObjectId,
@@ -127,7 +127,6 @@ impl BlockDevice for FlatCard {
     fn read(&self, lba: u64, buf: &mut [u8]) -> Result<(), SemmcError> {
         let start = FlatCard::lba(lba)?;
         let addr = buf.as_ptr() as usize;
-        let probe_started = embassy_time::Instant::now();
         #[cfg(feature = "sd-bench")]
         let blocks = buf.len() / BLOCK_BYTES;
         #[cfg(feature = "sd-bench")]
@@ -156,7 +155,6 @@ impl BlockDevice for FlatCard {
         })?;
         #[cfg(feature = "sd-bench")]
         crate::card_io::note_read_perf(bench_started, addr, blocks);
-        crate::upload_probe::read(buf.len(), probe_started);
         result
     }
 
@@ -168,20 +166,11 @@ impl BlockDevice for FlatCard {
             // start this one, and return while the card runs; the engine can then receive, CRC and
             // fill the disjoint half. Generic callers are synchronous as before.
             if addr.is_multiple_of(4) && crate::arena::usb_stage_contains(addr, buf.len()) {
-                let probe_started = embassy_time::Instant::now();
                 sd.finish_write_blocks()?;
-                let finished = embassy_time::Instant::now();
                 // SAFETY: the arena gate retains both halves for the transfer, and the engine does
                 // not reuse this half until the next staged write has joined it here.
-                let result = unsafe { sd.start_write_blocks(start, buf) };
-                crate::upload_probe::staged_write(
-                    buf.len(),
-                    (finished - probe_started).as_micros() as u32,
-                    finished.elapsed().as_micros() as u32,
-                );
-                return result;
+                return unsafe { sd.start_write_blocks(start, buf) };
             }
-            crate::upload_probe::other_write(buf.len());
             sd.finish_write_blocks()?;
             if addr.is_multiple_of(4) {
                 return sd.write_blocks(start, buf);
@@ -1154,19 +1143,22 @@ fn serve(
             Ok(Outcome::Reacted { reaction, out })
         }
         Request::StreamStagedBatch { request, offset, len, out } => {
-            let probe_started = embassy_time::Instant::now();
             let reaction = engine
                 .upload_stage_bank()
                 .and_then(|bank| {
                     crate::arena::with_usb_stage_bank(bank, |stage| {
-                        engine.on_usb_map_batch(store, policy, request, offset, len, &mut *out, bank, stage)
+                        engine.on_usb_map_batch(
+                            store,
+                            policy,
+                            UsbMapBatch::new(request, offset, len, bank, stage),
+                            &mut *out,
+                        )
                     })
                 })
                 .unwrap_or_else(|| {
                     engine.on_link_lost(Link::Usb, store);
                     Reaction::Close(obc_link::flat::Channel::Stream)
                 });
-            crate::upload_probe::batch_served(probe_started);
             publish_upload(engine);
             Ok(Outcome::Reacted { reaction, out })
         }
