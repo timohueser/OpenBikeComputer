@@ -39,26 +39,20 @@ export interface Caps {
 export type { DeviceSession, RideLibrary };
 
 /**
- * A place on disk to put the assembled map — a native folder on the desktop, a
- * picked directory on a browser that has `showDirectoryPicker`. Hosts without
- * either export `openMapOutput: null` and the UI falls back to its downloader.
+ * A place on disk to put the assembled map in a native host. Web exports
+ * `openMapOutput: null` and uses the browser's ordinary one-file downloader.
  *
- * **Why this exists at all, now that a map is one file.** A browser can save one
- * file without any of this: the assembled `.obcm` is an OPFS-backed `Blob`, so the
- * plain downloader streams it to disk without the tab's heap ever holding it. What
- * the downloader cannot do is choose *where*. A country-scale map is ~9 GiB, and
- * "save to Downloads, then copy it to the card" means writing those 9 GiB twice and
- * needing the room for both at once. A picked directory is the card itself, and the
- * write happens once. That is the whole argument, and at this size it is decisive.
+ * The assembled `.obcm` is an OPFS-backed `Blob`, so the web downloader streams it
+ * to disk without the tab's heap ever holding it. Native hosts retain this session
+ * because a webview does not provide a useful browser download destination.
  *
  * The session is opened once and written once — a map is one file — but `write`
  * still names it, because the destination is a *folder* and the file needs a name in
  * it. The name comes from the caller: the assembler names nothing.
  *
- * `openMapOutput` must be called **under the user gesture that starts the run**: the
- * browser implementation opens a directory picker, and a picker not backed by a
- * fresh activation is refused by the browser. A dismissed picker rejects with an
- * `AbortError`, which callers treat as "changed my mind", not as a failure.
+ * A host that presents a picker must be called under the user gesture that starts
+ * the run. A dismissed picker rejects with an `AbortError`, which callers treat as
+ * "changed my mind", not as a failure.
  */
 export interface MapOutputSession {
     readonly path: string;

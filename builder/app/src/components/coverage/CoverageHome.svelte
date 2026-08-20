@@ -5,9 +5,9 @@
     // parts and the map owns selection
     // through its tool rail.
     //
-    // Step 4 is the device step. A map is one file, so there is no assemble-and-
-    // stream path through this screen: the rider downloads the `.obcm` in step 3 and
-    // sends or copies that file, which is the same object either way.
+    // Step 4 is the device step. The one-file assembler exposes a disk-backed
+    // sink to it, so a rider may assemble straight into a v4 PUT without first
+    // downloading and selecting the same `.obcm`.
 
     import type { CatalogClient } from "../../lib/catalog/client";
     import { CoverageStore } from "../../lib/coverage/store.svelte";
@@ -19,6 +19,7 @@
     import MapSummary from "./MapSummary.svelte";
     import PartsList from "./PartsList.svelte";
     import SkinStep from "./SkinStep.svelte";
+    import type { SendAssembledMap } from "../../lib/device/write";
 
     let {
         client,
@@ -32,6 +33,11 @@
     const store = new CoverageStore(client, rootBody);
 
     const partCount = $derived(store.selection.parts.length);
+    let downloadStep = $state<{ sendToDevice: SendAssembledMap }>();
+    const sendAssembled: SendAssembledMap = (device, ctx) => {
+        if (!downloadStep) throw new Error("The map assembler is not ready yet.");
+        return downloadStep.sendToDevice(device, ctx);
+    };
 </script>
 
 <div class="layout">
@@ -68,7 +74,7 @@
                 <span class="num">3</span>
                 <h3>Download</h3>
             </div>
-            <DownloadStep {store} />
+            <DownloadStep bind:this={downloadStep} {store} />
         </section>
 
         <section class="card">
@@ -77,9 +83,9 @@
                 <h3>{available("deviceDashboard") ? "Send to device" : "Device"}</h3>
             </div>
             {#if available("deviceDashboard")}
-                <MapSendStep />
+                <MapSendStep ledger={store.ledger} {sendAssembled} />
             {:else}
-                <DeviceStep />
+                <DeviceStep ledger={store.ledger} {sendAssembled} />
             {/if}
         </section>
     </div>
