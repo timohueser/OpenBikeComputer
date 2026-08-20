@@ -428,6 +428,18 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         }
     }
 
+    /// Whether this exact upload owns the engine.
+    ///
+    /// Adapter-specific resources must use this rather than an app-facing progress projection:
+    /// progress deliberately omits the owner link, so it cannot prove that USB — rather than BLE —
+    /// is entitled to claim a cable-only staging arena.
+    pub fn upload_matches(&self, link: Link, request: RequestId, kind: ObjectKind) -> bool {
+        matches!(
+            &self.live,
+            Live::Upload(upload) if upload.link == link && upload.request == request && upload.kind == kind
+        )
+    }
+
     /// **Take the verdict on the last upload**, clearing it. See [`UploadEnd`].
     ///
     /// A link that goes away leaves nothing here: §3.8's third form of cancel answers nobody, and a

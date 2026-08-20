@@ -500,6 +500,9 @@ pub(crate) enum Request {
     /// been admitted" is a question only the engine can answer. One round trip, and only inside the
     /// race window.
     LiveTransfer,
+    /// Whether this exact request is a map upload owned by USB. This is the admission proof for the
+    /// cable-only arena arm; app-facing map progress intentionally carries no link identity.
+    UsbMapUpload { request: RequestId },
 }
 
 /// What one [`Request`] produced.
@@ -524,6 +527,8 @@ pub(crate) enum Outcome {
     },
     /// The live transfer's `RequestId`, or `None` when the engine is idle.
     Live(Option<RequestId>),
+    /// Answer to [`Request::UsbMapUpload`].
+    UsbMap(bool),
 }
 
 /// The caller's half of one round trip: the answer, **tagged with the request it answers**.
@@ -1122,6 +1127,11 @@ fn serve(
             Ok(Outcome::Done)
         }
         Request::LiveTransfer => Ok(Outcome::Live(engine.live_transfer())),
+        Request::UsbMapUpload { request } => Ok(Outcome::UsbMap(engine.upload_matches(
+            Link::Usb,
+            request,
+            obc_link::flat::ObjectKind::MapShard,
+        ))),
     }
 }
 

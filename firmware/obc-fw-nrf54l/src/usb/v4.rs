@@ -331,7 +331,7 @@ async fn driver(
     // Owned by the driver, so it is per cable by construction rather than by a `reset` someone has
     // to remember.
     let mut admission = Admission::new();
-    let mut stage_attempted = false;
+    let mut staged_request: Option<RequestId> = None;
     let mut stage_granted = false;
     let mut staged_started: Option<Instant> = None;
     let mut staged_bytes = 0u64;
@@ -345,7 +345,7 @@ async fn driver(
             },
             embassy_futures::select::Either::Second(record) => {
                 let result =
-                    stream_record(writer, lane, &mut admission, record, &mut stage_attempted, &mut stage_granted).await;
+                    stream_record(writer, lane, &mut admission, record, &mut staged_request, &mut stage_granted).await;
                 if stage_granted {
                     staged_started.get_or_insert_with(Instant::now);
                     staged_bytes += record.len().saturating_sub(obc_link::flat::wire::STREAM_HEADER_LEN) as u64;
@@ -356,6 +356,11 @@ async fn driver(
                 }
             }
         };
+        // Most records are `Idle`; do not put another storage round trip in the 4 KiB hot path.
+        // A terminal/control reaction can end the USB upload, while the app-facing map projection
+        // may remain `Receiving` if BLE immediately admits another map. That edge requires the
+        // exact owner query below.
+        let may_have_ended = reaction != Reaction::Idle;
         if let Some(reason) = pump(writer, lane, control_tx, stream_tx, reaction).await {
             if stage_granted {
                 let joined = finish_usb_stage(writer).await;
@@ -364,13 +369,19 @@ async fn driver(
             }
             return reason;
         }
-        if stage_attempted && !crate::link::map_transfer_state().is_some_and(|state| state.is_receiving()) {
+        let projection_ended = !crate::link::map_transfer_state().is_some_and(|state| state.is_receiving());
+        let staged_ended = if let Some(request) = staged_request {
+            (projection_ended || may_have_ended) && !usb_owns_map_upload(writer, request).await
+        } else {
+            false
+        };
+        if staged_ended {
             if stage_granted {
                 let joined = finish_usb_stage(writer).await;
                 release_joined_stage(joined);
                 log_staged_rate(staged_started, staged_bytes);
             }
-            stage_attempted = false;
+            staged_request = None;
             stage_granted = false;
             staged_started = None;
             staged_bytes = 0;
@@ -405,14 +416,15 @@ async fn stream_record(
     lane: &mut Lane,
     admission: &mut Admission,
     record: &'static [u8],
-    stage_attempted: &mut bool,
+    staged_request: &mut Option<RequestId>,
     stage_granted: &mut bool,
 ) -> Option<Reaction> {
     // §5's admission hold. Reading four bytes of the §3.8 frame header is not "parsing a payload":
     // it is the record boundary information the binding is explicitly responsible for, and a record
     // too short to carry one is not decoded here — it goes to the engine, which owns that refusal.
-    if record.len() >= 4 {
-        let frame_id = RequestId(u32::from_le_bytes([record[0], record[1], record[2], record[3]]));
+    let frame_id = (record.len() >= 4)
+        .then(|| RequestId(u32::from_le_bytes([record[0], record[1], record[2], record[3]])));
+    if let Some(frame_id) = frame_id {
         if admission.needs_query(frame_id) && admission.observed(frame_id, live_transfer(writer).await) {
             if let embassy_futures::select::Either::First(control) =
                 embassy_futures::select::select(CONTROL_IN.wait(), Timer::after(ADMISSION_WINDOW)).await
@@ -436,9 +448,13 @@ async fn stream_record(
             warn!("usb: [v4] a stream record arrived unadmitted — delivering after the hold window");
         }
     }
-    if !*stage_attempted && crate::link::map_transfer_state().is_some_and(|state| state.is_receiving()) {
-        *stage_attempted = true;
-        *stage_granted = crate::usb::request_stage().await;
+    if staged_request.is_none() {
+        if let Some(frame_id) = frame_id {
+            if usb_owns_map_upload(writer, frame_id).await {
+                *staged_request = Some(frame_id);
+                *stage_granted = crate::usb::request_stage().await;
+            }
+        }
     }
     let reaction = if *stage_granted {
         lane.call(writer, |out| Request::StreamStaged { record, out }).await
@@ -459,6 +475,16 @@ async fn live_transfer(writer: &Writer) -> Option<RequestId> {
     match writer.call(Request::LiveTransfer, &LIVE_REPLY).await {
         Ok(Outcome::Live(live)) => live,
         _ => None,
+    }
+}
+
+/// The storage-owned admission proof for the cable-only scratch arm. The app's map progress state
+/// deliberately omits link ownership and therefore cannot distinguish a BLE map PUT from USB.
+async fn usb_owns_map_upload(writer: &Writer, request: RequestId) -> bool {
+    static USB_MAP_REPLY: Reply = Signal::new();
+    match writer.call(Request::UsbMapUpload { request }, &USB_MAP_REPLY).await {
+        Ok(Outcome::UsbMap(owns)) => owns,
+        _ => false,
     }
 }
 

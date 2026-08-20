@@ -10,7 +10,7 @@
 
 use obc_link::flat::store::Policy;
 use obc_link::flat::wire::{flags, HEADER_LEN, STREAM_HEADER_LEN};
-use obc_link::flat::{CancelCause, Ceilings, Channel, Engine, Link, ObjectKind, OpenPolicy, Reaction};
+use obc_link::flat::{CancelCause, Ceilings, Channel, Engine, Link, ObjectKind, OpenPolicy, Reaction, RequestId};
 use obc_storage::flat::sim::{FaultOnce, SparseDisk};
 use obc_storage::flat::{
     BlockDevice, DisplayName, EntryFlags, EntryMeta, FlatStore, Mutation, ObjectId, PutSource, Revision, StoreId,
@@ -251,6 +251,11 @@ impl<D: BlockDevice> Device<D> {
     /// What the live upload has landed so far — the device-side progress report.
     pub fn live_upload(&self) -> Option<obc_link::flat::UploadProgress> {
         self.engine.live_upload()
+    }
+
+    /// Whether an exact upload owns the engine, used by adapter-resource admission tests.
+    pub fn upload_matches(&self, link: Link, request: RequestId, kind: ObjectKind) -> bool {
+        self.engine.upload_matches(link, request, kind)
     }
 
     /// The verdict on the last upload, taken.
