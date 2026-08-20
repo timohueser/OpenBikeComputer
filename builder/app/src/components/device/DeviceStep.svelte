@@ -13,6 +13,18 @@
     import Gated from "../Gated.svelte";
     import { platform } from "../../lib/platform";
     import { deviceHolder } from "../../lib/device/session.svelte";
+    import type { Ledger } from "../../lib/catalog/ledger";
+    import type { SendAssembledMap } from "../../lib/device/write";
+
+    let {
+        ledger = null,
+        sendAssembled = null,
+        sendReady = false,
+    }: {
+        ledger?: Ledger | null;
+        sendAssembled?: SendAssembledMap | null;
+        sendReady?: boolean;
+    } = $props();
 
     // The write surfaces reach the protocol client, the codecs and the transport — the ~24 kB C3
     // code-split out of the entry bundle. Loading them on connect keeps that split: a visitor who
@@ -64,7 +76,14 @@
             {#await loadSurfaces()}
                 <p class="small muted">Loading…</p>
             {:then { default: Surfaces }}
-                <Surfaces client={session.client} info={session.info} store={session.store} />
+                <Surfaces
+                    client={session.client}
+                    info={session.info}
+                    store={session.store}
+                    {ledger}
+                    {sendAssembled}
+                    {sendReady}
+                />
             {:catch}
                 <p class="note error small" role="alert">
                     The device tools could not be loaded. Check your connection and reload the page.

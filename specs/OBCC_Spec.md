@@ -452,19 +452,18 @@ cell bytes, skin, and assembler. Host-specific file saving MUST NOT alter the
 assembled bytes.
 
 A consumer MAY stream assembler output directly to a connected device instead
-of first saving it, and MUST verify the emitted file's announced length before transfer. (No
-consumer does today — the browser saves the file and the rider sends it; the direct path returns
-with the board cutover. The rule is written for the day one exists, so it names only what a
-streaming consumer can actually check: it has no independent digest to compare the bytes against,
-and what guarantees delivery is the transport's own whole-object CRC-32, which the device verifies
-before it commits.)
+of first saving it, and MUST verify the emitted file's announced length before transfer. The web
+and desktop builder do so from the assembler's `Blob`. Where the host provides writable OPFS with
+enough room, that Blob remains disk-backed and the flat-store v4 client reads it in bounded slices,
+rather than materialising a country-sized file in the webview heap. A host without that working
+storage may use the assembler's explicitly memory-priced fallback. A streaming consumer has no
+independent digest to compare the bytes against;
+delivery is guaranteed by the transport's whole-object CRC-32, which the device verifies before it
+commits.
 Cancellation or failure MUST abandon the incomplete transfer and MUST NOT leave anything selectable
 as a map. (Before OBCM v14 / #1420 this rule sequenced several files and committed a volume-set
-manifest last; with one file the store's own commit is the sequencing. The *producing* halves of the
-multi-file client path — the assembler's emitter, the browser's delivery, the device upload flows —
-were deleted in FS7.5b2. What still reads a set is the board's own mount and the host-side helper
-that resolves a card's terrain sidecar by manifest name; both go in FS7.5c —
-`FLAT_Store_Protocol.md`.)
+manifest last; with one file the store's own commit is the sequencing. The old multi-file producing
+path was deleted in FS7.5b2; the current direct path is its one-object flat-store-v4 replacement.)
 
 ## 13. Terrain artifacts
 

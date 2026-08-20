@@ -1,7 +1,8 @@
 <!--
-  Sending a map over USB: a map is ONE `.obcm` file, so this is one picker and
-  one transfer. A card's active lowest-id map is replaced with LIST's current
-  revision; only a card with no map creates a new object.
+  Sending a map over USB: a map is ONE `.obcm` object. The builder can stream
+  its verified OPFS-backed result straight into PUT; the picker remains for a
+  map the rider already has. A card's active lowest-id map is replaced with
+  LIST's current revision; only a card with no map creates a new object.
 
   There is no free-space meter, and that is a decision rather than an omission.
   §5.2.2 retires the card-space query: nothing asks in advance, because §3.6
@@ -11,20 +12,40 @@
   and a stale one by the time the last byte arrives.
 -->
 <script lang="ts">
+    import { onDestroy } from "svelte";
     import { DeviceJob } from "../../lib/device/job.svelte";
-    import { sendMapFile } from "../../lib/device/write";
+    import { sendMapFile, type SendAssembledMap } from "../../lib/device/write";
+    import type { Ledger } from "../../lib/catalog/ledger";
     import type { FlatStoreClient } from "../../lib/usb/client";
     import TransferBar from "./TransferBar.svelte";
 
-    let { client }: { client: FlatStoreClient } = $props();
+    let {
+        client,
+        ledger = null,
+        sendAssembled = null,
+        sendReady = false,
+    }: {
+        client: FlatStoreClient;
+        ledger?: Ledger | null;
+        sendAssembled?: SendAssembledMap | null;
+        sendReady?: boolean;
+    } = $props();
 
     const job = new DeviceJob("map");
+    onDestroy(() => job.cancel());
     let picker = $state<HTMLInputElement>();
 
     async function sendFile(file: File) {
         await job.run(
             (ctx) => sendMapFile(client, file, ctx),
             (result) => `${file.name} is on the device (map ${result.objectId}). Restart it to load this map.`,
+        );
+    }
+
+    async function sendSelection(send: SendAssembledMap) {
+        await job.run(
+            (ctx) => send(client, ctx),
+            (result) => `The assembled map is on the device (map ${result.objectId}). Restart it to load this map.`,
         );
     }
 
@@ -41,6 +62,17 @@
     <h4>Map</h4>
 
     <div class="actions">
+        {#if ledger && sendAssembled}
+            {@const send = sendAssembled}
+            <button
+                type="button"
+                class="btn primary"
+                disabled={job.running || !sendReady}
+                onclick={() => void sendSelection(send)}
+            >
+                Assemble &amp; send map
+            </button>
+        {/if}
         <button
             type="button"
             class="btn"

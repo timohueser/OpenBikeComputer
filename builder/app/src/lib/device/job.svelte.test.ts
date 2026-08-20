@@ -69,6 +69,26 @@ describe("DeviceJob", () => {
         expect(job.error).toBeNull();
     });
 
+    it("does not cancel host cleanup after a device commit", async () => {
+        const job = new DeviceJob();
+        let release!: () => void;
+        const cleanup = new Promise<void>((resolve) => (release = resolve));
+        let signal: AbortSignal | null = null;
+        const running = job.run(async (ctx) => {
+            signal = ctx.signal;
+            ctx.phase("finalizing");
+            await cleanup;
+            return 1;
+        }, () => "committed");
+
+        job.cancel();
+        expect(signal!.aborted).toBe(false);
+        release();
+        await running;
+        expect(job.phase).toBe("done");
+        expect(job.result).toBe("committed");
+    });
+
     it("reports a lost link where it will still be on screen afterwards", async () => {
         deviceHolder.interrupted = null;
         const job = new DeviceJob();
