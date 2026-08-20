@@ -252,20 +252,19 @@ pub struct UploadProgress {
     pub declared: u64,
 }
 
-/// The adapter-owned bank that receives the next staged upload record.
+/// The input record and output workspace for one staged stream call.
 ///
-/// The bank identity travels with its disjoint mutable borrow so a double-buffered adapter cannot
-/// accidentally name one half while lending the other. Construct this from only the inactive half;
-/// the opposite bank may still be borrowed by deferred media DMA.
-pub struct UploadStage<'a> {
-    bank: usize,
-    bytes: &'a mut [u8],
+/// These buffers have independent lifetimes and no coupled invariant; grouping them keeps the
+/// adapter-specific bank identity and its stage slice explicit at the call site.
+pub struct StreamBuffers<'record, 'out> {
+    record: &'record [u8],
+    out: &'out mut [u8],
 }
 
-impl<'a> UploadStage<'a> {
-    /// Pair a stage bank identity with that bank's exclusive byte slice.
-    pub fn new(bank: usize, bytes: &'a mut [u8]) -> Self {
-        Self { bank, bytes }
+impl<'record, 'out> StreamBuffers<'record, 'out> {
+    /// Group a received stream record with the workspace used for the engine's response.
+    pub fn new(record: &'record [u8], out: &'out mut [u8]) -> Self {
+        Self { record, out }
     }
 }
 
@@ -575,11 +574,11 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         link: Link,
         store: &S,
         policy: &mut P,
-        record: &[u8],
-        out: &mut [u8],
-        stage: UploadStage<'_>,
+        buffers: StreamBuffers<'_, '_>,
+        bank: usize,
+        stage: &mut [u8],
     ) -> Reaction {
-        let UploadStage { bank, bytes: stage } = stage;
+        let StreamBuffers { record, out } = buffers;
         if stage.len() < 512 || !stage.len().is_multiple_of(512) || self.upload_stage_bank() != Some(bank) {
             return Reaction::Close(Channel::Stream);
         }

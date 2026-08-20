@@ -69,7 +69,7 @@ use embassy_sync::channel::{Channel, Receiver, Sender};
 use embassy_sync::signal::Signal;
 use heapless::Deque;
 
-use obc_link::flat::{Ceilings, Engine, Link, Policy, Reaction, RequestId, UploadStage};
+use obc_link::flat::{Ceilings, Engine, Link, Policy, Reaction, RequestId, StreamBuffers};
 use obc_storage::flat::store::MAX_BATCH;
 use obc_storage::flat::{
     Allocation, BlockDevice, DisplayName, EntryFlags, EntryMeta, FlatStore, Handle, Mode, Mutation, ObjectId,
@@ -1075,9 +1075,9 @@ fn serve(
                             Link::Usb,
                             store,
                             policy,
-                            record,
-                            &mut *out,
-                            UploadStage::new(bank, stage),
+                            StreamBuffers::new(record, &mut *out),
+                            bank,
+                            stage,
                         )
                     })
                 })
