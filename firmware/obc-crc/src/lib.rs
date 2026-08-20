@@ -87,8 +87,8 @@ impl Crc32 {
         let mut c = self.state;
         #[cfg(feature = "slice-by-8")]
         let bytes = {
-            let mut chunks = bytes.chunks_exact(8);
-            for chunk in &mut chunks {
+            let (chunks, remainder) = bytes.as_chunks::<8>();
+            for chunk in chunks {
                 let first = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) ^ c;
                 let second = u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
                 c = TABLES[7][(first & 0xff) as usize]
@@ -100,7 +100,7 @@ impl Crc32 {
                     ^ TABLES[1][((second >> 16) & 0xff) as usize]
                     ^ TABLES[0][(second >> 24) as usize];
             }
-            chunks.remainder()
+            remainder
         };
         for &b in bytes {
             c = TABLE[((c ^ b as u32) & 0xFF) as usize] ^ (c >> 8);

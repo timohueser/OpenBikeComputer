@@ -377,7 +377,7 @@ pub fn ride_elevation_profile_into(src: &dyn ByteSource, out: &mut Profile) -> R
         let n = ((info.point_count - done) as usize).min(BLOCK);
         let bytes = &mut buf[..n * SAMPLE_LEN];
         src.read_at(u64::from(done) * SAMPLE_LEN as u64, bytes)?;
-        for rec in bytes.chunks_exact(SAMPLE_LEN) {
+        for rec in bytes.as_chunks::<SAMPLE_LEN>().0 {
             let lat = i32::from_le_bytes([rec[4], rec[5], rec[6], rec[7]]);
             let lon = i32::from_le_bytes([rec[0], rec[1], rec[2], rec[3]]);
             let ele = i16::from_le_bytes([rec[8], rec[9]]);
@@ -441,7 +441,7 @@ pub fn ride_preview_polyline<const N: usize>(src: &dyn ByteSource) -> Result<Vec
         let n = ((info.point_count - done) as usize).min(BLOCK);
         let bytes = &mut buf[..n * SAMPLE_LEN];
         src.read_at(u64::from(done) * SAMPLE_LEN as u64, bytes)?;
-        for (i, rec) in bytes.chunks_exact(SAMPLE_LEN).enumerate() {
+        for (i, rec) in bytes.as_chunks::<SAMPLE_LEN>().0.iter().enumerate() {
             if done as usize + i != next {
                 continue;
             }

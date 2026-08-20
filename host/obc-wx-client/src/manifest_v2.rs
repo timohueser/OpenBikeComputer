@@ -858,7 +858,7 @@ fn unhex(text: &str) -> Option<Vec<u8>> {
         b'A'..=b'F' => Some(byte - b'A' + 10),
         _ => None,
     };
-    bytes.chunks_exact(2).map(|pair| Some(nibble(pair[0])? << 4 | nibble(pair[1])?)).collect()
+    bytes.as_chunks::<2>().0.iter().map(|pair| Some(nibble(pair[0])? << 4 | nibble(pair[1])?)).collect()
 }
 
 /// A `0x`-prefixed 32-bit hex integer, and nothing else.

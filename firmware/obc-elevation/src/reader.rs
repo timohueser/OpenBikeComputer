@@ -158,7 +158,7 @@ impl<'a> TerrainReader<'a> {
             let n = ((entries - done) as usize).min(DIR_SCAN_ENTRIES);
             let bytes = &mut buf[..n * DIR_ENTRY_LEN];
             self.src.read_at(dir_start + done * DIR_ENTRY_LEN as u64, bytes)?;
-            for entry in bytes.chunks_exact(DIR_ENTRY_LEN) {
+            for entry in bytes.as_chunks::<DIR_ENTRY_LEN>().0 {
                 let offset = u32::from_le_bytes([entry[0], entry[1], entry[2], entry[3]]);
                 if offset == DIR_ABSENT {
                     continue;

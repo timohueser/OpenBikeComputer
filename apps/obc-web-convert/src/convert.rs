@@ -418,7 +418,7 @@ mod tests {
         let obcr = gpx_to_obcr(TINY_GPX.as_bytes(), "Tiny").unwrap();
         let flat = obcr_to_track(&obcr).unwrap();
         assert_eq!(flat.len() % 3, 0);
-        let points: Vec<[f64; 3]> = flat.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
+        let points: Vec<[f64; 3]> = flat.as_chunks::<3>().0.iter().map(|c| [c[0], c[1], c[2]]).collect();
         // The tiny track survives decimation whole: 3 in, 3 out.
         assert_eq!(points.len(), 3);
         let expect = [[48.0000, 7.8200, 236.0], [48.0005, 7.8230, 241.0], [48.0002, 7.8265, 249.5]];

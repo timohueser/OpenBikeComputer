@@ -573,7 +573,7 @@ mod tests {
         let mut preview = MapPreview::open(MAP.to_vec(), &schema, &day_skin).expect("default opens");
         let day = preview.frame().to_vec();
         assert_eq!(day.len(), (FRAME_W * FRAME_H * 4) as usize);
-        assert!(day.chunks_exact(4).all(|px| px[3] == 0xFF));
+        assert!(day.as_chunks::<4>().0.iter().all(|px| px[3] == 0xFF));
 
         preview.set_skin(&dusk_skin).expect("dusk restamps");
         let dusk = preview.frame().to_vec();
@@ -745,7 +745,7 @@ mod tests {
 
     fn non_modal_pixels(rgba: &[u8]) -> usize {
         let mut counts = std::collections::HashMap::<[u8; 3], usize>::new();
-        for pixel in rgba.chunks_exact(4) {
+        for pixel in rgba.as_chunks::<4>().0 {
             *counts.entry([pixel[0], pixel[1], pixel[2]]).or_default() += 1;
         }
         let modal = counts.values().copied().max().unwrap_or(0);
@@ -768,7 +768,7 @@ mod tests {
         preview.set_meters_per_pixel(5.0);
         let pixels = preview.frame();
         assert_eq!(pixels.len(), (240 * 320 * 4) as usize);
-        assert!(pixels.chunks_exact(4).all(|pixel| pixel[3] == 0xff));
+        assert!(pixels.as_chunks::<4>().0.iter().all(|pixel| pixel[3] == 0xff));
         let stats = preview.stats();
         assert_eq!(stats.lod, 11);
         assert!(stats.features_drawn <= obc_render::MAX_SPANS);

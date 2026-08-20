@@ -337,7 +337,7 @@ impl<'a> NavNodeRef<'a> {
     #[inline]
     pub fn neighbors(&self) -> impl Iterator<Item = NavNeighbor> + 'a {
         let (base_lat, base_lon) = (self.lat, self.lon);
-        self.neighbors.chunks_exact(NAV_NEIGHBOR_LEN).map(move |e| NavNeighbor {
+        self.neighbors.as_chunks::<NAV_NEIGHBOR_LEN>().0.iter().map(move |e| NavNeighbor {
             id: rd_u32(e, 0),
             lat: base_lat.wrapping_add(rd_i16(e, 4) as i32),
             lon: base_lon.wrapping_add(rd_i16(e, 6) as i32),
@@ -518,7 +518,7 @@ impl<'a> Reader<'a> {
         }
         points.push((anchor_lon, anchor_lat)).ok()?;
         let (mut lat, mut lon) = (anchor_lat, anchor_lon);
-        for pair in chunk[within + NAV_EDGE_FIXED_LEN..within + rec_len].chunks_exact(4) {
+        for pair in chunk[within + NAV_EDGE_FIXED_LEN..within + rec_len].as_chunks::<4>().0 {
             lat = lat.wrapping_add(rd_i16(pair, 0) as i32);
             lon = lon.wrapping_add(rd_i16(pair, 2) as i32);
             points.push((lon, lat)).ok()?;
@@ -644,7 +644,7 @@ impl<'a> Reader<'a> {
                     };
                     local[..dir.chunk_size].copy_from_slice(chunk);
                 }
-                for rec in local[..dir.chunk_size].chunks_exact(NAV_SNAP_RECORD_LEN) {
+                for rec in local[..dir.chunk_size].as_chunks::<NAV_SNAP_RECORD_LEN>().0 {
                     let edge_id = rd_u32(rec, 8);
                     if edge_id == u32::MAX {
                         break;
@@ -755,7 +755,7 @@ impl<'a> Reader<'a> {
         emit(from.coord);
         if forward {
             let mut point = anchor;
-            for (i, pair) in deltas.chunks_exact(4).enumerate() {
+            for (i, pair) in deltas.as_chunks::<4>().0.iter().enumerate() {
                 point = step(point, pair);
                 let vertex = i + 1;
                 if vertex > from.segment as usize && vertex <= to.segment as usize {
@@ -764,10 +764,10 @@ impl<'a> Reader<'a> {
             }
         } else {
             let mut point = anchor;
-            for pair in deltas.chunks_exact(4) {
+            for pair in deltas.as_chunks::<4>().0 {
                 point = step(point, pair);
             }
-            for (i, pair) in deltas.chunks_exact(4).enumerate().rev() {
+            for (i, pair) in deltas.as_chunks::<4>().0.iter().enumerate().rev() {
                 point = (
                     point.0.wrapping_sub(i16::from_le_bytes([pair[2], pair[3]]) as i32),
                     point.1.wrapping_sub(i16::from_le_bytes([pair[0], pair[1]]) as i32),
@@ -820,7 +820,7 @@ impl<'a> Reader<'a> {
         let mut best_distance = f32::INFINITY;
         let mut best_along = 0.0f32;
         let mut best_position = NavEdgePosition { segment: 0, fraction: 0, coord: anchor };
-        for (i, pair) in deltas.chunks_exact(4).enumerate() {
+        for (i, pair) in deltas.as_chunks::<4>().0.iter().enumerate() {
             let b = step(a, pair);
             let (t, distance) = project_to_nav_segment(a, b, p, cl);
             let segment_m = ground_dist_m_cl(a, b, cl);
@@ -946,7 +946,7 @@ impl<'a> Reader<'a> {
             // Forward: the record already runs `start → …`.
             let mut p = anchor;
             emit(p);
-            for pair in deltas.chunks_exact(4) {
+            for pair in deltas.as_chunks::<4>().0 {
                 p = step(p, pair);
                 emit(p);
             }
@@ -954,7 +954,7 @@ impl<'a> Reader<'a> {
         }
         // Maybe reversed: forward-sum the deltas for the `b` endpoint…
         let mut p = anchor;
-        for pair in deltas.chunks_exact(4) {
+        for pair in deltas.as_chunks::<4>().0 {
             p = step(p, pair);
         }
         if p != start {
@@ -962,7 +962,7 @@ impl<'a> Reader<'a> {
         }
         // …then walk them backward, undoing one delta per point.
         emit(p);
-        for pair in deltas.chunks_exact(4).rev() {
+        for pair in deltas.as_chunks::<4>().0.iter().rev() {
             p = (p.0.wrapping_sub(rd_i16(pair, 2) as i32), p.1.wrapping_sub(rd_i16(pair, 0) as i32));
             emit(p);
         }

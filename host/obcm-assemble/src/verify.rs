@@ -223,7 +223,7 @@ fn check_offset_table(
         Error::Verify(format!("LOD {i}: chunk size {} does not round to a unit boundary", lod.chunk_size))
     })?;
     let mut prev = 0u32;
-    for (k, w) in raw.chunks_exact(4).enumerate() {
+    for (k, w) in raw.as_chunks::<4>().0.iter().enumerate() {
         let v = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
         if k == 0 {
             if v != 0 {
