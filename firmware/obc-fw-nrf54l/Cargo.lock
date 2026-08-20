@@ -1357,6 +1357,7 @@ dependencies = [
  "embassy-sync",
  "embassy-time",
  "embassy-usb",
+ "embassy-usb-synopsys-otg",
  "embedded-graphics",
  "embedded-sdmmc",
  "embedded-storage",

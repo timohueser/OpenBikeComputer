@@ -121,9 +121,13 @@ impl RecordReader {
                 }
             }
             let at = self.frames.read_offset(self.buf, self.armed);
+            let probe_started = embassy_time::Instant::now();
             match self.ep.read(&mut self.buf[at..]).await {
                 Ok(0) => {}
-                Ok(n) => self.frames.filled(n),
+                Ok(n) => {
+                    crate::upload_probe::ep_read(n, probe_started);
+                    self.frames.filled(n);
+                }
                 Err(EndpointError::Disabled) => return Err(RecordEnd::LinkDown),
                 Err(e) => {
                     // Not a disable — a driver-level failure with the endpoint still up. The driver

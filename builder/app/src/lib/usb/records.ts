@@ -9,7 +9,7 @@
  *
  * The v1 envelope this replaces assumed one USB transfer was one frame, so a control message that
  * reached the endpoint's max packet size was a protocol error the host refused to send. Under v4 a
- * 4,112-byte device→host record is nine 512-byte packets on a high-speed endpoint, and there is no
+ * 8,208-byte device→host record spans seventeen 512-byte packets on a high-speed endpoint, and there is no
  * length in a packet to tell the reader which one ends the record. So {@link RecordChannel} keeps a
  * buffer and re-reads its own prefix, and {@link frameRecord} is the only thing that ever writes
  * one.
@@ -34,13 +34,12 @@ import { PipeError, throwIfAborted, type BytePipe } from "./pipe";
 export const RECORD_PREFIX_LEN = 2;
 
 /**
- * Device → host, either channel: §3.8's 16-byte stream frame plus 4,096 payload bytes — one whole
- * card write. It is also the `LIST` page ceiling, which makes a page 46 entries.
+ * Device → host, either channel: §3.8's 16-byte stream frame plus 8,192 payload bytes.
  */
-export const MAX_DEVICE_RECORD = 4112;
+export const MAX_DEVICE_RECORD = 8208;
 
 /** Host → device, stream channel: the same number, so a client frames both directions alike. */
-export const MAX_HOST_STREAM_RECORD = 4112;
+export const MAX_HOST_STREAM_RECORD = 8208;
 
 /**
  * Host → device, control channel. §3's largest request is the 100-byte `PUT`; the device sizes this

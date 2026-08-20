@@ -127,6 +127,7 @@ impl BlockDevice for FlatCard {
     fn read(&self, lba: u64, buf: &mut [u8]) -> Result<(), SemmcError> {
         let start = FlatCard::lba(lba)?;
         let addr = buf.as_ptr() as usize;
+        let probe_started = embassy_time::Instant::now();
         #[cfg(feature = "sd-bench")]
         let blocks = buf.len() / BLOCK_BYTES;
         #[cfg(feature = "sd-bench")]
@@ -155,6 +156,7 @@ impl BlockDevice for FlatCard {
         })?;
         #[cfg(feature = "sd-bench")]
         crate::card_io::note_read_perf(bench_started, addr, blocks);
+        crate::upload_probe::read(buf.len(), probe_started);
         result
     }
 
@@ -166,11 +168,20 @@ impl BlockDevice for FlatCard {
             // start this one, and return while the card runs; the engine can then receive, CRC and
             // fill the disjoint half. Generic callers are synchronous as before.
             if addr.is_multiple_of(4) && crate::arena::usb_stage_contains(addr, buf.len()) {
+                let probe_started = embassy_time::Instant::now();
                 sd.finish_write_blocks()?;
+                let finished = embassy_time::Instant::now();
                 // SAFETY: the arena gate retains both halves for the transfer, and the engine does
                 // not reuse this half until the next staged write has joined it here.
-                return unsafe { sd.start_write_blocks(start, buf) };
+                let result = unsafe { sd.start_write_blocks(start, buf) };
+                crate::upload_probe::staged_write(
+                    buf.len(),
+                    (finished - probe_started).as_micros() as u32,
+                    finished.elapsed().as_micros() as u32,
+                );
+                return result;
             }
+            crate::upload_probe::other_write(buf.len());
             sd.finish_write_blocks()?;
             if addr.is_multiple_of(4) {
                 return sd.write_blocks(start, buf);
@@ -473,6 +484,9 @@ pub(crate) enum Request {
     Stream { link: Link, record: &'static [u8], out: &'static mut [u8] },
     /// A USB stream record whose upload owns the arena's double 64 KiB stage.
     StreamStaged { record: &'static [u8], out: &'static mut [u8] },
+    /// One arena-local USB map batch. Records were validated and packed by the cable adapter; the
+    /// engine rechecks ownership and continuity before issuing the single media write.
+    StreamStagedBatch { request: RequestId, offset: u64, len: usize, out: &'static mut [u8] },
     /// Join any card DMA that still borrows the USB arena before its guard is released.
     FinishUsbStage,
     /// Pump the engine once — a live `GET`'s next record, or an error owed to a dropped transfer.
@@ -527,8 +541,8 @@ pub(crate) enum Outcome {
     },
     /// The live transfer's `RequestId`, or `None` when the engine is idle.
     Live(Option<RequestId>),
-    /// Answer to [`Request::UsbMapUpload`].
-    UsbMap(bool),
+    /// Declared payload length when [`Request::UsbMapUpload`] names the live cable map upload.
+    UsbMap(Option<u64>),
 }
 
 /// The caller's half of one round trip: the answer, **tagged with the request it answers**.
@@ -636,6 +650,24 @@ impl Writer {
     pub(crate) async fn call(&self, request: Request, reply: &'static Reply) -> Result<Outcome, StoreError> {
         let tag = NEXT_TAG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         self.requests.send(Job { request, reply, tag }).await;
+        self.result(tag, reply).await
+    }
+
+    /// Enqueue one call and return without waiting for the answer. The awaited half is
+    /// [`Writer::finish_call`]; between the two the reply slot and whatever the request borrows are
+    /// committed to this call. The USB adapter's deferred mid-upload batch is the one caller.
+    pub(crate) async fn begin_call(&self, request: Request, reply: &'static Reply) -> Ticket {
+        let tag = NEXT_TAG.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        self.requests.send(Job { request, reply, tag }).await;
+        Ticket(tag)
+    }
+
+    /// Wait for a [`Writer::begin_call`]'s answer.
+    pub(crate) async fn finish_call(&self, ticket: Ticket, reply: &'static Reply) -> Result<Outcome, StoreError> {
+        self.result(ticket.0, reply).await
+    }
+
+    async fn result(&self, tag: u32, reply: &'static Reply) -> Result<Outcome, StoreError> {
         loop {
             let (answered, outcome) = reply.wait().await;
             if answered == tag {
@@ -745,6 +777,37 @@ impl Lane {
             // gone only if that stopped being true. Report rather than panic: these are link tasks.
             _ => {
                 defmt::warn!("flat/v4: [{}] the engine answered a record with the wrong shape — lane closed", self.who);
+                None
+            }
+        }
+    }
+
+    /// Hand one request to the engine **without waiting for its answer**.
+    ///
+    /// The buffer travels with the request, so until [`Lane::collect`] takes it back this lane can
+    /// make no other call — the caller owns that sequencing. The USB adapter uses the pair to keep
+    /// receiving stream records while a mid-upload card batch is being served: the enqueue itself
+    /// never blocks in practice ([`REQUEST_QUEUE`] is sized to the sender census), so the await
+    /// here is queue admission, not storage work.
+    pub(crate) async fn call_deferred(
+        &mut self,
+        writer: &Writer,
+        make: impl FnOnce(&'static mut [u8]) -> Request,
+    ) -> Option<Ticket> {
+        let out = self.out.take()?;
+        Some(writer.begin_call(make(out), self.reply).await)
+    }
+
+    /// Take a deferred call's answer and the buffer back. The reaction's bytes are in this lane's
+    /// buffer exactly as after [`Lane::call`], so [`Lane::sent`] serves them unchanged.
+    pub(crate) async fn collect(&mut self, writer: &Writer, ticket: Ticket) -> Option<Reaction> {
+        match writer.finish_call(ticket, self.reply).await {
+            Ok(Outcome::Reacted { reaction, out }) => {
+                self.out = Some(out);
+                Some(reaction)
+            }
+            _ => {
+                defmt::warn!("flat/v4: [{}] the engine answered a batch with the wrong shape — lane closed", self.who);
                 None
             }
         }
@@ -1090,6 +1153,23 @@ fn serve(
             publish_upload(engine);
             Ok(Outcome::Reacted { reaction, out })
         }
+        Request::StreamStagedBatch { request, offset, len, out } => {
+            let probe_started = embassy_time::Instant::now();
+            let reaction = engine
+                .upload_stage_bank()
+                .and_then(|bank| {
+                    crate::arena::with_usb_stage_bank(bank, |stage| {
+                        engine.on_usb_map_batch(store, policy, request, offset, len, &mut *out, bank, stage)
+                    })
+                })
+                .unwrap_or_else(|| {
+                    engine.on_link_lost(Link::Usb, store);
+                    Reaction::Close(obc_link::flat::Channel::Stream)
+                });
+            crate::upload_probe::batch_served(probe_started);
+            publish_upload(engine);
+            Ok(Outcome::Reacted { reaction, out })
+        }
         Request::FinishUsbStage => {
             crate::flpr_mux::with_storage(|sd| sd.finish_write_blocks())
                 .map_err(|_| StoreError::Media)?
@@ -1135,7 +1215,7 @@ fn serve(
         }
         Request::LiveTransfer => Ok(Outcome::Live(engine.live_transfer())),
         Request::UsbMapUpload { request } => {
-            Ok(Outcome::UsbMap(engine.upload_matches(Link::Usb, request, obc_link::flat::ObjectKind::MapShard)))
+            Ok(Outcome::UsbMap(engine.upload_declared_len(Link::Usb, request, obc_link::flat::ObjectKind::MapShard)))
         }
     }
 }

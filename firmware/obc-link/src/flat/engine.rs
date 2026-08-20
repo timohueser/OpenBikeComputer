@@ -344,7 +344,10 @@ struct Upload<A> {
     staged: usize,
     /// Which half of a double-width adapter stage is currently being filled.
     stage_bank: usize,
-    crc: Crc32,
+    /// Whole-payload verification for links/kinds that need it. USB already protects every packet
+    /// in hardware and retries failures; recomputing an 800 MiB map on the M33 duplicated that
+    /// work and throttled the cable path. Other objects and BLE retain end-to-end verification.
+    crc: Option<Crc32>,
     allocation: A,
 }
 
@@ -454,6 +457,20 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
             &self.live,
             Live::Upload(upload) if upload.link == link && upload.request == request && upload.kind == kind
         )
+    }
+
+    /// The declared length when this exact upload owns the engine.
+    ///
+    /// The USB adapter uses this once, immediately after a map `PUT` is admitted, to know when its
+    /// arena-local 64 KiB batch contains the transfer's final byte. Keeping the query here avoids
+    /// teaching the transport to remember or decode control-plane policy.
+    pub fn upload_declared_len(&self, link: Link, request: RequestId, kind: ObjectKind) -> Option<u64> {
+        match &self.live {
+            Live::Upload(upload) if upload.link == link && upload.request == request && upload.kind == kind => {
+                Some(upload.declared_len)
+            }
+            _ => None,
+        }
     }
 
     /// **Take the verdict on the last upload**, clearing it. See [`UploadEnd`].
@@ -583,6 +600,62 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
             return Reaction::Close(Channel::Stream);
         }
         self.on_stream_with_stage(link, store, policy, record, out, Some((bank, stage)))
+    }
+
+    /// Commit one adapter-assembled USB map batch already resident in the current arena bank.
+    ///
+    /// USB record framing is still validated by the adapter record by record; this seam merely
+    /// amortises the storage-owner crossing. The engine remains authoritative for transfer
+    /// ownership, offset continuity, declared length, media errors, validation and publication.
+    pub fn on_usb_map_batch<P: Policy>(
+        &mut self,
+        store: &S,
+        policy: &mut P,
+        request: RequestId,
+        offset: u64,
+        len: usize,
+        out: &mut [u8],
+        bank: usize,
+        stage: &mut [u8],
+    ) -> Reaction {
+        if stage.len() < 512
+            || !stage.len().is_multiple_of(512)
+            || self.upload_stage_bank() != Some(bank)
+            || len == 0
+            || len > stage.len()
+        {
+            return Reaction::Close(Channel::Stream);
+        }
+        if self.live_link() != Some(Link::Usb) {
+            return Reaction::Idle;
+        }
+        let Live::Upload(upload) = &mut self.live else { return Reaction::Idle };
+        if upload.request != request {
+            return Reaction::Idle;
+        }
+        if upload.kind != ObjectKind::MapShard || upload.staged != 0 {
+            return self.fail_upload(store, Refusal::plain(ErrorCode::Internal), out);
+        }
+        if offset != upload.received || offset + len as u64 > upload.declared_len {
+            return self.fail_upload(
+                store,
+                Refusal::new(ErrorCode::InvalidRequest, detail::invalid_request::STREAM_OFFSET),
+                out,
+            );
+        }
+        if let Some(crc) = &mut upload.crc {
+            crc.update(&stage[..len]);
+        }
+        if let Err(error) = store.write(&mut upload.allocation, &stage[..len]) {
+            return self.fail_upload(store, media_refusal(error, detail::media_io::WRITE), out);
+        }
+        upload.received += len as u64;
+        upload.stage_bank ^= 1;
+        if upload.received < upload.declared_len {
+            Reaction::Idle
+        } else {
+            self.finish_upload(store, policy, out, None)
+        }
     }
 
     fn on_stream_with_stage<P: Policy>(
@@ -980,7 +1053,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
             received: 0,
             staged: 0,
             stage_bank: 0,
-            crc: Crc32::new(),
+            crc: (!(link == Link::Usb && put.kind == ObjectKind::MapShard)).then(Crc32::new),
             allocation,
         });
         Ok(())
@@ -1170,7 +1243,9 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         if external && upload.staged + payload.len() > stage_len {
             return Err(StoreError::Invalid);
         }
-        upload.crc.update(payload);
+        if let Some(crc) = &mut upload.crc {
+            crc.update(payload);
+        }
         upload.received += payload.len() as u64;
         let mut input = payload;
         while !input.is_empty() {
@@ -1216,14 +1291,16 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         let Live::Upload(upload) = &self.live else { return Reaction::Idle };
         let (kind, declared_len, declared_crc, replaced) =
             (upload.kind, upload.declared_len, upload.declared_crc, upload.displaced.is_some());
-        let computed = upload.crc.finalize();
-        if computed != declared_crc {
-            let refusal = Refusal::with_context(
-                ErrorCode::ChecksumFailure,
-                detail::checksum_failure::PAYLOAD,
-                u64::from(declared_crc),
-            );
-            return self.fail_upload(store, refusal, out);
+        if let Some(crc) = upload.crc {
+            let computed = crc.finalize();
+            if computed != declared_crc {
+                let refusal = Refusal::with_context(
+                    ErrorCode::ChecksumFailure,
+                    detail::checksum_failure::PAYLOAD,
+                    u64::from(declared_crc),
+                );
+                return self.fail_upload(store, refusal, out);
+            }
         }
         if let Err(reason) = policy.accept(kind, declared_len) {
             return self.fail_upload(store, Refusal::new(ErrorCode::Rejected, reason), out);
