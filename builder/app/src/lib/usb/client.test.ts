@@ -14,7 +14,7 @@
 import { describe, expect, it } from "vitest";
 
 import { Crc32 } from "./crc32";
-import { DeviceError, FlatStoreClient, bytesSource } from "./client";
+import { DeviceError, FlatStoreClient, blobSource, bytesSource } from "./client";
 import { MockDevice, REFERENCE_STORE_ID, loopbackDevice, loopbackLink } from "./loopback";
 import { RecordChannel, MAX_DEVICE_RECORD, MAX_HOST_CONTROL_RECORD, MAX_HOST_STREAM_RECORD } from "./records";
 import {
@@ -46,6 +46,58 @@ async function withDevice<T>(
         expect(rig.device.faults, "the mock device recorded a non-transport fault").toEqual([]);
     }
 }
+
+describe("Blob sources", () => {
+    it("reports the CRC pass and can cancel a pending Blob read", async () => {
+        const controller = new AbortController();
+        let releaseStarted!: () => void;
+        const started = new Promise<void>((resolve) => (releaseStarted = resolve));
+        let cancelled: unknown;
+        let pulls = 0;
+        const blob = {
+            size: 2,
+            stream: () =>
+                new ReadableStream<Uint8Array>({
+                    pull(stream) {
+                        if (pulls++ === 0) stream.enqueue(Uint8Array.of(7));
+                        // The second read deliberately remains pending until
+                        // AbortSignal makes blobSource cancel its reader.
+                    },
+                    cancel(reason) {
+                        cancelled = reason;
+                    },
+                }),
+        } as Blob;
+        const progress: Array<[number, number]> = [];
+        const source = blobSource(blob, {
+            signal: controller.signal,
+            onProgress(done, total) {
+                progress.push([done, total]);
+                releaseStarted();
+            },
+        });
+
+        await started;
+        const reason = new DOMException("cancelled", "AbortError");
+        controller.abort(reason);
+
+        await expect(source).rejects.toBe(reason);
+        expect(cancelled).toBe(reason);
+        expect(progress).toEqual([[1, 2]]);
+    });
+
+    it("reports the complete CRC pass before yielding a reusable source", async () => {
+        const blob = new Blob([payload(200_000) as unknown as BlobPart]);
+        const progress: Array<[number, number]> = [];
+        const source = await blobSource(blob, {
+            onProgress: (done, total) => progress.push([done, total]),
+        });
+
+        expect(progress.length).toBeGreaterThan(0);
+        expect(progress.at(-1)).toEqual([blob.size, blob.size]);
+        expect(source.totalLen).toBe(blob.size);
+    });
+});
 
 // ------------------------------------------------------------------- identity
 

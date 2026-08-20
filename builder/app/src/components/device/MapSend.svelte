@@ -12,6 +12,7 @@
   and a stale one by the time the last byte arrives.
 -->
 <script lang="ts">
+    import { onDestroy } from "svelte";
     import { DeviceJob } from "../../lib/device/job.svelte";
     import { sendMapFile, type SendAssembledMap } from "../../lib/device/write";
     import type { Ledger } from "../../lib/catalog/ledger";
@@ -22,13 +23,16 @@
         client,
         ledger = null,
         sendAssembled = null,
+        sendReady = false,
     }: {
         client: FlatStoreClient;
         ledger?: Ledger | null;
         sendAssembled?: SendAssembledMap | null;
+        sendReady?: boolean;
     } = $props();
 
     const job = new DeviceJob("map");
+    onDestroy(() => job.cancel());
     let picker = $state<HTMLInputElement>();
 
     async function sendFile(file: File) {
@@ -63,7 +67,7 @@
             <button
                 type="button"
                 class="btn primary"
-                disabled={job.running || !ledger.isFinal}
+                disabled={job.running || !sendReady}
                 onclick={() => void sendSelection(send)}
             >
                 Assemble &amp; send map

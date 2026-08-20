@@ -94,6 +94,8 @@ export class DeviceJob {
         try {
             const value = await task({
                 signal: controller.signal,
+                cancel: (reason) =>
+                    controller.abort(reason ?? new DOMException("cancelled by the rider", "AbortError")),
                 phase: (phase, total) => {
                     this.phase = phase;
                     if (total !== undefined) {

@@ -239,17 +239,25 @@ export function bytesSource(bytes: Uint8Array): ObjectSource {
  *
  * §3.6 needs the CRC before the first byte streams and the payload cannot be re-derived from a
  * suffix, so the blob is read **twice**: once to fingerprint, once to send. That is the right trade
- * for a 200 MB regional map, where the alternative is a second 200 MB copy in the tab's heap. Blobs
- * are backed by the browser's own storage, so the second pass is cheap.
+ * for a 200 MB regional map, where the alternative is a second 200 MB JavaScript buffer. A Blob
+ * keeps its own backing-store policy opaque while this client holds only the current stream chunk.
  */
-export async function blobSource(blob: Blob): Promise<ObjectSource> {
+export async function blobSource(
+    blob: Blob,
+    options: { signal?: AbortSignal; onProgress?: (done: number, total: number) => void } = {},
+): Promise<ObjectSource> {
     const crc = new Crc32();
-    for await (const chunk of streamChunks(blob.stream())) crc.update(chunk);
+    let read = 0;
+    for await (const chunk of streamChunks(blob.stream(), options.signal)) {
+        crc.update(chunk);
+        read += chunk.length;
+        options.onProgress?.(read, blob.size);
+    }
     return {
         totalLen: blob.size,
         crc32: crc.value(),
         async *chunks(chunkSize: number) {
-            for await (const chunk of streamChunks(blob.stream())) {
+            for await (const chunk of streamChunks(blob.stream(), options.signal)) {
                 for (let at = 0; at < chunk.length; at += chunkSize) {
                     yield chunk.subarray(at, Math.min(at + chunkSize, chunk.length));
                 }
@@ -258,15 +266,23 @@ export async function blobSource(blob: Blob): Promise<ObjectSource> {
     };
 }
 
-async function* streamChunks(stream: ReadableStream<Uint8Array>): AsyncGenerator<Uint8Array> {
+async function* streamChunks(
+    stream: ReadableStream<Uint8Array>,
+    signal?: AbortSignal,
+): AsyncGenerator<Uint8Array> {
     const reader = stream.getReader();
+    const onAbort = () => void reader.cancel(signal?.reason).catch(() => undefined);
+    signal?.addEventListener("abort", onAbort, { once: true });
     try {
+        signal?.throwIfAborted();
         for (;;) {
             const { done, value } = await reader.read();
+            signal?.throwIfAborted();
             if (done) return;
             if (value.length) yield value;
         }
     } finally {
+        signal?.removeEventListener("abort", onAbort);
         reader.releaseLock();
     }
 }

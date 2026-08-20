@@ -72,6 +72,7 @@ function ctx(): JobContext {
     const phases: JobPhase[] = [];
     return {
         signal: new AbortController().signal,
+        cancel() {},
         phase: (phase) => phases.push(phase),
         progress: () => undefined,
     };
