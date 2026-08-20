@@ -487,7 +487,7 @@
         const resolution = store.resolution;
         const indices = store.indices;
         const l = ledger;
-        if (!resolution || !indices || !l || running) {
+        if (!resolution || !indices || !l || !ready) {
             throw new Error("This map is not ready to assemble yet.");
         }
         // Native desktop saving still opens its output session under the click
@@ -617,7 +617,7 @@
         }
 
         phase = "assembling";
-        if (out.kind === "device") out.ctx.phase("assembling");
+        if (out.kind === "device") out.ctx.phase("assembling", 0);
         asmPhase = "open";
         const req: AssembleWorkerRequest = {
             type: "assemble",
