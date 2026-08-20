@@ -85,6 +85,13 @@ class DependencyTests(unittest.TestCase):
         self.assertEqual(len(violations), 1)
         self.assertIn("core -> host", violations[0])
 
+    def test_usb_transport_is_host_only(self):
+        production_rules = json.loads((Path(__file__).parents[1] / "dependency_rules.json").read_text())
+        self.assertEqual(
+            check_dependencies.group_index(production_rules)["obc-usb"],
+            "host",
+        )
+
     def test_forbidden_edge_has_useful_message(self):
         edges = check_dependencies.local_edges(metadata(("low", "high", None)))
         violations = check_dependencies.check_edges(edges, rules())

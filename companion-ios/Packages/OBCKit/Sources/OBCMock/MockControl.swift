@@ -74,9 +74,9 @@ public final class MockControl: @unchecked Sendable {
     /// trip delete commands landed (routes then trip, or however composed).
     private var _deletedRouteObjectIDs: [DeviceObjectID] = []
     private var _deletedTripObjectIDs: [DeviceObjectID] = []
-    /// When set, `deviceRoutes()` pads its catalog to one below the route cap so
-    /// a multi-stage fresh trip fails the whole-trip precheck **before any bytes**
-    /// (issue #657) — the storage-precheck XCUITest hook (`-OBCDeviceRoutesFull`).
+    /// When set, `deviceRoutes()` pads its catalog to the 64-route resident-menu
+    /// boundary — the flat-store/menu distinction XCUITest hook
+    /// (`-OBCDeviceRoutesFull`).
     private var _routesNearlyFull = false
     /// Every `ackRides` batch the transport sent, in order — the coordinator
     /// tests assert the connect-time possession ack lands here.
@@ -428,12 +428,13 @@ public final class MockControl: @unchecked Sendable {
                 crc32: crc32, expiresAt: expiresAt, retention: retention
             )
         }
-        // Storage-precheck hook: pad to one below the route cap so exactly one
-        // slot is free — a multi-stage fresh trip then can't fit (issue #657).
+        // Resident-menu boundary hook: pad to one below the 64-route on-device
+        // snapshot. Protocol v4 still admits fresh objects into the larger flat
+        // catalog; the trip regression proves the client does not conflate them.
         if lock.withLocked({ _routesNearlyFull }) {
             let used = Set(catalog.map(\.id.raw))
             var filler = UInt64(50_000)
-            while catalog.count < DeviceStorage.routeCapacity - 1 {
+            while catalog.count < 63 {
                 while used.contains(filler) { filler &+= 1 }
                 catalog.append(RouteCatalogEntry(
                     id: DeviceObjectID(filler), name: "On-device route \(filler)",
@@ -558,9 +559,9 @@ public final class MockControl: @unchecked Sendable {
 
     // MARK: Trips (TR8 — the device-side trip object store)
 
-    /// Whether a device holds a copy of `routesNearlyFull` — the storage-precheck
-    /// XCUITest hook. When true, `deviceRoutes()` pads its catalog so exactly one
-    /// route slot is free, forcing a multi-stage fresh trip to fail the precheck.
+    /// Whether `deviceRoutes()` pads its catalog to the 64-route resident-menu
+    /// boundary. The flat catalog remains writable; this pins that the app does
+    /// not report the menu snapshot as physical storage.
     public var routesNearlyFull: Bool {
         get { lock.withLocked { _routesNearlyFull } }
         set { lock.withLocked { _routesNearlyFull = newValue } }
@@ -629,10 +630,10 @@ public final class MockControl: @unchecked Sendable {
     }
 
     /// Begin a simulated trip upload (TR8). New trips (`targetObjectID == nil`)
-    /// take a fresh id from the trip counter; a `storageFull` reject fires at
-    /// descriptor-open when the trip catalog is at its cap (replace-by-id is
-    /// exempt, spec §7.4). On commit the device records the copy so a later
-    /// `listTrips()` reconcile keeps the badge lit.
+    /// take a fresh id from the trip counter. On commit the device records the
+    /// copy so a later `listTrips()` reconcile keeps the badge lit; explicit
+    /// failure scenarios model device `storageFull`, rather than treating the
+    /// 16-trip resident menu snapshot as an admission cap.
     func beginTripUpload(_ blob: TripBlob) -> TransferHandle {
         if connection == .disconnected { return .immediatelyFinished(.failed(.notConnected)) }
         if blob.payload.isEmpty { return .immediatelyFinished(.failed(.transferRejected)) }
@@ -646,9 +647,6 @@ public final class MockControl: @unchecked Sendable {
             let crc = CRC32.checksum(blob.payload)
             return _deviceTrips.first { $0.crc32 == crc }?.id
         }
-        // Cap check at open (new only): a full trip catalog rejects with storageFull.
-        let full = lock.withLocked { _deviceTrips.count >= DeviceStorage.tripCapacity }
-        if isNew && full && dedupID == nil { return .immediatelyFinished(.failed(.storageFull)) }
         let assignedID = AsyncPromise<DeviceObjectID?>()
         // A trip object is tiny; pace off a small design-scale minimum so the F
         // bar is still visible (the mock's realism is timing, not wire bytes).

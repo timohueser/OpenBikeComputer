@@ -14,7 +14,7 @@
 import { describe, expect, it } from "vitest";
 
 import { Crc32 } from "./crc32";
-import { DeviceError, FlatStoreClient, bytesSource } from "./client";
+import { DeviceError, FlatStoreClient, blobSource, bytesSource } from "./client";
 import { MockDevice, REFERENCE_STORE_ID, loopbackDevice, loopbackLink } from "./loopback";
 import { RecordChannel, MAX_DEVICE_RECORD, MAX_HOST_CONTROL_RECORD, MAX_HOST_STREAM_RECORD } from "./records";
 import {
@@ -46,6 +46,58 @@ async function withDevice<T>(
         expect(rig.device.faults, "the mock device recorded a non-transport fault").toEqual([]);
     }
 }
+
+describe("Blob sources", () => {
+    it("reports the CRC pass and can cancel a pending Blob read", async () => {
+        const controller = new AbortController();
+        let releaseStarted!: () => void;
+        const started = new Promise<void>((resolve) => (releaseStarted = resolve));
+        let cancelled: unknown;
+        let pulls = 0;
+        const blob = {
+            size: 2,
+            stream: () =>
+                new ReadableStream<Uint8Array>({
+                    pull(stream) {
+                        if (pulls++ === 0) stream.enqueue(Uint8Array.of(7));
+                        // The second read deliberately remains pending until
+                        // AbortSignal makes blobSource cancel its reader.
+                    },
+                    cancel(reason) {
+                        cancelled = reason;
+                    },
+                }),
+        } as Blob;
+        const progress: Array<[number, number]> = [];
+        const source = blobSource(blob, {
+            signal: controller.signal,
+            onProgress(done, total) {
+                progress.push([done, total]);
+                releaseStarted();
+            },
+        });
+
+        await started;
+        const reason = new DOMException("cancelled", "AbortError");
+        controller.abort(reason);
+
+        await expect(source).rejects.toBe(reason);
+        expect(cancelled).toBe(reason);
+        expect(progress).toEqual([[1, 2]]);
+    });
+
+    it("reports the complete CRC pass before yielding a reusable source", async () => {
+        const blob = new Blob([payload(200_000) as unknown as BlobPart]);
+        const progress: Array<[number, number]> = [];
+        const source = await blobSource(blob, {
+            onProgress: (done, total) => progress.push([done, total]),
+        });
+
+        expect(progress.length).toBeGreaterThan(0);
+        expect(progress.at(-1)).toEqual([blob.size, blob.size]);
+        expect(source.totalLen).toBe(blob.size);
+    });
+});
 
 // ------------------------------------------------------------------- identity
 
@@ -80,6 +132,37 @@ describe("what a connection learns before anything else", () => {
             expect(page.commitSequence).toBe(7n);
             expect(page.entries).toEqual([]);
             expect(page.more).toBe(false);
+        });
+    });
+});
+
+// ----------------------------------------------------------------- FORMAT
+
+describe("FORMAT", () => {
+    it("erases the catalog and starts the replacement store era", async () => {
+        await withDevice({ storeId: REFERENCE_STORE_ID, commitSequence: 7n }, async ({ client, device }) => {
+            device.seed({ kind: ObjectKind.Route, displayName: "erase me", bytes: payload(64) });
+            const replacement = "2a7b16c4903145d8a6e2730fb94c5811";
+            await expect(client.format(REFERENCE_STORE_ID, { replacementStoreId: replacement })).resolves.toEqual({
+                storeId: replacement,
+            });
+            expect(device.entries).toEqual([]);
+            expect(device.requestLog.at(-1)?.opcode).toBe(Opcode.Format);
+            const page = await client.listPage({});
+            expect(page.storeId).toBe(replacement);
+            expect(page.commitSequence).toBe(1n);
+        });
+    });
+
+    it("does not erase a card whose identity changed under the confirmation", async () => {
+        await withDevice({ storeId: REFERENCE_STORE_ID }, async ({ client, device }) => {
+            device.seed({ kind: ObjectKind.Route, displayName: "keep me", bytes: payload(16) });
+            await expect(
+                client.format("11111111111111111111111111111111", {
+                    replacementStoreId: "2a7b16c4903145d8a6e2730fb94c5811",
+                }),
+            ).rejects.toMatchObject({ code: "invalid-request" });
+            expect(device.entries).toHaveLength(1);
         });
     });
 });

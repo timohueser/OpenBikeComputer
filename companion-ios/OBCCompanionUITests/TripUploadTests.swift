@@ -4,7 +4,7 @@ import XCTest
 /// against the `trips` fixture. The queue-planner, adoption, and reconcile logic
 /// are host-tested (`TripUploadModelTests` / `TripReconcileModelTests`); this
 /// proves the wiring — Upload trip → queued sheet → done, the interrupt/resume
-/// framing, the storage-precheck failure, and delete-trip-&-routes.
+/// framing, the resident-menu/storage boundary, and delete-trip-&-routes.
 final class TripUploadTests: XCTestCase {
     override func setUp() {
         super.setUp()
@@ -107,25 +107,22 @@ final class TripUploadTests: XCTestCase {
         app.buttons["tripUpload.done"].tap()
     }
 
-    // MARK: Storage precheck (fails before any bytes)
+    // MARK: Resident menu capacity is not storage capacity
 
-    /// The device is nearly full — the precheck fails upfront with the storage
-    /// guidance, never a partial upload.
+    /// A route catalog at the 64-route resident-menu boundary still uploads: the
+    /// flat store's 1,916-entry catalog is the admission authority.
     @MainActor
-    func testWholeTripUploadStoragePrecheckFailure() {
+    func testWholeTripUploadPastResidentMenuBoundary() {
         let app = launch(extraArgs: ["-OBCDeviceRoutesFull"])
         openTrip(app)
         app.buttons["trip.upload"].tap()
-        confirmTripUpload(app)  // the precheck runs on the confirm tap (epic #638)
+        confirmTripUpload(app)
 
         XCTAssertTrue(
-            app.staticTexts["tripUpload.failedTitle"].waitForExistence(timeout: 10),
-            "precheck failure card missing")
-        XCTAssertTrue(
-            app.staticTexts["Device storage full"].exists,
-            "storage-full title missing")
-        snap(app, "TR8-trip-upload-precheck-fail")
-        app.buttons["tripUpload.close"].tap()
+            app.staticTexts["tripUpload.doneTitle"].waitForExistence(timeout: 20),
+            "trip upload was incorrectly rejected at the menu boundary")
+        snap(app, "TR8-trip-upload-menu-boundary")
+        app.buttons["tripUpload.done"].tap()
     }
 
     // MARK: Delete trip & routes while connected

@@ -54,7 +54,7 @@
  */
 
 import { PipeError, withAbort, type BytePipe, type DeviceLink } from "../usb/pipe";
-import { DeviceError, FlatStoreClient, type ClientOptions } from "../usb/client";
+import { DeviceError, FlatStoreClient, isFormatRecoveryState, type ClientOptions } from "../usb/client";
 import type { DeviceInfo } from "../usb/records";
 import type { DeviceState, DeviceWatcher } from "../usb/session";
 import { Channel } from "@tauri-apps/api/core";
@@ -492,7 +492,14 @@ export class NativeWatcher implements DeviceWatcher {
             // Then `LIST`, which §3 says every client issues before anything else and which is where
             // the store's identity and cache freshness come from. The wire major is not read at all:
             // §5.2 settles it by descriptor matching, and this host claimed the interface already.
-            const page = await client.listPage({});
+            let store: DeviceState["store"];
+            try {
+                const page = await client.listPage({});
+                store = { storeId: page.storeId, commitSequence: page.commitSequence };
+            } catch (cause) {
+                if (!isFormatRecoveryState(cause)) throw cause;
+                store = null;
+            }
             if (!this.owns(token)) {
                 // A newer flow (or a disconnect) took the state while this handshake ran. The
                 // connection itself is real, so it must be closed, not dropped — see the section
@@ -504,7 +511,7 @@ export class NativeWatcher implements DeviceWatcher {
             this.publish({
                 status: "ready",
                 client,
-                store: { storeId: page.storeId, commitSequence: page.commitSequence },
+                store,
                 info,
                 error: null,
             });

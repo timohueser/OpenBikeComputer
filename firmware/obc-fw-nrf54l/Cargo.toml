@@ -79,6 +79,12 @@ com-hw = []
 # table costs them no flash or RAM. See `firmware/docs/ARCHITECTURE_RESOURCE_BASELINE.md`.
 resource-report = []
 
+# Destructive maintenance mode for `flat_store_bench` only. It initializes one
+# empty flat store and parks before the benchmark's 1,025-entry `fs4-ladder`
+# corpus is created. The explicit feature + explicit binary name make a reset a
+# command the operator has to spell out; it is never part of a shipping image.
+flat-store-reset = []
+
 # The on-glass harness for the WX3 Weather Request discovery spike (#1188). When enabled, boot
 # raises one weather-request advertising intent so the iOS background-discovery states can be
 # measured without the rest of the weather lifecycle existing. The intent is cleared by the first
@@ -182,7 +188,7 @@ obc-storage = { path = "../obc-storage" }
 # `ClaimIntent`, `ObjectKind` and the identity types. Transport-free and storage-free by
 # construction, so this is a foundation dependency and not a second link stack — the only consumer
 # today is the `obc2_store_bench` binary (#1359); the live v1 link path is untouched.
-obc-link = { path = "../obc-link" }
+obc-link = { path = "../obc-link", features = ["fast-crc"] }
 obc-crc = { path = "../obc-crc" }
 # Shared no_std OBCW reader/cache and deterministic generation selector. The board supplies only
 # the flat-store adapter; no provider, UI or BLE policy enters this edge.

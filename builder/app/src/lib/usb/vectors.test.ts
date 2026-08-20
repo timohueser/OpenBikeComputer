@@ -42,6 +42,8 @@ import {
     encodeCancelRequest,
     encodeCancelResponse,
     encodeErrorResponse,
+    encodeFormatRequest,
+    encodeFormatResponse,
     encodeGetRequest,
     encodeGetResponse,
     encodeListRequest,
@@ -79,7 +81,7 @@ const SUITE = join(repoRoot(), "specs/vectors/flat-store-v4");
  * The manifest's own digest. Re-pin this **deliberately**, in the same commit that changes a
  * fixture and for the same stated reason — never because a test went red.
  */
-const MANIFEST_SHA256 = "f4c7aaf3270893e42ca4170e268ccb0dc9d0a1480aa08fbafa9fc4fe710c29b8";
+const MANIFEST_SHA256 = "800d0c4329a40c58550b373dd7c48cc13f40385fcc1a5281cb84b2a30fb00b90";
 const read = (relative: string): string => readFileSync(join(SUITE, relative), "utf8");
 
 interface ManifestRow {
@@ -242,6 +244,8 @@ function reencodeRequest(decoded: DecodedRequest): Uint8Array {
             return encodeCancelRequest(requestId, request.body);
         case Opcode.Arm:
             return encodeArmRequest(requestId, request.body);
+        case Opcode.Format:
+            return encodeFormatRequest(requestId, request.body);
     }
 }
 
@@ -262,6 +266,8 @@ function reencodeResponse(requestId: number, response: Response): Uint8Array {
             return encodeCancelResponse(requestId, response.body.cancelled);
         case Opcode.Arm:
             return encodeArmResponse(requestId, response.body);
+        case Opcode.Format:
+            return encodeFormatResponse(requestId, response.body.storeId);
     }
 }
 
@@ -301,6 +307,11 @@ function semanticRequest(request: Request): Record<string, unknown> {
             return {
                 packageObjectId: String(request.body.packageObjectId),
                 expectedRevision: String(request.body.expectedRevision),
+            };
+        case Opcode.Format:
+            return {
+                expectedStoreId: request.body.expectedStoreId,
+                replacementStoreId: request.body.replacementStoreId,
             };
     }
 }
@@ -344,6 +355,8 @@ function semanticResponse(response: Response): Record<string, unknown> {
                 rollbackObjectId: String(response.body.rollbackObjectId),
                 commitSequence: String(response.body.commitSequence),
             };
+        case Opcode.Format:
+            return { storeId: response.body.storeId };
     }
 }
 
@@ -371,7 +384,7 @@ describe("control vectors decode and re-encode byte for byte", () => {
         expectSameBytes(reencodeResponse(decoded.requestId, decoded.response), bytes, vector.name);
     });
 
-    it("reads §3.10's LIST page as two entries in catalog order", () => {
+    it("reads §3.11's LIST page as two entries in catalog order", () => {
         const row = MANIFEST.controls.find((r) => r.name === "list-response-two-entries");
         if (!row) throw new Error("the manifest no longer lists list-response-two-entries");
         const vector = fixture<ControlFixture>(row);

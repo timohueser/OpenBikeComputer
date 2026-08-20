@@ -47,10 +47,12 @@ describe("the hosts as a set", () => {
     });
 
     it("borrows the browser's USB stack only where there is nothing else", () => {
-        // Which transport `device()` uses, not whether it has one. The hosted
-        // tier's Chromium-only reach is exactly why the desktop app exists
-        // (#894), and #901 turns it into its own gate with its own sentence.
+        // Which transport `device()` uses, not whether it has one. Both browser
+        // hosts borrow Chromium's WebUSB stack; the desktop app has a native
+        // transport. #901 turns the browser limitation into its own gate and
+        // its own sentence.
         expect(web.platform.usbViaWebUsb).toBe(true);
+        expect(dev.platform.usbViaWebUsb).toBe(true);
         expect(desktop.platform.usbViaWebUsb).toBe(false);
         // Never true where there is no USB at all, or the gate would blame a
         // browser for a tier that was never going to connect.

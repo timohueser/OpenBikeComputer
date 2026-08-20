@@ -46,6 +46,22 @@ struct TripUploadPlannerTests {
     // MARK: Precheck math
 
     @Test
+    func residentMenuLimitsAreNotStorageLimits() {
+        // The flat-store benchmark card has 249 routes. The device intentionally
+        // keeps only the newest 64 resident for its menu, but the store itself has
+        // room for 1,916 catalog entries. With no advertised admission cap the
+        // planner must proceed and let the device remain the storage authority.
+        let plan = TripUploadPlanner.plan(
+            stages: [stage("a"), stage("b")],
+            tripObjectID: nil,
+            deviceRouteCount: 249, deviceTripCount: 0
+        )
+        #expect(plan.precheck.freeRouteSlots == .max)
+        #expect(plan.precheck.freeTripSlots == .max)
+        #expect(plan.precheck.fits)
+    }
+
+    @Test
     func precheckFitsWhenFreshStagesHaveSlots() {
         let plan = TripUploadPlanner.plan(
             stages: [stage("a"), stage("b")],  // 2 fresh

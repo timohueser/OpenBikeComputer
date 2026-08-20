@@ -5,6 +5,12 @@ edition = "2021"
 publish = false # internal firmware crate — not published to crates.io
 description = "CRC-32/IEEE (zlib/gzip/PNG) — the one implementation the DFU byte formats and the BLE data plane both hash with. no_std, core-only, zero dependencies."
 
+[features]
+default = []
+# Eight independent table lanes trade 7 KiB of flash for enough M33 throughput to verify a USB
+# object while the previous 64 KiB stage is in card DMA. The bootloader does not enable this.
+slice-by-8 = []
+
 # The smallest possible shared leaf: one table, one hasher, and — deliberately — no dependency
 # table at all. That emptiness is the point. `obc-ble` must stay free of the map and DFU stacks so
 # the phone-facing wire codec can never drag them into the link, and `obc-dfu` is `core`-only so

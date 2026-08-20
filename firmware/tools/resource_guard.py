@@ -382,6 +382,21 @@ def chain_cost(parsed: Disassembly, root: str) -> tuple[int, tuple[str, ...]]:
     return cost, path
 
 
+def reaches_any(parsed: Disassembly, root: str, targets: frozenset[str]) -> bool:
+    """Whether an outlined function can reach one of `targets` through direct call edges."""
+    pending = [root]
+    seen: set[str] = set()
+    while pending:
+        function = pending.pop()
+        if function in targets:
+            return True
+        if function in seen:
+            continue
+        seen.add(function)
+        pending.extend(parsed.callees.get(function, ()))
+    return False
+
+
 def resolve_symbol(parsed: Disassembly, needle: str, description: str) -> str:
     """The one symbol containing `needle` (mangling-hash-insensitive), or a stale-parser error.
 
@@ -508,22 +523,46 @@ def measure_boot_chain(parsed: Disassembly, elf: Path, chain_roots: list[str]) -
     deepest single root, not their sum.
     """
     stack_start, euninit = parse_stack_bounds(run_tool("llvm-nm", "--demangle", elf))
-    task_frames = select_task_body_frames(parsed)
-    task_symbol = max(task_frames, key=lambda name: task_frames[name])
     deepest = (0, "", ())
     # **Every** stale root, not the first. One masking another is how a second blind spot survives a
     # round that was opened to fix the first: the reported ceiling is missing both chains either way,
     # so a reader who fixes the one name in the message would find the guard still wrong.
     stale: list[str] = []
+    resolved_roots: list[str] = []
     for needle in chain_roots:
         try:
             root = resolve_symbol(parsed, needle, f"boot-chain root `{needle}`")
         except GuardError as error:
             stale.append(str(error))
             continue
+        resolved_roots.append(root)
         cost, path = chain_cost(parsed, root)
         if cost > deepest[0]:
             deepest = (cost, root, path)
+
+    try:
+        task_frames = select_task_body_frames(parsed)
+    except GuardError:
+        task_bodies = [name for name in parsed.symbols if is_task_body_symbol(canonical_symbol(name))]
+        if task_bodies:
+            # The symbols exist but their prologue spelling moved; the task parser itself owns the
+            # precise stale diagnostic and this is not the optimizer-inlining case below.
+            raise
+        # LLVM may inline the generated embassy task body into its TaskStorage::poll
+        # monomorphization. That poll then owns the same permanent thread-mode stack cost. Identify
+        # the main poll by the baselined boot roots it reaches; requiring exactly one candidate is
+        # what keeps this from degrading into an arbitrary "largest poll" fallback.
+        poll_frames = select_poll_frames(parsed)
+        targets = frozenset(resolved_roots)
+        task_frames = {
+            name: frame for name, frame in poll_frames.items() if reaches_any(parsed, name, targets)
+        }
+        require(
+            len(task_frames) == 1,
+            "task-body guard is stale: no out-of-line `____embassy_*_task` body exists and "
+            f"{len(task_frames)} TaskStorage::poll symbols reach the baselined boot roots",
+        )
+    task_symbol = max(task_frames, key=lambda name: task_frames[name])
     chain_ceiling, chain_root, chain_path = deepest
     return BootChain(
         residual_stack=stack_start - euninit,

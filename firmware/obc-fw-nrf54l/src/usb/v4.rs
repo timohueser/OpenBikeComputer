@@ -52,7 +52,7 @@ use defmt::{info, warn};
 use embassy_futures::select::{select3, Either3};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
-use embassy_time::{Duration, Timer};
+use embassy_time::{Duration, Instant, Timer};
 use obc_link::flat::{Admission, Ceilings, Channel, Link, Reaction, RequestId};
 
 use crate::flat_store::{Lane, Outcome, Reply, Request, Writer};
@@ -248,7 +248,8 @@ pub(crate) async fn serve_objects(ctrl_in: EpIn, ctrl_out: EpOut, bulk_in: EpIn,
         STREAM_IN.reset();
         // §3.8's third form of cancel. On its own reply slot, so that an orphan the driver may have
         // left in `ENGINE_REPLY` stays where `Lane::reclaim` can find it.
-        release_engine(&writer).await;
+        let joined = release_engine(&writer).await;
+        release_joined_stage(joined);
         info!("usb: [v4] link down ({}) — engine released", reason);
         if reason != RecordEnd::LinkDown.reason() {
             // Not an unplug: a framing error or a driver failure with the endpoints still up. Back
@@ -261,11 +262,32 @@ pub(crate) async fn serve_objects(ctrl_in: EpIn, ctrl_out: EpOut, bulk_in: EpIn,
 
 /// **Release whatever the engine still holds for a link that has gone away** (§3.8's third form of
 /// cancel).
-async fn release_engine(writer: &Writer) {
+async fn release_engine(writer: &Writer) -> JoinedUsbStage {
     static TEARDOWN_REPLY: Reply = Signal::new();
     if writer.call(Request::LinkLost { link: Link::Usb }, &TEARDOWN_REPLY).await.is_err() {
         warn!("usb: [v4] the engine refused a link-lost teardown");
     }
+    finish_usb_stage(writer).await
+}
+
+/// Proof that the storage task answered `FinishUsbStage`. Its constructor is private to the await
+/// below, so no granted-stage terminal path can compile a release before the DMA join.
+struct JoinedUsbStage;
+
+/// Join a deferred card write before the ride loop may hand the arena to render or navigation.
+async fn finish_usb_stage(writer: &Writer) -> JoinedUsbStage {
+    static FINISH_REPLY: Reply = Signal::new();
+    if writer.call(Request::FinishUsbStage, &FINISH_REPLY).await.is_err() {
+        warn!("usb: [v4] could not join the final staged card write");
+    }
+    // Even an error answer is produced only after `finish_write_blocks` returns: the transfer has
+    // stopped borrowing the source, although the card operation itself failed.
+    JoinedUsbStage
+}
+
+fn release_joined_stage(_joined: JoinedUsbStage) {
+    crate::usb::STAGE_REQ.store(false, core::sync::atomic::Ordering::Relaxed);
+    crate::usb::STAGE_WAKE.signal(());
 }
 
 /// Read control records and hand them over one at a time.
@@ -309,6 +331,10 @@ async fn driver(
     // Owned by the driver, so it is per cable by construction rather than by a `reset` someone has
     // to remember.
     let mut admission = Admission::new();
+    let mut staged_request: Option<RequestId> = None;
+    let mut stage_granted = false;
+    let mut staged_started: Option<Instant> = None;
+    let mut staged_bytes = 0u64;
     loop {
         // Control first when both are ready: a `CANCEL` or a `LIST` must not queue behind a stream
         // record the engine may be about to refuse anyway.
@@ -318,16 +344,60 @@ async fn driver(
                 None => return "lane",
             },
             embassy_futures::select::Either::Second(record) => {
-                match stream_record(writer, lane, &mut admission, record).await {
+                let result =
+                    stream_record(writer, lane, &mut admission, record, &mut staged_request, &mut stage_granted).await;
+                if stage_granted {
+                    staged_started.get_or_insert_with(Instant::now);
+                    staged_bytes += record.len().saturating_sub(obc_link::flat::wire::STREAM_HEADER_LEN) as u64;
+                }
+                match result {
                     Some(reaction) => reaction,
                     None => return "lane",
                 }
             }
         };
+        // Most records are `Idle`; do not put another storage round trip in the 4 KiB hot path.
+        // A terminal/control reaction can end the USB upload, while the app-facing map projection
+        // may remain `Receiving` if BLE immediately admits another map. That edge requires the
+        // exact owner query below.
+        let may_have_ended = reaction != Reaction::Idle;
         if let Some(reason) = pump(writer, lane, control_tx, stream_tx, reaction).await {
+            if stage_granted {
+                let joined = finish_usb_stage(writer).await;
+                release_joined_stage(joined);
+                log_staged_rate(staged_started, staged_bytes);
+            }
             return reason;
         }
+        let projection_ended = !crate::link::map_transfer_state().is_some_and(|state| state.is_receiving());
+        let staged_ended = if let Some(request) = staged_request {
+            (projection_ended || may_have_ended) && !usb_owns_map_upload(writer, request).await
+        } else {
+            false
+        };
+        if staged_ended {
+            if stage_granted {
+                let joined = finish_usb_stage(writer).await;
+                release_joined_stage(joined);
+                log_staged_rate(staged_started, staged_bytes);
+            }
+            staged_request = None;
+            stage_granted = false;
+            staged_started = None;
+            staged_bytes = 0;
+        }
     }
+}
+
+fn log_staged_rate(started: Option<Instant>, bytes: u64) {
+    let Some(started) = started else { return };
+    let us = started.elapsed().as_micros().max(1);
+    info!(
+        "usb: [v4] staged {=u64} B in {=u64} ms ({=u64} kB/s, full CRC + card DMA)",
+        bytes,
+        us / 1_000,
+        bytes.saturating_mul(1_000) / us
+    );
 }
 
 /// Hand one control record to the engine, then release the pump's buffer.
@@ -346,12 +416,15 @@ async fn stream_record(
     lane: &mut Lane,
     admission: &mut Admission,
     record: &'static [u8],
+    staged_request: &mut Option<RequestId>,
+    stage_granted: &mut bool,
 ) -> Option<Reaction> {
     // §5's admission hold. Reading four bytes of the §3.8 frame header is not "parsing a payload":
     // it is the record boundary information the binding is explicitly responsible for, and a record
     // too short to carry one is not decoded here — it goes to the engine, which owns that refusal.
-    if record.len() >= 4 {
-        let frame_id = RequestId(u32::from_le_bytes([record[0], record[1], record[2], record[3]]));
+    let frame_id =
+        (record.len() >= 4).then(|| RequestId(u32::from_le_bytes([record[0], record[1], record[2], record[3]])));
+    if let Some(frame_id) = frame_id {
         if admission.needs_query(frame_id) && admission.observed(frame_id, live_transfer(writer).await) {
             if let embassy_futures::select::Either::First(control) =
                 embassy_futures::select::select(CONTROL_IN.wait(), Timer::after(ADMISSION_WINDOW)).await
@@ -375,7 +448,19 @@ async fn stream_record(
             warn!("usb: [v4] a stream record arrived unadmitted — delivering after the hold window");
         }
     }
-    let reaction = lane.call(writer, |out| Request::Stream { link: Link::Usb, record, out }).await;
+    if staged_request.is_none() {
+        if let Some(frame_id) = frame_id {
+            if usb_owns_map_upload(writer, frame_id).await {
+                *staged_request = Some(frame_id);
+                *stage_granted = crate::usb::request_stage().await;
+            }
+        }
+    }
+    let reaction = if *stage_granted {
+        lane.call(writer, |out| Request::StreamStaged { record, out }).await
+    } else {
+        lane.call(writer, |out| Request::Stream { link: Link::Usb, record, out }).await
+    };
     STREAM_TAKEN.signal(());
     reaction
 }
@@ -385,11 +470,23 @@ async fn stream_record(
 /// Deliberately **not** a `Lane` call: it borrows no buffer, so it cannot be the thing that loses
 /// one. Its own reply slot for the reason the contract states — one slot per concurrently live
 /// call is a property of the types here rather than of call ordering.
+static LIVE_QUERY_REPLY: Reply = Signal::new();
+
 async fn live_transfer(writer: &Writer) -> Option<RequestId> {
-    static LIVE_REPLY: Reply = Signal::new();
-    match writer.call(Request::LiveTransfer, &LIVE_REPLY).await {
+    match writer.call(Request::LiveTransfer, &LIVE_QUERY_REPLY).await {
         Ok(Outcome::Live(live)) => live,
         _ => None,
+    }
+}
+
+/// The storage-owned admission proof for the cable-only scratch arm. The app's map progress state
+/// deliberately omits link ownership and therefore cannot distinguish a BLE map PUT from USB.
+async fn usb_owns_map_upload(writer: &Writer, request: RequestId) -> bool {
+    // Sequential in this one USB driver with `live_transfer`; reusing the slot avoids paying a
+    // second Signal (72 linked resident bytes) for two mutually-exclusive engine queries.
+    match writer.call(Request::UsbMapUpload { request }, &LIVE_QUERY_REPLY).await {
+        Ok(Outcome::UsbMap(owns)) => owns,
+        _ => false,
     }
 }
 
@@ -425,13 +522,16 @@ async fn pump(
                     return Some("send");
                 }
             }
-            Reaction::SendAndReboot { .. } => {
-                // §4 steps 4 and 5. `ARM` is refused by this build's policy
-                // (`flat_store::BoardPolicy`), so the engine never reaches this reaction; it is
-                // answered rather than ignored so that the slice which fills the policy finds a
-                // driver that already handles it.
-                warn!("usb: [v4] the engine asked for a reboot, which this build cannot arm");
-                return Some("arm");
+            Reaction::SendAndReboot { len } => {
+                // FORMAT invalidates the mounted store before it answers. Complete the USB record,
+                // give the controller one short drain beat, then remount the new empty store from a
+                // clean boot. ARM uses this same terminal reaction once board policy enables it.
+                if !control_tx.send(lane.sent(len)).await {
+                    return Some("send-reboot");
+                }
+                info!("usb: [v4] terminal response sent — rebooting");
+                Timer::after_millis(50).await;
+                cortex_m::peripheral::SCB::sys_reset();
             }
         }
         // **Between iterations, not only when idle.** A `GET` streams for as long as the object is

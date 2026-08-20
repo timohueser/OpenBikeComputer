@@ -1,0 +1,23 @@
+{
+  "name": "format-request",
+  "suite": "flat-store-v4",
+  "kind": "control",
+  "direction": "request",
+  "opcode": {
+    "name": "FORMAT",
+    "value": 8
+  },
+  "header": {
+    "magic": "OBC4",
+    "major": 4,
+    "flags": 0,
+    "payloadLength": 32,
+    "requestId": 10760
+  },
+  "note": "Destructive compare-and-swap: erase only the store the client confirmed, then begin a new identity era.",
+  "body": {
+    "expectedStoreId": "8f2c41d96b074ea3b1559c207de83466",
+    "replacementStoreId": "2a7b16c4903145d8a6e2730fb94c5811"
+  },
+  "frame": "4f4243340408000020000000082a00008f2c41d96b074ea3b1559c207de834662a7b16c4903145d8a6e2730fb94c5811"
+}

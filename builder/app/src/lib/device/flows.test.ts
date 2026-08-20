@@ -23,7 +23,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { DeviceError, FlatStoreClient } from "../usb/client";
 import { Crc32 } from "../usb/crc32";
@@ -32,7 +32,7 @@ import type { BytePipe, DeviceLink } from "../usb/pipe";
 import { ObjectKind } from "../usb/protocol";
 import { initConvert } from "../convert/bridge";
 import { prepareRoute } from "./route";
-import { armUpdate, sendMapFile, sendRoute, stageFirmware } from "./write";
+import { armUpdate, sendMapBlob, sendMapBytes, sendMapFile, sendRoute, stageFirmware } from "./write";
 import type { JobContext, JobPhase } from "./progress";
 
 // --- fixtures -----------------------------------------------------------------
@@ -71,6 +71,7 @@ function context(options: { signal?: AbortSignal; at?: (done: number, phase: Job
     let last: [number, number] = [0, 0];
     return {
         signal: options.signal ?? new AbortController().signal,
+        cancel() {},
         phases,
         get last() {
             return last;
@@ -103,6 +104,36 @@ async function withDevice<T>(
 // --- the flows ----------------------------------------------------------------
 
 describe("map upload from a file", () => {
+    it("can cancel the cooperative CRC pass of a resident assembler fallback", async () => {
+        const controller = new AbortController();
+        const list = vi.fn();
+        const client = { list } as unknown as FlatStoreClient;
+        const bytes = new Uint8Array(8 * 1024 * 1024);
+        const ctx = context({ signal: controller.signal });
+        setTimeout(() => controller.abort(new DOMException("cancelled", "AbortError")), 0);
+
+        await expect(sendMapBytes(client, bytes, "fallback.obcm", ctx)).rejects.toMatchObject({
+            name: "AbortError",
+        });
+
+        expect(ctx.last[0]).toBeGreaterThan(0);
+        expect(ctx.last[0]).toBeLessThan(bytes.length);
+        expect(list).not.toHaveBeenCalled();
+    });
+
+    it("streams an assembler Blob without requiring a picked File", async () => {
+        await withDevice({}, async ({ client, device }) => {
+            const bytes = syntheticBytes(200_000);
+            const blob = new Blob([bytes]);
+            const result = await sendMapBlob(client, blob, "built-monaco.obcm", context());
+
+            expect(result.payloadLength).toBe(BigInt(bytes.length));
+            expect(result.payloadCrc32).toBe(Crc32.of(bytes));
+            expect(device.payloadOf(result.objectId)).toEqual(bytes);
+            expect(device.entries[0].displayName).toBe("built-monaco");
+        });
+    });
+
     it("commits one object and reports the id the device assigned", async () => {
         await withDevice({}, async ({ client, device }) => {
             const bytes = syntheticBytes(200_000);

@@ -35,3 +35,5 @@ default = []
 # independence is the whole point of a golden vector. Unit tests enable it implicitly through
 # `cfg(test)`, so `cargo test -p obc-link` and the workspace's `--all-features` run both agree.
 std = []
+# Board-only performance profile; forwards to the wide CRC tables without changing compact users.
+fast-crc = ["obc-crc/slice-by-8"]

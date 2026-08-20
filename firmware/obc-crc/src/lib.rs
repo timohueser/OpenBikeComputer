@@ -39,6 +39,26 @@ const TABLE: [u32; 256] = {
     table
 };
 
+/// Eight reflected lookup lanes. Enabled only by the application firmware: independent table
+/// lookups let the Cortex-M33 fold a word pair without the byte-at-a-time dependency chain, while
+/// compact bootloader builds retain the single 1 KiB table above.
+#[cfg(feature = "slice-by-8")]
+const TABLES: [[u32; 256]; 8] = {
+    let mut tables = [[0u32; 256]; 8];
+    tables[0] = TABLE;
+    let mut lane = 1;
+    while lane < 8 {
+        let mut i = 0;
+        while i < 256 {
+            let prior = tables[lane - 1][i];
+            tables[lane][i] = TABLE[(prior & 0xff) as usize] ^ (prior >> 8);
+            i += 1;
+        }
+        lane += 1;
+    }
+    tables
+};
+
 /// An incremental CRC-32/IEEE hasher. `Copy`, so a partial CRC is a trivial resume anchor —
 /// snapshot it at a committed offset and continue from the copy after a drop, or fold a staged
 /// image one extent at a time without ever holding the whole thing.
@@ -56,6 +76,23 @@ impl Crc32 {
     /// Fold `bytes` into the running CRC.
     pub fn update(&mut self, bytes: &[u8]) {
         let mut c = self.state;
+        #[cfg(feature = "slice-by-8")]
+        let bytes = {
+            let mut chunks = bytes.chunks_exact(8);
+            for chunk in &mut chunks {
+                let first = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) ^ c;
+                let second = u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
+                c = TABLES[7][(first & 0xff) as usize]
+                    ^ TABLES[6][((first >> 8) & 0xff) as usize]
+                    ^ TABLES[5][((first >> 16) & 0xff) as usize]
+                    ^ TABLES[4][(first >> 24) as usize]
+                    ^ TABLES[3][(second & 0xff) as usize]
+                    ^ TABLES[2][((second >> 8) & 0xff) as usize]
+                    ^ TABLES[1][((second >> 16) & 0xff) as usize]
+                    ^ TABLES[0][(second >> 24) as usize];
+            }
+            chunks.remainder()
+        };
         for &b in bytes {
             c = TABLE[((c ^ b as u32) & 0xFF) as usize] ^ (c >> 8);
         }

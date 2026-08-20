@@ -10,7 +10,9 @@
 
 use obc_link::flat::store::Policy;
 use obc_link::flat::wire::{flags, HEADER_LEN, STREAM_HEADER_LEN};
-use obc_link::flat::{CancelCause, Ceilings, Channel, Engine, Link, ObjectKind, OpenPolicy, Reaction};
+use obc_link::flat::{
+    CancelCause, Ceilings, Channel, Engine, Link, ObjectKind, OpenPolicy, Reaction, RequestId, StreamBuffers,
+};
 use obc_storage::flat::sim::{FaultOnce, SparseDisk};
 use obc_storage::flat::{
     BlockDevice, DisplayName, EntryFlags, EntryMeta, FlatStore, Mutation, ObjectId, PutSource, Revision, StoreId,
@@ -156,6 +158,21 @@ impl<D: BlockDevice> Device<D> {
         self.drive_on(link, first, usize::MAX)
     }
 
+    /// One stream record through an adapter-owned write-combining stage.
+    pub fn stream_on_staged(&mut self, link: Link, record: &[u8], stage: &mut [u8]) -> Wire {
+        let bank = self.engine.upload_stage_bank().expect("staged stream owns an upload");
+        let half = stage.len() / 2;
+        let first = self.engine.on_stream_staged(
+            link,
+            &self.store,
+            &mut OpenPolicy,
+            StreamBuffers::new(record, &mut self.out),
+            bank,
+            &mut stage[bank * half..(bank + 1) * half],
+        );
+        self.drive_on(link, first, usize::MAX)
+    }
+
     /// Pump a named link once — what an adapter does until it is told there is nothing to do.
     pub fn pump_on(&mut self, link: Link) -> Wire {
         let first = self.engine.poll(link, &self.store, &mut self.out);
@@ -235,6 +252,11 @@ impl<D: BlockDevice> Device<D> {
     /// What the live upload has landed so far — the device-side progress report.
     pub fn live_upload(&self) -> Option<obc_link::flat::UploadProgress> {
         self.engine.live_upload()
+    }
+
+    /// Whether an exact upload owns the engine, used by adapter-resource admission tests.
+    pub fn upload_matches(&self, link: Link, request: RequestId, kind: ObjectKind) -> bool {
+        self.engine.upload_matches(link, request, kind)
     }
 
     /// The verdict on the last upload, taken.
@@ -446,6 +468,15 @@ pub mod client {
         body[0..8].copy_from_slice(&package.to_le_bytes());
         body[8..16].copy_from_slice(&expected.to_le_bytes());
         frame(0x07, request, &body)
+    }
+
+    /// §3.10. The expected identity is the destructive compare-and-swap; replacement starts the
+    /// new store era and must be non-zero and different.
+    pub fn format(request: u32, expected: [u8; 16], replacement: [u8; 16]) -> Vec<u8> {
+        let mut body = vec![0u8; 32];
+        body[0..16].copy_from_slice(&expected);
+        body[16..32].copy_from_slice(&replacement);
+        frame(0x08, request, &body)
     }
 
     /// §3.8's stream record.

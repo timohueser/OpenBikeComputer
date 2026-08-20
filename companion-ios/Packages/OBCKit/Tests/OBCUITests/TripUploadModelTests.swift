@@ -7,7 +7,7 @@ import OBCTransport
 
 /// The whole-trip upload queue driver (TR8, issue #657), host-side: the happy
 /// path (stages then trip object), interrupt + resume (restart-current-stage),
-/// the storage precheck (fails before any bytes), and the idempotent re-run.
+/// the flat-catalog/menu-cap boundary, and the idempotent re-run.
 /// Driven through `MainScreenModel.makeTripUploadModel` over the `trips` fixture,
 /// exactly as `TripDetailView` wires it.
 @MainActor
@@ -110,26 +110,22 @@ struct TripUploadModelTests {
         #expect(control.deviceTripCount == 1)
     }
 
-    // MARK: Storage precheck (fails before any bytes)
+    // MARK: Flat catalog vs. resident menu capacity
 
     @Test
-    func storagePrecheckFailsUpfrontWithoutSendingBytes() async {
+    func aFullResidentRouteMenuDoesNotPretendTheFlatStoreIsFull() async {
         let (model, control) = await makeMain(routesNearlyFull: true)
-        // The device catalog is padded to one below the route cap; the trip has
-        // two fresh stages, so it can't fit.
+        // The mock catalog is padded to 63 routes. The shipping device keeps at
+        // most 64 routes resident for its menu, but that is not a PUT admission
+        // cap: the flat store has a separate 1,916-entry catalog.
         let plan = try! #require(model.planTripUpload(tripID))
-        #expect(!plan.precheck.fits)
+        #expect(plan.precheck.fits)
 
         let upload = try! #require(model.makeTripUploadModel(tripID, timing: Self.fastTiming))
         startAndConfirm(upload)
-        await poll("failed") { upload.phase == .failed }
-        if case .storagePrecheck(let deficit) = upload.failure {
-            #expect(deficit == 1)
-        } else {
-            Issue.record("expected a storage-precheck failure, got \(String(describing: upload.failure))")
-        }
-        // No bytes flowed — the device holds no trip and gained no route.
-        #expect(control.deviceTripCount == 0)
+        await poll("done") { upload.phase == .done }
+        #expect(upload.committedCount == 3)
+        #expect(control.deviceTripCount == 1)
     }
 
     // MARK: Idempotent re-run

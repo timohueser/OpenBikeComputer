@@ -266,6 +266,24 @@ class BootChainTests(unittest.TestCase):
         with self.assertRaisesRegex(resource_guard.GuardError, "no `____embassy_\\*_task` body"):
             resource_guard.parse_task_body_frames("00001000 <core::ptr::drop_in_place>:\n")
 
+    def test_an_inlined_main_task_is_measured_at_the_poll_that_reaches_boot(self):
+        root = "obc_fw_nrf54l::link::init_store::hd4"
+        poll = "embassy_executor::raw::TaskStorage$LT$F$GT$::poll::h01"
+        parsed = resource_guard.parse_disassembly(
+            f"00001000 <{poll}>:\n"
+            "    1000: f5ad 6d80     sub.w sp, sp, #0x1000\n"
+            f"    1004: f000 f800     bl 0x2000 <{root}>\n"
+            f"00002000 <{root}>:\n"
+            "    2000: b084          sub sp, #0x10\n"
+        )
+        with mock.patch.object(resource_guard, "run_tool", return_value=""), mock.patch.object(
+            resource_guard, "parse_stack_bounds", return_value=(0x2007D000, 0x20071228)
+        ):
+            boot = resource_guard.measure_boot_chain(parsed, Path("fake"), ["link::init_store"])
+        self.assertEqual(boot.task_frame, 4_096)
+        self.assertEqual(boot.task_frame_symbol, poll)
+        self.assertEqual(boot.chain_ceiling, 4_112)
+
     def test_frame_parser_accepts_the_wide_subw_spelling(self):
         # `subw sp, sp, #imm` is a distinct encoding from `sub.w`; `mount_terrain` uses it.
         parsed = resource_guard.parse_disassembly(

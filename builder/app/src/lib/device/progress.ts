@@ -22,7 +22,9 @@
  *
  * `committing` is the same argument at the other end of a write: the last byte is on the wire and
  * the device is now closing the file, validating it and making it durable. Nothing moves, the bar is
- * at 100 % and the rate is zero — a state that reads as "stuck" unless it is named.
+ * at 100 % and the rate is zero — a state that reads as "stuck" unless it is named. `finalizing`
+ * begins only after that commit succeeded: host-side temporary data is being removed, so Cancel is
+ * no longer meaningful and must not reclassify the durable success as an aborted transfer.
  */
 export type JobPhase =
     | "idle"
@@ -33,6 +35,7 @@ export type JobPhase =
     | "assembling"
     | "sending"
     | "committing"
+    | "finalizing"
     | "done"
     | "error";
 
@@ -40,6 +43,9 @@ export type JobPhase =
 export interface JobContext {
     /** Fires on cancel. Pass it to every await that can block, or Cancel is a lie. */
     readonly signal: AbortSignal;
+    /** Cancel this whole job, including work owned by a component outside the
+     * transport surface that created the context. */
+    cancel(reason?: unknown): void;
     /** Move to a phase, optionally starting a fresh byte count for it. */
     phase(phase: JobPhase, total?: number): void;
     progress(done: number, total: number): void;

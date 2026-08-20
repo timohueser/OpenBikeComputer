@@ -6,6 +6,18 @@
 -->
 <script lang="ts">
     import { deviceHolder } from "../../lib/device/session.svelte";
+    import type { Ledger } from "../../lib/catalog/ledger";
+    import type { SendAssembledMap } from "../../lib/device/write";
+
+    let {
+        ledger = null,
+        sendAssembled = null,
+        sendReady = false,
+    }: {
+        ledger?: Ledger | null;
+        sendAssembled?: SendAssembledMap | null;
+        sendReady?: boolean;
+    } = $props();
 
     let mapSend: Promise<typeof import("./MapSend.svelte")> | undefined;
     const loadMapSend = () => (mapSend ??= import("./MapSend.svelte"));
@@ -21,7 +33,7 @@
     {#await loadMapSend()}
         <p class="small muted">Loading…</p>
     {:then { default: MapSend }}
-        <MapSend client={session.client} />
+        <MapSend client={session.client} {ledger} {sendAssembled} {sendReady} />
     {:catch}
         <p class="note error small" role="alert">
             The device tools could not be loaded. Check your connection and reload the page.

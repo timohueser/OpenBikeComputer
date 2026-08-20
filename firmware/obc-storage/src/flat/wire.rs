@@ -213,6 +213,10 @@ impl<D: BlockDevice> v4::Store for FlatStore<D> {
     fn entries_ok(&self) -> bool {
         FlatStore::entries_ok(self)
     }
+
+    fn format(&self, replacement: v4::StoreId) -> Result<(), v4::StoreError> {
+        FlatStore::format_media(self, StoreId(replacement.0)).map_err(error_out)
+    }
 }
 
 #[cfg(test)]

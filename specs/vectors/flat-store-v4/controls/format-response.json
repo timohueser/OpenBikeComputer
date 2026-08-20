@@ -1,0 +1,22 @@
+{
+  "name": "format-response",
+  "suite": "flat-store-v4",
+  "kind": "control",
+  "direction": "response",
+  "opcode": {
+    "name": "FORMAT",
+    "value": 8
+  },
+  "header": {
+    "magic": "OBC4",
+    "major": 4,
+    "flags": 1,
+    "payloadLength": 16,
+    "requestId": 10760
+  },
+  "note": "The new store identity is durable; after this response leaves the link the device reboots.",
+  "body": {
+    "storeId": "2a7b16c4903145d8a6e2730fb94c5811"
+  },
+  "frame": "4f4243340408010010000000082a00002a7b16c4903145d8a6e2730fb94c5811"
+}

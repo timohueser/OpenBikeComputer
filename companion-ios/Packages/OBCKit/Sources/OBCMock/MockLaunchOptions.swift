@@ -23,7 +23,7 @@ import OBCDomain
 /// | `-OBCImportSample [kind]` | bare flag = `gpx`; or `gpx` / `tcx` / `bad` / `grimsel` | feed a bundled sample file to the import path at launch (E1; `bad` → H5; `grimsel` = generated website route) |
 /// | `-OBCNetwork <state>` | `offline` / `online` | pin the MapKit-basemap reachability (#294) — `offline` forces the grid fallback |
 /// | `-OBCFirmwareDemo` | (flag) | open the S7 firmware-update screen with a pre-staged sample update (the Files picker can't be automated) |
-/// | `-OBCDeviceRoutesFull` | (flag) | pad the device's route catalog to one below the cap so a multi-stage trip fails the whole-trip precheck (TR8 storage-precheck demo/test) |
+/// | `-OBCDeviceRoutesFull` | (flag) | pad the route catalog to the 64-route resident-menu boundary (TR8 flat-store/menu regression) |
 /// | `-OBCOldFirmware` | (flag) | model a device predating auto-expiry (epic #638): `setClock`/`setRouteRetention` answer `unsupported`, no route-catalog expiry metadata — S7's capability-gated (hidden) state |
 /// | `-OBCWeatherDemo <state>` | `healthy` / `empty` / `stale` / `failing` / `unsupported` | seed the WX13 Weather screens with a fixture job ring, service manifest state and (for `failing`) an owed job; `unsupported` drops the device's weather feature bit |
 ///
@@ -83,9 +83,8 @@ public struct MockLaunchOptions: Equatable, Sendable {
     /// screenshots + demos. `.staged` stops at the staged screen; `.sending`
     /// also fires Send, so a run walks transfer → confirm → done. Debug-only.
     public var firmwareDemo: FirmwareDemoStage?
-    /// Pad the mock device's route catalog to one below the route cap so a
-    /// multi-stage trip fails the whole-trip precheck **before any bytes** (TR8,
-    /// issue #657) — the storage-precheck-failure XCUITest / demo hook.
+    /// Pad the mock device's route catalog to the 64-route resident-menu
+    /// boundary (TR8) — the flat-store/menu-cap XCUITest / demo hook.
     public var deviceRoutesFull: Bool
     /// Seed the WX13 Weather screens from a fixture state (Debug only): the job history ring, the
     /// service manifest state and any owed job. `nil` leaves the screens on the real stores, which
