@@ -136,14 +136,14 @@ impl RouteRepository for MemRouteStore {
 /// removes rows for the session; nothing is ever written.
 pub struct MemRideStore {
     catalog: Vec<RideSummary>,
-    ids: Vec<u16>,
+    ids: Vec<obc_app::CatalogObjectId>,
 }
 
 impl MemRideStore {
     /// Seed the catalog (newest first, as [`App::set_rides`](obc_app::App::set_rides) expects).
     /// Positional ids — the catalog is fixed, so they're session-stable.
     pub fn new(catalog: Vec<RideSummary>) -> Self {
-        let ids = (0..catalog.len() as u16).collect();
+        let ids = (0..catalog.len() as obc_app::CatalogObjectId).collect();
         MemRideStore { catalog, ids }
     }
 
@@ -153,12 +153,12 @@ impl MemRideStore {
     }
 
     /// Each catalog entry's id, parallel to [`catalog`](MemRideStore::catalog).
-    pub fn ids(&self) -> &[u16] {
+    pub fn ids(&self) -> &[obc_app::CatalogObjectId] {
         &self.ids
     }
 
     /// Delete the ride with id `id` (the hold-to-delete footer). `true` = removed.
-    pub fn delete_by_id(&mut self, id: u16) -> bool {
+    pub fn delete_by_id(&mut self, id: obc_app::CatalogObjectId) -> bool {
         let Some(pos) = self.ids.iter().position(|&x| x == id) else { return false };
         self.catalog.remove(pos);
         self.ids.remove(pos);
@@ -171,26 +171,26 @@ impl RideRepository for MemRideStore {
         self.catalog()
     }
 
-    fn ids(&self) -> &[u16] {
+    fn ids(&self) -> &[obc_app::CatalogObjectId] {
         self.ids()
     }
 
-    fn delete_by_id(&mut self, id: u16) -> bool {
+    fn delete_by_id(&mut self, id: obc_app::CatalogObjectId) -> bool {
         self.delete_by_id(id)
     }
 
     /// No on-disk track behind a memory ride — the Ride detail's band parks empty (an answered
     /// `None`, so the fill cue stops re-emitting rather than grinding a missing file every frame).
-    fn profile_by_id(&self, _id: u16) -> Option<Profile> {
+    fn profile_by_id(&self, _id: obc_app::CatalogObjectId) -> Option<Profile> {
         None
     }
 
-    fn preview_by_id(&self, _id: u16) -> Vec<(i32, i32)> {
+    fn preview_by_id(&self, _id: obc_app::CatalogObjectId) -> Vec<(i32, i32)> {
         Vec::new()
     }
 }
 
-/// An in-memory track store: no filesystem, so no on-disk ride log — the breadcrumb + ride stats
+/// An in-memory track store: no filesystem, so no on-disk ride object — the breadcrumb + ride stats
 /// come from the shared app state, not a sink. It only mirrors whether a ride is active so
 /// `is_recording()` stays honest, while `reconcile` still **drains** the app's one-shot
 /// [`TrackAction`] each frame (the host contract; an undrained action would linger).

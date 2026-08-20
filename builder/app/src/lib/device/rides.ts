@@ -34,8 +34,8 @@
  * ## Why this buffers where the map path streams
  *
  * C4 streams a map through a scratch file because a regional `.obcm` is hundreds of megabytes. A
- * ride is not that: the object is `31 + name + 18 × points` (§7.2), so a 12-hour ride logged at
- * 1 Hz is about 780 KB and a full day is 1.5 MB — two orders of magnitude below the case that
+ * ride is not that: the object is `84 + 20 × points` (§7.2), so a 12-hour ride logged at
+ * 1 Hz is about 865 KB and a full day is 1.7 MB — two orders of magnitude below the case that
  * forced staging. Two things then argue against streaming rather than merely permitting the buffer:
  * the whole-object CRC-32 is only known when the last byte has arrived, so a streamed export would
  * have to write an unverified file the rider could open before it was checked; and A2's wasm bridge
@@ -247,74 +247,9 @@ export async function exportRide(source: RideSource, entry: CatalogEntry, ctx: J
                 "probably stopped before the device had a fix.",
         );
     }
-    const gpx = await trackToGpx(rideToTrackLog(ride), ride.name);
+    const gpx = await trackToGpx(bytes, ride.name);
     ctx.progress(bytes.length, bytes.length);
     return { filename: rideFilename(entry, ride), gpx, points: ride.points.length, bytes: bytes.length };
-}
-
-// --- ride object -> the log the GPX exporter reads --------------------------------
-
-/*
- * The exporter is `obc_route::track_to_gpx`, reached through A2's wasm bridge — the same code the
- * device and the CLI run, so the file a visitor saves is the file the device would have written.
- * There is no TypeScript GPX writer here and there must never be one.
- *
- * That exporter reads the device's **recorded track log**: a headerless array of fixed 20-byte
- * records (`obc-formats/src/track.rs`). What crosses the wire is the **ride object** (§7.2), which
- * is what the device keeps — the log is a temp file, converted at Finish by `track_to_ride` and
- * deleted. So the pull side has to undo that conversion, and the interesting question is what it
- * costs.
- *
- * `track_to_ride` does exactly four things to each point, and three of them invert exactly:
- *
- * | Field | Device (log -> ride object) | Here (ride object -> log) |
- * | :-- | :-- | :-- |
- * | `lat` / `lon` | µdeg × 10 -> 1e-7 ° | ÷ 10 — **lossless**, every value it wrote is a multiple of 10 |
- * | `ele` | carried verbatim | carried verbatim |
- * | `hr` / `cad` / `pwr` | 1:1, sentinel for absent | 1:1, same sentinels |
- * | `t_ms` | `(t_ms - t0) / 1000` | × 1000 — sub-second resolution is gone, and unused: the exporter writes no `<time>` |
- *
- * And one thing that does **not** come back: `segment_start`. The ride object has no segment flag,
- * so a ride recorded with a pause exports as one `<trkseg>` where the device's own Finish-time GPX
- * would have had two. That loss happens on the device, at Finish, to every peer — the phone's
- * exporter (`GPXRideEncoder.swift`) says the same thing in the same words. It is a property of the
- * wire format, not of this code, and `rides.test.ts` pins it as the *only* difference from the
- * checked-in `track-export.gpx`.
- */
-
-const TRACK_RECORD_LEN = 20;
-const TRACK_HR_NONE = 0xff;
-const TRACK_CAD_NONE = 0xff;
-const TRACK_PWR_NONE = 0xffff;
-
-/** The largest whole-second offset that still fits the log's `t_ms u32` (~49.7 days). */
-const MAX_OFFSET_S = Math.floor(0xffffffff / 1000);
-
-/**
- * Re-cast a decoded ride object as the fixed-record log the GPX exporter reads.
- *
- * `eleM` is `null` only for an encoder that is not the firmware — the device stamps every point,
- * writing `0` before its first barometer sample and never the `INT16_MIN` sentinel. The log has no
- * absent representation and `track_to_gpx` always writes an `<ele>`, so a null takes the device's
- * own "no barometer yet" value rather than a fabricated altitude or a sentinel rendered as `-32768`.
- */
-export function rideToTrackLog(ride: RideObject): Uint8Array {
-    const out = new Uint8Array(ride.points.length * TRACK_RECORD_LEN);
-    const view = new DataView(out.buffer);
-    ride.points.forEach((point, i) => {
-        const at = i * TRACK_RECORD_LEN;
-        view.setInt32(at, Math.round(point.lon1e7 / 10), true);
-        view.setInt32(at + 4, Math.round(point.lat1e7 / 10), true);
-        view.setInt16(at + 8, point.eleM ?? 0, true);
-        // flags stay 0: the wire carries no segment breaks, and `track_to_gpx` opens a `<trkseg>`
-        // on the first point regardless.
-        view.setUint16(at + 10, 0, true);
-        view.setUint32(at + 12, Math.min(point.tOffsetS, MAX_OFFSET_S) * 1000, true);
-        out[at + 16] = point.hrBpm ?? TRACK_HR_NONE;
-        out[at + 17] = point.cadenceRpm ?? TRACK_CAD_NONE;
-        view.setUint16(at + 18, point.powerW ?? TRACK_PWR_NONE, true);
-    });
-    return out;
 }
 
 // --- naming and formatting -------------------------------------------------------

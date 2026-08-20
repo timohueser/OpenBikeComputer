@@ -1,29 +1,11 @@
-//! Legacy FatFs storage for the nRF54L board: maps, ride logs, weather, and firmware updates.
+//! Legacy FatFs storage for the nRF54L board's staged firmware update.
 //!
-//! This owns the concrete transport → [`VolumeManager`] stack and reconciles the FAT filesystem to
-//! the shared app's *intent*. Routes and trips are flat-store-only; this module retains the FAT
-//! surfaces that have not yet moved. The reusable, board-agnostic adapters it hands the format code
-//! live in [`obc_storage::sd`] ([`SdByteSource`]/[`SdByteSink`]/[`SdTrackSink`]); everything here is
-//! nRF-specific.
+//! This owns the concrete transport → [`VolumeManager`] stack retained for the staged updater and
+//! the card-resident store epoch. Routes, trips, and rides are flat-store-only.
 //!
-//! The `Storage` impl and every adapter below are generic over the concrete **block-device type**
-//! (they speak `embedded_sdmmc`'s `BlockDevice` / `TimeSource`). The chosen map streams from the
-//! card and the ride is logged to a temp `.obct` converted to the durable ride object on Finish.
-//!
-//! ## Card layout (FAT16/FAT32)
-//!   `/<name>.obcm`   — a side-loaded map (long filename, dragged on from a computer)
-//!   `/MP{id}.OBM`    — a map the device received over USB (issue #927): the durable object id lives
-//!                      in the 8.3 name. `OBM` is the device-created 3-char twin of `.obcm` —
-//!                      embedded-sdmmc creates short names only. The upload streams **straight into
-//!                      this file** with its 4-byte magic held back, so a torn write leaves a
-//!                      zero-magic file the scan refuses and the boot sweep reclaims.
-//!   `/MAP.SEL`       — which map the renderer streams from (see `obc_app::store_meta`); absent or
-//!                      torn = no preference, and the loader takes the first readable map
-//!   `/tracks/`       — saved rides (created if absent); the in-progress log lives here as
-//!                      `TRACK.OBT` and is deleted once converted. Each Finish writes **one**
-//!                      artifact: the BLE ride object `RD{id}.ORD` (the durable ride object id
-//!                      lives in the name). The device writes no GPX — the phone owns human-format
-//!                      export after sync.
+//! The `Storage` implementation and every adapter below speak `embedded_sdmmc`'s `BlockDevice` /
+//! `TimeSource` seams. FAT remains only for `/EPOCH.OBE`, `/UPDATE.BIN`, and `/ROLLBACK.BIN` until
+//! the updater moves to the flat store.
 //!
 //! ## The transport: **native 4-bit SD over Nordic's sEMMC soft peripheral** (epic #1158)
 //!
@@ -39,8 +21,8 @@
 //! Reads run 4-bit at **32 MHz** (14.7 MB/s measured, CMD18 × 256 blocks) and writes at 21.3 MHz
 //! (8.2 MB/s, card-program-limited) — against 1.07 MB/s over the SPI transport this replaced. The
 //! only thing this file does about any of that is [`SemmcCard`]: a `BlockDevice` over
-//! [`crate::semmc::Semmc`]. Everything above it — [`Storage`], the FAT layer, the extent fast path,
-//! the object store, the boot-fault rule — is transport-agnostic and did not move.
+//! [`crate::semmc::Semmc`]. Everything above it — [`Storage`], the FAT layer, the updater extent
+//! resolver, and the boot-fault rule — is transport-agnostic and did not move.
 
 #[cfg(feature = "sd-bench")]
 use embassy_time::Instant;
@@ -48,54 +30,21 @@ use embedded_sdmmc::{
     Block, BlockCount, BlockDevice, BlockIdx, LfnBuffer, Mode, RawDirectory, RawFile, ShortFileName, TimeSource,
     Timestamp, VolumeManager,
 };
-use heapless::{String, Vec};
-use obc_app::ride::{decode_synced_rides, encode_synced_rides, SyncedRides, SYNCED_RIDES_MAX_LEN};
 use obc_app::store_meta::{decode_store_epoch, encode_store_epoch, STORE_EPOCH_LEN};
-use obc_app::{MAX_RIDES, UI_RIDES_CAP};
 use obc_dfu::armer::{ExtentsError, ScanError, StageIo};
 use obc_formats::io::ByteSource;
-use obc_formats::obcr::NAME_CAP;
-use obc_route::{ride_elevation_profile, ride_preview_polyline, track_to_ride, Profile, RideInfo, RideStats};
 use obc_storage::shared_device::SharedBlockDevice;
-use obc_storage::{SdByteSink, SdByteSource, SdTrackSink};
-
-/// The in-progress ride log on the card — a header-less array of fixed track records (8.3
-/// name). Truncated-and-reused per ride, converted to the `RD{id}.ORD` ride object, then
-/// deleted on Finish.
-const TRACK_TMP: &str = "TRACK.OBT";
-
-/// The synced-ride sidecar in `/tracks` (epic #447 P7 / #454): the set of ride object ids the phone
-/// has downloaded at least once, so the Rides screen can render an *unsynced* ride's delete footer
-/// with the warning cue. In `/tracks` (not RRAM) so it survives a reflash and travels with the card
-/// alongside the rides it flags. Rewritten on a download completion; parsed leniently (a torn/missing
-/// file = "nothing synced"). Codec + torn-line semantics live in `obc-app::settings` (host-tested).
-const SYNCED_SET: &str = "SYNCED.SET";
-
-/// Which step of a CRC-framed sidecar rewrite failed (finding #876-5). A truncating rewrite is only
-/// **durable** when open, write, flush, **and** close all succeed; a swallowed flush/close error is a
-/// torn persist. Callers whose failure direction is safe by design (a torn retention/synced sidecar
-/// decodes conservatively → nothing deletes) may treat this best-effort.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SidecarWriteError {
-    /// The directory was absent, or the file could not be opened for a truncating rewrite.
-    Open,
-    /// The payload write failed.
-    Write,
-    /// The flush after the write failed (bytes may not have reached the card).
-    Flush,
-    /// The close failed (the directory entry / length may not be committed).
-    Close,
-}
+use obc_storage::SdByteSource;
 
 /// The store-epoch nonce file in the **card root** (protocol v2 #632 item 5; card-resident #776):
 /// the `u32` id-era name the phone reads over the pre-pairing `protocolVersion` read. Kept in the
-/// card **root** (not `/tracks`) because the epoch names the *whole* store, not rides specifically
-/// — so the SD card is the sole home of the id-era name: a card swap
+/// card **root** because the epoch names the *whole* store — so the SD card is the sole home of the
+/// id-era name: a card swap
 /// transplants the store's identity (swap back restores the old era, a card written by a *different*
 /// device presents *its* epoch — its own scope, closing the foreign-card hole the retired RRAM line
 /// left open). Minted/rewritten only at boot by the mint pass; a missing/torn file reads as "no
 /// epoch" → the mint rule draws a fresh one. Codec + torn-line semantics live in `obc-app::settings`
-/// (host-tested), the direct analogue of the `SYNCED.SET` sidecar.
+/// (host-tested).
 const EPOCH_FILE: &str = "EPOCH.OBE";
 
 /// The staged firmware update in the **card root** (epic #615, locked: 8.3-safe, no LFN — the
@@ -105,14 +54,13 @@ const UPDATE_BIN: &str = "UPDATE.BIN";
 
 /// The armer's snapshot of the **running** image (epic #615 S4, #619), in the card root next to
 /// [`UPDATE_BIN`]: a full OBCU container (64-byte header + raw image read straight out of RRAM),
-/// truncated-and-reused per arm like `TRACK.OBT`. The bootloader flashes it back if a trial boot
-/// goes unconfirmed.
+/// truncated-and-reused per arm. The bootloader flashes it back if a trial boot goes unconfirmed.
 const ROLLBACK_BIN: &str = "ROLLBACK.BIN";
 
 /// The concrete SD stack for this board: [`SemmcCard`] — the card in native 4-bit mode on the FLPR
 /// — under a 16-file/4-dir [`VolumeManager`].
 ///
-/// The manager keeps a larger-than-default handle budget for the retained ride and update paths.
+/// The manager keeps the existing measured handle budget until this FAT stack is retired.
 type Sd = SemmcCard;
 /// What the retained legacy manager owns: the card by shared reference, leaving its raw handle
 /// available to the DFU extent resolver.
@@ -120,16 +68,8 @@ type SdShared = SharedBlockDevice<'static, Sd>;
 /// The open-handle budget (see the file-count note above) — one set of consts so the manager and
 /// the `obc-platform` wrapper aliases below can never drift apart.
 const SD_MAX_DIRS: usize = 4;
-/// **Why 16, and why it is not 6 again.** The pre-volume-set budget was 6: the 5-handle mid-ride
-/// peak documented above plus one slot of headroom. A mounted volume set then needed one handle per
-/// shard for the mount lifetime, and 16 is where that landed.
-///
-/// The set is gone (FS7.5-c3b, #1420) and this is **deliberately not reverted to 6**. The cost is
-/// 640 B of `.bss` that the resource baseline already accounts for, and the reason to leave it is
-/// that this whole module is FS11's to delete (#1393) — shrinking a budget inside a stack that is
-/// being retired trades a measured, harmless allocation for a fresh chance to under-size the one
-/// thing that fails *only* mid-ride. If FS11 slips, this is a two-line change with a number
-/// already attached.
+/// This is deliberately not resized while the FAT stack awaits deletion in FS11 (#1393): its 640 B
+/// delta from the former six-handle budget is already included in the resource baseline.
 ///
 /// The cost is measured, not guessed: the fork's `FileInfo` (`filesystem/files.rs`) is `RawFile`
 /// 4 · `RawVolume` 4 · `current_cluster` 8 · `current_offset` 4 · `Mode` 1 · `DirEntry` 40 ·
@@ -139,11 +79,8 @@ const SD_MAX_DIRS: usize = 4;
 const SD_MAX_FILES: usize = 16;
 const SD_MAX_VOLUMES: usize = 1;
 type Vmgr = VolumeManager<SdShared, NullTime, SD_MAX_DIRS, SD_MAX_FILES, SD_MAX_VOLUMES>;
-/// [`SdTrackSink`] over this board's manager.
-type TrackSinkT<'a> = SdTrackSink<'a, SdShared, NullTime, SD_MAX_DIRS, SD_MAX_FILES, SD_MAX_VOLUMES>;
 
-/// FAT timestamps need a clock; the device has none yet (see [`obc_ports::TrackPoint::t_ms`]),
-/// so every file gets the epoch. Real dates wait on a clock source.
+/// FAT timestamps need a clock; the device has none yet, so every file gets the epoch.
 /// `pub(crate)` only because it surfaces in the adapter return types the loop names.
 pub(crate) struct NullTime;
 impl TimeSource for NullTime {
@@ -152,54 +89,12 @@ impl TimeSource for NullTime {
     }
 }
 
-/// The mounted legacy FAT card: ride, update and weather state retained until their flat slices land.
+/// The mounted legacy FAT card retained for the staged updater, store epoch, and free-space read.
 pub struct Storage {
     vmgr: Vmgr,
     /// The raw card the manager's [`SdShared`] borrows — the extent path's direct read handle.
     card: &'static Sd,
     root: RawDirectory,
-    /// `/tracks` (created on mount if absent), or `None` if it couldn't be opened/created
-    /// (rides then can't be saved, but the rest still works).
-    tracks_dir: Option<RawDirectory>,
-    /// 8.3 filename of each *ride* catalog entry, parallel to the ride order
-    /// [`scan_rides_into`](Storage::scan_rides_into) last returned — so a ride's durable object id resolves back
-    /// to the `RD{id}.ORD` file for detail reads and object-store deletes.
-    ride_files: Vec<ShortFileName, UI_RIDES_CAP>,
-    /// Each ride catalog entry's **durable object id**, parallel to [`ride_files`](Storage::ride_files)
-    /// — filename-encoded (`RD{id}.ORD`), the identity the app's ride-menu remap and the phone's
-    /// synced/tombstone sets key on.
-    ride_ids: Vec<u16, UI_RIDES_CAP>,
-    /// The open ride log for the current tracking session.
-    open_track: Option<OpenTrack>,
-    /// A finished ride whose log → ride-object conversion hasn't run yet. Finish only closes the
-    /// log and stashes this; the ride loop runs [`run_pending_save`](Storage::run_pending_save)
-    /// once the confirm animation has left the glass, so the save's blocking SD stretch never
-    /// freezes the hold bulge (the "finishing a ride is laggy" bug).
-    pending_save: Option<PendingSave>,
-    /// A ride object landed on the card this pass ([`run_pending_save`](Storage::run_pending_save)
-    /// committed an `RD{id}.ORD`) and the store edge hasn't been raised yet. Set by **every** save
-    /// path (the quiet-glass deferred run *and* the back-to-back flush inside
-    /// [`begin_track`](Storage::begin_track)/[`reconcile_track`](Storage::reconcile_track)), drained
-    /// once per ride-loop pass via [`take_ride_saved`](Storage::take_ride_saved) — which is what
-    /// makes a freshly-finished ride reach the Rides menu (and, on `ble`, the phone's catalog)
-    /// without a reboot.
-    ride_saved: bool,
-}
-
-/// One open `.obct` ride log: the session it belongs to, its file handle, and the save name
-/// (the route name, frozen at begin, so a later route change can't rename a finished file).
-struct OpenTrack {
-    session: u32,
-    file: RawFile,
-    name: String<NAME_CAP>,
-}
-
-/// A Finish waiting for its deferred log → `RD{id}.ORD` conversion: the save name and the ride
-/// totals snapshotted on the Finish frame. The log itself is already flushed + closed on the card
-/// as [`TRACK_TMP`], so a power cut before the conversion loses nothing a crash mid-ride wouldn't.
-struct PendingSave {
-    name: String<NAME_CAP>,
-    stats: RideStats,
 }
 
 /// **Bring the card up, and mount nothing on it.** Boot the sEMMC soft peripheral and identify the
@@ -222,7 +117,7 @@ struct PendingSave {
 /// constructor, not the coroutine body). Synchronous — the shape that ships — the same build
 /// measures **7,328 B**, which is what the resource guard pins as `task_frame_measured`.
 ///
-/// It is safe to block here: bring-up runs before the ride loop, the BLE stack and the USB plane
+/// It is safe to block here: bring-up runs before the app loop, the BLE stack and the USB plane
 /// exist, and the panel's anti-DC-bias COM wave is on the P3 `InterruptExecutor` (or, on `com-hw`,
 /// on TIMER + DPPI + GPIOTE), so it preempts thread mode rather than competing with it. See
 /// `Semmc::start`'s note for the full accounting.
@@ -390,204 +285,12 @@ impl BlockDevice for SemmcCard {
 impl Storage {
     /// Iterate `dir`'s entries with their long filenames, running `f` per entry. Wraps
     /// `iterate_dir_lfn`'s [`LfnBuffer`] scratch setup (a 256-byte buffer is ample for an 8.3 dir),
-    /// so the `.obcm`/`.obcr` scans below don't each repeat it. The iteration error is ignored —
-    /// a partial scan still yields what it read, the same as the bare call did.
+    /// so updater scans don't repeat it. The iteration error is ignored — a partial scan still
+    /// yields what it read, the same as the bare call did.
     fn iter_dir_lfn(&self, dir: RawDirectory, mut f: impl FnMut(&embedded_sdmmc::DirEntry, Option<&str>)) {
         let mut lfn_storage = [0u8; 256];
         let mut lfn = LfnBuffer::new(&mut lfn_storage);
         let _ = self.vmgr.iterate_dir_lfn(dir, &mut lfn, |e, long| f(e, long));
-    }
-
-    /// Scan `/tracks` for stored ride objects into the app's Rides menu (epic #447 P7 / #454):
-    /// [`RideSummary`](obc_app::RideSummary) per `RD{id}.ORD` — the **newest [`UI_RIDES_CAP`]**
-    /// (by `start_time`), newest first — each stamped with its `synced` flag from the
-    /// [`SYNCED_SET`] sidecar (read once here, not per file). Fills the parallel
-    /// [`ride_files`](Storage::ride_files)/[`ride_ids`](Storage::ride_ids) tables so a
-    /// hold-to-delete can resolve a durable id back to its file.
-    ///
-    /// **Stack discipline** (this fn hard-faulted the 256 KB part at boot, twice, before it
-    /// respected the budget): the first cut stacked an ~8 KB aligned sort temp on the ~6 KB
-    /// 128-cap catalog (>16 KB one frame); the second kept a 128-cap catalog whose *resident*
-    /// twin in `App`+`Storage` ate the deep-render path's last ~1.6 KB of margin — statics and
-    /// stack are zero-sum on this part. Now the catalog is [`UI_RIDES_CAP`]-capped (~1.4 KB) and
-    /// ordering is a bounded **top-K insertion** as summaries are read — no sort temp at all.
-    /// Fills the caller's catalog rather than returning a large buffer by value.
-    pub fn scan_rides_into(&mut self, catalog: &mut Vec<obc_app::RideSummary, UI_RIDES_CAP>) {
-        catalog.clear();
-        self.ride_files.clear();
-        self.ride_ids.clear();
-        let synced = self.load_synced_set();
-        let Some(dir) = self.tracks_dir else { return };
-
-        // Collect (id, name) for every RD{id}.ORD.
-        let mut entries: Vec<(u16, ShortFileName), MAX_RIDES> = Vec::new();
-        let mut overflow = false;
-        self.iter_dir_lfn(dir, |e, _| {
-            if let Some(id) = stored_ride_id(&e.name) {
-                if entries.push((id, e.name.clone())).is_err() {
-                    overflow = true;
-                }
-            }
-        });
-        if overflow {
-            defmt::warn!("SD: scan: more than {=usize} ride files — the excess is not listed", MAX_RIDES);
-        }
-
-        // Read each header and keep the newest UI_RIDES_CAP via bounded insertion: find the
-        // summary's slot by descending start_time; a full catalog drops the oldest (or skips the
-        // candidate when it is the oldest). The three parallel tables move together on every
-        // insert/evict, staying aligned.
-        for (id, n) in &entries {
-            let file = match self.vmgr.open_file_in_dir(dir, n, Mode::ReadOnly) {
-                Ok(f) => f,
-                Err(_) => {
-                    defmt::warn!("SD: scan: cannot open ride {} — not listed", defmt::Debug2Format(n));
-                    continue;
-                }
-            };
-            let len = self.vmgr.file_length(file).unwrap_or(0);
-            match RideInfo::read(&SdByteSource::new(&self.vmgr, file, len)) {
-                Ok(info) => {
-                    let sum = obc_app::RideSummary::from_info(&info, synced.contains(*id), synced.synced_at(*id));
-                    let pos = catalog.iter().position(|c| sum.start_time > c.start_time).unwrap_or(catalog.len());
-                    // A full catalog evicts its oldest for a newer candidate; a candidate older
-                    // than everything listed is simply not one of the newest UI_RIDES_CAP.
-                    if catalog.is_full() && pos < catalog.len() {
-                        let _ = catalog.pop();
-                        let _ = self.ride_files.pop();
-                        let _ = self.ride_ids.pop();
-                    }
-                    if pos <= catalog.len() && !catalog.is_full() {
-                        let _ = catalog.insert(pos, sum);
-                        let _ = self.ride_files.insert(pos, n.clone());
-                        let _ = self.ride_ids.insert(pos, *id);
-                    }
-                }
-                Err(_) => defmt::warn!("SD: scan: ride {} unreadable — not listed", defmt::Debug2Format(n)),
-            }
-            let _ = self.vmgr.close_file(file);
-        }
-
-        if entries.len() > catalog.len() {
-            defmt::info!("SD: rides menu lists the newest {=usize} of {=usize} stored", catalog.len(), entries.len());
-        }
-        defmt::info!("SD: {=usize} ride(s) in /tracks", catalog.len());
-    }
-
-    /// Each ride catalog entry's durable object id, parallel to the catalog
-    /// [`scan_rides_into`](Storage::scan_rides_into) last returned — the second argument to
-    /// [`App::set_rides`](obc_app::App::set_rides).
-    pub fn ride_ids(&self) -> &[u16] {
-        &self.ride_ids
-    }
-
-    /// Read the synced-ride sidecar (`/tracks/SYNCED.SET`) into a [`SyncedRides`] set. A missing,
-    /// torn, or malformed sidecar decodes to the **empty** set ("nothing synced") — never a panic
-    /// (the codec + torn-line semantics are host-tested in `obc-app::settings`). One file read.
-    pub fn load_synced_set(&self) -> SyncedRides {
-        let Some(dir) = self.tracks_dir else { return SyncedRides::new() };
-        let Ok(file) = self.vmgr.open_file_in_dir(dir, SYNCED_SET, Mode::ReadOnly) else {
-            return SyncedRides::new(); // absent = nothing synced
-        };
-        let mut buf = [0u8; SYNCED_RIDES_MAX_LEN];
-        let n = self.vmgr.read(file, &mut buf).unwrap_or(0);
-        let _ = self.vmgr.close_file(file);
-        decode_synced_rides(&buf[..n])
-    }
-
-    /// Record a batch of ride ids as synced at `synced_at` in **one** sidecar read-modify-write (the
-    /// `ackRides` command can carry dozens of ids — a per-id rewrite would be that many file
-    /// round-trips). Returns how many ids were **newly** flagged; `0` = the sidecar was not
-    /// rewritten. Ids already flagged (or dropped by a full set) count as nothing-new.
-    pub fn mark_rides_synced(&mut self, ids: impl Iterator<Item = u16>, synced_at: u32) -> usize {
-        let mut set = self.load_synced_set();
-        // The merge rule itself lives in `SyncedRides::ack` (obc-app), where it is host-tested:
-        // add-only, idempotent, first-stamp-wins — which is what lets a desktop ack and a phone
-        // heal commute (E1, #911). This function only owns the read-modify-write around it.
-        let added = set.ack(ids, synced_at);
-        if added > 0 {
-            let _ = self.write_synced_set(&set);
-        }
-        added
-    }
-
-    /// The **full** compact ride-retention inventory (finding #876-2): every synced ride's
-    /// `id + synced + synced_at`, up to [`MAX_RIDES`], read straight off the synced-set sidecar — so
-    /// the auto-delete sweep + the eager `synced_at` stamp reach a synced+expired ride even when it
-    /// sits below the newest-[`UI_RIDES_CAP`] the Rides menu shows. An unsynced ride carries no
-    /// retention state and is never in the set. One file read; the board hands this to
-    /// [`App::set_ride_retention_inventory`](obc_app::App::set_ride_retention_inventory) after each
-    /// ride rescan.
-    pub fn ride_retention_inventory(&self) -> Vec<obc_app::RideRetentionRecord, MAX_RIDES> {
-        let mut out = Vec::new();
-        for (id, synced_at) in self.load_synced_set().entries() {
-            let _ =
-                out.push(obc_app::RideRetentionRecord { id: u64::from(id), synced: true, synced_at_utc: synced_at });
-        }
-        out
-    }
-
-    /// Stamp a **legacy** synced-without-timestamp ride's `synced_at` (auto-expiry epic #638, S3 —
-    /// the sweep's [`StampRideSynced`](obc_app::HostCommand::StampRideSynced) countdown-start). Only
-    /// ever fills a `0` stamp; rewrites the sidecar only when it changed.
-    pub fn stamp_ride_synced_at(&mut self, id: u16, synced_at: u32) {
-        let mut set = self.load_synced_set();
-        if set.stamp_synced_at(id, synced_at) {
-            let _ = self.write_synced_set(&set);
-        }
-    }
-
-    /// Retire ride `id`'s synced flag from the sidecar (a deleted ride — ids never reuse, so this is
-    /// belt-and-braces tidiness). Rewrites the sidecar only when the flag was present.
-    pub fn forget_ride_synced(&mut self, id: u16) {
-        let mut set = self.load_synced_set();
-        if set.remove(id) {
-            let _ = self.write_synced_set(&set);
-        }
-    }
-
-    /// The centralized CRC-framed sidecar rewrite (finding #876-5): open (truncating) → write →
-    /// flush → close, checking **every** step, and returning the first that failed. The file is
-    /// always flushed + closed even after a write error so the open-file budget is never leaked, and
-    /// the failing step is named in the log (the consequence line lives at the call site, which knows
-    /// whether the failure is safe-by-design or must surface to the phone).
-    fn rewrite_sidecar(
-        &mut self,
-        dir: Option<RawDirectory>,
-        name: &str,
-        bytes: &[u8],
-    ) -> Result<(), SidecarWriteError> {
-        let Some(dir) = dir else { return Err(SidecarWriteError::Open) };
-        let file = self
-            .vmgr
-            .open_file_in_dir(dir, name, Mode::ReadWriteCreateOrTruncate)
-            .map_err(|_| SidecarWriteError::Open)?;
-        // Write, then flush + close **unconditionally** to release the handle, then report the first
-        // failing step.
-        let wrote = self.vmgr.write(file, bytes).is_ok();
-        let flushed = self.vmgr.flush_file(file).is_ok();
-        let closed = self.vmgr.close_file(file).is_ok();
-        let step = if !wrote {
-            Some(SidecarWriteError::Write)
-        } else if !flushed {
-            Some(SidecarWriteError::Flush)
-        } else if !closed {
-            Some(SidecarWriteError::Close)
-        } else {
-            None
-        };
-        match step {
-            Some(e) => {
-                defmt::warn!(
-                    "SD: sidecar rewrite failed (write {=bool} flush {=bool} close {=bool})",
-                    wrote,
-                    flushed,
-                    closed
-                );
-                Err(e)
-            }
-            None => Ok(()),
-        }
     }
 
     /// Read the card-resident store-epoch nonce (`/EPOCH.OBE`, protocol v2 #632 item 5 / #776), or
@@ -609,9 +312,8 @@ impl Storage {
     /// pass, when the mint rule fires — so the write rate is negligible. Returns `true` only when
     /// **every** step — open, write, flush, close — succeeded: a discarded flush/close error is a
     /// torn persist, and the mint pass gates the id-marks write and the served epoch on this result
-    /// (unlike the other sidecar writers, whose failure direction is safe by design, a swallowed
-    /// epoch-write failure would let a clause-2 mint go permanently undetected: old valid epoch on
-    /// card + freshly-written valid floor = steady state next boot — the exact aliasing the epoch
+    /// (a swallowed epoch-write failure would let a clause-2 mint go permanently undetected: old
+    /// valid epoch on card + freshly-written valid floor = steady state next boot — the exact aliasing the epoch
     /// exists to catch). Whole persist within the call (open, write truncating, flush, close), so it
     /// never counts against the open-file budget across an `await`.
     #[must_use]
@@ -639,64 +341,6 @@ impl Storage {
             );
         }
         ok
-    }
-
-    /// Overwrite the synced-ride sidecar (truncating), returning whether the whole rewrite reached
-    /// the card (finding #876-5). A torn write is safe by design — a ride reads as unsynced next boot
-    /// (the safe default: never deleted, and the phone re-acks on reconnect) — so the synced-flag
-    /// callers treat it best-effort; the helper logs the failing step.
-    fn write_synced_set(&mut self, set: &SyncedRides) -> Result<(), SidecarWriteError> {
-        let mut buf = [0u8; SYNCED_RIDES_MAX_LEN];
-        let n = encode_synced_rides(set, &mut buf);
-        self.rewrite_sidecar(self.tracks_dir, SYNCED_SET, &buf[..n])
-    }
-
-    /// Build the stored ride `id`'s recorded-track elevation [`Profile`] — the Ride detail's band
-    /// fill (epic #678 T2 / #680), answering
-    /// [`App::ride_track_request`](obc_app::App::ride_track_request). Resolves the id
-    /// through the scan-parallel [`ride_ids`](Storage::ride_ids)/[`ride_files`](Storage::ride_files)
-    /// tables and streams the `RD{id}.ORD` once through the shared `ride_elevation_profile`
-    /// (~448 B per SD read, no whole-track buffer — the ~36 KB stack budget's discipline; the
-    /// returned `Profile` is the nrf-mem ~3 KB build). `None` = unknown id / unopenable / torn file
-    /// — the caller parks the failure so the read isn't ground against every pass.
-    pub fn ride_profile_by_id(&mut self, id: u16) -> Option<Profile> {
-        let pos = self.ride_ids.iter().position(|&x| x == id)?;
-        let name = self.ride_files[pos].clone();
-        let dir = self.tracks_dir?;
-        let file = match self.vmgr.open_file_in_dir(dir, &name, Mode::ReadOnly) {
-            Ok(f) => f,
-            Err(_) => {
-                defmt::warn!("SD: ride profile: cannot open {} — band stays empty", defmt::Debug2Format(&name));
-                return None;
-            }
-        };
-        let len = self.vmgr.file_length(file).unwrap_or(0);
-        let profile = ride_elevation_profile(&SdByteSource::new(&self.vmgr, file, len)).ok();
-        let _ = self.vmgr.close_file(file);
-        profile
-    }
-
-    /// Build the stored ride `id`'s decimated recorded-track shape polyline (#678 rework 3) —
-    /// the preview half of the Ride detail's track-request answer, `ride_profile_by_id`'s twin:
-    /// the same id resolution, one forward streaming pass through the shared
-    /// `ride_preview_polyline` (~448 B blocks, no whole-track
-    /// buffer, no backward seeks — the #502 FAT lesson). Empty = unknown id / unopenable / torn
-    /// file — the detail's track page just leaves its slot blank.
-    pub fn ride_preview_by_id(&mut self, id: u16) -> heapless::Vec<(i32, i32), { obc_app::NAV_PREVIEW_MAX }> {
-        let Some(pos) = self.ride_ids.iter().position(|&x| x == id) else { return heapless::Vec::new() };
-        let name = self.ride_files[pos].clone();
-        let Some(dir) = self.tracks_dir else { return heapless::Vec::new() };
-        let file = match self.vmgr.open_file_in_dir(dir, &name, Mode::ReadOnly) {
-            Ok(f) => f,
-            Err(_) => {
-                defmt::warn!("SD: ride preview: cannot open {} — track page stays empty", defmt::Debug2Format(&name));
-                return heapless::Vec::new();
-            }
-        };
-        let len = self.vmgr.file_length(file).unwrap_or(0);
-        let pts = ride_preview_polyline(&SdByteSource::new(&self.vmgr, file, len)).unwrap_or_default();
-        let _ = self.vmgr.close_file(file);
-        pts
     }
 
     /// Free space on the SD card in bytes (T8 item 6) — a bounded **FAT free-cluster** read: the
@@ -739,196 +383,6 @@ impl Storage {
         }
         Some(free_clusters as u64 * sec_per_clus * bytes_per_sec)
     }
-
-    /// Reconcile the open ride log to the app's tracking intent — call once per frame *before*
-    /// ticking, mirroring the sim's `TrackStore::reconcile`. Drains the one-shot disposition
-    /// first (finalising / abandoning the current log), then opens a fresh log when the session
-    /// id changes. `name` is the active route's name (the save filename); `stats` is the app's
-    /// ride totals + wall-clock anchor, read the same frame — the ride object's header. `marks`
-    /// is the RRAM id high-water store (#450), threaded through for the ride-id allocation a
-    /// back-to-back begin's early flush may need.
-    pub fn reconcile_track(
-        &mut self,
-        action: Option<obc_app::TrackAction>,
-        session: Option<u32>,
-        name: &str,
-        stats: Option<&RideStats>,
-        marks: &mut crate::settings::RramSettingsStore,
-    ) {
-        use obc_app::TrackAction;
-        match action {
-            Some(TrackAction::Save) => self.finalize_track(stats),
-            Some(TrackAction::Discard) => self.abandon_track(),
-            None => {}
-        }
-        match session {
-            Some(id) if self.open_track.as_ref().map(|o| o.session) != Some(id) => self.begin_track(id, name, marks),
-            None => self.abandon_track(), // no session → ensure nothing is left open
-            _ => {}                       // same session → keep appending
-        }
-    }
-
-    /// The [`TrackSink`](obc_ports::TrackSink) for the open log, or `None` when not recording.
-    pub fn track_sink(&self) -> Option<TrackSinkT<'_>> {
-        self.open_track.as_ref().map(|o| SdTrackSink::new(&self.vmgr, o.file))
-    }
-
-    /// Open (truncating) a fresh `TRACK.OBT` for session `id`, to be saved as `name`.
-    fn begin_track(&mut self, id: u32, name: &str, marks: &mut crate::settings::RramSettingsStore) {
-        // A still-deferred previous Finish must convert **before** the truncate below destroys its
-        // log — the rare back-to-back case (Finish, then a new ride within the same quiet moment)
-        // pays the blocking save up front rather than losing the ride.
-        self.run_pending_save(marks);
-        self.abandon_track(); // close any previous handle first
-        let Some(dir) = self.tracks_dir else { return };
-        match self.vmgr.open_file_in_dir(dir, TRACK_TMP, Mode::ReadWriteCreateOrTruncate) {
-            Ok(file) => {
-                let mut nm = String::new();
-                let _ = nm.push_str(name);
-                self.open_track = Some(OpenTrack { session: id, file, name: nm });
-                defmt::info!("SD: recording ride → {=str}", name);
-            }
-            Err(e) => defmt::warn!("SD: cannot open ride log: {}", defmt::Debug2Format(&e)),
-        }
-    }
-
-    /// Finish the ride log: flush + close the temp and **stash** the log → ride-object conversion
-    /// as a [`PendingSave`] — deliberately doing no bulk SD work here. The Finish gesture lands
-    /// mid-confirm-animation, and the conversion is the longest blocking SD stretch the ride loop
-    /// has; the loop runs [`run_pending_save`](Self::run_pending_save) once the glass is quiet.
-    /// With no ride totals to head the object (`stats == None` — can't happen on a real Finish)
-    /// the temp is kept unconverted rather than writing a headerless object.
-    fn finalize_track(&mut self, stats: Option<&RideStats>) {
-        let Some(ot) = self.open_track.take() else { return };
-        let _ = self.vmgr.flush_file(ot.file);
-        let _ = self.vmgr.close_file(ot.file);
-        let Some(stats) = stats else {
-            defmt::warn!("SD: finish without ride stats — kept TRACK.OBT unconverted");
-            return;
-        };
-        self.pending_save = Some(PendingSave { name: ot.name, stats: *stats });
-    }
-
-    /// Whether a finished ride still awaits its deferred conversion — the ride loop keeps its
-    /// short wake cadence while this is true, so the save actually runs.
-    pub fn has_pending_save(&self) -> bool {
-        self.pending_save.is_some()
-    }
-
-    /// Run a deferred Finish, if any: one streaming [`track_to_ride`] pass over the closed
-    /// `TRACK.OBT` into a confirmed-free `RD{id}.ORD`, deleting the temp **only once the ride is
-    /// safely in the object**. Any path that can't guarantee a clean save — no confirmed-free
-    /// name, the object won't open, or the conversion errors — keeps `TRACK.OBT` so the ride
-    /// isn't lost to a transient SD glitch (a card-pull can still recover it; a fresh ride
-    /// truncates it, as before).
-    ///
-    /// `track_to_ride` holds the version byte back and patches it in as its final write, so a
-    /// power cut mid-save leaves a file every reader rejects (and whose id-in-name still reserves
-    /// the id — a later ride can't alias it for the app's synced-set).
-    ///
-    /// This is the ride path's one long blocking SD stretch, which is exactly why it is deferred:
-    /// the ride loop calls it only when the hold bulge is quiet, and [`begin_track`](Self::begin_track)
-    /// flushes it early if a new ride would otherwise truncate the unconverted temp.
-    ///
-    /// `marks` is the RRAM id high-water store (#450): the ride id is allocated as
-    /// `max(scan_max + 1, stored floor)` and the floor is bumped past it **before** the object is
-    /// written — so once device-side ride deletion exists, a deleted id can never be re-issued to
-    /// a later ride and alias it in the phone's synced/tombstone sets. A blank/torn floor line
-    /// decodes to "no floor" and this degrades to exactly the old scan-max + 1.
-    pub fn run_pending_save(&mut self, marks: &mut crate::settings::RramSettingsStore) {
-        let Some(ps) = self.pending_save.take() else { return };
-        let Some(dir) = self.tracks_dir else { return };
-        let Ok(src_file) = self.vmgr.open_file_in_dir(dir, TRACK_TMP, Mode::ReadOnly) else {
-            defmt::warn!("SD: pending save: cannot reopen TRACK.OBT — kept for a card-pull");
-            return;
-        };
-        let len = self.vmgr.file_length(src_file).unwrap_or(0);
-
-        let mut m = marks.load_id_marks().unwrap_or_default();
-        let id = m.alloc_ride(self.next_ride_id(dir));
-        marks.save_id_marks(&m); // one 16-byte RRAM line per ride finish — the durable never-reuse floor
-        let saved = match self.fresh_object_name(dir, "RD", id, "ORD") {
-            Some(file_name) => match self.vmgr.open_file_in_dir(dir, &file_name, Mode::ReadWriteCreateOrTruncate) {
-                Ok(dst_file) => {
-                    let source = SdByteSource::new(&self.vmgr, src_file, len);
-                    let mut sink = SdByteSink::new(&self.vmgr, dst_file);
-                    let ok = match track_to_ride(&source, &ps.name, &ps.stats, &mut sink) {
-                        Ok(()) => {
-                            defmt::info!("SD: saved ride → tracks/RD{=u16}.ORD", id);
-                            true
-                        }
-                        Err(e) => {
-                            defmt::warn!("SD: ride-object write failed: {} — kept TRACK.OBT", defmt::Debug2Format(&e));
-                            false
-                        }
-                    };
-                    let _ = self.vmgr.flush_file(dst_file);
-                    let _ = self.vmgr.close_file(dst_file);
-                    ok
-                }
-                Err(e) => {
-                    defmt::warn!("SD: cannot open ride object: {} — kept TRACK.OBT", defmt::Debug2Format(&e));
-                    false
-                }
-            },
-            None => {
-                defmt::warn!("SD: ride-object name RD{=u16}.ORD unavailable — kept TRACK.OBT (no overwrite)", id);
-                false
-            }
-        };
-        let _ = self.vmgr.close_file(src_file);
-        // Drop the temp only after the ride is confirmed written; otherwise keep it.
-        if saved {
-            let _ = self.vmgr.delete_file_in_dir(dir, TRACK_TMP);
-            // Raise the saved-ride flag for the ride loop's per-pass drain (`take_ride_saved`) —
-            // the edge that gets the fresh `RD{id}.ORD` into the Rides menu (and the phone's
-            // catalog) without a reboot. Set here, at the single commit point, so every caller
-            // (deferred run and back-to-back flush alike) raises it.
-            self.ride_saved = true;
-        }
-    }
-
-    /// Drain the saved-ride flag: `true` exactly once after [`run_pending_save`] committed a ride
-    /// object. The ride loop checks this once per pass and raises the store edge from it — on `ble`
-    /// by posting [`crate::object_store::note_ride_saved`] (the BLE plane re-scans its catalog and
-    /// bumps the revision, so the phone's `storeChanged`/digest and the Rides menu learn from the
-    /// same edge).
-    pub fn take_ride_saved(&mut self) -> bool {
-        core::mem::take(&mut self.ride_saved)
-    }
-
-    /// One past the highest ride object id stored in `/tracks` (0 on a virgin card) — the **scan
-    /// half** of the ride-id allocation. On its own it would resurrect a deleted id; the caller
-    /// (`run_pending_save`) maxes it against the persisted RRAM high-water floor (#450), which is
-    /// what keeps ids unique across deletes and reboots.
-    fn next_ride_id(&self, dir: RawDirectory) -> u16 {
-        let mut next = 0u16;
-        self.iter_dir_lfn(dir, |e, _| {
-            if let Some(id) = stored_ride_id(&e.name) {
-                next = next.max(id.saturating_add(1));
-            }
-        });
-        next
-    }
-
-    /// Drop the open log without saving (Discard, or a no-session reconcile), deleting the temp.
-    fn abandon_track(&mut self) {
-        if let Some(ot) = self.open_track.take() {
-            let _ = self.vmgr.close_file(ot.file);
-            if let Some(dir) = self.tracks_dir {
-                let _ = self.vmgr.delete_file_in_dir(dir, TRACK_TMP);
-            }
-        }
-    }
-
-    /// Whether `name` is **confirmed absent** in `dir` — i.e. safe to create without overwriting.
-    /// Only `embedded_sdmmc::Error::NotFound` counts as free — the *only* answer that proves a
-    /// name is unused. A present entry, or **any other error** (a transient `DeviceError` on the
-    /// flaky breadboard link), is treated as "taken", so a glitch can never green-light reusing a
-    /// name and truncate an existing object.
-    fn name_is_free(&self, dir: RawDirectory, name: &str) -> bool {
-        matches!(self.vmgr.find_directory_entry(dir, name), Err(embedded_sdmmc::Error::NotFound))
-    }
 }
 
 impl Storage {
@@ -937,61 +391,6 @@ impl Storage {
     /// is the on-device confirm flow's, never a BLE command handler's.
     pub fn has_update_bin(&self) -> bool {
         ShortFileName::create_from_str(UPDATE_BIN).ok().and_then(|n| self.find_root_entry(&n)).is_some()
-    }
-
-    /// A confirmed-free `{prefix}{id}.{ext}` 8.3 name for a durable-id ride object file: only a
-    /// proven-absent name (see [`name_is_free`](Self::name_is_free)) is handed back, so a squatting
-    /// foreign file or an unproven check fails the save rather than risk an overwrite.
-    fn fresh_object_name(&self, dir: RawDirectory, prefix: &str, id: u16, ext: &str) -> Option<ShortFileName> {
-        let mut s: String<12> = String::new();
-        let _ = core::fmt::write(&mut s, format_args!("{prefix}{id}.{ext}"));
-        if self.name_is_free(dir, s.as_str()) {
-            return ShortFileName::create_from_str(s.as_str()).ok();
-        }
-        None
-    }
-
-    /// Visit every stored ride object in `/tracks` (the `RD{id}.ORD` files) with its filename-encoded
-    /// durable id. An in-progress `TRACK.OBT` (or any foreign file) never matches.
-    pub fn for_each_ride_file(&self, mut f: impl FnMut(u16, &ShortFileName)) {
-        let Some(dir) = self.tracks_dir else { return };
-        self.iter_dir_lfn(dir, |e, _| {
-            if let Some(id) = stored_ride_id(&e.name) {
-                f(id, &e.name);
-            }
-        });
-    }
-
-    /// Whether a stored ride file is an **interrupted save** — the held-back version byte still
-    /// zeroed because [`track_to_ride`]'s final patch never ran. Only that exact signature is
-    /// sweepable; a merely unreadable file must be kept.
-    pub fn is_aborted_ride_object(&self, name: &ShortFileName) -> bool {
-        let Some(dir) = self.tracks_dir else { return false };
-        let Ok(file) = self.vmgr.open_file_in_dir(dir, name, Mode::ReadOnly) else {
-            return false;
-        };
-        let mut version = [0xFFu8; 1];
-        let zeroed = matches!(self.vmgr.read(file, &mut version), Ok(1)) && version[0] == 0;
-        let _ = self.vmgr.close_file(file);
-        zeroed
-    }
-
-    /// Delete a stored ride object file (the boot sweep of interrupted saves).
-    pub fn delete_ride_file(&mut self, name: &ShortFileName) -> bool {
-        let Some(dir) = self.tracks_dir else { return false };
-        self.vmgr.delete_file_in_dir(dir, name).is_ok()
-    }
-
-    /// A stored ride object's byte length + the header facts its `rideList` entry serves. One header
-    /// read; `None` when the file doesn't validate as a ride object v1 (incl. an interrupted save's
-    /// held-back version byte — see [`track_to_ride`]).
-    pub fn ride_object_info(&self, name: &ShortFileName) -> Option<(u32, RideInfo)> {
-        let dir = self.tracks_dir?;
-        let file = self.vmgr.open_file_in_dir(dir, name, Mode::ReadOnly).ok()?;
-        let len = self.vmgr.file_length(file).unwrap_or(0);
-        let info = RideInfo::read(&SdByteSource::new(&self.vmgr, file, len)).ok();
-        let _ = self.vmgr.close_file(file);
-        Some((len, info?))
     }
 }
 
@@ -1002,12 +401,12 @@ impl Storage {
 // a bounded local FAT-chain walk. The *decision logic* — the scan
 // matrix, the arm sequencing — is pure and host-tested in `obc_dfu::armer`; these methods are
 // its thin `StageIo`/snapshot adapters over FatFs + the raw card. Everything here runs inside
-// the ride loop's drained request at shallow per-pass depth, in frames that pop on return —
+// the app loop's drained request at shallow per-pass depth, in frames that pop on return —
 // its small parsing block and the `StagedRef`s never sit resident.
 impl Storage {
     /// Locate an 8.3 `name` in the card root, returning the entry facts the extent build needs:
     /// `(entry_block, entry_offset, byte length)` — the same public `DirEntry` capture as the
-    /// map-open scan.
+    /// root-directory scan.
     fn find_root_entry(&self, name: &ShortFileName) -> Option<(embedded_sdmmc::BlockIdx, u32, u32)> {
         let mut found = None;
         self.iter_dir_lfn(self.root, |e, _| {
@@ -1046,7 +445,7 @@ impl Storage {
 
     /// Write the rollback snapshot (#619 §2): `installed`'s raw image — `image`, the caller's
     /// memory-mapped view of the app slot — re-wrapped as a full OBCU container at
-    /// `/ROLLBACK.BIN` (truncate-and-reuse, the `TRACK.OBT` idiom), then extent-resolved exactly
+    /// `/ROLLBACK.BIN` (truncate-and-reuse), then extent-resolved exactly
     /// like the update file (whole-file chain, spec §2.3).
     ///
     /// `Ok(None)` = the slot's bytes no longer CRC-match the installed header (a dev SWD reflash
@@ -1140,10 +539,9 @@ impl StageIo for SdStage<'_> {
 
 /// Resolve one legacy FAT staging file into the bootloader's raw-block extents.
 ///
-/// This is intentionally the only FAT-chain walk left after the flat-only map cutover: DFU's boot
-/// record needs physical runs, not a reusable random-read source. Runs are written directly into
-/// the caller's fixed wire-cap buffer, so there is no resident extent table or storage-crate FAT
-/// abstraction to keep alive for an unreachable map fallback.
+/// This is intentionally the only FAT-chain walk left: DFU's boot record needs physical runs, not
+/// a reusable random-read source. Runs are written directly into the caller's fixed wire-cap
+/// buffer, so there is no resident extent table or broader filesystem abstraction to keep alive.
 fn resolve_extents(
     card: &'static Sd,
     entry_block: embedded_sdmmc::BlockIdx,
@@ -1251,32 +649,4 @@ fn resolve_extents(
     } else {
         Ok(count)
     }
-}
-
-/// The **durable ride object id** in a stored ride's filename — `RD{id}.ORD` → `id`. The app's
-/// synced-set and tombstones key on these ids across device reboots.
-pub fn stored_ride_id(name: &ShortFileName) -> Option<u16> {
-    id_in_name(name, b"RD", b"ORD")
-}
-
-/// Parse `{prefix}{decimal u16}.{ext}` from an 8.3 name; `None` for anything else.
-fn id_in_name(name: &ShortFileName, prefix: &[u8], ext: &[u8]) -> Option<u16> {
-    if name.extension() != ext {
-        return None;
-    }
-    let digits = name.base_name().strip_prefix(prefix)?;
-    if digits.is_empty() {
-        return None;
-    }
-    let mut id: u32 = 0;
-    for &b in digits {
-        if !b.is_ascii_digit() {
-            return None;
-        }
-        id = id * 10 + (b - b'0') as u32;
-        if id > u16::MAX as u32 {
-            return None;
-        }
-    }
-    Some(id as u16)
 }

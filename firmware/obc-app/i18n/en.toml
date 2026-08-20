@@ -475,6 +475,14 @@ ride_time = "RIDE TIME"
 distance = "DISTANCE"
 climb = "CLIMB"
 
+# --- Boot-time recovered ride ---
+[ride_recovery]
+title = "RIDE RECOVERED"
+body = "Recording restored"
+damaged = "Recording damaged"
+continue_ride = "Continue ride"
+discard = "Discard"
+
 # --- Route-less ride start card ---
 [ride_start]
 title = "RIDE"

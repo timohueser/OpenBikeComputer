@@ -3,9 +3,9 @@
 The **real hardware target** for OpenBikeComputer: the shared `obc-app` running on
 an nRF54LM20-DK (Cortex-M33), with map/routes/tracks streamed from a microSD card —
 load a route, ride it (driven by the **real SAM-M10Q GPS + BMP581 altimeter** on the shared I²C
-bus, issue #218, or a `--features synth`/`debug-uart` stand-in for indoor work), and save the ride
-as the durable `RDnn.ORD` ride object (GPX export happens in the companion app after sync — the
-device writes no GPX). The firmware drives
+bus, issue #218, or a `--features synth`/`debug-uart` stand-in for indoor work), and record the ride
+directly as a flat-store Ride object (GPX export happens in the companion app after sync — the
+device writes no GPX or FAT conversion artifact). The firmware drives
 the reflective **LS021B7DD02** memory LCD (the panel the project ships on) via the
 nRF54L's **FLPR** (the VPR RISC-V coprocessor) — the only display path. The LS021 protocol
 is on the [display-protocol docs page](https://openbikecomputer.com/hardware/display-protocol/);
@@ -534,18 +534,9 @@ and the `command` / `status` / `config` characteristics — is canonical in
   on glass, install a wrapped `UPDATE.BIN` (`obc-mkimage`). The same string answers the USB
   §5.2.1 EP0 vendor request. Hardware Revision `nrf54l15-dk`, Serial Number the 16-hex FICR `DEVICEID`
   whose last four digits are the `OBC-XXXX` advertised name.
-- **A FAT card is a reader's card now, and nothing else.** Since FS7.5-c3b (#1420) the wire writes
-  only to a flat store: every v4 opcode against a FAT card answers `readOnly` with detail
-  `unformatted 3` (the table under "Protocol v4 on both links" below), so nothing lands on one over
-  either wire. What the FAT arm still does is *read* what an older build — or a card reader — put
-  there: `RTnn.OBR` routes beside side-loaded `.obcr`, `/MPnn.OBM` maps beside side-loaded `.obcm`
-  (`OBM` is the 8.3-safe twin the scan accepts, since this FAT layer can create short names only),
-  `/MAP.SEL` naming which of them the renderer streams from, and `/tracks/RDnn.ORD` rides — the
-  byte-for-byte S0 §7.2 ride object every Finish still writes, and the only save artifact. The
-  durable id lives in each 8.3 name and is recovered at boot; that is what the app's synced-ride set
-  keys on. `sweep_aborted_maps()` still runs at boot, because a zero-magic `MP*.OBM` corpse is what a
-  *previous* build's interrupted map upload left behind and a rider's card can still be carrying one.
-  A ride is deleted **only on the device** (its Rides screen, hold-to-delete).
+- **A FAT card is no longer a supported runtime store.** Boot rejects it as unformatted and offers
+  the recovery link; there is no FAT ride recorder, ride scan, conversion, recovery, or
+  `RD*.ORD` ownership fallback.
 - **The volume set is gone from the card, reader side included.** A map is one OBCM file with its
   terrain inside it (`OBCM_Spec.md` §1.3), so the manifest, the shards, the set-wide mount and the
   `.bss` shard table all went with FS7.5b's producers and FS7.5-c3b's reader. One consequence is
@@ -632,8 +623,8 @@ Three client-visible facts worth knowing before you debug a client against this:
   (`PROCEDURE_ALREADY_IN_PROGRESS`) rather than staged for an answer that would arrive whenever a
   channel happened to open. Lifting this needs the driver split from the channel owner and is a
   named follow-up.
-- **Ride recording is unavailable on a flat card** until FS8 (#1390) lands the tail-in-slot journal.
-  The FAT arm's ride path is untouched.
+- **Ride recording is flat-store native.** Samples are their final served bytes, checkpointed by
+  the tail-in-slot journal and completed by one footer plus one commit clearing `RECORDING`.
 - **On-glass map-transfer progress survived the cutover, and it no longer comes from a transport.**
   The card the rider watches during an upload is fed from the engine
   (`obc_link::flat::Engine::live_upload` / `take_upload_end`, published beside the engine in

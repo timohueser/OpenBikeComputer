@@ -1,8 +1,9 @@
 //! The ride journal (`FLAT_Store_Format.md` §7): the one place in this format where bytes become
 //! durable without a commit.
 //!
-//! A slot is two program pages, written in one shot and covered by one CRC: a cut corrupts a page,
-//! the CRC fails, and the slot is skipped. There is no gate.
+//! Each slot's tail is one full program page. Its header lives in a separate, page-isolated record
+//! and is written only after the tail is durable. One CRC covers the header and the full tail page:
+//! a cut during either write leaves no valid header/tail pair, so recovery skips it.
 
 use obc_crc::Crc32;
 
@@ -10,24 +11,29 @@ use super::catalog::Entry;
 use super::error::{DecodeError, Reason, Record, Result};
 use super::layout::{Ranges, BLOCK, PROGRAM_PAGE, SLOTS};
 use super::raw::{bytes16_at, is_zero, put_bytes, put_u16, put_u32, put_u64, u16_at, u32_at, u64_at};
+use super::seam::RIDE_RESUME_LEN;
 use super::seam::{ObjectId, Revision, StoreId};
 use super::FORMAT_VERSION;
 
 /// `FSRJ`.
 pub const MAGIC: [u8; 4] = *b"FSRJ";
-/// Tail bytes one slot carries (§7.1).
-pub const TAIL_CAPACITY: usize = 32_256;
+/// Tail bytes one slot carries (§7.1): one whole media program page.
+pub const TAIL_CAPACITY: usize = PROGRAM_PAGE;
 /// The slot CRC field, inside the range it covers.
 const CRC_OFFSET: usize = 504;
-/// One slot, in bytes.
+const RESUME_OFFSET: usize = 96;
+const FLAGS_OFFSET: usize = RESUME_OFFSET + RIDE_RESUME_LEN;
+const PROOF_SEQUENCE_OFFSET: usize = 200;
+const FLAG_PROOF: u16 = 1;
+/// One tail slot, in bytes. Its header is stored separately.
 #[cfg(test)]
-pub const SLOT_LEN: usize = BLOCK + TAIL_CAPACITY;
+pub const SLOT_LEN: usize = TAIL_CAPACITY;
 /// The pad between the tail and the end of the slot, in read-only memory: a slot is written in whole
 /// blocks and its CRC covers the pad, so both the writer and a verifier need zeros to hand over. Eight
-/// blocks at a time keeps the pad of a small tail to eight card writes rather than sixty-two.
+/// blocks at a time keeps the pad of a small tail to four card writes rather than thirty-two.
 pub const ZERO_PAD: [u8; 8 * BLOCK] = [0u8; 8 * BLOCK];
 
-/// One journal slot's header. The tail follows it in blocks `1..64` of the slot.
+/// One journal slot's page-isolated header. Its tail lives in the corresponding 16 KiB tail slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Slot {
     pub slot: u16,
@@ -41,9 +47,15 @@ pub struct Slot {
     /// CRC-32 over `[0, flushed + tail_len)` — a seed for the resumed session, not a verification
     /// obligation (§7.3).
     pub payload_crc: u32,
+    /// Opaque recorder continuation state. Meaningful only on logical slots.
+    pub resume: [u8; RIDE_RESUME_LEN],
+    /// A proof slot is durable source bytes for a rollover copy, never a logical checkpoint.
+    pub proof: bool,
+    /// On a logical rollover slot, the proof slot that owns the page copied before exposure.
+    pub proof_sequence: u64,
     /// Copied verbatim from the ride's catalog entry, as a cross-check.
     pub ranges: Ranges,
-    /// CRC-32 over the whole 32,768-byte slot with this field zero.
+    /// CRC-32 over this header with the field zero, followed by the full 16 KiB tail slot.
     pub slot_crc: u32,
 }
 
@@ -67,6 +79,9 @@ impl Slot {
         put_u32(&mut out, 56, self.tail_len);
         put_u32(&mut out, 60, self.payload_crc);
         put_bytes(&mut out, 64, &self.ranges.encode());
+        put_bytes(&mut out, RESUME_OFFSET, &self.resume);
+        put_u16(&mut out, FLAGS_OFFSET, if self.proof { FLAG_PROOF } else { 0 });
+        put_u64(&mut out, PROOF_SEQUENCE_OFFSET, self.proof_sequence);
         put_u32(&mut out, CRC_OFFSET, slot_crc);
         out
     }
@@ -79,7 +94,7 @@ impl Slot {
     }
 
     /// The header block as it goes on the card, with the slot CRC over the whole slot — the header
-    /// with its CRC field zero, then `tail`, then the zero pad to 32,768 bytes.
+    /// with its CRC field zero, then `tail`, then the zero pad to 16,384 tail bytes.
     pub fn seal(&self, store: &StoreId, tail: &[u8]) -> [u8; BLOCK] {
         let mut digest = header_digest(&self.encode_with(0, store));
         digest.update(tail);
@@ -118,6 +133,9 @@ impl Slot {
         if id == 0 || revision == 0 || sequence == 0 {
             return Err(err(Reason::Zero));
         }
+        if sequence % SLOTS as u64 != slot as u64 {
+            return Err(err(Reason::Position));
+        }
         let flushed = u64_at(bytes, 48);
         if !flushed.is_multiple_of(PROGRAM_PAGE as u64) {
             return Err(err(Reason::Count));
@@ -126,9 +144,25 @@ impl Slot {
         if tail_len as usize > TAIL_CAPACITY {
             return Err(err(Reason::Count));
         }
-        if !is_zero(bytes, 96, CRC_OFFSET - 96) || !is_zero(bytes, 508, 4) {
+        let flags = u16_at(bytes, FLAGS_OFFSET);
+        if flags & !FLAG_PROOF != 0
+            || !is_zero(bytes, FLAGS_OFFSET + 2, PROOF_SEQUENCE_OFFSET - FLAGS_OFFSET - 2)
+            || !is_zero(bytes, PROOF_SEQUENCE_OFFSET + 8, CRC_OFFSET - PROOF_SEQUENCE_OFFSET - 8)
+            || !is_zero(bytes, 508, 4)
+        {
             return Err(err(Reason::Reserved));
         }
+        let proof = flags & FLAG_PROOF != 0;
+        let proof_sequence = u64_at(bytes, PROOF_SEQUENCE_OFFSET);
+        if proof {
+            if tail_len as usize != TAIL_CAPACITY || proof_sequence != 0 {
+                return Err(err(Reason::Count));
+            }
+        } else if proof_sequence != 0 && proof_sequence.checked_add(1) != Some(sequence) {
+            return Err(err(Reason::Count));
+        }
+        let mut resume = [0u8; RIDE_RESUME_LEN];
+        resume.copy_from_slice(&bytes[RESUME_OFFSET..RESUME_OFFSET + RIDE_RESUME_LEN]);
         let ranges = Ranges::decode(&bytes[64..96], live_ranges(&bytes[64..96]), extent_count)
             .map_err(|error| DecodeError::new(Record::Slot, error.reason))?;
         Ok(Slot {
@@ -139,6 +173,9 @@ impl Slot {
             flushed,
             tail_len,
             payload_crc: u32_at(bytes, 60),
+            resume,
+            proof,
+            proof_sequence,
             ranges,
             slot_crc: u32_at(bytes, CRC_OFFSET),
         })
@@ -151,7 +188,7 @@ impl Slot {
 }
 
 /// The running CRC over a slot header with its own CRC field zeroed: the seed a verifier folds the
-/// remaining 63 blocks of the slot into.
+/// corresponding 32-block tail slot into.
 pub fn header_digest(header: &[u8]) -> Crc32 {
     let mut digest = Crc32::new();
     digest.update(&header[..CRC_OFFSET]);
@@ -181,13 +218,16 @@ mod tests {
         let mut ranges = Ranges::default();
         ranges.push(13, 32).unwrap();
         Slot {
-            slot: 3,
+            slot: 9,
             id: ObjectId(2),
             revision: Revision(1),
             sequence: 41,
             flushed: 245_760,
             tail_len: 3_712,
             payload_crc: 0x5E1B_03C7,
+            resume: [0xA5; RIDE_RESUME_LEN],
+            proof: false,
+            proof_sequence: 0,
             ranges,
             slot_crc: 0,
         }
@@ -203,16 +243,16 @@ mod tests {
         let tail = tail(3_712);
         let header = expected.seal(&STORE, &tail);
         expected.slot_crc = u32_at(&header, CRC_OFFSET);
-        assert_eq!(Slot::decode(&header, 3, &STORE, 30_718).unwrap(), expected);
+        assert_eq!(Slot::decode(&header, 9, &STORE, 30_718).unwrap(), expected);
         assert_eq!(expected.payload_len(), 249_472);
     }
 
-    /// The slot CRC covers the whole 32,768 bytes, pad included: a byte flip anywhere in the tail
+    /// The slot CRC covers the header and the whole 16,384-byte tail slot, pad included: a byte flip anywhere in the tail
     /// fails it, which is what makes a slot all-or-nothing without a gate.
     #[test]
     fn the_slot_crc_covers_the_tail_and_the_pad() {
         let mut tail = tail(3_712);
-        let sealed = Slot::decode(&slot().seal(&STORE, &tail), 3, &STORE, 30_718).unwrap();
+        let sealed = Slot::decode(&slot().seal(&STORE, &tail), 9, &STORE, 30_718).unwrap();
 
         let mut digest = header_digest(&slot().seal(&STORE, &tail));
         digest.update(&tail);
@@ -232,35 +272,35 @@ mod tests {
     fn a_slot_read_from_the_wrong_position_or_the_wrong_store_is_refused() {
         let header = slot().seal(&STORE, &tail(0));
         assert_eq!(Slot::decode(&header, 4, &STORE, 30_718).unwrap_err().reason, Reason::Position);
-        assert_eq!(Slot::decode(&header, 3, &StoreId([1; 16]), 30_718).unwrap_err().reason, Reason::StoreId);
+        assert_eq!(Slot::decode(&header, 9, &StoreId([1; 16]), 30_718).unwrap_err().reason, Reason::StoreId);
         assert_eq!(Slot::decode(&ZERO_PAD[..BLOCK], 0, &STORE, 30_718).unwrap_err().reason, Reason::Magic);
     }
 
     /// §7.1: a flushed length that is not a multiple of the program page, and a tail above the slot's
-    /// 32,256-byte area, are both invalid — the binding limit is the tail area, not the `u32`.
+    /// 16,384-byte area, are both invalid — the binding limit is the tail area, not the `u32`.
     #[test]
     fn the_flush_boundary_and_the_tail_bound_are_enforced() {
         let mut broken = slot();
         broken.flushed += 1;
         let header = broken.seal(&STORE, &[]);
-        assert_eq!(Slot::decode(&header, 3, &STORE, 30_718).unwrap_err().reason, Reason::Count);
+        assert_eq!(Slot::decode(&header, 9, &STORE, 30_718).unwrap_err().reason, Reason::Count);
 
         let mut long = slot();
         long.tail_len = TAIL_CAPACITY as u32 + 1;
         let header = long.seal(&STORE, &[]);
-        assert_eq!(Slot::decode(&header, 3, &STORE, 30_718).unwrap_err().reason, Reason::Count);
+        assert_eq!(Slot::decode(&header, 9, &STORE, 30_718).unwrap_err().reason, Reason::Count);
 
         long.tail_len = TAIL_CAPACITY as u32;
-        assert!(Slot::decode(&long.seal(&STORE, &[]), 3, &STORE, 30_718).is_ok());
+        assert!(Slot::decode(&long.seal(&STORE, &[]), 9, &STORE, 30_718).is_ok());
     }
 
-    /// §7.2's headroom: step 2 leaves at most 16,383 bytes behind, so an interval may add 15,873
-    /// before the tail would not fit — three orders of magnitude above what ten seconds produces.
+    /// §7.2's full-page tail has no metadata hole: an ordinary checkpoint leaves at most 16,383 bytes behind, and
+    /// every possible remainder fits.
     #[test]
-    fn the_tail_area_leaves_section_7_2s_headroom() {
-        assert_eq!(TAIL_CAPACITY - (PROGRAM_PAGE - 1), 15_873);
-        assert_eq!(SLOT_LEN, 32_768);
-        assert_eq!(SLOT_LEN, 2 * PROGRAM_PAGE);
+    fn the_tail_slot_carries_every_possible_page_remainder() {
+        assert_eq!(TAIL_CAPACITY - (PROGRAM_PAGE - 1), 1);
+        assert_eq!(SLOT_LEN, 16_384);
+        assert_eq!(SLOT_LEN, PROGRAM_PAGE);
     }
 
     #[test]

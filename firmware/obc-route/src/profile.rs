@@ -112,6 +112,24 @@ pub struct Profile {
 }
 
 impl Profile {
+    /// Empty storage for hosts that build a profile directly into their resident cache.
+    /// [`ride_elevation_profile_into`] resets every field before filling it.
+    pub const EMPTY: Self = Profile {
+        cols: [(i16::MAX, i16::MIN); TOTAL_COLS],
+        cum_ascent: [0; ASCENT_COLS],
+        min_ele_m: 0,
+        max_ele_m: 0,
+        peak_col: 0,
+    };
+
+    fn reset(&mut self) {
+        self.cols.fill((i16::MAX, i16::MIN));
+        self.cum_ascent.fill(0);
+        self.min_ele_m = 0;
+        self.max_ele_m = 0;
+        self.peak_col = 0;
+    }
+
     /// The base (finest) level's per-column `(min, max)` elevations — always
     /// [`PROFILE_COLS`] long. The fully-detailed band; zoomed views use [`sample`] /
     /// [`window`] instead so they can read a coarser level when zoomed out.
@@ -304,53 +322,43 @@ impl RouteReader<'_> {
     }
 }
 
-/// Build a **recorded ride's** elevation [`Profile`] by streaming its stored ride object
-/// (`RD{id}.ORD` — the ride object v1/v2, spec §7.2) from `src` once, in small fixed blocks — the
-/// Ride detail screen's band source (epic #678 T2 / #680).
+/// Build a recorded ride's elevation [`Profile`] by streaming its verbatim 20-byte samples once.
 ///
 /// The route twin is [`RouteReader::elevation_profile`]; this shares its whole tail (gap-fill,
 /// pyramid downsample, cumulative ascent, peak) and differs only in the sweep:
-/// - points are the ride object's 14-byte (v1) / 18-byte (v2) records (`lat, lon` at 10⁻⁷ °,
-///   converted to the microdegrees the shared distance core measures in; a [`RIDE_ELE_NONE`]
-///   point contributes distance but no elevation; a v2 record's sensor tail is skipped here);
+/// - points are the final object's 20-byte records (`lon, lat` in microdegrees, exactly as they
+///   were recorded); the fixed summary footer is not part of the sweep;
 /// - columns bucket by the accumulated segment distance over the **header's** `distance` total
 ///   (the one total knowable in a single pass; the tail past it clamps into the last column and
 ///   any unreached columns gap-fill);
 /// - the y-range is the sweep's own min/max (the ride header stores none) and the ascent curve
 ///   normalizes to the header's `climb` total.
 ///
-/// Reads at most one 32-record block per `read_at` (≤576 B, v2 stride) and holds no whole-track
+/// Reads at most one 32-record block per `read_at` (640 B) and holds no whole-track
 /// buffer, so the board can run it inside its pass without a stack spike beyond the returned
 /// `Profile` itself. Rejects what [`RideInfo::read`](crate::RideInfo::read) rejects (bad version,
 /// torn length).
 pub fn ride_elevation_profile(src: &dyn ByteSource) -> Result<Profile, Error> {
-    use obc_formats::ride::{
-        header_len as ride_header_len, point_len as ride_point_len, ELE_NONE as RIDE_ELE_NONE,
-        POINT_LEN_V2 as RIDE_POINT_LEN_V2,
-    };
+    let mut out = Profile::EMPTY;
+    ride_elevation_profile_into(src, &mut out)?;
+    Ok(out)
+}
+
+/// Build a recorded ride's elevation profile directly into caller-owned resident storage.
+///
+/// This is the board path: returning the ~5 KiB [`Profile`] by value while a flat-store source is
+/// live makes both values part of one async task frame. Filling the app's existing cache in place
+/// keeps the shipping frame below its 16 KiB guard without allocating a second resident buffer.
+pub fn ride_elevation_profile_into(src: &dyn ByteSource, out: &mut Profile) -> Result<(), Error> {
+    use obc_formats::ride::SAMPLE_LEN;
 
     let info = crate::RideInfo::read(src)?;
-    // Point records start after the version's fixed header bytes + the on-disk name. Re-read the
-    // raw `name_len` — `RideInfo` clips its display copy to `NAME_CAP`, the file may store more.
-    // Both versions keep `lat/lon/ele` in the first 14 bytes; v2 only appends a sensor tail, so
-    // the stride (`point_len`) and header size vary by version but the fields read here don't.
-    let mut head = [0u8; 3];
-    src.read_at(0, &mut head)?;
-    let name_len = u16::from_le_bytes([head[1], head[2]]) as u32;
-    let point_len = ride_point_len(info.version);
-    let points_at = name_len + ride_header_len(info.version) as u32;
 
     // Build the band **into the result value**, not a separate `cols` scratch: the array is
     // `TOTAL_COLS × 4 B` and moving a local into the returned `Profile` at the end leaves both
     // live in the frame at once. Written in place it exists once (the ascent curve stays a local
     // — it integrates as `f32` and is quantised into the struct's `u32` at the end).
-    let mut out = Profile {
-        cols: [(i16::MAX, i16::MIN); TOTAL_COLS],
-        cum_ascent: [0; ASCENT_COLS],
-        min_ele_m: 0,
-        max_ele_m: 0,
-        peak_col: 0,
-    };
+    out.reset();
     let mut casc = [0f32; ASCENT_COLS];
     let total = info.distance_m.max(1) as f64;
     let base_last = PROFILE_COLS - 1;
@@ -363,26 +371,21 @@ pub fn ride_elevation_profile(src: &dyn ByteSource) -> Result<Profile, Error> {
     let mut dist = 0f64;
     let mut prev: Option<(i32, i32)> = None;
     const BLOCK: usize = 32;
-    let mut buf = [0u8; BLOCK * RIDE_POINT_LEN_V2];
+    let mut buf = [0u8; BLOCK * SAMPLE_LEN];
     let mut done: u32 = 0;
     while done < info.point_count {
         let n = ((info.point_count - done) as usize).min(BLOCK);
-        let bytes = &mut buf[..n * point_len];
-        src.read_at(u64::from(points_at + done * point_len as u32), bytes)?;
-        for rec in bytes.chunks_exact(point_len) {
+        let bytes = &mut buf[..n * SAMPLE_LEN];
+        src.read_at(u64::from(done) * SAMPLE_LEN as u64, bytes)?;
+        for rec in bytes.chunks_exact(SAMPLE_LEN) {
             let lat = i32::from_le_bytes([rec[4], rec[5], rec[6], rec[7]]);
-            let lon = i32::from_le_bytes([rec[8], rec[9], rec[10], rec[11]]);
-            let ele = i16::from_le_bytes([rec[12], rec[13]]);
-            // 10⁻⁷ ° → microdegrees, the shared distance core's unit (a 0.1 µ° truncation —
-            // centimetres — under a band column's reach).
-            let p = (lon / 10, lat / 10);
+            let lon = i32::from_le_bytes([rec[0], rec[1], rec[2], rec[3]]);
+            let ele = i16::from_le_bytes([rec[8], rec[9]]);
+            let p = (lon, lat);
             if let Some(pr) = prev {
                 dist += ground_dist_m(pr, p) as f64;
             }
             prev = Some(p);
-            if ele == RIDE_ELE_NONE {
-                continue;
-            }
             min_ele = min_ele.min(ele);
             max_ele = max_ele.max(ele);
             let frac = dist / total;
@@ -407,33 +410,21 @@ pub fn ride_elevation_profile(src: &dyn ByteSource) -> Result<Profile, Error> {
     out.peak_col = peak_column(&out.cols[..PROFILE_COLS]);
     out.min_ele_m = min_ele;
     out.max_ele_m = max_ele;
-    Ok(out)
+    Ok(())
 }
 
 /// A stored ride's recorded-track polyline decimated to at most `N` points — uniform by point
 /// index, the first and last point always kept — the Ride detail's track-shape preview seam
 /// (#678 rework 3, the recorded twin of [`RouteReader::preview_polyline`]). Points come back as
-/// `(lon, lat)` **microdegrees** (the ride records' 10⁻⁷ ° scaled by 1/10), matching the route
-/// preview's unit so the one screen drawer serves both.
+/// `(lon, lat)` microdegrees, matching the route preview's unit so the one screen drawer serves
+/// both.
 ///
-/// Mirrors [`ride_elevation_profile`]'s streaming exactly: the same header/`points_at` walk, the
-/// same 32-record blocks (strictly forward — no whole-track buffer and no backward seeks), one
-/// pass over the 14-byte (v1) / 18-byte (v2) records. Call it once per detail entry, never per
-/// frame. Rejects what [`RideInfo::read`](crate::RideInfo::read) rejects (bad version, torn
-/// length).
+/// Mirrors [`ride_elevation_profile`]'s streaming exactly: the same 32-record blocks (strictly
+/// forward — no whole-track buffer and no backward seeks), one pass over the 20-byte records.
 pub fn ride_preview_polyline<const N: usize>(src: &dyn ByteSource) -> Result<Vec<(i32, i32), N>, Error> {
-    use obc_formats::ride::{
-        header_len as ride_header_len, point_len as ride_point_len, POINT_LEN_V2 as RIDE_POINT_LEN_V2,
-    };
+    use obc_formats::ride::SAMPLE_LEN;
 
     let info = crate::RideInfo::read(src)?;
-    // Point records start after the version's fixed header bytes + the on-disk name (see
-    // `ride_elevation_profile` — `RideInfo` clips its display name, so re-read the raw length).
-    let mut head = [0u8; 3];
-    src.read_at(0, &mut head)?;
-    let name_len = u16::from_le_bytes([head[1], head[2]]) as u32;
-    let point_len = ride_point_len(info.version);
-    let points_at = name_len + ride_header_len(info.version) as u32;
 
     let mut out: Vec<(i32, i32), N> = Vec::new();
     let total = info.point_count as usize;
@@ -444,20 +435,19 @@ pub fn ride_preview_polyline<const N: usize>(src: &dyn ByteSource) -> Result<Vec
     let mut kept = 0usize; // points pushed so far
     let mut next = 0usize; // point index of the next kept point
     const BLOCK: usize = 32;
-    let mut buf = [0u8; BLOCK * RIDE_POINT_LEN_V2];
+    let mut buf = [0u8; BLOCK * SAMPLE_LEN];
     let mut done: u32 = 0;
     while done < info.point_count {
         let n = ((info.point_count - done) as usize).min(BLOCK);
-        let bytes = &mut buf[..n * point_len];
-        src.read_at(u64::from(points_at + done * point_len as u32), bytes)?;
-        for (i, rec) in bytes.chunks_exact(point_len).enumerate() {
+        let bytes = &mut buf[..n * SAMPLE_LEN];
+        src.read_at(u64::from(done) * SAMPLE_LEN as u64, bytes)?;
+        for (i, rec) in bytes.chunks_exact(SAMPLE_LEN).enumerate() {
             if done as usize + i != next {
                 continue;
             }
             let lat = i32::from_le_bytes([rec[4], rec[5], rec[6], rec[7]]);
-            let lon = i32::from_le_bytes([rec[8], rec[9], rec[10], rec[11]]);
-            // 10⁻⁷ ° → microdegrees, the route preview's unit (the profile sweep's conversion).
-            let _ = out.push((lon / 10, lat / 10));
+            let lon = i32::from_le_bytes([rec[0], rec[1], rec[2], rec[3]]);
+            let _ = out.push((lon, lat));
             kept += 1;
             if kept == keep {
                 return Ok(out);

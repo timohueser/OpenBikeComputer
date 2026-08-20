@@ -351,7 +351,7 @@ public final class RouteDetailModel {
 
     /// The tracked ride's sensor-summary rows (E3), in the design's fixed order —
     /// one row per value the ride actually carries, nothing at all when it
-    /// carries none (a v1 ride, or one recorded with no sensors paired). No dead
+    /// carries none (a ride recorded with no sensors paired). No dead
     /// rows for an absent value (`ios-copy-tone-plain`).
     public var sensorRows: [SensorRow] {
         guard case .tracked(let ride) = dressing else { return [] }

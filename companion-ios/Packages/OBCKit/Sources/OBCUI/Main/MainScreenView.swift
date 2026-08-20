@@ -112,7 +112,7 @@ public struct MainScreenView: View {
                 .padding(.bottom, 6)
             } else if sync.hiddenRideCount > 0 {
                 // The bounded ride catalog can report that some
-                // rides are dropped from the list in FAT-arbitrary order, so
+                // rides are outside the returned window, so
                 // "up to date" would be a lie — say so plainly (iOS tone rule).
                 OBCInlineBanner(
                     systemImage: "externaldrive.badge.exclamationmark",

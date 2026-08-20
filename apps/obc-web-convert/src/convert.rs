@@ -7,7 +7,6 @@
 
 use obc_formats::io::{ByteSink, Error, SliceSource};
 use obc_formats::obcr::WAYPOINT_ELE_NONE;
-use obc_formats::track::RECORD_LEN as TRACK_RECORD_LEN;
 use obc_route::{for_each_waypoint, RouteIndex, RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS};
 
 /// Largest point count an `.obcr` can *store*, and therefore the ceiling
@@ -57,10 +56,10 @@ pub enum ErrorCode {
     GpxNoTrackPoints,
     /// The decimated route still exceeds [`MAX_STORED_POINTS`].
     GpxTooManyPoints,
-    /// The ride log opens like text, so it is almost certainly a GPX handed to the wrong direction.
-    NotTrackLog,
-    /// The ride log is shorter than one record — nothing was ever written.
-    TrackNoPoints,
+    /// The bytes are not a finished ride-v3 object.
+    NotRide,
+    /// The finished ride carries no recorded points.
+    RideNoPoints,
     /// A read ran past the end of the input: the file is truncated or the upload was cut short.
     InputTruncated,
     /// The bytes handed to [`obcr_to_track`] are not an OBCR route (bad magic/version/layout).
@@ -78,8 +77,8 @@ impl ErrorCode {
             ErrorCode::NotGpx => "not-gpx",
             ErrorCode::GpxNoTrackPoints => "gpx-no-track-points",
             ErrorCode::GpxTooManyPoints => "gpx-too-many-points",
-            ErrorCode::NotTrackLog => "not-track-log",
-            ErrorCode::TrackNoPoints => "track-no-points",
+            ErrorCode::NotRide => "not-ride",
+            ErrorCode::RideNoPoints => "ride-no-points",
             ErrorCode::InputTruncated => "input-truncated",
             ErrorCode::NotRoute => "not-route",
             ErrorCode::Internal => "internal",
@@ -123,43 +122,30 @@ pub fn gpx_to_obcr(gpx: &[u8], name: &str) -> Result<Vec<u8>, ConvertFailure> {
     Ok(sink.0)
 }
 
-/// Convert a recorded `.obct` ride log's bytes into a GPX 1.1 document named `name`.
+/// Convert a finished ride-v3 object's bytes into a GPX 1.1 document named `name`.
 ///
 /// Byte-for-byte the same output as the native path (`obc_route::track_to_gpx`) — again, only the
-/// buffer adapter is new. `specs/vectors/track-log.obct` + `track-export.gpx` pin the pair.
-pub fn track_to_gpx(log: &[u8], name: &str) -> Result<String, ConvertFailure> {
-    if log.is_empty() {
+/// buffer adapter is new. `specs/vectors/ride-v3.bin` + `track-export.gpx` pin the pair.
+pub fn track_to_gpx(ride: &[u8], name: &str) -> Result<String, ConvertFailure> {
+    if ride.is_empty() {
         return Err(ConvertFailure::new(
             ErrorCode::EmptyFile,
-            "This file is empty (0 bytes). Pick the ride log the device wrote — a zero-byte file \
-             usually means the copy off the card failed part-way.",
+            "This file is empty (0 bytes). Download the finished ride again; a zero-byte file \
+             means the copy failed before any of the object arrived.",
         ));
     }
-    if announces_itself_as_xml(log) {
+    let source = SliceSource(ride);
+    let info = obc_route::RideInfo::read(&source).map_err(describe_track_error)?;
+    if info.point_count == 0 {
         return Err(ConvertFailure::new(
-            ErrorCode::NotTrackLog,
-            "This is an XML file, not a recorded ride log. Ride logs are the device's own binary \
-             .obct format — if this is already a GPX it needs no conversion.",
-        ));
-    }
-    // The converter itself tolerates a short tail (a power-loss mid-write leaves a partial record
-    // and the log stays valid to the 20-byte boundary), so a log below one whole record simply
-    // yields an empty — valid, useless — GPX. Refuse it here instead: "your recording is empty"
-    // is the true answer, and a browser download of a point-free GPX helps nobody.
-    if log.len() < TRACK_RECORD_LEN {
-        return Err(ConvertFailure::new(
-            ErrorCode::TrackNoPoints,
-            format!(
-                "This ride log holds no track points: it is {} bytes, short of the {}-byte record \
-                 the device writes per GPS fix. The recording ended before the first fix landed.",
-                log.len(),
-                TRACK_RECORD_LEN
-            ),
+            ErrorCode::RideNoPoints,
+            "This finished ride holds no track points. It was probably stopped before the first \
+             GPS fix landed, so there is nothing to export as GPX.",
         ));
     }
 
     let mut sink = VecSink(Vec::new());
-    obc_route::track_to_gpx(&SliceSource(log), name, &mut sink).map_err(describe_track_error)?;
+    obc_route::track_to_gpx(&source, name, &mut sink).map_err(describe_track_error)?;
     // Every byte the exporter writes is ASCII except `name`, which arrived as a `&str`, so this
     // cannot fail. Mapped rather than unwrapped all the same: a panic in wasm is an opaque trap.
     String::from_utf8(sink.0).map_err(|_| {
@@ -295,24 +281,6 @@ fn opens_like_xml(bytes: &[u8]) -> bool {
     document_start(bytes).first() == Some(&b'<')
 }
 
-/// Does `bytes` *say* it is XML — does the document start with `<?xml` or `<gpx`?
-///
-/// The **strict** test, for the ride-log direction, where the mistake runs the other way. A
-/// recorded `.obct` is a headerless record array whose first four bytes are a longitude, so
-/// roughly one real ride log in 256 opens with `0x3C` — `<`. The lenient test above would refuse
-/// those outright, with a message insisting they are XML.
-///
-/// Demanding a whole opening tag rules the collision out rather than making it unlikely. Those
-/// tags are printable ASCII, so matching one forces a coordinate word to be built from bytes in
-/// the `0x09..0x78` range — a longitude of 1 836 597 052 µdeg for `<?xm`, 2 020 632 380 for
-/// `<gpx`, and no less than ~5×10⁸ for any whitespace-padded placement. That is 500°–2000°, off a
-/// planet that stops at 180. The guard still catches what it exists for: a GPX dropped on the
-/// wrong target.
-fn announces_itself_as_xml(bytes: &[u8]) -> bool {
-    let start = document_start(bytes);
-    start.starts_with(b"<?xml") || start.starts_with(b"<gpx")
-}
-
 /// Map a GPX→OBCR failure onto the browser vocabulary.
 ///
 /// The match is exhaustive **on purpose**: [`Error`] is shared across the whole byte seam, so a
@@ -363,25 +331,22 @@ fn describe_gpx_error(e: Error) -> ConvertFailure {
 fn describe_track_error(e: Error) -> ConvertFailure {
     match e {
         Error::Empty => ConvertFailure::new(
-            ErrorCode::TrackNoPoints,
-            "This ride log holds no usable records. The recording ended before the first GPS fix \
-             was written.",
+            ErrorCode::RideNoPoints,
+            "This finished ride holds no track points, so there is nothing to export as GPX.",
         ),
-        Error::BadOffset => ConvertFailure::new(
-            ErrorCode::InputTruncated,
-            "Reading this ride log ran past the end of the file. The copy off the card was cut \
-             short — copy it again.",
+        Error::BadOffset | Error::BadMagic | Error::BadVersion => ConvertFailure::new(
+            ErrorCode::NotRide,
+            "These bytes are not one complete ride-v3 object. Download the finished ride again; \
+             unfinished sample logs and older ride formats are not accepted.",
         ),
         Error::Io => ConvertFailure::new(
             ErrorCode::Internal,
             "Internal error: writing the exported GPX into memory failed. This is a bug in the \
              conversion bridge — please report it.",
         ),
-        // The exporter has no capacity-bounded output and reads no format tag, so none of these
-        // is reachable from here.
-        Error::TooLarge | Error::BadMagic | Error::BadVersion => ConvertFailure::new(
+        Error::TooLarge => ConvertFailure::new(
             ErrorCode::Internal,
-            "Internal error: the track exporter reported a format or capacity failure it does not \
+            "Internal error: the ride exporter reported a capacity failure it should not \
              produce. This is a bug — please report it with the file.",
         ),
     }
@@ -409,6 +374,25 @@ impl ByteSink for VecSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn finished_ride(mut samples: Vec<u8>, name: &str) -> Vec<u8> {
+        let points = (samples.len() / obc_formats::track::RECORD_LEN) as u32;
+        samples.extend_from_slice(&obc_formats::ride::encode_footer(&obc_formats::ride::Footer::new(
+            name,
+            1_700_000_000,
+            0,
+            0,
+            0,
+            0,
+            points,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )));
+        samples
+    }
 
     /// The 9-point track from `obc-vectors`' route source, inline so this crate's tests stand on
     /// their own; the byte-identity proof against the real fixture is the frontend's job (it is
@@ -547,9 +531,10 @@ mod tests {
         ]
         .concat();
 
-        let mine = track_to_gpx(&log, "a < b").unwrap();
+        let ride = finished_ride(log, "a < b");
+        let mine = track_to_gpx(&ride, "a < b").unwrap();
         let mut reference = VecSink(Vec::new());
-        obc_route::track_to_gpx(&SliceSource(&log), "a < b", &mut reference).unwrap();
+        obc_route::track_to_gpx(&SliceSource(&ride), "a < b", &mut reference).unwrap();
         assert_eq!(mine.as_bytes(), reference.0.as_slice());
         assert!(mine.contains("<name>a &lt; b</name>"), "name escaping survives: {mine}");
     }
@@ -569,8 +554,8 @@ mod tests {
         assert_eq!(code_of(gpx_to_obcr(wpt_only.as_bytes(), "x")), ErrorCode::GpxNoTrackPoints);
 
         assert_eq!(code_of(track_to_gpx(b"", "x")), ErrorCode::EmptyFile);
-        assert_eq!(code_of(track_to_gpx(b"<?xml version=\"1.0\"?><gpx></gpx>", "x")), ErrorCode::NotTrackLog);
-        assert_eq!(code_of(track_to_gpx(&[0xAB; TRACK_RECORD_LEN - 1], "x")), ErrorCode::TrackNoPoints);
+        assert_eq!(code_of(track_to_gpx(b"<?xml version=\"1.0\"?><gpx></gpx>", "x")), ErrorCode::NotRide);
+        assert_eq!(code_of(track_to_gpx(&[0xAB; 19], "x")), ErrorCode::NotRide);
     }
 
     /// A leading BOM and leading whitespace are both normal in exported GPX; neither may be
@@ -583,19 +568,10 @@ mod tests {
         assert!(gpx_to_obcr(&bom, "Tiny").is_ok());
     }
 
-    /// The ride-log guard must not fire on a *real* log whose first byte happens to be `<`.
-    ///
-    /// A `.obct` has no header: byte 0 is the first longitude's low byte, so about one log in 256
-    /// starts with `0x3C`. A one-byte "looks like XML" test would refuse those, insisting a
-    /// perfectly good recording is an XML file — which is why that direction demands an actual
-    /// `<?xml` / `<gpx` opening instead.
     #[test]
-    fn a_ride_log_starting_with_an_angle_bracket_still_converts() {
-        // lon ≡ 0x3C (mod 256): 7_842_000 - 0xD0 + 0x3C = 7_841_852, whose LE encoding starts 0x3C.
-        let lon: i32 = 7_841_852;
-        assert_eq!(lon.to_le_bytes()[0], b'<', "the fixture only tests what it claims to");
-        let log = obc_formats::track::encode_record(&obc_ports::TrackPoint {
-            lon,
+    fn a_headerless_sample_stream_is_not_a_ride() {
+        let samples = obc_formats::track::encode_record(&obc_ports::TrackPoint {
+            lon: 7_841_852,
             lat: 47_995_000,
             ele: 300,
             t_ms: 0,
@@ -604,12 +580,7 @@ mod tests {
             cadence: None,
             power: None,
         });
-        let gpx = track_to_gpx(&log, "Angle").expect("a real ride log, not XML");
-        assert!(gpx.contains("lon=\"7.841852\""), "converted the point: {gpx}");
-
-        // The guard still catches what it is for: a GPX dropped on the ride-log target.
-        assert_eq!(code_of(track_to_gpx(TINY_GPX.as_bytes(), "x")), ErrorCode::NotTrackLog);
-        assert_eq!(code_of(track_to_gpx(b"  <gpx version=\"1.1\"></gpx>", "x")), ErrorCode::NotTrackLog);
+        assert_eq!(code_of(track_to_gpx(&samples, "retired")), ErrorCode::NotRide);
     }
 
     /// The message is the product here, so pin that each one actually says what is wrong and what
@@ -625,8 +596,7 @@ mod tests {
         assert!(not_gpx.message.contains(".fit"), "points at the likely real format: {not_gpx}");
 
         let short = track_to_gpx(&[0xAB; 4], "x").unwrap_err();
-        assert!(short.message.contains('4'), "quotes the actual size: {short}");
-        assert!(short.message.contains("20-byte"), "explains the record width: {short}");
+        assert!(short.message.contains("ride-v3"), "names the required format: {short}");
     }
 
     /// A route past the storage ceiling reports *that*, with the number in it. Built as a

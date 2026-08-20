@@ -42,9 +42,9 @@
             preview = {
                 title: ride.name || `Ride ${ride.objectId}`,
                 points: object.points.map((p) => ({
-                    lat: p.lat1e7 / 1e7,
-                    lon: p.lon1e7 / 1e7,
-                    ele: p.eleM,
+                    lat: p.latMicrodegrees / 1e6,
+                    lon: p.lonMicrodegrees / 1e6,
+                    ele: p.elevationM,
                 })),
                 stats: [
                     { label: "Distance", value: rideDistance(ride.distanceM) },

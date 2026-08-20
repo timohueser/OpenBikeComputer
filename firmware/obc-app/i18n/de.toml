@@ -449,6 +449,14 @@ ride_time = "FAHRZEIT"
 distance = "DISTANZ"
 climb = "ANSTIEG"
 
+# --- Wiederhergestellte Fahrt beim Start ---
+[ride_recovery]
+title = "FAHRT GERETTET"
+body = "Aufzeichnung gerettet"
+damaged = "Aufzeichnung beschädigt"
+continue_ride = "Fahrt fortsetzen"
+discard = "Verwerfen"
+
 # --- Route-less ride start card ---
 [ride_start]
 title = "FAHRT"

@@ -236,7 +236,11 @@ impl Mutation {
     }
 }
 
-/// One ride checkpoint: the tail past the last flushed page, and the running payload CRC.
+/// Fixed opaque recorder state carried by every logical ride checkpoint.
+pub const RIDE_RESUME_LEN: usize = 96;
+
+/// One ride checkpoint: the tail past the last flushed page, the running payload CRC, and the
+/// recorder's fixed resume image. Storage CRC-protects `resume` but never interprets it.
 #[derive(Debug, Clone, Copy)]
 pub struct RideCheckpoint<'a> {
     /// The entry carrying `RECORDING`; the store rejects a checkpoint naming anything else.
@@ -247,6 +251,8 @@ pub struct RideCheckpoint<'a> {
     pub tail: &'a [u8],
     /// CRC-32 of the whole ride payload through `flushed length + tail.len()`.
     pub payload_crc: u32,
+    /// Versioned recorder-owned continuation state for precisely this logical checkpoint.
+    pub resume: &'a [u8; RIDE_RESUME_LEN],
 }
 
 /// The card, as everything above it sees it.
@@ -290,8 +296,8 @@ pub trait Store {
     fn entries(&self) -> impl Iterator<Item = EntryMeta> + '_;
 
     /// The ride exception, and the only way bytes become durable without a commit. Performs both
-    /// halves of `FLAT_Store_Format.md` §7.2: flush whole 16 KiB payload pages from the tail into
-    /// the recording entry's own extents, then write one journal slot.
+    /// halves of `FLAT_Store_Format.md` §7.2: gate each whole 16 KiB prefix in a tail slot before
+    /// copying it to the recording entry's extents, then gate the remainder when one exists.
     fn journal(&self, checkpoint: RideCheckpoint) -> core::result::Result<(), StoreError>;
 }
 

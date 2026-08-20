@@ -1,97 +1,27 @@
-//! The remaining legacy control-plane state: RRAM-backed settings and the FAT ride catalog.
+//! The remaining legacy control-plane state: RRAM-backed settings and bond/config hand-off.
 //!
 //! Route and trip ownership moved completely to [`crate::flat_store`]. This module stays only for
-//! surfaces that have not moved yet: Config/bond state, locally recorded rides and their sync/delete
-//! edges, and the on-glass DFU request hand-off. It owns no route/trip catalog, identity allocator,
-//! upload receiver, or per-kind delete command.
+//! surfaces that have not moved yet: Config/bond state and the on-glass DFU request hand-off. Ride,
+//! route, trip, transfer, and catalog ownership all live in [`crate::flat_store`].
 
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
-use embedded_sdmmc::ShortFileName;
-use heapless::Vec;
 use obc_app::settings::DeviceName;
 use obc_app::Settings;
 use obc_ports::SettingsStore;
 
 use crate::SharedStore;
 
-/// Store-movement edge for the app UI (epic #447): [`bump_revision`](ObjectStore::bump_revision) —
-/// the single chokepoint for every commit/delete — increments this, the same edge that notifies the
-/// phone's `storeChanged`. The map plane's ride loop drains it each pass via
-/// [`take_store_changed`] and rings [`App::apply_event`](obc_app::App::apply_event),
-/// so the on-device catalog can react (the live rescan is P3 #450). A counter, not a flag, so a
-/// burst of commits between passes is never coalesced into a single missed edge.
-///
-/// It lives as a module static rather than a field because the `ObjectStore` lives behind the BLE
-/// planes' `RefCell` while the app lives in the ride loop — this is the lock-free hand-off between
-/// them, matching the `ble::state` publish pattern.
-static STORE_CHANGED: AtomicU32 = AtomicU32::new(0);
-
-/// Drain the count of store movements since the last call (epic #447). The ride loop calls this once
-/// per pass and rings `App::apply_event` that many times. `0` = nothing moved.
-pub fn take_store_changed() -> u32 {
-    STORE_CHANGED.swap(0, Ordering::Relaxed)
-}
-
-/// Wakes the **event-driven** ride loop on a store movement (#450): a parked device (Home, GPS
-/// asleep) otherwise dozes up to the watchdog-feed cap (~12 s) before its next pass would notice
-/// [`STORE_CHANGED`] — an upload from the phone should hit the Route menu now, not "eventually". A
-/// coalescing `Signal` (level, not queue), like the input plane's wake: the pass drains the counter
-/// whole, so one wake covers a burst.
+/// Wakes the event-driven ride loop for the remaining BLE control-plane hand-offs (remote DFU and
+/// clock stamps). Catalog movement has its own flat-store commit edge.
 static STORE_WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 /// The ride loop's store-movement wake arm — resolves when a commit/delete lands after the last
 /// pass. Folded into the loop's sensor-wake select (see `ride::wait_host_or_sensor_event`).
 pub(crate) async fn wait_store_changed() {
     STORE_WAKE.wait().await
-}
-
-/// The bounded ride-delete request channel depth.
-const DELETE_CHANNEL_CAP: usize = 8;
-
-/// On-device **ride**-delete request (epic #447, P7 / #454) — the ride-namespace twin of
-/// the removed route channel. The ride loop's Rides-menu hold posts a ride's durable object id; the BLE
-/// plane drains it and runs [`ObjectStore::delete_ride`], so an on-device ride delete goes through
-/// the same catalog + revision + `storeChanged` path a phone-initiated delete does.
-/// A bounded [`Channel`] (finding #876-3): the ride retention sweep can
-/// discover several synced+aged rides at once, and the old overwriting `Signal` lost all but the
-/// newest. Same contract as the route channel: never an overwrite, but a full channel **drops** the
-/// post — end-to-end losslessness rests on the app's retain-until-rescan retry, not on observed
-/// backpressure. Shared by manual (Rides-menu hold) and retention ride deletes.
-static RIDE_DELETE_REQ: Channel<CriticalSectionRawMutex, u16, DELETE_CHANNEL_CAP> = Channel::new();
-
-/// Post a ride-delete request from the ride loop (epic #447, P7). Returns `false` when the channel
-/// is full and the id was **dropped** — the caller warns, and the app's retained candidate retries.
-pub(crate) fn request_ride_delete(id: u16) -> bool {
-    RIDE_DELETE_REQ.try_send(id).is_ok()
-}
-
-/// The BLE plane's ride-delete arm: resolves with the next ride id to delete once the ride loop posts one.
-pub(crate) async fn wait_ride_delete() -> u16 {
-    RIDE_DELETE_REQ.receive().await
-}
-
-/// A locally-finished ride committed its `RD{id}.ORD` (the ride loop drained
-/// [`Storage::take_ride_saved`](crate::sd::Storage::take_ride_saved)). The BLE plane drains this and
-/// runs [`ObjectStore::adopt_saved_rides`] — the `/tracks` rescan + revision bump — so **one edge**
-/// feeds every consumer exactly like an upload or delete does: the phone gets `storeChanged(ride)` +
-/// the fresh digest, and the resulting [`STORE_CHANGED`] edge re-feeds the on-device Rides menu next
-/// pass. Without it a finished ride was invisible everywhere until a reboot (the boot scan was the
-/// only thing that ever read `/tracks` into either catalog). A coalescing `Signal<()>` — the drain
-/// rescans the whole directory, so a burst of saves needs no queue and no payload.
-static RIDE_SAVED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
-
-/// Post the saved-ride edge from the ride loop.
-pub(crate) fn note_ride_saved() {
-    RIDE_SAVED.signal(());
-}
-
-/// The BLE plane's saved-ride arm: resolves once a ride object lands after the last drain.
-pub(crate) async fn wait_ride_saved() {
-    RIDE_SAVED.wait().await
 }
 
 // ==================== BLE-initiated DFU install request (S6, #621) ====================
@@ -108,9 +38,9 @@ pub(crate) async fn wait_ride_saved() {
 // pass. Posting records **intent only**; the BLE command never waits for the human and never installs
 // on its own (spec §4.4 security posture).
 //
-// Same lock-free module-static hand-off as [`STORE_CHANGED`]: the store lives behind the BLE plane's
-// `RefCell`, the app in the ride loop. `Relaxed` suffices — both are cooperative futures on the one
-// executor.
+// Same lock-free module-static hand-off as the other BLE/ride-loop signals: the store lives behind
+// the BLE plane's `RefCell`, the app in the ride loop. `Relaxed` suffices — both are cooperative
+// futures on the one executor.
 
 /// A BLE `installFw` request, posted but not yet drained by the ride loop.
 static DFU_INSTALL_REQ: AtomicBool = AtomicBool::new(false);
@@ -207,31 +137,13 @@ pub(crate) fn take_ble_clock() -> Option<(u32, i16)> {
     BLE_CLOCK_SET.try_take()
 }
 
-/// One ride-catalog slot: the object id and where its bytes live.
-struct ObjectSlot {
-    id: u16,
-    file: ShortFileName,
-}
-
-/// Ride catalog capacity. Past it the newest rides stop being listed until the card is tidied.
-pub const MAX_RIDES: usize = 128;
-
 pub struct ObjectStore {
     /// The persisted settings, loaded once at boot — the config plane's read/modify cache. The SD
     /// card and the RRAM store themselves are **not** owned here: they live in the shared
     /// [`SharedStore`] both planes lock, which each storage/settings method takes as a `&mut` param
-    /// (#270). Keeping only the catalog + this cache in `ObjectStore` lets the BLE planes hold it
+    /// (#270). Keeping only this cache in `ObjectStore` lets the BLE planes hold it
     /// through a `RefCell` (never across an `await`) while the card is locked separately per call.
     settings: Settings,
-    /// The stored rides: scanned at boot and re-scanned on the saved-ride edge ([`RIDE_SAVED`]) —
-    /// since the de-split the `ble` build *is* the map build, so the ride loop records new rides
-    /// mid-session and this catalog must follow (it feeds the `rideList` object the phone syncs
-    /// against).
-    rides: Vec<ObjectSlot, MAX_RIDES>,
-    /// The ride store revision: monotonic per boot, bumped on every ride commit/delete.
-    revision: u32,
-    /// Full ride-catalog size before the [`MAX_RIDES`] cap — the `rideList` header's `total`.
-    ride_total: u16,
 }
 
 /// The announce-time ceiling on a weather bundle's `total_len` (#1221 F6). A megabyte-scale
@@ -239,79 +151,14 @@ pub struct ObjectStore {
 /// streamed to the card for minutes and then failing validation.
 ///
 impl ObjectStore {
-    /// The empty store — no settings read, no card scan; [`hydrate`](Self::hydrate) does that,
-    /// in place. Construction is split in two because this struct is ~13.5 KB by value: the old
-    /// `new(shared)`-then-`RefCell::new` shape put **two** copies of it in `link::init_store`'s
-    /// frame (the return slot + the wrapper's argument), the measured ~27.6 KB boot spike that
-    /// overran the residual stack once EL7 grew the ride task's poll frame (STKOF HardFault at
-    /// the `init_store` prologue, 2026-08-03). Since WX12 (#1197) the empty store is a **`const`**
-    /// — a `.rodata` image the slot write copies from — because even the one by-value hop proved
-    /// optimizer-fragile: a +96 B `Settings` growth was enough for rustc 1.96 to stop collapsing
-    /// `RefCell::new(empty())` and stack the two ~13.6 KB temporaries again (the boot-chain guard
-    /// caught it, as designed). A constant can't be duplicated onto the stack; everything that
-    /// scans stays in [`hydrate`], operating on the slot directly.
-    pub const EMPTY: ObjectStore =
-        ObjectStore { settings: Settings::DEFAULT, rides: Vec::new(), revision: 1, ride_total: 0 };
+    /// The empty control-plane cache — no settings read; [`hydrate`](Self::hydrate) fills it in
+    /// place. The former catalog arrays disappeared with flat-store ownership; a const initializer
+    /// keeps the remaining boot path allocation-free.
+    pub const EMPTY: ObjectStore = ObjectStore { settings: Settings::DEFAULT };
 
-    /// Mount-time fill of an [`EMPTY`](Self::EMPTY) store, **in place**: load settings and scan the
-    /// legacy ride catalog. Route and trip objects are owned exclusively by the flat store.
+    /// Mount-time fill of an [`EMPTY`](Self::EMPTY) store, **in place**: load settings only.
     pub fn hydrate(&mut self, shared: &mut SharedStore) {
         self.settings = shared.settings.load().unwrap_or_default();
-        self.rescan_rides(shared);
-    }
-
-    /// Scan `/tracks` for stored ride objects (`RD{id}.ORD`) whose id is durable in the filename.
-    /// An interrupted save (the held-back version byte, exactly that signature) is swept; a merely
-    /// unreadable file is kept off the catalog but never deleted. Ordered as the directory lists
-    /// them; the app sorts by `start_time`.
-    fn rescan_rides(&mut self, shared: &mut SharedStore) {
-        self.rides.clear();
-        self.ride_total = 0;
-        let Some(storage) = &mut shared.storage else { return };
-        let mut entries: Vec<(u16, ShortFileName), MAX_RIDES> = Vec::new();
-        // Count the excess the cap drops (epic #632 item 7) rather than boolean-flagging it, so
-        // the `rideList` header's `total` makes the truncation visible on the wire.
-        let mut over_cap: u16 = 0;
-        storage.for_each_ride_file(|id, n| {
-            if entries.push((id, n.clone())).is_err() {
-                over_cap = over_cap.saturating_add(1);
-            }
-        });
-        if over_cap > 0 {
-            defmt::warn!("store: more than {=usize} ride objects — {=u16} not listed", MAX_RIDES, over_cap);
-        }
-        for (id, name) in &entries {
-            match storage.ride_object_info(name) {
-                Some(_) => {
-                    let _ = self.rides.push(ObjectSlot { id: *id, file: name.clone() });
-                }
-                None => {
-                    if storage.is_aborted_ride_object(name) {
-                        defmt::info!("store: sweeping interrupted ride save {}", defmt::Debug2Format(name));
-                        let _ = storage.delete_ride_file(name);
-                    }
-                }
-            }
-        }
-        self.ride_total = (self.rides.len() as u16).saturating_add(over_cap);
-        defmt::info!("store: {=usize} ride object(s)", self.rides.len());
-    }
-
-    /// The current store revision — monotonic per boot, bumped on every commit/delete. The BLE plane
-    /// stamps it into the `storeChanged` status message (protocol v2's sole change signal — the
-    /// `objectStore` digest characteristic is retired).
-    pub fn revision(&self) -> u32 {
-        self.revision
-    }
-
-    fn bump_revision(&mut self) -> u32 {
-        self.revision = self.revision.wrapping_add(1);
-        // Signal the app UI (epic #447): every commit/delete funnels through here, so this is the one
-        // spot that raises the store-changed edge the ride loop drains — the same movement that
-        // notifies the phone's `storeChanged` — and wakes the loop if it's parked (#450).
-        STORE_CHANGED.fetch_add(1, Ordering::Relaxed);
-        STORE_WAKE.signal(());
-        self.revision
     }
 
     // ==================== config ↔ settings ====================
@@ -383,62 +230,6 @@ impl ObjectStore {
     /// Forget the stored bond (the peer signalled it lost its keys) → next contact re-pairs.
     pub fn clear_bond(&mut self, shared: &mut SharedStore) {
         shared.settings.clear_bond();
-    }
-
-    // ==================== delete ====================
-
-    /// Delete a stored **ride** by object id (epic #447, P7 / #454) — the ride-namespace twin of
-    /// [`delete_route`](Self::delete_route). Routes the delete through the store (revision bump +
-    /// `storeChanged`) so the phone's device-rides reconcile; retires the ride's synced-set flag too.
-    /// `true` = deleted. Ids never reuse, so the phone's synced/tombstone bookkeeping stays coherent.
-    pub fn delete_ride(&mut self, shared: &mut SharedStore, id: u16) -> bool {
-        let Some(idx) = self.rides.iter().position(|s| s.id == id) else { return false };
-        let Some(storage) = &mut shared.storage else { return false };
-        if !storage.delete_ride_file(&self.rides[idx].file) {
-            return false;
-        }
-        // Retire the synced flag (belt-and-braces — ids never reuse) so the sidecar stays tidy.
-        storage.forget_ride_synced(id);
-        self.rides.remove(idx);
-        self.ride_total = self.ride_total.saturating_sub(1);
-        self.bump_revision();
-        true
-    }
-
-    /// Reconcile the synced sidecar from the phone's possession ack (`ackRides`, spec §4.4 cmd 2):
-    /// flag every acked id **the device still stores** as synced — the phone's library is the ground
-    /// truth for "the phone has this ride", so this heals every divergence the download-completion
-    /// event alone leaves permanent (rides downloaded before the sidecar existed, a sidecar lost
-    /// with the card, an app reinstall). Monotonic: nothing is ever un-flagged here. One sidecar
-    /// read-modify-write for the whole batch; a change bumps the revision once, so the ride loop's
-    /// `STORE_CHANGED` rescan re-feeds the Rides menu with the freshened flags (same funnel as a
-    /// download-completion mark). Returns the newly-flagged count (the `commandResult.detail`,
-    /// saturating at 255).
-    pub fn ack_rides(&mut self, shared: &mut SharedStore, ack: &obc_ble::AckRides) -> u8 {
-        let Some(storage) = &mut shared.storage else { return 0 };
-        let rides = &self.rides;
-        // `synced_at = 0` (auto-expiry epic #638, S3): the BLE plane here has no trusted-clock
-        // handle, so the ride is flagged synced now with an unset stamp. S2's `setClock` precedes
-        // `ackRides` on every connect, so the clock is trusted in practice — and the app's **eager**
-        // ride-stamp step (`RetentionRuntime::stamp_synced_rides`, run every trusted tick, *not*
-        // recording-gated) stamps `synced_at = now` at ~ack-time once the store-changed rescan
-        // re-feeds this flag. An old app that never sends `setClock` leaves the clock untrusted and
-        // the stamp waits for the first trusted tick — the lazy fallback (invariant 5: a
-        // synced-without-timestamp ride is never deleted on sight, its countdown just starts later).
-        let added = storage.mark_rides_synced(ack.iter().filter(|id| rides.iter().any(|s| s.id == *id)), 0);
-        if added > 0 {
-            self.bump_revision();
-        }
-        added.min(u8::MAX as usize) as u8
-    }
-
-    /// Adopt locally-saved rides into the live catalog: re-scan `/tracks` and bump the revision, so
-    /// the phone's `storeChanged(ride)` + digest and the ride loop's [`STORE_CHANGED`] edge (→ the
-    /// Rides menu re-feed) all move from this one edge — the exact path an upload commit or a delete
-    /// takes. Driven by [`wait_ride_saved`] in `ble::run`'s `ride_saved_task`.
-    pub fn adopt_saved_rides(&mut self, shared: &mut SharedStore) {
-        self.rescan_rides(shared);
-        self.bump_revision();
     }
 
     /// Whether a staged `/UPDATE.BIN` exists in the card root — the `installFw` `noStaged` cheap

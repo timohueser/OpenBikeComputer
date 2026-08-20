@@ -5,7 +5,7 @@
 //! tests run it against the `Mem*` stores; `obc-sim`'s tests run it against the folder stores.
 //!
 //! Each entry takes a repository already seeded by the caller (the two store families seed from the
-//! same committed OBCR/ORD fixtures) plus the small extra facts a shape needs, and asserts the
+//! same committed route/ride object fixtures) plus the small extra facts a shape needs, and asserts the
 //! store-family-independent invariants.
 
 use obc_app::{App, AppState};
@@ -69,8 +69,8 @@ pub fn route_identity_remap(repo: &mut dyn RouteRepository) {
 }
 
 /// Ride-store invariants: delete + id retirement, and the unknown-id track reads. `expects_track`
-/// says whether a *known* id yields a real profile/preview (a folder-backed store with `RD{id}.ORD`
-/// bytes) — a memory store answers `None`/empty for every id.
+/// says whether a *known* id yields a real profile/preview (a folder-backed store with v3 ride
+/// object bytes) — a memory store answers `None`/empty for every id.
 pub fn ride_repository_suite(repo: &mut dyn RideRepository, expects_track: bool) {
     assert!(!repo.catalog().is_empty(), "seed the ride conformance repo with ≥1 ride");
     assert_eq!(repo.catalog().len(), repo.ids().len(), "catalog and ids stay parallel");

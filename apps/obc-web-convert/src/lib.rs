@@ -1,7 +1,7 @@
 //! `obc-web-convert` — the hosted builder's conversion bridge (epic #894, A2).
 //!
 //! The hosted tier has no backend, and this is what removes the last reason it would need one:
-//! `gpx_to_obcr` and `track_to_gpx` are `no_std` Rust in crates that already compile to wasm, so
+//! `gpx_to_obcr` and the ride-v3 GPX exporter are `no_std` Rust in crates that already compile to wasm, so
 //! route conversion runs in the visitor's browser through **the exact code the device and the CLI
 //! run**. Not a re-implementation in TypeScript — the same bytes, by construction.
 //!
@@ -11,7 +11,7 @@
 //! | export | contract |
 //! | :-- | :-- |
 //! | `obc_convert_gpx_to_obcr(bytes, name) -> Uint8Array` | a GPX file's bytes → a `.obcr` route |
-//! | `obc_convert_track_to_gpx(bytes, name) -> string` | a recorded `.obct` log → a GPX 1.1 document |
+//! | `obc_convert_track_to_gpx(bytes, name) -> string` | a finished ride-v3 object → a GPX 1.1 document |
 //! | `obc_convert_obcr_to_track(bytes) -> Float64Array` | a `.obcr` route → flat `[lat°, lon°, ele m]` triples |
 //! | `obc_convert_obcr_to_waypoints(bytes) -> Array` | a `.obcr` route's waypoint table → `{name, lat, lon, ele, category, distAlongM}` objects |
 //!
@@ -54,7 +54,7 @@ mod web {
         crate::convert::gpx_to_obcr(bytes, name).map_err(to_js)
     }
 
-    /// Convert a recorded `.obct` ride log into a GPX 1.1 document, naming the track `name`.
+    /// Convert a finished ride-v3 object into a GPX 1.1 document, naming the track `name`.
     ///
     /// Throws an `Error` carrying `code` + `message` on failure; see [`crate::ErrorCode`].
     #[wasm_bindgen]

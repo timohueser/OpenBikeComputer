@@ -7,13 +7,16 @@
 use std::io::{self, Write};
 
 use nusb::DeviceInfo;
+use obc_link::flat::{padded_record_len, Reassembler, RecordFault, RECORD_PREFIX_LEN};
 use obc_usb::{OpenLink, PRODUCT_ID, VENDOR_ID};
 
 const MAGIC: [u8; 4] = *b"OBC4";
 const WIRE_MAJOR: u8 = 4;
 const HEADER_LEN: usize = 16;
-const RECORD_PREFIX_LEN: usize = 2;
-const MAX_CONTROL_RECORD: usize = 4_112;
+/// Host → device control ceiling (§5.2). The widest request is PUT; LIST and FORMAT are smaller.
+const MAX_OUT_CONTROL_RECORD: usize = 256;
+/// Device → host ceiling on either endpoint pair (§5.2). LIST can fill the whole control ceiling.
+const MAX_IN_RECORD: usize = 8_208;
 const EXCHANGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 const LIST: u8 = 0x01;
@@ -172,33 +175,56 @@ async fn read_record(link: &OpenLink) -> Result<Vec<u8>, String> {
     loop {
         let bytes = link.control.read().await.map_err(|error| error.to_string())?;
         pending.extend_from_slice(&bytes);
-        if pending.len() < RECORD_PREFIX_LEN {
-            continue;
+        if let Some(frame) = decode_record(&pending)? {
+            return Ok(frame.to_vec());
         }
-        let length = u16::from_le_bytes([pending[0], pending[1]]) as usize;
-        if length == 0 || length > MAX_CONTROL_RECORD {
-            return Err(format!("device announced an invalid {length}-byte control record"));
-        }
-        let total = RECORD_PREFIX_LEN + length;
-        if pending.len() < total {
-            continue;
-        }
-        if pending.len() != total {
-            return Err("device sent more than one response to a single maintenance request".into());
-        }
-        return Ok(pending.split_off(RECORD_PREFIX_LEN));
     }
 }
 
 fn frame_record(frame: &[u8]) -> Result<Vec<u8>, String> {
-    let length = u16::try_from(frame.len()).map_err(|_| "control frame is too large".to_owned())?;
-    if length == 0 {
+    if frame.is_empty() {
         return Err("control frame is empty".into());
     }
-    let mut record = Vec::with_capacity(RECORD_PREFIX_LEN + frame.len());
+    if frame.len() > MAX_OUT_CONTROL_RECORD {
+        return Err(format!(
+            "control frame is {} bytes; USB binding v5 permits at most {MAX_OUT_CONTROL_RECORD}",
+            frame.len()
+        ));
+    }
+    let length = u32::try_from(frame.len()).map_err(|_| "control frame length does not fit binding v5".to_owned())?;
+    let mut record = Vec::with_capacity(RECORD_PREFIX_LEN + padded_record_len(frame.len()));
     record.extend_from_slice(&length.to_le_bytes());
     record.extend_from_slice(frame);
+    record.resize(RECORD_PREFIX_LEN + padded_record_len(frame.len()), 0);
     Ok(record)
+}
+
+/// Decode the single response record accumulated by this request/response maintenance client.
+/// `None` means a prefix, frame, or padding is still split across reads. A second record is an
+/// error because §3.1 has no unsolicited control frames and each request receives one answer.
+fn decode_record(pending: &[u8]) -> Result<Option<&[u8]>, String> {
+    let mut decoder = Reassembler::new(MAX_IN_RECORD);
+    decoder.filled(pending.len());
+    match decoder.take(pending).map_err(record_fault)? {
+        None => Ok(None),
+        Some((start, length)) => {
+            let wire_len = RECORD_PREFIX_LEN + padded_record_len(length);
+            if pending.len() != wire_len {
+                return Err("device sent more than one response to a single maintenance request".into());
+            }
+            Ok(Some(&pending[start..start + length]))
+        }
+    }
+}
+
+fn record_fault(fault: RecordFault) -> String {
+    match fault {
+        RecordFault::ZeroLength => "device announced an empty control record".into(),
+        RecordFault::OverCeiling { declared, ceiling } => {
+            format!("device announced a {declared}-byte control record; binding v5 permits at most {ceiling}")
+        }
+        RecordFault::NonZeroPadding => "device sent non-zero USB record alignment padding".into(),
+    }
 }
 
 fn list_request(request: u32) -> Vec<u8> {
@@ -378,8 +404,40 @@ mod tests {
         assert_eq!(&frame[16..32], &[0x11; 16]);
         assert_eq!(&frame[32..], &[0x22; 16]);
         let record = frame_record(&frame).unwrap();
-        assert_eq!(&record[..2], &[48, 0]);
-        assert_eq!(&record[2..], frame);
+        assert_eq!(&record[..4], &[48, 0, 0, 0]);
+        assert_eq!(&record[4..], frame);
+    }
+
+    #[test]
+    fn v5_encoder_zero_pads_to_the_next_word() {
+        let record = frame_record(&[1, 2, 3, 4, 5]).unwrap();
+        assert_eq!(&record[..4], &[5, 0, 0, 0]);
+        assert_eq!(&record[4..9], &[1, 2, 3, 4, 5]);
+        assert_eq!(&record[9..], &[0, 0, 0]);
+        assert_eq!(record.len() % 4, 0);
+    }
+
+    #[test]
+    fn v5_decoder_waits_for_every_split_prefix_frame_and_padding_byte() {
+        let record = frame_record(&[1, 2, 3, 4, 5]).unwrap();
+        for split in 0..record.len() {
+            assert_eq!(decode_record(&record[..split]).unwrap(), None, "split at {split} completed early");
+        }
+        assert_eq!(decode_record(&record).unwrap(), Some(&[1, 2, 3, 4, 5][..]));
+    }
+
+    #[test]
+    fn v5_decoder_reads_a_u32_length_and_rejects_bad_padding_or_an_extra_record() {
+        let oversized_u32 = 65_552u32.to_le_bytes();
+        assert!(decode_record(&oversized_u32).unwrap_err().contains("65552-byte"));
+
+        let mut bad_padding = frame_record(&[0xaa]).unwrap();
+        *bad_padding.last_mut().unwrap() = 1;
+        assert!(decode_record(&bad_padding).unwrap_err().contains("non-zero"));
+
+        let mut two = frame_record(&[1]).unwrap();
+        two.extend_from_slice(&frame_record(&[2]).unwrap());
+        assert!(decode_record(&two).unwrap_err().contains("more than one response"));
     }
 
     #[test]

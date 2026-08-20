@@ -79,6 +79,13 @@ impl<T: Elev> DeadBand<T> {
         DeadBand { ref_ele: None, threshold, ascent: T::ZERO, descent: T::ZERO }
     }
 
+    /// Restore already-booked totals after a persistence boundary, deliberately without restoring
+    /// the elevation reference. The next sample re-anchors, exactly like a pause, so an altitude
+    /// change while the device was off is never booked as one giant climb.
+    pub fn from_totals(ascent: T, descent: T) -> Self {
+        DeadBand { ref_ele: None, threshold: T::DEADBAND, ascent, descent }
+    }
+
     /// Integrate one elevation sample. A move of at least the threshold from the reference books
     /// the whole delta as ascent (up) or descent (down) and re-anchors the reference there; a
     /// smaller move is ignored (neither booked nor re-anchored).
@@ -180,6 +187,18 @@ mod tests {
         assert_eq!(db.ascent(), 10.0, "the gap is not climb");
         db.push(1510.0);
         assert_eq!(db.ascent(), 20.0, "…and integration resumes from the new anchor");
+    }
+
+    #[test]
+    fn restored_totals_keep_the_total_and_reanchor_after_the_gap() {
+        let mut db = DeadBand::<f32>::from_totals(42.0, 7.0);
+        assert_eq!(db.ascent(), 42.0);
+        assert_eq!(db.descent(), 7.0);
+        assert_eq!(db.smoothed(), None);
+        db.push(1_000.0);
+        assert_eq!(db.ascent(), 42.0, "the first post-restore height is only an anchor");
+        db.push(1_004.0);
+        assert_eq!(db.ascent(), 46.0);
     }
 
     #[test]

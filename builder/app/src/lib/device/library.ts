@@ -41,13 +41,12 @@
 
 import { trackToGpx } from "../convert/bridge";
 import { Crc32 } from "../usb/crc32";
-import { decodeRideObject, type RideObject } from "../usb/objects";
+import { decodeRideObject, encodeRideObject, type RideObject } from "../usb/objects";
 import type { CatalogEntry } from "../usb/protocol";
 import {
     RideExportError,
     recordedRides,
     rideKey,
-    rideToTrackLog,
     type RideScope,
     type RideSource,
 } from "./rides";
@@ -359,13 +358,13 @@ export async function pullRide(
 /**
  * The GPX, from the same `obc_route::track_to_gpx` the device runs at Finish.
  *
- * Through the wasm bridge and the ride-object → track-log inversion `rides.ts` already owns and
- * `rides.test.ts` pins byte-for-byte against `specs/vectors/track-export.gpx`. There is no
+ * Through the wasm bridge over the same finished v3 bytes the device serves, pinned byte-for-byte
+ * against `specs/vectors/track-export.gpx`. There is no
  * TypeScript GPX writer in this app and there must never be one — a library whose files disagreed
  * with the device's own export would be a slow-burning support problem.
  */
 export async function gpxOf(ride: RideObject): Promise<string> {
-    return trackToGpx(rideToTrackLog(ride), ride.name);
+    return trackToGpx(encodeRideObject(ride), ride.name);
 }
 
 /** Re-export one library ride's GPX from its stored object. The auto-repair is this, in a loop. */
@@ -414,7 +413,7 @@ export function downsampleTrack(points: readonly (readonly [number, number])[]):
 
 /** A downsampled `[lat, lon]` track for the list — {@link downsampleTrack} over a ride's points. */
 export function previewTrack(ride: RideObject): Array<[number, number]> {
-    return downsampleTrack(ride.points.map((p) => [p.lat1e7 / 1e7, p.lon1e7 / 1e7]));
+    return downsampleTrack(ride.points.map((p) => [p.latMicrodegrees / 1e6, p.lonMicrodegrees / 1e6]));
 }
 
 /** Six decimals is a ~11 cm grid — the device's own GPX precision, and about a third of the JSON. */

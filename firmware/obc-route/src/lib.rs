@@ -74,14 +74,14 @@ pub use matcher::{Match, RouteMatch};
 pub use nav::{plan_detour, plan_route, NavError, NavPhase, NavPlanner, NavScratch, Step, NAV_MAX_NODES};
 pub use obc_elevation::{ElevationSource, NullElevation};
 pub use profile::{
-    elevation_sparkline, ride_elevation_profile, ride_preview_polyline, Profile, Window, PROFILE_COLS,
-    SPARKLINE_BUCKETS,
+    elevation_sparkline, ride_elevation_profile, ride_elevation_profile_into, ride_preview_polyline, Profile, Window,
+    PROFILE_COLS, SPARKLINE_BUCKETS,
 };
 pub use reader::{
     for_each_waypoint, ChunkMeta, RouteCache, RouteIndex, RouteObjectInfo, RoutePoint, RoutePosition, RouteReader,
     RouteSummary, Waypoint, Waypoints, WptEntry, MAX_POINTS_PER_CHUNK, MAX_ROUTE_CHUNKS, MAX_WAYPOINTS,
 };
-pub use ride::{track_to_ride, RideInfo, RideStats};
+pub use ride::{encode_summary_footer, RideInfo, RideStats};
 pub use splice::{splice_detour, trim_detour_to_tail, TrimOutcome};
 pub use track::track_to_gpx;
 pub use trip::{trip_object_len, write_trip, TripMeta, TripSummary, MAX_TRIP_STAGES, TRIP_HEADER_LEN, TRIP_VERSION};

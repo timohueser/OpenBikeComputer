@@ -419,7 +419,6 @@ impl DfuErrorScreen {
             DfuErrorReason::Scan(e) => scan_msg(e),
             DfuErrorReason::Install(DfuInstallError::Scan(e)) => scan_msg(e),
             DfuErrorReason::Install(DfuInstallError::Recording) => Msg::DfuInstallRecording,
-            DfuErrorReason::Install(DfuInstallError::PendingSave) => Msg::DfuInstallPendingSave,
             DfuErrorReason::Install(DfuInstallError::NoCard) => Msg::DfuInstallNoCard,
             DfuErrorReason::Install(DfuInstallError::SnapshotFailed) => Msg::DfuInstallSnapshotFailed,
             DfuErrorReason::Install(DfuInstallError::StateWriteFailed) => Msg::DfuInstallStateWrite,
@@ -582,8 +581,8 @@ mod tests {
         let (t, _) = run(&mut |cx| scr.handle(Gesture::Back, cx));
         assert!(matches!(t, Transition::Pop));
 
-        let scr = DfuErrorScreen::new_install(DfuInstallError::PendingSave);
-        assert_eq!(scr.reason(), DfuErrorReason::Install(DfuInstallError::PendingSave));
+        let scr = DfuErrorScreen::new_install(DfuInstallError::Recording);
+        assert_eq!(scr.reason(), DfuErrorReason::Install(DfuInstallError::Recording));
 
         // The re-scan bucket folds to a plain scan reason (shared copy, no duplicate catalog key).
         let scr = DfuErrorScreen::new_install(DfuInstallError::Scan(DfuScanError::Damaged));

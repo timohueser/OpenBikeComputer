@@ -7,19 +7,18 @@ import OBCDomain
 /// extensions mirror the firmware's on-device `track_to_gpx` (epic #707, SE3) —
 /// the `gpxtpx` namespace on the root, a per-point `gpxtpx:TrackPointExtension`
 /// (`hr`/`cad`) plus a bare `<power>`, each element omitted when absent and the
-/// whole block omitted when all three are. A sensor-less ride (a v1 download)
-/// exports the plain track a pre-sensor build did — no regression.
+/// whole block omitted when all three are. Segment flags and the v3 microdegree grid are retained.
 struct GPXRideEncoderTests {
     private let encoder = GPXRideEncoder()
 
     private func point(
-        _ latE7: Int, _ lonE7: Int, ele: Double?,
+        _ latE6: Int, _ lonE6: Int, ele: Double?, segmentStart: Bool = false,
         hr: Int? = nil, cad: Int? = nil, pwr: Int? = nil
     ) -> RidePoint {
         RidePoint(
             timestamp: .distantPast,
-            coordinate: Coordinate(latitude: Double(latE7) / 1e7, longitude: Double(lonE7) / 1e7),
-            elevationMeters: ele, heartRate: hr, cadence: cad, power: pwr)
+            coordinate: Coordinate(latitude: Double(latE6) / 1e6, longitude: Double(lonE6) / 1e6),
+            elevationMeters: ele, heartRate: hr, cadence: cad, power: pwr, segmentStart: segmentStart)
     }
 
     private func ride(name: String, points: [RidePoint]) -> Ride {
@@ -33,10 +32,10 @@ struct GPXRideEncoderTests {
         // One of each extension shape: all-present, none, power-only (no
         // TrackPointExtension wrapper), hr-only. `&` in the name exercises escaping.
         let mixed = ride(name: "Feierabend & Sensors", points: [
-            point(480_000_000, 78_000_000, ele: 214, hr: 140, cad: 84, pwr: 205),
-            point(480_010_000, 78_012_000, ele: nil),
-            point(480_020_000, 78_030_000, ele: 219, pwr: 215),
-            point(480_030_000, 78_040_000, ele: 220, hr: 150),
+            point(48_000_000, 7_800_000, ele: 214, hr: 140, cad: 84, pwr: 205),
+            point(48_001_000, 7_801_200, ele: nil),
+            point(48_002_000, 7_803_000, ele: 219, pwr: 215),
+            point(48_003_000, 7_804_000, ele: 220, segmentStart: true, hr: 150),
         ])
 
         let expected = """
@@ -44,10 +43,12 @@ struct GPXRideEncoderTests {
             <gpx version="1.1" creator="OpenBikeComputer" xmlns="http://www.topografix.com/GPX/1/1" xmlns:gpxtpx="http://www.garmin.com/xmlschemas/TrackPointExtension/v1">
             <trk><name>Feierabend &amp; Sensors</name>
             <trkseg>
-            <trkpt lat="48.0000000" lon="7.8000000"><ele>214</ele><extensions><gpxtpx:TrackPointExtension><gpxtpx:hr>140</gpxtpx:hr><gpxtpx:cad>84</gpxtpx:cad></gpxtpx:TrackPointExtension><power>205</power></extensions></trkpt>
-            <trkpt lat="48.0010000" lon="7.8012000"></trkpt>
-            <trkpt lat="48.0020000" lon="7.8030000"><ele>219</ele><extensions><power>215</power></extensions></trkpt>
-            <trkpt lat="48.0030000" lon="7.8040000"><ele>220</ele><extensions><gpxtpx:TrackPointExtension><gpxtpx:hr>150</gpxtpx:hr></gpxtpx:TrackPointExtension></extensions></trkpt>
+            <trkpt lat="48.000000" lon="7.800000"><ele>214</ele><extensions><gpxtpx:TrackPointExtension><gpxtpx:hr>140</gpxtpx:hr><gpxtpx:cad>84</gpxtpx:cad></gpxtpx:TrackPointExtension><power>205</power></extensions></trkpt>
+            <trkpt lat="48.001000" lon="7.801200"></trkpt>
+            <trkpt lat="48.002000" lon="7.803000"><ele>219</ele><extensions><power>215</power></extensions></trkpt>
+            </trkseg>
+            <trkseg>
+            <trkpt lat="48.003000" lon="7.804000"><ele>220</ele><extensions><gpxtpx:TrackPointExtension><gpxtpx:hr>150</gpxtpx:hr></gpxtpx:TrackPointExtension></extensions></trkpt>
             </trkseg>
             </trk>
             </gpx>
@@ -59,8 +60,8 @@ struct GPXRideEncoderTests {
 
     @Test func sensorlessRideHasNoExtensionBlocks() throws {
         let plain = ride(name: "Plain Ride", points: [
-            point(470_000_000, 110_000_000, ele: 500),
-            point(470_050_000, 110_010_000, ele: nil),
+            point(47_000_000, 11_000_000, ele: 500),
+            point(47_005_000, 11_001_000, ele: nil),
         ])
 
         let expected = """
@@ -68,8 +69,8 @@ struct GPXRideEncoderTests {
             <gpx version="1.1" creator="OpenBikeComputer" xmlns="http://www.topografix.com/GPX/1/1" xmlns:gpxtpx="http://www.garmin.com/xmlschemas/TrackPointExtension/v1">
             <trk><name>Plain Ride</name>
             <trkseg>
-            <trkpt lat="47.0000000" lon="11.0000000"><ele>500</ele></trkpt>
-            <trkpt lat="47.0050000" lon="11.0010000"></trkpt>
+            <trkpt lat="47.000000" lon="11.000000"><ele>500</ele></trkpt>
+            <trkpt lat="47.005000" lon="11.001000"></trkpt>
             </trkseg>
             </trk>
             </gpx>
@@ -88,7 +89,7 @@ struct GPXRideEncoderTests {
         // The B7 seam: the encoder plugs into `RideExporter` by extension.
         let exporter = RideExporter(encoders: [GPXRideEncoder()], defaultFileExtension: "gpx")
         let file = try exporter.export(ride(name: "Loop", points: [
-            point(470_000_000, 110_000_000, ele: 500, hr: 120),
+            point(47_000_000, 11_000_000, ele: 500, hr: 120),
         ]))
         #expect(file.fileExtension == "gpx")
         let gpx = String(decoding: file.data, as: UTF8.self)

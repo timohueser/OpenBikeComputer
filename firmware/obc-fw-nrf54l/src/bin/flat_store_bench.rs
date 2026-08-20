@@ -25,13 +25,13 @@
 //!    [`LADDER_TOP`] entries a create/remove pair repeated [`COMMIT_SAMPLES`] times, so the reported
 //!    figure carries a spread rather than being one observation. Also [`measure_opens`]: what §5.3's
 //!    lookup costs twelve times over, which is a rendered set coming up.
-//! 4. **The ride journal (§7.2).** One checkpoint every [`RIDE_GROWTH`] bytes, timed, split by
-//!    whether it flushed a payload page.
+//! 4. **The ride journal (§7.2).** One checkpoint per ten exact 20-byte ride-v3 samples, timed,
+//!    including more than one turn of the 16-slot ring and a 16 KiB payload-page rollover.
 //! 5. **The read path (§6.1)** into a multi-GiB object: one sequential sweep and three random
 //!    passes, each with the **read amplification** — device blocks read over payload blocks
 //!    required — which is the flat store's version of #1379's read-ratio check.
-//! 6. **Resident cost** as a build assertion (see [`RESIDENT`]), plus the stack high-water the whole
-//!    run reached.
+//! 6. **Resident cost** as an exact build-time decomposition (see [`RESIDENT`]), plus the stack
+//!    high-water the whole run reached.
 //!
 //! Every timed figure is reported through [`report_split`]: the card's write half, its read half and
 //! the M33's residue, measured *inside* the block-device adapter. A commit is not one number — at 300
@@ -41,8 +41,10 @@
 //! Phase two, after `probe-rs reset`, on the ride phase one left recording:
 //!
 //! 7. **Recovery (§7.3)**, through the store's own [`FlatStore::recovered_ride`] — not a
-//!    reimplementation of it — and then §7.2's ride end, after which the ride is read back byte for
-//!    byte against the payload phase one generated.
+//!    reimplementation of it — followed by more samples, a ride-v3 footer, and §7.2's final commit.
+//!    The finished object is read through the ordinary path and compared byte-for-byte with the
+//!    exact sample/footer bytes the recorder generated. A second short ride gives a side-by-side
+//!    I/O census showing that finish cost is independent of the recorded prefix length.
 //!
 //! ## What it does NOT prove — read this before quoting the results
 //!
@@ -181,6 +183,9 @@ use embassy_nrf::interrupt::{InterruptExt, Priority};
 use embassy_nrf::uarte::{self, Baudrate, Uarte, UarteRx, UarteTx};
 use embassy_time::{Duration, Instant};
 use obc_crc::Crc32;
+use obc_formats::ride::{encode_footer, Footer, FOOTER_LEN, SAMPLE_LEN};
+use obc_formats::track::encode_record;
+use obc_ports::TrackPoint;
 use obc_storage::flat::store::{MAX_OPEN_OBJECTS, MAX_RESERVATIONS};
 use obc_storage::flat::{
     BlockDevice, DisplayName, EntryFlags, EntryMeta, FlatStore, Handle, Mode, Mutation, ObjectId, ObjectKind,
@@ -225,8 +230,10 @@ const EXTENT_SIZE: u64 = 1 << 20;
 const EXTENT_AREA: u64 = 4_096;
 /// The media program page, and the granule §7.2 flushes ride payload in (§1, §2).
 const PROGRAM_PAGE: usize = 16_384;
-/// Tail bytes one journal slot carries (§7.1) — the ceiling a recording caller's buffer must meet.
-const TAIL_CAPACITY: usize = 32_256;
+/// Tail bytes held by the shipping recorder: one 16 KiB journal payload plus sixteen samples of
+/// bounded spill while a checkpoint request is serviced. The durable slot itself is exactly one
+/// [`PROGRAM_PAGE`]; the spill is never part of a slot.
+const RIDE_TAIL_CAPACITY: usize = PROGRAM_PAGE + 16 * SAMPLE_LEN;
 /// The resident free bitmap (§9). Named here only to decompose the footprint report.
 const FREE_BITMAP: usize = 8 * 1_024;
 
@@ -238,10 +245,6 @@ const PLAN_BOOT_US: u64 = 100_000;
 const PLAN_COMMIT_US: u64 = 20_000;
 /// §8's initialization: "well under 1 s" (#1386).
 const PLAN_INIT_US: u64 = 1_000_000;
-/// The epic's resident figure: §9's 8 KiB bitmap, the 32,256-byte ride tail a recording caller
-/// holds, and the store's rows — about 42 KiB together.
-const PLAN_RESIDENT: usize = 42 * 1_024;
-
 // ── the bench's own shape ───────────────────────────────────────────────────────────────────────
 
 /// The bench's StoreId. A real initialization draws 128 CSPRNG bits (§4); a fixed value here makes a
@@ -270,24 +273,31 @@ const COMMIT_SAMPLES: usize = 3;
 
 /// The ride reserve §9 budgets: 32 MiB.
 const RIDE_RESERVE: u64 = 32 * EXTENT_SIZE;
-/// Payload bytes one checkpoint interval adds. A recorded ride is a few hundred bytes a second and
-/// §9's cadence is 10 s, so this is one interval of a real ride rounded to something a reader can
-/// multiply: nine checkpoints fill a program page, so the page flush lands mid-run rather than on a
-/// boundary the bench chose.
-const RIDE_GROWTH: usize = 2_048;
-/// Checkpoints phase one writes. Enough to flush several payload pages and to wrap past the sixteen
-/// slots, so the slot §7.3 selects is not the first one written — and deliberately not a multiple of
-/// eight, so the ride is left with a partial page in its slot and phase two's ride end has to move
-/// those bytes into the extents rather than finding everything already flushed.
-const RIDE_CHECKPOINTS: u64 = 23;
+/// The shipping recorder checkpoints every ten seconds. At the minimum one-second fix cadence that
+/// is ten exact ride-v3 records, not an arbitrary byte-growth surrogate.
+const SAMPLES_PER_CHECKPOINT: u32 = 10;
+const CHECKPOINT_SAMPLE_BYTES: usize = SAMPLES_PER_CHECKPOINT as usize * SAMPLE_LEN;
+/// Enough ten-sample checkpoints to cross the 16 KiB boundary and turn the 16-slot ring repeatedly.
+/// Checkpoint 82 crosses the page: the store consumes one proof sequence and one logical sequence.
+const RIDE_CHECKPOINTS: u64 = 83;
+const CONTINUATION_SAMPLES: u32 = 7;
+const SHORT_SAMPLES: u32 = 10;
+const RIDE_NAME: &str = "fs8-ride";
+const SHORT_NAME: &str = "fs8-short";
 
 /// What phase one's ride adds up to, from the constants it recorded with. Phase two anchors every
 /// expectation here and never on what recovery reported — see the comment in [`phase_two`].
-const RIDE_LEN: u64 = RIDE_CHECKPOINTS * RIDE_GROWTH as u64;
+const RIDE_LEN: u64 = RIDE_CHECKPOINTS * CHECKPOINT_SAMPLE_BYTES as u64;
 /// Payload bytes §7.2 will have flushed into the ride's own extents at that point.
 const RIDE_FLUSHED: u64 = RIDE_LEN / PROGRAM_PAGE as u64 * PROGRAM_PAGE as u64;
 /// And what is left in the newest journal slot: deliberately not zero.
 const RIDE_TAIL_LEN: u32 = (RIDE_LEN - RIDE_FLUSHED) as u32;
+/// A page rollover consumes a proof sequence in addition to the logical checkpoint sequence.
+const RIDE_RECOVERED_SEQUENCE: u64 = RIDE_CHECKPOINTS + RIDE_FLUSHED / PROGRAM_PAGE as u64;
+const RIDE_POINTS: u32 = RIDE_CHECKPOINTS as u32 * SAMPLES_PER_CHECKPOINT;
+const FINAL_POINTS: u32 = RIDE_POINTS + CONTINUATION_SAMPLES;
+const FINAL_SAMPLE_BYTES: u64 = FINAL_POINTS as u64 * SAMPLE_LEN as u64;
+const FINAL_RIDE_LEN: u64 = FINAL_SAMPLE_BYTES + FOOTER_LEN as u64;
 
 /// The read-path object, if the card has room for it. `FLAT_Store_Format.md` §6.1's addressing is
 /// arithmetic over 1 MiB extents, and only an object spanning thousands of them exercises it.
@@ -457,14 +467,73 @@ impl BlockDevice for Card {
 static mut PATTERN: Aligned<CHUNK> = Aligned([0; CHUNK]);
 /// Where a read comes back for the byte comparison.
 static mut READBACK: Aligned<CHUNK> = Aligned([0; CHUNK]);
-/// The recording caller's tail buffer: §7.1's ceiling, which is the figure §9's resident budget
-/// carries and not the couple of pages a real ride is ever holding.
-static mut RIDE_TAIL: Aligned<TAIL_CAPACITY> = Aligned([0; TAIL_CAPACITY]);
+/// The recording caller's tail buffer. Only the first 16 KiB is durable slot payload; the final
+/// sixteen records are the same bounded in-flight spill the shipping recorder carries.
+static mut RIDE_TAIL: Aligned<RIDE_TAIL_CAPACITY> = Aligned([0; RIDE_TAIL_CAPACITY]);
 
-/// The ride's payload byte at `offset`. Deterministic, so the boot after a reset can regenerate
-/// exactly what the boot before it recorded and compare byte for byte.
-fn ride_byte(offset: u64) -> u8 {
-    (offset.wrapping_mul(7).wrapping_add(11) ^ (offset >> 11)) as u8
+/// One deterministic semantic sample. Encoding always goes through the production 20-byte codec;
+/// the bench never substitutes a byte pattern for a ride point.
+fn ride_sample(index: u32) -> [u8; SAMPLE_LEN] {
+    let n = index as i32;
+    encode_record(&TrackPoint {
+        lon: 7_000_000 + n * 13,
+        lat: 46_000_000 + n * 7,
+        ele: 430 + (index % 900) as i16,
+        t_ms: index.wrapping_mul(1_000),
+        segment_start: index == 0 || index == RIDE_POINTS,
+        hr: (!index.is_multiple_of(5)).then_some(120 + (index % 55) as u8),
+        cadence: (!index.is_multiple_of(7)).then_some(70 + (index % 35) as u8),
+        power: (!index.is_multiple_of(11)).then_some(150 + (index % 500) as u16),
+    })
+}
+
+fn sample_byte(offset: u64) -> u8 {
+    let index = (offset / SAMPLE_LEN as u64) as u32;
+    ride_sample(index)[offset as usize % SAMPLE_LEN]
+}
+
+fn final_footer() -> [u8; FOOTER_LEN] {
+    encode_footer(&Footer::new(
+        RIDE_NAME,
+        1_751_449_700,
+        4_180,
+        FINAL_POINTS - 1,
+        500,
+        321,
+        FINAL_POINTS,
+        Some(145),
+        Some(178),
+        Some(86),
+        Some(235),
+        Some(612),
+    ))
+}
+
+fn short_footer() -> [u8; FOOTER_LEN] {
+    encode_footer(&Footer::new(
+        SHORT_NAME,
+        1_751_449_800,
+        45,
+        SHORT_SAMPLES - 1,
+        500,
+        3,
+        SHORT_SAMPLES,
+        Some(130),
+        Some(142),
+        Some(82),
+        Some(190),
+        Some(260),
+    ))
+}
+
+/// Recorder-owned state that must survive with the same logical checkpoint as its bytes.
+fn resume_image(points: u32) -> [u8; obc_storage::flat::RIDE_RESUME_LEN] {
+    let mut resume = [0u8; obc_storage::flat::RIDE_RESUME_LEN];
+    resume[..4].copy_from_slice(&points.to_le_bytes());
+    for (index, byte) in resume[4..].iter_mut().enumerate() {
+        *byte = points.wrapping_add(index as u32 * 17) as u8;
+    }
+    resume
 }
 
 #[embassy_executor::main]
@@ -654,7 +723,7 @@ struct Boot {
 /// `plan` is a parameter and a mount that recovered a ride is reported against **no** budget,
 /// because §5.6's ~100 ms is scoped to its own sentence: "on a card with no ride in progress a mount
 /// reads at most 3 blocks plus the live catalog prefix". A mount that reads sixteen slot headers and
-/// CRCs a 32 KiB slot is doing more than that figure covers, and the spec states no figure for it.
+/// CRCs a 16 KiB slot is doing more than that figure covers, and the spec states no figure for it.
 #[inline(never)]
 fn measure_boot(label: &str, plan: Option<u64>) -> Boot {
     arm();
@@ -945,7 +1014,7 @@ fn measure_opens(store: &FlatStore<Card>, entries: u16) {
 
 // ── 4: the ride journal ─────────────────────────────────────────────────────────────────────────
 
-/// §7.2's write half: start a ride, then one checkpoint per [`RIDE_GROWTH`] bytes, timed.
+/// §7.2's write half: start a ride, then one checkpoint per ten encoded samples, timed.
 ///
 /// The ride is left **recording** on purpose. It is what phase two recovers.
 fn ride() {
@@ -997,24 +1066,31 @@ fn ride() {
     let mut flush_total = 0u64;
     let mut flushes = 0u64;
     let mut worst = 0u64;
-    for sequence in 1..=RIDE_CHECKPOINTS {
-        for step in 0..RIDE_GROWTH {
-            let offset = payload_len + step as u64;
-            let byte = ride_byte(offset);
-            tail[(offset - flushed) as usize] = byte;
-            digest.update(&[byte]);
+    for checkpoint_number in 1..=RIDE_CHECKPOINTS {
+        for _ in 0..SAMPLES_PER_CHECKPOINT {
+            let point = (payload_len / SAMPLE_LEN as u64) as u32;
+            let sample = ride_sample(point);
+            let at = (payload_len - flushed) as usize;
+            tail[at..at + SAMPLE_LEN].copy_from_slice(&sample);
+            digest.update(&sample);
+            payload_len += SAMPLE_LEN as u64;
         }
-        payload_len += RIDE_GROWTH as u64;
         let held = (payload_len - flushed) as usize;
-        let checkpoint =
-            RideCheckpoint { id, revision: Revision(1), tail: &tail[..held], payload_crc: digest.finalize() };
+        let resume = resume_image((payload_len / SAMPLE_LEN as u64) as u32);
+        let checkpoint = RideCheckpoint {
+            id,
+            revision: Revision(1),
+            tail: &tail[..held],
+            payload_crc: digest.finalize(),
+            resume: &resume,
+        };
         arm();
         let started = Instant::now();
         let outcome = store.journal(checkpoint);
         let elapsed = us(started);
         let counted = counters();
         if let Err(error) = outcome {
-            error!("RIDE  checkpoint {=u64} refused ({})", sequence, defmt::Debug2Format(&error));
+            error!("RIDE  checkpoint {=u64} refused ({})", checkpoint_number, defmt::Debug2Format(&error));
             return;
         }
         // §7.2 flushes whole payload pages out of the front of the tail, and the caller drops exactly
@@ -1027,14 +1103,14 @@ fn ride() {
             flushes += 1;
             info!(
                 "RIDE  checkpoint {=u64} flushed {=usize} payload page(s): {=u64} us, {=u32} writes / {=u32} blocks",
-                sequence, pages, elapsed, counted.writes, counted.write_blocks
+                checkpoint_number, pages, elapsed, counted.writes, counted.write_blocks
             );
         } else {
             plain_total += elapsed;
             plain += 1;
-            if sequence == 1 {
+            if checkpoint_number == 1 {
                 info!(
-                    "RIDE  checkpoint 1 (one 32 KiB slot, no page flush): {=u64} us, {=u32} writes / {=u32} blocks, {=u32} syncs",
+                    "RIDE  checkpoint 1 (ten 20-byte samples into one 16 KiB slot, no page rollover): {=u64} us, {=u32} writes / {=u32} blocks, {=u32} syncs",
                     elapsed, counted.writes, counted.write_blocks, counted.syncs
                 );
             }
@@ -1042,9 +1118,10 @@ fn ride() {
         worst = worst.max(elapsed);
     }
     info!(
-        "RIDE  {=u64} checkpoints at {=usize} B each: {=u64} us mean without a page flush ({=u64} of them), {=u64} us mean with one ({=u64}), {=u64} us worst",
+        "RIDE  {=u64} checkpoints × {=u32} exact samples × {=usize} B: {=u64} us mean without a page rollover ({=u64}), {=u64} us mean with one ({=u64}), {=u64} us worst",
         RIDE_CHECKPOINTS,
-        RIDE_GROWTH,
+        SAMPLES_PER_CHECKPOINT,
+        SAMPLE_LEN,
         plain_total / plain.max(1),
         plain,
         flush_total / flushes.max(1),
@@ -1056,10 +1133,12 @@ fn ride() {
         (plain_total + flush_total) / RIDE_CHECKPOINTS / 10
     );
     info!(
-        "RIDE  left recording: object {=u64}, {=u64} B recorded, {=u64} B flushed, crc 0x{=u32:08x}",
+        "RIDE  left recording for reset: object {=u64}, {=u32} samples / {=u64} B, {=u64} B flushed, logical sequence {=u64}, crc 0x{=u32:08x}",
         id.0,
+        RIDE_POINTS,
         payload_len,
         flushed,
+        RIDE_RECOVERED_SEQUENCE,
         digest.finalize()
     );
 }
@@ -1285,16 +1364,12 @@ fn amplification(label: &str, counted: &Counters, required: u64, elapsed: u64) {
 
 // ── 6: resident cost ────────────────────────────────────────────────────────────────────────────
 
-/// The resident total, and the build assertion that keeps it under §9's figure.
-const RESIDENT: usize = core::mem::size_of::<FlatStore<Card>>() + TAIL_CAPACITY;
+/// The resident total used by this bench. §9 normatively fixes the 8 KiB free bitmap and each
+/// *card-resident* slot's 16 KiB payload, but it does not state a 42 KiB combined RAM budget. The
+/// caller addend below is therefore the shipping recorder's one-page-plus-spill buffer, reported as
+/// a fact rather than compared with a plan figure that the format does not contain.
+const RESIDENT: usize = core::mem::size_of::<FlatStore<Card>>() + RIDE_TAIL_CAPACITY;
 
-// **An assertion, not a measurement.** `size_of` is a compile-time fact, and the ~42 KiB plan figure
-// is the sum of the same two addends — reporting one against the other as a ratio dresses an
-// identity up as a result, which is what the first round of this bench did. So it is stated the
-// honest way: the build fails if the store plus a recording caller's tail ever leaves §9's budget,
-// and the number below is reported without a verdict. Nothing here is in `obc-storage`; the
-// constants are §9's, restated at the top of this file.
-const _: () = assert!(RESIDENT <= PLAN_RESIDENT, "the flat store plus §7.1's tail no longer fits §9's resident budget");
 const _: () = assert!(core::mem::size_of::<FlatStore<Card>>() > FREE_BITMAP);
 
 fn report_footprint() {
@@ -1305,21 +1380,21 @@ fn report_footprint() {
         store, FREE_BITMAP, MAX_RESERVATIONS, MAX_OPEN_OBJECTS
     );
     info!(
-        "RAM   [addend 2] the recording caller's tail buffer: {=usize} B — §7.1's ceiling, not the ~18 KiB a real ride holds",
-        TAIL_CAPACITY
+        "RAM   [addend 2] shipping recording tail: {=usize} B = one {=usize} B journal payload + sixteen × {=usize} B in-flight samples",
+        RIDE_TAIL_CAPACITY, PROGRAM_PAGE, SAMPLE_LEN
     );
     info!("RAM   [component] one open Handle: {=usize} B; the entry array is never resident (§5.1)", handle);
     info!("RAM   [component] this bench's own buffers, which are not the store's: {=usize} B", CHUNK * 2 + 4_096);
     info!(
-        "RAM   TOTAL for one mounted store with a ride recording: {=usize} B. The build ASSERTS this stays within §9's {=usize} B — it is a compile-time identity, so it is reported without a verdict",
-        RESIDENT, PLAN_RESIDENT
+        "RAM   TOTAL for one mounted store plus the shipping ride tail: {=usize} B. §9 states the component geometry, not a combined RAM budget; this is reported without a fabricated plan verdict",
+        RESIDENT
     );
 }
 
 // ── 7: phase two, the recovery half ─────────────────────────────────────────────────────────────
 
-/// Everything the ride recorded before the reset must come back from the card alone, and then §7.2's
-/// ride end must publish exactly those bytes.
+/// Everything recorded before reset must come back from the card alone. Recording then continues,
+/// appends the footer as final bytes, and one commit publishes that exact byte string.
 fn phase_two(boot: &Boot) {
     info!("PHASE two: the card already carries this bench's store with a ride recording");
     let Some(entry) = boot.recording else { return };
@@ -1330,26 +1405,31 @@ fn phase_two(boot: &Boot) {
 
     // **Every expectation below is anchored on the constants phase one wrote with, not on anything
     // the store just said.** Deriving the expected length from `checkpoint_sequence` — as the first
-    // round of this bench did — makes the check self-fulfilling: a store that silently selected slot
-    // 22 instead of 23 would hand back a shorter ride and a CRC over the shorter ride, and both would
-    // "match". §7.4's loss cap is exactly the claim that would go unchecked.
+    // round of this bench did — makes the check self-fulfilling: a store that silently selected the
+    // prior logical sequence would hand back a shorter ride and a CRC over that shorter ride, and
+    // both would "match". §7.4's loss cap is exactly the claim that would go unchecked.
     let mut digest = Crc32::new();
     for offset in 0..RIDE_LEN {
-        digest.update(&[ride_byte(offset)]);
+        digest.update(&[sample_byte(offset)]);
     }
     let expected_crc = digest.finalize();
     let mut ok = recovered.id == entry.id && recovered.revision == entry.revision;
-    if recovered.checkpoint_sequence != RIDE_CHECKPOINTS {
+    if recovered.checkpoint_sequence != RIDE_RECOVERED_SEQUENCE {
         error!(
-            "RCVR  §7.3 selected checkpoint {=u64}, but phase one wrote {=u64} — a checkpoint was lost or a stale slot won",
-            recovered.checkpoint_sequence, RIDE_CHECKPOINTS
+            "RCVR  §7.3 selected logical sequence {=u64}, expected {=u64} from {=u64} checkpoints plus the rollover proof — a checkpoint was lost or a stale slot won",
+            recovered.checkpoint_sequence, RIDE_RECOVERED_SEQUENCE, RIDE_CHECKPOINTS
         );
         ok = false;
     }
     if (recovered.flushed, recovered.tail_len) != (RIDE_FLUSHED, RIDE_TAIL_LEN) {
         error!(
             "RCVR  recovery says {=u64} B flushed + {=u32} B tail; {=u64} checkpoints of {=usize} B is {=u64} + {=u32}",
-            recovered.flushed, recovered.tail_len, RIDE_CHECKPOINTS, RIDE_GROWTH, RIDE_FLUSHED, RIDE_TAIL_LEN
+            recovered.flushed,
+            recovered.tail_len,
+            RIDE_CHECKPOINTS,
+            CHECKPOINT_SAMPLE_BYTES,
+            RIDE_FLUSHED,
+            RIDE_TAIL_LEN
         );
         ok = false;
     }
@@ -1364,108 +1444,200 @@ fn phase_two(boot: &Boot) {
         );
         ok = false;
     }
+    let expected_resume = resume_image(RIDE_POINTS);
+    if recovered.resume != expected_resume {
+        error!("RCVR  the recorder-owned continuation image is not the one paired with the final phase-one samples");
+        ok = false;
+    }
     info!(
-        "RCVR  §7.3 selected checkpoint {=u64} of 16 slots: {=u64} B flushed + {=u32} B tail = {=u64} B, crc 0x{=u32:08x}",
+        "RCVR  §7.3 selected logical sequence {=u64} (physical slot {=u64} of 16 after wrap): {=u64} B flushed + {=u32} B tail = {=u64} B, crc 0x{=u32:08x}",
         recovered.checkpoint_sequence,
+        recovered.checkpoint_sequence % 16,
         recovered.flushed,
         recovered.tail_len,
         recovered.payload_len(),
         recovered.payload_crc
     );
-    if ok {
-        info!(
-            "RCVR  the recovery matches the {=u64} checkpoints phase one wrote — sequence, flush point, length and CRC, all against the bench's own constants",
-            RIDE_CHECKPOINTS
-        );
+    if !ok {
+        error!("RCVR  recovery did not match the independently regenerated checkpoint; refusing to continue or finalise it");
+        return;
     }
+    info!(
+        "RCVR  recovery matches all {=u64} phase-one checkpoints — identity, wrapped sequence, flush point, exact sample bytes' CRC, and recorder continuation state",
+        RIDE_CHECKPOINTS
+    );
 
-    ride_end(&entry, expected_crc);
+    let long = ride_end(&entry, recovered);
+    let short = short_ride();
+    if let (Some(long), Some(short)) = (long, short) {
+        report_finish_census(short, long);
+    }
     measure_boot("BOOT  after the ride ended", Some(PLAN_BOOT_US));
     info!("PHASE two done. `probe-rs reset` now runs phase one again — the card has no ride left to recover.");
 }
 
-/// §7.2's ride end and what it makes readable, with the store scoped to this call.
+#[derive(Clone, Copy)]
+struct FinishCensus {
+    payload_len: u64,
+    elapsed: u64,
+    counters: Counters,
+}
+
+/// Continue the reset ride from its recovered CRC/tail, append the fixed footer, issue the one final
+/// commit that clears `RECORDING`, and prove the ordinary object is exactly the bytes recorded.
 #[inline(never)]
-fn ride_end(entry: &EntryMeta, expected_crc: u32) {
+fn ride_end(entry: &EntryMeta, recovered: RideRecovery) -> Option<FinishCensus> {
     let store = FlatStore::mount(Card);
+    if store.recovered_ride() != Some(recovered) {
+        error!("RCVR  a second mount did not select the same durable ride checkpoint; refusing continuation");
+        return None;
+    }
     // SAFETY: sole borrows.
     let tail = unsafe { &mut (*core::ptr::addr_of_mut!(RIDE_TAIL)).0 };
     let readback = unsafe { &mut (*core::ptr::addr_of_mut!(READBACK)).0 };
 
-    // The tail the store hands back is the part of the payload that is in a journal slot rather than
-    // in the ride's extents. It has to be the tail of what phase one generated.
-    match store.recovered_tail(&mut tail[..RIDE_TAIL_LEN as usize]) {
-        Ok(len) => {
-            let bad = tail[..len]
-                .iter()
-                .enumerate()
-                .find(|(at, byte)| **byte != ride_byte(RIDE_FLUSHED + *at as u64))
-                .map(|(at, _)| at);
-            match bad {
-                None => info!("RCVR  the {=usize} B tail came back out of the slot byte for byte", len),
-                Some(at) => error!("RCVR  the recovered tail differs from the ride at byte {=usize}", at),
-            }
+    let len = match store.recovered_tail(&mut tail[..RIDE_TAIL_LEN as usize]) {
+        Ok(len) => len,
+        Err(error) => {
+            error!("RCVR  the tail would not come back ({})", defmt::Debug2Format(&error));
+            return None;
         }
-        Err(error) => error!("RCVR  the tail would not come back ({})", defmt::Debug2Format(&error)),
+    };
+    let bad = tail[..len]
+        .iter()
+        .enumerate()
+        .find(|(at, byte)| **byte != sample_byte(RIDE_FLUSHED + *at as u64))
+        .map(|(at, _)| at);
+    if len != RIDE_TAIL_LEN as usize || bad.is_some() {
+        error!(
+            "RCVR  recovered tail is not the exact {=u32} B suffix (got {=usize} B; first bad offset {=usize})",
+            RIDE_TAIL_LEN,
+            len,
+            bad.unwrap_or(usize::MAX)
+        );
+        return None;
     }
+    info!("RCVR  the {=usize} B tail came back out of the slot byte for byte", len);
 
-    // §7.2's ride end: one commit clears RECORDING, trims the reserve to the payload, and moves the
-    // last partial page out of the slot and into the ride's own extents.
+    // Continue from the recovered checksum rather than re-hashing the prefix. This is the board's
+    // reset path: the recovered tail stays at the front, new sample bytes follow it, and the footer
+    // is appended once as final recorded bytes before the final checkpoint.
+    let mut digest = Crc32::from_checksum(recovered.payload_crc);
+    let mut held = len;
+    for point in RIDE_POINTS..FINAL_POINTS {
+        let sample = ride_sample(point);
+        tail[held..held + SAMPLE_LEN].copy_from_slice(&sample);
+        held += SAMPLE_LEN;
+        digest.update(&sample);
+    }
+    let footer = final_footer();
+    tail[held..held + FOOTER_LEN].copy_from_slice(&footer);
+    held += FOOTER_LEN;
+    digest.update(&footer);
+    let final_crc = digest.finalize();
+    let resume = resume_image(FINAL_POINTS);
+
+    arm();
+    let started = Instant::now();
+    if let Err(error) = store.journal(RideCheckpoint {
+        id: entry.id,
+        revision: entry.revision,
+        tail: &tail[..held],
+        payload_crc: final_crc,
+        resume: &resume,
+    }) {
+        error!("RCVR  continuation/footer checkpoint was refused ({})", defmt::Debug2Format(&error));
+        return None;
+    }
+    let checkpoint_us = us(started);
+    let checkpoint_io = counters();
+    info!(
+        "RCVR  continued with {=u32} samples and checkpointed the {=usize} B footer last: {=u64} us, {=u32} writes / {=u32} blocks",
+        CONTINUATION_SAMPLES,
+        FOOTER_LEN,
+        checkpoint_us,
+        checkpoint_io.writes,
+        checkpoint_io.write_blocks
+    );
+
     let meta = EntryMeta {
         id: entry.id,
         revision: entry.revision,
         kind: ObjectKind::Ride,
         flags: EntryFlags::NONE,
-        // The constants again, not the recovery's own numbers: if §7.3 had selected a stale slot,
-        // this length would not match the tail that slot holds and the store would refuse the commit
-        // — which is the loud failure a self-anchored expectation quietly turns into a pass.
-        payload_len: RIDE_LEN,
-        payload_crc: expected_crc,
-        name: DisplayName::new("fs4-ride").unwrap_or_default(),
+        payload_len: FINAL_RIDE_LEN,
+        payload_crc: final_crc,
+        name: DisplayName::new(RIDE_NAME).unwrap_or_default(),
     };
     arm();
     let started = Instant::now();
-    let outcome = store.commit(&[Mutation::Put { meta, source: PutSource::Amend }]);
-    let end_us = us(started);
-    let counted = counters();
-    if let Err(error) = outcome {
-        error!("RCVR  the ride end was refused ({})", defmt::Debug2Format(&error));
-        return;
+    if let Err(error) = store.commit(&[Mutation::Put { meta, source: PutSource::Amend }]) {
+        error!("RCVR  the one final commit clearing RECORDING was refused ({})", defmt::Debug2Format(&error));
+        return None;
     }
+    let census = FinishCensus { payload_len: FINAL_RIDE_LEN, elapsed: us(started), counters: counters() };
     info!(
-        "RCVR  §7.2 ride end (tail out of the slot, ranges trimmed, 16 slot headers zeroed): {=u64} us, {=u32} writes / {=u32} blocks",
-        end_us, counted.writes, counted.write_blocks
+        "RCVR  FINAL COMMIT cleared RECORDING for {=u64} B: {=u64} us, {=u32} reads / {=u32} blocks, {=u32} writes / {=u32} blocks, {=u32} syncs",
+        census.payload_len,
+        census.elapsed,
+        census.counters.reads,
+        census.counters.read_blocks,
+        census.counters.writes,
+        census.counters.write_blocks,
+        census.counters.syncs
     );
+    report_split("FINISH long", census.elapsed, &census.counters);
 
-    // And now the whole ride is an ordinary object, so it reads back through the ordinary path.
+    // This is the GET claim: open the now-ordinary object and compare every served byte to the same
+    // production encoders used above. There is no finish-time conversion oracle in the middle.
     match store.open(entry.id, None) {
         Ok(handle) => {
-            let mut digest = Crc32::new();
+            let mut served_crc = Crc32::new();
             let mut offset = 0u64;
             let mut bad = None;
-            while offset < RIDE_LEN {
-                let want = ((RIDE_LEN - offset) as usize).min(readback.len());
+            while offset < FINAL_RIDE_LEN {
+                let want = ((FINAL_RIDE_LEN - offset) as usize).min(readback.len());
                 let Ok(got) = store.read(&handle, offset, &mut readback[..want]) else {
                     error!("RCVR  the finalised ride would not read at {=u64} B", offset);
-                    return;
+                    store.close(handle);
+                    return None;
                 };
+                if got == 0 {
+                    error!("RCVR  ordinary GET ended early at {=u64} B", offset);
+                    store.close(handle);
+                    return None;
+                }
                 bad = bad.or_else(|| {
-                    readback[..got]
-                        .iter()
-                        .enumerate()
-                        .find(|(at, byte)| **byte != ride_byte(offset + *at as u64))
-                        .map(|(at, _)| offset + at as u64)
+                    readback[..got].iter().enumerate().find_map(|(at, byte)| {
+                        let absolute = offset + at as u64;
+                        let expected = if absolute < FINAL_SAMPLE_BYTES {
+                            sample_byte(absolute)
+                        } else {
+                            footer[(absolute - FINAL_SAMPLE_BYTES) as usize]
+                        };
+                        (*byte != expected).then_some(absolute)
+                    })
                 });
-                digest.update(&readback[..got]);
+                served_crc.update(&readback[..got]);
                 offset += got as u64;
             }
             match bad {
-                None if digest.finalize() == expected_crc => info!(
-                    "RCVR  the whole {=u64} B ride read back byte for byte through the ordinary read path",
-                    RIDE_LEN
+                None if served_crc.finalize() == final_crc => info!(
+                    "RCVR  ordinary GET served all {=u32} × 20-byte samples plus the {=usize}-byte footer unchanged ({=u64} B exact)",
+                    FINAL_POINTS,
+                    FOOTER_LEN,
+                    FINAL_RIDE_LEN
                 ),
-                None => error!("RCVR  the finalised ride's CRC is not the one phase one recorded"),
-                Some(at) => error!("RCVR  the finalised ride differs from what was recorded at byte {=u64}", at),
+                None => {
+                    error!("RCVR  the ordinary GET bytes have the wrong final CRC");
+                    store.close(handle);
+                    return None;
+                }
+                Some(at) => {
+                    error!("RCVR  the ordinary GET differs from recorded bytes at offset {=u64}", at);
+                    store.close(handle);
+                    return None;
+                }
             }
             store.close(handle);
         }
@@ -1477,6 +1649,106 @@ fn ride_end(entry: &EntryMeta, expected_crc: u32) {
     let big = store.entries().find(|entry| entry.kind == ObjectKind::MapShard);
     if let Some(meta) = big {
         spot_check(&store, &meta);
+    }
+    Some(census)
+}
+
+/// Build and finish a small comparison ride after the recovered long one. Its final tail occupies
+/// one card block just like the long ride's, while its durable prefix is orders of magnitude shorter.
+fn short_ride() -> Option<FinishCensus> {
+    let store = FlatStore::mount(Card);
+    let id = store.next_object_id();
+    let allocation = match store.allocate(RIDE_RESERVE) {
+        Ok(allocation) => allocation,
+        Err(error) => {
+            error!("FINISH short 32 MiB reserve was refused ({})", defmt::Debug2Format(&error));
+            return None;
+        }
+    };
+    let recording = EntryMeta {
+        id,
+        revision: Revision(1),
+        kind: ObjectKind::Ride,
+        flags: EntryFlags::RECORDING,
+        payload_len: 0,
+        payload_crc: 0,
+        name: DisplayName::default(),
+    };
+    if let Err(error) = store.commit(&[Mutation::Put { meta: recording, source: PutSource::Fresh(allocation) }]) {
+        error!("FINISH short start was refused ({})", defmt::Debug2Format(&error));
+        return None;
+    }
+
+    // SAFETY: sole borrow after the long finish has returned.
+    let tail = unsafe { &mut (*core::ptr::addr_of_mut!(RIDE_TAIL)).0 };
+    let mut digest = Crc32::new();
+    let mut held = 0usize;
+    for point in 0..SHORT_SAMPLES {
+        let sample = ride_sample(point);
+        tail[held..held + SAMPLE_LEN].copy_from_slice(&sample);
+        held += SAMPLE_LEN;
+        digest.update(&sample);
+    }
+    let footer = short_footer();
+    tail[held..held + FOOTER_LEN].copy_from_slice(&footer);
+    held += FOOTER_LEN;
+    digest.update(&footer);
+    let payload_crc = digest.finalize();
+    let resume = resume_image(SHORT_SAMPLES);
+    if let Err(error) =
+        store.journal(RideCheckpoint { id, revision: Revision(1), tail: &tail[..held], payload_crc, resume: &resume })
+    {
+        error!("FINISH short checkpoint was refused ({})", defmt::Debug2Format(&error));
+        return None;
+    }
+
+    let final_meta = EntryMeta {
+        id,
+        revision: Revision(1),
+        kind: ObjectKind::Ride,
+        flags: EntryFlags::NONE,
+        payload_len: held as u64,
+        payload_crc,
+        name: DisplayName::new(SHORT_NAME).unwrap_or_default(),
+    };
+    arm();
+    let started = Instant::now();
+    if let Err(error) = store.commit(&[Mutation::Put { meta: final_meta, source: PutSource::Amend }]) {
+        error!("FINISH short final commit was refused ({})", defmt::Debug2Format(&error));
+        return None;
+    }
+    let census = FinishCensus { payload_len: held as u64, elapsed: us(started), counters: counters() };
+    report_split("FINISH short", census.elapsed, &census.counters);
+    Some(census)
+}
+
+fn report_finish_census(short: FinishCensus, long: FinishCensus) {
+    info!(
+        "FINISH O(1) CENSUS short {=u64} B: {=u64} us, R {=u32}/{=u32} blocks, W {=u32}/{=u32} blocks, S {=u32}; long {=u64} B: {=u64} us, R {=u32}/{=u32} blocks, W {=u32}/{=u32} blocks, S {=u32}",
+        short.payload_len,
+        short.elapsed,
+        short.counters.reads,
+        short.counters.read_blocks,
+        short.counters.writes,
+        short.counters.write_blocks,
+        short.counters.syncs,
+        long.payload_len,
+        long.elapsed,
+        long.counters.reads,
+        long.counters.read_blocks,
+        long.counters.writes,
+        long.counters.write_blocks,
+        long.counters.syncs
+    );
+    // One additional catalog row can move a streamed catalog prefix across one block boundary; no
+    // operation is allowed to scale with the ride's recorded prefix. Both final tails fit one block.
+    let bounded = short.counters.read_blocks.abs_diff(long.counters.read_blocks) <= 1
+        && short.counters.write_blocks.abs_diff(long.counters.write_blocks) <= 1
+        && short.counters.syncs == long.counters.syncs;
+    if bounded {
+        info!("FINISH O(1) PASS: long-prefix finish I/O is the short-prefix census ± one catalog block");
+    } else {
+        error!("FINISH O(1) FAIL: final commit I/O changed by more than the one-block catalog-shape allowance");
     }
 }
 

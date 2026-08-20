@@ -74,6 +74,9 @@ fn sample_slot() -> Slot {
         flushed: 245_760,
         tail_len: 3_712,
         payload_crc: 0x5E1B_03C7,
+        resume: [0; super::seam::RIDE_RESUME_LEN],
+        proof: false,
+        proof_sequence: 0,
         ranges,
         slot_crc: 0,
     }
@@ -196,6 +199,7 @@ fn the_seam_never_panics_on_hostile_arguments() {
             revision: meta.revision,
             tail: &[0xCD; 300],
             payload_crc: meta.payload_crc,
+            resume: &[0; super::seam::RIDE_RESUME_LEN],
         });
         if let Ok(handle) = store.open(meta.id, Some(meta.revision)) {
             let _ = store.read(&handle, edge(&mut rng), &mut [0u8; 64]);

@@ -692,8 +692,8 @@ fn reconcile_tracks(app: &mut App, tracks: &mut TrackStore) {
     let action = app.activity.take_track_action();
     let session = app.activity.session();
     let name = app.active_route_index().and_then(|i| app.routes().get(i)).map(|r| r.name.as_str().to_string());
-    // Snapshot the ride totals for a Save so the durable `RD{id}.ORD` ride object the Rides screen
-    // lists carries them, exactly as the device does (#454).
+    // Snapshot the ride totals for a Save so the desktop `ride-{id}.obcr` object the Rides screen
+    // lists carries them, exactly as the device object's footer does (#454).
     let stats = matches!(action, Some(obc_app::TrackAction::Save)).then(|| app.ride_stats());
     tracks.reconcile(action, session, name.as_deref(), stats);
 }
@@ -1173,8 +1173,8 @@ fn main() {
         // folder rows; until then the grouping is resolved but unrendered (the flat menu is intact).
         let mut trip_store = TripStore::open(args.routes_dir());
         app.set_trips(&trip_store.inputs());
-        // Load the tracks folder so the Rides screen (#454) lists real `RD{id}.ORD` rides + their
-        // synced flags.
+        // Load the simulator tracks folder so the Rides screen (#454) lists its v3 fixtures and
+        // process-local synced flags.
         let mut ride_store = RideStore::open(args.tracks_dir());
         app.set_rides(ride_store.catalog(), ride_store.ids());
         // Inject BLE before the script; `+` preserves independent link, bond and passkey facts.

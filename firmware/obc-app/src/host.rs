@@ -212,7 +212,7 @@ pub enum HostCommand {
     /// one-shot**: re-emitted on every drain while the open Ride detail's viewed ride is
     /// unanswered, and gone the moment the answer (even a failure's `None`) parks under the viewed
     /// key — so a missed pass re-asks and a dead file never grinds.
-    LoadRideTrack { id: u16 },
+    LoadRideTrack { id: crate::CatalogObjectId },
     /// Decimate the active route's shape polyline and hand it to
     /// [`set_nav_preview`](crate::App::set_nav_preview) (#685 §4). **Derived level** like
     /// [`LoadRideTrack`](HostCommand::LoadRideTrack): re-emitted while a Route overview is up

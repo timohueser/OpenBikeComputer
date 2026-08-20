@@ -315,17 +315,18 @@ function syntheticRide(name: string, startTime: number, points: number, sensors:
     const list: RidePoint[] = [];
     for (let i = 0; i < points; i++) {
         list.push({
-            tOffsetS: i,
-            lat1e7: 479_950_000 + i * 120,
-            lon1e7: 78_420_000 + i * 90,
-            eleM: 280 + Math.round(600 * Math.sin((i / points) * Math.PI)),
+            tMs: i * 1_000,
+            latMicrodegrees: 47_995_000 + i * 12,
+            lonMicrodegrees: 7_842_000 + i * 9,
+            elevationM: 280 + Math.round(600 * Math.sin((i / points) * Math.PI)),
+            segmentStart: i === 0,
             hrBpm: sensors ? 128 + (i % 22) : null,
             cadenceRpm: sensors ? 74 + (i % 11) : null,
             powerW: sensors ? 180 + (i % 60) : null,
         });
     }
     return {
-        version: 2,
+        version: 3,
         name,
         startTime,
         distanceM: points * 7,
