@@ -233,7 +233,7 @@ fn matrix(
     build: impl Fn(u64) -> SparseDisk,
     scenario: impl Fn(&mut Card),
 ) {
-    matrix_admitting(name, cuts, &[before.snapshot(), after.snapshot()], after, build, scenario);
+    matrix_admitting(name, cuts, &[before.snapshot(), after.snapshot()], None, after, build, scenario);
 }
 
 /// The same, for the one scenario whose cut points admit a third state §5.5 names.
@@ -241,6 +241,7 @@ fn matrix_admitting(
     name: &str,
     cuts: usize,
     admissible: &[Snapshot],
+    resident_expected: Option<Snapshot>,
     expected: &Model,
     build: impl Fn(u64) -> SparseDisk,
     scenario: impl Fn(&mut Card),
@@ -298,7 +299,11 @@ fn matrix_admitting(
     let disk = build(99);
     let mut store = FlatStore::mount(&disk);
     scenario(&mut store);
-    assert_eq!(snapshot(&mut store), after.snapshot(), "{name}: fault-free run, resident state");
+    assert_eq!(
+        snapshot(&mut store),
+        resident_expected.unwrap_or_else(|| after.snapshot()),
+        "{name}: fault-free run, resident state"
+    );
     disk.reboot();
     assert_eq!(snapshot(&mut FlatStore::mount(&disk)), after.snapshot(), "{name}: fault-free run, remounted");
 }
@@ -433,7 +438,7 @@ fn a_commit_after_a_fallback_targets_the_copy_it_is_not_serving() {
         model.snapshot()
     };
     let admissible = [served.snapshot(), mark_erased, after.snapshot()];
-    matrix_admitting("fallback commit", 39, &admissible, &after, build, |store: &mut Card| {
+    matrix_admitting("fallback commit", 39, &admissible, None, &after, build, |store: &mut Card| {
         let Ok(mut allocation) = store.allocate(600) else { return };
         if store.write(&mut allocation, &payload(600)).is_err() {
             return;
@@ -827,10 +832,23 @@ fn starting_a_ride_recovers_the_old_or_the_new_catalog() {
     let ride = recording();
     let before = empty();
     let after = empty().apply(&[Change::Put(ride)]).clone();
-    matrix_both_copies("ride start", 27, &before, &after, |store: &mut Card| {
-        let Ok(allocation) = store.allocate(32 << 20) else { return };
-        let _ = store.commit(&[Mutation::Put { meta: ride.meta, source: PutSource::Fresh(allocation) }]);
-    });
+    let mut resident = after.snapshot();
+    resident.ride = None;
+    let admissible = [before.snapshot(), after.snapshot()];
+    for copy in [0, 1] {
+        matrix_admitting(
+            "ride start",
+            27,
+            &admissible,
+            Some(resident.clone()),
+            &after,
+            builder(&before, copy),
+            |store: &mut Card| {
+                let Ok(allocation) = store.allocate(32 << 20) else { return };
+                let _ = store.commit(&[Mutation::Put { meta: ride.meta, source: PutSource::Fresh(allocation) }]);
+            },
+        );
+    }
 }
 
 /// Installs one journal slot, uncounted: the state a ride that has been recording leaves behind, and
@@ -1555,6 +1573,40 @@ fn ending_a_ride_leaves_no_slot_behind() {
     }
     disk.reboot();
     assert_eq!(FlatStore::mount(&disk).recovered_ride(), None);
+}
+
+/// A recovery offer belongs to the mount that discovered it, not to every later `RECORDING`
+/// catalog entry. Finishing the recovered ride clears that offer; starting another ride in the
+/// same boot must not manufacture a second recovery screen. A real reset before the new ride's
+/// first checkpoint still recovers it at zero length through §7.3's mount fallback.
+#[test]
+fn a_new_ride_after_recovery_and_finish_is_not_a_same_boot_recovery() {
+    let disk = card(18, &holding(&[recording()], 6), 0);
+    let store = FlatStore::mount(&disk);
+    assert_eq!(store.recovered_ride().unwrap().id, ObjectId(1), "the interrupted ride was not offered");
+
+    let tail = payload(1_000);
+    store
+        .journal(RideCheckpoint {
+            id: ObjectId(1),
+            revision: Revision(1),
+            tail: &tail,
+            payload_crc: crc32(&tail),
+            resume: &RESUME,
+        })
+        .unwrap();
+    let finalised = entry(1, 1, ObjectKind::Ride, EntryFlags::NONE, 1_000, "Recovered", &[(0, 1)]);
+    store.commit(&[Mutation::Put { meta: finalised.meta, source: PutSource::Amend }]).unwrap();
+    assert_eq!(store.recovered_ride(), None, "finishing left the boot recovery offer live");
+
+    let allocation = store.allocate(32 << 20).unwrap();
+    let next = entry(2, 1, ObjectKind::Ride, EntryFlags::RECORDING, 0, "Next", &[(1, 32)]);
+    store.commit(&[Mutation::Put { meta: next.meta, source: PutSource::Fresh(allocation) }]).unwrap();
+    assert_eq!(store.recovered_ride(), None, "a fresh same-boot ride was re-offered as recovered");
+
+    disk.reboot();
+    let recovered = FlatStore::mount(&disk).recovered_ride().expect("the reset recording start is recoverable");
+    assert_eq!((recovered.id, recovered.payload_len()), (ObjectId(2), 0));
 }
 
 /// An amend changes an entry's metadata under its own key, so a reader that opens it afterwards gets the

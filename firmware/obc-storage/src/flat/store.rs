@@ -2208,22 +2208,11 @@ impl<D: BlockDevice> FlatStore<D> {
                 resume: same.map_or([0; RIDE_RESUME_LEN], |ride| ride.resume),
                 pending_proof: same.map_or(0, |ride| ride.pending_proof),
             }));
-            if self
-                .recovered
-                .get()
-                .is_none_or(|recovered| (recovered.id, recovered.revision) != (entry.meta.id, entry.meta.revision))
-            {
-                self.recovered.set(Some(RideRecovery {
-                    id: entry.meta.id,
-                    revision: entry.meta.revision,
-                    checkpoint_sequence: 0,
-                    flushed: 0,
-                    tail_len: 0,
-                    payload_crc: 0,
-                    resume: [0; RIDE_RESUME_LEN],
-                    slot: u16::MAX,
-                }));
-            }
+            // `recovered` is a mount-time offer, not a mirror of the active ride. A fresh start is
+            // already owned by its live recorder in this boot, so manufacturing a zero-length
+            // recovery here would make a later recorder construction offer that new ride as if it
+            // had survived a reset. If power is actually cut before its first journal slot, §7.3's
+            // mount fallback synthesizes the required zero-length recovery then.
             return;
         }
         let Some(ride) = self.ride.get() else { return };
