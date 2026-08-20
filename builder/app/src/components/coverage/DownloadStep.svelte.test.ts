@@ -7,6 +7,7 @@ const seams = vi.hoisted(() => ({
     sendMapBlob: vi.fn(),
     sendMapBytes: vi.fn(),
     readMapOutput: vi.fn(async () => new Blob([Uint8Array.of(1, 2, 3, 4)])),
+    discardCellStore: vi.fn(async () => undefined),
     discardMapOutput: vi.fn(async () => undefined),
     saveBlob: vi.fn(),
     workerOutput: "stored" as "stored" | "file",
@@ -17,7 +18,7 @@ vi.mock("../../lib/cells/store", () => ({
     cellStoreWritable: vi.fn(async () => false),
     clearCellStores: vi.fn(async () => undefined),
     clearMapWorkStorage: vi.fn(async () => undefined),
-    discardCellStore: vi.fn(async () => undefined),
+    discardCellStore: seams.discardCellStore,
     discardMapOutput: seams.discardMapOutput,
     hasRoomFor: vi.fn(async () => false),
     openCellStore: vi.fn(),
@@ -112,6 +113,7 @@ describe("direct assembler delivery", () => {
         vi.stubGlobal("Worker", AssembleWorker);
         seams.sendMapBlob.mockReset();
         seams.sendMapBytes.mockReset();
+        seams.discardCellStore.mockReset().mockResolvedValue(undefined);
         seams.discardMapOutput.mockClear();
         seams.saveBlob.mockClear();
         seams.workerOutput = "stored";
@@ -257,6 +259,48 @@ describe("direct assembler delivery", () => {
         expect(seams.discardMapOutput).toHaveBeenCalledOnce();
     });
 
+    it("keeps every delivery action closed until deferred cleanup has finished", async () => {
+        let releaseCleanup!: () => void;
+        const cleanup = new Promise<undefined>((resolve) => (releaseCleanup = () => resolve(undefined)));
+        seams.discardMapOutput.mockImplementationOnce(() => cleanup);
+        seams.sendMapBlob.mockResolvedValue({ objectId: 1n });
+        const readyChanges: boolean[] = [];
+        const { component, target } = await mountReadyStep({
+            onSendReadyChange: (ready) => readyChanges.push(ready),
+        });
+        const first = new DeviceJob("map");
+        const running = first.run(
+            (ctx) => component.sendToDevice({} as FlatStoreClient, ctx),
+            () => "sent",
+        );
+
+        for (let attempt = 0; attempt < 20 && !target.textContent?.includes("finishing up"); attempt++) {
+            await Promise.resolve();
+            await tick();
+        }
+        expect(target.textContent).toContain("finishing up");
+        expect(target.textContent).not.toContain("Download map");
+        expect(target.textContent).not.toContain("Cancel");
+        expect(readyChanges.at(-1)).toBe(false);
+
+        const second = new DeviceJob("map");
+        await expect(
+            second.run(
+                (ctx) => component.sendToDevice({} as FlatStoreClient, ctx),
+                () => "sent twice",
+            ),
+        ).resolves.toBeNull();
+        expect(second.error).toContain("not ready");
+        expect(seams.sendMapBlob).toHaveBeenCalledOnce();
+
+        releaseCleanup();
+        await running;
+        await tick();
+        expect(first.phase).toBe("done");
+        expect(target.textContent).toContain("Assembled and sent");
+        await unmount(component);
+    });
+
     it("keeps the ordinary download path and does not delete its source early", async () => {
         seams.workerOutput = "file";
         const { component, target } = await mountReadyStep();
@@ -302,10 +346,12 @@ const store = {
     holeCells: () => [],
 };
 
-async function mountReadyStep() {
+async function mountReadyStep(
+    props: { onSendReadyChange?: (ready: boolean) => void } = {},
+) {
     const target = document.createElement("div");
     document.body.append(target);
-    const component = mount(DownloadStep, { target, props: { store: store as never } });
+    const component = mount(DownloadStep, { target, props: { store: store as never, ...props } });
     await tick();
     vi.advanceTimersByTime(500);
     await Promise.resolve();
