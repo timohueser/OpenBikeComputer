@@ -39,10 +39,10 @@ use obc_crc::Crc32;
 use super::ids::{DisplayName, EntryFlags, EntryMeta, ObjectId, ObjectKind, Revision};
 use super::store::{Mode, Mutation, Policy, PutSource, Store, StoreError};
 use super::wire::{
-    decode_request, detail, encode_arm, encode_cancel, encode_error, encode_get, encode_put, encode_remove,
-    encode_status, write_stream, ArmRequest, ControlError, ErrorCode, GetRequest, ListRequest, ListWriter, ObjectState,
-    Opcode, PutRequest, Refusal, RemoveRequest, Request, RequestId, StatusRequest, StatusResponse, StreamFrame,
-    CONTROL_FLOOR, STREAM_HEADER_LEN,
+    decode_request, detail, encode_arm, encode_cancel, encode_error, encode_format, encode_get, encode_put,
+    encode_remove, encode_status, write_stream, ArmRequest, ControlError, ErrorCode, FormatRequest, GetRequest,
+    ListRequest, ListWriter, ObjectState, Opcode, PutRequest, Refusal, RemoveRequest, Request, RequestId,
+    StatusRequest, StatusResponse, StreamFrame, CONTROL_FLOOR, STREAM_HEADER_LEN,
 };
 
 /// The staging buffer a transfer accumulates into before it reaches the card, in bytes.
@@ -469,7 +469,36 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
             Request::Remove(remove) => self.on_remove(store, header.request, remove, out),
             Request::Cancel(cancel) => self.on_cancel(store, link, header.request, cancel.transfer, out),
             Request::Arm(arm) => self.on_arm(store, policy, header.request, arm, out),
+            Request::Format(format) => self.on_format(store, header.request, format, out),
         }
+    }
+
+    fn on_format(&mut self, store: &S, request: RequestId, format: FormatRequest, out: &mut [u8]) -> Reaction {
+        if let Err(refusal) = self.admit_format(store, format) {
+            return self.emit_error(out, Opcode::Format, request, refusal);
+        }
+        let len = match store.format(format.replacement) {
+            Ok(()) => encode_format(out, request, format.replacement),
+            Err(error) => encode_error(out, Opcode::Format, request, &media_refusal(error, detail::media_io::WRITE)),
+        };
+        // Once formatting starts, the old superblocks are invalidated first. Success or media
+        // failure, the current in-memory store must never continue serving after this answer leaves
+        // the link.
+        match len {
+            Some(len) => Reaction::SendAndReboot { len },
+            None => Reaction::Close(Channel::Control),
+        }
+    }
+
+    fn admit_format(&mut self, store: &S, format: FormatRequest) -> Result<(), Refusal> {
+        if let Some(refusal) = self.busy_refusal() {
+            return Err(refusal);
+        }
+        let expected = if store.mode().readable() { store.store_id() } else { super::ids::StoreId([0; 16]) };
+        if format.expected != expected {
+            return Err(bad_combination());
+        }
+        Ok(())
     }
 
     /// One whole stream record arrived: §3.8's 16-byte frame followed by exactly its payload.

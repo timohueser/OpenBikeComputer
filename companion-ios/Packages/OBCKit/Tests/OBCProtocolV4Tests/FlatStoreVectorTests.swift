@@ -72,7 +72,7 @@ struct FlatStoreVectorTests {
         let stream = try StreamRecord(
             requestID: requestID, offset: 40_960,
             payload: Data((0..<1_024).map { UInt8($0 % 251) }))
-        let expectedStream = try Vectors.record(named: "stream-frame-of-section-3-10")
+        let expectedStream = try Vectors.record(named: "stream-frame-of-section-3-11")
         #expect(stream.encode() == expectedStream)
     }
 }

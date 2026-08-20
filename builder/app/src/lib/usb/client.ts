@@ -1,5 +1,5 @@
 /**
- * The flat-store client: protocol v4's seven opcodes driven over a {@link DeviceLink}.
+ * The flat-store client: protocol v4's eight opcodes driven over a {@link DeviceLink}.
  *
  * One implementation serves both tiers. The hosted site drives it over WebUSB (`webusb.ts`), the
  * desktop app over `nusb` behind Tauri (`lib/desktop/usb.ts`), and CI over an in-memory loopback
@@ -60,12 +60,14 @@ import {
     decodeResponse,
     encodeArmRequest,
     encodeCancelRequest,
+    encodeFormatRequest,
     encodeGetRequest,
     encodeListRequest,
     encodePutRequest,
     encodeRemoveRequest,
     encodeStatusRequest,
     encodeStreamRecord,
+    hex as hexBytes,
     opcodeName,
     refusalName,
     splitStreamRecord,
@@ -73,6 +75,7 @@ import {
     type ArmResponse,
     type CatalogEntry,
     type GetResponse,
+    type FormatResponse,
     type ListPage,
     type ObjectKind,
     type ObjectRef,
@@ -83,6 +86,18 @@ import {
 } from "./protocol";
 
 export type { DeviceInfo };
+
+/** The destructive confirmation used when LIST cannot report a readable store identity. */
+export const ZERO_STORE_ID = "00000000000000000000000000000000";
+
+function mintStoreId(avoid: string): string {
+    for (;;) {
+        const bytes = new Uint8Array(16);
+        globalThis.crypto.getRandomValues(bytes);
+        const id = hexBytes(bytes);
+        if (id !== ZERO_STORE_ID && id !== avoid) return id;
+    }
+}
 
 /**
  * Why a device operation failed.
@@ -128,6 +143,16 @@ export class DeviceError extends Error {
         this.code = code;
         this.refusal = options?.refusal;
     }
+}
+
+/** True when LIST cannot name a store but FORMAT is still the intended recovery path. */
+export function isFormatRecoveryState(cause: unknown): cause is DeviceError {
+    return (
+        cause instanceof DeviceError &&
+        cause.code === "read-only" &&
+        (cause.refusal?.detail === Detail.readOnly.unformatted ||
+            cause.refusal?.detail === Detail.readOnly.catalogUnreadable)
+    );
 }
 
 /**
@@ -693,6 +718,34 @@ export class FlatStoreClient {
             signal,
         );
         return (response as Extract<Response, { opcode: typeof Opcode.Arm }>).body;
+    }
+
+    /**
+     * `FORMAT` (§3.10): replace the card with a new, empty flat store and reboot the device.
+     *
+     * `expectedStoreId` is the identity LIST reported, or `null` on the recovery path where LIST
+     * answered `readOnly/unformatted`. The replacement is minted from the host's CSPRNG;
+     * it is an era identifier rather than a secret, but re-use would make stale object ids look live.
+     */
+    async format(
+        expectedStoreId: string | null,
+        options: { signal?: AbortSignal; replacementStoreId?: string } = {},
+    ): Promise<FormatResponse> {
+        const expected = expectedStoreId ?? ZERO_STORE_ID;
+        const replacement = options.replacementStoreId ?? mintStoreId(expected);
+        const response = await this.exchange(
+            Opcode.Format,
+            (id) => encodeFormatRequest(id, { expectedStoreId: expected, replacementStoreId: replacement }),
+            options.signal,
+        );
+        const body = (response as Extract<Response, { opcode: typeof Opcode.Format }>).body;
+        if (body.storeId !== replacement) {
+            throw new DeviceError(
+                "protocol",
+                `The device formatted store ${body.storeId}, but this request minted ${replacement}.`,
+            );
+        }
+        return body;
     }
 
     /** Close both channels and fail every waiter. Idempotent. */

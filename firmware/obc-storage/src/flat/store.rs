@@ -714,41 +714,54 @@ impl<D: BlockDevice> FlatStore<D> {
     /// to express in 65,536 extents of the largest size (128 TiB, past every SD standard) is refused
     /// here rather than formatted into a store that would not mount.
     pub fn initialize(dev: D, store: StoreId) -> Result<Self, StoreError> {
-        let total_blocks = dev.block_count().map_err(|_| StoreError::Media)?;
-        let superblock = Superblock::for_card(store, total_blocks).ok_or(StoreError::Invalid)?;
-        for copy in SUPERBLOCK {
-            write_blocks(&dev, copy, &INVALIDATED)?;
-        }
-        sync(&dev)?;
-
-        write_blocks(&dev, catalog_gate(1), &INVALIDATED)?;
-        sync(&dev)?;
-
-        for slot in 0..SLOTS {
-            write_blocks(&dev, slot_block(slot), &INVALIDATED)?;
-        }
-        sync(&dev)?;
-
-        let header = Header { store, sequence: 1, next_object: 1, entry_count: 0 };
-        let body = header.encode();
-        write_blocks(&dev, CATALOG[0], &body)?;
-        sync(&dev)?;
-        let gate = Gate { copy: 0, store, sequence: 1, entry_count: 0, body_crc: super::raw::crc32(&body) };
-        write_blocks(&dev, catalog_gate(0), &gate.encode())?;
-        sync(&dev)?;
-
-        let superblock = superblock.encode();
-        for copy in SUPERBLOCK {
-            write_blocks(&dev, copy, &superblock)?;
-        }
-        sync(&dev)?;
-
+        Self::write_empty_store(&dev, store)?;
         let store = Self::mount(dev);
         if store.mode().writable() {
             Ok(store)
         } else {
             Err(StoreError::Media)
         }
+    }
+
+    /// Destructively write a fresh empty flat store through this mounted store's device.
+    ///
+    /// This deliberately does not mutate resident state. The protocol command that calls it drains
+    /// its response and immediately reboots; the next mount is the only point at which the new
+    /// identity and geometry become observable. Keeping that transition boot-scoped avoids trying
+    /// to replace a shared `FlatStore` while map, route, and weather readers still hold references.
+    pub fn format_media(&self, store: StoreId) -> Result<(), StoreError> {
+        Self::write_empty_store(&self.dev, store)
+    }
+
+    fn write_empty_store(dev: &D, store: StoreId) -> Result<(), StoreError> {
+        let total_blocks = dev.block_count().map_err(|_| StoreError::Media)?;
+        let superblock = Superblock::for_card(store, total_blocks).ok_or(StoreError::Invalid)?;
+        for copy in SUPERBLOCK {
+            write_blocks(dev, copy, &INVALIDATED)?;
+        }
+        sync(dev)?;
+
+        write_blocks(dev, catalog_gate(1), &INVALIDATED)?;
+        sync(dev)?;
+
+        for slot in 0..SLOTS {
+            write_blocks(dev, slot_block(slot), &INVALIDATED)?;
+        }
+        sync(dev)?;
+
+        let header = Header { store, sequence: 1, next_object: 1, entry_count: 0 };
+        let body = header.encode();
+        write_blocks(dev, CATALOG[0], &body)?;
+        sync(dev)?;
+        let gate = Gate { copy: 0, store, sequence: 1, entry_count: 0, body_crc: super::raw::crc32(&body) };
+        write_blocks(dev, catalog_gate(0), &gate.encode())?;
+        sync(dev)?;
+
+        let superblock = superblock.encode();
+        for copy in SUPERBLOCK {
+            write_blocks(dev, copy, &superblock)?;
+        }
+        sync(dev)
     }
 
     /// Why this store refuses writes, if it does.

@@ -12,7 +12,7 @@
 //!    production codec agrees with these bytes, and
 //!    [`tests::every_negative_vector_is_refused_with_its_stated_code_and_detail`] proves every
 //!    refusal lands where §3.9 says.
-//! 3. [`tests::section_3_10s_own_frames_are_in_the_suite_verbatim`] pins the four frames the spec
+//! 3. [`tests::section_3_11s_own_frames_are_in_the_suite_verbatim`] pins the four frames the spec
 //!    prints, against the spec's own hex.
 //!
 //! Regenerate after a deliberate spec change with:
@@ -221,12 +221,15 @@ pub fn dir() -> PathBuf {
 
 // ------------------------------------------------------------------------------------------------
 // The identities every fixture is built from. `FLAT_Store_Format.md` §4.1 and §5.7, and
-// `FLAT_Store_Protocol.md` §3.10, which carry the same two objects.
+// `FLAT_Store_Protocol.md` §3.11, which carry the same two objects.
 // ------------------------------------------------------------------------------------------------
 
 /// §4.1's `StoreId`.
 pub const STORE: [u8; 16] =
     [0x8F, 0x2C, 0x41, 0xD9, 0x6B, 0x07, 0x4E, 0xA3, 0xB1, 0x55, 0x9C, 0x20, 0x7D, 0xE8, 0x34, 0x66];
+/// §3.10's new era after the destructive FORMAT fixture.
+pub const REPLACEMENT_STORE: [u8; 16] =
+    [0x2A, 0x7B, 0x16, 0xC4, 0x90, 0x31, 0x45, 0xD8, 0xA6, 0xE2, 0x73, 0x0F, 0xB9, 0x4C, 0x58, 0x11];
 /// §5.7's commit sequence.
 const SEQUENCE: u64 = 7;
 /// §5.7's route: `ObjectId 1` at `Revision 3`, 42,137 bytes, CRC `0x9C4A7E21`, "Grimsel Loop".
@@ -238,7 +241,7 @@ const ROUTE_NAME: &[u8] = b"Grimsel Loop";
 /// §5.7's ride: `ObjectId 2` at `Revision 1`, `RECORDING`, no name.
 const RIDE_ID: u64 = 2;
 const RIDE_REVISION: u64 = 1;
-/// §3.10's `RequestId` for the upload, and the one its `LIST` uses.
+/// §3.11's `RequestId` for the upload, and the one its `LIST` uses.
 const UPLOAD_REQUEST: u32 = 0x0000_2A01;
 const LIST_REQUEST: u32 = 0x0000_2A02;
 
@@ -388,7 +391,7 @@ fn negative(name: &str, note: &str, target: Target, bytes: Vec<u8>) -> Fixture {
     Fixture { name: name.to_string(), category: Category::Negative, bytes, json }
 }
 
-/// The `PUT` of §3.10, verbatim: creating the route, 100 bytes on the wire.
+/// The `PUT` of §3.11, verbatim: creating the route, 100 bytes on the wire.
 fn put_create_request() -> Vec<u8> {
     let mut frame = header(0x04, 0, 84, UPLOAD_REQUEST);
     u64_at(&mut frame, HEADER_LEN + 16, ROUTE_LEN);
@@ -399,7 +402,7 @@ fn put_create_request() -> Vec<u8> {
     frame
 }
 
-/// The `LIST` response of §3.10, verbatim: both entries, no further page, 216 bytes.
+/// The `LIST` response of §3.11, verbatim: both entries, no further page, 216 bytes.
 fn list_response_two_entries() -> Vec<u8> {
     let mut frame = header(0x01, 0b1, 24 + 2 * 88, LIST_REQUEST);
     bytes_at(&mut frame, HEADER_LEN, &STORE);
@@ -719,11 +722,34 @@ pub fn fixtures() -> Vec<Fixture> {
         Json::new().big("rollbackObjectId", 6).big("commitSequence", SEQUENCE + 1),
     ));
 
+    let mut format_request = header(0x08, 0, 32, 0x0000_2A08);
+    bytes_at(&mut format_request, HEADER_LEN, &STORE);
+    bytes_at(&mut format_request, HEADER_LEN + 16, &REPLACEMENT_STORE);
+    all.push(control(
+        "format-request",
+        "Destructive compare-and-swap: erase only the store the client confirmed, then begin a new identity era.",
+        "request",
+        ("FORMAT", 0x08),
+        format_request,
+        Json::new().str("expectedStoreId", &hex(&STORE)).str("replacementStoreId", &hex(&REPLACEMENT_STORE)),
+    ));
+
+    let mut format_response = header(0x08, 0b1, 16, 0x0000_2A08);
+    bytes_at(&mut format_response, HEADER_LEN, &REPLACEMENT_STORE);
+    all.push(control(
+        "format-response",
+        "The new store identity is durable; after this response leaves the link the device reboots.",
+        "response",
+        ("FORMAT", 0x08),
+        format_response,
+        Json::new().str("storeId", &hex(&REPLACEMENT_STORE)),
+    ));
+
     // -- streams ----------------------------------------------------------------------------------
     let kilobyte: Vec<u8> = (0..1_024).map(|index| (index % 251) as u8).collect();
     all.push(stream_fixture(
-        "stream-frame-of-section-3-10",
-        "Section 3.10's stream frame: offset 40,960 and 1,024 payload bytes.",
+        "stream-frame-of-section-3-11",
+        "Section 3.11's stream frame: offset 40,960 and 1,024 payload bytes.",
         UPLOAD_REQUEST,
         40_960,
         &kilobyte,

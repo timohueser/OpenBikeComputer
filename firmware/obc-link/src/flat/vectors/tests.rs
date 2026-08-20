@@ -7,9 +7,9 @@ use std::vec::Vec;
 use super::*;
 use crate::flat::ids::{DisplayName, EntryFlags, EntryMeta, ObjectId, ObjectKind, Revision, StoreId};
 use crate::flat::wire::{
-    decode_request, encode_arm, encode_cancel, encode_error, encode_get, encode_put, encode_remove, encode_status,
-    write_stream, ControlError, ListWriter, ObjectState, Opcode, Refusal, RequestId, StatusResponse, StreamFrame,
-    CONTROL_FLOOR,
+    decode_request, encode_arm, encode_cancel, encode_error, encode_format, encode_get, encode_put, encode_remove,
+    encode_status, write_stream, ControlError, ListWriter, ObjectState, Opcode, Refusal, RequestId, StatusResponse,
+    StreamFrame, CONTROL_FLOOR,
 };
 
 /// Rewrites `specs/vectors/flat-store-v4/`.
@@ -70,7 +70,7 @@ fn every_fixture_has_a_unique_name_and_a_digest_in_the_manifest() {
     }
     // The suite's own size, so a category that stopped being produced is visible.
     let count = |category: Category| all.iter().filter(|fixture| fixture.category == category).count();
-    assert_eq!(count(Category::Control), 23);
+    assert_eq!(count(Category::Control), 25);
     assert_eq!(count(Category::Stream), 4);
     assert_eq!(count(Category::Error), 14);
     assert_eq!(count(Category::Negative), 25);
@@ -173,8 +173,11 @@ fn the_codec_encodes_every_response_vector_byte_for_byte() {
     let written = encode_arm(&mut out, RequestId(0x0000_2A07), ObjectId(6), SEQUENCE + 1).unwrap();
     encoded("arm-response", &out[..written]);
 
+    let written = encode_format(&mut out, RequestId(0x0000_2A08), StoreId(REPLACEMENT_STORE)).unwrap();
+    encoded("format-response", &out[..written]);
+
     let written = write_stream(&mut out, RequestId(UPLOAD_REQUEST), 40_960, 1_024).unwrap();
-    assert_eq!(hex(&out[..16]), hex(&find("stream-frame-of-section-3-10").bytes[..16]));
+    assert_eq!(hex(&out[..16]), hex(&find("stream-frame-of-section-3-11").bytes[..16]));
     assert_eq!(written, 16 + 1_024);
 }
 
@@ -231,7 +234,7 @@ fn spec_hex(text: &str) -> Vec<u8> {
 }
 
 #[test]
-fn section_3_10s_own_frames_are_in_the_suite_verbatim() {
+fn section_3_11s_own_frames_are_in_the_suite_verbatim() {
     let put = spec_hex(
         "0000  4F 42 43 34 04 04 00 00 54 00 00 00 01 2A 00 00
          0010  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
@@ -241,16 +244,16 @@ fn section_3_10s_own_frames_are_in_the_suite_verbatim() {
          0050  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
          0060  00 00 00 00",
     );
-    assert_eq!(find("put-create-request").bytes, put, "§3.10's PUT is not the suite's");
+    assert_eq!(find("put-create-request").bytes, put, "§3.11's PUT is not the suite's");
 
     let stream = spec_hex("0000  01 2A 00 00 00 A0 00 00 00 00 00 00 00 04 00 00");
-    assert_eq!(find("stream-frame-of-section-3-10").bytes[..16], stream[..], "§3.10's stream frame is not the suite's");
+    assert_eq!(find("stream-frame-of-section-3-11").bytes[..16], stream[..], "§3.11's stream frame is not the suite's");
 
     let conflict = spec_hex(
         "0000  4F 42 43 34 04 04 03 00 10 00 00 00 01 2A 00 00
          0010  05 00 01 00 05 00 00 00 00 00 00 00 00 00 00 00",
     );
-    assert_eq!(find("revision-conflict-head-differs").bytes, conflict, "§3.10's error response is not the suite's");
+    assert_eq!(find("revision-conflict-head-differs").bytes, conflict, "§3.11's error response is not the suite's");
 
     let list = spec_hex(
         "0000  4F 42 43 34 04 01 01 00 C8 00 00 00 02 2A 00 00
@@ -268,7 +271,7 @@ fn section_3_10s_own_frames_are_in_the_suite_verbatim() {
          00c0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
          00d0  00 00 00 00 00 00 00 00",
     );
-    assert_eq!(find("list-response-two-entries").bytes, list, "§3.10's LIST response is not the suite's");
+    assert_eq!(find("list-response-two-entries").bytes, list, "§3.11's LIST response is not the suite's");
     assert_eq!(list.len(), 216, "the spec calls it 216 bytes");
 }
 

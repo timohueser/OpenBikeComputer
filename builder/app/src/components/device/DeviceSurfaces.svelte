@@ -18,6 +18,7 @@
     import type { DeviceInfo } from "../../lib/usb/records";
     import type { StoreIdentity } from "../../lib/usb/session";
     import { rideAccess, rideScope } from "../../lib/device/rides";
+    import CardFormat from "./CardFormat.svelte";
     import FirmwareCard from "./FirmwareCard.svelte";
     import MapSend from "./MapSend.svelte";
     import RideExport from "./RideExport.svelte";
@@ -40,7 +41,10 @@
     const scope = $derived(rideScope(info, store));
 </script>
 
-<MapSend {client} />
-<RouteDrop {client} />
-<RideExport {rides} {scope} />
-<FirmwareCard {client} {info} />
+{#if store}
+    <MapSend {client} />
+    <RouteDrop {client} />
+    <RideExport {rides} {scope} />
+    <FirmwareCard {client} {info} />
+{/if}
+<CardFormat {client} storeId={store?.storeId ?? null} />

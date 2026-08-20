@@ -299,6 +299,20 @@ describe("the permission model", () => {
         await watcher.close();
     });
 
+    it("keeps the recovery client ready when LIST says the card is unformatted", async () => {
+        const { usb, usbDevice } = rig({}, { formatRecovery: "unformatted" });
+        usb.permitted = [usbDevice];
+        const watcher = new WebUsbWatcher({ usb });
+        expect(await watcher.start()).toBe(true);
+        expect(watcher.current).toMatchObject({ status: "ready", store: null, error: null });
+
+        const replacement = "2a7b16c4903145d8a6e2730fb94c5811";
+        await expect(
+            watcher.current.client?.format(null, { replacementStoreId: replacement }),
+        ).resolves.toEqual({ storeId: replacement });
+        await watcher.close();
+    });
+
     it("stays idle on a first visit instead of prompting", async () => {
         const { usb } = rig();
         const watcher = new WebUsbWatcher({ usb });

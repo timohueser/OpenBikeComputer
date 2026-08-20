@@ -448,6 +448,15 @@ pub mod client {
         frame(0x07, request, &body)
     }
 
+    /// §3.10. The expected identity is the destructive compare-and-swap; replacement starts the
+    /// new store era and must be non-zero and different.
+    pub fn format(request: u32, expected: [u8; 16], replacement: [u8; 16]) -> Vec<u8> {
+        let mut body = vec![0u8; 32];
+        body[0..16].copy_from_slice(&expected);
+        body[16..32].copy_from_slice(&replacement);
+        frame(0x08, request, &body)
+    }
+
     /// §3.8's stream record.
     pub fn stream(transfer: u32, offset: u64, bytes: &[u8]) -> Vec<u8> {
         let mut record = vec![0u8; STREAM_HEADER_LEN + bytes.len()];

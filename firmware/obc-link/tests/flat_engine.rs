@@ -7,7 +7,7 @@
 
 mod flat_harness;
 
-use flat_harness::{boot, boot_on, client, crc32, formatted_card, payload, Answer, Device};
+use flat_harness::{blank_card, boot, boot_on, client, crc32, formatted_card, payload, Answer, Device};
 use obc_link::flat::store::Policy;
 use obc_link::flat::wire::{detail, ErrorCode};
 use obc_link::flat::{CancelCause, Ceilings, Link, ObjectId, ObjectKind, Revision};
@@ -65,6 +65,56 @@ fn a_first_list_carries_the_store_identity_and_an_empty_catalog() {
     assert_eq!(&answer.body[0..16], &[0x11; 16], "the page carries the StoreId a client keys its cache on");
     assert_eq!(answer.u64_at(16), 1, "the commit sequence a paged listing is checked against");
     assert_eq!(answer.body.len(), 24, "an empty catalog is a page with no entries");
+}
+
+#[test]
+fn format_replaces_the_store_durably_and_reboots_on_ble_and_usb() {
+    for (seed, link, ceilings) in
+        [(101, Link::Ble, Ceilings::new(244, 1_024).unwrap()), (102, Link::Usb, Ceilings::for_usb(4_112).unwrap())]
+    {
+        let disk = formatted_card(seed);
+        let mut device = boot(&disk);
+        device.seed(ObjectKind::Route, &body(), "erase me");
+        device.link_up(link, ceilings);
+
+        let replacement = [seed as u8; 16];
+        let wire = device.control_on(link, &client::format(9, [0x11; 16], replacement));
+        assert!(wire.reboot, "a durable FORMAT answer is terminal on {link:?}");
+        let answer = Answer::of(wire.answer());
+        assert!(!answer.is_error(), "{answer:?}");
+        assert_eq!(answer.body, replacement);
+
+        drop(device);
+        let mut rebooted = boot(&disk);
+        let list = Answer::of(rebooted.control(&client::list(10, None)).answer());
+        assert_eq!(&list.body[0..16], &replacement);
+        assert_eq!(list.u64_at(16), 1, "a formatted store begins at commit sequence one");
+        assert_eq!(list.body.len(), 24, "FORMAT discarded every old catalog entry");
+    }
+}
+
+#[test]
+fn format_requires_the_current_identity_but_zero_recovers_an_unformatted_card() {
+    let disk = formatted_card(103);
+    let mut device = boot(&disk);
+    let answer = Answer::of(device.control(&client::format(1, [0x22; 16], [0x33; 16])).answer());
+    expect_error(&answer, ErrorCode::InvalidRequest, detail::invalid_request::BAD_COMBINATION);
+
+    drop(device);
+    let mut unchanged = boot(&disk);
+    let list = Answer::of(unchanged.control(&client::list(2, None)).answer());
+    assert_eq!(&list.body[0..16], &[0x11; 16], "a stale confirmation never formats the card");
+
+    let blank = blank_card(104);
+    let mut recovery = boot(&blank);
+    let wire = recovery.control(&client::format(3, [0; 16], [0x44; 16]));
+    assert!(wire.reboot);
+    assert!(!Answer::of(wire.answer()).is_error());
+    drop(recovery);
+
+    let mut rebooted = boot(&blank);
+    let list = Answer::of(rebooted.control(&client::list(4, None)).answer());
+    assert_eq!(&list.body[0..16], &[0x44; 16]);
 }
 
 #[test]
