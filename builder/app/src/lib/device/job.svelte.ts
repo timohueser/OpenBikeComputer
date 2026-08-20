@@ -94,6 +94,8 @@ export class DeviceJob {
         try {
             const value = await task({
                 signal: controller.signal,
+                cancel: (reason) =>
+                    controller.abort(reason ?? new DOMException("cancelled by the rider", "AbortError")),
                 phase: (phase, total) => {
                     this.phase = phase;
                     if (total !== undefined) {
@@ -110,20 +112,23 @@ export class DeviceJob {
             this.result = describe(value);
             return value;
         } catch (cause) {
-            if (controller.signal.aborted) {
+            const code = (cause as { code?: unknown })?.code;
+            const errorCode = typeof code === "string" ? code : null;
+            // A physical disconnect can race the surface teardown that aborts this job. The
+            // transport's stable link cause is stronger evidence than the later local abort.
+            if (errorCode === "link") {
+                this.errorCode = errorCode;
+                this.phase = "error";
+                this.error = cause instanceof Error ? cause.message : String(cause);
+                deviceHolder.noteInterrupted();
+            } else if (controller.signal.aborted) {
                 this.phase = "idle";
                 this.done = 0;
                 this.total = 0;
             } else {
                 this.phase = "error";
                 this.error = cause instanceof Error ? cause.message : String(cause);
-                const code = (cause as { code?: unknown })?.code;
-                this.errorCode = typeof code === "string" ? code : null;
-                // A write killed by the cable coming out has to be reported somewhere that
-                // outlives this job: the surface rendering it unmounts the instant the device
-                // goes, so its own message would never be read. Handled here rather than at each
-                // of the three call sites, so a fourth surface cannot forget to.
-                if (this.errorCode === "link") deviceHolder.noteInterrupted();
+                this.errorCode = errorCode;
             }
             return null;
         } finally {
@@ -135,6 +140,9 @@ export class DeviceJob {
 
     /** Cancel the running task. Safe to call when nothing is running. */
     cancel(): void {
+        // `finalizing` starts only after the device's commit is durable. There is no transfer left
+        // to cancel, and aborting now would let surface teardown mislabel success as cancellation.
+        if (this.phase === "finalizing") return;
         this.controller?.abort(new DOMException("cancelled by the rider", "AbortError"));
     }
 

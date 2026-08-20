@@ -244,6 +244,13 @@ export async function clearMapWorkStorage(): Promise<void> {
     for (const name of [ROOT, OUT, SCRATCH]) await removeDirectoryIfPresent(root, name);
 }
 
+/** Delete only the assembled-map staging area, leaving reusable cells and merge scratch alone. */
+export async function discardMapOutput(): Promise<void> {
+    const root = await opfsRoot();
+    if (!root) return;
+    await removeDirectoryIfPresent(root, OUT);
+}
+
 /** Delete one run's cells after its readers have closed. Used when future reuse was not selected. */
 export async function discardCellStore(revision: string): Promise<void> {
     const root = await opfsRoot();

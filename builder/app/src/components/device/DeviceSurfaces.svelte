@@ -17,6 +17,8 @@
     import type { FlatStoreClient } from "../../lib/usb/client";
     import type { DeviceInfo } from "../../lib/usb/records";
     import type { StoreIdentity } from "../../lib/usb/session";
+    import type { Ledger } from "../../lib/catalog/ledger";
+    import type { SendAssembledMap } from "../../lib/device/write";
     import { rideAccess, rideScope } from "../../lib/device/rides";
     import CardFormat from "./CardFormat.svelte";
     import FirmwareCard from "./FirmwareCard.svelte";
@@ -28,10 +30,16 @@
         client,
         info,
         store = null,
+        ledger = null,
+        sendAssembled = null,
+        sendReady = false,
     }: {
         client: FlatStoreClient;
         info: DeviceInfo | null;
         store?: StoreIdentity | null;
+        ledger?: Ledger | null;
+        sendAssembled?: SendAssembledMap | null;
+        sendReady?: boolean;
     } = $props();
 
     const rides = $derived(rideAccess(client));
@@ -42,7 +50,7 @@
 </script>
 
 {#if store}
-    <MapSend {client} />
+    <MapSend {client} {ledger} {sendAssembled} {sendReady} />
     <RouteDrop {client} />
     <RideExport {rides} {scope} />
     <FirmwareCard {client} {info} />
