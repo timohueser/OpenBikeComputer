@@ -416,6 +416,19 @@ coverage_component = "host-tools"
 ownership = [{ kind = "rust-package", name = "obc-usb-host" }]
 
 [[suite]]
+id = "rust.obc-usb"
+surface = "host-tools"
+level = "contract"
+command = "cargo test -p obc-usb --locked"
+fixtures = []
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = ["specs/FLAT_Store_Protocol.md", "specs/vectors/flat-store-v4/**"]
+platforms = ["linux", "macos", "windows"]
+coverage_component = "host-tools"
+ownership = [{ kind = "rust-package", name = "obc-usb" }]
+
+[[suite]]
 id = "rust.obc-wx-bake"
 surface = "weather"
 level = "fixture"

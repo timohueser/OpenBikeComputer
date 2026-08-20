@@ -260,7 +260,7 @@ class WebUsbPipe implements BytePipe {
      * A transfer that ends before its last record leaves the channel at an unknown offset, so it is
      * emptied before another transfer uses it. BLE closes and reopens the CoC; D4's native pipe
      * cancels every URB, drains the completions, then clears the halt
-     * (`apps/obc-desktop/src/usb/link.rs`). This pipe can do only the last of those three.
+     * (`host/obc-usb/src/lib.rs`). This pipe can do only the last of those three.
      * `clearHalt` is a `CLEAR_FEATURE(ENDPOINT_HALT)` control request — it neither cancels a
      * transfer nor discards a byte — and the WebUSB API has no per-transfer cancel at all; the only
      * thing that aborts a submitted transfer is `close()`, which would take the control plane's read

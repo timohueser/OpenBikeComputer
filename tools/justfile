@@ -99,6 +99,16 @@ sim *args:
 
 # ── Board firmware ───────────────────────────────────────────────────────────
 
+# Destructively initialize the card inside one USB-connected device as an empty flat store.
+# Requires typing FORMAT unless --yes is passed. Use --serial when more than one device is attached.
+# Args: [--serial DEVICE_SERIAL] [--yes].
+format-card *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    cd "$OBC_ROOT"
+    _run cargo run --release -p obc-usb --bin obc-format-card -- "$@"
+
 # Build & flash the board. Opts (space-separated): ble  debug-uart  synth  build.
 # e.g.  obc flash            (real sensors)   obc flash debug-uart
 #       obc flash ble        (companion link) obc flash ble debug-uart

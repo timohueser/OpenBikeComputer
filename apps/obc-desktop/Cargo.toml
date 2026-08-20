@@ -42,6 +42,7 @@ tauri-build = { version = "2", features = [] }
 # the host, the app and the firmware cannot drift. No radio types come with it:
 # obc-ble is deliberately no_std and transport-free.
 obc-ble = { path = "../../firmware/obc-ble" }
+obc-usb = { path = "../../host/obc-usb" }
 tauri = { version = "2", features = [] }
 # Native USB (#909). Pure Rust: there is no C library to vendor, no CMake leg,
 # and nothing for a user to install. It talks to each platform's own USB

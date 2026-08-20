@@ -1,8 +1,8 @@
 //! One claimed device: endpoint discovery, and the two byte pipes over it.
 //!
 //! Everything here moves **bytes**. Nothing in this file knows what a transfer descriptor is, what
-//! a status envelope means, or which object an upload belongs to — that is
-//! `builder/app/src/lib/usb/`, once, for both tiers (see [`super`]).
+//! a status envelope means, or which object an upload belongs to. The desktop app and maintenance
+//! CLI share this transport; their protocol clients sit above it.
 
 use std::sync::Arc;
 
@@ -10,6 +10,10 @@ use nusb::transfer::{Buffer, Bulk, Completion, In, Out, TransferError};
 use nusb::{Device, DeviceInfo, Endpoint, Interface};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{watch, Mutex};
+
+/// pid.codes' prototype/testing pair, shared with the board descriptors and WebUSB filter.
+pub const VENDOR_ID: u16 = 0x1209;
+pub const PRODUCT_ID: u16 = 0x0001;
 
 /// USB vendor-specific interface class — the class the device's one interface declares
 /// (`firmware/obc-fw-nrf54l/src/usb/mod.rs`), and the class a WebUSB-reachable interface must use.
@@ -80,7 +84,7 @@ impl PipeFault {
     ///
     /// `Disconnected` is `closed` rather than an error: a pulled cable is the ordinary end of a
     /// link, and the UI's sentence for it is "plug it back in", not "something went wrong".
-    pub(super) fn from_transfer(what: &str, error: TransferError) -> Self {
+    fn from_transfer(what: &str, error: TransferError) -> Self {
         match error {
             TransferError::Cancelled => Self::aborted(format!("The {what} was cancelled.")),
             TransferError::Disconnected => Self::closed("The device was disconnected."),
