@@ -252,6 +252,23 @@ pub struct UploadProgress {
     pub declared: u64,
 }
 
+/// The adapter-owned bank that receives the next staged upload record.
+///
+/// The bank identity travels with its disjoint mutable borrow so a double-buffered adapter cannot
+/// accidentally name one half while lending the other. Construct this from only the inactive half;
+/// the opposite bank may still be borrowed by deferred media DMA.
+pub struct UploadStage<'a> {
+    bank: usize,
+    bytes: &'a mut [u8],
+}
+
+impl<'a> UploadStage<'a> {
+    /// Pair a stage bank identity with that bank's exclusive byte slice.
+    pub fn new(bank: usize, bytes: &'a mut [u8]) -> Self {
+        Self { bank, bytes }
+    }
+}
+
 /// **How the last upload ended**, latched once and taken once.
 ///
 /// Latched rather than reported live for the same reason the progress above is read rather than
@@ -560,9 +577,9 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         policy: &mut P,
         record: &[u8],
         out: &mut [u8],
-        bank: usize,
-        stage: &mut [u8],
+        stage: UploadStage<'_>,
     ) -> Reaction {
+        let UploadStage { bank, bytes: stage } = stage;
         if stage.len() < 512 || !stage.len().is_multiple_of(512) || self.upload_stage_bank() != Some(bank) {
             return Reaction::Close(Channel::Stream);
         }

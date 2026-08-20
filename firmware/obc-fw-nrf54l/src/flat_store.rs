@@ -69,7 +69,7 @@ use embassy_sync::channel::{Channel, Receiver, Sender};
 use embassy_sync::signal::Signal;
 use heapless::Deque;
 
-use obc_link::flat::{Ceilings, Engine, Link, Policy, Reaction, RequestId};
+use obc_link::flat::{Ceilings, Engine, Link, Policy, Reaction, RequestId, UploadStage};
 use obc_storage::flat::store::MAX_BATCH;
 use obc_storage::flat::{
     Allocation, BlockDevice, DisplayName, EntryFlags, EntryMeta, FlatStore, Handle, Mode, Mutation, ObjectId,
@@ -1071,7 +1071,14 @@ fn serve(
                 .upload_stage_bank()
                 .and_then(|bank| {
                     crate::arena::with_usb_stage_bank(bank, |stage| {
-                        engine.on_stream_staged(Link::Usb, store, policy, record, &mut *out, bank, stage)
+                        engine.on_stream_staged(
+                            Link::Usb,
+                            store,
+                            policy,
+                            record,
+                            &mut *out,
+                            UploadStage::new(bank, stage),
+                        )
                     })
                 })
                 .unwrap_or_else(|| {
