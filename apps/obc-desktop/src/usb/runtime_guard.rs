@@ -10,7 +10,7 @@
 //! ```
 //!
 //! That is not a compile error, a deprecation or a warning. The crate builds, `clippy` is happy,
-//! and every `.await` in [`super::link`] and [`super::watch`] panics the first time a real device
+//! and every `.await` in [`obc_usb`] and [`super::watch`] panics the first time a real device
 //! is touched — on a tokio worker, so the Tauri command's caller sees a rejected promise and the
 //! window simply shows nothing. It shipped exactly that way in #909 and survived a green three-OS
 //! CI matrix, because the matrix *compiles* this crate and every USB test stands on a mock at the

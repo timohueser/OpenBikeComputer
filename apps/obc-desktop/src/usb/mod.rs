@@ -53,7 +53,6 @@
 //! with the by-path route gone there is no such question on this plane — a file the rider picks
 //! arrives through the webview as a `File` with no path at all, exactly as it does on the web.
 
-pub mod link;
 pub mod runtime_guard;
 pub mod watch;
 
@@ -64,13 +63,10 @@ use std::sync::{Arc, Mutex};
 use tauri::ipc::{Channel, InvokeBody, Request, Response};
 use tauri::State;
 
-use link::{Dir, OpenLink, OpenedLink, PipeFault, Plane};
+use obc_usb::{Dir, OpenLink, OpenedLink, PipeFault, Plane};
 use watch::{DeviceSummary, UsbEvent};
 
-/// **Development** USB vendor / product id — see [`watch::matches`] for what moves when a real one
-/// is allocated. The firmware declares the same pair.
-pub const VENDOR_ID: u16 = 0x1209;
-pub const PRODUCT_ID: u16 = 0x0001;
+pub use obc_usb::{PRODUCT_ID, VENDOR_ID};
 
 /// Every device this app has open, plus the one hot-plug watch behind them.
 #[derive(Default)]
@@ -174,7 +170,7 @@ pub async fn usb_open(state: State<'_, Arc<UsbState>>, device_id: String) -> Res
         .find(|info| watch::device_key(info.id()) == device_id)
         .ok_or_else(|| PipeFault::closed("That device is no longer attached."))?;
 
-    let (link, mut opened) = link::open(&info, device_id).await?;
+    let (link, mut opened) = obc_usb::open(&info, device_id).await?;
     let handle = state.next_handle.fetch_add(1, Ordering::Relaxed) + 1;
     opened.handle = handle;
     state.links.lock().expect("usb links").insert(handle, link);
