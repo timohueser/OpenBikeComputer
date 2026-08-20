@@ -1,4 +1,4 @@
-//! Protocol v4's bytes: the control frame, the seven request bodies, the response bodies, the
+//! Protocol v4's bytes: the control frame, the eight request bodies, the response bodies, the
 //! stream frame and the error body.
 //!
 //! `FLAT_Store_Protocol.md` §3 is the sole authority and every offset below is transcribed from its
@@ -46,6 +46,7 @@ const PUT_BODY_LEN: usize = 84;
 const REMOVE_BODY_LEN: usize = 16;
 const CANCEL_BODY_LEN: usize = 4;
 const ARM_BODY_LEN: usize = 16;
+const FORMAT_BODY_LEN: usize = 32;
 
 /// A client-chosen transfer identifier (§3.1). Nonzero: a zero one is unanswerable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -62,6 +63,7 @@ pub enum Opcode {
     Remove = 0x05,
     Cancel = 0x06,
     Arm = 0x07,
+    Format = 0x08,
 }
 
 impl Opcode {
@@ -75,6 +77,7 @@ impl Opcode {
             0x05 => Opcode::Remove,
             0x06 => Opcode::Cancel,
             0x07 => Opcode::Arm,
+            0x08 => Opcode::Format,
             _ => return None,
         })
     }
@@ -94,6 +97,7 @@ impl Opcode {
             Opcode::Remove => REMOVE_BODY_LEN,
             Opcode::Cancel => CANCEL_BODY_LEN,
             Opcode::Arm => ARM_BODY_LEN,
+            Opcode::Format => FORMAT_BODY_LEN,
         }
     }
 }
@@ -314,7 +318,7 @@ pub struct Header {
     pub request: RequestId,
 }
 
-/// One decoded request. There are seven and there is no generic forwarding path.
+/// One decoded request. There are eight and there is no generic forwarding path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Request {
     List(ListRequest),
@@ -324,6 +328,7 @@ pub enum Request {
     Remove(RemoveRequest),
     Cancel(CancelRequest),
     Arm(ArmRequest),
+    Format(FormatRequest),
 }
 
 /// §3.3's cursor: the **pair**, plus the commit sequence the page was told.
@@ -392,6 +397,15 @@ pub struct ArmRequest {
     pub expected: Revision,
 }
 
+/// §3.10. The current identity is the destructive confirmation; a client sends zero only when
+/// `LIST` cannot report one. The replacement is client-minted, nonzero, and becomes durable before
+/// the response is sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FormatRequest {
+    pub expected: StoreId,
+    pub replacement: StoreId,
+}
+
 /// Decodes one whole control record: §3.1's header and the opcode's body.
 ///
 /// Total. The two failures are §3.1's unanswerable record and a typed refusal to be sent back under
@@ -440,6 +454,7 @@ pub fn decode_request(record: &[u8]) -> Result<(Header, Request), ControlError> 
         Opcode::Remove => decode_remove(body).map(Request::Remove),
         Opcode::Cancel => decode_cancel(body).map(Request::Cancel),
         Opcode::Arm => decode_arm(body).map(Request::Arm),
+        Opcode::Format => decode_format(body).map(Request::Format),
     };
     match decoded {
         Ok(message) => Ok((Header { opcode, request }, message)),
@@ -542,6 +557,17 @@ fn decode_cancel(body: &[u8]) -> Result<CancelRequest, Refusal> {
 
 fn decode_arm(body: &[u8]) -> Result<ArmRequest, Refusal> {
     Ok(ArmRequest { package: ObjectId(u64_at(body, 0)), expected: Revision(u64_at(body, 8)) })
+}
+
+fn decode_format(body: &[u8]) -> Result<FormatRequest, Refusal> {
+    let mut expected = [0u8; 16];
+    expected.copy_from_slice(&body[..16]);
+    let mut replacement = [0u8; 16];
+    replacement.copy_from_slice(&body[16..32]);
+    if replacement == [0; 16] || replacement == expected {
+        return Err(bad_combination());
+    }
+    Ok(FormatRequest { expected: StoreId(expected), replacement: StoreId(replacement) })
 }
 
 /// Writes §3.1's header into `out` and returns the whole record's length, or `None` when the
@@ -714,6 +740,13 @@ pub fn encode_arm(out: &mut [u8], request: RequestId, reserve: ObjectId, sequenc
     Some(total)
 }
 
+/// Writes §3.10's 16-byte response: the identity of the newly initialized empty store.
+pub fn encode_format(out: &mut [u8], request: RequestId, store: StoreId) -> Option<usize> {
+    let total = write_header(out, Opcode::Format, flags::RESPONSE, 16, request)?;
+    out[HEADER_LEN..total].copy_from_slice(&store.0);
+    Some(total)
+}
+
 /// §3.8's stream frame. A stream record is this immediately followed by exactly `len` payload bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamFrame {
@@ -837,7 +870,7 @@ mod tests {
     use super::super::ids::EntryFlags;
     use super::*;
 
-    /// §3.10's `PUT` creating the route, byte for byte.
+    /// §3.11's `PUT` creating the route, byte for byte.
     const PUT_VECTOR: [u8; 100] = {
         let mut frame = [0u8; 100];
         frame[0] = 0x4F;

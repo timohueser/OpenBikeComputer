@@ -1,5 +1,5 @@
 /**
- * Protocol v4's bytes in TypeScript: the control frame, the seven request and response bodies, the
+ * Protocol v4's bytes in TypeScript: the control frame, the eight request and response bodies, the
  * stream frame and the error body.
  *
  * [`FLAT_Store_Protocol.md`](../../../../../specs/FLAT_Store_Protocol.md) §3 is the sole authority
@@ -56,7 +56,7 @@ export const NAME_CAPACITY = 48;
 
 // --- opcodes, flags, kinds ------------------------------------------------------
 
-/** §3.2's opcode table. Seven, and there is no generic forwarding path. */
+/** §3.2's opcode table. Eight, and there is no generic forwarding path. */
 export const Opcode = {
     List: 0x01,
     Status: 0x02,
@@ -65,6 +65,7 @@ export const Opcode = {
     Remove: 0x05,
     Cancel: 0x06,
     Arm: 0x07,
+    Format: 0x08,
 } as const;
 export type Opcode = (typeof Opcode)[keyof typeof Opcode];
 
@@ -76,6 +77,7 @@ const OPCODE_NAMES: Readonly<Record<Opcode, string>> = {
     [Opcode.Remove]: "REMOVE",
     [Opcode.Cancel]: "CANCEL",
     [Opcode.Arm]: "ARM",
+    [Opcode.Format]: "FORMAT",
 };
 
 /** The spec's own name for an opcode, for a message a person will read. */
@@ -92,6 +94,7 @@ const REQUEST_BODY_LEN: Readonly<Record<Opcode, number>> = {
     [Opcode.Remove]: 16,
     [Opcode.Cancel]: 4,
     [Opcode.Arm]: 16,
+    [Opcode.Format]: 32,
 };
 
 /** §3.1's flag bits. Requests carry none. */
@@ -435,6 +438,14 @@ export interface ArmRequest {
     readonly expectedRevision: bigint;
 }
 
+/** §3.10's destructive flat-store initialization. */
+export interface FormatRequest {
+    /** The mounted StoreId, or all zeroes when LIST cannot report one. */
+    readonly expectedStoreId: string;
+    /** A fresh, client-minted, nonzero StoreId. */
+    readonly replacementStoreId: string;
+}
+
 /** One decoded request, tagged by its opcode. */
 export type Request =
     | { readonly opcode: typeof Opcode.List; readonly body: ListRequest }
@@ -443,7 +454,8 @@ export type Request =
     | { readonly opcode: typeof Opcode.Put; readonly body: PutRequest }
     | { readonly opcode: typeof Opcode.Remove; readonly body: ObjectRef }
     | { readonly opcode: typeof Opcode.Cancel; readonly body: CancelRequest }
-    | { readonly opcode: typeof Opcode.Arm; readonly body: ArmRequest };
+    | { readonly opcode: typeof Opcode.Arm; readonly body: ArmRequest }
+    | { readonly opcode: typeof Opcode.Format; readonly body: FormatRequest };
 
 /** A decoded request and the `RequestId` its answer must echo. */
 export interface DecodedRequest {
@@ -554,6 +566,12 @@ function decodeRequestBody(opcode: Opcode, body: Uint8Array): Request | Refusal 
                 opcode,
                 body: { packageObjectId: view.getBigUint64(0, true), expectedRevision: view.getBigUint64(8, true) },
             };
+        case Opcode.Format: {
+            const expectedStoreId = hex(body.subarray(0, 16));
+            const replacementStoreId = hex(body.subarray(16, 32));
+            if (/^0+$/.test(replacementStoreId) || replacementStoreId === expectedStoreId) return badCombination();
+            return { opcode, body: { expectedStoreId, replacementStoreId } };
+        }
     }
 }
 
@@ -652,6 +670,17 @@ export function encodeArmRequest(requestId: number, request: ArmRequest): Uint8A
     return encodeControl(Opcode.Arm, 0, requestId, body);
 }
 
+/** §3.10's 32-byte request: destructive confirmation followed by the replacement identity. */
+export function encodeFormatRequest(requestId: number, request: FormatRequest): Uint8Array {
+    const body = new Uint8Array(REQUEST_BODY_LEN[Opcode.Format]);
+    body.set(unhex(request.expectedStoreId, 16), 0);
+    body.set(unhex(request.replacementStoreId, 16), 16);
+    if (body.subarray(16).every((byte) => byte === 0) || request.expectedStoreId === request.replacementStoreId) {
+        throw new RangeError("a replacement StoreId must be nonzero and different from the current identity.");
+    }
+    return encodeControl(Opcode.Format, 0, requestId, body);
+}
+
 // --- responses -------------------------------------------------------------------
 
 /** One catalog entry, §3.3's 88 bytes. */
@@ -707,6 +736,11 @@ export interface ArmResponse {
     readonly commitSequence: bigint;
 }
 
+/** §3.10's response: the new identity, durable before the device reboots. */
+export interface FormatResponse {
+    readonly storeId: string;
+}
+
 /** Every response body this protocol has, tagged by the opcode that produced it. */
 export type Response =
     | { readonly opcode: typeof Opcode.List; readonly body: ListPage }
@@ -715,7 +749,8 @@ export type Response =
     | { readonly opcode: typeof Opcode.Put; readonly body: PutResponse }
     | { readonly opcode: typeof Opcode.Remove; readonly body: { readonly commitSequence: bigint } }
     | { readonly opcode: typeof Opcode.Cancel; readonly body: { readonly cancelled: boolean } }
-    | { readonly opcode: typeof Opcode.Arm; readonly body: ArmResponse };
+    | { readonly opcode: typeof Opcode.Arm; readonly body: ArmResponse }
+    | { readonly opcode: typeof Opcode.Format; readonly body: FormatResponse };
 
 /** A decoded response: the `RequestId` it echoes, and either a body or the refusal it carried. */
 export type DecodedResponse =
@@ -862,6 +897,9 @@ function decodeResponseBody(opcode: number, body: Uint8Array, more: boolean): Re
                     commitSequence: view.getBigUint64(8, true),
                 },
             };
+        case Opcode.Format:
+            expect(16);
+            return { opcode: Opcode.Format, body: { storeId: hex(body) } };
         default:
             throw new ResponseError(`the device answered with ${opcodeName(opcode)}, which this client never sends.`);
     }
@@ -957,6 +995,11 @@ export function encodeArmResponse(requestId: number, answer: ArmResponse): Uint8
     view.setBigUint64(0, answer.rollbackObjectId, true);
     view.setBigUint64(8, answer.commitSequence, true);
     return encodeControl(Opcode.Arm, Flags.Response, requestId, body);
+}
+
+/** §3.10's 16-byte response. */
+export function encodeFormatResponse(requestId: number, storeId: string): Uint8Array {
+    return encodeControl(Opcode.Format, Flags.Response, requestId, unhex(storeId, 16));
 }
 
 // --- the stream channel (§3.8) -----------------------------------------------------

@@ -1,0 +1,12 @@
+[package]
+name = "obc-usb"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Shared native USB byte transport and maintenance CLI for OpenBikeComputer"
+
+[dependencies]
+getrandom = "0.4"
+nusb = { version = "=0.2.5", features = ["tokio"] }
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }

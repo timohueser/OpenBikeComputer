@@ -60,6 +60,7 @@ public enum Opcode: UInt8, CaseIterable, Hashable, Sendable {
     case remove = 5
     case cancel = 6
     case arm = 7
+    case format = 8
 }
 
 public struct CatalogFlags: OptionSet, Hashable, Sendable {
@@ -128,6 +129,10 @@ public enum CancelResult: UInt8, Hashable, Sendable {
 public struct ArmResult: Hashable, Sendable {
     public let rollbackObjectID: ObjectID
     public let commitSequence: UInt64
+}
+
+public struct FormatResult: Hashable, Sendable {
+    public let storeID: StoreID
 }
 
 public enum RemoteErrorCode: UInt16, Hashable, Sendable {
@@ -252,7 +257,7 @@ public struct ControlFrame: Hashable, Sendable {
 
         let expected: Int
         switch (direction, opcode) {
-        case (.request, .list): expected = 32
+        case (.request, .list), (.request, .format): expected = 32
         case (.request, .status), (.request, .get), (.request, .remove), (.request, .arm): expected = 16
         case (.request, .put): expected = 84
         case (.request, .cancel): expected = 4
@@ -264,7 +269,7 @@ public struct ControlFrame: Hashable, Sendable {
         case (.response, .put): expected = 32
         case (.response, .remove): expected = 8
         case (.response, .cancel): expected = 1
-        case (.response, .arm): expected = 16
+        case (.response, .arm), (.response, .format): expected = 16
         }
         guard payload.count == expected else { throw WireError.invalidLength }
 
@@ -317,6 +322,12 @@ public struct ControlFrame: Hashable, Sendable {
             guard try c.u64() != 0, try c.u64() != 0 else { throw WireError.invalidCombination }
         case .cancel:
             guard try c.u32() != 0 else { throw WireError.invalidCombination }
+        case .format:
+            let expected = try c.read(count: 16)
+            let replacement = try c.read(count: 16)
+            guard replacement.contains(where: { $0 != 0 }), replacement != expected else {
+                throw WireError.invalidCombination
+            }
         }
     }
 }
@@ -329,6 +340,7 @@ public enum ControlRequest: Hashable, Sendable {
     case remove(objectID: ObjectID, expectedRevision: Revision)
     case cancel(transfer: RequestID)
     case arm(packageObjectID: ObjectID, expectedRevision: Revision)
+    case format(expectedStoreID: StoreID, replacementStoreID: StoreID)
 
     public func frame(requestID: RequestID) throws -> ControlFrame {
         var payload = Data()
@@ -364,6 +376,13 @@ public enum ControlRequest: Hashable, Sendable {
             guard objectID.rawValue != 0, expectedRevision.rawValue != 0 else { throw WireError.invalidCombination }
             opcode = .arm
             payload.appendLE(objectID.rawValue); payload.appendLE(expectedRevision.rawValue)
+        case .format(let expectedStoreID, let replacementStoreID):
+            guard replacementStoreID.bytes.contains(where: { $0 != 0 }), replacementStoreID != expectedStoreID else {
+                throw WireError.invalidCombination
+            }
+            opcode = .format
+            payload.append(expectedStoreID.bytes)
+            payload.append(replacementStoreID.bytes)
         }
         return ControlFrame(opcode: opcode, flags: 0, requestID: requestID, payload: payload)
     }
@@ -436,6 +455,7 @@ public enum ControlResponse: Hashable, Sendable {
     case remove(RemoveResult)
     case cancel(CancelResult)
     case arm(ArmResult)
+    case format(FormatResult)
 
     public init(decoding record: Data, expectedOpcode: Opcode? = nil, expectedRequestID: RequestID? = nil) throws {
         let frame = try ControlFrame(decoding: record, direction: .response)
@@ -483,6 +503,10 @@ public enum ControlResponse: Hashable, Sendable {
                 rollbackObjectID: ObjectID(rawValue: try c.u64()), commitSequence: try c.u64())
             guard result.rollbackObjectID.rawValue != 0 else { throw WireError.invalidCombination }
             self = .arm(result)
+        case .format:
+            let result = FormatResult(storeID: try StoreID(bytes: c.read(count: 16)))
+            guard result.storeID.bytes.contains(where: { $0 != 0 }) else { throw WireError.invalidCombination }
+            self = .format(result)
         }
     }
 }

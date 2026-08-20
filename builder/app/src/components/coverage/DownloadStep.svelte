@@ -1,12 +1,11 @@
 <script lang="ts">
-    // Final coverage proof, then the download: cells fetched and verified against
-    // the catalog, assembled into ONE `.obcm` by wasm in a Worker, and saved.
+    // Final coverage proof, then delivery: cells fetched and verified against
+    // the catalog, assembled into ONE `.obcm` by wasm in a Worker, and either
+    // downloaded normally or streamed straight to a connected device.
     //
     // A map is one file, which decides the shape of this screen's second half. There
     // is nothing to order, nothing to package and nothing to acknowledge: the run
-    // produces a single object, and the only question left is where it lands —
-    // straight into a directory the rider picked (the card, ideally), or in the
-    // Downloads folder for them to move.
+    // produces a single object, and the only question left is where it lands.
 
     import { onDestroy, onMount } from "svelte";
     import type { AssemblePhase, MemoryEstimate } from "../../lib/assemble/bridge";
@@ -26,11 +25,13 @@
         clearCellStores,
         clearMapWorkStorage,
         discardCellStore,
+        discardMapOutput,
         hasRoomFor,
         openCellStore,
         readMapOutput,
         type CellStore,
     } from "../../lib/cells/store";
+    import { acquireMapWorkStorage } from "../../lib/cells/workBarrier";
     import { saveBlob } from "../../lib/download";
     import { platform } from "../../lib/platform";
     import type { MapOutputSession } from "../../lib/platform/types";
@@ -44,9 +45,16 @@
     import type { UBox } from "../../lib/catalog/grid";
     import { detailBandId, mergeMixedCellRects, parseCells, patchCount } from "../../lib/coverage/shape";
     import type { CoverageStore } from "../../lib/coverage/store.svelte";
+    import type { JobContext } from "../../lib/device/progress";
+    import type { SendAssembledMap } from "../../lib/device/write";
     import { formatBytes, truncateUtf8 } from "../../lib/format";
+    import type { FlatStoreClient } from "../../lib/usb/client";
+    import type { PutResponse } from "../../lib/usb/protocol";
 
-    let { store }: { store: CoverageStore } = $props();
+    let {
+        store,
+        onSendReadyChange,
+    }: { store: CoverageStore; onSendReadyChange?: (ready: boolean) => void } = $props();
 
     const KEEP_CELLS_KEY = "obcm.keepMapCells";
 
@@ -116,21 +124,49 @@
         );
     }
 
+    let destroyed = false;
+
     onDestroy(() => {
-        worker?.terminate();
-        void closeDownloadOutput(true);
-        void cleanupTransientCells();
+        destroyed = true;
+        const cause = new DOMException("the map builder was closed", "AbortError");
+        // Finalization starts only after the map is durable and its abort listener has been
+        // detached. Let that owner finish its cleanup. Every earlier teardown goes through the
+        // same barrier-owning failure path; independent close/discard calls here could race the
+        // owner's outstanding put or a newly mounted component.
+        if (phase !== "finalizing") {
+            // Direct delivery is cancelled through the DeviceJob so the same signal reaches the
+            // in-flight PUT; its one abort listener enters failRun. Browser/desktop delivery has
+            // no outer controller, so it enters that owner path directly.
+            if (output?.kind === "device" && !output.settled) output.ctx.cancel(cause);
+            else void failRun(cause);
+        }
+        // With no run owner, the worker only serves the background estimate and can be dropped
+        // immediately. A finalizing owner still needs it to finish its `done` continuation, so
+        // that path terminates below only after cleanup and settlement.
+        if (!output) {
+            worker?.terminate();
+            worker = null;
+        }
+        onSendReadyChange?.(false);
     });
 
     // Releases before the opt-in retained cells automatically. The first visit to this step after
     // the change removes that legacy cache unless the rider has explicitly enabled reuse.
     onMount(() => {
-        if (!keepCells) void clearStoredCells(false);
+        void initializeStorage();
     });
 
     // --- the run ----------------------------------------------------------
 
-    type Phase = "idle" | "downloading" | "assembling" | "saving" | "done" | "cancelled" | "error";
+    type Phase =
+        | "idle"
+        | "downloading"
+        | "assembling"
+        | "saving"
+        | "finalizing"
+        | "done"
+        | "cancelled"
+        | "error";
     let phase = $state<Phase>("idle");
     let dlProgress = $state<CellDownloadProgress | null>(null);
     let asmPhase = $state<AssemblePhase>("open");
@@ -142,7 +178,7 @@
      *  set the moment the map is delivered, and a cancel that raced the delivery
      *  must not tell someone to go and discard a file nobody has. */
     let persisted = $state(false);
-    /** The one delivery, so `done` can wait for a save that is still running rather
+    /** The one delivery, so `done` can wait for a save/send that is still running rather
      *  than declare the map finished behind it. */
     let delivery: Promise<void> = Promise.resolve();
     /** Set by `failRun`: a delivery that has not started must not write into an
@@ -160,10 +196,10 @@
     let cachedBytes = $state(0);
     /** Opt-in reuse. OPFS may still be the active run's necessary working disk when false. */
     let keepCells = $state(loadKeepCells());
-    let clearingCells = $state(false);
+    // Starts true so the first rendered/effected readiness cannot briefly enable a run before
+    // mount maintenance has joined the origin-global map-work barrier.
+    let clearingCells = $state(true);
     let cellStorageNotice = $state<string | null>(null);
-    /** A revision this run must remove after every reader has closed. */
-    let transientCellRevision: string | null = null;
     let outputPath = $state<string | null>(null);
     let runWarnings = $state<string[]>([]);
     let errorMessage = $state<string | null>(null);
@@ -177,6 +213,34 @@
      *  `$state` because the saving row renders it: it is written during a run, and a
      *  plain `let` would leave that row showing the previous run's name. */
     let runFileName = $state("OBC map.obcm");
+
+    interface DeviceOutput {
+        readonly kind: "device";
+        readonly client: FlatStoreClient;
+        readonly ctx: JobContext;
+        readonly resolve: (result: PutResponse) => void;
+        readonly reject: (cause: unknown) => void;
+        removeAbort: () => void;
+        result: PutResponse | null;
+        settled: boolean;
+        failing: boolean;
+        runId: number | null;
+        transientCellRevision: string | null;
+        releaseWork: (() => void) | null;
+        readonly operations: Set<Promise<unknown>>;
+    }
+    interface DownloadOutput {
+        readonly kind: "download";
+        runId: number | null;
+        transientCellRevision: string | null;
+        releaseWork: (() => void) | null;
+        readonly operations: Set<Promise<unknown>>;
+    }
+    type Output = DownloadOutput | DeviceOutput;
+    let output = $state.raw<Output | null>(null);
+    let lastRunKind = $state<Output["kind"]>("download");
+    let nextRunId = 0;
+    let activeRunId = 0;
 
     const ASM_PHASE_LABEL: Record<AssemblePhase, string> = {
         open: "reading cells",
@@ -218,14 +282,17 @@
                 // cancelling a thing that had already finished, and the button's own
                 // branch dispatched on the wrong phase.
                 phase = "saving";
-                delivery = saveStoredMap(msg.byteLength);
+                delivery = deliverStoredMap(msg.byteLength);
                 void delivery.catch(() => {});
                 break;
             case "file":
                 // No sink was available, so the bytes came across instead. Same
-                // delivery, one wrap earlier.
+                // delivery, but direct device delivery keeps the worker's transferred
+                // buffer as its sole resident copy instead of snapshotting it into a Blob.
                 phase = "saving";
-                delivery = saveMap(new Blob([msg.bytes as unknown as BlobPart]), msg.byteLength, msg.bytes);
+                delivery = output?.kind === "device"
+                    ? deliverResidentMap(msg.bytes, msg.byteLength)
+                    : deliverMap(new Blob([msg.bytes as unknown as BlobPart]), msg.byteLength, msg.bytes);
                 void delivery.catch(() => {});
                 break;
             case "done":
@@ -235,6 +302,15 @@
                 runWarnings = msg.warnings;
                 try {
                     await delivery;
+                    // A direct PUT is durable now. Detach its abort listener synchronously, before
+                    // even a no-op output-session await: TransferBar/unmount cancellation after
+                    // commit must not race `failRun` against host-side cleanup and turn success
+                    // into "cancelled".
+                    if (!sinkClosed && output?.kind === "device") {
+                        output.removeAbort();
+                        output.ctx.phase("finalizing");
+                        phase = "finalizing";
+                    }
                     await closeDownloadOutput(false);
                 } catch (cause) {
                     await failRun(cause);
@@ -247,8 +323,30 @@
                 // could report "Cancelled". `sinkClosed` is the fact that settles it,
                 // because it is set before the discard rather than after it.
                 if (sinkClosed) break;
-                phase = "done";
+                // Cleanup can recursively remove a country-sized temporary cell store. Keep the
+                // run closed while that awaits: declaring `done` here briefly re-enabled both
+                // delivery actions, and the older continuation could then clear a newer run's
+                // shared `output` after its cleanup finished.
+                phase = "finalizing";
                 await cleanupTransientCells();
+                if (output?.kind === "device") {
+                    if (!output.result) {
+                        await failRun(new Error("The device did not commit the assembled map."));
+                        break;
+                    }
+                    await cleanupDirectOutput();
+                    settleDevice(output.result);
+                }
+                output?.releaseWork?.();
+                if (output) output.releaseWork = null;
+                output = null;
+                abortCtl = null;
+                activeRunId = 0;
+                phase = "done";
+                if (destroyed) {
+                    worker?.terminate();
+                    worker = null;
+                }
                 break;
             case "error":
                 // Two conversations share this worker, and their failures are
@@ -279,7 +377,7 @@
      * host always had; the saving D1 is here for is on the *assembly*, and it is
      * unaffected.
      */
-    async function saveStoredMap(byteLength: number) {
+    async function deliverStoredMap(byteLength: number) {
         const blob = await readMapOutput();
         if (blob.size !== byteLength) {
             throw new Error(
@@ -287,14 +385,37 @@
                     `assembler wrote. Free some disk space and try again.`,
             );
         }
-        await saveMap(blob, byteLength, null);
+        await deliverMap(blob, byteLength, null);
     }
 
-    /** The two hosts' save, shared: a Blob for the browser, bytes for the desktop. */
-    async function saveMap(blob: Blob, byteLength: number, bytes: Uint8Array | null) {
+    /** Deliver the explicitly memory-priced fallback without creating a second full-map Blob. */
+    async function deliverResidentMap(bytes: Uint8Array, byteLength: number) {
         if (sinkClosed) return;
+        if (bytes.byteLength !== byteLength) {
+            throw new Error(
+                `The assembler announced ${byteLength} bytes but delivered ${bytes.byteLength}; the map was not sent.`,
+            );
+        }
+        if (output?.kind !== "device") throw new Error("The direct map destination was closed.");
+        const { sendMapBytes } = await import("../../lib/device/write");
+        output.result = await sendMapBytes(output.client, bytes, runFileName, output.ctx);
+    }
+
+    /** Deliver the verified one-file result without ever materialising an OPFS
+     * map in the tab heap. Device PUT reads the Blob twice in bounded slices
+     * (CRC then transfer); browser download hands the same Blob to the browser. */
+    async function deliverMap(blob: Blob, byteLength: number, bytes: Uint8Array | null) {
+        if (sinkClosed) return;
+        if (blob.size !== byteLength) {
+            throw new Error(
+                `The assembler announced ${byteLength} bytes but delivered ${blob.size}; the map was not sent.`,
+            );
+        }
         const name = runFileName;
-        if (downloadOutput) {
+        if (output?.kind === "device") {
+            const { sendMapBlob } = await import("../../lib/device/write");
+            output.result = await sendMapBlob(output.client, blob, name, output.ctx);
+        } else if (downloadOutput) {
             // A picked directory (or the desktop's native folder) takes the map
             // where the rider wants it — the card itself, when that is what they
             // picked. The session streams a Blob without buffering it; only a host
@@ -306,7 +427,16 @@
             saveBlob(blob, name);
             savedFile = { name, byteLength };
         }
-        persisted = true;
+        if (output?.kind !== "device") persisted = true;
+    }
+
+    function settleDevice(result: PutResponse | unknown, failed = false) {
+        const current = output;
+        if (current?.kind !== "device" || current.settled) return;
+        current.settled = true;
+        current.removeAbort();
+        if (failed) current.reject(result);
+        else current.resolve(result as PutResponse);
     }
 
     async function closeDownloadOutput(discard: boolean) {
@@ -315,9 +445,9 @@
         if (current) await (discard ? current.discard() : current.finish());
     }
 
-    async function cleanupTransientCells() {
-        const revision = transientCellRevision;
-        transientCellRevision = null;
+    async function cleanupTransientCells(owner: Output | null = output) {
+        const revision = owner?.transientCellRevision ?? null;
+        if (owner) owner.transientCellRevision = null;
         if (!revision) return;
         try {
             await discardCellStore(revision);
@@ -325,6 +455,17 @@
             runWarnings = [
                 ...runWarnings,
                 "Temporary map cells could not be deleted; use ‘Delete stored map data’.",
+            ];
+        }
+    }
+
+    async function cleanupDirectOutput() {
+        try {
+            await discardMapOutput();
+        } catch {
+            runWarnings = [
+                ...runWarnings,
+                "The temporary assembled map could not be deleted; use ‘Delete stored map data’.",
             ];
         }
     }
@@ -340,9 +481,24 @@
         if (!checked && !running) await clearStoredCells(true);
     }
 
+    async function initializeStorage() {
+        const release = await acquireMapWorkStorage();
+        try {
+            if (destroyed) return;
+            if (!keepCells) await clearMapWorkStorage();
+        } catch {
+            // Startup maintenance is best-effort, as it was before serialization. A later run's
+            // own probes give the actionable storage error.
+        } finally {
+            release();
+            if (!destroyed) clearingCells = false;
+        }
+    }
+
     async function clearStoredCells(announce = true) {
         clearingCells = true;
         if (announce) cellStorageNotice = null;
+        const release = await acquireMapWorkStorage();
         try {
             await clearMapWorkStorage();
             if (announce) cellStorageNotice = "Stored map downloads deleted.";
@@ -352,24 +508,106 @@
                     "Stored map downloads could not be deleted. Close other builder tabs and try again.";
             }
         } finally {
+            release();
             clearingCells = false;
         }
     }
 
-    async function failRun(cause: unknown) {
-        const cancelled = cause instanceof DOMException && cause.name === "AbortError";
-        abortCtl?.abort();
+    async function failRun(cause: unknown, runId = activeRunId) {
+        // A cancelled preflight may resume after an unabortable OPFS call. Its
+        // continuation no longer owns any shared run state and must be a no-op.
+        if (runId === 0 || activeRunId !== runId || output?.runId !== runId) return;
+        const direct = output?.kind === "device";
+        if (output?.kind === "device") {
+            if (output.failing || output.settled) return;
+            output.failing = true;
+        }
+        const owner = output;
+        activeRunId = 0;
+        const controller = abortCtl;
+        abortCtl = null;
+        controller?.abort();
         worker?.terminate();
         worker = null;
+        // Close the logical sink before the first await. A PUT can finish on the same microtask
+        // turn as cancellation; its `done` handler must already know that failure teardown won.
+        sinkClosed = true;
+        // `clearCellStores`, OPFS probes/opens and cell writes cannot be interrupted. Keep the
+        // surface in its running state until every operation owned by this run has physically
+        // returned; only then may cleanup run and the next map action become available.
+        await waitForRunOperations(owner);
         // A delivery that has not begun is now a no-op, but one may already be in
         // flight — let it land before the output is discarded, or the discard races
         // the write into the folder it removes. It is bounded by one file's write.
-        sinkClosed = true;
-        await delivery.catch(() => {});
+        const deliveryCause = await delivery.then(
+            () => null,
+            (error: unknown) => error,
+        );
+        // Teardown cancellation can arrive while the physical link rejection is already
+        // unwinding. Preserve that stable cause so the DeviceJob can surface interruption.
+        if ((deliveryCause as { code?: unknown } | null)?.code === "link") cause = deliveryCause;
+        const cancelled = cause instanceof DOMException && cause.name === "AbortError";
         await closeDownloadOutput(true).catch(() => (outputCleanupFailed = true));
-        await cleanupTransientCells();
+        await cleanupTransientCells(owner);
+        if (direct) await cleanupDirectOutput();
+        owner.releaseWork?.();
+        owner.releaseWork = null;
         errorMessage = cause instanceof Error ? cause.message : String(cause);
         phase = cancelled ? "cancelled" : "error";
+        settleDevice(cause, true);
+        output = null;
+    }
+
+    function assertRunActive(runId: number, out: Output, controller: AbortController) {
+        if (
+            activeRunId !== runId ||
+            output !== out ||
+            abortCtl !== controller ||
+            controller.signal.aborted
+        ) {
+            throw controller.signal.reason ?? new DOMException("the map run is no longer active", "AbortError");
+        }
+    }
+
+    async function runOperation<T>(
+        runId: number,
+        out: Output,
+        controller: AbortController,
+        operation: () => Promise<T>,
+        onStale?: (value: T) => Promise<void>,
+    ): Promise<T> {
+        assertRunActive(runId, out, controller);
+        let tracked!: Promise<T>;
+        tracked = (async () => {
+            try {
+                const value = await operation();
+                try {
+                    assertRunActive(runId, out, controller);
+                } catch (cause) {
+                    // Some operations create an artifact before cancellation can be observed.
+                    // Their caller owns the value/revision needed to remove it, and that cleanup
+                    // remains inside this tracked promise so failRun's barrier includes it.
+                    await onStale?.(value);
+                    throw cause;
+                }
+                return value;
+            } finally {
+                out.operations.delete(tracked);
+            }
+        })();
+        out.operations.add(tracked);
+        return tracked;
+    }
+
+    async function waitForRunOperations(owner: Output) {
+        // Operations can start nested work (download callbacks start OPFS writes), so drain until
+        // the owned set remains empty after a microtask turn rather than trusting one snapshot.
+        for (;;) {
+            const pending = [...owner.operations];
+            if (pending.length > 0) await Promise.allSettled(pending);
+            await Promise.resolve();
+            if (owner.operations.size === 0) return;
+        }
     }
 
     /**
@@ -388,13 +626,15 @@
     async function skipCached(
         plan: CellDownloadPlan,
         cells: CellStore,
+        runOp: <T>(operation: () => Promise<T>) => Promise<T>,
     ): Promise<CellDownloadPlan> {
         const wanted: typeof plan.items = [];
         let bytes = 0;
         let have = 0;
         let haveBytes = 0;
         for (const item of plan.items) {
-            if (item.band !== null && (await cells.has(item.cell.sha256, item.cell.bytes))) {
+            const present = item.band !== null && (await runOp(() => cells.has(item.cell.sha256, item.cell.bytes)));
+            if (present) {
                 have += 1;
                 haveBytes += item.cell.bytes;
                 continue;
@@ -407,7 +647,7 @@
         return { ...plan, items: wanted, totalBytes: bytes };
     }
 
-    /** What the selection is called, for the folder picker and the filename. */
+    /** What the selection is called in the file and on the device. */
     function mapName(): string {
         const parts = store.selection.parts;
         const base = parts.length === 0 ? "OBC map" : parts[0].name;
@@ -428,20 +668,18 @@
         return `${stem.length > 0 ? stem : "OBC map"}.obcm`;
     }
 
-    async function begin() {
+    async function begin(out: Output) {
         const resolution = store.resolution;
         const indices = store.indices;
         const l = ledger;
-        if (!resolution || !indices || !l || running) {
+        if (!resolution || !indices || !l || !ready) {
             throw new Error("This map is not ready to assemble yet.");
         }
-        // The output directory opens under the click that started the run: the
-        // browser's implementation is a directory picker, and a picker without
-        // a fresh user activation is refused (the platform contract). A
-        // dismissed picker is "changed my mind" — the run never starts, and
-        // the screen stays exactly as it was.
+        // Native desktop saving still opens its output session under the click
+        // that started a download. Direct device delivery never opens a save
+        // destination, and the web host uses an ordinary browser download.
         let picked: MapOutputSession | null = null;
-        if (platform.openMapOutput) {
+        if (out.kind === "download" && platform.openMapOutput) {
             try {
                 picked = await platform.openMapOutput(mapName());
             } catch (cause) {
@@ -449,6 +687,12 @@
                 throw cause;
             }
         }
+        if (destroyed) throw new DOMException("the map builder was closed", "AbortError");
+        const runId = ++nextRunId;
+        out.runId = runId;
+        activeRunId = runId;
+        output = out;
+        lastRunKind = out.kind;
         runFileName = mapFileName();
         errorMessage = null;
         savedFile = null;
@@ -466,12 +710,21 @@
         cachedCells = 0;
         cachedBytes = 0;
         phase = "downloading";
+        if (out.kind === "device") out.ctx.phase("downloading", l.totalBytes);
 
         const plan = planCells(resolution, store.catalog, indices, store.terrain);
         const cells: WorkerCell[] = [];
         const sourceCells: WorkerSourceCell[] = [];
         const terrainCells: WorkerTerrainCell[] = [];
-        abortCtl = new AbortController();
+        const runAbort = new AbortController();
+        abortCtl = runAbort;
+        const assertActive = () => assertRunActive(runId, out, runAbort);
+        const runOp = <T>(operation: () => Promise<T>, onStale?: (value: T) => Promise<void>) =>
+            runOperation(runId, out, runAbort, operation, onStale);
+
+        // Component readiness only covers this instance. The lease also waits for an older,
+        // already-unmounted instance's put/finalization before this run touches shared OPFS.
+        out.releaseWork = await runOp(acquireMapWorkStorage, async (release) => release());
 
         // Cells go to disk when this browser will take them, which keeps a country's
         // worth out of the tab's heap. With the opt-in above, the same store also lets
@@ -484,19 +737,37 @@
         const revision = cellStoreRevision(store.catalog);
         // Unchecked means no reuse in either direction. OPFS still carries this run when available,
         // because that working disk is what makes country-sized assembly possible.
-        if (!keepCells) await clearCellStores();
-        let cellStore = (await cellStoreWritable()) ? await openCellStore(revision) : null;
-        transientCellRevision = cellStore && !keepCells ? revision : null;
+        if (!keepCells) {
+            await runOp(clearCellStores);
+        }
+        const writable = await runOp(cellStoreWritable);
+        out.transientCellRevision = writable && !keepCells ? revision : null;
+        let cellStore = writable
+            ? await runOp(
+                  () => openCellStore(revision),
+                  async () => {
+                      if (!out.transientCellRevision) return;
+                      try {
+                          await discardCellStore(out.transientCellRevision);
+                          out.transientCellRevision = null;
+                      } catch {
+                          // failRun owns the same revision and retries after this barrier drains.
+                      }
+                  },
+              )
+            : null;
+        if (!cellStore) out.transientCellRevision = null;
         let fetchPlan = plan;
         if (cellStore) {
-            fetchPlan = await skipCached(plan, cellStore);
+            fetchPlan = await skipCached(plan, cellStore, runOp);
             // Asked once, before a byte is fetched, and asked about the WHOLE
             // run — cells, the map the sink writes, the merge's spill — because
             // after phase D all three live in OPFS: a store with room for the
             // cells but not the output would fail at the first write, after the
             // download. Falling back now costs disk-backed input and any selected
             // reuse, but avoids a quota failure after the download.
-            if (!(await hasRoomFor(runDiskNeed(l))))  {
+            const hasRoom = await runOp(() => hasRoomFor(runDiskNeed(l)));
+            if (!hasRoom) {
                 cellStore = null;
                 fetchPlan = plan;
                 cachedCells = 0;
@@ -505,40 +776,45 @@
         }
 
         try {
-            await downloadCells(fetchPlan, {
-                fetchImpl: store.client.fetchImpl,
-                onCell: async (item, bytes) => {
-                    // `band === null` is what a terrain cell is (`OBCC_Spec.md`
-                    // §13: a second artifact class, not a band), and it is the
-                    // only thing that decides which door it goes in.
-                    if (item.band === null) {
-                        terrainCells.push({ id: item.cell.id, sha256: item.cell.sha256, bytes });
-                    } else if (cellStore) {
-                        // Verified once, on the way in: the file's name is the
-                        // digest `fetchVerified` just checked. Awaited, so a slow
-                        // disk applies backpressure instead of letting the
-                        // download queue gigabytes behind it.
-                        await cellStore.put(item.cell.sha256, bytes).catch((cause: unknown) => {
-                            throw new Error(
-                                `The map could not be saved to this browser's storage (${
-                                    cause instanceof Error ? cause.message : String(cause)
-                                }). Free some disk space and try again.`,
+            await runOp(() =>
+                downloadCells(fetchPlan, {
+                    fetchImpl: store.client.fetchImpl,
+                    onCell: async (item, bytes) => {
+                        // `band === null` is what a terrain cell is (`OBCC_Spec.md`
+                        // §13: a second artifact class, not a band), and it is the
+                        // only thing that decides which door it goes in.
+                        if (item.band === null) {
+                            terrainCells.push({ id: item.cell.id, sha256: item.cell.sha256, bytes });
+                        } else if (cellStore) {
+                            // Verified once, on the way in: the file's name is the
+                            // digest `fetchVerified` just checked. Awaited, so a slow
+                            // disk applies backpressure instead of letting the
+                            // download queue gigabytes behind it.
+                            await runOp(() =>
+                                cellStore.put(item.cell.sha256, bytes).catch((cause: unknown) => {
+                                    throw new Error(
+                                        `The map could not be saved to this browser's storage (${
+                                            cause instanceof Error ? cause.message : String(cause)
+                                        }). Free some disk space and try again.`,
+                                    );
+                                }),
                             );
-                        });
-                    } else {
-                        cells.push({
-                            id: item.cell.id,
-                            band: item.band,
-                            partial: "partial" in item.cell && item.cell.partial,
-                            bytes,
-                        });
-                    }
-                },
-                onProgress: (p) => {
-                    dlProgress = p;
-                },
-                signal: abortCtl.signal,
-            });
+                        } else {
+                            cells.push({
+                                id: item.cell.id,
+                                band: item.band,
+                                partial: "partial" in item.cell && item.cell.partial,
+                                bytes,
+                            });
+                        }
+                    },
+                    onProgress: (p) => {
+                        dlProgress = p;
+                        if (out.kind === "device") out.ctx.progress(p.receivedBytes, p.totalBytes);
+                    },
+                    signal: runAbort.signal,
+                }),
+            );
             // In the plan's order, not the network's — cached and fetched cells
             // are one list, and which of the two a cell came from must not be
             // able to reach the bytes.
@@ -555,11 +831,12 @@
                 }
             }
         } catch (e) {
-            await failRun(e);
+            await failRun(e, runId);
             return;
         }
 
         phase = "assembling";
+        if (out.kind === "device") out.ctx.phase("assembling", 0);
         asmPhase = "open";
         const req: AssembleWorkerRequest = {
             type: "assemble",
@@ -597,23 +874,80 @@
                 acceptPartial: true,
             },
         };
+        assertActive();
         ensureWorker().postMessage(req, { transfer: requestTransferList(req) });
     }
 
     function run() {
-        void begin().catch((cause) => failRun(cause));
+        const out: DownloadOutput = {
+            kind: "download",
+            runId: null,
+            transientCellRevision: null,
+            releaseWork: null,
+            operations: new Set(),
+        };
+        void begin(out).catch((cause) => failRun(cause, out.runId ?? 0));
     }
 
+    /** Assemble this selection and stream its verified `.obcm` directly into
+     * the connected device's v4 flat-store PUT. The Blob is OPFS-backed when
+     * this host passed the writable-storage probe, and memory-priced otherwise. */
+    export const sendToDevice: SendAssembledMap = (client, ctx) =>
+        new Promise<PutResponse>((resolve, reject) => {
+            const onAbort = () =>
+                void failRun(
+                    ctx.signal.reason ?? new DOMException("cancelled", "AbortError"),
+                    device.runId ?? 0,
+                );
+            const device: DeviceOutput = {
+                kind: "device",
+                client,
+                ctx,
+                resolve,
+                reject,
+                removeAbort: () => ctx.signal.removeEventListener("abort", onAbort),
+                result: null,
+                settled: false,
+                failing: false,
+                runId: null,
+                transientCellRevision: null,
+                releaseWork: null,
+                operations: new Set(),
+            };
+            ctx.signal.addEventListener("abort", onAbort, { once: true });
+            if (ctx.signal.aborted) {
+                device.removeAbort();
+                reject(ctx.signal.reason);
+                return;
+            }
+            void begin(device).catch((cause) => {
+                if (output === device) void failRun(cause, device.runId ?? 0);
+                else {
+                    device.removeAbort();
+                    reject(cause);
+                }
+            });
+        });
+
     function cancel() {
+        const cause = new DOMException("cancelled", "AbortError");
+        // Direct assembly and PUT are one DeviceJob. Ask its controller to
+        // cancel so both this button and TransferBar cancel the same signal;
+        // merely aborting the cell downloader would let a live PUT commit and
+        // only then paint the run as cancelled.
+        if (output?.kind === "device") {
+            output.ctx.cancel(cause);
+            return;
+        }
         if (phase === "downloading") {
-            abortCtl?.abort();
+            abortCtl?.abort(cause);
         } else if (phase === "assembling" || phase === "saving") {
             // The worker is blocked inside one synchronous wasm call and cannot
             // read a message — terminate IS the cancel (bridge threading
             // contract). Nothing usable is left behind: a partial `.obcm` fails
             // its own header checks, and the file is only saved once the run says
             // it finished.
-            void failRun(new DOMException("cancelled", "AbortError"));
+            void failRun(cause);
         }
     }
 
@@ -661,6 +995,7 @@
             // a stale answer is overwritten, never kept.
             void (async () => {
                 const onDisk = (await cellStoreWritable()) && (await hasRoomFor(diskNeed));
+                if (destroyed) return;
                 ensureWorker().postMessage({
                     type: "estimate",
                     networkBandBytes,
@@ -797,7 +1132,9 @@
 
     // --- gating -----------------------------------------------------------
 
-    const running = $derived(phase === "downloading" || phase === "assembling" || phase === "saving");
+    const running = $derived(
+        phase === "downloading" || phase === "assembling" || phase === "saving" || phase === "finalizing",
+    );
     const refusal = $derived.by(() => {
         const l = ledger;
         if (!l || l.cellCount === 0) return null;
@@ -812,12 +1149,14 @@
             l.cellCount > 0 &&
             refusal === null &&
             !running &&
+            !clearingCells &&
             !estimatePending &&
             // An unanswered projection keeps the mandatory pre-download check
             // honest: the button waits for the retry, not forever (A3).
             estimateError === null
         );
     });
+    $effect(() => onSendReadyChange?.(ready));
     /** Whether a failed run left a file behind that someone has to delete. Counted
      *  from what actually reached the disk, and only where nothing cleaned it up:
      *  a picked directory's session removes what it wrote, so there is something to
@@ -939,7 +1278,9 @@
                 </button>
             {:else}
                 <div class="runrow">
-                    <button type="button" class="btn" onclick={cancel}>Cancel</button>
+                    {#if phase !== "finalizing"}
+                        <button type="button" class="btn" onclick={cancel}>Cancel</button>
+                    {/if}
                     {#if phase === "downloading" && dlProgress}
                         <span class="small muted">
                             downloading cells — {dlProgress.completedCells}/{dlProgress.totalCells} ·
@@ -955,30 +1296,35 @@
                         </span>
                     {:else if phase === "saving"}
                         <span class="small muted">
-                            saving the map{#if runFileName} — {runFileName}{/if}
+                            {output?.kind === "device" ? "sending the map" : "saving the map"}{#if runFileName}
+                                — {runFileName}{/if}
                         </span>
+                    {:else if phase === "finalizing"}
+                        <span class="small muted">finishing up — removing temporary map data</span>
                     {/if}
                 </div>
                 <div class="bar">
                     <span
                         style:width={`${phase === "downloading" ? dlPct : Math.round(asmFraction * 100)}%`}
-                        class:assembling={phase === "assembling" || phase === "saving"}
+                        class:assembling={phase === "assembling" || phase === "saving" || phase === "finalizing"}
                     ></span>
                 </div>
             {/if}
 
             {#if phase === "done"}
                 <div class="done">
-                    <p class="line small">
-                        {#if outputPath}
-                            Saved <span class="mono">{savedFile?.name}</span> in
-                            <span class="mono">{outputPath}</span> — if that folder isn't the device's
-                            card, copy it to the card's top level.
-                        {:else}
-                            Saved <span class="mono">{savedFile?.name}</span> — copy it to the top level
-                            of the device's card.
-                        {/if}
-                    </p>
+                    {#if lastRunKind === "device"}
+                        <p class="line small">Assembled and sent <span class="mono">{runFileName}</span>.</p>
+                    {:else}
+                        <p class="line small">
+                            {#if outputPath}
+                                Saved <span class="mono">{savedFile?.name}</span> in
+                                <span class="mono">{outputPath}</span>.
+                            {:else}
+                                Downloaded <span class="mono">{savedFile?.name}</span>.
+                            {/if}
+                        </p>
+                    {/if}
                     {#if savedFile}
                         <p class="line faint small mono">{formatBytes(savedFile.byteLength)}</p>
                     {/if}

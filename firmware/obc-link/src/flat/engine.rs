@@ -39,10 +39,10 @@ use obc_crc::Crc32;
 use super::ids::{DisplayName, EntryFlags, EntryMeta, ObjectId, ObjectKind, Revision};
 use super::store::{Mode, Mutation, Policy, PutSource, Store, StoreError};
 use super::wire::{
-    decode_request, detail, encode_arm, encode_cancel, encode_error, encode_get, encode_put, encode_remove,
-    encode_status, write_stream, ArmRequest, ControlError, ErrorCode, GetRequest, ListRequest, ListWriter, ObjectState,
-    Opcode, PutRequest, Refusal, RemoveRequest, Request, RequestId, StatusRequest, StatusResponse, StreamFrame,
-    CONTROL_FLOOR, STREAM_HEADER_LEN,
+    decode_request, detail, encode_arm, encode_cancel, encode_error, encode_format, encode_get, encode_put,
+    encode_remove, encode_status, write_stream, ArmRequest, ControlError, ErrorCode, FormatRequest, GetRequest,
+    ListRequest, ListWriter, ObjectState, Opcode, PutRequest, Refusal, RemoveRequest, Request, RequestId,
+    StatusRequest, StatusResponse, StreamFrame, CONTROL_FLOOR, STREAM_HEADER_LEN,
 };
 
 /// The staging buffer a transfer accumulates into before it reaches the card, in bytes.
@@ -252,6 +252,22 @@ pub struct UploadProgress {
     pub declared: u64,
 }
 
+/// The input record and output workspace for one staged stream call.
+///
+/// These buffers have independent lifetimes and no coupled invariant; grouping them keeps the
+/// adapter-specific bank identity and its stage slice explicit at the call site.
+pub struct StreamBuffers<'record, 'out> {
+    record: &'record [u8],
+    out: &'out mut [u8],
+}
+
+impl<'record, 'out> StreamBuffers<'record, 'out> {
+    /// Group a received stream record with the workspace used for the engine's response.
+    pub fn new(record: &'record [u8], out: &'out mut [u8]) -> Self {
+        Self { record, out }
+    }
+}
+
 /// **How the last upload ended**, latched once and taken once.
 ///
 /// Latched rather than reported live for the same reason the progress above is read rather than
@@ -326,6 +342,8 @@ struct Upload<A> {
     displaced: Option<Revision>,
     received: u64,
     staged: usize,
+    /// Which half of a double-width adapter stage is currently being filled.
+    stage_bank: usize,
     crc: Crc32,
     allocation: A,
 }
@@ -426,6 +444,18 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         }
     }
 
+    /// Whether this exact upload owns the engine.
+    ///
+    /// Adapter-specific resources must use this rather than an app-facing progress projection:
+    /// progress deliberately omits the owner link, so it cannot prove that USB — rather than BLE —
+    /// is entitled to claim a cable-only staging arena.
+    pub fn upload_matches(&self, link: Link, request: RequestId, kind: ObjectKind) -> bool {
+        matches!(
+            &self.live,
+            Live::Upload(upload) if upload.link == link && upload.request == request && upload.kind == kind
+        )
+    }
+
     /// **Take the verdict on the last upload**, clearing it. See [`UploadEnd`].
     ///
     /// A link that goes away leaves nothing here: §3.8's third form of cancel answers nobody, and a
@@ -469,7 +499,36 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
             Request::Remove(remove) => self.on_remove(store, header.request, remove, out),
             Request::Cancel(cancel) => self.on_cancel(store, link, header.request, cancel.transfer, out),
             Request::Arm(arm) => self.on_arm(store, policy, header.request, arm, out),
+            Request::Format(format) => self.on_format(store, header.request, format, out),
         }
+    }
+
+    fn on_format(&mut self, store: &S, request: RequestId, format: FormatRequest, out: &mut [u8]) -> Reaction {
+        if let Err(refusal) = self.admit_format(store, format) {
+            return self.emit_error(out, Opcode::Format, request, refusal);
+        }
+        let len = match store.format(format.replacement) {
+            Ok(()) => encode_format(out, request, format.replacement),
+            Err(error) => encode_error(out, Opcode::Format, request, &media_refusal(error, detail::media_io::WRITE)),
+        };
+        // Once formatting starts, the old superblocks are invalidated first. Success or media
+        // failure, the current in-memory store must never continue serving after this answer leaves
+        // the link.
+        match len {
+            Some(len) => Reaction::SendAndReboot { len },
+            None => Reaction::Close(Channel::Control),
+        }
+    }
+
+    fn admit_format(&mut self, store: &S, format: FormatRequest) -> Result<(), Refusal> {
+        if let Some(refusal) = self.busy_refusal() {
+            return Err(refusal);
+        }
+        let expected = if store.mode().readable() { store.store_id() } else { super::ids::StoreId([0; 16]) };
+        if format.expected != expected {
+            return Err(bad_combination());
+        }
+        Ok(())
     }
 
     /// One whole stream record arrived: §3.8's 16-byte frame followed by exactly its payload.
@@ -480,6 +539,60 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         policy: &mut P,
         record: &[u8],
         out: &mut [u8],
+    ) -> Reaction {
+        self.on_stream_with_stage(link, store, policy, record, out, None)
+    }
+
+    /// The bank the cable adapter must lend to [`on_stream_staged`](Self::on_stream_staged).
+    ///
+    /// Exposing the index before the borrow lets an arena-backed adapter form `&mut` for only the
+    /// inactive half. The opposite half may still be borrowed by deferred card DMA and must not be
+    /// covered by a whole-arena mutable reference.
+    pub fn upload_stage_bank(&self) -> Option<usize> {
+        match &self.live {
+            Live::Upload(upload) => Some(upload.stage_bank),
+            _ => None,
+        }
+    }
+
+    /// One whole stream record, using `stage` as the current bank of this upload's two-bank
+    /// write-combining buffer.
+    ///
+    /// This is the cable adapter's high-throughput seam. The protocol record ceiling is deliberately
+    /// independent of the card's efficient command width: a USB adapter may retain a scratch arm
+    /// for the whole `PUT` and lend it here on every record, letting several records reach
+    /// [`Store::write`] as one contiguous run. Radio adapters use [`on_stream`](Self::on_stream) and
+    /// retain the engine's small resident stage.
+    ///
+    /// A buffer at the same bank index and with the same length must be supplied until it fills;
+    /// then the engine advances [`upload_stage_bank`](Self::upload_stage_bank). The bank must be a
+    /// non-zero multiple of 512 bytes. Supplying no stage part-way through would
+    /// change the backing storage beneath `Upload::staged`; adapters must instead cancel the
+    /// transfer if their scratch ownership is revoked.
+    pub fn on_stream_staged<P: Policy>(
+        &mut self,
+        link: Link,
+        store: &S,
+        policy: &mut P,
+        buffers: StreamBuffers<'_, '_>,
+        bank: usize,
+        stage: &mut [u8],
+    ) -> Reaction {
+        let StreamBuffers { record, out } = buffers;
+        if stage.len() < 512 || !stage.len().is_multiple_of(512) || self.upload_stage_bank() != Some(bank) {
+            return Reaction::Close(Channel::Stream);
+        }
+        self.on_stream_with_stage(link, store, policy, record, out, Some((bank, stage)))
+    }
+
+    fn on_stream_with_stage<P: Policy>(
+        &mut self,
+        link: Link,
+        store: &S,
+        policy: &mut P,
+        record: &[u8],
+        out: &mut [u8],
+        mut stage: Option<(usize, &mut [u8])>,
     ) -> Reaction {
         // §3.8's silent discard, one step earlier: bytes on a wire that owns no transfer belong to
         // no transfer this can be sure of, and that includes bytes on the *other* link's wire.
@@ -516,13 +629,14 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
             let refusal = Refusal::new(ErrorCode::InvalidRequest, detail::invalid_request::STREAM_OFFSET);
             return self.fail_upload(store, refusal, out);
         }
-        if let Err(error) = self.absorb(store, payload) {
+        let staged = stage.as_mut().map(|(bank, bytes)| (*bank, &mut **bytes));
+        if let Err(error) = self.absorb(store, payload, staged) {
             return self.fail_upload(store, media_refusal(error, detail::media_io::WRITE), out);
         }
         if offset + (payload.len() as u64) < declared {
             return Reaction::Idle;
         }
-        self.finish_upload(store, policy, out)
+        self.finish_upload(store, policy, out, stage)
     }
 
     /// Pumps the engine: a live download's next record, or an error owed to a dropped transfer.
@@ -865,6 +979,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
             displaced,
             received: 0,
             staged: 0,
+            stage_bank: 0,
             crc: Crc32::new(),
             allocation,
         });
@@ -1039,8 +1154,22 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
 
     /// Folds one stream payload into the running CRC and the staging buffer, writing whole stages
     /// through to the card.
-    fn absorb(&mut self, store: &S, payload: &[u8]) -> Result<(), StoreError> {
+    fn absorb(&mut self, store: &S, payload: &[u8], stage: Option<(usize, &mut [u8])>) -> Result<(), StoreError> {
+        let external = stage.is_some();
+        let staging: &mut [u8] = match stage {
+            Some((_, stage)) => stage,
+            None => &mut self.staging,
+        };
         let Live::Upload(upload) = &mut self.live else { return Err(StoreError::Invalid) };
+        let stage_len = staging.len();
+        let base = 0;
+        // An oddly-sized record could otherwise fill this bank and need the next one in the same
+        // call. The board cannot safely borrow that next bank until this borrow ends because the
+        // write starts deferred DMA. Production 4 KiB records divide the 64 KiB bank exactly; a
+        // final short record cannot cross it.
+        if external && upload.staged + payload.len() > stage_len {
+            return Err(StoreError::Invalid);
+        }
         upload.crc.update(payload);
         upload.received += payload.len() as u64;
         let mut input = payload;
@@ -1054,19 +1183,22 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
             // (`FLAT_Store_Format.md` §5.5) — so the split, not the copy, was the cost. §5.2's
             // ceiling is chosen to make a full USB stream record exactly 4,096 payload bytes for
             // this reason, and the remainder below is the transfer's last, short record.
-            if upload.staged == 0 && input.len() >= STAGE {
-                let (chunk, rest) = input.split_at(input.len() - input.len() % STAGE);
+            if upload.staged == 0 && input.len() >= stage_len {
+                let (chunk, rest) = input.split_at(input.len() - input.len() % stage_len);
                 store.write(&mut upload.allocation, chunk)?;
                 input = rest;
                 continue;
             }
-            let take = (STAGE - upload.staged).min(input.len());
-            self.staging[upload.staged..upload.staged + take].copy_from_slice(&input[..take]);
+            let take = (stage_len - upload.staged).min(input.len());
+            staging[base + upload.staged..base + upload.staged + take].copy_from_slice(&input[..take]);
             upload.staged += take;
             input = &input[take..];
-            if upload.staged == STAGE {
-                store.write(&mut upload.allocation, &self.staging)?;
+            if upload.staged == stage_len {
+                store.write(&mut upload.allocation, &staging[base..base + stage_len])?;
                 upload.staged = 0;
+                if external {
+                    upload.stage_bank ^= 1;
+                }
             }
         }
         Ok(())
@@ -1074,7 +1206,13 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
 
     /// §3.6's last byte: verify the length and the whole-payload CRC, run the kind's validator, and
     /// commit.
-    fn finish_upload<P: Policy>(&mut self, store: &S, policy: &mut P, out: &mut [u8]) -> Reaction {
+    fn finish_upload<P: Policy>(
+        &mut self,
+        store: &S,
+        policy: &mut P,
+        out: &mut [u8],
+        stage: Option<(usize, &mut [u8])>,
+    ) -> Reaction {
         let Live::Upload(upload) = &self.live else { return Reaction::Idle };
         let (kind, declared_len, declared_crc, replaced) =
             (upload.kind, upload.declared_len, upload.declared_crc, upload.displaced.is_some());
@@ -1091,7 +1229,7 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
             return self.fail_upload(store, Refusal::new(ErrorCode::Rejected, reason), out);
         }
         // Everything received is on the card before the commit begins.
-        if let Err(error) = self.flush(store) {
+        if let Err(error) = self.flush(store, stage) {
             return self.fail_upload(store, media_refusal(error, detail::media_io::WRITE), out);
         }
         let request = self.owed_request();
@@ -1112,13 +1250,18 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
     }
 
     /// Writes whatever the staging buffer still holds.
-    fn flush(&mut self, store: &S) -> Result<(), StoreError> {
+    fn flush(&mut self, store: &S, stage: Option<(usize, &mut [u8])>) -> Result<(), StoreError> {
         let Live::Upload(upload) = &mut self.live else { return Ok(()) };
         if upload.staged == 0 {
             return Ok(());
         }
         let staged = upload.staged;
-        store.write(&mut upload.allocation, &self.staging[..staged])?;
+        let staging: &[u8] = match stage {
+            Some((_, stage)) => stage,
+            None => &self.staging,
+        };
+        let base = 0;
+        store.write(&mut upload.allocation, &staging[base..base + staged])?;
         upload.staged = 0;
         Ok(())
     }

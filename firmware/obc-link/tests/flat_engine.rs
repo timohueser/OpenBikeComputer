@@ -7,10 +7,10 @@
 
 mod flat_harness;
 
-use flat_harness::{boot, boot_on, client, crc32, formatted_card, payload, Answer, Device};
+use flat_harness::{blank_card, boot, boot_on, client, crc32, formatted_card, payload, Answer, Device};
 use obc_link::flat::store::Policy;
 use obc_link::flat::wire::{detail, ErrorCode};
-use obc_link::flat::{CancelCause, Ceilings, Link, ObjectId, ObjectKind, Revision};
+use obc_link::flat::{CancelCause, Ceilings, Link, ObjectId, ObjectKind, RequestId, Revision};
 use obc_storage::flat::sim::{FaultOnce, MediaOp};
 use obc_storage::flat::BlockDevice;
 
@@ -18,6 +18,7 @@ const ROUTE: u16 = 1;
 const WEATHER: u16 = 4;
 const RIDE: u16 = 3;
 const UPDATE: u16 = 7;
+const MAP: u16 = 5;
 
 /// A payload that crosses the harness's 1 KiB stage several times and ends part-way through it.
 fn body() -> Vec<u8> {
@@ -65,6 +66,56 @@ fn a_first_list_carries_the_store_identity_and_an_empty_catalog() {
     assert_eq!(&answer.body[0..16], &[0x11; 16], "the page carries the StoreId a client keys its cache on");
     assert_eq!(answer.u64_at(16), 1, "the commit sequence a paged listing is checked against");
     assert_eq!(answer.body.len(), 24, "an empty catalog is a page with no entries");
+}
+
+#[test]
+fn format_replaces_the_store_durably_and_reboots_on_ble_and_usb() {
+    for (seed, link, ceilings) in
+        [(101, Link::Ble, Ceilings::new(244, 1_024).unwrap()), (102, Link::Usb, Ceilings::for_usb(4_112).unwrap())]
+    {
+        let disk = formatted_card(seed);
+        let mut device = boot(&disk);
+        device.seed(ObjectKind::Route, &body(), "erase me");
+        device.link_up(link, ceilings);
+
+        let replacement = [seed as u8; 16];
+        let wire = device.control_on(link, &client::format(9, [0x11; 16], replacement));
+        assert!(wire.reboot, "a durable FORMAT answer is terminal on {link:?}");
+        let answer = Answer::of(wire.answer());
+        assert!(!answer.is_error(), "{answer:?}");
+        assert_eq!(answer.body, replacement);
+
+        drop(device);
+        let mut rebooted = boot(&disk);
+        let list = Answer::of(rebooted.control(&client::list(10, None)).answer());
+        assert_eq!(&list.body[0..16], &replacement);
+        assert_eq!(list.u64_at(16), 1, "a formatted store begins at commit sequence one");
+        assert_eq!(list.body.len(), 24, "FORMAT discarded every old catalog entry");
+    }
+}
+
+#[test]
+fn format_requires_the_current_identity_but_zero_recovers_an_unformatted_card() {
+    let disk = formatted_card(103);
+    let mut device = boot(&disk);
+    let answer = Answer::of(device.control(&client::format(1, [0x22; 16], [0x33; 16])).answer());
+    expect_error(&answer, ErrorCode::InvalidRequest, detail::invalid_request::BAD_COMBINATION);
+
+    drop(device);
+    let mut unchanged = boot(&disk);
+    let list = Answer::of(unchanged.control(&client::list(2, None)).answer());
+    assert_eq!(&list.body[0..16], &[0x11; 16], "a stale confirmation never formats the card");
+
+    let blank = blank_card(104);
+    let mut recovery = boot(&blank);
+    let wire = recovery.control(&client::format(3, [0; 16], [0x44; 16]));
+    assert!(wire.reboot);
+    assert!(!Answer::of(wire.answer()).is_error());
+    drop(recovery);
+
+    let mut rebooted = boot(&blank);
+    let list = Answer::of(rebooted.control(&client::list(4, None)).answer());
+    assert_eq!(&list.body[0..16], &[0x44; 16]);
 }
 
 #[test]
@@ -994,6 +1045,80 @@ fn a_record_of_whole_stages_reaches_the_card_in_one_write() {
         of_this_record.len()
     );
     assert_eq!(of_this_record[0].1, 8, "and the one command carried all eight blocks");
+}
+
+/// USB record framing must not dictate the card command width. The board lends the engine a 64 KiB
+/// arena arm for a map `PUT`, so sixteen ordinary 4 KiB records become one 128-block CMD25-shaped
+/// write instead of sixteen short program cycles.
+#[test]
+fn an_adapter_stage_coalesces_records_and_alternates_disjoint_banks() {
+    let disk = formatted_card(94);
+    let mut device = boot_on(&disk, Ceilings::for_usb(4_112).expect("§5.2's USB ceiling"));
+    let bytes = payload(2 * 64 * 1_024);
+    let mut stage = vec![0; 2 * 64 * 1_024];
+
+    device.control_on(Link::Ble, &client::put(1, 0, 0, &bytes, ROUTE, false, "wide stage"));
+    let before = disk.write_widths().len();
+    for offset in (0..bytes.len()).step_by(4 * 1_024) {
+        let end = offset + 4 * 1_024;
+        device.stream_on_staged(Link::Ble, &client::stream(1, offset as u64, &bytes[offset..end]), &mut stage);
+    }
+
+    let widths = disk.write_widths();
+    let staged = &widths[before..];
+    let wide = staged.iter().filter(|(_, blocks)| *blocks == 128).count();
+    assert_eq!(wide, 2, "thirty-two records did not become two 64 KiB card writes: {staged:?}");
+}
+
+#[test]
+fn a_ble_map_upload_never_admits_the_usb_only_stage() {
+    let disk = formatted_card(95);
+    let usb = Ceilings::for_usb(4_112).expect("§5.2's USB ceiling");
+    let ble = Ceilings::for_ble(247, 245, 256).expect("§5.1's preferred link");
+    let mut device = boot_on(&disk, usb);
+    device.link_up(Link::Usb, usb);
+    device.link_up(Link::Ble, ble);
+    let bytes = payload(8 * 1_024);
+
+    device.control_on(Link::Ble, &client::put(41, 0, 0, &bytes, MAP, false, "phone map"));
+    assert!(device.upload_matches(Link::Ble, RequestId(41), ObjectKind::MapShard));
+    assert!(
+        !device.upload_matches(Link::Usb, RequestId(41), ObjectKind::MapShard),
+        "app-facing map progress is not proof that USB owns the upload"
+    );
+
+    // An eager/refused cable frame carrying the phone's request id is ignored by the engine and
+    // still cannot satisfy the exact admission query the USB adapter uses before claiming arena.
+    let wire = device.stream_on(Link::Usb, &client::stream(41, 0, &bytes[..4 * 1_024]));
+    assert!(wire.control.is_empty() && wire.stream.is_empty());
+    assert!(!device.upload_matches(Link::Usb, RequestId(41), ObjectKind::MapShard));
+    let live = device.live_upload().expect("the BLE upload remains live");
+    assert_eq!(live.received, 0);
+}
+
+#[test]
+fn a_ble_map_handoff_does_not_keep_the_completed_usb_stage_admitted() {
+    let disk = formatted_card(96);
+    let usb = Ceilings::for_usb(4_112).expect("§5.2's USB ceiling");
+    let ble = Ceilings::for_ble(247, 245, 256).expect("§5.1's preferred link");
+    let mut device = boot_on(&disk, usb);
+    device.link_up(Link::Usb, usb);
+    device.link_up(Link::Ble, ble);
+    let bytes = payload(8 * 1_024);
+
+    device.control_on(Link::Usb, &client::put(42, 0, 0, &bytes, MAP, false, "cable map"));
+    assert!(device.upload_matches(Link::Usb, RequestId(42), ObjectKind::MapShard));
+    for record in client::stream_all(42, &bytes, 4 * 1_024) {
+        device.stream_on(Link::Usb, &record);
+    }
+    assert!(!device.upload_matches(Link::Usb, RequestId(42), ObjectKind::MapShard));
+
+    // BLE immediately replaces the app-facing `Receiving` projection with another map. The exact
+    // cable admission still goes false, which is the edge that makes the USB task join DMA and
+    // release its arena guard instead of mistaking the phone's progress for its own.
+    device.control_on(Link::Ble, &client::put(43, 0, 0, &bytes, MAP, false, "phone map"));
+    assert!(device.upload_matches(Link::Ble, RequestId(43), ObjectKind::MapShard));
+    assert!(!device.upload_matches(Link::Usb, RequestId(42), ObjectKind::MapShard));
 }
 
 // ══════════════════════ two links, one engine (FS7.5-c3b) ══════════════════════

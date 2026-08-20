@@ -38,7 +38,8 @@
  * answers, and a stale one by the time the bytes arrive.
  */
 
-import { blobSource, type FlatStoreClient } from "../usb/client";
+import { blobSource, type FlatStoreClient, type ObjectSource } from "../usb/client";
+import { Crc32 } from "../usb/crc32";
 import { EntryFlags, ObjectKind, type PutResponse } from "../usb/protocol";
 import { truncateUtf8 } from "../format";
 import { readUpdateImage, type UpdateImage } from "../firmware/obcu";
@@ -47,6 +48,11 @@ import type { PreparedRoute } from "./route";
 
 /** §3.6's display-name field: at most 48 UTF-8 bytes. */
 export const DISPLAY_NAME_MAX = 48;
+
+/** The coverage builder's one-click sink, kept as a type-only seam so the USB
+ * implementation stays out of the builder entry chunk until a connected rider
+ * actually presses Send. */
+export type SendAssembledMap = (client: FlatStoreClient, ctx: JobContext) => Promise<PutResponse>;
 
 /** A name the wire will take, trimmed on a byte boundary and never empty. */
 export function displayName(name: string, fallback: string): string {
@@ -57,21 +63,78 @@ export function displayName(name: string, fallback: string): string {
 // with the transport that pays for it: `DEFAULT_BATCH_BYTES` / `UPLOAD_WINDOW` in `../usb/client`.
 
 /**
- * Send a `.obcm` the rider already has.
+ * Send a `.obcm` Blob, either selected by the rider or produced by the assembler.
  *
- * No staging: a `File` is *already* a handle to bytes on disk, so it is read twice straight from
- * there — once for the CRC §3.6 declares, once to send — and nothing is copied anywhere. That is
- * what `blobSource` is for, and it is why this path costs nothing extra despite being the one a
- * 300 MB file is most likely to arrive on.
+ * No second staging copy: a picked `File` and the assembler's Blob are read twice in bounded
+ * chunks — once for the CRC §3.6 declares, once to send. The assembler Blob is disk-backed when
+ * writable OPFS had room for the run; its explicitly memory-priced fallback remains bounded by
+ * the builder's preflight instead. That is what `blobSource` is for.
  *
  * Replaces the map the device will select: the active (non-retained) `MapShard` with the lowest
  * `ObjectId`. That is the firmware's deterministic selection rule, so a second send moves the map
  * the rider is actually using instead of accumulating an unreachable sibling. A card with no map
  * creates one. `LIST` supplies both compare-and-swap fields immediately before `PUT`.
  */
-export async function sendMapFile(client: FlatStoreClient, file: File, ctx: JobContext): Promise<PutResponse> {
-    ctx.phase("reading", file.size);
-    const source = await blobSource(file);
+export async function sendMapBlob(
+    client: FlatStoreClient,
+    blob: Blob,
+    filename: string,
+    ctx: JobContext,
+): Promise<PutResponse> {
+    ctx.phase("reading", blob.size);
+    const source = await blobSource(blob, {
+        signal: ctx.signal,
+        onProgress: (done, total) => ctx.progress(done, total),
+    });
+    return sendMapSource(client, source, filename, ctx);
+}
+
+/** Send an assembler's already-resident fallback without wrapping/snapshotting it as a Blob. */
+export async function sendMapBytes(
+    client: FlatStoreClient,
+    bytes: Uint8Array,
+    filename: string,
+    ctx: JobContext,
+): Promise<PutResponse> {
+    ctx.phase("reading", bytes.length);
+    const source = await residentMapSource(bytes, ctx);
+    return sendMapSource(client, source, filename, ctx);
+}
+
+/** CRC an in-memory fallback cooperatively while retaining only the worker's transferred buffer. */
+async function residentMapSource(bytes: Uint8Array, ctx: JobContext): Promise<ObjectSource> {
+    const crc = new Crc32();
+    const sliceBytes = 4 * 1024 * 1024;
+    for (let at = 0; at < bytes.length; at += sliceBytes) {
+        ctx.signal.throwIfAborted();
+        const end = Math.min(at + sliceBytes, bytes.length);
+        crc.update(bytes.subarray(at, end));
+        ctx.progress(end, bytes.length);
+        if (end < bytes.length) {
+            // Give cancellation, rendering and the browser's disconnect event a turn between
+            // bounded CRC slices. No bytes are copied: every view names the transferred buffer.
+            await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        }
+    }
+    ctx.signal.throwIfAborted();
+    return {
+        totalLen: bytes.length,
+        crc32: crc.value(),
+        async *chunks(chunkSize: number) {
+            for (let at = 0; at < bytes.length; at += chunkSize) {
+                ctx.signal.throwIfAborted();
+                yield bytes.subarray(at, Math.min(at + chunkSize, bytes.length));
+            }
+        },
+    };
+}
+
+async function sendMapSource(
+    client: FlatStoreClient,
+    source: ObjectSource,
+    filename: string,
+    ctx: JobContext,
+): Promise<PutResponse> {
     const maps = await client.list({ kind: ObjectKind.MapShard, signal: ctx.signal });
     const current = maps.entries
         .filter((entry) => (entry.flags & EntryFlags.Retained) === 0)
@@ -86,7 +149,7 @@ export async function sendMapFile(client: FlatStoreClient, file: File, ctx: JobC
             objectId: current?.objectId,
             expectedRevision: current?.revision,
             kind: ObjectKind.MapShard,
-            displayName: displayName(file.name.replace(/\.obcm$/i, ""), "Map"),
+            displayName: displayName(filename.replace(/\.obcm$/i, ""), "Map"),
         },
         source,
         {
@@ -98,6 +161,11 @@ export async function sendMapFile(client: FlatStoreClient, file: File, ctx: JobC
             onSent: () => ctx.phase("committing"),
         },
     );
+}
+
+/** Send a `.obcm` the rider selected from disk. */
+export function sendMapFile(client: FlatStoreClient, file: File, ctx: JobContext): Promise<PutResponse> {
+    return sendMapBlob(client, file, file.name, ctx);
 }
 
 /**

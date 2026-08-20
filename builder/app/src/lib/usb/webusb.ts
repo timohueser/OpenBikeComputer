@@ -47,7 +47,7 @@
  */
 
 import { PipeError, withAbort, type BytePipe, type DeviceLink } from "./pipe";
-import { FlatStoreClient, type ClientOptions } from "./client";
+import { FlatStoreClient, isFormatRecoveryState, type ClientOptions } from "./client";
 import type { DeviceInfo } from "./records";
 import { WIRE_MAJOR } from "./protocol";
 
@@ -260,7 +260,7 @@ class WebUsbPipe implements BytePipe {
      * A transfer that ends before its last record leaves the channel at an unknown offset, so it is
      * emptied before another transfer uses it. BLE closes and reopens the CoC; D4's native pipe
      * cancels every URB, drains the completions, then clears the halt
-     * (`apps/obc-desktop/src/usb/link.rs`). This pipe can do only the last of those three.
+     * (`host/obc-usb/src/lib.rs`). This pipe can do only the last of those three.
      * `clearHalt` is a `CLEAR_FEATURE(ENDPOINT_HALT)` control request — it neither cancels a
      * transfer nor discards a byte — and the WebUSB API has no per-transfer cancel at all; the only
      * thing that aborts a submitted transfer is `close()`, which would take the control plane's read
@@ -753,12 +753,19 @@ export class WebUsbWatcher {
             // is claimed. Then `LIST`, which §3 says every client issues before it does anything
             // else and which is where the store's identity and cache freshness come from.
             const info = await client.deviceInfo();
-            const page = await client.listPage({});
+            let store: StoreIdentity | null;
+            try {
+                const page = await client.listPage({});
+                store = { storeId: page.storeId, commitSequence: page.commitSequence };
+            } catch (cause) {
+                if (!isFormatRecoveryState(cause)) throw cause;
+                store = null;
+            }
             this.link = link;
             this.publish({
                 status: "ready",
                 client,
-                store: { storeId: page.storeId, commitSequence: page.commitSequence },
+                store,
                 info,
                 error: null,
             });

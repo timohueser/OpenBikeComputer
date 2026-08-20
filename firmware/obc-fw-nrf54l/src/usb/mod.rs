@@ -143,6 +143,58 @@ const BULK_OUT_BURST_PACKETS: u16 = 8;
 /// One burst: what [`BULK_BUF`] holds and what the bulk OUT endpoint arms.
 const BULK_BURST_LEN: usize = BULK_OUT_BURST_PACKETS as usize * MAX_PACKET as usize;
 
+/// Payload bytes combined before the flat store sees one card write. This is sixteen protocol-v4
+/// stream records and one 128-block CMD25, matching the measured efficient width of the sEMMC
+/// path. The bytes are an arm of the existing scratch arena, not additional resident RAM.
+pub(crate) const STAGE_HALF_LEN: usize = 64 * 1024;
+pub(crate) const STAGE_LEN: usize = 2 * STAGE_HALF_LEN;
+
+// The USB task asks; the ride loop, which exclusively switches scratch-arena owners, grants. Level
+// bits are the truth and signals only wake the other side, so an edge cannot be lost.
+static STAGE_REQ: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static STAGE_GRANTED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static STAGE_WAKE: embassy_sync::signal::Signal<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, ()> =
+    embassy_sync::signal::Signal::new();
+static STAGE_EDGE: embassy_sync::signal::Signal<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, ()> =
+    embassy_sync::signal::Signal::new();
+
+pub(crate) fn stage_requested() -> bool {
+    STAGE_REQ.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+pub(crate) fn set_stage_granted(granted: bool) {
+    STAGE_GRANTED.store(granted, core::sync::atomic::Ordering::Relaxed);
+    STAGE_EDGE.signal(());
+}
+
+pub(crate) async fn wait_stage_request() {
+    STAGE_WAKE.wait().await
+}
+
+/// Ask for the arena arm once at the beginning of a map stream. A missed grant degrades to the
+/// ordinary 512-byte engine stage; it never blocks the transfer indefinitely.
+pub(crate) async fn request_stage() -> bool {
+    STAGE_REQ.store(true, core::sync::atomic::Ordering::Relaxed);
+    STAGE_EDGE.reset();
+    STAGE_WAKE.signal(());
+    let deadline = embassy_time::Instant::now() + embassy_time::Duration::from_secs(1);
+    while !STAGE_GRANTED.load(core::sync::atomic::Ordering::Relaxed) {
+        if embassy_time::with_deadline(deadline, STAGE_EDGE.wait()).await.is_err() {
+            cancel_stage_request();
+            warn!("usb: [v4] no upload staging arm granted — using narrow card writes");
+            return false;
+        }
+    }
+    true
+}
+
+/// Withdraw a request that never received a grant. Once a grant exists, only v4's joined-stage
+/// typestate path may clear it; this seam therefore cannot release DMA-owned arena bytes.
+fn cancel_stage_request() {
+    STAGE_REQ.store(false, core::sync::atomic::Ordering::Relaxed);
+    STAGE_WAKE.signal(());
+}
+
 /// The endpoint **index** the bulk OUT pipe lands on, which is what the driver's burst mask is
 /// keyed on ([`Config::out_burst_endpoints`](nrf_usb::Config)).
 ///

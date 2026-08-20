@@ -22,6 +22,8 @@
 <script lang="ts">
     import { untrack } from "svelte";
     import FirmwareCard from "../components/device/FirmwareCard.svelte";
+    import CardFormat from "../components/device/CardFormat.svelte";
+    import MapSend from "../components/device/MapSend.svelte";
     import PreviewModal from "../components/device/PreviewModal.svelte";
     import RideTiles from "../components/device/RideTiles.svelte";
     import RouteDrop from "../components/device/RouteDrop.svelte";
@@ -77,7 +79,7 @@
     // Load once per (serial, era); the store survives tab switches, so coming
     // back renders instantly and a card swap reloads.
     $effect(() => {
-        if (client) void dashboard.ensureLoaded(client, scope);
+        if (client && session?.store) void dashboard.ensureLoaded(client, scope);
     });
 
     /** One mutation, queued, with the refresh that makes the page the authority again. */
@@ -571,6 +573,11 @@
             <h1>OpenBikeComputer</h1>
         </div>
 
+        {#if !session.store}
+            <section class="card">
+                <CardFormat {client} storeId={null} />
+            </section>
+        {:else}
         {#if dashboard.busy}
             <p class="note small" role="status">
                 Another transfer is holding the cable
@@ -683,6 +690,8 @@
         </section>
 
         <section class="card">
+            <MapSend {client} />
+            <CardFormat {client} storeId={session.store.storeId} />
             <FirmwareCard {client} info={session.info} />
         </section>
 
@@ -731,6 +740,7 @@
                     {/if}
                 {/snippet}
             </PreviewModal>
+        {/if}
         {/if}
     {:else}
         <section class="card empty">

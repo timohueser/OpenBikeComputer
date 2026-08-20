@@ -148,7 +148,10 @@ async fn wait_host_or_sensor_event(
         ),
         embassy_futures::select::select(
             crate::flat_store::wait_catalog_commit(),
-            crate::object_store::wait_store_changed(),
+            embassy_futures::select::select(
+                crate::object_store::wait_store_changed(),
+                crate::usb::wait_stage_request(),
+            ),
         ),
     )
     .await;
@@ -790,6 +793,10 @@ pub(crate) async fn run_app(
     // and on every cancel/abort path.
     #[cfg(has_nav)]
     let mut nav_guard: Option<crate::arena::NavGuard> = None;
+    // A map upload's 64 KiB write-combining arm. Only this loop switches arena owners; the USB
+    // task asks through a level+edge handshake and borrows the bytes synchronously in storage.
+    #[cfg(feature = "ble")]
+    let mut usb_stage_guard: Option<crate::arena::UsbGuard> = None;
     // The active route's resident chunk-index slot. A bare `RouteIndex` + validity flag, NOT an
     // `Option<RouteIndex>` built by value: the slot is ~12.3 KB and permanently part of this frame
     // either way, but a by-value build (`RouteIndex::read`'s return) also transits the stack at
@@ -1083,6 +1090,25 @@ pub(crate) async fn run_app(
                     map_xfer_fed_ms = now;
                 }
                 map_uploading = receiving && map_card_shown;
+            }
+
+            let wants_stage = crate::usb::stage_requested();
+            if wants_stage && usb_stage_guard.is_none() {
+                #[cfg(has_nav)]
+                let search_live = nav_run.is_some();
+                #[cfg(not(has_nav))]
+                let search_live = false;
+                if let Some(ready) = obc_app::TransferReady::prove(app.map_transfer_card_up(), search_live) {
+                    if let Ok(guard) = crate::arena::claim_usb(ready) {
+                        usb_stage_guard = Some(guard);
+                        crate::usb::set_stage_granted(true);
+                        defmt::info!("arena: 64 KiB USB write-combining arm granted");
+                    }
+                }
+            } else if !wants_stage && usb_stage_guard.is_some() {
+                usb_stage_guard = None;
+                crate::usb::set_stage_granted(false);
+                defmt::info!("arena: USB write-combining arm reclaimed");
             }
         }
 

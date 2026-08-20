@@ -1,20 +1,13 @@
 //! The **scratch arena** (issue #1146, P2) — one block of RAM, three arms, one owner at a time.
 //!
-//! Two of the board's largest resident blocks are never live at the same moment, and each used to
+//! Three of the board's largest resident blocks are never live at the same moment, and each used to
 //! own its bytes permanently: the per-frame render scratch (`obc_render::RenderScratch`) and the nav
 //! block ([`NavArm`] — `NavScratch` + `NavTileCache` + the resumable `NavPlanner`, ~80.6 KB). This
 //! module time-shares them through a `union`, so the board pays **max(arms)** instead of their sum.
 //!
-//! **There were three, and the third is gone with the v1 USB upload (FS7.5-c3b, #1420).** A cable
-//! transfer used to stage 128 KiB of map bytes here before writing them to a FAT file; protocol v4
-//! stages 512 bytes inside the engine and writes each 4 KiB stream record straight to the card, so
-//! there is nothing left to time-share.
-//!
-//! **It freed no RAM, and saying so is the point of this paragraph.** #1299 had already spent the
-//! render arm's headroom on frame capacity until the two arms matched *exactly*, so the USB arm was
-//! never the arm that set `max` on its own — removing it moves the block's size by zero bytes. What
-//! it does remove is two of the three exclusion rules below and the ride-loop grant handshake that
-//! enforced them: complexity, not bytes.
+//! The third is the protocol-v4 USB write-combining stage. Sixteen 4 KiB records share a 64 KiB arm
+//! so the flat store issues one 128-block card command instead of sixteen short program cycles.
+//! It remains below the 128 KiB render arm, so restoring the throughput arm costs no resident RAM.
 //!
 //! **This is the only place in the feature that names the block's bytes, and the only place that
 //! reads or writes them through a raw pointer.** Everything outside reaches an arm through a guard:
@@ -36,6 +29,8 @@
 //! | Pair | Rule | Enforced by |
 //! |---|---|---|
 //! | render ⊥ nav | the map does not redraw while a planner run is live | the Recalculating freeze → [`MapQuiesced`] |
+//! | render ⊥ USB | the transfer card displaces map rendering | [`obc_app::TransferReady`] → [`UsbGuard`] |
+//! | nav ⊥ USB | an upload grant is refused while route search owns the arena | [`ArenaGate`] |
 //!
 //! # One thread-mode owner-switcher
 //!
@@ -46,10 +41,11 @@
 //!
 //! # No two references at once
 //!
-//! Every reference into the arena — each guard's `Deref` — is derived
+//! Every ordinary reference into the arena — each guard's `Deref` — is derived
 //! **freshly from the one raw pointer** ([`arena_ptr`]) and dies before the next one is made.
-//! Nothing here stores a reference, so no two live borrows of the block can exist even though three
-//! types name the same bytes. A frame that draws no map takes no reference at all: the app's render
+//! The USB exception is narrower: FLPR retains one bank's numeric address during deferred DMA, so
+//! [`with_usb_stage_bank`] forms `&mut` for only the other, disjoint bank and never for the whole
+//! arm. Nothing here stores a Rust reference. A frame that draws no map takes no reference at all: the app's render
 //! entry point wants an `Option<&mut RenderScratch>` and chrome passes `None` (#1146 P2).
 //!
 //! # The bug class this creates: sticky state
@@ -68,9 +64,8 @@
 //!
 //! - An arm **below** the maximum grows at **zero** resident cost until it reaches the maximum arm.
 //!   The nav arm is that case today, with ~36 KB of headroom under the render one.
-//! - Growing the **maximum** arm — today the render scratch, which is the ceiling now that the USB
-//!   arm is gone — costs the full delta, 1:1. The report and the assertion below keep that
-//!   accounting literal.
+//! - Growing either **maximum** arm — today render and USB are tied at the ceiling — costs the full
+//!   delta, 1:1. The report and the assertion below keep that accounting literal.
 //!
 //! Both halves are traps in opposite directions: nobody should "optimize" a growth that is free,
 //! and nobody should wave through one that is not. The compile-time assert in `main.rs` says the
@@ -146,6 +141,8 @@ union ScratchArena {
     render: ManuallyDrop<obc_render::RenderScratch>,
     #[cfg(has_nav)]
     nav: ManuallyDrop<NavArm>,
+    /// USB upload bytes; written before read during one transfer grant.
+    usb: ManuallyDrop<[u8; crate::usb::STAGE_LEN]>,
 }
 
 /// The arena's resident size — `max(arms)`, the single term the board's RAM budget carries in place
@@ -156,12 +153,13 @@ pub(crate) const RENDER_ARM_BYTES: usize = core::mem::size_of::<obc_render::Rend
 /// The nav arm's size, for the resource report. The *type's* size in every profile, like the
 /// terrain entries, even where `has_nav` would keep it out of the image — see [`NavArm`].
 pub(crate) const NAV_ARM_BYTES: usize = core::mem::size_of::<NavArm>();
-// **`max(arms)`, stated rather than assumed.** With the USB arm gone the render scratch *is* the
-// ceiling, so every growth note in this module and at `main.rs`'s budget assert now prices a render
-// growth 1:1 and a nav growth at nothing until it passes the render arm. Fail the build rather than
-// let those notes go quietly stale.
+/// The cable upload arm's size, reported beside the arena maximum.
+pub(crate) const USB_ARM_BYTES: usize = crate::usb::STAGE_LEN;
+// **`max(arms)`, stated rather than assumed.** Render and USB are tied at the ceiling, so every
+// growth note in this module and at `main.rs`'s budget assert prices growth in either 1:1 and nav
+// growth at nothing until it passes them. Fail the build rather than let those notes go stale.
 const _: () = assert!(
-    NAV_ARM_BYTES <= ARENA_BYTES && RENDER_ARM_BYTES == ARENA_BYTES,
+    NAV_ARM_BYTES <= ARENA_BYTES && USB_ARM_BYTES <= ARENA_BYTES && RENDER_ARM_BYTES == ARENA_BYTES,
     "the render arm is no longer the arena ceiling — re-read the growth-asymmetry notes in arena.rs \
      and at main.rs's budget assert before re-pinning anything"
 );
@@ -442,4 +440,57 @@ pub(crate) fn claim_nav(quiesced: MapQuiesced) -> Result<NavGuard, ArenaError> {
     // `planner_ready: false` — the zero fill above left a *slot*, not a planner. `begin_plan` is the
     // only thing that changes that, and it is what the accessors key on.
     Ok(NavGuard { planner_ready: false, _not_send: PhantomData })
+}
+
+// ============================ The USB arm ============================
+
+/// Guard retained by the ride loop for one staged cable upload.
+pub(crate) struct UsbGuard {
+    _not_send: PhantomData<*const ()>,
+}
+
+impl Drop for UsbGuard {
+    fn drop(&mut self) {
+        release(ArenaOwner::Usb);
+    }
+}
+
+/// Claim the USB byte stage after the transfer card has displaced map rendering and no route search
+/// owns the nav arm. The bytes need no initialization: the engine tracks the initialized prefix.
+pub(crate) fn claim_usb(ready: obc_app::TransferReady) -> Result<UsbGuard, ArenaError> {
+    // SAFETY: see `gate`.
+    unsafe { gate() }.claim_usb(ready).map_err(|e| refuse("usb", e))?;
+    Ok(UsbGuard { _not_send: PhantomData })
+}
+
+/// Lend one stage bank synchronously. `None` means the grant was revoked or never arrived.
+///
+/// This deliberately never forms a reference over the complete USB arm. Once FLPR has started a
+/// deferred write it retains the other bank as its DMA source; even a caller that touched only this
+/// bank would make a whole-arm `&mut` alias that retained access.
+pub(crate) fn with_usb_stage_bank<R>(
+    bank: usize,
+    f: impl FnOnce(&mut [u8; crate::usb::STAGE_HALF_LEN]) -> R,
+) -> Option<R> {
+    if owner() != ArenaOwner::Usb {
+        return None;
+    }
+    if bank >= 2 {
+        return None;
+    }
+    // SAFETY: the gate says USB owns the union. `bank` selects exactly one half, so this reference
+    // excludes the opposite half that FLPR may still retain as a DMA source. The closure cannot
+    // retain the borrow.
+    let address = unsafe { (arena_ptr() as *mut u8).add(bank * crate::usb::STAGE_HALF_LEN) };
+    Some(f(unsafe { &mut *(address as *mut [u8; crate::usb::STAGE_HALF_LEN]) }))
+}
+
+/// Whether a DMA source lies wholly inside the currently-owned USB arm. Numeric only: the sEMMC
+/// driver retains the address until its explicit join and no Rust reference escapes this call.
+pub(crate) fn usb_stage_contains(address: usize, len: usize) -> bool {
+    if owner() != ArenaOwner::Usb {
+        return false;
+    }
+    let start = arena_ptr() as usize;
+    address >= start && address.checked_add(len).is_some_and(|end| end <= start + crate::usb::STAGE_LEN)
 }

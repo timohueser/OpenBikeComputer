@@ -162,6 +162,14 @@ pub trait Store {
     /// listing is a media failure with nowhere to report itself, so **every** caller that treats a
     /// listing as the catalog asks here before it does.
     fn entries_ok(&self) -> bool;
+
+    /// Destructively initialize the underlying media as an empty flat store. The in-memory store is
+    /// intentionally not updated: a successful call is followed by a link drain and immediate
+    /// reboot, so no caller may observe two store identities in one boot.
+    fn format(&self, replacement: StoreId) -> Result<(), StoreError> {
+        let _ = replacement;
+        Err(StoreError::ReadOnly)
+    }
 }
 
 /// The two decisions the engine cannot make for itself, and the crate they belong to cannot reach.

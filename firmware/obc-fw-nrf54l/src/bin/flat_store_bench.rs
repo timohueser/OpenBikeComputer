@@ -252,6 +252,9 @@ const BENCH_STORE: StoreId =
 /// Flip to `true` for one flash to wipe a card that carries **another** store's `StoreId`, or to
 /// force phase one over this bench's own recorded ride instead of recovering it.
 const FORCE_REINIT: bool = false;
+/// Explicit build-time maintenance mode. Unlike `FORCE_REINIT`, this stops
+/// immediately after initialization instead of running the destructive corpus.
+const RESET_ONLY: bool = cfg!(feature = "flat-store-reset");
 
 /// Where the commit ladder reports its middle figure — §5.5's "a few hundred entries".
 const LADDER_MID: u16 = 300;
@@ -517,6 +520,14 @@ async fn main(_spawner: Spawner) {
 #[inline(never)]
 fn run(p: embassy_nrf::Peripherals) {
     report_footprint();
+
+    if RESET_ONLY {
+        info!("RESET ONLY: initializing one empty flat store; no ingest or benchmark phases will run");
+        if initialize().is_some() {
+            info!("RESET ONLY complete: the card has an empty flat catalog; flash the normal app firmware next");
+        }
+        return;
+    }
 
     let boot = measure_boot("SURVEY", Some(PLAN_BOOT_US));
     let ours = boot.mode.readable() && boot.store_id == BENCH_STORE;
@@ -1078,7 +1089,9 @@ fn read_path(bytes: u64) {
         }
     };
 
-    // The write, with the CRC fold on its own clock: `obc-crc` is a byte-at-a-time table fold, and
+    // The write, with the CRC fold on its own clock. The board enables obc-crc's slicing-by-8
+    // implementation so this is also the acceptance measurement for the upload pipeline's CRC
+    // worker; compact consumers such as the bootloader retain the single-table implementation.
     // rolling it into the write's rate would report the M33 rather than the card.
     arm();
     let mut digest = Crc32::new();
