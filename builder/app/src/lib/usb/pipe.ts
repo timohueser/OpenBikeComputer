@@ -8,7 +8,7 @@
  * ```text
  *   session.svelte.ts   reactive shell — what a Svelte component holds
  *   client.ts           protocol v4: LIST, STATUS, GET, PUT, REMOVE, CANCEL, ARM
- *   records.ts          FLAT_Store_Protocol.md §5.2's record framing: `record_length u16 · frame`
+ *   records.ts          §5.2's USB binding: `record_length u32 · frame · zero padding`
  *   pipe.ts             two byte pipes — WebUSB, nusb (`../desktop/usb.ts`) or loopback underneath
  * ```
  *
@@ -40,7 +40,7 @@
  * one byte, a full packet, several packets coalesced. Callers must accumulate until they have as
  * many bytes as the record's own length prefix announced. Assuming a read returns a whole logical
  * unit passes on a loopback that happens to write whole records and then fails on hardware, where a
- * 4,112-byte record arrives as nine 512-byte packets.
+ * 8,208-byte frame arrives as a record spanning seventeen 512-byte packets.
  *
  * **Cancellation has to reach the transport.** A `read` parked on an endpoint that will never
  * deliver — because the rider pulled the cable — is exactly the stuck spinner #902's acceptance
@@ -141,7 +141,7 @@ export interface BytePipe {
  *
  * The channels are named after the spec rather than after the endpoint type they happen to use. All
  * four endpoints are bulk endpoints; calling one of them "bulk" said nothing and hid that the
- * stream pair is the one with the 4,096-byte payload rule on it.
+ * stream pair is the one with the 8,192-byte payload rule on it.
  */
 export interface DeviceLink {
     /** §3's control frames: requests out, responses in, one frame per record. */

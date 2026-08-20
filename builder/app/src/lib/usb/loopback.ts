@@ -300,7 +300,7 @@ interface Stored {
     bytes: Uint8Array | null;
 }
 
-/** The page size §5.2's 4,112-byte device→host ceiling allows: 46 entries. */
+/** The page size §5.2's 8,208-byte device→host ceiling allows: 92 entries. */
 export const LIST_PAGE_ENTRIES = Math.floor((MAX_DEVICE_RECORD - HEADER_LEN - LIST_PREFIX_LEN) / LIST_ENTRY_LEN);
 
 const DEFAULT_DEVICE_INFO: DeviceInfo = {

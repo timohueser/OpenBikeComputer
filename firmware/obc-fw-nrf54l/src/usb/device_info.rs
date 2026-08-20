@@ -12,7 +12,7 @@
 //! so nothing about the trust decision moves.
 //!
 //! One request, and there is deliberately no second. The protocol major is settled by descriptor
-//! matching (`bInterfaceProtocol = 4`, `bcdDevice = 0x0400`) before a record moves, and the store's
+//! matching (`bInterfaceProtocol = 5`, `bcdDevice = 0x0500`) before a record moves, and the store's
 //! identity is `LIST`'s `StoreId` and commit sequence — which every client reads first anyway. A
 //! third answer to a question the wire answers twice is the duplication the major bump removed.
 //!
