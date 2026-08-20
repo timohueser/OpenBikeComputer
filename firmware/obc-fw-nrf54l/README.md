@@ -709,10 +709,10 @@ not a second protocol. What is **board-specific** and worth knowing:
   only after the firmware task has copied it out, so the endpoint NAKs for a whole scheduler round
   trip per 512 B (~342 µs measured on glass 2026-08-07, capping uploads at ~1.4 MB/s). The dial is
   `BULK_OUT_BURST_PACKETS` in `src/usb/mod.rs`; the sweep recipe is on the constant, and both RAM
-  baselines move with it. **There is no throughput line to read it off any more** — the
-  `usb: [bulk] upload finished … ~{} kB/s` print went with the v1 data plane in FS7.5-c3b, so a
-  sweep needs the figure timed at the host or a new device-side print. The watch-list — each line
-  says something different went wrong, and none of them is "slow":
+  baselines move with it. A completed staged map upload now prints
+  `usb: [v4] staged … B in … ms (… kB/s, full CRC + card DMA)`, so that line is the device-side
+  acceptance measurement; host timing remains useful for separating browser overhead. The
+  watch-list — each line says something different went wrong:
 
   | RTT line | What it means |
   | :-- | :-- |
@@ -720,33 +720,34 @@ not a second protocol. What is **board-specific** and worth knowing:
   | the endpoint goes dead after exactly one burst | The core cleared `EPENA` on transfer completion and the stock `DOEPTSIZ`+`CNAK` re-arm is not enough on this part. Nothing else looks like this. |
   | `usb: [rec] record length N is outside this channel's ceiling C` | A host framing bug or a desynchronised record stream: the length prefix is being read where payload is. The reader ends that record stream rather than guessing. |
   | `usb: [v4] a stream record arrived unadmitted — delivering after the hold window` | §3.6's admission race lost: the `PUT`'s first stream record beat its control record by more than the 250 ms hold. One per transfer at boot-time contention is survivable noise; every transfer means the control pump is being starved. |
+  | `usb: [v4] no upload staging arm granted — using narrow card writes` | The transfer could not claim the scratch arena within one second. It remains correct, but falls back to short synchronous writes and will be visibly slower. Recovery boot pre-grants the otherwise-idle arena, so this must not appear on the first upload after format. |
+  | `usb: [v4] staged … kB/s, full CRC + card DMA` | End-to-end device staging rate for this upload. Use a large map and compare it with the 7–7.9 MB/s hardware target; the flat-store bench's separate CRC timing identifies a checksum ceiling. |
   | `usb: [v4] the store's write half is not armed` | The plane came up without an engine — object service is down for this boot, and it is a storage-task failure, not a USB one. |
 
   Two cases worth constructing deliberately, because natural traffic almost never produces them:
   a record whose length is an **exact multiple of 512** (no short packet anywhere, so the final
   burst stays armed across the gap to the next record), and an **unplug** in the middle of a burst.
-- **Uploads use DMA at the USB end, and the card write is the engine's.** The vendored OTG driver
-  runs in buffer-DMA mode, including aligned IN bounce storage and burst-sized OUT DMA. What is
-  *gone* is everything below it: the v1 plane staged 128 KiB of map bytes in the scratch arena and
-  drove them through FAT, and a v4 `PUT` instead writes each stream record's aligned prefix straight
-  to the flat store through the one storage task (`obc_link`'s engine stages 512 bytes, no more).
-  **That freed no RAM, and the accounting is worth stating rather than assuming**: #1299 had already
-  grown the render arm until it matched the USB arm exactly, and the arena is `max(arms)`, so
-  `arena_total` is unchanged at 131,072 B. What the removal actually bought is two exclusion rules
-  (`render ⊥ usb`, `nav ⊥ usb`) and the ride loop's grant handshake — complexity, not bytes.
+- **Uploads use DMA at both ends.** The vendored OTG driver runs in buffer-DMA mode, including
+  aligned IN bounce storage and burst-sized OUT DMA. For a map `PUT`, sixteen 4 KiB v4 records fill
+  one of two 64 KiB scratch-arena banks; the flat store then starts one 128-block deferred card DMA
+  while USB reception and CRC folding fill the other bank. The storage task borrows only the
+  inactive bank — never the whole arm while DMA owns its opposite half — and every completion,
+  refusal, cancellation or unplug joins the card DMA before releasing the arena grant. The two
+  banks cost no additional resident RAM: render already sets the same 131,072 B arena ceiling.
 - **A whole-payload CRC-32 is checked before every commit, maps included.** The v1 plane exempted
   map-shaped objects from the device-side fold and leaned on USB packet CRC/retry, the card's block
   CRC/ECC and a magic-last commit instead; §3.6 retires that policy outright — the device verifies
   the declared length and the declared CRC over the whole payload, runs the kind's validator, and
-  only then commits, so a mismatch is `checksumFailure` and nothing is published. The fold costs
-  what it costs (`obc-crc` folds at 3.4 MB/s on this part — see the flat-store bench), and that cost
-  is now on the map path too.
-- **The 7.3–7.9 MB/s upload figures are not carried forward.** They were measured on 2026-08-07
-  against the v1 FAT path — a 73.4 MB builder set through the arena's double buffer into coalesced
-  CMD25 writes, with the map CRC skipped — and FS7.5-c3b deleted every stage of that pipeline. They
-  are kept here as history, not as a target: the v4 path writes to the flat store instead of FAT,
-  folds a CRC the old one skipped, and has never been timed on glass. Re-measuring it is on the
-  board session's list.
+  only then commits, so a mismatch is `checksumFailure` and nothing is published. The board enables
+  `obc-crc`'s slicing-by-8 implementation and overlaps that fold with card DMA; compact consumers
+  retain the single-table implementation. The flat-store bench times the fold independently.
+- **The hardware target is the historical 7.3–7.9 MB/s class.** Those figures were measured on
+  2026-08-07 against a 73.4 MB builder set using the same 2 × 64 KiB USB/card pipeline, although the
+  old FAT path skipped the map CRC. The restored flat-store pipeline keeps full v4 verification.
+  A conservative card-command model (`1,470 µs + 127 × 72 µs` for 64 KiB) predicts about
+  **6.17 MB/s**; that is a model, not the acceptance result. Flash the firmware, upload a large map,
+  and use the staged-rate RTT line above for the real on-glass number. Approximately 7–7.9 MB/s is
+  the target; a result near the former ~0.5 MB/s means the staged path was not active.
 - **Windows needs no driver install**: MS OS 2.0 BOS descriptors declare the `WINUSB` compatible id
   and a stable `DeviceInterfaceGUIDs` property, so Windows auto-binds WinUSB with no `.inf` and no
   Zadig.

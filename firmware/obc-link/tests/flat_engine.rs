@@ -10,7 +10,7 @@ mod flat_harness;
 use flat_harness::{blank_card, boot, boot_on, client, crc32, formatted_card, payload, Answer, Device};
 use obc_link::flat::store::Policy;
 use obc_link::flat::wire::{detail, ErrorCode};
-use obc_link::flat::{CancelCause, Ceilings, Link, ObjectId, ObjectKind, Revision};
+use obc_link::flat::{CancelCause, Ceilings, Link, ObjectId, ObjectKind, RequestId, Revision};
 use obc_storage::flat::sim::{FaultOnce, MediaOp};
 use obc_storage::flat::BlockDevice;
 
@@ -18,6 +18,7 @@ const ROUTE: u16 = 1;
 const WEATHER: u16 = 4;
 const RIDE: u16 = 3;
 const UPDATE: u16 = 7;
+const MAP: u16 = 5;
 
 /// A payload that crosses the harness's 1 KiB stage several times and ends part-way through it.
 fn body() -> Vec<u8> {
@@ -1067,6 +1068,57 @@ fn an_adapter_stage_coalesces_records_and_alternates_disjoint_banks() {
     let staged = &widths[before..];
     let wide = staged.iter().filter(|(_, blocks)| *blocks == 128).count();
     assert_eq!(wide, 2, "thirty-two records did not become two 64 KiB card writes: {staged:?}");
+}
+
+#[test]
+fn a_ble_map_upload_never_admits_the_usb_only_stage() {
+    let disk = formatted_card(95);
+    let usb = Ceilings::for_usb(4_112).expect("§5.2's USB ceiling");
+    let ble = Ceilings::for_ble(247, 245, 256).expect("§5.1's preferred link");
+    let mut device = boot_on(&disk, usb);
+    device.link_up(Link::Usb, usb);
+    device.link_up(Link::Ble, ble);
+    let bytes = payload(8 * 1_024);
+
+    device.control_on(Link::Ble, &client::put(41, 0, 0, &bytes, MAP, false, "phone map"));
+    assert!(device.upload_matches(Link::Ble, RequestId(41), ObjectKind::MapShard));
+    assert!(
+        !device.upload_matches(Link::Usb, RequestId(41), ObjectKind::MapShard),
+        "app-facing map progress is not proof that USB owns the upload"
+    );
+
+    // An eager/refused cable frame carrying the phone's request id is ignored by the engine and
+    // still cannot satisfy the exact admission query the USB adapter uses before claiming arena.
+    let wire = device.stream_on(Link::Usb, &client::stream(41, 0, &bytes[..4 * 1_024]));
+    assert!(wire.control.is_empty() && wire.stream.is_empty());
+    assert!(!device.upload_matches(Link::Usb, RequestId(41), ObjectKind::MapShard));
+    let live = device.live_upload().expect("the BLE upload remains live");
+    assert_eq!(live.received, 0);
+}
+
+#[test]
+fn a_ble_map_handoff_does_not_keep_the_completed_usb_stage_admitted() {
+    let disk = formatted_card(96);
+    let usb = Ceilings::for_usb(4_112).expect("§5.2's USB ceiling");
+    let ble = Ceilings::for_ble(247, 245, 256).expect("§5.1's preferred link");
+    let mut device = boot_on(&disk, usb);
+    device.link_up(Link::Usb, usb);
+    device.link_up(Link::Ble, ble);
+    let bytes = payload(8 * 1_024);
+
+    device.control_on(Link::Usb, &client::put(42, 0, 0, &bytes, MAP, false, "cable map"));
+    assert!(device.upload_matches(Link::Usb, RequestId(42), ObjectKind::MapShard));
+    for record in client::stream_all(42, &bytes, 4 * 1_024) {
+        device.stream_on(Link::Usb, &record);
+    }
+    assert!(!device.upload_matches(Link::Usb, RequestId(42), ObjectKind::MapShard));
+
+    // BLE immediately replaces the app-facing `Receiving` projection with another map. The exact
+    // cable admission still goes false, which is the edge that makes the USB task join DMA and
+    // release its arena guard instead of mistaking the phone's progress for its own.
+    device.control_on(Link::Ble, &client::put(43, 0, 0, &bytes, MAP, false, "phone map"));
+    assert!(device.upload_matches(Link::Ble, RequestId(43), ObjectKind::MapShard));
+    assert!(!device.upload_matches(Link::Usb, RequestId(42), ObjectKind::MapShard));
 }
 
 // ══════════════════════ two links, one engine (FS7.5-c3b) ══════════════════════
