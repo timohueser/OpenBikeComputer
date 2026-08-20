@@ -489,9 +489,10 @@ stages:
   card — per packet, so what a transfer really wants is few large writes. On the
   filesystem this was bought with a double buffer: two **64 KiB halves**, one
   filling from the cable while DMA wrote the other into coalesced FAT clusters.
-  Under the flat store it is bought at the wire instead — a stream record carries
-  up to 4 KiB, exactly one card write, and the engine writes each record's aligned
-  prefix straight through. The staging buffer that remains is 512 bytes.
+  The flat-store path now uses the same width without bringing FAT back: sixteen
+  4 KiB v4 records fill one arena-backed half, then one 128-block card DMA starts
+  while USB and CRC fill the other. Only the inactive half is borrowed by Rust;
+  teardown joins the card DMA before the arena can return to rendering or routing.
 - **Filesystem bookkeeping.** Extending a file by one cluster costs several
   single-block writes of the allocation table — and they land *between* the bulk
   bursts, which is exactly where they hurt. That stage is **gone rather than
@@ -499,11 +500,13 @@ stages:
   its only durable write is the commit, so there is no allocation table to update
   mid-transfer and nothing to interleave with the wire.
 
-The 7.3–7.9 MB/s once measured on the LM20-DK — against about 2.0 MB/s for the
-original synchronous path — belonged to the filesystem pipeline above and is **not
-carried forward**: it was measured with the map's checksum pass skipped, and the
-flat store's path folds a whole-payload CRC before every commit. The shape of the
-answer is unchanged, though: the card is the ceiling, not USB framing.
+The 7.3–7.9 MB/s measured on the LM20-DK — against about 2.0 MB/s for the original
+synchronous path — is the target for this restored pipeline. Unlike that old
+measurement, v4 still verifies the whole-object CRC: the board enables a
+slicing-by-8 fold and overlaps it with the deferred card DMA. Every staged upload
+logs its measured wire-to-stage kB/s, and the flat-store bench clocks the CRC alone,
+so a board run can distinguish the card, USB and checksum ceilings instead of
+inferring throughput from browser progress.
 
 ### When a route lands — the device's side
 
