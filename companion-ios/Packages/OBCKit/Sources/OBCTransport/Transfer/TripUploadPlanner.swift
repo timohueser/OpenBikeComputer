@@ -1,19 +1,6 @@
 import Foundation
 import OBCDomain
 
-/// The device's object-store capacities the whole-trip precheck reckons against
-/// (TR8). The wire doesn't advertise them, so these mirror the shipping target's
-/// firmware constants (`obc-app`: the 512 KB LM20 profile) — the client-side
-/// pre-flight that keeps a trip that can't fit from failing `storageFull` at the
-/// last stage. The device's own `storageFull` reject stays the backstop; a
-/// device on the trimmed `nrf-mem` profile simply hits that backstop sooner.
-public enum DeviceStorage {
-    /// `MAX_ROUTES` on the shipping target (`firmware/obc-app/src/route.rs`).
-    public static let routeCapacity = 64
-    /// `MAX_TRIPS` — the epic-locked trip cap (spec §7.4: 16).
-    public static let tripCapacity = 16
-}
-
 /// What a whole-trip upload does to one stage — the queue's per-stage verdict
 /// (spec / issue #657): up-to-date by CRC → skip, on device but outdated →
 /// replace in place by id, absent → a fresh upload the device assigns an id for.
@@ -147,23 +134,28 @@ public enum TripUploadPlanner {
     ///     push; `nil` = a fresh trip object.
     ///   - deviceRouteCount / deviceTripCount: how many routes / trips the device
     ///     currently stores (from the last route/trip catalog reconcile).
-    ///   - routeCapacity / tripCapacity: the device catalog caps.
+    ///   - routeCapacity / tripCapacity: optional **admission** caps, only when a
+    ///     transport explicitly knows them. Protocol v4 does not advertise the
+    ///     flat store's free entry count, so production leaves these `nil` and
+    ///     lets the device's atomic PUT refusal remain the authority. In
+    ///     particular, `obc-app`'s `MAX_ROUTES = 64` / `MAX_TRIPS = 16` are
+    ///     bounded on-device menu snapshots, not storage limits.
     public static func plan(
         stages: [StageInput],
         tripObjectID: DeviceObjectID?,
         deviceRouteCount: Int,
         deviceTripCount: Int,
-        routeCapacity: Int = DeviceStorage.routeCapacity,
-        tripCapacity: Int = DeviceStorage.tripCapacity
+        routeCapacity: Int? = nil,
+        tripCapacity: Int? = nil
     ) -> TripUploadPlan {
         let stagePlans = stages.map { TripStagePlan(routeID: $0.routeID, action: $0.action) }
         let freshRoutes = stagePlans.reduce(0) { $0 + ($1.action == .fresh ? 1 : 0) }
         let tripAction: TripObjectAction = tripObjectID.map(TripObjectAction.replace) ?? .fresh
         let precheck = TripUploadPrecheck(
             freshRoutesNeeded: freshRoutes,
-            freeRouteSlots: max(0, routeCapacity - deviceRouteCount),
+            freeRouteSlots: routeCapacity.map { max(0, $0 - deviceRouteCount) } ?? .max,
             needsNewTripSlot: tripAction.isFresh,
-            freeTripSlots: max(0, tripCapacity - deviceTripCount)
+            freeTripSlots: tripCapacity.map { max(0, $0 - deviceTripCount) } ?? .max
         )
         return TripUploadPlan(stages: stagePlans, tripObject: tripAction, precheck: precheck)
     }

@@ -79,6 +79,12 @@ com-hw = []
 # table costs them no flash or RAM. See `firmware/docs/ARCHITECTURE_RESOURCE_BASELINE.md`.
 resource-report = []
 
+# Destructive maintenance mode for `flat_store_bench` only. It initializes one
+# empty flat store and parks before the benchmark's 1,025-entry `fs4-ladder`
+# corpus is created. The explicit feature + explicit binary name make a reset a
+# command the operator has to spell out; it is never part of a shipping image.
+flat-store-reset = []
+
 # The on-glass harness for the WX3 Weather Request discovery spike (#1188). When enabled, boot
 # raises one weather-request advertising intent so the iOS background-discovery states can be
 # measured without the rest of the weather lifecycle existing. The intent is cleared by the first
