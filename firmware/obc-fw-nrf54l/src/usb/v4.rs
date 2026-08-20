@@ -52,7 +52,7 @@ use defmt::{info, warn};
 use embassy_futures::select::{select3, Either3};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
-use embassy_time::{Duration, Timer};
+use embassy_time::{Duration, Instant, Timer};
 use obc_link::flat::{Admission, Ceilings, Channel, Link, Reaction, RequestId};
 
 use crate::flat_store::{Lane, Outcome, Reply, Request, Writer};
@@ -249,6 +249,9 @@ pub(crate) async fn serve_objects(ctrl_in: EpIn, ctrl_out: EpOut, bulk_in: EpIn,
         // §3.8's third form of cancel. On its own reply slot, so that an orphan the driver may have
         // left in `ENGINE_REPLY` stays where `Lane::reclaim` can find it.
         release_engine(&writer).await;
+        // `release_engine` joins deferred FLPR DMA first. Only now may the ride loop drop UsbGuard
+        // and let render/navigation overwrite the two arena halves.
+        crate::usb::release_stage();
         info!("usb: [v4] link down ({}) — engine released", reason);
         if reason != RecordEnd::LinkDown.reason() {
             // Not an unplug: a framing error or a driver failure with the endpoints still up. Back
@@ -265,6 +268,15 @@ async fn release_engine(writer: &Writer) {
     static TEARDOWN_REPLY: Reply = Signal::new();
     if writer.call(Request::LinkLost { link: Link::Usb }, &TEARDOWN_REPLY).await.is_err() {
         warn!("usb: [v4] the engine refused a link-lost teardown");
+    }
+    finish_usb_stage(writer).await;
+}
+
+/// Join a deferred card write before the ride loop may hand the arena to render or navigation.
+async fn finish_usb_stage(writer: &Writer) {
+    static FINISH_REPLY: Reply = Signal::new();
+    if writer.call(Request::FinishUsbStage, &FINISH_REPLY).await.is_err() {
+        warn!("usb: [v4] could not join the final staged card write");
     }
 }
 
@@ -309,6 +321,10 @@ async fn driver(
     // Owned by the driver, so it is per cable by construction rather than by a `reset` someone has
     // to remember.
     let mut admission = Admission::new();
+    let mut stage_attempted = false;
+    let mut stage_granted = false;
+    let mut staged_started: Option<Instant> = None;
+    let mut staged_bytes = 0u64;
     loop {
         // Control first when both are ready: a `CANCEL` or a `LIST` must not queue behind a stream
         // record the engine may be about to refuse anyway.
@@ -318,16 +334,56 @@ async fn driver(
                 None => return "lane",
             },
             embassy_futures::select::Either::Second(record) => {
-                match stream_record(writer, lane, &mut admission, record).await {
+                let result = stream_record(
+                    writer,
+                    lane,
+                    &mut admission,
+                    record,
+                    &mut stage_attempted,
+                    &mut stage_granted,
+                )
+                .await;
+                if stage_granted {
+                    staged_started.get_or_insert_with(Instant::now);
+                    staged_bytes += record.len().saturating_sub(obc_link::flat::wire::STREAM_HEADER_LEN) as u64;
+                }
+                match result {
                     Some(reaction) => reaction,
                     None => return "lane",
                 }
             }
         };
         if let Some(reason) = pump(writer, lane, control_tx, stream_tx, reaction).await {
+            if stage_granted {
+                finish_usb_stage(writer).await;
+                log_staged_rate(staged_started, staged_bytes);
+            }
+            crate::usb::release_stage();
             return reason;
         }
+        if stage_attempted && !crate::link::map_transfer_state().is_some_and(|state| state.is_receiving()) {
+            if stage_granted {
+                finish_usb_stage(writer).await;
+                log_staged_rate(staged_started, staged_bytes);
+            }
+            crate::usb::release_stage();
+            stage_attempted = false;
+            stage_granted = false;
+            staged_started = None;
+            staged_bytes = 0;
+        }
     }
+}
+
+fn log_staged_rate(started: Option<Instant>, bytes: u64) {
+    let Some(started) = started else { return };
+    let us = started.elapsed().as_micros().max(1);
+    info!(
+        "usb: [v4] staged {=u64} B in {=u64} ms ({=u64} kB/s, full CRC + card DMA)",
+        bytes,
+        us / 1_000,
+        bytes.saturating_mul(1_000) / us
+    );
 }
 
 /// Hand one control record to the engine, then release the pump's buffer.
@@ -346,6 +402,8 @@ async fn stream_record(
     lane: &mut Lane,
     admission: &mut Admission,
     record: &'static [u8],
+    stage_attempted: &mut bool,
+    stage_granted: &mut bool,
 ) -> Option<Reaction> {
     // §5's admission hold. Reading four bytes of the §3.8 frame header is not "parsing a payload":
     // it is the record boundary information the binding is explicitly responsible for, and a record
@@ -375,7 +433,15 @@ async fn stream_record(
             warn!("usb: [v4] a stream record arrived unadmitted — delivering after the hold window");
         }
     }
-    let reaction = lane.call(writer, |out| Request::Stream { link: Link::Usb, record, out }).await;
+    if !*stage_attempted && crate::link::map_transfer_state().is_some_and(|state| state.is_receiving()) {
+        *stage_attempted = true;
+        *stage_granted = crate::usb::request_stage().await;
+    }
+    let reaction = if *stage_granted {
+        lane.call(writer, |out| Request::StreamStaged { record, out }).await
+    } else {
+        lane.call(writer, |out| Request::Stream { link: Link::Usb, record, out }).await
+    };
     STREAM_TAKEN.signal(());
     reaction
 }

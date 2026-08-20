@@ -16,10 +16,8 @@
 //! | Pair | Rule | Encoded as |
 //! |---|---|---|
 //! | render ⊥ nav | the map does not redraw while a planner run is live | [`MapQuiesced`] |
-//!
-//! There were three. `render ⊥ usb` and `nav ⊥ usb` guarded the arena's USB staging arm, and both
-//! went with it in FS7.5-c3b (#1420): protocol v4 writes each stream record straight to the card, so
-//! there is no third arm and nothing for those two rules to arbitrate.
+//! | render ⊥ usb | a map upload shows the transfer screen, not the map | [`TransferReady`] |
+//! | nav ⊥ usb | no route search while the cable owns upload scratch | [`TransferReady`] |
 //!
 //! A gate that is merely *documented* is a gate that gets skipped, so each precondition is a token
 //! only its `prove` constructor can mint: [`claim_nav`](ArenaGate::claim_nav) cannot even be
@@ -51,6 +49,8 @@ pub enum ArenaOwner {
     Render,
     /// The nav block, held for a whole search (many frames).
     Nav,
+    /// The USB write-combining buffer, held for one map upload.
+    Usb,
 }
 
 /// Why a claim (or a release) was refused. The board maps this to a debug `panic!` and a release
@@ -83,6 +83,17 @@ impl MapQuiesced {
     /// [`App::nav_arena_precondition`](crate::App::nav_arena_precondition).
     pub fn prove(freeze_active: bool, base_draws_map: bool) -> Option<MapQuiesced> {
         (freeze_active || !base_draws_map).then_some(MapQuiesced(()))
+    }
+}
+
+/// Proof that a cable upload may take the arena: its transfer screen is up and no route search is
+/// live. Both facts come from the ride loop, the arena's sole owner-switcher.
+#[derive(Debug, Clone, Copy)]
+pub struct TransferReady(());
+
+impl TransferReady {
+    pub fn prove(transfer_screen_up: bool, search_live: bool) -> Option<Self> {
+        (transfer_screen_up && !search_live).then_some(Self(()))
     }
 }
 
@@ -172,6 +183,11 @@ impl ArenaGate {
         self.take(ArenaOwner::Nav).map(|_| ())
     }
 
+    /// Claim the write-combining arm for a whole USB map upload.
+    pub fn claim_usb(&mut self, _ready: TransferReady) -> Result<(), ArenaError> {
+        self.take(ArenaOwner::Usb).map(|_| ())
+    }
+
     /// Release the arena — **only** the arm that holds it. Releasing anything else is an
     /// [`ArenaError::NotHeld`], because with one owner-switcher there is no benign reason for it.
     pub fn release(&mut self, owner: ArenaOwner) -> Result<(), ArenaError> {
@@ -246,6 +262,19 @@ mod tests {
 
         assert_eq!(gate.release(ArenaOwner::Nav), Ok(()));
         assert_eq!(gate.claim_render(), Ok(ArenaInit::Required), "the frame after the answer renders normally");
+    }
+
+    #[test]
+    fn usb_stage_requires_a_visible_transfer_and_excludes_render_and_nav() {
+        assert!(TransferReady::prove(false, false).is_none());
+        assert!(TransferReady::prove(true, true).is_none());
+        let ready = TransferReady::prove(true, false).expect("visible transfer, no search");
+        let mut gate = ArenaGate::new();
+        assert_eq!(gate.claim_usb(ready), Ok(()));
+        assert_eq!(gate.claim_render(), Err(ArenaError::Busy(ArenaOwner::Usb)));
+        let quiet = MapQuiesced::prove(true, true).unwrap();
+        assert_eq!(gate.claim_nav(quiet), Err(ArenaError::Busy(ArenaOwner::Usb)));
+        assert_eq!(gate.release(ArenaOwner::Usb), Ok(()));
     }
 
     /// A render span is short but it is still a span: a search that started inside one (the answer

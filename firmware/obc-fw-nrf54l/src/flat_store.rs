@@ -132,6 +132,9 @@ impl BlockDevice for FlatCard {
         #[cfg(feature = "sd-bench")]
         let bench_started = embassy_time::Instant::now();
         let result = crate::flpr_mux::with_storage(|sd| {
+            // A staged upload may have left the previous arena half in FLPR DMA while USB filled
+            // the other one. No read may pass it; joining here preserves block-device ordering.
+            sd.finish_write_blocks()?;
             if addr.is_multiple_of(4) {
                 return sd.read_blocks(start, buf);
             }
@@ -159,6 +162,16 @@ impl BlockDevice for FlatCard {
         let start = FlatCard::lba(lba)?;
         let addr = buf.as_ptr() as usize;
         crate::flpr_mux::with_storage(|sd| {
+            // Two arena halves give the USB task an owned, aligned DMA source. Join the older half,
+            // start this one, and return while the card runs; the engine can then receive, CRC and
+            // fill the disjoint half. Generic callers are synchronous as before.
+            if addr.is_multiple_of(4) && crate::arena::usb_stage_contains(addr, buf.len()) {
+                sd.finish_write_blocks()?;
+                // SAFETY: the arena gate retains both halves for the transfer, and the engine does
+                // not reuse this half until the next staged write has joined it here.
+                return unsafe { sd.start_write_blocks(start, buf) };
+            }
+            sd.finish_write_blocks()?;
             if addr.is_multiple_of(4) {
                 return sd.write_blocks(start, buf);
             }
@@ -178,7 +191,9 @@ impl BlockDevice for FlatCard {
         })?
     }
 
-    /// **Free on this transport, and the reason §5.5's budget reads the way it does.**
+    /// Synchronous callers have nothing to flush. The staged USB path uses this as the explicit
+    /// join seam before its arena grant is released, so a deferred card DMA can never outlive the
+    /// buffer it borrows.
     ///
     /// `Semmc::write_blocks` polls CMD13 until the card has left `prg`, so the program cycle *is*
     /// the completion signal and every write is already durable when the store's next statement
@@ -187,7 +202,7 @@ impl BlockDevice for FlatCard {
     /// (`obc_storage::flat::cost`). A transport with a write-back cache would move that cost back
     /// here, and every commit figure would move with it.
     fn sync(&self) -> Result<(), SemmcError> {
-        Ok(())
+        crate::flpr_mux::with_storage(|sd| sd.finish_write_blocks())?
     }
 }
 
@@ -456,6 +471,10 @@ pub(crate) enum Request {
     Control { link: Link, record: &'static [u8], out: &'static mut [u8] },
     /// One whole stream record (§3.8): the 16-byte frame followed by exactly its payload.
     Stream { link: Link, record: &'static [u8], out: &'static mut [u8] },
+    /// A USB stream record whose upload owns the arena's double 64 KiB stage.
+    StreamStaged { record: &'static [u8], out: &'static mut [u8] },
+    /// Join any card DMA that still borrows the USB arena before its guard is released.
+    FinishUsbStage,
     /// Pump the engine once — a live `GET`'s next record, or an error owed to a dropped transfer.
     /// An adapter repeats this until the reaction is [`Reaction::Idle`]; a driver that stops pumping
     /// stalls a download.
@@ -1041,6 +1060,29 @@ fn serve(
             let reaction = engine.on_stream(link, store, policy, record, out);
             publish_upload(engine);
             Ok(Outcome::Reacted { reaction, out })
+        }
+        Request::StreamStaged { record, out } => {
+            let reaction = engine
+                .upload_stage_bank()
+                .and_then(|bank| {
+                    crate::arena::with_usb_stage_bank(bank, |stage| {
+                        engine.on_stream_staged(Link::Usb, store, policy, record, &mut *out, bank, stage)
+                    })
+                })
+            .unwrap_or_else(|| {
+                // Losing the arm invalidates the staged prefix. Cancel rather than switching to the
+                // resident 512-byte buffer and writing unrelated bytes under the same cursor.
+                engine.on_link_lost(Link::Usb, store);
+                Reaction::Close(obc_link::flat::Channel::Stream)
+            });
+            publish_upload(engine);
+            Ok(Outcome::Reacted { reaction, out })
+        }
+        Request::FinishUsbStage => {
+            crate::flpr_mux::with_storage(|sd| sd.finish_write_blocks())
+                .map_err(|_| StoreError::Media)?
+                .map_err(|_| StoreError::Media)?;
+            Ok(Outcome::Done)
         }
         Request::Pump { link, out } => {
             let reaction = engine.poll(link, store, out);

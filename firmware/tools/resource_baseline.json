@@ -62,6 +62,7 @@
         "route_index": 12396,
         "weather_reader_cache": 472,
         "arena_total": 131072,
+        "arena_usb": 131072,
         "arena_render": 131072,
         "arena_nav": 97344,
         "terrain": 2152,
@@ -86,7 +87,7 @@
         "flat_map_read": 76,
         "flat_route_read": 48,
         "flat_weather_read": 48,
-        "flat_engine": 736,
+        "flat_engine": 744,
         "ble_v4_adapter": 763
       },
       "_compile_note_fs7_upload_events": "FS7 adversarial review: +753 B of named compile-time state. `flat_catalog_uploads` is a 737 B bounded queue containing at most the Route + Trip menu capacities (80 compact 9-byte facts plus queue indices) plus a one-byte conservative loss signal; same-object facts coalesce with final ordering/replace semantics, and churn beyond one full snapshot forces active-route invalidation. `flat_engine` grows 720 -> 736 B to latch the exact committed ObjectId and replacement bit. The signal costs 8 linked-resident bytes after static alignment; the production gate remains green with 32,872 B over the stale measured deep-ride high-water on this profile.",
@@ -195,6 +196,7 @@
         "route_index": 12396,
         "weather_reader_cache": 472,
         "arena_total": 131072,
+        "arena_usb": 131072,
         "arena_render": 131072,
         "arena_nav": 97344,
         "terrain": 2152,
@@ -219,7 +221,7 @@
         "flat_map_read": 76,
         "flat_route_read": 48,
         "flat_weather_read": 48,
-        "flat_engine": 736,
+        "flat_engine": 744,
         "ble_v4_adapter": 763
       },
       "_compile_note_fs7_upload_events": "FS7 adversarial review: +753 B of named compile-time state. `flat_catalog_uploads` is a 737 B bounded queue containing at most the Route + Trip menu capacities (80 compact 9-byte facts plus queue indices) plus a one-byte conservative loss signal; same-object facts coalesce with final ordering/replace semantics, and churn beyond one full snapshot forces active-route invalidation. `flat_engine` grows 720 -> 736 B to latch the exact committed ObjectId and replacement bit. The linked-resident board gate remains authoritative for this profile.",

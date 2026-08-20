@@ -156,6 +156,22 @@ impl<D: BlockDevice> Device<D> {
         self.drive_on(link, first, usize::MAX)
     }
 
+    /// One stream record through an adapter-owned write-combining stage.
+    pub fn stream_on_staged(&mut self, link: Link, record: &[u8], stage: &mut [u8]) -> Wire {
+        let bank = self.engine.upload_stage_bank().expect("staged stream owns an upload");
+        let half = stage.len() / 2;
+        let first = self.engine.on_stream_staged(
+            link,
+            &self.store,
+            &mut OpenPolicy,
+            record,
+            &mut self.out,
+            bank,
+            &mut stage[bank * half..(bank + 1) * half],
+        );
+        self.drive_on(link, first, usize::MAX)
+    }
+
     /// Pump a named link once — what an adapter does until it is told there is nothing to do.
     pub fn pump_on(&mut self, link: Link) -> Wire {
         let first = self.engine.poll(link, &self.store, &mut self.out);
