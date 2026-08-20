@@ -172,7 +172,7 @@ fn read_style_ids(src: &dyn ByteSource) -> Result<Vec<u8>> {
         .ok_or_else(|| Error::Format("the cell's `Style Offset` does not resolve (OBCM §1.1)".into()))?;
     let count = read_at(src, style_offset, 1)?[0] as usize;
     let table = read_at(src, style_offset + 1, count * STYLE_RECORD_LEN)?;
-    Ok(table.chunks_exact(STYLE_RECORD_LEN).map(|r| r[0]).collect())
+    Ok(table.as_chunks::<STYLE_RECORD_LEN>().0.iter().map(|r| r[0]).collect())
 }
 
 /// OBCA §4.1's cross-cell preconditions: one OBCM version (the reader already enforced it), one

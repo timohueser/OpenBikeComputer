@@ -81,7 +81,7 @@ impl DrawTarget for Framebuffer {
     }
 
     fn clear(&mut self, color: Self::Color) -> Result<(), Self::Error> {
-        for px in self.buf.chunks_exact_mut(3) {
+        for px in self.buf.as_chunks_mut::<3>().0 {
             px[0] = color.r();
             px[1] = color.g();
             px[2] = color.b();

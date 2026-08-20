@@ -228,7 +228,7 @@ impl BlockDevice for SemmcCard {
                     for (i, chunk) in blocks.chunks_mut(bounce_blocks).enumerate() {
                         let len = chunk.len() * BLOCK_LEN;
                         sd.read_blocks(start_block_idx.0 + (i * bounce_blocks) as u32, &mut bounce[..len])?;
-                        for (b, src) in chunk.iter_mut().zip(bounce[..len].chunks_exact(BLOCK_LEN)) {
+                        for (b, src) in chunk.iter_mut().zip(bounce[..len].as_chunks::<BLOCK_LEN>().0) {
                             b.contents.copy_from_slice(src);
                         }
                     }
@@ -262,7 +262,7 @@ impl BlockDevice for SemmcCard {
                     let bounce_blocks = bounce.len() / BLOCK_LEN;
                     for (i, chunk) in blocks.chunks(bounce_blocks).enumerate() {
                         let len = chunk.len() * BLOCK_LEN;
-                        for (b, dst) in chunk.iter().zip(bounce[..len].chunks_exact_mut(BLOCK_LEN)) {
+                        for (b, dst) in chunk.iter().zip(bounce[..len].as_chunks_mut::<BLOCK_LEN>().0) {
                             dst.copy_from_slice(&b.contents);
                         }
                         sd.write_blocks(start_block_idx.0 + (i * bounce_blocks) as u32, &bounce[..len])?;

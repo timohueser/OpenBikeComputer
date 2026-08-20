@@ -83,7 +83,7 @@ pub fn merge(cells: &[&Cell<'_>]) -> Result<MergedPois> {
                 .ok_or_else(|| Error::Format(format!("cell {}: POI directory overflows", cell.id)))?;
             for k in 0..entry.chunk_count {
                 let chunk = cell.read(data_start + (k * dir.chunk_size) as u64, dir.chunk_size)?;
-                for rec in chunk.chunks_exact(POI_RECORD_LEN) {
+                for rec in chunk.as_chunks::<POI_RECORD_LEN>().0 {
                     let subtype = rec[8];
                     if subtype == CHUNK_END {
                         break; // the §7.3 end-of-records sentinel
@@ -153,7 +153,7 @@ fn read_hours_pool(cell: &Cell<'_>) -> Result<Vec<[u8; POI_HOURS_BLOB_LEN]>> {
         return Ok(Vec::new());
     }
     let bytes = cell.read(cell.pois.hours_pool_offset + 2, count * POI_HOURS_BLOB_LEN)?;
-    Ok(bytes.chunks_exact(POI_HOURS_BLOB_LEN).map(|b| b.try_into().expect("blob width")).collect())
+    Ok(bytes.as_chunks::<POI_HOURS_BLOB_LEN>().0.to_vec())
 }
 
 /// One category's laid-out block: its quadtree index and its padded chunks.

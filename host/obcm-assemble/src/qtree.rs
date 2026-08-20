@@ -790,7 +790,7 @@ pub fn flatten_streaming(
 pub fn read_run(scratch: &dyn ScratchStore, points: ScratchId, first: u32, count: u32) -> Result<Vec<[u8; TREE_REC]>> {
     let mut buf = vec![0u8; count as usize * TREE_REC];
     scratch.read_at(points, first as u64 * TREE_REC as u64, &mut buf)?;
-    let mut out: Vec<[u8; TREE_REC]> = buf.chunks_exact(TREE_REC).map(|c| c.try_into().expect("TREE_REC")).collect();
+    let mut out: Vec<[u8; TREE_REC]> = buf.as_chunks::<TREE_REC>().0.to_vec();
     out.sort_unstable_by_key(rec_ord);
     Ok(out)
 }
@@ -830,7 +830,7 @@ mod tests {
         assert!(chunk_count > 1, "the tree split");
         assert_eq!(chunks.len(), chunk_count as usize * 512, "one padded chunk per non-empty leaf");
         // Every branch points forward at a contiguous quadruple — the reader's walk invariant.
-        let vals: Vec<u32> = index.chunks_exact(4).map(|w| u32::from_le_bytes(w.try_into().unwrap())).collect();
+        let vals: Vec<u32> = index.as_chunks::<4>().0.iter().map(|w| u32::from_le_bytes(*w)).collect();
         for (i, v) in vals.iter().enumerate() {
             if v & BRANCH_BIT != 0 {
                 let c = (v & !BRANCH_BIT) as usize;
@@ -1023,8 +1023,7 @@ mod tests {
             let mut chunk: Vec<u8> = Vec::new();
             let mut current = 0u32;
             let plan = read_all(&scratch, flat.places);
-            for p in plan.chunks_exact(PLACE_REC) {
-                let p: &[u8; PLACE_REC] = p.try_into().expect("PLACE_REC");
+            for p in plan.as_chunks::<PLACE_REC>().0 {
                 while current < place_chunk(p) {
                     chunk.resize(CHUNK, obc_formats::obcm::CHUNK_END);
                     got.extend_from_slice(&chunk);

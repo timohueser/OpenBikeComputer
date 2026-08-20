@@ -180,7 +180,7 @@ fn the_terrain_region_places_every_published_cell_and_leaves_the_void_absent() {
     assert_eq!(region[6], terrain_lattice().cell_log2);
     assert_eq!(u16::from_le_bytes(region[16..18].try_into().unwrap()), 2, "rows");
     assert_eq!(u16::from_le_bytes(region[18..20].try_into().unwrap()), 2, "cols");
-    let dir: Vec<u32> = region[32..48].chunks_exact(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect();
+    let dir: Vec<u32> = region[32..48].as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect();
     assert_eq!(dir.iter().filter(|&&e| e == 0).count(), 1, "exactly one canonically void square (OBCC §13.6)");
     assert_eq!(dir[3], 0, "…and it is the rectangle's last slot");
 

@@ -248,7 +248,7 @@ impl DrawTarget for Frame {
     }
 
     fn clear(&mut self, color: Self::Color) -> Result<(), Self::Error> {
-        for pixel in self.bytes.chunks_exact_mut(3) {
+        for pixel in self.bytes.as_chunks_mut::<3>().0 {
             pixel.copy_from_slice(&[color.r(), color.g(), color.b()]);
         }
         Ok(())

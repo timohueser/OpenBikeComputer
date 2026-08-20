@@ -309,7 +309,7 @@ pub fn emit_lod(plan: &LodPlan, cells: &[Cell<'_>], w: &mut MapWriter<'_>) -> Re
         let l = cell.lod(plan.lod)?;
         let raw = cell.read(l.index_offset + 4, (g.node_count as usize - 1) * 4)?;
         let mut block = Vec::with_capacity(raw.len());
-        for word in raw.chunks_exact(4) {
+        for word in raw.as_chunks::<4>().0 {
             let v = relocate(u32::from_le_bytes([word[0], word[1], word[2], word[3]]), g, cell.id, plan.lod)?;
             block.extend_from_slice(&v.to_le_bytes());
         }
@@ -331,7 +331,7 @@ pub fn emit_lod(plan: &LodPlan, cells: &[Cell<'_>], w: &mut MapWriter<'_>) -> Re
         let table_start = l.index_offset + (l.node_count * 4) as u64;
         let raw = cell.read(table_start, (g.chunk_count as usize + 1) * 4)?;
         let mut prev = 0u32;
-        for (k, word) in raw.chunks_exact(4).enumerate() {
+        for (k, word) in raw.as_chunks::<4>().0.iter().enumerate() {
             let v = u32::from_le_bytes([word[0], word[1], word[2], word[3]]);
             if k == 0 {
                 if v != 0 {

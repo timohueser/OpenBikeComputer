@@ -616,7 +616,7 @@ pub fn restamp_style_table(
     if slot.len() != packed.len() {
         return Err(RestampError::LengthMismatch { count, packed: packed.len() });
     }
-    let have: Vec<u8> = slot[1..].chunks_exact(STYLE_RECORD_LEN).map(|record| record[0]).collect();
+    let have: Vec<u8> = slot[1..].as_chunks::<STYLE_RECORD_LEN>().0.iter().map(|record| record[0]).collect();
     let want: Vec<u8> = stamped.iter().map(|style| style.id).collect();
     if have != want {
         return Err(RestampError::IdMismatch { have, want });
@@ -624,7 +624,7 @@ pub fn restamp_style_table(
     // The rain band boundary (WX10): a restamp may restyle freely on either side of
     // `RAIN_BELOW_Z`, but may not carry a style across it — the renderer draws precipitation at
     // that z split, and "roads above rain" is locked UX a skin must not be able to undo.
-    for (record, style) in slot[1..].chunks_exact(STYLE_RECORD_LEN).zip(stamped) {
+    for (record, style) in slot[1..].as_chunks::<STYLE_RECORD_LEN>().0.iter().zip(stamped) {
         let from = record[1] as i8;
         let to = style.z_index;
         if (from >= obc_map_scene::RAIN_BELOW_Z) != (to >= obc_map_scene::RAIN_BELOW_Z) {

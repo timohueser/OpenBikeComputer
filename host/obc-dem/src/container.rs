@@ -323,7 +323,7 @@ mod tests {
         let bytes = w.finish().unwrap().into_inner();
 
         assert_eq!(bytes.len(), 32 + 16 + 2 * 512);
-        let dir: Vec<u32> = bytes[32..48].chunks_exact(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect();
+        let dir: Vec<u32> = bytes[32..48].as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect();
         assert_eq!(dir, vec![48, 0, 0, 48 + 512]);
     }
 
