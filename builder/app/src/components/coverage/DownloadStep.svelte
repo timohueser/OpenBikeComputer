@@ -141,7 +141,15 @@
 
     // --- the run ----------------------------------------------------------
 
-    type Phase = "idle" | "downloading" | "assembling" | "saving" | "done" | "cancelled" | "error";
+    type Phase =
+        | "idle"
+        | "downloading"
+        | "assembling"
+        | "saving"
+        | "finalizing"
+        | "done"
+        | "cancelled"
+        | "error";
     let phase = $state<Phase>("idle");
     let dlProgress = $state<CellDownloadProgress | null>(null);
     let asmPhase = $state<AssemblePhase>("open");
@@ -276,7 +284,11 @@
                 // could report "Cancelled". `sinkClosed` is the fact that settles it,
                 // because it is set before the discard rather than after it.
                 if (sinkClosed) break;
-                phase = "done";
+                // Cleanup can recursively remove a country-sized temporary cell store. Keep the
+                // run closed while that awaits: declaring `done` here briefly re-enabled both
+                // delivery actions, and the older continuation could then clear a newer run's
+                // shared `output` after its cleanup finished.
+                phase = "finalizing";
                 await cleanupTransientCells();
                 if (output?.kind === "device") {
                     if (!output.result) {
@@ -287,6 +299,7 @@
                     settleDevice(output.result);
                 }
                 output = null;
+                phase = "done";
                 break;
             case "error":
                 // Two conversations share this worker, and their failures are
@@ -936,7 +949,9 @@
 
     // --- gating -----------------------------------------------------------
 
-    const running = $derived(phase === "downloading" || phase === "assembling" || phase === "saving");
+    const running = $derived(
+        phase === "downloading" || phase === "assembling" || phase === "saving" || phase === "finalizing",
+    );
     const refusal = $derived.by(() => {
         const l = ledger;
         if (!l || l.cellCount === 0) return null;
@@ -1079,7 +1094,9 @@
                 </button>
             {:else}
                 <div class="runrow">
-                    <button type="button" class="btn" onclick={cancel}>Cancel</button>
+                    {#if phase !== "finalizing"}
+                        <button type="button" class="btn" onclick={cancel}>Cancel</button>
+                    {/if}
                     {#if phase === "downloading" && dlProgress}
                         <span class="small muted">
                             downloading cells — {dlProgress.completedCells}/{dlProgress.totalCells} ·
@@ -1098,12 +1115,14 @@
                             {output?.kind === "device" ? "sending the map" : "saving the map"}{#if runFileName}
                                 — {runFileName}{/if}
                         </span>
+                    {:else if phase === "finalizing"}
+                        <span class="small muted">finishing up — removing temporary map data</span>
                     {/if}
                 </div>
                 <div class="bar">
                     <span
                         style:width={`${phase === "downloading" ? dlPct : Math.round(asmFraction * 100)}%`}
-                        class:assembling={phase === "assembling" || phase === "saving"}
+                        class:assembling={phase === "assembling" || phase === "saving" || phase === "finalizing"}
                     ></span>
                 </div>
             {/if}
