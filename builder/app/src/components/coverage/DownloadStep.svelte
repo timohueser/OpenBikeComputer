@@ -25,6 +25,7 @@
         clearCellStores,
         clearMapWorkStorage,
         discardCellStore,
+        discardMapOutput,
         hasRoomFor,
         openCellStore,
         readMapOutput,
@@ -248,13 +249,12 @@
                 break;
             case "file":
                 // No sink was available, so the bytes came across instead. Same
-                // delivery, one wrap earlier.
+                // delivery, but direct device delivery keeps the worker's transferred
+                // buffer as its sole resident copy instead of snapshotting it into a Blob.
                 phase = "saving";
-                delivery = deliverMap(
-                    new Blob([msg.bytes as unknown as BlobPart]),
-                    msg.byteLength,
-                    msg.bytes,
-                );
+                delivery = output?.kind === "device"
+                    ? deliverResidentMap(msg.bytes, msg.byteLength)
+                    : deliverMap(new Blob([msg.bytes as unknown as BlobPart]), msg.byteLength, msg.bytes);
                 void delivery.catch(() => {});
                 break;
             case "done":
@@ -283,6 +283,7 @@
                         await failRun(new Error("The device did not commit the assembled map."));
                         break;
                     }
+                    await cleanupDirectOutput();
                     settleDevice(output.result);
                 }
                 output = null;
@@ -325,6 +326,19 @@
             );
         }
         await deliverMap(blob, byteLength, null);
+    }
+
+    /** Deliver the explicitly memory-priced fallback without creating a second full-map Blob. */
+    async function deliverResidentMap(bytes: Uint8Array, byteLength: number) {
+        if (sinkClosed) return;
+        if (bytes.byteLength !== byteLength) {
+            throw new Error(
+                `The assembler announced ${byteLength} bytes but delivered ${bytes.byteLength}; the map was not sent.`,
+            );
+        }
+        if (output?.kind !== "device") throw new Error("The direct map destination was closed.");
+        const { sendMapBytes } = await import("../../lib/device/write");
+        output.result = await sendMapBytes(output.client, bytes, runFileName, output.ctx);
     }
 
     /** Deliver the verified one-file result without ever materialising an OPFS
@@ -385,6 +399,17 @@
         }
     }
 
+    async function cleanupDirectOutput() {
+        try {
+            await discardMapOutput();
+        } catch {
+            runWarnings = [
+                ...runWarnings,
+                "The temporary assembled map could not be deleted; use ‘Delete stored map data’.",
+            ];
+        }
+    }
+
     async function setKeepCells(checked: boolean) {
         keepCells = checked;
         cellStorageNotice = null;
@@ -413,11 +438,11 @@
     }
 
     async function failRun(cause: unknown) {
+        const direct = output?.kind === "device";
         if (output?.kind === "device") {
             if (output.failing || output.settled) return;
             output.failing = true;
         }
-        const cancelled = cause instanceof DOMException && cause.name === "AbortError";
         abortCtl?.abort();
         worker?.terminate();
         worker = null;
@@ -425,9 +450,17 @@
         // flight — let it land before the output is discarded, or the discard races
         // the write into the folder it removes. It is bounded by one file's write.
         sinkClosed = true;
-        await delivery.catch(() => {});
+        const deliveryCause = await delivery.then(
+            () => null,
+            (error: unknown) => error,
+        );
+        // Teardown cancellation can arrive while the physical link rejection is already
+        // unwinding. Preserve that stable cause so the DeviceJob can surface interruption.
+        if ((deliveryCause as { code?: unknown } | null)?.code === "link") cause = deliveryCause;
+        const cancelled = cause instanceof DOMException && cause.name === "AbortError";
         await closeDownloadOutput(true).catch(() => (outputCleanupFailed = true));
         await cleanupTransientCells();
+        if (direct) await cleanupDirectOutput();
         errorMessage = cause instanceof Error ? cause.message : String(cause);
         phase = cancelled ? "cancelled" : "error";
         settleDevice(cause, true);

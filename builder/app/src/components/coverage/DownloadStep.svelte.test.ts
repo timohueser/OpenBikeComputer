@@ -5,7 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const seams = vi.hoisted(() => ({
     sendMapBlob: vi.fn(),
+    sendMapBytes: vi.fn(),
     readMapOutput: vi.fn(async () => new Blob([Uint8Array.of(1, 2, 3, 4)])),
+    discardMapOutput: vi.fn(async () => undefined),
+    saveBlob: vi.fn(),
+    workerOutput: "stored" as "stored" | "file",
 }));
 
 vi.mock("../../lib/cells/store", () => ({
@@ -14,6 +18,7 @@ vi.mock("../../lib/cells/store", () => ({
     clearCellStores: vi.fn(async () => undefined),
     clearMapWorkStorage: vi.fn(async () => undefined),
     discardCellStore: vi.fn(async () => undefined),
+    discardMapOutput: seams.discardMapOutput,
     hasRoomFor: vi.fn(async () => false),
     openCellStore: vi.fn(),
     readMapOutput: seams.readMapOutput,
@@ -36,10 +41,15 @@ vi.mock("../../lib/catalog/download", () => ({
     ),
 }));
 
-vi.mock("../../lib/device/write", () => ({ sendMapBlob: seams.sendMapBlob }));
+vi.mock("../../lib/device/write", () => ({
+    sendMapBlob: seams.sendMapBlob,
+    sendMapBytes: seams.sendMapBytes,
+}));
+vi.mock("../../lib/download", () => ({ saveBlob: seams.saveBlob }));
 
 import { DeviceJob } from "../../lib/device/job.svelte";
-import type { FlatStoreClient } from "../../lib/usb/client";
+import { deviceHolder } from "../../lib/device/session.svelte";
+import { DeviceError, type FlatStoreClient } from "../../lib/usb/client";
 import DownloadStep from "./DownloadStep.svelte";
 
 class AssembleWorker {
@@ -72,7 +82,14 @@ class AssembleWorker {
             queueMicrotask(() => {
                 this.onmessage?.(
                     new MessageEvent("message", {
-                        data: { type: "stored-map", sha256: "abc", byteLength: 4 },
+                        data: seams.workerOutput === "stored"
+                            ? { type: "stored-map", sha256: "abc", byteLength: 4 }
+                            : {
+                                type: "file",
+                                sha256: "abc",
+                                byteLength: 4,
+                                bytes: Uint8Array.of(1, 2, 3, 4),
+                            },
                     }),
                 );
                 queueMicrotask(() =>
@@ -94,9 +111,14 @@ describe("direct assembler delivery", () => {
         vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         vi.stubGlobal("Worker", AssembleWorker);
         seams.sendMapBlob.mockReset();
+        seams.sendMapBytes.mockReset();
+        seams.discardMapOutput.mockClear();
+        seams.saveBlob.mockClear();
+        seams.workerOutput = "stored";
     });
 
     afterEach(() => {
+        deviceHolder.interrupted = null;
         vi.useRealTimers();
         vi.unstubAllGlobals();
         document.body.replaceChildren();
@@ -187,6 +209,107 @@ describe("direct assembler delivery", () => {
         expect(putAborted).toBe(true);
         expect(committed).toBe(false);
         expect(job.phase).toBe("idle");
+        expect(seams.discardMapOutput).toHaveBeenCalledOnce();
+        await unmount(component);
+    });
+
+    it("sends a resident fallback without a duplicate Blob and removes direct staging", async () => {
+        seams.workerOutput = "file";
+        seams.sendMapBytes.mockResolvedValue({ objectId: 1n });
+        const { component } = await mountReadyStep();
+        const job = new DeviceJob("map");
+
+        const result = await job.run(
+            (ctx) => component.sendToDevice({} as FlatStoreClient, ctx),
+            () => "sent",
+        );
+
+        expect(result).toEqual({ objectId: 1n });
+        expect(seams.sendMapBytes).toHaveBeenCalledOnce();
+        expect(seams.sendMapBytes.mock.calls[0][1]).toEqual(Uint8Array.of(1, 2, 3, 4));
+        expect(seams.sendMapBlob).not.toHaveBeenCalled();
+        expect(seams.discardMapOutput).toHaveBeenCalledOnce();
+        await unmount(component);
+    });
+
+    it("preserves a physical link failure when teardown cancels direct delivery", async () => {
+        let rejectPut: ((cause: unknown) => void) | null = null;
+        seams.sendMapBlob.mockImplementation(
+            () => new Promise((_resolve, reject) => (rejectPut = reject)),
+        );
+        const { component } = await mountReadyStep();
+        const job = new DeviceJob("map");
+        const running = job.run(
+            (ctx) => component.sendToDevice({} as FlatStoreClient, ctx),
+            () => "sent",
+        );
+        for (let attempt = 0; attempt < 20 && rejectPut === null; attempt++) {
+            await Promise.resolve();
+            await tick();
+        }
+        expect(rejectPut).not.toBeNull();
+
+        rejectPut!(new DeviceError("link", "the USB cable disconnected"));
+        await unmount(component);
+        await running;
+
+        expect(deviceHolder.interrupted).toContain("plug it back in");
+        expect(seams.discardMapOutput).toHaveBeenCalledOnce();
+    });
+
+    it("keeps the ordinary download path and does not delete its source early", async () => {
+        seams.workerOutput = "file";
+        const { component, target } = await mountReadyStep();
+
+        (target.querySelector("button.primary") as HTMLButtonElement).click();
+        for (let attempt = 0; attempt < 20 && !target.textContent?.includes("Map ready"); attempt++) {
+            await Promise.resolve();
+            await tick();
+        }
+
+        expect(seams.saveBlob).toHaveBeenCalledOnce();
+        const [blob, name] = seams.saveBlob.mock.calls[0] as [Blob, string];
+        expect(blob.size).toBe(4);
+        expect(name).toBe("OBC map.obcm");
+        expect(seams.discardMapOutput).not.toHaveBeenCalled();
         await unmount(component);
     });
 });
+
+const ledger = {
+    totalBytes: 4,
+    cellCount: 1,
+    core: { bytes: 4 },
+    terrain: null,
+    isFinal: true,
+    verdict: { kind: "ok" },
+};
+const store = {
+    ledger,
+    resolution: { cellsByBand: new Map(), parts: [] },
+    indices: new Map(),
+    catalog: {
+        schema: {
+            name: "Test schema",
+            bands: [{ id: "fine", lods: [16], role: "fine", cell_log2: 18 }],
+        },
+    },
+    terrain: null,
+    client: { fetchImpl: globalThis.fetch },
+    selection: { parts: [] },
+    skin: { name: "Default" },
+    rootBody: "{}",
+    holeCells: () => [],
+};
+
+async function mountReadyStep() {
+    const target = document.createElement("div");
+    document.body.append(target);
+    const component = mount(DownloadStep, { target, props: { store: store as never } });
+    await tick();
+    vi.advanceTimersByTime(500);
+    await Promise.resolve();
+    await tick();
+    vi.useRealTimers();
+    return { component, target };
+}
