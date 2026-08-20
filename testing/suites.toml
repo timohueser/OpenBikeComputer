@@ -711,7 +711,7 @@ command = "python3 firmware/tools/check_dependencies.py"
 fixtures = []
 pull_request = "affected"
 scheduled = "none"
-extra_triggers = ["firmware/tools/check_dependencies.py", "deny.toml"]
+extra_triggers = ["firmware/tools/check_dependencies.py", "firmware/tools/dependency_rules.json", "deny.toml"]
 ownership = [
   { kind = "workflow", pattern = "python3 firmware/tools/check_dependencies.py" },
   { kind = "workflow", pattern = "cargo deny *" },

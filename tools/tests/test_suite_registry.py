@@ -191,6 +191,12 @@ class SuiteSelectionTests(unittest.TestCase):
             self._suite("python.builder", "path", "python-test", pattern="builder/tests/test_*.py", triggers=["builder/server/**/*.py"]),
             self._suite("fixture.consumer", "path", "python-test", pattern="fixtures/tests/test_*.py", fixtures=["catalog"]),
             self._suite("ci.policy", "workflow", "python3 tools/check.py", triggers=["testing/**", ".github/workflows/**"]),
+            self._suite(
+                "ci.dependencies",
+                "workflow",
+                "python3 firmware/tools/check_dependencies.py",
+                triggers=["firmware/tools/dependency_rules.json"],
+            ),
             self._suite("ci.docs", "workflow", "python3 docs/build.py", triggers=["docs/**"]),
             self._suite("missing.route", "path", "rain-radar-test", pattern="demo/tests/*.test.ts", triggers=["demo/**"]),
         ]
@@ -289,6 +295,7 @@ class SuiteSelectionTests(unittest.TestCase):
             "builder/server/nested/routes.py": {"python.builder"},
             "fixtures/catalog.toml": {"fixture.consumer"},
             ".github/workflows/release.yml": {"ci.policy"},
+            "firmware/tools/dependency_rules.json": {"ci.dependencies"},
             "testing/suites.toml": {"ci.policy"},
             "web/src/view.ts": {"web.unit"},
             "ios/Sources/Model.swift": {"swift.contract"},
