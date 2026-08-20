@@ -252,6 +252,9 @@ const BENCH_STORE: StoreId =
 /// Flip to `true` for one flash to wipe a card that carries **another** store's `StoreId`, or to
 /// force phase one over this bench's own recorded ride instead of recovering it.
 const FORCE_REINIT: bool = false;
+/// Explicit build-time maintenance mode. Unlike `FORCE_REINIT`, this stops
+/// immediately after initialization instead of running the destructive corpus.
+const RESET_ONLY: bool = cfg!(feature = "flat-store-reset");
 
 /// Where the commit ladder reports its middle figure — §5.5's "a few hundred entries".
 const LADDER_MID: u16 = 300;
@@ -517,6 +520,14 @@ async fn main(_spawner: Spawner) {
 #[inline(never)]
 fn run(p: embassy_nrf::Peripherals) {
     report_footprint();
+
+    if RESET_ONLY {
+        info!("RESET ONLY: initializing one empty flat store; no ingest or benchmark phases will run");
+        if initialize().is_some() {
+            info!("RESET ONLY complete: the card has an empty flat catalog; flash the normal app firmware next");
+        }
+        return;
+    }
 
     let boot = measure_boot("SURVEY", Some(PLAN_BOOT_US));
     let ours = boot.mode.readable() && boot.store_id == BENCH_STORE;

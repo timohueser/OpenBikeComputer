@@ -239,6 +239,21 @@ own.
 cargo run --release --bin flat_store_bench
 ```
 
+To erase the benchmark corpus without immediately recreating it, use the
+bench's explicit **reset-only** maintenance mode. It initializes one empty flat
+store and parks before serial ingest and before the `fs4-ladder` measurement
+phase:
+
+```bash
+cargo run --release --bin flat_store_bench --features flat-store-reset
+```
+
+This destroys every card object (maps, routes, trips, rides, weather, and
+updates), not only benchmark routes. Wait for RTT to print `RESET ONLY complete`,
+then stop the runner and flash the normal `obc-fw-nrf54l` app image. The normal
+image can receive the desired map and routes over its protocol-v4 USB Device
+page; do not reset or rerun `flat_store_bench` after uploading them.
+
 It runs in two phases, and which one it runs is decided by what is on the card. A card that is not
 this bench's store gets phase one: initialize, then every measurement above, ending with a ride left
 **recording**. `probe-rs reset` then runs phase two on that ride — §7.3 recovery through the store's
