@@ -69,7 +69,8 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     /// at `phaseTimeout` for the machine-only openL2CAPChannel → didOpen tail.
     private static let pairingTimeout: DispatchTimeInterval = .seconds(90)
     /// Imperative command acknowledgements are tiny and immediate. Bound the wait so a dropped
-    /// `status` notification cannot hold the command lane forever.
+    /// `status` notification cannot hold the command lane forever. A timeout invalidates that lane
+    /// until reconnect because command results have no exchange id that could reject a late reply.
     private static let commandResultTimeout: DispatchTimeInterval = .seconds(3)
     // Outstanding operations (all touched only on `queue`). Connecting is a
     // two-phase flow (#297): `discover()` (un-gated) then `authenticate()` (gated,
@@ -173,6 +174,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     private var commandSlotWaiters: [CommandSlotWaiter] = []
     private var commandResultWaiter: CommandResultWaiter?
     private var pendingCommandResults: [UInt8: CommandResult] = [:]
+    private var commandLaneInvalidated = false
     private var statusNotificationWaiters: [CheckedContinuation<Void, Error>] = []
     private var statusNotificationTimeout: DispatchWorkItem?
 
@@ -1741,6 +1743,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         let slot = await acquireCommandSlot()
         defer { releaseCommandSlot(slot) }
         try Task.checkCancellation()
+        try await validateCommandLane()
         try await ensureStatusNotifications()
         try Task.checkCancellation()
         await clearPendingCommandResult(command)
@@ -1777,6 +1780,19 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         }
     }
 
+    private func validateCommandLane() async throws {
+        try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<Void, Error>) in
+            queue.async { [self] in
+                if commandLaneInvalidated {
+                    continuation.resume(throwing: DeviceError.writeFailed)
+                } else {
+                    continuation.resume()
+                }
+            }
+        }
+    }
+
     /// The answer can beat CoreBluetooth's write callback, so clear the previous attempt before
     /// writing and buffer a matching early notification until the waiter is registered.
     private func clearPendingCommandResult(_ command: UInt8) async {
@@ -1800,7 +1816,15 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
                     guard let self, let waiter = self.commandResultWaiter,
                           waiter.token == token else { return }
                     self.commandResultWaiter = nil
+                    self.commandLaneInvalidated = true
+                    self.pendingCommandResults.removeAll()
                     waiter.continuation.resume(throwing: DeviceError.writeFailed)
+                    // Results carry only a command byte, not an exchange id. Tear down this link
+                    // so a reply arriving after the timeout cannot satisfy a retry of that command;
+                    // the normal connection policy establishes a fresh, unambiguous lane.
+                    if let peripheral = self.peripheral {
+                        self.central.cancelPeripheralConnection(peripheral)
+                    }
                 }
                 commandResultWaiter = CommandResultWaiter(
                     token: token, command: command, timeout: timeout,
@@ -2243,6 +2267,8 @@ extension BLETransport: CBCentralManagerDelegate {
     }
 
     public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        commandLaneInvalidated = false
+        pendingCommandResults.removeAll()
         discoveryPolicy.didConnect(peripheralID: peripheral.identifier)
         if discoveryPolicy.connectionOwnership == .weatherRequest {
             // The radio hold this connection represents starts here, and both weather legs are
@@ -2480,6 +2506,7 @@ extension BLETransport: CBPeripheralDelegate {
             return
         }
         if uuid == GATT.status {
+            guard !commandLaneInvalidated else { return }
             if error != nil {
                 if let waiter = commandResultWaiter {
                     commandResultWaiter = nil
