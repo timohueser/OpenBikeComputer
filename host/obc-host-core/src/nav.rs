@@ -1,6 +1,7 @@
 //! The host side of on-device route planning (#499): the resumable planner held across frames,
 //! plus the shared commit/answer tail both hosts run when it finishes.
 
+use crate::trace::{DataKey, FeederCall, FeederKind, TraceSink};
 use crate::VecSink;
 
 /// An in-flight route plan (#499): the resumable planner plus its caller-owned buffers and the
@@ -136,6 +137,7 @@ pub fn finish_detour_plan(
     outcome: Result<obc_route::RouteStats, obc_route::NavError>,
     plan: DetourPlan,
     orig: Option<&obc_route::RouteReader>,
+    trace: &mut dyn TraceSink,
 ) -> Option<DetourReady> {
     match outcome {
         Ok(stats) => {
@@ -189,9 +191,16 @@ pub fn finish_detour_plan(
             if let Ok(idx) = obc_route::RouteIndex::read(&src) {
                 let pts = obc_route::RouteReader::new(&idx, &src).preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>();
                 app.set_detour_preview(&pts);
+                trace.feeder(FeederCall::new(
+                    FeederKind::DetourPreview,
+                    DataKey::from("host.detour-preview"),
+                    pts.len(),
+                ));
             }
             eprintln!("detour plan: ok len={detour_len_m} m (Δ {:+} m)", preview.cost_delta_m);
-            app.apply_event(obc_app::HostEvent::DetourPlanned(Ok(preview)));
+            let event = obc_app::HostEvent::DetourPlanned(Ok(preview));
+            trace.event(&event);
+            app.apply_event(event);
             Some(DetourReady {
                 bytes,
                 detour_len_m,
@@ -202,7 +211,9 @@ pub fn finish_detour_plan(
         }
         Err(e) => {
             eprintln!("detour plan: failed ({e:?})");
-            app.apply_event(obc_app::HostEvent::DetourPlanned(Err(e)));
+            let event = obc_app::HostEvent::DetourPlanned(Err(e));
+            trace.event(&event);
+            app.apply_event(event);
             None
         }
     }
@@ -220,6 +231,7 @@ pub fn finish_detour_commit(
     store: &mut dyn crate::RouteRepository,
     orig_index: Option<&obc_route::RouteIndex>,
     ready: Option<DetourReady>,
+    trace: &mut dyn TraceSink,
 ) {
     use obc_route::NavError;
     let result = (|| {
@@ -246,7 +258,10 @@ pub fn finish_detour_commit(
             .map_err(|_| NavError::NoPath)?;
         }
         let id = store.write_nav_route(sink.bytes()).ok_or(NavError::NoPath)?;
-        app.set_routes_with_meta(store.catalog(), store.ids(), &store.retention_metas());
+        let metas = store.retention_metas();
+        app.set_routes_with_meta(store.catalog(), store.ids(), &metas);
+        trace.feeder(FeederCall::new(FeederKind::RouteCatalog, DataKey::from("host.routes"), store.catalog().len()));
+        trace.feeder(FeederCall::new(FeederKind::RouteRetention, DataKey::from("host.route-retention"), metas.len()));
         // The spliced bytes sit under the reserved slot's (possibly unchanged) id — force the
         // change-gated active-route read to re-open them.
         store.invalidate_active();
@@ -256,7 +271,9 @@ pub fn finish_detour_commit(
     if let Err(e) = &result {
         eprintln!("detour commit: failed ({e:?})");
     }
-    app.apply_event(obc_app::HostEvent::DetourCommitted(result));
+    let event = obc_app::HostEvent::DetourCommitted(result);
+    trace.event(&event);
+    app.apply_event(event);
 }
 
 /// Commit / report a finished plan and answer the app — the shared tail of the live hosts' stepped
@@ -272,11 +289,15 @@ pub fn finish_nav_plan(
     outcome: Result<obc_route::RouteStats, obc_route::NavError>,
     sink_bytes: &[u8],
     tile_stats: obc_reader::NavCacheStats,
+    trace: &mut dyn TraceSink,
 ) {
     use obc_route::NavError;
     let result = outcome.and_then(|stats| {
         let id = store.write_nav_route(sink_bytes).ok_or(NavError::NoPath)?;
-        app.set_routes_with_meta(store.catalog(), store.ids(), &store.retention_metas());
+        let metas = store.retention_metas();
+        app.set_routes_with_meta(store.catalog(), store.ids(), &metas);
+        trace.feeder(FeederCall::new(FeederKind::RouteCatalog, DataKey::from("host.routes"), store.catalog().len()));
+        trace.feeder(FeederCall::new(FeederKind::RouteRetention, DataKey::from("host.route-retention"), metas.len()));
         // A re-route rewrites the nav bytes under an unchanged catalog index — force the
         // change-gated active-route read to re-open them.
         store.invalidate_active();
@@ -295,7 +316,9 @@ pub fn finish_nav_plan(
     if let Err(e) = &result {
         eprintln!("nav route: failed ({e:?})");
     }
-    app.apply_event(obc_app::HostEvent::NavPlanned(result));
+    let event = obc_app::HostEvent::NavPlanned(result);
+    trace.event(&event);
+    app.apply_event(event);
     // The computed-route overview's shape preview (#685 §4), decimated host-side from the
     // just-committed bytes. After the `NavPlanned` answer (which activates the route and clears any
     // stale preview) so the copy keys to the fresh `active_route`. Skipped when the answer was
@@ -305,6 +328,7 @@ pub fn finish_nav_plan(
         if let Ok(idx) = obc_route::RouteIndex::read(&src) {
             let pts = obc_route::RouteReader::new(&idx, &src).preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>();
             app.set_nav_preview(&pts);
+            trace.feeder(FeederCall::new(FeederKind::NavPreview, DataKey::from("host.nav-preview"), pts.len()));
         }
     }
 }

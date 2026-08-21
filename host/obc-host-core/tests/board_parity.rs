@@ -16,42 +16,8 @@
 #![cfg(feature = "external-fixtures")]
 
 use obc_app::{App, AppState};
-use obc_host_core::{HostLoop, MemRideStore, MemRouteStore, MemTrackStore, PlanHold};
-use obc_reader::{MapCache, MapTables, Reader, SliceSource};
-
-/// Run one dispatcher pass against a fresh map reader (the frame loop's `reconcile`, minus the tick).
-fn reconcile(host: &mut HostLoop, app: &mut App, routes: &mut MemRouteStore, map: &[u8]) {
-    let src = SliceSource(map);
-    let tables = MapTables::parse(&src).expect("grimsel map parses");
-    let cache = MapCache::new();
-    let reader = Reader::new(&src, &tables, &cache);
-    let mut rides = MemRideStore::new(Vec::new());
-    let mut tracks = MemTrackStore::new();
-    let mut no_trips = ();
-    let mut elev = obc_route::NullElevation;
-    host.reconcile(app, routes, &mut rides, &mut tracks, &mut no_trips, &reader, &mut elev, |_app, _cmd| {});
-}
-
-/// Run the scripted-host shape: the same drain and planner, without yielding between steps.
-fn reconcile_to_completion(host: &mut HostLoop, app: &mut App, routes: &mut MemRouteStore, map: &[u8]) {
-    let src = SliceSource(map);
-    let tables = MapTables::parse(&src).expect("grimsel map parses");
-    let cache = MapCache::new();
-    let reader = Reader::new(&src, &tables, &cache);
-    let mut rides = MemRideStore::new(Vec::new());
-    let mut no_trips = ();
-    let mut elev = obc_route::NullElevation;
-    host.reconcile_to_completion(
-        app,
-        routes,
-        &mut rides,
-        &mut no_trips,
-        &reader,
-        &mut elev,
-        PlanHold::NONE,
-        |_app, _cmd| {},
-    );
-}
+use obc_host_core::trace::{reconcile_fixture_pass, reconcile_fixture_to_completion};
+use obc_host_core::{HostLoop, MemRouteStore};
 
 /// The board rescans the object store on a store-changed edge and re-feeds the catalog; the
 /// dispatcher's `RescanStore` must do the same, so a subsequent id resolves against the rescanned
@@ -73,7 +39,7 @@ fn rescan_refeeds_the_catalog_like_the_board() {
     app.apply_event(obc_app::HostEvent::StoreChanged);
 
     let mut host = HostLoop::new();
-    reconcile(&mut host, &mut app, &mut routes, &map);
+    reconcile_fixture_pass(&mut host, &mut app, &mut routes, &map).expect("grimsel map parses");
 
     assert_eq!(app.routes().len(), 1, "the dispatcher's RescanStore re-fed the rescanned catalog");
     assert!(!app.route_ids().contains(&gone), "the deleted id is gone from the app catalog too");
@@ -93,7 +59,7 @@ fn plan_route_enters_the_resumable_planner_like_the_board() {
 
     let mut host = HostLoop::new();
     assert!(!host.is_planning(), "nothing planning before the pass");
-    reconcile(&mut host, &mut app, &mut routes, &map);
+    reconcile_fixture_pass(&mut host, &mut app, &mut routes, &map).expect("grimsel map parses");
     assert!(host.is_planning(), "the dispatcher consumed PlanRoute into the resumable planner");
 }
 
@@ -111,10 +77,10 @@ fn completion_matches_repeated_frame_steps() {
         app.debug_start_nav((8_169_610, 46_694_536), (8_217_309, 46_706_261), "Same Plan");
         let mut host = HostLoop::new();
         if complete {
-            reconcile_to_completion(&mut host, &mut app, &mut routes, &map);
+            reconcile_fixture_to_completion(&mut host, &mut app, &mut routes, &map).expect("grimsel map parses");
         } else {
             for _ in 0..10_000 {
-                reconcile(&mut host, &mut app, &mut routes, &map);
+                reconcile_fixture_pass(&mut host, &mut app, &mut routes, &map).expect("grimsel map parses");
                 if !host.is_planning() {
                     break;
                 }
@@ -144,6 +110,6 @@ fn cancel_before_the_pass_starts_no_plan() {
     app.apply_gesture(obc_app::Gesture::Back);
 
     let mut host = HostLoop::new();
-    reconcile(&mut host, &mut app, &mut routes, &map);
+    reconcile_fixture_pass(&mut host, &mut app, &mut routes, &map).expect("grimsel map parses");
     assert!(!host.is_planning(), "an annihilated request never starts a plan in the dispatcher");
 }

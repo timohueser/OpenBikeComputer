@@ -16,6 +16,8 @@
 //! - [`terrain`] — the one place a host resolves "the elevation source for this map" (EL7): the
 //!   `.obcd` sidecar mounted into an [`ElevationSource`](obc_route::ElevationSource), or the null
 //!   source when there is none.
+//! - [`trace`] — typed, normalized in-memory behavior traces and policy-free immediate/delayed
+//!   outcome scheduling used to pin the legacy DeviceCore boundary before ownership moves.
 //! - [`VecSink`] — the in-memory [`ByteSink`](obc_formats::io::ByteSink) OBCR/GPX output collects into.
 //! - [`RgbaFrame`] — the in-memory RGBA8888 `DrawTarget` the browser hosts blit to a `<canvas>`
 //!   (the app demo and the builder's preset previews both draw into it).
@@ -37,6 +39,7 @@ mod session;
 mod sink;
 mod stores;
 pub mod terrain;
+pub mod trace;
 
 pub use dispatch::{HostLoop, PlanHold};
 pub use frame::RgbaFrame;
