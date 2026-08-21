@@ -173,8 +173,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     private var commandSlotOwner: UUID?
     private var commandSlotWaiters: [CommandSlotWaiter] = []
     private var commandResultWaiter: CommandResultWaiter?
-    private var pendingCommandResults: [UInt8: CommandResult] = [:]
-    private var commandLaneInvalidated = false
+    private var commandResults = CommandResultCorrelation()
     private var statusNotificationWaiters: [CheckedContinuation<Void, Error>] = []
     private var statusNotificationTimeout: DispatchWorkItem?
 
@@ -1704,7 +1703,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         let commandResult = commandResultWaiter
         commandResultWaiter = nil
         commandResult?.timeout.cancel()
-        pendingCommandResults.removeAll()
+        commandResults.clearPending()
         let statusNotifications = statusNotificationWaiters
         statusNotificationWaiters.removeAll()
         statusNotificationTimeout?.cancel()
@@ -1784,13 +1783,25 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         try await withCheckedThrowingContinuation {
             (continuation: CheckedContinuation<Void, Error>) in
             queue.async { [self] in
-                if commandLaneInvalidated {
-                    continuation.resume(throwing: DeviceError.writeFailed)
-                } else {
+                if commandResults.isAvailable {
                     continuation.resume()
+                } else {
+                    continuation.resume(throwing: DeviceError.writeFailed)
                 }
             }
         }
+    }
+
+    /// Command results identify only their command byte. Any failure that can leave a reply in
+    /// flight makes correlation ambiguous, so fail closed and reconnect before accepting another.
+    private func invalidateCommandLane(_ error: DeviceError) {
+        dispatchPrecondition(condition: .onQueue(queue))
+        let waiter = commandResultWaiter
+        commandResultWaiter = nil
+        waiter?.timeout.cancel()
+        commandResults.invalidate()
+        if let peripheral { central.cancelPeripheralConnection(peripheral) }
+        waiter?.continuation.resume(throwing: error)
     }
 
     /// The answer can beat CoreBluetooth's write callback, so clear the previous attempt before
@@ -1798,7 +1809,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     private func clearPendingCommandResult(_ command: UInt8) async {
         await withCheckedContinuation { continuation in
             queue.async { [self] in
-                pendingCommandResults.removeValue(forKey: command)
+                commandResults.clearPending(command: command)
                 continuation.resume()
             }
         }
@@ -1808,23 +1819,14 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         let token = UUID()
         return try await withCheckedThrowingContinuation { continuation in
             queue.async { [self] in
-                if let result = pendingCommandResults.removeValue(forKey: command) {
+                if let result = commandResults.take(command: command) {
                     continuation.resume(returning: result)
                     return
                 }
                 let timeout = DispatchWorkItem { [weak self] in
                     guard let self, let waiter = self.commandResultWaiter,
                           waiter.token == token else { return }
-                    self.commandResultWaiter = nil
-                    self.commandLaneInvalidated = true
-                    self.pendingCommandResults.removeAll()
-                    waiter.continuation.resume(throwing: DeviceError.writeFailed)
-                    // Results carry only a command byte, not an exchange id. Tear down this link
-                    // so a reply arriving after the timeout cannot satisfy a retry of that command;
-                    // the normal connection policy establishes a fresh, unambiguous lane.
-                    if let peripheral = self.peripheral {
-                        self.central.cancelPeripheralConnection(peripheral)
-                    }
+                    self.invalidateCommandLane(.writeFailed)
                 }
                 commandResultWaiter = CommandResultWaiter(
                     token: token, command: command, timeout: timeout,
@@ -2267,8 +2269,7 @@ extension BLETransport: CBCentralManagerDelegate {
     }
 
     public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        commandLaneInvalidated = false
-        pendingCommandResults.removeAll()
+        commandResults.reconnect()
         discoveryPolicy.didConnect(peripheralID: peripheral.identifier)
         if discoveryPolicy.connectionOwnership == .weatherRequest {
             // The radio hold this connection represents starts here, and both weather legs are
@@ -2506,13 +2507,9 @@ extension BLETransport: CBPeripheralDelegate {
             return
         }
         if uuid == GATT.status {
-            guard !commandLaneInvalidated else { return }
+            guard commandResults.isAvailable else { return }
             if error != nil {
-                if let waiter = commandResultWaiter {
-                    commandResultWaiter = nil
-                    waiter.timeout.cancel()
-                    waiter.continuation.resume(throwing: DeviceError.readFailed)
-                }
+                invalidateCommandLane(.readFailed)
             } else if let data = characteristic.value,
                       case .commandResult(let result) = try? StatusMessage(decoding: data)
             {
@@ -2521,7 +2518,7 @@ extension BLETransport: CBPeripheralDelegate {
                     waiter.timeout.cancel()
                     waiter.continuation.resume(returning: result)
                 } else {
-                    pendingCommandResults[result.command] = result
+                    commandResults.receive(result)
                 }
             }
             return
