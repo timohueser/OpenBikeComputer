@@ -195,6 +195,10 @@ const CLK_WRITE_MAX_HZ: u32 = CLK_DS_HZ;
 /// Retries the firmware makes per transaction. Zero only for the CMD6 drain read, where a retry
 /// would hunt for a second start bit forever.
 const NUM_RETRIES: u32 = 3;
+/// Additional whole-command attempts after a transient read abort. The sEMMC firmware's internal
+/// retries do not cover the observed RF-correlated `EVENTS_ABORTED` result, while replaying a read
+/// is side-effect free once the failed transfer has been stopped.
+const READ_ABORT_RETRIES: usize = 2;
 
 // ── Deadlines. Every wait in this module is bounded by one of these; none of them is ever hit in
 //    normal operation, so they are generous rather than tight — their job is to turn a wedge into a
@@ -982,7 +986,7 @@ impl Semmc {
         // the CMD12, while `init_card`'s `unwrap_or(false)` turns it into a cheerful `Ok`. The card
         // is meanwhile in `data` with its status block undelivered, and every later read is illegal.
         if let Err(e) = self.cmd(6, 0x80FF_FFF1, RESP_R1B, PROC_PROCESS, None, CMD_DEADLINE) {
-            self.stop_transmission();
+            let _ = self.stop_transmission();
             return Err(e);
         }
 
@@ -1128,15 +1132,15 @@ impl Semmc {
     /// resets the *host*, and a card that was mid-block when we walked away sits in `data`/`rcv`
     /// waiting for clocks that are not coming. The card is the one piece of state a warm reboot
     /// cannot repair, so it gets told to stop even when we are already returning an error.
-    fn stop_transmission(&mut self) {
-        let _ = self.cmd(12, 0, RESP_R1B, PROC_PROCESS, None, CMD_DEADLINE);
+    fn stop_transmission(&mut self) -> Result<(), SemmcError> {
+        self.cmd(12, 0, RESP_R1B, PROC_PROCESS, None, CMD_DEADLINE).map(|_| ())
     }
 
     fn read_one(&mut self, lba: u32, block: &mut AlignedBlock) -> Result<(), SemmcError> {
         let addr = block.0.as_mut_ptr() as u32;
         let data = Some((addr, BLOCK_BYTES as u32, 1));
         if let Err(e) = self.cmd(17, self.block_arg(lba), RESP_R1, PROC_IGNORE, data, READ_DEADLINE) {
-            self.stop_transmission();
+            let _ = self.stop_transmission();
             return Err(e);
         }
         self.check_after_transfer()
@@ -1159,26 +1163,39 @@ impl Semmc {
     /// Blocking, and it holds the core while the transfer runs — the same profile the SPI transport
     /// had, and what `embedded_sdmmc`'s synchronous `BlockDevice` needs. See
     /// [`wait_completion`](Self::wait_completion) for why the wait is a bounded poll with an
-    /// interrupt fast path rather than a sleep.
+    /// interrupt fast path rather than a sleep. A controller abort gets two whole-command retries
+    /// after transfer recovery; all other errors return immediately.
     pub fn read_blocks(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), SemmcError> {
         let n = self.check_request(buf.as_ptr() as usize, buf.len(), lba)?;
         self.clk_hz = self.read_clk_hz;
         let data = Some((buf.as_mut_ptr() as u32, BLOCK_BYTES as u32, n));
-        if n == 1 {
-            if let Err(e) = self.cmd(17, self.block_arg(lba), RESP_R1, PROC_IGNORE, data, READ_DEADLINE) {
-                self.stop_transmission();
-                return Err(e);
+        let mut retries_remaining = READ_ABORT_RETRIES;
+        loop {
+            let transfer = if n == 1 {
+                match self.cmd(17, self.block_arg(lba), RESP_R1, PROC_IGNORE, data, READ_DEADLINE) {
+                    Ok(_) => Ok(()),
+                    Err(error) => match self.stop_transmission() {
+                        Ok(()) => Err(error),
+                        Err(cleanup_error) => return Err(cleanup_error),
+                    },
+                }
+            } else {
+                // A failed CMD18 leaves the **card** streaming — the timeout path recovers the host
+                // (warm reboot), not the card — so STOP_TRANSMISSION goes out either way, or every
+                // later command talks to a card stuck in `data`.
+                let transfer = self.cmd(18, self.block_arg(lba), RESP_R1, PROC_IGNORE, data, READ_DEADLINE);
+                self.stop_transmission()?;
+                transfer.map(|_| ())
             }
-        } else {
-            // A failed CMD18 leaves the **card** streaming — the timeout path recovers the host
-            // (warm reboot), not the card — so STOP_TRANSMISSION goes out either way, or every
-            // later command talks to a card stuck in `data`.
-            let r = self.cmd(18, self.block_arg(lba), RESP_R1, PROC_IGNORE, data, READ_DEADLINE);
-            let stop = self.cmd(12, 0, RESP_R1B, PROC_PROCESS, None, CMD_DEADLINE);
-            r?;
-            stop?;
+            .and_then(|()| self.check_after_transfer());
+
+            match transfer {
+                Err(SemmcError::Aborted(_)) if retries_remaining != 0 => {
+                    retries_remaining -= 1;
+                }
+                result => return result,
+            }
         }
-        self.check_after_transfer()
     }
 
     /// **Start writing `buf.len() / 512` blocks at `lba`, leaving the data phase in flight.**
@@ -1222,7 +1239,7 @@ impl Semmc {
         let transfer = self.wait_completion(WRITE_DEADLINE);
         if n == 1 {
             if let Err(e) = transfer {
-                self.stop_transmission();
+                let _ = self.stop_transmission();
                 return Err(e);
             }
         } else {
