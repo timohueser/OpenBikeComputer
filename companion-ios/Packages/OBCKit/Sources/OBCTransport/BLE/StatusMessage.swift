@@ -1,7 +1,7 @@
 import Foundation
 
-/// The result of the one command that still uses the legacy `command` / `status` GATT pair:
-/// `weatherUnchanged`. Protocol-v4 object transfers use `objectControl` records instead.
+/// The result of an authenticated BLE imperative command. Protocol-v4 object transfers use
+/// `objectControl` records instead; clock, bond, and weather request control remain here.
 public struct CommandResult: Equatable, Sendable {
     public enum Status: UInt8, Equatable, Sendable, CaseIterable {
         case ok = 0

@@ -30,7 +30,7 @@ public enum GATT {
     nonisolated(unsafe) public static let obcControlService = CBUUID(string: "3C920000-9916-4EBA-ABC2-342FE08F6B10")
     /// Small imperative commands (delete object, …) — spec §4.4.
     nonisolated(unsafe) public static let command = CBUUID(string: "3C920001-9916-4EBA-ABC2-342FE08F6B10")
-    /// The surviving legacy command-result notification used by `weatherUnchanged`.
+    /// Results for authenticated BLE imperative commands; v4 object results use `objectControl`.
     nonisolated(unsafe) public static let status = CBUUID(string: "3C920002-9916-4EBA-ABC2-342FE08F6B10")
     // `0003` (`objectStore`) retired in v2 and must not be reused.
     /// The Config object, whole-blob read + write (incl. rename, Delta 1) — spec §7.3.

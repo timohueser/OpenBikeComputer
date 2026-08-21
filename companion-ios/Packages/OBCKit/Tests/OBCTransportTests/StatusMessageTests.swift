@@ -4,12 +4,14 @@ import XCTest
 
 final class StatusMessageTests: XCTestCase {
     func testCommandResultRoundTrips() throws {
-        for status in CommandResult.Status.allCases {
-            let message = StatusMessage.commandResult(
-                CommandResult(command: 7, status: status, detail: 9)
-            )
-            XCTAssertEqual(message.encode().count, 4)
-            XCTAssertEqual(try StatusMessage(decoding: message.encode()), message)
+        for command: UInt8 in [4, 5, 7] {
+            for status in CommandResult.Status.allCases {
+                let message = StatusMessage.commandResult(
+                    CommandResult(command: command, status: status, detail: 9)
+                )
+                XCTAssertEqual(message.encode().count, 4)
+                XCTAssertEqual(try StatusMessage(decoding: message.encode()), message)
+            }
         }
     }
 
