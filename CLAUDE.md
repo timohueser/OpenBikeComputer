@@ -1,19 +1,30 @@
-# OpenBikeComputer — notes for Claude
+We are building an open source bikepacking GPS computer. The brain of the OpenBikeComputer is the **NRF54LM20**.  
 
-Open-source bikepacking GPS computer: an **nRF54L** MCU driving a reflective
-Sharp memory-LCD (LS021B7DD02). The nRF54L is THE target (an STM32F429 was the
-original bring-up bridge, now removed) — keep the *shared* crates board-agnostic
-and the simulator + tests first-class.
 
-## Layout
+## Coding Preferences
+The goal for this codebase is to make this a robust and extendable open source mono-repo, with modern coding practices and clear architectural seams and boundaries. We put a great deal of thought and effort into building our features and modules in ways that makes them easy to understand and reason about.
+
+- **Keep things simple, adhere to YAGNI and DRY principles** This is a large codebase and we don't want it to grow uncontrollably. So make sure large LOC additions you make are well justified. If you think an architectural choice we made earlier forces you to write "patchworky" code or use a lot of workarounds do flag this with me and don't be afraid to suggest a larger restructuring.
+- Make sure individual files do not grow into huge Monoliths, instead split them into more digestible units if possible. 
+- **Feel free to propose any ideas you have to me**, but never go off and implement features, or additions to features without explicit consent. Only build what we agree upon, or what is written in the issue you're following.
+- Test are good! But avoid endless smoke thests and too many "regression tests". Write focused, high quality tests, never add tests just for the sake of adding them.
+- **Use comments to clearly describe how a function or class is supposed to be used, but keep them concise**. Keep revision history and references to PRs, issues etc. out of the comments. They shoul n only ever describe the current state of the codebase, never give a history lesson or justify why changes were made.
+- Make sure that comments stay up to date and remove/rewrite stale comments if you stumble across them
+
+## Pull Requests and issues
+- Keep all PRs and issues simple and concise, use **ASD-STE100 Simplified Technical English**.
+- **Open real PRs, never drafts**.
+- Open the PRs description with a simple explanation of the problem this PR solves, or the feature it implements. 
+- Do not over-explain your solution in the PRs body, stick to the most important information, highlight potential pitfalls or areas where you diverged from the plan/issue.
+
+## Codebase Layout
 
 - The Rust is in **three trees**, one cargo workspace rooted at `Cargo.toml` (so
   one `Cargo.lock`, one `target/`). The rule is mechanical: a crate is in
-  `firmware/` iff the device image reaches it through *normal* deps.
+  `firmware/` if the device image reaches it through *normal* deps.
   - `firmware/` — the shared `no_std` render path and the device: the
     dependency-free foundations (`obc-crc`, `obc-formats`, `obc-ports`,
-    `obc-map-scene`),
-    the render path (obc-reader → obc-elevation → obc-route → obc-render →
+    `obc-map-scene`), the render path (obc-reader → obc-elevation → obc-route → obc-render →
     obc-app), the platform adapters (`obc-platform`, `obc-display`,
     `obc-sensors`, `obc-storage`), `obc-ble`, `obc-dfu`, the `obc-fw-nrf54l`
     board crate and `obc-boot`, plus the allocation-free `obc-weather` OBCW
@@ -25,21 +36,13 @@ and the simulator + tests first-class.
     `obc-mkimage`, `obc-bench`, `obcm-testkit`, `obc-vectors`, `obc-host-core`,
     `obc-replay`, `obc-usb-host`, the weather bakery `obc-wx-bake` (upstream
     radar/model products → OBCG frames + manifest; it also ships a second binary
-    `obc-wx-pack`, which freezes a real past storm — raw archive bytes, the tree
-    the real baker makes of them, and the observed frames that followed — into a
-    replayable event pack in the fixture registry, with reviewable manifests under
-    `fixtures/sources/weather-events/`) and its
+    `obc-wx-pack`, which freezes a real past storm into a
+    replayable event pack in the fixture registry and its
     counterpart `obc-wx-client` (manifest + OBCG corridor Range reads + MET → one
     OBCW bundle — the Rust twin of the phone's client, driving `--weather live`).
   - `apps/` — the shells: `obc-sim`, `obc-web-demo`, `obc-web-convert`,
     `obc-web-assemble`, `obc-skin-preview`, `obc-desktop`.
 
-  Dev-deps deliberately cross the boundary (obc-render → obcm-testkit,
-  obc-route → obc-pack); they never touch the `no_std` build. `obc-pack` also
-  owns the config's JSON Schema (`obc-pack schema` — a config parser change must
-  extend `schema/config.schema.json` + the `schema_*` pinning tests, or the
-  builder's editor lies). Per-crate roles + build/run:
-  [firmware/README.md](firmware/README.md).
 - `docs/` — the public docs site (below), published at
   <https://openbikecomputer.com/>: it's the **conceptual**
   reference (architecture, formats, rendering, UI, display protocol). `docs/
@@ -50,11 +53,9 @@ and the simulator + tests first-class.
 - `builder/` — the map builder: **one** Svelte app (`app/`) with three hosts
   selected at build time by vite's `$host` alias (static web, Tauri desktop,
   and the FastAPI dev server in `server/`; `npm run build`, CI runs the `web`
-  job). Nothing here packs anything — all three drive `host/obc-pack`. Style
-  documents live in `builder/presets/`: **one** `schema.json` (the complete,
+  job) Style documents live in `builder/presets/`: **one** `schema.json` (the complete,
   CLI-usable packer config everything is baked with) plus `skins/<id>.json`
-  (presentation only, stamped onto an assembled map — never handed to the
-  packer). The user's working config lives in the browser, not on disk.
+  (presentation only, stamped onto an assembled map).
 - `tools/` — the dev scripts: `justfile` (behind `obc <task>`), the GEOS and
   RISC-V installers, shell completion.
 
@@ -96,6 +97,9 @@ where it belongs — don't re-explain the architecture in a README.
   `obc-desktop`), or the fmt CI guard fails. (rustfmt config is committed — let it
   do style; don't hand-format.)
 - Required CI check is the `ci` job in `.github/workflows/ci.yml`.
+- Use the test levels, fast hermetic tier, suite-granularity rule, and exception language from
+[`docs/testing.md`](docs/testing.md). Run `obc suites check` when test sources, validation commands,
+workflows, registries, or test policy change.
 
 ## Keep the docs in sync with the code
 
