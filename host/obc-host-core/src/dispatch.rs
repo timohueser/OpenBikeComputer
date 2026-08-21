@@ -15,6 +15,7 @@
 use obc_app::{App, DrainStatus, HostCommand, HostMailbox, TrackAction};
 
 use crate::nav::{finish_detour_commit, finish_detour_plan, DetourPlan, DetourReady};
+use crate::trace::{DataKey, FeederCall, FeederKind, NoTrace, ObjectKind, TraceSink};
 use crate::{
     finish_nav_plan, ActiveRouteSession, NavPlan, RideRepository, RouteRepository, TrackRepository, TripCatalog,
 };
@@ -22,8 +23,11 @@ use crate::{
 /// Feed the app the route catalog **with** its retention metas (epic #638, S3) — the shared re-feed
 /// after a scan/delete so the auto-expiry sweep always reads device-truth retention alongside the
 /// summaries. A retention-less repository returns empty metas → every route reads `Never`.
-fn feed_routes(app: &mut App, routes: &dyn RouteRepository) {
-    app.set_routes_with_meta(routes.catalog(), routes.ids(), &routes.retention_metas());
+fn feed_routes(app: &mut App, routes: &dyn RouteRepository, trace: &mut dyn TraceSink) {
+    let metas = routes.retention_metas();
+    app.set_routes_with_meta(routes.catalog(), routes.ids(), &metas);
+    trace.feeder(FeederCall::new(FeederKind::RouteCatalog, DataKey::from("host.routes"), routes.catalog().len()));
+    trace.feeder(FeederCall::new(FeederKind::RouteRetention, DataKey::from("host.route-retention"), metas.len()));
 }
 
 /// The one in-flight plan a host steps — a POI route plan or a detour plan (#882). One enum slot
@@ -103,13 +107,32 @@ impl HostLoop {
         elev: &mut dyn obc_route::ElevationSource,
         host: impl FnMut(&mut App, HostCommand),
     ) {
+        self.reconcile_traced(app, routes, rides, tracks, trips, reader, elev, host, &mut NoTrace);
+    }
+
+    /// [`reconcile`](Self::reconcile) with a passive typed observer at the real legacy protocol and
+    /// bulk-feeder call sites. The observer cannot influence dispatch policy; production callers use
+    /// the no-op sink through `reconcile`, while DC1 traces use this adapter.
+    #[allow(clippy::too_many_arguments)]
+    pub fn reconcile_traced(
+        &mut self,
+        app: &mut App,
+        routes: &mut dyn RouteRepository,
+        rides: &mut dyn RideRepository,
+        tracks: &mut dyn TrackRepository,
+        trips: &mut dyn TripCatalog,
+        reader: &obc_reader::Reader,
+        elev: &mut dyn obc_route::ElevationSource,
+        host: impl FnMut(&mut App, HostCommand),
+        trace: &mut dyn TraceSink,
+    ) {
         // The three phases run as **separate calls** on purpose: `dispatch_commands` reserves the
         // fresh `NavPlan` (its ~4 KB inline tile cache) and `step_plan` reaches `finish_nav_plan`'s
         // ~8 KB `RouteIndex` parse — nesting them in one frame stacked both and overflowed the deep
         // sim tour test's thread stack. Sequential calls keep only one large frame live at a time.
-        let finish = self.dispatch_commands(app, routes, rides, trips, PlanHold::NONE, host);
-        self.step_plan(app, routes, reader, elev);
-        reconcile_track(app, rides, tracks, finish);
+        let finish = self.dispatch_commands(app, routes, rides, trips, PlanHold::NONE, false, false, host, trace);
+        self.step_plan(app, routes, reader, elev, trace);
+        reconcile_track(app, rides, tracks, finish, trace);
     }
 
     /// The run-to-completion counterpart to [`reconcile`](Self::reconcile): drain the same mailbox
@@ -134,18 +157,58 @@ impl HostLoop {
         hold: PlanHold,
         host: impl FnMut(&mut App, HostCommand),
     ) -> Option<TrackAction> {
+        self.reconcile_to_completion_traced(app, routes, rides, trips, reader, elev, hold, host, &mut NoTrace)
+    }
+
+    /// [`reconcile_to_completion`](Self::reconcile_to_completion) with the same passive trace
+    /// observer used by [`reconcile_traced`](Self::reconcile_traced).
+    #[allow(clippy::too_many_arguments)]
+    pub fn reconcile_to_completion_traced(
+        &mut self,
+        app: &mut App,
+        routes: &mut dyn RouteRepository,
+        rides: &mut dyn RideRepository,
+        trips: &mut dyn TripCatalog,
+        reader: &obc_reader::Reader,
+        elev: &mut dyn obc_route::ElevationSource,
+        hold: PlanHold,
+        host: impl FnMut(&mut App, HostCommand),
+        trace: &mut dyn TraceSink,
+    ) -> Option<TrackAction> {
         // Keep these calls separate for the same stack-frame reason documented in `reconcile`.
-        let finish = self.dispatch_commands(app, routes, rides, trips, hold, host);
+        let finish = self.dispatch_commands(app, routes, rides, trips, hold, false, false, host, trace);
         while self.plan.is_some() {
-            self.step_plan(app, routes, reader, elev);
+            self.step_plan(app, routes, reader, elev, trace);
         }
         finish
+    }
+
+    /// Drain and execute only the legacy command phase with passive observation. DC1's fast,
+    /// fixture-free scenario harness uses the three hold controls to delay planner, detour-commit,
+    /// or ride-track outcomes without copying the dispatch order. Held commands are still popped
+    /// and observed; their level/request remains owned by the scenario's scripted outcome adapter.
+    /// Frame and headless product hosts continue to use the complete reconcile methods above.
+    #[allow(clippy::too_many_arguments)]
+    pub fn reconcile_commands_traced(
+        &mut self,
+        app: &mut App,
+        routes: &mut dyn RouteRepository,
+        rides: &mut dyn RideRepository,
+        trips: &mut dyn TripCatalog,
+        hold: PlanHold,
+        hold_detour_commit: bool,
+        hold_ride_track: bool,
+        host: impl FnMut(&mut App, HostCommand),
+        trace: &mut dyn TraceSink,
+    ) -> Option<TrackAction> {
+        self.dispatch_commands(app, routes, rides, trips, hold, hold_detour_commit, hold_ride_track, host, trace)
     }
 
     /// Phase 1 — drain the typed protocol once in canonical order and apply each command. Returns the
     /// drained [`FinishTrack`](HostCommand::FinishTrack) action (reconciled in phase 3). Generic over
     /// the host closure; `#[inline(never)]` so its `NavPlan` reservation doesn't bleed into the
     /// caller's frame.
+    #[allow(clippy::too_many_arguments)]
     #[inline(never)]
     fn dispatch_commands(
         &mut self,
@@ -154,7 +217,10 @@ impl HostLoop {
         rides: &mut dyn RideRepository,
         trips: &mut dyn TripCatalog,
         hold: PlanHold,
+        hold_detour_commit: bool,
+        hold_ride_track: bool,
         mut host: impl FnMut(&mut App, HostCommand),
+        trace: &mut dyn TraceSink,
     ) -> Option<TrackAction> {
         // The mailbox is popped empty at the end of every pass and sized `HOST_COMMAND_CLASSES`
         // (the `HostMailbox` default), so a full drain is guaranteed by construction — keep the
@@ -163,22 +229,38 @@ impl HostLoop {
         debug_assert_eq!(status, DrainStatus::Complete, "a canonical-capacity mailbox always drains completely");
         let mut finish: Option<TrackAction> = None;
         while let Some(cmd) = self.mailbox.pop() {
+            trace.command(&cmd);
             match cmd {
                 HostCommand::RescanStore { .. } => {
-                    feed_routes(app, routes);
+                    feed_routes(app, routes, trace);
                     trips.rescan();
                     trips.refeed(app); // after the routes, so stage ids resolve
+                    trace.feeder(FeederCall::new(
+                        FeederKind::TripCatalog,
+                        DataKey::from("host.trips"),
+                        app.trips().len(),
+                    ));
                     rides.refresh();
                     app.set_rides(rides.catalog(), rides.ids());
+                    trace.feeder(FeederCall::new(
+                        FeederKind::RideCatalog,
+                        DataKey::from("host.rides"),
+                        rides.catalog().len(),
+                    ));
                 }
                 HostCommand::DeleteRoute { id } => {
                     if routes.delete_by_id(id) {
-                        feed_routes(app, routes);
+                        feed_routes(app, routes, trace);
                     }
                 }
                 HostCommand::DeleteRide { id } => {
                     if rides.delete_by_id(id) {
                         app.set_rides(rides.catalog(), rides.ids());
+                        trace.feeder(FeederCall::new(
+                            FeederKind::RideCatalog,
+                            DataKey::from("host.rides"),
+                            rides.catalog().len(),
+                        ));
                     }
                 }
                 HostCommand::DeleteTrip { id } => {
@@ -188,8 +270,13 @@ impl HostLoop {
                         routes.delete_by_id(rid);
                     }
                     if trips.delete_by_id(id) {
-                        feed_routes(app, routes);
+                        feed_routes(app, routes, trace);
                         trips.refeed(app);
+                        trace.feeder(FeederCall::new(
+                            FeederKind::TripCatalog,
+                            DataKey::from("host.trips"),
+                            app.trips().len(),
+                        ));
                     }
                 }
                 // Auto-expiry sidecar stamps (epic #638, S3): apply to the host's retention store —
@@ -225,19 +312,43 @@ impl HostLoop {
                             Some(plan) => self.plan = Some(InflightPlan::Detour(plan)),
                             // The active route vanished / can't resolve the rejoin — answer now.
                             None => {
-                                app.apply_event(obc_app::HostEvent::DetourPlanned(Err(obc_route::NavError::NoPath)))
+                                let event = obc_app::HostEvent::DetourPlanned(Err(obc_route::NavError::NoPath));
+                                trace.event(&event);
+                                app.apply_event(event);
                             }
                         }
                     }
                 }
                 HostCommand::CommitDetour => {
-                    let ready = self.detour_ready.take();
-                    finish_detour_commit(app, routes, self.session.index(), ready);
+                    if !hold_detour_commit {
+                        let ready = self.detour_ready.take();
+                        finish_detour_commit(app, routes, self.session.index(), ready, trace);
+                    }
                 }
                 HostCommand::FinishTrack(action) => finish = Some(action),
                 HostCommand::LoadRideTrack { id } => {
-                    app.set_ride_profile(rides.profile_by_id(id));
-                    app.set_ride_preview(&rides.preview_by_id(id));
+                    if hold_ride_track {
+                        continue;
+                    }
+                    let profile = rides.profile_by_id(id);
+                    let profile_len = profile.as_ref().map_or(0, |value| value.cols().len());
+                    app.set_ride_profile(profile);
+                    trace.feeder_object(
+                        FeederKind::RideProfile,
+                        "host.requested-ride-profile",
+                        ObjectKind::Ride,
+                        id,
+                        profile_len,
+                    );
+                    let preview = rides.preview_by_id(id);
+                    app.set_ride_preview(&preview);
+                    trace.feeder_object(
+                        FeederKind::RidePreview,
+                        "host.requested-ride-preview",
+                        ObjectKind::Ride,
+                        id,
+                        preview.len(),
+                    );
                 }
                 // Answered post-reconcile by the caller's `fill_nav_preview` (the route isn't open here).
                 HostCommand::RefreshNavPreview => {}
@@ -258,6 +369,7 @@ impl HostLoop {
         routes: &mut dyn RouteRepository,
         reader: &obc_reader::Reader,
         elev: &mut dyn obc_route::ElevationSource,
+        trace: &mut dyn TraceSink,
     ) {
         // Compute the outcome before `take`-ing, so the terminal-outcome commit doesn't overlap the
         // step borrow.
@@ -273,7 +385,7 @@ impl HostLoop {
         };
         match self.plan.take().expect("just stepped it") {
             InflightPlan::Nav(plan) => {
-                finish_nav_plan(app, routes, terminal, plan.bytes(), plan.tile_stats());
+                finish_nav_plan(app, routes, terminal, plan.bytes(), plan.tile_stats(), trace);
             }
             InflightPlan::Detour(plan) => {
                 // The detour is NOT committed here — the bytes park until the preview's Press
@@ -283,7 +395,7 @@ impl HostLoop {
                 let src = routes.active_source();
                 let orig =
                     self.session.index().zip(src.as_ref()).map(|(index, s)| obc_route::RouteReader::new(index, s));
-                self.detour_ready = finish_detour_plan(app, terminal, plan, orig.as_ref());
+                self.detour_ready = finish_detour_plan(app, terminal, plan, orig.as_ref(), trace);
             }
         }
     }
@@ -297,6 +409,7 @@ fn reconcile_track(
     rides: &mut dyn RideRepository,
     tracks: &mut dyn TrackRepository,
     finish: Option<TrackAction>,
+    trace: &mut dyn TraceSink,
 ) {
     // The save name is only consumed when a ride is opened or finalised, both of which need a
     // session or a drained action — skip the small String copy on the idle no-ride path. During an
@@ -308,6 +421,7 @@ fn reconcile_track(
     if matches!(finish, Some(TrackAction::Save)) {
         rides.refresh();
         app.set_rides(rides.catalog(), rides.ids());
+        trace.feeder(FeederCall::new(FeederKind::RideCatalog, DataKey::from("host.rides"), rides.catalog().len()));
     }
 }
 
