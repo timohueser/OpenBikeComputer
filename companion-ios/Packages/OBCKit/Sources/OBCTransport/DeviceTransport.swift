@@ -42,8 +42,9 @@ public protocol DeviceLink: Sendable {
     /// passkey sheet yet. The gated ops wait for `authenticate()`.
     func discover() async throws
     /// **First-time-pairing phase 2** (#297): the gated operations that establish
-    /// the encrypted, LESC-authenticated link — subscribe the `status` notify
-    /// (the sole device → app CCCD in v2), read the PSM, open the CoC. This is what raises
+    /// the encrypted, LESC-authenticated link — subscribe the v4 object-control indication,
+    /// read the PSM, and open the CoC. BLE imperative commands arm their separate `status`
+    /// notification lazily after this phase. This is what raises
     /// the system passkey sheet (A8); the launch flow calls it on the D2 row tap so
     /// the sheet lands in the D3 "pairing…" beat. Requires a prior `discover()`.
     func authenticate() async throws
