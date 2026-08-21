@@ -45,4 +45,21 @@ struct DeviceCommandTests {
         #expect(late.utcSeconds == UInt32.max)
         #expect(late.offsetMinutes == 840)
     }
+
+    @Test func ambiguousLaneRejectsLateResultsUntilReconnect() {
+        var correlation = CommandResultCorrelation()
+        let late = CommandResult(command: 7, status: .ok)
+
+        correlation.receive(late)
+        correlation.invalidate()
+        #expect(!correlation.isAvailable)
+        #expect(correlation.take(command: 7) == nil)
+
+        correlation.receive(late)
+        #expect(correlation.take(command: 7) == nil)
+
+        correlation.reconnect()
+        #expect(correlation.isAvailable)
+        #expect(correlation.take(command: 7) == nil)
+    }
 }
