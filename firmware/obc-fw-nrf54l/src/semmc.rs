@@ -986,7 +986,7 @@ impl Semmc {
         // the CMD12, while `init_card`'s `unwrap_or(false)` turns it into a cheerful `Ok`. The card
         // is meanwhile in `data` with its status block undelivered, and every later read is illegal.
         if let Err(e) = self.cmd(6, 0x80FF_FFF1, RESP_R1B, PROC_PROCESS, None, CMD_DEADLINE) {
-            self.stop_transmission();
+            let _ = self.stop_transmission();
             return Err(e);
         }
 
@@ -1132,15 +1132,15 @@ impl Semmc {
     /// resets the *host*, and a card that was mid-block when we walked away sits in `data`/`rcv`
     /// waiting for clocks that are not coming. The card is the one piece of state a warm reboot
     /// cannot repair, so it gets told to stop even when we are already returning an error.
-    fn stop_transmission(&mut self) {
-        let _ = self.cmd(12, 0, RESP_R1B, PROC_PROCESS, None, CMD_DEADLINE);
+    fn stop_transmission(&mut self) -> Result<(), SemmcError> {
+        self.cmd(12, 0, RESP_R1B, PROC_PROCESS, None, CMD_DEADLINE).map(|_| ())
     }
 
     fn read_one(&mut self, lba: u32, block: &mut AlignedBlock) -> Result<(), SemmcError> {
         let addr = block.0.as_mut_ptr() as u32;
         let data = Some((addr, BLOCK_BYTES as u32, 1));
         if let Err(e) = self.cmd(17, self.block_arg(lba), RESP_R1, PROC_IGNORE, data, READ_DEADLINE) {
-            self.stop_transmission();
+            let _ = self.stop_transmission();
             return Err(e);
         }
         self.check_after_transfer()
@@ -1172,18 +1172,20 @@ impl Semmc {
         let mut retries_remaining = READ_ABORT_RETRIES;
         loop {
             let transfer = if n == 1 {
-                let transfer = self.cmd(17, self.block_arg(lba), RESP_R1, PROC_IGNORE, data, READ_DEADLINE);
-                if transfer.is_err() {
-                    self.stop_transmission();
+                match self.cmd(17, self.block_arg(lba), RESP_R1, PROC_IGNORE, data, READ_DEADLINE) {
+                    Ok(_) => Ok(()),
+                    Err(error) => match self.stop_transmission() {
+                        Ok(()) => Err(error),
+                        Err(cleanup_error) => return Err(cleanup_error),
+                    },
                 }
-                transfer.map(|_| ())
             } else {
                 // A failed CMD18 leaves the **card** streaming — the timeout path recovers the host
                 // (warm reboot), not the card — so STOP_TRANSMISSION goes out either way, or every
                 // later command talks to a card stuck in `data`.
                 let transfer = self.cmd(18, self.block_arg(lba), RESP_R1, PROC_IGNORE, data, READ_DEADLINE);
-                let stop = self.cmd(12, 0, RESP_R1B, PROC_PROCESS, None, CMD_DEADLINE);
-                transfer.map(|_| ()).and(stop.map(|_| ()))
+                self.stop_transmission()?;
+                transfer.map(|_| ())
             }
             .and_then(|()| self.check_after_transfer());
 
@@ -1237,7 +1239,7 @@ impl Semmc {
         let transfer = self.wait_completion(WRITE_DEADLINE);
         if n == 1 {
             if let Err(e) = transfer {
-                self.stop_transmission();
+                let _ = self.stop_transmission();
                 return Err(e);
             }
         } else {
