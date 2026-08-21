@@ -68,6 +68,9 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     /// instantly with no sheet). Once the read resolves, the watchdog re-arms
     /// at `phaseTimeout` for the machine-only openL2CAPChannel → didOpen tail.
     private static let pairingTimeout: DispatchTimeInterval = .seconds(90)
+    /// Imperative command acknowledgements are tiny and immediate. Bound the wait so a dropped
+    /// `status` notification cannot hold the command lane forever.
+    private static let commandResultTimeout: DispatchTimeInterval = .seconds(3)
     // Outstanding operations (all touched only on `queue`). Connecting is a
     // two-phase flow (#297): `discover()` (un-gated) then `authenticate()` (gated,
     // raises the passkey sheet) — each parks its own continuation.
@@ -153,13 +156,25 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     private var pendingReads: [CBUUID: [CheckedContinuation<Data, Error>]] = [:]
     private var pendingWrites: [CBUUID: [CheckedContinuation<Void, Error>]] = [:]
 
-    // Protocol v4 removed transfer verdicts from `status`, but the authenticated
-    // `weatherUnchanged` command remains on the legacy command/status pair. Keep exactly one
-    // waiter for that one surviving exchange; an early notification is buffered until the GATT
-    // write acknowledgement has returned.
-    private var weatherCommandWaiter: (token: UUID, continuation: CheckedContinuation<CommandResult, Error>)?
-    private var pendingWeatherCommandResult: CommandResult?
-    private var cancelledWeatherCommandTokens: Set<UUID> = []
+    // Protocol v4 removed object-transfer verdicts from `status`, but the authenticated BLE-only
+    // imperative commands remain on the command/status pair. Serialize those short exchanges so
+    // concurrent clock, forget-bond, and weather acknowledgements cannot consume one another.
+    private struct CommandSlotWaiter {
+        let token: UUID
+        let continuation: CheckedContinuation<UUID, Never>
+    }
+    private struct CommandResultWaiter {
+        let token: UUID
+        let command: UInt8
+        let timeout: DispatchWorkItem
+        let continuation: CheckedContinuation<CommandResult, Error>
+    }
+    private var commandSlotOwner: UUID?
+    private var commandSlotWaiters: [CommandSlotWaiter] = []
+    private var commandResultWaiter: CommandResultWaiter?
+    private var pendingCommandResults: [UInt8: CommandResult] = [:]
+    private var statusNotificationWaiters: [CheckedContinuation<Void, Error>] = []
+    private var statusNotificationTimeout: DispatchWorkItem?
 
     // Physical indication records for protocol v4. Correlation, operation lifetime and STATUS
     // reconciliation belong to TransferClient; the transport only preserves received records.
@@ -858,19 +873,12 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         requestID: UInt32, retryAfterSeconds: UInt16, token: UUID
     ) async {
         do {
-            await clearPendingWeatherCommandResult()
-            try Task.checkCancellation()
-            try await write(
+            let result = try await exchangeCommand(
                 WeatherUnchangedCommand.encode(
                     requestID: requestID, retryAfterSeconds: retryAfterSeconds
                 ),
-                to: GATT.command
+                command: WeatherUnchangedCommand.commandByte
             )
-            let result = try await nextWeatherCommandResult(token: token)
-            guard result.command == WeatherUnchangedCommand.commandByte else {
-                queue.async { [weak self] in self?.failWeatherUpload(.connectionDropped, token: token) }
-                return
-            }
             switch result.status {
             case .ok:
                 queue.async { [weak self] in self?.completeWeatherUpload(token: token) }
@@ -881,49 +889,6 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
             }
         } catch {
             queue.async { [weak self] in self?.failWeatherUpload(.connectionDropped, token: token) }
-        }
-    }
-
-    private func clearPendingWeatherCommandResult() async {
-        await withCheckedContinuation { continuation in
-            queue.async { [self] in
-                pendingWeatherCommandResult = nil
-                continuation.resume()
-            }
-        }
-    }
-
-    private func nextWeatherCommandResult(token: UUID) async throws -> CommandResult {
-        try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                queue.async { [self] in
-                    guard weatherUploadToken == token,
-                          cancelledWeatherCommandTokens.remove(token) == nil
-                    else {
-                        continuation.resume(throwing: DeviceError.transferDropped)
-                        return
-                    }
-                    if let result = pendingWeatherCommandResult {
-                        pendingWeatherCommandResult = nil
-                        continuation.resume(returning: result)
-                    } else {
-                        weatherCommandWaiter = (token, continuation)
-                    }
-                }
-            }
-        } onCancel: { [weak self] in
-            self?.queue.async { [weak self] in
-                guard let self else { return }
-                if let waiter = weatherCommandWaiter, waiter.token == token {
-                    weatherCommandWaiter = nil
-                    waiter.continuation.resume(throwing: DeviceError.transferDropped)
-                } else if weatherUploadToken == token {
-                    // Cancellation can arrive after the result path completed and cleared the
-                    // attempt. Only remember a token while registration may still race with us;
-                    // completed attempts mint no future waiter and must not accumulate here.
-                    cancelledWeatherCommandTokens.insert(token)
-                }
-            }
         }
     }
 
@@ -1093,12 +1058,21 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     }
 
     public func setClock(_ sample: WallClockSample) async throws -> ClockSyncOutcome {
-        .unsupported
+        switch try await exchangeCommand(
+            SetClockCommand.encode(sample), command: SetClockCommand.commandByte
+        ).status {
+        case .ok: .stamped
+        case .unknownCommand: .unsupported
+        case .notFound, .busy, .error: throw DeviceError.writeFailed
+        }
     }
 
     public func setRouteRetention(
         _ id: DeviceObjectID, _ retention: Retention
     ) async throws -> RetentionWriteOutcome {
+        // Protocol v4's flat route metadata does not yet carry retention. Restoring command 6 here
+        // would report success without a catalog field the app can reconcile; #1398 R4 owns that
+        // metadata shape and the eventual capability restoration.
         .unsupported
     }
 
@@ -1359,8 +1333,10 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
             discoveryStore.clearWeatherRestoration()
             discoveryStore.clearWeatherUploadRestoration()
         }
-        // Protocol v4 registers no remote bond mutation. Clearing the companion's trusted
-        // CoreBluetooth identity is the entire app-side operation.
+        let result = try await exchangeCommand(
+            ForgetBondCommand.encode(), command: ForgetBondCommand.commandByte
+        )
+        guard result.status == .ok else { throw DeviceError.writeFailed }
     }
 
     public func downloadRides(_ ids: [RideID]) -> RideDownload {
@@ -1723,16 +1699,22 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         channelWaiters.removeAll()
         let objectControls = objectControlWaiters
         objectControlWaiters.removeAll()
-        let weatherCommand = weatherCommandWaiter
-        weatherCommandWaiter = nil
-        pendingWeatherCommandResult = nil
+        let commandResult = commandResultWaiter
+        commandResultWaiter = nil
+        commandResult?.timeout.cancel()
+        pendingCommandResults.removeAll()
+        let statusNotifications = statusNotificationWaiters
+        statusNotificationWaiters.removeAll()
+        statusNotificationTimeout?.cancel()
+        statusNotificationTimeout = nil
         pendingObjectControlRecords.removeAll()
         openingChannel = false
         disarmChannelWatchdog()
         for cont in reads { cont.resume(throwing: DeviceError.notConnected) }
         for cont in writes { cont.resume(throwing: DeviceError.notConnected) }
         for waiter in objectControls { waiter.resume(throwing: TransferLinkLost()) }
-        weatherCommand?.continuation.resume(throwing: DeviceError.notConnected)
+        commandResult?.continuation.resume(throwing: DeviceError.notConnected)
+        for waiter in statusNotifications { waiter.resume(throwing: DeviceError.notConnected) }
         for cont in channels { cont.resume(throwing: DeviceError.notConnected) }
     }
 
@@ -1747,6 +1729,115 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
                 }
                 pendingReads[uuid, default: []].append(cont)
                 peripheral.readValue(for: characteristic)
+            }
+        }
+    }
+
+    /// Run one authenticated BLE imperative command. The protocol-v4 object client deliberately
+    /// has its own operation gate; this much smaller lane covers only the legacy command/status
+    /// pair that remains part of the BLE control surface.
+    private func exchangeCommand(_ payload: Data, command: UInt8) async throws -> CommandResult {
+        precondition(payload.first == command)
+        let slot = await acquireCommandSlot()
+        defer { releaseCommandSlot(slot) }
+        try Task.checkCancellation()
+        try await ensureStatusNotifications()
+        try Task.checkCancellation()
+        await clearPendingCommandResult(command)
+        try await write(payload, to: GATT.command)
+        let result = try await nextCommandResult(command: command)
+        try Task.checkCancellation()
+        return result
+    }
+
+    private func acquireCommandSlot() async -> UUID {
+        let token = UUID()
+        return await withCheckedContinuation { continuation in
+            queue.async { [self] in
+                if commandSlotOwner == nil {
+                    commandSlotOwner = token
+                    continuation.resume(returning: token)
+                } else {
+                    commandSlotWaiters.append(CommandSlotWaiter(token: token, continuation: continuation))
+                }
+            }
+        }
+    }
+
+    private func releaseCommandSlot(_ token: UUID) {
+        queue.async { [self] in
+            guard commandSlotOwner == token else { return }
+            if commandSlotWaiters.isEmpty {
+                commandSlotOwner = nil
+            } else {
+                let next = commandSlotWaiters.removeFirst()
+                commandSlotOwner = next.token
+                next.continuation.resume(returning: next.token)
+            }
+        }
+    }
+
+    /// The answer can beat CoreBluetooth's write callback, so clear the previous attempt before
+    /// writing and buffer a matching early notification until the waiter is registered.
+    private func clearPendingCommandResult(_ command: UInt8) async {
+        await withCheckedContinuation { continuation in
+            queue.async { [self] in
+                pendingCommandResults.removeValue(forKey: command)
+                continuation.resume()
+            }
+        }
+    }
+
+    private func nextCommandResult(command: UInt8) async throws -> CommandResult {
+        let token = UUID()
+        return try await withCheckedThrowingContinuation { continuation in
+            queue.async { [self] in
+                if let result = pendingCommandResults.removeValue(forKey: command) {
+                    continuation.resume(returning: result)
+                    return
+                }
+                let timeout = DispatchWorkItem { [weak self] in
+                    guard let self, let waiter = self.commandResultWaiter,
+                          waiter.token == token else { return }
+                    self.commandResultWaiter = nil
+                    waiter.continuation.resume(throwing: DeviceError.writeFailed)
+                }
+                commandResultWaiter = CommandResultWaiter(
+                    token: token, command: command, timeout: timeout,
+                    continuation: continuation
+                )
+                queue.asyncAfter(deadline: .now() + Self.commandResultTimeout, execute: timeout)
+            }
+        }
+    }
+
+    /// Arm the command-result notification before writing. This stays lazy so the v4 object path
+    /// does not gain a second gated CCCD during pairing; the first imperative command enables it
+    /// after authentication is already established.
+    private func ensureStatusNotifications() async throws {
+        try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<Void, Error>) in
+            queue.async { [self] in
+                guard let peripheral, let status = characteristics[GATT.status] else {
+                    continuation.resume(throwing: DeviceError.notConnected)
+                    return
+                }
+                guard !status.isNotifying else {
+                    continuation.resume()
+                    return
+                }
+                statusNotificationWaiters.append(continuation)
+                guard statusNotificationWaiters.count == 1 else { return }
+                let timeout = DispatchWorkItem { [weak self] in
+                    guard let self, !self.statusNotificationWaiters.isEmpty else { return }
+                    let waiters = self.statusNotificationWaiters
+                    self.statusNotificationWaiters.removeAll()
+                    self.statusNotificationTimeout = nil
+                    for waiter in waiters { waiter.resume(throwing: DeviceError.writeFailed) }
+                }
+                statusNotificationTimeout = timeout
+                queue.asyncAfter(deadline: .now() + Self.phaseTimeout, execute: timeout)
+                peripheral.setNotifyValue(true, for: status)
             }
         }
     }
@@ -2390,19 +2481,20 @@ extension BLETransport: CBPeripheralDelegate {
         }
         if uuid == GATT.status {
             if error != nil {
-                if let waiter = weatherCommandWaiter {
-                    weatherCommandWaiter = nil
+                if let waiter = commandResultWaiter {
+                    commandResultWaiter = nil
+                    waiter.timeout.cancel()
                     waiter.continuation.resume(throwing: DeviceError.readFailed)
                 }
             } else if let data = characteristic.value,
-                      case .commandResult(let result) = try? StatusMessage(decoding: data),
-                      result.command == WeatherUnchangedCommand.commandByte
+                      case .commandResult(let result) = try? StatusMessage(decoding: data)
             {
-                if let waiter = weatherCommandWaiter {
-                    weatherCommandWaiter = nil
+                if let waiter = commandResultWaiter, waiter.command == result.command {
+                    commandResultWaiter = nil
+                    waiter.timeout.cancel()
                     waiter.continuation.resume(returning: result)
                 } else {
-                    pendingWeatherCommandResult = result
+                    pendingCommandResults[result.command] = result
                 }
             }
             return
@@ -2416,10 +2508,16 @@ extension BLETransport: CBPeripheralDelegate {
         _ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?
     ) {
         if characteristic.uuid == GATT.status {
-            if error == nil {
+            statusNotificationTimeout?.cancel()
+            statusNotificationTimeout = nil
+            let waiters = statusNotificationWaiters
+            statusNotificationWaiters.removeAll()
+            if error == nil, characteristic.isNotifying {
+                for waiter in waiters { waiter.resume() }
                 beginWeatherUploadIfReady()
-            } else if discoveryPolicy.weatherUploadPending {
-                failWeatherUpload(.connectionDropped)
+            } else {
+                for waiter in waiters { waiter.resume(throwing: DeviceError.writeFailed) }
+                if discoveryPolicy.weatherUploadPending { failWeatherUpload(.connectionDropped) }
             }
             return
         }
