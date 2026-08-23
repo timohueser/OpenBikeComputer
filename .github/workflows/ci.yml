@@ -228,6 +228,13 @@ jobs:
       - name: Deleted catalog and bake APIs stay deleted
         run: python3 tools/check_retired_map_stack.py
 
+  card-scheduler-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Host-pushed cards are built only by the card scheduler
+        run: python3 tools/check_card_scheduler.py
+
   fixture-registry:
     runs-on: ubuntu-latest
     steps:
@@ -1045,7 +1052,7 @@ jobs:
 
   ci:
     if: always()
-    needs: [changes, selection, retired-map-stack, fixture-registry, fmt, clippy, test, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, web, desktop-frontend, desktop]
+    needs: [changes, selection, retired-map-stack, card-scheduler-guard, fixture-registry, fmt, clippy, test, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, web, desktop-frontend, desktop]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

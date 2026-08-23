@@ -13,7 +13,7 @@ from typing import Any, Mapping, Sequence
 
 
 RUNNER_JOBS = {
-    "always": ("changes", "selection", "retired-map-stack", "fixture-registry"),
+    "always": ("changes", "selection", "retired-map-stack", "card-scheduler-guard", "fixture-registry"),
     "rust": ("fmt", "clippy", "test", "embedded", "boot", "device", "deny"),
     "wasm": ("wasm",),
     "web": ("wasm-bridges", "web"),
