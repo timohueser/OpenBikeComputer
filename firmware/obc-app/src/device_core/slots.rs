@@ -95,7 +95,11 @@ pub struct SlotFull<T> {
 /// A newtype over `Option<T>` rather than a bare field, so the capacity-one rule is enforced by the
 /// type instead of policed at every call site — a plain `Option` would let any writer overwrite an
 /// unconsumed effect with `=` and silently drop a delete or a persist.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Deliberately **not** `Clone` or `Copy`. The slot fields are `pub`, so a `Copy` slot could be
+/// copied out and drained beside the original, and the executor's "consume each effect at most
+/// once" obligation would become a convention again. One slot, one value, one taker.
+#[derive(Debug, PartialEq, Eq)]
 pub struct Slot<T> {
     held: Option<T>,
 }
@@ -118,11 +122,6 @@ impl<T> Slot<T> {
     /// Take the held value, emptying the slot. The executor's "consume at most once" is this call.
     pub fn take(&mut self) -> Option<T> {
         self.held.take()
-    }
-
-    /// Look at the held value without consuming it.
-    pub fn peek(&self) -> Option<&T> {
-        self.held.as_ref()
     }
 
     /// Whether the slot holds nothing — the admission test before issuing a new operation.
@@ -401,9 +400,8 @@ mod tests {
         ($slots:ident, $other:ident, $expected:ident, $refused:ident, $($field:ident),+) => {$(
             let intruder = $other.$field.take().expect("a second value exists");
             let err = $slots.$field.try_put(intruder).expect_err("a full slot refuses");
-            assert_eq!(Some(&err.rejected), $refused.$field.peek(), "the refused value comes back unchanged");
-            assert_eq!($slots.$field.peek(), $expected.$field.peek(), "the first value is untouched");
-            assert_eq!($slots.$field.take(), $expected.$field.take(), "and it is what the owner takes");
+            assert_eq!(Some(err.rejected), $refused.$field.take(), "the refused value comes back unchanged");
+            assert_eq!($slots.$field.take(), $expected.$field.take(), "the first value is what the owner takes");
             assert!($slots.$field.is_empty(), "taking empties the slot");
         )+};
     }
@@ -411,7 +409,7 @@ mod tests {
     #[test]
     fn a_full_effect_slot_preserves_the_first_effect() {
         let (mut slots, mut other) = effects();
-        let (mut expected, refused) = effects();
+        let (mut expected, mut refused) = effects();
         assert!(slots.has_pending());
 
         check_full_slot!(slots, other, expected, refused, catalog, retention, recorder, navigator, settings);
@@ -425,7 +423,7 @@ mod tests {
     #[test]
     fn a_full_outcome_slot_preserves_the_first_outcome() {
         let (mut slots, mut other) = outcomes();
-        let (mut expected, refused) = outcomes();
+        let (mut expected, mut refused) = outcomes();
         assert!(slots.has_pending());
 
         check_full_slot!(slots, other, expected, refused, catalog, retention, recorder, navigator, settings);
@@ -452,15 +450,13 @@ mod tests {
             Err(full) => Some(full.rejected),
             Ok(()) => panic!("the slot was occupied"),
         };
-        assert_eq!(slots.catalog.peek(), Some(&refresh), "the in-flight refresh is untouched");
-
-        // The executor consumes the refresh.
-        assert_eq!(slots.catalog.take(), Some(refresh));
+        // The executor consumes the refresh — untouched by the refusal.
+        assert_eq!(slots.catalog.take(), Some(refresh), "the in-flight refresh is what the executor gets");
 
         // Pass 2: the retained delete goes out unchanged.
         let retained = pending.take().unwrap();
         slots.catalog.try_put(retained).unwrap();
-        assert_eq!(slots.catalog.peek(), Some(&delete), "the deferred delete survived the busy pass");
+        assert_eq!(slots.catalog.take(), Some(delete), "the deferred delete survived the busy pass");
         assert!(pending.is_none());
     }
 

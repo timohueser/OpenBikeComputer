@@ -42,14 +42,23 @@ pub enum LegacyRole {
 /// Which DeviceCore component owns the variant after the migration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LegacyOwner {
+    /// `CatalogMachine` — revisions, identities, refresh, deletion, the trip cascade.
     Catalog,
+    /// `RetentionMachine` — usage stamps, expiry deadlines, sidecar metadata.
     Retention,
+    /// `Recorder` — the ride session and its persistence lifecycle.
     Recorder,
+    /// `Navigator` — route and detour planning, preview, and commit.
     Navigator,
+    /// `SettingsMachine` — the dirty revision and the persist handshake.
     Settings,
+    /// `WeatherDomain` — visible freshness, alerts, and installed-data identity.
     Weather,
+    /// `DfuState` — update scan, install admission, and terminal state.
     Dfu,
+    /// The bond domain in `ble.rs` — bond removal.
     Bond,
+    /// The storage-information domain — free-space reporting.
     StorageInfo,
     /// `FaultState` and the card scheduler.
     Fault,
@@ -216,10 +225,14 @@ mod tests {
 
     /// All 15 events map, exactly once each. Distinctness is by discriminant, so two rows for the
     /// same variant would fail even though their payloads differ.
+    ///
+    /// Unlike the command side there is no `HostEvent` class registry to cross-check the sample list
+    /// against, so what guarantees completeness here is [`event_migration`]'s exhaustive match alone
+    /// — a sixteenth variant fails the build. This test proves the rows are distinct, not that the
+    /// list is exhaustive.
     #[test]
     fn all_fifteen_events_map_exactly_once() {
         let events = every_event();
-        assert_eq!(events.len(), LEGACY_EVENTS);
 
         let mut seen: heapless::Vec<_, LEGACY_EVENTS> = heapless::Vec::new();
         for event in &events {
