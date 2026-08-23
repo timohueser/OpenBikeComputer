@@ -843,8 +843,8 @@ impl RouteCache {
         self.inner.borrow_mut().clear();
     }
 
-    /// Cumulative `(hits, misses)` since the last [`clear`](Self::clear) — for the device's RTT
-    /// route-cache log.
+    /// Cumulative `(hits, misses)` since the last [`clear`](Self::clear). Nothing on the device
+    /// reads it; it is how this crate's own tests observe residency and eviction.
     pub fn stats(&self) -> (u32, u32) {
         let inner = self.inner.borrow();
         (inner.hits, inner.misses)
