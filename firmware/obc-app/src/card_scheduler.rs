@@ -579,6 +579,23 @@ fn expire_upload(stack: &mut Stack, now_ms: u32) -> bool {
 }
 
 #[cfg(test)]
+impl CardScheduler {
+    /// Whether every slot is unset and no warning has been raised or shown — the
+    /// [`new`](CardScheduler::new) state. The destructure is exhaustive, so a new slot must state
+    /// its empty value here too.
+    pub(crate) fn is_empty(&self) -> bool {
+        let CardScheduler { passkey, map_transfer, upload, warnings, warned, update, dfu } = self;
+        passkey.is_none()
+            && map_transfer.is_none()
+            && upload.is_none()
+            && *warnings == WarningFlags::NONE
+            && *warned == WarningFlags::NONE
+            && update.is_none()
+            && dfu.is_none()
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use crate::screen::{MapTransfer, WarningFlags, MAX_DEPTH};
     use crate::{App, AppState, BleLink, BleStatus, Gesture, Screen};
