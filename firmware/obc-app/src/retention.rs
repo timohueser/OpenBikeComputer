@@ -1146,3 +1146,84 @@ mod tests {
         assert_eq!(rt.take(SweepKind::StampRoute), Some(8));
     }
 }
+
+// ==================== the Retention domain protocol (#1436) ====================
+//
+// RetentionMachine owns the stamps, the deadlines and the sweep. It advances *before*
+// CatalogMachine, so an expiry it decides on this pass reaches the catalog as a `CatalogIntent`
+// in the same pass — the deletion itself is never a retention effect. What is left here is the
+// device-local sidecar write: two bounded metadata writes that bump no store revision.
+
+use crate::device_core::{OperationToken, RetentionTag};
+use crate::CatalogObjectId;
+
+/// What the rest of the device asks of retention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetentionIntent {
+    /// Re-run the sweep. Raised when an input the policy depends on moves: the clock becomes
+    /// trusted, the catalog changes, a ride ends, or the day rolls over.
+    Recheck,
+    /// A route's retention metadata changed — the rider picked a level, or the route was used.
+    RouteMetadataChanged { id: CatalogObjectId, meta: RouteRetentionMeta },
+    /// A ride's sync stamp changed — the companion acknowledged the ride.
+    RideMetadataChanged { id: CatalogObjectId, synced_at: u32 },
+}
+
+/// One bounded sidecar write, carrying the [`OperationToken`] the domain issued.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetentionEffect {
+    /// Write route `id`'s retention level and last-used stamp to the route-retention sidecar.
+    WriteRouteMetadata { token: OperationToken<RetentionTag>, id: CatalogObjectId, meta: RouteRetentionMeta },
+    /// Write ride `id`'s `synced_at` stamp to the synced-set sidecar.
+    WriteRideMetadata { token: OperationToken<RetentionTag>, id: CatalogObjectId, synced_at: u32 },
+}
+
+impl RetentionEffect {
+    /// The operation this effect belongs to.
+    pub fn token(&self) -> OperationToken<RetentionTag> {
+        match self {
+            RetentionEffect::WriteRouteMetadata { token, .. } | RetentionEffect::WriteRideMetadata { token, .. } => {
+                *token
+            }
+        }
+    }
+}
+
+/// Why a metadata write failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetentionError {
+    /// The sidecar write failed. Retention is the safe-direction store: an unwritten stamp reads
+    /// back as unknown, which never deletes — so this is retried, never escalated.
+    WriteFailed,
+}
+
+/// The result of one [`RetentionEffect`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetentionOutcome {
+    /// Route `id`'s metadata is durable.
+    RouteMetadataWritten { token: OperationToken<RetentionTag>, id: CatalogObjectId },
+    /// Ride `id`'s metadata is durable.
+    RideMetadataWritten { token: OperationToken<RetentionTag>, id: CatalogObjectId },
+    /// The write failed.
+    Failed { token: OperationToken<RetentionTag>, error: RetentionError },
+    /// The executor abandoned the write without completing it.
+    Cancelled { token: OperationToken<RetentionTag> },
+}
+
+impl RetentionOutcome {
+    /// The operation this outcome answers.
+    pub fn token(&self) -> OperationToken<RetentionTag> {
+        match self {
+            RetentionOutcome::RouteMetadataWritten { token, .. }
+            | RetentionOutcome::RideMetadataWritten { token, .. }
+            | RetentionOutcome::Failed { token, .. }
+            | RetentionOutcome::Cancelled { token } => *token,
+        }
+    }
+}
+
+// Layout tripwires: an identity plus the two-field sidecar record, never the sidecar itself.
+const _: () = assert!(core::mem::size_of::<RetentionIntent>() <= 24, "an identity and a stamp");
+const _: () = assert!(core::mem::size_of::<RetentionEffect>() <= 24, "a token, an identity and a stamp");
+const _: () = assert!(core::mem::size_of::<RetentionOutcome>() <= 16, "a token and an identity");
+const _: () = assert!(core::mem::size_of::<RetentionError>() <= 1, "a verdict, not a report");

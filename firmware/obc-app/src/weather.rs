@@ -28,7 +28,7 @@
 use obc_formats::io::ByteSource;
 use obc_formats::obcw::{HourlyRecord, HOURLY_COUNT, HOURLY_INTERVAL_SECONDS, INTENSITY_NODATA};
 use obc_route::RouteReader;
-use obc_weather::{Error as WeatherError, WeatherCache, WeatherReader, FRAME_CURRENT_CAP_S};
+use obc_weather::{Error as ReadError, WeatherCache, WeatherReader, FRAME_CURRENT_CAP_S};
 
 /// Rain-frame samples the snapshot holds. OBCW's radar-de policy is nine 15-minute frames; a
 /// bundle carrying more keeps its first sixteen and reports the truncation, which the outlook
@@ -191,7 +191,7 @@ impl WeatherSnapshot {
         reader: &WeatherReader<'_, S>,
         cache: &mut WeatherCache,
         pos: Option<(i32, i32)>,
-    ) -> Result<Self, WeatherError> {
+    ) -> Result<Self, ReadError> {
         Self::sample_along(reader, cache, pos, None)
     }
 
@@ -227,7 +227,7 @@ impl WeatherSnapshot {
         cache: &mut WeatherCache,
         pos: Option<(i32, i32)>,
         projection: Option<(&RouteReader<'_>, RideProjection)>,
-    ) -> Result<Self, WeatherError> {
+    ) -> Result<Self, ReadError> {
         let header = reader.header();
         let hourly = reader.hourly_records()?;
 
@@ -1099,3 +1099,84 @@ mod tests {
         assert_eq!(local_hour_minute(3_600, -120), (23, 0), "-2 h rolls back across midnight");
     }
 }
+
+// ==================== the Weather domain protocol (#1436) ====================
+//
+// WeatherDomain owns what the rider may be *told*: visible freshness, the alert policy, and the
+// identity of the installed data. The platform weather task owns the radio, the provider's timing,
+// decoding and store access — it reports typed outcomes and external facts and decides none of the
+// honesty rules this module derives.
+//
+// The bundle never crosses. An `OpenInstalledData` outcome names the product it opened; the frames
+// themselves stay in the store behind [`WeatherSnapshot::sample`], exactly as they do today.
+
+use crate::device_core::{DataIdentity, OperationToken, Revision, WeatherTag};
+
+/// What the UI asks of the weather domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WeatherIntent {
+    /// Fetch fresh weather for the current position. Idempotent: a repeat while one is in flight
+    /// coalesces rather than stacking a second request on a metered link.
+    RefreshRequested,
+}
+
+/// One bounded physical weather operation, carrying the [`OperationToken`] the domain issued.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WeatherEffect {
+    /// Ask the companion for a fresh bundle and install it.
+    RequestRefresh { token: OperationToken<WeatherTag> },
+    /// Open the installed data set so the screens can sample it.
+    OpenInstalledData { token: OperationToken<WeatherTag>, data: DataIdentity },
+}
+
+impl WeatherEffect {
+    /// The operation this effect belongs to.
+    pub fn token(&self) -> OperationToken<WeatherTag> {
+        match self {
+            WeatherEffect::RequestRefresh { token } | WeatherEffect::OpenInstalledData { token, .. } => *token,
+        }
+    }
+}
+
+/// Why a weather operation failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WeatherError {
+    /// The companion link dropped mid-request.
+    LinkLost,
+    /// The provider had nothing for this position, or refused.
+    NoData,
+    /// The installed data could not be read or decoded.
+    Unreadable,
+}
+
+/// The result of one [`WeatherEffect`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WeatherOutcome {
+    /// A fresh bundle was installed as `data` at `revision`.
+    Refreshed { token: OperationToken<WeatherTag>, data: DataIdentity, revision: Revision },
+    /// The installed data set is open and samplable.
+    Opened { token: OperationToken<WeatherTag>, data: DataIdentity, revision: Revision },
+    /// The operation failed. Nothing is claimed about the weather on this path — a failed refresh
+    /// leaves the previous snapshot standing and ages honestly.
+    Failed { token: OperationToken<WeatherTag>, error: WeatherError },
+    /// The executor abandoned the operation without completing it.
+    Cancelled { token: OperationToken<WeatherTag> },
+}
+
+impl WeatherOutcome {
+    /// The operation this outcome answers.
+    pub fn token(&self) -> OperationToken<WeatherTag> {
+        match self {
+            WeatherOutcome::Refreshed { token, .. }
+            | WeatherOutcome::Opened { token, .. }
+            | WeatherOutcome::Failed { token, .. }
+            | WeatherOutcome::Cancelled { token } => *token,
+        }
+    }
+}
+
+// Layout tripwires: an identity and a revision — never a bundle, a frame or a grid.
+const _: () = assert!(core::mem::size_of::<WeatherIntent>() == 0, "one fieldless request");
+const _: () = assert!(core::mem::size_of::<WeatherEffect>() <= 16, "a token and a data identity");
+const _: () = assert!(core::mem::size_of::<WeatherOutcome>() <= 24, "a token, an identity and a revision");
+const _: () = assert!(core::mem::size_of::<WeatherError>() <= 1, "a verdict, not a report");

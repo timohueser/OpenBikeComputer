@@ -97,3 +97,70 @@ pub struct WeatherSnapshot {
     /// ([`App::clock_trusted`](crate::App::clock_trusted)) — the scheduler's bundle-age input.
     pub now_utc: Option<u32>,
 }
+
+// ==================== the Bond domain protocol (#1436) ====================
+//
+// Forgetting a phone is one bounded platform operation, but its user-visible lifecycle is
+// DeviceCore's: the confirm hold, the "not paired" row afterwards, and the fact that the *link*
+// dropping is a separate external fact ([`ExternalFacts::link`](crate::device_core::ExternalFacts))
+// rather than part of this answer.
+
+use crate::device_core::{BondTag, OperationToken};
+
+/// What the rider asks of the bond store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BondIntent {
+    /// Forget the paired phone — the guarded hold on the Bluetooth screen.
+    ForgetRequested,
+}
+
+/// The one bounded bond operation, carrying the [`OperationToken`] the domain issued.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BondEffect {
+    /// Clear the bond store and drop the bonded connection.
+    Forget { token: OperationToken<BondTag> },
+}
+
+impl BondEffect {
+    /// The operation this effect belongs to.
+    pub fn token(&self) -> OperationToken<BondTag> {
+        match self {
+            BondEffect::Forget { token } => *token,
+        }
+    }
+}
+
+/// Why removing the bond failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BondError {
+    /// The bond store could not be written.
+    StoreWriteFailed,
+}
+
+/// The result of one [`BondEffect`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BondOutcome {
+    /// No bond remains. The disconnect that follows arrives separately, as a link external fact.
+    Forgotten { token: OperationToken<BondTag> },
+    /// The removal failed; the bond is still there.
+    Failed { token: OperationToken<BondTag>, error: BondError },
+    /// The executor abandoned the removal without completing it.
+    Cancelled { token: OperationToken<BondTag> },
+}
+
+impl BondOutcome {
+    /// The operation this outcome answers.
+    pub fn token(&self) -> OperationToken<BondTag> {
+        match self {
+            BondOutcome::Forgotten { token } | BondOutcome::Failed { token, .. } | BondOutcome::Cancelled { token } => {
+                *token
+            }
+        }
+    }
+}
+
+// Layout tripwires: a token, and at most a one-byte reason.
+const _: () = assert!(core::mem::size_of::<BondIntent>() == 0, "one fieldless request");
+const _: () = assert!(core::mem::size_of::<BondEffect>() <= 4, "a bare token");
+const _: () = assert!(core::mem::size_of::<BondOutcome>() <= 8, "a token and a reason");
+const _: () = assert!(core::mem::size_of::<BondError>() <= 1, "a verdict, not a report");
