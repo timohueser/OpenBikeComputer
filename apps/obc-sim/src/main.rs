@@ -465,18 +465,36 @@ fn parse_ble(s: &str) -> Result<BleSeed, String> {
 /// The `--inject` vocabulary, stated once — the parser's error text and the `--help` line both read
 /// it, so an added form cannot advertise itself in only one of them.
 const INJECT_FORMS: &str = "--inject needs nav-fail=KIND|detour-fail=KIND|upload=ID|upload-replace=ID|\
-     trip-upload=ID|map-transfer=receiving:RECEIVED/TOTAL|map-transfer=installed|warning=LIST";
+     trip-upload=ID|map-transfer=receiving:RECEIVED/TOTAL|map-transfer=installed|map-transfer=failed:KIND|\
+     warning=LIST";
 
-/// Parse a `--inject map-transfer` value into the board's live transfer state (issue #927) —
-/// `receiving:RECEIVED/TOTAL` (kibibytes, the unit the seam itself carries) or the terminal
-/// `installed`. An abort/unplug clears the card rather than raising one, so there is no form for it.
+/// The `--inject map-transfer` forms, stated once (see [`INJECT_FORMS`]).
+const MAP_TRANSFER_FORMS: &str =
+    "--inject map-transfer needs receiving:RECEIVED/TOTAL|installed|failed:storage|damaged|notamap|refused";
+
+/// Parse a `--inject map-transfer` value into the board's live transfer state (issue #927): every
+/// state the seam can carry — `receiving:RECEIVED/TOTAL` (kibibytes, the unit the seam itself
+/// carries), the terminal `installed`, and each `failed:KIND` face.
+///
+/// There is deliberately no form for an **abort or unplug**, and that is the one state this is
+/// short of: those clear the card rather than raising one (the rider caused them, and a red card
+/// explaining what they just did is noise), so `None` at the seam is what they look like and there
+/// is no frame to shoot.
 fn parse_map_transfer(s: &str) -> Result<obc_app::screen::MapTransfer, String> {
-    use obc_app::screen::MapTransfer;
+    use obc_app::screen::{MapTransfer, MapTransferError};
     if s == "installed" {
         return Ok(MapTransfer::Installed);
     }
-    let progress =
-        s.strip_prefix("receiving:").ok_or("--inject map-transfer needs receiving:RECEIVED/TOTAL|installed")?;
+    if let Some(kind) = s.strip_prefix("failed:") {
+        return Ok(MapTransfer::Failed(match kind {
+            "storage" => MapTransferError::Storage,
+            "damaged" => MapTransferError::Damaged,
+            "notamap" => MapTransferError::NotAMap,
+            "refused" => MapTransferError::Refused,
+            other => return Err(format!("--inject map-transfer failed: unknown kind `{other}`")),
+        }));
+    }
+    let progress = s.strip_prefix("receiving:").ok_or(MAP_TRANSFER_FORMS)?;
     let (received, total) =
         progress.split_once('/').ok_or("--inject map-transfer receiving needs RECEIVED/TOTAL in KiB")?;
     let received_kib: u32 = received.parse().map_err(|_| "--inject map-transfer: bad RECEIVED (KiB)")?;
@@ -915,7 +933,7 @@ Scripted snapshots:
   --inject EVENT          nav-fail=KIND|detour-fail=KIND|upload=ID|
                           upload-replace=ID|trip-upload=ID|warning=LIST|
                           map-transfer=receiving:RECEIVED/TOTAL|
-                          map-transfer=installed
+                          map-transfer=installed|map-transfer=failed:KIND
   --dfu STATE             scan=KIND|progress=KIND|installing=KIND|
                           error=ERR|confirmed=VERSION|failed=WHY[:VERSION]
   --freeze                Show the live recalculation freeze over the map
@@ -1742,6 +1760,12 @@ mod cli_tests {
             Some(Injection::MapTransfer(obc_app::screen::MapTransfer::Installed))
         ));
         assert!(matches!(
+            parse(&["--inject", "map-transfer=failed:notamap"]).unwrap().inject,
+            Some(Injection::MapTransfer(obc_app::screen::MapTransfer::Failed(
+                obc_app::screen::MapTransferError::NotAMap
+            )))
+        ));
+        assert!(matches!(
             parse(&["--dfu", "failed=reverted:v1.2.3"]).unwrap().dfu,
             Some(DfuSeed::Failed(obc_app::DfuFailure::Reverted, Some(v))) if v == "v1.2.3"
         ));
@@ -1758,6 +1782,7 @@ mod cli_tests {
         assert!(parse(&["--inject", "map-transfer=receiving:500/400"]).is_err());
         assert!(parse(&["--inject", "map-transfer=receiving:0/0"]).is_err());
         assert!(parse(&["--inject", "map-transfer=aborted"]).is_err());
+        assert!(parse(&["--inject", "map-transfer=failed:melted"]).is_err());
         assert!(parse(&["--inject", "trip-upload=nope"]).is_err());
         assert!(parse(&["--dfu", "failed=exploded"]).is_err());
         let weather = parse(&["--weather-fault", "fail-from=3:503"]).unwrap();
@@ -1838,6 +1863,7 @@ mod cli_tests {
             "trip-upload=ID",
             "map-transfer=receiving:RECEIVED/TOTAL",
             "map-transfer=installed",
+            "map-transfer=failed:KIND",
             "failed=WHY[:VERSION]",
         ] {
             assert!(HELP.contains(form), "help is missing {form}");
