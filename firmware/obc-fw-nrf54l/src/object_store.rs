@@ -207,10 +207,7 @@ impl ObjectStore {
                 assert!(Stored::Every60 as u8 == Wire::Every60.as_u8());
                 assert!(Stored::Every120 as u8 == Wire::Every120.as_u8());
                 assert!(Stored::COUNT == 5, "a new refresh interval needs a §11.8 parity row above");
-                assert!(
-                    matches!(Wire::from_u8(Stored::COUNT as u8), Err(_)),
-                    "obc-ble grew an interval obc-app has not"
-                );
+                assert!(Wire::from_u8(Stored::COUNT as u8).is_err(), "obc-ble grew an interval obc-app has not");
             };
             self.settings.weather_refresh = obc_app::WeatherRefresh::from_byte(refresh);
         }
