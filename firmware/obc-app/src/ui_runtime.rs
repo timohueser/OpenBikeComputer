@@ -2,10 +2,9 @@
 //!
 //! Owns the screen stack and everything scheduled around it: the fused input plane, the map-plane
 //! clock, the accumulated repaint demand (full-frame + region) and its render-clip/next-wake
-//! bookkeeping, hold cancellation, the idle-return policy, and the **modal reconciliation** rules
-//! for every host-pushed card (the BLE passkey card, the route-upload popups, the advisory warning
-//! card, the post-update toast, the DFU answer landings) — the delivery/defer/replace discipline
-//! those cards share (never land mid-hold, the passkey card outranks, timeout = dismiss).
+//! bookkeeping, hold cancellation, and the idle-return policy. Every **host-pushed card** is the
+//! [`CardScheduler`]'s: this component keeps one, feeds it the cross-component facts a sweep needs,
+//! and lends it the stack through the single [`run_card_sweep`](UiRuntime::run_card_sweep) door.
 //!
 //! `App` stays the orchestrator: gestures still apply through [`App::apply_gesture`] (they need
 //! the full [`Ctx`](crate::screen::Ctx) over settings/activity/catalogs) and
@@ -22,44 +21,14 @@ use embedded_graphics::primitives::Rectangle;
 use obc_ports::Fix;
 use obc_reader::Reader;
 
+use crate::card_scheduler::{CardCtx, CardScheduler};
 use crate::catalog_state::CatalogState;
 use crate::corridor::CorridorScratch;
 use crate::dirty::Dirty;
 use crate::input_plane::InputPlane;
 use crate::next_ahead::NextAhead;
-use crate::screen::{self, BaseContent, HomeScreen, MapScreen, PoiScratch, ReaderNeed, Screen, Stack, WarningFlags};
+use crate::screen::{self, BaseContent, HomeScreen, MapScreen, PoiScratch, ReaderNeed, Screen, Stack};
 use crate::settings::{DateTime, Settings};
-
-/// One committed route upload, as [`App::apply_event`](crate::App::apply_event)
-/// queues it for prompt delivery (epic #447, P4).
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct UploadEvent {
-    /// The committed route's durable object id — resolved to a catalog index at *delivery* time.
-    pub(crate) id: crate::CatalogObjectId,
-    /// The upload replaced the **actively-navigated** route (snapshotted at arrival): the
-    /// info-only "ROUTE UPDATED" card instead of a choice prompt — adoption already happened.
-    pub(crate) active_replace: bool,
-    /// The route's mini elevation sparkline ([`obc_route::elevation_sparkline`]), built by the host
-    /// from the just-committed OBCR at commit time (#682) — `None` when the route carries no
-    /// elevation. Carried with the event so the idle "ROUTE RECEIVED" card can draw it; the
-    /// mid-ride swap / active-replace variants ignore it.
-    pub(crate) elevation: Option<[u8; obc_route::SPARKLINE_BUCKETS]>,
-}
-
-/// What the single pending-upload slot holds: a committed **route** upload or a committed **trip**
-/// upload. One slot for both kinds keeps the locked most-recent-wins rule across the whole popup
-/// family — and since a trip object always arrives *after* its member routes (it references their
-/// ids, so every client sends the routes first), a burst of route events capped by the trip event
-/// naturally collapses to the one "TRIP RECEIVED" prompt.
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum PendingUpload {
-    Route(UploadEvent),
-    /// The committed trip's durable object id — validated against the (already re-fed) trip
-    /// catalog at delivery time.
-    Trip {
-        id: crate::CatalogObjectId,
-    },
-}
 
 /// The UI-plane state + policy component. See the module docs; field-level invariants are on
 /// each field (they are `App`'s former fields, moved verbatim).
@@ -162,12 +131,10 @@ pub(crate) struct UiRuntime {
     /// snapshots above (a `Screen` variant is a slot in a `.bss` union), and quiet — asking for
     /// nothing — unless such a tile is on the grid while the Statistics screen is up.
     pub(crate) next_ahead: NextAhead,
-    /// The live BLE pairing passkey ([`BleStatus::passkey`](crate::BleStatus)), fed by
-    /// [`set_ble_status`](App::set_ble_status) and driving the passkey card (P2, #449) via
-    /// [`reconcile_passkey_card`](App::reconcile_passkey_card). Held off `AppState` so feeding it
-    /// never gates a map redraw; [`ble_passkey`](App::ble_passkey) exposes it for tests to observe
-    /// the seam carrying it.
-    pub(crate) ble_passkey: Option<u32>,
+    /// Every host-pushed modal card: the named pending slots, the policy table, and the one sweep
+    /// that lands them (see [`CardScheduler`]). Held here because the stack is here — the scheduler
+    /// borrows it for the length of [`run_card_sweep`](UiRuntime::run_card_sweep) and never longer.
+    pub(crate) cards: CardScheduler,
     /// The per-slot BLE **sensor status** (BLE sensors epic #707, SE7): HR / power / cadence
     /// connection phase + battery + live tick, fed each pass by the host through
     /// [`set_sensor_status`](App::set_sensor_status) and drawn only by the Sensors settings screen.
@@ -179,31 +146,6 @@ pub(crate) struct UiRuntime {
     /// scan, fed by the host through [`set_sensor_scan_hits`](App::set_sensor_scan_hits). Empty
     /// outside a scan; replaced wholesale each pass while one runs.
     pub(crate) sensor_scan_hits: crate::sensors::SensorScanHits,
-    /// The one **pending upload prompt** (epic #447, P4) — a route *or* a trip commit
-    /// ([`PendingUpload`]), set by [`App::apply_event`](crate::App::apply_event) and delivered (or
-    /// dropped) by [`reconcile_upload_prompt`](App::reconcile_upload_prompt). Deliberately a single
-    /// slot: consecutive uploads replace it — most recent wins, the popup rule. Carried by
-    /// **durable object id**, never a catalog index, so a rescan between arrival and a
-    /// hold-deferred delivery can't retarget it.
-    pub(crate) pending_upload: Option<PendingUpload>,
-    /// Device warnings **discovered but not yet shown** on the advisory card (issue #504) — a
-    /// missing-sensor probe result, or the map-slow flag. Accumulated by
-    /// [`notify_warning`](App::apply_event) and delivered (or deferred behind a passkey card /
-    /// hold) by [`reconcile_warning`](App::reconcile_warning), like [`pending_upload`].
-    pub(crate) pending_warnings: WarningFlags,
-    /// Warnings **already shown** on a card this session, so each flag is surfaced once and a
-    /// dismissed notice doesn't nag — while a genuinely *new* flag (e.g. a late sensor timeout)
-    /// still re-opens the card. Never cleared (the boot's warnings are the boot's).
-    pub(crate) warned: WarningFlags,
-    /// The firmware update **this boot just confirmed** (S4, #619): the running image's version
-    /// string, set by the board once the trial confirm has written `Idle { installed }`. The
-    /// one-time fact S5's "updated to vX" toast takes; `None` on a normal boot.
-    pub(crate) update_confirmed: Option<heapless::String<32>>,
-    /// The firmware update **this boot detected as failed** (the board's boot-outcome reconcile):
-    /// the typed [`DfuFailure`](crate::dfu::DfuFailure) verdict + the staged version the arm
-    /// marker recorded (if it survived). The one-time fact the "UPDATE FAILED" card takes; `None`
-    /// on a normal boot.
-    pub(crate) update_failed: Option<(crate::dfu::DfuFailure, Option<heapless::String<32>>)>,
 }
 
 impl UiRuntime {
@@ -229,14 +171,9 @@ impl UiRuntime {
             poi_scratch: PoiScratch::new(),
             corridor_scratch: CorridorScratch::new(),
             next_ahead: NextAhead::new(),
-            ble_passkey: None,
+            cards: CardScheduler::new(),
             sensor_status: [crate::sensors::SensorStatus::default(); crate::settings::SENSOR_SLOTS],
             sensor_scan_hits: crate::sensors::SensorScanHits::new(),
-            pending_upload: None,
-            pending_warnings: WarningFlags::NONE,
-            warned: WarningFlags::NONE,
-            update_confirmed: None,
-            update_failed: None,
         }
     }
 
@@ -271,15 +208,10 @@ impl UiRuntime {
             addr_of_mut!((*slot).poi_scratch).write(PoiScratch::new());
             addr_of_mut!((*slot).corridor_scratch).write(CorridorScratch::new());
             addr_of_mut!((*slot).next_ahead).write(NextAhead::new());
-            addr_of_mut!((*slot).ble_passkey).write(None);
+            addr_of_mut!((*slot).cards).write(CardScheduler::new());
             addr_of_mut!((*slot).sensor_status)
                 .write([crate::sensors::SensorStatus::default(); crate::settings::SENSOR_SLOTS]);
             addr_of_mut!((*slot).sensor_scan_hits).write(crate::sensors::SensorScanHits::new());
-            addr_of_mut!((*slot).pending_upload).write(None);
-            addr_of_mut!((*slot).pending_warnings).write(WarningFlags::NONE);
-            addr_of_mut!((*slot).warned).write(WarningFlags::NONE);
-            addr_of_mut!((*slot).update_confirmed).write(None);
-            addr_of_mut!((*slot).update_failed).write(None);
             // Exhaustiveness guard: a field added to `UiRuntime` fails to compile here until its
             // `addr_of_mut!(...).write(...)` is added above (see `App::init_idle`).
             let UiRuntime {
@@ -299,14 +231,9 @@ impl UiRuntime {
                 poi_scratch: _,
                 corridor_scratch: _,
                 next_ahead: _,
-                ble_passkey: _,
+                cards: _,
                 sensor_status: _,
                 sensor_scan_hits: _,
-                pending_upload: _,
-                pending_warnings: _,
-                warned: _,
-                update_confirmed: _,
-                update_failed: _,
             } = &*slot;
         }
     }
@@ -316,9 +243,9 @@ impl UiRuntime {
     /// so a screen surfaces its own timed-refresh rather than the host re-rendering on a blind
     /// heartbeat — and the soonest residual deadline is stored for
     /// [`App::ms_until_next_wake`](crate::App::ms_until_next_wake). Cheap: a clock comparison per
-    /// drawn screen, over the same `base..` range the render draws. The per-pass modal sweeps
-    /// (upload popups, warnings, toast, idle return) are sequenced by
-    /// [`App::advance_animations`](crate::App::advance_animations) right after this.
+    /// drawn screen, over the same `base..` range the render draws. The card sweep and the idle-return
+    /// sweep are sequenced by [`App::advance_animations`](crate::App::advance_animations) right
+    /// after this.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn advance_timers(
         &mut self,
@@ -613,367 +540,31 @@ impl UiRuntime {
             || self.input.back_hold_progress() > 0.0
     }
 
-    /// The stack index of the passkey card, or `None` when it isn't up. The card only ever sits as
-    /// the top (it swallows input, and nothing navigates past it), but this searches the whole stack
-    /// so a close removes it wherever it ended up.
-    fn passkey_card_index(&self) -> Option<usize> {
-        self.stack.iter().position(|s| matches!(s, Screen::Passkey(_)))
-    }
-
-    /// Whether the passkey card is currently up (epic #447). The P4 route-upload popups poll this to
-    /// honour the priority rule — a popup is dropped, not queued, while the card shows.
+    /// Whether the **passkey card** is on the stack (epic #447) — the modal-priority query, distinct
+    /// from the desired passkey *level* the scheduler holds: while a hold charges the level can be
+    /// set with no card up yet. A stack read, never a mutation.
     pub(crate) fn passkey_card_up(&self) -> bool {
-        self.passkey_card_index().is_some()
+        self.stack.iter().any(|s| matches!(s, Screen::Passkey(_)))
     }
 
-    /// Record the live BLE pairing passkey and reconcile the host-pushed card to it — the tail
-    /// of [`App::set_ble_status`](crate::App::set_ble_status), owned here because the card's
-    /// open/close discipline (defer mid-hold, outrank the upload popups) is modal-reconciliation
-    /// policy.
-    pub(crate) fn update_passkey_card(&mut self, passkey: Option<u32>) {
-        self.ble_passkey = passkey;
-        self.reconcile_passkey_card();
-    }
-
-    /// Open or close the host-pushed passkey card to match the seam's passkey ([`ble_passkey`](App::ble_passkey)):
-    /// push a [`PasskeyScreen`](crate::screen::PasskeyScreen) when a passkey is present and no card is
-    /// up, remove it when the passkey clears. Idempotent — the steady state (same passkey re-fed each
-    /// pass) does nothing, so it never re-dirties. **Deferred while a hold charges** so a host-pushed
-    /// screen never lands mid-hold (push *or* pop); the desired state is re-fed every pass, so the
-    /// deferral is simply "try again next pass". Each transition dirties the map exactly once: opening
-    /// covers the screen below (its own draw); closing repaints whatever the card covered.
-    ///
-    /// The card outranks the P4 route-upload popups: a popup consults
-    /// [`passkey_card_up`](App::passkey_card_up) and drops its prompt while the card is showing.
-    pub(crate) fn reconcile_passkey_card(&mut self) {
-        // Never move a host-pushed screen onto/off the stack while a hold is charging.
-        if self.hold_charging() {
-            return;
-        }
-        match (self.ble_passkey, self.passkey_card_index()) {
-            // A passkey to show and no card up → open it over the current top. The card outranks
-            // the route-upload popups (P4) in *both* directions: a popup arriving under the card
-            // is dropped (see `reconcile_upload_prompt`), and a passkey arriving while a popup is
-            // up **replaces** it — remove the popup rather than stacking the card over it (it's
-            // advisory; the route is in the menu either way). The manual, menu-opened Route-swap
-            // prompt is not a popup and stays put under the card.
-            (Some(passkey), None) => {
-                self.remove_received_popups();
-                let r = self.stack.push(Screen::Passkey(crate::screen::PasskeyScreen::new(passkey)));
-                debug_assert!(r.is_ok(), "screen stack overflow — raise MAX_DEPTH");
-                self.map_dirty = true;
-            }
-            // No passkey but a card is up → remove it wherever it sits (the rider may not have
-            // touched anything), and repaint what it covered.
-            (None, Some(i)) => {
-                let _ = self.stack.remove(i);
-                self.map_dirty = true;
-            }
-            // Card already matches the passkey (both present, or both absent): nothing to do.
-            _ => {}
-        }
-    }
-
-    /// The stack index of the map-transfer card, or `None` when it isn't up (issue #927). Searched
-    /// across the whole stack for the same reason the passkey card's index is: a close must find it
-    /// wherever it ended up.
-    fn map_transfer_index(&self) -> Option<usize> {
-        self.stack.iter().position(|s| matches!(s, Screen::MapTransfer(_)))
-    }
-
-    /// Whether the map-transfer card is up — the modal-priority query, and what
-    /// [`App::map_transfer_card_up`](crate::App::map_transfer_card_up) exposes.
+    /// Whether the **map-transfer card** is on the stack (issue #927) — what
+    /// [`App::map_transfer_card_up`](crate::App::map_transfer_card_up) exposes to the board's
+    /// transfer gate.
     pub(crate) fn map_transfer_card_up(&self) -> bool {
-        self.map_transfer_index().is_some()
+        self.stack.iter().any(|s| matches!(s, Screen::MapTransfer(_)))
     }
 
-    /// Reconcile the host-pushed map-transfer card to the board's live transfer state (issue #927) —
-    /// the tail of [`App::set_map_transfer`](crate::App::set_map_transfer), and the direct analogue
-    /// of [`reconcile_passkey_card`](Self::reconcile_passkey_card):
-    ///
-    /// - a state with no card up → push one;
-    /// - a **changed** state with a card up → rewrite it in place and dirty (never stack a second);
-    /// - an unchanged state → nothing, so the per-pass feed never re-dirties on the steady state
-    ///   (progress is published in KiB, so even a fast card only changes this a few times a second);
-    /// - no state with a card up → remove it and repaint what it covered.
-    ///
-    /// **Deferred while a hold charges**, like every host-pushed screen: the desired state is re-fed
-    /// each pass, so the deferral is just "try again next pass". Unlike the passkey card this one
-    /// does *not* clear the upload popups — the two cannot coexist in practice (a map transfer is
-    /// USB-only and a route popup is BLE-driven), and stacking over one is harmless if they ever do.
-    pub(crate) fn reconcile_map_transfer_card(&mut self, state: Option<crate::screen::MapTransfer>) {
-        if self.hold_charging() {
-            return;
-        }
-        match (state, self.map_transfer_index()) {
-            (Some(state), Some(i)) => {
-                let Screen::MapTransfer(card) = &mut self.stack[i] else { return };
-                if card.state() != state {
-                    card.set_state(state);
-                    self.map_dirty = true;
-                }
-            }
-            (Some(state), None) => {
-                let r = self.stack.push(Screen::MapTransfer(crate::screen::MapTransferScreen::new(state)));
-                debug_assert!(r.is_ok(), "screen stack overflow — raise MAX_DEPTH");
-                self.map_dirty = true;
-            }
-            (None, Some(i)) => {
-                let _ = self.stack.remove(i);
-                self.map_dirty = true;
-            }
-            (None, None) => {}
-        }
-    }
-
-    /// Queue a route-upload advisory event (single slot — most recent wins) and try to deliver
-    /// it immediately — the tail of [`HostEvent::RouteUploaded`](crate::host::HostEvent) handling.
-    pub(crate) fn post_upload_event(&mut self, ev: UploadEvent, catalogs: &CatalogState, tracking: bool) {
-        self.pending_upload = Some(PendingUpload::Route(ev));
-        self.reconcile_upload_prompt(catalogs, tracking);
-    }
-
-    /// Queue a trip-upload advisory event into the same single slot (most recent wins) and try to
-    /// deliver it — the tail of [`HostEvent::TripUploaded`](crate::host::HostEvent) handling. The
-    /// trip commit always follows its member routes' commits, so this is what collapses the
-    /// per-route popup burst into the one "TRIP RECEIVED" card.
-    pub(crate) fn post_trip_upload_event(
-        &mut self,
-        id: crate::CatalogObjectId,
-        catalogs: &CatalogState,
-        tracking: bool,
-    ) {
-        self.pending_upload = Some(PendingUpload::Trip { id });
-        self.reconcile_upload_prompt(catalogs, tracking);
-    }
-
-    /// Deliver (or drop) the pending route-upload prompt (epic #447, P4). Called on arrival and
-    /// once per [`advance_animations`](App::advance_animations) pass, so a hold-deferred prompt
-    /// lands on the next tick — the P2 host-pushed-screen precedent, adapted to a one-shot event
-    /// (the pending slot *is* the re-fed desired state).
-    ///
-    /// The locked popup rules, in order:
-    /// - **Passkey outranks**: while the card is up the prompt is dropped, not queued (advisory —
-    ///   the route is in the Route menu regardless).
-    /// - **Never lands mid-hold**: delivery waits a tick while either button's hold charges.
-    /// - **Vanished id**: a route deleted between commit and delivery drops the prompt.
-    /// - **Replace, don't stack**: an existing upload popup — or a manual
-    ///   [`RouteSwapScreen`](crate::screen::RouteSwapScreen) opened from the menu — is replaced in
-    ///   place by the new prompt (most recent wins; selection resets with the fresh screen).
-    pub(crate) fn reconcile_upload_prompt(&mut self, catalogs: &CatalogState, tracking: bool) {
-        let Some(ev) = self.pending_upload else { return };
-        if self.passkey_card_up() {
-            self.pending_upload = None; // dropped, not queued — the card outranks
-            return;
-        }
-        if self.hold_charging() {
-            return; // defer a tick; retried from `advance_animations`
-        }
-        self.pending_upload = None;
-        let screen = match ev {
-            PendingUpload::Route(ev) => {
-                // Resolve the durable id in the (already rescanned) catalog; a vanished route
-                // drops the advisory prompt entirely.
-                let Some(idx) = catalogs.route_index_of(ev.id) else { return };
-                if ev.active_replace {
-                    Screen::RouteUpdated(crate::screen::RouteUpdatedScreen::new(idx, self.now_ms))
-                } else if tracking {
-                    Screen::RouteSwap(crate::screen::RouteSwapScreen::received(idx, self.now_ms))
-                } else {
-                    Screen::RouteReceived(crate::screen::RouteReceivedScreen::new(idx, self.now_ms, ev.elevation))
-                }
-            }
-            // The trip card is the same whether idle or tracking (there is nothing to swap onto —
-            // a trip is a folder, not a navigable route). Validate the id against the (already
-            // re-fed) trip catalog; a vanished trip drops the advisory prompt entirely. The screen
-            // keeps the durable id, so no remap is needed while it is up.
-            PendingUpload::Trip { id } => {
-                if !catalogs.trips().iter().any(|t| t.id == id) {
-                    return;
-                }
-                Screen::TripReceived(crate::screen::TripReceivedScreen::new(id, self.now_ms))
-            }
-        };
-        match self.upload_prompt_index() {
-            Some(i) => self.stack[i] = screen,
-            None => {
-                let r = self.stack.push(screen);
-                debug_assert!(r.is_ok(), "screen stack overflow — raise MAX_DEPTH");
-            }
-        }
-        self.map_dirty = true;
-    }
-
-    /// The stack index of the screen an incoming upload prompt **replaces**: any upload popup, or
-    /// the manual Route-swap prompt (the locked "same rule when the manual swap is up"). `None`
-    /// when the prompt should push fresh.
-    fn upload_prompt_index(&self) -> Option<usize> {
-        self.stack.iter().position(|s| {
-            matches!(
-                s,
-                Screen::RouteReceived(_) | Screen::RouteUpdated(_) | Screen::TripReceived(_) | Screen::RouteSwap(_)
-            )
-        })
-    }
-
-    /// Remove every host-pushed upload popup from the stack (the passkey card just opened over
-    /// them — card outranks). The **manual** Route-swap prompt is rider-opened, not a popup, and
-    /// stays. Returns whether anything was removed.
-    fn remove_received_popups(&mut self) -> bool {
-        let mut removed = false;
-        let mut i = 0;
-        while i < self.stack.len() {
-            let popup = match &self.stack[i] {
-                Screen::RouteReceived(_) | Screen::RouteUpdated(_) | Screen::TripReceived(_) => true,
-                Screen::RouteSwap(s) => s.is_received(),
-                _ => false,
-            };
-            if popup {
-                let _ = self.stack.remove(i);
-                removed = true;
-            } else {
-                i += 1;
-            }
-        }
-        removed
-    }
-
-    /// Auto-close any upload popup past its 30 s deadline — **timeout = dismiss** (epic #447,
-    /// P4): the popup is removed exactly as Back would, nothing else changes. Deferred while a
-    /// hold charges (the P2 rule: never move a host-pushed screen mid-hold); the popups'
-    /// `tick_timers` keep a short residual wake armed until the sweep lands.
-    pub(crate) fn close_expired_upload_popups(&mut self) {
-        if self.hold_charging() {
-            return;
-        }
-        let now = self.now_ms;
-        let mut i = 0;
-        while i < self.stack.len() {
-            let expired = match &self.stack[i] {
-                Screen::RouteReceived(s) => s.expired(now),
-                Screen::RouteUpdated(s) => s.expired(now),
-                Screen::TripReceived(s) => s.expired(now),
-                Screen::RouteSwap(s) => s.expired(now),
-                _ => false,
-            };
-            if expired {
-                let _ = self.stack.remove(i);
-                self.map_dirty = true; // repaint what the popup covered
-            } else {
-                i += 1;
-            }
-        }
-    }
-
-    /// Accumulate freshly-raised warning flags and try to deliver them — the
-    /// [`HostEvent::Warning`](crate::host::HostEvent) landing rule.
-    pub(crate) fn post_warning(&mut self, flags: WarningFlags) {
-        if flags.is_empty() {
-            return;
-        }
-        self.pending_warnings |= flags;
-        self.reconcile_warning();
-    }
-
-    /// Deliver (or defer) the pending [warnings](App::apply_event). Called on arrival and once
-    /// per [`advance_animations`](App::advance_animations) pass, so a warning deferred behind a
-    /// passkey card or a live hold lands on a later tick — the [`reconcile_upload_prompt`] pattern.
-    /// Only the not-yet-shown subset is surfaced (`pending & !warned`); it ORs into an open card or
-    /// pushes a fresh one.
-    pub(crate) fn reconcile_warning(&mut self) {
-        let fresh = self.pending_warnings & !self.warned;
-        if fresh.is_empty() {
-            self.pending_warnings = WarningFlags::NONE; // nothing new — drop any stale re-raise
-            return;
-        }
-        // Advisory: never cover the passkey card (it outranks) and never land mid-hold. Keep the
-        // flags pending and retry from `advance_animations` once the card clears / the hold resolves.
-        if self.passkey_card_up() || self.hold_charging() {
-            return;
-        }
-        self.warned |= fresh;
-        self.pending_warnings = WarningFlags::NONE;
-        match self.warning_index() {
-            Some(i) => {
-                if let Screen::Warning(s) = &mut self.stack[i] {
-                    s.add(fresh);
-                }
-            }
-            None => {
-                let r = self.stack.push(Screen::Warning(crate::screen::WarningScreen::new(fresh)));
-                debug_assert!(r.is_ok(), "screen stack overflow — raise MAX_DEPTH");
-            }
-        }
-        self.map_dirty = true;
-    }
-
-    /// The stack index of a live [warning card](crate::screen::WarningScreen), so a newly-discovered
-    /// fault ORs into it rather than stacking a second card. `None` when no card is open.
-    fn warning_index(&self) -> Option<usize> {
-        self.stack.iter().position(|s| matches!(s, Screen::Warning(_)))
-    }
-
-    /// Surface the one-time post-update verdict — the "Updated to vX" toast (epic #615 S5, #620)
-    /// if this boot confirmed a freshly-installed update, or its failure twin, the "UPDATE FAILED"
-    /// card, if the boot-outcome reconcile found the armed update is not what's running. The board
-    /// calls [`notify_update_confirmed`](App::apply_event) at the health anchor (the
-    /// first frame with the SD mounted) or [`notify_update_failed`](App::apply_event) at
-    /// boot; the next [`advance_animations`](App::advance_animations) pass drains the fact and
-    /// pushes the card once. Deferred behind a
-    /// passkey card or a live hold like [`reconcile_warning`](App::reconcile_warning), so it never
-    /// covers the pairing code or lands mid-hold; a normal boot has no fact and does nothing.
-    pub(crate) fn reconcile_update_toast(&mut self) {
-        if self.update_confirmed.is_none() && self.update_failed.is_none() {
-            return;
-        }
-        if self.passkey_card_up() || self.hold_charging() {
-            return; // retried next pass, once the card clears / the hold resolves
-        }
-        if let Some(version) = self.update_confirmed.take() {
-            let r = self.stack.push(Screen::DfuUpdated(crate::screen::DfuUpdatedScreen::new(&version)));
-            debug_assert!(r.is_ok(), "screen stack overflow — raise MAX_DEPTH");
+    /// **The scheduler's one door onto the stack.** Runs a
+    /// [`CardScheduler::sweep`](crate::card_scheduler::CardScheduler::sweep) with the
+    /// cross-component facts it needs, and folds its single "something visible moved" answer into
+    /// the map's repaint demand. Called once per
+    /// [`advance_animations`](crate::App::advance_animations) pass and again whenever a host fact is
+    /// posted, so an arriving card lands in the same frame unless a rule defers it.
+    pub(crate) fn run_card_sweep(&mut self, catalogs: &CatalogState, tracking: bool) {
+        let ctx = CardCtx { now_ms: self.now_ms, hold_charging: self.hold_charging(), catalogs, tracking };
+        if self.cards.sweep(&mut self.stack, &ctx) {
             self.map_dirty = true;
         }
-        // The failure twin (the board's boot-outcome reconcile sets at most one of the two facts).
-        if let Some((why, staged)) = self.update_failed.take() {
-            let card = crate::screen::DfuFailedScreen::new(why, staged.as_deref());
-            let r = self.stack.push(Screen::DfuFailed(card));
-            debug_assert!(r.is_ok(), "screen stack overflow — raise MAX_DEPTH");
-            self.map_dirty = true;
-        }
-    }
-
-    /// [`HostEvent::DfuScanned`]: land the scan answer in the "Checking card..." wait, or drop it.
-    pub(crate) fn on_dfu_scanned(&mut self, result: Result<crate::dfu::DfuScanReport, crate::dfu::DfuScanError>) {
-        let Some(i) = self.stack.iter().position(|s| matches!(s, Screen::DfuCheck(_))) else {
-            return;
-        };
-        self.stack[i] = match result {
-            Ok(report) => Screen::DfuConfirm(crate::screen::DfuConfirmScreen::new(report)),
-            Err(e) => Screen::DfuError(crate::screen::DfuErrorScreen::new(e)),
-        };
-        self.map_dirty = true;
-    }
-
-    /// [`HostEvent::DfuInstallBegan`]: swap the spinner for (or push) the terminal installing card.
-    pub(crate) fn on_dfu_install_began(&mut self) {
-        let card = Screen::DfuInstalling(crate::screen::DfuInstallingScreen::new());
-        if let Some(i) = self.stack.iter().position(|s| matches!(s, Screen::DfuProgress(_))) {
-            self.stack[i] = card;
-        } else {
-            let _ = self.stack.push(card);
-        }
-        self.map_dirty = true;
-    }
-
-    /// [`HostEvent::DfuInstallFailed`]: land the failure in the live install wait, or drop it.
-    pub(crate) fn on_dfu_install_failed(&mut self, reason: crate::dfu::DfuInstallError) {
-        let Some(i) = self.stack.iter().position(|s| matches!(s, Screen::DfuProgress(_) | Screen::DfuInstalling(_)))
-        else {
-            return;
-        };
-        self.stack[i] = Screen::DfuError(crate::screen::DfuErrorScreen::new_install(reason));
-        self.map_dirty = true;
     }
 
     /// Whether the top (input-receiving) screen is one of the settings screens — the gate
