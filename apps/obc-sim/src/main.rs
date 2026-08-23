@@ -73,6 +73,8 @@ enum Injection {
     NavFail(NavFailure),
     DetourFail(NavFailure),
     Upload { id: obc_app::CatalogObjectId, replaced: bool },
+    TripUpload { id: obc_app::CatalogObjectId },
+    MapTransfer(obc_app::screen::MapTransfer),
     Warning(obc_app::WarningFlags),
 }
 
@@ -83,6 +85,9 @@ enum DfuSeed {
     Installing(dfu::DfuScanKind),
     Error(obc_app::DfuScanError),
     Confirmed(String),
+    /// The boot-outcome failure verdict + the version that was staged (`None` when the board could
+    /// not name one) — the "UPDATE FAILED" card's two inputs.
+    Failed(obc_app::DfuFailure, Option<String>),
 }
 
 enum WeatherFault {
@@ -457,10 +462,33 @@ fn parse_ble(s: &str) -> Result<BleSeed, String> {
     Ok(seed)
 }
 
+/// The `--inject` vocabulary, stated once — the parser's error text and the `--help` line both read
+/// it, so an added form cannot advertise itself in only one of them.
+const INJECT_FORMS: &str = "--inject needs nav-fail=KIND|detour-fail=KIND|upload=ID|upload-replace=ID|\
+     trip-upload=ID|map-transfer=receiving:RECEIVED/TOTAL|map-transfer=installed|warning=LIST";
+
+/// Parse a `--inject map-transfer` value into the board's live transfer state (issue #927) —
+/// `receiving:RECEIVED/TOTAL` (kibibytes, the unit the seam itself carries) or the terminal
+/// `installed`. An abort/unplug clears the card rather than raising one, so there is no form for it.
+fn parse_map_transfer(s: &str) -> Result<obc_app::screen::MapTransfer, String> {
+    use obc_app::screen::MapTransfer;
+    if s == "installed" {
+        return Ok(MapTransfer::Installed);
+    }
+    let progress =
+        s.strip_prefix("receiving:").ok_or("--inject map-transfer needs receiving:RECEIVED/TOTAL|installed")?;
+    let (received, total) =
+        progress.split_once('/').ok_or("--inject map-transfer receiving needs RECEIVED/TOTAL in KiB")?;
+    let received_kib: u32 = received.parse().map_err(|_| "--inject map-transfer: bad RECEIVED (KiB)")?;
+    let total_kib: u32 = total.parse().map_err(|_| "--inject map-transfer: bad TOTAL (KiB)")?;
+    if total_kib == 0 || received_kib > total_kib {
+        return Err("--inject map-transfer: RECEIVED must be ≤ TOTAL and TOTAL non-zero".into());
+    }
+    Ok(MapTransfer::Receiving { received_kib, total_kib })
+}
+
 fn parse_injection(s: &str) -> Result<Injection, String> {
-    let (kind, value) = s
-        .split_once('=')
-        .ok_or("--inject needs nav-fail=KIND|detour-fail=KIND|upload=ID|upload-replace=ID|warning=LIST")?;
+    let (kind, value) = s.split_once('=').ok_or(INJECT_FORMS)?;
     match kind {
         "nav-fail" => Ok(Injection::NavFail(parse_nav_failure(value, "--inject nav-fail")?)),
         "detour-fail" => Ok(Injection::DetourFail(parse_nav_failure(value, "--inject detour-fail")?)),
@@ -468,21 +496,45 @@ fn parse_injection(s: &str) -> Result<Injection, String> {
             id: value.parse().map_err(|_| "--inject upload needs a u64 object id")?,
             replaced: kind == "upload-replace",
         }),
+        "trip-upload" => {
+            Ok(Injection::TripUpload { id: value.parse().map_err(|_| "--inject trip-upload needs a u64 object id")? })
+        }
+        "map-transfer" => Ok(Injection::MapTransfer(parse_map_transfer(value)?)),
         "warning" => Ok(Injection::Warning(parse_warning(value)?)),
-        _ => Err("--inject needs nav-fail=KIND|detour-fail=KIND|upload=ID|upload-replace=ID|warning=LIST".into()),
+        _ => Err(INJECT_FORMS.into()),
     }
 }
 
+/// The `--dfu` vocabulary, stated once (see [`INJECT_FORMS`]).
+const DFU_FORMS: &str =
+    "--dfu needs scan=KIND|progress=KIND|installing=KIND|error=ERR|confirmed=VERSION|failed=WHY[:VERSION]";
+
+/// Parse a `--dfu failed=WHY[:VERSION]` value into the boot-outcome verdict the "UPDATE FAILED"
+/// card carries: why the armed update is not what is running, and the version that was staged (the
+/// board leaves it out when the arm marker could not name one).
+fn parse_dfu_failed(s: &str) -> Result<DfuSeed, String> {
+    let (why, staged) = match s.split_once(':') {
+        Some((why, version)) => (why, Some(version.to_string())),
+        None => (s, None),
+    };
+    let why = match why {
+        "notstarted" => obc_app::DfuFailure::NotStarted,
+        "reverted" => obc_app::DfuFailure::Reverted,
+        other => return Err(format!("--dfu failed: unknown reason `{other}` (notstarted|reverted)")),
+    };
+    Ok(DfuSeed::Failed(why, staged))
+}
+
 fn parse_dfu(s: &str) -> Result<DfuSeed, String> {
-    let (state, value) =
-        s.split_once('=').ok_or("--dfu needs scan=KIND|progress=KIND|installing=KIND|error=ERR|confirmed=VERSION")?;
+    let (state, value) = s.split_once('=').ok_or(DFU_FORMS)?;
     match state {
         "scan" => Ok(DfuSeed::Scan(dfu::DfuScanKind::parse(value)?)),
         "progress" => Ok(DfuSeed::Progress(dfu::DfuScanKind::parse(value)?)),
         "installing" => Ok(DfuSeed::Installing(dfu::DfuScanKind::parse(value)?)),
         "error" => Ok(DfuSeed::Error(parse_dfu_error(value)?)),
         "confirmed" => Ok(DfuSeed::Confirmed(value.to_string())),
-        _ => Err("--dfu needs scan=KIND|progress=KIND|installing=KIND|error=ERR|confirmed=VERSION".into()),
+        "failed" => parse_dfu_failed(value),
+        _ => Err(DFU_FORMS.into()),
     }
 }
 
@@ -861,9 +913,11 @@ Scripted snapshots:
   --expect-screen NAME    Refuse unless the script lands on this screen
   --hold PLAN             Consume without starting one request: nav|detour
   --inject EVENT          nav-fail=KIND|detour-fail=KIND|upload=ID|
-                          upload-replace=ID|warning=LIST
+                          upload-replace=ID|trip-upload=ID|warning=LIST|
+                          map-transfer=receiving:RECEIVED/TOTAL|
+                          map-transfer=installed
   --dfu STATE             scan=KIND|progress=KIND|installing=KIND|
-                          error=ERR|confirmed=VERSION
+                          error=ERR|confirmed=VERSION|failed=WHY[:VERSION]
   --freeze                Show the live recalculation freeze over the map
 
 Weather (independent product controls):
@@ -1342,6 +1396,18 @@ fn main() {
             let elevation = store.elevation_sparkline(id);
             app.apply_event(obc_app::HostEvent::RouteUploaded { id, replaced, elevation });
         }
+        // Inject a committed **trip** upload (epic #526): the trip catalog was fed above from the
+        // `--routes-dir`'s `.obt` files (the "already rescanned" store), and this is the event that
+        // names the committed id — the device's exact order. A trip always lands after its member
+        // routes, so the one "TRIP RECEIVED" card replaces the burst's last per-route popup.
+        if let Some(Injection::TripUpload { id }) = args.inject {
+            app.apply_event(obc_app::HostEvent::TripUploaded { id, replaced: false });
+        }
+        // Feed the board's live map-transfer state (issue #927) through the same level-style seam
+        // the ride loop polls each pass, so the card is raised exactly as a real upload raises it.
+        if let Some(Injection::MapTransfer(state)) = args.inject {
+            app.set_map_transfer(Some(state));
+        }
         // Raise device warnings (issue #504) through the real `Warning` event, so the advisory
         // card renders — the sim has no I²C probe / fragmented card to trip it for real.
         if let Some(Injection::Warning(w)) = args.inject {
@@ -1384,6 +1450,16 @@ fn main() {
         // pass — `reconcile_update_toast` pushes the "Updated to vX" card there, like the device.
         if let Some(DfuSeed::Confirmed(version)) = &args.dfu {
             app.apply_event(obc_app::HostEvent::UpdateConfirmed(obc_app::dfu::clamp(version)));
+            app.advance_animations(InputClock(500_000));
+        }
+        // The failure twin: the boot-outcome reconcile found the armed update is not what is
+        // running. Same shape as the toast above — raise the fact, then one animation pass drains it
+        // into the one-time "UPDATE FAILED" card.
+        if let Some(DfuSeed::Failed(why, staged)) = &args.dfu {
+            app.apply_event(obc_app::HostEvent::UpdateFailed {
+                why: *why,
+                staged: staged.as_deref().map(obc_app::dfu::clamp),
+            });
             app.advance_animations(InputClock(500_000));
         }
         // `--sensors screen` (SE7, epic #707): after the script lands on the Sensors screen (or its
@@ -1490,18 +1566,6 @@ fn main() {
             app.show_weather_alert(kind, minutes);
         }
 
-        // `--expect-screen`: the recipe states where its gestures were supposed to land, and the
-        // sim checks it against the `screens!` table's own name before a single pixel is written.
-        // Checked here — after the injections, at the frame that is actually about to be drawn —
-        // so what is verified is what gets saved.
-        if let Some(expected) = &args.expect_screen {
-            let landed = app.top_screen().name();
-            if landed != expected {
-                eprintln!("error: --expect-screen {expected}, but the script landed on {landed}");
-                std::process::exit(1);
-            }
-        }
-
         let mut fb = Framebuffer::new(args.width, args.height);
         // Time the whole frame draw into `render_us` (the no_std renderer has no clock, so
         // the host fills it) — same field the live panel shows.
@@ -1532,6 +1596,19 @@ fn main() {
         if args.weather_decide {
             app.weather_alert_tick(wx_snapshot.as_ref());
         }
+
+        // `--expect-screen`: the recipe states where its gestures were supposed to land, and the
+        // sim checks it against the `screens!` table's own name before a single pixel is written.
+        // Checked here — below every seam that can still change the top screen, including WX12's
+        // alert decision — so what is verified is exactly what gets saved.
+        if let Some(expected) = &args.expect_screen {
+            let landed = app.top_screen().name();
+            if landed != expected {
+                eprintln!("error: --expect-screen {expected}, but the script landed on {landed}");
+                std::process::exit(1);
+            }
+        }
+
         let rain_step = app.state.rain_step;
         let refreshing = args.weather_refreshing;
         let render_final = |rain: Option<&mut dyn obc_render::RainOverlaySource>,
@@ -1652,6 +1729,37 @@ mod cli_tests {
             parse(&["--dfu", "installing=normal"]).unwrap().dfu,
             Some(DfuSeed::Installing(dfu::DfuScanKind::Normal))
         ));
+        assert!(matches!(parse(&["--inject", "trip-upload=5"]).unwrap().inject, Some(Injection::TripUpload { id: 5 })));
+        assert!(matches!(
+            parse(&["--inject", "map-transfer=receiving:100000/400000"]).unwrap().inject,
+            Some(Injection::MapTransfer(obc_app::screen::MapTransfer::Receiving {
+                received_kib: 100_000,
+                total_kib: 400_000
+            }))
+        ));
+        assert!(matches!(
+            parse(&["--inject", "map-transfer=installed"]).unwrap().inject,
+            Some(Injection::MapTransfer(obc_app::screen::MapTransfer::Installed))
+        ));
+        assert!(matches!(
+            parse(&["--dfu", "failed=reverted:v1.2.3"]).unwrap().dfu,
+            Some(DfuSeed::Failed(obc_app::DfuFailure::Reverted, Some(v))) if v == "v1.2.3"
+        ));
+        assert!(matches!(
+            parse(&["--dfu", "failed=notstarted"]).unwrap().dfu,
+            Some(DfuSeed::Failed(obc_app::DfuFailure::NotStarted, None))
+        ));
+    }
+
+    /// The new seed forms refuse the values that would silently snapshot a *different* frame:
+    /// a progress bar past full, a zero-length transfer, and an unknown failure reason.
+    #[test]
+    fn seed_forms_reject_states_the_device_cannot_reach() {
+        assert!(parse(&["--inject", "map-transfer=receiving:500/400"]).is_err());
+        assert!(parse(&["--inject", "map-transfer=receiving:0/0"]).is_err());
+        assert!(parse(&["--inject", "map-transfer=aborted"]).is_err());
+        assert!(parse(&["--inject", "trip-upload=nope"]).is_err());
+        assert!(parse(&["--dfu", "failed=exploded"]).is_err());
         let weather = parse(&["--weather-fault", "fail-from=3:503"]).unwrap();
         assert_eq!(weather.live.controls.fail_from, Some((3, 503)));
         let faults = parse(&["--weather-fault", "latency=10", "--weather-fault", "fail-from=2:503"]).unwrap();
@@ -1723,6 +1831,17 @@ mod cli_tests {
         for removed in ["--true-color", "--colorway", "--calibrate", "--screenshot", "--boot-fault", "--set"] {
             assert!(!HELP.contains(removed), "help still advertises {removed}");
             assert!(!readme.contains(removed), "README still advertises {removed}");
+        }
+        // A grouped flag's *forms* are the actual vocabulary a snapshot recipe writes, so they are
+        // documented in both places too — a seed nobody can find is a seed nobody uses.
+        for form in [
+            "trip-upload=ID",
+            "map-transfer=receiving:RECEIVED/TOTAL",
+            "map-transfer=installed",
+            "failed=WHY[:VERSION]",
+        ] {
+            assert!(HELP.contains(form), "help is missing {form}");
+            assert!(readme.contains(form), "README is missing {form}");
         }
     }
 }

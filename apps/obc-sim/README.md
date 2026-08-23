@@ -60,12 +60,14 @@ remaining option.
   spinner snapshot.
 - `--inject EVENT` injects one mutually-exclusive host event:
   `nav-fail=exhausted|nopath`, `detour-fail=exhausted|nopath`, `upload=ID`,
-  `upload-replace=ID`, or `warning=LIST`. Warning tokens are
-  `gps,altimeter,compass,map,rec`.
+  `upload-replace=ID`, `trip-upload=ID`, `map-transfer=receiving:RECEIVED/TOTAL`,
+  `map-transfer=installed`, or `warning=LIST`. Warning tokens are
+  `gps,altimeter,compass,map,rec`. `trip-upload=ID` names a trip in the `--routes-dir`, and the
+  map-transfer figures are kibibytes — the unit the board's own progress seam carries.
 - `--dfu STATE` selects one complete DFU fixture state: `scan=KIND`, `progress=KIND`,
-  `installing=KIND`, `error=ERR`, or `confirmed=VERSION`. Scan kinds are `normal`, `same`, and
-  `first`; errors are `notfound`, `unreadable`, `damaged`, `toolarge`, `fragmented`, and
-  `untrusted`.
+  `installing=KIND`, `error=ERR`, `confirmed=VERSION`, or `failed=WHY[:VERSION]`. Scan kinds are
+  `normal`, `same`, and `first`; errors are `notfound`, `unreadable`, `damaged`, `toolarge`,
+  `fragmented`, and `untrusted`; failure reasons are `notstarted` and `reverted`.
 - `--freeze` engages the production recalculation freeze for an over-map banner snapshot.
 
 ## Weather
