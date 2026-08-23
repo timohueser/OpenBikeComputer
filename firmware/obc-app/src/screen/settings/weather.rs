@@ -9,8 +9,10 @@ use obc_render::{rect, text::Font, Surface};
 use crate::input::Gesture;
 use crate::Msg;
 
-use super::super::{Ctx, Render, Transition, LIST_TOP};
-use crate::screen::title_frame;
+use super::super::{Ctx, Render, Transition};
+use crate::screen::vocab::chrome::title_frame;
+use crate::screen::vocab::chrome::LIST_TOP;
+use crate::screen::vocab::rows::{row_cursor, row_rect};
 
 /// Row height — the Display screen's picker-row pitch.
 const ROW_H: i32 = 58;
@@ -47,8 +49,8 @@ impl WeatherSettingsScreen {
         let (w, h) = (rx.w, rx.h);
         title_frame(cv, w, h, rx.t(Msg::WeatherSettingsTitle), "");
 
-        let row = super::row_rect(LIST_TOP + 8, w, ROW_H);
-        super::row_cursor(cv, row, true, self.editing);
+        let row = row_rect(LIST_TOP + 8, w, ROW_H);
+        row_cursor(cv, row, true, self.editing);
         super::row_label(cv, row, rx.t(Msg::WeatherSettingsRefresh), Some(rx.t(Msg::WeatherSettingsRefreshSub)));
         let value = rx.settings.weather_refresh.name(rx.settings.language);
         let (cw, ch) = (88, 32);

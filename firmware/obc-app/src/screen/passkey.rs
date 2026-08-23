@@ -23,6 +23,7 @@ use obc_render::{
 use crate::input::Gesture;
 use crate::Msg;
 
+use super::vocab::chrome::{ble_glyph, title_frame, BLE_GLYPH_W, TITLE_BAR_H};
 use super::{palette, Ctx, Render, Transition};
 
 /// The passkey card. Carries the 6-digit code it displays; the app pushes it with the live passkey
@@ -58,7 +59,7 @@ impl PasskeyScreen {
 
         // Opaque full-screen card on the wood frame — the shared chrome, but titled as the pairing
         // prompt rather than a menu (no title-bar readout, no BLE glyph: the whole screen is the cue).
-        super::title_frame(cv, w, h, rx.t(Msg::PasskeyTitle), "");
+        title_frame(cv, w, h, rx.t(Msg::PasskeyTitle), "");
 
         // The six digits, zero-padded and ungrouped `000042` (leading zeros kept — the owner's
         // review round 1 reverted the `000 042` grouping), in the Huge tier — the one oversized
@@ -73,7 +74,7 @@ impl PasskeyScreen {
 
         // The device↔phone pair in the glyph slot above the code (dialog anatomy, #678 T1): the
         // Bluetooth rune, three dashes for the link, a phone outline — quiet, no animation.
-        pair_glyph(cv, w / 2, (super::TITLE_BAR_H + code_top) / 2);
+        pair_glyph(cv, w / 2, (TITLE_BAR_H + code_top) / 2);
 
         // The caption: the phone types this code (the device is DisplayOnly). Plain, functional, and
         // split across two lines so it fits the 240 px panel in the Label tier (≈ 20 chars/line).
@@ -93,8 +94,8 @@ fn pair_glyph(cv: &mut impl Surface, cx: i32, cy: i32) {
     // Group layout, left to right: rune (11) · gap (8) · dashes (5+3+5+3+5 = 21) · gap (8) ·
     // phone (12) — 60 px total, centred on `cx`.
     let x0 = cx - 30;
-    super::ble_glyph(cv, x0, cy, INK);
-    let mut x = x0 + super::BLE_GLYPH_W + 8;
+    ble_glyph(cv, x0, cy, INK);
+    let mut x = x0 + BLE_GLYPH_W + 8;
     for _ in 0..3 {
         cv.fill(rect(x, cy - 1, 5, 2), INK);
         x += 5 + 3;

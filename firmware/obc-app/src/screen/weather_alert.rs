@@ -17,11 +17,10 @@ use obc_render::{
 use crate::input::Gesture;
 use crate::Msg;
 
+use super::vocab::chrome::{card_triangle, title_frame, wrapped};
+use super::vocab::rows::{draw_guarded_rows, GuardedRowsGeometry, MenuItem};
 use super::weather_map::WeatherRainMapScreen;
-use super::{
-    card_triangle, draw_guarded_rows, palette, title_frame, wrapped, Ctx, GuardedRowsGeometry, MenuItem, Render,
-    Screen, Transition,
-};
+use super::{palette, Ctx, Render, Screen, Transition};
 
 /// What the alert is about — sets the title and body copy. The WX12 engine maps its classes onto
 /// these faces: heavy rain (≥ 10 mm/h reaching the corridor) → [`Rain`](WeatherAlertKind::Rain),
@@ -72,7 +71,7 @@ impl WeatherAlertScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Step(n) => super::list::on_step(&mut self.selected, n, 2),
+            Gesture::Step(n) => super::vocab::list::on_step(&mut self.selected, n, 2),
             Gesture::Press => match self.selected {
                 0 => {
                     // VIEW RAIN MAP answers the alert with the rain map, never parking the card

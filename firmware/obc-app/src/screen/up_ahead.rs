@@ -62,8 +62,10 @@ use crate::input::Gesture;
 use crate::settings::{Units, UpAheadSource};
 use crate::Msg;
 
-use super::list::{self, ListGeometry, Separators};
-use super::{empty_state, fit_caption, palette, poi_menu::draw_category_icon, Ctx, Render, Screen, Transition};
+use super::vocab::chrome::empty_state;
+use super::vocab::list::{self, ListGeometry, Separators};
+use super::vocab::tiles::fit_caption;
+use super::{palette, poi_menu::draw_category_icon, Ctx, Render, Screen, Transition};
 
 /// The two-line row pitch: icon + name above, distance-to-go + climb-to-go (+ the off-route side
 /// hint) below. Inherited unchanged from the waypoint list this screen replaces, so the ride

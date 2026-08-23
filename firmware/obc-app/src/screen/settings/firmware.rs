@@ -23,10 +23,11 @@ use obc_render::{
 };
 
 use crate::input::Gesture;
-use crate::screen::{palette, title_frame, Ctx, DfuCheckScreen, Render, Screen, Transition, LIST_TOP};
+use crate::screen::vocab::chrome::{title_frame, LIST_TOP};
+use crate::screen::{palette, Ctx, DfuCheckScreen, Render, Screen, Transition};
 use crate::Msg;
 
-use super::ROW_X;
+use crate::screen::vocab::rows::ROW_X;
 
 /// The Firmware page. Stateless beyond being on the stack — the one row is always the selection.
 #[derive(Debug, Default)]

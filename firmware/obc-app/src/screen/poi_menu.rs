@@ -4,7 +4,7 @@
 //! [`PoiListScreen`](super::PoiListScreen) for that category; `back` returns to the Menu.
 //!
 //! Names only, no counts (house style — a count would also cost a `nearest_pois` query per row on
-//! entry). The list itself reuses the shared [`list`](super::list) widget; only the per-row body
+//! entry). The list itself reuses the shared [`list`](super::vocab::list) widget; only the per-row body
 //! (icon + name) and the Press semantics are local, mirroring the Route menu.
 
 use embedded_graphics::prelude::Point;
@@ -18,7 +18,7 @@ use obc_render::{
 use crate::input::Gesture;
 use crate::Msg;
 
-use super::list::{self, ListGeometry, Separators};
+use super::vocab::list::{self, ListGeometry, Separators};
 use super::{palette, Ctx, PoiListScreen, Render, Screen, Transition};
 
 /// Per-category row height — a Body-tier row with an amber highlight + padding, matching the nav

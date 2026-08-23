@@ -32,12 +32,14 @@ use obc_render::{
     Surface,
 };
 
+use super::vocab::chrome::{empty_state, title_frame};
+use super::vocab::tiles::tile;
 use crate::input::Gesture;
 use crate::screen::ActiveClimb;
 use crate::settings::{Language, Units};
 use crate::{t, Msg};
 
-use super::{palette, tile, title_frame, Ctx, MapScreen, Render, Screen, Transition};
+use super::{palette, Ctx, MapScreen, Render, Screen, Transition};
 
 // Chart geometry (px), tuned for the 240×320 panel. Taller than Statistics' band (its chart is
 // ~42→110) — the four tiles below leave the room the epic wants for a climb worth reading.
@@ -108,7 +110,7 @@ impl ClimbScreen {
         // safe placeholder instead of panicking, exactly like Statistics' no-route guard.
         let Some(climb) = rx.climb else {
             title_frame(cv, w, h, rx.t(Msg::ClimbTitle), "");
-            super::empty_state(cv, w, h, rx.t(Msg::ClimbNoClimb), rx.t(Msg::ClimbNotOnClimb));
+            empty_state(cv, w, h, rx.t(Msg::ClimbNoClimb), rx.t(Msg::ClimbNotOnClimb));
             return;
         };
         let ActiveClimb { seg, profile } = climb;

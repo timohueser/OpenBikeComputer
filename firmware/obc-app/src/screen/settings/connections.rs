@@ -6,7 +6,8 @@
 use obc_render::Surface;
 
 use crate::input::Gesture;
-use crate::screen::{list, BluetoothScreen, Ctx, Render, Screen, SensorsScreen, Transition};
+use crate::screen::vocab::list;
+use crate::screen::{BluetoothScreen, Ctx, Render, Screen, SensorsScreen, Transition};
 use crate::Msg;
 
 /// The two rows: Phone (BLE pairing) then Sensors (BLE sensors).

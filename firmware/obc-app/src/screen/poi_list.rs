@@ -31,7 +31,8 @@ use crate::settings::Units;
 use crate::Msg;
 use obc_ports::Fix;
 
-use super::list::{self, ListGeometry, Separators};
+use super::vocab::chrome::{empty_state, stroke2};
+use super::vocab::list::{self, ListGeometry, Separators};
 use super::{palette, Ctx, PoiDetailScreen, Render, Screen, Transition};
 
 /// Per-POI **nominal** row height — two lines (name above, bearing arrow + distance below) with
@@ -170,11 +171,11 @@ impl PoiListScreen {
             // against a fix, "No POIs in this map" for a genuinely empty category. Before the first
             // query (no fix yet, not queried) draw nothing — a transient one-frame state.
             if rx.state.user_fix.is_none() {
-                super::empty_state(cv, w, h, rx.t(Msg::PoiListNoPosition), rx.t(Msg::PoiListNoPositionSub));
+                empty_state(cv, w, h, rx.t(Msg::PoiListNoPosition), rx.t(Msg::PoiListNoPositionSub));
             } else if queried {
                 // Body title fits ~16 chars on the 240 px panel — keep it short; the hint carries
                 // the "in this map" scope the epic's wording wants.
-                super::empty_state(cv, w, h, rx.t(Msg::PoiListNoPois), rx.t(Msg::PoiListNoPoisSub));
+                empty_state(cv, w, h, rx.t(Msg::PoiListNoPois), rx.t(Msg::PoiListNoPoisSub));
             }
             return;
         }
@@ -310,10 +311,10 @@ pub(super) fn draw_bearing_arrow(
     };
     let tip = end(c, theta, rf);
     let tail = end(c, theta + core::f32::consts::PI, rf);
-    super::stroke2(cv, tail, tip, palette::WOOD);
+    stroke2(cv, tail, tip, palette::WOOD);
     // Barbs off the tip at ±135° from the direction, ~3/4 of the half-size long.
     for da in [3.0 * FRAC_PI_4, -3.0 * FRAC_PI_4] {
-        super::stroke2(cv, tip, end(tip, theta + da, rf * 0.75), palette::WOOD);
+        stroke2(cv, tip, end(tip, theta + da, rf * 0.75), palette::WOOD);
     }
 }
 

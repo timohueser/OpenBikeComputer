@@ -22,8 +22,10 @@ use crate::settings::Units;
 use crate::weather::{local_hour_minute, wind_class, wind_octant, WindClass};
 use crate::Msg;
 
+use super::vocab::chrome::{empty_state, stroke2, title_frame, LIST_TOP};
+use super::vocab::list;
 use super::weather_dash::hourly_icon;
-use super::{empty_state, list, palette, stroke2, title_frame, Ctx, Render, Transition, LIST_TOP};
+use super::{palette, Ctx, Render, Transition};
 
 use obc_formats::obcw::{
     HOURLY_COUNT, HOURLY_INTERVAL_SECONDS, PRECIP_UNAVAILABLE, WIND_DIRECTION_UNAVAILABLE, WIND_SPEED_UNAVAILABLE,

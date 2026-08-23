@@ -23,7 +23,10 @@ use obc_formats::obcr::NAME_CAP;
 use crate::input::Gesture;
 use crate::Msg;
 
-use super::{list, palette, title_frame, Ctx, MenuItem, Render, Transition};
+use super::vocab::chrome::{title_frame, wrapped, TITLE_BAR_H};
+use super::vocab::list;
+use super::vocab::rows::{draw_guarded_rows, GuardedRowsGeometry, MenuItem};
+use super::{palette, Ctx, Render, Transition};
 
 /// Per-row guard flags: only *Delete trip & routes* is destructive.
 const GUARDS: [bool; 2] = [true, false];
@@ -89,20 +92,19 @@ impl TripDeleteScreen {
         // The trip name, centred, truncated with ".." to the card width (no ellipsis glyph).
         let max = (((w - 24) / Font::Body.char_width() as i32).max(6)) as usize;
         let name = super::route_menu::fit_name(&self.name, max);
-        cv.text(&name, Point::new(w / 2, super::TITLE_BAR_H + 12), Font::Body, TextAlign::Center, INK);
+        cv.text(&name, Point::new(w / 2, TITLE_BAR_H + 12), Font::Body, TextAlign::Center, INK);
 
         // The warning line — what the confirm actually does (deletes the routes too), word-wrapped in
         // the olive sub-text so the longer translations don't clip. Returns the y past the last line.
-        let warn_end =
-            super::wrapped(cv, rx.t(Msg::TripDeleteWarn), w / 2, super::TITLE_BAR_H + 40, w - 24, Font::Label, SUBTEXT);
+        let warn_end = wrapped(cv, rx.t(Msg::TripDeleteWarn), w / 2, TITLE_BAR_H + 40, w - 24, Font::Label, SUBTEXT);
 
         // The guarded Delete row fills warning-red (this IS destructive); Cancel is a plain amber row.
-        let geo = super::GuardedRowsGeometry::card(w, warn_end + 8);
+        let geo = GuardedRowsGeometry::card(w, warn_end + 8);
         let items = [
             MenuItem { label: rx.t(Msg::TripDeleteConfirm), guard: GUARDS[0] },
             MenuItem { label: rx.t(Msg::TripDeleteCancel), guard: GUARDS[1] },
         ];
-        super::draw_guarded_rows(cv, &items, self.selected, rx.hold_progress, WARNING, geo);
+        draw_guarded_rows(cv, &items, self.selected, rx.hold_progress, WARNING, geo);
     }
 }
 

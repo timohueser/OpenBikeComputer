@@ -12,7 +12,9 @@
 use obc_render::{rect, text::Font, Surface};
 
 use crate::input::Gesture;
-use crate::screen::{title_frame, Ctx, Render, Transition, LIST_TOP};
+use crate::screen::vocab::chrome::{title_frame, LIST_TOP};
+use crate::screen::vocab::rows::{row_cursor, row_rect};
+use crate::screen::{Ctx, Render, Transition};
 use crate::Msg;
 
 /// Row height — fits a two-line label (Body + sub-caption) plus a toggle / value cell with arrow room.
@@ -47,7 +49,7 @@ impl DisplayScreen {
                         cx.settings.idle_return = cx.settings.idle_return.stepped(n);
                     }
                 } else {
-                    self.selected = crate::screen::list::step_selection(self.selected, n, ROWS);
+                    self.selected = crate::screen::vocab::list::step_selection(self.selected, n, ROWS);
                 }
                 Transition::None
             }
@@ -77,29 +79,29 @@ impl DisplayScreen {
 
         // Row 0 — Clock (toggle). Label + sub kept as short as the GPS-fix row's so they clear the
         // right-hand toggle slider.
-        let r0 = super::row_rect(LIST_TOP + 8, w, ROW_H);
-        super::row_cursor(cv, r0, self.selected == CLOCK, false);
+        let r0 = row_rect(LIST_TOP + 8, w, ROW_H);
+        row_cursor(cv, r0, self.selected == CLOCK, false);
         super::row_label(cv, r0, rx.t(Msg::DisplayClock), Some(rx.t(Msg::DisplayClockSub)));
         super::toggle_slider(cv, r0, rx.settings.map_clock);
 
         // Row 1 — Scale bar (toggle).
-        let r1 = super::row_rect(LIST_TOP + 8 + ROW_H + 6, w, ROW_H);
-        super::row_cursor(cv, r1, self.selected == SCALE_BAR, false);
+        let r1 = row_rect(LIST_TOP + 8 + ROW_H + 6, w, ROW_H);
+        row_cursor(cv, r1, self.selected == SCALE_BAR, false);
         super::row_label(cv, r1, rx.t(Msg::DisplayScaleBar), Some(rx.t(Msg::DisplayScaleBarSub)));
         super::toggle_slider(cv, r1, rx.settings.map_scale_bar);
 
         // Row 2 — Contours (toggle, #1096, provisional). Same shape as the two above; the fr/es
         // catalogs split "courbes de niveau" / "curvas de nivel" over the label + sub lines so the
         // term clears the slider.
-        let r2 = super::row_rect(LIST_TOP + 8 + 2 * (ROW_H + 6), w, ROW_H);
-        super::row_cursor(cv, r2, self.selected == CONTOURS, false);
+        let r2 = row_rect(LIST_TOP + 8 + 2 * (ROW_H + 6), w, ROW_H);
+        row_cursor(cv, r2, self.selected == CONTOURS, false);
         super::row_label(cv, r2, rx.t(Msg::DisplayContours), Some(rx.t(Msg::DisplayContoursSub)));
         super::toggle_slider(cv, r2, rx.settings.map_contours);
 
         // Row 3 — Idle return (value picker: 15 s / 30 s / 1 min / 5 min / Never).
-        let r3 = super::row_rect(LIST_TOP + 8 + 3 * (ROW_H + 6), w, ROW_H);
+        let r3 = row_rect(LIST_TOP + 8 + 3 * (ROW_H + 6), w, ROW_H);
         let editing = self.editing && self.selected == IDLE_RETURN;
-        super::row_cursor(cv, r3, self.selected == IDLE_RETURN, editing);
+        row_cursor(cv, r3, self.selected == IDLE_RETURN, editing);
         super::row_label(cv, r3, rx.t(Msg::DisplayIdle), Some(rx.t(Msg::DisplayIdleSub)));
         let val = rx.settings.idle_return.name(rx.settings.language);
         let (cw, ch) = (76, 32);
@@ -170,7 +172,7 @@ mod tests {
         use obc_render::text::text_width;
 
         // `row_rect(_, 240, _)` is `ROW_X..(240 - ROW_X)`; the slider's left edge inside it:
-        let row_w = 240 - 2 * crate::screen::settings::ROW_X;
+        let row_w = 240 - 2 * crate::screen::vocab::rows::ROW_X;
         let limit = row_w - 50 - 4 - 10;
         for lang in [Language::En, Language::De, Language::Fr, Language::Es] {
             for (row, label, sub) in [
