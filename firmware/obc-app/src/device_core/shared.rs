@@ -9,8 +9,11 @@
 //! | [`Capabilities`] | Can this device do this operation *at all*? |
 //! | [`ExternalFacts`] | What changed underneath me that nobody asked for? |
 //!
-//! Every type here is `Copy`, bounded, and free of platform handles, paths and collections — a
-//! value in this module can cross the DeviceCore ↔ executor seam on any platform.
+//! Every type here is bounded and free of platform handles, paths and unbounded collections — a
+//! value in this module can cross the DeviceCore ↔ executor seam on any platform. All of them are
+//! `Copy` except [`UpdateResult`] and the [`ExternalFacts`] that holds it: an update result carries
+//! `Version` strings ([`heapless::String`], fixed 32-byte buffers), which are bounded but not
+//! `Copy`. Those two are `Clone` instead — bounded either way, and neither ever allocates.
 
 use core::marker::PhantomData;
 
@@ -21,49 +24,43 @@ use crate::CatalogObjectId;
 
 // ==================== operation tokens ====================
 
-/// The domain tags an [`OperationToken`] is typed by — one per domain that owns asynchronous work
-/// (the effect/outcome slots of epic #1433 §5).
-///
-/// They are uninhabited: a tag is a *name at the type level*, never a value. `UiRuntime`,
-/// `CoreMode` and `FaultState` have no tag because they issue no effects and therefore own no
-/// operation.
-macro_rules! domain_tags {
-    ($($(#[$meta:meta])* $name:ident),+ $(,)?) => {
-        $(
-            $(#[$meta])*
-            #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-            pub enum $name {}
-        )+
-    };
-}
+// The domain tags an `OperationToken` is typed by — one per domain that owns asynchronous work
+// (the effect/outcome slots of epic #1433 §5). They are uninhabited: a tag is a *name at the type
+// level*, never a value, so no trait impl on one could ever be called. `UiRuntime`, `CoreMode` and
+// `FaultState` have no tag because they issue no effects and therefore own no operation.
 
-domain_tags! {
-    /// Catalog revisions, refresh, deletion, and the trip cascade.
-    CatalogTag,
-    /// Route-use and ride-sync stamps, and expiry metadata writes.
-    RetentionTag,
-    /// Ride samples, checkpoints, finalize and discard.
-    RecorderTag,
-    /// Route planning, detour planning, preview and commit.
-    NavigatorTag,
-    /// The settings persist handshake.
-    SettingsTag,
-    /// Weather refresh and installed weather data.
-    WeatherTag,
-    /// Firmware-update scan and install arming.
-    DfuTag,
-    /// Bond removal.
-    BondTag,
-    /// Free-space measurement.
-    StorageInfoTag,
-}
+/// Catalog revisions, refresh, deletion, and the trip cascade.
+pub enum CatalogTag {}
+/// Route-use and ride-sync stamps, and expiry metadata writes.
+pub enum RetentionTag {}
+/// Ride samples, checkpoints, finalize and discard.
+pub enum RecorderTag {}
+/// Route planning, detour planning, preview and commit.
+pub enum NavigatorTag {}
+/// The settings persist handshake.
+pub enum SettingsTag {}
+/// Weather refresh and installed weather data.
+pub enum WeatherTag {}
+/// Firmware-update scan and install arming.
+pub enum DfuTag {}
+/// Bond removal.
+pub enum BondTag {}
+/// Free-space measurement.
+pub enum StorageInfoTag {}
 
 /// The identity of one in-flight operation, typed by its owning domain.
 ///
 /// Every effect carries the token its domain issued, and every outcome carries it back. The domain
 /// owner accepts an outcome only while [`TokenSource::is_current`] holds — that single equality is
-/// how a cancelled, replaced or simply late result is rejected without the executor knowing any
-/// product rule.
+/// how a *superseded* result (cancelled, replaced, or belonging to an operation the domain has
+/// since moved past) is rejected without the executor knowing any product rule.
+///
+/// **What equality alone does not reject.** The generation keeps standing after the operation ends,
+/// so a duplicate or post-terminal outcome carrying the same token still compares current. Closing
+/// that is the domain owner's obligation, and it is one line: **invalidate when you accept a
+/// terminal outcome** ([`TokenSource::invalidate`]), exactly as cancellation and replacement do.
+/// An owner that skips it will reprocess a repeated result, and the bug will look like a state
+/// machine bug rather than the contract gap it is.
 ///
 /// The generation is private and never zero, so a token cannot be forged, minted by an executor, or
 /// confused with "no operation". `PhantomData<fn() -> Tag>` keeps the tag invariant-free (the token
@@ -132,14 +129,17 @@ impl<Tag> TokenSource<Tag> {
         OperationToken { generation: self.generation, tag: PhantomData }
     }
 
-    /// Cancel or replace without starting new work: outstanding tokens stop being current, so their
-    /// outcomes are rejected when they finally land.
+    /// Cancel, replace, or close out a finished operation without starting new work: outstanding
+    /// tokens stop being current, so their outcomes are rejected when they finally land. A domain
+    /// owner calls this on cancellation, on replacement, **and** when it accepts a terminal outcome
+    /// — see [`OperationToken`] for why the last one is not optional.
     pub fn invalidate(&mut self) {
         let _ = self.issue();
     }
 
     /// Whether `token` identifies the operation this source last issued — the domain owner's accept
-    /// test for an incoming outcome.
+    /// test for an incoming outcome. It answers "not superseded", not "not yet answered": an owner
+    /// that has accepted the terminal outcome must have called [`invalidate`](Self::invalidate).
     pub fn is_current(&self, token: OperationToken<Tag>) -> bool {
         token.generation == self.generation
     }
@@ -166,10 +166,12 @@ impl<Tag> core::fmt::Debug for TokenSource<Tag> {
 /// This is where "the board has no detour planner" and "the web demo has no persistent store" are
 /// stated honestly, instead of surfacing later as a routing failure or a save that silently never
 /// happens.
+///
+/// There is deliberately no `route_planning` field: #1433 §7.2 requires the same `obc-route`
+/// algorithms on every platform, so route planning rests on live facts (a routing graph, a store to
+/// commit into, admission) alone. Detour is the one navigation split that actually exists today.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PlatformSupport {
-    /// The on-device router is present.
-    pub route_planning: bool,
     /// The detour planner and the splice-commit path are present.
     pub detour: bool,
     /// A durable settings store exists (the web demo has none).
@@ -199,7 +201,17 @@ pub struct DeviceFacts {
     pub weather_data: bool,
     /// A companion link is connected — the only weather-refresh source.
     pub link_connected: bool,
-    /// `CoreMode` admits heavy operations: no transfer is streaming and no install is armed.
+    /// A ride is being recorded. Arming an install ends in a reboot, which would lose the live ride
+    /// — the shipping refusal in [`DfuInstallError`](crate::dfu::DfuInstallError) and the remote-DFU
+    /// door in [`App::open_remote_dfu_check`](crate::App::open_remote_dfu_check).
+    ///
+    /// `RetentionMachine` also defers its expiry deletes while a ride records (together with the
+    /// trusted-clock gate). That stays a domain policy rather than a capability: the device *can*
+    /// delete, it simply waits — and a dimmed menu entry would be the wrong way to say so.
+    pub ride_recording: bool,
+    /// `CoreMode`'s verdict on heavy work. Today it withdraws admission while a transfer streams or
+    /// an install is armed, but this field carries the verdict, not that list — read `CoreMode` for
+    /// the current conditions rather than re-deriving them from this sentence.
     pub heavy_operations: bool,
 }
 
@@ -309,17 +321,18 @@ impl Capabilities {
     /// The rules, and why each precondition is real:
     ///
     /// - Catalog mutation and ride recording need a writable store.
-    /// - Route planning needs the router, a routing graph, a store to commit into, and admission.
+    /// - Route planning needs a routing graph, a store to commit into, and admission.
     /// - Detour planning needs the detour planner, a graph and admission; committing one needs the
     ///   planner and a writable store (the commit itself is not heavy).
     /// - Weather refresh needs a connected companion; installed weather data needs data installed.
-    /// - An install is heavy (it reboots), a scan is not.
+    /// - An install is heavy *and* reboots, so it also needs no ride recording; a scan is neither,
+    ///   so it rests on the image alone.
     pub const fn calculate(support: PlatformSupport, facts: DeviceFacts) -> Capabilities {
         Capabilities {
             catalog: CatalogCapabilities { mutate: facts.store_writable },
             recorder: RecorderCapabilities { record: facts.store_writable },
             navigator: NavigatorCapabilities {
-                plan_route: support.route_planning && facts.nav_graph && facts.store_writable && facts.heavy_operations,
+                plan_route: facts.nav_graph && facts.store_writable && facts.heavy_operations,
                 plan_detour: support.detour && facts.nav_graph && facts.heavy_operations,
                 commit_detour: support.detour && facts.store_writable,
             },
@@ -328,7 +341,10 @@ impl Capabilities {
                 refresh: support.weather && facts.link_connected,
                 installed_data: support.weather && facts.weather_data,
             },
-            dfu: DfuCapabilities { scan: support.dfu, install: support.dfu && facts.heavy_operations },
+            dfu: DfuCapabilities {
+                scan: support.dfu,
+                install: support.dfu && facts.heavy_operations && !facts.ride_recording,
+            },
             bond: BondCapabilities { remove: support.bonding },
             storage_info: StorageInfoCapabilities { report_free_space: support.storage_space_report },
         }
@@ -531,7 +547,15 @@ impl ExternalFacts {
     }
 
     /// The store moved. Same store: the newer revision wins, so a reordered report cannot walk the
-    /// level backwards. Different store: a remount is newer by definition and replaces.
+    /// level backwards. Different store: it replaces, because revisions of two different stores have
+    /// no order to compare.
+    ///
+    /// **Producer obligation.** Because a different identity always wins, an executor must not
+    /// report a store it has unmounted. A late report from the previous mount would otherwise
+    /// overwrite the live one and leave [`store_revision`](Self::store_revision) naming a dead
+    /// store. The executor is the only party that can honour this — it is the one that knows the
+    /// unmount happened — so it drains or drops its pending store reports before it reports the new
+    /// mount.
     pub fn note_store_revision(&mut self, fact: StoreRevision) {
         let keep =
             matches!(self.store_revision, Some(have) if have.store == fact.store && have.revision > fact.revision);
@@ -643,8 +667,12 @@ const _: () = assert!(core::mem::size_of::<TokenSource<CatalogTag>>() == 4, "a t
 const _: () = assert!(core::mem::size_of::<PlatformSupport>() <= 8, "platform support is a handful of bools");
 const _: () = assert!(core::mem::size_of::<DeviceFacts>() <= 8, "device facts are a handful of bools");
 const _: () = assert!(core::mem::size_of::<Capabilities>() <= 16, "capabilities are bools, never payloads");
+const _: () = assert!(core::mem::size_of::<StoreIdentity>() <= 8, "an opaque identity, nothing more");
+const _: () = assert!(core::mem::size_of::<DataIdentity>() <= 8, "an opaque identity, nothing more");
+const _: () = assert!(core::mem::size_of::<Revision>() <= 8, "the flat store's revision width");
 const _: () = assert!(core::mem::size_of::<StoreRevision>() <= 16, "an identity and a revision");
 const _: () = assert!(core::mem::size_of::<WeatherData>() <= 16, "an identity and a revision");
+const _: () = assert!(core::mem::size_of::<FactMergeError>() <= 1, "a fieldless reason");
 const _: () = assert!(core::mem::size_of::<TransferState>() <= 1, "a two-state level");
 const _: () = assert!(core::mem::size_of::<RouteUpload>() <= 80, "id + flag + the fixed sparkline");
 const _: () = assert!(core::mem::size_of::<TripUpload>() <= 16, "id + flag");
@@ -685,10 +713,14 @@ mod tests {
     #[test]
     fn generation_skips_zero_on_wrap() {
         let mut source: TokenSource<CatalogTag> = TokenSource::new();
-        source.generation = u32::MAX;
+        source.generation = u32::MAX - 1;
 
+        let before = source.issue(); // the last generation before the wrap
+        assert_eq!(source.generation, u32::MAX);
         let wrapped = source.issue();
         assert_eq!(source.generation, 1);
+        assert_ne!(before, wrapped, "the wrap still moves the generation");
+        assert!(!source.is_current(before), "the pre-wrap token is stale like any other");
 
         let fresh: TokenSource<CatalogTag> = TokenSource::new();
         assert!(!fresh.is_current(wrapped), "a wrapped token cannot pass as a never-issued one");
@@ -756,6 +788,77 @@ mod tests {
         assert_eq!(facts.take_update_result(), Some(second), "the slot is free once consumed");
     }
 
+    /// A batch merges field by field, under exactly the rules the `note_*` methods apply — and an
+    /// absent field in the batch changes nothing, so an executor reporting one fact cannot wipe a
+    /// level it knows nothing about.
+    #[test]
+    fn merge_folds_every_field_and_leaves_absent_ones_alone() {
+        let installed = WeatherData { data: DataIdentity::new(4), revision: Revision::new(2) };
+        let mut facts = ExternalFacts::NONE;
+        facts.note_store_revision(store(5));
+        facts.note_transfer(TransferState::Idle);
+        facts.note_link(BleStatus::DISCONNECTED);
+        facts.note_weather_data(installed);
+        facts.raise_warnings(WarningFlags::NO_GPS);
+
+        let connected = BleStatus { link: crate::ble::BleLink::Connected, ..BleStatus::DISCONNECTED };
+        let route = RouteUpload { id: 21, replaced: false, elevation: None };
+        let trip = TripUpload { id: 22, replaced: false };
+        let mut batch = ExternalFacts::NONE;
+        batch.note_store_revision(store(9));
+        batch.note_transfer(TransferState::Active);
+        batch.note_link(connected);
+        batch.note_weather_data(WeatherData { revision: Revision::new(7), ..installed });
+        batch.raise_warnings(WarningFlags::MAP_SLOW);
+        batch.note_route_upload(route);
+        batch.note_trip_upload(trip);
+        batch.note_update_result(UpdateResult::Confirmed(crate::dfu::clamp("v2"))).unwrap();
+
+        facts.merge(batch).unwrap();
+
+        assert_eq!(facts.store_revision(), Some(store(9)));
+        assert_eq!(facts.transfer(), Some(TransferState::Active));
+        assert_eq!(facts.link(), Some(connected));
+        assert_eq!(facts.weather_data().unwrap().revision, Revision::new(7));
+        assert_eq!(facts.take_route_upload(), Some(route));
+        assert_eq!(facts.take_trip_upload(), Some(trip));
+        assert!(facts.take_update_result().is_some());
+        let warnings = facts.take_warnings();
+        assert!(warnings.contains(WarningFlags::NO_GPS) && warnings.contains(WarningFlags::MAP_SLOW));
+
+        // A stale batch loses on the level fields and cannot clear the ones it omits.
+        facts.note_store_revision(store(9));
+        let mut stale = ExternalFacts::NONE;
+        stale.note_store_revision(store(6));
+        facts.merge(stale).unwrap();
+        assert_eq!(facts.store_revision(), Some(store(9)), "merge applies the same stale-revision rule");
+        assert_eq!(facts.transfer(), Some(TransferState::Active), "an absent field in the batch changes nothing");
+        assert_eq!(facts.link(), Some(connected));
+    }
+
+    /// The documented partial-failure guarantee: a batch whose update result is rejected still
+    /// delivers every other fact, so the rejection cannot cost a warning or an upload.
+    #[test]
+    fn a_rejected_update_result_does_not_lose_the_rest_of_the_batch() {
+        let first = UpdateResult::Confirmed(crate::dfu::clamp("v1"));
+        let mut facts = ExternalFacts::NONE;
+        facts.note_update_result(first.clone()).unwrap();
+
+        let route = RouteUpload { id: 31, replaced: true, elevation: None };
+        let mut batch = ExternalFacts::NONE;
+        batch.raise_warnings(WarningFlags::REC_ERROR);
+        batch.note_route_upload(route);
+        batch.note_store_revision(store(3));
+        batch.note_update_result(UpdateResult::Failed { why: DfuFailure::NotStarted, staged: None }).unwrap();
+
+        assert_eq!(facts.merge(batch), Err(FactMergeError::UpdateResultUnconsumed));
+
+        assert!(facts.take_warnings().contains(WarningFlags::REC_ERROR), "the warning survived the rejection");
+        assert_eq!(facts.take_route_upload(), Some(route), "the upload survived the rejection");
+        assert_eq!(facts.store_revision(), Some(store(3)));
+        assert_eq!(facts.take_update_result(), Some(first), "the unconsumed result is still the one held");
+    }
+
     /// Each field is consumed on its own: a pass that takes the uploads must not lose the warnings
     /// or the levels it did not look at.
     #[test]
@@ -778,7 +881,6 @@ mod tests {
 
     fn board() -> PlatformSupport {
         PlatformSupport {
-            route_planning: true,
             detour: true,
             settings_persistence: true,
             dfu: true,
@@ -794,21 +896,51 @@ mod tests {
             nav_graph: true,
             weather_data: true,
             link_connected: true,
+            ride_recording: false,
             heavy_operations: true,
         }
     }
 
-    /// Capabilities are a pure level: the same inputs give the same answer, and a changed input
-    /// gives the answer that input implies — nothing latches.
+    /// Capabilities are a pure level of their inputs — every field, written out, so a rule flipped
+    /// in `calculate` fails here rather than passing a "same inputs, same output" tautology.
+    #[test]
+    fn capabilities_are_the_written_out_level_of_their_inputs() {
+        assert_eq!(
+            Capabilities::calculate(board(), mounted()),
+            Capabilities {
+                catalog: CatalogCapabilities { mutate: true },
+                recorder: RecorderCapabilities { record: true },
+                navigator: NavigatorCapabilities { plan_route: true, plan_detour: true, commit_detour: true },
+                settings: SettingsCapabilities { persist: true },
+                weather: WeatherCapabilities { refresh: true, installed_data: true },
+                dfu: DfuCapabilities { scan: true, install: true },
+                bond: BondCapabilities { remove: true },
+                storage_info: StorageInfoCapabilities { report_free_space: true },
+            }
+        );
+
+        // The web demo: no durable store, no radio, no update path, no weather.
+        assert_eq!(
+            Capabilities::calculate(PlatformSupport { detour: true, ..PlatformSupport::default() }, mounted()),
+            Capabilities {
+                catalog: CatalogCapabilities { mutate: true },
+                recorder: RecorderCapabilities { record: true },
+                navigator: NavigatorCapabilities { plan_route: true, plan_detour: true, commit_detour: true },
+                ..Capabilities::NONE
+            }
+        );
+    }
+
+    /// Nothing latches: a changed live fact gives the answer that fact implies, and giving it back
+    /// restores the previous level exactly.
     #[test]
     fn capabilities_recalculate_from_mounted_data_and_transfer_state() {
         let full = Capabilities::calculate(board(), mounted());
-        assert_eq!(full, Capabilities::calculate(board(), mounted()), "identical inputs, identical output");
-        assert!(full.navigator.plan_route && full.navigator.plan_detour && full.navigator.commit_detour);
 
         // A map without a routing graph mounts: planning goes, the rest stays.
         let graphless = Capabilities::calculate(board(), DeviceFacts { nav_graph: false, ..mounted() });
         assert!(!graphless.navigator.plan_route && !graphless.navigator.plan_detour);
+        assert!(graphless.navigator.commit_detour, "committing a planned detour needs no graph read");
         assert!(graphless.catalog.mutate && graphless.recorder.record);
 
         // A transfer starts: CoreMode withdraws heavy admission.
@@ -818,17 +950,13 @@ mod tests {
         assert!(transferring.dfu.scan, "a scan is not heavy");
         assert!(transferring.catalog.mutate);
 
-        // The transfer ends: the level comes straight back.
-        assert_eq!(Capabilities::calculate(board(), mounted()), full);
+        // A ride records: the install that would reboot away the live ride is gone, planning is not.
+        let riding = Capabilities::calculate(board(), DeviceFacts { ride_recording: true, ..mounted() });
+        assert!(!riding.dfu.install, "arming an install mid-ride would lose the ride");
+        assert!(riding.dfu.scan && riding.navigator.plan_route && riding.navigator.plan_detour);
 
-        // The web demo: no durable store, no radio, no update path.
-        let demo = Capabilities::calculate(
-            PlatformSupport { route_planning: true, detour: true, ..PlatformSupport::default() },
-            mounted(),
-        );
-        assert!(!demo.settings.persist && !demo.bond.remove && !demo.dfu.scan);
-        assert!(!demo.weather.refresh && !demo.weather.installed_data);
-        assert!(demo.navigator.plan_route);
+        // Each fact comes back: the level does too, with no residue from the interim states.
+        assert_eq!(Capabilities::calculate(board(), mounted()), full);
     }
 
     /// An unsupported detour is a missing capability, not a planning failure: no combination of
@@ -837,13 +965,14 @@ mod tests {
     #[test]
     fn unsupported_detour_never_enters_the_planning_path() {
         let support = PlatformSupport { detour: false, ..board() };
-        for bits in 0u8..32 {
+        for bits in 0u8..64 {
             let facts = DeviceFacts {
                 store_writable: bits & 1 != 0,
                 nav_graph: bits & 2 != 0,
                 weather_data: bits & 4 != 0,
                 link_connected: bits & 8 != 0,
-                heavy_operations: bits & 16 != 0,
+                ride_recording: bits & 16 != 0,
+                heavy_operations: bits & 32 != 0,
             };
             let caps = Capabilities::calculate(support, facts);
             assert!(!caps.navigator.plan_detour, "no live fact can supply a planner the image lacks");
