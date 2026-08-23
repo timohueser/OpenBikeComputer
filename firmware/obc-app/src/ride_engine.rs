@@ -19,6 +19,7 @@ use obc_route::{ClimbProfile, Climbs, Profile, RouteMatch, RouteReader, Waypoint
 
 use crate::activity::Activity;
 use crate::breadcrumb::Breadcrumb;
+use crate::placement::define_placement_constructors;
 use crate::settings::Settings;
 
 /// A fix older than this (map-plane millis) means "no current GPS fix". The window is the larger of
@@ -237,13 +238,21 @@ pub(crate) struct RideEngine {
 pub(crate) const HEADING_MOVE_M: u32 = 50;
 
 impl RideEngine {
-    /// The boot state: no route caches, no session, nothing sensed yet.
-    pub(crate) fn new() -> Self {
-        RideEngine {
+    define_placement_constructors!(
+        /// The boot state: no route caches, no session, nothing sensed yet.
+        pub(crate) fn new();
+        /// Initialize `slot` **in place** to the [`new`](RideEngine::new) state — the placement
+        /// path the firmware boots through (the waypoint table, climb caches, and breadcrumb are
+        /// KB-scale; nothing here may form a by-value `RideEngine` on the stack).
+        pub(crate) unsafe fn init_in_place;
+        fields {
             profile: None,
             profile_route: None,
+            // The climb caches mirror the profile: an empty list + a zeroed detail buffer.
             climbs: Climbs::new(),
             climbs_route: None,
+            // The waypoint table mirrors the climbs list: an empty table (~1.3 KB), keyed to no
+            // route until the first load.
             waypoints: Waypoints::new(),
             waypoints_route: None,
             climb_profile: ClimbProfile::new(),
@@ -263,73 +272,7 @@ impl RideEngine {
             travel_at_m: None,
             speed_win: crate::weather::SpeedWindow::new(),
         }
-    }
-
-    /// Initialize `slot` **in place** to the [`new`](RideEngine::new) state — the placement path
-    /// (the waypoint table, climb caches, and breadcrumb are KB-scale; nothing here may form a
-    /// by-value `RideEngine` on the stack). Same field-by-field `addr_of_mut!` discipline as
-    /// [`App::init_idle`](crate::App::init_idle), with the same trailing exhaustiveness guard.
-    ///
-    /// # Safety
-    /// `slot` must be valid, aligned, exclusively owned, and writable for a full `RideEngine`.
-    pub(crate) unsafe fn init_in_place(slot: *mut Self) {
-        use core::ptr::addr_of_mut;
-        // SAFETY: caller's contract; every field is written exactly once before any read.
-        unsafe {
-            addr_of_mut!((*slot).profile).write(None);
-            addr_of_mut!((*slot).profile_route).write(None);
-            // The climb caches mirror the profile: an empty list + a zeroed detail buffer
-            // (`Climbs::new`/`ClimbProfile::new` are const, so no large temporary is formed here).
-            addr_of_mut!((*slot).climbs).write(Climbs::new());
-            addr_of_mut!((*slot).climbs_route).write(None);
-            // The waypoint table mirrors the climbs list: an empty table (~1.3 KB) written straight
-            // into the slot, keyed to no route until the first load.
-            addr_of_mut!((*slot).waypoints).write(Waypoints::new());
-            addr_of_mut!((*slot).waypoints_route).write(None);
-            addr_of_mut!((*slot).climb_profile).write(ClimbProfile::new());
-            #[cfg(test)]
-            addr_of_mut!((*slot).climb_fill_count).write(0);
-            addr_of_mut!((*slot).route_match).write(RouteMatch::new());
-            addr_of_mut!((*slot).matched_route).write(None);
-            addr_of_mut!((*slot).ride_session).write(None);
-            addr_of_mut!((*slot).breadcrumb).write(Breadcrumb::new());
-            addr_of_mut!((*slot).last_battery_poll_ms).write(None);
-            addr_of_mut!((*slot).temp_c).write(None);
-            addr_of_mut!((*slot).last_fix_ms).write(None);
-            addr_of_mut!((*slot).pending_terrain).write(None);
-            addr_of_mut!((*slot).prev_no_fix).write(true);
-            addr_of_mut!((*slot).prev_live_sensors).write((None, None, None));
-            addr_of_mut!((*slot).travel_deg).write(None);
-            addr_of_mut!((*slot).travel_at_m).write(None);
-            addr_of_mut!((*slot).speed_win).write(crate::weather::SpeedWindow::new());
-            // Exhaustiveness guard: a field added to `RideEngine` fails to compile here until its
-            // `addr_of_mut!(...).write(...)` is added above (see `App::init_idle`).
-            let RideEngine {
-                profile: _,
-                profile_route: _,
-                climbs: _,
-                climbs_route: _,
-                waypoints: _,
-                waypoints_route: _,
-                climb_profile: _,
-                #[cfg(test)]
-                    climb_fill_count: _,
-                route_match: _,
-                matched_route: _,
-                ride_session: _,
-                breadcrumb: _,
-                last_battery_poll_ms: _,
-                temp_c: _,
-                last_fix_ms: _,
-                pending_terrain: _,
-                prev_no_fix: _,
-                prev_live_sensors: _,
-                travel_deg: _,
-                travel_at_m: _,
-                speed_win: _,
-            } = &*slot;
-        }
-    }
+    );
 
     /// The once-per-load route/session sync, run at the top of every tick. Returns whether the map
     /// must repaint (a route line appeared/vanished, the breadcrumb cleared, the matcher re-locked).
@@ -702,9 +645,67 @@ impl RideEngine {
 }
 
 #[cfg(test)]
+impl RideEngine {
+    /// Assert the [`new`](RideEngine::new) boot state, field by field. The destructure is
+    /// exhaustive, so a field added to the plan must state its boot value here too.
+    pub(crate) fn assert_boot_state(&self) {
+        let RideEngine {
+            profile,
+            profile_route,
+            climbs,
+            climbs_route,
+            waypoints,
+            waypoints_route,
+            climb_profile,
+            climb_fill_count,
+            route_match,
+            matched_route,
+            ride_session,
+            breadcrumb,
+            last_battery_poll_ms,
+            temp_c,
+            last_fix_ms,
+            pending_terrain,
+            prev_no_fix,
+            prev_live_sensors,
+            travel_deg,
+            travel_at_m,
+            speed_win,
+        } = self;
+        assert!(profile.is_none() && profile_route.is_none(), "no elevation profile cached");
+        assert!(climbs.is_empty() && climbs_route.is_none(), "no climbs before a route loads");
+        assert!(waypoints.is_empty() && waypoints_route.is_none(), "no waypoints before a route loads");
+        assert!(climb_profile.cols().iter().all(|&c| c == 0), "the climb detail buffer is a flat zero line");
+        assert_eq!(*climb_fill_count, 0, "the climb detail buffer has never been filled");
+        assert!(!route_match.started() && matched_route.is_none(), "the matcher is unlocked");
+        assert!(ride_session.is_none() && breadcrumb.is_empty(), "no session, no breadcrumb");
+        assert!(last_battery_poll_ms.is_none() && temp_c.is_none(), "nothing sensed off the ride path");
+        assert!(last_fix_ms.is_none() && pending_terrain.is_none(), "no fix, so no terrain sample armed");
+        assert!(*prev_no_fix, "the no-fix banner edge starts at 'no fix'");
+        assert_eq!(*prev_live_sensors, (None, None, None), "the sensor tiles start blank");
+        assert!(travel_deg.is_none() && travel_at_m.is_none(), "no travel direction without a route");
+        assert!(speed_win.median_cms().is_none(), "no moving speeds recorded");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::harness::support::wpts;
+
+    /// The placement path must land exactly the state the by-value path builds.
+    #[test]
+    fn init_in_place_matches_new() {
+        RideEngine::new().assert_boot_state();
+
+        let mut slot = core::mem::MaybeUninit::<RideEngine>::uninit();
+        // SAFETY: `slot` is a valid, aligned, exclusively-owned region for one `RideEngine`.
+        let placed = unsafe {
+            RideEngine::init_in_place(slot.as_mut_ptr());
+            slot.assume_init_ref()
+        };
+        placed.assert_boot_state();
+    }
 
     // --- the pure climb resolver (C3, #509) ---
     //

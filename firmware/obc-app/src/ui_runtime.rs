@@ -27,6 +27,7 @@ use crate::corridor::CorridorScratch;
 use crate::dirty::Dirty;
 use crate::input_plane::InputPlane;
 use crate::next_ahead::NextAhead;
+use crate::placement::define_placement_constructors;
 use crate::screen::{self, BaseContent, HomeScreen, MapScreen, PoiScratch, ReaderNeed, Screen, Stack};
 use crate::settings::{DateTime, Settings};
 
@@ -149,12 +150,15 @@ pub(crate) struct UiRuntime {
 }
 
 impl UiRuntime {
-    /// The boot state: the Home root on the stack, first frame dirty, nothing pending.
-    pub(crate) fn new() -> Self {
-        let mut stack = Stack::new();
-        let _ = stack.push(Screen::Home(HomeScreen::new()));
-        UiRuntime {
-            stack,
+    define_placement_constructors!(
+        /// The boot state: the Home root on the stack, first frame dirty, nothing pending.
+        pub(crate) fn new();
+        /// Initialize `slot` **in place** to the [`new`](UiRuntime::new) state — the placement path
+        /// the firmware boots through (the screen stack and POI scratch are KB-scale; nothing here
+        /// may form a by-value `UiRuntime` on the stack).
+        pub(crate) unsafe fn init_in_place;
+        fields {
+            stack: Stack::new(),
             input: InputPlane::new(),
             now_ms: 0,
             // Force the host's first frame: nothing has been drawn yet, so the map is dirty.
@@ -175,68 +179,12 @@ impl UiRuntime {
             sensor_status: [crate::sensors::SensorStatus::default(); crate::settings::SENSOR_SLOTS],
             sensor_scan_hits: crate::sensors::SensorScanHits::new(),
         }
-    }
-
-    /// Initialize `slot` **in place** to the [`new`](UiRuntime::new) state — the placement path
-    /// (the screen stack and POI scratch are KB-scale; nothing here may form a by-value
-    /// `UiRuntime` on the stack). Same field-by-field `addr_of_mut!` discipline as
-    /// [`App::init_idle`](crate::App::init_idle), with the same trailing exhaustiveness guard.
-    ///
-    /// # Safety
-    /// `slot` must be valid, aligned, exclusively owned, and writable for a full `UiRuntime`.
-    pub(crate) unsafe fn init_in_place(slot: *mut Self) {
-        use core::ptr::addr_of_mut;
-        // SAFETY: caller's contract; every field is written exactly once before any read.
-        unsafe {
-            // The screen stack: empty in place, then push the always-present Home root.
-            // `heapless::Vec::push` isn't `const`, so the root can't be part of a literal.
-            addr_of_mut!((*slot).stack).write(Stack::new());
-            let _ = (*slot).stack.push(Screen::Home(HomeScreen::new()));
-            addr_of_mut!((*slot).input).write(InputPlane::new());
-            addr_of_mut!((*slot).now_ms).write(0);
-            // Force the host's first frame: nothing has been drawn yet, so the map is dirty.
-            addr_of_mut!((*slot).map_dirty).write(true);
-            addr_of_mut!((*slot).overlay_edge).write(false);
-            addr_of_mut!((*slot).region_dirty).write(None);
-            addr_of_mut!((*slot).frame_size).write((0, 0));
-            addr_of_mut!((*slot).render_clip).write(None);
-            addr_of_mut!((*slot).next_wake_ms).write(None);
-            addr_of_mut!((*slot).last_input_ms).write(0);
-            addr_of_mut!((*slot).idle_return_timing).write(true);
-            addr_of_mut!((*slot).hold_progress_override).write(None);
-            addr_of_mut!((*slot).hold_cancel_pending).write(false);
-            addr_of_mut!((*slot).poi_scratch).write(PoiScratch::new());
-            addr_of_mut!((*slot).corridor_scratch).write(CorridorScratch::new());
-            addr_of_mut!((*slot).next_ahead).write(NextAhead::new());
-            addr_of_mut!((*slot).cards).write(CardScheduler::new());
-            addr_of_mut!((*slot).sensor_status)
-                .write([crate::sensors::SensorStatus::default(); crate::settings::SENSOR_SLOTS]);
-            addr_of_mut!((*slot).sensor_scan_hits).write(crate::sensors::SensorScanHits::new());
-            // Exhaustiveness guard: a field added to `UiRuntime` fails to compile here until its
-            // `addr_of_mut!(...).write(...)` is added above (see `App::init_idle`).
-            let UiRuntime {
-                stack: _,
-                input: _,
-                now_ms: _,
-                map_dirty: _,
-                overlay_edge: _,
-                region_dirty: _,
-                frame_size: _,
-                render_clip: _,
-                next_wake_ms: _,
-                last_input_ms: _,
-                idle_return_timing: _,
-                hold_progress_override: _,
-                hold_cancel_pending: _,
-                poi_scratch: _,
-                corridor_scratch: _,
-                next_ahead: _,
-                cards: _,
-                sensor_status: _,
-                sensor_scan_hits: _,
-            } = &*slot;
+        // The always-present Home root. It can't be part of the field plan above:
+        // `heapless::Vec::push` isn't `const`, so an empty stack is all a field expression can say.
+        post |ui| {
+            let _ = ui.stack.push(Screen::Home(HomeScreen::new()));
         }
-    }
+    );
 
     /// Advance the map-plane clock to `now_ms` and poll each visible screen's timers
     /// ([`Screen::tick_timers`]) in one pass: any time-driven repaint that fired dirties the map —
@@ -738,4 +686,74 @@ fn union_rect(a: Rectangle, b: Rectangle) -> Rectangle {
     let x1 = (a.top_left.x + a.size.width as i32).max(b.top_left.x + b.size.width as i32);
     let y1 = (a.top_left.y + a.size.height as i32).max(b.top_left.y + b.size.height as i32);
     Rectangle::new(Point::new(x0, y0), Size::new((x1 - x0) as u32, (y1 - y0) as u32))
+}
+
+#[cfg(test)]
+impl UiRuntime {
+    /// Assert the [`new`](UiRuntime::new) boot state, field by field — including the Home root the
+    /// shared post block seeds. The destructure is exhaustive, so a field added to the plan must
+    /// state its boot value here too.
+    pub(crate) fn assert_boot_state(&self) {
+        let UiRuntime {
+            stack,
+            input,
+            now_ms,
+            map_dirty,
+            overlay_edge,
+            region_dirty,
+            frame_size,
+            render_clip,
+            next_wake_ms,
+            last_input_ms,
+            idle_return_timing,
+            hold_progress_override,
+            hold_cancel_pending,
+            poi_scratch,
+            corridor_scratch,
+            next_ahead,
+            cards,
+            sensor_status,
+            sensor_scan_hits,
+        } = self;
+        assert_eq!(stack.len(), 1, "Home is the only screen");
+        assert!(matches!(stack[0], Screen::Home(_)), "Home is the stack root");
+        assert!(!input.overlay_active() && input.last_gesture().is_none(), "no gesture in flight");
+        assert_eq!(*now_ms, 0, "the map plane's clock starts at the boot origin");
+        assert!(*map_dirty, "the host's first frame must paint");
+        assert!(!*overlay_edge && region_dirty.is_none(), "no accumulated overlay or region demand");
+        assert_eq!(*frame_size, (0, 0), "no frame rendered yet");
+        assert!(render_clip.is_none() && next_wake_ms.is_none(), "no clip armed, nothing time-animating");
+        assert_eq!(*last_input_ms, 0, "the idle clock runs from power-on");
+        assert!(*idle_return_timing, "idle time accumulates from the first pass");
+        assert!(hold_progress_override.is_none() && !*hold_cancel_pending, "no hold charging or cancelled");
+        assert_eq!(poi_scratch.len(), 0, "the POI snapshot is empty");
+        assert!(corridor_scratch.armed().is_none() && corridor_scratch.is_empty(), "the corridor is disarmed");
+        assert!(next_ahead.request().is_none(), "the next-ahead cache asks for nothing");
+        assert!(cards.is_empty(), "no card pending, no warning raised or shown");
+        assert!(
+            sensor_status.iter().all(|s| *s == crate::sensors::SensorStatus::default()),
+            "no sensor slot has a status yet"
+        );
+        assert!(sensor_scan_hits.is_empty(), "no scan hits");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The placement path must land exactly the state the by-value path builds — Home seeded by
+    /// the one shared post block included.
+    #[test]
+    fn init_in_place_matches_new() {
+        UiRuntime::new().assert_boot_state();
+
+        let mut slot = core::mem::MaybeUninit::<UiRuntime>::uninit();
+        // SAFETY: `slot` is a valid, aligned, exclusively-owned region for one `UiRuntime`.
+        let placed = unsafe {
+            UiRuntime::init_in_place(slot.as_mut_ptr());
+            slot.assume_init_ref()
+        };
+        placed.assert_boot_state();
+    }
 }

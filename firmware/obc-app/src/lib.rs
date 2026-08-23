@@ -51,6 +51,7 @@ pub mod map_catalog;
 pub mod nav_profiles;
 pub mod navigator;
 pub mod next_ahead;
+pub(crate) mod placement;
 pub mod recorder;
 pub mod reroute_freeze;
 pub mod retention;
