@@ -198,12 +198,22 @@ fn find(stack: &Stack, kind: CardKind) -> Option<usize> {
 /// rule targets an open slot, otherwise push. The one overflow assert — loud in debug, a silent
 /// no-op in release (the card just doesn't open, exactly as `screen::apply` behaves). Removals are
 /// each family's own `stack.remove`; this is where cards arrive, not where they leave.
-fn land(stack: &mut Stack, at: Option<usize>, screen: Screen) {
+///
+/// Returns whether the card is on the stack. A rewrite always is; a push can fail on a full stack,
+/// and **every one-shot fact is consumed only on a `true`** — otherwise a release build would mark
+/// a warning shown, or take a boot verdict, for a card the rider never saw, and neither would ever
+/// come back. A `false` leaves the fact in its slot for the next sweep.
+#[must_use]
+fn land(stack: &mut Stack, at: Option<usize>, screen: Screen) -> bool {
     match at {
-        Some(i) => stack[i] = screen,
+        Some(i) => {
+            stack[i] = screen;
+            true
+        }
         None => {
             let r = stack.push(screen);
             debug_assert!(r.is_ok(), "screen stack overflow — raise MAX_DEPTH");
+            r.is_ok()
         }
     }
 }
@@ -392,19 +402,26 @@ impl CardScheduler {
 
     /// Passkey — conflict: an open **received** popup is replaced, not stacked over (it is advisory;
     /// the route is in the Route menu either way). The rider's own menu-opened swap prompt stays put
-    /// under the card.
+    /// under the card. A **changed** code rewrites the open card, the transfer card's rule: both are
+    /// level families, so neither may leave a stale value on glass — here that would be a rider
+    /// typing a dead pairing code into their phone. The same code re-fed each pass is no change, so
+    /// the steady state never re-dirties.
     fn deliver_passkey(&mut self, stack: &mut Stack) -> bool {
         let Some(passkey) = self.passkey else { return false };
-        if find(stack, CardKind::Passkey).is_some() {
-            return false; // the card already matches the level — idempotent, so no re-dirty
+        if let Some(i) = find(stack, CardKind::Passkey) {
+            let Screen::Passkey(card) = &mut stack[i] else { return false };
+            if card.passkey() == passkey {
+                return false;
+            }
+            *card = screen::PasskeyScreen::new(passkey);
+            return true;
         }
         if let Some(i) = find(stack, CardKind::Upload) {
             if is_received_popup(&stack[i]) {
                 let _ = stack.remove(i);
             }
         }
-        land(stack, None, Screen::Passkey(screen::PasskeyScreen::new(passkey)));
-        true
+        land(stack, None, Screen::Passkey(screen::PasskeyScreen::new(passkey)))
     }
 
     /// Map transfer — conflict: the open card is **rewritten in place**, never stacked. An unchanged
@@ -421,10 +438,7 @@ impl CardScheduler {
                 card.set_state(state);
                 true
             }
-            None => {
-                land(stack, None, Screen::MapTransfer(screen::MapTransferScreen::new(state)));
-                true
-            }
+            None => land(stack, None, Screen::MapTransfer(screen::MapTransferScreen::new(state))),
         }
     }
 
@@ -434,6 +448,10 @@ impl CardScheduler {
     /// debug arm — it pushes. This row never defers on a hold; see [`Policy::defer_on_hold`].
     fn deliver_dfu(&mut self, stack: &mut Stack) -> bool {
         let Some(landing) = self.dfu.take() else { return false };
+        // Only the install-began answer can reach a *push* (the debug arm, with no spinner up); the
+        // other two replace a wait, which cannot fail. So that is the one variant a full stack can
+        // bounce, and the one that goes back in the slot.
+        let pushes = matches!(landing, DfuLanding::InstallBegan);
         let (at, screen) = match landing {
             DfuLanding::Scanned(result) => {
                 let Some(i) = find(stack, CardKind::DfuCheck) else { return false };
@@ -456,8 +474,14 @@ impl CardScheduler {
                 (Some(i), Screen::DfuError(screen::DfuErrorScreen::new_install(reason)))
             }
         };
-        land(stack, at, screen);
-        true
+        if land(stack, at, screen) {
+            return true;
+        }
+        debug_assert!(pushes, "a DFU answer that replaces its wait cannot fail to land");
+        if pushes {
+            self.dfu = Some(DfuLanding::InstallBegan);
+        }
+        false
     }
 
     /// Upload prompt — conflict: the incoming prompt **replaces the upload family** in place (any
@@ -492,8 +516,7 @@ impl CardScheduler {
             }
         };
         let at = find(stack, CardKind::Upload);
-        land(stack, at, card);
-        true
+        land(stack, at, card)
     }
 
     /// Warning — conflict: fresh flags **merge into the open card** rather than stacking a second.
@@ -508,16 +531,19 @@ impl CardScheduler {
         if outranked {
             return false; // still pending; retried once the card clears
         }
-        self.warned |= fresh;
-        self.warnings = WarningFlags::NONE;
         match find(stack, CardKind::Warning) {
             Some(i) => {
                 if let Screen::Warning(s) = &mut stack[i] {
                     s.add(fresh);
                 }
             }
-            None => land(stack, None, Screen::Warning(screen::WarningScreen::new(fresh))),
+            // A full stack leaves the flags pending rather than marking them shown for a card that
+            // never opened — they would otherwise never surface again this boot.
+            None if !land(stack, None, Screen::Warning(screen::WarningScreen::new(fresh))) => return false,
+            None => {}
         }
+        self.warned |= fresh;
+        self.warnings = WarningFlags::NONE;
         true
     }
 
@@ -527,12 +553,15 @@ impl CardScheduler {
         if outranked {
             return false;
         }
-        let Some(result) = self.update.take() else { return false };
+        let Some(result) = self.update.as_ref() else { return false };
         let card = match result {
-            BootUpdate::Confirmed(version) => Screen::DfuUpdated(screen::DfuUpdatedScreen::new(&version)),
-            BootUpdate::Failed(why, staged) => Screen::DfuFailed(screen::DfuFailedScreen::new(why, staged.as_deref())),
+            BootUpdate::Confirmed(version) => Screen::DfuUpdated(screen::DfuUpdatedScreen::new(version)),
+            BootUpdate::Failed(why, staged) => Screen::DfuFailed(screen::DfuFailedScreen::new(*why, staged.as_deref())),
         };
-        land(stack, None, card);
+        if !land(stack, None, card) {
+            return false; // no room — the verdict keeps its slot and shows on a later pass
+        }
+        self.update = None;
         true
     }
 }
@@ -921,16 +950,54 @@ mod tests {
 
     // --- capacity ---------------------------------------------------------------------------------
 
-    /// The stack's capacity failure stays **loud in debug** and silent in release: one assert in the
-    /// scheduler's single `land` door replaces the six copies the reconcilers carried.
+    /// A full stack, both halves of the contract: the overflow stays **loud in debug** through the
+    /// scheduler's one `land` assert (which replaced the six copies the reconcilers carried) — and,
+    /// because a one-shot fact is consumed only once its card is actually on the stack, the flags
+    /// survive to open the card when there is room again. Without that ordering a release build
+    /// would mark them shown for a card nobody saw, and they would never surface again this boot.
     #[test]
     #[cfg(debug_assertions)]
-    #[should_panic(expected = "screen stack overflow")]
-    fn stack_capacity_failure_is_loud_in_debug() {
+    fn a_full_stack_fails_loudly_and_keeps_the_fact_pending() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         while app.debug_stack_len() < MAX_DEPTH {
             let _ = app.ui.stack.push(Screen::Menu(crate::screen::MenuScreen::new()));
         }
-        app.apply_event(crate::HostEvent::Warning(WarningFlags::NO_GPS));
+
+        let overflow = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            app.apply_event(crate::HostEvent::Warning(WarningFlags::NO_GPS));
+        }));
+        assert!(overflow.is_err(), "a full stack fails loudly in debug builds");
+        assert_eq!(app.debug_stack_len(), MAX_DEPTH, "and nothing landed");
+
+        // Room appears: the flags were never consumed, so the card opens carrying them.
+        app.ui.stack.pop();
+        app.advance_animations(InputClock(100));
+        match app.top_screen() {
+            Screen::Warning(w) => assert!(w.flags().contains(WarningFlags::NO_GPS), "the fact outlived the overflow"),
+            _ => panic!("the warning lands once there is room"),
+        }
+    }
+
+    /// The passkey card is a **level** family like the transfer card, so a code that changes while
+    /// the card is up rewrites it in place — a rider must never be typing a dead pairing code — and
+    /// the same code re-fed every pass repaints nothing.
+    #[test]
+    fn a_changed_passkey_rewrites_the_open_card() {
+        let code = |app: &App| match app.top_screen() {
+            Screen::Passkey(card) => card.passkey(),
+            _ => panic!("the passkey card is up"),
+        };
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        pair(&mut app, Some(111_111));
+        assert_eq!(code(&app), 111_111);
+        let _ = app.take_dirty();
+
+        pair(&mut app, Some(111_111));
+        assert!(!app.ui.map_dirty, "the same code, re-fed every pass, repaints nothing");
+
+        pair(&mut app, Some(222_222));
+        assert_eq!(code(&app), 222_222, "the card shows the live code, never a stale one");
+        assert_eq!(app.debug_stack_len(), 2, "rewritten in place, never a second card");
+        assert!(app.ui.map_dirty, "…and the change repaints");
     }
 }
