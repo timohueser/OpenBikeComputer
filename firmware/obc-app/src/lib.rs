@@ -33,6 +33,7 @@ pub mod ble;
 pub mod breadcrumb;
 pub mod catalog_state;
 pub mod corridor;
+pub mod device_core;
 mod device_status;
 pub mod dfu;
 pub mod dirty;
