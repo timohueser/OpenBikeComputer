@@ -27,6 +27,14 @@
 #      After a sweep: `python3 firmware/tools/ui_snapshot_manifest.py check
 #      firmware/ui-snapshots.sha256 "$OUT"`. A change of pixels is intentional or it is a
 #      regression; look at the changed frames first, then record them with `update`.
+#
+# Coverage against the `screens!` table: 59 of the 60 screens have at least one frame here.
+# The exception is **RideRecovery**, the boot card that offers a ride recovered from a durable
+# recording after a reset. Its only entry is `App::offer_recovered_ride(RideContinuation)` — a
+# host call carrying thirteen reconstructed accumulator fields, which the simulator has no
+# fixture for and no gesture can stand in for. It is named here rather than left to be
+# discovered: an uncovered screen is exactly where a refactor breaks silently, so adding that
+# seed is the way to close the gap, not quietly widening the net's claim.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -106,6 +114,10 @@ cp "$repo_root/fixtures/sources/sim-grimsel/routes/TP1.OBT" "$TRIPDIR/TP1.OBT"
 # routes, so the top level shows the "Alpen Traverse" folder row (folder glyph + name + `N routes` +
 # summed km/climb) above the loose grimsel route. `p p p` then drills into the folder — the stage
 # list, the trip's member routes as standard route rows under the trip's own name as the title.
+# Weak spot, stated so nobody mistakes it for coverage: both member routes are specs/vectors routes
+# named "Vector Loop", so the stage list's two rows are identical and a refactor that swapped or
+# collapsed them would not move a pixel. Distinguishing them needs differently-named member routes,
+# which means new committed vectors — worth doing when the stage list is next touched.
 "$SIM" "$MAP" --boot --script "p p"   --routes-dir "$TRIPDIR" --expect-screen RouteMenu --png "$OUT/routemenu-trips.png"
 "$SIM" "$MAP" --boot --script "p p p" --routes-dir "$TRIPDIR" --expect-screen RouteMenu --png "$OUT/trip-stage-list.png"
 # The trip cascade-delete confirm (TR3): long-press the folder (`h` fires the completed hold) → the
@@ -221,8 +233,8 @@ DETOUR_PRE="B d d w p d d d p f d d d d d d p p p f p T"
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
     --script "$DETOUR_PRE B d p d d p f p f T" --expect-screen Map --png "$OUT/detour-committed.png"
 # --- Settings ------------------------------------------------------------------------------------
-# The Settings list is five themed GROUP rows — Ride / Display / Connections / Power / System — so
-# every settings screen sits two levels down. The shape of every script below is:
+# The Settings list is six themed GROUP rows — Ride / Display / Weather / Connections / Power /
+# System — so every settings screen sits two levels down. The shape of every script below is:
 #   B u p        open the Menu, one Up step to the Settings station, press -> the Settings list
 #   d × G        step to group row G (0 Ride, 1 Display, 2 Weather, 3 Connections, 4 Power,
 #                5 System)
@@ -282,7 +294,10 @@ DETOUR_PRE="B d d w p d d d p f d d d d d d p p p f p T"
 "$SIM" "$MAP" --boot --script "B u p d p"       --expect-screen Display --png "$OUT/display.png"
 "$SIM" "$MAP" --boot --script "B u p d p d d p" --expect-screen Display --png "$OUT/display-idle-return.png"
 
-# Connections (group 2): the two radios in one drawer — Phone (Bluetooth) then Sensors.
+# Weather (group 2) is the refresh-interval picker; it is shot with the rest of the weather
+# surfaces further down (`weather-settings.png`), which reach it from the Menu's Weather station.
+#
+# Connections (group 3): the two radios in one drawer — Phone (Bluetooth) then Sensors.
 "$SIM" "$MAP" --boot --script "B u p d d d p"  --expect-screen Connections --png "$OUT/connections.png"
 # Bluetooth screen (#455, Forget restyled to the Pause-menu row family in owner review round 3):
 # the main state (radio on, advertising, a stored bond -> Paired: yes, the Forget row a plain label
@@ -302,11 +317,11 @@ DETOUR_PRE="B d d w p d d d p f d d d d d d p p p f p T"
 "$SIM" "$MAP" --boot --sensors screen --script "B u p d d d p d p p" --expect-screen SensorScan --png "$OUT/sensors-scan.png"
 "$SIM" "$MAP" --boot                  --script "B u p d d d p d p p" --expect-screen SensorScan --png "$OUT/sensors-scanning.png"
 
-# Power (group 3): the GPS fix-interval stepper + the power-saver toggle.
+# Power (group 4): the GPS fix-interval stepper + the power-saver toggle.
 "$SIM" "$MAP" --boot --script "B u p d d d d p" --expect-screen Power --png "$OUT/power.png"
 
-# System (group 4) — the device drawer: Units, Date & Time, Language, Firmware, Reset. The menu
-# itself first, then each row's page.
+# System (group 5) — the device drawer: Units, Date & Time, Language, Firmware, About, Reset. The
+# menu itself first, then each row's page.
 "$SIM" "$MAP" --boot --script "B u p d d d d d p"     --expect-screen System --png "$OUT/system.png"
 "$SIM" "$MAP" --boot --script "B u p d d d d d p p"   --expect-screen Units --png "$OUT/units.png"
 "$SIM" "$MAP" --boot --script "B u p d d d d d p d p" --expect-screen DateTime --png "$OUT/datetime.png"
@@ -543,6 +558,18 @@ trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$ELEVDIR" "$ETAROUTE"
 "$SIM" "$MAP" --boot --routes-dir "$ELEVDIR" --script "p p p f w w w w w w w f" \
     --expect-screen RouteOverview --png "$OUT/elev-route-profile.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p p" --gpx "$GPX" --at 30 --expect-screen RideControl --png "$OUT/ridecontrol.png"
+# The mid-ride compass (epic #789): a BackHold on the riding Map opens the RIDE menu — Up ahead /
+# Detour / POIs / Routes / Main menu — instead of the main Menu. Many scripts above *pass through* it
+# (`B u p` is how they climb out to the main menu mid-ride); this is the frame of the menu itself,
+# with the needle settled on its Up-ahead entry station.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p B w" --gpx "$GPX" --at 30 --expect-screen RideMenu --png "$OUT/ride-menu.png"
+# The Climb view (epic #506, C4/C5): the current climb's grade-striped profile + cursor + the four
+# climb-scoped tiles. Reached with **no gesture at all** — `climb_mode` defaults to Auto, so riding
+# into a climb replaces the riding view with this screen on the entry edge. `$ETAROUTE` holds the
+# Grimsel climb alone, so `p p p p` rides it and the replay (well inside the pass road at --at 1500)
+# crosses the entry the auto-switch fires on. That is also what makes this frame the C5 regression
+# surface: if the auto-switch stops firing, the sweep fails here rather than quietly saving a Map.
+"$SIM" "$MAP" --boot --routes-dir "$ETAROUTE" --script "p p p p" --gpx "$GPX" --at 1500 --expect-screen Climb --png "$OUT/climb.png"
 # The "Up ahead" timeline (epic #946, U3) — the ride compass's north station. Needs a POI-DENSE map,
 # so these frames use `monaco.obcm` (not $MAP) with the committed `monaco-upahead.gpx`: a ~2.7 km line
 # across central Monaco whose 300 m corridor catches real Resupply / Pharmacy / Lodging POIs, and whose
@@ -669,6 +696,13 @@ U5CLIMBOFF="B u p p d d d p b b b"
 # Figures are kibibytes, so 120000/400000 KiB is the ~30 % point of a 390 MB map.
 "$SIM" "$MAP" --boot --inject map-transfer=receiving:120000/400000 --expect-screen MapTransfer --png "$OUT/map-transfer-receiving.png"
 "$SIM" "$MAP" --boot --inject map-transfer=installed --expect-screen MapTransfer --png "$OUT/map-transfer-installed.png"
+# …and each failure face, the dfu-error family's grammar applied to the map: one card per sentence
+# the rider can act on. `refused` is the volume-set case (#1044) — the one announce-time refusal
+# that reaches the glass, because it lands on top of a stale "Map installed".
+"$SIM" "$MAP" --boot --inject map-transfer=failed:storage --expect-screen MapTransfer --png "$OUT/map-transfer-failed-storage.png"
+"$SIM" "$MAP" --boot --inject map-transfer=failed:damaged --expect-screen MapTransfer --png "$OUT/map-transfer-failed-damaged.png"
+"$SIM" "$MAP" --boot --inject map-transfer=failed:notamap --expect-screen MapTransfer --png "$OUT/map-transfer-failed-notamap.png"
+"$SIM" "$MAP" --boot --inject map-transfer=failed:refused --expect-screen MapTransfer --png "$OUT/map-transfer-failed-refused.png"
 # Storage/sensor warnings (issue #504). The dismissable warning card is raised through the real
 # notify_warning seam: one missing sensor, and
 # the coalesced worst case (all three sensors absent + a slow/fragmented map) — the widest layout
@@ -684,8 +718,10 @@ U5CLIMBOFF="B u p p d d d p b b b"
 # every screen in the runtime Language setting; `--lang de|fr|es` seeds it into the headless
 # Settings (English is the default the sweep above already captures, so it isn't re-shot). Re-render
 # the text-heaviest representative slice — Menu, the Settings list + a few value screens
-# (Units, Stats, Date & Time), Statistics, Climb, the off-route Map (warning chip + scale bar), and
-# the Route overview — in each of de/fr/es. These are the shots to eyeball for a stray `?` (a char outside the
+# (Units, Ride settings, Date & Time), Statistics, the off-route Map (warning chip + scale bar), and
+# the Route overview — in each of de/fr/es. (The Climb screen is *not* in this slice: it is drawn
+# almost entirely from numbers and a grade-striped band, so it has nearly no copy to eyeball. Its
+# English frame is `climb.png`.) These are the shots to eyeball for a stray `?` (a char outside the
 # Latin font's #601 repertoire, caught deterministically by `obc-app`'s i18n repertoire test) and for
 # clipped / overflowing rows now that the copy is longer. Scripts mirror the English lines above.
 for lang in de fr es; do

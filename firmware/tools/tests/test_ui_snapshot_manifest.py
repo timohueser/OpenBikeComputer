@@ -115,6 +115,10 @@ class CommittedManifestTests(unittest.TestCase):
         self.assertTrue(all(name.endswith(".png") for name in rows))
 
     def test_every_render_command_states_its_expected_screen(self):
+        """Line-scoped: `--expect-screen` must sit on the same physical line as its `--png`. Every
+        command in the sweep is written that way, and the check fails safe — a flag moved onto a
+        continuation line is a false *failure*, never a false pass — so a future multi-line command
+        means deliberately relaxing this, not silently slipping past it."""
         commands = [line for line in self.sweep_source().splitlines() if '--png "$OUT/' in line]
         without = [line for line in commands if "--expect-screen " not in line]
         self.assertEqual(without, [], "every render command must state --expect-screen")

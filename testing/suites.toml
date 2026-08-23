@@ -559,7 +559,16 @@ command = "python3 -m unittest discover -s firmware/tools/tests -v"
 fixtures = []
 pull_request = "affected"
 scheduled = "none"
-extra_triggers = ["firmware/tools/*.py", "firmware/tools/**/*.py"]
+# The sweep script and its manifest are inputs to this suite, not just its subjects:
+# `test_ui_snapshot_manifest.py` reads both, and it is the only thing that catches an
+# `--expect-screen` stripped off an existing command — the frames are unchanged, so `ci.ui-snapshots`
+# still passes.
+extra_triggers = [
+  "firmware/tools/*.py",
+  "firmware/tools/**/*.py",
+  "firmware/ui-snapshots.sh",
+  "firmware/ui-snapshots.sha256",
+]
 coverage_component = "dev-tools"
 ownership = [
   { kind = "path", source = "python-test", pattern = "firmware/tools/tests/test_*.py" },
