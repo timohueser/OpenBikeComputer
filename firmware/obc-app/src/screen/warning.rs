@@ -21,7 +21,8 @@ use obc_render::{
 
 use crate::input::Gesture;
 
-use super::{palette, title_frame, Ctx, Render, Transition};
+use super::vocab::chrome::{card_triangle, title_frame, TITLE_BAR_H};
+use super::{palette, Ctx, Render, Transition};
 
 /// The set of active device warnings, a small bitmask so several coalesce onto one card. Absent
 /// sensors are distinct bits (the rider is told *which* to check); the map-slow and recording-error
@@ -137,7 +138,7 @@ impl WarningScreen {
 
         // The shared warning triangle in the glyph slot (dialog anatomy, #678 T1); the text block
         // starts below it (was 26 % pre-glyph — nudged down only to make room).
-        super::card_triangle(cv, Point::new(w / 2, super::TITLE_BAR_H + 46), 22);
+        card_triangle(cv, Point::new(w / 2, TITLE_BAR_H + 46), 22);
 
         let line = Font::Body.line_height() as i32;
         let mut y = h * 36 / 100;

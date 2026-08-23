@@ -22,7 +22,9 @@ use obc_render::{
 
 use crate::ble::BleLink;
 use crate::input::Gesture;
-use crate::screen::{palette, title_frame, Ctx, Render, Transition, LIST_TOP};
+use crate::screen::vocab::chrome::{title_frame, LIST_TOP};
+use crate::screen::vocab::rows::{row_cursor, row_rect, ROW_X};
+use crate::screen::{palette, Ctx, Render, Transition};
 use crate::settings::{Language, Settings};
 use crate::Msg;
 
@@ -69,7 +71,7 @@ impl BluetoothScreen {
                 // onto the toggle before the step, so a step never walks a hidden row.
                 let len = rows(cx.state.device.ble_paired);
                 self.selected = self.selected.min(len - 1);
-                self.selected = crate::screen::list::step_selection(self.selected, n, len);
+                self.selected = crate::screen::vocab::list::step_selection(self.selected, n, len);
                 Transition::None
             }
             // The toggle is a click-to-flip; the edit lands in `Settings` and the host's
@@ -99,15 +101,15 @@ impl BluetoothScreen {
         let selected = self.selected.min(rows(device.ble_paired) - 1);
 
         // Row 0 — the radio switch.
-        let r0 = super::row_rect(LIST_TOP + 8, w, ROW_H);
-        super::row_cursor(cv, r0, selected == TOGGLE, false);
+        let r0 = row_rect(LIST_TOP + 8, w, ROW_H);
+        row_cursor(cv, r0, selected == TOGGLE, false);
         super::row_label(cv, r0, rx.t(Msg::BluetoothRadio), Some(rx.t(Msg::BluetoothRadioSub)));
         super::toggle_slider(cv, r0, rx.settings.ble_enabled);
 
         // The read-only lines — stacked caption-over-value pairs (a right-aligned "Advertising"
         // would collide with its caption on the 240 px panel): status (Off / Advertising /
         // Connected) and Paired (no phone name — deliberately not worth the protocol addition).
-        let info_x = super::ROW_X + 10;
+        let info_x = ROW_X + 10;
         let y0 = LIST_TOP + 8 + ROW_H + 16;
         cv.text(rx.t(Msg::BluetoothStatus), Point::new(info_x, y0), Font::Label, TextAlign::Left, SUBTEXT);
         cv.text(

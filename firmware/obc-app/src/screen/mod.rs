@@ -7,19 +7,19 @@
 //! (mutable camera/mode + clock), [`Render`] is the draw half (read-only state plus the
 //! `Reader`, the host's borrowed `RenderScratch`, and the in-flight hold-progress for the confirm
 //! ring).
+//!
+//! This module holds the navigation engine only — the contexts, [`Transition`], [`Caps`], the
+//! `screens!` table and the ride-session entry points. The drawing vocabulary every screen composes
+//! its page from lives one module per concept under [`vocab`].
 
 use core::fmt::Write;
 use core::ops::{Deref, DerefMut};
 
-use embedded_graphics::{draw_target::DrawTarget, prelude::Point, primitives::Rectangle};
+use embedded_graphics::{draw_target::DrawTarget, primitives::Rectangle};
 use obc_map_scene::MapScene;
 use obc_ports::Fix;
 use obc_reader::Reader;
-use obc_render::{
-    rect,
-    text::{text_width, Font, TextAlign},
-    Canvas, Clock, RenderScratch, RenderStats, Surface,
-};
+use obc_render::{Canvas, Clock, RenderScratch, RenderStats};
 use obc_route::{ClimbProfile, ClimbSeg, Profile, RouteReader, Waypoints};
 
 use crate::activity::{Activity, Mode};
@@ -29,13 +29,11 @@ use crate::input::Gesture;
 use crate::ride::RideSummary;
 use crate::route::RouteSummary;
 use crate::settings::{DateTime, Settings, Units};
-use crate::{t, Msg};
 
 mod climb;
 mod detour;
 mod dfu;
 mod home;
-mod list;
 mod map;
 mod map_transfer;
 mod menu;
@@ -58,6 +56,7 @@ mod settings;
 mod statistics;
 mod trip_delete;
 pub(crate) mod up_ahead;
+pub(crate) mod vocab;
 mod warning;
 mod weather_alert;
 mod weather_dash;
@@ -72,7 +71,6 @@ pub use dfu::{
     DfuProgressScreen, DfuUpdatedScreen,
 };
 pub use home::HomeScreen;
-pub use list::window_start;
 pub use map::{MapScreen, ROUTE_WEIGHT};
 pub use map_transfer::{MapTransfer, MapTransferError, MapTransferScreen};
 pub use menu::MenuScreen;
@@ -1131,81 +1129,6 @@ impl ScreenTick {
     }
 }
 
-/// Height of the wood title bar. Sized for the Body-tier title with even ≈8 px padding.
-pub const TITLE_BAR_H: i32 = 34;
-
-/// Top of the list area (just below the title bar) shared by list screens.
-pub const LIST_TOP: i32 = TITLE_BAR_H + 8;
-
-/// Draw the shared screen chrome: a near-white background, a thin rounded outline, and a rounded
-/// wood title bar with `title` left-aligned and `right` (a counter, a grade readout, …) right-
-/// justified. `title` is left-aligned so a long right-hand readout never collides with it. Every
-/// framed screen draws its header through this; the caller fills the body below [`LIST_TOP`].
-///
-/// This is the plain header; framed screens that want the BLE connected indicator in the right slot
-/// (the menus) call [`title_frame_ble`] instead, threading the app's link state.
-pub fn title_frame(cv: &mut impl Surface, w: i32, h: i32, title: &str, right: &str) {
-    title_frame_ble(cv, w, h, title, right, false)
-}
-
-/// [`title_frame`] plus the BLE **connected indicator** (epic #447): when `ble_connected`, a small
-/// static Bluetooth rune sits in the title bar's right slot, on the parchment glyph colour of the
-/// bar text. The `right` readout is inset left of it so the two never overlap (in practice the
-/// menus that show the indicator carry no right readout). Static — no animation — so it stays
-/// dirty-row-cheap: it only appears/disappears on a link change, which
-/// [`App::set_ble_status`](crate::App::set_ble_status) gates a repaint on.
-pub fn title_frame_ble(cv: &mut impl Surface, w: i32, h: i32, title: &str, right: &str, ble_connected: bool) {
-    use palette::*;
-    cv.clear(PARCHMENT);
-    cv.round_outline(rect(4, 4, w - 8, h - 8), 8, WOOD_LIGHT);
-    cv.round(rect(4, 4, w - 8, TITLE_BAR_H), 6, WOOD);
-    // Both rows vertically centered in the bar; the two y's account for the different glyph baselines.
-    cv.text(title, Point::new(14, 8), Font::Body, TextAlign::Left, PARCHMENT);
-    // The rune occupies the far-right slot; any `right` readout is pushed left of it so they can't
-    // collide. `BLE_GLYPH_W` + a small gap is the reserved band.
-    let right_x = if ble_connected {
-        ble_glyph(cv, w - 14 - BLE_GLYPH_W, TITLE_BAR_H / 2 + 4, PARCHMENT);
-        w - 14 - BLE_GLYPH_W - 8
-    } else {
-        w - 14
-    };
-    cv.text(right, Point::new(right_x, 10), Font::Label, TextAlign::Right, PARCHMENT);
-}
-
-/// Total width (px) the [`ble_glyph`] rune occupies, so callers can reserve its slot.
-pub(crate) const BLE_GLYPH_W: i32 = 11;
-
-/// Draw the Bluetooth "connected" rune centred vertically on `cy`, its left edge at `x`, in `color`.
-///
-/// The classic Bluetooth bind-rune (ᛒ): a vertical stem; from the stem's top a stroke runs to the
-/// upper-right tip and back to the centre notch, mirrored from the bottom; and two crossing
-/// back-strokes run from each tip to the opposite left corner — the diagonals that close the rune.
-/// Hand-plotted as `line`s in the panel's own glyph idiom (like the climb triangles and POI bearing
-/// arrows) rather than a font glyph, so it quantizes and reads at the device's pixel scale. Static
-/// and tiny (~11×16), so painting it is cheap and it composites into a single dirty row-band.
-pub(crate) fn ble_glyph(cv: &mut impl Surface, x: i32, cy: i32, color: u16) {
-    let half = 8; // half-height → a 16 px-tall stem
-    let (top, mid, bot) = (cy - half, cy, cy + half);
-    let stem_x = x + 3; // the vertical bar, inset so the left back-strokes have room on either side
-    let tip_x = x + BLE_GLYPH_W - 1; // the rightmost point of each triangle
-    let left_x = x; // the two left corners the diagonals reach
-    let quarter = half / 2;
-    let (t, b, c) = (Point::new(stem_x, top), Point::new(stem_x, bot), Point::new(stem_x, mid));
-    let up_tip = Point::new(tip_x, top + quarter);
-    let lo_tip = Point::new(tip_x, bot - quarter);
-    // The vertical stem.
-    cv.line(t, b, color);
-    // Right-hand strokes: top → upper-tip → centre, and bottom → lower-tip → centre.
-    cv.line(t, up_tip, color);
-    cv.line(up_tip, c, color);
-    cv.line(b, lo_tip, color);
-    cv.line(lo_tip, c, color);
-    // The crossing diagonals to the opposite left corner — what makes it read as the ᛒ rune, not two
-    // stacked chevrons. Upper tip → lower-left, lower tip → upper-left.
-    cv.line(up_tip, Point::new(left_x, bot - quarter), color);
-    cv.line(lo_tip, Point::new(left_x, top + quarter), color);
-}
-
 /// How long a route-upload popup (epic #447, P4) stays up before it auto-closes; the timeout **is**
 /// a dismiss — the popups are advisory (the route is committed before any prompt), so expiring
 /// loses nothing. Long enough to read mid-ride, short enough that a parked device returns to warm
@@ -1265,333 +1188,6 @@ pub(crate) fn riding_common(g: Gesture, cx: &mut Ctx) -> Transition {
     }
 }
 
-/// Draw one stat tile — a rounded pane in `bg` with an olive caption over a big `value_color` Display
-/// value (`INK` on the live riding grid; the olive `SUBTEXT` for the Fields editor's ghost sample
-/// values, T8 item 4), optionally prefixed by an up-triangle for climb figures (the panel font has no
-/// ↑ glyph). The
-/// value sits at `value_align` (Left for the number-only fields; Right for the wide `NextWaypoint`
-/// distance, so it hugs the far edge clear of the name caption). Shared by the riding Statistics
-/// grid (tan panes) and the Fields editor (which draws the same tiles, amber under the cursor). The
-/// caption+value block is vertically centred, so the taller editor tiles and the chart-squeezed
-/// Statistics tiles both balance.
-#[allow(clippy::too_many_arguments)] // a plain draw helper: surface + rect + caption/value + style
-pub(crate) fn tile(
-    cv: &mut impl Surface,
-    area: Rectangle,
-    label: &str,
-    value: &str,
-    arrow: bool,
-    value_align: TextAlign,
-    bg: u16,
-    value_color: u16,
-) {
-    use palette::*;
-    let (x, y) = (area.top_left.x, area.top_left.y);
-    cv.round(area, 5, bg);
-    // Content block: Label caption (cap 18) + Display value (cap 26) with the same 18 px lead the
-    // Statistics grid always had; centre it in whatever height the pane has.
-    let cy = y + ((area.size.height as i32 - 48) / 2).max(4);
-    // A caption wider than the tile (a long waypoint name) is truncated with an ASCII ellipsis; the
-    // short unit captions of every built-in field pass through untouched. Caption inset less than
-    // the value so those unit captions sit nearer the tile centre.
-    let mut label_buf: heapless::String<24> = heapless::String::new();
-    let label = fit_caption(label, area.size.width as i32 - 5, &mut label_buf, Font::Label);
-    cv.text(label, Point::new(x + 5, cy), Font::Label, TextAlign::Left, SUBTEXT);
-    let vy = cy + 18;
-    match value_align {
-        // Right-aligned (the wide waypoint distance): anchor at the tile's far edge, so it can never
-        // collide with the caption on the line above.
-        TextAlign::Right => {
-            cv.text(
-                value,
-                Point::new(x + area.size.width as i32 - 8, vy),
-                Font::Display,
-                TextAlign::Right,
-                value_color,
-            );
-        }
-        _ => {
-            let vx = if arrow {
-                // Up-triangle sized to sit alongside the Display digits (dimmed with the value in the
-                // Fields editor's ghost tiles).
-                let ax = x + 8;
-                cv.triangle(
-                    Point::new(ax, vy + 26),
-                    Point::new(ax + 13, vy + 26),
-                    Point::new(ax + 6, vy + 6),
-                    value_color,
-                );
-                x + 26
-            } else {
-                x + 8
-            };
-            cv.text(value, Point::new(vx, vy), Font::Display, TextAlign::Left, value_color);
-        }
-    }
-}
-
-/// Left inset of the category icon's centre inside a `Next: <category>` tile — half the ~22 px icon
-/// box plus the tile's own 5 px caption inset, so the glyph sits on the same left margin the plain
-/// tiles' captions do.
-const CATEGORY_TILE_ICON_CX: i32 = 16;
-/// Where a `Next: <category>` tile's caption starts: clear of the icon box, with a hair of air.
-const CATEGORY_TILE_NAME_X: i32 = 31;
-
-/// Draw a **`Next: <category>` tile** (epic #946, U5) — [`tile`]'s wide anatomy with the category's
-/// row icon in front of the caption: `[icon] name` over a right-aligned Display distance. The name
-/// is the nearest entry of that category ahead (a map POI or the rider's own categorized waypoint —
-/// the tile can't tell, and deliberately doesn't say: on a stat page the answer is *how far*, and
-/// provenance is the Up-ahead list's job); `--` when nothing of the kind is ahead, with the caption
-/// falling back to the category's own name so the tile still reads as an answer rather than a blank.
-///
-/// Split out from [`tile`] rather than folded into it as a ninth argument: the icon changes the
-/// caption's *geometry* (its inset and therefore its ellipsis budget), which every other tile would
-/// have to opt out of. Same rounded pane, same caption/value fonts, same vertical centring, so the
-/// two read as one system on the grid.
-pub(crate) fn category_tile(
-    cv: &mut impl Surface,
-    area: Rectangle,
-    cat: obc_reader::PoiCategory,
-    name: &str,
-    value: &str,
-    bg: u16,
-    value_color: u16,
-) {
-    use palette::*;
-    let (x, y) = (area.top_left.x, area.top_left.y);
-    let w = area.size.width as i32;
-    cv.round(area, 5, bg);
-    // The caption/value block, centred in the pane exactly as `tile` centres its own.
-    let cy = y + ((area.size.height as i32 - 48) / 2).max(4);
-    poi_menu::draw_category_icon(cv, cat, Point::new(x + CATEGORY_TILE_ICON_CX, cy + 9), SUBTEXT, bg);
-    let mut buf: heapless::String<24> = heapless::String::new();
-    let name = fit_caption(name, w - CATEGORY_TILE_NAME_X - 5, &mut buf, Font::Label);
-    cv.text(name, Point::new(x + CATEGORY_TILE_NAME_X, cy), Font::Label, TextAlign::Left, SUBTEXT);
-    cv.text(value, Point::new(x + w - 8, cy + 18), Font::Display, TextAlign::Right, value_color);
-}
-
-/// Number of waypoint rows the 2×3 panel lists — the next this-many ahead of the rider.
-pub(crate) const WAYPOINT_PANEL_ROWS: usize = 4;
-
-/// Draw the **waypoint list panel** — the page-sized (2-col × 3-row) multi-row stat field
-/// ([`WaypointList`](crate::stat_fields::StatField::WaypointList)). Its 2×3 list doesn't fit the
-/// caption+value shape [`tile`] draws, so the Statistics grid and the Fields editor special-case
-/// `rows() > 1` and call this instead (WYSIWYG: the editor draws the real panel, live). Chrome
-/// matches [`tile`] — a rounded pane in `bg` with the olive `WAYPOINTS` caption — so it reads as one
-/// system with the tan tiles around it.
-///
-/// Content is the next [`WAYPOINT_PANEL_ROWS`] waypoints ahead (rows `k..k+4` from
-/// [`next_waypoint`](crate::stat_fields::Readout), the App-resolved first-ahead index): each row is
-/// the name on the left and the along-route distance-to-go (`dist_along_m − progress`, clamped
-/// through the pass-linger by `saturating_sub`) on the right, the **first row emphasized**
-/// ([`Font::Body`]; the rest [`Font::Label`]). A name that would reach the distance column is
-/// ellipsis-truncated. Fewer than four remaining leaves the tail rows blank; no route / nothing ahead
-/// draws the frame + caption with a centred `--` (the route-relative fallback, like the 2×1 tile).
-pub(crate) fn waypoint_panel(cv: &mut impl Surface, area: Rectangle, cx: &crate::stat_fields::Readout, bg: u16) {
-    use palette::*;
-    let (x, y) = (area.top_left.x, area.top_left.y);
-    let (w, hgt) = (area.size.width as i32, area.size.height as i32);
-    cv.round(area, 5, bg);
-    cv.text(t(Msg::TileWaypoints, cx.language), Point::new(x + 8, y + 8), Font::Label, TextAlign::Left, SUBTEXT);
-
-    // The first waypoint ahead, guarded against a stale/out-of-range resolver index and the empty
-    // table (no route loaded) — either way the panel falls back to a centred `--`.
-    let ahead = cx.next_waypoint.filter(|&k| k < cx.waypoints.as_slice().len());
-    let Some(k) = ahead else {
-        cv.text("--", Point::new(x + w / 2, y + hgt / 2 - 11), Font::Body, TextAlign::Center, INK);
-        return;
-    };
-
-    // Rows below the caption band, split evenly; the first is emphasized (Body), the rest Label.
-    const HEAD: i32 = 30;
-    let stride = (hgt - HEAD - 6) / WAYPOINT_PANEL_ROWS as i32;
-    let wps = cx.waypoints.as_slice();
-    for i in 0..WAYPOINT_PANEL_ROWS {
-        let Some(wp) = wps.get(k + i) else { break }; // fewer than four remaining → blank tail rows
-        let font = if i == 0 { Font::Body } else { Font::Label };
-        let ry = y + HEAD + i as i32 * stride;
-        // Distance-to-go, right-aligned at the far edge; the name is truncated clear of it.
-        let dist = crate::stat_fields::fmt_dist_short(wp.dist_along_m.saturating_sub(cx.activity.progress_m), cx.units);
-        cv.text(&dist, Point::new(x + w - 10, ry), font, TextAlign::Right, INK);
-        let budget = w - 20 - text_width(&dist, font) as i32 - 8;
-        let mut buf: heapless::String<24> = heapless::String::new();
-        let name = fit_caption(wp.name.as_str(), budget, &mut buf, font);
-        cv.text(name, Point::new(x + 10, ry), font, TextAlign::Left, INK);
-    }
-}
-
-/// The **Fields-editor ghost** of [`waypoint_panel`] (T8 item 4). In the editor there's no route
-/// loaded, so the real panel would read a lone `--`; like the ghost sample values the tiles show, it
-/// draws two fixed sample rows (`Brunnen  1.2km` emphasized [`Font::Body`], `Pass Summit  8.7km`
-/// [`Font::Label`]) in the olive `SUBTEXT` — so the placed panel is judged against realistic content,
-/// not a dash. Editor-only: the live Statistics grid always calls [`waypoint_panel`]. Chrome (the
-/// rounded pane + olive `WAYPOINTS` caption) matches it so the two read as one system.
-pub(crate) fn waypoint_panel_ghost(cv: &mut impl Surface, area: Rectangle, lang: crate::settings::Language, bg: u16) {
-    use palette::*;
-    let (x, y) = (area.top_left.x, area.top_left.y);
-    let (w, hgt) = (area.size.width as i32, area.size.height as i32);
-    cv.round(area, 5, bg);
-    cv.text(t(Msg::TileWaypoints, lang), Point::new(x + 8, y + 8), Font::Label, TextAlign::Left, SUBTEXT);
-    const HEAD: i32 = 30;
-    let stride = (hgt - HEAD - 6) / WAYPOINT_PANEL_ROWS as i32;
-    // Two sample waypoints ahead — name left, along-route distance-to-go right, the first emphasized;
-    // all in olive so the block reads as a placeholder preview, not live content.
-    let samples: [(&str, &str); 2] = [("Brunnen", "1.2km"), ("Pass Summit", "8.7km")];
-    for (i, (name, dist)) in samples.iter().enumerate() {
-        let font = if i == 0 { Font::Body } else { Font::Label };
-        let ry = y + HEAD + i as i32 * stride;
-        cv.text(dist, Point::new(x + w - 10, ry), font, TextAlign::Right, SUBTEXT);
-        cv.text(name, Point::new(x + 10, ry), font, TextAlign::Left, SUBTEXT);
-    }
-}
-
-/// Fit a caption into `budget_px` at `font`, dropping trailing chars and appending an ASCII ellipsis
-/// (`...` — the device font is printable-ASCII only, so `…` would render as tofu) when it overflows.
-/// Every built-in field's unit caption fits whole; only a long waypoint name is ever truncated (the
-/// wide tile's caption at [`Font::Label`], the panel's per-row names at their row font). Writes into
-/// `buf` and returns it. Pure integer geometry over the monospace cell width, so the truncation is
-/// deterministic. Mirrors the Map chip's `fit_name`.
-fn fit_caption<'b>(label: &str, budget_px: i32, buf: &'b mut heapless::String<24>, font: Font) -> &'b str {
-    buf.clear();
-    let char_w = font.char_width() as i32;
-    if label.chars().count() as i32 * char_w <= budget_px {
-        let _ = buf.push_str(label); // fits whole (caption ≤ StatCell cap ≤ buf)
-        return buf.as_str();
-    }
-    const ELL: &str = "...";
-    let keep = ((budget_px - ELL.len() as i32 * char_w) / char_w).max(0) as usize;
-    for ch in label.chars().take(keep) {
-        if buf.push(ch).is_err() {
-            break;
-        }
-    }
-    // A cut that lands on a word gap would read as `Fontaine du ...` — the space between the last
-    // word and the ellipsis makes the truncation look like a typo. Drop trailing blanks first (the
-    // budget only ever shrinks, so this can't overflow).
-    while buf.ends_with(' ') {
-        buf.pop();
-    }
-    let _ = buf.push_str(ELL);
-    buf.as_str()
-}
-
-/// One stat-ledger row — olive caption on the left, the Display value right-aligned with a small
-/// unit suffix (baselines shared), and an optional climb/descent triangle just left of the value
-/// (`Some(true)` = up). All text sits on the parchment — no pane; that look is reserved for the
-/// riding grid's live tiles. Shared by the Route overview and the Paused page.
-pub(crate) fn ledger_row(
-    cv: &mut impl Surface,
-    w: i32,
-    y: i32,
-    caption: &str,
-    value: &str,
-    unit: &str,
-    arrow: Option<bool>,
-) {
-    use palette::*;
-    // Display cap is 26 from `y + 6`, Label cap 18 from `y + 14` — both bottom out at `y + 32`.
-    cv.text(caption, Point::new(16, y + 14), Font::Label, TextAlign::Left, SUBTEXT);
-    cv.text(unit, Point::new(w - 16, y + 14), Font::Label, TextAlign::Right, SUBTEXT);
-    let unit_w = unit.chars().count() as i32 * Font::Label.char_width() as i32;
-    let vx = w - 16 - unit_w - 6;
-    cv.text(value, Point::new(vx, y + 6), Font::Display, TextAlign::Right, INK);
-    if let Some(up) = arrow {
-        let value_w = value.chars().count() as i32 * Font::Display.char_width() as i32;
-        let ax = vx - value_w - 18;
-        let (flat, tip) = if up { (y + 30, y + 12) } else { (y + 12, y + 30) };
-        cv.triangle(Point::new(ax, flat), Point::new(ax + 13, flat), Point::new(ax + 6, tip), INK);
-    }
-}
-
-/// Draw the shared card **warning glyph** — an amber triangle with an ink exclamation — centred at
-/// `center`, `k` the triangle's half-height (epic #678 T1's dialog anatomy kit). Drawn in the
-/// "glyph slot": horizontally centred, vertically in the band between the title bar and the card's
-/// text block. Pixel-for-pixel the glyph the DFU error cards established (the reference
-/// composition); the factory-Reset screen and the routing-failure / sensor-warning cards draw the
-/// identical sign through this one helper.
-pub(crate) fn card_triangle(cv: &mut impl Surface, center: Point, k: i32) {
-    use palette::*;
-    let (cx, cy) = (center.x, center.y);
-    cv.triangle(Point::new(cx, cy - k), Point::new(cx - k, cy + k), Point::new(cx + k, cy + k), AMBER);
-    // Exclamation: a bar over a dot.
-    cv.vline(cx, cy - k / 4, k / 2, 3, INK);
-    cv.disc(Point::new(cx, cy + k / 2 + 1), 2, INK);
-}
-
-/// Draw the shared card **check glyph** — an amber check mark, two strokes stepped out of discs
-/// (the canvas has no diagonal thick-line primitive) — centred near `center`, `k` its half-width.
-/// The success twin of [`card_triangle`], factored from the DFU "UPDATED" toast (the reference)
-/// and the Reset done state; the "ROUTE UPDATED" card draws the same mark.
-pub(crate) fn card_check(cv: &mut impl Surface, center: Point, k: i32) {
-    fn seg(cv: &mut impl Surface, a: (i32, i32), b: (i32, i32)) {
-        const N: i32 = 14;
-        for s in 0..=N {
-            let x = a.0 + (b.0 - a.0) * s / N;
-            let y = a.1 + (b.1 - a.1) * s / N;
-            cv.disc(Point::new(x, y), 3, palette::AMBER);
-        }
-    }
-    let (cx, cy) = (center.x, center.y);
-    // Down-stroke to the low point, then up-stroke to the top-right.
-    seg(cv, (cx - k, cy), (cx - k / 3, cy + k * 2 / 3));
-    seg(cv, (cx - k / 3, cy + k * 2 / 3), (cx + k, cy - k * 2 / 3));
-}
-
-/// Draw `text` word-wrapped into centred `font` lines within `width_px`, the first line at
-/// `top_y`, in `color` — the shared multi-line card body (author each catalog string on one line;
-/// wrap at draw time). Greedy over the monospace cell width; returns the `y` just past the last
-/// line so a caller can stack more below it. A single word wider than the budget is left to clip
-/// (versions and the like are short). The line advance is the font's cap height plus a hair of
-/// lead. Shared by the DFU cards (which established it) and the routing-failure card.
-pub(crate) fn wrapped(
-    cv: &mut impl Surface,
-    text: &str,
-    cx: i32,
-    top_y: i32,
-    width_px: i32,
-    font: Font,
-    color: u16,
-) -> i32 {
-    let lh = font.cap_height() as i32 + 1; // cap + a hair of lead (Label: the 19 px the DFU cards pinned)
-    let char_w = font.char_width() as i32;
-    let budget = (width_px / char_w).max(1) as usize;
-    let mut y = top_y;
-    let mut line: heapless::String<48> = heapless::String::new();
-    for word in text.split(' ') {
-        let extra = if line.is_empty() { word.len() } else { line.len() + 1 + word.len() };
-        if extra > budget && !line.is_empty() {
-            cv.text(&line, Point::new(cx, y), font, TextAlign::Center, color);
-            y += lh;
-            line.clear();
-        }
-        if !line.is_empty() {
-            let _ = line.push(' ');
-        }
-        let _ = line.push_str(word);
-    }
-    if !line.is_empty() {
-        cv.text(&line, Point::new(cx, y), font, TextAlign::Center, color);
-        y += lh;
-    }
-    y
-}
-
-/// Doubled-1-px stroke: the segment plus a twin offset 1 px across its dominant axis — the
-/// panel's 2 px line idiom (the menu bezel ticks / passkey phone established it; the POI bearing
-/// arrows and the computed-route shape preview draw through this one helper).
-pub(crate) fn stroke2(cv: &mut impl Surface, a: Point, b: Point, color: u16) {
-    cv.line(a, b, color);
-    let off = if (b.x - a.x).abs() > (b.y - a.y).abs() { Point::new(0, 1) } else { Point::new(1, 0) };
-    cv.line(a + off, b + off, color);
-}
-
-/// Draw a centered two-line empty state — a bold `title` over a muted `hint` — the shared
-/// "nothing to show yet" body the Route menu and Statistics draw under their header.
-pub(crate) fn empty_state(cv: &mut impl Surface, w: i32, h: i32, title: &str, hint: &str) {
-    cv.text(title, Point::new(w / 2, h / 2 - 28), Font::Body, TextAlign::Center, palette::INK);
-    cv.text(hint, Point::new(w / 2, h / 2 + 8), Font::Label, TextAlign::Center, palette::SUBTEXT);
-}
-
 /// Append a cross-track distance after `prefix`, compacted to a whole large unit past the cross-
 /// over so the readout stays within the panel width. Metric: `NNNm` below 1 km, `NNkm` above
 /// (rounded). Imperial: `NNNft` below a mile, `NNmi` above. Shared by the Statistics header readout
@@ -1609,99 +1205,6 @@ pub(crate) fn write_off_route<const N: usize>(s: &mut heapless::String<N>, prefi
         let _ = write!(s, "{prefix}{}km", (d_m + 500) / 1000);
     } else {
         let _ = write!(s, "{prefix}{d_m}m");
-    }
-}
-
-/// One option in a guarded-action menu (Ride control, Route swap): a static label and a
-/// `guard` flag marking the irreversible options that need a hold-to-confirm instead of a
-/// plain press.
-pub(crate) struct MenuItem {
-    pub label: &'static str,
-    pub guard: bool,
-}
-
-/// Draw a selected option row's background for the guarded-action menus: a plain `AMBER` fill for
-/// an instant option, or — when `guard` is set — a `PARCHMENT_SHADE` base that fills in `fill`
-/// tracking `hold_progress` (0.0–1.0). The caller draws the label. A no-op for an unselected row.
-pub(crate) fn confirm_row(
-    cv: &mut impl Surface,
-    row: Rectangle,
-    selected: bool,
-    guard: bool,
-    hold_progress: f32,
-    fill: u16,
-    radius: u32,
-) {
-    if !selected {
-        return;
-    }
-    if guard {
-        cv.round(row, radius, palette::PARCHMENT_SHADE);
-        let fill_w = (row.size.width as f32 * hold_progress.clamp(0.0, 1.0)) as i32;
-        if fill_w > 0 {
-            cv.round(rect(row.top_left.x, row.top_left.y, fill_w, row.size.height as i32), radius, fill);
-        }
-    } else {
-        cv.round(row, radius, palette::AMBER);
-    }
-}
-
-/// Layout of a guarded-action menu's option rows — the per-screen geometry
-/// [`draw_guarded_rows`] lays [`MenuItem`]s out with. The label offsets are from the row's
-/// top-left, hand-tuned per screen (the two panels frame their rows differently).
-pub(crate) struct GuardedRowsGeometry {
-    /// Left edge and width of every row.
-    pub x: i32,
-    pub w: i32,
-    /// Top of the first row.
-    pub top: i32,
-    /// Row height and the vertical gap between rows.
-    pub row_h: i32,
-    pub gap: i32,
-    /// The label anchor, relative to the row's top-left.
-    pub label_dx: i32,
-    pub label_dy: i32,
-}
-
-impl GuardedRowsGeometry {
-    /// The **card** family — the option rows of a full-bleed confirm card (Route received /
-    /// updated, Trip received, Route swap, Trip delete, Nav route): a 12 px side inset, 46 px rows
-    /// 8 apart, the label 16 in and 11 down. Only where the block starts differs between them.
-    pub(crate) fn card(w: i32, top: i32) -> Self {
-        GuardedRowsGeometry { x: 12, w: w - 24, top, row_h: 46, gap: 8, label_dx: 16, label_dy: 11 }
-    }
-
-    /// The **panel** family — action rows inside a framed panel (Pause menu, Route overview, Ride
-    /// detail): the wider 14 px inset the frame wants, and a tighter label at 12 in / 5 down. Row
-    /// height and gap stay the caller's, since each panel sizes its block to the space it has.
-    pub(crate) fn panel(w: i32, top: i32, row_h: i32, gap: i32) -> Self {
-        GuardedRowsGeometry { x: 14, w: w - 28, top, row_h, gap, label_dx: 12, label_dy: 5 }
-    }
-}
-
-/// Draw a guarded-action menu's option rows (Ride control, Route swap): each [`MenuItem`] gets its
-/// [`confirm_row`] background — the amber cursor, or the hold-progress fill in `fill` on a guarded
-/// row — and its Body label. The caller draws its chrome (the PAUSED panel / the full-frame prompt)
-/// and keeps its `handle` semantics.
-pub(crate) fn draw_guarded_rows(
-    cv: &mut impl Surface,
-    items: &[MenuItem],
-    selected: usize,
-    hold_progress: f32,
-    fill: u16,
-    geo: GuardedRowsGeometry,
-) {
-    for (i, item) in items.iter().enumerate() {
-        let y = geo.top + i as i32 * (geo.row_h + geo.gap);
-        let row = rect(geo.x, y, geo.w, geo.row_h);
-        confirm_row(cv, row, i == selected, item.guard, hold_progress, fill, 6);
-        cv.text(
-            item.label,
-            Point::new(geo.x + geo.label_dx, y + geo.label_dy),
-            Font::Body,
-            TextAlign::Left,
-            palette::INK,
-        );
     }
 }
 
@@ -1768,138 +1271,6 @@ pub mod palette {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::support::wpts;
-    use obc_render::text::text_width;
-
-    /// A draw target that records only its text draws — the panel-content tests observe which strings
-    /// land, at what font + alignment, ignoring the chrome primitives (fills/rounds).
-    #[derive(Default)]
-    struct TextRec {
-        calls: heapless::Vec<(heapless::String<24>, Font, TextAlign), 16>,
-    }
-    impl Surface for TextRec {
-        fn clear(&mut self, _: u16) {}
-        fn fill(&mut self, _: Rectangle, _: u16) {}
-        fn round(&mut self, _: Rectangle, _: u32, _: u16) {}
-        fn round_outline(&mut self, _: Rectangle, _: u32, _: u16) {}
-        fn line(&mut self, _: Point, _: Point, _: u16) {}
-        fn triangle(&mut self, _: Point, _: Point, _: Point, _: u16) {}
-        fn disc(&mut self, _: Point, _: u32, _: u16) {}
-        fn text(&mut self, s: &str, at: Point, font: Font, align: TextAlign, _: u16) -> Point {
-            let mut buf = heapless::String::new();
-            let _ = buf.push_str(s);
-            let _ = self.calls.push((buf, font, align));
-            at
-        }
-    }
-
-    /// A bare metric readout over `activity` + `waypoints`, resolving `next` as the first waypoint
-    /// ahead — enough for the panel drawer (which reads only those three).
-    /// An empty per-category cache (U5): the panel drawer never reads it, but `Readout` carries it.
-    static EMPTY_CACHE: &crate::next_ahead::NextAhead = &crate::next_ahead::NextAhead::EMPTY;
-
-    fn readout<'a>(
-        activity: &'a Activity,
-        waypoints: &'a Waypoints,
-        next: Option<usize>,
-    ) -> crate::stat_fields::Readout<'a> {
-        crate::stat_fields::Readout {
-            fix: None,
-            activity,
-            units: Units::Metric,
-            route: None,
-            profile: None,
-            climb: None,
-            waypoints,
-            next_waypoint: next,
-            now: DateTime::default(),
-            now_ms: 0,
-            bike_profile_idx: 0,
-            language: crate::settings::Language::En,
-            next_ahead: EMPTY_CACHE,
-        }
-    }
-
-    /// A representative panel rect (the Statistics grid's full-page area on the 240×320 panel).
-    fn panel_area() -> Rectangle {
-        rect(12, 136, 216, 174)
-    }
-
-    /// The panel pins the next four waypoints ahead (rows `k..k+4`), the first emphasized (`Body`)
-    /// and the rest `Label`, each row a right-aligned distance-to-go (`dist_along_m − progress`) and
-    /// a left name; with only two remaining, the tail rows stay blank (nothing drawn).
-    #[test]
-    fn waypoint_panel_pins_the_next_four_and_blanks_the_tail() {
-        let act = Activity::new(Mode::Riding); // progress 0
-        let w = wpts(&[(1_000, "Brunnen"), (5_000, "Alp")]); // short names → verbatim, no truncation
-        let cx = readout(&act, &w, Some(0));
-        let mut rec = TextRec::default();
-        waypoint_panel(&mut rec, panel_area(), &cx, palette::PARCHMENT_SHADE);
-
-        // caption, then per row: distance (right) then name (left). Two waypoints → 1 + 2×2 = 5.
-        assert_eq!(rec.calls.len(), 5, "caption + two rows; the two empty tail rows draw nothing");
-        assert_eq!((rec.calls[0].0.as_str(), rec.calls[0].1), ("WAYPOINTS", Font::Label));
-        // Row 0 — emphasized (Body), distance-to-go 1000 − 0 = 1.0 km, then the name.
-        assert_eq!((rec.calls[1].0.as_str(), rec.calls[1].1, rec.calls[1].2), ("1.0km", Font::Body, TextAlign::Right));
-        assert_eq!((rec.calls[2].0.as_str(), rec.calls[2].1, rec.calls[2].2), ("Brunnen", Font::Body, TextAlign::Left));
-        // Row 1 — Label, 5000 − 0 = 5.0 km.
-        assert_eq!((rec.calls[3].0.as_str(), rec.calls[3].1, rec.calls[3].2), ("5.0km", Font::Label, TextAlign::Right));
-        assert_eq!((rec.calls[4].0.as_str(), rec.calls[4].1, rec.calls[4].2), ("Alp", Font::Label, TextAlign::Left));
-    }
-
-    /// A name too wide for the space left of its distance is ellipsis-truncated (ASCII `...`) so it
-    /// can never run into the distance column — the panel row's version of the tile's `fit_caption`.
-    #[test]
-    fn waypoint_panel_truncates_a_long_name_before_the_distance() {
-        let act = Activity::new(Mode::Riding);
-        let w = wpts(&[(12_400, "Pass Summit Overlook")]); // 20 chars ≤ WAYPOINT_NAME_CAP, too wide for the row
-        let cx = readout(&act, &w, Some(0));
-        let mut rec = TextRec::default();
-        waypoint_panel(&mut rec, panel_area(), &cx, palette::PARCHMENT_SHADE);
-        // Row 0: distance then the truncated name.
-        assert_eq!(rec.calls[1].0.as_str(), "12.4km", "the distance-to-go is intact");
-        let name = rec.calls[2].0.as_str();
-        assert!(name.ends_with("..."), "an over-long name is ellipsis-truncated, got {name:?}");
-        assert!(name.starts_with("Pass"), "…keeping its leading characters, got {name:?}");
-        // And the truncated name plus a gap stays clear of the distance's left edge.
-        let name_px = text_width(name, Font::Body) as i32;
-        let budget = panel_area().size.width as i32 - 20 - text_width("12.4km", Font::Body) as i32 - 8;
-        assert!(name_px <= budget, "the truncated name fits its budget ({name_px} <= {budget})");
-    }
-
-    /// Inside the 100 m pass-linger (progress past the still-current first waypoint) the row-1
-    /// distance clamps to `0m` via `saturating_sub` — the "you are here" readout the 2×1 tile shares.
-    #[test]
-    fn waypoint_panel_row_one_clamps_to_zero_in_the_linger() {
-        let mut act = Activity::new(Mode::Riding);
-        act.progress_m = 1_050; // 50 m past Brunnen, still its index (inside the linger)
-        let w = wpts(&[(1_000, "Brunnen"), (5_000, "Pass Summit")]);
-        let cx = readout(&act, &w, Some(0));
-        let mut rec = TextRec::default();
-        waypoint_panel(&mut rec, panel_area(), &cx, palette::PARCHMENT_SHADE);
-        assert_eq!(rec.calls[1].0.as_str(), "0m", "the passed first waypoint clamps to 0m");
-        assert_eq!(rec.calls[2].0.as_str(), "Brunnen");
-    }
-
-    /// Empty state — the frame + caption `WAYPOINTS` and a single centred `--` — for every way there's
-    /// nothing ahead: no index resolved, a stale out-of-range index, and an empty table.
-    #[test]
-    fn waypoint_panel_empty_state_is_a_centred_dash() {
-        let act = Activity::new(Mode::Riding);
-        let w = wpts(&[(1_000, "Brunnen")]);
-        let empty = Waypoints::new();
-        for cx in [
-            readout(&act, &empty, None),    // no route / nothing ahead
-            readout(&act, &w, Some(9)),     // a stale index past the table's end
-            readout(&act, &empty, Some(0)), // an index against an empty table
-        ] {
-            let mut rec = TextRec::default();
-            waypoint_panel(&mut rec, panel_area(), &cx, palette::PARCHMENT_SHADE);
-            assert_eq!(rec.calls.len(), 2, "just the caption and the fallback dash — no rows");
-            assert_eq!(rec.calls[0].0.as_str(), "WAYPOINTS");
-            assert_eq!((rec.calls[1].0.as_str(), rec.calls[1].2), ("--", TextAlign::Center), "a centred fallback dash");
-        }
-    }
 
     /// `Screen::NAMES` is a usable drift-guard key set: every name unique and non-empty, and the
     /// table agrees with [`Screen::name`] (both are generated from the one `screens!` table, so
@@ -1913,107 +1284,6 @@ mod tests {
         }
         assert_eq!(Screen::Home(HomeScreen::new()).name(), "Home");
         assert!(Screen::NAMES.contains(&"Home") && Screen::NAMES.contains(&"Map"));
-    }
-
-    /// A draw target that records text **with its anchor** — the `Next: <category>` tile's whole
-    /// point is *where* the two strings land (the caption clear of the icon, the value on the far
-    /// edge), which the font/align-only recorder above can't see. Primitives are counted, since the
-    /// category icon is drawn, not typed.
-    #[derive(Default)]
-    struct PosRec {
-        calls: heapless::Vec<(heapless::String<24>, Point, Font, TextAlign), 8>,
-        primitives: usize,
-    }
-    impl Surface for PosRec {
-        fn clear(&mut self, _: u16) {}
-        fn fill(&mut self, _: Rectangle, _: u16) {
-            self.primitives += 1;
-        }
-        fn round(&mut self, _: Rectangle, _: u32, _: u16) {}
-        fn round_outline(&mut self, _: Rectangle, _: u32, _: u16) {}
-        fn line(&mut self, _: Point, _: Point, _: u16) {
-            self.primitives += 1;
-        }
-        fn triangle(&mut self, _: Point, _: Point, _: Point, _: u16) {
-            self.primitives += 1;
-        }
-        fn disc(&mut self, _: Point, _: u32, _: u16) {
-            self.primitives += 1;
-        }
-        fn text(&mut self, s: &str, at: Point, font: Font, align: TextAlign, _: u16) -> Point {
-            let mut buf = heapless::String::new();
-            let _ = buf.push_str(s);
-            let _ = self.calls.push((buf, at, font, align));
-            at
-        }
-    }
-
-    /// The `Next: <category>` tile's anatomy (epic #946, U5): the category icon is drawn (not
-    /// typed), the name sits clear of it in `Label`, and the distance hugs the far edge in the big
-    /// `Display` face — the wide next-waypoint tile's shape, plus the glyph.
-    #[test]
-    fn category_tile_draws_icon_name_and_a_right_aligned_distance() {
-        let area = rect(10, 40, 220, 60);
-        let mut cv = PosRec::default();
-        category_tile(
-            &mut cv,
-            area,
-            obc_reader::PoiCategory::Water,
-            "Fontaine",
-            "2.4km",
-            palette::PARCHMENT_SHADE,
-            palette::INK,
-        );
-        assert!(cv.primitives > 0, "the category glyph draws as primitives, not a font char");
-        let (name, name_at, name_font, _) = &cv.calls[0];
-        assert_eq!(name.as_str(), "Fontaine");
-        assert_eq!(*name_font, Font::Label, "the name is a caption, like every other tile's");
-        assert!(name_at.x >= area.top_left.x + CATEGORY_TILE_NAME_X, "…and starts clear of the icon box");
-        let (value, value_at, value_font, value_align) = &cv.calls[1];
-        assert_eq!(value.as_str(), "2.4km");
-        assert_eq!(*value_font, Font::Display, "the distance is the glanceable number");
-        assert_eq!(*value_align, TextAlign::Right);
-        assert_eq!(value_at.x, area.top_left.x + area.size.width as i32 - 8, "anchored on the tile's far edge");
-        assert!(value_at.y > name_at.y, "and below the name, never beside it");
-    }
-
-    /// A name too long for the tile is ellipsized against the **icon-narrowed** budget, and the cut
-    /// never leaves a dangling space before the ellipsis.
-    #[test]
-    fn category_tile_ellipsizes_against_the_icon_narrowed_budget() {
-        let mut cv = PosRec::default();
-        category_tile(
-            &mut cv,
-            rect(10, 40, 220, 60),
-            obc_reader::PoiCategory::Resupply,
-            "Boulangerie du Port Hercule",
-            "1.6km",
-            palette::PARCHMENT_SHADE,
-            palette::INK,
-        );
-        let name = cv.calls[0].0.as_str();
-        assert!(name.ends_with("..."), "an over-long name is cut with the house ellipsis, got {name:?}");
-        assert!(!name.ends_with(" ..."), "…and never with a dangling space before it");
-        let budget = 220 - CATEGORY_TILE_NAME_X - 5;
-        assert!(text_width(name, Font::Label) as i32 <= budget, "the cut stays inside the icon-narrowed budget");
-    }
-
-    /// A stat tile's caption fits its pixel budget: a short built-in caption passes through verbatim,
-    /// a long waypoint name is cut to leading chars + an ASCII ellipsis that stays within budget — so
-    /// the wide `NextWaypoint` tile's name can never run into its right-aligned value.
-    #[test]
-    fn tile_caption_truncation_fits_the_budget() {
-        let cw = Font::Label.char_width() as i32;
-        let mut buf = heapless::String::<24>::new();
-        assert_eq!(
-            fit_caption("NEXT WPT", 100 * cw, &mut buf, Font::Label),
-            "NEXT WPT",
-            "a caption within budget is verbatim"
-        );
-        let mut buf = heapless::String::<24>::new();
-        let fitted = fit_caption("Pass Summit Overlook", 10 * cw, &mut buf, Font::Label);
-        assert_eq!(fitted, "Pass Su...", "7 leading chars + ellipsis fill the 10-cell budget");
-        assert!(text_width(fitted, Font::Label) as i32 <= 10 * cw, "and it stays within budget");
     }
 
     // ── Capability metadata (#803) ──────────────────────────────────────────────────────────────

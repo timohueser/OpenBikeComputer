@@ -497,7 +497,7 @@ fn ride_control_finish_saves_and_discard_discards() {
 
 #[test]
 fn list_window_keeps_the_selection_visible() {
-    use crate::screen::window_start;
+    use crate::screen::vocab::list::window_start;
     // Everything fits → never scrolls.
     assert_eq!(window_start(0, 4, 3), 0);
     assert_eq!(window_start(2, 4, 3), 0);

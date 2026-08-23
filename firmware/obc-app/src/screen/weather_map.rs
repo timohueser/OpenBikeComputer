@@ -26,7 +26,8 @@ use crate::weather::{local_hour_minute, rain_outlook, RainOutlook};
 use crate::Msg;
 
 use super::map::{draw_map_scene, draw_pan_hud, handle_pan};
-use super::{palette, wrapped, Ctx, RenderFrame, ScreenTick, Transition};
+use super::vocab::chrome::wrapped;
+use super::{palette, Ctx, RenderFrame, ScreenTick, Transition};
 
 /// The time-step label's top anchor — the Map clock's slot (there is no clock overlay here; the
 /// viewed frame's timestamp owns the top edge).

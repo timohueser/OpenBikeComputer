@@ -44,9 +44,9 @@ use crate::dfu::{DfuFailure, DfuInstallError, DfuScanError, DfuScanReport, Versi
 use crate::input::Gesture;
 use crate::Msg;
 
-use super::{
-    card_check, card_triangle, palette, title_frame, Ctx, MenuItem, Render, Screen, ScreenTick, Transition, TITLE_BAR_H,
-};
+use super::vocab::chrome::{self, card_check, card_triangle, title_frame, TITLE_BAR_H};
+use super::vocab::rows::{draw_guarded_rows, GuardedRowsGeometry, MenuItem};
+use super::{palette, Ctx, Render, Screen, ScreenTick, Transition};
 
 // ── The shared indeterminate spinner (the Menu dial's needle, like the nav planner's #499) ──
 
@@ -108,11 +108,11 @@ impl Spinner {
     }
 }
 
-// ── Multi-line centred body copy: the shared `super::wrapped` (author each catalog string on one
+// ── Multi-line centred body copy: the shared `wrapped` (author each catalog string on one
 // line; wrap at draw time), always at `Font::Label` on these cards. ──
 
 fn wrapped(cv: &mut impl Surface, text: &str, cx: i32, top_y: i32, width_px: i32, color: u16) -> i32 {
-    super::wrapped(cv, text, cx, top_y, width_px, Font::Label, color)
+    chrome::wrapped(cv, text, cx, top_y, width_px, Font::Label, color)
 }
 
 // ── DfuCheck: the "Checking card..." wait ──
@@ -173,7 +173,7 @@ impl DfuConfirmScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Step(n) => super::list::on_step(&mut self.selected, n, N_CONFIRM_ITEMS),
+            Gesture::Step(n) => super::vocab::list::on_step(&mut self.selected, n, N_CONFIRM_ITEMS),
             Gesture::Press if self.selected == INSTALL => {
                 // Arm: post the install one-shot (the board snapshots the rollback + arms + reboots)
                 // and swap to the progress spinner. The confirm was pushed over the System menu.
@@ -212,7 +212,7 @@ impl DfuConfirmScreen {
         }
 
         // The Install / Cancel rows, the standard confirm chrome (like the create-route confirm).
-        let geo = super::GuardedRowsGeometry {
+        let geo = GuardedRowsGeometry {
             x: 12,
             w: w - 24,
             top: h - 2 * 42 - 6 - 12,
@@ -225,7 +225,7 @@ impl DfuConfirmScreen {
             MenuItem { label: rx.t(Msg::DfuInstall), guard: false },
             MenuItem { label: rx.t(Msg::DfuCancel), guard: false },
         ];
-        super::draw_guarded_rows(cv, &items, self.selected, rx.hold_progress, AMBER, geo);
+        draw_guarded_rows(cv, &items, self.selected, rx.hold_progress, AMBER, geo);
     }
 }
 
@@ -344,7 +344,7 @@ impl DfuInstallingScreen {
         // The headline wraps at Body size (the French copy is two lines at 240 px), the
         // explanation below at Label, and the one imperative — keep power on — in warning red.
         let after_head =
-            super::wrapped(cv, rx.t(Msg::DfuInstalling), w / 2, TITLE_BAR_H + 40, w - 2 * INSET, Font::Body, INK);
+            chrome::wrapped(cv, rx.t(Msg::DfuInstalling), w / 2, TITLE_BAR_H + 40, w - 2 * INSET, Font::Body, INK);
         let after_body = wrapped(cv, rx.t(Msg::DfuInstallingBody), w / 2, after_head + 16, w - 2 * INSET, INK);
         wrapped(cv, rx.t(Msg::DfuInstallingPower), w / 2, after_body + 12, w - 2 * INSET, WARNING);
     }

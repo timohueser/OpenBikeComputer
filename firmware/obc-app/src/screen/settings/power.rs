@@ -8,7 +8,9 @@ use core::fmt::Write;
 use obc_render::{rect, text::Font, Surface};
 
 use crate::input::Gesture;
-use crate::screen::{title_frame, Ctx, Render, Transition, LIST_TOP};
+use crate::screen::vocab::chrome::{title_frame, LIST_TOP};
+use crate::screen::vocab::rows::{row_cursor, row_rect};
+use crate::screen::{Ctx, Render, Transition};
 use crate::settings::{FIX_INTERVAL_MAX, FIX_INTERVAL_MIN};
 use crate::Msg;
 
@@ -52,7 +54,7 @@ impl PowerScreen {
                 if self.editing {
                     cx.settings.fix_interval_s = step_interval(cx.settings.fix_interval_s, n);
                 } else {
-                    self.selected = crate::screen::list::step_selection(self.selected, n, ROWS);
+                    self.selected = crate::screen::vocab::list::step_selection(self.selected, n, ROWS);
                 }
                 Transition::None
             }
@@ -77,9 +79,9 @@ impl PowerScreen {
         title_frame(cv, w, h, rx.t(Msg::PowerTitle), "");
 
         // Row 0 — GPS Fix interval (value row).
-        let r0 = super::row_rect(LIST_TOP + 8, w, ROW_H);
+        let r0 = row_rect(LIST_TOP + 8, w, ROW_H);
         let editing = self.editing && self.selected == GPS_FIX;
-        super::row_cursor(cv, r0, self.selected == GPS_FIX, editing);
+        row_cursor(cv, r0, self.selected == GPS_FIX, editing);
         super::row_label(cv, r0, rx.t(Msg::PowerGpsFix), Some(rx.t(Msg::PowerGpsFixSub)));
         let mut val: heapless::String<8> = heapless::String::new();
         let _ = write!(val, "{} s", rx.settings.fix_interval_s);
@@ -88,8 +90,8 @@ impl PowerScreen {
         super::stepper_field(cv, cell, &val, editing, Font::Label);
 
         // Row 1 — Power Saver (toggle).
-        let r1 = super::row_rect(LIST_TOP + 8 + ROW_H + 6, w, ROW_H);
-        super::row_cursor(cv, r1, self.selected == POWER_SAVER, false);
+        let r1 = row_rect(LIST_TOP + 8 + ROW_H + 6, w, ROW_H);
+        row_cursor(cv, r1, self.selected == POWER_SAVER, false);
         super::row_label(cv, r1, rx.t(Msg::PowerPowerSave), Some(rx.t(Msg::PowerPowerSaveSub)));
         super::toggle_slider(cv, r1, rx.settings.power_saver);
     }

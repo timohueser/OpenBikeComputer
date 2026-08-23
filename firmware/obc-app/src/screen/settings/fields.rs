@@ -27,7 +27,11 @@ use obc_render::{
 };
 
 use crate::input::Gesture;
-use crate::screen::{list, title_frame, Ctx, Render, Screen, Transition, LIST_TOP};
+use crate::screen::vocab::chrome::{title_frame, LIST_TOP};
+use crate::screen::vocab::list;
+use crate::screen::vocab::rows::ROW_X;
+use crate::screen::vocab::tiles::{category_tile, tile, waypoint_panel_ghost};
+use crate::screen::{Ctx, Render, Screen, Transition};
 use crate::stat_fields::{self, COLS, SLOTS_PER_PAGE};
 use crate::Msg;
 
@@ -164,24 +168,13 @@ impl StatFieldsScreen {
                 // of the `--` the real drawers would show, tiles render a fixed olive sample value and
                 // the placed panel two sample rows — so a layout is judged against realistic content.
                 if f.rows() > 1 {
-                    crate::screen::waypoint_panel_ghost(cv, area, rdt.language, bg);
+                    waypoint_panel_ghost(cv, area, rdt.language, bg);
                 } else {
                     let mut cell = f.cell(&rdt);
                     ghost_value(*f, &mut cell, rdt.language);
                     match f.category() {
-                        Some(cat) => {
-                            crate::screen::category_tile(cv, area, cat, &cell.caption, &cell.value, bg, SUBTEXT)
-                        }
-                        None => crate::screen::tile(
-                            cv,
-                            area,
-                            &cell.caption,
-                            &cell.value,
-                            cell.arrow,
-                            cell.value_align,
-                            bg,
-                            SUBTEXT,
-                        ),
+                        Some(cat) => category_tile(cv, area, cat, &cell.caption, &cell.value, bg, SUBTEXT),
+                        None => tile(cv, area, &cell.caption, &cell.value, cell.arrow, cell.value_align, bg, SUBTEXT),
                     }
                 }
                 if is_sel && self.grabbed {
@@ -223,16 +216,16 @@ impl StatFieldsScreen {
 fn delete_footer(cv: &mut impl Surface, w: i32, h: i32, on_field: bool, hold: f32) {
     use crate::screen::palette::*;
     let fy = h - FOOTER_H;
-    cv.hline(super::ROW_X, fy, w - 2 * super::ROW_X, RULE);
+    cv.hline(ROW_X, fy, w - 2 * ROW_X, RULE);
     if !on_field {
         return;
     }
     let p = hold.clamp(0.0, 1.0);
     let midy = fy + FOOTER_H / 2;
-    draw_trash(cv, super::ROW_X + 16, midy, WARNING);
+    draw_trash(cv, ROW_X + 16, midy, WARNING);
     let bh = 12;
-    let (bx, by) = (super::ROW_X + 36, midy - bh / 2);
-    let bw = w - super::ROW_X - 4 - bx;
+    let (bx, by) = (ROW_X + 36, midy - bh / 2);
+    let bw = w - ROW_X - 4 - bx;
     cv.round(rect(bx, by, bw, bh), 6, PARCHMENT_SHADE);
     let fill = (bw as f32 * p) as i32;
     if fill > 0 {
@@ -271,7 +264,7 @@ fn draw_trash(cv: &mut impl Surface, cx: i32, cy: i32, color: u16) {
 /// | Eta           | `15:37`                 |
 /// | Clock         | `14:32`                 |
 /// | NextWaypoint  | `Pass Summit` + `8.7km` |
-/// | WaypointList  | (drawn by [`waypoint_panel_ghost`](crate::screen::waypoint_panel_ghost)) |
+/// | WaypointList  | (drawn by [`waypoint_panel_ghost`](crate::screen::vocab::tiles::waypoint_panel_ghost)) |
 /// | HeartRate     | `152`                   |
 /// | Power         | `210`                   |
 /// | Cadence       | `88`                    |

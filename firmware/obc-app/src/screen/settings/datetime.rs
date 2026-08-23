@@ -17,7 +17,9 @@ use obc_render::{
 };
 
 use crate::input::Gesture;
-use crate::screen::{palette, title_frame, Ctx, Render, Transition, LIST_TOP};
+use crate::screen::vocab::chrome::{title_frame, LIST_TOP};
+use crate::screen::vocab::rows::{row_cursor, row_rect};
+use crate::screen::{palette, Ctx, Render, Transition};
 use crate::settings::{Settings, UTC_OFFSET_MAX, UTC_OFFSET_MIN, UTC_OFFSET_STEP};
 use crate::{t, Msg};
 
@@ -134,10 +136,10 @@ impl DateTimeScreen {
         let mut y = LIST_TOP + 4;
         for (i, &kind) in ROWS.iter().enumerate() {
             let rh = kind.height();
-            let area = super::row_rect(y, w, rh);
+            let area = row_rect(y, w, rh);
             let selected = i == self.selected;
             let editing = if selected { self.editing } else { None };
-            super::row_cursor(cv, area, selected, editing.is_some());
+            row_cursor(cv, area, selected, editing.is_some());
 
             match kind {
                 RowKind::GpsFix => {

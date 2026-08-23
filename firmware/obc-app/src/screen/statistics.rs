@@ -31,7 +31,9 @@ use crate::settings::Settings;
 use crate::stat_fields;
 use crate::Msg;
 
-use super::{palette, title_frame, ClimbScreen, Ctx, MapScreen, Render, Screen, ScreenTick, Transition};
+use super::vocab::chrome::title_frame;
+use super::vocab::tiles::{category_tile, tile, waypoint_panel};
+use super::{palette, ClimbScreen, Ctx, MapScreen, Render, Screen, ScreenTick, Transition};
 
 /// Cursor scrub per Up/Down step, as a fraction of the whole route — ~42 steps end to end.
 const CURSOR_STEP_FRAC: f32 = 1.0 / 42.0;
@@ -383,7 +385,7 @@ impl StatisticsScreen {
             // grid width and all three rows + their inner gaps.
             if placed.field.rows() > 1 {
                 let panel_h = row_h * stat_fields::ROWS_PER_PAGE as i32 + gap * (stat_fields::ROWS_PER_PAGE as i32 - 1);
-                super::waypoint_panel(cv, rect(chart_x, y, chart_w, panel_h), &cx, PARCHMENT_SHADE);
+                waypoint_panel(cv, rect(chart_x, y, chart_w, panel_h), &cx, PARCHMENT_SHADE);
                 continue;
             }
             let cell = placed.field.cell(&cx);
@@ -393,18 +395,9 @@ impl StatisticsScreen {
             // moves the caption — so it has its own drawer (epic #946, U5).
             match placed.field.category() {
                 Some(cat) => {
-                    super::category_tile(cv, area, cat, &cell.caption, &cell.value, PARCHMENT_SHADE, INK);
+                    category_tile(cv, area, cat, &cell.caption, &cell.value, PARCHMENT_SHADE, INK);
                 }
-                None => super::tile(
-                    cv,
-                    area,
-                    &cell.caption,
-                    &cell.value,
-                    cell.arrow,
-                    cell.value_align,
-                    PARCHMENT_SHADE,
-                    INK,
-                ),
+                None => tile(cv, area, &cell.caption, &cell.value, cell.arrow, cell.value_align, PARCHMENT_SHADE, INK),
             }
         }
     }

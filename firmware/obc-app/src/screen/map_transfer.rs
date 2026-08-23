@@ -37,7 +37,8 @@ use obc_render::{
 use crate::input::Gesture;
 use crate::Msg;
 
-use super::{palette, title_frame, wrapped, Ctx, Render, Transition, TITLE_BAR_H};
+use super::vocab::chrome::{title_frame, wrapped, TITLE_BAR_H};
+use super::{palette, Ctx, Render, Transition};
 
 /// Inset from the panel edge for the card's body, matching the DFU cards.
 const INSET: i32 = 12;

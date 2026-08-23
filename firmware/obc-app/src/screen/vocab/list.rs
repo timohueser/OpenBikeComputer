@@ -15,7 +15,8 @@ use obc_render::{
     Surface,
 };
 
-use super::{palette, title_frame, Transition, LIST_TOP};
+use super::chrome::{title_frame, LIST_TOP};
+use crate::screen::{palette, Transition};
 
 /// Advance a wrapping list selection by `n` steps over `len` items. Wraps at both ends; a no-op
 /// on an empty list.
@@ -37,7 +38,7 @@ pub(crate) fn on_step(selected: &mut usize, n: i32, len: usize) -> Transition {
 /// of `total` items. Stateless — a pure function of the selection — so list screens need no scroll
 /// state: the highlight moves down to the last visible row, then the window follows it. Cast to
 /// `i32` this is the default `first` for [`draw_rows`].
-pub fn window_start(selected: usize, visible: usize, total: usize) -> usize {
+pub(crate) fn window_start(selected: usize, visible: usize, total: usize) -> usize {
     if total <= visible || selected < visible {
         0
     } else {

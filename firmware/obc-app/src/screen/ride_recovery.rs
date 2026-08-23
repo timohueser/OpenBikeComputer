@@ -19,9 +19,10 @@ use crate::input::Gesture;
 use crate::stat_fields::{fmt_hms, fmt_km};
 use crate::Msg;
 
-use super::{
-    ledger_row, list, palette, title_frame, Ctx, GuardedRowsGeometry, MapScreen, MenuItem, Render, Screen, Transition,
-};
+use super::vocab::chrome::{title_frame, TITLE_BAR_H};
+use super::vocab::list;
+use super::vocab::rows::{draw_guarded_rows, ledger_row, GuardedRowsGeometry, MenuItem};
+use super::{palette, Ctx, MapScreen, Render, Screen, Transition};
 
 const CONTINUE: usize = 0;
 const DISCARD: usize = 1;
@@ -85,7 +86,7 @@ impl RideRecoveryScreen {
         title_frame(cv, w, h, rx.t(Msg::RideRecoveryTitle), "");
         cv.text(
             rx.t(if self.can_continue { Msg::RideRecoveryBody } else { Msg::RideRecoveryDamaged }),
-            Point::new(w / 2, super::TITLE_BAR_H + 12),
+            Point::new(w / 2, TITLE_BAR_H + 12),
             Font::Label,
             TextAlign::Center,
             SUBTEXT,
@@ -127,7 +128,7 @@ impl RideRecoveryScreen {
 }
 
 fn draw_rows(cv: &mut impl Surface, items: &[MenuItem], selected: usize, hold_progress: f32, w: i32) {
-    super::draw_guarded_rows(
+    draw_guarded_rows(
         cv,
         items,
         selected,

@@ -37,7 +37,8 @@ use crate::input::Gesture;
 use crate::Msg;
 
 use super::poi_list::draw_bearing_arrow;
-use super::{palette, title_frame, Ctx, Render, Screen, Transition, LIST_TOP};
+use super::vocab::chrome::{title_frame, LIST_TOP};
+use super::{palette, Ctx, Render, Screen, Transition};
 
 /// The POI detail. Carries the selected [`Poi`] (name / coords / subtype / `hours_ref`) plus a
 /// lazily-resolved schedule cache. The `Poi` widens the [`Screen`](super::Screen) enum by its size;
