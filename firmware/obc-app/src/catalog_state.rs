@@ -21,6 +21,7 @@
 use obc_route::Profile;
 
 use crate::app::NAV_PREVIEW_MAX;
+use crate::placement::define_placement_constructors;
 use crate::retention::{RideRetentionRecord, RouteRetentionMeta};
 use crate::ride::{RideCatalog, RideSummary, MAX_RIDES, UI_RIDES_CAP};
 use crate::route::{Catalog, RouteSummary, MAX_ROUTES};
@@ -120,9 +121,14 @@ pub(crate) struct CatalogState {
 }
 
 impl CatalogState {
-    /// Empty catalogs, nothing cached — the boot state.
-    pub(crate) const fn new() -> Self {
-        CatalogState {
+    define_placement_constructors!(
+        /// Empty catalogs, nothing cached — the boot state.
+        pub(crate) fn new();
+        /// Initialize `slot` **in place** to the [`new`](CatalogState::new) state — the placement
+        /// path the firmware boots through (the catalogs are several KB; nothing here may form a
+        /// by-value `CatalogState` on the stack).
+        pub(crate) unsafe fn init_in_place;
+        fields {
             routes: Catalog::new(),
             route_ids: heapless::Vec::new(),
             route_meta: heapless::Vec::new(),
@@ -140,57 +146,7 @@ impl CatalogState {
             detour_preview: heapless::Vec::new(),
             detour_preview_route: None,
         }
-    }
-
-    /// Initialize `slot` **in place** to the [`new`](CatalogState::new) state — the placement path
-    /// (the catalogs are several KB; nothing here may form a by-value `CatalogState` on the
-    /// stack). Same field-by-field `addr_of_mut!` discipline as [`App::init_idle`], with the same
-    /// trailing exhaustiveness guard.
-    ///
-    /// # Safety
-    /// `slot` must be valid, aligned, exclusively owned, and writable for a full `CatalogState`.
-    pub(crate) unsafe fn init_in_place(slot: *mut Self) {
-        use core::ptr::addr_of_mut;
-        // SAFETY: caller's contract; every field is written exactly once before any read.
-        unsafe {
-            addr_of_mut!((*slot).routes).write(Catalog::new());
-            addr_of_mut!((*slot).route_ids).write(heapless::Vec::new());
-            addr_of_mut!((*slot).route_meta).write(heapless::Vec::new());
-            addr_of_mut!((*slot).trips).write(Trips::new());
-            addr_of_mut!((*slot).rides).write(RideCatalog::new());
-            addr_of_mut!((*slot).ride_ids).write(heapless::Vec::new());
-            addr_of_mut!((*slot).ride_inventory).write(heapless::Vec::new());
-            addr_of_mut!((*slot).ride_profile).write(Profile::EMPTY);
-            addr_of_mut!((*slot).ride_profile_present).write(false);
-            addr_of_mut!((*slot).ride_profile_for).write(None);
-            addr_of_mut!((*slot).ride_preview).write(heapless::Vec::new());
-            addr_of_mut!((*slot).ride_preview_for).write(None);
-            addr_of_mut!((*slot).nav_preview).write(heapless::Vec::new());
-            addr_of_mut!((*slot).nav_preview_route).write(None);
-            addr_of_mut!((*slot).detour_preview).write(heapless::Vec::new());
-            addr_of_mut!((*slot).detour_preview_route).write(None);
-            // Exhaustiveness guard: a field added to `CatalogState` fails to compile here until
-            // its `addr_of_mut!(...).write(...)` is added above (see `App::init_idle`).
-            let CatalogState {
-                routes: _,
-                route_ids: _,
-                route_meta: _,
-                trips: _,
-                rides: _,
-                ride_ids: _,
-                ride_inventory: _,
-                ride_profile: _,
-                ride_profile_present: _,
-                ride_profile_for: _,
-                ride_preview: _,
-                ride_preview_for: _,
-                nav_preview: _,
-                nav_preview_route: _,
-                detour_preview: _,
-                detour_preview_route: _,
-            } = &*slot;
-        }
-    }
+    );
 
     // ---- route catalog ----
 
@@ -553,5 +509,58 @@ impl CatalogState {
     pub(crate) fn clear_detour_preview(&mut self) {
         self.detour_preview.clear();
         self.detour_preview_route = None;
+    }
+}
+
+#[cfg(test)]
+impl CatalogState {
+    /// Assert the [`new`](CatalogState::new) boot state, field by field. The destructure is
+    /// exhaustive, so a field added to the plan must state its boot value here too.
+    pub(crate) fn assert_boot_state(&self) {
+        let CatalogState {
+            routes,
+            route_ids,
+            route_meta,
+            trips,
+            rides,
+            ride_ids,
+            ride_inventory,
+            ride_profile,
+            ride_profile_present,
+            ride_profile_for,
+            ride_preview,
+            ride_preview_for,
+            nav_preview,
+            nav_preview_route,
+            detour_preview,
+            detour_preview_route,
+        } = self;
+        assert!(routes.is_empty() && route_ids.is_empty() && route_meta.is_empty(), "no routes catalogued");
+        assert!(trips.is_empty(), "no trips catalogued");
+        assert!(rides.is_empty() && ride_ids.is_empty() && ride_inventory.is_empty(), "no rides catalogued");
+        assert_eq!(ride_profile.cols(), Profile::EMPTY.cols(), "the ride-profile buffer is the empty line");
+        assert!(!*ride_profile_present && ride_profile_for.is_none(), "no ride profile answered");
+        assert!(ride_preview.is_empty() && ride_preview_for.is_none(), "no ride preview cached");
+        assert!(nav_preview.is_empty() && nav_preview_route.is_none(), "no route-shape preview cached");
+        assert!(detour_preview.is_empty() && detour_preview_route.is_none(), "no detour preview cached");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The placement path must land exactly the state the by-value path builds.
+    #[test]
+    fn init_in_place_matches_new() {
+        CatalogState::new().assert_boot_state();
+
+        let mut slot = core::mem::MaybeUninit::<CatalogState>::uninit();
+        // SAFETY: `slot` is a valid, aligned, exclusively-owned region for one `CatalogState`.
+        let placed = unsafe {
+            CatalogState::init_in_place(slot.as_mut_ptr());
+            slot.assume_init_ref()
+        };
+        placed.assert_boot_state();
     }
 }

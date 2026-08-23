@@ -50,6 +50,7 @@ pub mod link_gate;
 pub mod map_catalog;
 pub mod nav_profiles;
 pub mod next_ahead;
+pub(crate) mod placement;
 pub mod reroute_freeze;
 pub mod retention;
 pub mod ride;
