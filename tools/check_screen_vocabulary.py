@@ -4,9 +4,10 @@
 `firmware/obc-app/src/screen/mod.rs` is the navigation engine: the `screens!` table, `Caps`, the
 contexts, `Transition`, and the ride-session entry points. The drawing vocabulary every screen
 composes its page from lives one module per concept under `firmware/obc-app/src/screen/vocab/`.
-Nothing enforces that split at compile time — a helper re-grown next to the table would build
-fine — so this guard keeps it honest: each landmark definition below exists exactly once, in
-`screen/vocab/`, and never in `mod.rs`.
+Nothing enforces that split at compile time — a helper re-grown next to the table, or a screen
+quietly re-declaring one it could have imported, would build fine — so this guard keeps it
+honest: each landmark definition below exists exactly once in `screen/vocab/`, and nowhere else
+under `screen/`.
 """
 
 from __future__ import annotations
@@ -35,10 +36,11 @@ def definitions(name: str, paths: list[Path]) -> list[str]:
 def main() -> int:
     failures: list[str] = []
     vocab_files = sorted(VOCAB.rglob("*.rs"))
+    screen_files = [p for p in sorted(SCREEN.rglob("*.rs")) if VOCAB not in p.parents]
     for name in LANDMARKS:
-        in_mod = definitions(name, [SCREEN / "mod.rs"])
-        if in_mod:
-            failures.append(f"`fn {name}` is back in screen/mod.rs ({', '.join(in_mod)}) — it belongs in vocab/")
+        outside = definitions(name, screen_files)
+        if outside:
+            failures.append(f"`fn {name}` is defined outside vocab/ ({', '.join(outside)}) — import it instead")
         in_vocab = definitions(name, vocab_files)
         if len(in_vocab) != 1:
             where = ", ".join(in_vocab) or "nowhere"
