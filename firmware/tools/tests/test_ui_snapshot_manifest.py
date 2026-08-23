@@ -101,13 +101,39 @@ class CommittedManifestTests(unittest.TestCase):
     rendered."""
 
     REPO = Path(__file__).parents[3]
-    LANGUAGES = ("de", "fr", "es")
+
+    #: The one screen with no frame, and why. Its only entry is
+    #: `App::offer_recovered_ride(RideContinuation)` — a host call carrying thirteen reconstructed
+    #: accumulator fields that no gesture stands in for, and which the simulator has no seed for.
+    #: Adding that seed is how this set empties; widening it is how the net quietly stops meaning
+    #: anything, so a new name here needs the same argument.
+    UNCOVERED_SCREENS = {"RideRecovery"}
 
     def sweep_source(self) -> str:
         return (self.REPO / "firmware" / "ui-snapshots.sh").read_text()
 
     def committed_rows(self) -> dict[str, str]:
         return manifest_tool.read_manifest(self.REPO / "firmware" / "ui-snapshots.sha256")
+
+    def sweep_languages(self) -> list[str]:
+        """The languages the sweep's per-language loop runs, read out of the loop itself. Hardcoding
+        them here would be a second source of truth: a language added to the script would expand to
+        frames this test never looks for."""
+        loop = re.search(r"^for lang in ([a-z ]+); do$", self.sweep_source(), re.MULTILINE)
+        self.assertIsNotNone(loop, "the sweep's per-language loop is not where this test expects it")
+        languages = loop.group(1).split()
+        self.assertTrue(languages, "the per-language loop names no languages")
+        return languages
+
+    def rendered_frames(self) -> list[str]:
+        """Every PNG basename one sweep writes, in script order, with `$lang` expanded."""
+        frames = []
+        for target in re.findall(r'--png "\$OUT/([^"]+\.png)"', self.sweep_source()):
+            if "$lang" in target:
+                frames.extend(target.replace("$lang", language) for language in self.sweep_languages())
+            else:
+                frames.append(target)
+        return frames
 
     def test_the_committed_manifest_parses(self):
         rows = self.committed_rows()
@@ -130,12 +156,53 @@ class CommittedManifestTests(unittest.TestCase):
         per-language loop's `$lang` expanded — so a row with no command and a command with no row are
         both named. Derived rather than a hand-kept count: the literal that used to live at the foot
         of the sweep drifted 37 frames behind the script before it was deleted."""
-        rendered = set()
-        for target in re.findall(r'--png "\$OUT/([^"]+\.png)"', self.sweep_source()):
-            if "$lang" in target:
-                rendered.update(target.replace("$lang", language) for language in self.LANGUAGES)
-            else:
-                rendered.add(target)
+        rendered = set(self.rendered_frames())
         recorded = set(self.committed_rows())
         self.assertEqual(sorted(rendered - recorded), [], "the sweep renders frames the manifest does not name")
         self.assertEqual(sorted(recorded - rendered), [], "the manifest names frames the sweep does not render")
+
+    def test_no_two_render_commands_write_the_same_frame(self):
+        """A repeated basename is invisible to every other check here: the second render overwrites
+        the first, the sweep still reports its own file count, and the manifest still holds one row
+        that matches. The scenario that lost the race simply stops being covered. Names are the only
+        thing tying a frame to the recipe that made it, so they have to be unique."""
+        frames = self.rendered_frames()
+        repeated = sorted({name for name in frames if frames.count(name) > 1})
+        self.assertEqual(repeated, [], "two render commands write the same PNG basename")
+
+    def test_every_screen_but_the_documented_exception_has_a_frame(self):
+        """The net's actual claim, enforced against the app's own screen table rather than against
+        the manifest — so it cannot be satisfied by deleting a command and its row together, which
+        is the one edit the manifest comparison above is blind to.
+
+        This is what a `screens!` row is *for* here: add a screen and the sweep must gain a frame
+        naming it, or this fails. The reverse is covered too — an `--expect-screen` naming a screen
+        the table no longer has is a recipe pinned to a variant that cannot be reached."""
+        table = (self.REPO / "firmware" / "obc-app" / "src" / "screen" / "mod.rs").read_text()
+        body = re.search(r"^screens! \{$(.*?)^\}$", table, re.MULTILINE | re.DOTALL)
+        self.assertIsNotNone(body, "the screens! table is not where this test expects it")
+        declared = set(re.findall(r"^    (\w+)\(\w+\) => Caps", body.group(1), re.MULTILINE))
+        self.assertGreater(len(declared), 50, "the screens! table parsed suspiciously small")
+
+        # Command lines only — the header's prose mentions `--expect-screen NAME` as a placeholder.
+        expected = {
+            name
+            for line in self.sweep_source().splitlines()
+            if '--png "$OUT/' in line
+            for name in re.findall(r"--expect-screen (\w+)", line)
+        }
+        self.assertEqual(
+            sorted(declared - expected - self.UNCOVERED_SCREENS),
+            [],
+            "a screen in the screens! table has no frame in the sweep",
+        )
+        self.assertEqual(
+            sorted(expected - declared),
+            [],
+            "a recipe expects a screen the screens! table does not declare",
+        )
+        self.assertEqual(
+            sorted(self.UNCOVERED_SCREENS & expected),
+            [],
+            "a screen listed as uncovered now has a frame — remove it from UNCOVERED_SCREENS",
+        )
