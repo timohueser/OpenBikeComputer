@@ -354,15 +354,15 @@ ownership = [{ kind = "rust-package", name = "obc-mkimage" }]
 id = "rust.obc-bench"
 surface = "rendering"
 level = "contract"
-command = "cargo run -p obc-bench --release --locked -- --check host/obc-bench/hashes.txt"
+command = "cargo run -p obc-bench --release --locked -- --check host/obc-bench/golden.txt"
 fixtures = []
 pull_request = "affected"
 scheduled = "none"
-extra_triggers = ["host/obc-bench/hashes.txt"]
+extra_triggers = ["host/obc-bench/golden.txt"]
 coverage_component = "host-tools"
 ownership = [
   { kind = "rust-package", name = "obc-bench" },
-  { kind = "workflow", pattern = "cargo run -p obc-bench --release --locked -- --check host/obc-bench/hashes.txt" },
+  { kind = "workflow", pattern = "cargo run -p obc-bench --release --locked -- --check host/obc-bench/golden.txt" },
 ]
 
 [[suite]]

@@ -1,0 +1,16 @@
+riding hash=0x56d9a197e3d0cfe7 chunks_visited=4 map_chunk_hits=4 map_chunk_misses=0 map_sd_reads=0 map_bytes_read=0
+riding-rot hash=0x8351ed68501a0af6 chunks_visited=4 map_chunk_hits=4 map_chunk_misses=0 map_sd_reads=0 map_bytes_read=0
+mid hash=0x3071f09bdcd8bbe5 chunks_visited=4 map_chunk_hits=4 map_chunk_misses=0 map_sd_reads=0 map_bytes_read=0
+mid-rot hash=0x8b3421f22d2e8ef5 chunks_visited=4 map_chunk_hits=4 map_chunk_misses=0 map_sd_reads=0 map_bytes_read=0
+overview hash=0xf953e5888b2ec1da chunks_visited=32 map_chunk_hits=3064 map_chunk_misses=40 map_sd_reads=40 map_bytes_read=100608
+overview-rot hash=0x0523871bee60349f chunks_visited=32 map_chunk_hits=3064 map_chunk_misses=40 map_sd_reads=40 map_bytes_read=100608
+route hash=0xe26019c8e500f2c0 chunks_visited=4 map_chunk_hits=4 map_chunk_misses=0 map_sd_reads=0 map_bytes_read=0
+corridor/thin/all/cold rows=6 map_reads=42 map_bytes=21216 route_reads=6 route_bytes=7902
+corridor/thin/all/full-walk rows=6 map_reads=36 map_bytes=18144 route_reads=6 route_bytes=7902
+corridor/thin/water/full-walk rows=1 map_reads=6 map_bytes=3024 route_reads=6 route_bytes=7902
+corridor/dense/all/cold rows=16 map_reads=43 map_bytes=21744 route_reads=1 route_bytes=1530
+corridor/dense/all/warm rows=16 map_reads=42 map_bytes=21308 route_reads=0 route_bytes=0
+corridor/dense/water/warm rows=16 map_reads=5 map_bytes=2520 route_reads=0 route_bytes=0
+corridor/dense/all/mid-ride rows=16 map_reads=55 map_bytes=27792 route_reads=0 route_bytes=0
+corridor/sparse/all/warm rows=16 map_reads=24 map_bytes=12096 route_reads=4 route_bytes=6120
+corridor/sparse/water/warm rows=4 map_reads=6 map_bytes=3024 route_reads=6 route_bytes=7902

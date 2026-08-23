@@ -525,6 +525,22 @@ fn saturated_fallback_omits_a_hostile_pass_b_feature_without_stealing_later_capa
     }
 }
 
+/// `chunks_visited` is the frame's total leaf traffic, not one walk's. A saturated frame abandons
+/// the direct walk and re-walks the same leaves in pass A; both fake scenes report one leaf per
+/// walk, so the saturated frame must report two and the unsaturated one must stay at one.
+#[test]
+fn chunks_visited_counts_every_candidate_walk() {
+    let (saturated, _) = hostile_render(Hostility::PassBSizeMismatch);
+    assert_eq!(saturated.chunks_visited, 2, "abandoned direct walk + pass A");
+
+    let mut renderer = RenderScratch::new();
+    let mut target = Buf::new(64, 64);
+    let viewport = Viewport::new(64.0, 64.0, 0, 0, 1.0);
+    let direct =
+        renderer.render(&mut target, &StaticScene, &viewport, Rgb888::BLACK, RenderConfig::default(), |_| Rgb888::RED);
+    assert_eq!(direct.chunks_visited, 1, "an unsaturated frame walks once");
+}
+
 #[test]
 fn renders_static_scene_without_reader_or_map_bytes() {
     let mut renderer = RenderScratch::new();
