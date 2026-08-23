@@ -15,6 +15,7 @@ use crate::host::{
     DrainStatus, HostCommand, HostCommandClass, HostEvent, HostMailbox, HostPending, HOST_COMMAND_CLASSES,
 };
 use crate::input::Gesture;
+use crate::placement::define_placement_constructors;
 use crate::reroute_freeze::PlanFamily;
 use crate::ride::RideSummary;
 use crate::ride_engine::RideEngine;
@@ -592,60 +593,6 @@ pub struct App {
 /// fixed ~512 B resident buffer here rather than a route-sized one.
 pub const NAV_PREVIEW_MAX: usize = 64;
 
-// `App` has two construction modes with different physical requirements: hosts may build it by
-// value, while firmware must initialize the large resident object directly in its reserved region.
-// Keep the field plan single-sourced even though those write mechanisms remain different. A field
-// with an `=> init_in_place` arm uses its component's placement constructor on firmware; every
-// other field is a small direct write of the same expression used by `new_idle`.
-//
-// The generated struct literal and tail destructure are both exhaustive. Adding an `App` field
-// therefore fails this one declaration until its value and placement rule are supplied; there is no
-// second constructor list to remember.
-macro_rules! initialize_app_field {
-    ($slot:ident, $field:ident, $value:expr => $init_in_place:path) => {
-        // SAFETY: the generated `init_idle` contract gives us an owned, aligned `App` slot, and
-        // this field appears exactly once in the exhaustive plan.
-        unsafe { $init_in_place(core::ptr::addr_of_mut!((*$slot).$field)) };
-    };
-    ($slot:ident, $field:ident, $value:expr) => {
-        // SAFETY: the generated `init_idle` contract gives us an owned, aligned `App` slot, and
-        // this field appears exactly once in the exhaustive plan.
-        unsafe { core::ptr::addr_of_mut!((*$slot).$field).write($value) };
-    };
-}
-
-macro_rules! define_idle_constructors {
-    ($state:ident; $( $field:ident: $value:expr $(=> $init_in_place:path)? ),+ $(,)?) => {
-        /// Build the app at the device's real power-on state: the Home screensaver,
-        /// Idle, no route loaded. Loading a route (Home → Menu → Routes → `press`) starts
-        /// riding and opens the Map.
-        pub fn new_idle($state: AppState) -> Self {
-            App { $( $field: $value ),+ }
-        }
-
-        /// Build the idle power-on [`App`] **in place** at `slot` — the by-reference twin of
-        /// [`new_idle`](App::new_idle), used by firmware to construct the resident `App` without
-        /// materializing it on the stack.
-        ///
-        /// The same exhaustive field plan generates this function and `new_idle`. KB-scale
-        /// components retain their own field-by-field placement constructors; small fields are
-        /// written directly. The render scratch is not part of `App` and remains host-owned.
-        ///
-        /// # Safety
-        /// `slot` must be a valid, aligned `*mut App` the caller exclusively owns and into which a
-        /// full `App` may be written. On return the slot is fully initialized; read it via
-        /// `&mut *slot`.
-        pub unsafe fn init_idle(slot: *mut App, $state: AppState) {
-            $( initialize_app_field!(slot, $field, $value $(=> $init_in_place)?); )+
-
-            // Exhaustiveness guard for the raw-pointer path. No moves or drops; this optimizes to
-            // nothing. It deliberately stays after every generated write so borrowing `*slot` is
-            // sound.
-            let App { $( $field: _ ),+ } = unsafe { &*slot };
-        }
-    };
-}
-
 impl App {
     /// Build the app straight onto the live map: stack `[Home, Map]`, Home the always-present root
     /// that Finish / Discard return to, no route loaded. The map-first constructor the simulator
@@ -653,32 +600,49 @@ impl App {
     /// [`new_idle`](App::new_idle).
     pub fn new(state: AppState) -> Self {
         let mut app = Self::new_idle(state);
-        app.activity = Activity::new(Mode::Riding);
-        let _ = app.ui.stack.push(Screen::Map(MapScreen::new()));
+        app.open_map_first();
         app
     }
 
-    define_idle_constructors!(state;
-        state: state,
-        activity: Activity::new(Mode::Idle),
-        catalogs: CatalogState::new() => CatalogState::init_in_place,
-        ride: RideEngine::new() => RideEngine::init_in_place,
-        ui: UiRuntime::new() => UiRuntime::init_in_place,
-        nav_profiles: crate::NavProfiles::new(),
-        settings: Settings::default(),
-        // The clock starts from the default set-point; the host re-stamps the persisted value.
-        wall_clock: WallClock::new(Settings::default().local_clock()),
-        // A persisted set-point is display-only until GPS or BLE establishes trust this boot.
-        clock_trust: ClockTrust::Untrusted,
-        retention: crate::retention::RetentionMachine::new(),
-        weather: crate::weather::WeatherDomain::new(),
-        host: HostPending::new(),
-        freeze: crate::reroute_freeze::RerouteFreeze::new(),
-        fw_version: heapless::String::new(),
-        map_name: heapless::String::new(),
-        map_obcm_version: 0,
-        card_free_bytes: None,
-        recovered_ride_offered: false,
+    /// The map-first tail both map-first constructors share: drop the just-built idle app straight
+    /// onto the live Map. Plain safe mutation of a complete `App` (the assignment drops the Idle
+    /// activity it replaces).
+    fn open_map_first(&mut self) {
+        self.activity = Activity::new(Mode::Riding);
+        let _ = self.ui.stack.push(Screen::Map(MapScreen::new()));
+    }
+
+    define_placement_constructors!(
+        /// Build the app at the device's real power-on state: the Home screensaver, Idle, no route
+        /// loaded. Loading a route (Home → Menu → Routes → `press`) starts riding and opens the Map.
+        pub fn new_idle(state: AppState);
+        /// Build the idle power-on [`App`] **in place** at `slot` — the by-reference twin of
+        /// [`new_idle`](App::new_idle), used by firmware to construct the resident `App` without
+        /// materializing it on the stack. Each KB-scale component is written by its own placement
+        /// constructor. The render scratch is not part of `App` and remains host-owned.
+        pub unsafe fn init_idle;
+        fields {
+            state: state,
+            activity: Activity::new(Mode::Idle),
+            catalogs: CatalogState::new() => CatalogState::init_in_place,
+            ride: RideEngine::new() => RideEngine::init_in_place,
+            ui: UiRuntime::new() => UiRuntime::init_in_place,
+            nav_profiles: crate::NavProfiles::new(),
+            settings: Settings::default(),
+            // The clock starts from the default set-point; the host re-stamps the persisted value.
+            wall_clock: WallClock::new(Settings::default().local_clock()),
+            // A persisted set-point is display-only until GPS or BLE establishes trust this boot.
+            clock_trust: ClockTrust::Untrusted,
+            retention: crate::retention::RetentionMachine::new(),
+            weather: crate::weather::WeatherDomain::new(),
+            host: HostPending::new(),
+            freeze: crate::reroute_freeze::RerouteFreeze::new(),
+            fw_version: heapless::String::new(),
+            map_name: heapless::String::new(),
+            map_obcm_version: 0,
+            card_free_bytes: None,
+            recovered_ride_offered: false,
+        }
     );
 
     /// Build the **map-first** [`App`] in place at `slot` — the by-reference twin of
@@ -690,13 +654,65 @@ impl App {
     /// # Safety
     /// Same contract as [`init_idle`](App::init_idle).
     pub unsafe fn init_map(slot: *mut App, state: AppState) {
-        // SAFETY: caller's contract. `init_idle` fully initialises the slot, so thereafter
-        // `&mut *slot` is sound and the map-first tail is plain safe mutation (assignment drops the
-        // just-written Idle activity, not leaks it).
+        // SAFETY: caller's contract. `init_idle` fully initialises the slot, so `&mut *slot` is
+        // sound thereafter.
         unsafe { Self::init_idle(slot, state) };
-        let app = unsafe { &mut *slot };
-        app.activity = Activity::new(Mode::Riding);
-        let _ = app.ui.stack.push(Screen::Map(MapScreen::new()));
+        unsafe { &mut *slot }.open_map_first();
+    }
+
+    /// Assert the [`new_idle`](App::new_idle) boot state, field by field, delegating each KB-scale
+    /// component to its own boot-state assertion. The destructure is exhaustive, so a field added
+    /// to the plan must state its boot value here too.
+    #[cfg(test)]
+    fn assert_idle_boot_state(&self, state: AppState) {
+        use crate::retention::SweepKind;
+        let App {
+            state: camera,
+            activity,
+            catalogs,
+            ride,
+            ui,
+            nav_profiles,
+            settings,
+            wall_clock,
+            clock_trust,
+            retention,
+            weather,
+            host,
+            freeze,
+            fw_version,
+            map_name,
+            map_obcm_version,
+            card_free_bytes,
+            recovered_ride_offered,
+        } = self;
+        assert_eq!(*camera, state, "the camera state is preserved verbatim");
+        assert_eq!(activity.mode, Mode::Idle, "boots Idle, not Riding");
+        assert!(activity.active_route.is_none() && activity.active_climb.is_none(), "nothing loaded, no climb");
+        assert!(activity.next_waypoint.is_none(), "no next waypoint at power-on");
+        catalogs.assert_boot_state();
+        ride.assert_boot_state();
+        ui.assert_boot_state();
+        assert!(nav_profiles.is_empty(), "no routing profiles before a map loads");
+        assert_eq!(*settings, Settings::default(), "the defaults until the store answers");
+        assert_eq!(*wall_clock, WallClock::new(Settings::default().local_clock()), "the default set-point");
+        assert_eq!(*clock_trust, ClockTrust::Untrusted, "a persisted set-point is display-only this boot");
+        assert!(
+            [SweepKind::DeleteRoute, SweepKind::StampRoute, SweepKind::DeleteRide, SweepKind::StampRide]
+                .iter()
+                .all(|k| !retention.has(*k)),
+            "no retention sweep in flight"
+        );
+        assert!(
+            weather.installed().is_none() && !weather.refreshing() && weather.last_refresh().is_none(),
+            "no weather installed, none requested, nothing completed this boot"
+        );
+        assert!(host.is_empty(), "no host work pending, settings Clean at revision 0");
+        assert!(!freeze.plan_live() && !freeze.active(true), "no planner running, no freeze banner");
+        assert!(fw_version.is_empty() && map_name.is_empty(), "the host has identified nothing yet");
+        assert_eq!(*map_obcm_version, 0, "no map format known yet");
+        assert!(card_free_bytes.is_none(), "the card scan has not answered");
+        assert!(!*recovered_ride_offered, "no recovered ride offered this boot");
     }
 
     /// Advance one tick from the sensors.
@@ -3895,35 +3911,39 @@ mod tests {
     /// builds by value, including the KB-scale components. Guards the shared field plan end to end.
     #[test]
     fn init_idle_matches_new_idle() {
-        use core::mem::MaybeUninit;
         let state = AppState::new(1, 2, 3.0);
-        let mut slot = MaybeUninit::<App>::uninit();
-        // SAFETY: `slot` is a valid, aligned, exclusively-owned `App` region; init_idle fully
-        // initializes it before assume_init_ref reads it.
+        App::new_idle(state).assert_idle_boot_state(state);
+
+        let mut slot = core::mem::MaybeUninit::<App>::uninit();
+        // SAFETY: `slot` is a valid, aligned, exclusively-owned region for one `App`.
         let placed = unsafe {
             App::init_idle(slot.as_mut_ptr(), state);
             slot.assume_init_ref()
         };
+        placed.assert_idle_boot_state(state);
+    }
 
-        assert_eq!(placed.state, state, "camera state is preserved verbatim");
-        assert_eq!(placed.activity.mode, Mode::Idle, "boots Idle, not Riding");
-        assert!(placed.ui.map_dirty, "first frame must paint");
-        assert_eq!(placed.ui.now_ms, 0);
-        assert!(placed.ride.profile.is_none() && placed.ride.profile_route.is_none());
-        assert!(placed.ride.climbs.is_empty() && placed.ride.climbs_route.is_none(), "no climbs before a route loads");
-        assert!(placed.activity.active_climb.is_none(), "not on a climb at power-on");
-        assert!(
-            placed.ride.waypoints.is_empty() && placed.ride.waypoints_route.is_none(),
-            "no waypoints before a route loads"
-        );
-        assert!(placed.activity.next_waypoint.is_none(), "no next waypoint at power-on");
-        assert!(placed.ride.matched_route.is_none() && placed.ride.ride_session.is_none());
-        assert!(placed.ride.breadcrumb.is_empty(), "no breadcrumb before any ride");
-        // The stack is exactly the Home root, like `new_idle`.
-        let reference = App::new_idle(state);
-        assert_eq!(placed.ui.stack.len(), reference.ui.stack.len());
-        assert_eq!(placed.ui.stack.len(), 1);
-        assert!(matches!(placed.ui.stack[0], Screen::Home(_)), "Home is the stack root");
+    /// The **map-first** twins: both paths run the idle plan and then the same map-first tail, so
+    /// both land on `[Home, Map]` in Riding with the camera untouched.
+    #[test]
+    fn init_map_matches_new_map() {
+        let state = AppState::new(1, 2, 3.0);
+        let by_value = App::new(state);
+
+        let mut slot = core::mem::MaybeUninit::<App>::uninit();
+        // SAFETY: `slot` is a valid, aligned, exclusively-owned region for one `App`.
+        let placed = unsafe {
+            App::init_map(slot.as_mut_ptr(), state);
+            slot.assume_init_ref()
+        };
+
+        for app in [&by_value, placed] {
+            assert_eq!(app.state, state, "the camera state is preserved verbatim");
+            assert_eq!(app.activity.mode, Mode::Riding, "map-first boots Riding");
+            assert_eq!(app.ui.stack.len(), 2, "exactly Home + Map");
+            assert!(matches!(app.ui.stack[0], Screen::Home(_)), "Home stays the always-present root");
+            assert!(matches!(app.ui.stack[1], Screen::Map(_)), "the Map is on top");
+        }
     }
 
     // --- end-to-end barometric climb through `tick` ---
