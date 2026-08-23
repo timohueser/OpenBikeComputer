@@ -695,8 +695,8 @@ impl App {
                 .all(|k| !retention.has(*k)),
             "no retention sweep in flight"
         );
-        assert_eq!(host.store_changed_pending(), 0, "no host work pending");
-        assert!(!freeze.plan_live(), "no planner running");
+        assert!(host.is_empty(), "no host work pending, settings Clean at revision 0");
+        assert!(!freeze.plan_live() && !freeze.active(true), "no planner running, no freeze banner");
         assert!(fw_version.is_empty() && map_name.is_empty(), "the host has identified nothing yet");
         assert_eq!(*map_obcm_version, 0, "no map format known yet");
         assert!(card_free_bytes.is_none(), "the card scan has not answered");
