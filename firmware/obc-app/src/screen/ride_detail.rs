@@ -39,13 +39,15 @@ use obc_render::{
     Surface,
 };
 
+use super::vocab::chrome::{empty_state, title_frame, LIST_TOP};
+use super::vocab::rows::{draw_guarded_rows, ledger_row, GuardedRowsGeometry, MenuItem};
 use crate::activity::Activity;
 use crate::input::Gesture;
 use crate::screen::ScreenTick;
 use crate::stat_fields::fmt_hms;
 use crate::Msg;
 
-use super::{ledger_row, palette, title_frame, Ctx, MenuItem, Render, Transition, LIST_TOP};
+use super::{palette, Ctx, Render, Transition};
 
 /// The content-paired media band (track shape / elevation): the Route overview's composition,
 /// regrown near its reference height by the pager rework (owner review round 2 — see the module
@@ -149,7 +151,7 @@ impl RideDetailScreen {
             // The shown ride vanished in a rescan (deleted from the phone mid-view): the Rides
             // list's own empty-state copy, Back returns to the refreshed list.
             title_frame(cv, w, h, rx.t(Msg::RideStartTitle), "");
-            super::empty_state(cv, w, h, rx.t(Msg::RidesNoRides), rx.t(Msg::RidesNoRidesSub));
+            empty_state(cv, w, h, rx.t(Msg::RidesNoRides), rx.t(Msg::RidesNoRidesSub));
             return;
         };
         let units = rx.settings.units;
@@ -265,9 +267,9 @@ impl RideDetailScreen {
         // act, so it doesn't show) — and the `delete_enabled` guard keeps a hold a no-op regardless.
         if self.delete_enabled(rx.activity, rx.rides.len()) {
             let row_y = h - 10 - ROW_H;
-            let geo = super::GuardedRowsGeometry::panel(w, row_y, ROW_H, 0);
+            let geo = GuardedRowsGeometry::panel(w, row_y, ROW_H, 0);
             let items = [MenuItem { label: rx.t(Msg::RideDetailDeleteRide), guard: true }];
-            super::draw_guarded_rows(cv, &items, 0, rx.hold_progress, WARNING, geo);
+            draw_guarded_rows(cv, &items, 0, rx.hold_progress, WARNING, geo);
         }
     }
 }

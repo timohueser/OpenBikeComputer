@@ -21,7 +21,10 @@ use crate::input::Gesture;
 use crate::Msg;
 
 use super::route_received::{popup_expired, popup_tick};
-use super::{list, palette, title_frame, Ctx, MapScreen, MenuItem, Render, Screen, ScreenTick, Transition};
+use super::vocab::chrome::{title_frame, TITLE_BAR_H};
+use super::vocab::list;
+use super::vocab::rows::{draw_guarded_rows, GuardedRowsGeometry, MenuItem};
+use super::{palette, Ctx, MapScreen, Render, Screen, ScreenTick, Transition};
 
 /// Per-row guard flags (only *Finish & new* is destructive). The labels are looked up per language
 /// at draw time (see [`RouteSwapScreen::draw`]) — the old `const ITEMS` couldn't stay const.
@@ -155,23 +158,23 @@ impl RouteSwapScreen {
         } else {
             let _ = sub.push_str(rx.t(Msg::RouteSwapRecording));
         }
-        cv.text(&sub, Point::new(w / 2, super::TITLE_BAR_H + 16), Font::Label, TextAlign::Center, SUBTEXT);
+        cv.text(&sub, Point::new(w / 2, TITLE_BAR_H + 16), Font::Label, TextAlign::Center, SUBTEXT);
 
         // The picked / received route's stats line, directly under the subtitle — the same helper
         // the idle received card uses, so the whole card family reads identically (#682). No
         // sparkline here: three option rows + subtitle already fill the card (locked, idle-only).
         if let Some(route) = self.pending.and_then(|i| rx.routes.get(i)) {
             let stats = super::route_received::route_stats(route);
-            cv.text(&stats, Point::new(w / 2, super::TITLE_BAR_H + 38), Font::Label, TextAlign::Center, SUBTEXT);
+            cv.text(&stats, Point::new(w / 2, TITLE_BAR_H + 38), Font::Label, TextAlign::Center, SUBTEXT);
         }
 
         // Guarded rows fill amber (not warning-red — this confirms a save, it isn't destructive).
-        let geo = super::GuardedRowsGeometry::card(w, super::TITLE_BAR_H + 64);
+        let geo = GuardedRowsGeometry::card(w, TITLE_BAR_H + 64);
         let items = [
             MenuItem { label: rx.t(Msg::RouteSwapSwap), guard: GUARDS[0] },
             MenuItem { label: rx.t(Msg::RouteSwapFinishNew), guard: GUARDS[1] },
             MenuItem { label: rx.t(Msg::RouteSwapCancel), guard: GUARDS[2] },
         ];
-        super::draw_guarded_rows(cv, &items, self.selected, rx.hold_progress, AMBER, geo);
+        draw_guarded_rows(cv, &items, self.selected, rx.hold_progress, AMBER, geo);
     }
 }

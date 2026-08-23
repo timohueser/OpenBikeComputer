@@ -9,7 +9,9 @@ use obc_render::{
 };
 
 use crate::input::Gesture;
-use crate::screen::list::{self, ListGeometry, Separators};
+use crate::screen::vocab::chrome::empty_state;
+use crate::screen::vocab::list::{self, ListGeometry, Separators};
+use crate::screen::vocab::rows::ROW_X;
 use crate::screen::{Ctx, Render, Transition};
 use crate::stat_fields::StatField;
 use crate::Msg;
@@ -53,13 +55,13 @@ impl AddFieldScreen {
         let (w, h) = (rx.w, rx.h);
         let avail = hidden(&rx.settings.stat_fields);
         let total = avail.len();
-        let geo = ListGeometry::below_title(w, h, ROW_H, 6, super::ROW_X, Separators::None);
+        let geo = ListGeometry::below_title(w, h, ROW_H, 6, ROW_X, Separators::None);
 
         let sel = if total == 0 { 0 } else { self.selected.min(total - 1) };
         list::list_frame(cv, w, h, rx.t(Msg::AddFieldTitle), sel + 1, total, geo.visible);
 
         if total == 0 {
-            super::empty_state(cv, w, h, rx.t(Msg::AddFieldAllAdded), rx.t(Msg::AddFieldAllAddedSub));
+            empty_state(cv, w, h, rx.t(Msg::AddFieldAllAdded), rx.t(Msg::AddFieldAllAddedSub));
             return;
         }
 

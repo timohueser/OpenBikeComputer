@@ -17,7 +17,8 @@ use obc_render::{
 };
 
 use crate::input::Gesture;
-use crate::screen::{card_check, card_triangle, palette, title_frame, Ctx, Render, Transition, TITLE_BAR_H};
+use crate::screen::vocab::chrome::{card_check, card_triangle, title_frame, TITLE_BAR_H};
+use crate::screen::{palette, Ctx, Render, Transition};
 use crate::settings::Settings;
 use crate::Msg;
 

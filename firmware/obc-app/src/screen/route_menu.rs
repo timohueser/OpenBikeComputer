@@ -31,7 +31,8 @@ use crate::route::RouteSummary;
 use crate::trip::TripSummary;
 use crate::Msg;
 
-use super::list::{self, ListGeometry, Separators};
+use super::vocab::chrome::empty_state;
+use super::vocab::list::{self, ListGeometry, Separators};
 use super::{
     palette, Ctx, MapScreen, Render, RouteOverviewScreen, RouteSwapScreen, Screen, Transition, TripDeleteScreen,
 };
@@ -295,7 +296,7 @@ impl RouteMenuScreen {
                 RouteMenuScope::TopLevel => rx.t(Msg::RouteMenuNoRoutesSub),
                 RouteMenuScope::Trip { .. } => rx.t(Msg::RouteMenuFolderEmptySub),
             };
-            super::empty_state(cv, w, h, rx.t(Msg::RouteMenuNoRoutes), sub);
+            empty_state(cv, w, h, rx.t(Msg::RouteMenuNoRoutes), sub);
             return;
         }
 

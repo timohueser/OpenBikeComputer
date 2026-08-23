@@ -25,6 +25,7 @@ use crate::settings::DateTime;
 use crate::wall_clock::MinuteTicker;
 use crate::Msg;
 
+use super::vocab::chrome::{ble_glyph, BLE_GLYPH_W};
 use super::{palette, Ctx, MenuScreen, Render, Screen, ScreenTick, Transition};
 
 /// The seven weekday-abbreviation catalog keys (the `[date]` section), Monday-first — the order
@@ -131,7 +132,7 @@ impl HomeScreen {
         // The BLE connected rune lives in a fixed top-right status slot — 10 px inset from both
         // edges, white, and only when a phone is linked (nothing else ever occupies this corner).
         if device.ble_connected() {
-            super::ble_glyph(cv, w - 10 - super::BLE_GLYPH_W, 10 + 8, palette::PARCHMENT);
+            ble_glyph(cv, w - 10 - BLE_GLYPH_W, 10 + 8, palette::PARCHMENT);
         }
     }
 }

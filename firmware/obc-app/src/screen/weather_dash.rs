@@ -23,9 +23,10 @@ use crate::wall_clock::MinuteTicker;
 use crate::weather::{local_hour_minute, rain_outlook, RainOutlook, WeatherSnapshot, OUTLOOK_WINDOW_S};
 use crate::Msg;
 
+use super::vocab::chrome::{card_triangle, title_frame, wrapped, LIST_TOP};
 use super::weather_icons::{self, DayPhase, WeatherIcon, WeatherIconTheme};
 use super::weather_map::WeatherRainMapScreen;
-use super::{palette, title_frame, wrapped, Ctx, Render, Screen, ScreenTick, Transition, LIST_TOP};
+use super::{palette, Ctx, Render, Screen, ScreenTick, Transition};
 
 /// The two action rows, in draw order.
 const ACTIONS: usize = 2;
@@ -64,7 +65,7 @@ impl WeatherScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
-            Gesture::Step(n) => super::list::on_step(&mut self.selected, n, ACTIONS),
+            Gesture::Step(n) => super::vocab::list::on_step(&mut self.selected, n, ACTIONS),
             Gesture::Press => match self.selected {
                 0 => Transition::Push(Screen::WeatherHourly(super::WeatherHourlyScreen::new())),
                 _ => {
@@ -242,7 +243,7 @@ fn draw_card_calm(cv: &mut impl Surface, w: i32, text: &str, sub: &str, icon: We
     }
 }
 
-/// The greedy line count [`wrapped`](super::wrapped) will produce for `text` at `per_line`
+/// The greedy line count [`wrapped`](super::vocab::chrome::wrapped) will produce for `text` at `per_line`
 /// characters — the pre-measure the centred card blocks need.
 fn wrapped_line_count(text: &str, per_line: usize) -> usize {
     let mut lines = 0usize;
@@ -281,7 +282,7 @@ fn draw_card_note(cv: &mut impl Surface, w: i32, text: &str, sub: Option<&str>) 
     use palette::*;
     let area = rect(CARD_X, CARD_Y, w - 2 * CARD_X, CARD_H);
     cv.round(area, 6, PARCHMENT_SHADE);
-    super::card_triangle(cv, Point::new(CARD_X + 30, CARD_Y + CARD_H / 2), 14);
+    card_triangle(cv, Point::new(CARD_X + 30, CARD_Y + CARD_H / 2), 14);
     let zone_x = CARD_X + 58;
     let zone_w = area.size.width as i32 - 58 - 10;
     let line_h = Font::Label.cap_height() as i32 + 1;

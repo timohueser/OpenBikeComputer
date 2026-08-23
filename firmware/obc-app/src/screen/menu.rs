@@ -23,9 +23,11 @@ use obc_render::{
 use crate::input::Gesture;
 use crate::Msg;
 
+use super::vocab::chrome::title_frame_ble;
+use super::vocab::list;
 use super::{
-    list, palette, title_frame_ble, Ctx, MapScreen, PoiMenuScreen, Render, RidesScreen, RouteMenuScreen, Screen,
-    ScreenTick, SettingsScreen, Transition,
+    palette, Ctx, MapScreen, PoiMenuScreen, Render, RidesScreen, RouteMenuScreen, Screen, ScreenTick, SettingsScreen,
+    Transition,
 };
 
 /// The number of main-menu entries (Routes / Rides / POIs / Map / Weather / Settings). The ride
