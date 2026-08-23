@@ -1,5 +1,6 @@
 import hashlib
 import importlib.util
+import re
 import sys
 import tempfile
 import unittest
@@ -95,18 +96,42 @@ class UiSnapshotManifestTests(unittest.TestCase):
 
 
 class CommittedManifestTests(unittest.TestCase):
-    """The committed manifest is itself parseable, and covers the sweep's render commands
-    one-for-one — the count check the sweep cannot make about itself."""
+    """The committed manifest is itself parseable, and lines up with the sweep script one-for-one —
+    the two claims the sweep cannot make about itself, because it only ever sees the frames it just
+    rendered."""
 
     REPO = Path(__file__).parents[3]
+    LANGUAGES = ("de", "fr", "es")
+
+    def sweep_source(self) -> str:
+        return (self.REPO / "firmware" / "ui-snapshots.sh").read_text()
+
+    def committed_rows(self) -> dict[str, str]:
+        return manifest_tool.read_manifest(self.REPO / "firmware" / "ui-snapshots.sha256")
 
     def test_the_committed_manifest_parses(self):
-        rows = manifest_tool.read_manifest(self.REPO / "firmware" / "ui-snapshots.sha256")
+        rows = self.committed_rows()
         self.assertTrue(rows)
         self.assertTrue(all(name.endswith(".png") for name in rows))
 
     def test_every_render_command_states_its_expected_screen(self):
-        sweep = (self.REPO / "firmware" / "ui-snapshots.sh").read_text()
-        commands = [line for line in sweep.splitlines() if '--png "$OUT/' in line]
+        commands = [line for line in self.sweep_source().splitlines() if '--png "$OUT/' in line]
         without = [line for line in commands if "--expect-screen " not in line]
         self.assertEqual(without, [], "every render command must state --expect-screen")
+
+    def test_the_manifest_names_exactly_what_the_sweep_renders(self):
+        """A `check` run only compares the manifest to the frames a sweep *just produced*, so a
+        command deleted together with its row passes silently and the screen leaves the net unnoticed.
+        This reads the intended frame set out of the script instead — the `--png` targets, with the
+        per-language loop's `$lang` expanded — so a row with no command and a command with no row are
+        both named. Derived rather than a hand-kept count: the literal that used to live at the foot
+        of the sweep drifted 37 frames behind the script before it was deleted."""
+        rendered = set()
+        for target in re.findall(r'--png "\$OUT/([^"]+\.png)"', self.sweep_source()):
+            if "$lang" in target:
+                rendered.update(target.replace("$lang", language) for language in self.LANGUAGES)
+            else:
+                rendered.add(target)
+        recorded = set(self.committed_rows())
+        self.assertEqual(sorted(rendered - recorded), [], "the sweep renders frames the manifest does not name")
+        self.assertEqual(sorted(recorded - rendered), [], "the manifest names frames the sweep does not render")
