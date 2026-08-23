@@ -729,6 +729,20 @@ extra_triggers = ["firmware/tools/resource_baseline.json", "firmware/tools/resou
 ownership = [{ kind = "workflow", pattern = "python3 *resource_guard.py *" }]
 
 [[suite]]
+id = "ci.ui-snapshots"
+surface = "simulator"
+level = "contract"
+command = "firmware/ui-snapshots.sh OUT && python3 firmware/tools/ui_snapshot_manifest.py check firmware/ui-snapshots.sha256 OUT"
+fixtures = ["sim"]
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = ["firmware/ui-snapshots.sh", "firmware/ui-snapshots.sha256", "firmware/tools/ui_snapshot_manifest.py", "firmware/obc-app/src/**", "firmware/obc-render/src/**", "apps/obc-sim/src/**"]
+coverage_component = "host-tools"
+# The step's `cargo build -p obc-sim` line is a build, already owned by `ci.rust-builds`; what this
+# suite owns is the check that reads the manifest.
+ownership = [{ kind = "workflow", pattern = "python3 firmware/tools/ui_snapshot_manifest.py check *" }]
+
+[[suite]]
 id = "ci.wasm-size"
 surface = "web"
 level = "contract"
