@@ -9,7 +9,9 @@ use obc_render::{
 };
 
 use crate::input::Gesture;
-use crate::screen::{palette, title_frame, Ctx, Render, Transition, LIST_TOP};
+use crate::screen::vocab::chrome::{title_frame, LIST_TOP};
+use crate::screen::vocab::rows::value_row_with_arrows;
+use crate::screen::{palette, Ctx, Render, Transition};
 use crate::Msg;
 
 /// The Units screen. Stateless — the value lives in [`Settings`](crate::Settings); the one row
@@ -42,7 +44,7 @@ impl UnitsScreen {
 
         // The single value row — the current system centred, flanked by left/right arrows to read as
         // "rotate to switch". Shared with the Language picker (`value_row_with_arrows`).
-        let area = super::value_row_with_arrows(cv, LIST_TOP + 8, w, units.name(rx.settings.language));
+        let area = value_row_with_arrows(cv, LIST_TOP + 8, w, units.name(rx.settings.language));
 
         // What the system means for each readout — caption left, value right. The value is dimmed
         // one step (INK → the olive SUBTEXT the captions use) so the block reads as a **read-only

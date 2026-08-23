@@ -28,9 +28,11 @@ use obc_render::{
 use crate::input::Gesture;
 use crate::Msg;
 
+use super::vocab::chrome::{card_check, title_frame, TITLE_BAR_H};
+use super::vocab::list;
+use super::vocab::rows::{draw_guarded_rows, GuardedRowsGeometry, MenuItem};
 use super::{
-    list, palette, title_frame, Ctx, MenuItem, Render, RouteMenuScreen, RouteOverviewScreen, Screen, ScreenTick,
-    Transition, UPLOAD_POPUP_TIMEOUT_MS,
+    palette, Ctx, Render, RouteMenuScreen, RouteOverviewScreen, Screen, ScreenTick, Transition, UPLOAD_POPUP_TIMEOUT_MS,
 };
 
 /// Whether a popup opened at `opened_ms` has outlived its auto-close window at `now_ms`.
@@ -152,15 +154,15 @@ impl RouteReceivedScreen {
                 // Name first (names > metadata), one stats line under it.
                 let max = (((w - 24) / Font::Body.char_width() as i32).max(6)) as usize;
                 let name = super::route_menu::fit_name(&route.name, max);
-                cv.text(&name, Point::new(w / 2, super::TITLE_BAR_H + 14), Font::Body, TextAlign::Center, INK);
+                cv.text(&name, Point::new(w / 2, TITLE_BAR_H + 14), Font::Body, TextAlign::Center, INK);
                 let stats = route_stats(route);
-                cv.text(&stats, Point::new(w / 2, super::TITLE_BAR_H + 44), Font::Label, TextAlign::Center, SUBTEXT);
+                cv.text(&stats, Point::new(w / 2, TITLE_BAR_H + 44), Font::Label, TextAlign::Center, SUBTEXT);
                 // The mini elevation sparkline, centred between the stats line and the options —
                 // the Route-overview band's language (olive fill under a 2 px amber top stroke), no
                 // labels, no axis.
                 if let Some(elev) = &self.elevation {
                     let band_x = (w - SPARK_W) / 2;
-                    draw_sparkline(cv, band_x, super::TITLE_BAR_H + SPARK_TOP, SPARK_W, SPARK_H, elev);
+                    draw_sparkline(cv, band_x, TITLE_BAR_H + SPARK_TOP, SPARK_W, SPARK_H, elev);
                     drew_spark = true;
                 }
             }
@@ -168,7 +170,7 @@ impl RouteReceivedScreen {
             None => {
                 cv.text(
                     rx.t(Msg::RouteReceivedRouteRemoved),
-                    Point::new(w / 2, super::TITLE_BAR_H + 24),
+                    Point::new(w / 2, TITLE_BAR_H + 24),
                     Font::Label,
                     TextAlign::Center,
                     SUBTEXT,
@@ -177,13 +179,13 @@ impl RouteReceivedScreen {
         }
 
         // With the band drawn the options sit below it; without it they move up into its slot.
-        let rows_top = super::TITLE_BAR_H + if drew_spark { SPARK_TOP + SPARK_H + 10 } else { 78 };
-        let geo = super::GuardedRowsGeometry::card(w, rows_top);
+        let rows_top = TITLE_BAR_H + if drew_spark { SPARK_TOP + SPARK_H + 10 } else { 78 };
+        let geo = GuardedRowsGeometry::card(w, rows_top);
         let items = [
             MenuItem { label: rx.t(Msg::RouteReceivedViewRoute), guard: false },
             MenuItem { label: rx.t(Msg::RouteReceivedDismiss), guard: false },
         ];
-        super::draw_guarded_rows(cv, &items, self.selected, rx.hold_progress, AMBER, geo);
+        draw_guarded_rows(cv, &items, self.selected, rx.hold_progress, AMBER, geo);
     }
 }
 
@@ -285,21 +287,21 @@ impl TripReceivedScreen {
                 // per-route parade never gave.
                 let max = (((w - 24) / Font::Body.char_width() as i32).max(6)) as usize;
                 let name = super::route_menu::fit_name(&trip.name, max);
-                cv.text(&name, Point::new(w / 2, super::TITLE_BAR_H + 14), Font::Body, TextAlign::Center, INK);
+                cv.text(&name, Point::new(w / 2, TITLE_BAR_H + 14), Font::Body, TextAlign::Center, INK);
                 let mut stats: heapless::String<24> = heapless::String::new();
                 let _ = write!(stats, "{} km, +{} m", trip.distance_km, trip.climb_m);
-                cv.text(&stats, Point::new(w / 2, super::TITLE_BAR_H + 44), Font::Label, TextAlign::Center, SUBTEXT);
+                cv.text(&stats, Point::new(w / 2, TITLE_BAR_H + 44), Font::Label, TextAlign::Center, SUBTEXT);
                 let n = trip.stage_indices.len();
                 let word = if n == 1 { rx.t(Msg::TripReceivedRouteOne) } else { rx.t(Msg::TripReceivedRoutes) };
                 let mut count: heapless::String<24> = heapless::String::new();
                 let _ = write!(count, "{n} {word}");
-                cv.text(&count, Point::new(w / 2, super::TITLE_BAR_H + 68), Font::Label, TextAlign::Center, SUBTEXT);
+                cv.text(&count, Point::new(w / 2, TITLE_BAR_H + 68), Font::Label, TextAlign::Center, SUBTEXT);
             }
             // Deleted from under the popup: say so — the View row will just dismiss.
             None => {
                 cv.text(
                     rx.t(Msg::TripReceivedTripRemoved),
-                    Point::new(w / 2, super::TITLE_BAR_H + 24),
+                    Point::new(w / 2, TITLE_BAR_H + 24),
                     Font::Label,
                     TextAlign::Center,
                     SUBTEXT,
@@ -309,12 +311,12 @@ impl TripReceivedScreen {
 
         // The option rows sit under the three text lines — the route card's no-sparkline geometry,
         // shifted down by the extra count line.
-        let geo = super::GuardedRowsGeometry::card(w, super::TITLE_BAR_H + 96);
+        let geo = GuardedRowsGeometry::card(w, TITLE_BAR_H + 96);
         let items = [
             MenuItem { label: rx.t(Msg::TripReceivedViewTrip), guard: false },
             MenuItem { label: rx.t(Msg::TripReceivedDismiss), guard: false },
         ];
-        super::draw_guarded_rows(cv, &items, self.selected, rx.hold_progress, AMBER, geo);
+        draw_guarded_rows(cv, &items, self.selected, rx.hold_progress, AMBER, geo);
     }
 }
 
@@ -365,7 +367,7 @@ impl RouteUpdatedScreen {
         title_frame(cv, w, h, rx.t(Msg::RouteReceivedUpdatedTitle), "");
         // The shared check in the glyph slot (dialog anatomy, #678 T1): the update already
         // succeeded — this card is the confirmation, so it carries the success mark.
-        super::card_check(cv, Point::new(w / 2, super::TITLE_BAR_H + 40), 24);
+        card_check(cv, Point::new(w / 2, TITLE_BAR_H + 40), 24);
         // The route's name, then the plain two-line statement of what already happened.
         let name_top = h * 35 / 100;
         match self.route.and_then(|i| rx.routes.get(i)) {

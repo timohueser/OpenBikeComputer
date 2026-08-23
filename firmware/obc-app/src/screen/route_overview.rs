@@ -34,6 +34,8 @@ use obc_render::{
     Surface,
 };
 
+use super::vocab::chrome::{empty_state, stroke2, title_frame, LIST_TOP};
+use super::vocab::rows::{draw_guarded_rows, ledger_row, GuardedRowsGeometry, MenuItem};
 use crate::activity::Activity;
 use crate::input::Gesture;
 use crate::retention::{RouteRetentionMeta, DAY_SECS};
@@ -41,7 +43,7 @@ use crate::route::RouteSummary;
 use crate::screen::ScreenTick;
 use crate::Msg;
 
-use super::{ledger_row, palette, title_frame, Ctx, MenuItem, Render, Transition, LIST_TOP};
+use super::{palette, Ctx, Render, Transition};
 
 /// Chart band: below the title bar, deep enough to read the terrain, clear of the stat tiles.
 const BAND_TOP: i32 = LIST_TOP + 8;
@@ -179,7 +181,7 @@ impl RouteOverviewScreen {
             Gesture::Step(n) => {
                 let len = if self.delete_enabled(cx.activity, cx.routes) { 2 } else { 1 };
                 self.selected = self.selected.min(len - 1);
-                self.selected = super::list::step_selection(self.selected, n, len);
+                self.selected = super::vocab::list::step_selection(self.selected, n, len);
                 Transition::None
             }
             // Start — only from the selected START row (a press on the Delete row does nothing;
@@ -224,7 +226,7 @@ impl RouteOverviewScreen {
         let (w, h) = (rx.w, rx.h);
         let Some(summary) = rx.routes.get(self.route) else {
             title_frame(cv, w, h, rx.t(Msg::RouteOverviewTitle), "");
-            super::empty_state(cv, w, h, rx.t(Msg::RouteOverviewNoRoute), rx.t(Msg::RouteOverviewNoRouteSub));
+            empty_state(cv, w, h, rx.t(Msg::RouteOverviewNoRoute), rx.t(Msg::RouteOverviewNoRouteSub));
             return;
         };
 
@@ -403,13 +405,13 @@ impl RouteOverviewScreen {
         // can't act, so it doesn't show) — and the `selection_is_guarded` guard keeps a hold a
         // no-op regardless. START keeps the two-row block's top slot either way, so nothing jumps
         // when the Delete row re-arms.
-        let geo = super::GuardedRowsGeometry::panel(w, action_rows_top(h), OPTION_ROW_H, OPTION_GAP);
+        let geo = GuardedRowsGeometry::panel(w, action_rows_top(h), OPTION_ROW_H, OPTION_GAP);
         let items = [
             MenuItem { label: rx.t(Msg::RouteOverviewStartRide), guard: false },
             MenuItem { label: rx.t(Msg::RouteOverviewDelete), guard: true },
         ];
         let n = if self.delete_enabled(rx.activity, rx.routes) { 2 } else { 1 };
-        super::draw_guarded_rows(cv, &items[..n], self.selected.min(n - 1), rx.hold_progress, WARNING, geo);
+        draw_guarded_rows(cv, &items[..n], self.selected.min(n - 1), rx.hold_progress, WARNING, geo);
     }
 }
 
@@ -557,7 +559,7 @@ pub(super) fn draw_route_preview(cv: &mut impl Surface, w: i32, top: i32, bot: i
     let mut prev = project(pts[0]);
     for &p in &pts[1..] {
         let cur = project(p);
-        super::stroke2(cv, prev, cur, INK);
+        stroke2(cv, prev, cur, INK);
         prev = cur;
     }
     // Start: a 4 px filled disc. Destination: a 6 px hollow diamond (its four 1 px edges).

@@ -18,7 +18,9 @@ use obc_render::{
 
 use super::bike_icons;
 use crate::input::Gesture;
-use crate::screen::{palette, title_frame, Ctx, Render, Transition, TITLE_BAR_H};
+use crate::screen::vocab::chrome::{empty_state, title_frame, wrapped, TITLE_BAR_H};
+use crate::screen::vocab::rows::{row_cursor, row_rect};
+use crate::screen::{palette, Ctx, Render, Transition};
 use crate::Msg;
 
 /// Art-pixel scale for the hero bike sprite (50 × 30 art px → 200 × 120 device px).
@@ -69,7 +71,7 @@ impl BikeTypeScreen {
         // No map loaded (or a router-less `ble` build): nothing to pick from, so say so instead of
         // drawing an empty picker.
         if count == 0 {
-            super::empty_state(cv, w, h, rx.t(Msg::BikeTypeNoProfiles), rx.t(Msg::BikeTypeNoProfilesSub));
+            empty_state(cv, w, h, rx.t(Msg::BikeTypeNoProfiles), rx.t(Msg::BikeTypeNoProfilesSub));
             return;
         }
 
@@ -88,8 +90,8 @@ impl BikeTypeScreen {
         // left/right arrows so it reads as "rotate to switch". `write_label` shows profile 0's name
         // for an out-of-range stored index (never a name the map doesn't have). The bike above *is*
         // the "which type" cue, so there's no separate list to repeat the names.
-        let area = super::row_rect(SELECTOR_ROW_Y, w, 46);
-        super::row_cursor(cv, area, true, false);
+        let area = row_rect(SELECTOR_ROW_Y, w, 46);
+        row_cursor(cv, area, true, false);
         let midy = area.top_left.y + area.size.height as i32 / 2;
         let mut label: heapless::String<20> = heapless::String::new();
         rx.nav_profiles.write_label(idx, &mut label);
@@ -107,7 +109,7 @@ impl BikeTypeScreen {
         // translations) overruns a single 240 px Label line, so it centre-wraps to two rather than
         // clip — the shared card body wrap, so every language stays inside the panel.
         let sub_y = area.top_left.y + area.size.height as i32 + 14;
-        crate::screen::wrapped(cv, rx.t(Msg::BikeTypeRoutingUses), w / 2, sub_y, w - 24, Font::Label, SUBTEXT);
+        wrapped(cv, rx.t(Msg::BikeTypeRoutingUses), w / 2, sub_y, w - 24, Font::Label, SUBTEXT);
     }
 }
 

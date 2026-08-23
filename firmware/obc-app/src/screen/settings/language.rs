@@ -6,7 +6,9 @@
 use obc_render::Surface;
 
 use crate::input::Gesture;
-use crate::screen::{title_frame, Ctx, Render, Transition, LIST_TOP};
+use crate::screen::vocab::chrome::{title_frame, LIST_TOP};
+use crate::screen::vocab::rows::value_row_with_arrows;
+use crate::screen::{Ctx, Render, Transition};
 use crate::Msg;
 
 /// The Language screen. Stateless — the value lives in [`Settings`](crate::Settings); the one row is
@@ -43,7 +45,7 @@ impl LanguageScreen {
 
         // The single value row — the current language's endonym centred, flanked by left/right arrows
         // to read as "rotate to switch". Shared with the Units picker (`value_row_with_arrows`).
-        super::value_row_with_arrows(cv, LIST_TOP + 8, w, language.name());
+        value_row_with_arrows(cv, LIST_TOP + 8, w, language.name());
     }
 }
 

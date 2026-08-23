@@ -27,7 +27,9 @@ use obc_render::{
 };
 
 use crate::input::Gesture;
-use crate::screen::{palette, title_frame, Ctx, Render, Screen, Transition, LIST_TOP};
+use crate::screen::vocab::chrome::{empty_state, title_frame, LIST_TOP};
+use crate::screen::vocab::rows::{row_cursor, row_rect};
+use crate::screen::{palette, Ctx, Render, Screen, Transition};
 use crate::sensors::{SensorPhase, SensorStatus};
 use crate::settings::{Language, SavedSensor, SENSOR_SLOTS};
 use crate::Msg;
@@ -63,7 +65,7 @@ impl SensorsScreen {
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         match g {
             Gesture::Step(n) => {
-                self.selected = crate::screen::list::step_selection(self.selected, n, SENSOR_SLOTS);
+                self.selected = crate::screen::vocab::list::step_selection(self.selected, n, SENSOR_SLOTS);
                 Transition::None
             }
             // Enter the row's scan list — raise scan mode so the host runs a discovery scan and feeds
@@ -90,8 +92,8 @@ impl SensorsScreen {
 
         for slot in 0..SENSOR_SLOTS {
             let y = LIST_TOP + 8 + slot as i32 * ROW_H;
-            let row = super::row_rect(y, w, ROW_H);
-            super::row_cursor(cv, row, slot == self.selected, false);
+            let row = row_rect(y, w, ROW_H);
+            row_cursor(cv, row, slot == self.selected, false);
             let present = rx.settings.saved_sensors[slot].present;
             let status = rx.sensor_status.get(slot).copied().unwrap_or_default();
             let mut sub = heapless::String::<24>::new();
@@ -165,7 +167,7 @@ impl SensorScanScreen {
             Gesture::Step(n) => {
                 let len = self.count(cx.sensor_scan_hits);
                 if len > 0 {
-                    self.selected = crate::screen::list::step_selection(self.selected.min(len - 1), n, len);
+                    self.selected = crate::screen::vocab::list::step_selection(self.selected.min(len - 1), n, len);
                 }
                 Transition::None
             }
@@ -201,15 +203,15 @@ impl SensorScanScreen {
         let len = self.count(rx.sensor_scan_hits);
         if len == 0 {
             // Empty while scanning: the calm searching note (no list yet).
-            super::empty_state(cv, w, h, rx.t(Msg::SensorsScanning), "");
+            empty_state(cv, w, h, rx.t(Msg::SensorsScanning), "");
             return;
         }
 
         let selected = self.selected.min(len - 1);
         for (i, hit) in self.hits(rx.sensor_scan_hits).enumerate() {
             let y = LIST_TOP + 8 + i as i32 * ROW_H;
-            let row = super::row_rect(y, w, ROW_H);
-            super::row_cursor(cv, row, i == selected, false);
+            let row = row_rect(y, w, ROW_H);
+            row_cursor(cv, row, i == selected, false);
             // Name, or the address when the advert carried none.
             let x = row.top_left.x + 10;
             if hit.name.is_empty() {

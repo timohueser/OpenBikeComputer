@@ -10,8 +10,9 @@
 use obc_render::Surface;
 
 use crate::input::Gesture;
+use crate::screen::vocab::list;
 use crate::screen::{
-    list, AboutScreen, Ctx, DateTimeScreen, FirmwareScreen, LanguageScreen, Render, ResetScreen, Screen, Transition,
+    AboutScreen, Ctx, DateTimeScreen, FirmwareScreen, LanguageScreen, Render, ResetScreen, Screen, Transition,
     UnitsScreen,
 };
 use crate::Msg;

@@ -1,6 +1,8 @@
 //! The Settings tree, in the field-map style of the rest of the UI. This module owns the list
-//! screen ([`SettingsScreen`]) and the reusable drawing kit every settings screen shares (the slider
-//! toggle, the value/stepper field, the row cursor); the individual screens live one file each.
+//! screen ([`SettingsScreen`]) and the settings-only drawing kit (the slider toggle, the stepper
+//! field, the row label, the guarded Forget footer); the individual screens live one file each.
+//! The row rectangle, the row cursor and the value picker are shared vocabulary
+//! ([`vocab::rows`](crate::screen::vocab::rows)).
 //!
 //! The two-level Select model:
 //! - **Rotate** moves the amber row cursor; while a field is open it changes that field's value.
@@ -23,12 +25,9 @@ use obc_render::{
 use crate::input::Gesture;
 use crate::Msg;
 
-use super::list;
+use super::vocab::list;
+use super::vocab::rows::{confirm_row, row_rect};
 use super::{palette, Ctx, Render, Screen, Transition};
-
-/// Re-exported for the settings screens (the kit is their one-stop `super::`), so a sub-screen
-/// like Add field never reaches for `super::super::`.
-pub(super) use super::empty_state;
 
 mod about;
 mod add_field;
@@ -121,9 +120,6 @@ impl SettingsScreen {
 
 // The shared kit — the reusable parts behind every settings screen.
 
-/// Left inset of every settings row (clears the framed outline).
-pub(super) const ROW_X: i32 = 14;
-
 /// The Forget row's height + bottom anchor — the Route overview Delete row's geometry family
 /// (38 px tall, the standard 10 px above the card bottom), so the button faces all match.
 pub(super) const FORGET_H: i32 = 38;
@@ -150,39 +146,8 @@ pub(super) fn back_out_of_field(open: bool, close: impl FnOnce()) -> Transition 
 pub(super) fn forget_footer(cv: &mut impl Surface, w: i32, h: i32, label: &str, selected: bool, hold: f32) {
     let fy = h - 10 - FORGET_H;
     let row = row_rect(fy, w, FORGET_H);
-    super::confirm_row(cv, row, selected, true, hold, palette::WARNING, 6);
+    confirm_row(cv, row, selected, true, hold, palette::WARNING, 6);
     cv.text_vcentered(label, row.top_left.x + 12, (fy, FORGET_H), Font::Body, TextAlign::Left, palette::INK);
-}
-
-/// The full-width settings-row rectangle at `y` of height `h`.
-pub(super) fn row_rect(y: i32, w: i32, h: i32) -> Rectangle {
-    rect(ROW_X, y, w - 2 * ROW_X, h)
-}
-
-/// Paint a row's amber row-focus cursor. A no-op while editing (the field's `▲▼` box is the cursor
-/// then) or when unselected, so the two focus levels never both light up.
-pub(super) fn row_cursor(cv: &mut impl Surface, area: Rectangle, selected: bool, editing: bool) {
-    if selected && !editing {
-        cv.round(area, 6, palette::AMBER);
-    }
-}
-
-/// One centred value row flanked by ◄ ► triangles — the "rotate to switch" picker row shared by the
-/// single-row settings screens ([`Units`](units::UnitsScreen), [`Language`](language::LanguageScreen)).
-/// Always drawn as the cursor (these screens have one row, always focused). Returns the row rectangle
-/// so a caller can lay out further content beneath it (Units' consequence-preview rows). `y` is the
-/// row's top; the row is a fixed 50 px tall.
-pub(super) fn value_row_with_arrows(cv: &mut impl Surface, y: i32, w: i32, text: &str) -> Rectangle {
-    let area = row_rect(y, w, 50);
-    row_cursor(cv, area, true, false);
-    let midy = area.top_left.y + area.size.height as i32 / 2;
-    cv.text_vcentered(text, w / 2, (area.top_left.y, 50), Font::Body, TextAlign::Center, palette::INK);
-    // ◄ and ► as filled triangles, inset from the row edges.
-    let ax = area.top_left.x + 18;
-    cv.triangle(Point::new(ax, midy - 9), Point::new(ax, midy + 9), Point::new(ax - 11, midy), palette::INK);
-    let bx = area.top_left.x + area.size.width as i32 - 18;
-    cv.triangle(Point::new(bx, midy - 9), Point::new(bx, midy + 9), Point::new(bx + 11, midy), palette::INK);
-    area
 }
 
 /// Draw a row's left-hand label (Body) with an optional muted sub-caption (Label) under it. The

@@ -522,7 +522,7 @@ fn fmt_climb_delta(delta_m: Option<i32>, units: crate::settings::Units) -> heapl
 
 /// Draw the climb figure — an ink up-triangle followed by `text` — as one group ending at `right`,
 /// its baseline shared with the distance figure. The triangle is the same 13-wide mark
-/// [`ledger_row`](super::ledger_row) draws for a CLIMB row, and it is *drawn* rather than typed
+/// [`ledger_row`](super::vocab::rows::ledger_row) draws for a CLIMB row, and it is *drawn* rather than typed
 /// because the device font's Latin strip has no arrow glyph.
 fn draw_climb_figure(cv: &mut impl Surface, right: i32, y: i32, text: &str) {
     use super::palette::*;

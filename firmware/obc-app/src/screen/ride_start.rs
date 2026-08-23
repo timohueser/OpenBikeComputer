@@ -22,10 +22,13 @@ use crate::input::Gesture;
 use crate::Msg;
 
 use super::settings::bike_icons;
-use super::{list, palette, title_frame, Ctx, MenuItem, Render, Transition};
+use super::vocab::chrome::{title_frame, TITLE_BAR_H};
+use super::vocab::list;
+use super::vocab::rows::{draw_guarded_rows, GuardedRowsGeometry, MenuItem};
+use super::{palette, Ctx, Render, Transition};
 
 /// Top of the hero bike, just under the title bar.
-const HERO_TOP: i32 = super::TITLE_BAR_H + 8;
+const HERO_TOP: i32 = TITLE_BAR_H + 8;
 /// Art-pixel scale for the hero bike. 2× (→ 100×60 device px), smaller than the Bike-type screen's
 /// own 4× hero: that hero fills a screen with one row under it, but this card stacks five content
 /// rows (name + three checklist + two options) below it, so it renders the same sprite at half scale
@@ -106,20 +109,12 @@ impl RideStartScreen {
         }
 
         // Options: Start ride (amber primary) / Back — unchanged behaviour, anchored at the bottom.
-        let geo = super::GuardedRowsGeometry {
-            x: 12,
-            w: w - 24,
-            top: OPT_TOP,
-            row_h: 42,
-            gap: 8,
-            label_dx: 16,
-            label_dy: 10,
-        };
+        let geo = GuardedRowsGeometry { x: 12, w: w - 24, top: OPT_TOP, row_h: 42, gap: 8, label_dx: 16, label_dy: 10 };
         let items = [
             MenuItem { label: rx.t(Msg::RideStartStartRide), guard: false },
             MenuItem { label: rx.t(Msg::RideStartBack), guard: false },
         ];
-        super::draw_guarded_rows(cv, &items, self.selected, rx.hold_progress, AMBER, geo);
+        draw_guarded_rows(cv, &items, self.selected, rx.hold_progress, AMBER, geo);
     }
 }
 

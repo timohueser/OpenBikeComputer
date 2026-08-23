@@ -29,10 +29,11 @@ use obc_render::{
 };
 
 use crate::input::Gesture;
-use crate::screen::{palette, title_frame, Ctx, Render, Transition, LIST_TOP};
+use crate::screen::vocab::chrome::{title_frame, LIST_TOP};
+use crate::screen::{palette, Ctx, Render, Transition};
 use crate::Msg;
 
-use super::ROW_X;
+use crate::screen::vocab::rows::ROW_X;
 
 /// Per-line vertical advance — [`Font::Label`] stacked the way the Firmware ledger stacks it.
 const PITCH: i32 = 22;

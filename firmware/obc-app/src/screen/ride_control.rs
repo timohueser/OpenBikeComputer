@@ -15,7 +15,10 @@ use crate::input::Gesture;
 use crate::stat_fields::{fmt_hms, fmt_km};
 use crate::Msg;
 
-use super::{ledger_row, list, palette, title_frame, Ctx, MenuItem, Render, RideMenuScreen, Screen, Transition};
+use super::vocab::chrome::title_frame;
+use super::vocab::list;
+use super::vocab::rows::{draw_guarded_rows, ledger_row, GuardedRowsGeometry, MenuItem};
+use super::{palette, Ctx, Render, RideMenuScreen, Screen, Transition};
 
 /// The ride-so-far ledger: three caption/value rows under the title bar.
 const ROWS_TOP: i32 = 50;
@@ -119,12 +122,12 @@ impl RideControl {
         }
 
         // Guarded rows fill warning-red — Finish/Discard are irreversible.
-        let geo = super::GuardedRowsGeometry::panel(w, OPTIONS_TOP, OPTION_ROW_H, OPTION_GAP);
+        let geo = GuardedRowsGeometry::panel(w, OPTIONS_TOP, OPTION_ROW_H, OPTION_GAP);
         let items = [
             MenuItem { label: rx.t(Msg::RideControlResume), guard: GUARDS[0] },
             MenuItem { label: rx.t(Msg::RideControlFinish), guard: GUARDS[1] },
             MenuItem { label: rx.t(Msg::RideControlDiscard), guard: GUARDS[2] },
         ];
-        super::draw_guarded_rows(cv, &items, self.selected, rx.hold_progress, WARNING, geo);
+        draw_guarded_rows(cv, &items, self.selected, rx.hold_progress, WARNING, geo);
     }
 }

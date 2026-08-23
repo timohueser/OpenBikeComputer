@@ -8,7 +8,7 @@
 //! from its old standalone page).
 //!
 //! Seven rows overrun the ~4-row panel, so this is the one settings screen that **scrolls**: the row
-//! cursor drives the window ([`window_start`](crate::screen::list::window_start)) exactly like the
+//! cursor drives the window ([`window_start`](crate::screen::vocab::list::window_start)) exactly like the
 //! nav lists, and a scrollbar tracks the position. The two-level Select model is otherwise the
 //! shared one — a step moves the cursor (or edits an open stepper), a press opens a page / flips a
 //! cycle / toggles the Page-cycle stepper.
@@ -24,8 +24,10 @@ use obc_render::{
 
 use crate::input::Gesture;
 use crate::retention::RideRetention;
-use crate::screen::list::{scrollbar, window_start};
-use crate::screen::{title_frame, BikeTypeScreen, Ctx, Render, Screen, Transition, LIST_TOP};
+use crate::screen::vocab::chrome::{title_frame, LIST_TOP};
+use crate::screen::vocab::list::{scrollbar, window_start};
+use crate::screen::vocab::rows::{row_cursor, row_rect, ROW_X};
+use crate::screen::{BikeTypeScreen, Ctx, Render, Screen, Transition};
 use crate::settings::{STAT_CYCLE_MAX, STAT_CYCLE_MIN};
 use crate::Msg;
 
@@ -92,7 +94,7 @@ impl RideScreen {
                 if self.editing_cycle {
                     cx.settings.stat_cycle_s = step_cycle(cx.settings.stat_cycle_s, n);
                 } else {
-                    self.selected = crate::screen::list::step_selection(self.selected, n, ROWS);
+                    self.selected = crate::screen::vocab::list::step_selection(self.selected, n, ROWS);
                 }
                 Transition::None
             }
@@ -143,7 +145,7 @@ impl RideScreen {
         title_frame(cv, w, h, rx.t(Msg::RideTitle), "");
 
         // ONE value column (T8 item 3): every row's value right-aligns at this inset.
-        let val_r = w - super::ROW_X - VAL_INSET;
+        let val_r = w - ROW_X - VAL_INSET;
         // The scrolling window: the cursor stays on screen, the window follows it.
         let first = window_start(self.selected, VISIBLE, ROWS);
 
@@ -153,23 +155,23 @@ impl RideScreen {
                 break;
             }
             let y = TOP + slot as i32 * PITCH;
-            let row = super::row_rect(y, w, ROW_H);
+            let row = row_rect(y, w, ROW_H);
             let selected = idx == self.selected;
 
             match idx {
                 BIKE_TYPE => {
-                    super::row_cursor(cv, row, selected, false);
+                    row_cursor(cv, row, selected, false);
                     super::row_label(cv, row, rx.t(Msg::RideBikeType), None);
                     chevron(cv, val_r, &row);
                 }
                 DATA_FIELDS => {
-                    super::row_cursor(cv, row, selected, false);
+                    row_cursor(cv, row, selected, false);
                     super::row_label(cv, row, rx.t(Msg::RideFields), Some(rx.t(Msg::RideFieldsSub)));
                     chevron(cv, val_r, &row);
                 }
                 PAGE_CYCLE => {
                     let editing = self.editing_cycle && selected;
-                    super::row_cursor(cv, row, selected, editing);
+                    row_cursor(cv, row, selected, editing);
                     super::row_label(cv, row, rx.t(Msg::RidePages), Some(rx.t(Msg::RidePagesSub)));
                     let mut val: heapless::String<8> = heapless::String::new();
                     let _ = write!(val, "{} s", rx.settings.stat_cycle_s);
@@ -182,26 +184,26 @@ impl RideScreen {
                     }
                 }
                 CLIMB => {
-                    super::row_cursor(cv, row, selected, false);
+                    row_cursor(cv, row, selected, false);
                     super::row_label(cv, row, rx.t(Msg::RideClimb), Some(rx.t(Msg::RideClimbSub)));
                     draw_subline_cycle_value(cv, &row, val_r, rx.settings.climb_mode.name(rx.settings.language));
                 }
                 WAYPOINTS => {
-                    super::row_cursor(cv, row, selected, false);
+                    row_cursor(cv, row, selected, false);
                     super::row_label(cv, row, rx.t(Msg::RideWaypoints), Some(rx.t(Msg::RideWaypointsSub)));
                     draw_subline_cycle_value(cv, &row, val_r, rx.settings.waypoint_mode.name(rx.settings.language));
                 }
                 UP_AHEAD => {
                     // Up ahead: the same press-to-cycle face as the two rows above, reading as the
                     // sentence "Up ahead shows ◄ Waypoints" (the value word carries the "only").
-                    super::row_cursor(cv, row, selected, false);
+                    row_cursor(cv, row, selected, false);
                     super::row_label(cv, row, rx.t(Msg::RideUpAhead), Some(rx.t(Msg::RideUpAheadSub)));
                     draw_subline_cycle_value(cv, &row, val_r, rx.settings.up_ahead_source.name(rx.settings.language));
                 }
                 AUTODELETE => {
                     // Auto-delete: the retention value rides on the sub-caption line with the same
                     // ◄ "press to cycle" cue as the Climb / Waypoints rows above.
-                    super::row_cursor(cv, row, selected, false);
+                    row_cursor(cv, row, selected, false);
                     super::row_label(cv, row, rx.t(Msg::RideAutodelete), Some(rx.t(Msg::RideAutodeleteSub)));
                     draw_subline_cycle_value(cv, &row, val_r, rx.t(retention_msg(rx.settings.ride_retention)));
                 }
@@ -384,7 +386,7 @@ mod tests {
         use crate::settings::{ClimbMode, Language, UpAheadSource, WaypointMode};
         const W: i32 = 240;
         const MIN_CLEAR: i32 = 8;
-        let val_r = W - super::super::ROW_X - VAL_INSET;
+        let val_r = W - ROW_X - VAL_INSET;
         let lw = |s: &str| text_width(s, Font::Label) as i32;
         for lang in [Language::En, Language::De, Language::Fr, Language::Es] {
             let rows: [(&str, &[&str]); 4] = [
@@ -415,7 +417,7 @@ mod tests {
                 ),
             ];
             for (sub, values) in rows {
-                let sub_right = super::super::ROW_X + 10 + lw(sub);
+                let sub_right = ROW_X + 10 + lw(sub);
                 for value in values {
                     let cue_tip = val_r - lw(value) - CUE_GAP - 8;
                     assert!(

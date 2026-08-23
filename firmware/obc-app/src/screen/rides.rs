@@ -30,8 +30,9 @@ use crate::input::Gesture;
 use crate::settings::{DateTime, Language, Units};
 use crate::{t, Msg};
 
-use super::list::{self, ListGeometry, Separators};
 use super::route_menu::fit_name;
+use super::vocab::chrome::empty_state;
+use super::vocab::list::{self, ListGeometry, Separators};
 use super::{palette, Ctx, Render, RideDetailScreen, Screen, Transition};
 
 /// Per-ride pane height (two lines: name + metadata), sized to fill the full list area (the old
@@ -95,7 +96,7 @@ impl RidesScreen {
         list::list_frame(cv, w, h, rx.t(Msg::RidesTitle), pos, total, geo.visible);
 
         if total == 0 {
-            super::empty_state(cv, w, h, rx.t(Msg::RidesNoRides), rx.t(Msg::RidesNoRidesSub));
+            empty_state(cv, w, h, rx.t(Msg::RidesNoRides), rx.t(Msg::RidesNoRidesSub));
             return;
         }
 
@@ -133,7 +134,7 @@ impl RidesScreen {
     }
 }
 
-/// The synced check mark — the [`card_check`](super::card_check) two-stroke check shrunk to the
+/// The synced check mark — the [`card_check`](super::vocab::chrome::card_check) two-stroke check shrunk to the
 /// row-glyph scale (~10 px ink, 1 px-radius disc strokes so it stays legible without going bold):
 /// down-stroke to the low point, then up-stroke to the top-right. `c` is the mark's centre on the
 /// name line's cap; drawn in the row's accent (olive on a resting row, ink on the amber cursor).

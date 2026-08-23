@@ -20,7 +20,8 @@ use obc_render::{
     Canvas, Surface,
 };
 
-use crate::screen::{palette, title_frame, wrapped, TITLE_BAR_H};
+use crate::screen::palette;
+use crate::screen::vocab::chrome::{title_frame, wrapped, TITLE_BAR_H};
 use crate::settings::Language;
 use crate::{t, Msg};
 

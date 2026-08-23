@@ -39,7 +39,10 @@ use crate::input::Gesture;
 use crate::settings::Units;
 use crate::Msg;
 
-use super::{list, palette, title_frame, Ctx, MenuItem, Render, Screen, ScreenTick, Transition};
+use super::vocab::chrome::{card_triangle, title_frame, wrapped, TITLE_BAR_H};
+use super::vocab::list;
+use super::vocab::rows::{draw_guarded_rows, GuardedRowsGeometry, MenuItem};
+use super::{palette, Ctx, Render, Screen, ScreenTick, Transition};
 
 /// The two confirm rows (Create route / Cancel), neither guarded — labels looked up per language at
 /// draw time (see [`NavConfirmScreen::draw`]).
@@ -105,12 +108,12 @@ impl NavConfirmScreen {
         // The destination's category glyph in the T1 glyph slot (the failure cards' triangle
         // position) — what kind of place the route goes to, at a glance (#685 §3).
         if let Some(cat) = self.category {
-            super::poi_menu::draw_category_icon(cv, cat, Point::new(w / 2, super::TITLE_BAR_H + 40), INK, PARCHMENT);
+            super::poi_menu::draw_category_icon(cv, cat, Point::new(w / 2, TITLE_BAR_H + 40), INK, PARCHMENT);
         }
         // The destination's name — what the rider is routing to.
         let max = (((w - 24) / Font::Label.char_width() as i32).max(6)) as usize;
         let name = super::route_menu::fit_name(&self.name, max);
-        let name_y = super::TITLE_BAR_H + 68;
+        let name_y = TITLE_BAR_H + 68;
         cv.text(&name, Point::new(w / 2, name_y), Font::Label, TextAlign::Center, SUBTEXT);
         // The straight-line distance to it (#685 §3) — the number that sets expectations before
         // committing to a plan. Current fix → POI; the browser required a fix to get here, so it's
@@ -122,12 +125,12 @@ impl NavConfirmScreen {
             cv.text(&away, Point::new(w / 2, name_y + 24), Font::Label, TextAlign::Center, SUBTEXT);
         }
 
-        let geo = super::GuardedRowsGeometry::card(w, super::TITLE_BAR_H + 122);
+        let geo = GuardedRowsGeometry::card(w, TITLE_BAR_H + 122);
         let items = [
             MenuItem { label: rx.t(Msg::NavRouteCreateRoute), guard: false },
             MenuItem { label: rx.t(Msg::NavRouteCancel), guard: false },
         ];
-        super::draw_guarded_rows(cv, &items, self.selected, rx.hold_progress, AMBER, geo);
+        draw_guarded_rows(cv, &items, self.selected, rx.hold_progress, AMBER, geo);
     }
 }
 
@@ -299,7 +302,7 @@ impl NavPlanningScreen {
         if !self.name.is_empty() {
             let max = (((w - 24) / Font::Label.char_width() as i32).max(6)) as usize;
             let name = super::route_menu::fit_name(&self.name, max);
-            cv.text(&name, Point::new(w / 2, super::TITLE_BAR_H + 16), Font::Label, TextAlign::Center, SUBTEXT);
+            cv.text(&name, Point::new(w / 2, TITLE_BAR_H + 16), Font::Label, TextAlign::Center, SUBTEXT);
         }
 
         // The spinner: the Menu dial's needle (shared drawing), free-spinning while the host
@@ -369,7 +372,7 @@ impl NavFailScreen {
         title_frame(cv, w, h, rx.t(title), "");
         // The shared warning triangle in the glyph slot (dialog anatomy, #678 T1) — the DFU error
         // cards' composition: title bar, gap, triangle, gap, message.
-        super::card_triangle(cv, Point::new(w / 2, super::TITLE_BAR_H + 46), 22);
+        card_triangle(cv, Point::new(w / 2, TITLE_BAR_H + 46), 22);
         // The two-tier message (ink, Body) over its one olive guidance line (Label) — each authored
         // as one catalog string and word-wrapped at draw time (either overruns the 240 px panel).
         // A detour failure keeps the two-tier message but shares the one honest remedy hint (#882).
@@ -379,8 +382,8 @@ impl NavFailScreen {
             (false, true) => rx.t(Msg::NavRouteTooFarHint),
             (false, false) => rx.t(Msg::NavRouteNotFoundHint),
         };
-        let y = super::wrapped(cv, msg, w / 2, super::TITLE_BAR_H + 84, w - 32, Font::Body, INK);
-        super::wrapped(cv, hint, w / 2, y + 12, w - 32, Font::Label, SUBTEXT);
+        let y = wrapped(cv, msg, w / 2, TITLE_BAR_H + 84, w - 32, Font::Body, INK);
+        wrapped(cv, hint, w / 2, y + 12, w - 32, Font::Label, SUBTEXT);
     }
 }
 
