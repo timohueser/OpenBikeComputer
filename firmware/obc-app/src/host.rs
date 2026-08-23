@@ -673,4 +673,13 @@ impl HostPending {
     pub(crate) fn arm_settings_save(&mut self) {
         self.note_settings_edited();
     }
+
+    /// Whether nothing at all is pending: no store change, settings Clean at revision 0 — the
+    /// [`new`](HostPending::new) state. The destructure is exhaustive, so a field added here must
+    /// state its empty value too.
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
+        let HostPending { store_changed, settings_rev, retry_at_ms, persist } = self;
+        *store_changed == 0 && *settings_rev == 0 && *retry_at_ms == 0 && *persist == PersistState::Clean
+    }
 }
