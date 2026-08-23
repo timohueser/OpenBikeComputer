@@ -17,7 +17,7 @@ host-side correctness and parser checks:
 
 ```sh
 cargo test --workspace --all-features --locked
-cargo run -p obc-bench --release --locked -- --check obc-bench/golden.txt
+cargo run -p obc-bench --release --locked -- --check ../host/obc-bench/golden.txt
 python3 tools/check_dependencies.py
 python3 -m unittest discover -s tools/tests -v
 python3 tools/resource_guard.py strict-align
@@ -117,14 +117,16 @@ architectural reason in the commit or PR. Do not append another permanent change
 
 ## Render and timing evidence
 
-`obc-bench/golden.txt` is the deterministic authority for both the rendered pixels and the map read
-path's per-case read counters (leaves visited, chunk cache hits/misses, SD reads, bytes read). A
-pure refactor leaves it unchanged; an intentional render or cache change updates it in the same PR
-with the visual evidence, or the counter reason, stated. A counter delta is a review failure exactly
-like a hash delta.
+`host/obc-bench/golden.txt` is the deterministic authority for both the rendered pixels and the
+map read path's per-case read counters (leaves visited, chunk cache hits/misses, SD reads, bytes
+read). A pure refactor leaves it unchanged; an intentional render or cache change updates it in the
+same PR with the visual evidence, or the counter reason, stated. A counter delta is a review failure
+exactly like a hash delta.
+
+From the repository root:
 
 ```sh
-cargo run -p obc-bench --release --locked -- --check obc-bench/golden.txt
+cargo run -p obc-bench --release --locked -- --check host/obc-bench/golden.txt
 cargo run -p obc-bench --release --locked -- --repeat 9
 ```
 
