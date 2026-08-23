@@ -183,17 +183,14 @@ macro_rules! setting_enum {
             }
         }
 
-        // The on-disk contract, enforced. The per-variant asserts pin each row's byte by name, so
-        // a failure says *which* value moved; the loop is the one with teeth — it fails the build
-        // unless the table still runs `0..COUNT` in declaration order, which is exactly what
-        // `ALL`, `cycled`, `stepped`, and `from_byte` all assume. Renumber or reorder a row and
-        // the build stops, instead of a stored byte quietly decoding to a different value.
-        $(
-            const _: () = assert!(
-                $Name::$Var as u8 == $disc,
-                concat!(stringify!($Name), "::", stringify!($Var), " must keep its stored discriminant"),
-            );
-        )+
+        // The on-disk contract, enforced: the table still runs `0..COUNT` in declaration order,
+        // which is exactly what `ALL`, `cycled`, `stepped`, and `from_byte` all assume. Renumber a
+        // row, reorder two, or shift the range and the build stops, instead of a stored byte
+        // quietly decoding to a different value.
+        //
+        // One loop and no per-variant assert: inside a macro, `$Var as u8 == $disc` compares a
+        // value against the very literal that declared it, so it cannot fail. This is the whole
+        // check.
         const _: () = {
             let mut i = 0;
             while i < $Name::COUNT {
