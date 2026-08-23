@@ -8,8 +8,7 @@
 //! re-implemented once per card.
 //!
 //! Here it is stated once. A host fact is **posted** into a named slot; one [`sweep`](CardScheduler::sweep)
-//! scans the screen stack a single time and then lands, rewrites, merges or drops each family
-//! according to the [`POLICY`] table. [`UiRuntime`](crate::ui_runtime::UiRuntime) stays the stack's
+//! lands, rewrites, merges or drops each family according to the [`POLICY`] table. [`UiRuntime`](crate::ui_runtime::UiRuntime) stays the stack's
 //! owner: the scheduler reaches it only through
 //! [`UiRuntime::run_card_sweep`](crate::ui_runtime::UiRuntime::run_card_sweep).
 //!
@@ -19,7 +18,7 @@
 
 use crate::catalog_state::CatalogState;
 use crate::dfu::{DfuFailure, DfuInstallError, DfuScanError, DfuScanReport};
-use crate::screen::{self, MapTransfer, Screen, Stack, WarningFlags, UPLOAD_POPUP_TIMEOUT_MS};
+use crate::screen::{self, MapTransfer, Screen, Stack, WarningFlags};
 
 /// One committed route upload, as [`App::apply_event`](crate::App::apply_event) posts it.
 #[derive(Debug, Clone, Copy)]
@@ -100,33 +99,42 @@ enum Priority {
 struct Policy {
     family: Family,
     priority: Priority,
-    /// `Some` when a landed card of this family auto-closes. The deadline itself lives on the
-    /// screen (it is also what arms the timed wake); this column is what makes the sweep run an
-    /// expiry pass for the family at all.
-    timeout_ms: Option<u32>,
+    /// Whether a charging hold postpones this family — the rule that keeps a host-pushed screen
+    /// from appearing or vanishing under a finger mid-charge.
+    ///
+    /// **False for the DFU landing, and only for it.** Every screen a DFU answer replaces is a
+    /// modal wait that binds no gesture (`DfuCheck`, `DfuProgress` and `DfuInstalling` all return
+    /// [`Transition::None`](crate::screen::Transition) for everything), so there is no hold target
+    /// to protect — and the install-began answer has no next pass to be retried on: the board posts
+    /// it, renders that one frame, and hands the panel to a warm reset that never paints again
+    /// (`obc-fw-nrf54l/src/ride.rs`). Deferring it would latch the animated "Preparing update…"
+    /// spinner onto the MIP for the whole install.
+    defer_on_hold: bool,
 }
 
 /// **The card policy — one row per family.** Read this table, not six reconcilers:
 ///
-/// | Family | Priority | Conflict action | Timeout | Revalidation |
-/// |---|---|---|---|---|
-/// | Passkey | High | replace an open *received* upload popup, then push | none | the desired passkey level is still present |
-/// | Map transfer | High | rewrite the open card in place, never stack | none | the desired transfer state is still present |
-/// | DFU landing | High | replace the expected DFU wait | none | that wait is still on the stack |
-/// | Upload prompt | Low | replace the whole upload family (popups + the manual swap prompt) | 30 s | the durable object still resolves in the catalog |
-/// | Warning | Low | merge the fresh flags into the open card | none | the flags are still unshown this boot |
-/// | Update toast | Low | push once; a second unconsumed result is rejected at post | none | the boot result is still pending |
+/// | Family | Priority | Defers on hold | Conflict action | Timeout | Revalidation |
+/// |---|---|---|---|---|---|
+/// | Passkey | High | yes | replace an open *received* upload popup, then push | none | the desired passkey level is still present |
+/// | Map transfer | High | yes | rewrite the open card in place, never stack | none | the desired transfer state is still present |
+/// | DFU landing | High | **no** | replace the expected DFU wait | none | that wait is still on the stack |
+/// | Upload prompt | Low | yes | replace the whole upload family (popups + the manual swap prompt) | 30 s | the durable object still resolves in the catalog |
+/// | Warning | Low | yes | merge the fresh flags into the open card | none | the flags are still unshown this boot |
+/// | Update toast | Low | yes | push once; a second unconsumed result is rejected at post | none | the boot result is still pending |
 ///
-/// `priority` and `timeout_ms` are what the sweep *reads*. Conflict and revalidation are what each
-/// family's arm below *does* — they need the stack, the catalogs or the flag set, so they are code
-/// rather than data, and each arm names its row.
+/// `priority` and `defer_on_hold` are what the sweep *reads*. Conflict and revalidation are what
+/// each family's arm below *does* — they need the stack, the catalogs or the flag set, so they are
+/// code rather than data, and each arm names its row. The timeout is deliberately **not** a column:
+/// the 30 s deadline lives on the popup screens, which is also what arms the timed wake that gets a
+/// parked device back here at the deadline, and a second copy here could only ever disagree.
 const POLICY: [Policy; 6] = [
-    Policy { family: Family::Passkey, priority: Priority::High, timeout_ms: None },
-    Policy { family: Family::MapTransfer, priority: Priority::High, timeout_ms: None },
-    Policy { family: Family::DfuLanding, priority: Priority::High, timeout_ms: None },
-    Policy { family: Family::Upload, priority: Priority::Low, timeout_ms: Some(UPLOAD_POPUP_TIMEOUT_MS) },
-    Policy { family: Family::Warning, priority: Priority::Low, timeout_ms: None },
-    Policy { family: Family::UpdateToast, priority: Priority::Low, timeout_ms: None },
+    Policy { family: Family::Passkey, priority: Priority::High, defer_on_hold: true },
+    Policy { family: Family::MapTransfer, priority: Priority::High, defer_on_hold: true },
+    Policy { family: Family::DfuLanding, priority: Priority::High, defer_on_hold: false },
+    Policy { family: Family::Upload, priority: Priority::Low, defer_on_hold: true },
+    Policy { family: Family::Warning, priority: Priority::Low, defer_on_hold: true },
+    Policy { family: Family::UpdateToast, priority: Priority::Low, defer_on_hold: true },
 ];
 
 /// The whole pending state is resident on the board, so it stays register-sized per family. 248 B
@@ -143,27 +151,26 @@ const _: () = {
     }
 };
 
-// ==================== the typed card index set ====================
+// ==================== finding a card on the stack ====================
 
 /// Every stack screen a sweep needs to find — the card families themselves plus the three DFU wait
 /// screens a landing replaces. Anything else on the stack is a rider-opened screen the scheduler
 /// does not touch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CardKind {
-    Passkey = 0,
-    MapTransfer = 1,
+    Passkey,
+    MapTransfer,
     /// Any upload-family screen: the three received popups **and** the manual Route-swap prompt,
     /// which an incoming prompt replaces by the same rule.
-    Upload = 2,
-    Warning = 3,
-    DfuCheck = 4,
-    DfuProgress = 5,
-    DfuInstalling = 6,
+    Upload,
+    Warning,
+    DfuCheck,
+    DfuProgress,
+    DfuInstalling,
 }
 
-const KIND_COUNT: usize = 7;
-
-/// Which tracked kind a screen is, if any — the single classification the one stack scan uses.
+/// Which tracked kind a screen is, if any — the one classification every lookup below shares, so
+/// "what counts as an upload popup" is written once.
 fn kind_of(s: &Screen) -> Option<CardKind> {
     Some(match s {
         Screen::Passkey(_) => CardKind::Passkey,
@@ -179,76 +186,24 @@ fn kind_of(s: &Screen) -> Option<CardKind> {
     })
 }
 
-/// Where each tracked kind sits on the stack. Built by **one** scan per sweep and then kept in step
-/// with every mutation the sweep makes — a family never re-scans on its own.
-#[derive(Debug, Clone, Copy)]
-struct CardIndices([Option<u8>; KIND_COUNT]);
-
-impl CardIndices {
-    /// The one stack scan of a sweep: the lowest slot holding each tracked kind.
-    fn scan(stack: &Stack) -> Self {
-        let mut ix = [None; KIND_COUNT];
-        for (i, s) in stack.iter().enumerate() {
-            if let Some(k) = kind_of(s) {
-                let slot = &mut ix[k as usize];
-                if slot.is_none() {
-                    *slot = Some(i as u8);
-                }
-            }
-        }
-        CardIndices(ix)
-    }
-
-    fn get(&self, k: CardKind) -> Option<usize> {
-        self.0[k as usize].map(usize::from)
-    }
-
-    fn holds(&self, k: CardKind) -> bool {
-        self.0[k as usize].is_some()
-    }
-
-    /// Re-point the set after slot `at` left the stack: that slot's kind is gone, everything above
-    /// it slid down one.
-    fn removed(&mut self, at: usize) {
-        for slot in self.0.iter_mut() {
-            match *slot {
-                Some(i) if usize::from(i) == at => *slot = None,
-                Some(i) if usize::from(i) > at => *slot = Some(i - 1),
-                _ => {}
-            }
-        }
-    }
-
-    /// Re-point the set after slot `at` became `kind` (or an untracked screen).
-    fn retarget(&mut self, at: usize, kind: Option<CardKind>) {
-        for slot in self.0.iter_mut() {
-            if *slot == Some(at as u8) {
-                *slot = None;
-            }
-        }
-        if let Some(k) = kind {
-            self.0[k as usize] = Some(at as u8);
-        }
-    }
+/// Where a tracked kind sits on the stack, lowest slot first. Every arm reads the stack through
+/// this rather than through a cached index set: the stack is at most
+/// [`MAX_DEPTH`](crate::screen::MAX_DEPTH) slots, so a lookup is a handful of discriminant compares,
+/// and re-reading means no arm can ever act on a stale picture of a stack an earlier arm just moved.
+fn find(stack: &Stack, kind: CardKind) -> Option<usize> {
+    stack.iter().position(|s| kind_of(s) == Some(kind))
 }
 
-/// The **single door** onto the stack for every scheduler card: rewrite `at` when the family's
-/// conflict rule targets an open slot, otherwise push. The one overflow assert — loud in debug, a
-/// silent no-op in release (the card just doesn't open, exactly as `screen::apply` behaves).
-fn land(stack: &mut Stack, idx: &mut CardIndices, at: Option<usize>, screen: Screen) {
-    let kind = kind_of(&screen);
+/// The **single landing door** for every scheduler card: rewrite `at` when the family's conflict
+/// rule targets an open slot, otherwise push. The one overflow assert — loud in debug, a silent
+/// no-op in release (the card just doesn't open, exactly as `screen::apply` behaves). Removals are
+/// each family's own `stack.remove`; this is where cards arrive, not where they leave.
+fn land(stack: &mut Stack, at: Option<usize>, screen: Screen) {
     match at {
-        Some(i) => {
-            stack[i] = screen;
-            idx.retarget(i, kind);
-        }
+        Some(i) => stack[i] = screen,
         None => {
-            let at = stack.len();
             let r = stack.push(screen);
             debug_assert!(r.is_ok(), "screen stack overflow — raise MAX_DEPTH");
-            if r.is_ok() {
-                idx.retarget(at, kind);
-            }
         }
     }
 }
@@ -282,7 +237,8 @@ fn upload_expired(s: &Screen, now_ms: u32) -> bool {
 pub(crate) struct CardCtx<'a> {
     /// The map plane's clock — the open anchor a landing popup stamps, and the expiry `now`.
     pub(crate) now_ms: u32,
-    /// A hold is charging on either plane: the sweep makes no stack mutation at all this pass.
+    /// A hold is charging on either plane. Suspends the stack-wide steps and every family whose
+    /// row sets [`defer_on_hold`](Policy::defer_on_hold).
     pub(crate) hold_charging: bool,
     /// Resolves a pending upload's durable id at delivery time.
     pub(crate) catalogs: &'a CatalogState,
@@ -354,8 +310,8 @@ impl CardScheduler {
     }
 
     /// Post this boot's one-time update verdict. A second result arriving before the first is shown
-    /// is **rejected** — the board produces at most one, and a queue of boot verdicts is a thing
-    /// that has never happened.
+    /// is **rejected** — the board's boot-outcome reconcile yields at most one, and a queue of boot
+    /// verdicts is a thing that has never happened.
     pub(crate) fn post_update(&mut self, result: BootUpdate) {
         if self.update.is_none() {
             self.update = Some(result);
@@ -372,34 +328,34 @@ impl CardScheduler {
     /// The per-pass sweep — the scheduler's **only** stack mutation. Returns whether anything
     /// visible changed, so the caller sets the map dirty exactly once.
     ///
-    /// 1. a charging hold suspends every mutation (a host-pushed screen must never appear or vanish
-    ///    under a finger mid-charge; the slots are re-fed or stay pending, so this is "try again
-    ///    next pass");
-    /// 2. one stack scan builds the typed index set;
-    /// 3. a desired level that vanished removes its card;
-    /// 4. terminal replacements and deliveries happen together, in [`POLICY`] order — the `High`
-    ///    rows (the DFU landing among them) before the `Low` ones, so a card landing this pass
-    ///    already outranks a low fact in the same pass;
-    /// 5. an upload card past its deadline closes (timeout = dismiss);
-    /// 6. the caller dirties the map once.
+    /// 1. a charging hold suspends the two stack-wide steps below and every family whose row sets
+    ///    [`defer_on_hold`](Policy::defer_on_hold) (the slots are re-fed or stay pending, so a
+    ///    deferral is simply "try again next pass");
+    /// 2. a desired level that vanished removes its card;
+    /// 3. every family delivers in [`POLICY`] order — the `High` rows (the DFU landing's terminal
+    ///    replacement among them) before the `Low` ones, so a card landing this pass already
+    ///    outranks a low fact in the same pass;
+    /// 4. an upload card past its deadline closes (timeout = dismiss);
+    /// 5. the caller dirties the map once.
     ///
-    /// The typed index set is updated in place after each mutation — no family ever re-scans.
+    /// Each arm reads the stack through [`find`], so it always sees what the arm before it did.
     pub(crate) fn sweep(&mut self, stack: &mut Stack, ctx: &CardCtx) -> bool {
-        if ctx.hold_charging {
-            return false;
+        let mut changed = false;
+        if !ctx.hold_charging {
+            changed |= self.remove_vanished(stack);
         }
-        let mut idx = CardIndices::scan(stack);
-        let mut changed = self.remove_vanished(stack, &mut idx);
         for row in POLICY.iter() {
-            changed |= self.deliver(row, stack, &mut idx, ctx);
+            changed |= self.deliver(row, stack, ctx);
         }
-        changed |= expire_upload(stack, &mut idx, ctx.now_ms);
+        if !ctx.hold_charging {
+            changed |= expire_upload(stack, ctx.now_ms);
+        }
         changed
     }
 
-    /// Step 3 — the two **level** families: a level that went `None` takes its card off the stack
+    /// Step 2 — the two **level** families: a level that went `None` takes its card off the stack
     /// wherever it ended up (the rider may not have touched anything).
-    fn remove_vanished(&mut self, stack: &mut Stack, idx: &mut CardIndices) -> bool {
+    fn remove_vanished(&mut self, stack: &mut Stack) -> bool {
         let mut changed = false;
         for (level_present, kind) in
             [(self.passkey.is_some(), CardKind::Passkey), (self.map_transfer.is_some(), CardKind::MapTransfer)]
@@ -407,55 +363,56 @@ impl CardScheduler {
             if level_present {
                 continue;
             }
-            if let Some(i) = idx.get(kind) {
+            if let Some(i) = find(stack, kind) {
                 let _ = stack.remove(i);
-                idx.removed(i);
                 changed = true;
             }
         }
         changed
     }
 
-    /// Step 4 — one family's delivery (or terminal replacement), per its policy row.
-    fn deliver(&mut self, row: &Policy, stack: &mut Stack, idx: &mut CardIndices, ctx: &CardCtx) -> bool {
+    /// Step 3 — one family's delivery (or terminal replacement), per its policy row.
+    fn deliver(&mut self, row: &Policy, stack: &mut Stack, ctx: &CardCtx) -> bool {
+        if row.defer_on_hold && ctx.hold_charging {
+            return false;
+        }
         // The rank gate: a `Low` family never covers the passkey card. What it does instead is its
         // own row's business — the upload prompt is *dropped* (advisory: the object is in the menu
         // either way), the warning and the toast stay pending for a later pass.
-        let outranked = row.priority == Priority::Low && idx.holds(CardKind::Passkey);
+        let outranked = row.priority == Priority::Low && find(stack, CardKind::Passkey).is_some();
         match row.family {
-            Family::Passkey => self.deliver_passkey(stack, idx),
-            Family::MapTransfer => self.deliver_map_transfer(stack, idx),
-            Family::DfuLanding => self.deliver_dfu(stack, idx),
-            Family::Upload => self.deliver_upload(stack, idx, ctx, outranked),
-            Family::Warning => self.deliver_warning(stack, idx, outranked),
-            Family::UpdateToast => self.deliver_update(stack, idx, outranked),
+            Family::Passkey => self.deliver_passkey(stack),
+            Family::MapTransfer => self.deliver_map_transfer(stack),
+            Family::DfuLanding => self.deliver_dfu(stack),
+            Family::Upload => self.deliver_upload(stack, ctx, outranked),
+            Family::Warning => self.deliver_warning(stack, outranked),
+            Family::UpdateToast => self.deliver_update(stack, outranked),
         }
     }
 
     /// Passkey — conflict: an open **received** popup is replaced, not stacked over (it is advisory;
     /// the route is in the Route menu either way). The rider's own menu-opened swap prompt stays put
     /// under the card.
-    fn deliver_passkey(&mut self, stack: &mut Stack, idx: &mut CardIndices) -> bool {
+    fn deliver_passkey(&mut self, stack: &mut Stack) -> bool {
         let Some(passkey) = self.passkey else { return false };
-        if idx.holds(CardKind::Passkey) {
+        if find(stack, CardKind::Passkey).is_some() {
             return false; // the card already matches the level — idempotent, so no re-dirty
         }
-        if let Some(i) = idx.get(CardKind::Upload) {
+        if let Some(i) = find(stack, CardKind::Upload) {
             if is_received_popup(&stack[i]) {
                 let _ = stack.remove(i);
-                idx.removed(i);
             }
         }
-        land(stack, idx, None, Screen::Passkey(screen::PasskeyScreen::new(passkey)));
+        land(stack, None, Screen::Passkey(screen::PasskeyScreen::new(passkey)));
         true
     }
 
     /// Map transfer — conflict: the open card is **rewritten in place**, never stacked. An unchanged
     /// re-feed (the steady state, fed every pass) reports no change, so a multi-minute write does
     /// not repaint the panel continuously.
-    fn deliver_map_transfer(&mut self, stack: &mut Stack, idx: &mut CardIndices) -> bool {
+    fn deliver_map_transfer(&mut self, stack: &mut Stack) -> bool {
         let Some(state) = self.map_transfer else { return false };
-        match idx.get(CardKind::MapTransfer) {
+        match find(stack, CardKind::MapTransfer) {
             Some(i) => {
                 let Screen::MapTransfer(card) = &mut stack[i] else { return false };
                 if card.state() == state {
@@ -465,7 +422,7 @@ impl CardScheduler {
                 true
             }
             None => {
-                land(stack, idx, None, Screen::MapTransfer(screen::MapTransferScreen::new(state)));
+                land(stack, None, Screen::MapTransfer(screen::MapTransferScreen::new(state)));
                 true
             }
         }
@@ -474,12 +431,12 @@ impl CardScheduler {
     /// DFU landing — conflict: the answer **replaces the wait it belongs to**. Revalidation: that
     /// wait must still be on the stack, or the answer is dropped (the rider pressed Back). The
     /// install-began card is the one exception the flow needs: with no spinner up — the `dfu-install`
-    /// debug arm — it pushes.
-    fn deliver_dfu(&mut self, stack: &mut Stack, idx: &mut CardIndices) -> bool {
+    /// debug arm — it pushes. This row never defers on a hold; see [`Policy::defer_on_hold`].
+    fn deliver_dfu(&mut self, stack: &mut Stack) -> bool {
         let Some(landing) = self.dfu.take() else { return false };
         let (at, screen) = match landing {
             DfuLanding::Scanned(result) => {
-                let Some(i) = idx.get(CardKind::DfuCheck) else { return false };
+                let Some(i) = find(stack, CardKind::DfuCheck) else { return false };
                 let card = match result {
                     Ok(report) => Screen::DfuConfirm(screen::DfuConfirmScreen::new(report)),
                     Err(e) => Screen::DfuError(screen::DfuErrorScreen::new(e)),
@@ -487,16 +444,19 @@ impl CardScheduler {
                 (Some(i), card)
             }
             DfuLanding::InstallBegan => {
-                (idx.get(CardKind::DfuProgress), Screen::DfuInstalling(screen::DfuInstallingScreen::new()))
+                (find(stack, CardKind::DfuProgress), Screen::DfuInstalling(screen::DfuInstallingScreen::new()))
             }
+            // Whichever install wait sits lower, exactly as the pre-scheduler `position` did: the
+            // spinner, or the terminal card that already replaced it.
             DfuLanding::InstallFailed(reason) => {
-                let Some(i) = idx.get(CardKind::DfuProgress).or_else(|| idx.get(CardKind::DfuInstalling)) else {
-                    return false;
-                };
+                let wait = stack
+                    .iter()
+                    .position(|s| matches!(kind_of(s), Some(CardKind::DfuProgress | CardKind::DfuInstalling)));
+                let Some(i) = wait else { return false };
                 (Some(i), Screen::DfuError(screen::DfuErrorScreen::new_install(reason)))
             }
         };
-        land(stack, idx, at, screen);
+        land(stack, at, screen);
         true
     }
 
@@ -504,7 +464,7 @@ impl CardScheduler {
     /// received popup, or the manual swap prompt), so consecutive uploads never stack and selection
     /// resets with the fresh screen. Revalidation: the durable id must still resolve in the
     /// (already rescanned) catalog, or the advisory prompt is dropped entirely.
-    fn deliver_upload(&mut self, stack: &mut Stack, idx: &mut CardIndices, ctx: &CardCtx, outranked: bool) -> bool {
+    fn deliver_upload(&mut self, stack: &mut Stack, ctx: &CardCtx, outranked: bool) -> bool {
         let Some(ev) = self.upload else { return false };
         self.upload = None; // delivered or dropped — never queued behind the passkey card
         if outranked {
@@ -531,14 +491,15 @@ impl CardScheduler {
                 Screen::TripReceived(screen::TripReceivedScreen::new(id, ctx.now_ms))
             }
         };
-        land(stack, idx, idx.get(CardKind::Upload), card);
+        let at = find(stack, CardKind::Upload);
+        land(stack, at, card);
         true
     }
 
     /// Warning — conflict: fresh flags **merge into the open card** rather than stacking a second.
     /// Revalidation: only the not-yet-shown subset is surfaced, so an already-acknowledged flag
     /// re-raised each pass stays quiet.
-    fn deliver_warning(&mut self, stack: &mut Stack, idx: &mut CardIndices, outranked: bool) -> bool {
+    fn deliver_warning(&mut self, stack: &mut Stack, outranked: bool) -> bool {
         let fresh = self.warnings & !self.warned;
         if fresh.is_empty() {
             self.warnings = WarningFlags::NONE; // nothing new — drop any stale re-raise
@@ -549,20 +510,20 @@ impl CardScheduler {
         }
         self.warned |= fresh;
         self.warnings = WarningFlags::NONE;
-        match idx.get(CardKind::Warning) {
+        match find(stack, CardKind::Warning) {
             Some(i) => {
                 if let Screen::Warning(s) = &mut stack[i] {
                     s.add(fresh);
                 }
             }
-            None => land(stack, idx, None, Screen::Warning(screen::WarningScreen::new(fresh))),
+            None => land(stack, None, Screen::Warning(screen::WarningScreen::new(fresh))),
         }
         true
     }
 
     /// Update toast — conflict: **pushed once**, over whatever is up. Revalidation: the slot itself
     /// is the fact, and taking it is what makes the card show once per boot.
-    fn deliver_update(&mut self, stack: &mut Stack, idx: &mut CardIndices, outranked: bool) -> bool {
+    fn deliver_update(&mut self, stack: &mut Stack, outranked: bool) -> bool {
         if outranked {
             return false;
         }
@@ -571,25 +532,20 @@ impl CardScheduler {
             BootUpdate::Confirmed(version) => Screen::DfuUpdated(screen::DfuUpdatedScreen::new(&version)),
             BootUpdate::Failed(why, staged) => Screen::DfuFailed(screen::DfuFailedScreen::new(why, staged.as_deref())),
         };
-        land(stack, idx, None, card);
+        land(stack, None, card);
         true
     }
 }
 
-/// Step 5 — **timeout = dismiss**: an upload card past its deadline is removed exactly as Back would
-/// remove it, nothing else changes. Runs only because the upload row is the one carrying a
-/// [`timeout_ms`](Policy::timeout_ms); the deadline itself is the screen's, which is also what armed
+/// Step 4 — **timeout = dismiss**: an upload card past its deadline is removed exactly as Back would
+/// remove it, nothing else changes. The deadline itself is the screen's, which is also what armed
 /// the timed wake that got a parked device to this line.
-fn expire_upload(stack: &mut Stack, idx: &mut CardIndices, now_ms: u32) -> bool {
-    if POLICY[Family::Upload as usize].timeout_ms.is_none() {
-        return false;
-    }
-    let Some(i) = idx.get(CardKind::Upload) else { return false };
+fn expire_upload(stack: &mut Stack, now_ms: u32) -> bool {
+    let Some(i) = find(stack, CardKind::Upload) else { return false };
     if !upload_expired(&stack[i], now_ms) {
         return false;
     }
     let _ = stack.remove(i);
-    idx.removed(i);
     true
 }
 
@@ -836,11 +792,11 @@ mod tests {
 
     // --- the hold rule, once for every family ----------------------------------------------------
 
-    /// Rule 1 of the sweep: **no scheduler stack mutation while a hold charges**, whatever the
-    /// family. Each fact stays in its slot and lands on the first pass after the hold settles —
-    /// this is the rule the nine reconcilers each re-implemented, now tested once.
+    /// **No scheduler stack mutation while a hold charges** — the rule the nine reconcilers each
+    /// re-implemented, now stated once and tested once. Each fact stays in its slot and lands on the
+    /// first pass after the hold settles.
     #[test]
-    fn a_charging_hold_delays_every_family() {
+    fn a_charging_hold_delays_every_deferring_family() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         app.set_hold_progress(0.5);
 
@@ -851,21 +807,95 @@ mod tests {
         assert!(matches!(app.top_screen(), Screen::Home(_)), "nothing lands mid-hold");
         assert_eq!(app.debug_stack_len(), 1);
 
-        // A terminal DFU answer is deferred by the same rule — the wait it belongs to stays up.
-        let _ = app.ui.stack.push(Screen::DfuProgress(crate::screen::DfuProgressScreen::new()));
-        app.apply_event(crate::HostEvent::DfuInstallBegan);
-        assert!(matches!(app.top_screen(), Screen::DfuProgress(_)), "the answer waits for the hold");
-
         // The hold settles: one sweep lands every deferred High fact.
         app.set_hold_progress(0.0);
         app.advance_animations(InputClock(100));
         let up = |app: &App, f: fn(&Screen) -> bool| app.ui.stack.iter().any(f);
         assert!(up(&app, |s| matches!(s, Screen::Passkey(_))), "the passkey card landed");
         assert!(up(&app, |s| matches!(s, Screen::MapTransfer(_))), "the transfer card landed");
-        assert!(up(&app, |s| matches!(s, Screen::DfuInstalling(_))), "the DFU answer landed in its wait");
-        assert!(!up(&app, |s| matches!(s, Screen::DfuProgress(_))), "…replacing it, never stacking");
         // The two Low facts are still pending — they never cover the pairing code.
         assert!(!up(&app, |s| matches!(s, Screen::Warning(_) | Screen::DfuUpdated(_))), "Low waits behind High");
+    }
+
+    /// The **DFU landing is the one row that does not defer**, and it must not: it replaces modal
+    /// waits that bind no gesture, so there is no hold target to protect — and the install-began
+    /// answer has no next pass to be retried on. The board posts it, renders that single frame, and
+    /// hands the panel to a warm reset that never paints again, so a deferral would latch the
+    /// animated "Preparing update…" spinner onto the MIP for the whole install.
+    #[test]
+    fn a_dfu_landing_delivers_under_a_charging_hold() {
+        use crate::dfu::{DfuInstallError, DfuScanReport};
+        let mk = |v: &str| {
+            let mut s = heapless::String::new();
+            let _ = s.push_str(v);
+            s
+        };
+
+        // The board's arm frame: a button is physically down when the install begins.
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let _ = app.ui.stack.push(Screen::DfuProgress(crate::screen::DfuProgressScreen::new()));
+        app.set_hold_progress(0.5);
+        app.apply_event(crate::HostEvent::DfuInstallBegan);
+        assert!(matches!(app.top_screen(), Screen::DfuInstalling(_)), "the terminal frame lands under the hold");
+        assert!(!app.ui.stack.iter().any(|s| matches!(s, Screen::DfuProgress(_))), "the spinner is gone");
+
+        // The scan answer and the failure landing share the row, so they share the rule.
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let _ = app.ui.stack.push(Screen::DfuCheck(crate::screen::DfuCheckScreen::new()));
+        app.set_hold_progress(0.9);
+        let report = DfuScanReport { installed: mk("v1"), staged: mk("v2"), first_install: false };
+        app.apply_event(crate::HostEvent::DfuScanned(Ok(report)));
+        assert!(matches!(app.top_screen(), Screen::DfuConfirm(_)), "the scan answer lands under the hold");
+
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let _ = app.ui.stack.push(Screen::DfuProgress(crate::screen::DfuProgressScreen::new()));
+        app.set_hold_progress(0.3);
+        app.apply_event(crate::HostEvent::DfuInstallFailed(DfuInstallError::NoCard));
+        assert!(matches!(app.top_screen(), Screen::DfuError(_)), "the failure lands under the hold");
+    }
+
+    /// The boot-verdict slot's posting rule: **a second unconsumed result is rejected**, first
+    /// posted wins. The two independent `update_confirmed` / `update_failed` fields became one
+    /// slot, so this is what stops a late verdict from overwriting — or stacking a second card on —
+    /// one the rider has not seen yet. The board's boot-outcome reconcile yields at most one, so
+    /// nothing on device depends on which of the two arrives; the rule is what makes that explicit.
+    #[test]
+    fn a_second_unconsumed_boot_verdict_is_rejected() {
+        let cards = |app: &App| {
+            app.ui.stack.iter().filter(|s| matches!(s, Screen::DfuUpdated(_) | Screen::DfuFailed(_))).count()
+        };
+        let fail = || crate::HostEvent::UpdateFailed {
+            why: crate::dfu::DfuFailure::Reverted,
+            staged: Some(crate::dfu::clamp("v2.0.0-0-gccc")),
+        };
+
+        // A hold keeps the first verdict unconsumed while the others arrive.
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_hold_progress(0.5);
+        app.apply_event(crate::HostEvent::UpdateConfirmed(crate::dfu::clamp("v1.0.0-0-gaaa")));
+        app.apply_event(fail());
+        app.set_hold_progress(0.0);
+        app.advance_animations(InputClock(100));
+        assert_eq!(cards(&app), 1, "one card, never two");
+        assert!(matches!(app.top_screen(), Screen::DfuUpdated(_)), "the first verdict owns the slot");
+
+        // Symmetric the other way round: a confirm arriving behind a failure is rejected too.
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_hold_progress(0.5);
+        app.apply_event(fail());
+        app.apply_event(crate::HostEvent::UpdateConfirmed(crate::dfu::clamp("v1.0.0-0-gaaa")));
+        app.set_hold_progress(0.0);
+        app.advance_animations(InputClock(100));
+        assert_eq!(cards(&app), 1);
+        match app.top_screen() {
+            Screen::DfuFailed(card) => assert_eq!(card.why(), crate::dfu::DfuFailure::Reverted),
+            _ => panic!("the first verdict owns the slot"),
+        }
+
+        // Consumed, the slot is free again — a later boot verdict is not locked out for good.
+        app.ui.stack.pop();
+        app.apply_event(crate::HostEvent::UpdateConfirmed(crate::dfu::clamp("v3.0.0-0-gddd")));
+        assert!(matches!(app.top_screen(), Screen::DfuUpdated(_)), "the taken slot accepts the next fact");
     }
 
     // --- rank: the passkey card outranks the advisory families ----------------------------------

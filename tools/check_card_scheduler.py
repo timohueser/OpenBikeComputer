@@ -37,13 +37,18 @@ OWNED = [
 
 # Where building one is legitimate:
 #   * the scheduler itself — it is the one that lands them;
-#   * `firmware/obc-app/src/screen/` — the cards' own definitions and their draw tests;
 #   * test harnesses and integration tests, which stage a stack to exercise something else.
-# Deliberately **not** exempt: `RouteSwapScreen::new` (the rider's own menu-opened swap prompt) is a
-# rider-opened screen, so it is not on the list at all and any screen may open it.
+#
+# `firmware/obc-app/src/screen/` is deliberately **not** exempt, even though it defines these cards:
+# it is where every `Transition::Push` in the codebase is authored, so a screen's `handle()` pushing
+# a scheduler-owned card is the single most plausible way this invariant breaks. The cards' own
+# constructor uses there all sit below their file's `#[cfg(test)]` gate, which the scan already
+# honours, so covering the directory costs nothing.
+#
+# Deliberately not on the banned list at all: `RouteSwapScreen::new` (the rider's own menu-opened
+# swap prompt) is a rider-opened screen, so any screen may open it.
 ALLOWED_PATHS = (
     Path("firmware/obc-app/src/card_scheduler.rs"),
-    Path("firmware/obc-app/src/screen"),
     Path("firmware/obc-app/src/harness"),
     Path("firmware/obc-app/tests"),
 )
@@ -67,6 +72,10 @@ def main() -> int:
         lines = path.read_text(encoding="utf-8").splitlines()
         gate = next((i for i, line in enumerate(lines) if line.strip() == TEST_GATE), len(lines))
         for line_no, line in enumerate(lines[:gate], 1):
+            # A comment is prose, not a construction: intra-doc links such as
+            # `[`received`](RouteSwapScreen::received)` name a constructor without calling it.
+            if line.lstrip().startswith("//"):
+                continue
             for owned in OWNED:
                 match = owned.search(line)
                 if match:
