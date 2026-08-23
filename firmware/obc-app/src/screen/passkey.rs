@@ -39,6 +39,13 @@ impl PasskeyScreen {
         PasskeyScreen { passkey }
     }
 
+    /// The code the card is currently showing — how the card scheduler decides whether a re-fed
+    /// passkey level is a change worth rewriting the card for (the map-transfer card's `state()`
+    /// rule, for the same reason: a level family must never leave a stale value on glass).
+    pub(crate) fn passkey(&self) -> u32 {
+        self.passkey
+    }
+
     /// Modal + time-boxed: the card swallows every gesture so pairing can't be dismissed by input.
     /// It closes only when the host clears the seam's passkey (see [`App::set_ble_status`]).
     pub fn handle(&mut self, _g: Gesture, _cx: &mut Ctx) -> Transition {
