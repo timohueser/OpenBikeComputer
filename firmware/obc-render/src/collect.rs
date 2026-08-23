@@ -266,6 +266,10 @@ impl FrameScratch {
         // The direct attempt is deliberately all-or-nothing. Discard its feature accounting and
         // restore clean frame buffers before the priority-preserving fallback. Source/cache timing
         // around this method still includes the real cost of the failed attempt.
+        //
+        // Its *leaf* accounting is not discarded: the abandoned walk really visited those leaves,
+        // so `chunks_visited` carries it forward and pass A accumulates its own walk on top.
+        stats.chunks_visited = direct_stats.chunks_visited;
         self.frame_points.clear();
         self.frame_ring_lens.clear();
         self.slots.clear();
@@ -393,7 +397,7 @@ impl FrameScratch {
             stats.feature_decode_capacity_drops.saturating_add(report.capacity_dropped);
         stats.malformed_features = stats.malformed_features.saturating_add(report.malformed_features);
         record_read_failures(stats, report.read_failures);
-        stats.chunks_visited = report.chunks_visited;
+        stats.chunks_visited += report.chunks_visited;
         if failed {
             return None;
         }
@@ -514,7 +518,7 @@ impl FrameScratch {
             stats.feature_decode_capacity_drops.saturating_add(report.capacity_dropped);
         stats.malformed_features = stats.malformed_features.saturating_add(report.malformed_features);
         record_read_failures(stats, report.read_failures);
-        stats.chunks_visited = report.chunks_visited;
+        stats.chunks_visited += report.chunks_visited;
         frame_points.clear();
         frame_ring_lens.clear();
         candidates

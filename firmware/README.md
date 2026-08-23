@@ -143,25 +143,30 @@ cargo test -p obc-pack    # just the packer (fixtures under builder/tests/corpus
 
 `cargo test` does **not** touch the excluded board crate.
 
-### Render benchmark + pixel-hash tripwire
+### Render benchmark + hash and read-counter gate
 
 `obc-bench` renders seven fixed scenes (riding / mid / overview × north-up /
 rotated, plus route) through the real reader → renderer pipeline over a deterministic
-fixture and prints per-stage timings plus a frame hash per scene. CI re-renders
-them and fails if any hash drifts from the committed golden file — timings are
-printed but never gated.
+fixture and prints per-stage timings, a frame hash and the map read path's counters
+per scene. `--check` re-runs those scenes **and** the nine route-corridor snapshot
+cases, and fails if any frame hash or any read counter — leaves visited, chunk cache
+hits/misses, SD reads, bytes read — drifts from `host/obc-bench/golden.txt`. The
+counters are what catch a cache change that regresses the hit rate while leaving
+every pixel identical. Timings are printed but never gated.
 
 ```sh
-cargo run -p obc-bench --release                                  # the timing/hash table
-cargo run -p obc-bench --release -- --check host/obc-bench/hashes.txt  # what CI runs
+cargo run -p obc-bench --release                                  # the timing/hash/counter table
+cargo run -p obc-bench --release -- --check host/obc-bench/golden.txt  # what CI runs
 cargo run -p obc-bench --release -- --repeat 9                    # stable local timing sample
+cargo run -p obc-bench --release -- --corridor                    # the corridor matrix alone
 ```
 
-A pure refactor must leave the hashes untouched. An **intentional** rendering
-change regenerates the golden file in the same PR (that's the review signal):
+A pure refactor must leave the golden file untouched. An **intentional** rendering
+or cache change regenerates it in the same PR, with the reason stated (that's the
+review signal):
 
 ```sh
-cargo run -p obc-bench --release -- --write-hashes host/obc-bench/hashes.txt
+cargo run -p obc-bench --release -- --write-golden host/obc-bench/golden.txt
 ```
 
 One-off runs against a real map:

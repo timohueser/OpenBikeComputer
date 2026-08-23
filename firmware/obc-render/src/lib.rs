@@ -310,8 +310,11 @@ fn diagnostics<S: MapScene>(scene: &S, stats: &mut RenderStats, fallback: Diagno
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RenderStats {
     pub lod: usize,
-    /// Quadtree leaves overlapping the viewport this frame (uncapped). Counted by the successful
-    /// direct source walk or the stub-select fallback's pass A (see [`collect`](crate::collect)).
+    /// Quadtree leaves overlapping the viewport this frame (uncapped), summed over **every**
+    /// candidate walk the frame performed. A frame that fits walks once, directly. A saturated one
+    /// abandons that walk and re-walks it as the stub-select fallback's pass A, so its leaves count
+    /// for both — the honest read cost (see [`collect`](crate::collect)). Pass B adds none: it
+    /// refetches winners, not leaves, and reports `chunks_refetched`.
     pub chunks_visited: usize,
     pub features_tried: usize,
     pub features_drawn: usize,
