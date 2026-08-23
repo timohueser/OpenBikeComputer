@@ -9,6 +9,7 @@
 
 use crate::i18n::{t, Msg};
 use crate::retention::RideRetention;
+use crate::settings_enum::setting_enum;
 use crate::stat_fields::{StatFieldList, MAX_STAT_FIELDS};
 
 pub(crate) use obc_ports::DateTime;
@@ -83,15 +84,20 @@ pub(crate) fn month_name(date: DateTime, lang: Language) -> &'static str {
     t(MONTHS[(date.month.clamp(1, 12) - 1) as usize], lang)
 }
 
-/// Measurement system for the ride readouts. Re-captions and re-scales the
-/// [`Statistics`](crate::screen) tiles and the off-route distance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Units {
-    /// km / km·h⁻¹ / m — the default.
-    #[default]
-    Metric,
-    /// mi / mi·h⁻¹ / ft.
-    Imperial,
+setting_enum! {
+    /// Measurement system for the ride readouts. Re-captions and re-scales the
+    /// [`Statistics`](crate::screen) tiles and the off-route distance.
+    ///
+    /// [`name`](Units::name) is word-bearing, so it routes through the catalog (epic #602); the
+    /// symbol captions ([`speed_label`](Units::speed_label) and friends) stay
+    /// language-independent.
+    pub enum Units {
+        /// km / km·h⁻¹ / m — the default.
+        Metric = 0, key Msg::UnitsMetric;
+        /// mi / mi·h⁻¹ / ft.
+        Imperial = 1, key Msg::UnitsImperial;
+    }
+    default Metric;
 }
 
 /// The device-name byte cap — the BLE Config name field (matches the OBCR route-name cap).
@@ -227,221 +233,105 @@ impl Units {
             "m"
         }
     }
-
-    /// The label for the Units screen's value row (`Metric` / `Imperial`), in the UI `lang`
-    /// (epic #602). Word-bearing, so it routes through the catalog; the symbol labels
-    /// ([`speed_label`](Units::speed_label) etc.) stay language-independent.
-    #[inline]
-    pub const fn name(self, lang: Language) -> &'static str {
-        if self.is_imperial() {
-            t(Msg::UnitsImperial, lang)
-        } else {
-            t(Msg::UnitsMetric, lang)
-        }
-    }
-
-    /// Flip to the other system — the Units screen's one action.
-    #[inline]
-    pub const fn toggled(self) -> Self {
-        if self.is_imperial() {
-            Units::Metric
-        } else {
-            Units::Imperial
-        }
-    }
 }
 
-/// How the Climb screen (epic #506) is reached. A device-only setting (the Stats settings screen
-/// cycles it), persisted in the settings codec next to [`ble_enabled`](Settings::ble_enabled).
-///
-/// The discriminants are a **stable on-disk contract** — appended, never renumbered — so a stored
-/// byte always decodes to the same mode (an unknown byte sanitises to the default, [`Auto`]).
-///
-/// [`Auto`]: ClimbMode::Auto
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum ClimbMode {
-    /// The Climb screen is disabled: it's kept out of the Back-cycle entirely (Map ↔ Statistics
-    /// only) and never auto-shown.
-    Off = 0,
-    /// The Climb screen is in the Back-cycle when a climb is active, but the device never switches
-    /// to it on its own — the rider reaches it by cycling Back.
-    Manual = 1,
-    /// The Climb screen is in the Back-cycle **and** the device auto-switches to it on climb entry
-    /// (from a riding view) and auto-returns to the Map on the crest — the headline behavior.
-    Auto = 2,
-}
-
-impl Default for ClimbMode {
+setting_enum! {
+    /// How the Climb screen (epic #506) is reached. A device-only setting (the Stats settings screen
+    /// cycles it), persisted in the settings codec next to [`ble_enabled`](Settings::ble_enabled).
+    ///
+    /// The discriminants are a **stable on-disk contract** — appended, never renumbered — so a stored
+    /// byte always decodes to the same mode (an unknown byte sanitises to the default, [`Auto`]).
+    ///
+    /// [`Auto`]: ClimbMode::Auto
+    pub enum ClimbMode {
+        /// The Climb screen is disabled: it's kept out of the Back-cycle entirely (Map ↔ Statistics
+        /// only) and never auto-shown.
+        Off = 0, key Msg::ClimbModeOff;
+        /// The Climb screen is in the Back-cycle when a climb is active, but the device never switches
+        /// to it on its own — the rider reaches it by cycling Back.
+        Manual = 1, key Msg::ClimbModeManual;
+        /// The Climb screen is in the Back-cycle **and** the device auto-switches to it on climb entry
+        /// (from a riding view) and auto-returns to the Map on the crest — the headline behavior.
+        Auto = 2, key Msg::ClimbModeAuto;
+    }
     /// **Auto** out of the box — the climb panel is self-discovering (it shows itself on the first
     /// climb). Easily changed here if a quieter default is wanted.
-    fn default() -> Self {
-        ClimbMode::Auto
-    }
+    default Auto;
 }
 
 impl ClimbMode {
-    /// The label for the Stats screen's Climb-panel row (`Off` / `Manual` / `Auto`), in the UI
-    /// `lang` (epic #602).
-    #[inline]
-    pub const fn name(self, lang: Language) -> &'static str {
-        match self {
-            ClimbMode::Off => t(Msg::ClimbModeOff, lang),
-            ClimbMode::Manual => t(Msg::ClimbModeManual, lang),
-            ClimbMode::Auto => t(Msg::ClimbModeAuto, lang),
-        }
-    }
-
     /// Whether the Climb screen belongs in the Back-cycle at all — false only for [`Off`](ClimbMode::Off).
     #[inline]
     pub const fn is_on(self) -> bool {
         !matches!(self, ClimbMode::Off)
     }
-
-    /// The next mode in the Off → Manual → Auto → Off ring — the Stats row's one action (a step or
-    /// press steps it).
-    #[inline]
-    pub const fn cycled(self) -> Self {
-        match self {
-            ClimbMode::Off => ClimbMode::Manual,
-            ClimbMode::Manual => ClimbMode::Auto,
-            ClimbMode::Auto => ClimbMode::Off,
-        }
-    }
-
-    /// Rebuild from a stored byte, sanitising an unknown value to the default ([`Auto`](ClimbMode::Auto))
-    /// — the decode-side clamp, exactly like the other codec fields.
-    #[inline]
-    fn from_byte(b: u8) -> Self {
-        match b {
-            0 => ClimbMode::Off,
-            1 => ClimbMode::Manual,
-            2 => ClimbMode::Auto,
-            _ => ClimbMode::default(),
-        }
-    }
 }
 
-/// Whether — and when — the Map's bottom-centre **waypoint chip** (epic #523) is shown: the calm
-/// `◆ NAME  <dist>` pill counting the along-route distance to the next named waypoint ahead. A
-/// device-only setting (the Stats settings screen cycles it), persisted in the codec next to
-/// [`climb_mode`](Settings::climb_mode).
-///
-/// The discriminants are a **stable on-disk contract** — appended, never renumbered — so a stored
-/// byte always decodes to the same mode (an unknown byte sanitises to the default, [`Approach`]).
-///
-/// [`Approach`]: WaypointMode::Approach
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum WaypointMode {
-    /// The chip is never shown — the silencer for routes carrying junk/artifact waypoints from a
-    /// planner's GPX export (a whole route of them can be muted here).
-    Off = 0,
-    /// The chip appears only as the next waypoint nears — within the approach radius
-    /// (`WAYPOINT_APPROACH_M`, 500 m) ahead — counting the distance down, so a stop is noticed
-    /// without standing chrome. **The default** (discoverability won over the conservative `Off`).
-    Approach = 1,
-    /// The chip is shown whenever a named waypoint lies ahead (subject to the shared
-    /// no-fix / off-route / pan suppression), reading the along-route distance to it.
-    Always = 2,
-}
-
-impl Default for WaypointMode {
+setting_enum! {
+    /// Whether — and when — the Map's bottom-centre **waypoint chip** (epic #523) is shown: the calm
+    /// `◆ NAME  <dist>` pill counting the along-route distance to the next named waypoint ahead. A
+    /// device-only setting (the Stats settings screen cycles it), persisted in the codec next to
+    /// [`climb_mode`](Settings::climb_mode).
+    ///
+    /// The discriminants are a **stable on-disk contract** — appended, never renumbered — so a stored
+    /// byte always decodes to the same mode (an unknown byte sanitises to the default, [`Approach`]).
+    ///
+    /// [`Approach`]: WaypointMode::Approach
+    pub enum WaypointMode {
+        /// The chip is never shown — the silencer for routes carrying junk/artifact waypoints from a
+        /// planner's GPX export (a whole route of them can be muted here).
+        Off = 0, key Msg::WaypointModeOff;
+        /// The chip appears only as the next waypoint nears — within the approach radius
+        /// (`WAYPOINT_APPROACH_M`, 500 m) ahead — counting the distance down, so a stop is noticed
+        /// without standing chrome. **The default** (discoverability won over the conservative `Off`).
+        Approach = 1, key Msg::WaypointModeApproach;
+        /// The chip is shown whenever a named waypoint lies ahead (subject to the shared
+        /// no-fix / off-route / pan suppression), reading the along-route distance to it.
+        Always = 2, key Msg::WaypointModeAlways;
+    }
     /// **Approach** out of the box — the calm middle ground: the chip surfaces as a waypoint nears
     /// (so the feature is self-discovering) but stays down the rest of the time. Locked 2026-07-08.
-    fn default() -> Self {
-        WaypointMode::Approach
-    }
+    default Approach;
 }
 
-impl WaypointMode {
-    /// The label for the Stats screen's Waypoints-panel row (`Off` / `Approach` / `Always`), in
-    /// the UI `lang` (epic #602).
-    #[inline]
-    pub const fn name(self, lang: Language) -> &'static str {
-        match self {
-            WaypointMode::Off => t(Msg::WaypointModeOff, lang),
-            WaypointMode::Approach => t(Msg::WaypointModeApproach, lang),
-            WaypointMode::Always => t(Msg::WaypointModeAlways, lang),
-        }
+setting_enum! {
+    /// Which sources feed the **"Up ahead" timeline** (epic #946, U4) — the ride compass's north
+    /// station. A device-only setting, cycled in place by the Ride settings screen's press-to-cycle row
+    /// and persisted in the codec next to [`ride_retention`](Settings::ride_retention).
+    ///
+    /// Scope is deliberately narrow: this is *who feeds the list*, nothing else. It never hides the
+    /// map's POI markers or waypoint diamonds, never touches the nearby-POI browser (Menu → POIs, which
+    /// answers the other question — "what's near me *now*?"), and never touches the stats waypoint panel
+    /// or the "Next: \<category\>" stat fields. It composes with the list's own Hold category picker:
+    /// the category filter applies *within* the configured sources.
+    ///
+    /// The labels are short by necessity: the value shares the Ride row's sub-caption line with its
+    /// `◄` cue at 240 px, so the row reads as the sentence *"Up ahead shows ◄ Waypoints"* rather than
+    /// repeating "only".
+    ///
+    /// The discriminants are a **stable on-disk contract** — appended, never renumbered — so a stored
+    /// byte always decodes to the same value (an unknown byte sanitises to the default, [`Both`]).
+    ///
+    /// [`Both`]: UpAheadSource::Both
+    pub enum UpAheadSource {
+        /// Custom waypoints **and** route-corridor map POIs — the merged timeline the epic designed.
+        /// **The default**: the merge is the feature.
+        Both = 0, key Msg::UpAheadSourceBoth;
+        /// The rider's own GPX waypoints only. The corridor query is never armed under this value, so
+        /// the map `Reader` is never built for it either — the list costs exactly what the old waypoint
+        /// list cost.
+        WaypointsOnly = 1, key Msg::UpAheadSourceWaypoints;
+        /// Route-corridor map POIs only. The documented trade: the waypoint plan leaves the ride menu
+        /// entirely (it stays on the map and in the stats panel) — for riders who treat a planner's
+        /// exported waypoints as clutter.
+        MapPoisOnly = 2, key Msg::UpAheadSourceMapPois;
     }
-
-    /// The next mode in the Off → Approach → Always → Off ring — the Stats row's one action (a step
-    /// or press steps it).
-    #[inline]
-    pub const fn cycled(self) -> Self {
-        match self {
-            WaypointMode::Off => WaypointMode::Approach,
-            WaypointMode::Approach => WaypointMode::Always,
-            WaypointMode::Always => WaypointMode::Off,
-        }
-    }
-
-    /// Rebuild from a stored byte, sanitising an unknown value to the default
-    /// ([`Approach`](WaypointMode::Approach)) — the decode-side clamp, exactly like the other codec
-    /// fields.
-    #[inline]
-    fn from_byte(b: u8) -> Self {
-        match b {
-            0 => WaypointMode::Off,
-            1 => WaypointMode::Approach,
-            2 => WaypointMode::Always,
-            _ => WaypointMode::default(),
-        }
-    }
-}
-
-/// Which sources feed the **"Up ahead" timeline** (epic #946, U4) — the ride compass's north
-/// station. A device-only setting, cycled in place by the Ride settings screen's press-to-cycle row
-/// and persisted in the codec next to [`ride_retention`](Settings::ride_retention).
-///
-/// Scope is deliberately narrow: this is *who feeds the list*, nothing else. It never hides the
-/// map's POI markers or waypoint diamonds, never touches the nearby-POI browser (Menu → POIs, which
-/// answers the other question — "what's near me *now*?"), and never touches the stats waypoint panel
-/// or the "Next: \<category\>" stat fields. It composes with the list's own Hold category picker:
-/// the category filter applies *within* the configured sources.
-///
-/// The discriminants are a **stable on-disk contract** — appended, never renumbered — so a stored
-/// byte always decodes to the same value (an unknown byte sanitises to the default, [`Both`]).
-///
-/// [`Both`]: UpAheadSource::Both
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum UpAheadSource {
-    /// Custom waypoints **and** route-corridor map POIs — the merged timeline the epic designed.
-    /// **The default**: the merge is the feature.
-    Both = 0,
-    /// The rider's own GPX waypoints only. The corridor query is never armed under this value, so
-    /// the map `Reader` is never built for it either — the list costs exactly what the old waypoint
-    /// list cost.
-    WaypointsOnly = 1,
-    /// Route-corridor map POIs only. The documented trade: the waypoint plan leaves the ride menu
-    /// entirely (it stays on the map and in the stats panel) — for riders who treat a planner's
-    /// exported waypoints as clutter.
-    MapPoisOnly = 2,
-}
-
-impl Default for UpAheadSource {
     /// **Both** out of the box — one list answering "what's coming up on my route?" is the whole
     /// point of the timeline; the single-source values are the pressure valves.
-    fn default() -> Self {
-        UpAheadSource::Both
-    }
+    default Both;
 }
 
 impl UpAheadSource {
-    /// The label for the Ride screen's press-to-cycle row, in the UI `lang` (epic #602). Short by
-    /// necessity: the value shares the row's sub-caption line with its `◄` cue at 240 px, so the
-    /// row reads as the sentence *"Up ahead shows ◄ Waypoints"* rather than repeating "only".
-    #[inline]
-    pub const fn name(self, lang: Language) -> &'static str {
-        match self {
-            UpAheadSource::Both => t(Msg::UpAheadSourceBoth, lang),
-            UpAheadSource::WaypointsOnly => t(Msg::UpAheadSourceWaypoints, lang),
-            UpAheadSource::MapPoisOnly => t(Msg::UpAheadSourceMapPois, lang),
-        }
-    }
-
     /// Whether custom route waypoints feed the list under this value.
     #[inline]
     pub const fn shows_waypoints(self) -> bool {
@@ -455,298 +345,105 @@ impl UpAheadSource {
     pub const fn shows_pois(self) -> bool {
         matches!(self, UpAheadSource::Both | UpAheadSource::MapPoisOnly)
     }
-
-    /// The next value in the Both → Waypoints → Map POIs ring — the Ride row's one action, the twin
-    /// of [`ClimbMode::cycled`] / [`WaypointMode::cycled`].
-    #[inline]
-    pub const fn cycled(self) -> Self {
-        match self {
-            UpAheadSource::Both => UpAheadSource::WaypointsOnly,
-            UpAheadSource::WaypointsOnly => UpAheadSource::MapPoisOnly,
-            UpAheadSource::MapPoisOnly => UpAheadSource::Both,
-        }
-    }
-
-    /// Rebuild from a stored byte, sanitising an unknown value to the default
-    /// ([`Both`](UpAheadSource::Both)) — the decode-side clamp, exactly like the other codec fields.
-    #[inline]
-    fn from_byte(b: u8) -> Self {
-        match b {
-            0 => UpAheadSource::Both,
-            1 => UpAheadSource::WaypointsOnly,
-            2 => UpAheadSource::MapPoisOnly,
-            _ => UpAheadSource::default(),
-        }
-    }
 }
 
-/// How long the UI sits idle (no user input) before it navigates itself back to where it belongs —
-/// the Home root when not tracking a ride, the Map when a ride is running (see
-/// [`App::apply_idle_return`](crate::App::apply_idle_return)). A device-only setting, cycled by the
-/// Power settings screen's value picker and persisted in the codec next to
-/// [`climb_mode`](Settings::climb_mode).
-///
-/// The discriminants are a **stable on-disk contract** — appended, never renumbered — so a stored
-/// byte always decodes to the same value (an unknown byte sanitises to the default, [`S30`]).
-///
-/// [`S30`]: IdleReturn::S30
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum IdleReturn {
-    /// 15 seconds.
-    S15 = 0,
-    /// 30 seconds — the default.
-    S30 = 1,
-    /// 1 minute.
-    M1 = 2,
-    /// 5 minutes.
-    M5 = 3,
-    /// Never — the idle-return mechanism is disabled entirely.
-    Never = 4,
-}
-
-impl Default for IdleReturn {
+setting_enum! {
+    /// How long the UI sits idle (no user input) before it navigates itself back to where it belongs —
+    /// the Home root when not tracking a ride, the Map when a ride is running (see
+    /// [`App::apply_idle_return`](crate::App::apply_idle_return)). A device-only setting, cycled by the
+    /// Power settings screen's value picker and persisted in the codec next to
+    /// [`climb_mode`](Settings::climb_mode).
+    ///
+    /// `Never` is a word; the durations are unit-glued numbers, catalogued whole so a language can
+    /// localize the `s`/`min` grain if it ever needs to.
+    ///
+    /// The discriminants are a **stable on-disk contract** — appended, never renumbered — so a stored
+    /// byte always decodes to the same value (an unknown byte sanitises to the default, [`S30`]).
+    ///
+    /// [`S30`]: IdleReturn::S30
+    pub enum IdleReturn {
+        /// 15 seconds.
+        S15 = 0, key Msg::IdleS15, Some(15_000);
+        /// 30 seconds — the default.
+        S30 = 1, key Msg::IdleS30, Some(30_000);
+        /// 1 minute.
+        M1 = 2, key Msg::IdleM1, Some(60_000);
+        /// 5 minutes.
+        M5 = 3, key Msg::IdleM5, Some(300_000);
+        /// Never — the idle-return mechanism is disabled entirely.
+        Never = 4, key Msg::IdleNever, None;
+    }
     /// **30 s** out of the box — long enough not to yank an attentive rider mid-glance, short enough
     /// that a device left in a menu drifts back to a useful screen on its own.
-    fn default() -> Self {
-        IdleReturn::S30
-    }
-}
-
-/// Walk `order` `n` steps from `cur`, wrapping at both ends — the shared value-picker step behind
-/// every ordered enum row (Language, IdleReturn, …). Mirrors the list cursor's
-/// [`step_selection`](crate::screen::list::step_selection) `rem_euclid` wrap, but on the value array
-/// rather than a bare index. `cur` missing from `order` falls back to `fallback` (each caller's
-/// default index); in practice `order` lists every variant, so that arm is unreachable.
-fn step_order<T: Copy + PartialEq, const N: usize>(order: &[T; N], cur: T, n: i32, fallback: usize) -> T {
-    let i = order.iter().position(|&v| v == cur).unwrap_or(fallback);
-    order[(i as i32 + n).rem_euclid(N as i32) as usize]
-}
-
-impl IdleReturn {
-    /// The ordered picker values (the left/right walk order), shortest to `Never`.
-    const ORDER: [IdleReturn; 5] =
-        [IdleReturn::S15, IdleReturn::S30, IdleReturn::M1, IdleReturn::M5, IdleReturn::Never];
-
-    /// The label for the Power screen's value picker (`15 s` / `30 s` / `1 min` / `5 min` /
-    /// `Never`), in the UI `lang` (epic #602). `Never` is a word; the durations are unit-glued
-    /// numbers, catalogued whole so a language can localize the `s`/`min` grain if it ever needs to.
-    #[inline]
-    pub const fn name(self, lang: Language) -> &'static str {
-        match self {
-            IdleReturn::S15 => t(Msg::IdleS15, lang),
-            IdleReturn::S30 => t(Msg::IdleS30, lang),
-            IdleReturn::M1 => t(Msg::IdleM1, lang),
-            IdleReturn::M5 => t(Msg::IdleM5, lang),
-            IdleReturn::Never => t(Msg::IdleNever, lang),
-        }
-    }
-
+    default S30;
     /// The idle timeout in millis, or `None` for [`Never`](IdleReturn::Never) (the mechanism is
     /// off). `None` also disables the idle wake, so a parked device isn't woken to no purpose.
-    #[inline]
-    pub const fn timeout_ms(self) -> Option<u32> {
-        match self {
-            IdleReturn::S15 => Some(15_000),
-            IdleReturn::S30 => Some(30_000),
-            IdleReturn::M1 => Some(60_000),
-            IdleReturn::M5 => Some(300_000),
-            IdleReturn::Never => None,
-        }
-    }
-
-    /// Walk the picker `n` steps through [`ORDER`](IdleReturn::ORDER), wrapping at both ends — the
-    /// Power row's left/right value step. Falls back to the default [`S30`](IdleReturn::S30) index.
-    #[inline]
-    pub fn stepped(self, n: i32) -> Self {
-        step_order(&Self::ORDER, self, n, 1)
-    }
-
-    /// Rebuild from a stored byte, sanitising an unknown value to the default
-    /// ([`S30`](IdleReturn::S30)) — the decode-side clamp, exactly like the other codec fields.
-    #[inline]
-    fn from_byte(b: u8) -> Self {
-        match b {
-            0 => IdleReturn::S15,
-            1 => IdleReturn::S30,
-            2 => IdleReturn::M1,
-            3 => IdleReturn::M5,
-            4 => IdleReturn::Never,
-            _ => IdleReturn::default(),
-        }
-    }
+    payload timeout_ms: Option<u32>;
 }
 
-/// How often the device asks the phone for a fresh weather bundle (epic #1185 — WX11's settings
-/// entry; the WX8 due scheduler consumes it): Off, or every 15 / 30 / 60 / 120 minutes.
-/// Scheduled requests occur only during an active ride, and opening Weather is urgent regardless
-/// of this interval — both are WX8's lifecycle rules; this is just the persisted knob.
-///
-/// The discriminants are a **double** on-disk contract: the settings-codec byte *and* the BLE
-/// Config `weather_refresh` field (obc-ble-interface-spec §11.8, `obc_ble::WeatherRefresh`) use
-/// these exact values, so the two stores can never disagree — a parity test pins the mapping.
-/// Appended, never renumbered; an unknown stored byte sanitises to the default,
-/// [`Every30`](WeatherRefresh::Every30).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[repr(u8)]
-pub enum WeatherRefresh {
-    /// No scheduled refresh (opening Weather still requests urgently).
-    Off = 0,
-    /// Every 15 minutes.
-    Every15 = 1,
-    /// Every 30 minutes — the default (the epic's locked default interval).
-    #[default]
-    Every30 = 2,
-    /// Every 60 minutes.
-    Every60 = 3,
-    /// Every 120 minutes.
-    Every120 = 4,
-}
-
-impl WeatherRefresh {
-    /// The ordered picker values (the left/right walk order) — Off first, then rising intervals;
-    /// the wire order is already monotonic, so the two coincide.
-    const ORDER: [WeatherRefresh; 5] = [
-        WeatherRefresh::Off,
-        WeatherRefresh::Every15,
-        WeatherRefresh::Every30,
-        WeatherRefresh::Every60,
-        WeatherRefresh::Every120,
-    ];
-
-    /// The label for the Weather settings screen's value picker (`Off` / `15 min` / …), in the UI
-    /// `lang`.
-    #[inline]
-    pub const fn name(self, lang: Language) -> &'static str {
-        match self {
-            WeatherRefresh::Off => t(Msg::WeatherRefreshOff, lang),
-            WeatherRefresh::Every15 => t(Msg::WeatherRefreshM15, lang),
-            WeatherRefresh::Every30 => t(Msg::WeatherRefreshM30, lang),
-            WeatherRefresh::Every60 => t(Msg::WeatherRefreshM60, lang),
-            WeatherRefresh::Every120 => t(Msg::WeatherRefreshM120, lang),
-        }
+setting_enum! {
+    /// How often the device asks the phone for a fresh weather bundle (epic #1185 — WX11's settings
+    /// entry; the WX8 due scheduler consumes it): Off, or every 15 / 30 / 60 / 120 minutes.
+    /// Scheduled requests occur only during an active ride, and opening Weather is urgent regardless
+    /// of this interval — both are WX8's lifecycle rules; this is just the persisted knob.
+    ///
+    /// The discriminants are a **double** on-disk contract: the settings-codec byte *and* the BLE
+    /// Config `weather_refresh` field (obc-ble-interface-spec §11.8, `obc_ble::WeatherRefresh`) use
+    /// these exact values, so the two stores can never disagree — the board crate's compile-time
+    /// asserts pin the mapping variant by variant (`obc-fw-nrf54l/src/object_store.rs`).
+    /// Appended, never renumbered; an unknown stored byte sanitises to the default,
+    /// [`Every30`](WeatherRefresh::Every30).
+    pub enum WeatherRefresh {
+        /// No scheduled refresh (opening Weather still requests urgently).
+        Off = 0, key Msg::WeatherRefreshOff, None;
+        /// Every 15 minutes.
+        Every15 = 1, key Msg::WeatherRefreshM15, Some(15);
+        /// Every 30 minutes — the default (the epic's locked default interval).
+        Every30 = 2, key Msg::WeatherRefreshM30, Some(30);
+        /// Every 60 minutes.
+        Every60 = 3, key Msg::WeatherRefreshM60, Some(60);
+        /// Every 120 minutes.
+        Every120 = 4, key Msg::WeatherRefreshM120, Some(120);
     }
-
+    default Every30;
     /// The scheduled interval in minutes, or `None` for [`Off`](WeatherRefresh::Off) — the shape
     /// the WX8 scheduler consumes (mirrors `obc_ble::WeatherRefresh::minutes`).
-    #[inline]
-    pub const fn minutes(self) -> Option<u16> {
-        match self {
-            WeatherRefresh::Off => None,
-            WeatherRefresh::Every15 => Some(15),
-            WeatherRefresh::Every30 => Some(30),
-            WeatherRefresh::Every60 => Some(60),
-            WeatherRefresh::Every120 => Some(120),
-        }
-    }
-
-    /// Walk the picker `n` steps through [`ORDER`](WeatherRefresh::ORDER), wrapping at both ends.
-    /// Falls back to the default [`Every30`](WeatherRefresh::Every30) index.
-    #[inline]
-    pub fn stepped(self, n: i32) -> Self {
-        step_order(&Self::ORDER, self, n, 2)
-    }
-
-    /// Rebuild from a stored/wire byte, sanitising an unknown value to the default
-    /// ([`Every30`](WeatherRefresh::Every30)) — the decode-side clamp, like every codec enum.
-    /// `pub`: the board's Config write path converts the obc-ble-validated §11.8 byte through
-    /// this after wire validation (#1221/#1224 merge resolution).
-    #[inline]
-    pub fn from_byte(b: u8) -> Self {
-        match b {
-            0 => WeatherRefresh::Off,
-            1 => WeatherRefresh::Every15,
-            2 => WeatherRefresh::Every30,
-            3 => WeatherRefresh::Every60,
-            4 => WeatherRefresh::Every120,
-            _ => WeatherRefresh::default(),
-        }
-    }
+    payload minutes: Option<u16>;
 }
 
-/// The UI language (epic #602). A device-only setting, cycled by the Language settings screen's
-/// value picker and persisted in the codec next to [`waypoint_mode`](Settings::waypoint_mode). Only
-/// the on-glass **preference** ships here (L1); the translation catalog that actually reads it lands
-/// later in the epic — until then every string stays English regardless of this value.
-///
-/// The discriminants are a **stable on-disk contract** — appended, never renumbered — so a stored
-/// byte always decodes to the same language (an unknown byte sanitises to the default, [`En`]).
-///
-/// [`En`]: Language::En
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum Language {
-    /// English — the default.
-    En = 0,
-    /// German.
-    De = 1,
-    /// French.
-    Fr = 2,
-    /// Spanish.
-    Es = 3,
-}
-
-impl Default for Language {
+setting_enum! {
+    /// The UI language (epic #602). A device-only setting, cycled by the Language settings screen's
+    /// value picker and persisted in the codec next to [`waypoint_mode`](Settings::waypoint_mode).
+    ///
+    /// Each value's [`name`](Language::name) is its **endonym** (its own name for itself), so the
+    /// picker row reads to a speaker who can't yet read the current UI language — which is also why
+    /// this is the one settings enum whose labels are literals rather than catalog keys. The
+    /// accented forms (`Français` / `Español`) render via the Latin font extension (#601).
+    ///
+    /// [`COUNT`](Language::COUNT) is the number of columns the i18n catalog must ship: a static
+    /// assertion in [`i18n`](crate::i18n) ties `TABLE`'s column count to it, so the "index never
+    /// panics" contract of [`t`](crate::i18n::t) is compiler-enforced — a fifth variant added
+    /// without a fifth `{lang}.toml` column fails the build instead of panicking on the first draw
+    /// (#614). Because the picker only ever selects out of [`ALL`](Language::ALL),
+    /// [`Settings::language`](crate::Settings::language) is always in range.
+    ///
+    /// The discriminants are a **stable on-disk contract** — appended, never renumbered — so a stored
+    /// byte always decodes to the same language (an unknown byte sanitises to the default, [`En`]).
+    ///
+    /// [`En`]: Language::En
+    pub enum Language {
+        /// English — the default.
+        En = 0, text "English";
+        /// German.
+        De = 1, text "Deutsch";
+        /// French.
+        Fr = 2, text "Français";
+        /// Spanish.
+        Es = 3, text "Español";
+    }
     /// **English** out of the box — the language every string is authored in; the other three are
     /// opt-in once the catalog lands.
-    fn default() -> Self {
-        Language::En
-    }
-}
-
-impl Language {
-    /// The number of variants — and the number of columns the i18n catalog must ship. A static
-    /// assertion in [`i18n`](crate::i18n) ties `TABLE`'s column count to this, so the "index never
-    /// panics" contract of [`t`](crate::i18n::t) is compiler-enforced: a fifth variant added
-    /// without a fifth `{lang}.toml` column fails the build instead of panicking on the first draw
-    /// (#614). Because [`ORDER`](Language::ORDER) is `[Language; COUNT]` and the picker only ever
-    /// selects out of it, [`Settings::language`](crate::Settings::language) is always in range.
-    pub const COUNT: usize = 4;
-
-    /// The ordered picker values (the left/right walk order), English first. Sized `[_; COUNT]`, so
-    /// wiring a newly-added variant into the picker without bumping [`COUNT`](Language::COUNT) — and
-    /// thus adding its catalog column — won't compile.
-    const ORDER: [Language; Self::COUNT] = [Language::En, Language::De, Language::Fr, Language::Es];
-
-    /// The label for the Language screen's value picker — each language's **endonym** (its own name
-    /// for itself), so the row reads to a speaker who can't yet read the current UI language. The
-    /// accented forms (`Français` / `Español`) render via the Latin font extension (#601).
-    #[inline]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Language::En => "English",
-            Language::De => "Deutsch",
-            Language::Fr => "Français",
-            Language::Es => "Español",
-        }
-    }
-
-    /// Walk the picker `n` steps through [`ORDER`](Language::ORDER), wrapping at both ends — the
-    /// Language row's left/right value step. Falls back to the default [`En`](Language::En) index.
-    #[inline]
-    pub fn stepped(self, n: i32) -> Self {
-        step_order(&Self::ORDER, self, n, 0)
-    }
-
-    /// The next language in the ring — the Language row's press action (one step forward, like a
-    /// [`stepped(1)`](Language::stepped)).
-    #[inline]
-    pub fn cycled(self) -> Self {
-        self.stepped(1)
-    }
-
-    /// Rebuild from a stored byte, sanitising an unknown value to the default ([`En`](Language::En))
-    /// — the decode-side clamp, exactly like the other codec fields.
-    #[inline]
-    fn from_byte(b: u8) -> Self {
-        match b {
-            0 => Language::En,
-            1 => Language::De,
-            2 => Language::Fr,
-            3 => Language::Es,
-            _ => Language::default(),
-        }
-    }
+    default En;
 }
 
 /// UTC-offset stepper bounds + granularity (minutes). 15-minute steps cover the real-world
@@ -938,6 +635,11 @@ pub struct Settings {
     /// a preference: [`adopt_ble_fields`](Settings::adopt_ble_fields) never touches it.
     pub weather_alert_marks: crate::weather_alerts::AlertMarks,
 }
+
+/// The in-memory footprint, pinned. [`Settings`] is copied whole (the live `App` copy, the board's
+/// Config cache, the `.rodata` [`DEFAULT`](Settings::DEFAULT) image), so a field that silently
+/// widens the struct widens every one of those — this makes the growth an explicit decision.
+const _: () = assert!(core::mem::size_of::<Settings>() == 184, "Settings grew — was that deliberate?");
 
 impl Default for Settings {
     fn default() -> Self {
@@ -1184,7 +886,7 @@ pub fn decode(bytes: &[u8]) -> Option<Settings> {
         return None;
     }
     let mut s = Settings {
-        units: if b[1] == Units::Imperial as u8 { Units::Imperial } else { Units::Metric },
+        units: Units::from_byte(b[1]),
         // Byte 2 (the retired `gps_time` flag, #641) is ignored — old blobs decode cleanly.
         clock: DateTime { year: u16::from_le_bytes([b[3], b[4]]), month: b[5], day: b[6], hour: b[7], minute: b[8] },
         utc_offset_min: i16::from_le_bytes([b[9], b[10]]),
@@ -1316,14 +1018,14 @@ mod tests {
         assert_eq!(d, Settings::default());
     }
 
-    /// A non-default settings value — including a customised, reordered field selection with a
-    /// two-span tile — round-trips through the codec byte-for-byte.
-    #[test]
-    fn codec_round_trips() {
+    /// A settings value with **every** field pushed off its default — including a customised,
+    /// reordered stat-field selection with a two-span tile. Shared by the round-trip test and the
+    /// golden blobs below, so the two always speak about the same bytes.
+    fn every_field_set() -> Settings {
         let mut stat_fields = StatFieldList::default();
         stat_fields.remove(0); // drop a default tile…
         assert!(stat_fields.push(crate::stat_fields::StatField::Clock)); // …and pin the wide clock
-        let s = Settings {
+        Settings {
             units: Units::Imperial,
             clock: DateTime { year: 2026, month: 6, day: 29, hour: 14, minute: 40 },
             utc_offset_min: 120,
@@ -1358,8 +1060,69 @@ mod tests {
                 None,
                 Some(crate::weather_alerts::AlertMark { onset: -1, pos: Some((-47_000_000, -8_000_000)), severity: 0 }),
             ],
-        };
+        }
+    }
+
+    /// A non-default settings value — including a customised, reordered field selection with a
+    /// two-span tile — round-trips through the codec byte-for-byte.
+    #[test]
+    fn codec_round_trips() {
+        let s = every_field_set();
         assert_eq!(decode(&encode(&s)), Some(s));
+    }
+
+    /// The golden blobs: `encode` writes exactly the bytes it wrote before the `setting_enum!`
+    /// table replaced the hand-written enum kits (#1466) — for [`Settings::DEFAULT`] and for a
+    /// value with every field set. Each value enum stores its **declared** discriminant, so a
+    /// renumbered variant moves a byte here: this is the codec-side twin of the macro's
+    /// compile-time discriminant asserts, and the pin the codec/table slices inherit.
+    #[test]
+    fn encode_matches_the_golden_blobs() {
+        const DEFAULT_BLOB: [u8; ENCODED_LEN] = [
+            16, 0, 0, 233, 7, 1, 1, 12, 0, 0, 0, 1, 0, 0, 6, 0, 1, 2, 3, 4, 5, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 2, 0, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 212, 126, 0, 0, 0, 0, 0, 0,
+        ];
+        const FULL_BLOB: [u8; ENCODED_LEN] = [
+            16, 1, 0, 234, 7, 6, 29, 14, 40, 120, 0, 5, 0, 1, 6, 1, 2, 3, 4, 5, 9, 0, 0, 0, 0, 0, 0, 8, 0, 10, 84, 105,
+            109, 111, 39, 115, 32, 79, 66, 67, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 3, 0, 0, 3, 2, 1, 1, 1, 1, 2, 3, 4, 5, 6, 0, 0, 0, 0, 0, 0,
+            0, 0, 1, 0, 6, 5, 4, 3, 2, 1, 3, 2, 0, 4, 3, 132, 213, 73, 107, 0, 0, 0, 0, 0, 12, 207, 2, 241, 13, 132, 0,
+            11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 255, 255, 255, 255, 255, 255, 255, 255, 64,
+            214, 50, 253, 0, 238, 133, 255, 0, 2, 122, 0, 0, 0, 0, 0, 0,
+        ];
+
+        assert_eq!(encode(&Settings::DEFAULT), DEFAULT_BLOB, "the default blob is frozen");
+        assert_eq!(encode(&every_field_set()), FULL_BLOB, "the fully-populated blob is frozen");
+        assert_eq!(decode(&DEFAULT_BLOB), Some(Settings::DEFAULT), "…and both decode back");
+        assert_eq!(decode(&FULL_BLOB), Some(every_field_set()));
+    }
+
+    /// One table over all seven `setting_enum!` types: every declared byte round-trips through
+    /// `from_byte` at its table position, and any byte past the last discriminant clamps to the
+    /// default. The macro is one implementation — tested once, here, rather than seven times.
+    #[test]
+    fn every_setting_enum_round_trips_its_bytes_and_clamps_the_rest() {
+        macro_rules! check {
+            ($T:ty) => {{
+                for (i, v) in <$T>::ALL.iter().enumerate() {
+                    assert_eq!(*v as u8, i as u8, "{}::{:?} stores byte {i}", stringify!($T), v);
+                    assert_eq!(<$T>::from_byte(i as u8), *v, "{} byte {i} decodes back", stringify!($T));
+                }
+                for b in [<$T>::COUNT as u8, u8::MAX] {
+                    assert_eq!(<$T>::from_byte(b), <$T>::default(), "{} clamps {b} to its default", stringify!($T));
+                }
+            }};
+        }
+        check!(Units);
+        check!(ClimbMode);
+        check!(WaypointMode);
+        check!(UpAheadSource);
+        check!(IdleReturn);
+        check!(WeatherRefresh);
+        check!(Language);
     }
 
     /// The v16 tail (WX12 #1197): the per-class weather-alert marks round-trip (present and
@@ -2126,8 +1889,8 @@ mod tests {
         assert!((Units::Imperial.dist(10.0) - 6.21371).abs() < 1e-3, "10 km ≈ 6.21 mi");
         assert!((Units::Imperial.speed(100.0) - 62.1371).abs() < 1e-2, "100 km/h ≈ 62.1 mph");
         assert!((Units::Imperial.elev(1000.0) - 3280.84).abs() < 1e-1, "1000 m ≈ 3281 ft");
-        assert_eq!(Units::Metric.toggled(), Units::Imperial);
-        assert_eq!(Units::Imperial.toggled(), Units::Metric);
+        assert_eq!(Units::Metric.cycled(), Units::Imperial);
+        assert_eq!(Units::Imperial.cycled(), Units::Metric);
     }
 
     // ==================== settings coherence (#456) ====================

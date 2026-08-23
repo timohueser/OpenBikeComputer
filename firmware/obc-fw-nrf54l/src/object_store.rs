@@ -189,6 +189,22 @@ impl ObjectStore {
         if let Some(refresh) = weather_refresh {
             // Wire-validated upstream (obc-ble's strict write direction); this converts the §11.8
             // byte into obc-app's typed representation (#1221/#1224 merge resolution).
+            //
+            // That conversion is only sound because the two enums agree byte-for-byte, and this
+            // crate is the only one that depends on both — so the parity check lives here, as a
+            // compile-time assert per interval. `COUNT` catches an interval appended on one side
+            // and not the other: a new value fails the board build until it gets its row.
+            #[cfg(feature = "ble")]
+            const _: () = {
+                use obc_app::WeatherRefresh as Stored;
+                use obc_ble::WeatherRefresh as Wire;
+                assert!(Stored::Off as u8 == Wire::Off.as_u8());
+                assert!(Stored::Every15 as u8 == Wire::Every15.as_u8());
+                assert!(Stored::Every30 as u8 == Wire::Every30.as_u8());
+                assert!(Stored::Every60 as u8 == Wire::Every60.as_u8());
+                assert!(Stored::Every120 as u8 == Wire::Every120.as_u8());
+                assert!(Stored::COUNT == 5, "a new refresh interval needs a §11.8 parity row above");
+            };
             self.settings.weather_refresh = obc_app::WeatherRefresh::from_byte(refresh);
         }
         // The BLE plane persists its owned fields directly (best-effort): the store logs a write
