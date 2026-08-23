@@ -4,7 +4,7 @@
 //! state machines here and differ only in the platform executor that performs bounded physical
 //! work and reports typed results back.
 //!
-//! This module currently holds the shared vocabulary every domain needs (#1435):
+//! This module holds the shared vocabulary every domain needs (#1435):
 //!
 //! - [`OperationToken`] / [`TokenSource`] — the per-domain stale-result guard.
 //! - [`Capabilities`] — what this device can actually do, recalculated from platform support,
@@ -12,10 +12,26 @@
 //! - [`ExternalFacts`] — the facts that are *not* an answer to an effect, with one documented
 //!   merge rule per field.
 //!
-//! Domain effects, outcomes and the pass entry point arrive in later slices; nothing here changes
-//! the legacy [`HostCommand`](crate::HostCommand) / [`HostEvent`](crate::HostEvent) protocol.
+//! …plus the seam the domains talk through (#1436):
+//!
+//! - [`EffectSlots`] / [`OutcomeSlots`] — one bounded slot per domain, capacity one, first value
+//!   wins. See [`slots`] for the full contract.
+//! - [`storage_info`] — the one domain with no product feature to live beside. The other eight
+//!   protocols live beside their owner: `catalog_state`, `retention`, `recorder`, `navigator`,
+//!   `settings`, `weather`, `dfu` and `ble`. There is deliberately **no** combined `Effect`,
+//!   `Outcome` or `Intent` enum anywhere.
+//! - [`migration`] — the Appendix A inventory of the legacy protocol, as compile-checked test data.
+//!
+//! The pass entry point arrives in a later slice; nothing here changes the legacy
+//! [`HostCommand`](crate::HostCommand) / [`HostEvent`](crate::HostEvent) protocol.
 
+pub mod migration;
 mod shared;
+pub mod slots;
+pub mod storage_info;
+
+pub use slots::{EffectSlots, OutcomeSlots, Slot, SlotFull};
+pub use storage_info::{StorageInfoEffect, StorageInfoError, StorageInfoIntent, StorageInfoOutcome};
 
 pub use shared::{
     BondCapabilities, BondTag, Capabilities, CatalogCapabilities, CatalogTag, DataIdentity, DeviceFacts,

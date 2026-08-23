@@ -559,7 +559,16 @@ command = "python3 -m unittest discover -s firmware/tools/tests -v"
 fixtures = []
 pull_request = "affected"
 scheduled = "none"
-extra_triggers = ["firmware/tools/*.py", "firmware/tools/**/*.py"]
+# The sweep script and its manifest are inputs to this suite, not just its subjects:
+# `test_ui_snapshot_manifest.py` reads both, and it is the only thing that catches an
+# `--expect-screen` stripped off an existing command — the frames are unchanged, so `ci.ui-snapshots`
+# still passes.
+extra_triggers = [
+  "firmware/tools/*.py",
+  "firmware/tools/**/*.py",
+  "firmware/ui-snapshots.sh",
+  "firmware/ui-snapshots.sha256",
+]
 coverage_component = "dev-tools"
 ownership = [
   { kind = "path", source = "python-test", pattern = "firmware/tools/tests/test_*.py" },
@@ -727,6 +736,20 @@ pull_request = "affected"
 scheduled = "none"
 extra_triggers = ["firmware/tools/resource_baseline.json", "firmware/tools/resource_guard.py", "firmware/tools/strict_align_probe.rs"]
 ownership = [{ kind = "workflow", pattern = "python3 *resource_guard.py *" }]
+
+[[suite]]
+id = "ci.ui-snapshots"
+surface = "simulator"
+level = "contract"
+command = "firmware/ui-snapshots.sh OUT && python3 firmware/tools/ui_snapshot_manifest.py check firmware/ui-snapshots.sha256 OUT"
+fixtures = ["sim"]
+pull_request = "affected"
+scheduled = "none"
+extra_triggers = ["firmware/ui-snapshots.sh", "firmware/ui-snapshots.sha256", "firmware/tools/ui_snapshot_manifest.py", "firmware/obc-app/src/**", "firmware/obc-render/src/**", "apps/obc-sim/src/**"]
+coverage_component = "host-tools"
+# The step's `cargo build -p obc-sim` line is a build, already owned by `ci.rust-builds`; what this
+# suite owns is the check that reads the manifest.
+ownership = [{ kind = "workflow", pattern = "python3 firmware/tools/ui_snapshot_manifest.py check *" }]
 
 [[suite]]
 id = "ci.wasm-size"

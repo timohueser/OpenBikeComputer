@@ -351,6 +351,18 @@ jobs:
       # an intentional change regenerates golden.txt (--write-golden) in the same PR.
       - name: obc-bench --check (render + read-counter golden gate)
         run: cargo run -p obc-bench --release --locked -- --check host/obc-bench/golden.txt
+      # Screen pixel-hash tripwire (#1441): re-render every UI screen through the headless
+      # simulator and compare the frames to the committed digest manifest. The bench tripwire above
+      # covers the map renderer's scenes; this covers the screens drawn over them, which is what a
+      # screen refactor moves. The debug binary is used deliberately — its output is byte-identical
+      # to release and the tests above have already built it, so this adds a sweep, not a link.
+      # `update` is a developer command and never runs here: a self-regenerating manifest records
+      # nothing.
+      - name: ui-snapshots manifest check
+        run: |
+          cargo build -p obc-sim --locked
+          SIM="$PWD/target/debug/obc-sim" firmware/ui-snapshots.sh "$RUNNER_TEMP/ui-snapshots"
+          python3 firmware/tools/ui_snapshot_manifest.py check firmware/ui-snapshots.sha256 "$RUNNER_TEMP/ui-snapshots"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
