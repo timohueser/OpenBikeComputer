@@ -1381,7 +1381,7 @@ fn main() {
             }
         }
         // The one-time post-update toast: raise the confirmed-update fact, then run one animation
-        // pass — `reconcile_update_toast` pushes the "Updated to vX" card there, like the device.
+        // pass — the card scheduler pushes the "Updated to vX" card there, like the device.
         if let Some(DfuSeed::Confirmed(version)) = &args.dfu {
             app.apply_event(obc_app::HostEvent::UpdateConfirmed(obc_app::dfu::clamp(version)));
             app.advance_animations(InputClock(500_000));

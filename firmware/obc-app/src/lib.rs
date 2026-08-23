@@ -31,6 +31,7 @@ pub mod app;
 pub mod arena_gate;
 pub mod ble;
 pub mod breadcrumb;
+pub(crate) mod card_scheduler;
 pub mod catalog_state;
 pub mod corridor;
 pub mod device_core;

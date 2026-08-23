@@ -8,6 +8,7 @@ use obc_render::{zoom_for_mpp, Canvas, Clock, NoopClock, RenderScratch, RenderSt
 use obc_route::{Profile, RouteReader};
 
 use crate::activity::{Activity, Mode};
+use crate::card_scheduler::{BootUpdate, DfuLanding, PendingUpload, UploadEvent};
 use crate::catalog_state::CatalogState;
 use crate::dirty::Dirty;
 use crate::host::{
@@ -20,7 +21,7 @@ use crate::ride_engine::RideEngine;
 use crate::route::RouteSummary;
 use crate::screen::{self, Ctx, MapScreen, Render, RenderFrame, Screen, WarningFlags};
 use crate::settings::{DateTime, Settings};
-use crate::ui_runtime::{UiRuntime, UploadEvent};
+use crate::ui_runtime::UiRuntime;
 use crate::wall_clock::WallClock;
 use crate::DeviceStatus;
 use obc_map_scene::MapScene;
@@ -525,9 +526,10 @@ pub struct App {
     ride: RideEngine,
     /// The UI-plane component: the screen stack, the fused input plane, the map-plane clock,
     /// repaint accumulation (full-frame + region) and wake scheduling, hold cancellation, the
-    /// idle-return policy, and the modal-reconciliation state for every host-pushed card
-    /// (passkey, upload popups, warnings, post-update toasts, DFU landings).
-    ui: UiRuntime,
+    /// idle-return policy, and the [`CardScheduler`](crate::card_scheduler::CardScheduler) that
+    /// owns every host-pushed card. `pub(crate)` so the in-crate harnesses and the scheduler's own
+    /// tests can observe the stack they act on; no public accessor exists for it.
+    pub(crate) ui: UiRuntime,
     /// The persisted device settings, seeded from the host's store at boot
     /// ([`set_settings`](App::set_settings)) and edited in place by the settings screens.
     settings: Settings,
@@ -1051,8 +1053,8 @@ impl App {
 
     /// The Auto-mode screen follow (epic #506, C5), driven off the climb entry/exit edge in
     /// [`update_active_climb`](App::update_active_climb) — the host-pushed-screen pattern (the P2
-    /// precedent [`reconcile_upload_prompt`](App::reconcile_upload_prompt) uses), applied to the
-    /// active-climb transition rather than a route upload:
+    /// precedent the [`CardScheduler`](crate::card_scheduler::CardScheduler) now owns), applied to
+    /// the active-climb transition rather than a route upload:
     ///
     /// - **Entry** (`None → Some`): in [`Auto`](crate::settings::ClimbMode::Auto) mode, if the top
     ///   screen is exactly Map or Statistics, switch it to the Climb screen. The explicit sibling
@@ -1453,7 +1455,7 @@ impl App {
     /// **defers** — the board keeps the request pending and retries next pass, so an inconvenient
     /// moment delays the card, never drops or force-installs it. Deferred while:
     /// - the passkey card is up or a hold is charging (the
-    ///   [`reconcile_update_toast`](App::reconcile_update_toast) politeness — never cover the
+    ///   [`CardScheduler`](crate::card_scheduler::CardScheduler) politeness — never cover the
     ///   pairing code, never land mid-hold),
     /// - a DFU screen (check / confirm / progress / error) is already on the stack — never
     ///   double-open, and never yank a flow the rider opened from the menu themself,
@@ -1871,11 +1873,10 @@ impl App {
     /// The **passkey** (epic #447, P2) drives the host-pushed [`PasskeyScreen`](crate::screen::PasskeyScreen):
     /// a passkey going `Some` opens the card over whatever is up, and its clearing (pairing
     /// complete/failed, or disconnect — all cleared BLE-side) closes it. Fed every pass with an
-    /// unchanged status, [`reconcile_passkey_card`](App::reconcile_passkey_card) is a no-op, so the
-    /// steady state never re-dirties. Because it's a host-pushed screen, it also **defers while a
-    /// hold is charging** (yanking the hold target out from under the rider mid-charge would break
-    /// the confirm) — the reconcile just skips that pass and lands on the next, since the desired
-    /// state is re-fed every pass.
+    /// unchanged status the card scheduler's sweep is a no-op, so the steady state never re-dirties.
+    /// Because it's a host-pushed screen, it also **defers while a hold is charging** (yanking the
+    /// hold target out from under the rider mid-charge would break the confirm) — the sweep just
+    /// skips that pass and lands on the next, since the desired level is re-fed every pass.
     pub fn set_ble_status(&mut self, status: crate::ble::BleStatus) {
         let state_before = self.state;
         self.state.device.ble_link = status.link;
@@ -1887,13 +1888,37 @@ impl App {
         if self.state != state_before && self.ui.indicator_visible() {
             self.ui.map_dirty = true;
         }
-        self.ui.update_passkey_card(status.passkey);
+        self.ui.cards.set_passkey(status.passkey);
+        self.sweep_cards();
     }
 
     /// Whether the passkey card is currently up (epic #447). The P4 route-upload popups poll this to
     /// honour the priority rule — a popup is dropped, not queued, while the card shows.
     pub fn passkey_card_up(&self) -> bool {
         self.ui.passkey_card_up()
+    }
+
+    /// Run the one [`CardScheduler`](crate::card_scheduler::CardScheduler) sweep with the
+    /// cross-component facts it needs. Called once per [`advance_animations`](App::advance_animations)
+    /// pass, and again right after any host fact is posted so an arriving card lands in the same
+    /// frame unless a policy rule defers it.
+    fn sweep_cards(&mut self) {
+        self.ui.run_card_sweep(&self.catalogs, self.activity.is_tracking());
+    }
+
+    /// [`HostEvent::DfuScanned`] / [`DfuInstallBegan`](HostEvent::DfuInstallBegan) /
+    /// [`DfuInstallFailed`](HostEvent::DfuInstallFailed): post the terminal answer for the DFU wait
+    /// on the stack. The scheduler drops it when that wait is gone (the rider pressed Back).
+    fn post_dfu_landing(&mut self, landing: DfuLanding) {
+        self.ui.cards.post_dfu(landing);
+        self.sweep_cards();
+    }
+
+    /// [`HostEvent::UpdateConfirmed`] / [`UpdateFailed`](HostEvent::UpdateFailed): post this boot's
+    /// one-time update verdict for the toast (or its failure twin).
+    fn post_boot_update(&mut self, result: BootUpdate) {
+        self.ui.cards.post_update(result);
+        self.sweep_cards();
     }
 
     // ==================== map-transfer seam (issue #927) ====================
@@ -1914,7 +1939,8 @@ impl App {
     /// ([`MapTransfer::Installed`](crate::screen::MapTransfer::Installed) /
     /// [`Failed`](crate::screen::MapTransfer::Failed)) stay up to be dismissed.
     pub fn set_map_transfer(&mut self, state: Option<crate::screen::MapTransfer>) {
-        self.ui.reconcile_map_transfer_card(state);
+        self.ui.cards.set_map_transfer(state);
+        self.sweep_cards();
     }
 
     /// Whether the map-transfer card is currently up (issue #927) — how a host observes the seam,
@@ -1927,7 +1953,7 @@ impl App {
     /// as last fed to [`set_ble_status`](App::set_ble_status). Consumed by the passkey card in P2
     /// (#449); exposed now so the seam is observable end to end.
     pub fn ble_passkey(&self) -> Option<u32> {
-        self.ui.ble_passkey
+        self.ui.cards.passkey_level()
     }
 
     // ==================== BLE sensor seam (epic #707, SE7) ====================
@@ -1988,11 +2014,8 @@ impl App {
             self.drop_route_derived_state();
             self.ui.map_dirty = true; // the drawn route line + progress changed under the rider
         }
-        self.ui.post_upload_event(
-            UploadEvent { id, active_replace, elevation },
-            &self.catalogs,
-            self.activity.is_tracking(),
-        );
+        self.ui.cards.post_upload(PendingUpload::Route(UploadEvent { id, active_replace, elevation }));
+        self.sweep_cards();
         // Anchor the route's retention clock at upload time (auto-expiry epic #638 S4): a fresh or
         // replace upload is a "use", so stamp `last_used = now` when the clock is trusted — the precise
         // expiry anchor the app's `setRouteRetention` (which never touches `last_used`) then reads. An
@@ -2015,12 +2038,17 @@ impl App {
         if replaced {
             return;
         }
-        self.ui.post_trip_upload_event(id, &self.catalogs, self.activity.is_tracking());
+        self.ui.cards.post_upload(PendingUpload::Trip { id });
+        self.sweep_cards();
     }
 
     /// [`HostEvent::Warning`]: accumulate the flags and deliver (or defer) the advisory card.
     fn on_warning(&mut self, flags: WarningFlags) {
-        self.ui.post_warning(flags);
+        if flags.is_empty() {
+            return;
+        }
+        self.ui.cards.post_warning(flags);
+        self.sweep_cards();
     }
 
     /// The screen currently on top of the stack (receiving input). Always present — the Home root is
@@ -2560,20 +2588,13 @@ impl App {
         // runtime's; this method sequences the per-pass sweeps around it with the cross-component
         // facts they need.
         self.ui.advance_timers(clock.0, now, ms_to_next_minute, &self.settings, pan_active, tracking);
-        // The route-upload popups' per-pass reconcile (epic #447, P4): land a hold-deferred
-        // prompt, and run the 30 s auto-close (timeout = dismiss). Here — the one hook every host
-        // runs each pass — rather than a new timer path; the popups' `tick_timers` above already
-        // armed the wake that gets a parked device to this line at the deadline.
-        self.ui.reconcile_upload_prompt(&self.catalogs, tracking);
-        self.ui.close_expired_upload_popups();
-        // Land any warning (issue #504) deferred behind a passkey card / a live hold on an earlier pass.
-        // Before the idle sweep, so a warning that lands this pass is on top when the sweep checks
-        // its exemptions — an unacknowledged card must not be yanked to Home by the idle return.
-        self.ui.reconcile_warning();
-        // The one-time post-update toast (epic #615 S5): land it after the warning reconcile so it
-        // sits on top when the idle sweep checks its exemptions (an unacknowledged card must not be
-        // yanked Home). A normal boot has no confirmed-update fact and this is a cheap no-op.
-        self.ui.reconcile_update_toast();
+        // The one host-pushed-card sweep (epic #1397, S1): land anything a hold or a higher-ranked
+        // card deferred on an earlier pass, and run the upload family's 30 s auto-close. Here — the
+        // one hook every host runs each pass — rather than a new timer path; the popups'
+        // `tick_timers` above already armed the wake that gets a parked device to this line at the
+        // deadline. Before the idle sweep, so a card that lands this pass is on top when the sweep
+        // checks its exemptions — an unacknowledged card must not be yanked Home by the idle return.
+        self.sweep_cards();
         // The idle-return sweep (fire the return if we're past the deadline) and its residual wake,
         // folded into the deadline the event-driven host arms so a parked device wakes to return.
         self.ui.apply_idle_return(&self.settings, tracking);
@@ -3122,11 +3143,11 @@ impl App {
                 self.card_free_bytes = free_bytes;
                 self.ui.map_dirty = true;
             }
-            HostEvent::DfuScanned(result) => self.ui.on_dfu_scanned(result),
-            HostEvent::DfuInstallFailed(reason) => self.ui.on_dfu_install_failed(reason),
-            HostEvent::DfuInstallBegan => self.ui.on_dfu_install_began(),
-            HostEvent::UpdateConfirmed(version) => self.ui.update_confirmed = Some(version),
-            HostEvent::UpdateFailed { why, staged } => self.ui.update_failed = Some((why, staged)),
+            HostEvent::DfuScanned(result) => self.post_dfu_landing(DfuLanding::Scanned(result)),
+            HostEvent::DfuInstallFailed(reason) => self.post_dfu_landing(DfuLanding::InstallFailed(reason)),
+            HostEvent::DfuInstallBegan => self.post_dfu_landing(DfuLanding::InstallBegan),
+            HostEvent::UpdateConfirmed(version) => self.post_boot_update(BootUpdate::Confirmed(version)),
+            HostEvent::UpdateFailed { why, staged } => self.post_boot_update(BootUpdate::Failed(why, staged)),
             HostEvent::SettingsPersisted { revision } => self.on_settings_persisted(revision),
             HostEvent::SettingsPersistFailed { revision, error } => self.on_settings_persist_failed(revision, error),
         }
@@ -4371,55 +4392,6 @@ mod tests {
         }
     }
 
-    /// The `notify_warning` contract: a raised flag opens the card, further flags coalesce onto the
-    /// open one (never a second card), any press dismisses it, and each flag is shown **once** — an
-    /// already-shown flag stays quiet, but a genuinely new one re-opens the card with only itself.
-    #[test]
-    fn warning_card_opens_coalesces_and_shows_each_flag_once() {
-        let mut app = App::new_idle(AppState::new(0, 0, 1.0)); // [Home]
-        assert!(matches!(app.top_screen(), Screen::Home(_)));
-
-        // An empty warning opens nothing.
-        app.apply_event(crate::HostEvent::Warning(WarningFlags::NONE));
-        assert!(matches!(app.top_screen(), Screen::Home(_)), "an empty warning is a no-op");
-
-        // The first flag opens the card.
-        app.apply_event(crate::HostEvent::Warning(WarningFlags::NO_GPS));
-        match app.top_screen() {
-            Screen::Warning(w) => assert!(w.flags().contains(WarningFlags::NO_GPS)),
-            _ => panic!("a raised warning opens the card"),
-        }
-
-        // A second flag while the card is up joins it — one card, both flags.
-        app.apply_event(crate::HostEvent::Warning(WarningFlags::MAP_SLOW));
-        assert_eq!(app.ui.stack.len(), 2, "the new flag joins the open card, not a second one");
-        match app.top_screen() {
-            Screen::Warning(w) => {
-                assert!(w.flags().contains(WarningFlags::NO_GPS));
-                assert!(w.flags().contains(WarningFlags::MAP_SLOW));
-            }
-            _ => panic!("still the one card"),
-        }
-
-        // Any press dismisses it back to Home.
-        app.apply_gesture(Gesture::Back);
-        assert!(matches!(app.top_screen(), Screen::Home(_)), "dismiss pops the card");
-
-        // A flag already shown doesn't nag again.
-        app.apply_event(crate::HostEvent::Warning(WarningFlags::NO_GPS));
-        assert!(matches!(app.top_screen(), Screen::Home(_)), "an already-shown flag stays quiet");
-
-        // A brand-new flag re-opens the card — showing only the fresh flag, not the acknowledged ones.
-        app.apply_event(crate::HostEvent::Warning(WarningFlags::NO_COMPASS));
-        match app.top_screen() {
-            Screen::Warning(w) => {
-                assert!(w.flags().contains(WarningFlags::NO_COMPASS));
-                assert!(!w.flags().contains(WarningFlags::NO_GPS), "the re-opened card carries only the new flag");
-            }
-            _ => panic!("a new flag re-opens the card"),
-        }
-    }
-
     /// `set_settings` seeds the boot value without arming a save (the value came from the store /
     /// the default — re-persisting it would be a pointless write).
     #[test]
@@ -5351,6 +5323,12 @@ mod tests {
             let mut app = App::new_idle(AppState::new(0, 0, 1.0));
             app.settings.idle_return = IdleReturn::S15;
             let kind = core::mem::discriminant(&card);
+            // The passkey card is level-driven: raise the level it stands for, or the card
+            // scheduler's per-pass sweep would (correctly) take a card with no passkey behind it
+            // straight back off the stack.
+            if matches!(card, Screen::Passkey(_)) {
+                app.ui.cards.set_passkey(Some(123_456));
+            }
             let _ = app.ui.stack.push(card);
             app.ui.last_input_ms = 0;
             idle_tick(&mut app, 20_000);
@@ -5453,125 +5431,18 @@ mod tests {
         assert_eq!(app.ms_until_next_wake(10_000), Some(20_000), "wake armed 20 s out (30 s − 10 s elapsed)");
     }
 
-    /// The DFU one-shots (epic #615 S4/S5): the install request and the confirmed-update fact are
-    /// both drained exactly once — the create-route request contract. `request_dfu_install` (the
-    /// `dfu-install` debug path) posts the [`DfuAction::Install`] the board's drain matches on.
+    /// The DFU install request (epic #615 S4) drains exactly once — the create-route request
+    /// contract. `request_dfu_install` (the `dfu-install` debug path) posts the
+    /// [`DfuAction::Install`] the board's drain matches on. The boot-update verdict's own
+    /// once-only rule lives with the card scheduler that consumes it.
     #[test]
-    fn dfu_request_and_confirmed_fact_are_take_once() {
+    fn dfu_install_request_is_take_once() {
         use crate::activity::DfuAction;
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         assert_eq!(drain_dfu(&mut app), None, "nothing pending at boot");
         app.activity.request_dfu(DfuAction::Install);
         assert_eq!(drain_dfu(&mut app), Some(DfuAction::Install), "the posted request drains");
         assert_eq!(drain_dfu(&mut app), None, "…exactly once");
-
-        // The confirmed-update fact is app-internal delivery state consumed by
-        // `reconcile_update_toast` (no host-protocol accessor); the in-crate test reads the field.
-        assert_eq!(app.ui.update_confirmed.take(), None, "no confirmed update on a normal boot");
-        app.apply_event(crate::HostEvent::UpdateConfirmed(crate::dfu::clamp("v1.2.3-4-gabc1234")));
-        let v = app.ui.update_confirmed.take().expect("the fact is set");
-        assert_eq!(v.as_str(), "v1.2.3-4-gabc1234");
-        assert_eq!(app.ui.update_confirmed.take(), None, "taken once — the toast shows once");
-    }
-
-    /// The S5 scan-result seam (epic #615 S5, #620): `notify_dfu_scan_result` lands in the
-    /// "Checking card..." wait the System menu pushed, swapping it for the confirm screen (`Ok`) or
-    /// the error card (`Err`); with no wait on the stack it's a no-op (the rider pressed Back).
-    #[test]
-    fn dfu_scan_result_replaces_the_check_wait() {
-        use crate::dfu::{DfuScanError, DfuScanReport};
-        let mk = |v: &str| {
-            let mut s = heapless::String::new();
-            let _ = s.push_str(v);
-            s
-        };
-        let report =
-            DfuScanReport { installed: mk("v1.0.0-0-gaaa"), staged: mk("v1.1.0-3-gbbb"), first_install: false };
-
-        // No wait up → dropped.
-        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        app.apply_event(crate::HostEvent::DfuScanned(Ok(report.clone())));
-        assert!(!app.ui.stack.iter().any(|s| matches!(s, Screen::DfuConfirm(_))), "no wait ⇒ answer dropped");
-
-        // Wait up → Ok swaps in the confirm.
-        let _ = app.ui.stack.push(Screen::DfuCheck(crate::screen::DfuCheckScreen::new()));
-        app.apply_event(crate::HostEvent::DfuScanned(Ok(report)));
-        assert!(matches!(app.top_screen(), Screen::DfuConfirm(_)), "Ok swaps the wait for the confirm");
-
-        // Wait up → Err swaps in the error card, carrying the variant.
-        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        let _ = app.ui.stack.push(Screen::DfuCheck(crate::screen::DfuCheckScreen::new()));
-        app.apply_event(crate::HostEvent::DfuScanned(Err(DfuScanError::TooFragmented)));
-        match app.top_screen() {
-            Screen::DfuError(e) => {
-                assert_eq!(e.reason(), crate::screen::DfuErrorReason::Scan(DfuScanError::TooFragmented))
-            }
-            _ => panic!("Err swaps the wait for the error card"),
-        }
-    }
-
-    /// The install-drain failure seam (issue #755): `notify_dfu_install_failed` lands in the
-    /// "Preparing update..." spinner the confirm swapped in, replacing it with the error card; with
-    /// no progress screen on the stack it's a no-op (nothing was armed) — symmetric with the scan
-    /// answer's drop-if-gone. The error→card mapping is pinned, including the re-scan bucket folding
-    /// to a scan reason so it shares the scan copy.
-    #[test]
-    fn dfu_install_failure_replaces_the_progress_spinner() {
-        use crate::dfu::DfuInstallError;
-        use crate::screen::DfuErrorReason;
-
-        // No progress spinner up → dropped.
-        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        app.apply_event(crate::HostEvent::DfuInstallFailed(DfuInstallError::NoCard));
-        assert!(!app.ui.stack.iter().any(|s| matches!(s, Screen::DfuError(_))), "no spinner ⇒ answer dropped");
-
-        // A refusal replaces the spinner with the error card, carrying the reason.
-        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        let _ = app.ui.stack.push(Screen::DfuProgress(crate::screen::DfuProgressScreen::new()));
-        app.apply_event(crate::HostEvent::DfuInstallFailed(DfuInstallError::Recording));
-        match app.top_screen() {
-            Screen::DfuError(e) => assert_eq!(e.reason(), DfuErrorReason::Install(DfuInstallError::Recording)),
-            _ => panic!("a refusal swaps the spinner for the error card"),
-        }
-        assert!(!app.ui.stack.iter().any(|s| matches!(s, Screen::DfuProgress(_))), "the spinner is gone");
-
-        // An arm-time re-scan failure folds to a plain scan reason (shared copy).
-        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        let _ = app.ui.stack.push(Screen::DfuProgress(crate::screen::DfuProgressScreen::new()));
-        app.apply_event(crate::HostEvent::DfuInstallFailed(DfuInstallError::Scan(crate::dfu::DfuScanError::Damaged)));
-        match app.top_screen() {
-            Screen::DfuError(e) => assert_eq!(e.reason(), DfuErrorReason::Scan(crate::dfu::DfuScanError::Damaged)),
-            _ => panic!("the re-scan bucket lands the error card"),
-        }
-
-        // A failure past the terminal-frame swap (`show_dfu_installing` already replaced the
-        // spinner) lands the error card on the installing card the same way.
-        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        let _ = app.ui.stack.push(Screen::DfuInstalling(crate::screen::DfuInstallingScreen::new()));
-        app.apply_event(crate::HostEvent::DfuInstallFailed(DfuInstallError::SnapshotFailed));
-        match app.top_screen() {
-            Screen::DfuError(e) => assert_eq!(e.reason(), DfuErrorReason::Install(DfuInstallError::SnapshotFailed)),
-            _ => panic!("a post-swap failure swaps the installing card for the error card"),
-        }
-        assert!(!app.ui.stack.iter().any(|s| matches!(s, Screen::DfuInstalling(_))), "the installing card is gone");
-    }
-
-    /// The terminal-frame seam: `show_dfu_installing` swaps the "Preparing update..." spinner for
-    /// the static installing card (the pre-reset frame the panel holds through the install), and
-    /// with no spinner up — the `dfu-install` debug command's direct arm — pushes it instead.
-    #[test]
-    fn show_dfu_installing_swaps_the_spinner_or_pushes() {
-        // The confirm flow: the spinner is up → swapped in place, never stacked.
-        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        let _ = app.ui.stack.push(Screen::DfuProgress(crate::screen::DfuProgressScreen::new()));
-        app.apply_event(crate::HostEvent::DfuInstallBegan);
-        assert!(matches!(app.top_screen(), Screen::DfuInstalling(_)), "the spinner became the installing card");
-        assert!(!app.ui.stack.iter().any(|s| matches!(s, Screen::DfuProgress(_))), "the spinner is gone");
-
-        // The debug direct-arm door: no spinner → the card is pushed on top.
-        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        app.apply_event(crate::HostEvent::DfuInstallBegan);
-        assert!(matches!(app.top_screen(), Screen::DfuInstalling(_)), "pushed with no spinner up");
     }
 
     /// The S6 remote-check seam (epic #615 S6, #621): a BLE `installFw` opens the **same** scan →
@@ -5586,47 +5457,6 @@ mod tests {
         assert_eq!(checks, 1, "exactly one wait screen pushed");
         assert_eq!(drain_dfu(&mut app), Some(DfuAction::Scan), "a Scan is posted — NEVER Install");
         assert_eq!(drain_dfu(&mut app), None, "…exactly once");
-    }
-
-    /// The map-transfer card's whole life cycle (issue #927), the seam a multi-minute SD write is
-    /// visible through: one card for the whole transfer (never a stack of them), progress rewritten
-    /// in place, an unchanged re-feed repainting nothing, a terminal state dismissable by a press
-    /// while a receiving one is not, and `None` closing it.
-    #[test]
-    fn map_transfer_card_opens_updates_and_closes() {
-        use crate::screen::{MapTransfer, MapTransferError};
-        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        let cards = |app: &App| app.ui.stack.iter().filter(|s| matches!(s, Screen::MapTransfer(_))).count();
-
-        assert!(!app.map_transfer_card_up(), "no card before a transfer");
-        app.set_map_transfer(Some(MapTransfer::Receiving { received_kib: 0, total_kib: 400_000 }));
-        assert!(app.map_transfer_card_up(), "the first announced byte raises the card");
-        assert_eq!(cards(&app), 1);
-
-        // Progress rewrites the one card; an identical re-feed (the steady state, fed every pass)
-        // must not dirty the map, or the transfer would repaint the panel continuously.
-        app.set_map_transfer(Some(MapTransfer::Receiving { received_kib: 100_000, total_kib: 400_000 }));
-        assert_eq!(cards(&app), 1, "progress never stacks a second card");
-        app.ui.map_dirty = false;
-        app.set_map_transfer(Some(MapTransfer::Receiving { received_kib: 100_000, total_kib: 400_000 }));
-        assert!(!app.ui.map_dirty, "an unchanged state repaints nothing");
-
-        // Modal while receiving: a press cannot dismiss the one explanation for the busy glass.
-        app.apply_gesture(Gesture::Press);
-        assert!(app.map_transfer_card_up(), "a receiving card swallows input");
-
-        // Terminal → dismissable.
-        app.set_map_transfer(Some(MapTransfer::Installed));
-        assert_eq!(cards(&app), 1, "the outcome replaces the progress state in place");
-        app.apply_gesture(Gesture::Press);
-        assert!(!app.map_transfer_card_up(), "a terminal card dismisses on a press");
-
-        // A failure raises the card the same way, and `None` (abort / unplug) closes it silently.
-        app.set_map_transfer(Some(MapTransfer::Failed(MapTransferError::Damaged)));
-        assert!(app.map_transfer_card_up());
-        app.set_map_transfer(None);
-        assert!(!app.map_transfer_card_up(), "clearing the state removes the card");
-        assert_eq!(cards(&app), 0);
     }
 
     /// Remote-check deferral behind the passkey card (S6, #621): the request is *deferred*, not
@@ -5679,44 +5509,6 @@ mod tests {
         app.activity.start_session();
         assert!(!app.open_remote_dfu_check(), "deferred while recording");
         assert_eq!(drain_dfu(&mut app), None);
-    }
-
-    /// The post-update toast (epic #615 S5): a confirmed-update fact surfaces the "Updated to vX"
-    /// card once on the next `advance_animations` pass; a normal boot (no fact) pushes nothing.
-    #[test]
-    fn confirmed_update_pushes_the_toast_once() {
-        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        app.advance_animations(InputClock(1000));
-        assert!(!app.ui.stack.iter().any(|s| matches!(s, Screen::DfuUpdated(_))), "a normal boot shows no toast");
-
-        app.apply_event(crate::HostEvent::UpdateConfirmed(crate::dfu::clamp("v2.0.0-0-gccc")));
-        app.advance_animations(InputClock(2000));
-        assert!(matches!(app.top_screen(), Screen::DfuUpdated(_)), "the confirmed update surfaces the toast");
-        app.ui.stack.pop(); // dismiss
-        app.advance_animations(InputClock(3000));
-        assert!(!app.ui.stack.iter().any(|s| matches!(s, Screen::DfuUpdated(_))), "shown once — the fact was consumed");
-    }
-
-    /// The failure twin: a failed-update fact surfaces the "UPDATE FAILED" card once — with the
-    /// typed verdict the seam carries — and a normal boot pushes nothing.
-    #[test]
-    fn failed_update_pushes_the_card_once() {
-        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        app.advance_animations(InputClock(1000));
-        assert!(!app.ui.stack.iter().any(|s| matches!(s, Screen::DfuFailed(_))), "a normal boot shows no failure card");
-
-        app.apply_event(crate::HostEvent::UpdateFailed {
-            why: crate::dfu::DfuFailure::Reverted,
-            staged: Some(crate::dfu::clamp("v2.0.0-0-gccc")),
-        });
-        app.advance_animations(InputClock(2000));
-        match app.top_screen() {
-            Screen::DfuFailed(card) => assert_eq!(card.why(), crate::dfu::DfuFailure::Reverted),
-            _ => panic!("expected the failure card on top"),
-        }
-        app.ui.stack.pop(); // dismiss
-        app.advance_animations(InputClock(3000));
-        assert!(!app.ui.stack.iter().any(|s| matches!(s, Screen::DfuFailed(_))), "shown once — the fact was consumed");
     }
 
     /// The Ride detail's track-request seam (#680): no request without an open detail; an open one
