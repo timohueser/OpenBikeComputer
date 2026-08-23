@@ -469,24 +469,22 @@ jobs:
           rustup component add llvm-tools
           python3 ../tools/resource_guard.py board --profile default \
             --elf target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l
-          cargo build --release --locked --features resource-report
-          python3 ../tools/resource_guard.py report --profile default \
-            --elf target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l
-      # The resident `App`'s own construction frame (#1446). `App::init_idle` writes each field
-      # straight into the `.bss` slot, so its frame is small (1,572 B) and must stay that way: the
-      # field plan's two row forms differ by four tokens, and demoting a `=> Type::init_in_place`
-      # row to a plain one silently materialises that component on the boot stack. Nothing else here
-      # would notice — resident RAM, `.uninit`, flash, the poll frame and the task bodies are all
-      # unchanged by a stack temporary — while a by-value `App` is 50,520 B against 55,000 B of
-      # residual main stack, i.e. the MSPLIM HardFault `mount_in_place` already cost us once.
-      # 4,096 is the measured figure with headroom, on the same ratchet policy as the legs below.
-      - name: "obc-fw-nrf54l: App placement frame ceiling"
-        if: matrix.name == 'build (default = LS021/FLPR, release)'
-        working-directory: firmware/obc-fw-nrf54l
-        run: |
+          # The resident `App`'s own construction frame (#1446), measured on the **shipping** link —
+          # hence here, before the resource-report rebuild below overwrites this same path.
+          # `App::init_idle` writes each field straight into the `.bss` slot, so its frame is small
+          # (1,572 B) and must stay that way: the field plan's two row forms differ by four tokens,
+          # and demoting a `=> Type::init_in_place` row to a plain one silently materialises that
+          # component on the boot stack. Nothing else here would notice — resident RAM, `.uninit`,
+          # flash, the poll frame and the task bodies are all unchanged by a stack temporary — while
+          # a by-value `App` is 50,520 B against 55,000 B of residual main stack, i.e. the MSPLIM
+          # HardFault `mount_in_place` already cost us once. 4,096 is the measured figure with
+          # headroom, on the same ratchet policy as the frame legs below.
           python3 ../tools/resource_guard.py frames \
             --elf target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l \
             --match init_idle --limit 4096
+          cargo build --release --locked --features resource-report
+          python3 ../tools/resource_guard.py report --profile default \
+            --elf target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l
       # The OBC2 store's own stack ceiling (#1359). The guards above measure the app image's async
       # task frames; the store is synchronous code that the app image does not link yet, so until the
       # DOS4 cutover nothing else in CI looks at it. It is gated because the regression is measured,
