@@ -512,6 +512,105 @@ impl CatalogState {
     }
 }
 
+// ==================== the Catalog domain protocol (#1436) ====================
+//
+// CatalogMachine owns every ordering the host used to improvise: delete-then-refresh, the trip
+// cascade's member lookup before its one bounded delete commit, and the identity remap a refresh
+// implies. The store executor is left with three operations — read the catalog, read a trip's
+// members, remove an object — and no say in what any of them means.
+//
+// Bulk stays out. A catalog read fills the resident catalogs through their existing feeders and the
+// outcome reports only the store revision it was read at; a member read fills the domain's bounded
+// member target and the outcome reports only how many landed.
+
+use crate::device_core::{CatalogTag, OperationToken, Revision};
+
+/// What the UI (or another domain) asks of the catalog.
+///
+/// Expiry arrives here too: `RetentionMachine` advances first and sends its deletions as these same
+/// intents, so an auto-expired ride leaves through exactly the path a rider-deleted one does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CatalogIntent {
+    /// Re-read the catalogs. Raised by the domain itself after a commit, and by a store-revision
+    /// external fact — the fact never orders a refresh, this intent does.
+    Refresh,
+    /// Delete one route.
+    DeleteRoute { id: CatalogObjectId },
+    /// Delete one ride.
+    DeleteRide { id: CatalogObjectId },
+    /// Delete one trip **and its member routes** — the cascade, whose order the domain owns.
+    DeleteTrip { id: CatalogObjectId },
+}
+
+/// One bounded physical catalog operation, carrying the [`OperationToken`] the domain issued.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CatalogEffect {
+    /// Re-read the object store into the resident catalogs.
+    ReadCatalog { token: OperationToken<CatalogTag> },
+    /// Read `trip`'s member ids into the domain's bounded member target — the cascade's first step.
+    ReadTripMembers { token: OperationToken<CatalogTag>, trip: CatalogObjectId },
+    /// Remove one object. Deliberately namespace-free: routes, rides and trips are all objects to
+    /// the store, and it is the domain that knows which cascade step this is.
+    RemoveObject { token: OperationToken<CatalogTag>, object: CatalogObjectId },
+}
+
+impl CatalogEffect {
+    /// The operation this effect belongs to.
+    pub fn token(&self) -> OperationToken<CatalogTag> {
+        match self {
+            CatalogEffect::ReadCatalog { token }
+            | CatalogEffect::ReadTripMembers { token, .. }
+            | CatalogEffect::RemoveObject { token, .. } => *token,
+        }
+    }
+}
+
+/// Why a catalog operation failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CatalogError {
+    /// The store could not be read.
+    Unreadable,
+    /// The store refused or failed the removal. A *missing* object is not this — see
+    /// [`ObjectRemoved`](CatalogOutcome::ObjectRemoved)'s `existed`.
+    RemoveFailed,
+}
+
+/// The result of one [`CatalogEffect`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CatalogOutcome {
+    /// The catalogs were re-read at store revision `revision`; the resident catalogs now hold it.
+    CatalogRead { token: OperationToken<CatalogTag>, revision: Revision },
+    /// `members` member ids landed in the domain's bounded member target.
+    TripMembersRead { token: OperationToken<CatalogTag>, members: u8 },
+    /// `object` is gone from the store. `existed` is `false` when it was already absent — the
+    /// epic's "a trip member disappears before the delete commit" race, which is a *success* for
+    /// the cascade (the goal state holds) and must not read as a failure.
+    ObjectRemoved { token: OperationToken<CatalogTag>, object: CatalogObjectId, existed: bool },
+    /// The operation failed.
+    Failed { token: OperationToken<CatalogTag>, error: CatalogError },
+    /// The executor abandoned the operation without completing it.
+    Cancelled { token: OperationToken<CatalogTag> },
+}
+
+impl CatalogOutcome {
+    /// The operation this outcome answers.
+    pub fn token(&self) -> OperationToken<CatalogTag> {
+        match self {
+            CatalogOutcome::CatalogRead { token, .. }
+            | CatalogOutcome::TripMembersRead { token, .. }
+            | CatalogOutcome::ObjectRemoved { token, .. }
+            | CatalogOutcome::Failed { token, .. }
+            | CatalogOutcome::Cancelled { token } => *token,
+        }
+    }
+}
+
+// Layout tripwires: an identity, a revision, a count — never a catalog.
+const _: () = assert!(core::mem::size_of::<CatalogIntent>() <= 16, "a request with one identity");
+const _: () = assert!(core::mem::size_of::<CatalogEffect>() <= 16, "a token and one identity");
+const _: () = assert!(core::mem::size_of::<CatalogOutcome>() <= 16, "a token, an identity and a flag");
+const _: () = assert!(core::mem::size_of::<CatalogError>() <= 1, "a verdict, not a report");
+
 #[cfg(test)]
 impl CatalogState {
     /// Assert the [`new`](CatalogState::new) boot state, field by field. The destructure is
