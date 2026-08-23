@@ -74,7 +74,20 @@ pub struct LegacyMigration {
     pub role: LegacyRole,
     /// Which component owns it afterwards.
     pub owner: LegacyOwner,
-    /// The concrete type or field it lands on.
+    /// Where it lands, as **display prose for a human reading the plan** — not a symbol reference,
+    /// and deliberately not compiler-checked.
+    ///
+    /// A third of these destinations cannot be a checked path: two name `DerivedNeeds` fields that
+    /// DC4 has not created yet, five name private [`ExternalFacts`](super::ExternalFacts) fields
+    /// whose public accessors are named differently, and three name a *pair* of variants one legacy
+    /// variant splits into. Typing the rest would either invent placeholder types for the futures —
+    /// the speculative structure this repo bans — or leave a half-typed table, which is worse than a
+    /// uniformly prose one.
+    ///
+    /// What is actually guarded is the thing that matters: [`command_migration`] and
+    /// [`event_migration`] are exhaustive over the legacy enums, so no variant can go unclassified.
+    /// The strings are rewritten row by row as DC5/DC6 wire each real path, and die with the
+    /// compatibility adapter.
     pub home: &'static str,
 }
 
