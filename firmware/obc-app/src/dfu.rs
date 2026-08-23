@@ -232,3 +232,83 @@ mod arm_marker_tests {
         assert_eq!(decode_arm_marker(&bad_utf8), None, "a non-UTF-8 version string is no marker");
     }
 }
+
+// ==================== the DFU domain protocol (#1436) ====================
+//
+// `DfuState` owns the update's user-visible lifecycle: when a scan may run, whether an install is
+// admissible, and what terminal state the panel holds through the bootloader. The executor scans a
+// package or arms an install — both bounded, both failable, neither of them a policy decision.
+//
+// The two errors here are reused, not restated: [`DfuScanError`] and [`DfuInstallError`] already
+// name every bucket the rider can be shown, and a parallel vocabulary would only drift from them.
+
+use crate::device_core::{DfuTag, OperationToken};
+
+/// What the rider (or the remote-DFU door) asks of the update domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DfuIntent {
+    /// Validate the staged package and report what it holds. Read-only and free to refuse.
+    ScanRequested,
+    /// Arm the update and reboot into the bootloader. Admissible only while
+    /// [`DfuCapabilities::install`](crate::device_core::DfuCapabilities) holds.
+    InstallRequested,
+}
+
+/// One bounded physical update operation, carrying the [`OperationToken`] the domain issued.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DfuEffect {
+    /// Validate the staged package: header, CRC, extents, signature.
+    Scan { token: OperationToken<DfuTag> },
+    /// Snapshot the running image, write the arm record, and reset. On success this never returns.
+    ArmInstall { token: OperationToken<DfuTag> },
+}
+
+impl DfuEffect {
+    /// The operation this effect belongs to.
+    pub fn token(&self) -> OperationToken<DfuTag> {
+        match self {
+            DfuEffect::Scan { token } | DfuEffect::ArmInstall { token } => *token,
+        }
+    }
+}
+
+/// The result of one [`DfuEffect`].
+///
+/// [`InstallBegan`](DfuOutcome::InstallBegan) is the *terminal* answer of a successful arm: the
+/// board reboots immediately after it, so the panel swaps to the installing card and holds it
+/// through the bootloader. Whether the update took is not an outcome at all — it is next boot's
+/// [`UpdateResult`](crate::device_core::UpdateResult) external fact.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DfuOutcome {
+    /// The staged package validated; `report` is what the confirm screen shows.
+    ScanFinished { token: OperationToken<DfuTag>, report: DfuScanReport },
+    /// The staged package was rejected.
+    ScanFailed { token: OperationToken<DfuTag>, error: DfuScanError },
+    /// The arm succeeded and the reset is imminent.
+    InstallBegan { token: OperationToken<DfuTag> },
+    /// The arm refused or failed without rebooting; the device keeps running the old image.
+    InstallFailed { token: OperationToken<DfuTag>, error: DfuInstallError },
+    /// The executor abandoned the operation without completing it.
+    Cancelled { token: OperationToken<DfuTag> },
+}
+
+impl DfuOutcome {
+    /// The operation this outcome answers.
+    pub fn token(&self) -> OperationToken<DfuTag> {
+        match self {
+            DfuOutcome::ScanFinished { token, .. }
+            | DfuOutcome::ScanFailed { token, .. }
+            | DfuOutcome::InstallBegan { token }
+            | DfuOutcome::InstallFailed { token, .. }
+            | DfuOutcome::Cancelled { token } => *token,
+        }
+    }
+}
+
+// Layout tripwires. `DfuOutcome` is the largest message in the whole DeviceCore protocol and it is
+// meant to be: [`DfuScanReport`] carries the two fixed 32-byte version strings the confirm screen
+// prints verbatim. Bounded, never allocating — and the reason the outcome enum is `Clone` rather
+// than `Copy`, like the [`UpdateResult`](crate::device_core::UpdateResult) fact it neighbours.
+const _: () = assert!(core::mem::size_of::<DfuIntent>() <= 1, "two fieldless requests");
+const _: () = assert!(core::mem::size_of::<DfuEffect>() <= 8, "a bare token");
+const _: () = assert!(core::mem::size_of::<DfuOutcome>() <= 96, "the two fixed version strings dominate");

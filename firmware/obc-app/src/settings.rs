@@ -2266,3 +2266,69 @@ mod tests {
         assert_eq!(objstore_cache.units, Units::Imperial, "the Config read serves the on-device change, no reboot");
     }
 }
+
+// ==================== the Settings domain protocol (#1436) ====================
+//
+// SettingsMachine owns the dirty revision, the debounce, the retry and the stale-ack rule that
+// `HostPending` holds today. The platform executor writes **one** revision and says what happened;
+// it decides nothing about when a write is owed or whether an old answer still counts.
+
+use crate::device_core::{OperationToken, SettingsTag};
+
+/// What moves the settings-persistence handshake.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsIntent {
+    /// A rider edit changed the live settings; `revision` is the value they now describe. A newer
+    /// edit supersedes an older in-flight write, and the older ack is then no longer current.
+    Changed { revision: u16 },
+    /// The backoff after a failed write elapsed — retry the revision that is still owed.
+    RetryDue,
+}
+
+/// The one bounded settings operation, carrying the [`OperationToken`] the domain issued.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsEffect {
+    /// Write the live settings to durable storage as `revision`. The values themselves are read
+    /// from the resident [`Settings`] under the snapshot-at-execute rule — no settings copy ever
+    /// rides the effect.
+    PersistRevision { token: OperationToken<SettingsTag>, revision: u16 },
+}
+
+impl SettingsEffect {
+    /// The operation this effect belongs to.
+    pub fn token(&self) -> OperationToken<SettingsTag> {
+        match self {
+            SettingsEffect::PersistRevision { token, .. } => *token,
+        }
+    }
+}
+
+/// The result of one [`SettingsEffect`]. The typed failure reuses
+/// [`SettingsSaveError`](obc_ports::SettingsSaveError) — the port already names every way a
+/// settings write can fail, and a second vocabulary for the same thing would only drift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsOutcome {
+    /// `revision` reached durable storage.
+    Persisted { token: OperationToken<SettingsTag>, revision: u16 },
+    /// The write for `revision` failed; the value stays live in RAM and the revision stays owed.
+    PersistFailed { token: OperationToken<SettingsTag>, revision: u16, error: obc_ports::SettingsSaveError },
+    /// The executor abandoned the write without completing it — a platform with no durable store
+    /// says so here instead of leaving the handshake parked forever.
+    Cancelled { token: OperationToken<SettingsTag> },
+}
+
+impl SettingsOutcome {
+    /// The operation this outcome answers.
+    pub fn token(&self) -> OperationToken<SettingsTag> {
+        match self {
+            SettingsOutcome::Persisted { token, .. }
+            | SettingsOutcome::PersistFailed { token, .. }
+            | SettingsOutcome::Cancelled { token } => *token,
+        }
+    }
+}
+
+// Layout tripwires: a token, a revision, a reason — never a `Settings`.
+const _: () = assert!(core::mem::size_of::<SettingsIntent>() <= 4, "a revision or nothing");
+const _: () = assert!(core::mem::size_of::<SettingsEffect>() <= 8, "a token and a revision");
+const _: () = assert!(core::mem::size_of::<SettingsOutcome>() <= 8, "a token, a revision and a reason");
