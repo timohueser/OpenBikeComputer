@@ -336,12 +336,14 @@ jobs:
         run: python3 -m unittest discover -s ops/weather/tests -v
       - name: firmware production dependency direction
         run: python3 firmware/tools/check_dependencies.py
-      # Renderer pixel-hash tripwire (issue #327): re-render the 7 fixed bench scenes over the
-      # deterministic testkit fixture and fail if any frame hash drifts from the committed golden
-      # file. Timings are printed to the log but never gated (shared runners are noisy); an
-      # intentional rendering change regenerates hashes.txt (--write-hashes) in the same PR.
-      - name: obc-bench --check (render pixel-hash tripwire)
-        run: cargo run -p obc-bench --release --locked -- --check host/obc-bench/hashes.txt
+      # Render + read-path golden gate (issues #327, #1467): re-run the 7 fixed bench scenes and
+      # the 9 route-corridor cases over the deterministic testkit fixtures and fail if any frame
+      # hash *or* any read counter (chunks visited, cache hits/misses, SD reads, bytes) drifts from
+      # the committed golden file — so a cache change that halves the hit rate cannot pass on
+      # identical pixels. Timings are printed to the log but never gated (shared runners are noisy);
+      # an intentional change regenerates golden.txt (--write-golden) in the same PR.
+      - name: obc-bench --check (render + read-counter golden gate)
+        run: cargo run -p obc-bench --release --locked -- --check host/obc-bench/golden.txt
       # Screen pixel-hash tripwire (#1441): re-render every UI screen through the headless
       # simulator and compare the frames to the committed digest manifest. The bench tripwire above
       # covers the map renderer's scenes; this covers the screens drawn over them, which is what a

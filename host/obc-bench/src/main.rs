@@ -1,4 +1,4 @@
-//! Host render benchmark harness + pixel-hash tripwire (issue #327, epic #326).
+//! Host render benchmark harness + pixel-hash and read-counter golden gate (issues #327, #1467).
 //!
 //! Renders a fixed 7-scene matrix through the **real pipeline** — `obcm-testkit`'s deterministic
 //! fixture → `SliceSource` → `MapTables`/`MapCache`/`Reader` → `RenderScratch::render_timed` → the
@@ -8,15 +8,21 @@
 //! Two jobs, one binary:
 //! - **Benchmark** (the epic's measuring instrument): the timings are the before/after numbers every
 //!   #329 optimization lands with. Printed, never gated — shared CI runners are noisy.
-//! - **Tripwire** (`--check`): the frame hashes are deterministic (seeded fixture, integer/`libm`
-//!   math), so CI compares them against the committed `hashes.txt` and fails on any drift. A
-//!   pure-motion refactor must not touch them; an intentional rendering change updates the golden
-//!   file in the same PR — that is the review signal.
+//! - **Tripwire** (`--check`): both the frame hashes *and* the map read path's per-case read
+//!   counters are deterministic (seeded fixture, integer/`libm` math, fixed cache policy), so CI
+//!   compares them against the committed `golden.txt` and fails on any drift. Pixels catch a
+//!   rendering change; the counters catch a cache change that halves the hit rate while every pixel
+//!   stays identical (epic #1402 §2.5). A pure refactor must touch neither; an intentional change
+//!   regenerates the file with `--write-golden` in the same PR — that is the review signal.
+//!
+//! `--check`/`--write-golden` cover **two** matrices against one file: the 7 render scenes and the
+//! 9 route-corridor snapshot cases, the latter under `corridor/` names.
 //!
 //! Modes: default (print the table), `--repeat <N>` (repeat the whole matrix and report
-//! min/median/max), `--write-hashes <file>`, `--check <file>` (exit 1 on mismatch), and `--map
-//! <path> --mpp <f> --heading <deg>` — a manual escape hatch to run one scene against a real local
-//! `.obcm` (never in CI: real maps aren't byte-stable fixtures).
+//! min/median/max), `--write-golden <file>`, `--check <file>` (exit 1 on mismatch), `--corridor`
+//! (print the corridor matrix alone), and `--map <path> --mpp <f> --heading <deg>` — a manual
+//! escape hatch to run one scene against a real local `.obcm` (never in CI: real maps aren't
+//! byte-stable fixtures).
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -267,15 +273,30 @@ fn run_matrix() -> Vec<SceneResult> {
     results
 }
 
+/// The scene table. `chunks`/`hit/miss`/`sd`/`bytes` are the gated read counters — `sd` is
+/// `ByteSource::read_at` calls (one card read each on the device, index blocks included) and
+/// `bytes` what they moved.
 fn print_table(results: &[SceneResult]) {
     println!(
-        "{:<13} {:>3} {:>10} {:>8} {:>9} {:>9}  {:>6} {:>6} {:>7}  {:>6} {:>9}  hash",
-        "scene", "lod", "collect", "sort", "draw", "total", "tried", "drawn", "dropped", "chunks", "hit/miss"
+        "{:<13} {:>3} {:>10} {:>8} {:>9} {:>9}  {:>6} {:>6} {:>7}  {:>6} {:>9} {:>5} {:>8}  hash",
+        "scene",
+        "lod",
+        "collect",
+        "sort",
+        "draw",
+        "total",
+        "tried",
+        "drawn",
+        "dropped",
+        "chunks",
+        "hit/miss",
+        "sd",
+        "bytes"
     );
     for r in results {
         let s = &r.stats;
         println!(
-            "{:<13} {:>3} {:>8}us {:>6}us {:>7}us {:>7}us  {:>6} {:>6} {:>7}  {:>6} {:>4}/{:<4}  0x{:016x}",
+            "{:<13} {:>3} {:>8}us {:>6}us {:>7}us {:>7}us  {:>6} {:>6} {:>7}  {:>6} {:>4}/{:<4} {:>5} {:>8}  0x{:016x}",
             r.name,
             s.lod,
             r.collect_us,
@@ -288,6 +309,8 @@ fn print_table(results: &[SceneResult]) {
             s.chunks_visited,
             s.map_chunk_hits,
             s.map_chunk_misses,
+            s.map_sd_reads,
+            s.map_bytes_read,
             r.hash
         );
     }
@@ -295,18 +318,20 @@ fn print_table(results: &[SceneResult]) {
 
 /// Repeat the complete matrix and summarize each scene's end-to-end time. Each matrix result is
 /// already the min of [`ITERS`] warmed renders; the outer median rejects process/scheduler noise,
-/// while min/max expose the observed envelope used to set a review tolerance. Hashes must agree on
-/// every repeat, keeping this timing mode covered by the same deterministic-pixel contract.
+/// while min/max expose the observed envelope used to set a review tolerance. Every gated value —
+/// hash and read counters alike — must agree on every repeat, keeping this timing mode covered by
+/// the same determinism contract the golden file gates.
 fn print_repeat_table(repeats: usize) {
     let runs: Vec<Vec<SceneResult>> = (0..repeats).map(|_| run_matrix()).collect();
     println!("{:13} {:>8} {:>8} {:>8} {:>8}  hash", "scene", "min", "median", "max", "spread");
     for scene in 0..runs[0].len() {
         let name = &runs[0][scene].name;
         let hash = runs[0][scene].hash;
+        let gated = scene_values(&runs[0][scene]);
         let mut totals: Vec<u64> = runs.iter().map(|run| run[scene].total_us).collect();
         assert!(
-            runs.iter().all(|run| run[scene].name == *name && run[scene].hash == hash),
-            "scene order or pixel hash changed between benchmark repeats"
+            runs.iter().all(|run| run[scene].name == *name && scene_values(&run[scene]) == gated),
+            "scene order, pixel hash or read counters changed between benchmark repeats"
         );
         totals.sort_unstable();
         let min = totals[0];
@@ -558,36 +583,129 @@ fn print_corridor_table(results: &[CorridorResult], route: &[u8]) {
     );
 }
 
-fn parse_golden_hashes(golden: &str) -> Result<BTreeMap<&str, u64>, String> {
+// ==================== the golden file: pixels and read counters, one gate (issue #1467) ====================
+//
+// One record per case, `name key=value …`, keys named exactly as the `RenderStats` / corridor-table
+// fields that produced them so a golden line greps straight back to the code. Both matrices share
+// one namespace: corridor cases carry a `corridor/` prefix and the name selects the key set, so
+// there is no record-type field to keep in sync.
+//
+// Timings are *not* here. Shared runners are noisy; only values that are bit-for-bit reproducible on
+// any host are gated.
+
+/// A scene record's keys, in the order [`golden_lines`] writes them. `hash` is `0x` + 16 hex
+/// digits; every counter is decimal. The counters are the last of [`ITERS`] warmed renders — a
+/// per-frame steady state, so they do not depend on how many iterations ran.
+const SCENE_KEYS: [&str; 6] =
+    ["hash", "chunks_visited", "map_chunk_hits", "map_chunk_misses", "map_sd_reads", "map_bytes_read"];
+
+/// A corridor record's keys, named after the columns [`print_corridor_table`] prints.
+const CORRIDOR_KEYS: [&str; 5] = ["rows", "map_reads", "map_bytes", "route_reads", "route_bytes"];
+
+/// The corridor matrix's namespace inside the shared golden file.
+const CORRIDOR_PREFIX: &str = "corridor/";
+
+/// Which key set a case name carries.
+fn keys_for(name: &str) -> &'static [&'static str] {
+    if name.starts_with(CORRIDOR_PREFIX) {
+        &CORRIDOR_KEYS
+    } else {
+        &SCENE_KEYS
+    }
+}
+
+/// One scene's gated values, in [`SCENE_KEYS`] order.
+fn scene_values(r: &SceneResult) -> Vec<u64> {
+    let s = &r.stats;
+    vec![
+        r.hash,
+        s.chunks_visited as u64,
+        u64::from(s.map_chunk_hits),
+        u64::from(s.map_chunk_misses),
+        u64::from(s.map_sd_reads),
+        u64::from(s.map_bytes_read),
+    ]
+}
+
+/// One corridor case's gated values, in [`CORRIDOR_KEYS`] order.
+fn corridor_values(r: &CorridorResult) -> Vec<u64> {
+    vec![r.results as u64, u64::from(r.map_reads), r.map_bytes, u64::from(r.route_reads), r.route_bytes]
+}
+
+/// Both matrices as `(case name, gated values)` in run order — the order the golden file is written
+/// in, so it reads like the tables the bench prints.
+fn records(scenes: &[SceneResult], corridor: &[CorridorResult]) -> Vec<(String, Vec<u64>)> {
+    scenes
+        .iter()
+        .map(|r| (r.name.clone(), scene_values(r)))
+        .chain(corridor.iter().map(|r| (format!("{CORRIDOR_PREFIX}{}", r.name), corridor_values(r))))
+        .collect()
+}
+
+/// Render one value the way its key is written and read.
+fn format_value(key: &str, value: u64) -> String {
+    if key == "hash" {
+        format!("0x{value:016x}")
+    } else {
+        value.to_string()
+    }
+}
+
+fn parse_value(at: usize, key: &str, value: &str) -> Result<u64, String> {
+    if key == "hash" {
+        return value
+            .strip_prefix("0x")
+            .filter(|digits| digits.len() == 16 && digits.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .and_then(|digits| u64::from_str_radix(digits, 16).ok())
+            .ok_or_else(|| format!("line {at} has invalid hash `{value}`"));
+    }
+    value.parse().map_err(|error| format!("line {at} has invalid {key} `{value}`: {error}"))
+}
+
+/// Parse the golden file. Every key of the record's key set must appear exactly once and no other
+/// key is accepted, so a dropped counter is an error rather than a silent zero that would gate
+/// nothing.
+fn parse_golden(golden: &str) -> Result<BTreeMap<String, Vec<u64>>, String> {
     let mut expected = BTreeMap::new();
     for (index, raw) in golden.lines().enumerate() {
         let line = raw.trim();
         if line.is_empty() {
             continue;
         }
-        let (name, value) =
-            line.split_once('=').ok_or_else(|| format!("line {} is not `name=0x<16 hex digits>`", index + 1))?;
-        let digits = value
-            .strip_prefix("0x")
-            .filter(|digits| digits.len() == 16 && digits.bytes().all(|byte| byte.is_ascii_hexdigit()))
-            .ok_or_else(|| format!("line {} has invalid hash `{value}`", index + 1))?;
-        if name.is_empty() || name.trim() != name {
-            return Err(format!("line {} has invalid scene name `{name}`", index + 1));
+        let at = index + 1;
+        let mut fields = line.split_whitespace();
+        let name = fields.next().expect("a non-empty trimmed line has a first field");
+        let keys = keys_for(name);
+        let mut found: Vec<Option<u64>> = vec![None; keys.len()];
+        for field in fields {
+            let (key, value) =
+                field.split_once('=').ok_or_else(|| format!("line {at} field `{field}` is not `key=value`"))?;
+            let slot = keys
+                .iter()
+                .position(|known| *known == key)
+                .ok_or_else(|| format!("line {at} has unknown key `{key}` for case `{name}`"))?;
+            if found[slot].is_some() {
+                return Err(format!("line {at} repeats key `{key}`"));
+            }
+            found[slot] = Some(parse_value(at, key, value)?);
         }
-        let hash = u64::from_str_radix(digits, 16)
-            .map_err(|error| format!("line {} has invalid hash `{value}`: {error}", index + 1))?;
-        if expected.insert(name, hash).is_some() {
-            return Err(format!("line {} duplicates scene `{name}`", index + 1));
+        let values = keys
+            .iter()
+            .zip(&found)
+            .map(|(key, value)| value.ok_or_else(|| format!("line {at} case `{name}` is missing key `{key}`")))
+            .collect::<Result<Vec<u64>, String>>()?;
+        if expected.insert(name.to_string(), values).is_some() {
+            return Err(format!("line {at} duplicates case `{name}`"));
         }
     }
     Ok(expected)
 }
 
-/// Compare the run's hashes to the golden file (`name=0x<16 hex digits>` lines). Malformed or
-/// duplicate lines, changed hashes, and any difference between the golden/current scene-name sets
-/// print a focused diagnostic and fail the check.
-fn check_hashes(results: &[SceneResult], golden: &str) -> bool {
-    let expected = match parse_golden_hashes(golden) {
+/// Compare a run's records to the golden file. Malformed, duplicate or incomplete golden lines, any
+/// changed value, and any difference between the golden/current case-name sets print a focused
+/// diagnostic and fail the check. A counter delta fails exactly like a hash delta.
+fn check_golden(scenes: &[SceneResult], corridor: &[CorridorResult], golden: &str) -> bool {
+    let expected = match parse_golden(golden) {
         Ok(expected) => expected,
         Err(error) => {
             eprintln!("GOLDEN INVALID: {error}");
@@ -596,43 +714,66 @@ fn check_hashes(results: &[SceneResult], golden: &str) -> bool {
     };
     let mut current = BTreeMap::new();
     let mut ok = true;
-    for result in results {
-        if current.insert(result.name.as_str(), result.hash).is_some() {
-            eprintln!("CURRENT INVALID: duplicate scene `{}`", result.name);
+    for (name, values) in records(scenes, corridor) {
+        if current.insert(name.clone(), values).is_some() {
+            eprintln!("CURRENT INVALID: duplicate case `{name}`");
             ok = false;
         }
     }
-    for (&name, &want) in &expected {
-        match current.get(name) {
-            Some(&got) if want == got => {}
-            Some(&got) => {
-                eprintln!("HASH MISMATCH {name}: golden 0x{want:016x} != run 0x{got:016x}");
-                ok = false;
-            }
-            None => {
-                eprintln!("HASH STALE {name}: golden entry has no current scene");
+    for (name, want) in &expected {
+        let Some(got) = current.get(name) else {
+            eprintln!("STALE {name}: golden entry has no current case");
+            ok = false;
+            continue;
+        };
+        for ((key, want), got) in keys_for(name).iter().zip(want).zip(got) {
+            if want != got {
+                eprintln!(
+                    "MISMATCH {name} {key}: golden {} != run {}",
+                    format_value(key, *want),
+                    format_value(key, *got)
+                );
                 ok = false;
             }
         }
     }
-    for (&name, &got) in &current {
+    for name in current.keys() {
         if !expected.contains_key(name) {
-            eprintln!("HASH MISSING {name}: no golden entry (run 0x{got:016x})");
+            eprintln!("MISSING {name}: no golden entry for this case");
             ok = false;
         }
     }
     ok
 }
 
-fn hash_lines(results: &[SceneResult]) -> String {
-    results.iter().map(|r| format!("{}=0x{:016x}\n", r.name, r.hash)).collect()
+/// Run and print everything the golden file gates — the scene matrix and the corridor matrix — so
+/// `--check` and `--write-golden` measure and report exactly the same thing.
+fn run_gated_matrices() -> (Vec<SceneResult>, Vec<CorridorResult>) {
+    let scenes = run_matrix();
+    print_table(&scenes);
+    let (corridor, route) = run_corridor_matrix();
+    println!();
+    print_corridor_table(&corridor, &route);
+    (scenes, corridor)
+}
+
+fn golden_lines(scenes: &[SceneResult], corridor: &[CorridorResult]) -> String {
+    let mut out = String::new();
+    for (name, values) in records(scenes, corridor) {
+        out.push_str(&name);
+        for (key, value) in keys_for(&name).iter().zip(&values) {
+            out.push_str(&format!(" {key}={}", format_value(key, *value)));
+        }
+        out.push('\n');
+    }
+    out
 }
 
 /// What the hand-parsed CLI asked for. No CLI framework — five flags, parsed by hand.
 enum Mode {
     Table,
     Repeat(usize),
-    WriteHashes(String),
+    WriteGolden(String),
     Check(String),
     Custom {
         map: String,
@@ -652,7 +793,7 @@ fn parse_args() -> Result<Mode, String> {
     while let Some(a) = it.next() {
         let mut val = |flag: &str| it.next().cloned().ok_or(format!("{flag} needs a value"));
         match a.as_str() {
-            "--write-hashes" => write = Some(val("--write-hashes")?),
+            "--write-golden" => write = Some(val("--write-golden")?),
             "--check" => check = Some(val("--check")?),
             "--repeat" => {
                 let n: usize = val("--repeat")?.parse().map_err(|e| format!("--repeat: {e}"))?;
@@ -668,19 +809,14 @@ fn parse_args() -> Result<Mode, String> {
             other => return Err(format!("unknown argument `{other}`")),
         }
     }
-    if corridor {
-        if write.is_some() || check.is_some() || map.is_some() || repeat.is_some() {
-            return Err("--corridor takes no other mode flag".into());
-        }
-        return Ok(Mode::Corridor);
-    }
-    Ok(match (write, check, map, repeat) {
-        (Some(f), None, None, None) => Mode::WriteHashes(f),
-        (None, Some(f), None, None) => Mode::Check(f),
-        (None, None, Some(map), None) => Mode::Custom { map, mpp, heading },
-        (None, None, None, Some(n)) => Mode::Repeat(n),
-        (None, None, None, None) => Mode::Table,
-        _ => return Err("pick one of --repeat / --write-hashes / --check / --map".into()),
+    Ok(match (write, check, map, repeat, corridor) {
+        (Some(f), None, None, None, false) => Mode::WriteGolden(f),
+        (None, Some(f), None, None, false) => Mode::Check(f),
+        (None, None, Some(map), None, false) => Mode::Custom { map, mpp, heading },
+        (None, None, None, Some(n), false) => Mode::Repeat(n),
+        (None, None, None, None, true) => Mode::Corridor,
+        (None, None, None, None, false) => Mode::Table,
+        _ => return Err("pick one of --repeat / --write-golden / --check / --corridor / --map".into()),
     })
 }
 
@@ -690,7 +826,7 @@ fn main() -> ExitCode {
         Err(e) => {
             eprintln!("obc-bench: {e}");
             eprintln!(
-                "usage: obc-bench [--repeat <odd-N> | --write-hashes <file> | --check <file> | --corridor | --map <path> [--mpp <f>] [--heading <deg>]]"
+                "usage: obc-bench [--repeat <odd-N> | --write-golden <file> | --check <file> | --corridor | --map <path> [--mpp <f>] [--heading <deg>]]"
             );
             return ExitCode::FAILURE;
         }
@@ -703,10 +839,9 @@ fn main() -> ExitCode {
             print_corridor_table(&results, &route);
         }
         Mode::Repeat(n) => print_repeat_table(n),
-        Mode::WriteHashes(path) => {
-            let results = run_matrix();
-            print_table(&results);
-            if let Err(e) = std::fs::write(&path, hash_lines(&results)) {
+        Mode::WriteGolden(path) => {
+            let (scenes, corridor) = run_gated_matrices();
+            if let Err(e) = std::fs::write(&path, golden_lines(&scenes, &corridor)) {
                 eprintln!("obc-bench: writing {path}: {e}");
                 return ExitCode::FAILURE;
             }
@@ -720,13 +855,15 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            let results = run_matrix();
-            print_table(&results);
-            if !check_hashes(&results, &golden) {
-                eprintln!("frame hashes drifted from {path} — intentional rendering change? regenerate with --write-hashes and commit it in the same PR");
+            let (scenes, corridor) = run_gated_matrices();
+            if !check_golden(&scenes, &corridor, &golden) {
+                eprintln!(
+                    "pixels or read counters drifted from {path} — intentional change? regenerate with \
+                     --write-golden and state the reason in the same PR"
+                );
                 return ExitCode::FAILURE;
             }
-            println!("all {} frame hashes match {path}", results.len());
+            println!("all {} golden records match {path}", scenes.len() + corridor.len());
         }
         // Manual escape hatch: one scene over a real local `.obcm`. No hash bookkeeping, no
         // saturation assert — real maps aren't fixtures.
@@ -832,30 +969,89 @@ mod tests {
         assert_eq!(a.hash, b.hash);
     }
 
-    fn hash_result(name: &str, hash: u64) -> SceneResult {
+    /// The scene and corridor counters are as reproducible as the pixels — the property the golden
+    /// file's counter half stands on, asserted the same way `frame_hash_is_repeatable` asserts the
+    /// pixel half.
+    #[test]
+    fn gated_values_are_repeatable_across_runs() {
+        assert_eq!(records(&run_matrix(), &[]), records(&run_matrix(), &[]));
+        let (a, _) = run_corridor_matrix();
+        let (b, _) = run_corridor_matrix();
+        assert_eq!(records(&[], &a), records(&[], &b));
+    }
+
+    fn scene_result(name: &str, hash: u64, chunks_visited: usize) -> SceneResult {
         SceneResult {
             name: name.into(),
             collect_us: 0,
             sort_us: 0,
             draw_us: 0,
             total_us: 0,
-            stats: RenderStats::default(),
+            stats: RenderStats { chunks_visited, ..RenderStats::default() },
             hash,
         }
     }
 
-    #[test]
-    fn golden_hash_parser_rejects_malformed_and_duplicate_lines() {
-        assert!(parse_golden_hashes("riding=not-a-hash\n").unwrap_err().contains("invalid hash"));
-        assert!(parse_golden_hashes("riding=0x0000000000000001\nriding=0x0000000000000001\n")
-            .unwrap_err()
-            .contains("duplicates scene"));
+    fn corridor_result(name: &str, map_reads: u32) -> CorridorResult {
+        CorridorResult {
+            name: name.into(),
+            results: 6,
+            map_reads,
+            map_bytes: 21216,
+            route_reads: 6,
+            route_bytes: 7902,
+            us: 0,
+        }
+    }
+
+    /// A run and the golden file it was written from, plus the same run's file with one substring
+    /// edited — the shape every check test below uses.
+    fn a_run() -> ([SceneResult; 1], [CorridorResult; 1], String) {
+        let scenes = [scene_result("riding", 1, 4)];
+        let corridor = [corridor_result("thin/all/cold", 42)];
+        let golden = golden_lines(&scenes, &corridor);
+        (scenes, corridor, golden)
     }
 
     #[test]
-    fn hash_check_rejects_both_missing_and_stale_scene_names() {
-        let results = [hash_result("riding", 1), hash_result("route", 2)];
-        assert!(!check_hashes(&results, "riding=0x0000000000000001\noverview=0x0000000000000003\n"));
-        assert!(check_hashes(&results, "riding=0x0000000000000001\nroute=0x0000000000000002\n"));
+    fn golden_parser_rejects_malformed_duplicate_unknown_and_missing_keys() {
+        let (.., golden) = a_run();
+        assert!(parse_golden(&golden).is_ok());
+        assert!(parse_golden(&golden.replace("hash=0x0000000000000001", "hash=nope"))
+            .unwrap_err()
+            .contains("invalid hash"));
+        assert!(parse_golden(&golden.replace("chunks_visited=4", "chunks_visited=four"))
+            .unwrap_err()
+            .contains("invalid chunks_visited"));
+        assert!(parse_golden(&format!("{golden}{golden}")).unwrap_err().contains("duplicates case"));
+        assert!(parse_golden(&golden.replace("map_sd_reads=", "map_sd_readz="))
+            .unwrap_err()
+            .contains("unknown key `map_sd_readz`"));
+        // A dropped counter must be an error, never a silent zero that would gate nothing.
+        assert!(parse_golden(&golden.replace(" map_sd_reads=0", ""))
+            .unwrap_err()
+            .contains("missing key `map_sd_reads`"));
+        assert!(parse_golden(&golden.replace(" map_bytes=21216", "")).unwrap_err().contains("missing key `map_bytes`"));
+    }
+
+    /// The gate's whole purpose: identical pixels, one moved counter, and CI goes red — in either
+    /// matrix.
+    #[test]
+    fn check_fails_on_a_counter_delta_with_every_hash_intact() {
+        let (scenes, corridor, golden) = a_run();
+        assert!(check_golden(&scenes, &corridor, &golden));
+        assert!(!check_golden(&scenes, &corridor, &golden.replace("chunks_visited=4", "chunks_visited=5")));
+        assert!(!check_golden(&scenes, &corridor, &golden.replace("map_reads=42", "map_reads=43")));
+    }
+
+    #[test]
+    fn check_still_fails_on_a_hash_delta_and_on_either_name_set_difference() {
+        let (scenes, corridor, golden) = a_run();
+        assert!(!check_golden(&scenes, &corridor, &golden.replace("0x0000000000000001", "0x0000000000000002")));
+        // A golden entry with no current case…
+        let stale = format!("{golden}{}", golden_lines(&[scene_result("overview", 3, 16)], &[]));
+        assert!(!check_golden(&scenes, &corridor, &stale));
+        // …and, in the same edit, a current case with no golden entry.
+        assert!(!check_golden(&scenes, &corridor, &golden.replace("riding ", "mid ")));
     }
 }
