@@ -606,7 +606,7 @@ mod tests {
 
     // --- ported behaviour: the families' own contracts -------------------------------------------
 
-    /// The `notify_warning` contract: a raised flag opens the card, further flags coalesce onto the
+    /// The [`HostEvent::Warning`](crate::HostEvent::Warning) contract: a raised flag opens the card, further flags coalesce onto the
     /// open one (never a second card), any press dismisses it, and each flag is shown **once** — an
     /// already-shown flag stays quiet, but a genuinely new one re-opens the card with only itself.
     #[test]
@@ -655,7 +655,7 @@ mod tests {
         }
     }
 
-    /// The S5 scan-result seam (epic #615 S5, #620): `notify_dfu_scan_result` lands in the
+    /// The S5 scan-result seam (epic #615 S5, #620): a scan answer lands in the
     /// "Checking card..." wait the System menu pushed, swapping it for the confirm screen (`Ok`) or
     /// the error card (`Err`); with no wait on the stack it's a no-op (the rider pressed Back).
     #[test]
@@ -691,7 +691,7 @@ mod tests {
         }
     }
 
-    /// The install-drain failure seam (issue #755): `notify_dfu_install_failed` lands in the
+    /// The install-drain failure seam (issue #755): an install failure lands in the
     /// "Preparing update..." spinner the confirm swapped in, replacing it with the error card; with
     /// no progress screen on the stack it's a no-op (nothing was armed) — symmetric with the scan
     /// answer's drop-if-gone. The error→card mapping is pinned, including the re-scan bucket folding
@@ -725,7 +725,7 @@ mod tests {
             _ => panic!("the re-scan bucket lands the error card"),
         }
 
-        // A failure past the terminal-frame swap (`show_dfu_installing` already replaced the
+        // A failure past the terminal-frame swap (the install-began answer already replaced the
         // spinner) lands the error card on the installing card the same way.
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         let _ = app.ui.stack.push(Screen::DfuInstalling(crate::screen::DfuInstallingScreen::new()));
@@ -737,7 +737,7 @@ mod tests {
         assert!(!app.ui.stack.iter().any(|s| matches!(s, Screen::DfuInstalling(_))), "the installing card is gone");
     }
 
-    /// The terminal-frame seam: `show_dfu_installing` swaps the "Preparing update..." spinner for
+    /// The terminal-frame seam: the install-began answer swaps the "Preparing update..." spinner for
     /// the static installing card (the pre-reset frame the panel holds through the install), and
     /// with no spinner up — the `dfu-install` debug command's direct arm — pushes it instead.
     #[test]
