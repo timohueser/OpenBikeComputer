@@ -2,9 +2,13 @@
 //! sidecar** codec, and the portable **expiry sweep** (epic #638, S3 #643).
 //!
 //! Everything here is host-agnostic `no_std`: the same types drive the simulator, the board, and
-//! the unit tests. The *policy* (what expires, what re-stamps) lives here as pure functions so the
-//! safety invariants are testable without hardware; the *I/O* (deleting a file, writing the
-//! sidecar) is the host's, reached through the typed [`HostCommand`](crate::HostCommand) protocol.
+//! the unit tests. The *policy* — what expires, what re-stamps, and when either may happen — has
+//! exactly one owner, [`RetentionMachine`]; [`collect_sweep_actions`] is the pure discovery pass
+//! inside it, so the safety invariants stay testable without hardware. The machine never deletes:
+//! it emits a [`RetentionEffect`] for its own device-local sidecar writes and a
+//! [`CatalogIntent`](crate::catalog_state::CatalogIntent) for every expiry, so an auto-expired
+//! object leaves through exactly the path a rider-deleted one does and **no platform executor ever
+//! decides whether an object is expired**.
 //!
 //! ## The safety core
 //!
@@ -442,7 +446,7 @@ pub struct SweepInputs<'a> {
 ///    retention`; an unsynced ride is never touched regardless of age.
 ///
 /// **Ride `synced_at` stamps are not emitted here** — they are stamped *eagerly* at ack-time (see
-/// [`RetentionRuntime::stamp_synced_rides`]), not deferred to this recording-gated hourly sweep, so
+/// [`RetentionMachine::advance`]), not deferred to this recording-gated hourly sweep, so
 /// a ride acked mid-tour starts its countdown immediately rather than at recording-end. This
 /// function only ever *deletes* a ride whose `synced_at` is already set.
 pub fn collect_sweep_actions<const N: usize>(inputs: &SweepInputs, out: &mut heapless::Vec<SweepAction, N>) {
@@ -496,7 +500,7 @@ pub fn collect_sweep_actions<const N: usize>(inputs: &SweepInputs, out: &mut hea
 /// now that the sweep reads the full [`MAX_RIDES`](crate::ride::MAX_RIDES)-deep ride inventory
 /// (finding #876-2): a pathological store (every route expired + >32 rides due at once) can emit
 /// more candidates than fit. That overflow is **wave behavior, not loss** — `collect_sweep_actions`
-/// drops the excess silently, and because [`RetentionRuntime::maybe_sweep`] only re-sweeps once the
+/// drops the excess silently, and because [`RetentionMachine::advance`] only re-sweeps once the
 /// queue has drained, the next sweep re-discovers whatever is still due. The failure direction is
 /// benign by construction: a full queue can only *delay* stamps and deletes to a later wave, never
 /// mis-delete (every candidate is still re-validated at dispatch). Sized for the realistic case —
@@ -511,23 +515,75 @@ pub(crate) const SWEEP_QUEUE_CAP: usize = MAX_ROUTES + UI_RIDES_CAP;
 /// candidate is cancelled as "already absent") is never gated by it.
 pub(crate) const RETENTION_DELETE_BACKOFF_MS: u32 = 3_000;
 
-/// The app-resident retention **coordinator** (finding #876): the pending candidate queue, the
-/// wall-clock hour the last sweep ran (the allocation-free "roughly hourly" gate — no new timer), the
-/// last active-route id stamped (so activation stamps `last_used` **once per activation**, not per
-/// tick), and the bounded re-dispatch backoff for an in-flight delete.
+/// Everything one retention decision reads, borrowed for the length of the call — the catalogs and
+/// their metadata columns, the live gates, and the two clocks.
 ///
-/// The queue holds **candidates**, not final commands. A `Delete*` entry means only "this id looked
-/// worth deleting when the cursor reached it" — it does **not** authorize deletion. The just-in-time
-/// decision is re-derived from live state (clock trust, recording, active route, expiry, synced) in
-/// [`App::drain_host_command`](crate::App) immediately before dispatch, and a delete candidate is
-/// **retained until storage confirms it gone** (the rescan drops the id) rather than consumed on
-/// dispatch — so a transient failure retries without waiting for the next hourly sweep, and a route
-/// activated or a ride re-synced after discovery is protected by the live recheck.
-pub(crate) struct RetentionRuntime {
-    /// The batch of candidate [`SweepAction`]s a sweep pass emitted. Stamps drain once (fire-and-
-    /// forget, mirrored so they don't re-enqueue); delete candidates are retained until storage
-    /// confirms the object absent (or a live recheck cancels them). A sweep only refills it when it
-    /// is empty (so a batch is never double-enqueued and at most one batch drains at a time).
+/// It exists so the *whole* policy can live in [`RetentionMachine`] without the machine owning a
+/// copy of the catalogs: `App` assembles this view from its components and the machine reads it.
+/// Building it is free — three slice borrows and five scalars — so discovery and the just-in-time
+/// recheck read exactly the same picture rather than two hand-assembled ones.
+pub(crate) struct RetentionView<'a> {
+    /// Current UTC unix seconds, or `None` when no real time source established the clock **this
+    /// boot** — invariant 1. A `None` here is the whole safety core: nothing stamps, nothing
+    /// deletes, nothing sweeps.
+    pub now_utc: Option<u32>,
+    /// Map-plane millis — the timebase of the bounded delete re-dispatch backoff only.
+    pub now_ms: u32,
+    /// Whether a ride is recording (invariant 4: deletions defer; metadata stamps do not).
+    pub recording: bool,
+    /// Durable route ids, pairwise with [`route_metas`](RetentionView::route_metas).
+    pub route_ids: &'a [crate::CatalogObjectId],
+    /// Each route's retention meta, pairwise with [`route_ids`](RetentionView::route_ids).
+    pub route_metas: &'a [RouteRetentionMeta],
+    /// The active-navigation route's catalog index, or `None` — never deleted (re-stamped instead).
+    pub active_route: Option<usize>,
+    /// The **full** compact ride inventory (finding #876-2), not just the newest UI page.
+    pub ride_records: &'a [RideRetentionRecord],
+    /// The device ride-retention setting.
+    pub ride_retention: RideRetention,
+}
+
+impl RetentionView<'_> {
+    /// Route `id`'s catalog index and retention meta, or `None` when it is not resident.
+    fn route(&self, id: crate::CatalogObjectId) -> Option<(usize, RouteRetentionMeta)> {
+        let idx = self.route_ids.iter().position(|&x| x == id)?;
+        Some((idx, self.route_metas.get(idx).copied().unwrap_or_default()))
+    }
+
+    /// The active route's durable id, but only while it is a route that can actually expire. A
+    /// `Never` route (the migration default, and every route until a rider sets a level) needs no
+    /// `last_used`, so stamping it on each activation would churn the sidecar for no benefit.
+    fn expiring_active_route(&self) -> Option<crate::CatalogObjectId> {
+        let idx = self.active_route?;
+        self.route_metas.get(idx)?.retention.days()?;
+        self.route_ids.get(idx).copied()
+    }
+}
+
+/// The **one owner** of retention policy (epic #1433 §5, #1437): the trusted-clock gate, the hourly
+/// sweep gate, the active-route and ride-sync stamps, expiry discovery, the live revalidation that
+/// stands between a candidate and a deletion, and the per-kind delete retry pacing.
+///
+/// It produces exactly two things, and never a deletion itself:
+///
+/// - [`RetentionEffect`] — the two bounded device-local sidecar writes, through
+///   [`next_metadata_effect`](RetentionMachine::next_metadata_effect).
+/// - [`CatalogIntent`] — an expiry, handed to `CatalogMachine` through
+///   [`next_expiry`](RetentionMachine::next_expiry), so an auto-expired object leaves by exactly the
+///   path a rider-deleted one does. **No platform executor decides whether an object is expired.**
+///
+/// The queue holds **candidates**, not decisions. A `Delete*` entry means only "this id looked worth
+/// deleting when the sweep reached it"; [`next_expiry`](RetentionMachine::next_expiry) re-derives
+/// the whole rule from the live [`RetentionView`] immediately before it emits an intent, and keeps
+/// the candidate until storage confirms the object gone — so a transient failure retries without
+/// waiting for the next hourly sweep, and a route activated or a ride re-synced after discovery is
+/// protected by the recheck.
+pub(crate) struct RetentionMachine {
+    /// The batch of candidate [`SweepAction`]s a sweep pass emitted. A stamp leaves the queue when
+    /// its effect is issued (and is re-queued only if the write comes back failed); delete
+    /// candidates are retained until storage confirms the object absent, or a live recheck cancels
+    /// them. A sweep only refills it when it is empty (so a batch is never double-enqueued and at
+    /// most one batch drains at a time).
     queue: heapless::Vec<SweepAction, SWEEP_QUEUE_CAP>,
     /// The wall-clock hour (`utc / 3600`) of the last completed sweep — `None` until the first
     /// trusted sweep this boot. The sweep re-runs when the current hour differs (roughly hourly)
@@ -550,17 +606,186 @@ pub(crate) struct RetentionRuntime {
     /// outstanding) must not re-open the dispatch window mid-flight.
     route_delete_inflight: Option<(crate::CatalogObjectId, u32)>,
     ride_delete_inflight: Option<(crate::CatalogObjectId, u32)>,
+    /// The token source for the sidecar writes. One write is in flight at a time (the domain's
+    /// single effect slot), so one source is all the domain needs.
+    ops: crate::device_core::TokenSource<crate::device_core::RetentionTag>,
+    /// The stamp currently out with the executor, so a failure can be re-queued for the id it was
+    /// actually about (the outcome carries the token, not the subject).
+    inflight_write: Option<(SweepKind, crate::CatalogObjectId)>,
 }
 
-impl RetentionRuntime {
+impl RetentionMachine {
     /// The boot state: nothing queued, no sweep run yet, no activation stamped.
     pub(crate) const fn new() -> Self {
-        RetentionRuntime {
+        RetentionMachine {
             queue: heapless::Vec::new(),
             last_sweep_hour: None,
             last_active_stamped: None,
             route_delete_inflight: None,
             ride_delete_inflight: None,
+            ops: crate::device_core::TokenSource::new(),
+            inflight_write: None,
+        }
+    }
+
+    /// Advance the domain one pass: the once-per-activation active-route stamp, the eager ride
+    /// `synced_at` stamps, and the roughly-hourly expiry sweep.
+    ///
+    /// **The safety core lives here, not in the caller.** An untrusted clock returns immediately:
+    /// no stamp, no sweep, no candidate (invariant 1). The sweep additionally waits for the ride to
+    /// end (invariant 4) — a metadata stamp does not, so a ride acked mid-tour starts its countdown
+    /// at ack time instead of at the end of the tour.
+    pub(crate) fn advance(&mut self, view: &RetentionView) {
+        let Some(now) = view.now_utc else {
+            return; // invariant 1: no trusted clock this boot → nothing runs
+        };
+
+        // Once-per-activation stamp: when the active route *changes*, mark it used now so a freshly
+        // started route cannot expire underneath the ride it is guiding (invariant 3's companion).
+        self.note_active_route(view.expiring_active_route());
+
+        // The eager `synced_at` stamp: a ride acked under a trusted clock starts its delete
+        // countdown at ~ack time. Safe mid-ride — invariant 4 gates *deletions*, not stamps.
+        self.stamp_synced_rides(view.ride_records);
+
+        if view.recording {
+            return; // invariant 4: no sweep while a ride records
+        }
+        self.maybe_sweep(now, |queue| {
+            let inputs = SweepInputs {
+                now_utc: now,
+                route_ids: view.route_ids,
+                route_metas: view.route_metas,
+                active_route: view.active_route,
+                ride_records: view.ride_records,
+                ride_retention: view.ride_retention,
+            };
+            collect_sweep_actions(&inputs, queue);
+        });
+    }
+
+    /// Take the next queued **metadata write** of `kind` (a stamp class) as a typed effect, or
+    /// `None` when nothing of that kind is queued, the clock is untrusted, or a write is already in
+    /// flight — the domain's single-operation rule.
+    ///
+    /// The stamp carries the UTC instant at *emission*, which is what makes the queue entry a bare
+    /// id: day-grain expiry is indifferent to the seconds between discovery and dispatch.
+    pub(crate) fn next_metadata_effect(&mut self, kind: SweepKind, view: &RetentionView) -> Option<RetentionEffect> {
+        let now = view.now_utc?;
+        if self.inflight_write.is_some() {
+            return None; // one sidecar write at a time
+        }
+        let id = self.peek(kind)?;
+        let effect = match kind {
+            SweepKind::StampRoute => {
+                // A retention *level* is never touched by a use stamp — read the live level back and
+                // write it beside the fresh `last_used`.
+                let retention = view.route(id).map(|(_, meta)| meta.retention).unwrap_or_default();
+                RetentionEffect::WriteRouteMetadata {
+                    token: self.ops.issue(),
+                    id,
+                    meta: RouteRetentionMeta { retention, last_used_utc: now },
+                }
+            }
+            SweepKind::StampRide => RetentionEffect::WriteRideMetadata { token: self.ops.issue(), id, synced_at: now },
+            SweepKind::DeleteRoute | SweepKind::DeleteRide => return None, // deletions are intents
+        };
+        self.take(kind); // the stamp leaves the queue; a failure re-queues it in `apply_outcome`
+        self.inflight_write = Some((kind, id));
+        Some(effect)
+    }
+
+    /// Consume the answer to a [`RetentionEffect`]. A stale token (the write was superseded or
+    /// already accounted for) changes nothing.
+    ///
+    /// A failed or abandoned write **re-queues its stamp**. The direction is safe either way — an
+    /// unwritten stamp reads back as unknown, which never deletes — but re-queuing means the retry
+    /// costs one pass rather than waiting for the next hourly sweep to rediscover it.
+    pub(crate) fn apply_outcome(&mut self, outcome: RetentionOutcome) {
+        if !self.ops.is_current(outcome.token()) {
+            return;
+        }
+        self.ops.invalidate(); // terminal: a repeat of this outcome is no longer current
+        let Some((kind, id)) = self.inflight_write.take() else {
+            return;
+        };
+        if matches!(outcome, RetentionOutcome::Failed { .. } | RetentionOutcome::Cancelled { .. }) {
+            let _ = match kind {
+                SweepKind::StampRoute => self.ensure_stamp_route(id),
+                _ => self.ensure_stamp_ride(id),
+            };
+        }
+    }
+
+    /// The next **expiry intent** of `kind` for `CatalogMachine`, with the whole policy re-derived
+    /// from live state at this instant (finding #876-1). A candidate is only a suggestion; what
+    /// leaves here is a decision:
+    ///
+    /// - no trusted clock, or a ride recording → **defer** (candidates stay queued — invariants 1 & 4);
+    /// - the route is now active → **never delete**; re-stamp it instead (invariant 3);
+    /// - the subject vanished, went `Never`, has an unknown `last_used`, was re-synced, or is no
+    ///   longer expired → **cancel** the candidate and try the next (invariants 2, 5 & 6);
+    /// - otherwise **emit** the intent and **keep** the candidate — it is retired only when the
+    ///   authoritative rescan drops the id — paced by the bounded re-dispatch backoff so a failing
+    ///   write retries without hammering (finding #876-3).
+    pub(crate) fn next_expiry(&mut self, kind: SweepKind, view: &RetentionView) -> Option<CatalogIntent> {
+        if view.now_utc.is_none() || view.recording {
+            return None; // defer — invariants 1 & 4, evaluated at execution time
+        }
+        loop {
+            let id = self.peek(kind)?;
+            if self.still_due(kind, id, view) {
+                if !self.delete_dispatch_ready(kind, id, view.now_ms) {
+                    return None; // one delete of this kind in flight — wait out the bounded backoff
+                }
+                self.mark_delete_dispatched(kind, id, view.now_ms);
+                return Some(match kind {
+                    SweepKind::DeleteRide => CatalogIntent::DeleteRide { id },
+                    _ => CatalogIntent::DeleteRoute { id },
+                });
+            }
+            self.cancel(kind, id); // invalid / already applied: drop it and try the next
+        }
+    }
+
+    /// The just-in-time delete predicate: whether `id` is *still* a legal auto-delete right now.
+    /// Converts an active or unknown-stamp route into a re-stamp instead of a delete (so the safety
+    /// stamp is never lost), and reports `false` for anything that vanished or stopped qualifying.
+    fn still_due(&mut self, kind: SweepKind, id: crate::CatalogObjectId, view: &RetentionView) -> bool {
+        let Some(now) = view.now_utc else { return false };
+        match kind {
+            SweepKind::DeleteRide => {
+                let Some(rec) = view.ride_records.iter().find(|r| r.id == id) else {
+                    return false; // gone from the inventory — already absent
+                };
+                if !rec.synced || rec.synced_at_utc == 0 {
+                    return false; // unsynced, or the countdown has not started (invariant 5)
+                }
+                let Some(days) = view.ride_retention.days() else {
+                    return false; // ride_retention == Never
+                };
+                now >= rec.synced_at_utc.saturating_add(days * DAY_SECS)
+            }
+            _ => {
+                let Some((idx, meta)) = view.route(id) else {
+                    return false; // route gone — already absent
+                };
+                // Invariant 3: the active route is never deleted — re-stamp it instead.
+                if view.active_route == Some(idx) {
+                    if !matches!(meta.retention, Retention::Never) {
+                        self.ensure_stamp_route(id);
+                    }
+                    return false;
+                }
+                if matches!(meta.retention, Retention::Never) {
+                    return false; // invariant 6
+                }
+                if meta.needs_clock_started() {
+                    self.ensure_stamp_route(id); // invariant 2: stamp, never delete on sight
+                    return false;
+                }
+                meta.is_expired(now)
+            }
         }
     }
 
@@ -582,7 +807,7 @@ impl RetentionRuntime {
     /// Pop the first queued action of `kind`, or `None`. Removes it (each is a distinct one-shot).
     /// The **stamp** drain path — a delete candidate is never consumed this way (it is retained
     /// until confirmed; see [`peek`](Self::peek) / [`cancel`](Self::cancel)).
-    pub(crate) fn take(&mut self, kind: SweepKind) -> Option<crate::CatalogObjectId> {
+    fn take(&mut self, kind: SweepKind) -> Option<crate::CatalogObjectId> {
         let pos = self.queue.iter().position(|a| kind.matches(*a))?;
         Some(self.queue.remove(pos).id())
     }
@@ -601,7 +826,7 @@ impl RetentionRuntime {
     /// while a *different* id's delete is outstanding) leaves the in-flight slot alone, preserving
     /// the per-kind one-in-flight property: the outstanding id is not re-dispatched mid-flight by an
     /// unrelated cancel. Returns whether anything was removed.
-    pub(crate) fn cancel(&mut self, kind: SweepKind, id: crate::CatalogObjectId) -> bool {
+    fn cancel(&mut self, kind: SweepKind, id: crate::CatalogObjectId) -> bool {
         let Some(pos) = self.queue.iter().position(|a| kind.matches(*a) && a.id() == id) else {
             return false;
         };
@@ -621,7 +846,7 @@ impl RetentionRuntime {
     /// per kind. Cancellation of the dispatched id clears the slot, so the common success path
     /// (rescan drops the id within a frame or two) is never gated; only a genuinely-failing write
     /// waits out the backoff before it re-fires.
-    pub(crate) fn delete_dispatch_ready(&mut self, kind: SweepKind, id: crate::CatalogObjectId, now_ms: u32) -> bool {
+    fn delete_dispatch_ready(&mut self, kind: SweepKind, id: crate::CatalogObjectId, now_ms: u32) -> bool {
         match self.inflight_slot(kind).and_then(|s| *s) {
             None => true,
             Some((inflight, at)) => inflight == id && now_ms.wrapping_sub(at) < 0x8000_0000,
@@ -632,7 +857,7 @@ impl RetentionRuntime {
     /// slot and arm the bounded re-dispatch backoff so a still-present (failed) object doesn't
     /// re-fire every frame. The candidate itself stays queued (retained until storage confirms it
     /// gone).
-    pub(crate) fn mark_delete_dispatched(&mut self, kind: SweepKind, id: crate::CatalogObjectId, now_ms: u32) {
+    fn mark_delete_dispatched(&mut self, kind: SweepKind, id: crate::CatalogObjectId, now_ms: u32) {
         if let Some(slot) = self.inflight_slot(kind) {
             *slot = Some((id, now_ms.wrapping_add(RETENTION_DELETE_BACKOFF_MS)));
         }
@@ -649,7 +874,7 @@ impl RetentionRuntime {
     ///   live drain recheck is the primary guard; this closes the window belt-and-braces);
     /// - it advances `last_active_stamped` **only once the stamp is actually queued**, so a full
     ///   queue can never drop the activation stamp and then suppress the retry — a later tick re-tries.
-    pub(crate) fn note_active_route(&mut self, active_id: Option<crate::CatalogObjectId>) {
+    fn note_active_route(&mut self, active_id: Option<crate::CatalogObjectId>) {
         match active_id {
             Some(id) => {
                 // Invariant 3: an activated route must never be deleted by an earlier sweep decision.
@@ -668,7 +893,7 @@ impl RetentionRuntime {
 
     /// Ensure a `StampRoute(id)` is queued (idempotent — skips a duplicate). Returns whether one is
     /// queued afterwards (`false` only when the queue was full and the push failed).
-    pub(crate) fn ensure_stamp_route(&mut self, id: crate::CatalogObjectId) -> bool {
+    fn ensure_stamp_route(&mut self, id: crate::CatalogObjectId) -> bool {
         if self.queue.iter().any(|a| matches!(a, SweepAction::StampRoute(q) if *q == id)) {
             return true;
         }
@@ -684,9 +909,7 @@ impl RetentionRuntime {
     /// resident meta, so a stamped route stops re-enqueuing). Reuses the `StampRouteUsed` host path (the
     /// same sidecar write a sweep / activation stamp takes) — no new channel.
     pub(crate) fn note_route_uploaded(&mut self, id: crate::CatalogObjectId) {
-        if !self.queue.iter().any(|a| matches!(a, SweepAction::StampRoute(q) if *q == id)) {
-            let _ = self.queue.push(SweepAction::StampRoute(id));
-        }
+        self.ensure_stamp_route(id);
     }
 
     /// Eagerly enqueue a `synced_at` stamp for every resident ride that is `synced` but not yet
@@ -696,26 +919,27 @@ impl RetentionRuntime {
     /// instead of deferring to the recording-end sweep. Idempotent: skips an id already queued (the
     /// caller also mirrors `synced_at` on drain, so a stamped ride stops matching next tick). `rides`
     /// is the resident catalog pairwise with `ride_ids`.
-    pub(crate) fn stamp_synced_rides(&mut self, rides: &[RideRetentionRecord]) {
+    fn stamp_synced_rides(&mut self, rides: &[RideRetentionRecord]) {
         for ride in rides {
-            if ride.synced && ride.synced_at_utc == 0 && !self.has_stamp_ride(ride.id) {
-                let _ = self.queue.push(SweepAction::StampRide(ride.id));
+            if ride.synced && ride.synced_at_utc == 0 {
+                self.ensure_stamp_ride(ride.id);
             }
         }
     }
 
-    /// Whether a `StampRide` for `id` is already queued — the eager stamp's re-enqueue guard.
-    fn has_stamp_ride(&self, id: crate::CatalogObjectId) -> bool {
-        self.queue.iter().any(|a| matches!(a, SweepAction::StampRide(q) if *q == id))
+    /// Ensure a `StampRide(id)` is queued (idempotent) — the ride twin of
+    /// [`ensure_stamp_route`](Self::ensure_stamp_route). Returns whether one is queued afterwards.
+    fn ensure_stamp_ride(&mut self, id: crate::CatalogObjectId) -> bool {
+        if self.queue.iter().any(|a| matches!(a, SweepAction::StampRide(q) if *q == id)) {
+            return true;
+        }
+        self.queue.push(SweepAction::StampRide(id)).is_ok()
     }
 
-    /// Run a sweep pass if due, filling the queue. Gated by the caller on trust + not-recording; here
-    /// the hourly cadence + empty-queue precondition are checked. `now_utc` is the trusted UTC now.
-    pub(crate) fn maybe_sweep(
-        &mut self,
-        now_utc: u32,
-        build: impl FnOnce(&mut heapless::Vec<SweepAction, SWEEP_QUEUE_CAP>),
-    ) {
+    /// Run a sweep pass if due, filling the queue. [`advance`](Self::advance) has already applied the
+    /// trust and recording gates; here the hourly cadence + empty-queue precondition are checked.
+    /// `now_utc` is the trusted UTC now.
+    fn maybe_sweep(&mut self, now_utc: u32, build: impl FnOnce(&mut heapless::Vec<SweepAction, SWEEP_QUEUE_CAP>)) {
         if !self.queue.is_empty() {
             return; // a prior batch is still draining — don't stack a second
         }
@@ -1013,7 +1237,7 @@ mod tests {
         assert!(out.contains(&SweepAction::DeleteRide(7)), "an older-than-UI-cap synced+expired ride is deleted");
 
         // The eager stamp reaches every legacy ride in the inventory, not just the UI-resident ones.
-        let mut rt = RetentionRuntime::new();
+        let mut rt = RetentionMachine::new();
         rt.stamp_synced_rides(&recs);
         assert_eq!(rt.take(SweepKind::StampRide), Some(8), "the legacy synced-unstamped ride is stamped");
         assert_eq!(rt.take(SweepKind::StampRide), None, "only the one unstamped ride needs a stamp");
@@ -1028,7 +1252,7 @@ mod tests {
             ride(2, true, 5_000), // synced, already stamped → leave
             ride(3, false, 0),    // unsynced → never
         ];
-        let mut rt = RetentionRuntime::new();
+        let mut rt = RetentionMachine::new();
         rt.stamp_synced_rides(&rides);
         rt.stamp_synced_rides(&rides); // a second tick must not double-enqueue id 1
         assert_eq!(rt.take(SweepKind::StampRide), Some(1), "the unstamped synced ride is stamped");
@@ -1047,7 +1271,7 @@ mod tests {
 
     #[test]
     fn runtime_active_stamp_fires_once_per_activation() {
-        let mut rt = RetentionRuntime::new();
+        let mut rt = RetentionMachine::new();
         rt.note_active_route(Some(7));
         rt.note_active_route(Some(7)); // unchanged → no second stamp
         assert!(rt.has(SweepKind::StampRoute));
@@ -1065,7 +1289,7 @@ mod tests {
     /// once-per-activation memory — so a later tick (after a slot frees) retries and lands it.
     #[test]
     fn activation_stamp_survives_capacity_pressure() {
-        let mut rt = RetentionRuntime::new();
+        let mut rt = RetentionMachine::new();
         // Saturate the queue with delete candidates.
         for i in 0..SWEEP_QUEUE_CAP as crate::CatalogObjectId {
             rt.test_push(SweepAction::DeleteRoute(i));
@@ -1082,7 +1306,7 @@ mod tests {
     /// route that just became active (belt-and-braces alongside the live drain recheck).
     #[test]
     fn activation_cancels_a_queued_delete_for_that_route() {
-        let mut rt = RetentionRuntime::new();
+        let mut rt = RetentionMachine::new();
         rt.test_push(SweepAction::DeleteRoute(5));
         rt.test_push(SweepAction::DeleteRoute(6));
         rt.note_active_route(Some(5));
@@ -1092,7 +1316,7 @@ mod tests {
 
     #[test]
     fn runtime_hourly_gate_and_empty_precondition() {
-        let mut rt = RetentionRuntime::new();
+        let mut rt = RetentionMachine::new();
         let mut runs = 0;
         // First eligible sweep this boot runs (last_sweep_hour is None).
         rt.maybe_sweep(3600, |q| {
@@ -1132,11 +1356,109 @@ mod tests {
         assert!(!store.set(7, RouteRetentionMeta::new(Retention::Day1, preserved)), "unchanged again → no change");
     }
 
+    // ==================== the domain boundary (#1437) ====================
+
+    fn view<'a>(
+        now_utc: Option<u32>,
+        route_ids: &'a [crate::CatalogObjectId],
+        route_metas: &'a [RouteRetentionMeta],
+        ride_records: &'a [RideRetentionRecord],
+    ) -> RetentionView<'a> {
+        RetentionView {
+            now_utc,
+            now_ms: 0,
+            recording: false,
+            route_ids,
+            route_metas,
+            active_route: None,
+            ride_records,
+            ride_retention: RideRetention::Week1,
+        }
+    }
+
+    /// The safety core is the domain's, not the caller's: without a clock established this boot,
+    /// `advance` stamps nothing, sweeps nothing and discovers nothing — however expired the data
+    /// looks (invariant 1).
+    #[test]
+    fn the_machine_does_nothing_without_a_trusted_clock() {
+        let ids = [10u64];
+        let metas = [RouteRetentionMeta::new(Retention::Day1, 1)]; // "used" at unix 1 → ancient
+        let rides = [ride(7, true, 1)];
+        let mut rt = RetentionMachine::new();
+
+        rt.advance(&view(None, &ids, &metas, &rides));
+        assert!(!rt.has(SweepKind::DeleteRoute) && !rt.has(SweepKind::StampRide), "no clock, no candidates");
+        assert!(rt.next_metadata_effect(SweepKind::StampRide, &view(None, &ids, &metas, &rides)).is_none());
+        assert!(rt.next_expiry(SweepKind::DeleteRoute, &view(None, &ids, &metas, &rides)).is_none());
+    }
+
+    /// A discovered expiry leaves as a **catalog intent**, never as a delete the domain performs:
+    /// the route and the ride namespaces each become the intent `CatalogMachine` already accepts
+    /// from a rider's own delete.
+    #[test]
+    fn an_expiry_leaves_as_a_catalog_intent() {
+        let now = 10_000_000;
+        let ids = [10u64];
+        let metas = [RouteRetentionMeta::new(Retention::Day1, now - 3 * DAY_SECS)];
+        let rides = [ride(7, true, now - 30 * DAY_SECS)];
+        let mut rt = RetentionMachine::new();
+        rt.advance(&view(Some(now), &ids, &metas, &rides));
+
+        let v = view(Some(now), &ids, &metas, &rides);
+        assert_eq!(rt.next_expiry(SweepKind::DeleteRoute, &v), Some(CatalogIntent::DeleteRoute { id: 10 }));
+        assert_eq!(rt.next_expiry(SweepKind::DeleteRide, &v), Some(CatalogIntent::DeleteRide { id: 7 }));
+        // The candidate is *kept* until storage confirms it gone, and the bounded backoff paces the
+        // retry rather than letting it re-fire every pass.
+        assert!(rt.next_expiry(SweepKind::DeleteRoute, &v).is_none(), "the dispatched delete waits out the backoff");
+        let later = RetentionView { now_ms: RETENTION_DELETE_BACKOFF_MS, ..view(Some(now), &ids, &metas, &rides) };
+        assert_eq!(
+            rt.next_expiry(SweepKind::DeleteRoute, &later),
+            Some(CatalogIntent::DeleteRoute { id: 10 }),
+            "and then the same candidate retries — storage never confirmed it gone"
+        );
+    }
+
+    /// A stamp leaves as a typed metadata effect carrying the live retention *level* beside a fresh
+    /// `last_used` — a use stamp never rewrites the level — and a failed write re-queues it.
+    #[test]
+    fn a_metadata_effect_carries_the_level_and_a_failure_requeues_it() {
+        let now = 500_000;
+        let ids = [10u64];
+        let metas = [RouteRetentionMeta::new(Retention::Week2, 0)]; // level set, clock never started
+        let rides: [RideRetentionRecord; 0] = [];
+        let mut rt = RetentionMachine::new();
+        rt.advance(&view(Some(now), &ids, &metas, &rides));
+
+        let effect = rt.next_metadata_effect(SweepKind::StampRoute, &view(Some(now), &ids, &metas, &rides));
+        let Some(RetentionEffect::WriteRouteMetadata { token, id, meta }) = effect else {
+            panic!("the unknown last_used is stamped, not deleted")
+        };
+        assert_eq!(id, 10);
+        assert_eq!(meta, RouteRetentionMeta::new(Retention::Week2, now), "the level survives a use stamp");
+        assert!(
+            rt.next_metadata_effect(SweepKind::StampRoute, &view(Some(now), &ids, &metas, &rides)).is_none(),
+            "one sidecar write in flight at a time"
+        );
+
+        // A failed write is retried on a later pass rather than waiting for the next hourly sweep.
+        rt.apply_outcome(RetentionOutcome::Failed { token, error: RetentionError::WriteFailed });
+        assert!(rt.has(SweepKind::StampRoute), "the failed stamp is queued again");
+        let retry = rt.next_metadata_effect(SweepKind::StampRoute, &view(Some(now), &ids, &metas, &rides));
+        let Some(RetentionEffect::WriteRouteMetadata { token: retry_token, .. }) = retry else {
+            panic!("the retry goes out")
+        };
+
+        // The success is terminal, and a repeat of it is stale — nothing is re-queued twice.
+        rt.apply_outcome(RetentionOutcome::RouteMetadataWritten { token: retry_token, id: 10 });
+        rt.apply_outcome(RetentionOutcome::Failed { token: retry_token, error: RetentionError::WriteFailed });
+        assert!(!rt.has(SweepKind::StampRoute), "a repeated outcome cannot resurrect a written stamp");
+    }
+
     /// The route-upload `last_used` stamp (epic #638 S4): `note_route_uploaded` enqueues exactly one
     /// `StampRoute` per uploaded id, idempotently (a re-fire before the drain must not double-enqueue).
     #[test]
     fn runtime_note_route_uploaded_enqueues_once() {
-        let mut rt = RetentionRuntime::new();
+        let mut rt = RetentionMachine::new();
         rt.note_route_uploaded(7);
         rt.note_route_uploaded(7); // a second call before draining must not stack a duplicate
         assert_eq!(rt.take(SweepKind::StampRoute), Some(7), "the uploaded route is stamped");
@@ -1154,6 +1476,7 @@ mod tests {
 // in the same pass — the deletion itself is never a retention effect. What is left here is the
 // device-local sidecar write: two bounded metadata writes that bump no store revision.
 
+use crate::catalog_state::CatalogIntent;
 use crate::device_core::{OperationToken, RetentionTag};
 use crate::CatalogObjectId;
 
