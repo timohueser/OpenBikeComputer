@@ -608,15 +608,15 @@ licenses *args:
     source "{{lib}}"; obc_init
     _run "$OBC_TOOLS/licenses/gen-third-party.sh" "$@"
 
-# Render benchmark + pixel-hash tripwire. Args: (none) | check | write.
+# Render benchmark + pixel-hash / read-counter golden gate. Args: (none) | check | write.
 bench *args:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{lib}}"; obc_init; ensure_geos
     cd "$OBC_ROOT"
     case "${1:-}" in
-      check) _run cargo run -p obc-bench --release -- --check host/obc-bench/hashes.txt ;;
-      write) _run cargo run -p obc-bench --release -- --write-hashes host/obc-bench/hashes.txt ;;
+      check) _run cargo run -p obc-bench --release -- --check host/obc-bench/golden.txt ;;
+      write) _run cargo run -p obc-bench --release -- --write-golden host/obc-bench/golden.txt ;;
       *)     _run cargo run -p obc-bench --release ;;
     esac
 
@@ -666,7 +666,7 @@ check *args:
       OBC_FIXTURE_ROOT="$(python3 "$OBC_TOOLS/fixtures.py" root)"
       export OBC_REQUIRE_FIXTURES=1
       step "test (workspace, all features)" cargo test --workspace --all-features --locked
-      step "bench pixel-hash tripwire" cargo run -p obc-bench --release --locked -- --check host/obc-bench/hashes.txt
+      step "bench golden gate (pixels + read counters)" cargo run -p obc-bench --release --locked -- --check host/obc-bench/golden.txt
     fi
     want device && step "device build (obc-app @ thumbv8m)" \
       cargo build -p obc-app --target thumbv8m.main-none-eabihf --locked
