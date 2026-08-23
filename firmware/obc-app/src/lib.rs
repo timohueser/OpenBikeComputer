@@ -57,6 +57,7 @@ pub mod route;
 pub mod screen;
 pub mod sensors;
 pub mod settings;
+mod settings_enum;
 pub mod stat_fields;
 pub mod store_meta;
 pub mod trip;

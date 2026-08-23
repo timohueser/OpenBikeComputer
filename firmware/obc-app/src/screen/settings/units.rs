@@ -26,7 +26,7 @@ impl UnitsScreen {
         match g {
             // A binary choice: press or a step flips it (no separate edit mode).
             Gesture::Press | Gesture::Step(_) => {
-                cx.settings.units = cx.settings.units.toggled();
+                cx.settings.units = cx.settings.units.cycled();
                 Transition::None
             }
             Gesture::Back => Transition::Pop,
