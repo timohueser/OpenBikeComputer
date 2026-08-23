@@ -1110,7 +1110,9 @@ mod tests {
 // The bundle never crosses. An `OpenInstalledData` outcome names the product it opened; the frames
 // themselves stay in the store behind [`WeatherSnapshot::sample`], exactly as they do today.
 
-use crate::device_core::{DataIdentity, OperationToken, Revision, WeatherTag};
+use crate::device_core::{
+    DataIdentity, OperationToken, Revision, TokenSource, WeatherCapabilities, WeatherData, WeatherTag,
+};
 
 /// What the UI asks of the weather domain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1180,3 +1182,296 @@ const _: () = assert!(core::mem::size_of::<WeatherIntent>() == 0, "one fieldless
 const _: () = assert!(core::mem::size_of::<WeatherEffect>() <= 16, "a token and a data identity");
 const _: () = assert!(core::mem::size_of::<WeatherOutcome>() <= 24, "a token, an identity and a revision");
 const _: () = assert!(core::mem::size_of::<WeatherError>() <= 1, "a verdict, not a report");
+
+// ==================== WeatherDomain (#1437) ====================
+
+/// How the last completed refresh ended — the terminal state the rider is owed an honest answer
+/// from. A failure never invents weather: the previous bundle stays and keeps ageing under its own
+/// arithmetic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefreshResult {
+    /// A fresh bundle was installed.
+    Installed,
+    /// The refresh failed for this reason.
+    Failed(WeatherError),
+    /// The platform abandoned the refresh without completing it.
+    Cancelled,
+}
+
+/// Everything the weather screens may say about freshness, in one value.
+///
+/// The bundle's own honesty arithmetic ([`rain_outlook`]) answers *what may be claimed*; this adds
+/// the device-side half — is there data at all, and is an update running right now — that a
+/// snapshot cannot know about itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WeatherVisible {
+    /// What the dashboard may honestly claim at `now`, or `None` when no bundle is sampled.
+    pub outlook: Option<RainOutlook>,
+    /// A refresh is in flight: the screens raise the non-blocking UPDATING cue over the cached
+    /// content — they never blank it, because stale-and-labelled beats empty.
+    pub refreshing: bool,
+    /// Weather data is installed on the device at all.
+    pub installed: bool,
+}
+
+/// The **one owner** of what the rider is told about weather (epic #1433 §5, #1437): the installed
+/// data's identity and revision, visible freshness, the refresh request and its in-flight
+/// operation, the last terminal result, and the alert decision.
+///
+/// The split with the platform is total. The platform owns provider timing, radio work, decoding
+/// and storage access, and reports back through [`WeatherOutcome`] and the installed-data external
+/// fact. It decides none of the honesty rules: not whether a bundle is fresh enough to claim
+/// anything, not whether an alert fires, not whether a repeat request is worth a second radio trip.
+///
+/// **The bundle never lives here.** Frames stay in the store behind [`WeatherSnapshot::sample`];
+/// this type holds identities, revisions and a handful of flags.
+///
+/// ## Where the cooldown lives
+///
+/// Alert dedup marks ([`AlertMarks`](crate::weather_alerts::AlertMarks)) must survive a reboot, so
+/// their bytes sit in the persisted settings blob. This type is their only interpreter: nothing
+/// else reads them, and [`mark_fired`](WeatherDomain::mark_fired) is the only thing that writes one.
+/// Ownership of the *policy* and ownership of the *bytes* are deliberately separate — duplicating
+/// the table here would be one more copy to keep in step for no gain.
+#[derive(Debug)]
+pub struct WeatherDomain {
+    ops: TokenSource<WeatherTag>,
+    installed: Option<WeatherData>,
+    refresh_requested: bool,
+    in_flight: Option<OperationToken<WeatherTag>>,
+    last_result: Option<RefreshResult>,
+}
+
+impl WeatherDomain {
+    /// The boot state: nothing installed, nothing requested, nothing in flight.
+    pub const fn new() -> Self {
+        WeatherDomain {
+            ops: TokenSource::new(),
+            installed: None,
+            refresh_requested: false,
+            in_flight: None,
+            last_result: None,
+        }
+    }
+
+    /// The installed data set and its revision, or `None` when none is installed.
+    pub fn installed(&self) -> Option<WeatherData> {
+        self.installed
+    }
+
+    /// The platform installed data (the DC2 external fact). Same rule as
+    /// [`ExternalFacts::note_weather_data`](crate::device_core::ExternalFacts::note_weather_data):
+    /// a *newer* revision of the same product wins, and a different product always replaces — two
+    /// products' revisions have no order to compare.
+    pub fn note_installed(&mut self, fact: WeatherData) {
+        let keep = matches!(self.installed, Some(have) if have.data == fact.data && have.revision > fact.revision);
+        if !keep {
+            self.installed = Some(fact);
+        }
+    }
+
+    /// Apply a [`WeatherIntent`]. A repeat while one is already requested or in flight **coalesces**:
+    /// the companion link is metered, and two taps of the same button are one question.
+    pub fn apply_intent(&mut self, intent: WeatherIntent) {
+        match intent {
+            WeatherIntent::RefreshRequested => self.refresh_requested = true,
+        }
+    }
+
+    /// Whether a refresh is in flight — the screens' non-blocking UPDATING cue.
+    pub fn refreshing(&self) -> bool {
+        self.in_flight.is_some()
+    }
+
+    /// Whether a requested refresh has not gone out yet (no capability, or the slot was busy).
+    pub fn refresh_pending(&self) -> bool {
+        self.refresh_requested
+    }
+
+    /// How the last completed refresh ended, or `None` when none has completed this boot.
+    pub fn last_refresh(&self) -> Option<RefreshResult> {
+        self.last_result
+    }
+
+    /// The next bounded weather operation, or `None`. A refresh goes out only when one was asked
+    /// for, the device can actually reach a companion ([`WeatherCapabilities::refresh`]), and
+    /// nothing is already in flight. Withdrawing the capability does not drop the request — the
+    /// rider asked, and the link coming back is what answers them.
+    pub fn next_effect(&mut self, caps: WeatherCapabilities) -> Option<WeatherEffect> {
+        if !self.refresh_requested || self.in_flight.is_some() || !caps.refresh {
+            return None;
+        }
+        self.refresh_requested = false;
+        let token = self.ops.issue();
+        self.in_flight = Some(token);
+        Some(WeatherEffect::RequestRefresh { token })
+    }
+
+    /// Consume the answer to a [`WeatherEffect`]. A stale token — a superseded operation, or a
+    /// repeat of one already accounted for — changes nothing.
+    pub fn apply_outcome(&mut self, outcome: WeatherOutcome) {
+        if !self.ops.is_current(outcome.token()) {
+            return;
+        }
+        self.ops.invalidate(); // terminal: a duplicate of this outcome is no longer current
+        self.in_flight = None;
+        self.last_result = Some(match outcome {
+            WeatherOutcome::Refreshed { data, revision, .. } | WeatherOutcome::Opened { data, revision, .. } => {
+                self.note_installed(WeatherData { data, revision });
+                RefreshResult::Installed
+            }
+            WeatherOutcome::Failed { error, .. } => RefreshResult::Failed(error),
+            WeatherOutcome::Cancelled { .. } => RefreshResult::Cancelled,
+        });
+    }
+
+    /// Everything the screens may say about freshness right now: the snapshot's own honest claim,
+    /// plus the two device-side facts a snapshot cannot know about itself.
+    pub fn visible(&self, snapshot: Option<&WeatherSnapshot>, now: i64) -> WeatherVisible {
+        WeatherVisible {
+            outlook: snapshot.map(|snap| rain_outlook(snap, now)),
+            refreshing: self.refreshing(),
+            installed: self.installed.is_some(),
+        }
+    }
+
+    /// Decide what the alert engine wants shown this pass: evaluate the centralized threshold table
+    /// against `snapshot` at `now`, then govern the result against the persisted cooldown marks and
+    /// the card already on the stack. No snapshot never alerts, and neither does expired data — the
+    /// engine's own law.
+    pub fn alert_action(
+        &self,
+        snapshot: Option<&WeatherSnapshot>,
+        now: i64,
+        marks: &crate::weather_alerts::AlertMarks,
+        open_card: Option<crate::screen::WeatherAlertKind>,
+    ) -> crate::weather_alerts::AlertAction {
+        let Some(snapshot) = snapshot else {
+            return crate::weather_alerts::AlertAction::None;
+        };
+        let candidates = crate::weather_alerts::evaluate(snapshot, now);
+        crate::weather_alerts::govern(&candidates, marks, open_card)
+    }
+
+    /// Record that `candidate`'s card actually reached the rider, starting its persisted cooldown.
+    ///
+    /// Deliberately separate from [`alert_action`](WeatherDomain::alert_action): the presentation
+    /// seam can refuse (a passkey prompt outranks the card, and so does a full screen stack), and
+    /// marking a card nobody saw would sit on that storm for a whole persisted cooldown in silence.
+    pub fn mark_fired(
+        &self,
+        candidate: &crate::weather_alerts::AlertCandidate,
+        marks: &mut crate::weather_alerts::AlertMarks,
+    ) {
+        marks[candidate.class.slot()] = Some(crate::weather_alerts::mark_of(candidate));
+    }
+}
+
+impl Default for WeatherDomain {
+    fn default() -> Self {
+        WeatherDomain::new()
+    }
+}
+
+// Layout tripwire: identities, a token and three flags. The snapshot is an order of magnitude
+// bigger and stays out.
+const _: () = assert!(core::mem::size_of::<WeatherDomain>() <= 48, "identities and flags, never a bundle");
+
+#[cfg(test)]
+mod domain_tests {
+    use super::*;
+    use crate::device_core::{DataIdentity, Revision};
+
+    fn data(id: u64, revision: u64) -> WeatherData {
+        WeatherData { data: DataIdentity::new(id), revision: Revision::new(revision) }
+    }
+
+    fn can_refresh() -> WeatherCapabilities {
+        WeatherCapabilities { refresh: true, installed_data: true }
+    }
+
+    /// The request lifecycle: one effect per request, coalesced repeats, and a terminal outcome that
+    /// both frees the slot and records how it ended.
+    #[test]
+    fn a_refresh_goes_out_once_and_its_outcome_is_terminal() {
+        let mut wx = WeatherDomain::new();
+        assert!(wx.next_effect(can_refresh()).is_none(), "nothing was asked for");
+
+        wx.apply_intent(WeatherIntent::RefreshRequested);
+        wx.apply_intent(WeatherIntent::RefreshRequested); // a second tap is the same question
+        assert!(wx.refresh_pending());
+
+        let Some(WeatherEffect::RequestRefresh { token }) = wx.next_effect(can_refresh()) else {
+            panic!("the request goes out");
+        };
+        assert!(wx.refreshing() && !wx.refresh_pending());
+        assert!(wx.next_effect(can_refresh()).is_none(), "one refresh in flight at a time");
+
+        wx.apply_outcome(WeatherOutcome::Refreshed { token, data: DataIdentity::new(4), revision: Revision::new(2) });
+        assert_eq!(wx.last_refresh(), Some(RefreshResult::Installed));
+        assert_eq!(wx.installed(), Some(data(4, 2)));
+        assert!(!wx.refreshing());
+
+        // The same answer arriving twice must not re-run any of that.
+        wx.apply_outcome(WeatherOutcome::Failed { token, error: WeatherError::LinkLost });
+        assert_eq!(wx.last_refresh(), Some(RefreshResult::Installed), "a repeated outcome is stale");
+    }
+
+    /// Without a companion there is nothing to ask, but the *request* survives: the rider asked, and
+    /// the link coming back is what answers them.
+    #[test]
+    fn a_request_waits_for_the_capability_instead_of_failing() {
+        let mut wx = WeatherDomain::new();
+        wx.apply_intent(WeatherIntent::RefreshRequested);
+
+        let offline = WeatherCapabilities { refresh: false, installed_data: false };
+        assert!(wx.next_effect(offline).is_none(), "no link, no radio trip");
+        assert!(wx.refresh_pending(), "and no invented failure either");
+
+        assert!(wx.next_effect(can_refresh()).is_some(), "the link returns and the question goes out");
+        assert_eq!(wx.last_refresh(), None, "nothing completed yet");
+    }
+
+    /// A failed refresh is terminal and honest: it records the reason, frees the slot for a retry,
+    /// and leaves the previously installed data exactly where it was.
+    #[test]
+    fn a_failed_refresh_leaves_the_installed_data_standing() {
+        let mut wx = WeatherDomain::new();
+        wx.note_installed(data(1, 5));
+
+        wx.apply_intent(WeatherIntent::RefreshRequested);
+        let Some(effect) = wx.next_effect(can_refresh()) else { panic!("requested") };
+        wx.apply_outcome(WeatherOutcome::Failed { token: effect.token(), error: WeatherError::NoData });
+
+        assert_eq!(wx.last_refresh(), Some(RefreshResult::Failed(WeatherError::NoData)));
+        assert_eq!(wx.installed(), Some(data(1, 5)), "a failure never drops what is installed");
+        assert!(!wx.refreshing());
+    }
+
+    /// Installed-data identity follows the DC2 fact rule: a stale revision of the same product
+    /// cannot walk the level backwards, and a different product is a replacement.
+    #[test]
+    fn installed_data_never_walks_backwards() {
+        let mut wx = WeatherDomain::new();
+        wx.note_installed(data(1, 7));
+        wx.note_installed(data(1, 4));
+        assert_eq!(wx.installed(), Some(data(1, 7)), "a late report cannot un-install newer data");
+
+        wx.note_installed(data(2, 0));
+        assert_eq!(wx.installed(), Some(data(2, 0)), "a different product replaces");
+    }
+
+    /// Visible freshness carries the device-side half a snapshot cannot know about itself.
+    #[test]
+    fn visible_state_reports_installation_and_refresh() {
+        let mut wx = WeatherDomain::new();
+        let blank = wx.visible(None, 0);
+        assert_eq!(blank, WeatherVisible { outlook: None, refreshing: false, installed: false });
+
+        wx.note_installed(data(1, 1));
+        wx.apply_intent(WeatherIntent::RefreshRequested);
+        let _ = wx.next_effect(can_refresh());
+        let live = wx.visible(None, 0);
+        assert!(live.installed && live.refreshing);
+    }
+}
