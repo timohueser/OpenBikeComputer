@@ -88,8 +88,14 @@ class CycleVerdicts(unittest.TestCase):
         self.assertIsNone(read_cycle(torn).verdict(), "counts see nothing wrong")
         self.assertIn("not exclusive", assert_sequence(torn))
 
-    def test_a_banner_after_the_catch_up_means_the_freeze_outlived_its_search(self):
+    def test_a_banner_at_or_after_the_answer_means_the_freeze_outlived_its_search(self):
+        """The answer is where the freeze ends, not the catch-up: `nav route:` and `note_answer`
+        land in the same pass and the render decision comes after both. So the banner between the
+        answer and the catch-up repaint is a stuck freeze caught one pass earlier, not a healthy
+        frame — an earlier revision let exactly that transcript through."""
+        self.assertIn("outlived", assert_sequence([START, ANSWER, BANNER, MAP]))
         self.assertIn("outlived", assert_sequence([START, ANSWER, MAP, BANNER]))
+        self.assertIsNone(assert_sequence([START, BANNER, ANSWER, MAP]), "…and before it is the freeze")
 
 
 class Liveness(unittest.TestCase):

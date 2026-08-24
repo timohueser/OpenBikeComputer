@@ -158,9 +158,14 @@ def read_cycle(lines: list[str]) -> Cycle:
 
 def assert_sequence(lines: list[str]) -> str | None:
     """The order a cycle must walk: start → answer → the map catches up, with any banner repaint
-    strictly between the start and that catch-up.
+    strictly **between the start and the answer**.
 
-    Counts alone pass a transcript where the map frame landed *first*, which is exactly the
+    The answer is where the freeze ends, not the catch-up: `nav_finish` logs `nav route:` and hands
+    the app the answer in the same pass, `note_answer` clears the search level there, and the render
+    decision comes after both. So a banner repaint anywhere at or past the answer says the level
+    outlived the run that owned it — which is the stuck freeze, one pass early.
+
+    Counts alone pass a transcript where a map frame landed *before* the answer, which is the other
     regression: the map plane drawing while the nav arm is still out."""
     order = [
         kind
@@ -187,9 +192,8 @@ def assert_sequence(lines: list[str]) -> str | None:
         return "a full map repaint landed while the search still held the arm — the arena was not exclusive"
     if "map" not in after[answer_at:]:
         return "no map frame after the answer — the map did not catch up"
-    catch_up_at = answer_at + after[answer_at:].index("map")
-    if "banner" in after and after.index("banner") > catch_up_at:
-        return "a banner repaint after the catch-up — the freeze outlived its search"
+    if "banner" in after[answer_at:]:
+        return "a banner repaint at or after the answer — the freeze outlived its search"
     return None
 
 
@@ -409,10 +413,14 @@ def scenario_b(link: Link, frm: tuple[int, int], to: tuple[int, int]) -> int:
     `usb::stage_requested()` and announces as `arena: 64 KiB USB write-combining arm granted`. Without
     that grant the arena is free and the plan proceeds beside the upload exactly as it did before this
     slice — so the step below checks for the grant first and says so rather than failing the board."""
+    # Every mark around an `input()` is taken **before** the prompt. Both arena transitions are
+    # edges the board logs once, in the same pass as the card they accompany — and the operator is
+    # slower than a pass, so a mark taken after they press Enter starts the window past the very
+    # line it is waiting for. That is a healthy board reported as a SKIP (or as a false refusal).
+    mark = link.mark()
     print("B: plug the cable into J3, load a route, and start a map upload; press Enter when the")
     print("   transfer card is up.")
     input()
-    mark = link.mark()
     if not link.wait_for(mark, USB_GRANTED, timeout=10.0):
         print("  SKIP — the USB write-combining arm was never granted, so the arena is free and this")
         print("         step tests nothing. Re-run with an upload large enough to request it.")
@@ -439,20 +447,29 @@ def scenario_b(link: Link, frm: tuple[int, int], to: tuple[int, int]) -> int:
     else:
         print("  refused before the planner armed, and the refusal names the transfer: ok")
 
+    reclaim_mark = link.mark()
     print("B: end the upload, then press Enter.")
     input()
-    mark = link.mark()
-    link.plan(frm, to)
-    if not link.wait_for(mark, PLAN_START, timeout=5.0):
-        print("  FAIL — no plan armed after the upload ended")
-        failures += 1
-    elif any(PLAN_REFUSED in line for line in link.since(mark)):
-        print("  FAIL — the same input is still refused after the upload ended")
+    # The arm has to be *given back* before the plan can be expected to arm. Without this wait the
+    # next `N` races a guard that is still held, and the run reports a false refusal — the same
+    # mistake in the other direction. An arm that never comes back is the stuck-USB mirror of the
+    # stuck-nav-arm bug this whole soak hunts, so it fails rather than waiting forever.
+    if not link.wait_for(reclaim_mark, USB_RECLAIMED, timeout=10.0):
+        print("  FAIL — the USB write-combining arm was never reclaimed after the upload ended")
         failures += 1
     else:
-        print("  the plan arms normally afterwards: ok")
-        link.wait_for(mark, PLAN_ANSWER, timeout=20.0)
-        link.back()
+        mark = link.mark()
+        link.plan(frm, to)
+        if not link.wait_for(mark, PLAN_START, timeout=5.0):
+            print("  FAIL — no plan armed after the upload ended")
+            failures += 1
+        elif any(PLAN_REFUSED in line for line in link.since(mark)):
+            print("  FAIL — the same input is still refused after the upload ended")
+            failures += 1
+        else:
+            print("  the plan arms normally afterwards: ok")
+            link.wait_for(mark, PLAN_ANSWER, timeout=20.0)
+            link.back()
 
     whole = link.since(0)
     granted = sum(USB_GRANTED in line for line in whole)
