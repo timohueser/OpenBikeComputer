@@ -654,7 +654,11 @@ command = "xcodebuild test -project companion-ios/OBCCompanion.xcodeproj -scheme
 fixtures = []
 pull_request = "affected"
 scheduled = "weekly"
-extra_triggers = ["companion-ios/OBCCompanion/**", "companion-ios/project.yml"]
+extra_triggers = [
+  "companion-ios/OBCCompanion/**",
+  "companion-ios/project.yml",
+  "companion-ios/Packages/OBCKit/Sources/**",
+]
 platforms = ["macos"]
 coverage_component = "ios"
 ownership = [
@@ -673,7 +677,7 @@ command = "obc check test"
 fixtures = ["test"]
 pull_request = "affected"
 scheduled = "none"
-extra_triggers = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml"]
+extra_triggers = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "tools/fixtures.py"]
 ownership = [
   { kind = "workflow", pattern = "cargo test --workspace --all-features --locked" },
   { kind = "workflow", pattern = "cargo test -p obc-formats --locked" },
@@ -767,6 +771,7 @@ extra_triggers = [
   "builder/build-wasm-bridges.sh",
   "firmware/tools/wasm_size_guard.py",
   "docs/Trunk.toml",
+  "docs/index.html",
 ]
 coverage_component = "web"
 ownership = [
@@ -864,7 +869,14 @@ command = "xcodebuild build -project companion-ios/OBCCompanion.xcodeproj -schem
 fixtures = []
 pull_request = "affected"
 scheduled = "none"
-extra_triggers = ["companion-ios/OBCCompanion/**", "companion-ios/project.yml"]
+# The app links OBCKit, and no Swift dependency graph exists to derive that edge: an OBCKit
+# API change breaks `xcodebuild build` without touching a file under OBCCompanion/.
+extra_triggers = [
+  "companion-ios/OBCCompanion/**",
+  "companion-ios/project.yml",
+  "companion-ios/Packages/OBCKit/Package.swift",
+  "companion-ios/Packages/OBCKit/Sources/**",
+]
 platforms = ["macos"]
 coverage_component = "ios"
 ownership = [{ kind = "workflow", pattern = "xcodebuild build -project OBCCompanion.xcodeproj -scheme OBCCompanion" }]

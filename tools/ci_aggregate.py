@@ -50,11 +50,21 @@ def _job_result(needs: Mapping[str, Any], job: str) -> str:
 def _blocked_upstream(
     needs: Mapping[str, Any], jobs: Sequence[str], upstream_jobs: Mapping[str, Sequence[str]]
 ) -> list[str]:
+    """Walk the whole upstream closure: a producer two hops up still blocks the work."""
+
     blocked: list[str] = []
-    for job in jobs:
-        for upstream in upstream_jobs.get(job, ()):
+    seen: set[str] = set()
+    pending = list(jobs)
+    while pending:
+        for upstream in upstream_jobs.get(pending.pop(), ()):
+            if upstream in seen:
+                continue
+            seen.add(upstream)
             if _job_result(needs, upstream) in {"failure", "cancelled"}:
                 blocked.append(upstream)
+            else:
+                # A healthy producer can still hide a failed producer of its own.
+                pending.append(upstream)
     return sorted(set(blocked))
 
 

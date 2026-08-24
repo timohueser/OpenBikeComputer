@@ -80,6 +80,13 @@ class AggregateTests(unittest.TestCase):
         result = evaluate(plan(suite("web.contract", True, ("web",))), job_results)
         self.assertEqual(result.suites[0].state, "selected but not run")
 
+    def test_blocking_producer_is_found_two_hops_up(self):
+        # wasm-bridges -> desktop-frontend -> desktop: the failure is not a direct `needs` entry.
+        job_results = needs(wasm_bridges="failure", desktop_frontend="skipped", desktop="skipped")
+        result = evaluate(plan(suite("desktop.contract", True, ("desktop",))), job_results)
+        self.assertEqual(result.suites[0].state, "blocked by an upstream failure")
+        self.assertIn("wasm-bridges", result.suites[0].reason)
+
     def test_blocked_state_when_a_downstream_job_is_skipped(self):
         job_results = needs(desktop_frontend="failure", desktop="skipped")
         result = evaluate(plan(suite("desktop.contract", True, ("desktop",))), job_results)

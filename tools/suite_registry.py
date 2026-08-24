@@ -64,6 +64,11 @@ TEST_POLICY_PATTERNS = (
     "docs/testing.md",
     "CONTRIBUTING.md",
     "AGENTS.md",
+    "CLAUDE.md",
+    # These three define what the registry's `obc check` and `obc test` suites execute.
+    "tools/justfile",
+    "tools/obc",
+    "tools/obc-dev.sh",
 )
 CODE_OR_POLICY_SUFFIXES = {
     ".c",
@@ -132,6 +137,7 @@ class WorkflowJob:
     runs_on: str
     needs: tuple[str, ...]
     plan_gated: bool
+    gates_on: str = ""
 
 
 @dataclass
@@ -672,11 +678,12 @@ def workflow_jobs(root: Path) -> dict[str, WorkflowJob]:
     runs_on = ""
     needs: tuple[str, ...] = ()
     gated = False
+    gates_on = ""
     in_jobs = False
 
     def flush() -> None:
         if name:
-            jobs[name] = WorkflowJob(name, runs_on, needs, gated)
+            jobs[name] = WorkflowJob(name, runs_on, needs, gated, gates_on)
 
     for raw in workflow.read_text(encoding="utf-8").splitlines():
         if raw.rstrip() and not raw.startswith(" "):
@@ -688,7 +695,7 @@ def workflow_jobs(root: Path) -> dict[str, WorkflowJob]:
         job_match = re.fullmatch(r"  ([A-Za-z0-9_-]+):", raw)
         if job_match:
             flush()
-            name, runs_on, needs, gated = job_match.group(1), "", (), False
+            name, runs_on, needs, gated, gates_on = job_match.group(1), "", (), False, ""
             continue
         if not name:
             continue
@@ -703,8 +710,11 @@ def workflow_jobs(root: Path) -> dict[str, WorkflowJob]:
                 for value in need.group(1).strip("[] ").split(",")
                 if value.strip()
             )
-        if stripped.startswith("if:") and "needs.selection.outputs" in stripped:
-            gated = True
+        gate_literal = re.search(r"needs\.selection\.outputs\.jobs\)\s*,\s*'([^']*)'", stripped)
+        if gate_literal:
+            gated, gates_on = True, gate_literal.group(1)
+        elif stripped.startswith("if:") and "needs.selection.outputs" in stripped:
+            gated, gates_on = True, ""
     flush()
     return jobs
 
@@ -786,6 +796,32 @@ def _cargo_packages(args: Sequence[str], directory: str, graph: CargoGraph) -> s
 
 SCRIPT_RE = re.compile(r"(?:^|\s)((?:[\w.-]+/)*[\w.-]+\.sh)(?:\s|$)")
 WASM_PACK_RE = re.compile(r"\bwasm-pack\s+build\s+([\w./-]+)")
+TRUNK_RE = re.compile(r"\btrunk\s+build\b[^|;&]*?--config\s+([\w./-]+)")
+TRUNK_LINK_RE = re.compile(r"<link[^>]*data-trunk[^>]*>")
+HREF_RE = re.compile(r'href="([^"]+)"')
+
+
+def _trunk_packages(command: str, root: Path, graph: CargoGraph) -> set[str]:
+    """Packages a `trunk build --config CFG` compiles, read from the config's HTML target."""
+
+    packages: set[str] = set()
+    for match in TRUNK_RE.finditer(command):
+        config = root / match.group(1)
+        if not config.is_file():
+            continue
+        page = config.parent / _read_toml(config).get("build", {}).get("target", "index.html")
+        if not page.is_file():
+            continue
+        for tag in TRUNK_LINK_RE.findall(page.read_text(encoding="utf-8")):
+            href = HREF_RE.search(tag)
+            if not href or 'rel="rust"' not in tag:
+                continue
+            try:
+                manifest = _relative(page.parent / href.group(1), root)
+            except (ValueError, OSError):
+                continue
+            packages |= {name for name, item in graph.packages.items() if item.manifest == manifest}
+    return packages
 
 
 def _executed_commands(root: Path, step: WorkflowStep) -> list[tuple[str, str]]:
@@ -817,6 +853,7 @@ def cargo_job_coverage(root: Path, graph: CargoGraph) -> dict[str, set[str]]:
             }
             for match in WASM_PACK_RE.finditer(command):
                 packages |= _directory_package(match.group(1), graph)
+            packages |= _trunk_packages(command, root, graph)
             for package in packages:
                 coverage.setdefault(package, set()).add(step.job)
     return coverage
@@ -1133,8 +1170,10 @@ def run_plan(plan: SelectionPlan, root: Path, *, dry_run: bool = False) -> int:
     print(f"selected {len(plan.selected)} of {len(plan.suites)} registry suites")
     for selection in plan.selected:
         print(f"  {selection.suite['id']} [{','.join(selection.jobs) or 'no CI job'}]")
-        for reason in selection.reasons:
-            print(f"      - {reason}")
+        # One reason per suite; the rest are counted so a wide selection stays readable.
+        print(f"      - {selection.reasons[0]}")
+        if len(selection.reasons) > 1:
+            print(f"        (+{len(selection.reasons) - 1} more reasons)")
     if plan.errors:
         for error in plan.errors:
             print(f"selection error: {error}", file=sys.stderr)
@@ -1263,9 +1302,29 @@ def validate_ci_routing(
             elif not jobs[job].runs_on:
                 errors.append(f"job {job} provisions no runner image for suite {suite_id}")
     claimed = {job for suite_jobs in routes.values() for job in suite_jobs}
+    reported = set(jobs[gate].needs) if gate in jobs else set()
     for name in sorted(jobs):
-        if name != gate and name not in claimed:
+        if name == gate:
+            continue
+        if name not in claimed:
             errors.append(f"workflow job {name} runs no registry suite")
+        if name not in reported:
+            errors.append(f"workflow job {name} is not in the aggregate gate's needs")
+        job = jobs[name]
+        if job.plan_gated and job.gates_on != name:
+            errors.append(
+                f"workflow job {name} gates on {job.gates_on or 'no job literal'}, "
+                "so the plan can never start it"
+            )
+        if not job.plan_gated:
+            # An ungated job runs on every pull request, so calling any of its suites
+            # `affected` would be a lie about when that suite runs.
+            for suite in inventory.suites:
+                if name in routes.get(suite["id"], ()) and suite.get("pull_request") != "always":
+                    errors.append(
+                        f"workflow job {name} runs unconditionally but hosts "
+                        f"{suite['id']}, whose cadence is {suite.get('pull_request')}"
+                    )
     # Only provisioning questions the plan cannot answer may remain in the coarse layer.
     for name, patterns in sorted(coarse_filters(root).items()):
         for pattern in patterns:
