@@ -9,7 +9,7 @@
 //!
 //! - `RescanStore` re-feeds the catalog before subsequent work (the board's
 //!   `take_store_changed → refeed`), so an upload/delete id resolves against the rescanned catalog.
-//! - `PlanRoute` is consumed into the resumable planner (the board's `take_nav_request → plan step`),
+//! - `PlanRoute` is consumed into the resumable planner (the board's `PlanRoute → plan step`),
 //!   and a `CancelRoutePlan` posted in the same input batch **annihilates** it, so the dispatcher
 //!   never starts a plan the rider already dismissed.
 
@@ -45,7 +45,7 @@ fn rescan_refeeds_the_catalog_like_the_board() {
     assert!(!app.route_ids().contains(&gone), "the deleted id is gone from the app catalog too");
 }
 
-/// The board consumes `take_nav_request` into its one-step-per-pass planner; the dispatcher consumes
+/// The board consumes `PlanRoute` into its one-step-per-pass planner; the dispatcher consumes
 /// `PlanRoute` into the resumable [`NavPlan`] the same way (`is_planning` after the pass).
 #[test]
 fn plan_route_enters_the_resumable_planner_like_the_board() {
@@ -95,7 +95,7 @@ fn completion_matches_repeated_frame_steps() {
 
 /// A `debug_start_nav` immediately dismissed (the confirm→Back annihilation, #837) leaves the
 /// dispatcher with **no** plan: the cancel clears the undrained request at post time, exactly as it
-/// does for the board's `take_nav_cancel` before `take_nav_request`.
+/// does for the board's `CancelRoutePlan` before `PlanRoute`.
 #[test]
 fn cancel_before_the_pass_starts_no_plan() {
     let map = obc_fixtures::read("sim-grimsel", "grimsel.obcm").expect("full fixture suite requires map");

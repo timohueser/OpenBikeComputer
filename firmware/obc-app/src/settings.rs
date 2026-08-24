@@ -2033,7 +2033,8 @@ mod tests {
 // ==================== the Settings domain protocol (#1436) ====================
 //
 // SettingsMachine owns the dirty revision, the debounce, the retry and the stale-ack rule that
-// `HostPending` holds today. The platform executor writes **one** revision and says what happened;
+// [`SettingsMachine`] holds since #1397 S2. The platform executor writes **one** revision and says
+// what happened;
 // it decides nothing about when a write is owed or whether an old answer still counts.
 
 use crate::device_core::{OperationToken, SettingsTag};
@@ -2095,3 +2096,327 @@ impl SettingsOutcome {
 const _: () = assert!(core::mem::size_of::<SettingsIntent>() <= 4, "a revision or nothing");
 const _: () = assert!(core::mem::size_of::<SettingsEffect>() <= 8, "a token and a revision");
 const _: () = assert!(core::mem::size_of::<SettingsOutcome>() <= 8, "a token, a revision and a reason");
+
+/// Bounded backoff before a failed settings persist may re-emit (map-plane millis, #810). Fixed and
+/// coarse: a persist failure is rare (an RRAM/file write error), the value stays live in RAM
+/// meanwhile, and the retry only re-emits on a frame that runs for another reason — so this paces
+/// retries without ever scheduling an idle wake.
+pub(crate) const SETTINGS_RETRY_BACKOFF_MS: u32 = 2_000;
+
+/// Wrap-safe "deadline reached" in the persist-backoff's **u16** millisecond space (the low 16 bits
+/// of map-plane millis): true while `now` sits in the half-window at or past `deadline`. The u16
+/// domain wraps every 65.5 s, so a frame gap longer than ~32.7 s can park a due retry in the "not
+/// yet" half and slide it by up to one wrap — bounded, harmless for a rare failure path, and the
+/// price of keeping the deadline to two resident bytes (#792 rule 2).
+fn retry_deadline_reached(now: u16, deadline: u16) -> bool {
+    now.wrapping_sub(deadline) < 0x8000
+}
+
+/// Where the settings-persistence handshake is (#810).
+///
+/// Deliberately **fieldless** (one byte): the Backoff deadline lives in the sibling
+/// [`SettingsMachine::retry_at_ms`] field (meaningful only in Backoff), so this byte packs into an
+/// existing padding hole instead of an 8-byte payload-carrying enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum PersistState {
+    /// The live settings are persisted at the current revision.
+    #[default]
+    Clean,
+    /// An edit changed the live settings; a save is owed once the rider leaves the settings subtree.
+    Dirty,
+    /// A write was emitted for the current revision and awaits its answer.
+    Awaiting,
+    /// The last write failed; no retry re-emits before the deadline.
+    Backoff,
+}
+
+/// The settings domain's persistence machine: the dirty revision, the subtree debounce, the retry
+/// backoff and the stale-answer rule.
+///
+/// Editing is live in RAM the instant it happens; *persisting* it is an acknowledged, retryable
+/// cross-boundary conversation keyed by the monotonic [`revision`](SettingsMachine::revision).
+///
+/// - **Clean** — persisted. An edit → **Dirty** (and bumps the revision).
+/// - **Dirty** — a save is owed. Once outside the subtree, the next effect writes it → **Awaiting**.
+/// - **Awaiting** — emitted and waiting; **not re-emitted** (no RRAM spam under a slow executor). A
+///   matching success → **Clean**; a matching failure → **Backoff**. An edit here → **Dirty**
+///   (supersede: the new revision re-emits, and the older answer no longer matches). An executor
+///   that takes the write but never answers (the web demo has no durable store) parks here
+///   terminally — by design: edits stay live in RAM and keep superseding, and nothing re-emits.
+/// - **Backoff** — the last write failed; re-emits only once the deadline is reached. An edit →
+///   **Dirty**, so a fresh revision skips the wait.
+///
+/// The revision is the supersede guard: an answer is honoured only when it equals the current one.
+/// `u16` monotonic (wrapping) — a false match would need exactly 65,536 edits between an emit and
+/// its answer, and only one revision is ever Awaiting.
+#[derive(Debug, Default)]
+pub(crate) struct SettingsMachine {
+    /// The operation token for the write an executor is running.
+    ops: crate::device_core::TokenSource<crate::device_core::SettingsTag>,
+    /// The revision of the live settings, bumped by every edit whose before/after compare finds a
+    /// change. Starts `0`, re-zeroed when the boot value is seeded.
+    revision: u16,
+    /// The [`Backoff`](PersistState::Backoff) retry deadline — the **low 16 bits** of map-plane
+    /// millis. Meaningful only while [`persist`](SettingsMachine::persist) is Backoff.
+    retry_at_ms: u16,
+    /// Where the handshake is.
+    persist: PersistState,
+}
+
+impl SettingsMachine {
+    /// The boot state: Clean at revision 0 — the boot value came from the store or the default.
+    pub(crate) const fn new() -> Self {
+        SettingsMachine {
+            ops: crate::device_core::TokenSource::new(),
+            revision: 0,
+            retry_at_ms: 0,
+            persist: PersistState::Clean,
+        }
+    }
+
+    /// Admit one settings intent.
+    ///
+    /// [`Changed`](SettingsIntent::Changed) from *any* prior state supersedes an in-flight or
+    /// backing-off older revision: the new content re-emits, and the older answer, when it lands,
+    /// no longer matches the revision and is ignored (#810).
+    pub(crate) fn admit_intent(&mut self, intent: SettingsIntent) {
+        match intent {
+            SettingsIntent::Changed { revision } => {
+                self.revision = revision;
+                self.persist = PersistState::Dirty;
+            }
+            // The backoff elapsing is not a state change on its own: `next_effect` re-derives the
+            // deadline from the clock it is handed, so a due retry emits without anything to latch.
+            SettingsIntent::RetryDue => {}
+        }
+    }
+
+    /// A rider edit: bump the revision and (re-)arm the save.
+    pub(crate) fn note_edited(&mut self) {
+        let revision = self.revision.wrapping_add(1);
+        self.admit_intent(SettingsIntent::Changed { revision });
+    }
+
+    /// The boot value was just seeded from the store (or the default): it is already persisted, so
+    /// reset to Clean at revision 0. Any pending edit is discarded — seeding is a boot/reload
+    /// operation, not a rider edit.
+    pub(crate) fn note_seeded(&mut self) {
+        self.revision = 0;
+        self.persist = PersistState::Clean;
+    }
+
+    /// Whether a write is owed **and** may be emitted now: the value is dirty, the rider has left
+    /// the settings subtree, and we are neither already awaiting an answer nor inside a failed-write
+    /// backoff window.
+    pub(crate) fn wants_write(&self, in_settings_subtree: bool, now_ms: u32) -> bool {
+        if in_settings_subtree {
+            return false;
+        }
+        match self.persist {
+            PersistState::Dirty => true,
+            PersistState::Backoff => retry_deadline_reached(now_ms as u16, self.retry_at_ms),
+            PersistState::Clean | PersistState::Awaiting => false,
+        }
+    }
+
+    /// The next bounded settings operation, or `None` when none is owed this pass.
+    ///
+    /// The dirty state is *not* cleared here (the #810 fix): a failed write must keep the revision
+    /// retryable, so Clean is reached only by a matching success.
+    pub(crate) fn next_effect(&mut self, in_settings_subtree: bool, now_ms: u32) -> Option<SettingsEffect> {
+        if !self.wants_write(in_settings_subtree, now_ms) {
+            return None;
+        }
+        self.persist = PersistState::Awaiting;
+        Some(SettingsEffect::PersistRevision { token: self.ops.issue(), revision: self.revision })
+    }
+
+    /// Consume the answer to a write. Returns `true` when the write **failed** and the rider must
+    /// be told — the one part of this the domain cannot do itself.
+    ///
+    /// Both guards are checked, and they are independent: the token rejects a superseded
+    /// *operation*, the revision rejects a stale *value*. A stale answer leaves the newer content
+    /// pending either way.
+    pub(crate) fn apply_outcome(&mut self, outcome: SettingsOutcome, now_ms: u32) -> bool {
+        if !self.ops.is_current(outcome.token()) {
+            return false;
+        }
+        self.ops.invalidate(); // terminal: a duplicate of this answer is no longer current
+        match outcome {
+            SettingsOutcome::Persisted { revision, .. } => {
+                self.note_persisted(revision);
+                false
+            }
+            SettingsOutcome::PersistFailed { revision, .. } => self.note_persist_failed(revision, now_ms),
+            // A platform with no durable store says so here instead of parking the handshake
+            // forever. The value stays dirty and retryable; nothing is claimed to have been written.
+            SettingsOutcome::Cancelled { .. } => {
+                if self.persist == PersistState::Awaiting {
+                    self.persist = PersistState::Dirty;
+                }
+                false
+            }
+        }
+    }
+
+    /// `revision` reached durable storage. Clear to Clean **only** while it is still the latest — a
+    /// newer edit has already moved the machine back to Dirty, and that content stays pending.
+    ///
+    /// The revision is the whole guard here, because the legacy protocol carries no token: an
+    /// answer to a write nobody made cannot be distinguished from a stale one, and both leave the
+    /// live value exactly where it is.
+    pub(crate) fn note_persisted(&mut self, revision: u16) {
+        if self.persist == PersistState::Awaiting && revision == self.revision {
+            self.persist = PersistState::Clean;
+        }
+    }
+
+    /// The write for `revision` failed. Keep it dirty and re-arm the bounded backoff, but only
+    /// while it is still the in-flight latest.
+    ///
+    /// **Always returns `true`:** the rider is told a save failed whatever the revision guard says,
+    /// which is what the legacy handler did and the honest thing to show — a write *did* fail. The
+    /// guard decides only whether that revision stays retryable; a stale failure leaves the newer
+    /// content pending exactly as it was and re-arms nothing.
+    pub(crate) fn note_persist_failed(&mut self, revision: u16, now_ms: u32) -> bool {
+        if self.persist == PersistState::Awaiting && revision == self.revision {
+            self.retry_at_ms = (now_ms as u16).wrapping_add(SETTINGS_RETRY_BACKOFF_MS as u16);
+            self.persist = PersistState::Backoff;
+        }
+        true
+    }
+
+    /// Test hook: arm a pending save without driving a real edit, standing in for a settings-screen
+    /// edit the drain/gating tests do not replay.
+    #[cfg(test)]
+    pub(crate) fn arm_save(&mut self) {
+        self.note_edited();
+    }
+
+    /// Whether nothing at all is owed: Clean at revision 0 — the [`new`](SettingsMachine::new)
+    /// state. The destructure is exhaustive, so a field added here must state its empty value too.
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
+        let SettingsMachine { ops, revision, retry_at_ms, persist } = self;
+        format!("{ops:?}") == "TokenSource(0)" && *revision == 0 && *retry_at_ms == 0 && *persist == PersistState::Clean
+    }
+}
+
+// Layout tripwire: a revision, a deadline, a phase and a generation — never a `Settings`.
+const _: () = assert!(core::mem::size_of::<SettingsMachine>() <= 12, "the handshake, not the values");
+
+#[cfg(test)]
+mod settings_machine_tests {
+    use super::*;
+    use obc_ports::SettingsSaveError;
+
+    /// The token a write went out under, so a test can answer the operation the machine is actually
+    /// holding.
+    fn emit(
+        machine: &mut SettingsMachine,
+        now_ms: u32,
+    ) -> (crate::device_core::OperationToken<crate::device_core::SettingsTag>, u16) {
+        match machine.next_effect(false, now_ms).expect("a write is owed") {
+            SettingsEffect::PersistRevision { token, revision } => (token, revision),
+        }
+    }
+
+    /// The debounce: nothing is written while the rider is still inside the settings subtree — they
+    /// are mid-edit — and exactly one write goes out when they leave.
+    #[test]
+    fn no_write_leaves_while_the_rider_is_inside_the_settings_subtree() {
+        let mut machine = SettingsMachine::new();
+        machine.note_edited();
+        assert!(machine.next_effect(true, 100).is_none(), "still editing");
+        assert!(machine.next_effect(true, 200).is_none(), "…and still editing");
+
+        let (_, revision) = emit(&mut machine, 300);
+        assert_eq!(revision, 1, "the edit's revision leaves once");
+        assert!(machine.next_effect(false, 400).is_none(), "awaiting an answer — never re-emitted");
+    }
+
+    /// **#810.** A stale ack — one for a revision a newer edit has already superseded — must not
+    /// clear the newer content. The revision is the guard, and it is checked independently of the
+    /// token: the legacy protocol carries no token at all.
+    #[test]
+    fn a_stale_ack_does_not_clear_the_newer_state() {
+        let mut machine = SettingsMachine::new();
+        machine.note_edited(); // revision 1
+        emit(&mut machine, 100);
+        machine.note_edited(); // revision 2 supersedes it while the write is in flight
+
+        machine.note_persisted(1);
+        assert!(machine.wants_write(false, 200), "the newer content is still owed");
+        let (_, revision) = emit(&mut machine, 200);
+        assert_eq!(revision, 2, "and it is the newer revision that goes out");
+        machine.note_persisted(2);
+        assert!(!machine.wants_write(false, 300), "the matching ack is what clears it");
+    }
+
+    /// A failed write keeps the revision dirty, backs off, and retries **once** the window elapses —
+    /// never before it, and never in a loop.
+    #[test]
+    fn a_failed_write_backs_off_and_retries_once() {
+        let mut machine = SettingsMachine::new();
+        machine.note_edited();
+        let (_, revision) = emit(&mut machine, 1_000);
+
+        machine.note_persist_failed(revision, 1_000);
+        assert!(!machine.wants_write(false, 1_000 + SETTINGS_RETRY_BACKOFF_MS - 1), "not before the window");
+        assert!(machine.wants_write(false, 1_000 + SETTINGS_RETRY_BACKOFF_MS), "and exactly once at it");
+
+        let (_, retried) = emit(&mut machine, 1_000 + SETTINGS_RETRY_BACKOFF_MS);
+        assert_eq!(retried, revision, "the same content, not a new one");
+        assert!(machine.next_effect(false, 1_000 + 4 * SETTINGS_RETRY_BACKOFF_MS).is_none(), "one retry in flight");
+    }
+
+    /// A platform that takes the write and never answers (the web demo has no durable store) parks
+    /// — by design. Edits stay live in RAM and keep superseding, and nothing re-emits into a store
+    /// that will not answer.
+    #[test]
+    fn an_executor_that_never_answers_parks_without_re_emitting() {
+        let mut machine = SettingsMachine::new();
+        machine.note_edited();
+        emit(&mut machine, 100);
+        for ms in [200, 10_000, 100_000, 1_000_000] {
+            assert!(machine.next_effect(false, ms).is_none(), "no RRAM spam under a silent executor");
+        }
+
+        // …and a `Cancelled` answer is how such a platform says so honestly: the value stays dirty
+        // and retryable rather than parked forever.
+        machine.note_edited();
+        let (token, _) = emit(&mut machine, 2_000_000);
+        assert!(!machine.apply_outcome(SettingsOutcome::Cancelled { token }, 2_000_000));
+        assert!(machine.wants_write(false, 2_000_001), "the write is owed again");
+    }
+
+    /// The rider is told a save failed even when the failure is for a superseded revision — a write
+    /// did fail, and hiding it would be the quieter lie. What the revision guard decides is only
+    /// whether *that* revision stays retryable: a stale failure re-arms nothing, so the newer
+    /// content is still owed immediately rather than parked behind a backoff it never earned.
+    #[test]
+    fn a_stale_failure_is_still_shown_but_re_arms_nothing() {
+        let mut machine = SettingsMachine::new();
+        machine.note_edited(); // revision 1
+        emit(&mut machine, 100);
+        machine.note_edited(); // revision 2 supersedes it
+
+        assert!(machine.note_persist_failed(1, 100), "the rider is told a save failed");
+        assert!(machine.wants_write(false, 100), "but revision 2 is owed now, not after a backoff");
+        assert_eq!(emit(&mut machine, 100).1, 2);
+    }
+
+    /// The token and the revision are independent guards: an answer to a *superseded operation* is
+    /// refused before its revision is even looked at.
+    #[test]
+    fn a_superseded_operation_is_refused_on_its_token() {
+        let mut machine = SettingsMachine::new();
+        machine.note_edited();
+        let (first, revision) = emit(&mut machine, 100);
+        machine.note_edited();
+        emit(&mut machine, 200);
+
+        let stale = SettingsOutcome::PersistFailed { token: first, revision, error: SettingsSaveError::Backend };
+        assert!(!machine.apply_outcome(stale, 200), "a superseded write cannot report a failure to the rider");
+    }
+}

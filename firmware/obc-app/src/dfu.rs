@@ -312,3 +312,133 @@ impl DfuOutcome {
 const _: () = assert!(core::mem::size_of::<DfuIntent>() <= 1, "two fieldless requests");
 const _: () = assert!(core::mem::size_of::<DfuEffect>() <= 8, "a bare token");
 const _: () = assert!(core::mem::size_of::<DfuOutcome>() <= 96, "the two fixed version strings dominate");
+
+// ==================== the DFU state machine (#1397 S2) ====================
+
+use crate::activity::DfuAction;
+
+/// The update domain's own state: the single phase slot, the operation token, and whether an
+/// executor is running one.
+///
+/// **One phase at a time, most-recent-wins.** There is never more than one update phase in flight,
+/// so a rider's later post replaces an undelivered earlier one rather than queueing behind it — a
+/// scan the rider walked away from must not run after the install they asked for instead. The
+/// remote BLE door is the one caller that must *not* replace: `App::open_remote_dfu_check` reads
+/// [`request_pending`](DfuState::request_pending) and defers, because a phone must never displace
+/// what the rider is doing on the device.
+#[derive(Debug, Default)]
+pub struct DfuState {
+    /// The rider's (or the remote door's) request, until an executor takes it.
+    request: Option<DfuAction>,
+    /// The operation token for the phase an executor is running.
+    ops: crate::device_core::TokenSource<DfuTag>,
+}
+
+impl DfuState {
+    /// The boot state: nothing staged, nothing running.
+    pub(crate) const fn new() -> Self {
+        DfuState { request: None, ops: crate::device_core::TokenSource::new() }
+    }
+
+    /// Admit one update request. Most-recent-wins, and superseding invalidates the older token so a
+    /// scan answer cannot land on the install that replaced it.
+    pub(crate) fn admit_intent(&mut self, intent: DfuIntent) {
+        self.ops.invalidate();
+        self.request = Some(match intent {
+            DfuIntent::ScanRequested => DfuAction::Scan,
+            DfuIntent::InstallRequested => DfuAction::Install,
+        });
+    }
+
+    /// The next bounded update operation, or `None` when nothing is owed.
+    pub(crate) fn next_effect(&mut self) -> Option<DfuEffect> {
+        Some(match self.request.take()? {
+            DfuAction::Scan => DfuEffect::Scan { token: self.ops.issue() },
+            DfuAction::Install => DfuEffect::ArmInstall { token: self.ops.issue() },
+        })
+    }
+
+    /// Whether `outcome` still answers the phase the domain is waiting for.
+    pub(crate) fn accepts(&self, outcome: &DfuOutcome) -> bool {
+        self.ops.is_current(outcome.token())
+    }
+
+    /// A terminal answer landed: the phase is over, so a repeat of it is no longer current.
+    pub(crate) fn note_answer(&mut self) {
+        self.ops.invalidate();
+    }
+
+    /// Whether a request is posted but undelivered — the `Dfu` peek, and the remote door's
+    /// deferral gate.
+    pub(crate) fn request_pending(&self) -> bool {
+        self.request.is_some()
+    }
+
+    /// Assert the boot state, field by field.
+    #[cfg(test)]
+    pub(crate) fn assert_boot_state(&self) {
+        let DfuState { request, ops } = self;
+        assert!(request.is_none(), "no update phase posted");
+        assert_eq!(format!("{ops:?}"), "TokenSource(0)", "no update operation has been issued");
+    }
+}
+
+// Layout tripwire: one phase and a token.
+const _: () = assert!(core::mem::size_of::<DfuState>() <= 8, "one phase slot and a generation");
+
+#[cfg(test)]
+mod dfu_state_tests {
+    use super::*;
+
+    fn phase(state: &mut DfuState) -> Option<DfuAction> {
+        state.next_effect().map(|effect| match effect {
+            DfuEffect::Scan { .. } => DfuAction::Scan,
+            DfuEffect::ArmInstall { .. } => DfuAction::Install,
+        })
+    }
+
+    /// One phase at a time, most-recent-wins: a later post replaces an undelivered earlier one, and
+    /// superseding invalidates the older token so a scan's answer cannot land on the install that
+    /// replaced it.
+    #[test]
+    fn the_phase_slot_is_most_recent_wins() {
+        let mut state = DfuState::new();
+        state.admit_intent(DfuIntent::ScanRequested);
+        state.admit_intent(DfuIntent::InstallRequested);
+        assert_eq!(phase(&mut state), Some(DfuAction::Install), "the rider's latest is what runs");
+        assert_eq!(phase(&mut state), None, "…exactly once");
+    }
+
+    /// A scan answer that belongs to a superseded phase changes nothing — the rider is not shown a
+    /// scan report for an update they already asked to install.
+    #[test]
+    fn an_answer_to_a_superseded_phase_is_refused() {
+        let mut state = DfuState::new();
+        state.admit_intent(DfuIntent::ScanRequested);
+        let scan = state.next_effect().expect("the scan goes out");
+        state.admit_intent(DfuIntent::InstallRequested);
+
+        let report = DfuScanReport::new("v1", "v2", false);
+        assert!(!state.accepts(&DfuOutcome::ScanFinished { token: scan.token(), report }));
+    }
+
+    /// Both terminal failures answer the phase they belong to, so the panel's card is the one the
+    /// rider was waiting on.
+    #[test]
+    fn a_scan_failure_and_an_install_failure_both_answer_their_own_phase() {
+        for (intent, failure) in [(DfuIntent::ScanRequested, 0), (DfuIntent::InstallRequested, 1)] {
+            let mut state = DfuState::new();
+            state.admit_intent(intent);
+            let effect = state.next_effect().expect("the phase goes out");
+            let token = effect.token();
+            let outcome = if failure == 0 {
+                DfuOutcome::ScanFailed { token, error: DfuScanError::NotFound }
+            } else {
+                DfuOutcome::InstallFailed { token, error: DfuInstallError::NoCard }
+            };
+            assert!(state.accepts(&outcome), "the failure answers the phase that was asked for");
+            state.note_answer();
+            assert!(!state.accepts(&outcome), "and a repeat of it is no longer current");
+        }
+    }
+}

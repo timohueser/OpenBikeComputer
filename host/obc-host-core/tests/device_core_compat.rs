@@ -206,9 +206,18 @@ fn the_adapter_path_completes_one_operation_per_unanswerable_domain() {
     let mut host = expiring_host();
 
     let (_, report) = host.pass(10);
-    assert_eq!(report.translated, 1, "the active route's use stamp is a legacy command");
+    // Two domains speak in the boot pass: retention's use stamp for the active route, and the
+    // settings write the trusted-clock stamp made owed (#1397 S2 moved that handshake into
+    // `SettingsMachine`, so the pass — not the drain — is what offers it).
+    assert_eq!(report.translated, 2, "the use stamp and the settings write are both legacy commands");
     assert_eq!(report.left, 0);
-    assert_eq!(host.sent, vec![HostCommand::StampRouteUsed { id: 11, utc: host.app.wall_unix_now() }]);
+    assert_eq!(
+        host.sent,
+        vec![
+            HostCommand::StampRouteUsed { id: 11, utc: host.app.wall_unix_now() },
+            HostCommand::PersistSettings { revision: 1 },
+        ]
+    );
 
     let (plan, report) = host.pass(20);
     assert_eq!(report.left, 1, "the expiry's removal has no legacy expression");
@@ -232,7 +241,14 @@ fn the_adapter_path_completes_one_operation_per_unanswerable_domain() {
         assert_eq!(report, LegacyReport::default(), "no domain offers anything further");
         assert!(!plan.effects.has_pending(), "and the pass has nothing left to offer either");
     }
-    assert_eq!(host.sent.len(), 1, "one command in the device's whole life on this path");
+    assert_eq!(host.sent.len(), 2, "two commands in the device's whole life on this path");
+
+    // The difference an *answerable* domain makes, in the same run: the settings write has a
+    // terminal legacy event, so its answer reaches `SettingsMachine` and the domain speaks again.
+    host.deliver(HostEvent::SettingsPersisted { revision: 1 }).unwrap();
+    let (_, report) = host.pass(80);
+    assert_eq!(report, LegacyReport::default(), "the write is done — nothing is owed");
+    assert!(host.adapter.pending().is_empty(), "and its correlation slot is free again");
 }
 
 /// The fact half of the protocol, end to end: a store commit, an upload and a warning all reach the
@@ -245,7 +261,12 @@ fn legacy_facts_reach_the_rider_through_the_pass() {
     host.deliver(HostEvent::StoreChanged).unwrap();
     host.deliver(HostEvent::Warning(WarningFlags::NO_GPS)).unwrap();
     host.deliver(HostEvent::RouteUploaded { id: 22, replaced: false, elevation: None }).unwrap();
-    assert!(host.adapter.pending().is_empty(), "a fact is nobody's answer");
+    let owed: Vec<_> = LegacyReply::ALL.into_iter().filter(|class| host.adapter.pending().holds(*class)).collect();
+    assert_eq!(
+        owed,
+        vec![LegacyReply::SettingsWrite],
+        "a fact is nobody's answer — the only slot in flight is the boot pass's settings write"
+    );
 
     host.pass(20);
     assert!(host.app.debug_stack_len() > 1, "the facts put something in front of the rider");

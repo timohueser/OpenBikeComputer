@@ -1157,7 +1157,7 @@ pub(crate) async fn run_app(
                     // design, with its own on-glass acceptance — a separate issue.
                     //
                     // So: answer the typed failure the moment the request drains, exactly as the
-                    // router-less image answers `PlanRoute`. `on_detour_planned` swaps the spinner for
+                    // router-less image answers `PlanRoute`. the detour answer swaps the spinner for
                     // the "Try a farther rejoin." card and releases the freeze in the same pass.
                     obc_app::HostCommand::PlanDetour(_) => {
                         defmt::warn!("nav: detour planning has no board half yet (#882) — answering the failure tier");
@@ -1480,7 +1480,9 @@ pub(crate) async fn run_app(
 
             // The System settings screen's card-free scan (T8 item 6): a drained on-entry request runs
             // one bounded FAT free-cluster read off the card and answers through the `CardScanned`
-            // event (or a `None` → the screen keeps `--` when there's no card / no FSInfo free count).
+            // event. A `None` — no mounted card, or no FSInfo free count — is a measurement that
+            // produced no figure, and `StorageInfo` blanks the row back to `--` rather than leaving
+            // a byte count from a card that may no longer be in the device.
             if host_pass.card_scan {
                 app.apply_event(obc_app::HostEvent::CardScanned {
                     free_bytes: storage.as_ref().and_then(|s| s.card_free_bytes()),
@@ -2193,7 +2195,7 @@ pub(crate) async fn run_app(
             // the reflective panel keeps the last frame on glass for free. Two things follow, and
             // both are load-bearing. The map redraw is **skipped, not queued** — latched into
             // `pending_map_redraw` so nothing is lost and the catch-up lands the pass the freeze
-            // lifts (`App::note_plan_ended` dirties the map for exactly that). And the *overlay*
+            // lifts (Navigator dirties the map for exactly that). And the *overlay*
             // still paints: `dirty.overlay` carries the freeze's edge, and the banner is what turns
             // a frozen screen from "the device wedged" into "it is recalculating".
             //
