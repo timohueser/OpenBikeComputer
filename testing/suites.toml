@@ -638,10 +638,8 @@ ownership = [
   { kind = "swift-target", package = "companion-ios/Packages/OBCKit/Package.swift", name = "OBCFormatsTests" },
   { kind = "swift-target", package = "companion-ios/Packages/OBCKit/Package.swift", name = "OBCMockTests" },
   { kind = "swift-target", package = "companion-ios/Packages/OBCKit/Package.swift", name = "OBCUITests" },
-  { kind = "workflow", pattern = "swift test --package-path companion-ios/Packages/OBCKit --skip *" },
-  { kind = "workflow", pattern = "swift test --package-path companion-ios/Packages/OBCKit --skip-build --filter *" },
+  { kind = "workflow", pattern = "swift test --package-path companion-ios/Packages/OBCKit" },
 ]
-budget_exception = { reason = "The exhaustive weather codec mutation test exceeds the per-suite target until its CRC seam is optimized.", issue = "#1449" }
 sleep_exception = { reason = "Short bounded host-model waits remain while the state-observation work is completed.", issue = "#1236" }
 
 [[suite]]
