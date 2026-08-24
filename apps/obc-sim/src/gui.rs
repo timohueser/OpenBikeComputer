@@ -618,6 +618,11 @@ impl SimGui {
                 )
             }
         };
+        // A single-loop host has no second recognizer to cancel, so it consumes the hold-cancel
+        // latch the pass may have armed rather than leaving it set for a plane that does not exist
+        // — the same rule `App::handle_input` applies for the hosts that still go through it.
+        let _ = self.app.take_hold_cancel();
+
         // Reflect the replayed fix in the panel mirrors, so manual control resumes from here if the
         // track is ejected.
         if self.gpx.is_some() {
@@ -642,7 +647,7 @@ impl SimGui {
             self.host.execute(
                 &mut self.app,
                 &mut plan,
-                &self.session,
+                &mut self.session,
                 &mut self.store,
                 &mut self.ride_store,
                 &mut self.tracks,

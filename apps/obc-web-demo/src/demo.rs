@@ -187,11 +187,14 @@ pub struct Demo {
     queue: Vec<Cmd>,
     /// The previous `tick` timestamp (rAF `now_ms`), for the replay `dt`.
     last_now_ms: Option<f64>,
-    /// The pass's monotonic UI clock (holds, animations, the next wake). Taken from the rAF
-    /// timestamp, but never allowed to move backwards: a guided-demo pre-roll runs hundreds of
-    /// render-free passes of its own, and a clock that then jumped back would age every timer the
-    /// wrong way.
-    ui_ms: u32,
+    /// How far the device's UI clock runs **ahead of** the rAF timestamp: the time the guided-demo
+    /// pre-roll's own render-free passes consumed.
+    ///
+    /// The UI clock (holds, animations, card dwell, the next wake) is `now_ms + this`, so it is
+    /// monotonic *and* it keeps running. Clamping it to the larger of the two instead would freeze
+    /// the device for as long as the pre-roll took — about eight minutes of wall clock after every
+    /// `enter`, which is the whole guided tour.
+    ui_offset_ms: u32,
     /// Guided-demo mode: the page's tour engine owns playback + baseline resets, so the ambient
     /// summit auto-restart is suspended (a `start_session` mid-demo would reset progress under
     /// the script).
@@ -232,7 +235,7 @@ impl Demo {
             frame: RgbaFrame::new(FRAME_W, FRAME_H),
             queue: Vec::new(),
             last_now_ms: None,
-            ui_ms: 0,
+            ui_offset_ms: 0,
             tour_active: false,
             ready: false,
         });
@@ -275,7 +278,6 @@ impl Demo {
             Some(last) => ((now_ms - last) / 1000.0).clamp(0.0, MAX_FRAME_DT_S),
             None => 0.0,
         };
-        self.ui_ms = self.ui_ms.max(now_ms.max(0.0) as u32);
 
         // Drain the page's commands first, so a gesture's transition is visible in this same
         // frame's render (and the closed-loop tour never waits an extra frame). Gestures go into
@@ -288,7 +290,11 @@ impl Demo {
             self.apply(cmd, &mut gestures);
         }
 
-        let plan = self.device_frame(self.ui_ms, dt, &gestures);
+        let plan = self.device_frame(self.ui_now(), dt, &gestures);
+        // A single-loop host has no second recognizer to cancel, so it consumes the hold-cancel
+        // latch the pass may have armed rather than leaving it set for a plane that does not exist
+        // — the same rule `App::handle_input` applies for the hosts that still go through it.
+        let _ = self.app.take_hold_cancel();
 
         // Ambient: restart the climb at the summit so the page stays alive. Point-to-point, so
         // bump the tracking session to clear the breadcrumb + totals (a fresh lap instead of
@@ -333,6 +339,12 @@ impl Demo {
         false
     }
 
+    /// The device's UI clock: the rAF timestamp plus whatever a guided pre-roll ran through on its
+    /// own. Monotonic, because the rAF clock is and the offset only ever grows.
+    fn ui_now(&self) -> u32 {
+        (self.last_now_ms.unwrap_or(0.0).max(0.0) as u32).wrapping_add(self.ui_offset_ms)
+    }
+
     /// One device frame: the active route opened once, one [`App::run_pass`], and the typed
     /// executor behind it. The shape the page's tick and the guided pre-roll share.
     ///
@@ -375,7 +387,7 @@ impl Demo {
         self.host.execute(
             &mut self.app,
             &mut plan,
-            &self.session,
+            &mut self.session,
             &mut self.routes,
             &mut self.rides,
             &mut self.tracks,
@@ -492,8 +504,10 @@ impl Demo {
                 // Full frames, not bare ticks: a pass whose effects nobody serves leaves its
                 // domains in flight, and the device the guided demo hands over would then refuse
                 // the first delete or stamp it is asked for.
-                self.ui_ms = self.ui_ms.wrapping_add((wall_dt * 1000.0) as u32);
-                let _ = self.device_frame(self.ui_ms, wall_dt, &[]);
+                // The pre-roll's own time joins the offset, so the clock the page resumes on
+                // carries it and keeps ticking from there.
+                self.ui_offset_ms = self.ui_offset_ms.wrapping_add((wall_dt * 1000.0) as u32);
+                let _ = self.device_frame(self.ui_now(), wall_dt, &[]);
             }
         }
     }

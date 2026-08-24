@@ -1245,7 +1245,7 @@ const MANDATORY_TRACES: [MandatoryTrace; 16] = [
         row: "trip member disappearance before delete commit",
         test: "an_object_that_vanished_before_the_commit_is_a_success",
         substitution: Some(
-            "the trip cascade never becomes an effect — CatalogState::admit_intent refuses it              (LegacyOwned::TripCascade), so there is no bounded member read to race with. The trace              runs the same disappearance against a route removal, which is where the rule lives: an              object already gone is `existed: false`, a success, never a failure the rider sees. The              cascade's own member read lands with #1397 S6.",
+            "the trip cascade never becomes an effect — CatalogState::admit_intent refuses it              (LegacyOwned::TripCascade), so there is no bounded member read to race with. The trace              runs the same disappearance against a route removal, which is where the rule lives: an              object already gone is `existed: false`, a success, never a failure the rider sees. The              cascade's own member read lands with the catalog cascade slice — see              `LegacyOwned::TripCascade::deletes_in`, which #1397 S6a corrected to say that slice is              still unallocated: S6a found `admit_intent` refuses one, and S6b is the board's cutover.",
         ),
     },
     MandatoryTrace {

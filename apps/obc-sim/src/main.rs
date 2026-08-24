@@ -1589,7 +1589,7 @@ fn main() {
                 host.execute(
                     &mut app,
                     &mut plan,
-                    &session,
+                    &mut session,
                     stores.routes,
                     stores.rides,
                     stores.tracks,
@@ -1658,7 +1658,7 @@ fn main() {
                 host.execute(
                     &mut app,
                     &mut plan,
-                    &session,
+                    &mut session,
                     stores.routes,
                     stores.rides,
                     stores.tracks,

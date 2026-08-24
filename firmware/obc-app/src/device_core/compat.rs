@@ -198,12 +198,14 @@ impl LegacyOwned {
     /// symbol.
     pub const fn deletes_in(self) -> &'static str {
         match self {
-            LegacyOwned::StoreRevision
-            | LegacyOwned::ObjectNamespace
-            | LegacyOwned::TripCascade
-            | LegacyOwned::SidecarAck => {
+            LegacyOwned::StoreRevision | LegacyOwned::ObjectNamespace | LegacyOwned::SidecarAck => {
                 "#1397 S6a/S6b — the store and retention executors report revisions and results"
             }
+            // Deliberately **not** S6a/S6b. S6a found that `CatalogState::admit_intent` refuses a
+            // trip cascade outright — there is no bounded member read to translate — and S6b is the
+            // board's own cutover, not the domain work. The slice that builds it is unallocated,
+            // and saying so is more honest than pointing at one that has already shipped without it.
+            LegacyOwned::TripCascade => "#1397 — the catalog cascade slice, still unallocated: S6a found `admit_intent` refuses one, S6b is the board",
             LegacyOwned::RecorderJournal | LegacyOwned::RideCloseAck => {
                 "#1398 — the recorder domain owns the journal and answers with the ride identity"
             }
