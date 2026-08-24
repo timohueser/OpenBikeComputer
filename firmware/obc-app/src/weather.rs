@@ -1329,6 +1329,11 @@ impl WeatherDomain {
             // Opening installed data is not a refresh: it fetched nothing, so it records the
             // identity it opened and leaves the last *refresh* verdict standing. Reporting
             // "installed" here would tell the rider a fetch succeeded when none ran.
+            //
+            // Unreachable through this domain today and therefore untested: `next_effect` only ever
+            // emits `RequestRefresh`, so the only way to observe this arm would be to fabricate an
+            // outcome no executor can legitimately send. #1401 is where `OpenInstalledData` starts
+            // being issued; the rule is stated here so that cutover does not have to rediscover it.
             WeatherOutcome::Opened { data, revision, .. } => self.note_installed(WeatherData { data, revision }),
             WeatherOutcome::Failed { error, .. } => self.last_result = Some(RefreshResult::Failed(error)),
             WeatherOutcome::Cancelled { .. } => self.last_result = Some(RefreshResult::Cancelled),
@@ -1485,31 +1490,6 @@ mod domain_tests {
         assert_eq!(wx.last_refresh(), Some(RefreshResult::Failed(WeatherError::NoData)));
         assert_eq!(wx.installed(), Some(data(1, 5)), "a failure never drops what is installed");
         assert!(!wx.refreshing());
-    }
-
-    /// Opening installed data records what was opened without claiming a fetch happened.
-    #[test]
-    fn opening_installed_data_is_not_a_refresh_result() {
-        let mut wx = WeatherDomain::new();
-        wx.apply_intent(WeatherIntent::RefreshRequested);
-        let Some(effect) = wx.next_effect(can_refresh()) else { panic!("requested") };
-        wx.apply_outcome(WeatherOutcome::Failed { token: effect.token(), error: WeatherError::NoData });
-        assert_eq!(wx.last_refresh(), Some(RefreshResult::Failed(WeatherError::NoData)));
-
-        wx.apply_intent(WeatherIntent::RefreshRequested);
-        let Some(effect) = wx.next_effect(can_refresh()) else { panic!("requested") };
-        wx.apply_outcome(WeatherOutcome::Opened {
-            token: effect.token(),
-            data: DataIdentity::new(3),
-            revision: Revision::new(1),
-        });
-        assert_eq!(wx.installed(), Some(data(3, 1)), "the opened product is what is installed");
-        assert_eq!(
-            wx.last_refresh(),
-            Some(RefreshResult::Failed(WeatherError::NoData)),
-            "an open never overwrites the last fetch's verdict"
-        );
-        assert!(!wx.refreshing(), "an open is still terminal for its own operation");
     }
 
     /// Installed-data identity follows the DC2 fact rule: a stale revision of the same product
