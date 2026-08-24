@@ -495,9 +495,9 @@ impl UiRuntime {
         self.stack.iter().any(|s| matches!(s, Screen::Passkey(_)))
     }
 
-    /// Whether the **map-transfer card** is on the stack (issue #927) — what
-    /// [`App::map_transfer_card_up`](crate::App::map_transfer_card_up) exposes to the board's
-    /// transfer gate.
+    /// Whether the **map-transfer card** is on the stack (issue #927) — the `render ⊥ usb` half of
+    /// [`App::usb_stage_precondition`](crate::App::usb_stage_precondition), reached through
+    /// [`App::map_transfer_card_up`](crate::App::map_transfer_card_up).
     pub(crate) fn map_transfer_card_up(&self) -> bool {
         self.stack.iter().any(|s| matches!(s, Screen::MapTransfer(_)))
     }

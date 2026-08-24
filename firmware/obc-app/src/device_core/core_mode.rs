@@ -58,10 +58,9 @@ use crate::navigator::PlanFamily;
 ///
 /// The ranking decides only what the rider is **told**. It never decides admission: that reads the
 /// levels, because a search and a transfer exclude different things.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModeState {
     /// Nothing heavy is holding the device.
-    #[default]
     Free,
     /// A planner run holds the nav arm.
     Searching,
@@ -70,7 +69,7 @@ pub enum ModeState {
 }
 
 /// The four levels: two searches, one transfer, and the banner's level→edge bit.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct CoreMode {
     /// A live [`Route`](PlanFamily::Route) planner run.
     route_search: bool,

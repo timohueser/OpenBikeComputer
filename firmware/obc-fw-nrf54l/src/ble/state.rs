@@ -4,7 +4,7 @@
 //! lives entirely within the `ble` module tree, read/written across the four planes but never wider.
 //!
 //! Anything a *second transport* would also need — the command handler, descriptor classification,
-//! the cross-transport one-transfer gate, the identity blobs — lives in [`crate::link`] instead.
+//! the identity blobs — lives in [`crate::link`] instead.
 
 use core::cell::Cell;
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
