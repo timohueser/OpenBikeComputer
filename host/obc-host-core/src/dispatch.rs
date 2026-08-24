@@ -24,7 +24,7 @@
 //! |---|---|---|
 //! | `FinishTrack` | Recorder has no machine — the close is answered by a catalog re-feed, not a ride identity (`LegacyOwned::RideCloseAck`) | #1398 |
 //! | `ForgetBond` | The removal is confirmed by a link-status fact, not by a reply (`LegacyOwned::BondAck`) | #1398/#1400 |
-//! | `DeleteTrip` | `CatalogState::admit_intent` **refuses** a trip cascade: the bounded member read does not exist, and the sim's folder stores number routes and trips from separate counters, so a namespace-free `RemoveObject` could not tell them apart (`LegacyOwned::TripCascade` + `ObjectNamespace`) | the cascade slice |
+//! | `DeleteTrip` | `CatalogState::admit_intent` **refuses** a trip cascade: the bounded member read does not exist, and the sim's folder stores number routes and trips from separate counters, so a namespace-free `RemoveObject` could not tell them apart (`LegacyOwned::TripCascade` + `ObjectNamespace`) | `LegacyOwned::TripCascade::deletes_in` |
 //!
 //! [`RESIDUAL`] is that list as data, and [`assert_residual`] is the production assertion that
 //! nothing else comes back.
@@ -37,7 +37,6 @@
 //! render, which a `&mut self` executor call cannot straddle. The host opens it once per frame with
 //! [`ActiveRouteSession::sync`] and lends it to both.
 
-use obc_app::ble::BondEffect;
 use obc_app::catalog_state::{CatalogEffect, CatalogError, CatalogOutcome};
 use obc_app::device_core::derived::{DerivedInput, DerivedInputs, DerivedTargets};
 use obc_app::device_core::storage_info::{StorageInfoEffect, StorageInfoError, StorageInfoOutcome};
@@ -128,12 +127,15 @@ pub trait HostPlatform {
     /// Remove the bond with the paired phone. Confirmed by a link fact, never by a reply.
     fn forget_bond(&mut self) {}
 
-    /// Validate the staged update package. `None` = still working; the operation stays in flight.
+    /// Validate the staged update package. `None` = **this host does not answer** — nothing
+    /// re-polls the platform between passes, so the operation is simply never completed and the
+    /// rider's next request mints a fresh one.
     fn scan_update(&mut self) -> Option<Result<DfuScanReport, DfuScanError>> {
         None
     }
 
-    /// Arm the staged update. `None` = still working.
+    /// Arm the staged update. `None` = this host does not answer, as above — which is exactly what
+    /// a progress spinner with no terminal swap behind it is.
     fn arm_install(&mut self) -> Option<Result<(), DfuInstallError>> {
         None
     }
@@ -148,7 +150,9 @@ impl HostPlatform for () {}
 const HOST_STORE: StoreIdentity = StoreIdentity::new(1);
 
 /// The legacy classes these hosts still drain, and nothing else — the named residual of #1397 S6.
-pub const RESIDUAL: [&str; 3] = ["FinishTrack", "ForgetBond", "DeleteTrip"];
+/// Prose for [`assert_residual`]'s message; [`residual`] is what actually decides, and
+/// `the_residual_table_names_exactly_what_the_predicate_admits` pins the two together.
+const RESIDUAL: [&str; 3] = ["FinishTrack", "ForgetBond", "DeleteTrip"];
 
 /// Whether `command` is one of the three the typed executor deliberately leaves on the old
 /// protocol. Anything else in the mailbox is a class DeviceCore already owns, and running it beside
@@ -292,7 +296,7 @@ impl HostLoop {
         &mut self,
         app: &mut App,
         plan: &mut PassPlan,
-        session: &ActiveRouteSession,
+        session: &mut ActiveRouteSession,
         routes: &mut dyn RouteRepository,
         rides: &mut dyn RideRepository,
         tracks: &mut dyn TrackRepository,
@@ -300,37 +304,16 @@ impl HostLoop {
         reader: &obc_reader::Reader,
         elev: &mut dyn obc_route::ElevationSource,
         platform: &mut dyn HostPlatform,
-    ) {
-        self.execute_traced(app, plan, session, routes, rides, tracks, trips, reader, elev, platform, &mut NoTrace);
-    }
-
-    /// [`execute`](Self::execute) with a passive typed observer at the feeder and residual-command
-    /// call sites. The observer cannot influence dispatch policy; production callers use the no-op
-    /// sink through `execute`.
-    #[allow(clippy::too_many_arguments)]
-    pub fn execute_traced(
-        &mut self,
-        app: &mut App,
-        plan: &mut PassPlan,
-        session: &ActiveRouteSession,
-        routes: &mut dyn RouteRepository,
-        rides: &mut dyn RideRepository,
-        tracks: &mut dyn TrackRepository,
-        trips: &mut dyn TripCatalog,
-        reader: &obc_reader::Reader,
-        elev: &mut dyn obc_route::ElevationSource,
-        platform: &mut dyn HostPlatform,
-        trace: &mut dyn TraceSink,
     ) {
         // The keyed answers and their polylines were consumed by the pass that produced `plan`;
         // a later answer brings its own.
         self.inbox.derived = DerivedInputs::NONE;
         self.inbox.ride_preview.clear();
         self.inbox.nav_preview.clear();
-        self.serve_effects(app, plan, session, routes, rides, trips, platform, trace);
-        self.step_plan(app, session, routes, reader, elev, trace);
-        let finish = self.drain_residual(app, trips, routes, platform, trace);
-        reconcile_track(app, rides, tracks, finish, trace);
+        self.serve_effects(app, plan, session, routes, rides, trips, platform);
+        self.step_plan(app, session, routes, reader, elev);
+        let finish = self.drain_residual(app, trips, routes, platform);
+        reconcile_track(app, rides, tracks, finish, &mut NoTrace);
         self.serve_derived(app, plan, session, routes, rides);
     }
 
@@ -349,19 +332,18 @@ impl HostLoop {
         rides: &mut dyn RideRepository,
         trips: &mut dyn TripCatalog,
         platform: &mut dyn HostPlatform,
-        trace: &mut dyn TraceSink,
     ) {
         if let Some(effect) = plan.effects.catalog.take() {
-            let outcome = self.serve_catalog(app, effect, routes, rides, trips, trace);
-            let _ = self.inbox.outcomes.catalog.try_put(outcome);
+            let outcome = self.serve_catalog(app, effect, routes, rides, trips);
+            deliver(&mut self.inbox.outcomes.catalog, outcome, "catalog");
         }
         if let Some(effect) = plan.effects.retention.take() {
             let outcome = serve_retention(effect, routes, rides);
-            let _ = self.inbox.outcomes.retention.try_put(outcome);
+            deliver(&mut self.inbox.outcomes.retention, outcome, "retention");
         }
         if let Some(effect) = plan.effects.navigator.take() {
             if let Some(outcome) = self.serve_navigator(app, effect, session, routes) {
-                let _ = self.inbox.outcomes.navigator.try_put(outcome);
+                deliver(&mut self.inbox.outcomes.navigator, outcome, "navigator");
             }
         }
         if let Some(SettingsEffect::PersistRevision { token, revision }) = plan.effects.settings.take() {
@@ -369,7 +351,7 @@ impl HostLoop {
                 Ok(()) => SettingsOutcome::Persisted { token, revision },
                 Err(error) => SettingsOutcome::PersistFailed { token, revision, error },
             };
-            let _ = self.inbox.outcomes.settings.try_put(outcome);
+            deliver(&mut self.inbox.outcomes.settings, outcome, "settings");
         }
         if let Some(effect) = plan.effects.dfu.take() {
             let answer = match effect {
@@ -383,7 +365,7 @@ impl HostLoop {
                 }),
             };
             if let Some(outcome) = answer {
-                let _ = self.inbox.outcomes.dfu.try_put(outcome);
+                deliver(&mut self.inbox.outcomes.dfu, outcome, "dfu");
             }
         }
         if let Some(StorageInfoEffect::MeasureFreeSpace { token }) = plan.effects.storage_info.take() {
@@ -391,13 +373,16 @@ impl HostLoop {
                 Ok(free_bytes) => StorageInfoOutcome::Measured { token, free_bytes },
                 Err(error) => StorageInfoOutcome::Failed { token, error },
             };
-            let _ = self.inbox.outcomes.storage_info.try_put(outcome);
+            deliver(&mut self.inbox.outcomes.storage_info, outcome, "storage");
         }
-        if let Some(BondEffect::Forget { .. }) = plan.effects.bond.take() {
-            // Bond has no machine, so the pass emits nothing here; the removal arrives as the
-            // residual `ForgetBond` command instead (`LegacyOwned::BondAck`). Served anyway so a
-            // future `BondEffect` cannot be silently dropped by this executor.
-            platform.forget_bond();
+        if plan.effects.bond.take().is_some() {
+            // Bond has no machine, so nothing produces a `BondEffect` and the removal arrives as
+            // the residual `ForgetBond` command instead (`LegacyOwned::BondAck`). Performing it
+            // here as well would forget the bond **twice in one execute** — the exact
+            // double-execution `assert_residual` exists to prevent — so this refuses like every
+            // other never-produced arm, and the domain that starts emitting one has to move its
+            // removal off the residual command in the same change.
+            debug_assert!(false, "BondEffect has no producer: the bond removal is the residual ForgetBond command");
         }
         debug_assert!(
             !plan.effects.has_pending(),
@@ -419,27 +404,25 @@ impl HostLoop {
         routes: &mut dyn RouteRepository,
         rides: &mut dyn RideRepository,
         trips: &mut dyn TripCatalog,
-        trace: &mut dyn TraceSink,
     ) -> CatalogOutcome {
         match effect {
             CatalogEffect::ReadCatalog { token } => {
                 rides.refresh();
                 trips.rescan();
-                feed_routes(app, routes, trace);
+                feed_routes(app, routes, &mut NoTrace);
                 // After the routes, so the trips' stage ids resolve against the fresh catalog.
                 trips.refeed(app);
-                trace.feeder(FeederCall::new(FeederKind::TripCatalog, DataKey::from("host.trips"), app.trips().len()));
-                feed_rides(app, rides, trace);
+                feed_rides(app, rides, &mut NoTrace);
                 self.revision = self.revision.wrapping_add(1);
                 CatalogOutcome::CatalogRead { token, revision: Revision::new(self.revision) }
             }
             CatalogEffect::RemoveObject { token, object } => {
                 if routes.delete_by_id(object) {
-                    feed_routes(app, routes, trace);
+                    feed_routes(app, routes, &mut NoTrace);
                     return CatalogOutcome::ObjectRemoved { token, object, existed: true };
                 }
                 if rides.delete_by_id(object) {
-                    feed_rides(app, rides, trace);
+                    feed_rides(app, rides, &mut NoTrace);
                     return CatalogOutcome::ObjectRemoved { token, object, existed: true };
                 }
                 // The subject vanished before the commit — a success for the goal state, and the
@@ -538,7 +521,6 @@ impl HostLoop {
         routes: &mut dyn RouteRepository,
         reader: &obc_reader::Reader,
         elev: &mut dyn obc_route::ElevationSource,
-        trace: &mut dyn TraceSink,
     ) {
         // Compute the outcome before `take`-ing, so the terminal-outcome commit doesn't overlap the
         // step borrow.
@@ -559,7 +541,7 @@ impl HostLoop {
         };
         let answer = match self.plan.take().expect("just stepped it") {
             InflightPlan::Nav(plan) => {
-                let result = commit_nav_plan(app, routes, terminal, plan.bytes(), plan.tile_stats(), trace);
+                let result = commit_nav_plan(app, routes, terminal, plan.bytes(), plan.tile_stats(), &mut NoTrace);
                 match result {
                     Ok(route) => NavigatorOutcome::PlanFinished { token, route },
                     Err(error) => NavigatorOutcome::Failed { token, error: NavigatorError::Plan(error) },
@@ -572,7 +554,7 @@ impl HostLoop {
                 // outlive the call, so it's bound here rather than inside a closure.
                 let src = routes.active_source();
                 let orig = session.index().zip(src.as_ref()).map(|(i, s)| obc_route::RouteReader::new(i, s));
-                let (ready, result) = plan_detour_preview(app, terminal, plan, orig.as_ref(), trace);
+                let (ready, result) = plan_detour_preview(app, terminal, plan, orig.as_ref(), &mut NoTrace);
                 self.detour_ready = ready;
                 match result {
                     Ok(preview) => NavigatorOutcome::DetourFinished { token, preview },
@@ -581,7 +563,7 @@ impl HostLoop {
             }
         };
         self.plan_token = None;
-        let _ = self.inbox.outcomes.navigator.try_put(answer);
+        deliver(&mut self.inbox.outcomes.navigator, answer, "navigator");
     }
 
     // ---- the residual legacy half, for the classes with no domain executor ----
@@ -594,7 +576,6 @@ impl HostLoop {
         trips: &mut dyn TripCatalog,
         routes: &mut dyn RouteRepository,
         platform: &mut dyn HostPlatform,
-        trace: &mut dyn TraceSink,
     ) -> Option<TrackAction> {
         let status = app.drain_host_commands(&mut self.mailbox);
         debug_assert_eq!(status, DrainStatus::Complete, "a canonical-capacity mailbox always drains completely");
@@ -604,7 +585,6 @@ impl HostLoop {
                 continue;
             }
             assert_residual(&command);
-            trace.command(&command);
             match command {
                 HostCommand::FinishTrack(action) => finish = Some(action),
                 HostCommand::ForgetBond => platform.forget_bond(),
@@ -615,13 +595,8 @@ impl HostLoop {
                         routes.delete_by_id(rid);
                     }
                     if trips.delete_by_id(id) {
-                        feed_routes(app, routes, trace);
+                        feed_routes(app, routes, &mut NoTrace);
                         trips.refeed(app);
-                        trace.feeder(FeederCall::new(
-                            FeederKind::TripCatalog,
-                            DataKey::from("host.trips"),
-                            app.trips().len(),
-                        ));
                     }
                 }
                 _ => unreachable!("assert_residual already refused it"),
@@ -639,7 +614,7 @@ impl HostLoop {
         &mut self,
         app: &mut App,
         plan: &PassPlan,
-        session: &ActiveRouteSession,
+        session: &mut ActiveRouteSession,
         routes: &mut dyn RouteRepository,
         rides: &mut dyn RideRepository,
     ) {
@@ -662,16 +637,41 @@ impl HostLoop {
             }
         }
         if let Some(key) = plan.derived_needs.nav_preview {
+            // Re-sync first: a plan or a splice this very `execute` committed replaced the active
+            // route's bytes, and the resident parse is still the old route's until the store is
+            // pointed at the new one. Reading before that would answer the level `Failed` for a
+            // route that is perfectly readable a line later — and a failure *is* an answer, so the
+            // overview would settle with no shape at all.
+            session.sync(app, routes);
             let src = routes.active_source();
             let pts = session.index().zip(src.as_ref()).map(|(index, s)| {
                 obc_route::RouteReader::new(index, s).preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>()
             });
-            if let Some(pts) = pts {
-                self.inbox.nav_preview = pts.iter().copied().collect();
-                self.inbox.derived.nav_preview = Some(DerivedInput::filled(key));
-            }
+            // Answered either way, exactly as the ride-track arm above it is: a failure *is* an
+            // answer (`derived.rs`'s "a dead file must cost one read, not one read per pass"), and
+            // a level left unanswered is what turns an unreadable route into a headless driver
+            // settling for `MAX_SETTLE_PASSES`.
+            self.inbox.derived.nav_preview = Some(match pts {
+                Some(pts) => {
+                    self.inbox.nav_preview = pts.iter().copied().collect();
+                    DerivedInput::filled(key)
+                }
+                None => DerivedInput::failed(key),
+            });
         }
     }
+}
+
+/// Hand one outcome to its domain's slot.
+///
+/// [`Slot::try_put`](obc_app::device_core::Slot) hands a refused value **back** so its owner can
+/// offer it again, and this executor's owner is the pass: it drains every slot the executor writes
+/// at stage 1, unconditionally, so a full slot here means two answers were produced for one domain
+/// inside a single `execute`. That cannot happen today — each arm serves at most one effect — and a
+/// change that made it happen would otherwise lose the second answer silently.
+fn deliver<T: core::fmt::Debug>(slot: &mut obc_app::device_core::Slot<T>, outcome: T, domain: &str) {
+    let refused = slot.try_put(outcome);
+    debug_assert!(refused.is_ok(), "{domain} answered twice in one execute: {refused:?}");
 }
 
 /// The sidecar writes. A repository stamp cannot report a failure, so the answer *is* the write —
@@ -734,4 +734,50 @@ pub(crate) fn reconcile_track(
 pub(crate) fn active_route_name(app: &App) -> Option<String> {
     let i = app.active_route_index()?;
     app.routes().get(i).map(|r| r.name.as_str().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use obc_app::{DfuAction, TrackAction};
+
+    /// [`RESIDUAL`] is the prose an `assert_residual` failure prints and [`residual`] is what
+    /// actually decides — so they have to name the same three classes. A class added to one and not
+    /// the other would either fail with a message that lists the wrong residual, or quietly widen
+    /// the residual without anyone reading the list noticing.
+    #[test]
+    fn the_residual_table_names_exactly_what_the_predicate_admits() {
+        let admitted = [
+            ("FinishTrack", HostCommand::FinishTrack(TrackAction::Save)),
+            ("FinishTrack", HostCommand::FinishTrack(TrackAction::Discard)),
+            ("ForgetBond", HostCommand::ForgetBond),
+            ("DeleteTrip", HostCommand::DeleteTrip { id: 7 }),
+        ];
+        for (name, command) in admitted {
+            assert!(residual(&command), "{command:?} is in the residual and the predicate refuses it");
+            assert!(RESIDUAL.contains(&name), "{name} is admitted but not in the printed table");
+        }
+        assert_eq!(RESIDUAL.len(), 3, "three classes, and the table says which");
+
+        // Everything DeviceCore took over is refused, including the two derived levels — those are
+        // declined earlier, by `derived_level`, and must never reach the assertion at all.
+        for command in [
+            HostCommand::RescanStore { commits: 1 },
+            HostCommand::DeleteRoute { id: 1 },
+            HostCommand::DeleteRide { id: 1 },
+            HostCommand::StampRouteUsed { id: 1, utc: 2 },
+            HostCommand::StampRideSynced { id: 1, utc: 2 },
+            HostCommand::CancelRoutePlan,
+            HostCommand::CancelDetour,
+            HostCommand::CommitDetour,
+            HostCommand::Dfu(DfuAction::Scan),
+            HostCommand::PersistSettings { revision: 1 },
+            HostCommand::ScanCardFree,
+        ] {
+            assert!(!residual(&command), "{command:?} is DeviceCore's — the executor must refuse it");
+        }
+        for command in [HostCommand::LoadRideTrack { id: 1 }, HostCommand::RefreshNavPreview] {
+            assert!(derived_level(&command), "{command:?} is a level the plan's keys answer");
+        }
+    }
 }

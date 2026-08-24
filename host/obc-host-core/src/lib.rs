@@ -42,7 +42,7 @@ mod stores;
 pub mod terrain;
 pub mod trace;
 
-pub use dispatch::{HostLoop, HostPlatform, InflightPlan, PlanHold, RESIDUAL};
+pub use dispatch::{HostLoop, HostPlatform, InflightPlan, PlanHold};
 pub use frame::RgbaFrame;
 pub use legacy::LegacyLoop;
 pub use nav::{finish_detour_commit, finish_detour_plan, finish_nav_plan, DetourPlan, DetourReady, NavPlan};

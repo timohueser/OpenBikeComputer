@@ -159,14 +159,20 @@ impl obc_host_core::RideRepository for RideStore {
     }
 }
 
-/// The full-width object id in a desktop `ride-{id}.obcr` fixture path, or `None` for every other
-/// file. There is deliberately no compatibility parser for historical device filenames.
+/// The object id a desktop `ride-{id}.obcr` fixture path names, or `None` for every file this store
+/// cannot name unambiguously. There is deliberately no compatibility parser for historical device
+/// filenames.
 ///
 /// The filename number is carried into [`RIDE_ID_BASE`](obc_host_core::RIDE_ID_BASE)'s band, so a
 /// ride and a route can never share an object identity: the typed store executor removes an object
 /// by identity alone (`CatalogEffect::RemoveObject` is namespace-free, like the flat store it was
 /// written for), and this folder store numbers each family from zero. Only the id moves — the file
 /// on disk keeps its plain name.
+///
+/// A filename number the band cannot hold (`N >= 2^64 - 2^32`) is therefore **not listed at all**,
+/// rather than listed under an id that collides with a route: the allocator below never mints one,
+/// so the only way to see this is a hand-written fixture, and an absent row is the honest answer to
+/// a file whose identity this store cannot state.
 fn fixture_object_id_in(p: &Path) -> Option<CatalogObjectId> {
     p.file_name()
         .and_then(|n| n.to_str())
