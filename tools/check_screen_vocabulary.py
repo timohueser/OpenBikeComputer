@@ -7,7 +7,7 @@ composes its page from lives one module per concept under `firmware/obc-app/src/
 Nothing enforces that split at compile time — a helper re-grown next to the table, or a screen
 quietly re-declaring one it could have imported, would build fine — so this guard keeps it
 honest: each landmark definition below exists exactly once in `screen/vocab/`, and nowhere else
-under `screen/`.
+under `screen/`, and each retired helper name stays retired.
 """
 
 from __future__ import annotations
@@ -19,6 +19,10 @@ ROOT = Path(__file__).resolve().parents[1]
 SCREEN = ROOT / "firmware/obc-app/src/screen"
 VOCAB = SCREEN / "vocab"
 
+# `stat_fields.rs` sits beside `screen/` rather than under it, but its tiles print the same
+# quantities the screens do — it grew the first six formatters, and is scanned with them.
+NEIGHBOURS = [ROOT / "firmware/obc-app/src/stat_fields.rs"]
+
 # One landmark per vocabulary module, spelled as its definition site.
 LANDMARKS = [
     "title_frame",
@@ -28,6 +32,36 @@ LANDMARKS = [
     "tile",
     "waypoint_panel",
     "needle_region",
+    "distance_short",
+    "duration_hms",
+    "elevation_short",
+]
+
+# Quantity formatters that existed twice, or under a name that said nothing about the quantity.
+# Each one is a shape a screen must import from `vocab/fmt.rs`, never re-declare next to its draw
+# code — that is how two screens came to round the same number differently.
+RETIRED_FORMATTERS = [
+    "fmt_km",
+    "fmt_dist_short",
+    "fmt_speed",
+    "fmt_int",
+    "fmt_int_opt",
+    "fmt_elev",
+    "fmt_hms",
+    "fmt_pct",
+    "fmt_climb_delta",
+    "fmt_remaining",
+    "fmt_date",
+    "fmt_offset",
+    "fmt_bytes",
+    "fmt_addr",
+    "fmt_temp",
+    "write_off_route",
+    "write_away",
+    "write_short_date",
+    "write_computed_distance",
+    "write_climb",
+    "write_distance",
 ]
 
 # Constants that tune a shared mechanism. Each was copied verbatim into a second screen before the
@@ -69,7 +103,7 @@ def check_once(kind: str, name: str, pattern: re.Pattern[str], vocab: list[Path]
 def main() -> int:
     failures: list[str] = []
     vocab_files = sorted(VOCAB.rglob("*.rs"))
-    screen_files = [p for p in sorted(SCREEN.rglob("*.rs")) if VOCAB not in p.parents]
+    screen_files = [p for p in sorted(SCREEN.rglob("*.rs")) if VOCAB not in p.parents] + NEIGHBOURS
     for name in LANDMARKS:
         pattern = re.compile(r"\bfn " + re.escape(name) + r"\s*[(<]")
         failures += check_once("fn", name, pattern, vocab_files, screen_files)
@@ -81,13 +115,21 @@ def main() -> int:
         hits = matches(re.compile(r"\b" + re.escape(name) + r"\b"), scanned)
         if hits:
             failures.append(f"`{name}` is back outside vocab/ ({', '.join(hits)}) — draw through the vocabulary")
+    for name in RETIRED_FORMATTERS:
+        pattern = re.compile(r"\bfn " + re.escape(name) + r"\s*[(<]")
+        hits = matches(pattern, screen_files) + matches(pattern, vocab_files)
+        if hits:
+            failures.append(f"`fn {name}` is back ({', '.join(hits)}) — format through `vocab::fmt` instead")
 
     if failures:
         print("The shared screen vocabulary has drifted out of `screen/vocab/`:")
         print("\n".join(failures))
         return 1
     pinned = len(LANDMARKS) + len(CONSTANTS)
-    print(f"screen vocabulary intact: {pinned} landmark definitions, each exactly once under screen/vocab/")
+    print(
+        f"screen vocabulary intact: {pinned} landmark definitions, each exactly once under screen/vocab/; "
+        f"{len(RETIRED_FORMATTERS)} retired formatter names stay retired"
+    )
     return 0
 
 

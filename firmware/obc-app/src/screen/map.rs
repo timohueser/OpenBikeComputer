@@ -252,7 +252,12 @@ impl MapScreen {
                 draw_status_chip(cv, rx.w, rx.h, rx.t(Msg::MapNoGpsFix));
             } else {
                 let mut s: heapless::String<20> = heapless::String::new();
-                super::write_off_route(&mut s, rx.t(Msg::MapOffRoute), rx.activity.dist_to_route_m, rx.settings.units);
+                super::vocab::fmt::write_distance_coarse(
+                    &mut s,
+                    rx.t(Msg::MapOffRoute),
+                    rx.activity.dist_to_route_m,
+                    rx.settings.units,
+                );
                 draw_status_chip(cv, rx.w, rx.h, &s);
             }
         }
@@ -271,7 +276,7 @@ impl MapScreen {
             rx.activity.progress_m,
         );
         if let Some((k, dist_to_go)) = wpt_chip {
-            let dist = crate::stat_fields::fmt_dist_short(dist_to_go, rx.settings.units);
+            let dist = super::vocab::fmt::distance_short(dist_to_go, rx.settings.units);
             draw_waypoint_chip(cv, rx.w, rx.h, rx.waypoints.as_slice()[k].name.as_str(), &dist);
         }
 
@@ -1314,7 +1319,7 @@ mod tests {
         // 50 m past the waypoint the index (still 0) lingers; the distance clamps to 0.
         let got = waypoint_chip(WaypointMode::Approach, false, false, false, Some(0), &wpts, 1750);
         assert_eq!(got, Some((0, 0)), "50 m past: visible, distance clamped to 0");
-        assert_eq!(crate::stat_fields::fmt_dist_short(0, Units::Metric).as_str(), "0m", "…rendering as 0m");
+        assert_eq!(crate::screen::vocab::fmt::distance_short(0, Units::Metric).as_str(), "0m", "…rendering as 0m");
     }
 
     /// The chip name fits its pixel budget: short names pass through verbatim, long ones are cut to

@@ -10,9 +10,9 @@ use core::fmt::Write;
 
 use obc_render::Surface;
 
+use super::vocab::fmt::{distance_figure, duration_hms};
 use crate::activity::{Mode, TrackAction};
 use crate::input::Gesture;
-use crate::stat_fields::{fmt_hms, fmt_km};
 use crate::Msg;
 
 use super::vocab::chrome::title_frame;
@@ -102,8 +102,8 @@ impl RideControl {
         // away with Discard) is on screen while the option rows are armed below.
         let units = rx.settings.units;
         let act = rx.activity;
-        let time = fmt_hms(act.moving_s);
-        let dist = fmt_km(units.dist(act.ridden_m / 1000.0));
+        let time = duration_hms(act.moving_s);
+        let dist = distance_figure(units.dist(act.ridden_m / 1000.0));
         let dist_unit = if units.is_imperial() { "mi" } else { "km" };
         let mut climb: heapless::String<8> = heapless::String::new();
         let _ = write!(climb, "{}", units.elev(act.climb_m()) as u32);

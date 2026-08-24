@@ -182,7 +182,7 @@ fn draw_row(
 
     // Temperature — the row's glanceable number, Display tier on the top line (clamped to two
     // digits, so its box is bounded at 4 cells).
-    match super::weather_dash::fmt_temp(record.temperature_deci_c) {
+    match super::vocab::fmt::temperature_short(record.temperature_deci_c) {
         Some(temp) => cv.text(&temp, Point::new(TEMP_X, line1), Font::Display, TextAlign::Left, INK),
         None => cv.text("--", Point::new(TEMP_X, line1), Font::Display, TextAlign::Left, SUBTEXT),
     };
