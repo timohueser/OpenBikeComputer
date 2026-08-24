@@ -64,7 +64,7 @@ const SUPPORT: PlatformSupport = PlatformSupport {
     weather: true,
     bonding: true,
     storage_space_report: true,
-    // Unlike the board, which has no ObjectId-keyed metadata kind until #1398: the in-memory repositories hold the stamps for the session.
+    // The in-memory repositories hold the route-use and ride-sync stamps for the session.
     retention_metadata: true,
 };
 

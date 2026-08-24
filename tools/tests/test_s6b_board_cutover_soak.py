@@ -190,12 +190,29 @@ class Liveness(unittest.TestCase):
 
 
 class StackAndFaults(unittest.TestCase):
-    def test_peaks_are_read_and_the_margin_floor_is_enforced(self):
-        deep = STACK_RESERVE - DEEP_RIDE_MARGIN_MIN + 1
-        lines = [f"1.0 INFO  stack high-water {deep} / {STACK_RESERVE} B (new peak)"]
-        self.assertEqual(stack_peaks(lines), [deep])
-        self.assertIn("under the", margin_verdict(stack_peaks(lines)))
-        self.assertIsNone(margin_verdict([37_016]), "the pinned deep-ride peak still has its margin")
+    def test_peaks_are_read_with_the_boards_own_available_stack(self):
+        """**The `/ M B` half is the gate's denominator**, not the linker's reserve. The board reports
+        `stackmeter::total()` — the residual main stack this flashed image actually has — and it sits
+        tens of kilobytes below `stack_reserve`. Subtracting from the reserve instead reports a
+        comfortable margin on an image that has almost none, which is the exact shape the FS8 record
+        caught (37,016 used of 37,568 available)."""
+        healthy = [f"1.0 INFO  stack high-water 37016 / {54_032} B (new peak)"]
+        self.assertEqual(stack_peaks(healthy), [(37_016, 54_032)])
+        self.assertIsNone(margin_verdict(stack_peaks(healthy)), "17,016 B clears the floor")
+
+        thin = ["1.0 INFO  stack high-water 37016 / 37568 B (new peak)"]
+        why = margin_verdict(stack_peaks(thin))
+        self.assertIn("under the", why)
+        self.assertIn("37568", why.replace(",", ""), "the verdict names the total it measured against")
+
+    def test_the_worst_margin_wins_not_the_deepest_peak(self):
+        """Two images can appear in one log (a DFU install reboots mid-soak). The failure is the
+        smallest *margin*, which is not always the largest peak."""
+        mixed = [(37_016, 54_032), (30_000, 33_000)]
+        self.assertIn("under the", margin_verdict(mixed))
+
+    def test_a_line_with_no_total_falls_back_to_the_linker_reserve(self):
+        self.assertEqual(stack_peaks(["1.0 INFO  stack high-water 40000 B"]), [(40_000, STACK_RESERVE)])
 
     def test_no_peak_reported_is_not_a_failure(self):
         self.assertIsNone(margin_verdict([]))

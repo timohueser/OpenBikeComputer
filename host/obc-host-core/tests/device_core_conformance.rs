@@ -200,7 +200,7 @@ const EVERYTHING: PlatformSupport = PlatformSupport {
     weather: true,
     bonding: true,
     storage_space_report: true,
-    // Unlike the board, which has no ObjectId-keyed metadata kind until #1398: the folder stores keep sidecars beside their objects.
+    // The folder stores keep the retention sidecars beside their objects.
     retention_metadata: true,
 };
 

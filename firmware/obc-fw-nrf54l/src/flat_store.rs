@@ -1226,6 +1226,13 @@ fn serve(
             // with the live `RequestId` as context, whichever wire asked, which is exactly what the
             // spec commit's §10 sentence promises.
             engine.on_link_up(link, store, ceilings);
+            // **The reconnecting link may have owned the live transfer**, and `on_link_up` abandons
+            // it — so the engine's transfer state moved here exactly as it does on a `LinkLost`.
+            // Without this the `LIVE_TRANSFER` level the ride loop reads as
+            // `ExternalFacts::note_transfer` would stay `true` until some later engine request
+            // happened to run, withdrawing heavy-operation admission in between; the #927 card would
+            // stay up for the same window.
+            publish_upload(engine);
             defmt::info!(
                 "flat/v4: link up ({}) — control {=usize} B, stream {=usize} B",
                 match link {
