@@ -76,7 +76,7 @@ fn request_route(app: &mut App) -> NavRequest {
     plan_req(app).expect("Create route records the one-shot request")
 }
 
-/// The drained `PlanRoute` request, if one is pending (the `take_nav_request` successor): drain the
+/// The drained `PlanRoute` request, if one is pending (the `PlanRoute` drain): drain the
 /// typed protocol and pick the plan out of the mailbox. FAR-19, #812.
 fn plan_req(app: &mut App) -> Option<NavRequest> {
     let mut mb: HostMailbox = HostMailbox::new();
@@ -87,7 +87,7 @@ fn plan_req(app: &mut App) -> Option<NavRequest> {
     })
 }
 
-/// Whether a `CancelRoutePlan` is pending (the `take_nav_cancel` successor). FAR-19, #812.
+/// Whether a `CancelRoutePlan` is pending (the `CancelRoutePlan` peek). FAR-19, #812.
 fn took_cancel(app: &mut App) -> bool {
     let mut mb: HostMailbox = HostMailbox::new();
     let _ = app.drain_host_commands(&mut mb);
