@@ -36,11 +36,15 @@ fn event() -> Event {
     Event::read(&pack_root()).expect("the registry pack parses")
 }
 
+/// The service cycle, replayed once — and every claim this file makes about what that replay *did*
+/// is made here, against the one report. `verify_rebake` is `bake_into` plus the byte-for-byte
+/// comparison, so a second call would re-run the identical cycle to read the identical summary.
 #[test]
 fn the_pack_rebakes_byte_identically() {
     let event = event();
     let report = rebake::verify_rebake(&pack_root(), &event, &scratch("rebake")).expect("the pack re-bakes");
-    eprintln!("{EVENT_ID} re-bake:\n{}", report.cycle.summary());
+    let summary = report.cycle.summary();
+    eprintln!("{EVENT_ID} re-bake:\n{summary}");
     // Every request the replay made must be answered by a member the pack carries — the property
     // that makes "it re-baked" mean "it re-baked from these bytes" rather than "from the network".
     let members: Vec<&str> = event.members.iter().map(|member| member.url.as_str()).collect();
@@ -48,12 +52,15 @@ fn the_pack_rebakes_byte_identically() {
         let url = request.trim_start_matches("HEAD ").split('#').next().unwrap_or(request);
         assert!(members.contains(&url), "the replay asked for {url}, which no member records");
     }
+    // The live branch, which the derecho pack cannot exercise: this capture found the observation
+    // ten minutes before its anchor, so the cycle really does publish an advected radar layer.
+    assert!(summary.contains("advected forward frames"), "the cycle published no nowcast layer:\n{summary}");
 }
 
-/// The live branch, which the derecho pack cannot exercise: this capture found the observation ten
-/// minutes before its anchor, so the cycle really does publish an advected radar layer.
+/// The observation that live branch needs is in the package — a claim about `event.json`, and the
+/// reason this test needs no bake of its own.
 #[test]
-fn the_pack_carries_its_motion_history_and_publishes_a_nowcast_layer() {
+fn the_pack_carries_its_motion_history() {
     let event = event();
     let anchor = obc_wx_bake::timefmt::parse_rfc3339(&event.window_start).expect("window_start");
     let history = obc_wx_bake::source::mrms::object_url(anchor - obc_wx_bake::source::mrms::MOTION_LAG_SECONDS);
@@ -66,10 +73,6 @@ fn the_pack_carries_its_motion_history_and_publishes_a_nowcast_layer() {
         .unwrap_or_else(|| panic!("no body member for the motion-history observation {history}"));
     assert!(member.stored, "{history} is recorded but not stored in the registry package");
     assert_eq!(member.role, Role::Service, "the motion history is part of what the service had");
-
-    let report = rebake::bake_into(&pack_root(), &event, &scratch("nowcast")).expect("a re-bake");
-    let summary = report.cycle.summary();
-    assert!(summary.contains("advected forward frames"), "the cycle published no nowcast layer:\n{summary}");
 }
 
 /// Re-derive `service/`, `truth/` and `event.json` from the registry-packaged `upstream/`, offline.
