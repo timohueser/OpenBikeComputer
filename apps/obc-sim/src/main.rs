@@ -1519,7 +1519,12 @@ fn main() {
             if matches!(dfu, DfuSeed::Progress(_) | DfuSeed::Installing(_)) {
                 // Confirm (Install is the default selection) → the arm request. A tap: down, then up
                 // 80 ms later, well under the long-press threshold.
-                let now = 500_000u32;
+                //
+                // Long after any script (~110 ms a token), but taken as a *floor* on the script's
+                // own clock rather than as an absolute: the UI clock must never move backwards, and
+                // a script long enough to pass this mark would otherwise re-open every bounded
+                // window it had already closed.
+                let now = script_now.max(500_000);
                 feed(&mut app, now, vec![InputEvent::Button(ButtonEvent::Down(Button::Select))]);
                 feed(&mut app, now + 80, vec![InputEvent::Button(ButtonEvent::Up(Button::Select))]);
                 settle(&mut host, &mut session, &mut app, &mut stores, &reader, &mut *elev, &mut platform, now + 80);
@@ -1539,7 +1544,8 @@ fn main() {
         };
         if let Some(result) = boot_update {
             let _ = host.facts().note_update_result(result);
-            settle(&mut host, &mut session, &mut app, &mut stores, &reader, &mut *elev, &mut platform, 500_000);
+            let now = script_now.max(500_000);
+            settle(&mut host, &mut session, &mut app, &mut stores, &reader, &mut *elev, &mut platform, now);
         }
 
         // `--sensors screen` (SE7, epic #707): after the script lands on the Sensors screen (or its
