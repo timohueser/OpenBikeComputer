@@ -23,10 +23,7 @@
 //! [`AppState::user_fix`](crate::AppState::user_fix) is essentially always present here. If it
 //! genuinely isn't, the confirm degrades straight to the "Couldn't find a route." tier.
 
-use embedded_graphics::{
-    prelude::{Point, Size},
-    primitives::Rectangle,
-};
+use embedded_graphics::prelude::Point;
 use obc_formats::obcm::POI_NAME_LEN;
 use obc_reader::PoiCategory;
 use obc_render::{
@@ -42,6 +39,7 @@ use crate::Msg;
 use super::vocab::chrome::{card_triangle, title_frame, wrapped, TITLE_BAR_H};
 use super::vocab::list;
 use super::vocab::rows::{draw_guarded_rows, GuardedRowsGeometry, MenuItem};
+use super::vocab::spinner::Spinner;
 use super::{palette, Ctx, Render, Screen, ScreenTick, Transition};
 
 /// The two confirm rows (Create route / Cancel), neither guarded — labels looked up per language at
@@ -155,40 +153,6 @@ fn write_away<const N: usize>(s: &mut heapless::String<N>, d_m: u32, units: Unit
     }
 }
 
-/// Degrees per second the planning spinner sweeps — a calm, steady rotation (one revolution per
-/// 1.5 s), advanced by real elapsed millis so the speed reads the same at any host frame rate.
-const SPIN_DPS: f32 = 240.0;
-
-/// Frame cadence the spinner repaints at *and* asks the host to wake for — smooth enough for a
-/// needle, cheap enough that a multi-second plan isn't dominated by repaints. This is a hard
-/// throttle, not just a wake request: during a plan the ride loop passes by every planner step
-/// (far faster than this), and each claimed repaint costs a full chrome render + push (~40 ms on
-/// glass) — unthrottled, the spinner starves the planner it's decorating (#500).
-const SPIN_FRAME_MS: u32 = 66;
-
-/// The spinner needle's sweep radius (px) — [`draw`](NavPlanningScreen::draw) passes it to the
-/// shared `draw_needle`, and [`needle_region`] sizes the reported dirty disc from it, so the two
-/// can't drift.
-const NEEDLE_R: f32 = 42.0;
-
-/// Half-extent (px) of [`needle_region`]'s square around the needle's centre: the [`NEEDLE_R`]
-/// sweep plus a rounding margin for the rasterizer (`draw_needle` rounds its triangle vertices
-/// away from zero, and the hub discs sit inside the sweep).
-const NEEDLE_CLIP_HALF: i32 = NEEDLE_R as i32 + 2;
-
-/// The square the spinning needle repaints inside, centred on the `(w/2, h/2)` the
-/// [`draw`](NavPlanningScreen::draw) spins it at — everything else on the planning screen (title
-/// bar, destination name, copy) is static while a plan runs. This is the dirty region
-/// [`tick_timers`](NavPlanningScreen::tick_timers) reports so the host can clip the repaint;
-/// `nav.rs`'s `needle_region_covers_the_spin` pins that the sweep never escapes it.
-pub fn needle_region(w: i32, h: i32) -> Rectangle {
-    let (cx, cy) = (w / 2, h / 2);
-    Rectangle::new(
-        Point::new(cx - NEEDLE_CLIP_HALF, cy - NEEDLE_CLIP_HALF),
-        Size::new(2 * NEEDLE_CLIP_HALF as u32 + 1, 2 * NEEDLE_CLIP_HALF as u32 + 1),
-    )
-}
-
 /// Which plan a [`NavPlanningScreen`] spinner fronts — the POI create-route (#116) or the
 /// mid-ride detour (#882). Selects the title/copy and which cancel one-shot Back posts; the
 /// spinner mechanics are identical, so the two flows share one screen instead of a near-duplicate.
@@ -211,14 +175,8 @@ pub struct NavPlanningScreen {
     /// The destination's name, echoed so the rider sees what's being planned (empty for a
     /// detour — its "destination" is the rejoin point already shown on the chooser).
     name: heapless::String<POI_NAME_LEN>,
-    /// The spinner's current angle (0° = N, clockwise), advanced in [`tick_timers`].
-    needle_deg: f32,
-    /// Clock of the previous spin tick, for the per-frame `dt`; `None` before the first.
-    last_ms: Option<u32>,
-    /// Clock of the last tick that **claimed a repaint** — the [`SPIN_FRAME_MS`] throttle's
-    /// anchor, distinct from `last_ms` (the needle advances every tick; the glass repaints at
-    /// the spinner cadence).
-    last_paint_ms: Option<u32>,
+    /// The shared wait spinner — the sweep, the repaint throttle, and the dirty disc.
+    spin: Spinner,
 }
 
 impl NavPlanningScreen {
@@ -230,19 +188,13 @@ impl NavPlanningScreen {
                 break;
             }
         }
-        NavPlanningScreen { kind: PlanKind::Nav, name: nm, needle_deg: 0.0, last_ms: None, last_paint_ms: None }
+        NavPlanningScreen { kind: PlanKind::Nav, name: nm, spin: Spinner::default() }
     }
 
     /// The planning screen for a detour plan (#882): detour title/copy, Back posts the detour
     /// cancel, and the host's `DetourPlanned` answer replaces it with the preview or fail card.
     pub fn detour() -> Self {
-        NavPlanningScreen {
-            kind: PlanKind::Detour,
-            name: heapless::String::new(),
-            needle_deg: 0.0,
-            last_ms: None,
-            last_paint_ms: None,
-        }
+        NavPlanningScreen { kind: PlanKind::Detour, name: heapless::String::new(), spin: Spinner::default() }
     }
 
     /// Which flow's plan this spinner fronts — the event router keys its answer landing on it.
@@ -266,26 +218,10 @@ impl NavPlanningScreen {
         }
     }
 
-    /// [`Screen::tick_timers`] arm: spin the needle by real elapsed time and keep the host's
-    /// frame cadence armed — between the ride loop's planner steps this is what animates.
-    /// `changed` is claimed at most once per [`SPIN_FRAME_MS`] no matter how often the loop
-    /// passes (see the constant's doc — an unthrottled claim per planner step starved the plan
-    /// with ~40 ms chrome repaints, #500); the needle still advances by the full elapsed time,
-    /// so a throttled frame just shows a slightly larger sweep.
-    ///
-    /// The claim carries the [`needle_region`] as its dirty region — the chrome around the
-    /// needle never changes while planning — so the host repaints (and pushes) only the disc.
-    /// `w`/`h` of 0 (no frame rendered yet) abstains: `None` = full repaint.
+    /// [`Screen::tick_timers`] arm: spin the shared needle while the host steps the planner —
+    /// between the ride loop's planner steps this is what animates.
     pub fn tick_timers(&mut self, now_ms: u32, w: i32, h: i32) -> ScreenTick {
-        let dt = self.last_ms.map_or(0.0, |last| now_ms.wrapping_sub(last) as f32 / 1000.0);
-        self.last_ms = Some(now_ms);
-        self.needle_deg = (self.needle_deg + SPIN_DPS * dt.min(0.25)) % 360.0;
-        let due = self.last_paint_ms.is_none_or(|last| now_ms.wrapping_sub(last) >= SPIN_FRAME_MS);
-        if due {
-            self.last_paint_ms = Some(now_ms);
-        }
-        let region = (w > 0 && h > 0).then(|| needle_region(w, h));
-        ScreenTick { changed: due && dt > 0.0, next_wake_ms: Some(SPIN_FRAME_MS), region }
+        self.spin.tick(now_ms, w, h)
     }
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
@@ -305,10 +241,8 @@ impl NavPlanningScreen {
             cv.text(&name, Point::new(w / 2, TITLE_BAR_H + 16), Font::Label, TextAlign::Center, SUBTEXT);
         }
 
-        // The spinner: the Menu dial's needle (shared drawing), free-spinning while the host
-        // steps the planner. Centre + radius are what `needle_region` promises the host — keep
-        // any change to them inside its bound.
-        super::menu::draw_needle(cv, Point::new(w / 2, h / 2), self.needle_deg, NEEDLE_R, 10.0);
+        // The spinner: the shared wait needle, free-spinning while the host steps the planner.
+        self.spin.draw_needle(cv, w, h);
 
         // Label-tier: the full phrase overruns the panel at Body width (18 × 14 px > 240).
         cv.text(rx.t(copy), Point::new(w / 2, h * 72 / 100), Font::Label, TextAlign::Center, INK);

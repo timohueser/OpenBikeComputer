@@ -31,6 +31,7 @@ use crate::settings::Settings;
 use crate::stat_fields;
 use crate::Msg;
 
+use super::vocab::band::ElevationBand;
 use super::vocab::chrome::title_frame;
 use super::vocab::tiles::{category_tile, tile, waypoint_panel};
 use super::{palette, ClimbScreen, Ctx, MapScreen, Render, Screen, ScreenTick, Transition};
@@ -271,8 +272,7 @@ impl StatisticsScreen {
         let chart_x = SIDE_MARGIN;
         let chart_w = w - 2 * SIDE_MARGIN;
         let win = profile.window(cursor_frac, zoom, chart_w.max(1) as u32);
-        let span = (win.hi_frac - win.lo_frac).max(1e-6);
-        let frac_to_x = |f: f32| chart_x + ((f - win.lo_frac) / span * chart_w as f32) as i32;
+        let band = ElevationBand::new(profile, win, rect(chart_x, BAND_TOP, chart_w, CHART_BOT - BAND_TOP + 1));
 
         // Live indicators go warning-red off-route; the cursor stays amber while scrubbing (it's an
         // inspection point, not "you").
@@ -291,44 +291,31 @@ impl StatisticsScreen {
         }
         title_frame(cv, w, h, rx.t(Msg::StatsTitle), &readout);
 
-        // Elevation band + amber top line
-        let band_bot = CHART_BOT;
-        let span_ele = (profile.max_ele_m - profile.min_ele_m).max(1) as f32;
-        let ele_to_y = |e: i16| -> i32 {
-            let t = ((e - profile.min_ele_m) as f32 / span_ele).clamp(0.0, 1.0);
-            band_bot - (t * (band_bot - BAND_TOP) as f32) as i32
-        };
-
-        let mut prev_top: Option<i32> = None;
+        // The shared elevation band: the tan silhouette, this screen's own traveled shading over
+        // it (the part behind the rider reads darker olive), then the connected amber top line.
+        band.fill(cv, PARCHMENT_SHADE);
         for px in 0..chart_w {
-            let f = win.lo_frac + span * (px as f32 / chart_w as f32);
-            let top_y = ele_to_y(profile.sample(win.level, f).1);
-            let x = chart_x + px;
-            // Traveled part (left of live) reads darker olive, the part ahead lighter tan.
-            let band = if f <= live_frac { SUBTEXT } else { PARCHMENT_SHADE };
-            cv.vline(x, top_y, band_bot - top_y + 1, 1, band);
-            // Amber top line, connected to the previous column so it stays continuous on steep
-            // sections rather than stair-stepping into gaps.
-            let (y0, y1) = prev_top.map_or((top_y, top_y), |p| (p.min(top_y), p.max(top_y)));
-            cv.vline(x, y0 - 1, (y1 - y0) + 2, 1, AMBER);
-            prev_top = Some(top_y);
+            if band.frac(px) <= live_frac {
+                band.fill_column(cv, px, SUBTEXT);
+            }
         }
-        cv.hline(chart_x, band_bot + 1, chart_w, RULE); // baseline under the band
+        band.stroke(cv, AMBER);
+        cv.hline(chart_x, CHART_BOT + 1, chart_w, RULE); // baseline under the band
 
         // The cursor (scrub point, or the zoom centre)
-        let cursor_x = frac_to_x(cursor_frac).clamp(chart_x, chart_x + chart_w - 1);
+        let cursor_x = band.frac_to_x(cursor_frac).clamp(chart_x, chart_x + chart_w - 1);
         let cur_ele = profile.at(cursor_frac).1;
-        let cur_y = ele_to_y(cur_ele);
-        cv.vline(cursor_x, CHART_TOP, band_bot - CHART_TOP + 1, 2, cursor_color);
+        let cur_y = band.ele_to_y(cur_ele);
+        cv.vline(cursor_x, CHART_TOP, CHART_BOT - CHART_TOP + 1, 2, cursor_color);
         cv.disc(Point::new(cursor_x, cur_y), 4, INK);
         cv.disc(Point::new(cursor_x, cur_y), 3, cursor_color);
         // Elevation readout at the cursor. Below the dot near the peak so labels don't overlap;
         // else just above, clamped inside the band and clear of the baseline/bar.
         let mut ele_s: heapless::String<8> = heapless::String::new();
         let _ = write!(ele_s, "{} {}", units.elev(cur_ele as f32) as i32, units.elev_label());
-        let peak_x = frac_to_x(profile.peak_frac());
+        let peak_x = band.frac_to_x(profile.peak_frac());
         let near_peak = (chart_x..chart_x + chart_w).contains(&peak_x) && (cursor_x - peak_x).abs() < PEAK_NEAR_PX;
-        let label_y = (if near_peak { cur_y + 9 } else { cur_y - 5 }).clamp(CHART_TOP + 2, band_bot - 24);
+        let label_y = (if near_peak { cur_y + 9 } else { cur_y - 5 }).clamp(CHART_TOP + 2, CHART_BOT - 24);
         if cursor_x < w - 44 {
             cv.text(&ele_s, Point::new(cursor_x + 8, label_y), Font::Label, TextAlign::Left, INK);
         } else {
