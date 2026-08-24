@@ -16,6 +16,13 @@
 //! Live layers stay with the screen that owns them: Statistics keeps its cursor, its progress bar,
 //! and its waypoint ticks; `climb.rs` keeps its grade-striped renderer, which colours every column
 //! by local gradient over a climb-local span — a different mechanism, not a copy of this one.
+//!
+//! The received-route card's mini sparkline is a different *raster*, for a reason the device
+//! enforces: it interpolates the 64-byte min-max-normalized band the host builds once at commit
+//! time ([`obc_route::elevation_sparkline`]), because no `Profile` can exist on that path —
+//! building one costs tens of KB of stack, more than the device has. Its columns are its own; its
+//! top line is not. Both rasters stroke through [`TopStroke`], so the connected amber rule has one
+//! definition and cannot drift between the card and the overview.
 
 use core::fmt::Write;
 
@@ -131,15 +138,11 @@ impl<'a> ElevationBand<'a> {
         }
     }
 
-    /// Stroke the profile's top line, each column connected to the previous one so a steep section
-    /// stays solid instead of stair-stepping into gaps.
+    /// Stroke the silhouette's top line, column by column, through the shared [`TopStroke`] rule.
     pub(crate) fn stroke(&self, cv: &mut impl Surface, color: u16) {
-        let mut prev_top: Option<i32> = None;
+        let mut stroke = TopStroke::default();
         for px in 0..self.w {
-            let top_y = self.column_top(px);
-            let (y0, y1) = prev_top.map_or((top_y, top_y), |p| (p.min(top_y), p.max(top_y)));
-            cv.vline(self.x + px, y0 - 1, (y1 - y0) + 2, 1, color);
-            prev_top = Some(top_y);
+            stroke.column(cv, self.x + px, self.column_top(px), color);
         }
     }
 
@@ -158,6 +161,27 @@ impl<'a> ElevationBand<'a> {
             PeakLabel::TopRight => (Point::new(self.x + self.w - 2, self.top - 2), TextAlign::Right),
         };
         cv.text(&peak, at, Font::Label, align, palette::SUBTEXT);
+    }
+}
+
+/// The connected top stroke, one column at a time — the rule an elevation band's top line obeys
+/// whatever produced its columns. Each column's span reaches back to the previous column's top, so
+/// a steep section stays solid instead of stair-stepping into gaps; on a flat run it is the 2 px
+/// cap. Stateful because "the previous column" is the whole rule.
+///
+/// Separate from [`ElevationBand`] because the received-route card strokes the same line over a
+/// raster the band cannot produce: different columns, one top line.
+#[derive(Default)]
+pub(crate) struct TopStroke {
+    prev_top: Option<i32>,
+}
+
+impl TopStroke {
+    /// Stroke panel column `x`, whose silhouette top row is `top_y`.
+    pub(crate) fn column(&mut self, cv: &mut impl Surface, x: i32, top_y: i32, color: u16) {
+        let (y0, y1) = self.prev_top.map_or((top_y, top_y), |p| (p.min(top_y), p.max(top_y)));
+        cv.vline(x, y0 - 1, (y1 - y0) + 2, 1, color);
+        self.prev_top = Some(top_y);
     }
 }
 
