@@ -885,7 +885,7 @@ impl RetentionMachine {
     ///   live drain recheck is the primary guard; this closes the window belt-and-braces);
     /// - it advances `last_active_stamped` **only once the stamp is actually queued**, so a full
     ///   queue can never drop the activation stamp and then suppress the retry — a later tick re-tries.
-    pub(crate) fn note_active_route(&mut self, active_id: Option<crate::CatalogObjectId>) {
+    fn note_active_route(&mut self, active_id: Option<crate::CatalogObjectId>) {
         match active_id {
             Some(id) => {
                 // Invariant 3: an activated route must never be deleted by an earlier sweep decision.
@@ -900,6 +900,28 @@ impl RetentionMachine {
             }
             None => self.last_active_stamped = None,
         }
+    }
+
+    /// A route was activated — the domain's entry point for the `Navigator → RetentionMachine`
+    /// connection (#1438), which delivers the activation one pass after Navigator decided it.
+    ///
+    /// It re-derives the whole rule from the live `view` rather than trusting the delivered id,
+    /// because that id is one pass old and the two guards are not optional:
+    ///
+    /// - **invariant 1** — an untrusted clock stamps nothing, queues nothing, sweeps nothing;
+    /// - **the expiring filter** — a route with no expiry clock (`Retention::Never`, the default
+    ///   until a rider sets a level) needs no `last_used`, so stamping it would be a sidecar write
+    ///   for a countdown that does not exist.
+    ///
+    /// Both are exactly what [`expiring_active_route`](RetentionView::expiring_active_route) and the
+    /// [`advance`](RetentionMachine::advance) gate already apply; this states the rule by delegating
+    /// to it, so there is one implementation and the delivery cannot drift from the sweep. A route
+    /// that stopped being the active one in the meantime is simply no longer this rule's subject.
+    pub(crate) fn note_route_activated(&mut self, route: crate::CatalogObjectId, view: &RetentionView) {
+        if view.now_utc.is_none() || view.expiring_active_route() != Some(route) {
+            return;
+        }
+        self.note_active_route(Some(route));
     }
 
     /// Ensure a `StampRoute(id)` is queued (idempotent — skips a duplicate). Returns whether one is

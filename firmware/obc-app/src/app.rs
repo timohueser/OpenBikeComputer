@@ -3237,7 +3237,10 @@ impl App {
     /// saw. The next pass consumes whatever the executor completed.
     pub fn apply_event(&mut self, event: HostEvent) {
         if self.pass.in_pass() {
-            return; // #1438: nothing may change DeviceCore mid-pass
+            // Loud in debug, and refused either way: `run_pass` holds `&mut self` for the whole
+            // pass, so reaching here at all means a caller found a way around that borrow.
+            debug_assert!(false, "a platform callback cannot change DeviceCore during a pass");
+            return;
         }
         match event {
             HostEvent::StoreChanged => self.host.note_store_changed(),
@@ -3449,7 +3452,10 @@ impl App {
         targets: crate::device_core::derived::DerivedTargets,
     ) {
         if self.pass.in_pass() {
-            return; // #1438: nothing may change DeviceCore mid-pass
+            // Loud in debug, and refused either way: `run_pass` holds `&mut self` for the whole
+            // pass, so reaching here at all means a caller found a way around that borrow.
+            debug_assert!(false, "a platform callback cannot change DeviceCore during a pass");
+            return;
         }
         self.accept_derived(inputs, targets);
     }

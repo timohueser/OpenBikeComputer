@@ -45,6 +45,9 @@
 //! pass before sleep** ([`Connections::has_deferred`]) — the work is decided, it simply has not
 //! reached its consumer yet, and sleeping on it would leave it sitting until the next input.
 
+// Reached from the pass alone, which has no production caller yet — see [`pass`](super::pass).
+#![allow(dead_code)]
+
 use crate::catalog_state::CatalogIntent;
 use crate::recorder::RecorderIntent;
 use crate::screen::WarningFlags;
