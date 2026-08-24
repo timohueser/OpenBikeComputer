@@ -32,11 +32,12 @@
 //! performed, and [`a_ride_finalize_failure_after_the_last_checkpoint_reaches_the_rider`] runs the
 //! mandated trace for real instead of pinning a gap.
 //!
-//! **A decided sidecar stamp was rediscovered forever.** The retention sweep re-derives its
-//! candidates from the resident view, and the pass never mirrored the stamp it had just issued — so
-//! the same write went out again on the pass after the executor answered it, one per pass, for the
-//! rest of the boot. Found by the settle probe in [`Run::finish`]: a scenario that never came to
-//! rest. [`a_stamp_that_was_answered_is_not_enqueued_again`] pins it.
+//! **A decided sidecar stamp was rediscovered forever.** Retention re-derives its candidates from
+//! the resident view — the eager ride stamp on every trusted tick — and the pass never mirrored the
+//! stamp it had just issued, so the same write went out again on the pass after the executor
+//! answered it, one per pass, for the rest of the boot. Found by the settle probe in
+//! [`Run::finish`]: a scenario that never came to rest.
+//! [`a_stamp_that_was_answered_is_not_enqueued_again`] pins it on that ride arm.
 //!
 //! ## What Phase 1 does and does not own
 //!
@@ -73,8 +74,8 @@ use obc_app::screen::Screen;
 use obc_app::settings::{SettingsEffect, SettingsOutcome};
 use obc_app::weather::WeatherEffect;
 use obc_app::{
-    App, AppState, DetourRequest, DfuAction, Gesture, HostCommand, HostEvent, HostMailbox, NavRequest, TrackAction,
-    WarningFlags,
+    App, AppState, DetourRequest, DfuAction, Gesture, HostCommand, HostEvent, HostMailbox, NavRequest,
+    RideRetentionRecord, TrackAction, WarningFlags,
 };
 use obc_host_core::trace::{run_scenario_seeded, RunnerMode, Trace, TraceHarness, TraceInput, TraceRecorder};
 use obc_ports::{Fix, InputClock, LocationSource, RideClock, Sensors, SettingsSaveError};
@@ -1734,34 +1735,44 @@ fn a_failed_retention_write_is_retried() {
 
 /// A decided sidecar stamp is mirrored into the resident view, so it is not rediscovered forever.
 ///
-/// The second defect this gate found. The sweep re-derives its candidates from the resident view, so
-/// a stamp that left as an effect but was not mirrored came back on the pass after the executor
-/// answered it — one sidecar write per pass, for the rest of the boot, on a device whose whole
-/// power budget is not waking up. The legacy drain has always mirrored at
-/// `App::retention_stamp_command`; the pass does now too.
+/// The second defect this gate found, and this is the arm that re-derives: the eager ride stamp runs
+/// on **every trusted tick**, and re-enqueues any resident ride that is `synced` with a `synced_at`
+/// of 0. A stamp that left as an effect but was not mirrored left that 0 in place, so the same
+/// sidecar write came back on the pass after the executor answered it — one per pass, for the rest
+/// of the boot, on a device whose whole power budget is not waking up. The legacy drain has always
+/// mirrored at `App::retention_stamp_command`; the pass does now too, into the full ride inventory
+/// as well as the display catalog, because a ride outside the newest-32 menu re-enqueues just the
+/// same (finding #876-2).
+///
+/// Without the mirror this fails on the first pass after the answer.
 #[test]
 fn a_stamp_that_was_answered_is_not_enqueued_again() {
     let mut harness = typed();
     harness.app().stamp_clock_ble(1_720_000_000, 60);
-    let now = harness.state.app.wall_unix_now();
-    harness.app().set_route_meta(&[
-        RouteRetentionMeta::new(Retention::Week1, now),
-        RouteRetentionMeta::new(Retention::Never, 0),
-        RouteRetentionMeta::new(Retention::Never, 0),
-    ]);
-    harness.app().activate_route(0);
+    let id = harness.state.ride_ids[0];
+    harness.app().set_ride_retention_inventory(&[RideRetentionRecord { id, synced: true, synced_at_utc: 0 }]);
+    harness.app().force_retention_sweep();
 
-    let mut plan = harness.pass();
-    let effect = plan.effects.retention.take().expect("the activation's use stamp goes out");
+    let mut effect = None;
+    for _ in 0..8 {
+        let mut plan = harness.pass();
+        if let Some(found) = plan.effects.retention.take() {
+            effect = Some(found);
+            break;
+        }
+        harness.serve(plan, &mut recorder());
+    }
+    let effect = effect.expect("an acked ride with no synced_at stamp gets one");
     let outcome = harness.serve_retention(effect);
     harness.deliver(Done::Retention(outcome), &mut recorder());
 
     for step in 0..8 {
-        let plan = harness.pass();
+        let mut plan = harness.pass();
         assert!(
-            plan.effects.retention.is_empty(),
+            plan.effects.retention.take().is_none(),
             "the answered stamp came back on settle pass {step} — an endless sidecar write"
         );
+        harness.serve(plan, &mut recorder());
     }
 }
 

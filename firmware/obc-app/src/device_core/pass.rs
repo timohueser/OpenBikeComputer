@@ -413,7 +413,7 @@ impl App {
     ///
     /// The rider's ride *close* is deliberately not taken here. Recorder has no machine yet, so
     /// there is no domain to name it to; taking the one-shot anyway would only remove it from the
-    /// legacy drain that still performs it (#1440 found exactly that, and it destroyed the save).
+    /// legacy drain that still performs it, and the rider's save would be destroyed on the way.
     fn stage_ui(&mut self, now: PassClock) {
         self.pass.record(PassStage::Ui);
         self.advance_animations(now.ui);
@@ -478,10 +478,9 @@ impl App {
 
     /// Mirror a decided sidecar stamp into the resident view, the moment the effect leaves.
     ///
-    /// The sweep re-derives its candidates from that view, so without this the *same* stamp is
+    /// Retention re-derives its candidates from that view, so without this the *same* stamp is
     /// rediscovered on the pass after the executor answers it — an endless sidecar write, one per
-    /// pass, for the rest of the boot. DC7 (#1440) measured exactly that: a settled scenario that
-    /// never came to rest.
+    /// pass, for the rest of the boot, on a device whose whole power budget is not waking up.
     ///
     /// The value written is the one the effect carries, not a guess: the durable write is still the
     /// executor's, and a failure re-queues the stamp through
@@ -554,9 +553,9 @@ impl App {
     /// [`FinishTrack`](crate::HostCommand::FinishTrack), exactly as it always was.
     ///
     /// The stage is a *position*, held so the order is fixed before the machines land. It is
-    /// deliberately not a connection into a domain that cannot act: DC7 (#1440) measured what one
-    /// costs — the pass took the rider's Save at stage 4 and had nowhere to put it, so the ride was
-    /// never finalized and no executor was told.
+    /// deliberately not a connection into a domain that cannot act: such a connection destroys what
+    /// it carries — the pass would take the rider's Save at stage 4 and have nowhere to put it here,
+    /// so the ride would never be finalized and no executor would be told.
     fn stage_recorder(&mut self) {
         self.pass.record(PassStage::Recorder);
     }
@@ -976,9 +975,8 @@ mod tests {
 
     /// The rider's ride close stays on the legacy path, untouched by the pass.
     ///
-    /// DC7 (#1440) found the opposite: stage 4 took the finish one-shot and stage 7 had nowhere to
-    /// put it, so the ride was never finalized and no executor was told. The fix was to delete the
-    /// connection rather than to document the loss — and this is what "the close reaches the platform
+    /// A stage-4 take with nowhere to put it at stage 7 leaves the ride unfinalized and no executor
+    /// told, so there is no connection to take it — and this is what "the close reaches the platform
     /// on the legacy path" has to mean to be true.
     #[test]
     fn a_ride_close_survives_the_pass_for_the_legacy_drain() {
