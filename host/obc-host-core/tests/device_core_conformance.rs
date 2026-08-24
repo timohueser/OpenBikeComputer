@@ -32,12 +32,10 @@
 //! performed, and [`a_ride_finalize_failure_after_the_last_checkpoint_reaches_the_rider`] runs the
 //! mandated trace for real instead of pinning a gap.
 //!
-//! **A decided sidecar stamp was rediscovered forever.** Retention re-derives its candidates from
-//! the resident view — the eager ride stamp on every trusted tick — and the pass never mirrored the
-//! stamp it had just issued, so the same write went out again on the pass after the executor
-//! answered it, one per pass, for the rest of the boot. Found by the settle probe in
-//! [`Run::finish`]: a scenario that never came to rest.
-//! [`a_stamp_that_was_answered_is_not_enqueued_again`] pins it on that ride arm.
+//! **A decided sidecar stamp must be mirrored into the resident view.** Retention re-derives its
+//! candidates from that view — the eager ride stamp on every trusted tick — so an unmirrored stamp
+//! is rediscovered and re-issued on every later pass.
+//! [`a_stamp_that_was_answered_is_not_enqueued_again`] pins the ride arm.
 //!
 //! ## What Phase 1 does and does not own
 //!
@@ -1733,16 +1731,14 @@ fn a_failed_retention_write_is_retried() {
     assert!(retried, "a failed write keeps its candidate and offers it again");
 }
 
-/// A decided sidecar stamp is mirrored into the resident view, so it is not rediscovered forever.
+/// A decided sidecar stamp is mirrored into the resident view, so it is not rediscovered.
 ///
-/// The second defect this gate found, and this is the arm that re-derives: the eager ride stamp runs
-/// on **every trusted tick**, and re-enqueues any resident ride that is `synced` with a `synced_at`
-/// of 0. A stamp that left as an effect but was not mirrored left that 0 in place, so the same
-/// sidecar write came back on the pass after the executor answered it — one per pass, for the rest
-/// of the boot, on a device whose whole power budget is not waking up. The legacy drain has always
-/// mirrored at `App::retention_stamp_command`; the pass does now too, into the full ride inventory
-/// as well as the display catalog, because a ride outside the newest-32 menu re-enqueues just the
-/// same (finding #876-2).
+/// The eager ride stamp runs on every trusted tick and re-enqueues any resident ride that is
+/// `synced` with a `synced_at` of 0; only the mirror clears that 0, so an unmirrored stamp comes
+/// back on every pass after the executor answers it. Both the legacy drain
+/// (`App::retention_stamp_command`) and the pass mirror into the full ride inventory as well as
+/// the display catalog, because a ride outside the newest-32 menu re-enqueues just the same
+/// (finding #876-2).
 ///
 /// Without the mirror this fails on the first pass after the answer.
 #[test]
