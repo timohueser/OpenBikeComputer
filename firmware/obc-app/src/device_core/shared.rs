@@ -184,6 +184,17 @@ pub struct PlatformSupport {
     pub bonding: bool,
     /// Free space on the storage medium can be measured.
     pub storage_space_report: bool,
+    /// A durable place to keep per-object retention metadata exists — the route-use stamp and the
+    /// ride-sync stamp.
+    ///
+    /// False on the board: FS7/FS8 removed the FAT sidecars deliberately and #1398 supplies the
+    /// ObjectId-keyed replacement, so a stamp there is mirrored in the resident view and is never
+    /// durable. Stating that here is what stops
+    /// [`stage_retention`](crate::device_core::pass) emitting a
+    /// [`RetentionEffect`](crate::retention::RetentionEffect) nobody can answer: an unanswered write
+    /// parks `inflight_write` forever, and answering `…Written` would claim durability that does not
+    /// exist. Absence is the third option, and the honest one.
+    pub retention_metadata: bool,
 }
 
 /// The live facts capabilities depend on — mounted data and heavy-operation admission.
@@ -904,6 +915,7 @@ mod tests {
             weather: true,
             bonding: true,
             storage_space_report: true,
+            retention_metadata: true,
         }
     }
 

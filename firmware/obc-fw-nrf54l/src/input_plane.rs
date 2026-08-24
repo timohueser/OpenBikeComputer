@@ -47,7 +47,7 @@ use obc_ports::{InputClock, InputEvent, InputSource};
 /// Bound of the input→map gesture channel. One frame yields a couple of gestures and the map plane
 /// drains it each loop, so even across a slow map push it never fills; `try_send` drops on the
 /// (unreachable) overflow rather than block the high-priority plane.
-const GESTURE_QUEUE: usize = 16;
+pub(crate) const GESTURE_QUEUE: usize = 16;
 
 /// Recognised gestures flowing from the input plane (high priority) to the map plane (thread mode) —
 /// the only lock-free shared state between the two planes.

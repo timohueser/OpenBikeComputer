@@ -1618,6 +1618,17 @@ impl App {
         true
     }
 
+    /// **Debug only**: arm an install exactly as the confirm screen's press does, for the board's
+    /// physical `dfu-install` VCOM command (#620) — which deliberately skips the confirm.
+    ///
+    /// It names the intent to [`DfuState`](crate::dfu::DfuState) rather than reaching for the
+    /// executor, so the debug path and the rider's path produce the *same*
+    /// [`DfuEffect::ArmInstall`](crate::dfu::DfuEffect) under the same operation token. A typed
+    /// executor has no other way to mint one — the token source is the domain's.
+    pub fn debug_request_dfu_install(&mut self) {
+        self.dfu.admit_intent(crate::dfu::DfuIntent::InstallRequested);
+    }
+
     /// **Debug / snapshot only** (#1146 P2): engage the Recalculating freeze as if the host had just
     /// begun a planner run — the same seam a drained `PlanRoute`/`PlanDetour` takes, so the banner,
     /// the paused matcher and the skipped redraws are the real ones.
@@ -2168,11 +2179,15 @@ impl App {
     /// explaining what they just did is noise. Only outcomes they can act on
     /// ([`MapTransfer::Installed`](crate::screen::MapTransfer::Installed) /
     /// [`Failed`](crate::screen::MapTransfer::Failed)) stay up to be dismissed.
+    /// **The card only.** This seam used to also drive [`CoreMode`]'s transfer level, and that was
+    /// the level's whole source — so a route, trip or weather upload streamed without admission ever
+    /// seeing it, and a map upload paced to the card's own throttle reported the level at that pace.
+    /// Since #1397 S6b the level comes from the store engine's own live transfer, through
+    /// [`ExternalFacts::note_transfer`](crate::device_core::ExternalFacts::note_transfer), and this
+    /// is a screen feeder like every other.
+    ///
+    /// [`CoreMode`]: crate::device_core::core_mode::CoreMode
     pub fn set_map_transfer(&mut self, state: Option<crate::screen::MapTransfer>) {
-        // The one place a streaming map upload becomes `CoreMode`'s transfer level. A terminal card
-        // (Installed / Failed) is a *report*, not a stream: the store is free again the moment the
-        // bytes stopped, so heavy work is re-admitted while the rider is still reading the card.
-        self.mode.note_transfer(state.is_some_and(|s| s.is_receiving()));
         self.ui.cards.set_map_transfer(state);
         self.sweep_cards();
     }

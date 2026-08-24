@@ -315,7 +315,7 @@ impl App {
         self.stage_ui(now);
 
         let mut effects = EffectSlots::new();
-        self.stage_retention(&mut effects);
+        self.stage_retention(&mut effects, support);
         self.stage_catalog(&mut effects);
         self.stage_recorder();
         self.stage_navigator(&mut effects);
@@ -485,7 +485,11 @@ impl App {
     /// without a trusted clock — the two guards
     /// [`note_route_activated`](crate::retention::RetentionMachine::note_route_activated) applies,
     /// which are the same ones the sweep applies.
-    fn stage_retention(&mut self, effects: &mut EffectSlots) {
+    /// The sidecar write is offered only on a device that has somewhere to put it
+    /// ([`PlatformSupport::retention_metadata`]). Without one the candidate simply stays queued: an
+    /// effect nobody can answer parks `inflight_write` for the rest of the boot, and an invented
+    /// `…Written` would claim a durability the device does not have.
+    fn stage_retention(&mut self, effects: &mut EffectSlots, support: PlatformSupport) {
         self.pass.record(PassStage::Retention);
         if let Some(activated) = self.pass.connections.route_activated.take() {
             self.with_retention(|retention, view| retention.note_route_activated(activated.route, view));
@@ -503,7 +507,7 @@ impl App {
                 }
             }
         }
-        if effects.retention.is_empty() {
+        if support.retention_metadata && effects.retention.is_empty() {
             for kind in [SweepKind::StampRoute, SweepKind::StampRide] {
                 if let Some(effect) = self.with_retention(|retention, view| retention.next_metadata_effect(kind, view))
                 {
@@ -804,25 +808,58 @@ mod tests {
         derived: DerivedInputs,
         targets: DerivedTargets<'_>,
     ) -> PassPlan {
+        pass_supported(app, EVERYTHING, now, gestures, outcomes, facts, derived, targets)
+    }
+
+    /// Every capability this crate's own tests assume unless one is named.
+    const EVERYTHING: PlatformSupport = PlatformSupport {
+        detour: true,
+        settings_persistence: true,
+        dfu: true,
+        weather: true,
+        bonding: true,
+        storage_space_report: true,
+        retention_metadata: true,
+    };
+
+    #[allow(clippy::too_many_arguments)]
+    fn pass_supported(
+        app: &mut App,
+        support: PlatformSupport,
+        now: PassClock,
+        gestures: &[Gesture],
+        outcomes: &mut OutcomeSlots,
+        facts: &mut ExternalFacts,
+        derived: DerivedInputs,
+        targets: DerivedTargets<'_>,
+    ) -> PassPlan {
         let mut loc = NoFix;
         app.run_pass(PassInputs {
             now,
             gestures,
             sensors: Sensors::new(&mut loc),
             route: None,
-            support: PlatformSupport {
-                detour: true,
-                settings_persistence: true,
-                dfu: true,
-                weather: true,
-                bonding: true,
-                storage_space_report: true,
-            },
+            support,
             outcomes,
             facts,
             derived,
             targets,
         })
+    }
+
+    /// One quiet pass on a platform with no durable retention metadata — the board.
+    fn quiet_without_metadata(app: &mut App, ms: u32) -> PassPlan {
+        let mut facts = ExternalFacts::NONE;
+        pass_supported(
+            app,
+            PlatformSupport { retention_metadata: false, ..EVERYTHING },
+            PassClock { ride: RideClock(ms), ui: InputClock(ms) },
+            &[],
+            &mut OutcomeSlots::new(),
+            &mut facts,
+            DerivedInputs::NONE,
+            DerivedTargets::NONE,
+        )
     }
 
     fn summary(name: &str) -> RouteSummary {
@@ -996,6 +1033,38 @@ mod tests {
         assert!(!plan.immediate, "and nothing is left waiting");
         assert!(plan.effects.retention.is_empty(), "the delivery is idempotent — no second sidecar write");
         assert!(!app.retention.has(SweepKind::StampRoute), "and no second candidate either");
+    }
+
+    /// A device with no durable retention metadata (`PlatformSupport::retention_metadata = false` —
+    /// the board since FS7/FS8) emits **no** sidecar write at all, and keeps emitting none.
+    ///
+    /// Both halves are the point. An effect nobody can answer parks `inflight_write` for the rest of
+    /// the boot; an effect re-decided every pass would be one write per pass on a device whose whole
+    /// power budget is not waking up. The candidate stays queued, which is exactly what the resident
+    /// mirror the legacy stamp drain still performs is for.
+    #[test]
+    fn no_metadata_store_means_no_sidecar_effect_and_no_per_pass_re_decision() {
+        let mut app = navigating();
+        trust_clock(&mut app);
+        let now = app.wall_unix_now();
+        app.set_route_meta(&[expiring(Retention::Week1, now), expiring(Retention::Never, 0)]);
+
+        let plan = quiet_without_metadata(&mut app, 10);
+        assert!(plan.effects.retention.is_empty(), "there is nowhere durable to write it");
+        assert!(app.retention.has(SweepKind::StampRoute), "so the candidate is not consumed either");
+
+        for ms in [20, 30, 40] {
+            let plan = quiet_without_metadata(&mut app, ms);
+            assert!(plan.effects.retention.is_empty(), "and no later pass invents one");
+        }
+
+        // The same app on a platform that *has* the store answers it once, the ordinary way — so the
+        // absence above is the capability speaking, not a wedged domain.
+        let plan = quiet(&mut app, 50);
+        assert!(
+            matches!(plan.effects.retention, ref slot if !slot.is_empty()),
+            "with a metadata store the queued stamp goes out"
+        );
     }
 
     /// The delivered id is a pass old, so the domain re-derives the rule rather than trusting it:

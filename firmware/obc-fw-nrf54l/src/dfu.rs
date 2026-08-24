@@ -391,7 +391,19 @@ pub(crate) fn confirm_trial(settings: &mut RramSettingsStore) -> Option<ImageHea
 ///   bootloader never consumed it (stale or missing). Downgrade the stray arm to `Idle` so it can't
 ///   fire by surprise later (the rollback snapshot's header is carried into `installed`, mirroring
 ///   the engine's reject path), clear the marker, and show the not-started card.
-pub(crate) fn reconcile_boot_outcome(app: &mut obc_app::App, settings: &mut RramSettingsStore) {
+pub(crate) fn reconcile_boot_outcome(
+    facts: &mut obc_app::device_core::ExternalFacts,
+    settings: &mut RramSettingsStore,
+) {
+    use obc_app::device_core::UpdateResult;
+    // There is one boot per boot, so the one-shot slot is free and this cannot be refused; a
+    // rejection would mean a second verdict was minted, which is a producer bug worth naming.
+    let mut report = |result: UpdateResult| {
+        if facts.note_update_result(result).is_err() {
+            defmt::error!("dfu: a second boot verdict was produced — the first is the one the rider is owed");
+            debug_assert!(false, "one boot, one update verdict");
+        }
+    };
     let marker = settings.read_arm_marker();
     let state = settings.read_boot_state();
     match obc_dfu::verdict(&state, marker.as_ref().map(|m| m.generation)) {
@@ -401,7 +413,7 @@ pub(crate) fn reconcile_boot_outcome(app: &mut obc_app::App, settings: &mut Rram
             // Confirmed is only returned with a marker present (see `verdict`), so `staged` is set.
             let staged = marker.as_ref().map(|m| m.staged.as_str()).unwrap_or("");
             defmt::info!("dfu: staged {=str} accepted after an unconfirmed trial", staged);
-            app.apply_event(obc_app::HostEvent::UpdateConfirmed(obc_app::dfu::clamp(staged)));
+            report(UpdateResult::Confirmed(obc_app::dfu::clamp(staged)));
         }
         obc_dfu::Verdict::Reverted => {
             settings.clear_arm_marker();
@@ -412,7 +424,7 @@ pub(crate) fn reconcile_boot_outcome(app: &mut obc_app::App, settings: &mut Rram
                 Some(v) => defmt::warn!("dfu: staged {=str} is not the running image — rejected or rolled back", v),
                 None => defmt::warn!("dfu: staged update is not the running image — rejected or rolled back"),
             }
-            app.apply_event(obc_app::HostEvent::UpdateFailed {
+            report(UpdateResult::Failed {
                 why: obc_app::DfuFailure::Reverted,
                 staged: staged.map(obc_app::dfu::clamp),
             });
@@ -427,7 +439,7 @@ pub(crate) fn reconcile_boot_outcome(app: &mut obc_app::App, settings: &mut Rram
             };
             settings.write_boot_state(&BootState::Idle { installed, last_outcome: None });
             settings.clear_arm_marker();
-            app.apply_event(obc_app::HostEvent::UpdateFailed {
+            report(UpdateResult::Failed {
                 why: obc_app::DfuFailure::NotStarted,
                 staged: staged.as_ref().map(|h| obc_app::dfu::clamp(h.fw_version_str())),
             });
