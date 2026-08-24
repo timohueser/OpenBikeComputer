@@ -25,6 +25,12 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 
 LEVELS = {"unit", "component", "contract", "fixture", "end-to-end", "live", "hardware"}
+# The only two spoken aliases: `obc test fixtures` and `obc test e2e`.
+LEVEL_ALIASES = {"fixtures": "fixture", "e2e": "end-to-end"}
+# Cargo subcommands that compile, lint, format, or execute a named package. `deny` is
+# lockfile policy rather than package execution, so it never routes a package to a job.
+CARGO_EXECUTION_VERBS = {"build", "clippy", "fmt", "run", "test"}
+PLATFORMS = {"linux": "linux", "darwin": "macos", "win32": "windows"}
 PR_CADENCES = {"always", "affected", "never"}
 SCHEDULED_CADENCES = {"none", "nightly", "weekly", "manual", "release"}
 OWNERSHIP_KINDS = {"rust-package", "path", "swift-target", "swift-package", "workflow"}
@@ -51,12 +57,18 @@ RUST_FOUNDATION_PATHS = {
 }
 TEST_POLICY_PATTERNS = (
     ".github/workflows/**",
+    ".github/actions/**",
     "testing/**",
     "tools/suite_registry.py",
     "tools/ci_aggregate.py",
     "docs/testing.md",
     "CONTRIBUTING.md",
     "AGENTS.md",
+    "CLAUDE.md",
+    # These three define what the registry's `obc check` and `obc test` suites execute.
+    "tools/justfile",
+    "tools/obc",
+    "tools/obc-dev.sh",
 )
 CODE_OR_POLICY_SUFFIXES = {
     ".c",
@@ -112,6 +124,22 @@ class Discovered:
         return f"{self.kind}:{self.name}{suffix}"
 
 
+@dataclass(frozen=True, order=True)
+class WorkflowStep:
+    command: str
+    job: str
+    working_directory: str = ""
+
+
+@dataclass(frozen=True)
+class WorkflowJob:
+    name: str
+    runs_on: str
+    needs: tuple[str, ...]
+    plan_gated: bool
+    gates_on: str = ""
+
+
 @dataclass
 class Inventory:
     suites: list[dict[str, Any]]
@@ -138,7 +166,7 @@ class CargoGraph:
 @dataclass
 class SuiteSelection:
     suite: dict[str, Any]
-    runners: list[str]
+    jobs: list[str]
     reasons: list[str] = field(default_factory=list)
 
     @property
@@ -270,21 +298,39 @@ def _strip_yaml_scalar(value: str) -> str:
     return value
 
 
-def discover_workflow(root: Path) -> list[Discovered]:
+def scan_workflow(root: Path) -> list[WorkflowStep]:
+    """Read every repository-behavior command in the workflow with its job and directory."""
+
     workflow = root / ".github/workflows/ci.yml"
     if not workflow.exists():
         return []
-    lines = workflow.read_text(encoding="utf-8").splitlines()
-    commands: list[tuple[str, str]] = []
+    steps: list[WorkflowStep] = []
     block_indent: int | None = None
     current_job = ""
-    for raw in lines:
+    job_directory = ""
+    step_directory = ""
+    in_defaults = False
+    in_jobs = False
+
+    def record(command: str) -> None:
+        if any(marker in command for marker in WORKFLOW_MARKERS):
+            steps.append(WorkflowStep(command, current_job, step_directory or job_directory))
+
+    for raw in workflow.read_text(encoding="utf-8").splitlines():
         indent = len(raw) - len(raw.lstrip())
         stripped = raw.strip()
+        if raw.rstrip() and not raw.startswith(" "):
+            in_jobs = raw.startswith("jobs:")
+            continue
+        if not in_jobs:
+            continue
         job_match = re.fullmatch(r"  ([A-Za-z0-9_-]+):", raw)
         if job_match:
             current_job = job_match.group(1)
             block_indent = None
+            job_directory = ""
+            step_directory = ""
+            in_defaults = False
             continue
         if stripped.startswith("export "):
             continue
@@ -292,10 +338,21 @@ def discover_workflow(root: Path) -> list[Discovered]:
             if stripped and indent <= block_indent:
                 block_indent = None
             elif stripped and not stripped.startswith("#"):
-                command = stripped.rstrip("\\").strip()
-                if any(marker in command for marker in WORKFLOW_MARKERS):
-                    commands.append((command, current_job))
+                record(stripped.rstrip("\\").strip())
                 continue
+        if stripped.startswith("- "):
+            step_directory = ""
+            in_defaults = False
+        if stripped == "defaults:":
+            in_defaults = True
+            continue
+        directory = re.fullmatch(r"-?\s*working-directory:\s*(\S+)", stripped)
+        if directory:
+            if in_defaults:
+                job_directory = directory.group(1)
+            else:
+                step_directory = directory.group(1)
+            continue
         match = re.search(r"(?:^|[-{,]\s)(?:run|cmd):\s*(.*?)(?:\s*}\s*)?$", stripped)
         if not match:
             continue
@@ -303,13 +360,17 @@ def discover_workflow(root: Path) -> list[Discovered]:
         if value in {"|", ">", "|-", ">-"}:
             block_indent = indent
             continue
-        value = _strip_yaml_scalar(value)
-        if any(marker in value for marker in WORKFLOW_MARKERS):
-            commands.append((value, current_job))
-    return [
-        Discovered("workflow-command", command, ".github/workflows/ci.yml", job)
-        for command, job in sorted(set(commands))
-    ]
+        record(_strip_yaml_scalar(value))
+    return steps
+
+
+def discover_workflow(root: Path) -> list[Discovered]:
+    return sorted(
+        {
+            Discovered("workflow-command", step.command, ".github/workflows/ci.yml", step.job)
+            for step in scan_workflow(root)
+        }
+    )
 
 
 def discover_all(root: Path, metadata_loader: Callable[[Path, Path | None], dict[str, Any]] = _cargo_metadata) -> list[Discovered]:
@@ -606,52 +667,237 @@ def git_changed_paths(root: Path, base: str, head: str) -> list[str]:
     return sorted({line.strip() for line in result.stdout.splitlines() if line.strip()})
 
 
-def workflow_job_runners(root: Path) -> dict[str, str]:
-    """Derive the coarse runner output controlling each CI job."""
+def workflow_jobs(root: Path) -> dict[str, WorkflowJob]:
+    """Derive each CI job's runner image, upstream needs, and whether the plan gates it."""
 
     workflow = root / ".github/workflows/ci.yml"
     if not workflow.exists():
         return {}
-    runners: dict[str, str] = {}
-    current_job = ""
+    jobs: dict[str, WorkflowJob] = {}
+    name = ""
+    runs_on = ""
+    needs: tuple[str, ...] = ()
+    gated = False
+    gates_on = ""
+    in_jobs = False
+
+    def flush() -> None:
+        if name:
+            jobs[name] = WorkflowJob(name, runs_on, needs, gated, gates_on)
+
     for raw in workflow.read_text(encoding="utf-8").splitlines():
+        if raw.rstrip() and not raw.startswith(" "):
+            flush()
+            name, in_jobs = "", raw.startswith("jobs:")
+            continue
+        if not in_jobs:
+            continue
         job_match = re.fullmatch(r"  ([A-Za-z0-9_-]+):", raw)
         if job_match:
-            current_job = job_match.group(1)
-            runners[current_job] = "always"
+            flush()
+            name, runs_on, needs, gated, gates_on = job_match.group(1), "", (), False, ""
             continue
-        if not current_job:
+        if not name:
             continue
-        condition = re.search(r"needs\.changes\.outputs\.([A-Za-z0-9_-]+)\s*==\s*'true'", raw)
-        if condition:
-            runners[current_job] = condition.group(1)
-    return runners
+        stripped = raw.strip()
+        runner = re.fullmatch(r"runs-on:\s*(.+)", stripped)
+        if runner:
+            runs_on = runner.group(1).strip()
+        need = re.fullmatch(r"needs:\s*(.+)", stripped)
+        if need:
+            needs = tuple(
+                value.strip()
+                for value in need.group(1).strip("[] ").split(",")
+                if value.strip()
+            )
+        gate_literal = re.search(r"needs\.selection\.outputs\.jobs\)\s*,\s*'([^']*)'", stripped)
+        if gate_literal:
+            gated, gates_on = True, gate_literal.group(1)
+        elif stripped.startswith("if:") and "needs.selection.outputs" in stripped:
+            gated, gates_on = True, ""
+    flush()
+    return jobs
 
 
-def suite_runner_surfaces(inventory: Inventory, root: Path) -> dict[str, list[str]]:
-    """Derive executable CI surfaces; an empty list is an intentionally visible missing route."""
+def aggregate_job(root: Path) -> str:
+    """The gate job evaluating the plan; it is never a route for the suites it reports."""
 
-    job_runners = workflow_job_runners(root)
+    for step in scan_workflow(root):
+        if "ci_aggregate.py" in step.command:
+            return step.job
+    return ""
+
+
+def _cargo_invocations(command: str) -> list[list[str]]:
+    """Split a shell command into the argument list of each `cargo` invocation it runs."""
+
+    try:
+        words = shlex.split(command.replace("\n", " "))
+    except ValueError:
+        return []
+    invocations: list[list[str]] = []
+    current: list[str] | None = None
+    for word in words:
+        if word in {"&&", "||", ";", "|"} or word.endswith(";"):
+            if current is not None:
+                invocations.append(current)
+            current = None
+            continue
+        if word == "cargo" or word.endswith("/cargo"):
+            if current is not None:
+                invocations.append(current)
+            current = []
+            continue
+        if current is not None:
+            current.append(word)
+    if current is not None:
+        invocations.append(current)
+    return invocations
+
+
+def _cargo_packages(args: Sequence[str], directory: str, graph: CargoGraph) -> set[str]:
+    """Resolve which Cargo packages one invocation compiles, lints, formats, or runs."""
+
+    verb = next((word for word in args if not word.startswith(("-", "+"))), "")
+    if verb not in CARGO_EXECUTION_VERBS:
+        return set()
+    named: set[str] = set()
+    manifest = ""
+    workspace = False
+    index = 0
+    while index < len(args):
+        word = args[index]
+        following = args[index + 1] if index + 1 < len(args) else ""
+        if word in {"-p", "--package"} and following:
+            named.add(following)
+            index += 2
+            continue
+        if word.startswith("--package="):
+            named.add(word.split("=", 1)[1])
+        elif word in {"--workspace", "--all"}:
+            workspace = True
+        elif word == "--manifest-path" and following:
+            manifest = following
+            index += 2
+            continue
+        elif word.startswith("--manifest-path="):
+            manifest = word.split("=", 1)[1]
+        index += 1
+    if workspace:
+        return {name for name, package in graph.packages.items() if package.root_workspace}
+    if manifest:
+        return {name for name, package in graph.packages.items() if package.manifest == manifest}
+    if named:
+        return named.intersection(graph.packages)
+    if directory:
+        return _directory_package(directory, graph)
+    return set()
+
+
+SCRIPT_RE = re.compile(r"(?:^|\s)((?:[\w.-]+/)*[\w.-]+\.sh)(?:\s|$)")
+WASM_PACK_RE = re.compile(r"\bwasm-pack\s+build\s+([\w./-]+)")
+TRUNK_RE = re.compile(r"\btrunk\s+build\b[^|;&]*?--config\s+([\w./-]+)")
+TRUNK_LINK_RE = re.compile(r"<link[^>]*data-trunk[^>]*>")
+HREF_RE = re.compile(r'href="([^"]+)"')
+
+
+def _trunk_packages(command: str, root: Path, graph: CargoGraph) -> set[str]:
+    """Packages a `trunk build --config CFG` compiles, read from the config's HTML target."""
+
+    packages: set[str] = set()
+    for match in TRUNK_RE.finditer(command):
+        config = root / match.group(1)
+        if not config.is_file():
+            continue
+        page = config.parent / _read_toml(config).get("build", {}).get("target", "index.html")
+        if not page.is_file():
+            continue
+        for tag in TRUNK_LINK_RE.findall(page.read_text(encoding="utf-8")):
+            href = HREF_RE.search(tag)
+            if not href or 'rel="rust"' not in tag:
+                continue
+            try:
+                manifest = _relative(page.parent / href.group(1), root)
+            except (ValueError, OSError):
+                continue
+            packages |= {name for name, item in graph.packages.items() if item.manifest == manifest}
+    return packages
+
+
+def _executed_commands(root: Path, step: WorkflowStep) -> list[tuple[str, str]]:
+    """A step's command plus the lines of any repository script that command runs."""
+
+    commands = [(step.command, step.working_directory)]
+    for match in SCRIPT_RE.finditer(step.command):
+        script = root / match.group(1)
+        if script.is_file():
+            commands.extend((line.strip(), "") for line in script.read_text(encoding="utf-8").splitlines())
+    return commands
+
+
+def _directory_package(directory: str, graph: CargoGraph) -> set[str]:
+    root = directory.rstrip("/")
+    return {name for name, package in graph.packages.items() if package.root == root}
+
+
+def cargo_job_coverage(root: Path, graph: CargoGraph) -> dict[str, set[str]]:
+    """Map each Cargo package to the CI jobs whose steps build, lint, or run it."""
+
+    coverage: dict[str, set[str]] = {}
+    for step in scan_workflow(root):
+        for command, directory in _executed_commands(root, step):
+            packages = {
+                package
+                for args in _cargo_invocations(command)
+                for package in _cargo_packages(args, directory, graph)
+            }
+            for match in WASM_PACK_RE.finditer(command):
+                packages |= _directory_package(match.group(1), graph)
+            packages |= _trunk_packages(command, root, graph)
+            for package in packages:
+                coverage.setdefault(package, set()).add(step.job)
+    return coverage
+
+
+def suite_workflow_jobs(inventory: Inventory, root: Path, graph: CargoGraph) -> dict[str, list[str]]:
+    """Derive each suite's CI jobs; an empty list is an intentionally visible missing route."""
+
+    coverage = cargo_job_coverage(root, graph)
+    gate = aggregate_job(root)
     routes: dict[str, list[str]] = {}
     for suite in inventory.suites:
         suite_id = suite["id"]
-        discovered_runners = {
-            job_runners[item.detail]
+        jobs = {
+            item.detail
             for item in inventory.matches[suite_id]
-            if item.kind == "workflow-command" and item.detail in job_runners
+            if item.kind == "workflow-command" and item.detail
         }
-        rust_owners = [
-            owner["name"]
-            for owner in suite.get("ownership", [])
-            if owner.get("kind") == "rust-package"
-        ]
-        if "always" in discovered_runners:
-            routes[suite_id] = ["always"]
-            continue
-        if rust_owners:
-            discovered_runners.add("desktop" if "obc-desktop" in rust_owners else "rust")
-        routes[suite_id] = sorted(discovered_runners)
+        for owner in suite.get("ownership", []):
+            if owner.get("kind") == "rust-package":
+                jobs |= coverage.get(owner.get("name", ""), set())
+        routes[suite_id] = sorted(jobs - {gate})
     return routes
+
+
+def unconditional_jobs(root: Path) -> set[str]:
+    """Jobs that start on every run: the plan gates everything else."""
+
+    gate = aggregate_job(root)
+    return {name for name, job in workflow_jobs(root).items() if not job.plan_gated and name != gate}
+
+
+def required_jobs(plan: SelectionPlan, jobs: Mapping[str, WorkflowJob]) -> list[str]:
+    """Close the plan's jobs over the workflow `needs` graph so artifact producers run."""
+
+    required = {job for selection in plan.selected for job in selection.jobs}
+    pending = sorted(required)
+    while pending:
+        job = pending.pop()
+        for upstream in jobs.get(job, WorkflowJob(job, "", (), False)).needs:
+            if upstream not in required:
+                required.add(upstream)
+                pending.append(upstream)
+    return sorted(required)
 
 
 def _add_reason(selection: SuiteSelection, reason: str) -> None:
@@ -715,11 +961,13 @@ def select_suites(
     *,
     base: str = "",
     head: str = "HEAD",
+    unconditional: Iterable[str] = (),
 ) -> SelectionPlan:
     """Build the deterministic suite-level selection plan from repository facts."""
 
+    always_running = set(unconditional)
     selections = {
-        suite["id"]: SuiteSelection(suite=suite, runners=list(routes.get(suite["id"], ())))
+        suite["id"]: SuiteSelection(suite=suite, jobs=list(routes.get(suite["id"], ())))
         for suite in inventory.suites
     }
     errors: list[str] = []
@@ -733,8 +981,10 @@ def select_suites(
         path_owned = False
         if _is_policy_path(path):
             path_owned = True
+            # Every suite whose CI execution the workflow itself defines, derived from ownership
+            # rather than from an ID prefix.
             for suite in inventory.suites:
-                if suite["id"].startswith("ci.") or suite["id"] == "python.repository-tools":
+                if any(owner.get("kind") == "workflow" for owner in suite.get("ownership", [])):
                     _add_reason(selections[suite["id"]], f"test policy changed: {path}")
 
         if path in RUST_FOUNDATION_PATHS:
@@ -800,26 +1050,26 @@ def select_suites(
                 f"changed production path has no suite owner: {path}; add a registry trigger or build-graph owner"
             )
 
-    selected_runners = {
-        runner
-        for selection in selections.values()
-        if selection.selected
-        for runner in selection.runners
+    selected_jobs = {
+        job for selection in selections.values() if selection.selected for job in selection.jobs
     }
+    # A required-cadence suite rides the jobs a change already started. It is narrowed to those
+    # jobs so riding one leg cannot pull a whole surface in behind it.
     for selection in selections.values():
         if selection.suite.get("pull_request") != "always" or selection.selected:
             continue
-        if "always" in selection.runners:
+        if always_running.intersection(selection.jobs):
+            selection.jobs = sorted(always_running.intersection(selection.jobs))
             _add_reason(selection, "always-run policy suite")
-        elif selected_runners.intersection(selection.runners):
+        elif selected_jobs.intersection(selection.jobs):
+            selection.jobs = sorted(selected_jobs.intersection(selection.jobs))
             _add_reason(
                 selection,
-                "required whenever its runner surface is selected: "
-                + ", ".join(sorted(selected_runners.intersection(selection.runners))),
+                "required whenever one of its CI jobs starts: " + ", ".join(selection.jobs),
             )
 
     for selection in selections.values():
-        if selection.selected and not selection.runners:
+        if selection.selected and not selection.jobs:
             errors.append(
                 f"selected suite {selection.suite['id']} has no executable CI route; "
                 f"command is `{selection.suite['command']}`"
@@ -834,16 +1084,19 @@ def select_suites(
     )
 
 
-def selection_plan_data(plan: SelectionPlan) -> dict[str, Any]:
+NOT_SELECTED = "no changed path, Cargo edge, or required cadence selected this suite"
+
+
+def selection_plan_data(
+    plan: SelectionPlan, jobs: Mapping[str, WorkflowJob] | None = None
+) -> dict[str, Any]:
     return {
         "schema": 1,
         "base": plan.base,
         "head": plan.head,
         "changed_paths": plan.changed_paths,
         "selected_suite_ids": [selection.suite["id"] for selection in plan.selected],
-        "required_runner_surfaces": sorted(
-            {runner for selection in plan.selected for runner in selection.runners}
-        ),
+        "required_jobs": required_jobs(plan, jobs or {}),
         "errors": plan.errors,
         "suites": [
             {
@@ -851,10 +1104,8 @@ def selection_plan_data(plan: SelectionPlan) -> dict[str, Any]:
                 "surface": selection.suite["surface"],
                 "platforms": selection.suite.get("platforms", []),
                 "selected": selection.selected,
-                "runner_surfaces": selection.runners,
-                "reasons": selection.reasons
-                if selection.selected
-                else ["no changed path, Cargo edge, or required cadence selected this suite"],
+                "jobs": selection.jobs,
+                "reasons": selection.reasons if selection.selected else [NOT_SELECTED],
             }
             for selection in plan.suites
         ],
@@ -865,14 +1116,122 @@ def render_selection_text(plan: SelectionPlan) -> str:
     lines = [f"selection {plan.base}...{plan.head}: {len(plan.changed_paths)} changed path(s)"]
     for selection in plan.suites:
         state = "SELECTED" if selection.selected else "not selected"
-        runners = ",".join(selection.runners) if selection.runners else "missing route"
-        reasons = selection.reasons or ["no changed path, Cargo edge, or required cadence selected this suite"]
-        lines.append(f"{state:<12} {selection.suite['id']:<36} runners={runners}")
-        lines.extend(f"  - {reason}" for reason in reasons)
+        jobs = ",".join(selection.jobs) if selection.jobs else "missing route"
+        lines.append(f"{state:<12} {selection.suite['id']:<36} jobs={jobs}")
+        lines.extend(f"  - {reason}" for reason in selection.reasons or [NOT_SELECTED])
     if plan.errors:
         lines.append("errors:")
         lines.extend(f"  - {error}" for error in plan.errors)
     return "\n".join(lines)
+
+
+def select_by_level(
+    inventory: Inventory,
+    routes: Mapping[str, Sequence[str]],
+    level: str,
+    surface: str | None = None,
+) -> SelectionPlan:
+    """Select every suite of one registry level, optionally narrowed to one surface."""
+
+    resolved = LEVEL_ALIASES.get(level, level)
+    if resolved not in LEVELS:
+        known = ", ".join(sorted(LEVELS | set(LEVEL_ALIASES)))
+        raise RegistryError(f"unknown test level {level!r}; known levels: {known}")
+    surfaces = {suite["surface"] for suite in inventory.suites}
+    if surface is not None and surface not in surfaces:
+        raise RegistryError(
+            f"unknown surface {surface!r}; known surfaces: {', '.join(sorted(surfaces))}"
+        )
+    reason = f"registry level {resolved}"
+    if surface is not None:
+        reason += f" on surface {surface}"
+    selections = []
+    errors: list[str] = []
+    for suite in inventory.suites:
+        selection = SuiteSelection(suite=suite, jobs=list(routes.get(suite["id"], ())))
+        if suite["level"] == resolved and surface in (None, suite["surface"]):
+            selection.reasons.append(reason)
+            if not selection.jobs:
+                errors.append(
+                    f"selected suite {suite['id']} has no executable CI route; "
+                    f"command is `{suite['command']}`"
+                )
+        selections.append(selection)
+    return SelectionPlan(base="", head="", changed_paths=[], suites=selections, errors=errors)
+
+
+def host_platform() -> str:
+    return PLATFORMS.get(sys.platform, sys.platform)
+
+
+def run_plan(plan: SelectionPlan, root: Path, *, dry_run: bool = False) -> int:
+    """Print the plan with one reason per suite, then run each selected suite command."""
+
+    print(f"selected {len(plan.selected)} of {len(plan.suites)} registry suites")
+    for selection in plan.selected:
+        print(f"  {selection.suite['id']} [{','.join(selection.jobs) or 'no CI job'}]")
+        # One reason per suite; the rest are counted so a wide selection stays readable.
+        print(f"      - {selection.reasons[0]}")
+        if len(selection.reasons) > 1:
+            print(f"        (+{len(selection.reasons) - 1} more reasons)")
+    if plan.errors:
+        for error in plan.errors:
+            print(f"selection error: {error}", file=sys.stderr)
+        return 1
+    if dry_run:
+        print("dry run: no suite command was executed")
+        return 0
+    sys.stdout.flush()
+    for selection in plan.selected:
+        suite = selection.suite
+        platforms = suite.get("platforms", [])
+        if platforms and host_platform() not in platforms:
+            print(f"skipped  {suite['id']}: runs only on {', '.join(platforms)}")
+            continue
+        # Flushed: the plan and every suite banner must precede that suite's own output.
+        print(f"running  {suite['id']}: {suite['command']}", flush=True)
+        if subprocess.run(["bash", "-c", suite["command"]], cwd=root).returncode != 0:
+            print(f"failed   {suite['id']}", file=sys.stderr)
+            return 1
+    return 0
+
+
+def _check_gates(command: str) -> list[str]:
+    match = re.fullmatch(r"obc check\s+(.+)", str(command).strip())
+    return match.group(1).split() if match else []
+
+
+def gate_claims(
+    suites: Sequence[dict[str, Any]], graph: CargoGraph | None = None
+) -> dict[str, set[str]]:
+    """Derive which registry suites each `obc check` gate reproduces, from suite commands."""
+
+    claims: dict[str, set[str]] = {}
+    for suite in suites:
+        for gate in _check_gates(suite.get("command", "")):
+            claims.setdefault(gate, set()).add(suite["id"])
+    if graph is None:
+        return claims
+    by_id = {suite["id"]: suite for suite in suites}
+    by_package: dict[str, set[str]] = {}
+    for suite in suites:
+        for owner in suite.get("ownership", []):
+            if owner.get("kind") == "rust-package":
+                by_package.setdefault(owner.get("name", ""), set()).add(suite["id"])
+    # A gate that reproduces a workspace-wide Cargo command also reproduces every package
+    # suite that command compiles, so the claim does not understate what the run covers.
+    for gate, claimed in claims.items():
+        expanded = set(claimed)
+        for suite_id in claimed:
+            for owner in by_id[suite_id].get("ownership", []):
+                pattern = owner.get("pattern", "")
+                if owner.get("kind") != "workflow" or set("*?[").intersection(pattern):
+                    continue
+                for args in _cargo_invocations(pattern):
+                    for package in _cargo_packages(args, "", graph):
+                        expanded |= by_package.get(package, set())
+        claims[gate] = expanded
+    return claims
 
 
 def coarse_filters(root: Path) -> dict[str, list[str]]:
@@ -900,51 +1259,89 @@ def coarse_filters(root: Path) -> dict[str, list[str]]:
     return filters
 
 
-def validate_coarse_filters(
+AUDITED_PATHS = (
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "rustfmt.toml",
+    ".cargo/config.toml",
+    "specs/vectors/obcm-v2.json",
+    "ops/weather/check_freshness.py",
+    "tools/suite_registry.py",
+    "builder/server/nested/handler.py",
+    "fixtures/catalog.toml",
+    ".github/workflows/bake.yml",
+    "testing/suites.toml",
+    "builder/app/src/lib/example.ts",
+    "companion-ios/Packages/OBCKit/Sources/OBCFormats/example.swift",
+    "apps/obc-desktop/src/main.rs",
+    "docs/index.md",
+)
+
+
+def _representative_path(pattern: str) -> str:
+    return pattern.replace("**", "x").replace("*", "x").strip("/") or "x"
+
+
+def validate_ci_routing(
     root: Path,
     inventory: Inventory,
     cargo_graph: CargoGraph,
     routes: Mapping[str, Sequence[str]],
 ) -> list[str]:
-    """Exercise the locked audit classes against selection and the transitional filters."""
+    """Prove the plan and the workflow describe the same jobs after the selector cutover."""
 
-    filters = coarse_filters(root)
-    representatives = [
-        "Cargo.toml",
-        "Cargo.lock",
-        "rust-toolchain.toml",
-        "rustfmt.toml",
-        ".cargo/config.toml",
-        "specs/vectors/obcm-v2.json",
-        "ops/weather/check_freshness.py",
-        "tools/suite_registry.py",
-        "builder/server/nested/handler.py",
-        "fixtures/catalog.toml",
-        ".github/workflows/bake.yml",
-        "testing/suites.toml",
-        "builder/app/src/lib/example.ts",
-        "companion-ios/Packages/OBCKit/Sources/OBCFormats/example.swift",
-        "apps/obc-desktop/src/main.rs",
-        "docs/index.md",
-    ]
+    jobs = workflow_jobs(root)
+    gate = aggregate_job(root)
+    started = unconditional_jobs(root)
     errors: list[str] = []
-    for path in representatives:
-        plan = select_suites(inventory, [path], cargo_graph, routes)
-        errors.extend(plan.errors)
-        for selection in plan.selected:
-            conditional = [runner for runner in selection.runners if runner != "always"]
-            if not conditional:
-                continue
-            if not any(
-                any(_glob_matches(path, pattern) for pattern in filters.get(runner, []))
-                for runner in conditional
-            ):
+    for suite_id, suite_jobs in sorted(routes.items()):
+        for job in suite_jobs:
+            if job not in jobs:
+                errors.append(f"suite {suite_id} routes to unknown workflow job {job}")
+            elif not jobs[job].runs_on:
+                errors.append(f"job {job} provisions no runner image for suite {suite_id}")
+    claimed = {job for suite_jobs in routes.values() for job in suite_jobs}
+    reported = set(jobs[gate].needs) if gate in jobs else set()
+    for name in sorted(jobs):
+        if name == gate:
+            continue
+        if name not in claimed:
+            errors.append(f"workflow job {name} runs no registry suite")
+        if name not in reported:
+            errors.append(f"workflow job {name} is not in the aggregate gate's needs")
+        job = jobs[name]
+        if job.plan_gated and job.gates_on != name:
+            errors.append(
+                f"workflow job {name} gates on {job.gates_on or 'no job literal'}, "
+                "so the plan can never start it"
+            )
+        if not job.plan_gated:
+            # An ungated job runs on every pull request, so calling any of its suites
+            # `affected` would be a lie about when that suite runs.
+            for suite in inventory.suites:
+                if name in routes.get(suite["id"], ()) and suite.get("pull_request") != "always":
+                    errors.append(
+                        f"workflow job {name} runs unconditionally but hosts "
+                        f"{suite['id']}, whose cadence is {suite.get('pull_request')}"
+                    )
+    # Only provisioning questions the plan cannot answer may remain in the coarse layer.
+    for name, patterns in sorted(coarse_filters(root).items()):
+        for pattern in patterns:
+            plan = select_suites(
+                inventory, [_representative_path(pattern)], cargo_graph, routes, unconditional=started
+            )
+            if plan.selected:
                 errors.append(
-                    f"coarse filters {conditional!r} miss {path}, which selects {selection.suite['id']}"
+                    f"coarse filter {name} entry {pattern!r} encodes suite policy already owned by "
+                    f"{plan.selected[0].suite['id']}"
                 )
+    for path in AUDITED_PATHS:
+        plan = select_suites(inventory, [path], cargo_graph, routes, unconditional=started)
+        errors.extend(plan.errors)
     if errors:
         raise RegistryError("\n".join(f"- {error}" for error in sorted(set(errors))))
-    return representatives
+    return list(AUDITED_PATHS)
 
 
 def _suite_summary(suite: dict[str, Any], owned: Sequence[Discovered]) -> dict[str, Any]:
@@ -1018,37 +1415,101 @@ def command_explain(args: argparse.Namespace) -> int:
     return 0
 
 
-def command_select(args: argparse.Namespace) -> int:
-    root = (args.root or repository_root()).resolve()
+def _affected_plan(root: Path, base: str, head: str) -> SelectionPlan:
     inventory = load_inventory(root)
     graph = build_cargo_graph(root)
-    routes = suite_runner_surfaces(inventory, root)
-    changed_paths = git_changed_paths(root, args.base, args.head)
-    plan = select_suites(
+    return select_suites(
         inventory,
-        changed_paths,
+        git_changed_paths(root, base, head),
         graph,
-        routes,
-        base=args.base,
-        head=args.head,
+        suite_workflow_jobs(inventory, root, graph),
+        base=base,
+        head=head,
+        unconditional=unconditional_jobs(root),
     )
+
+
+def command_select(args: argparse.Namespace) -> int:
+    root = (args.root or repository_root()).resolve()
+    plan = _affected_plan(root, args.base, args.head)
+    data = selection_plan_data(plan, workflow_jobs(root))
+    if args.jobs_file:
+        Path(args.jobs_file).write_text(json.dumps(data["required_jobs"]), encoding="utf-8")
     if args.format == "json":
-        print(json.dumps(selection_plan_data(plan), sort_keys=True, separators=(",", ":")))
+        print(json.dumps(data, sort_keys=True, separators=(",", ":")))
     else:
         print(render_selection_text(plan))
     return 1 if plan.errors else 0
 
 
+def command_run(args: argparse.Namespace) -> int:
+    root = (args.root or repository_root()).resolve()
+    if args.affected == bool(args.level):
+        raise RegistryError("run needs exactly one of --affected or --level")
+    if args.affected:
+        if not args.base:
+            raise RegistryError(
+                "`affected` needs an explicit base revision: obc test affected --base origin/develop"
+            )
+        plan = _affected_plan(root, args.base, args.head)
+    else:
+        inventory = load_inventory(root)
+        routes = suite_workflow_jobs(inventory, root, build_cargo_graph(root))
+        plan = select_by_level(inventory, routes, args.level, args.surface)
+    return run_plan(plan, root, dry_run=args.dry_run)
+
+
+def command_gates(args: argparse.Namespace) -> int:
+    root = (args.root or repository_root()).resolve()
+    suites = _read_toml(root / "testing/suites.toml").get("suite", [])
+    if args.list:
+        print(" ".join(sorted({gate for suite in suites for gate in _check_gates(suite.get("command", ""))})))
+        return 0
+    if not args.gate:
+        raise RegistryError("name at least one gate, or pass --list")
+    claims = gate_claims(suites, build_cargo_graph(root) if args.unreproduced else None)
+    unknown = [gate for gate in args.gate if gate not in claims]
+    if unknown:
+        raise RegistryError(
+            f"gate(s) {', '.join(unknown)} reproduce no registry suite; "
+            "add the `obc check` route to the suite they gate or rename them back"
+        )
+    reproduced = set().union(*(claims[gate] for gate in args.gate))
+    # A step that ran a suite's own command reproduces it whatever the gate map says.
+    reproduced |= {suite["id"] for suite in suites if suite.get("command") in set(args.ran)}
+    if not args.unreproduced:
+        print("reproduces registry suites: " + ", ".join(sorted(reproduced)))
+        return 0
+    host = host_platform()
+    missing = [
+        suite
+        for suite in suites
+        if suite.get("pull_request") == "always" and suite["id"] not in reproduced
+    ]
+    if not missing:
+        print("this run reproduces every registry suite required on a pull request")
+        return 0
+    print("required registry suites this run does not reproduce:")
+    for suite in missing:
+        platforms = suite.get("platforms", [])
+        reason = (
+            f"runs only on {', '.join(platforms)}"
+            if platforms and host not in platforms
+            else "no gate in this run runs its command"
+        )
+        print(f"  - {suite['id']}: {reason}")
+    return 0
+
+
 def command_validate_filters(args: argparse.Namespace) -> int:
     root = (args.root or repository_root()).resolve()
     inventory = load_inventory(root)
-    representatives = validate_coarse_filters(
-        root,
-        inventory,
-        build_cargo_graph(root),
-        suite_runner_surfaces(inventory, root),
+    graph = build_cargo_graph(root)
+    audited = validate_ci_routing(root, inventory, graph, suite_workflow_jobs(inventory, root, graph))
+    print(
+        f"plan-derived CI routing covers {len(workflow_jobs(root))} workflow jobs "
+        f"and {len(audited)} audited selection classes"
     )
-    print(f"coarse CI filters cover {len(representatives)} audited selection classes")
     return 0
 
 
@@ -1068,10 +1529,27 @@ def build_parser() -> argparse.ArgumentParser:
     select.add_argument("--base", required=True, help="base Git revision")
     select.add_argument("--head", default="HEAD", help="head Git revision (default: HEAD)")
     select.add_argument("--format", choices=("text", "json"), default="text")
+    select.add_argument("--jobs-file", help="also write the required workflow jobs as a JSON array")
     select.set_defaults(func=command_select)
+    run = subparsers.add_parser("run", help="run the suites of a level, surface, or Git range")
+    run.add_argument("--level", help="registry level (fixtures and e2e are the only aliases)")
+    run.add_argument("--surface", help="narrow a level selection to one product surface")
+    run.add_argument("--affected", action="store_true", help="select from a Git range instead")
+    run.add_argument("--base", help="base Git revision, required by --affected")
+    run.add_argument("--head", default="HEAD", help="head Git revision (default: HEAD)")
+    run.add_argument("--dry-run", action="store_true", help="print the plan and run nothing")
+    run.set_defaults(func=command_run)
+    gates = subparsers.add_parser("gates", help="report the suites `obc check` gates reproduce")
+    gates.add_argument("gate", nargs="*", help="gate names to resolve")
+    gates.add_argument("--list", action="store_true", help="print every gate the registry claims")
+    gates.add_argument(
+        "--unreproduced", action="store_true", help="list the required suites the run omits"
+    )
+    gates.add_argument("--ran", nargs="*", default=(), help="commands the run actually executed")
+    gates.set_defaults(func=command_gates)
     filters = subparsers.add_parser(
         "validate-filters",
-        help="prove coarse runner filters cover the audited registry selections",
+        help="prove the plan and the workflow describe the same jobs",
     )
     filters.set_defaults(func=command_validate_filters)
     return parser
