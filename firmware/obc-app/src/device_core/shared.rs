@@ -209,9 +209,9 @@ pub struct DeviceFacts {
     /// trusted-clock gate). That stays a domain policy rather than a capability: the device *can*
     /// delete, it simply waits — and a dimmed menu entry would be the wrong way to say so.
     pub ride_recording: bool,
-    /// `CoreMode`'s verdict on heavy work. Today it withdraws admission while a transfer streams or
-    /// an install is armed, but this field carries the verdict, not that list — read `CoreMode` for
-    /// the current conditions rather than re-deriving them from this sentence.
+    /// [`CoreMode`](crate::device_core::core_mode::CoreMode)'s verdict on heavy work — a transfer
+    /// holding the store, or a planner run holding the nav arm. This field carries the verdict, not
+    /// that list: read `CoreMode` for the current conditions rather than re-deriving them here.
     pub heavy_operations: bool,
 }
 
@@ -426,7 +426,16 @@ pub struct WeatherData {
 }
 
 /// Whether a bulk transfer is streaming. Producer: the link and USB control planes. Consumer:
-/// `CoreMode`, which withdraws heavy-operation admission while one is in flight.
+/// [`CoreMode`](crate::device_core::core_mode::CoreMode), which withdraws heavy-operation admission
+/// while one is in flight.
+///
+/// **The known gap, stated rather than papered over:** today the only transfer that reports itself
+/// is the **map** upload, through
+/// [`App::set_map_transfer`](crate::App::set_map_transfer)'s card level. A route, trip or weather
+/// upload streams without one, so `CoreMode`'s transfer level does not see it. That is a gap in the
+/// *fact* — the flat engine knows the truth — and #1397 S6 closes it by feeding
+/// [`note_transfer`](ExternalFacts::note_transfer) from the engine. A fourth derivation here would
+/// be a second copy of the level, which is exactly what S5 deleted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransferState {
     /// No transfer holds the store.

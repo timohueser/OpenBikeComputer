@@ -16,6 +16,7 @@
 //! engages, pauses the matcher, raises its banner, and — on every exit the flow has — releases.
 
 use embedded_graphics::pixelcolor::Rgb888;
+use obc_app::device_core::ModeState;
 use obc_app::screen::{palette, Screen};
 use obc_app::{
     App, AppState, DetourPreview, DetourRequest, Gesture, HostCommand, HostEvent, HostMailbox, RouteSummary,
@@ -270,6 +271,12 @@ fn frozen_over_the_chooser(app: &mut App) {
     assert!(matches!(app.top_screen(), Screen::Detour(_)));
 }
 
+/// Whether a planner run holds the nav arm — `CoreMode`'s search level, read through the one public
+/// mode. No transfer streams in this file, so `Searching` is exactly "a search is live".
+fn searching(app: &App) -> bool {
+    app.core_mode() == ModeState::Searching
+}
+
 fn rgb(c: u16) -> Rgb888 {
     let (r, g, b) = rgb565_to_rgb888(c);
     Rgb888::new(r, g, b)
@@ -284,25 +291,25 @@ fn rgb(c: u16) -> Rgb888 {
 fn the_freeze_covers_a_live_search_exactly_while_a_map_base_would_draw() {
     let (mut app, _obcr) = riding_app();
     assert!(app.base_draws_map(), "riding on the Map");
-    assert!(!app.plan_in_flight());
+    assert!(!searching(&app));
     assert!(!app.reroute_freeze_active(), "no plan, no freeze");
     assert!(app.nav_arena_precondition().is_none(), "…so a search may not take the arena yet");
 
     open_chooser(&mut app);
     app.apply_gesture(Gesture::Press);
     assert!(drained(&mut app).iter().any(|c| matches!(c, HostCommand::PlanDetour(_))));
-    assert!(app.plan_in_flight(), "the drained command is what says the host began planning");
+    assert!(searching(&app), "the drained command is what says the host began planning");
     assert!(!app.base_draws_map(), "the spinner is an opaque chrome base — no map underneath to freeze");
     assert!(!app.reroute_freeze_active(), "menu-shaped planning needs no freeze");
     assert!(app.nav_arena_precondition().is_some(), "…and the arena is claimable: nothing will draw a map");
 
     app.apply_gesture(Gesture::Back);
     assert!(app.base_draws_map(), "the chooser is a map base again");
-    assert!(app.plan_in_flight(), "…while the host has not been told to stop yet");
+    assert!(searching(&app), "…while the host has not been told to stop yet");
     assert!(app.reroute_freeze_active(), "THE window — the freeze covers it");
 
     assert!(drained(&mut app).iter().any(|c| matches!(c, HostCommand::CancelDetour)));
-    assert!(!app.plan_in_flight(), "the cancel reaching the host ends the run");
+    assert!(!searching(&app), "the cancel reaching the host ends the run");
     assert!(!app.reroute_freeze_active());
     assert!(app.nav_arena_precondition().is_none(), "a map base with no freeze refuses the nav claim again");
 }
@@ -420,7 +427,7 @@ fn the_banner_lands_when_a_map_base_returns_under_a_search_that_already_started(
     app.apply_gesture(Gesture::BackHold); // the ride menu: an opaque chrome base
     assert!(!app.base_draws_map(), "no map underneath the menu");
     app.debug_set_plan_live(true); // the host begins a planner run
-    assert!(app.plan_in_flight());
+    assert!(searching(&app));
     assert!(!app.reroute_freeze_active(), "a chrome base freezes nothing — and needs no banner");
     assert_eq!(board.pass(&mut app), Painted::Frame, "the menu frame renders normally");
 
@@ -449,7 +456,7 @@ fn a_detour_terminal_edge_leaves_a_live_route_search_frozen() {
 
     // A detour answer lands anyway — a stray event, or #882's board half answering its own request.
     app.apply_event(HostEvent::DetourPlanned(Err(NavError::NoPath)));
-    assert!(app.plan_in_flight(), "the route search is untouched by another family's answer");
+    assert!(searching(&app), "the route search is untouched by another family's answer");
     assert!(app.reroute_freeze_active(), "so the map stays frozen");
     app.apply_event(HostEvent::DetourCommitted(Err(NavError::NoPath)));
     assert!(app.reroute_freeze_active(), "…and by its commit failure too");
@@ -457,7 +464,7 @@ fn a_detour_terminal_edge_leaves_a_live_route_search_frozen() {
     // Only the route family's own terminal edge releases it.
     app.debug_set_plan_live(false);
     assert!(!app.reroute_freeze_active());
-    assert!(!app.plan_in_flight());
+    assert!(!searching(&app));
 }
 
 /// And the mirror: a live **detour** plan is not released by the route family's cancel drain. Same
@@ -473,7 +480,7 @@ fn a_route_cancel_leaves_a_live_detour_plan_frozen() {
 
     // A route answer for a run that isn't this one (a late `NavPlanned` behind a cancelled plan).
     app.apply_event(HostEvent::NavPlanned(Err(NavError::NoPath)));
-    assert!(app.plan_in_flight(), "the detour search is still the arm's holder");
+    assert!(searching(&app), "the detour search is still the arm's holder");
     assert!(app.reroute_freeze_active());
 
     assert!(drained(&mut app).iter().any(|c| matches!(c, HostCommand::CancelDetour)));
@@ -493,12 +500,12 @@ fn the_board_loop_renders_the_map_again_the_pass_a_cancel_lands() {
     assert_eq!(board.pass(&mut app), Painted::Frame, "the chooser is a map base");
     app.apply_gesture(Gesture::Press); // → the spinner, and the request
     assert_eq!(board.pass(&mut app), Painted::Frame, "the spinner renders; the plan drains with it");
-    assert!(app.plan_in_flight());
+    assert!(searching(&app));
 
     app.apply_gesture(Gesture::Back); // pops the spinner *and* pends the cancel
     assert!(app.reroute_freeze_active(), "frozen until the cancel actually reaches the host");
     assert_eq!(board.pass(&mut app), Painted::Frame, "which it does on this pass — so the map redraws");
-    assert!(!app.plan_in_flight());
+    assert!(!searching(&app));
     assert_eq!(board.pass(&mut app), Painted::Nothing, "and nothing is left demanding a repaint");
 }
 
@@ -573,7 +580,7 @@ fn every_way_a_plan_ends_releases_the_freeze() {
     open_chooser(&mut app);
     app.apply_gesture(Gesture::Press);
     let _ = drained(&mut app);
-    assert!(app.plan_in_flight());
+    assert!(searching(&app));
     app.apply_event(HostEvent::DetourPlanned(Ok(DetourPreview {
         cost_delta_m: 420,
         total_distance_m: 1_020,
@@ -582,7 +589,7 @@ fn every_way_a_plan_ends_releases_the_freeze() {
     })));
     assert!(matches!(app.top_screen(), Screen::DetourPreview(_)));
     assert!(app.base_draws_map(), "the preview is a map base");
-    assert!(!app.plan_in_flight(), "the answer ended the run");
+    assert!(!searching(&app), "the answer ended the run");
     assert!(!app.reroute_freeze_active(), "so the preview's first frame renders");
 
     // The failure tier: same release, on a card that isn't a map base at all.
@@ -591,16 +598,16 @@ fn every_way_a_plan_ends_releases_the_freeze() {
     app.apply_gesture(Gesture::Press);
     let _ = drained(&mut app);
     app.apply_event(HostEvent::DetourPlanned(Err(NavError::Exhausted)));
-    assert!(!app.plan_in_flight(), "a failed run is still a finished run");
+    assert!(!searching(&app), "a failed run is still a finished run");
 
     // A late answer behind a cancel: the run already ended, and the stray event must not re-engage
     // (or leave) anything.
     let (mut app, _obcr) = riding_app();
     frozen_over_the_chooser(&mut app);
     let _ = drained(&mut app);
-    assert!(!app.plan_in_flight());
+    assert!(!searching(&app));
     app.apply_event(HostEvent::DetourPlanned(Err(NavError::NoPath)));
-    assert!(!app.plan_in_flight());
+    assert!(!searching(&app));
     assert!(!app.reroute_freeze_active(), "the map keeps rendering through a late answer");
 }
 

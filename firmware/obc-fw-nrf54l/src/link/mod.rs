@@ -10,7 +10,6 @@
 //! - [`command::run_command`] — the §4.4 imperatives (`deleteObject`, `ackRides`, `installFw`,
 //!   `forgetBond`, `setClock`, `setRouteRetention`). Takes the store, returns a typed outcome; it
 //!   has never had a radio in it.
-//! - [`Armed`] + [`TRANSFER_ACTIVE`] — the one-transfer-at-a-time gate. **Deliberately shared
 //! - [`identity`] — the FICR-derived serial/name, the DIS strings, and the Config /
 //!   `protocolVersion` blob codecs, in plain bytes. BLE's GATT table wraps them into its
 //!   attribute-value types; USB writes the same bytes into a control frame.
@@ -132,8 +131,6 @@ pub fn publish_stack_high_water(bytes: usize) {
     STACK_HIGH_WATER.store(bytes as u32, Ordering::Relaxed);
 }
 
-// ============================ Data-plane arming ============================
-
 // ============================ Map-transfer progress mirror (issue #927) ============================
 //
 // A map upload writes for **minutes**. The ride loop owns the `App` and is the only task that may
@@ -240,21 +237,6 @@ pub fn clear_map_transfer() {
         MAP_PHASE.store(0, Ordering::Relaxed);
     }
 }
-
-/// One transfer at a time, **across every transport**: claimed by whichever control plane armed it,
-/// released by that transport's data plane when the transfer concludes (answered, aborted, or the
-/// channel dropped).
-///
-/// Shared rather than per-transport because the resource being arbitrated is the store, not the
-/// wire: [`ObjectStore`] holds exactly one upload handle and one open download source. Two
-/// simultaneous uploads would interleave into the same file and commit a corrupt object.
-///
-/// It carries **who holds it** rather than merely whether it is held (issue #1039), because one
-/// transfer at a time is not one transport at a time: both links can be connected at once, and each
-/// tears its own state down when it drops. A bare flag meant a phone walking out of range released
-/// a gate the cable was holding mid-set. The rule — and the regression — live in
-/// [`obc_app::link_gate`], where they can be tested.
-pub(crate) static TRANSFER_ACTIVE: obc_app::TransferGate = obc_app::TransferGate::new();
 
 // ============================ Status-message vocabulary ============================
 

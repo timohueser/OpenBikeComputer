@@ -562,8 +562,8 @@ fn inspect_viewport(w: i32, h: i32, candidate: (i32, i32), overview_zoom: f32, f
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::navigator::{NavigatorEffect, NavigatorMachine, PlannerWork};
-    use crate::reroute_freeze::PlanFamily;
+    use crate::device_core::core_mode::CoreMode;
+    use crate::navigator::{NavigatorEffect, NavigatorMachine, PlanFamily, PlannerWork};
     use crate::screen::test_ctx;
     use crate::{AppState, Settings};
     use obc_ports::Fix;
@@ -585,9 +585,11 @@ mod tests {
         f(&mut cx)
     }
 
-    /// The detour-plan request Navigator holds, taken as an executor would.
+    /// The detour-plan request Navigator holds, taken as an executor would. The search level rides
+    /// on the app's `CoreMode`; these tests read the request, not the mode, so a scratch one is
+    /// enough.
     fn drained_detour(nav: &mut NavigatorMachine) -> Option<DetourRequest> {
-        match nav.next_plan_effect(PlanFamily::Detour) {
+        match nav.next_plan_effect(PlanFamily::Detour, &mut CoreMode::new()) {
             Some(NavigatorEffect::Acquire { work: PlannerWork::Detour(req), .. }) => Some(req),
             other => {
                 assert!(other.is_none(), "the detour arm only ever acquires a detour: {other:?}");

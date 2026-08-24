@@ -354,28 +354,28 @@ fn nav_begin(nav: &mut NavBuffers, req: &obc_app::NavRequest, profile_idx: u8) {
     );
 }
 
-/// Take everything a fresh route search needs, in the order that leaves nothing half-held: the
-/// transfer gate's **search arm** first (a cable transfer streaming into the same store must win —
-/// the arena's `nav ⊥ usb` rule), then the scratch arena's **nav arm** against the app's own
+/// Take the scratch arena's **nav arm** for a fresh route search, against the app's own
 /// quiesced-map proof.
 ///
-/// `Err(why)` = the caller must answer the failure tier now rather than arm a plan; every refusal
-/// path has already given back whatever it took, so no spinner can hang behind a half-claim. A
-/// request arriving while a plan is still in flight is *not* a refusal: we already hold both, and
-/// the drain overwrites the planner slot for the new plan exactly as it did before.
+/// `Err(why)` = the caller must answer the failure tier now rather than arm a plan; a refused claim
+/// took nothing, so no spinner can hang behind a half-claim. A request arriving while a plan is
+/// still in flight is *not* a refusal: we already hold the arm, and the drain overwrites the
+/// planner slot for the new plan exactly as it did before.
+///
+/// The arena's own owner is what enforces `nav ⊥ usb` — a cable transfer streaming into the same
+/// store holds the block, so the claim is refused by ownership rather than by a second gate
+/// tracking the same fact. The refusal *names* that holder, because "wait for the cable" is
+/// something the rider can act on and "the scratch arena is busy" is not.
 #[cfg(has_nav)]
 fn nav_take_arena(app: &App, guard: &mut Option<crate::arena::NavGuard>) -> Result<(), &'static str> {
+    use obc_app::{ArenaError, ArenaOwner};
     if guard.is_some() {
         return Ok(());
-    }
-    if !crate::link::TRANSFER_ACTIVE.begin_search() {
-        return Err("a cable transfer holds the store");
     }
     let Some(quiesced) = app.nav_arena_precondition() else {
         // Unreachable by construction: draining a plan command is what engages the Recalculating
         // freeze, so by the time we are here the map plane is already quiet over a map base — and
         // menu planning has no map base to quiet. Loud in debug, handled in release.
-        crate::link::TRANSFER_ACTIVE.end_search();
         debug_assert!(false, "a plan drained with the map plane still drawing — the freeze did not engage");
         return Err("the map plane is not quiesced");
     };
@@ -384,10 +384,8 @@ fn nav_take_arena(app: &App, guard: &mut Option<crate::arena::NavGuard>) -> Resu
             *guard = Some(g);
             Ok(())
         }
-        Err(_) => {
-            crate::link::TRANSFER_ACTIVE.end_search();
-            Err("the scratch arena is busy")
-        }
+        Err(ArenaError::Busy(ArenaOwner::Usb)) => Err("a cable transfer holds the store"),
+        Err(_) => Err("the scratch arena is busy"),
     }
 }
 
@@ -1059,11 +1057,7 @@ pub(crate) async fn run_app(
 
             let wants_stage = crate::usb::stage_requested();
             if wants_stage && usb_stage_guard.is_none() {
-                #[cfg(has_nav)]
-                let search_live = nav_run.is_some();
-                #[cfg(not(has_nav))]
-                let search_live = false;
-                if let Some(ready) = obc_app::TransferReady::prove(app.map_transfer_card_up(), search_live) {
+                if let Some(ready) = app.usb_stage_precondition() {
                     if let Ok(guard) = crate::arena::claim_usb(ready) {
                         usb_stage_guard = Some(guard);
                         crate::usb::set_stage_granted(true);
@@ -1112,11 +1106,11 @@ pub(crate) async fn run_app(
                         // router, so it answers the failure tier here instead of arming.
                         //
                         // Since #1146 P2 the slot lives in the scratch arena, so the search must
-                        // *take* the arena first — and the gate's search arm before it, because a
-                        // cable transfer streaming into the same store outranks a reroute. Either
-                        // refusal answers the app immediately (the polite failure path): a plan whose
-                        // spinner never resolves would now also hold the Recalculating freeze, i.e. a
-                        // map that never redraws again.
+                        // *take* the arena first — and a cable transfer streaming into the same store
+                        // outranks a reroute, which `nav_take_arena` enforces by asking the arena who
+                        // holds it. A refusal answers the app immediately (the polite failure path):
+                        // a plan whose spinner never resolves would now also hold the Recalculating
+                        // freeze, i.e. a map that never redraws again.
                         #[cfg(has_nav)]
                         match nav_take_arena(app, &mut nav_guard) {
                             Ok(()) => {
@@ -1535,9 +1529,9 @@ pub(crate) async fn run_app(
             let nav_cancel = host_pass.cancel_plan;
             #[cfg(has_nav)]
             {
-                // Whether this pass ended the search — the one place the arena's nav arm and the
-                // gate's search arm are given back. A flag rather than an inline release because the
-                // guard is borrowed by the step view below and must die first.
+                // Whether this pass ended the search — the one place the arena's nav arm is given
+                // back. A flag rather than an inline release because the guard is borrowed by the
+                // step view below and must die first.
                 let mut search_ended = false;
                 if host_pass.plan_armed {
                     // The planner slot was already written from the request at the pass-top drain
@@ -1823,11 +1817,10 @@ pub(crate) async fn run_app(
                     search_ended = true;
                 }
                 if search_ended {
-                    // Drop the guard (releasing the arena so the next frame can render the map
-                    // again), then the gate's search arm — in that order, because a transfer that
-                    // arms the instant the search arm opens must find the arena free.
+                    // Drop the guard, releasing the arena so the next frame can render the map
+                    // again — and so a transfer waiting on it finds the block free. The app's own
+                    // search level was released by the answer that set `search_ended`.
                     nav_guard = None;
-                    crate::link::TRANSFER_ACTIVE.end_search();
                 }
             }
             #[cfg(not(has_nav))]
@@ -2247,6 +2240,13 @@ pub(crate) async fn run_app(
                             app.render_overlay(&mut fbdev, FRAME_W as f32, FRAME_H as f32, color_fn);
                             obc_render::RenderStats::default()
                         });
+                        // Named apart from the `ui frame:` line every other non-map redraw shares:
+                        // the menus, the station steps and the planning spinner all take this same
+                        // branch, so a log reader (and the #1487 soak driver) cannot tell a banner
+                        // repaint from a menu repaint without it. `debug-uart` only — the harness is
+                        // its only reader and the shipping image should not carry the string.
+                        #[cfg(feature = "debug-uart")]
+                        defmt::info!("freeze: banner repaint rows {=u16}..{=u16}", y0, y0 + rows);
                         Some(RenderedFrame { needs_map: false, stats, render_us })
                     }
                     // Mid-freeze with no edge: nothing changed on either plane, so nothing to push.
@@ -2540,10 +2540,11 @@ pub(crate) async fn run_app(
         // it stays fluid; otherwise arm the app's single next-wake deadline, or sleep indefinitely
         // until input/sensor.
         let charging = hold_p > 0.0 || display.hold_charging();
-        #[cfg(has_nav)]
-        let planning = nav_run.is_some();
-        #[cfg(not(has_nav))]
-        let planning = false;
+        // "A search is live" is the app's fact, never the board's run handle: `CoreMode` is set when
+        // the plan command drains and cleared by the answer, which brackets `nav_run` on both sides.
+        // It costs a hot loop rather than an exclusion if it is wrong, and it is the last place the
+        // board derived this a second way.
+        let planning = app.core_mode() == obc_app::device_core::ModeState::Searching;
         let animating = charging || planning || pending_map_redraw || overlay_dirty || overlay_span.is_some();
         let next_ms = if animating { Some(LOOP_MS as u32) } else { app.ms_until_next_wake(now) };
         // debug-uart host build: keep a ~2 Hz floor so streamed telemetry / `Z` zoom commands stay
