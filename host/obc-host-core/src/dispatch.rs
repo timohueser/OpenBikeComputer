@@ -24,7 +24,7 @@
 //! |---|---|---|
 //! | `FinishTrack` | Recorder has no machine — the close is answered by a catalog re-feed, not a ride identity (`LegacyOwned::RideCloseAck`) | #1398 |
 //! | `ForgetBond` | The removal is confirmed by a link-status fact, not by a reply (`LegacyOwned::BondAck`) | #1398/#1400 |
-//! | `DeleteTrip` | `CatalogState::admit_intent` **refuses** a trip cascade: the bounded member read does not exist, and the sim's folder stores number routes and trips from separate counters, so a namespace-free `RemoveObject` could not tell them apart (`LegacyOwned::TripCascade` + `ObjectNamespace`) | `LegacyOwned::TripCascade::deletes_in` |
+//! | `DeleteTrip` | `CatalogState::admit_intent` **refuses** a trip cascade: the bounded member read does not exist, and the sim's folder stores number routes and trips from separate counters, so a namespace-free `RemoveObject` could not tell them apart (`LegacyOwned::TripCascade` + `ObjectNamespace`) | #1491 |
 //!
 //! [`RESIDUAL`] is that list as data, and [`assert_residual`] is the production assertion that
 //! nothing else comes back.
@@ -418,6 +418,12 @@ impl HostLoop {
             }
             CatalogEffect::RemoveObject { token, object } => {
                 if routes.delete_by_id(object) {
+                    // Routes only. The trip *folders* re-resolve inside this feeder —
+                    // `CatalogState::replace_routes` re-points every trip's stage ids at the new
+                    // catalog — so a removal that shifts catalog positions cannot leave a trip
+                    // naming the wrong route. `trips.refeed` re-reads the host's `.obt` files, and
+                    // nothing here changed those; only a full read or the cascade's own `.obt`
+                    // deletion does.
                     feed_routes(app, routes, &mut NoTrace);
                     return CatalogOutcome::ObjectRemoved { token, object, existed: true };
                 }
