@@ -4,12 +4,9 @@ The nRF crate is Thumb-only, so these checks pin the glue that its target build 
 host unit test cannot execute: a successful engine commit must cross the catalog rescan before the
 upload fact it produces, while transient reads must keep the prior snapshot and re-arm that rescan.
 
-**Re-anchored by #1397 S6b**, which is a rename of the sites rather than a change of the rules. The
-board drains no `HostCommand`s any more: the rescan is `CatalogEffect::ReadCatalog`'s body
+The board drains no `HostCommand`s: the rescan is `CatalogEffect::ReadCatalog`'s body
 (`read_catalogs`), the delivery is `note_catalog_uploads` writing `ExternalFacts` for the *next*
-pass, and the re-arm a partial read owes is the executor's own `rescan_owed` rather than a
-re-injected `HostEvent::StoreChanged`. The ordering each test asserts is unchanged, which is the
-point of pinning it here at all.
+pass, and the re-arm a partial read owes is the executor's own `rescan_owed`.
 """
 
 from pathlib import Path

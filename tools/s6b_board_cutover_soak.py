@@ -135,8 +135,9 @@ EXEC_ALARMS = (
 REFUSAL_TRANSFER = "a cable transfer holds the store"
 REFUSAL_ARENA = "the scratch arena is busy"
 
-# `stack_reserve` / `deep_ride_margin_min` from `firmware/tools/resource_baseline.json` — scenario C
-# fails if a reported stack peak eats into the margin.
+# `deep_ride_margin_min` from `firmware/tools/resource_baseline.json` — scenario C fails if a
+# reported stack peak eats into the margin. `STACK_RESERVE` is only the fallback for a line whose
+# `/ M B` half could not be read; the board's own reported total is what the gate uses.
 STACK_RESERVE = 65_536
 DEEP_RIDE_MARGIN_MIN = 8_704
 
@@ -265,27 +266,36 @@ def transfer_edges(lines: list[str]) -> list[str]:
     return ["active" if XFER_ACTIVE in line else "idle" for line in lines if XFER_ACTIVE in line or XFER_IDLE in line]
 
 
-def stack_peaks(lines: list[str]) -> list[int]:
-    """Every `stack high-water N / M B` peak in the window, in bytes."""
-    peaks = []
+def stack_peaks(lines: list[str]) -> list[tuple[int, int]]:
+    """Every `stack high-water N / M B` peak in the window, as `(used, total)`.
+
+    **The `M` is not decoration.** It is `stackmeter::total()` — the *residual* main stack this
+    flashed image actually has, which is what is left after `.bss`, `.data` and `.uninit` and is
+    therefore several tens of kilobytes below the linker's `stack_reserve`. A gate that subtracted
+    the peak from the reserve instead would report a comfortable margin on an image that has almost
+    none, which is precisely the shape the FS8 record caught (37,016 used of 37,568 available)."""
+    peaks: list[tuple[int, int]] = []
     for line in lines:
         if STACK_PEAK not in line:
             continue
-        tail = line.split(STACK_PEAK, 1)[1].split("/")[0]
-        digits = "".join(c for c in tail if c.isdigit())
-        if digits:
-            peaks.append(int(digits))
+        tail = line.split(STACK_PEAK, 1)[1]
+        used, _, rest = tail.partition("/")
+        used_digits = "".join(c for c in used if c.isdigit())
+        total_digits = "".join(c for c in rest.split("B")[0] if c.isdigit())
+        if used_digits:
+            peaks.append((int(used_digits), int(total_digits) if total_digits else STACK_RESERVE))
     return peaks
 
 
-def margin_verdict(peaks: list[int]) -> str | None:
-    """Scenario C's stack gate: the deepest reported peak must leave `deep_ride_margin_min` free."""
+def margin_verdict(peaks: list[tuple[int, int]]) -> str | None:
+    """Scenario C's stack gate: the deepest reported peak must leave `deep_ride_margin_min` free of
+    the stack the **board says it has**, not of the linker's reserve."""
     if not peaks:
         return None
-    worst = max(peaks)
-    margin = STACK_RESERVE - worst
+    worst, total = min(peaks, key=lambda p: p[1] - p[0])
+    margin = total - worst
     if margin < DEEP_RIDE_MARGIN_MIN:
-        return f"stack peak {worst} B leaves {margin} B, under the {DEEP_RIDE_MARGIN_MIN} B floor"
+        return f"stack peak {worst} B of {total} B leaves {margin} B, under the {DEEP_RIDE_MARGIN_MIN} B floor"
     return None
 
 
