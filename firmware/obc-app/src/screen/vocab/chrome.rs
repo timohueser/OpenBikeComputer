@@ -1,11 +1,12 @@
-//! The screen **chrome** — the framed page header every screen draws through, the card glyphs, and
-//! the small shared text/stroke helpers the bodies below it are assembled from.
+//! The screen **chrome** — the framed page header every screen draws through, the card glyphs, the
+//! Recalculating banner, and the small shared text/stroke helpers the bodies below it are assembled
+//! from.
 
-use embedded_graphics::prelude::Point;
+use embedded_graphics::{draw_target::DrawTarget, prelude::Point};
 use obc_render::{
     rect,
-    text::{Font, TextAlign},
-    Surface,
+    text::{text_width, Font, TextAlign},
+    Canvas, Surface,
 };
 
 use crate::screen::palette;
@@ -167,9 +168,79 @@ pub(crate) fn stroke2(cv: &mut impl Surface, a: Point, b: Point, color: u16) {
     cv.line(a + off, b + off, color);
 }
 
+// ==================== the Recalculating banner (issue #1146, P2) ====================
+//
+// The overlay chrome the freeze raises. Drawing it on the map plane would mean rendering the map —
+// the exact thing the freeze forbids — so it is painted by
+// [`App::render_overlay`](crate::App::render_overlay) instead, the cheap half that composites over
+// the still-visible frame, beside the long-press bulge. Whether it is up at all is
+// [`CoreMode`](crate::device_core::core_mode::CoreMode)'s answer; this is only how it looks.
+
+/// Banner height (px) — the map's status-chip height, so the two chrome pills read as one family.
+const BANNER_H: i32 = 36;
+/// Horizontal padding (px) around the copy, split either side — tighter than the status chip's 28,
+/// because the copy is one long word: at 240 px the longest catalogued string ("Neuberechnung...")
+/// would otherwise leave under 10 px of frame either side and read as a full-width bar.
+const BANNER_PAD_X: i32 = 20;
+/// Corner radius (px) — the shared pill radius.
+const BANNER_RADIUS: u32 = 9;
+/// Where the banner's top sits, as a fraction of frame height. A third of the way down: clear of
+/// the top-centre clock, and well above the centred rider marker the rider is looking at (the map
+/// under the banner is frozen, not gone — covering the marker would read as "lost").
+const BANNER_Y_FRAC: f32 = 0.3;
+
+/// The banner's bounding rows `[y0, y0 + rows)` in a `h`-high frame — what a partial-overlay host
+/// re-presents (the board pushes overlay rows, not whole frames).
+pub(crate) fn recalculating_banner_rows(h: f32) -> (u16, u16) {
+    let y0 = (h * BANNER_Y_FRAC) as i32;
+    let y0 = y0.clamp(0, (h as i32 - BANNER_H).max(0));
+    (y0 as u16, BANNER_H.min(h as i32).max(0) as u16)
+}
+
+/// Draw the "Recalculating..." banner: a centred parchment pill with an ink outline and the copy in
+/// ink — the calm chip idiom (the alert orange stays reserved for the No-GPS / off-route chip, which
+/// is *below* on the frozen map plane and never collides with this band).
+pub(crate) fn recalculating_banner<D, F>(target: &mut D, color_fn: &F, w: f32, h: f32, text: &str)
+where
+    D: DrawTarget,
+    F: Fn(u16) -> D::Color,
+{
+    let (w, h) = (w as i32, h as i32);
+    // [`Font::Label`], not the status chip's Body: the copy is a long word in every language
+    // ("Neuberechnung...", "Recalculando..."), and the pill must keep a margin at 240 px.
+    let font = Font::Label;
+    let (y0, _) = recalculating_banner_rows(h as f32);
+    let pw = (text_width(text, font) as i32 + BANNER_PAD_X).min(w - 8);
+    let px = (w - pw) / 2;
+    let py = y0 as i32;
+    let mut cv = Canvas::new(target, color_fn);
+    cv.round(rect(px, py, pw, BANNER_H), BANNER_RADIUS, palette::PARCHMENT);
+    cv.round_outline(rect(px, py, pw, BANNER_H), BANNER_RADIUS, palette::INK);
+    cv.text(text, Point::new(w / 2, py + 5), font, TextAlign::Center, palette::INK);
+}
+
 /// Draw a centered two-line empty state — a bold `title` over a muted `hint` — the shared
 /// "nothing to show yet" body the Route menu and Statistics draw under their header.
 pub(crate) fn empty_state(cv: &mut impl Surface, w: i32, h: i32, title: &str, hint: &str) {
     cv.text(title, Point::new(w / 2, h / 2 - 28), Font::Body, TextAlign::Center, palette::INK);
     cv.text(hint, Point::new(w / 2, h / 2 + 8), Font::Label, TextAlign::Center, palette::SUBTEXT);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The banner sits in its own band: below the top-centre clock, above the centred rider marker,
+    /// and always fully on-panel.
+    #[test]
+    fn the_recalculating_banner_band_stays_on_panel_and_clear_of_the_marker() {
+        let (y0, rows) = recalculating_banner_rows(320.0);
+        assert_eq!((y0, rows), (96, 36));
+        assert!(y0 as i32 + rows as i32 <= 320);
+        assert!((y0 + rows) < 160, "clear of the centred user marker");
+
+        let (y0, rows) = recalculating_banner_rows(20.0); // a frame shorter than the banner (the test harnesses')
+        assert_eq!(y0, 0, "clamped to the top rather than drawn off-panel");
+        assert_eq!(rows, 20);
+    }
 }

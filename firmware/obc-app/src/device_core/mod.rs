@@ -9,6 +9,8 @@
 //! - [`OperationToken`] / [`TokenSource`] — the per-domain stale-result guard.
 //! - [`Capabilities`] — what this device can actually do, recalculated from platform support,
 //!   mounted data and heavy-operation admission.
+//! - [`core_mode`] — `CoreMode`, the single owner of "what heavy work may run now, and what the
+//!   rider is looking at": two search levels, a transfer level, and the freeze's level→edge bit.
 //! - [`ExternalFacts`] — the facts that are *not* an answer to an effect, with one documented
 //!   merge rule per field.
 //!
@@ -50,6 +52,7 @@
 
 pub mod compat;
 pub(crate) mod connections;
+pub(crate) mod core_mode;
 pub mod derived;
 pub mod feeders;
 pub mod migration;
@@ -63,6 +66,7 @@ pub use derived::{
 };
 
 pub use compat::{LegacyAdapter, LegacyInputs, LegacyOwned, LegacyPending, LegacyReply, LegacyReport};
+pub use core_mode::ModeState;
 pub use pass::{PassClock, PassInputs, PassPlan};
 pub use slots::{EffectSlots, OutcomeSlots, Slot, SlotFull};
 pub use storage_info::{StorageInfoEffect, StorageInfoError, StorageInfoIntent, StorageInfoOutcome};

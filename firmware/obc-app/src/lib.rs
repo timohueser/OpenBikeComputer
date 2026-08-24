@@ -46,14 +46,12 @@ pub mod host;
 pub mod i18n;
 pub mod input;
 pub mod input_plane;
-pub mod link_gate;
 pub mod map_catalog;
 pub mod nav_profiles;
 pub mod navigator;
 pub mod next_ahead;
 pub(crate) mod placement;
 pub mod recorder;
-pub mod reroute_freeze;
 pub mod retention;
 pub mod ride;
 pub(crate) mod ride_engine;
@@ -90,7 +88,6 @@ pub use host::{DetourPreview, DrainStatus, HostCommand, HostEvent, HostMailbox, 
 pub use i18n::{t, Msg};
 pub use input::{Gesture, Gestures, DEFAULT_HOLD_MS, DEFAULT_TAP_MS};
 pub use input_plane::InputPlane;
-pub use link_gate::{GateOwner, TransferGate};
 pub use map_catalog::{
     boot_fault, choose_map, classify_map_entry, flat_boot_fault, is_superseded_upload, newest_set,
     set_retirement_keeper, MapChoice, MapEntry,

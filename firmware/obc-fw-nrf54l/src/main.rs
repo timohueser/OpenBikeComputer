@@ -800,7 +800,7 @@ async fn spawn_map_recovery_usb(
     // No ride loop, map render or route search exists on this boot path. Retain the arena guard in
     // the caller's diverging fault scope and pre-grant it, so the first post-FORMAT map upload gets
     // the same double-buffer DMA path as an ordinary mounted boot.
-    let stage = obc_app::TransferReady::prove(true, false).and_then(|ready| arena::claim_usb(ready).ok());
+    let stage = arena::claim_usb(obc_app::TransferReady::recovery_boot()).ok();
     usb::set_stage_granted(stage.is_some());
     spawner.spawn(defmt::unwrap!(spawn_usb_stack(spawner, usb_p)));
     defmt::warn!("usb: card-recovery plane active — format if needed, then upload a map and reboot");
