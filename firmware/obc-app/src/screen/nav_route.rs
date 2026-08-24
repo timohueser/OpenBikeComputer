@@ -33,10 +33,10 @@ use obc_render::{
 
 use crate::activity::NavRequest;
 use crate::input::Gesture;
-use crate::settings::Units;
 use crate::Msg;
 
 use super::vocab::chrome::{card_triangle, title_frame, wrapped, TITLE_BAR_H};
+use super::vocab::fmt::write_distance_away;
 use super::vocab::list;
 use super::vocab::rows::{draw_guarded_rows, GuardedRowsGeometry, MenuItem};
 use super::vocab::spinner::Spinner;
@@ -119,7 +119,7 @@ impl NavConfirmScreen {
         if let Some(fix) = rx.state.user_fix {
             let d_m = obc_map_scene::ground_dist_m((fix.lon, fix.lat), self.to) as u32;
             let mut away: heapless::String<20> = heapless::String::new();
-            write_away(&mut away, d_m, rx.settings.units, rx.t(Msg::NavRouteAway));
+            write_distance_away(&mut away, d_m, rx.settings.units, rx.t(Msg::NavRouteAway));
             cv.text(&away, Point::new(w / 2, name_y + 24), Font::Label, TextAlign::Center, SUBTEXT);
         }
 
@@ -129,27 +129,6 @@ impl NavConfirmScreen {
             MenuItem { label: rx.t(Msg::NavRouteCancel), guard: false },
         ];
         draw_guarded_rows(cv, &items, self.selected, rx.hold_progress, AMBER, geo);
-    }
-}
-
-/// Write the confirm's straight-line readout: `600 m away` below 1 km, else `2.3 km away` (one
-/// decimal) — the imperial twin is whole feet below a mile, else one-decimal miles (the
-/// [`write_off_route`](super::write_off_route) thresholds). `away` is the catalog's trailing word,
-/// so the phrase translates as a unit-value + suffix.
-fn write_away<const N: usize>(s: &mut heapless::String<N>, d_m: u32, units: Units, away: &str) {
-    use crate::settings::{FT_PER_M, FT_PER_MI};
-    use core::fmt::Write;
-    if units.is_imperial() {
-        let ft = (d_m as f32 * FT_PER_M) as u32;
-        if ft >= FT_PER_MI {
-            let _ = write!(s, "{:.1} mi {away}", ft as f32 / FT_PER_MI as f32);
-        } else {
-            let _ = write!(s, "{ft} ft {away}");
-        }
-    } else if d_m >= 1000 {
-        let _ = write!(s, "{:.1} km {away}", d_m as f32 / 1000.0);
-    } else {
-        let _ = write!(s, "{d_m} m {away}");
     }
 }
 
@@ -318,33 +297,5 @@ impl NavFailScreen {
         };
         let y = wrapped(cv, msg, w / 2, TITLE_BAR_H + 84, w - 32, Font::Body, INK);
         wrapped(cv, hint, w / 2, y + 12, w - 32, Font::Label, SUBTEXT);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn away(d_m: u32, units: Units) -> heapless::String<20> {
-        let mut s = heapless::String::new();
-        write_away(&mut s, d_m, units, "away");
-        s
-    }
-
-    /// Metric: whole metres below 1 km, one-decimal km from there (#685 §3's exact examples).
-    #[test]
-    fn away_metric_switches_at_one_km() {
-        assert_eq!(away(600, Units::Metric).as_str(), "600 m away");
-        assert_eq!(away(999, Units::Metric).as_str(), "999 m away");
-        assert_eq!(away(1000, Units::Metric).as_str(), "1.0 km away");
-        assert_eq!(away(2300, Units::Metric).as_str(), "2.3 km away");
-    }
-
-    /// Imperial twin: whole feet below a mile, one-decimal miles above (write_off_route's
-    /// thresholds).
-    #[test]
-    fn away_imperial_switches_at_one_mile() {
-        assert_eq!(away(100, Units::Imperial).as_str(), "328 ft away");
-        assert_eq!(away(2000, Units::Imperial).as_str(), "1.2 mi away");
     }
 }

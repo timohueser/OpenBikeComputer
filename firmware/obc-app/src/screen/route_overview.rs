@@ -36,6 +36,7 @@ use obc_render::{
 
 use super::vocab::band::{ElevationBand, PeakLabel};
 use super::vocab::chrome::{empty_state, stroke2, title_frame, LIST_TOP};
+use super::vocab::fmt::{duration_hms, expiry_short, write_distance_split};
 use super::vocab::pager::ContentPager;
 use super::vocab::rows::{draw_guarded_rows, ledger_row, GuardedRowsGeometry, MenuItem};
 use crate::activity::Activity;
@@ -236,7 +237,7 @@ impl RouteOverviewScreen {
             // Metres below 1 km (`600 m`, #685 §4 — `0.6 km` undersells a short POI route), the
             // one-decimal km above; imperial twin: whole feet below a mile, one-decimal miles.
             let mut dist: heapless::String<8> = heapless::String::new();
-            let dist_unit = write_computed_distance(&mut dist, total_m, units);
+            let dist_unit = write_distance_split(&mut dist, total_m, units);
             let rows_top = LIST_TOP + 34;
             ledger_row(cv, w, rows_top, rx.t(Msg::RouteOverviewDistance), &dist, dist_unit, None);
             // EST TIME (EL9, #1077) — the one figure a length-only page was missing. A computed
@@ -395,28 +396,10 @@ const EXPIRY_SHOW_WINDOW: u32 = 5 * DAY_SECS;
 /// ([`expires_at`](RouteRetentionMeta::expires_at) is `Some` — retention ≠ `Never`
 /// **and** `last_used != 0`) falling **within [`EXPIRY_SHOW_WINDOW`]** (past-due included). A `Never`
 /// route, an unstarted clock (`last_used == 0`), and a deadline more than 5 days out all read `None`.
-/// The value itself is [`fmt_remaining`]'s locked format ("in N d" / "in N h" / "soon").
+/// The value itself is [`expiry_short`]'s locked format ("in N d" / "in N h" / "soon").
 fn expiry_value(meta: RouteRetentionMeta, now_utc: u32) -> Option<heapless::String<12>> {
     let deadline = meta.expires_at()?; // Never, or clock never started → absent
-    (deadline.saturating_sub(now_utc) <= EXPIRY_SHOW_WINDOW).then(|| fmt_remaining(deadline, now_utc))
-}
-
-/// The time left until `deadline` from `now_utc`, in the Route overview's locked format (epic #638
-/// S5): `≥ 2 days → "in N d"`, `≥ 1 hour (and < 48 h) → "in N h"`, anything sooner — the sub-hour
-/// tail or an already-past deadline the hourly sweep hasn't collected yet — `"soon"`. Whole units
-/// (floor); day-grain expiry doesn't warrant minutes, and the sub-hour → "soon" fold avoids an
-/// "in 0 h" readout in the final hour. Not localised — the format is pinned by the issue.
-fn fmt_remaining(deadline: u32, now_utc: u32) -> heapless::String<12> {
-    let mut s = heapless::String::new();
-    let secs = deadline.saturating_sub(now_utc);
-    if secs >= 2 * DAY_SECS {
-        let _ = write!(s, "in {} d", secs / DAY_SECS);
-    } else if secs >= 3600 {
-        let _ = write!(s, "in {} h", secs / 3600);
-    } else {
-        let _ = s.push_str("soon");
-    }
-    s
+    (deadline.saturating_sub(now_utc) <= EXPIRY_SHOW_WINDOW).then(|| expiry_short(deadline, now_utc))
 }
 
 /// The route's length in metres for the time model: the **opened** route's exact total once it has
@@ -439,7 +422,7 @@ fn route_ascent_m(rx: &Render, summary: &RouteSummary) -> u32 {
 /// RIDE tile and the ride ledger use. Not localised and not unit-dependent — hours and minutes are
 /// hours and minutes in every catalog language and both unit systems.
 fn est_time_value(total_m: u32, ascent_m: u32, bike_profile_idx: u8) -> heapless::String<8> {
-    crate::stat_fields::fmt_hms(obc_route::route_time_s(total_m, ascent_m, bike_profile_idx) as f32)
+    duration_hms(obc_route::route_time_s(total_m, ascent_m, bike_profile_idx) as f32)
 }
 
 /// The "BIKE TYPE" ledger row: the profile name the computed route was planned under (routing-v2
@@ -450,29 +433,6 @@ fn draw_profile_label(cv: &mut impl Surface, w: i32, rx: &Render, y: i32) {
     let mut name: heapless::String<20> = heapless::String::new();
     rx.nav_profiles.write_label(rx.settings.bike_profile_idx, &mut name);
     ledger_row(cv, w, y, rx.t(Msg::RouteOverviewBikeType), &name, "", None);
-}
-
-/// Write the computed page's DISTANCE value into `s`, returning its unit suffix: whole metres
-/// below 1 km (#685 §4), one-decimal km above — imperial twin: whole feet below a mile,
-/// one-decimal miles (the same thresholds as every other compacting readout).
-fn write_computed_distance(s: &mut heapless::String<8>, total_m: u32, units: crate::settings::Units) -> &'static str {
-    use crate::settings::{FT_PER_M, FT_PER_MI};
-    if units.is_imperial() {
-        let ft = (total_m as f32 * FT_PER_M) as u32;
-        if ft < FT_PER_MI {
-            let _ = write!(s, "{ft}");
-            "ft"
-        } else {
-            let _ = write!(s, "{:.1}", units.dist(total_m as f32 / 1000.0));
-            "mi"
-        }
-    } else if total_m < 1000 {
-        let _ = write!(s, "{total_m}");
-        "m"
-    } else {
-        let _ = write!(s, "{:.1}", total_m as f32 / 1000.0);
-        "km"
-    }
 }
 
 /// The track-shape preview's box size (#685 §4): ≈212×90 px, horizontally centred, vertically
@@ -692,26 +652,6 @@ mod tests {
         assert_eq!(est_time_value(44_000, 1_000, 99), est_time_value(44_000, 1_000, 0));
         // Degenerate inputs stay a readable zero rather than a placeholder.
         assert_eq!(est_time_value(0, 0, 0).as_str(), "0:00");
-    }
-
-    /// The locked remaining-time format (epic #638 S5), at every boundary: the day/hour cutover at
-    /// exactly 48 h, an exact 2-day span, the hour band, the sub-hour fold to "soon", and past-due.
-    #[test]
-    fn fmt_remaining_boundaries() {
-        let now = 1_000_000;
-        let at = |secs: u32| fmt_remaining(now + secs, now);
-        // ≥ 2 days → whole days. 48 h *exactly* is the first day-grain tick (not "in 47 h").
-        assert_eq!(at(2 * DAY_SECS).as_str(), "in 2 d", "48 h exactly reads as 2 days");
-        assert_eq!(at(12 * DAY_SECS).as_str(), "in 12 d");
-        assert_eq!(at(2 * DAY_SECS - 1).as_str(), "in 47 h", "one second under 48 h is still the hour band");
-        // < 48 h → whole hours, down to the last full hour.
-        assert_eq!(at(5 * 3600).as_str(), "in 5 h");
-        assert_eq!(at(3600).as_str(), "in 1 h", "exactly one hour left");
-        // The final sub-hour tail folds to "soon" rather than "in 0 h".
-        assert_eq!(at(3599).as_str(), "soon", "under an hour → soon, never \"in 0 h\"");
-        // Past-due (the sweep hasn't collected it yet): now == deadline, and now > deadline.
-        assert_eq!(fmt_remaining(now, now).as_str(), "soon", "exactly due → soon");
-        assert_eq!(fmt_remaining(now - DAY_SECS, now).as_str(), "soon", "past-due → soon (saturating)");
     }
 
     /// The Auto-delete row's ≤ 5-day presence gate (owner review): absent for `Never`, absent for an

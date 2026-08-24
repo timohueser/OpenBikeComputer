@@ -157,7 +157,7 @@ pub(crate) fn waypoint_panel(cv: &mut impl Surface, area: Rectangle, cx: &crate:
         let font = if i == 0 { Font::Body } else { Font::Label };
         let ry = y + HEAD + i as i32 * stride;
         // Distance-to-go, right-aligned at the far edge; the name is truncated clear of it.
-        let dist = crate::stat_fields::fmt_dist_short(wp.dist_along_m.saturating_sub(cx.activity.progress_m), cx.units);
+        let dist = super::fmt::distance_short(wp.dist_along_m.saturating_sub(cx.activity.progress_m), cx.units);
         cv.text(&dist, Point::new(x + w - 10, ry), font, TextAlign::Right, INK);
         let budget = w - 20 - text_width(&dist, font) as i32 - 8;
         let mut buf: heapless::String<24> = heapless::String::new();

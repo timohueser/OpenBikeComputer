@@ -18,6 +18,7 @@ use obc_render::{
 
 use crate::input::Gesture;
 use crate::screen::vocab::chrome::{title_frame, LIST_TOP};
+use crate::screen::vocab::fmt::utc_offset;
 use crate::screen::vocab::rows::{row_cursor, row_rect};
 use crate::screen::{palette, Ctx, Render, Transition};
 use crate::settings::{Settings, UTC_OFFSET_MAX, UTC_OFFSET_MIN, UTC_OFFSET_STEP};
@@ -177,7 +178,7 @@ impl DateTimeScreen {
                         cw,
                         ch,
                     );
-                    super::stepper_field(cv, cell, &fmt_offset(s.utc_offset_min), editing == Some(0), Font::Label);
+                    super::stepper_field(cv, cell, &utc_offset(s.utc_offset_min), editing == Some(0), Font::Label);
                 }
             }
             // A hairline separator with a wider gap (so it clears a selected row's amber bar) groups
@@ -202,15 +203,6 @@ fn info_row(cv: &mut impl Surface, area: Rectangle, label: &str, value: &str) {
     let x = area.top_left.x + 10;
     cv.text(label, Point::new(x, area.top_left.y + 2), Font::Label, TextAlign::Left, palette::SUBTEXT);
     cv.text(value, Point::new(x, area.top_left.y + 24), Font::Label, TextAlign::Left, palette::INK);
-}
-
-/// Format a UTC offset as `±HH:MM`.
-fn fmt_offset(min: i16) -> heapless::String<8> {
-    let mut s = heapless::String::new();
-    let sign = if min < 0 { '-' } else { '+' };
-    let a = min.unsigned_abs();
-    let _ = write!(s, "{sign}{:02}:{:02}", a / 60, a % 60);
-    s
 }
 
 #[cfg(test)]

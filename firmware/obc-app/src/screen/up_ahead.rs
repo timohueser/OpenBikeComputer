@@ -46,8 +46,6 @@
 //! mode, advertised by the global hold-hint bulge. `Press` applies (and re-keys the snapshot),
 //! `Back` cancels. The list always **opens on Everything**: predictable beats sticky.
 
-use core::fmt::Write as _;
-
 use embedded_graphics::prelude::Point;
 use obc_formats::obcm::{poi_category_of, poi_label_of};
 use obc_reader::{CorridorPoi, PoiCategory, PoiCategorySet};
@@ -63,6 +61,7 @@ use crate::settings::{Units, UpAheadSource};
 use crate::Msg;
 
 use super::vocab::chrome::empty_state;
+use super::vocab::fmt::{self, elevation_short, write_distance_coarse};
 use super::vocab::list::{self, ListGeometry, Separators};
 use super::vocab::tiles::fit_caption;
 use super::{palette, poi_menu::draw_category_icon, Ctx, Render, Screen, Transition};
@@ -273,22 +272,6 @@ pub(crate) fn figures(dist_along_m: u32, progress_m: u32, route_total_m: u32, pr
     Figures { passed, distance_m, climb_m }
 }
 
-/// The remaining-ascent readout, compact (`250m`) — the row's third column shares line 2 with the
-/// off-route hint, so the unit rides tight against the number.
-fn write_climb(value_m: Option<u32>, units: Units) -> heapless::String<12> {
-    let mut s = heapless::String::new();
-    match value_m {
-        Some(m) => {
-            let shown = (units.elev(m as f32) + 0.5) as u32;
-            let _ = write!(s, "{shown}{}", units.elev_label());
-        }
-        None => {
-            let _ = s.push_str("--");
-        }
-    }
-    s
-}
-
 /// The off-route side hint for `offset_m`, or `None` inside [`OFF_ROUTE_HINT_M`]. `true` = the
 /// entry sits to the **right** of the direction of travel.
 fn side_hint(offset_m: i32, units: Units) -> Option<(bool, heapless::String<12>)> {
@@ -296,7 +279,7 @@ fn side_hint(offset_m: i32, units: Units) -> Option<(bool, heapless::String<12>)
         return None;
     }
     let mut s = heapless::String::new();
-    super::write_off_route(&mut s, "", offset_m.unsigned_abs(), units);
+    write_distance_coarse(&mut s, "", offset_m.unsigned_abs(), units);
     Some((offset_m > 0, s))
 }
 
@@ -624,7 +607,7 @@ fn draw_row(cv: &mut impl Surface, entry: Entry, row: &list::RowCtx, values: Fig
     // Line 2 — distance, climb, side hint. The three compete for a 216 px line on the 240 px panel,
     // so the climb column slides left of the hint block rather than colliding with it.
     let sy = y + 36;
-    let dist = crate::stat_fields::fmt_dist_short(values.distance_m, units);
+    let dist = fmt::distance_short(values.distance_m, units);
     cv.text(&dist, Point::new(x + LINE2_INSET, sy), Font::Label, TextAlign::Left, stat_color);
     let dist_end = x + LINE2_INSET + text_width(&dist, Font::Label) as i32;
 
@@ -641,7 +624,7 @@ fn draw_row(cv: &mut impl Surface, entry: Entry, row: &list::RowCtx, values: Fig
         None => right,
     };
 
-    let climb = write_climb(values.climb_m, units);
+    let climb = elevation_short(values.climb_m, units);
     let climb_w = 16 + text_width(&climb, Font::Label) as i32;
     let climb_x = (x + row.area.size.width as i32 * CLIMB_COL_PCT / 100).min(hint_left - 8 - climb_w).max(dist_end + 8);
     cv.triangle(

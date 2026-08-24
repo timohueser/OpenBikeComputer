@@ -24,6 +24,7 @@ use obc_route::{Profile, RouteReader, Waypoints};
 
 use crate::activity::Activity;
 use crate::i18n::{t, Msg};
+use crate::screen::vocab::fmt;
 use crate::settings::{DateTime, Language, Units};
 use obc_ports::Fix;
 
@@ -299,31 +300,31 @@ impl StatField {
         match self {
             StatField::Speed => {
                 let v = cx.fix.and_then(|f| f.speed_mps).map(|mps| units.speed(mps * 3.6));
-                StatCell::new(cap(units.speed_label(), ""), fmt_speed(v), false)
+                StatCell::new(cap(units.speed_label(), ""), fmt::speed_figure(v), false)
             }
             StatField::AvgSpeed => {
                 let v = cx.activity.avg_kmh().map(|kmh| units.speed(kmh));
-                StatCell::new(cap(t(Msg::TileAvg, lang), units.speed_label()), fmt_speed(v), false)
+                StatCell::new(cap(t(Msg::TileAvg, lang), units.speed_label()), fmt::speed_figure(v), false)
             }
             StatField::DistDone => StatCell::new(
                 cap(units.dist_label(), t(Msg::TileDone, lang)),
-                fmt_km(units.dist(cx.activity.ridden_m / 1000.0)),
+                fmt::distance_figure(units.dist(cx.activity.ridden_m / 1000.0)),
                 false,
             ),
             StatField::DistToGo => {
                 // Route-relative: with no route loaded (a route-less ride) there's nothing "to go",
                 // so the tile reads `--` rather than a misleading 0.0.
                 let value = match cx.route {
-                    Some(r) => {
-                        fmt_km(units.dist(r.total_distance_m.saturating_sub(cx.activity.progress_m) as f32 / 1000.0))
-                    }
-                    None => dashes(),
+                    Some(r) => fmt::distance_figure(
+                        units.dist(r.total_distance_m.saturating_sub(cx.activity.progress_m) as f32 / 1000.0),
+                    ),
+                    None => fmt::dashes(),
                 };
                 StatCell::new(cap(units.dist_label(), t(Msg::TileToGo, lang)), value, false)
             }
             StatField::Climbed => StatCell::new(
                 cap(t(Msg::TileClimbed, lang), ""),
-                fmt_int(units.elev(cx.activity.climb_m()) as u32),
+                fmt::integer(units.elev(cx.activity.climb_m()) as u32),
                 true,
             ),
             StatField::ToClimb => {
@@ -332,20 +333,16 @@ impl StatField {
                 // [progress, end] — the one the Up-ahead rows and the EL9 time model also read, so
                 // TO CLIMB and TIME TO GO can never disagree about the climbing that's left.
                 let value = match (cx.route, cx.profile) {
-                    (Some(r), Some(p)) => fmt_int(units.elev(ascent_to_go_m(r, p, cx.activity) as f32) as u32),
-                    _ => dashes(),
+                    (Some(r), Some(p)) => fmt::integer(units.elev(ascent_to_go_m(r, p, cx.activity) as f32) as u32),
+                    _ => fmt::dashes(),
                 };
                 StatCell::new(cap(t(Msg::TileToClimb, lang), ""), value, true)
             }
             StatField::Grade => {
                 // Route-relative — `--` on a route-less ride (grade comes from the route profile).
                 let value = match (cx.route, cx.profile) {
-                    (Some(r), Some(p)) => {
-                        let mut s: heapless::String<8> = heapless::String::new();
-                        let _ = write!(s, "{}%", grade_at(p, r.total_distance_m, live));
-                        s
-                    }
-                    _ => dashes(),
+                    (Some(r), Some(p)) => fmt::percent(grade_at(p, r.total_distance_m, live)),
+                    _ => fmt::dashes(),
                 };
                 StatCell::new(cap(t(Msg::TileGrade, lang), ""), value, false)
             }
@@ -355,9 +352,11 @@ impl StatField {
                 // estimator has settled (`Activity::current_elevation_m`), raw barometric before
                 // that and on a terrain-less map: same tile, same presentation, no fake precision.
                 let v = cx.activity.current_elevation_m().map(|m| units.elev(m));
-                StatCell::new(cap(t(Msg::TileElev, lang), units.elev_label()), fmt_elev(v), false)
+                StatCell::new(cap(t(Msg::TileElev, lang), units.elev_label()), fmt::elevation_rounded(v), false)
             }
-            StatField::RideTime => StatCell::new(cap(t(Msg::TileRide, lang), ""), fmt_hms(cx.activity.moving_s), false),
+            StatField::RideTime => {
+                StatCell::new(cap(t(Msg::TileRide, lang), ""), fmt::duration_hms(cx.activity.moving_s), false)
+            }
             // The two EL9 time tiles (#1077). Both read one number — the gradient-aware seconds
             // still to ride — and differ only in how they present it: TIME TO GO as a duration,
             // ETA as the clock time it lands on. Route-relative, so `--` on a route-less ride
@@ -365,8 +364,8 @@ impl StatField {
             // distance-only guess is exactly the wrong answer this field exists to replace.
             StatField::TimeToGo => {
                 let value = match time_to_go_s(cx) {
-                    Some(s) => fmt_hms(s as f32),
-                    None => dashes(),
+                    Some(s) => fmt::duration_hms(s as f32),
+                    None => fmt::dashes(),
                 };
                 // The unit rides in the caption like every other tile ("h TO GO", the twin of
                 // DistToGo's "km TO GO") — a single-column tile fits 8 Label glyphs, so a
@@ -383,7 +382,7 @@ impl StatField {
                         let _ = write!(v, "{:02}:{:02}", at.hour, at.minute);
                         v
                     }
-                    None => dashes(),
+                    None => fmt::dashes(),
                 };
                 StatCell::new(cap(t(Msg::TileEta, lang), ""), value, false)
             }
@@ -404,10 +403,10 @@ impl StatField {
                     Some(wp) => {
                         let mut caption: heapless::String<24> = heapless::String::new();
                         let _ = caption.push_str(wp.name.as_str());
-                        let value = fmt_dist_short(wp.dist_along_m.saturating_sub(cx.activity.progress_m), units);
+                        let value = fmt::distance_short(wp.dist_along_m.saturating_sub(cx.activity.progress_m), units);
                         StatCell::new(caption, value, false)
                     }
-                    None => StatCell::new(cap(t(Msg::TileNextWpt, lang), ""), dashes(), false),
+                    None => StatCell::new(cap(t(Msg::TileNextWpt, lang), ""), fmt::dashes(), false),
                 };
                 cell.value_align = TextAlign::Right;
                 cell
@@ -417,7 +416,7 @@ impl StatField {
                 // caption+value shape a `StatCell` carries — the Statistics grid + Fields editor
                 // special-case `rows() > 1` and call that drawer instead). This arm exists only so
                 // `cell` stays total and no path can panic: a caption + `--`, echoing the empty state.
-                StatCell::new(cap(t(Msg::TileWaypoints, lang), ""), dashes(), false)
+                StatCell::new(cap(t(Msg::TileWaypoints, lang), ""), fmt::dashes(), false)
             }
             StatField::HeartRate => {
                 // Live bpm from the paired HR sensor, staleness-gated by `Activity` (SE2): `--` with
@@ -426,18 +425,18 @@ impl StatField {
                 // freshness on the ride clock the sample recorded on, not this render's clock (they
                 // differ in the sim during a GPX replay), so the tile doesn't spuriously blank.
                 let v = cx.activity.live_hr_display().map(|bpm| bpm as u32);
-                StatCell::new(cap(t(Msg::TileHr, lang), ""), fmt_int_opt(v), false)
+                StatCell::new(cap(t(Msg::TileHr, lang), ""), fmt::integer_opt(v), false)
             }
             StatField::Power => {
                 // Live watts from the paired power meter, same 5 s staleness gate → `--`.
                 let v = cx.activity.live_power_display().map(|w| w as u32);
-                StatCell::new(cap(t(Msg::TilePwr, lang), ""), fmt_int_opt(v), false)
+                StatCell::new(cap(t(Msg::TilePwr, lang), ""), fmt::integer_opt(v), false)
             }
             StatField::Cadence => {
                 // Live rpm, same gate. A fresh `0` (coasting) is a real reading and shows `0`; only
                 // an absent/stale value reads `--`.
                 let v = cx.activity.live_cadence_display().map(|rpm| rpm as u32);
-                StatCell::new(cap(t(Msg::TileRpm, lang), ""), fmt_int_opt(v), false)
+                StatCell::new(cap(t(Msg::TileRpm, lang), ""), fmt::integer_opt(v), false)
             }
             // The six `Next: <category>` tiles (epic #946, U5) share one arm — the field's own
             // `category()` is the only thing that differs. Anatomy = the next-waypoint tile's, plus
@@ -459,13 +458,13 @@ impl StatField {
                                 break;
                             }
                         }
-                        let value = fmt_dist_short(dist_along_m - cx.activity.progress_m, units);
+                        let value = fmt::distance_short(dist_along_m - cx.activity.progress_m, units);
                         StatCell::new(caption, value, false)
                     }
                     // Nothing of this kind ahead (no route, nothing cached yet, or a genuinely
                     // empty corridor): the icon still says *what*, so the caption falls back to the
                     // category's name and the value to the house `--`.
-                    None => StatCell::new(cap(self.name(lang), ""), dashes(), false),
+                    None => StatCell::new(cap(self.name(lang), ""), fmt::dashes(), false),
                 };
                 cell.value_align = TextAlign::Right;
                 cell
@@ -532,111 +531,6 @@ impl StatCell {
     fn new(caption: heapless::String<24>, value: heapless::String<8>, arrow: bool) -> Self {
         StatCell { caption, value, arrow, value_align: TextAlign::Left }
     }
-}
-
-// shared with the Statistics header readout.
-
-/// A km figure for a tile: one decimal up to 100 km, none past it, so the value stays ≤ 3 digits
-/// and fits the half-width tile.
-pub(crate) fn fmt_km(km: f32) -> heapless::String<8> {
-    let mut s = heapless::String::new();
-    let _ = if km >= 100.0 { write!(s, "{km:.0}") } else { write!(s, "{km:.1}") };
-    s
-}
-
-/// A compact **whole-distance** readout in the units system — the shared string for the Map
-/// waypoint chip's distance-to-go and (later in epic #523) the waypoint stat fields. Metric: `NNNm`
-/// below 1 km, `N.Nkm` to one decimal below 100 km, whole `NNNkm` above. Imperial: `NNNft` below
-/// 1000 ft, `N.Nmi` to one decimal below 100 mi, whole `NNNmi` above. Rounds to the readout's own
-/// grain (nearest tenth / whole), the same integer style as [`write_off_route`](crate::screen)'s
-/// warning-chip readout — which stays as-is, being a different (feet-to-a-full-mile) format.
-pub(crate) fn fmt_dist_short(d_m: u32, units: Units) -> heapless::String<8> {
-    use crate::settings::{FT_PER_M, FT_PER_MI};
-    let mut s = heapless::String::new();
-    if units.is_imperial() {
-        let ft = (d_m as f32 * FT_PER_M) as u32;
-        if ft < 1000 {
-            let _ = write!(s, "{ft}ft");
-        } else if ft < 100 * FT_PER_MI {
-            // One decimal mile, rounded to the nearest tenth.
-            let tenths = (ft * 10 + FT_PER_MI / 2) / FT_PER_MI;
-            let _ = write!(s, "{}.{}mi", tenths / 10, tenths % 10);
-        } else {
-            let _ = write!(s, "{}mi", (ft + FT_PER_MI / 2) / FT_PER_MI);
-        }
-    } else if d_m < 1000 {
-        let _ = write!(s, "{d_m}m");
-    } else if d_m < 100_000 {
-        // One decimal km, rounded to the nearest tenth (100 m).
-        let tenths = (d_m + 50) / 100;
-        let _ = write!(s, "{}.{}km", tenths / 10, tenths % 10);
-    } else {
-        let _ = write!(s, "{}km", (d_m + 500) / 1000);
-    }
-    s
-}
-
-/// A speed to one decimal, or `--` when unknown (no fix / no moving time yet).
-fn fmt_speed(v: Option<f32>) -> heapless::String<8> {
-    let mut s = heapless::String::new();
-    match v {
-        Some(v) => {
-            let _ = write!(s, "{v:.1}");
-        }
-        None => {
-            let _ = s.push_str("--");
-        }
-    }
-    s
-}
-
-/// The `--` placeholder a route-relative tile shows when no route is loaded (a route-less ride) —
-/// the same "no data" glyph the live speed/elevation tiles use for an absent reading.
-fn dashes() -> heapless::String<8> {
-    let mut s = heapless::String::new();
-    let _ = s.push_str("--");
-    s
-}
-
-/// An integer figure (climb) as plain digits.
-fn fmt_int(m: u32) -> heapless::String<8> {
-    let mut s = heapless::String::new();
-    let _ = write!(s, "{m}");
-    s
-}
-
-/// A raw-integer live-sensor figure (bpm / watts / rpm) as plain digits, or `--` when the reading
-/// is absent or stale — the "no data" glyph the live speed/elevation tiles share.
-fn fmt_int_opt(v: Option<u32>) -> heapless::String<8> {
-    match v {
-        Some(v) => fmt_int(v),
-        None => dashes(),
-    }
-}
-
-/// A live-elevation figure: rounded to a whole unit (signed, so a sub-sea-level reading shows a
-/// `-` rather than wrapping), or `--` when there's no altimeter sample yet. Rounds
-/// half away from zero without `libm` (the codebase keeps elevation maths off the math lib).
-fn fmt_elev(v: Option<f32>) -> heapless::String<8> {
-    let mut s = heapless::String::new();
-    match v {
-        Some(v) => {
-            let rounded = (v + if v >= 0.0 { 0.5 } else { -0.5 }) as i32;
-            let _ = write!(s, "{rounded}");
-        }
-        None => {
-            let _ = s.push_str("--");
-        }
-    }
-    s
-}
-
-/// A duration in seconds as `H:MM` (moving time) — hours uncapped, minutes zero-padded.
-pub(crate) fn fmt_hms(secs: f32) -> heapless::String<8> {
-    let total_min = (secs as u32) / 60;
-    let mut s = heapless::String::new();
-    let _ = write!(s, "{}:{:02}", total_min / 60, total_min % 60);
-    s
 }
 
 /// Glue two caption fragments into a tile caption (e.g. `"AVG "` + `Units::speed_label()`),
@@ -920,7 +814,7 @@ mod tests {
             assert_eq!(route.total_ascent_m, 300, "the fixture climbs 300 m");
 
             let secs = obc_route::route_time_s(route.total_distance_m, route.total_ascent_m, 0);
-            assert_eq!(StatField::TimeToGo.cell(&cx).value.as_str(), fmt_hms(secs as f32).as_str());
+            assert_eq!(StatField::TimeToGo.cell(&cx).value.as_str(), fmt::duration_hms(secs as f32).as_str());
             // ETA = 14:00 + the estimate rounded to the nearest minute.
             let mins = (secs + 30) / 60;
             let mut want: heapless::String<8> = heapless::String::new();
@@ -1120,34 +1014,6 @@ mod tests {
         let l = list(&[]);
         assert_eq!(page_count(&l), 1);
         assert!(page_fields(&l, 0).is_empty());
-    }
-
-    /// `fmt_dist_short` metric: metres below 1 km, one decimal km up to 100 km, whole km above —
-    /// pinned across the 1 km and 100 km crossovers.
-    #[test]
-    fn fmt_dist_short_metric_crossovers() {
-        assert_eq!(fmt_dist_short(0, Units::Metric).as_str(), "0m");
-        assert_eq!(fmt_dist_short(487, Units::Metric).as_str(), "487m");
-        assert_eq!(fmt_dist_short(999, Units::Metric).as_str(), "999m", "just under 1 km stays metres");
-        assert_eq!(fmt_dist_short(1000, Units::Metric).as_str(), "1.0km", "1 km crosses to one-decimal km");
-        assert_eq!(fmt_dist_short(12_400, Units::Metric).as_str(), "12.4km");
-        assert_eq!(fmt_dist_short(99_900, Units::Metric).as_str(), "99.9km", "just under 100 km keeps a decimal");
-        assert_eq!(fmt_dist_short(100_000, Units::Metric).as_str(), "100km", "100 km crosses to whole km");
-        assert_eq!(fmt_dist_short(153_000, Units::Metric).as_str(), "153km");
-    }
-
-    /// `fmt_dist_short` imperial: feet below 1000 ft, one decimal miles up to 100 mi, whole miles
-    /// above — pinned across the ft→mi and 100 mi crossovers.
-    #[test]
-    fn fmt_dist_short_imperial_crossovers() {
-        assert_eq!(fmt_dist_short(0, Units::Imperial).as_str(), "0ft");
-        assert_eq!(fmt_dist_short(300, Units::Imperial).as_str(), "984ft", "300 m ≈ 984 ft stays feet");
-        // 1000 ft ≈ 304.8 m — the feet→miles crossover; 305 m ≈ 1000 ft reads a fractional mile.
-        assert_eq!(fmt_dist_short(305, Units::Imperial).as_str(), "0.2mi", "past 1000 ft crosses to decimal miles");
-        assert_eq!(fmt_dist_short(15_933, Units::Imperial).as_str(), "9.9mi");
-        // 100 mi = 528000 ft ≈ 160934 m — the decimal→whole-miles crossover.
-        assert_eq!(fmt_dist_short(160_000, Units::Imperial).as_str(), "99.4mi", "just under 100 mi keeps a decimal");
-        assert_eq!(fmt_dist_short(200_000, Units::Imperial).as_str(), "124mi", "well past 100 mi is whole miles");
     }
 
     /// The next-waypoint tile ahead of the rider: caption = the waypoint's name, value = its
@@ -1407,7 +1273,7 @@ mod tests {
         assert_eq!((cell.caption.as_str(), cell.value.as_str()), ("Water", "--"), "a passed cache line reads --");
     }
 
-    /// The distance is the shared `fmt_dist_short` readout, so the tile re-scales with the unit
+    /// The distance is the shared `fmt::distance_short` readout, so the tile re-scales with the unit
     /// system exactly like the next-waypoint tile beside it.
     #[test]
     fn next_category_tile_follows_the_unit_system() {

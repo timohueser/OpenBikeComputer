@@ -32,6 +32,7 @@ use crate::Msg;
 use obc_ports::Fix;
 
 use super::vocab::chrome::{empty_state, stroke2};
+use super::vocab::fmt::write_distance_coarse;
 use super::vocab::list::{self, ListGeometry, Separators};
 use super::{palette, Ctx, PoiDetailScreen, Render, Screen, Transition};
 
@@ -243,7 +244,7 @@ fn draw_poi_row(
     // Line 2 — bearing arrow + distance, secondary (smaller, muted), stacked under the name.
     let line2_top = name_top + Font::Body.cap_height() as i32 + 4;
     let mut dist: heapless::String<12> = heapless::String::new();
-    super::write_off_route(&mut dist, "", poi.distance_m, units);
+    write_distance_coarse(&mut dist, "", poi.distance_m, units);
     let mut text_x = x;
     // Arrow at the left of line 2 (only when a heading reference exists — else hidden), distance
     // just to its right.

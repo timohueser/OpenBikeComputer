@@ -33,6 +33,7 @@ use crate::Msg;
 
 use super::vocab::band::ElevationBand;
 use super::vocab::chrome::title_frame;
+use super::vocab::fmt::write_distance_coarse;
 use super::vocab::tiles::{category_tile, tile, waypoint_panel};
 use super::{palette, ClimbScreen, Ctx, MapScreen, Render, Screen, ScreenTick, Transition};
 
@@ -285,7 +286,7 @@ impl StatisticsScreen {
         if rx.no_fix {
             let _ = readout.push_str(rx.t(Msg::StatsNoGps));
         } else if off {
-            super::write_off_route(&mut readout, rx.t(Msg::StatsOff), rx.activity.dist_to_route_m, units);
+            write_distance_coarse(&mut readout, rx.t(Msg::StatsOff), rx.activity.dist_to_route_m, units);
         } else {
             let _ = write!(readout, "{}{}%", rx.t(Msg::StatsGrade), stat_fields::grade_at(profile, total, cursor_frac));
         }

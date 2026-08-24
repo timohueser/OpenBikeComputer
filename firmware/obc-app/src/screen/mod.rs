@@ -12,7 +12,6 @@
 //! `screens!` table and the ride-session entry points. The drawing vocabulary every screen composes
 //! its page from lives one module per concept under [`vocab`].
 
-use core::fmt::Write;
 use core::ops::{Deref, DerefMut};
 
 use embedded_graphics::{draw_target::DrawTarget, primitives::Rectangle};
@@ -28,7 +27,7 @@ use crate::breadcrumb::Breadcrumb;
 use crate::input::Gesture;
 use crate::ride::RideSummary;
 use crate::route::RouteSummary;
-use crate::settings::{DateTime, Settings, Units};
+use crate::settings::{DateTime, Settings};
 
 mod climb;
 mod detour;
@@ -1189,26 +1188,6 @@ pub(crate) fn riding_common(g: Gesture, cx: &mut Ctx) -> Transition {
         }
         Gesture::BackHold => Transition::Push(Screen::RideMenu(RideMenuScreen::new())),
         _ => Transition::None,
-    }
-}
-
-/// Append a cross-track distance after `prefix`, compacted to a whole large unit past the cross-
-/// over so the readout stays within the panel width. Metric: `NNNm` below 1 km, `NNkm` above
-/// (rounded). Imperial: `NNNft` below a mile, `NNmi` above. Shared by the Statistics header readout
-/// and the Map's off-route pill.
-pub(crate) fn write_off_route<const N: usize>(s: &mut heapless::String<N>, prefix: &str, d_m: u32, units: Units) {
-    use crate::settings::{FT_PER_M, FT_PER_MI};
-    if units.is_imperial() {
-        let ft = (d_m as f32 * FT_PER_M) as u32;
-        if ft >= FT_PER_MI {
-            let _ = write!(s, "{prefix}{}mi", (ft + FT_PER_MI / 2) / FT_PER_MI);
-        } else {
-            let _ = write!(s, "{prefix}{ft}ft");
-        }
-    } else if d_m >= 1000 {
-        let _ = write!(s, "{prefix}{}km", (d_m + 500) / 1000);
-    } else {
-        let _ = write!(s, "{prefix}{d_m}m");
     }
 }
 

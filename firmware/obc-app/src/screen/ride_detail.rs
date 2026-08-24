@@ -42,12 +42,12 @@ use obc_render::{
 
 use super::vocab::band::{ElevationBand, PeakLabel};
 use super::vocab::chrome::{empty_state, title_frame, LIST_TOP};
+use super::vocab::fmt::{date_iso, duration_hms};
 use super::vocab::pager::ContentPager;
 use super::vocab::rows::{draw_guarded_rows, ledger_row, GuardedRowsGeometry, MenuItem};
 use crate::activity::Activity;
 use crate::input::Gesture;
 use crate::screen::ScreenTick;
-use crate::stat_fields::fmt_hms;
 use crate::Msg;
 
 use super::{palette, Ctx, Render, Transition};
@@ -155,7 +155,7 @@ impl RideDetailScreen {
         // date helper plus the wall clock's `HH:MM` shape, no new formats.
         let d = crate::settings::DateTime::from_unix(ride.start_time);
         let mut when: heapless::String<20> = heapless::String::new();
-        let _ = write!(when, "{} · {:02}:{:02}", super::rides::fmt_date(ride.start_time), d.hour, d.minute);
+        let _ = write!(when, "{} · {:02}:{:02}", date_iso(ride.start_time), d.hour, d.minute);
         cv.text(&when, Point::new(14, LIST_TOP + 28), Font::Label, TextAlign::Left, SUBTEXT);
 
         // The content-paired media band (owner review round 3): page A the recorded track's
@@ -195,7 +195,7 @@ impl RideDetailScreen {
         let _ = write!(dist, "{:.1}", units.dist(ride.distance_m as f32 / 1000.0));
         let dist_unit = if units.is_imperial() { "mi" } else { "km" };
 
-        let time = fmt_hms(ride.moving_time_s as f32);
+        let time = duration_hms(ride.moving_time_s as f32);
 
         let mut avg: heapless::String<8> = heapless::String::new();
         if ride.moving_time_s > 0 {
