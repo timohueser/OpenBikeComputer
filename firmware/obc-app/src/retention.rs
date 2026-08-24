@@ -885,7 +885,7 @@ impl RetentionMachine {
     ///   live drain recheck is the primary guard; this closes the window belt-and-braces);
     /// - it advances `last_active_stamped` **only once the stamp is actually queued**, so a full
     ///   queue can never drop the activation stamp and then suppress the retry — a later tick re-tries.
-    fn note_active_route(&mut self, active_id: Option<crate::CatalogObjectId>) {
+    pub(crate) fn note_active_route(&mut self, active_id: Option<crate::CatalogObjectId>) {
         match active_id {
             Some(id) => {
                 // Invariant 3: an activated route must never be deleted by an earlier sweep decision.
