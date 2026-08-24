@@ -3420,17 +3420,21 @@ impl App {
         inputs: crate::device_core::derived::DerivedInputs,
         targets: crate::device_core::derived::DerivedTargets,
     ) {
+        // "The key the need currently carries" is the *need's* key, not the subject's — the two
+        // differ, and only this one is right. A nav preview is wanted only while an overview is
+        // open, so an answer that lands after the rider closed it is about a question nobody is
+        // asking any more; keying on the active route alone would accept it and mark the level
+        // answered on a pass that never wanted it.
+        let needs = self.derived_needs();
         if let Some(input) = inputs.ride_track {
-            let current = self.catalogs.ride_track_key(self.activity.viewed_ride);
-            let profile = self.catalogs.accept_ride_profile(current, input, None);
-            let preview = self.catalogs.accept_ride_preview(current, input, targets.ride_preview);
+            let profile = self.catalogs.accept_ride_profile(needs.ride_track, input, None);
+            let preview = self.catalogs.accept_ride_preview(needs.ride_track, input, targets.ride_preview);
             if profile || preview {
                 self.ui.map_dirty = true;
             }
         }
         if let Some(input) = inputs.nav_preview {
-            let current = self.catalogs.nav_preview_key(self.activity.active_route);
-            if self.catalogs.accept_nav_preview(current, input, targets.nav_preview) {
+            if self.catalogs.accept_nav_preview(needs.nav_preview, input, targets.nav_preview) {
                 self.ui.map_dirty = true;
             }
         }
@@ -6943,6 +6947,27 @@ mod tests {
 
         app.finish_ride_profile_fill(true);
         assert!(app.derived_needs().ride_track.is_none(), "the completed fill answers the new key");
+    }
+
+    /// A need is not its subject: closing the Route overview ends the nav-preview level even though
+    /// the route stays active, so an answer that arrives afterwards is about a question nobody is
+    /// asking and must not mark the level answered on a later entry.
+    #[test]
+    fn an_answer_that_lands_after_the_overview_closed_is_refused() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_routes_with_ids(&[summary("Col")], &[10]);
+        app.activity.active_route = Some(0);
+        let overview = || Screen::RouteOverview(crate::screen::RouteOverviewScreen::new(0, None));
+        let _ = app.ui.stack.push(overview());
+        let key = app.derived_needs().nav_preview.expect("an open overview wants its shape");
+
+        app.ui.stack.pop(); // the rider leaves while the read is out
+        assert!(app.derived_needs().nav_preview.is_none(), "nothing is asking any more");
+        let late = DerivedTargets { nav_preview: &[(5, 5)], ..DerivedTargets::NONE };
+        app.apply_derived(DerivedInputs::nav_preview(DerivedInput::filled(key)), late);
+
+        let _ = app.ui.stack.push(overview()); // …and comes back
+        assert_eq!(app.derived_needs().nav_preview, Some(key), "the level is up again, not silently answered");
     }
 
     /// The nav-preview twin of the staleness rule, over the one thing identity cannot catch: an
