@@ -442,10 +442,10 @@ pub(crate) fn step_zoom(mut zoom: f32, steps: i32, min: f32, max: f32) -> f32 {
     zoom.clamp(min, max)
 }
 
-/// Capacity of [`handle_input`](App::handle_input)'s per-frame gesture buffer. One frame yields at
-/// most one gesture per raw event (the input queue is bounded — `ButtonInput`'s is 8) plus the
-/// single per-frame long-press, so this never overflows.
-const GESTURE_BUF: usize = 16;
+/// Capacity of one frame's gesture buffer ([`App::handle_input`], [`App::recognize`]). One frame
+/// yields at most one gesture per raw event (the input queue is bounded — `ButtonInput`'s is 8)
+/// plus the single per-frame long-press, so this never overflows.
+pub const GESTURE_BUF: usize = 16;
 
 /// The whole device application, ready to run a frame.
 ///
@@ -2695,19 +2695,45 @@ impl App {
         self.ui.input.recognize(clock, input, |g| {
             let _ = pending.push(g);
         });
-        // A gesture that changes the stack cancels any hold charging at that moment
-        // (`apply_gesture` handles the recogniser). A `Hold`/`BackHold` *already recognised into
-        // this batch* behind such a transition escaped that cancel — it was aimed at the old top,
-        // so drop it here rather than deliver it to the screen that replaced it (issue #480).
+        self.apply_gesture_batch(&pending);
+        // A single-loop host has no second recognizer to cancel, so it consumes the latch the batch
+        // may have set rather than leaving it for a plane that does not exist.
+        let _ = self.take_hold_cancel();
+        self.advance_animations(clock);
+    }
+
+    /// Recognise this frame's raw input into gestures **without applying them** — the recognition
+    /// half of [`handle_input`](App::handle_input), for a single-loop host that drives
+    /// [`run_pass`](App::run_pass) and hands the batch in as
+    /// [`PassInputs::gestures`](crate::device_core::PassInputs).
+    ///
+    /// The clock is the recognizer's alone: the map plane's own `now_ms` is the pass's to set, at
+    /// its input stage, from the same frame's clock.
+    pub fn recognize(&mut self, clock: InputClock, input: &mut dyn InputSource) -> heapless::Vec<Gesture, GESTURE_BUF> {
+        let mut pending: heapless::Vec<Gesture, GESTURE_BUF> = heapless::Vec::new();
+        self.ui.input.recognize(clock, input, |g| {
+            let _ = pending.push(g);
+        });
+        pending
+    }
+
+    /// Apply one frame's recognised gestures **in order**, dropping a `Hold`/`BackHold` that was
+    /// already recognised into the batch behind a gesture that changed the screen stack.
+    ///
+    /// That drop is issue #480: the transition cancels any hold still charging on the recognizer,
+    /// but a completed hold sitting in this batch escaped it — it was aimed at the old top (a
+    /// popup's "Save & new"), and completing it onto the new one can be destructive (the Route
+    /// menu's hold-to-delete footer). The board applies the same rule around its own gesture channel
+    /// because it must also cancel its second input plane; this is the one place a host with a
+    /// single plane needs.
+    pub(crate) fn apply_gesture_batch(&mut self, gestures: &[Gesture]) {
         let mut cancelled = false;
-        for g in pending {
+        for &g in gestures {
             if cancelled && matches!(g, Gesture::Hold | Gesture::BackHold) {
                 continue;
             }
-            self.apply_gesture(g);
-            cancelled |= self.take_hold_cancel();
+            cancelled |= self.apply_gesture_reporting_stack_change(g);
         }
-        self.advance_animations(clock);
     }
 
     /// Drain the pending hold-cancel edge (see `hold_cancel_pending`): `true` when a gesture
@@ -2726,6 +2752,13 @@ impl App {
     /// lands a frame after the overlay confirmed the press. Uses the map plane's clock
     /// ([`now_ms`](App::now_ms)) for the [`Ctx`](screen::Ctx).
     pub fn apply_gesture(&mut self, g: Gesture) {
+        let _ = self.apply_gesture_reporting_stack_change(g);
+    }
+
+    /// [`apply_gesture`](App::apply_gesture), reporting whether the transition **changed the screen
+    /// stack** — the fact [`apply_gesture_batch`](App::apply_gesture_batch) needs to apply #480's
+    /// drop rule without consuming the hold-cancel latch a second input plane still owns.
+    fn apply_gesture_reporting_stack_change(&mut self, g: Gesture) -> bool {
         // Every screen renders into the map plane, so an applied gesture dirties it. Conservative by
         // design (a gesture a screen ignores still costs one redraw), which keeps the idle path
         // exact: with no gesture recognized, `apply_gesture` never runs and the map stays clean.
@@ -2814,6 +2847,7 @@ impl App {
                 self.wall_clock.set(local_now, self.ui.now_ms);
             }
         }
+        stack_changed
     }
 
     /// Advance the **map plane's** clock to `clock` and poll each visible screen's timers
