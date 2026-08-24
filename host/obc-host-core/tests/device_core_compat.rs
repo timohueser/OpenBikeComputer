@@ -190,16 +190,19 @@ fn expiring_host() -> CompatHost {
 
 // ==================== the pass, end to end, over the legacy protocol ====================
 
-/// Two real passes of the real `App`, translated: what the domains decided leaves as legacy
-/// commands, and what the legacy protocol cannot express is **left in its slot** against a named row
-/// rather than dropped.
+/// The real `App` over the legacy protocol, and the exact price of the half-done migration.
 ///
-/// Both halves are visible in one scenario here. Retention's use stamp for the active route has a
-/// legacy command; the expiry it decides on becomes a namespace-free `RemoveObject`, which the old
-/// namespaced deletes cannot carry. The removal then stays with the catalog — the honest,
-/// *visible* cost of [`LegacyOwned::ObjectNamespace`], and the reason the row names its slice.
+/// Retention's use stamp for the active route has a legacy command; the expiry it decides on becomes
+/// a namespace-free `RemoveObject`, which the old namespaced deletes cannot carry, so it is left
+/// against [`LegacyOwned::ObjectNamespace`] rather than dropped.
+///
+/// Then the tail: **neither domain speaks again**. Both latch in-flight when they emit and clear
+/// only on their own outcome, and this path can build neither a catalog nor a retention outcome —
+/// so the successfully translated stamp is stuck exactly as hard as the untranslatable removal.
+/// That is the cost of running the pass before the executors migrate, and it is a fact here rather
+/// than a sentence in a doc comment.
 #[test]
-fn one_pass_emits_legacy_commands_and_names_what_it_cannot_translate() {
+fn the_adapter_path_completes_one_operation_per_unanswerable_domain() {
     let mut host = expiring_host();
 
     let (_, report) = host.pass(10);
@@ -217,10 +220,19 @@ fn one_pass_emits_legacy_commands_and_names_what_it_cannot_translate() {
         "and it is still with the catalog, not lost"
     );
 
-    // The row is not a loose end: it names the slice that closes it, and until then the catalog is
-    // simply still holding an operation the legacy protocol has no command for.
+    // The row is not a loose end: it names the slice that closes it.
     assert!(LegacyOwned::ObjectNamespace.deletes_in().starts_with('#'));
     assert!(host.app.route_ids().contains(&22), "nothing pretended the object was gone");
+
+    // …and this is what it costs until then, pinned rather than left as prose. Both domains hold an
+    // in-flight latch that only their own outcome clears, and this path can build neither, so
+    // neither speaks again — the *translated* stamp is as stuck as the untranslatable removal.
+    for step in 0..4 {
+        let (plan, report) = host.pass(30 + step * 10);
+        assert_eq!(report, LegacyReport::default(), "no domain offers anything further");
+        assert!(!plan.effects.has_pending(), "and the pass has nothing left to offer either");
+    }
+    assert_eq!(host.sent.len(), 1, "one command in the device's whole life on this path");
 }
 
 /// The fact half of the protocol, end to end: a store commit, an upload and a warning all reach the
