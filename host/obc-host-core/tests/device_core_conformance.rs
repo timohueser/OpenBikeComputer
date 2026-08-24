@@ -2008,15 +2008,13 @@ fn the_conformance_replay_wake_profile_and_pass_cost() {
 }
 
 /// `(passes, immediate, timed, sleep-until-event)` for the replay above. A ratchet, not a budget:
-/// the numbers move when the pass's wake decisions do, and #1397 compares against them.
+/// the numbers move when the pass's wake decisions do.
 ///
-/// #1397 S2 moved two passes from *sleep-until-event* to *timed* (236/124 → 238/122) and nothing
-/// else. The cause is a settings write's failure now being raised into the fault connection at
-/// stage 1 instead of posting its card directly, so the card — and the wake its 30 s timeout arms —
-/// lands at stage 13 of that pass rather than before stages 2-12 run. Same pass, same card, same
-/// rider-visible state (the disposition table is unchanged); only which side of `stage_plan` the
-/// deadline appears on moved. The two figures the epic gates — 366 passes and 6 immediate wakes —
-/// are untouched, which is the claim that matters: nothing here polls.
+/// Two replay passes are *timed* rather than *sleep-until-event* because a settings write's
+/// failure is raised into the fault connection at stage 1, so its card — and the wake the card's
+/// 30 s timeout arms — lands at stage 13 of that pass rather than before stages 2-12 run. The two
+/// gating figures — 366 passes and 6 immediate wakes — are the claim that matters: nothing here
+/// polls.
 const WAKE_PROFILE: (u32, u32, u32, u32) = (366, 6, 238, 122);
 
 // ==================== the resource gate ====================
