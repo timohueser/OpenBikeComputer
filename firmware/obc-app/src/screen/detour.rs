@@ -826,6 +826,9 @@ mod tests {
         let mut p = preview_for(&a);
         let _ = with_state_ctx(&mut a, &mut nav_a, nav_state(), |cx| p.handle(Gesture::Press, cx));
         assert!(drained_commit(&mut nav_a));
+        // The splice answered — a failure, which returns the preview to the rider *and* frees
+        // Navigator, so the retry has an operation slot to go out in.
+        nav_a.note_commit(false);
         p.set_commit_failed();
         let _ = with_state_ctx(&mut a, &mut nav_a, nav_state(), |cx| p.handle(Gesture::Press, cx));
         assert!(drained_commit(&mut nav_a), "a failed commit can be retried");

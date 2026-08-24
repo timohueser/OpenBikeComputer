@@ -1817,6 +1817,15 @@ impl App {
 
     /// Hand `family`'s undelivered cancellation to the executor, and repaint the map the freeze
     /// held still. `false` when there was nothing to deliver.
+    ///
+    /// This and `NavigatorMachine::next_release` are the **two consumers of one flag**, and stage 8
+    /// runs before `drain_host_commands` — so on a composition that runs the pass, the cancellation
+    /// leaves as a typed `Release` and this arm finds nothing. That is the intended handover, with
+    /// one known gap the pass cannot close on its own: under the pass *plus* `LegacyAdapter` the
+    /// `Release` is `LegacyOwned::PlannerRelease` and is dropped untranslated, so that composition
+    /// never tells the executor to drop the planner. No shipped host runs both — the production
+    /// hosts reach this arm and nothing else — and #1397 S6 closes it by giving Navigator an
+    /// executor that answers a `Release`. See `next_release` for the whole reasoning.
     fn deliver_plan_cancel(&mut self, family: PlanFamily) -> bool {
         if !self.navigator.take_cancel(family) {
             return false;
@@ -3369,8 +3378,9 @@ impl App {
             HostEvent::DetourPlanned(result) => self.land_detour_plan(result),
             HostEvent::DetourCommitted(result) => self.land_detour_commit(result),
             HostEvent::CardScanned { free_bytes } => {
-                // The legacy `None` folded "no medium" and "the scan failed" into one value; the
-                // domain separates them, and an unqualified `None` is the failed scan.
+                // The legacy `None` says only "no figure" — the board's producer yields it for no
+                // mounted medium *and* for no free count — so it goes to the domain as it stands,
+                // and blanks the System screen back to `--`.
                 self.land_card_scan(free_bytes);
             }
             HostEvent::DfuScanned(result) => {
@@ -5284,6 +5294,22 @@ mod tests {
         );
     }
 
+    /// The rider pulls the card while the System screen is up. The board answers its next scan with
+    /// `CardScanned { free_bytes: None }`, and the row goes back to `--` rather than keeping the
+    /// byte count it read off a card that is no longer in the device.
+    ///
+    /// This is the one path the legacy protocol actually produces: `ride.rs`'s producer yields
+    /// `None` for no mounted medium *and* for no FSInfo free count, and it has always blanked.
+    #[test]
+    fn a_card_scan_with_no_figure_blanks_the_free_space_row() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.apply_event(HostEvent::CardScanned { free_bytes: Some(8 * 1024 * 1024) });
+        assert_eq!(app.storage.free_bytes(), Some(8 * 1024 * 1024), "the scan answered");
+
+        app.apply_event(HostEvent::CardScanned { free_bytes: None });
+        assert_eq!(app.storage.free_bytes(), None, "and a scan with no figure leaves the rider a `--`");
+    }
+
     /// The preview polyline is *derived* from the detour plan, so Back on the preview takes it with
     /// the plan it previewed. It is drawn over the still-active route: a shape that outlived its
     /// detour is a line to nowhere, and the rider would be looking at a turn nobody is going to
@@ -5876,7 +5902,10 @@ mod tests {
 
         let mut mailbox: HostMailbox = HostMailbox::new();
         assert_eq!(app.drain_host_commands(&mut mailbox), DrainStatus::Complete);
-        assert_eq!(mailbox.len(), HOST_COMMAND_CLASSES, "one command per class");
+        // Sixteen, not eighteen: Navigator hands out **one operation at a time**, so the detour
+        // plan and its commit wait behind the route plan rather than minting tokens that would
+        // supersede it (see `NavigatorMachine::ops`). Every other class drains together.
+        assert_eq!(mailbox.len(), HOST_COMMAND_CLASSES - 2, "one command per class, less Navigator's backpressure");
         let mut drained: heapless::Vec<HostCommand, HOST_COMMAND_CLASSES> = heapless::Vec::new();
         while let Some(cmd) = mailbox.pop() {
             let _ = drained.push(cmd);
@@ -5895,8 +5924,6 @@ mod tests {
                     HostCommand::StampRideSynced { id: 7, .. },
                     HostCommand::FinishTrack(TrackAction::Save),
                     HostCommand::PlanRoute(_),
-                    HostCommand::PlanDetour(_),
-                    HostCommand::CommitDetour,
                     HostCommand::Dfu(DfuAction::Scan),
                     HostCommand::ForgetBond,
                     HostCommand::PersistSettings { .. },
@@ -5908,15 +5935,45 @@ mod tests {
             "canonical order, ids resolved at drain: {drained:?}"
         );
 
-        // One-shots drained exactly once; only the derived cues re-emit (still unanswered).
+        // Backpressure, never a loss: the route plan's answer frees Navigator and the retained
+        // detour work goes out on the next drain, still in canonical order.
+        app.apply_event(crate::HostEvent::NavPlanned(Ok(10)));
+        assert_eq!(app.drain_host_commands(&mut mailbox), DrainStatus::Complete);
+        let mut retained: heapless::Vec<HostCommand, HOST_COMMAND_CLASSES> = heapless::Vec::new();
+        while let Some(cmd) = mailbox.pop() {
+            let _ = retained.push(cmd);
+        }
+        assert!(
+            matches!(
+                retained.as_slice(),
+                [HostCommand::PlanDetour(_), HostCommand::LoadRideTrack { id: 7 }, HostCommand::RefreshNavPreview]
+            ),
+            "the detour plan survived the busy drain: {retained:?}"
+        );
+
+        // One-shots drained exactly once; only the derived cues re-emit (still unanswered). The
+        // commit waits one more turn behind the detour plan it was queued with.
+        app.apply_event(crate::HostEvent::DetourPlanned(Err(obc_route::nav::NavError::NoPath)));
         assert_eq!(app.drain_host_commands(&mut mailbox), DrainStatus::Complete);
         let mut redrained: heapless::Vec<HostCommand, HOST_COMMAND_CLASSES> = heapless::Vec::new();
         while let Some(cmd) = mailbox.pop() {
             let _ = redrained.push(cmd);
         }
         assert!(
-            matches!(redrained.as_slice(), [HostCommand::LoadRideTrack { id: 7 }, HostCommand::RefreshNavPreview]),
-            "only the level-derived cues re-emit: {redrained:?}"
+            matches!(
+                redrained.as_slice(),
+                [HostCommand::CommitDetour, HostCommand::LoadRideTrack { id: 7 }, HostCommand::RefreshNavPreview]
+            ),
+            "and nothing was lost on the way: {redrained:?}"
+        );
+        assert_eq!(app.drain_host_commands(&mut mailbox), DrainStatus::Complete);
+        let mut settled: heapless::Vec<HostCommand, HOST_COMMAND_CLASSES> = heapless::Vec::new();
+        while let Some(cmd) = mailbox.pop() {
+            let _ = settled.push(cmd);
+        }
+        assert!(
+            matches!(settled.as_slice(), [HostCommand::LoadRideTrack { id: 7 }, HostCommand::RefreshNavPreview]),
+            "only the level-derived cues re-emit: {settled:?}"
         );
 
         // Their `set_*` answers clear them — the protocol goes quiet.

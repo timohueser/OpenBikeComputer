@@ -1480,7 +1480,9 @@ pub(crate) async fn run_app(
 
             // The System settings screen's card-free scan (T8 item 6): a drained on-entry request runs
             // one bounded FAT free-cluster read off the card and answers through the `CardScanned`
-            // event (or a `None` → the screen keeps `--` when there's no card / no FSInfo free count).
+            // event. A `None` — no mounted card, or no FSInfo free count — is a measurement that
+            // produced no figure, and `StorageInfo` blanks the row back to `--` rather than leaving
+            // a byte count from a card that may no longer be in the device.
             if host_pass.card_scan {
                 app.apply_event(obc_app::HostEvent::CardScanned {
                     free_bytes: storage.as_ref().and_then(|s| s.card_free_bytes()),

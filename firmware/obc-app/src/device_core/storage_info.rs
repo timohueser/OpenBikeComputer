@@ -119,30 +119,40 @@ impl StorageInfo {
 
     /// Consume the answer to a measurement. A superseded or repeated answer changes nothing.
     ///
-    /// A failure is **reported, not retried**: the screen keeps whatever it last knew (or its `--`)
-    /// and the rider can ask again by re-entering. A domain that re-armed itself here would turn a
-    /// dead card into a free-cluster walk every pass.
+    /// The rider asked how much room is left, and there are three honest answers. A number replaces
+    /// the figure. A **failure** replaces it with *no figure* — whether the medium is absent or the
+    /// walk died part-way, we do not know how much room is left, and a byte count from an earlier
+    /// scan under the label "Card free" would be a lie (a card the rider has since taken out is the
+    /// case that matters). [`NotMounted`](StorageInfoError::NotMounted) and
+    /// [`ScanFailed`](StorageInfoError::ScanFailed) stay distinct because they are different
+    /// *facts*, not because the figure differs: neither produced one. A **cancellation** leaves the
+    /// figure alone — nothing was attempted, so what the rider is looking at is exactly as true as
+    /// it was.
+    ///
+    /// Nothing is retried here: the rider asks again by re-entering the screen. A domain that
+    /// re-armed itself would turn a dead card into a free-cluster walk every pass.
     pub(crate) fn apply_outcome(&mut self, outcome: StorageInfoOutcome) -> bool {
         if !self.ops.is_current(outcome.token()) {
             return false;
         }
         self.ops.invalidate(); // terminal: a duplicate of this answer is no longer current
-        self.note_measured(match outcome {
-            StorageInfoOutcome::Measured { free_bytes, .. } => Some(free_bytes),
-            StorageInfoOutcome::Failed { .. } | StorageInfoOutcome::Cancelled { .. } => None,
-        });
+        match outcome {
+            StorageInfoOutcome::Measured { free_bytes, .. } => self.note_measured(Some(free_bytes)),
+            StorageInfoOutcome::Failed { .. } => self.note_measured(None),
+            StorageInfoOutcome::Cancelled { .. } => {}
+        }
         true
     }
 
-    /// A measurement answered with `free_bytes`, or `None` when it did not produce a figure — the
+    /// A measurement answered with `free_bytes`, or `None` when it produced no figure — the
     /// token-free half, for the legacy protocol that carries no token.
     ///
-    /// A failure leaves the last known figure alone rather than blanking it: the rider is looking
-    /// at a number that was true, and replacing it with `--` because one scan failed says less.
+    /// The assignment is unconditional, which is what makes a `None` blank the screen back to `--`.
+    /// The legacy [`CardScanned`](crate::HostEvent::CardScanned) event's `Option<u64>` is exactly
+    /// this shape and always has been: its `None` is the board reporting no mounted medium *or* no
+    /// free count, and the System screen has always answered both with `--`.
     pub(crate) fn note_measured(&mut self, free_bytes: Option<u64>) {
-        if let Some(free_bytes) = free_bytes {
-            self.free_bytes = Some(free_bytes);
-        }
+        self.free_bytes = free_bytes;
     }
 
     /// Whether a refresh is posted but undelivered — the `ScanCardFree` peek.
@@ -184,24 +194,42 @@ mod storage_info_tests {
         assert!(storage.next_effect().is_none(), "…not two");
     }
 
-    /// A failed scan is a **reported** failure, not a retry loop: the last figure the rider was
-    /// shown stands, nothing re-arms itself, and asking again is the rider's move.
+    /// A failed measurement blanks the figure back to `--`, and does **not** retry.
+    ///
+    /// The card the rider took out is the case that matters: a stale "8.0 GB" under the label
+    /// "Card free" on a device with no card in it is a lie the screen would keep telling. Both
+    /// failure modes blank it, because neither produced a figure.
     #[test]
-    fn a_failed_measurement_is_reported_and_not_retried() {
+    fn a_failed_measurement_blanks_the_figure_and_is_not_retried() {
+        for error in [StorageInfoError::NotMounted, StorageInfoError::ScanFailed] {
+            let mut storage = StorageInfo::new();
+            storage.admit_intent(StorageInfoIntent::RefreshRequested);
+            let token = storage.next_effect().expect("the measurement goes out").token();
+            assert!(storage.apply_outcome(StorageInfoOutcome::Measured { token, free_bytes: 8_000 }));
+            assert_eq!(storage.free_bytes(), Some(8_000));
+
+            storage.admit_intent(StorageInfoIntent::RefreshRequested);
+            let token = storage.next_effect().expect("the refresh goes out").token();
+            assert!(storage.apply_outcome(StorageInfoOutcome::Failed { token, error }));
+            assert_eq!(storage.free_bytes(), None, "{error:?} leaves the rider a `--`, never a stale count");
+            assert!(!storage.refresh_pending(), "and nothing re-armed itself");
+            assert!(storage.next_effect().is_none());
+        }
+    }
+
+    /// A cancellation is the executor saying it did not try — so the figure the rider is looking at
+    /// is exactly as true as it was, and blanking it would report a failure that never happened.
+    #[test]
+    fn an_abandoned_measurement_leaves_the_figure_alone() {
         let mut storage = StorageInfo::new();
         storage.admit_intent(StorageInfoIntent::RefreshRequested);
-        let effect = storage.next_effect().expect("the measurement goes out");
-        let token = effect.token();
+        let token = storage.next_effect().expect("the measurement goes out").token();
         assert!(storage.apply_outcome(StorageInfoOutcome::Measured { token, free_bytes: 8_000 }));
-        assert_eq!(storage.free_bytes(), Some(8_000));
 
         storage.admit_intent(StorageInfoIntent::RefreshRequested);
-        let effect = storage.next_effect().expect("the refresh goes out");
-        let token = effect.token();
-        assert!(storage.apply_outcome(StorageInfoOutcome::Failed { token, error: StorageInfoError::ScanFailed }));
-        assert_eq!(storage.free_bytes(), Some(8_000), "the figure that was true is not blanked by one bad scan");
-        assert!(!storage.refresh_pending(), "and nothing re-armed itself");
-        assert!(storage.next_effect().is_none());
+        let token = storage.next_effect().expect("the refresh goes out").token();
+        assert!(storage.apply_outcome(StorageInfoOutcome::Cancelled { token }));
+        assert_eq!(storage.free_bytes(), Some(8_000));
     }
 
     /// A superseded or repeated answer changes nothing — the terminal answer invalidates the token
