@@ -57,8 +57,8 @@ fn the_pack_rebakes_byte_identically() {
     assert!(summary.contains("advected forward frames"), "the cycle published no nowcast layer:\n{summary}");
 }
 
-/// The observation that live branch needs is in the package — a claim about `event.json`, and the
-/// reason this test needs no bake of its own.
+/// The observation that the live branch needs is in the package — a claim about `event.json`, and
+/// the reason this test needs no bake of its own.
 #[test]
 fn the_pack_carries_its_motion_history() {
     let event = event();
