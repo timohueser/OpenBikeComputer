@@ -711,16 +711,18 @@ impl CatalogOutcome {
 /// [`pass`](crate::device_core::pass).
 #[allow(dead_code)]
 impl CatalogState {
-    /// Admit `intent`, or refuse it when one is already waiting to become an effect.
+    /// Admit `intent`, or refuse it and hand it back.
     ///
-    /// The refusal hands the intent back rather than dropping or replacing it: whoever asked keeps
-    /// it and offers it again next pass. That is the whole backpressure rule — a busy catalog delays
-    /// a delete, it never loses one.
+    /// Two refusals, both of them backpressure rather than failure: one intent is already waiting to
+    /// become an effect, or the intent is a **trip cascade**, whose bounded member read the domain
+    /// cannot perform until #1397 lands it. Refusing the cascade is what keeps "a busy catalog
+    /// delays a delete, it never loses one" true of it too — its producer keeps it, and it stays on
+    /// the legacy path. Admitting one and quietly doing nothing would strand it here instead.
     pub(crate) fn admit_intent(
         &mut self,
         intent: CatalogIntent,
     ) -> Result<(), crate::device_core::SlotFull<CatalogIntent>> {
-        if self.pending.is_some() {
+        if self.pending.is_some() || matches!(intent, CatalogIntent::DeleteTrip { .. }) {
             return Err(crate::device_core::SlotFull { rejected: intent });
         }
         self.pending = Some(intent);
@@ -730,20 +732,24 @@ impl CatalogState {
     /// The next bounded catalog operation, or `None` while one is already in flight or nothing is
     /// admitted.
     ///
-    /// A trip deletion yields nothing yet: its cascade needs the member read the machine owns, so it
-    /// stays on the legacy path rather than being half-performed here.
+    /// The admitted intent is taken **before** the match, so no arm can leave the domain holding an
+    /// intent it has already decided about — an intent that stayed pending would refuse every later
+    /// one for the rest of the boot.
     pub(crate) fn next_effect(&mut self) -> Option<CatalogEffect> {
         if self.in_flight {
             return None;
         }
-        let effect = match self.pending? {
+        let effect = match self.pending.take()? {
             CatalogIntent::Refresh => CatalogEffect::ReadCatalog { token: self.ops.issue() },
             CatalogIntent::DeleteRoute { id } | CatalogIntent::DeleteRide { id } => {
                 CatalogEffect::RemoveObject { token: self.ops.issue(), object: id }
             }
-            CatalogIntent::DeleteTrip { .. } => return None,
+            // Refused at admission, so nothing can be holding one here.
+            CatalogIntent::DeleteTrip { .. } => {
+                debug_assert!(false, "a trip cascade is refused by admit_intent, never admitted");
+                return None;
+            }
         };
-        self.pending = None;
         self.in_flight = true;
         Some(effect)
     }
@@ -817,6 +823,24 @@ impl CatalogState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A trip cascade is refused at the door rather than admitted and quietly abandoned: its
+    /// producer keeps it, and the domain stays able to serve every later intent. Admitting one and
+    /// returning no effect would strand it in the pending slot and refuse every delete for the rest
+    /// of the boot.
+    #[test]
+    fn a_trip_cascade_is_refused_without_wedging_the_domain() {
+        let mut catalogs = CatalogState::new();
+        let cascade = CatalogIntent::DeleteTrip { id: 5 };
+        assert_eq!(catalogs.admit_intent(cascade).unwrap_err().rejected, cascade, "handed back to its producer");
+        assert!(catalogs.next_effect().is_none(), "and nothing is owed");
+
+        catalogs.admit_intent(CatalogIntent::DeleteRoute { id: 9 }).unwrap();
+        assert!(
+            matches!(catalogs.next_effect(), Some(CatalogEffect::RemoveObject { object: 9, .. })),
+            "the next intent is served normally"
+        );
+    }
 
     /// The placement path must land exactly the state the by-value path builds.
     #[test]

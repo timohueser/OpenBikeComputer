@@ -278,7 +278,7 @@ impl PassState {
     #[inline]
     fn record(&mut self, stage: PassStage) {
         #[cfg(test)]
-        let _ = self.trace.push(stage);
+        self.trace.push(stage).expect("the trace holds every stage of one pass");
         #[cfg(not(test))]
         let _ = stage;
     }
@@ -452,10 +452,17 @@ impl App {
     /// last pass. Then the domain's own advance, then the one expiry intent and the one sidecar
     /// write it may have this pass. The expiry goes into a same-pass slot because the catalog runs
     /// next — an auto-expired object leaves by exactly the path a rider-deleted one does.
+    ///
+    /// Each inbox value goes to a domain **entry point that re-derives its own rule**: a delivered
+    /// id is a pass old, and only the domain can say whether it still qualifies. An activation in
+    /// particular must not stamp a route that has no expiry clock, and must queue nothing at all
+    /// without a trusted clock — the two guards
+    /// [`note_route_activated`](crate::retention::RetentionMachine::note_route_activated) applies,
+    /// which are the same ones the sweep applies.
     fn stage_retention(&mut self, effects: &mut EffectSlots) {
         self.pass.record(PassStage::Retention);
         if let Some(activated) = self.pass.connections.route_activated.take() {
-            self.retention.note_active_route(Some(activated.route));
+            self.with_retention(|retention, view| retention.note_route_activated(activated.route, view));
         }
         if self.pass.connections.ride_closed.take().is_some() {
             self.retention.force_next_sweep();
@@ -602,6 +609,11 @@ impl App {
     /// what is currently true (a mounted store, a routing graph, a streaming transfer, a recording
     /// ride). Heavy work is withdrawn while a transfer holds the store — which is what stops a plan
     /// or an install from starting, rather than letting one start and fail.
+    ///
+    /// **One axis cannot yet come back down.** `store_writable` reads "a store has reported a
+    /// revision", and [`ExternalFacts`] has no unmount fact to retract it with, so a pulled card
+    /// leaves catalog mutation asserted. That is a gap in the fact vocabulary rather than in this
+    /// stage: the level is honest the moment an unmount can be reported.
     fn stage_admission(&mut self, support: PlatformSupport) {
         self.pass.record(PassStage::Admission);
         let facts = DeviceFacts {
@@ -692,9 +704,30 @@ mod tests {
         outcomes: &mut OutcomeSlots,
         facts: &mut ExternalFacts,
     ) -> PassPlan {
+        pass_full(
+            app,
+            PassClock { ride: RideClock(ms), ui: InputClock(ms) },
+            gestures,
+            outcomes,
+            facts,
+            DerivedInputs::NONE,
+            DerivedTargets::NONE,
+        )
+    }
+
+    /// Every input the pass takes, so one test can drive the halves the shorthands leave at `NONE`.
+    fn pass_full(
+        app: &mut App,
+        now: PassClock,
+        gestures: &[Gesture],
+        outcomes: &mut OutcomeSlots,
+        facts: &mut ExternalFacts,
+        derived: DerivedInputs,
+        targets: DerivedTargets<'_>,
+    ) -> PassPlan {
         let mut loc = NoFix;
         app.run_pass(PassInputs {
-            now: PassClock { ride: RideClock(ms), ui: InputClock(ms) },
+            now,
             gestures,
             sensors: Sensors::new(&mut loc),
             route: None,
@@ -708,8 +741,8 @@ mod tests {
             },
             outcomes,
             facts,
-            derived: DerivedInputs::NONE,
-            targets: DerivedTargets::NONE,
+            derived,
+            targets,
         })
     }
 
@@ -730,6 +763,22 @@ mod tests {
         app.set_routes_with_ids(&[summary("alpha"), summary("beta")], &[11, 22]);
         app.activate_route(0);
         app
+    }
+
+    fn ride_summary() -> crate::ride::RideSummary {
+        crate::ride::RideSummary {
+            name: heapless::String::try_from("First").unwrap(),
+            start_time: 1_720_000_000,
+            distance_m: 1_000,
+            moving_time_s: 600,
+            climb_m: 10,
+            synced: false,
+            synced_at_utc: 0,
+        }
+    }
+
+    fn expiring(retention: Retention, last_used_utc: u32) -> RouteRetentionMeta {
+        RouteRetentionMeta::new(retention, last_used_utc)
     }
 
     /// A store fact at `revision`, the level a commit reports.
@@ -841,17 +890,59 @@ mod tests {
     #[test]
     fn an_activation_reaches_retention_on_the_next_pass() {
         let mut app = navigating();
-        app.set_route_meta(&[RouteRetentionMeta::new(Retention::Week1, 0), RouteRetentionMeta::default()]);
         trust_clock(&mut app);
+        // A fresh `last_used` so the hourly sweep has nothing of its own to say: the only stamp in
+        // this test is the activation's.
+        let now = app.wall_unix_now();
+        app.set_route_meta(&[expiring(Retention::Week1, now), expiring(Retention::Never, 0)]);
 
-        quiet(&mut app, 10);
+        let plan = quiet(&mut app, 10);
         assert!(
             app.pass.connections.route_activated.is_pending(),
             "the activation is deposited, not delivered — retention already ran"
         );
+        // The stamp itself is retention's own, from the view it reads every advance, so it is
+        // already out; the connection delivers the same fact by the same rule one pass later.
+        let mut effects = plan.effects;
+        assert!(
+            matches!(
+                effects.retention.take(),
+                Some(crate::retention::RetentionEffect::WriteRouteMetadata { id: 11, .. })
+            ),
+            "the active route's use stamp goes out"
+        );
+
         let plan = quiet(&mut app, 20);
         assert!(!app.pass.connections.route_activated.is_pending(), "consumed by retention's stage");
         assert!(!plan.immediate, "and nothing is left waiting");
+        assert!(plan.effects.retention.is_empty(), "the delivery is idempotent — no second sidecar write");
+        assert!(!app.retention.has(SweepKind::StampRoute), "and no second candidate either");
+    }
+
+    /// The delivered id is a pass old, so the domain re-derives the rule rather than trusting it:
+    /// a route with no expiry clock is never stamped, and an untrusted clock queues nothing at all.
+    ///
+    /// Both are retention's own invariants, and a delivery that reached past them would write a
+    /// sidecar for a countdown that does not exist — or put a candidate in the bounded queue on a
+    /// boot where "nothing runs" is the whole safety core.
+    #[test]
+    fn an_activation_stamps_only_a_route_that_can_expire_under_a_trusted_clock() {
+        let mut never = navigating();
+        never.set_route_meta(&[expiring(Retention::Never, 0), expiring(Retention::Never, 0)]);
+        trust_clock(&mut never);
+        quiet(&mut never, 10); // stage 8 defers the activation
+        let plan = quiet(&mut never, 20); // …and this is the pass that delivers it
+        assert!(plan.effects.retention.is_empty(), "a route with no expiry clock has no `last_used` to write");
+        assert!(!never.retention.has(SweepKind::StampRoute), "and no candidate is queued for one");
+
+        let mut untrusted = navigating();
+        untrusted.set_route_meta(&[expiring(Retention::Week1, 0), expiring(Retention::Never, 0)]);
+        quiet(&mut untrusted, 10);
+        let plan = quiet(&mut untrusted, 20);
+        assert!(
+            plan.effects.retention.is_empty() && !untrusted.retention.has(SweepKind::StampRoute),
+            "no trusted clock this boot: no stamp, no sweep, no candidate"
+        );
     }
 
     /// A deferred value in flight makes the pass ask for another one **before sleep**: the work is
@@ -883,6 +974,40 @@ mod tests {
         let plan = quiet(&mut app, 40);
         assert!(app.pass.connections.ride_closed.is_pending() && plan.immediate);
         assert!(app.pass.connections.ui_recorder.is_empty(), "the intent reached its domain");
+    }
+
+    /// The backpressure rule, end to end: two intents reach the catalog in one pass, it can admit
+    /// one, and the refused one goes **back into the slot it came from** rather than being dropped —
+    /// so a busy pass costs a delay, never a delete.
+    #[test]
+    fn a_refused_intent_goes_back_to_its_producer_and_lands_later() {
+        let (mut app, ms) = expiring_app();
+        app.activity.request_route_delete(0); // the rider deletes one route in the pass an expiry fires
+
+        let plan = quiet(&mut app, ms);
+        let mut effects = plan.effects;
+        let first = effects.catalog.take().expect("the rider's delete outranks the expiry");
+        assert!(matches!(first, CatalogEffect::RemoveObject { object: 11, .. }));
+        assert!(!app.pass.connections.expiry.is_empty(), "the refused expiry is back with its producer");
+
+        // Next pass: the catalog admits it, but its one operation is still in flight.
+        let plan = quiet(&mut app, ms + 10);
+        assert!(app.pass.connections.expiry.is_empty(), "delivered on the pass after the refusal");
+        assert!(plan.effects.catalog.is_empty(), "one catalog operation at a time");
+
+        // The answer frees the domain, and the expiry that waited two passes goes out unchanged.
+        let mut outcomes = OutcomeSlots::new();
+        outcomes
+            .catalog
+            .try_put(CatalogOutcome::ObjectRemoved { token: first.token(), object: 11, existed: true })
+            .unwrap();
+        let mut none = ExternalFacts::NONE;
+        let plan = pass_with(&mut app, ms + 20, &[], &mut outcomes, &mut none);
+        let mut effects = plan.effects;
+        assert!(
+            matches!(effects.catalog.take(), Some(CatalogEffect::RemoveObject { object: 22, .. })),
+            "nothing was lost to the busy pass"
+        );
     }
 
     /// A store commit is announced to retention once, from the stage that owns the catalog — and
@@ -998,22 +1123,27 @@ mod tests {
         assert!(app.capabilities().dfu.install, "and it comes straight back");
     }
 
-    /// A platform callback cannot change DeviceCore in the middle of a pass: the push doors refuse
-    /// while one is in flight, and the next pass consumes what the executor completed.
+    /// A platform callback cannot change DeviceCore in the middle of a pass. `run_pass` holds
+    /// `&mut self` for its whole length, so no safe caller can reach a push door mid-pass at all —
+    /// the flag has to be set by hand here. Reaching one anyway is a caller bug, so it is loud in
+    /// debug and refused in release rather than quietly losing the event.
     #[test]
+    #[should_panic(expected = "cannot change DeviceCore during a pass")]
     fn a_callback_cannot_mutate_core_state_during_a_pass() {
         let mut app = navigating();
         quiet(&mut app, 10);
-        let before = app.store_changed_pending();
-
         app.pass.in_pass = true;
         app.apply_event(crate::HostEvent::StoreChanged);
-        app.apply_derived(DerivedInputs::NONE, DerivedTargets::NONE);
-        assert_eq!(app.store_changed_pending(), before, "a mid-pass push changes nothing");
+    }
 
-        app.pass.in_pass = false;
+    /// The same door, outside a pass: it works exactly as it always did.
+    #[test]
+    fn a_push_outside_a_pass_is_applied_normally() {
+        let mut app = navigating();
+        quiet(&mut app, 10);
+        let before = app.store_changed_pending();
         app.apply_event(crate::HostEvent::StoreChanged);
-        assert_ne!(app.store_changed_pending(), before, "and the same call outside a pass works");
+        assert_ne!(app.store_changed_pending(), before);
     }
 
     /// Hold cancellation stays off the pass entirely: a pass neither reports it nor drains it, so
@@ -1048,6 +1178,65 @@ mod tests {
         assert!(!plan.render.map, "a quiet pass repaints nothing");
         assert!(plan.derived_needs.is_empty(), "no detail is open");
         assert!(!plan.effects.has_pending(), "and nothing physical is owed");
+    }
+
+    /// Stage 2 with a full batch: every level lands with its owner, every one-shot is **taken** from
+    /// the batch (which is what "the pass consumed it" means), and a keyed derived answer clears the
+    /// need it answers. The handlers themselves are pinned by the legacy-protocol tests; what this
+    /// covers is the pass's routing to them.
+    ///
+    /// The two clocks are deliberately different here — the board runs them equal, the simulator does
+    /// not — so a stage that read the ride clock where it owes the UI one trips
+    /// [`App::ms_until_next_wake`]'s same-frame assertion.
+    #[test]
+    fn one_pass_routes_a_full_fact_batch_and_a_derived_answer() {
+        let mut app = navigating();
+        app.set_rides(&[ride_summary()], &[7]);
+        app.activity.viewed_ride = Some(0);
+        let mut quiet_facts = ExternalFacts::NONE;
+        let plan = pass_full(
+            &mut app,
+            PassClock { ride: RideClock(5_000), ui: InputClock(9_000) },
+            &[],
+            &mut OutcomeSlots::new(),
+            &mut quiet_facts,
+            DerivedInputs::NONE,
+            DerivedTargets::NONE,
+        );
+        let key = plan.derived_needs.ride_track.expect("the open ride detail needs its track");
+
+        let connected =
+            crate::ble::BleStatus { link: crate::ble::BleLink::Connected, ..crate::ble::BleStatus::DISCONNECTED };
+        let installed = WeatherData { data: DataIdentity::new(7), revision: Revision::new(2) };
+        let mut facts = committed(9);
+        facts.note_link(connected);
+        facts.note_weather_data(installed);
+        facts.note_route_upload(crate::device_core::RouteUpload { id: 33, replaced: false, elevation: None });
+        facts.note_trip_upload(crate::device_core::TripUpload { id: 44, replaced: false });
+        facts.note_update_result(UpdateResult::Confirmed(crate::dfu::clamp("v9"))).unwrap();
+
+        let plan = pass_full(
+            &mut app,
+            PassClock { ride: RideClock(6_000), ui: InputClock(10_000) },
+            &[],
+            &mut OutcomeSlots::new(),
+            &mut facts,
+            DerivedInputs::ride_track(crate::device_core::DerivedInput::filled(key)),
+            DerivedTargets { ride_preview: &[(1, 2), (3, 4)], nav_preview: &[] },
+        );
+
+        // Levels reached their owners.
+        assert_eq!(app.weather.installed(), Some(installed), "the installed data reached WeatherDomain");
+        assert_eq!(app.state.device.ble_link, crate::ble::BleLink::Connected, "the link state reached the UI");
+        assert!(app.store_changed_pending() > 0, "the commit became the catalog's refresh cue");
+
+        // One-shots were consumed rather than left for a second delivery.
+        assert!(facts.take_route_upload().is_none() && facts.take_trip_upload().is_none());
+        assert!(facts.take_update_result().is_none() && facts.take_warnings().is_empty());
+        assert!(app.debug_stack_len() > 1, "and what they post reached the screen");
+
+        // The keyed answer cleared the need it answered.
+        assert!(plan.derived_needs.ride_track.is_none(), "the ride track is answered");
     }
 
     // ---- helpers that need a trusted clock ----
