@@ -24,6 +24,8 @@ struct OBCWeatherCodecTests {
             | UInt32(data[offset + 3]) << 24
     }
 
+    /// Bit-by-bit CRC-32, independent of the table-driven production implementation, used once to
+    /// pin it. Too slow for a loop: ~57 ms per pass over the 46 KB seed in a debug build.
     private func crc32TreatingWeatherFieldAsZero(_ data: Data) -> UInt32 {
         var crc: UInt32 = 0xFFFF_FFFF
         for (index, storedByte) in data.enumerated() {
@@ -34,10 +36,22 @@ struct OBCWeatherCodecTests {
         return crc ^ 0xFFFF_FFFF
     }
 
+    /// Writes the checksum the decoder recomputes, over the same three spans it hashes.
     private func refreshCRC(_ data: inout Data) {
-        data[88..<92] = Data(repeating: 0, count: 4)
-        let crc = crc32TreatingWeatherFieldAsZero(data)
+        var hasher = CRC32.Hasher()
+        hasher.update(data.prefix(88))
+        hasher.update(Data(repeating: 0, count: 4))
+        hasher.update(data.dropFirst(92))
+        let crc = hasher.finalize()
         for byte in 0..<4 { data[88 + byte] = UInt8(truncatingIfNeeded: crc >> (byte * 8)) }
+    }
+
+    @Test
+    func weatherWireCRC32MatchesTheIndependentImplementationAndCanonicalCheckValue() throws {
+        #expect(CRC32.checksum(Data("123456789".utf8)) == 0xCBF4_3926)
+        var bytes = try fixture("weather-dwd-96x96-9f.obcw")
+        refreshCRC(&bytes)
+        #expect(readUInt32(bytes, at: 88) == crc32TreatingWeatherFieldAsZero(bytes))
     }
 
     @Test
@@ -125,7 +139,6 @@ struct OBCWeatherCodecTests {
                 let offset = start + (mutation * 97) % (end - start)
                 bytes[offset] ^= UInt8(1 << (mutation % 8))
                 refreshCRC(&bytes)
-                #expect(readUInt32(bytes, at: 88) == crc32TreatingWeatherFieldAsZero(bytes), "CRC drift in \(label)")
                 if (try? OBCWeatherCodec.decode(bytes)) == nil { rejected += 1 }
             }
             #expect(rejected > 0, "structured \(label) mutations never exercised a rejection path")

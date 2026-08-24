@@ -693,14 +693,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: swift test (OBCKit package, host)
-        run: |
-          # Swift Testing schedules suites concurrently even though SwiftPM's
-          # test runner defaults to --no-parallel. Keep the exhaustive codec
-          # mutation test out of the process with timeout-sensitive async model
-          # tests, then run it alone against the same already-built package.
-          exhaustive='OBCWeatherCodecTests/validCRCStructuredMutationsAndEveryTruncationReachRealParserBoundaries'
-          swift test --package-path companion-ios/Packages/OBCKit --skip "$exhaustive"
-          swift test --package-path companion-ios/Packages/OBCKit --skip-build --filter "$exhaustive"
+        run: swift test --package-path companion-ios/Packages/OBCKit
 
   # iOS companion, app tier: xcodegen + simulator-SDK builds of the app target. One deliberately
   # narrow XCUITest flow also refreshes the five real app screens used by the landing page and
