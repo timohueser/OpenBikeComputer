@@ -27,6 +27,7 @@ NEIGHBOURS = [ROOT / "firmware/obc-app/src/stat_fields.rs"]
 LANDMARKS = [
     "title_frame",
     "card_triangle",
+    "recalculating_banner",
     "ledger_row",
     "draw_guarded_rows",
     "tile",
