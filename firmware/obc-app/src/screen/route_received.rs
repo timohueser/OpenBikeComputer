@@ -28,6 +28,7 @@ use obc_render::{
 use crate::input::Gesture;
 use crate::Msg;
 
+use super::vocab::band::TopStroke;
 use super::vocab::chrome::{card_check, title_frame, TITLE_BAR_H};
 use super::vocab::list;
 use super::vocab::rows::{draw_guarded_rows, GuardedRowsGeometry, MenuItem};
@@ -194,13 +195,17 @@ impl RouteReceivedScreen {
 /// [`AMBER`](palette::AMBER) top stroke, no labels or axis. `elev` is the host-built
 /// min–max-normalized band ([`obc_route::elevation_sparkline`], `0..=255` per bucket); each pixel
 /// column reads a linearly-interpolated height so the coarse 64-bucket band draws as a smooth line.
-/// The amber top connects to the previous column so steep steps stay solid (as the overview does).
+///
+/// The columns are the card's own — the device has no `Profile` here to hand
+/// [`ElevationBand`](super::vocab::band::ElevationBand), and cannot afford to build one — but the
+/// top line is the vocabulary's [`TopStroke`], so the card's amber and the overview's stay the same
+/// line.
 fn draw_sparkline(cv: &mut impl Surface, x0: i32, y_top: i32, w_band: i32, h_band: i32, elev: &[u8]) {
     use palette::*;
     let last = elev.len().saturating_sub(1);
     let y_bot = y_top + h_band;
     let span_px = (w_band - 1).max(1) as f32;
-    let mut prev_top: Option<i32> = None;
+    let mut stroke = TopStroke::default();
     for px in 0..w_band {
         // Fractional bucket for this column, linearly interpolated between the two nearest buckets.
         let fb = (px as f32 / span_px) * last as f32;
@@ -212,11 +217,7 @@ fn draw_sparkline(cv: &mut impl Surface, x0: i32, y_top: i32, w_band: i32, h_ban
         let top_y = y_bot - (v / 255.0 * h_band as f32) as i32;
         let x = x0 + px;
         cv.vline(x, top_y, y_bot - top_y + 1, 1, PARCHMENT_SHADE);
-        // Amber top, spanning this column's step from the previous so steep sections stay solid;
-        // on a flat run it's the 2 px cap the overview draws.
-        let (y0, y1) = prev_top.map_or((top_y, top_y), |p| (p.min(top_y), p.max(top_y)));
-        cv.vline(x, y0 - 1, (y1 - y0) + 2, 1, AMBER);
-        prev_top = Some(top_y);
+        stroke.column(cv, x, top_y, AMBER);
     }
 }
 

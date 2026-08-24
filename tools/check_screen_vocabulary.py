@@ -70,13 +70,11 @@ RETIRED_FORMATTERS = [
 CONSTANTS = ["SPIN_DPS", "SPIN_FRAME_MS", "PAGE_FLIP_MS"]
 
 # Spellings that only appear when a screen has re-grown a raster the vocabulary owns. `prev_top` is
-# the elevation band's connected top stroke, copied into three screens before `vocab/band.rs`.
+# the elevation band's connected top stroke, copied into four screens before `vocab/band.rs` owned
+# it — three sampling a profile, and the received card interpolating the host's byte band. That
+# fourth raster is still the card's own (it has no profile to sample), but its top line goes
+# through `band::TopStroke` like the rest, so no screen keeps the state this name spells.
 RETIRED = ["prev_top"]
-
-# `route_received.rs` draws the received card's mini sparkline from the host's min-max-normalized
-# byte band — no profile, no window, no pyramid level — so it is a different raster, not a band
-# copy, and it carries the only other connected stroke in the tree.
-RETIRED_EXEMPT = {"route_received.rs"}
 
 
 def matches(pattern: re.Pattern[str], paths: list[Path]) -> list[str]:
@@ -111,9 +109,8 @@ def main() -> int:
     for name in CONSTANTS:
         pattern = re.compile(r"\bconst " + re.escape(name) + r"\s*:")
         failures += check_once("const", name, pattern, vocab_files, screen_files)
-    scanned = [p for p in screen_files if p.name not in RETIRED_EXEMPT]
     for name in RETIRED:
-        hits = matches(re.compile(r"\b" + re.escape(name) + r"\b"), scanned)
+        hits = matches(re.compile(r"\b" + re.escape(name) + r"\b"), screen_files)
         if hits:
             failures.append(f"`{name}` is back outside vocab/ ({', '.join(hits)}) — draw through the vocabulary")
     for name in RETIRED_FORMATTERS:
