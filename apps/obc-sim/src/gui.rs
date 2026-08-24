@@ -16,10 +16,12 @@ use std::path::Path;
 
 use eframe::egui;
 use embedded_graphics::pixelcolor::{raw::RawU16, Rgb565};
-use obc_app::{App, AppState, CameraMode, Dirty, HostCommand, HostEvent};
+use obc_app::device_core::{PassClock, PlatformSupport};
+use obc_app::settings::Settings;
+use obc_app::{App, AppState, CameraMode, Dirty, Gesture};
 use obc_display::FbDevice64;
-use obc_host_core::{fill_nav_preview, HostLoop};
-use obc_ports::{Button, Fix, InputClock, RideClock, Sensors, SettingsStore};
+use obc_host_core::{ActiveRouteSession, HostLoop, HostPlatform};
+use obc_ports::{Button, Fix, InputClock, RideClock, Sensors, SettingsSaveError, SettingsStore};
 use obc_route::RouteReader;
 
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
@@ -87,6 +89,43 @@ struct PanelState {
 #[derive(Default)]
 struct CalibState {
     measured_mm: String,
+}
+
+/// What the desktop simulator implements. Everything the shared screens can reach: the sim is the
+/// device's development twin, and a capability withdrawn here would hide a screen the device has.
+/// The bounded work behind DFU is simply never answered ([`SimPlatform`]), exactly as the old
+/// command loop dropped that request — the headless `--png` path stages synthetic answers instead.
+pub(crate) const SIM_SUPPORT: PlatformSupport = PlatformSupport {
+    detour: true,
+    settings_persistence: true,
+    dfu: true,
+    weather: true,
+    bonding: true,
+    storage_space_report: true,
+};
+
+/// What only this host can do: the RRAM stand-in file, the injected panel "bond", and the fixed
+/// card-free figure (the desktop sim has no FAT to scan).
+struct SimPlatform<'a> {
+    settings: &'a mut FileSettingsStore,
+    panel: &'a mut PanelState,
+}
+
+impl HostPlatform for SimPlatform<'_> {
+    /// Persist to the RRAM stand-in file. The answer clears the app's dirty state, or keeps the
+    /// revision retryable on a failure (#810).
+    fn persist_settings(&mut self, settings: &Settings, _revision: u16) -> Result<(), SettingsSaveError> {
+        self.settings.save(settings)
+    }
+
+    /// A fixed ~1.2 GiB stand-in — the sim has no allocation table to walk.
+    fn measure_free_space(&mut self) -> Result<u64, obc_app::device_core::StorageInfoError> {
+        Ok(crate::SIM_CARD_FREE)
+    }
+
+    fn forget_bond(&mut self) {
+        self.panel.ble.paired = false;
+    }
 }
 
 /// The simulator's GPS-time source (auto-expiry epic #638, S3): when `enabled`, each poll resolves
@@ -237,16 +276,27 @@ struct SimGui {
     quit: bool,
     texture: Option<egui::TextureHandle>,
     last_stats: obc_render::RenderStats,
-    /// The shared render-on-demand dirty signal ([`App::take_dirty`]), drained once per frame for
-    /// the stats panel. The sim always redraws, so this is informational — a live readout of the
+    /// The render-on-demand signal the last pass planned (`PassPlan::render`), kept for the stats
+    /// panel. The sim always redraws, so this is informational — a live readout of the
     /// signal the firmware gates its renders on. (Mouse pan/zoom bypasses the app's input path, so
     /// it isn't reflected; on the device every camera change goes through a gesture or a fix.)
     last_dirty: Dirty,
-    /// The shared host loop (`obc-host-core`): the command/event dispatcher, the in-flight
-    /// resumable planner (#499, stepped once per frame — the board's one-step-per-pass shape), and
-    /// the resident active-route session (so the Map opens without a per-frame `RouteIndex` reparse).
-    /// Every delete/rescan/nav/track sequencing decision lives in the dispatcher, not here.
+    /// The last pass's `next_wake_ms`, for the same panel and the same reason: the simulator
+    /// repaints continuously so its Controls window stays live, so the device's sleep schedule is
+    /// **shown** rather than obeyed — stated here rather than silently dropped.
+    last_wake_ms: Option<u32>,
+    /// The shared typed executor (`obc-host-core`): the next pass's outcomes and facts, and the
+    /// in-flight resumable planner (#499, stepped once per frame — the board's one-step-per-pass
+    /// shape). Every delete/rescan/nav/track sequencing decision lives in a domain, not here.
     host: HostLoop,
+    /// The resident active-route parse, opened once per frame and lent to both the pass and the
+    /// render (so the Map opens without a per-frame `RouteIndex` reparse).
+    session: ActiveRouteSession,
+    /// The gestures the recognizer produced at the end of the **previous** frame, applied by the
+    /// next pass's input stage. Recognition happens where the housing is hit-tested (inside the
+    /// egui draw); the pass is what applies them, so they wait one frame here — exactly the frame
+    /// they already waited for before, when `handle_input` applied them behind the render.
+    pending_gestures: Vec<Gesture>,
     /// The map's terrain (EL7): the `.obcd` sidecar beside the `.obcm`, mounted once for the
     /// session like the map, or the null source when there is none. The planner samples it as it
     /// emits, so a route created in the GUI arrives with a real elevation profile and climbs.
@@ -406,7 +456,10 @@ impl SimGui {
             map,
             last_stats: obc_render::RenderStats::default(),
             last_dirty: Dirty::CLEAN,
+            last_wake_ms: None,
             host: HostLoop::new(),
+            session: ActiveRouteSession::new(),
+            pending_gestures: Vec::new(),
             colorway,
             kbd_steps: 0,
             kbd_up: false,
@@ -455,7 +508,7 @@ impl SimGui {
         // Feed the host→app BLE seam (epic #447): the control panel's injected link state, pushed
         // every frame exactly as the board's ride loop feeds its `ble::state` snapshot. Cheap and
         // idempotent — an unchanged status repaints nothing.
-        self.app.set_ble_status(self.panel.ble);
+        self.host.facts().note_link(self.panel.ble);
 
         // Feed the host→app BLE **sensor** seam (epic #707, SE7) from a fake central manager, so the
         // Sensors screen is fully drivable without a radio. While the scan list is up, publish a
@@ -479,94 +532,95 @@ impl SimGui {
         }
         self.app.set_sensor_status(&sensor_status);
 
-        // Host reconciliation through the shared dispatcher (`obc-host-core`): drain the typed
-        // command protocol in canonical order and apply it against the sim's folder-backed stores —
-        // the route/ride/trip deletes + catalog re-feeds, the resumable planner's lifecycle (one
-        // bounded step per frame), the ride-track fill, and the ride recorder's session reconcile
-        // (finalising a `Save` writes a desktop `ride-{id}.obcr` and re-feeds the Rides menu). The handful of
-        // genuinely host-specific commands go to the closure: the card-free scan (a fixed ~1.2 GB
-        // stand-in — the sim has no FAT to scan), the Bluetooth Forget (the "bond" is the injected
-        // panel flag), settings persistence (the RRAM stand-in file), and DFU (no real flash in the
-        // desktop sim, so a no-op). Everything else — the sequencing — lives in the dispatcher.
-        {
-            let settings_store = &mut self.settings_store;
-            let panel = &mut self.panel;
-            self.host.reconcile(
-                &mut self.app,
-                &mut self.store,
-                &mut self.ride_store,
-                &mut self.tracks,
-                &mut self.trip_store,
-                &reader,
-                &mut *self.elevation,
-                |app, cmd| match cmd {
-                    HostCommand::ScanCardFree => {
-                        app.apply_event(HostEvent::CardScanned { free_bytes: Some(crate::SIM_CARD_FREE) });
-                    }
-                    HostCommand::ForgetBond => panel.ble.paired = false,
-                    HostCommand::PersistSettings { revision } => {
-                        // Persist to the RRAM stand-in file, then acknowledge the revision so the app
-                        // clears its dirty state (or, on failure, keeps it retryable) — #810.
-                        let event = match settings_store.save(app.settings()) {
-                            Ok(()) => HostEvent::SettingsPersisted { revision },
-                            Err(error) => HostEvent::SettingsPersistFailed { revision, error },
-                        };
-                        app.apply_event(event);
-                    }
-                    // No real firmware to flash in the desktop sim; the headless `--png` path stages
-                    // synthetic DFU answers directly, so the interactive loop just drops the request.
-                    HostCommand::Dfu(_) => {}
-                    _ => {}
-                },
-            );
-        }
-
         // Mirror the sim's route-retention sidecar into the app each frame (auto-expiry epic #638,
-        // S3), pairwise with the just-fed catalog ids — cheap, and it keeps the sweep reading
-        // device-truth retention even on frames the reconcile didn't re-feed the catalog.
+        // S3), pairwise with the fed catalog ids — cheap, and it keeps the sweep reading
+        // device-truth retention even on frames nothing re-fed the catalog.
         let metas = self.store.retention_metas();
         self.app.set_route_meta(&metas);
 
-        // Open the active route's geometry from the resident session — no per-frame `RouteIndex`
-        // reparse (reloads only when the active bytes change). It stays borrowed through `tick` +
-        // `render_frame` below so the map-matcher gets it.
-        let changed = self.store.sync_active(self.app.active_route_index());
-        self.host.session.reparse(changed, &self.store);
-        let route_src = self.store.active_source();
-        let route = match (self.host.session.index(), route_src.as_ref()) {
-            (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
-            _ => None,
-        };
-        // The open Route overview's decimated shape preview — the shared once-per-entry fill.
-        fill_nav_preview(&mut self.app, route.as_ref());
-
-        // Drive the app from whichever location source is active. A loaded GPX replay takes over
-        // from the manual panel fix (as the device's GPS would).
-        if let Some(player) = self.gpx.as_mut() {
-            // Advance + tick on the playback clock (shared with the headless replay).
-            let dt = ctx.input(|i| i.stable_dt) as f64;
-            // Feed the synthetic sensors on the same playback clock, from the *previous* frame's
-            // speed (a ~1-frame lag is irrelevant at the 1 Hz emit cadence) — so a sample is stamped
-            // onto the point this tick logs. Effort-follows-speed reads that speed; the sliders don't.
-            let now_ms = (player.time() * 1000.0) as u32;
-            let speed_mps = self.app.state.user_fix.and_then(|f| f.speed_mps).unwrap_or(0.0);
-            self.sim_sensors.feed(now_ms, speed_mps);
-            crate::replay_step(
-                &mut self.app,
-                player,
-                &mut self.baro,
-                Some(&mut self.compass),
-                dt,
-                route.as_ref(),
-                self.tracks.sink(),
-                crate::ReplaySensors {
+        // ── One DeviceCore pass ──────────────────────────────────────────────────────────────
+        // The active route is opened once from the resident session (no per-frame `RouteIndex`
+        // reparse) and lent to the pass, so the map-matcher reads the geometry the frame draws.
+        // The render below re-opens it: the executor may commit new bytes under it.
+        self.session.sync(&self.app, &mut self.store);
+        let ui_now = self.input.now_ms();
+        let gestures = core::mem::take(&mut self.pending_gestures);
+        let mut plan = {
+            let route_src = self.store.active_source();
+            let route = match (self.session.index(), route_src.as_ref()) {
+                (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
+                _ => None,
+            };
+            // Drive the app from whichever location source is active. A loaded GPX replay takes
+            // over from the manual panel fix (as the device's GPS would).
+            if let Some(player) = self.gpx.as_mut() {
+                let dt = ctx.input(|i| i.stable_dt) as f64;
+                // Feed the synthetic sensors on the same playback clock, from the *previous*
+                // frame's speed (a ~1-frame lag is irrelevant at the 1 Hz emit cadence) — so a
+                // sample is stamped onto the point this pass logs. Effort-follows-speed reads that
+                // speed; the sliders don't.
+                let speed_mps = self.app.state.user_fix.and_then(|f| f.speed_mps).unwrap_or(0.0);
+                self.sim_sensors.feed((player.time() * 1000.0) as u32, speed_mps);
+                let (ride, sensors) = obc_host_core::replay_advance(
+                    player,
+                    &mut self.baro,
+                    Some(&mut self.compass),
+                    dt,
+                    self.tracks.sink(),
+                    obc_host_core::ReplaySensors {
+                        hr: Some(&mut self.sim_sensors.hr),
+                        power: Some(&mut self.sim_sensors.power),
+                        cadence: Some(&mut self.sim_sensors.cadence),
+                    },
+                );
+                self.host.pass(
+                    &mut self.app,
+                    PassClock { ride, ui: InputClock(ui_now) },
+                    &gestures,
+                    sensors,
+                    route.as_ref(),
+                    SIM_SUPPORT,
+                )
+            } else {
+                // Manual panel control: no barometer, wall-clock for any moving-time.
+                self.baro.clear();
+                // The synthetic sensors run under manual control too (their sliders drive fixed
+                // values); effort-follows-speed has no GPX speed here, so it reads whatever the
+                // last fix had (~0).
+                let speed_mps = self.app.state.user_fix.and_then(|f| f.speed_mps).unwrap_or(0.0);
+                self.sim_sensors.feed(ui_now, speed_mps);
+                // The **GPS time** feed (auto-expiry epic #638, S3): with the control-panel toggle
+                // on (the default), stamp the device clock from the host wall clock (plus the
+                // "+1 day" offset) each pass — booting the sim into a trusted clock like a real fix
+                // would, the precondition the deletion sweep gates on.
+                let mut sim_clock =
+                    SimClock { enabled: self.panel.gps_time, offset_secs: self.panel.clock_offset_secs };
+                // Defaulted away: no thermometer in manual control (BMP581 temperature is
+                // device-only) and no live fuel gauge (battery is set once from `--battery`).
+                let sensors = Sensors {
+                    clock: Some(&mut sim_clock),
+                    compass: Some(&mut self.compass),
+                    track: self.tracks.sink(),
+                    // The panel's "Sensors" section drives these (SE8); each source honours the
+                    // ~1 Hz fresh-mailbox contract, so a disabled quantity goes stale → `--`.
                     hr: Some(&mut self.sim_sensors.hr),
                     power: Some(&mut self.sim_sensors.power),
                     cadence: Some(&mut self.sim_sensors.cadence),
-                },
-            );
-            // Reflect the replayed fix in the panel mirrors, so manual control resumes from
-            // here if the track is ejected.
+                    ..Sensors::new(&mut self.loc)
+                };
+                self.host.pass(
+                    &mut self.app,
+                    PassClock { ride: RideClock(ui_now), ui: InputClock(ui_now) },
+                    &gestures,
+                    sensors,
+                    route.as_ref(),
+                    SIM_SUPPORT,
+                )
+            }
+        };
+        // Reflect the replayed fix in the panel mirrors, so manual control resumes from here if the
+        // track is ejected.
+        if self.gpx.is_some() {
             if let Some(f) = self.app.state.user_fix {
                 self.panel.lat_deg = f.lat as f64 / 1e6;
                 self.panel.lon_deg = f.lon as f64 / 1e6;
@@ -574,38 +628,43 @@ impl SimGui {
                     self.panel.heading_deg = c;
                 }
             }
-        } else {
-            // Manual panel control: no barometer, wall-clock for any moving-time.
-            self.baro.clear();
-            let now_ms = self.input.now_ms();
-            // The synthetic sensors run under manual control too (their sliders drive fixed values);
-            // effort-follows-speed has no GPX speed here, so it reads whatever the last fix had (~0).
-            let speed_mps = self.app.state.user_fix.and_then(|f| f.speed_mps).unwrap_or(0.0);
-            self.sim_sensors.feed(now_ms, speed_mps);
-            // The **GPS time** feed (auto-expiry epic #638, S3): with the control-panel toggle on
-            // (the default), stamp the device clock from the host wall clock (plus the "+1 day"
-            // offset) each tick — booting the sim into a trusted clock like a real fix would, the
-            // precondition the deletion sweep gates on.
-            let mut sim_clock = SimClock { enabled: self.panel.gps_time, offset_secs: self.panel.clock_offset_secs };
-            // Defaulted away: no thermometer in manual control (BMP581 temperature is
-            // device-only) and no live fuel gauge (battery is set once from `--battery`).
-            let sensors = Sensors {
-                clock: Some(&mut sim_clock),
-                compass: Some(&mut self.compass),
-                track: self.tracks.sink(),
-                // The panel's "Sensors" section drives these (SE8); each source honours the ~1 Hz
-                // fresh-mailbox contract, so a disabled quantity goes stale → `--` on its tile.
-                hr: Some(&mut self.sim_sensors.hr),
-                power: Some(&mut self.sim_sensors.power),
-                cadence: Some(&mut self.sim_sensors.cadence),
-                ..Sensors::new(&mut self.loc)
-            };
-            self.app.tick(RideClock(now_ms), sensors, route.as_ref());
+        }
+
+        // ── The typed executor ───────────────────────────────────────────────────────────────
+        // The plan's bounded effects against the sim's folder-backed stores: the route/ride deletes
+        // and their catalog re-feeds, the resumable planner's lifecycle (one bounded step per
+        // frame), the retention sidecar stamps, the keyed ride-track fill, and the ride recorder's
+        // session reconcile (finalising a `Save` writes a desktop `ride-{id}.obcr` and re-feeds the
+        // Rides menu). What only this host can do — the card-free stand-in, the Bluetooth Forget,
+        // the RRAM stand-in file — is [`SimPlatform`]. Everything else lives in a domain.
+        {
+            let mut platform = SimPlatform { settings: &mut self.settings_store, panel: &mut self.panel };
+            self.host.execute(
+                &mut self.app,
+                &mut plan,
+                &self.session,
+                &mut self.store,
+                &mut self.ride_store,
+                &mut self.tracks,
+                &mut self.trip_store,
+                &reader,
+                &mut *self.elevation,
+                &mut platform,
+            );
         }
         // The map-referenced altimeter's terrain read (EL8, #1076), drained once per frame behind
-        // whichever tick ran above — the board's ride-loop shape. It is a one-shot armed only by a
-        // fresh fix, so this reads at most one 512 B tile per fix, never per frame.
+        // the pass — the board's ride-loop shape. It is a one-shot armed only by a fresh fix, so
+        // this reads at most one 512 B tile per fix, never per frame.
         self.app.sample_terrain(&mut *self.elevation);
+
+        // Re-open the active route for the render: a committed plan or a spliced detour replaced
+        // the bytes under it, and the frame must draw what is there now.
+        self.session.sync(&self.app, &mut self.store);
+        let route_src = self.store.active_source();
+        let route = match (self.session.index(), route_src.as_ref()) {
+            (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
+            _ => None,
+        };
 
         // Time the whole frame draw into `render_us` (`obc-render` is clockless, so the host
         // fills it; the device uses the DWT cycle counter). Render the whole frame straight into the
@@ -686,9 +745,12 @@ impl SimGui {
         };
         stats.render_us = t0.elapsed().as_micros() as u32;
         self.last_stats = stats;
-        // Drain the shared dirty signal for the stats readout (the sim always redraws, so this
-        // doesn't gate drawing).
-        self.last_dirty = self.app.take_dirty();
+        // The plan's own render decision, for the stats readout (the sim always redraws, so this
+        // doesn't gate drawing). `plan.next_wake_ms` rides beside it for the same reason: the sim
+        // repaints continuously so its control panel stays live, and the device's sleep schedule is
+        // shown rather than obeyed.
+        self.last_dirty = plan.render;
+        self.last_wake_ms = plan.next_wake_ms;
 
         // Present: the presenter self-diffs the resident frame and pushes only the changed spans
         // into its reconstructed texture (under the exact-diff oracle). Uploading *that* — not a
@@ -842,10 +904,11 @@ impl SimGui {
         // UP/DOWN held state is visual only (the housing pads sink) — the app already got the step.
         let _ = (hit.up_down, hit.down_down);
         let now = self.input.now_ms();
-        self.app.handle_input(InputClock(now), &mut self.input);
-        // Settings persistence rides the shared dispatcher now (the `PersistSettings` command, gated
-        // on leaving the settings subtree), so `render_to_texture` picks up the dirty edge next frame
-        // — the same debounced save-on-subtree-exit the device runs, one seam instead of two.
+        // Recognition only: the *pass* applies the batch, at its input stage, on the next frame —
+        // where a gesture lands after what the executor finished and before the domains decide.
+        // That is the same one-frame delay the old order had (the transition used to happen behind
+        // the render it would first be visible on), moved to the one place that owns it.
+        self.pending_gestures.extend(self.app.recognize(InputClock(now), &mut self.input));
     }
 
     /// The 1:1 calibration screen: draw a reference bar of a known point-width; the user
@@ -992,7 +1055,11 @@ impl eframe::App for SimGui {
                     }
                     Err(e) => self.gpx_error = Some(e),
                 }
-                self.app.set_routes_with_ids(self.store.catalog(), self.store.ids());
+                // A GPX drop is the one thing that moves this store **behind** the executor, so it
+                // is reported as the store revision it is: the next pass raises
+                // `CatalogIntent::Refresh` and the executor re-reads the whole catalog — routes,
+                // their retention metas, the trips that group them and the rides beside them.
+                self.host.note_store_commit();
             }
         }
 

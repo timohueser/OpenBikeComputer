@@ -1,9 +1,7 @@
-//! One replay frame: advance the GPX playback and tick the shared app on the playback clock.
+//! One replay frame: advance the GPX playback and hand the pass its playback clock and sensor ports.
 
-use obc_app::App;
 use obc_ports::{CadenceSource, CompassSource, HeartRateSource, PowerSource, RideClock, Sensors, TrackSink};
 use obc_replay::{BaroSensor, GpxPlayer};
-use obc_route::RouteReader;
 
 /// The starting camera for a freshly-opened map: centered on the bbox, zoomed so
 /// its longitude span fills the window width. Returns `(cam_lon, cam_lat, zoom)`
@@ -26,27 +24,25 @@ pub struct ReplaySensors<'s> {
     pub cadence: Option<&'s mut dyn CadenceSource>,
 }
 
-/// Advance the GPX replay by `dt` seconds and run one app tick on the **playback**
-/// clock. The millis derive from playback-time (not wall-clock), so Avg. Speed isn't
-/// scaled by the replay-speed multiplier. Shared by the live hosts' frame loops and
+/// Advance the GPX replay by `dt` seconds and hand back the **playback** clock and the sensor
+/// ports one DeviceCore pass reads. The millis derive from playback-time (not wall-clock), so Avg.
+/// Speed isn't scaled by the replay-speed multiplier. Shared by the live hosts' frame loops and
 /// `obc-sim`'s headless `--png` replay.
 ///
 /// `sensors` carries the optional synthetic HR/power/cadence sources (SE8); pass
 /// [`ReplaySensors::default()`] for a plain replay. A host feeds those sources on the same playback
-/// clock **before** calling this (so a sample is stamped onto the point this tick logs).
-// Each argument models a distinct sensor seam the app tick binds together; bundling them further
-// would just relocate the same fan-out behind an opaque struct.
+/// clock **before** calling this (so a sample is stamped onto the point the pass logs).
+// Each argument models a distinct sensor seam the pass binds together; bundling them further would
+// just relocate the same fan-out behind an opaque struct.
 #[allow(clippy::too_many_arguments)]
-pub fn replay_step<'s>(
-    app: &mut App,
+pub fn replay_advance<'s>(
     player: &'s mut GpxPlayer,
     baro: &'s mut BaroSensor,
     compass: Option<&'s mut dyn CompassSource>,
     dt: f64,
-    route: Option<&RouteReader>,
     track: Option<&'s mut dyn TrackSink>,
     sensors: ReplaySensors<'s>,
-) {
+) -> (RideClock, Sensors<'s>) {
     // The sensor handles share one lifetime `'s` so the invariant `Sensors<'a>` can bind them
     // together. The compass only matters while stationary (GPS course drops to `None`).
     player.advance(dt);
@@ -61,5 +57,5 @@ pub fn replay_step<'s>(
         cadence: sensors.cadence,
         ..Sensors::new(player)
     };
-    app.tick(RideClock(now_ms), sensors, route);
+    (RideClock(now_ms), sensors)
 }

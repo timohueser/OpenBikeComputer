@@ -201,12 +201,15 @@ impl LegacyOwned {
             LegacyOwned::StoreRevision
             | LegacyOwned::ObjectNamespace
             | LegacyOwned::TripCascade
-            | LegacyOwned::SidecarAck => "#1397 S6 — the store and retention executors report revisions and results",
-            LegacyOwned::RecorderJournal | LegacyOwned::RideCloseAck => {
-                "#1397 S6 — the recorder executor owns the journal and answers with the ride identity"
+            | LegacyOwned::SidecarAck => {
+                "#1397 S6a/S6b — the store and retention executors report revisions and results"
             }
-            LegacyOwned::PlannerPacing | LegacyOwned::PlannerRelease | LegacyOwned::BondAck => {
-                "#1397 S6 — the platform executors run bounded steps and answer every effect"
+            LegacyOwned::RecorderJournal | LegacyOwned::RideCloseAck => {
+                "#1398 — the recorder domain owns the journal and answers with the ride identity"
+            }
+            LegacyOwned::BondAck => "#1398/#1400 — the bond domain answers its own removal",
+            LegacyOwned::PlannerPacing | LegacyOwned::PlannerRelease => {
+                "#1400 — the board's typed effect staging paces the planner and answers every release"
             }
             LegacyOwned::WeatherProtocol => "#1401 — the weather storage and request cutover, after FS7",
         }

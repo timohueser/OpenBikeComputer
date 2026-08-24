@@ -22,7 +22,7 @@
 use obc_app::{App, AppState};
 use obc_elevation::{TerrainElevation, DEFAULT_TILE_SLOTS};
 use obc_formats::io::SliceSource;
-use obc_host_core::{replay_step, ReplaySensors};
+use obc_host_core::{replay_advance, ReplaySensors};
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 
 /// The device's default GPS cadence — the rate [`obc_app::altitude::OFFSET_ALPHA`] is stated at.
@@ -70,7 +70,8 @@ fn ride(drift_m_per_h: f32, at_s: &[f64], map: &[u8], terrain_bytes: &[u8], gpx:
     let mut next = 0usize;
     let mut t = 0.0;
     while next < at_s.len() {
-        replay_step(&mut app, &mut player, &mut baro, None, FIX_DT_S, None, None, ReplaySensors::default());
+        let (ride, sensors) = replay_advance(&mut player, &mut baro, None, FIX_DT_S, None, ReplaySensors::default());
+        app.tick(ride, sensors, None);
         // The EL8 drain: one terrain read per fresh fix, never per frame.
         app.sample_terrain(&mut terrain);
         t += FIX_DT_S;
@@ -195,7 +196,8 @@ fn without_terrain_the_shown_elevation_is_the_raw_barometer() {
     player.seek(0.0);
     player.play();
     for _ in 0..600 {
-        replay_step(&mut app, &mut player, &mut baro, None, FIX_DT_S, None, None, ReplaySensors::default());
+        let (ride, sensors) = replay_advance(&mut player, &mut baro, None, FIX_DT_S, None, ReplaySensors::default());
+        app.tick(ride, sensors, None);
         app.sample_terrain(&mut null);
     }
     assert!(!app.activity.altitude().settled(), "no residual can arrive through the null source");

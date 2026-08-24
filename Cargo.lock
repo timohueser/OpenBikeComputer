@@ -3137,6 +3137,7 @@ dependencies = [
  "obc-app",
  "obc-display",
  "obc-host-core",
+ "obc-ports",
  "obc-reader",
  "obc-render",
  "obc-replay",

@@ -223,6 +223,11 @@ pub(crate) struct PassState {
     store: Option<StoreRevision>,
     /// The store revision the catalog last announced to retention, so one commit is announced once.
     announced: Option<Revision>,
+    /// A store commit has been seen and not yet become a [`CatalogIntent::Refresh`]. The edge is
+    /// detected at stage 2 and admitted at stage 6, so a catalog that is busy delays the re-read
+    /// rather than losing the commit. One bit, and the only pending copy of it — the fact itself is
+    /// a level nobody stores twice.
+    refresh_owed: bool,
     /// The newest link state seen, so an unchanged level does not re-run the link's card sweep.
     link: Option<crate::ble::BleStatus>,
     /// The active route's durable identity as of the last pass — Navigator's activation edge.
@@ -243,6 +248,7 @@ impl PassState {
             connections: Connections::new(),
             store: None,
             announced: None,
+            refresh_owed: false,
             link: None,
             active_route: None,
             capabilities: Capabilities::NONE,
@@ -366,7 +372,7 @@ impl App {
     /// Stage 2 — consume external facts and the derived inputs that answer a need.
     ///
     /// Levels ([`store_revision`](ExternalFacts::store_revision), transfer, link, installed weather)
-    /// are read and compared against what the coordinator last saw, so one commit is one cue. The
+    /// are read and compared against what the coordinator last saw, so one commit is one intent. The
     /// one-shots (uploads, warnings, this boot's update result) are taken. A warning goes to the
     /// fault connection rather than straight to a card: every fault raised in a pass reaches the
     /// rider together at stage 13.
@@ -375,7 +381,10 @@ impl App {
         if let Some(store) = facts.store_revision() {
             if self.pass.store != Some(store) {
                 self.pass.store = Some(store);
-                self.note_store_changed();
+                // The fact says the store moved; it does not order a re-read. `CatalogIntent::Refresh`
+                // does, and stage 6 admits it — so a commit that arrives while the catalog is busy
+                // costs a delay rather than a missed rescan.
+                self.pass.refresh_owed = true;
             }
         }
         if let Some(state) = facts.transfer() {
@@ -412,7 +421,9 @@ impl App {
 
     /// Stage 3 — apply gestures, sensors and time.
     ///
-    /// Gestures land in the order they were recognised. The hold-cancel latch a stack change arms is
+    /// Gestures land in the order they were recognised, and a `Hold`/`BackHold` already in the batch
+    /// behind a stack-changing gesture is dropped rather than delivered to the screen that replaced
+    /// its target (#480). The hold-cancel latch a stack change arms is
     /// deliberately **not** drained here: it belongs to the board's input plane, which drains it
     /// between passes (see the module docs).
     fn stage_input(
@@ -424,9 +435,7 @@ impl App {
     ) {
         self.pass.record(PassStage::Input);
         self.ui.now_ms = now.ui.0;
-        for &gesture in gestures {
-            self.apply_gesture(gesture);
-        }
+        self.apply_gesture_batch(gestures);
         self.advance_inputs(now.ride, sensors, route);
     }
 
@@ -533,7 +542,8 @@ impl App {
 
     /// Stage 6 — advance `CatalogMachine`.
     ///
-    /// The rider's own request outranks an expiry, exactly as the legacy drain has it: a hold-to-
+    /// The rider's own request outranks an expiry, and both outrank the store's own re-read, exactly
+    /// as the legacy drain has it: a hold-to-
     /// delete is something someone is watching happen. An admitted deletion of the **followed**
     /// route reaches Navigator in this pass — the rider is not left being guided along a route the
     /// device has decided to remove — and a store commit is announced to retention for the next one.
@@ -551,6 +561,11 @@ impl App {
             if let Err(full) = self.admit_catalog_intent(intent) {
                 let _ = self.pass.connections.expiry.try_put(full.rejected);
             }
+        }
+        // The store's own re-read goes last: a rider watching a delete happen outranks bookkeeping,
+        // and the level simply stays owed until the domain has room for it.
+        if self.pass.refresh_owed && self.admit_catalog_intent(CatalogIntent::Refresh).is_ok() {
+            self.pass.refresh_owed = false;
         }
         if let Some(store) = self.pass.store {
             if self.pass.announced != Some(store.revision) {
@@ -1114,6 +1129,54 @@ mod tests {
         assert!(!app.pass.connections.catalog_identity.is_pending(), "one commit, one announcement");
     }
 
+    /// A store commit becomes a **catalog intent**, not a rescan cue: the fact reports that the
+    /// store moved, `CatalogIntent::Refresh` is what orders the re-read, and one commit orders
+    /// exactly one.
+    #[test]
+    fn a_store_commit_raises_one_catalog_refresh() {
+        let mut app = navigating();
+        quiet(&mut app, 10);
+
+        let mut facts = committed(4);
+        let plan = pass_with(&mut app, 20, &[], &mut OutcomeSlots::new(), &mut facts);
+        let mut effects = plan.effects;
+        let effect = effects.catalog.take().expect("the commit ordered a re-read");
+        assert!(matches!(effect, CatalogEffect::ReadCatalog { .. }));
+        assert_eq!(app.store_changed_pending(), 0, "and the legacy rescan cue was never latched");
+
+        // The same revision again is the same edge, and the answered read starts nothing new.
+        let mut outcomes = OutcomeSlots::new();
+        outcomes
+            .catalog
+            .try_put(CatalogOutcome::CatalogRead { token: effect.token(), revision: Revision::new(4) })
+            .unwrap();
+        let mut same = committed(4);
+        let plan = pass_with(&mut app, 30, &[], &mut outcomes, &mut same);
+        assert!(plan.effects.catalog.is_empty(), "one commit, one refresh");
+
+        // A busy catalog delays the refresh rather than losing it: the rider's delete goes first
+        // and the commit's own re-read follows on a later pass.
+        app.activity.request_route_delete(1);
+        let mut next = committed(5);
+        let plan = pass_with(&mut app, 40, &[], &mut OutcomeSlots::new(), &mut next);
+        let mut effects = plan.effects;
+        let delete = effects.catalog.take().expect("the rider outranks the re-read");
+        assert!(matches!(delete, CatalogEffect::RemoveObject { object: 22, .. }));
+
+        let mut outcomes = OutcomeSlots::new();
+        outcomes
+            .catalog
+            .try_put(CatalogOutcome::ObjectRemoved { token: delete.token(), object: 22, existed: true })
+            .unwrap();
+        let mut none = ExternalFacts::NONE;
+        let plan = pass_with(&mut app, 50, &[], &mut outcomes, &mut none);
+        let mut effects = plan.effects;
+        assert!(
+            matches!(effects.catalog.take(), Some(CatalogEffect::ReadCatalog { .. })),
+            "the delayed refresh went out once the domain had room"
+        );
+    }
+
     // ==================== outcomes ====================
 
     /// A domain consumes its own outcome and rejects one it has moved past. Only a domain that owns
@@ -1342,7 +1405,7 @@ mod tests {
         // Levels reached their owners.
         assert_eq!(app.weather.installed(), Some(installed), "the installed data reached WeatherDomain");
         assert_eq!(app.state.device.ble_link, crate::ble::BleLink::Connected, "the link state reached the UI");
-        assert!(app.store_changed_pending() > 0, "the commit became the catalog's refresh cue");
+        assert_eq!(app.store_changed_pending(), 0, "the commit is an intent, never the legacy rescan cue");
 
         // One-shots were consumed rather than left for a second delivery.
         assert!(facts.take_route_upload().is_none() && facts.take_trip_upload().is_none());
