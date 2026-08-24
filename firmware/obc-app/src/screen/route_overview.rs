@@ -34,7 +34,9 @@ use obc_render::{
     Surface,
 };
 
+use super::vocab::band::{ElevationBand, PeakLabel};
 use super::vocab::chrome::{empty_state, stroke2, title_frame, LIST_TOP};
+use super::vocab::pager::ContentPager;
 use super::vocab::rows::{draw_guarded_rows, ledger_row, GuardedRowsGeometry, MenuItem};
 use crate::activity::Activity;
 use crate::input::Gesture;
@@ -80,10 +82,6 @@ const OPTION_GAP: i32 = 8;
 /// shared with the POI detail's `Route here` footer (see [`draw_start_button`]).
 const BUTTON_H: i32 = 34;
 
-/// The stat-ledger pager's dwell — a plain fixed constant (not user-configurable): each of the two
-/// pages shows this long before the auto-flip (T3). Reuses the Statistics screen-tick machinery.
-const PAGE_FLIP_MS: u32 = 5_000;
-
 /// The two action rows the cursor walks (owner review round 2): the START RIDE bar and, when the
 /// route is deletable, the guarded Delete-route button under it.
 const START: usize = 0;
@@ -102,13 +100,9 @@ pub struct RouteOverviewScreen {
     /// omits the elevation band and the climb/descent rows rather than showing a flat band and
     /// "+0 m" (the locked "length only" overview).
     computed: bool,
-    /// Which content-paired page is showing (0 = track shape + DISTANCE, 1 = elevation band +
-    /// CLIMB + DESCENT); auto-flipped by [`tick_timers`](Self::tick_timers). Unused on the
-    /// computed (length-only) page.
-    page: usize,
-    /// Instant of the last page flip (wrap-safe). `None` until the first tick anchors it, so the
-    /// first page gets a full dwell on entry — mirrors the Statistics pager.
-    last_flip_ms: Option<u32>,
+    /// The content-paired pager: page one is the track shape + DISTANCE, page two the elevation
+    /// band + CLIMB + DESCENT. Unused on the computed (length-only) page, which never flips.
+    pager: ContentPager,
     /// The action-row cursor ([`START`] / [`DELETE`], owner review round 2). Entry selects START;
     /// meaningful only while the Delete row exists — with it hidden the cursor pins to START.
     selected: usize,
@@ -117,13 +111,13 @@ pub struct RouteOverviewScreen {
 impl RouteOverviewScreen {
     /// Preview catalog route `route`; `prev_active` is the `active_route` to restore on cancel.
     pub fn new(route: usize, prev_active: Option<usize>) -> Self {
-        RouteOverviewScreen { route, prev_active, computed: false, page: 0, last_flip_ms: None, selected: START }
+        RouteOverviewScreen { route, prev_active, computed: false, pager: ContentPager::default(), selected: START }
     }
 
     /// Preview a **computed** route (the router's output): length only — no elevation band, no
     /// climb/descent rows. Opened by [`App::apply_event`](crate::App::apply_event).
     pub fn computed(route: usize, prev_active: Option<usize>) -> Self {
-        RouteOverviewScreen { route, prev_active, computed: true, page: 0, last_flip_ms: None, selected: START }
+        RouteOverviewScreen { route, prev_active, computed: true, pager: ContentPager::default(), selected: START }
     }
 
     /// Whether the guarded **Delete route** row exists — a real, non-computed catalog route
@@ -146,22 +140,13 @@ impl RouteOverviewScreen {
     }
 
     /// Content-paired pager tick: flip the two pages (track shape + DISTANCE / elevation band +
-    /// CLIMB + DESCENT) every [`PAGE_FLIP_MS`], reporting the residual dwell as the next wake
-    /// (the Statistics auto-flip machinery). The computed (length-only) page has a single fixed
+    /// CLIMB + DESCENT) on the shared dwell. The computed (length-only) page has a single fixed
     /// layout and no pager, so it never flips.
     pub fn tick_timers(&mut self, now_ms: u32) -> ScreenTick {
         if self.computed {
             return ScreenTick::idle();
         }
-        let last = *self.last_flip_ms.get_or_insert(now_ms);
-        let changed = now_ms.wrapping_sub(last) >= PAGE_FLIP_MS;
-        if changed {
-            self.page ^= 1; // two pages
-            self.last_flip_ms = Some(now_ms);
-        }
-        let anchor = self.last_flip_ms.unwrap_or(now_ms);
-        let next = PAGE_FLIP_MS.saturating_sub(now_ms.wrapping_sub(anchor)).max(1);
-        ScreenTick { changed, next_wake_ms: Some(next), region: None }
+        self.pager.tick(now_ms)
     }
 
     /// Re-point both held indices after a live catalog rescan (#450). A vanished preview subject
@@ -301,42 +286,20 @@ impl RouteOverviewScreen {
         // The content-paired media band (owner review round 3): the auto-flip swaps this WITH the
         // stat rows below — page A the route's track-shape preview, page B the elevation profile.
         // Both draw in the same slot (`band_top`..[`BAND_BOT`]), so nothing jumps on the flip.
-        let page_b = self.page & 1 == 1;
+        let page_b = self.pager.on_second_page();
         if !page_b {
             // Page A: the host-decimated track shape (the NEW ROUTE page's sketch, aspect-fit,
             // start disc + destination diamond). An empty slice (the frame or two before the host
             // hands it in) just leaves the slot blank, like the shape preview always has.
             draw_route_preview(cv, w, band_top, BAND_BOT, rx.nav_preview);
         } else if let Some(profile) = rx.profile {
-            // Page B: the full-route elevation band — the Statistics silhouette without any of
-            // its live layers (no traveled shading, no cursor, no progress bar). A small peak
-            // label gives the vertical scale meaning.
-            let win = profile.window(0.5, 1.0, chart_w.max(1) as u32);
-            let span = (win.hi_frac - win.lo_frac).max(1e-6);
-            let span_ele = (profile.max_ele_m - profile.min_ele_m).max(1) as f32;
-            let ele_to_y = |e: i16| -> i32 {
-                let t = ((e - profile.min_ele_m) as f32 / span_ele).clamp(0.0, 1.0);
-                BAND_BOT - (t * (BAND_BOT - band_top) as f32) as i32
-            };
-            let mut prev_top: Option<i32> = None;
-            for px in 0..chart_w {
-                let f = win.lo_frac + span * (px as f32 / chart_w as f32);
-                let top_y = ele_to_y(profile.sample(win.level, f).1);
-                let x = chart_x + px;
-                cv.vline(x, top_y, BAND_BOT - top_y + 1, 1, PARCHMENT_SHADE);
-                // Amber top line, connected to the previous column so steep sections stay solid.
-                let (y0, y1) = prev_top.map_or((top_y, top_y), |p| (p.min(top_y), p.max(top_y)));
-                cv.vline(x, y0 - 1, (y1 - y0) + 2, 1, AMBER);
-                prev_top = Some(top_y);
-            }
-            // Peak elevation label, kept inside the band edges.
-            let units = rx.settings.units;
-            let mut peak: heapless::String<10> = heapless::String::new();
-            let _ = write!(peak, "{} {}", units.elev(profile.peak_ele_m() as f32) as i32, units.elev_label());
-            let peak_x =
-                (chart_x + (profile.peak_frac() * chart_w as f32) as i32).clamp(chart_x + 30, chart_x + chart_w - 30);
-            let peak_y = (ele_to_y(profile.peak_ele_m()) - 22).max(band_top - 2);
-            cv.text(&peak, Point::new(peak_x, peak_y), Font::Label, TextAlign::Center, SUBTEXT);
+            // Page B: the shared full-route elevation band without any of Statistics' live layers
+            // (no traveled shading, no cursor, no progress bar). A peak label over the apex gives
+            // the vertical scale meaning.
+            let band = ElevationBand::whole_route(profile, rect(chart_x, band_top, chart_w, BAND_BOT - band_top + 1));
+            band.fill(cv, PARCHMENT_SHADE);
+            band.stroke(cv, AMBER);
+            band.peak_label(cv, rx.settings.units, PeakLabel::OverPeak);
         } else {
             // Route still streaming open: keep the band's footprint so the page doesn't jump.
             cv.text(
@@ -691,25 +654,23 @@ mod tests {
         assert_eq!(act.take_route_delete(), None);
     }
 
-    /// The two-row pager flips exactly at the dwell deadline and only once, re-arming a fresh dwell —
-    /// the Statistics auto-flip contract. The first poll anchors the dwell (page 0 gets a full one).
+    /// The page the pager selects is the page the content is paired with: the shape/DISTANCE page
+    /// first, the elevation/CLIMB page after a dwell. The flip timing itself is the shared pager's
+    /// (`vocab::pager`); what this pins is that this screen delegates it and reads it back.
     #[test]
-    fn pager_flips_once_at_the_deadline() {
+    fn the_pager_drives_this_screen_s_paired_pages() {
+        use super::super::vocab::pager::PAGE_FLIP_MS;
         let mut scr = RouteOverviewScreen::new(0, None);
-        assert_eq!(scr.page, 0);
         assert!(!scr.tick_timers(0).changed, "the first poll only anchors the dwell");
-        assert!(!scr.tick_timers(PAGE_FLIP_MS - 1).changed, "still dwelling just before the deadline");
-        assert_eq!(scr.page, 0);
-        assert!(scr.tick_timers(PAGE_FLIP_MS).changed, "flips exactly at the deadline");
-        assert_eq!(scr.page, 1, "now on the elevation (CLIMB + DESCENT) page");
-        assert!(!scr.tick_timers(PAGE_FLIP_MS + 1).changed, "and only once — a fresh dwell re-armed");
-        assert!(scr.tick_timers(2 * PAGE_FLIP_MS).changed, "flips back at the next deadline");
-        assert_eq!(scr.page, 0);
+        assert!(!scr.pager.on_second_page(), "entry shows the track shape + DISTANCE page");
+        assert!(scr.tick_timers(PAGE_FLIP_MS).changed, "the dwell flips the page");
+        assert!(scr.pager.on_second_page(), "now on the elevation (CLIMB + DESCENT) page");
     }
 
     /// The computed page has a single fixed layout and no pager, so its tick never self-dirties.
     #[test]
     fn computed_overview_never_flips() {
+        use super::super::vocab::pager::PAGE_FLIP_MS;
         let mut scr = RouteOverviewScreen::computed(0, None);
         assert!(!scr.tick_timers(PAGE_FLIP_MS).changed);
         assert_eq!(scr.tick_timers(PAGE_FLIP_MS), ScreenTick::idle());
