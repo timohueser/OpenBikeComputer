@@ -2,7 +2,14 @@
 
 The nRF crate is Thumb-only, so these checks pin the glue that its target build type-checks but a
 host unit test cannot execute: a successful engine commit must cross the catalog rescan before the
-typed app event, while transient reads must keep the prior snapshot and re-arm that rescan.
+upload fact it produces, while transient reads must keep the prior snapshot and re-arm that rescan.
+
+**Re-anchored by #1397 S6b**, which is a rename of the sites rather than a change of the rules. The
+board drains no `HostCommand`s any more: the rescan is `CatalogEffect::ReadCatalog`'s body
+(`read_catalogs`), the delivery is `note_catalog_uploads` writing `ExternalFacts` for the *next*
+pass, and the re-arm a partial read owes is the executor's own `rescan_owed` rather than a
+re-injected `HostEvent::StoreChanged`. The ordering each test asserts is unchanged, which is the
+point of pinning it here at all.
 """
 
 from pathlib import Path
@@ -28,15 +35,15 @@ class Fs7BoardCompositionTests(unittest.TestCase):
         self.assertIn("ObjectKind::Trip => Some(CatalogUploadKind::Trip)", publish)
         self.assertIn("note_catalog_upload(CatalogUpload::new(kind, id.0, replaced))", publish)
 
-        delivery = body(RIDE, "fn apply_catalog_uploads", "/// A `no_std`")
-        self.assertIn("HostEvent::RouteUploaded", delivery)
-        self.assertIn("HostEvent::TripUploaded", delivery)
+        delivery = body(RIDE, "fn note_catalog_uploads", "/// **`CatalogEffect::ReadCatalog`")
+        self.assertIn("note_route_upload", delivery)
+        self.assertIn("note_trip_upload", delivery)
         self.assertIn("replaced: upload.replaced()", delivery)
 
-        rescan = body(RIDE, "if host_pass.rescan {", "// ── On-device route delete")
+        rescan = body(RIDE, "fn read_catalogs", "/// A `no_std`")
         routes = rescan.index("load_routes(flat, app)")
         trips = rescan.index("load_trips(flat, app)")
-        events = rescan.index("apply_catalog_uploads(app)")
+        events = rescan.index("note_catalog_uploads(app, facts)")
         self.assertLess(routes, trips)
         self.assertLess(trips, events, "typed upload ids must resolve against the newly-fed snapshots")
 
@@ -56,13 +63,13 @@ class Fs7BoardCompositionTests(unittest.TestCase):
         self.assertIn("UPLOAD_EVENTS_LOSS.store(true", note)
         self.assertNotIn("advisory deferred", note, "a dropped fact is loss, not deferred work")
 
-        delivery = body(RIDE, "fn apply_catalog_uploads", "/// A `no_std`")
+        delivery = body(RIDE, "fn note_catalog_uploads", "/// **`CatalogEffect::ReadCatalog`")
         loss = delivery.index("take_catalog_upload_loss()")
         drain = delivery.index("while let Some(upload)")
         self.assertLess(loss, drain, "the conservative refresh precedes retained facts in commit order")
         fallback = delivery[loss:drain]
         self.assertIn("active_route_index()", fallback)
-        self.assertIn("HostEvent::RouteUploaded", fallback)
+        self.assertIn("note_route_upload", fallback)
         self.assertIn("replaced: true", fallback)
 
     def test_transient_catalog_reads_preserve_snapshot_and_rearm_retry(self) -> None:
@@ -77,9 +84,20 @@ class Fs7BoardCompositionTests(unittest.TestCase):
             self.assertLess(abort, update, "a retryable read must not publish a partial replacement snapshot")
             self.assertIn("Ok(Err(_))", section, "definitively malformed objects remain omittable")
 
-        rescan = body(RIDE, "if host_pass.rescan {", "// ── On-device route delete")
+        rescan = body(RIDE, "fn read_catalogs", "/// A `no_std`")
         self.assertIn("if routes_loaded && trips_loaded", rescan)
-        self.assertIn("app.apply_event(obc_app::HostEvent::StoreChanged)", rescan)
+        self.assertIn("routes_loaded && trips_loaded && rides_loaded", rescan)
+
+        # The re-arm a partial read owes. It is no longer a re-injected `HostEvent::StoreChanged`:
+        # the domain is answered `Failed { Unreadable }` (so it stays free to serve the next delete)
+        # and the *re-read* is the executor's own, because a store that did not move raises no new
+        # revision and would therefore order no second refresh. Both halves are pinned, because
+        # either one alone is the bug: the answer without the retry is a menu stuck until the next
+        # commit, and the retry without the answer is a catalog domain wedged forever.
+        served = body(RIDE, "if let Some(effect) = exec.effects.catalog.take() {", "// The in-flight removal")
+        self.assertIn("exec.rescan_owed = !read", served)
+        self.assertIn("CatalogOutcome::Failed { token, error: CatalogError::Unreadable }", served)
+        self.assertIn("} else if exec.rescan_owed {", served)
 
     def test_menu_loader_retains_only_bounded_object_open_keys(self) -> None:
         head = body(FLAT_STORE, "struct CatalogHead", "fn retain_newest")
