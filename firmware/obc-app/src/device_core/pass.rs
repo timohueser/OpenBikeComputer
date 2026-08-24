@@ -63,10 +63,9 @@ use obc_ports::{InputClock, RideClock, Sensors};
 use obc_route::RouteReader;
 
 use crate::catalog_state::CatalogIntent;
-use crate::device_core::connections::{ActiveRouteRemoved, CatalogIdentityChanged, RideClosed, RouteActivated};
+use crate::device_core::connections::{ActiveRouteRemoved, CatalogIdentityChanged, RouteActivated};
 use crate::dirty::Dirty;
 use crate::input::Gesture;
-use crate::recorder::RecorderIntent;
 use crate::retention::SweepKind;
 use crate::App;
 
@@ -411,6 +410,10 @@ impl App {
     /// [`CatalogIntent`], not a store operation. Every intent is offered into a slot that is
     /// **checked first** — an intent that cannot be delivered leaves the rider's one-shot exactly
     /// where it was, so nothing is lost by a busy pass.
+    ///
+    /// The rider's ride *close* is deliberately not taken here. Recorder has no machine yet, so
+    /// there is no domain to name it to; taking the one-shot anyway would only remove it from the
+    /// legacy drain that still performs it, and the rider's save would be destroyed on the way.
     fn stage_ui(&mut self, now: PassClock) {
         self.pass.record(PassStage::Ui);
         self.advance_animations(now.ui);
@@ -429,21 +432,11 @@ impl App {
                 let _ = self.pass.connections.ui_catalog.try_put(intent);
             }
         }
-        if self.pass.connections.ui_recorder.is_empty() {
-            if let Some(action) = self.activity.take_track_action() {
-                let intent = match action {
-                    crate::TrackAction::Save => RecorderIntent::Save,
-                    crate::TrackAction::Discard => RecorderIntent::Discard,
-                };
-                let _ = self.pass.connections.ui_recorder.try_put(intent);
-            }
-        }
     }
 
     /// Stage 5 — advance `RetentionMachine`.
     ///
-    /// Its deferred inbox first: what Navigator, Recorder and the catalog decided *after* it ran
-    /// last pass. Then the domain's own advance, then the one expiry intent and the one sidecar
+    /// Its deferred inbox first: what Navigator and the catalog decided *after* it ran last pass. Then the domain's own advance, then the one expiry intent and the one sidecar
     /// write it may have this pass. The expiry goes into a same-pass slot because the catalog runs
     /// next — an auto-expired object leaves by exactly the path a rider-deleted one does.
     ///
@@ -457,9 +450,6 @@ impl App {
         self.pass.record(PassStage::Retention);
         if let Some(activated) = self.pass.connections.route_activated.take() {
             self.with_retention(|retention, view| retention.note_route_activated(activated.route, view));
-        }
-        if self.pass.connections.ride_closed.take().is_some() {
-            self.retention.force_next_sweep();
         }
         if self.pass.connections.catalog_identity.take().is_some() {
             self.retention.force_next_sweep();
@@ -478,9 +468,35 @@ impl App {
             for kind in [SweepKind::StampRoute, SweepKind::StampRide] {
                 if let Some(effect) = self.with_retention(|retention, view| retention.next_metadata_effect(kind, view))
                 {
+                    self.mirror_stamp(effect);
                     let _ = effects.retention.try_put(effect);
                     break;
                 }
+            }
+        }
+    }
+
+    /// Mirror a decided sidecar stamp into the resident view, the moment the effect leaves.
+    ///
+    /// Retention re-derives its candidates from that view, so without this the *same* stamp is
+    /// rediscovered on the pass after the executor answers it — an endless sidecar write, one per
+    /// pass, for the rest of the boot, on a device whose whole power budget is not waking up.
+    ///
+    /// The value written is the one the effect carries, not a guess: the durable write is still the
+    /// executor's, and a failure re-queues the stamp through
+    /// [`apply_outcome`](crate::retention::RetentionMachine::apply_outcome) as before. The legacy
+    /// drain has always done this at `App::retention_stamp_command`; this is the same mirror on the
+    /// path that replaces it.
+    fn mirror_stamp(&mut self, effect: crate::retention::RetentionEffect) {
+        match effect {
+            crate::retention::RetentionEffect::WriteRouteMetadata { id, meta, .. } => {
+                self.catalogs.stamp_route_last_used(id, meta.last_used_utc);
+            }
+            crate::retention::RetentionEffect::WriteRideMetadata { id, synced_at, .. } => {
+                // Both, because a ride outside the newest-32 display catalog must stop re-enqueuing
+                // its stamp too (finding #876-2).
+                self.catalogs.stamp_ride_synced_at(id, synced_at);
+                self.catalogs.stamp_inventory_synced_at(id, synced_at);
             }
         }
     }
@@ -509,8 +525,7 @@ impl App {
         if let Some(store) = self.pass.store {
             if self.pass.announced != Some(store.revision) {
                 self.pass.announced = Some(store.revision);
-                let _ =
-                    self.pass.connections.catalog_identity.defer(CatalogIdentityChanged { revision: store.revision });
+                self.pass.connections.catalog_identity.defer(CatalogIdentityChanged { revision: store.revision });
             }
         }
         if let Some(effect) = self.catalogs.next_effect() {
@@ -532,18 +547,17 @@ impl App {
 
     /// Stage 7 — advance `Recorder`.
     ///
-    /// The ride session itself accumulates with the fix in stage 3, and the close reaches the
-    /// platform on the legacy path until Recorder's machine lands (#1397). What the pass owns is the
-    /// connection: the ride inventory is about to change and retention hears about it next pass. A
-    /// full deferred slot leaves the intent where it was, and the immediate next wake is what brings
-    /// it back.
+    /// Nothing yet: Recorder's machine arrives with #1397 S6, and until it does the ride lifecycle
+    /// stays entirely on the legacy path — the rider's finish one-shot is left in
+    /// [`Activity`](crate::Activity) for `drain_host_commands` to turn into a
+    /// [`FinishTrack`](crate::HostCommand::FinishTrack), exactly as it always was.
+    ///
+    /// The stage is a *position*, held so the order is fixed before the machines land. It is
+    /// deliberately not a connection into a domain that cannot act: such a connection destroys what
+    /// it carries — the pass would take the rider's Save at stage 4 and have nowhere to put it here,
+    /// so the ride would never be finalized and no executor would be told.
     fn stage_recorder(&mut self) {
         self.pass.record(PassStage::Recorder);
-        let Some(intent) = self.pass.connections.ui_recorder.take() else { return };
-        let closed = RideClosed { discarded: matches!(intent, RecorderIntent::Discard) };
-        if self.pass.connections.ride_closed.defer(closed).is_err() {
-            let _ = self.pass.connections.ui_recorder.try_put(intent);
-        }
     }
 
     /// Stage 8 — advance `Navigator`.
@@ -564,7 +578,7 @@ impl App {
         if active != self.pass.active_route {
             self.pass.active_route = active;
             if let Some(route) = active {
-                let _ = self.pass.connections.route_activated.defer(RouteActivated { route });
+                self.pass.connections.route_activated.defer(RouteActivated { route });
             }
         }
     }
@@ -937,32 +951,54 @@ mod tests {
     /// A deferred value in flight makes the pass ask for another one **before sleep**: the work is
     /// already decided, and parking on it would leave it sitting until the next rider input.
     ///
-    /// The other half of the rule — a *full* slot handing the value back so its producer keeps it —
-    /// is the [`Deferred`](super::super::connections::Deferred) contract, exercised in
-    /// [`connections`](super::super::connections). It cannot arise from this wiring, because every
-    /// consumer's stage runs on every pass.
+    /// Written on the activation, which is the deferred producer this wiring actually has: Navigator
+    /// runs after retention, so an activation cannot reach backwards and waits a pass.
     #[test]
     fn a_deferred_value_forces_another_pass_before_sleep() {
+        let mut app = navigating(); // route 0 is active before the first pass
+        app.activity.mode = Mode::Riding;
+
+        let plan = quiet(&mut app, 10);
+        assert!(app.pass.connections.route_activated.is_pending(), "the activation waits for retention");
+        assert!(plan.immediate && plan.next_wake_ms == Some(0), "so the runtime comes straight back");
+
+        // The next pass consumes it before anything else, and then there is nothing to hurry for.
+        let plan = quiet(&mut app, 20);
+        assert!(!app.pass.connections.route_activated.is_pending());
+        assert!(!plan.immediate && plan.next_wake_ms != Some(0));
+
+        // A second activation right behind the first is deposited just the same.
+        app.activate_route(1);
+        let plan = quiet(&mut app, 30);
+        assert!(app.pass.connections.route_activated.is_pending() && plan.immediate);
+    }
+
+    /// The rider's ride close stays on the legacy path, untouched by the pass.
+    ///
+    /// A stage-4 take with nowhere to put it at stage 7 leaves the ride unfinalized and no executor
+    /// told, so there is no connection to take it — and this is what "the close reaches the platform
+    /// on the legacy path" has to mean to be true.
+    #[test]
+    fn a_ride_close_survives_the_pass_for_the_legacy_drain() {
         let mut app = App::new(AppState::new(0, 0, 1.0));
         app.activity.mode = Mode::Riding;
         quiet(&mut app, 10);
 
         app.activity.request_track(crate::TrackAction::Save);
         let plan = quiet(&mut app, 20);
-        assert!(app.pass.connections.ride_closed.is_pending(), "the close waits for retention");
-        assert!(plan.immediate && plan.next_wake_ms == Some(0), "so the runtime comes straight back");
+        assert!(app.activity.has_track_action(), "the pass left the rider's finish where it was");
+        assert!(plan.effects.recorder.is_empty(), "and emitted no recorder effect it cannot answer");
 
-        // The next pass consumes it before anything else, and then there is nothing to hurry for.
-        let plan = quiet(&mut app, 30);
-        assert!(!app.pass.connections.ride_closed.is_pending());
-        assert!(!plan.immediate && plan.next_wake_ms != Some(0));
-
-        // A second close right behind the first is delivered just the same — nothing was lost to
-        // the pass that was already carrying one.
-        app.activity.request_track(crate::TrackAction::Discard);
-        let plan = quiet(&mut app, 40);
-        assert!(app.pass.connections.ride_closed.is_pending() && plan.immediate);
-        assert!(app.pass.connections.ui_recorder.is_empty(), "the intent reached its domain");
+        let mut mail: crate::HostMailbox = crate::HostMailbox::new();
+        let _ = app.drain_host_commands(&mut mail);
+        let mut drained = Vec::new();
+        while let Some(command) = mail.pop() {
+            drained.push(command);
+        }
+        assert!(
+            drained.contains(&crate::HostCommand::FinishTrack(crate::TrackAction::Save)),
+            "so the executor that performs it still gets it: {drained:?}"
+        );
     }
 
     /// The backpressure rule, end to end: two intents reach the catalog in one pass, it can admit
