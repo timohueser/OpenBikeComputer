@@ -31,10 +31,7 @@
 //!   the board's boot-outcome reconcile): a typed [`DfuFailure`](crate::dfu::DfuFailure) verdict —
 //!   never started vs reverted — plus the staged version; any press/Back dismisses.
 
-use embedded_graphics::{
-    prelude::{Point, Size},
-    primitives::Rectangle,
-};
+use embedded_graphics::prelude::Point;
 use obc_render::{
     text::{Font, TextAlign},
     Surface,
@@ -46,66 +43,19 @@ use crate::Msg;
 
 use super::vocab::chrome::{self, card_check, card_triangle, title_frame, TITLE_BAR_H};
 use super::vocab::rows::{draw_guarded_rows, GuardedRowsGeometry, MenuItem};
+use super::vocab::spinner::Spinner;
 use super::{palette, Ctx, Render, Screen, ScreenTick, Transition};
 
-// ── The shared indeterminate spinner (the Menu dial's needle, like the nav planner's #499) ──
+// ── The wait card: the shared spinner over this flow's title + caption ──
 
-/// Degrees per second the wait spinner sweeps — a calm, steady rotation, matching the nav planner.
-const SPIN_DPS: f32 = 240.0;
-/// Frame cadence the spinner repaints at *and* asks the host to wake for — smooth enough for a
-/// needle, cheap enough that the wait isn't dominated by full-chrome repaints.
-const SPIN_FRAME_MS: u32 = 66;
-/// The spinner needle's sweep radius (px).
-const NEEDLE_R: f32 = 42.0;
-/// Half-extent (px) of the reported dirty square: the sweep plus a rasterizer margin.
-const NEEDLE_CLIP_HALF: i32 = NEEDLE_R as i32 + 2;
-
-/// The square the spinning needle repaints inside, centred on `(w/2, h/2)` — everything else on a
-/// wait screen (title bar, caption) is static, so the host can clip the repaint to this disc.
-fn needle_region(w: i32, h: i32) -> Rectangle {
-    let (cx, cy) = (w / 2, h / 2);
-    Rectangle::new(
-        Point::new(cx - NEEDLE_CLIP_HALF, cy - NEEDLE_CLIP_HALF),
-        Size::new(2 * NEEDLE_CLIP_HALF as u32 + 1, 2 * NEEDLE_CLIP_HALF as u32 + 1),
-    )
-}
-
-/// A free-spinning compass needle over static chrome — the "working..." indicator shared by
-/// [`DfuCheckScreen`] and [`DfuProgressScreen`]. Advanced by real elapsed millis (so the speed
-/// reads the same at any host frame rate) and throttled to [`SPIN_FRAME_MS`] like the nav planner.
-#[derive(Debug, Default)]
-struct Spinner {
-    /// Current angle (0° = N, clockwise), advanced in [`tick`](Spinner::tick).
-    needle_deg: f32,
-    /// Clock of the previous tick, for the per-frame `dt`; `None` before the first.
-    last_ms: Option<u32>,
-    /// Clock of the last tick that claimed a repaint — the throttle's anchor.
-    last_paint_ms: Option<u32>,
-}
-
-impl Spinner {
-    /// Spin by real elapsed time and keep the host's frame cadence armed. The claim carries the
-    /// [`needle_region`] as its dirty region (the chrome never changes), so the host repaints only
-    /// the disc. `w`/`h` of 0 (no frame rendered yet) abstains (`None` = full repaint).
-    fn tick(&mut self, now_ms: u32, w: i32, h: i32) -> ScreenTick {
-        let dt = self.last_ms.map_or(0.0, |last| now_ms.wrapping_sub(last) as f32 / 1000.0);
-        self.last_ms = Some(now_ms);
-        self.needle_deg = (self.needle_deg + SPIN_DPS * dt.min(0.25)) % 360.0;
-        let due = self.last_paint_ms.is_none_or(|last| now_ms.wrapping_sub(last) >= SPIN_FRAME_MS);
-        if due {
-            self.last_paint_ms = Some(now_ms);
-        }
-        let region = (w > 0 && h > 0).then(|| needle_region(w, h));
-        ScreenTick { changed: due && dt > 0.0, next_wake_ms: Some(SPIN_FRAME_MS), region }
-    }
-
-    /// Draw the needle centred on the panel, over a title bar + a caption line.
-    fn draw(&self, cv: &mut impl Surface, rx: &Render, title: &str, caption: &str) {
-        let (w, h) = (rx.w, rx.h);
-        title_frame(cv, w, h, title, "");
-        super::menu::draw_needle(cv, Point::new(w / 2, h / 2), self.needle_deg, NEEDLE_R, 10.0);
-        cv.text(caption, Point::new(w / 2, h * 72 / 100), Font::Label, TextAlign::Center, palette::INK);
-    }
+/// Draw a DFU wait screen: the title bar, the shared spinner's needle centred on the panel, and
+/// the caption naming what the board is doing. The two waits ([`DfuCheckScreen`] and
+/// [`DfuProgressScreen`]) differ only in that copy.
+fn wait_card(cv: &mut impl Surface, rx: &Render, spin: &Spinner, title: &str, caption: &str) {
+    let (w, h) = (rx.w, rx.h);
+    title_frame(cv, w, h, title, "");
+    spin.draw_needle(cv, w, h);
+    cv.text(caption, Point::new(w / 2, h * 72 / 100), Font::Label, TextAlign::Center, palette::INK);
 }
 
 // ── Multi-line centred body copy: the shared `wrapped` (author each catalog string on one
@@ -143,7 +93,7 @@ impl DfuCheckScreen {
     }
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
-        self.spin.draw(cv, rx, rx.t(Msg::DfuTitle), rx.t(Msg::DfuChecking));
+        wait_card(cv, rx, &self.spin, rx.t(Msg::DfuTitle), rx.t(Msg::DfuChecking));
     }
 }
 
@@ -311,7 +261,7 @@ impl DfuProgressScreen {
     }
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
-        self.spin.draw(cv, rx, rx.t(Msg::DfuTitle), rx.t(Msg::DfuPreparing));
+        wait_card(cv, rx, &self.spin, rx.t(Msg::DfuTitle), rx.t(Msg::DfuPreparing));
     }
 }
 
