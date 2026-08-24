@@ -28,6 +28,7 @@ use obc_render::{
 
 use crate::input::Gesture;
 use crate::screen::vocab::chrome::{empty_state, title_frame, LIST_TOP};
+use crate::screen::vocab::fmt::write_ble_address;
 use crate::screen::vocab::rows::{row_cursor, row_rect};
 use crate::screen::{palette, Ctx, Render, Screen, Transition};
 use crate::sensors::{SensorPhase, SensorStatus};
@@ -216,7 +217,7 @@ impl SensorScanScreen {
             let x = row.top_left.x + 10;
             if hit.name.is_empty() {
                 let mut addr = heapless::String::<24>::new();
-                fmt_addr(&mut addr, &hit.addr);
+                write_ble_address(&mut addr, &hit.addr);
                 cv.text(&addr, Point::new(x, row.top_left.y + 5), Font::Body, TextAlign::Left, INK);
             } else {
                 cv.text(&hit.name, Point::new(x, row.top_left.y + 5), Font::Body, TextAlign::Left, INK);
@@ -226,17 +227,6 @@ impl SensorScanScreen {
             let _ = write!(rssi, "{} dBm", hit.rssi);
             cv.text(&rssi, Point::new(x, row.top_left.y + 30), Font::Label, TextAlign::Left, SUBTEXT);
         }
-    }
-}
-
-/// Format a BLE address big-endian (`AA:BB:…`), the conventional display order (the stored bytes are
-/// little-endian, as the wire carries them).
-fn fmt_addr(buf: &mut heapless::String<24>, addr: &[u8; 6]) {
-    for (i, b) in addr.iter().rev().enumerate() {
-        if i > 0 {
-            let _ = buf.push(':');
-        }
-        let _ = write!(buf, "{b:02X}");
     }
 }
 
@@ -403,13 +393,5 @@ mod tests {
         b.clear();
         status_line(&mut b, true, SensorStatus { phase: SensorPhase::Connected, battery: None, last_value_ms: 0 }, en);
         assert_eq!(b.as_str(), "Connected", "no battery → no percent tail");
-    }
-
-    /// Addresses render big-endian with colons, unnamed hits fall back to the address.
-    #[test]
-    fn address_formatting() {
-        let mut b = heapless::String::<24>::new();
-        fmt_addr(&mut b, &[0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
-        assert_eq!(b.as_str(), "66:55:44:33:22:11");
     }
 }

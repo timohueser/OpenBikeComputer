@@ -18,8 +18,6 @@
 //! there with it; this screen carries no hold-to-delete footer anymore, and the reclaimed band
 //! returns to list rows.
 
-use core::fmt::Write;
-
 use embedded_graphics::prelude::Point;
 use obc_render::{
     text::{Font, TextAlign},
@@ -27,11 +25,12 @@ use obc_render::{
 };
 
 use crate::input::Gesture;
-use crate::settings::{DateTime, Language, Units};
-use crate::{t, Msg};
+use crate::settings::{Language, Units};
+use crate::Msg;
 
 use super::route_menu::fit_name;
 use super::vocab::chrome::empty_state;
+use super::vocab::fmt::{write_date_short, write_distance_spaced};
 use super::vocab::list::{self, ListGeometry, Separators};
 use super::{palette, Ctx, Render, RideDetailScreen, Screen, Transition};
 
@@ -156,16 +155,16 @@ fn synced_mark(cv: &mut impl Surface, c: Point, color: u16) {
 /// **rightmost** item when the run would overflow `budget_px` (the C1 anti-cram guard: the
 /// distance drops whole in a pathological overflow; the date never does, and gaps never shrink).
 /// The worst legitimate run — a two-digit day, a four-char month (fr `JUIL`), a three-digit-km
-/// distance (whole km at that magnitude — [`write_distance`] compacts past 100) — is 16 Label
+/// distance (whole km at that magnitude — [`write_distance_spaced`] compacts past 100) — is 16 Label
 /// cells, inside the inset row's ~16.6-cell budget, so the guard normally never fires. Pure
 /// integer geometry over the monospace Label cell, so any drop is deterministic.
 fn meta_line(start_time: u32, dist_m: u32, units: Units, lang: Language, budget_px: i32) -> heapless::String<32> {
     let cw = Font::Label.char_width() as i32;
     let mut dist: heapless::String<12> = heapless::String::new();
-    write_distance(&mut dist, dist_m, units);
+    write_distance_spaced(&mut dist, dist_m, units);
 
     let mut s: heapless::String<32> = heapless::String::new();
-    write_short_date(&mut s, start_time, lang);
+    write_date_short(&mut s, start_time, lang);
     for part in [dist.as_str()] {
         let want = s.chars().count() + 3 + part.chars().count(); // " · " + the item
         if want as i32 * cw > budget_px {
@@ -175,65 +174,6 @@ fn meta_line(start_time: u32, dist_m: u32, units: Units, lang: Language, budget_
         let _ = s.push_str(part);
     }
     s
-}
-
-/// The 12 uppercase month-abbreviation keys (the `[date]` catalog section) in calendar order —
-/// the short-date table the rides rows draw from (and the Home date line reuses, T5 / #683).
-/// Distinct from the Date & Time stepper's mixed-case `[month]` table.
-const DATE_MONTHS: [Msg; 12] = [
-    Msg::DateJan,
-    Msg::DateFeb,
-    Msg::DateMar,
-    Msg::DateApr,
-    Msg::DateMay,
-    Msg::DateJun,
-    Msg::DateJul,
-    Msg::DateAug,
-    Msg::DateSep,
-    Msg::DateOct,
-    Msg::DateNov,
-    Msg::DateDec,
-];
-
-/// Append a ride's unix `start_time` as the short day-first date `D MON` (UTC) — no leading zero,
-/// the month from the per-language uppercase table. Day-first in all four languages (the locked
-/// shared shape).
-fn write_short_date<const N: usize>(s: &mut heapless::String<N>, start_time: u32, lang: Language) {
-    let d = DateTime::from_unix(start_time);
-    let _ = write!(s, "{} {}", d.day, t(DATE_MONTHS[(d.month.clamp(1, 12) - 1) as usize], lang));
-}
-
-/// Format a ride's unix `start_time` as a compact `YYYY-MM-DD` (UTC) — the list's and the Ride
-/// detail's shared date shape. (Local-time formatting would need the app's UTC offset threaded in;
-/// the date rarely differs and the extra plumbing isn't worth it.)
-pub(crate) fn fmt_date(start_time: u32) -> heapless::String<12> {
-    let d = DateTime::from_unix(start_time);
-    let mut s = heapless::String::new();
-    let _ = write!(s, "{:04}-{:02}-{:02}", d.year, d.month, d.day);
-    s
-}
-
-/// Append a compact distance in the rider's units: `NN.N km` / `NN.N mi`, compacting to a whole
-/// unit (`142 km`) from 100 up — the tenths stop meaning anything at that magnitude, and the whole
-/// figure keeps the worst legitimate metadata run inside the inset row's budget (the same
-/// compact-past-the-crossover idiom as [`write_off_route`](super::write_off_route)).
-fn write_distance<const N: usize>(s: &mut heapless::String<N>, dist_m: u32, units: Units) {
-    if units.is_imperial() {
-        use crate::settings::{FT_PER_M, FT_PER_MI};
-        let mi10 = (dist_m as f32 * FT_PER_M / FT_PER_MI as f32 * 10.0) as u32;
-        if mi10 >= 1000 {
-            let _ = write!(s, "{} mi", (mi10 + 5) / 10);
-        } else {
-            let _ = write!(s, "{}.{} mi", mi10 / 10, mi10 % 10);
-        }
-    } else {
-        let km10 = (dist_m + 50) / 100; // tenths of a km
-        if km10 >= 1000 {
-            let _ = write!(s, "{} km", (dist_m + 500) / 1000);
-        } else {
-            let _ = write!(s, "{}.{} km", km10 / 10, km10 % 10);
-        }
-    }
 }
 
 #[cfg(test)]

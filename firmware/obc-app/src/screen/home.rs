@@ -26,6 +26,7 @@ use crate::wall_clock::MinuteTicker;
 use crate::Msg;
 
 use super::vocab::chrome::{ble_glyph, BLE_GLYPH_W};
+use super::vocab::fmt::DATE_MONTHS;
 use super::{palette, Ctx, MenuScreen, Render, Screen, ScreenTick, Transition};
 
 /// The seven weekday-abbreviation catalog keys (the `[date]` section), Monday-first — the order
@@ -33,24 +34,6 @@ use super::{palette, Ctx, MenuScreen, Render, Screen, ScreenTick, Transition};
 /// Home date line's per-language `WD D MON`.
 const DATE_WEEKDAYS: [Msg; 7] =
     [Msg::DateMon, Msg::DateTue, Msg::DateWed, Msg::DateThu, Msg::DateFri, Msg::DateSat, Msg::DateSun];
-
-/// The 12 uppercase month-abbreviation keys (the `[date]` section) in calendar order — the same
-/// short-date table the Rides rows draw from (T5, #683 reuses it), distinct from the Date & Time
-/// stepper's mixed-case `[month]` table.
-const DATE_MONTHS: [Msg; 12] = [
-    Msg::DateJan,
-    Msg::DateFeb,
-    Msg::DateMar,
-    Msg::DateApr,
-    Msg::DateMay,
-    Msg::DateJun,
-    Msg::DateJul,
-    Msg::DateAug,
-    Msg::DateSep,
-    Msg::DateOct,
-    Msg::DateNov,
-    Msg::DateDec,
-];
 
 /// The idle home screen.
 #[derive(Debug, Default)]

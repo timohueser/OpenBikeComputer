@@ -33,6 +33,7 @@ use obc_render::{
 };
 
 use super::vocab::chrome::{empty_state, title_frame};
+use super::vocab::fmt::{distance_figure, integer, percent};
 use super::vocab::tiles::tile;
 use crate::input::Gesture;
 use crate::screen::ActiveClimb;
@@ -238,20 +239,20 @@ fn climb_tiles(climb: &ActiveClimb, progress_m: u32, units: Units, lang: Languag
     [
         ClimbCell::new(
             t(Msg::ClimbToClimb, lang),
-            fmt_int(units.elev(to_climb_m(climb, progress_m) as f32) as u32),
+            integer(units.elev(to_climb_m(climb, progress_m) as f32) as u32),
             true,
         ),
         ClimbCell::new(
             &cap_dist(units, t(Msg::ClimbToGo, lang)),
-            crate::stat_fields::fmt_km(units.dist(to_top_m(seg, progress_m) as f32 / 1000.0)),
+            distance_figure(units.dist(to_top_m(seg, progress_m) as f32 / 1000.0)),
             false,
         ),
-        ClimbCell::new(t(Msg::ClimbGrade, lang), fmt_pct(profile.grade_at(cursor)), false),
+        ClimbCell::new(t(Msg::ClimbGrade, lang), percent(profile.grade_at(cursor)), false),
         // The epic's "Avg → top": average grade over the climb's remainder. Captioned "AVG GRAD"
         // (average gradient) — a monospace 8-char caption that fits the half-width tile, where the
         // 9-char "AVG AHEAD" (and "AVG→TOP", whose `→` renders `?` in the ASCII panel font) overshot.
         // Reads as the average gradient still to come, paired with the instantaneous "GRADE" beside it.
-        ClimbCell::new(t(Msg::ClimbAvgGrad, lang), fmt_pct(avg_to_top_pct(climb, progress_m)), false),
+        ClimbCell::new(t(Msg::ClimbAvgGrad, lang), percent(avg_to_top_pct(climb, progress_m)), false),
     ]
 }
 
@@ -281,20 +282,6 @@ fn avg_to_top_pct(climb: &ActiveClimb, progress_m: u32) -> i32 {
 /// Below this remaining distance (m) to the summit, [`avg_to_top_pct`] reads 0 — the run is too
 /// short to divide the give-back gain into a sane average (and the rider is essentially there).
 const AVG_MIN_RUN_M: u32 = 20;
-
-/// A grade figure for a tile: signed whole percent with a `%` suffix.
-fn fmt_pct(pct: i32) -> heapless::String<8> {
-    let mut s = heapless::String::new();
-    let _ = write!(s, "{pct}%");
-    s
-}
-
-/// An integer figure (remaining ascent) as plain digits — mirrors `stat_fields`' climb formatting.
-fn fmt_int(m: u32) -> heapless::String<8> {
-    let mut s = heapless::String::new();
-    let _ = write!(s, "{m}");
-    s
-}
 
 /// The "TO GO" caption, unit-prefixed (`KM TO GO` / `MI TO GO`) so the distance unit lives in the
 /// caption and the big digits fit the half-width tile — the same idiom as `stat_fields`' distance
