@@ -30,15 +30,13 @@
 //!
 //! - **Earlier → later is same-pass.** The producer fills a named slot; the consumer's stage takes
 //!   it a few stages on.
-//! - **Later → earlier is next-pass.** It cannot reach backwards, so it waits in a
-//!   [`Deferred`](super::connections::Deferred) slot, which
-//!   [`promote_deferred`](super::connections::Connections::promote_deferred) makes visible at the
-//!   top of the next pass — *before* any new gesture, sensor reading or fact. A deferred value
-//!   still in flight at the end of a pass folds into an **immediate** next wake, so decided work
-//!   never waits for the next rider input.
+//! - **Later → earlier is next-pass.** It cannot reach backwards, so it waits in a `Deferred` slot,
+//!   which `Connections::promote_deferred` makes visible at the top of the next pass — *before* any
+//!   new gesture, sensor reading or fact. A deferred value still in flight at the end of a pass
+//!   folds into an **immediate** next wake, so decided work never waits for the next rider input.
 //!
-//! [`connections`](super::connections) lists every connection, its type, its capacity and its merge
-//! rule.
+//! The crate-private `connections` module lists every connection, its type, its capacity and its
+//! merge rule. It stays private: it is wiring *between* stages, and only a stage may touch it.
 //!
 //! ## What is deliberately not here
 //!
@@ -60,11 +58,6 @@
 //! cannot be the owner of an outcome** (epic §4.3). An outcome for a domain whose state machine has
 //! not landed is therefore *left in its slot*, not dropped and not guessed at. The stage where that
 //! machine will advance already exists and already runs, because the order is what this slice pins.
-
-// The pass has no production caller yet, by design: #1438 pins the order and the delivery rules,
-// DC6 #1439's compatibility adapter is its first caller, and #1397 S6 makes it the hosts' entry
-// point and deletes the frame methods it replaces. Until then the tests below are what exercise it.
-#![allow(dead_code)]
 
 use obc_ports::{InputClock, RideClock, Sensors};
 use obc_route::RouteReader;
@@ -294,10 +287,11 @@ impl App {
     /// The whole product frame in one call — what completed, what changed, what the rider did, and
     /// what every domain decides about it — returning the bounded work the platform must perform.
     ///
-    /// Private to `obc-app` for Phase 1. The existing frame methods stay the hosts' entry points
-    /// until #1397 S6 migrates them; both compositions call the same per-domain entry points, so
-    /// there is one implementation of each and only the order differs.
-    pub(crate) fn run_pass(&mut self, inputs: PassInputs<'_>) -> PassPlan {
+    /// Public from #1439 on, so the compatibility adapter and the conformance tests can drive it.
+    /// The existing frame methods stay the *production* hosts' entry points until #1397 S6 migrates
+    /// them; both compositions call the same per-domain entry points, so there is one implementation
+    /// of each and only the order differs.
+    pub fn run_pass(&mut self, inputs: PassInputs<'_>) -> PassPlan {
         let PassInputs { now, gestures, sensors, route, support, outcomes, facts, derived, targets } = inputs;
         self.pass.enter();
         // The previous pass's later-to-earlier deposits become visible here — before any new
@@ -655,11 +649,6 @@ impl App {
             effects,
             immediate,
         }
-    }
-
-    /// What this device can currently do, as of the last pass's admission stage.
-    pub(crate) fn capabilities(&self) -> Capabilities {
-        self.pass.capabilities
     }
 
     /// The stages the last pass ran, in order.
@@ -1110,17 +1099,17 @@ mod tests {
         let mut app = navigating();
         let mut facts = committed(1);
         pass_with(&mut app, 10, &[], &mut OutcomeSlots::new(), &mut facts);
-        assert!(app.capabilities().catalog.mutate, "a mounted store may be mutated");
+        assert!(app.pass.capabilities.catalog.mutate, "a mounted store may be mutated");
 
         let mut streaming = ExternalFacts::NONE;
         streaming.note_transfer(TransferState::Active);
         pass_with(&mut app, 20, &[], &mut OutcomeSlots::new(), &mut streaming);
-        assert!(!app.capabilities().dfu.install, "an install is heavy — never while a transfer streams");
+        assert!(!app.pass.capabilities.dfu.install, "an install is heavy — never while a transfer streams");
 
         let mut idle = ExternalFacts::NONE;
         idle.note_transfer(TransferState::Idle);
         pass_with(&mut app, 30, &[], &mut OutcomeSlots::new(), &mut idle);
-        assert!(app.capabilities().dfu.install, "and it comes straight back");
+        assert!(app.pass.capabilities.dfu.install, "and it comes straight back");
     }
 
     /// A platform callback cannot change DeviceCore in the middle of a pass. `run_pass` holds

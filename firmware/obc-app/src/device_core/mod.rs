@@ -29,8 +29,9 @@
 //! - `connections` — every way one domain reaches another, named, typed and capacity-bounded, with
 //!   the delivery rule (same pass forwards, next pass backwards) following from the stage order.
 //!
-//! Both stay crate-private until the runtime hosts move onto the pass, so they are documented for
-//! the crate rather than published as an API with no caller.
+//! `connections` stays crate-private: it is wiring *between* stages, and nothing outside a stage
+//! may reach it. `pass` is public from #1439 on, because the adapter below is its first caller and
+//! the host and board conformance tests drive it from outside the crate.
 //!
 //! …and the boundary that is not a command at all (#1437):
 //!
@@ -40,15 +41,19 @@
 //! - [`feeders`] — the inventory of every public bulk feeder on `App` and its new home, the feeder
 //!   twin of [`migration`].
 //!
-//! Nothing here changes the legacy [`HostCommand`](crate::HostCommand) /
-//! [`HostEvent`](crate::HostEvent) protocol: the pass is private to `obc-app` until #1397 S6
-//! migrates the runtime hosts onto it.
+//! …and the one temporary thing here (#1439):
+//!
+//! - [`compat`] — [`LegacyAdapter`]: effects out as [`HostCommand`](crate::HostCommand)s, and
+//!   [`HostEvent`](crate::HostEvent)s back in as typed outcomes and named facts. Translation only,
+//!   and written to be deleted. The legacy protocol itself is untouched: no variant is added, and
+//!   the production hosts keep their own paths until #1397 S6 moves them onto the pass.
 
+pub mod compat;
 pub(crate) mod connections;
 pub mod derived;
 pub mod feeders;
 pub mod migration;
-pub(crate) mod pass;
+pub mod pass;
 mod shared;
 pub mod slots;
 pub mod storage_info;
@@ -57,10 +62,8 @@ pub use derived::{
     DerivedInput, DerivedInputs, DerivedNeeds, DerivedResult, DerivedTargets, NavPreviewKey, RideTrackKey,
 };
 
-// The coordinator and its wires stay inside `obc-app` for Phase 1 (#1438): `App::run_pass` is
-// crate-private, so publishing their vocabulary would be a public API with no caller, and everything
-// in the crate names them through `device_core::pass` / `device_core::connections`. #1439 opens the
-// door when the compatibility adapter needs it.
+pub use compat::{LegacyAdapter, LegacyInputs, LegacyOwned, LegacyPending, LegacyReply, LegacyReport};
+pub use pass::{PassClock, PassInputs, PassPlan};
 pub use slots::{EffectSlots, OutcomeSlots, Slot, SlotFull};
 pub use storage_info::{StorageInfoEffect, StorageInfoError, StorageInfoIntent, StorageInfoOutcome};
 

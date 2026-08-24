@@ -7,7 +7,7 @@
 //! home here, and nothing is left unclassified.
 //!
 //! **This is documentation and test data, not a dispatcher.** Nothing in a runtime path calls it.
-//! It dies with the compatibility executor (DC6 #1439), together with the wrappers it describes.
+//! It dies with the pass cutover (#1397 S6), together with the wrappers it describes.
 //!
 //! ## Reading a row
 //!
@@ -147,8 +147,11 @@ pub enum FeederKind {
 /// Which slice removes the method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeletingSlice {
-    /// DC6 #1439 — the compatibility executor replaces the legacy protocol and its feeders.
-    Dc6CompatibilityExecutor,
+    /// #1397 S6 — every host runs `App::run_pass`, so the legacy protocol and its feeders go with
+    /// the frame methods they belong to. DC6 #1439 built the replacement path
+    /// ([`compat`](super::compat)) but deliberately left the production call sites alone, so the
+    /// methods themselves survive until the cutover.
+    PassCutover,
     /// #1401 — the weather storage and request cutover, after FS7.
     WeatherCutover,
     /// The method survives the migration: it is not a legacy shim but a real runtime seam.
@@ -183,52 +186,45 @@ pub fn feeder_migration(feeder: Feeder) -> FeederMigration {
         // reports only the revision it read at. Three route feeders exist because the id column and
         // the retention column were added one at a time; they collapse into one refresh.
         Feeder::Routes | Feeder::RoutesWithIds => {
-            row(Kind::RefreshOutcome, Own::Catalog, "CatalogOutcome::CatalogRead", When::Dc6CompatibilityExecutor)
+            row(Kind::RefreshOutcome, Own::Catalog, "CatalogOutcome::CatalogRead", When::PassCutover)
         }
         Feeder::RoutesWithMeta => row(
             Kind::RefreshOutcome,
             Own::Catalog,
             "CatalogOutcome::CatalogRead + RetentionMachine metadata",
-            When::Dc6CompatibilityExecutor,
+            When::PassCutover,
         ),
         Feeder::Trips | Feeder::Rides => {
-            row(Kind::RefreshOutcome, Own::Catalog, "CatalogOutcome::CatalogRead", When::Dc6CompatibilityExecutor)
+            row(Kind::RefreshOutcome, Own::Catalog, "CatalogOutcome::CatalogRead", When::PassCutover)
         }
-        Feeder::RouteMeta => row(
-            Kind::RefreshOutcome,
-            Own::Retention,
-            "RetentionMachine route metadata column",
-            When::Dc6CompatibilityExecutor,
-        ),
+        Feeder::RouteMeta => {
+            row(Kind::RefreshOutcome, Own::Retention, "RetentionMachine route metadata column", When::PassCutover)
+        }
         Feeder::RideRetentionInventory => row(
             Kind::RefreshOutcome,
             Own::Retention,
             "CatalogMachine inventory + RetentionMachine input",
-            When::Dc6CompatibilityExecutor,
+            When::PassCutover,
         ),
 
         // ---- keyed derived data: one need, one key, one answer (this slice).
         Feeder::RideProfile | Feeder::RideProfileFillBegin | Feeder::RideProfileFillFinish | Feeder::RidePreview => {
-            row(Kind::DerivedInput, Own::Derived, "DerivedInputs::ride_track", When::Dc6CompatibilityExecutor)
+            row(Kind::DerivedInput, Own::Derived, "DerivedInputs::ride_track", When::PassCutover)
         }
-        Feeder::NavPreview => {
-            row(Kind::DerivedInput, Own::Derived, "DerivedInputs::nav_preview", When::Dc6CompatibilityExecutor)
-        }
+        Feeder::NavPreview => row(Kind::DerivedInput, Own::Derived, "DerivedInputs::nav_preview", When::PassCutover),
 
         // ---- bounded targets a domain owns. The detour preview is *not* a derived level: it is the
         // result of a planning operation the Navigator asked for, and it carries that operation's
         // token rather than a key.
         Feeder::DetourPreview => {
-            row(Kind::BoundedTarget, Own::Navigator, "Navigator detour preview target", When::Dc6CompatibilityExecutor)
+            row(Kind::BoundedTarget, Own::Navigator, "Navigator detour preview target", When::PassCutover)
         }
 
         // ---- external facts: nobody asked for these.
-        Feeder::BleStatus => row(Kind::ExternalFact, Own::Fault, "ExternalFacts::link", When::Dc6CompatibilityExecutor),
-        Feeder::MapTransfer => {
-            row(Kind::ExternalFact, Own::Fault, "ExternalFacts::transfer", When::Dc6CompatibilityExecutor)
-        }
+        Feeder::BleStatus => row(Kind::ExternalFact, Own::Fault, "ExternalFacts::link", When::PassCutover),
+        Feeder::MapTransfer => row(Kind::ExternalFact, Own::Fault, "ExternalFacts::transfer", When::PassCutover),
         Feeder::SensorStatus | Feeder::SensorScanHits => {
-            row(Kind::ExternalFact, Own::Fault, "PassInputs::sensors", When::Dc6CompatibilityExecutor)
+            row(Kind::ExternalFact, Own::Fault, "PassInputs::sensors", When::PassCutover)
         }
         Feeder::WeatherFeed => {
             row(Kind::ExternalFact, Own::Weather, "ExternalFacts::weather_data", When::WeatherCutover)
@@ -244,13 +240,11 @@ pub fn feeder_migration(feeder: Feeder) -> FeederMigration {
         ),
 
         // ---- boot inputs: supplied once, before any pass.
-        Feeder::Settings => {
-            row(Kind::BootInput, Own::Settings, "SettingsMachine boot input", When::Dc6CompatibilityExecutor)
-        }
+        Feeder::Settings => row(Kind::BootInput, Own::Settings, "SettingsMachine boot input", When::PassCutover),
         Feeder::NavProfiles | Feeder::MapInfo | Feeder::MapNavGraph => {
-            row(Kind::BootInput, Own::Catalog, "mounted-map facts at map open", When::Dc6CompatibilityExecutor)
+            row(Kind::BootInput, Own::Catalog, "mounted-map facts at map open", When::PassCutover)
         }
-        Feeder::FwVersion => row(Kind::BootInput, Own::Dfu, "DfuState running version", When::Dc6CompatibilityExecutor),
+        Feeder::FwVersion => row(Kind::BootInput, Own::Dfu, "DfuState running version", When::PassCutover),
 
         // ---- platform state around a pass. These are not legacy shims: the runtime owns the
         // display and the input plane on every platform, and says so through these.
