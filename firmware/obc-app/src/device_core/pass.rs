@@ -225,8 +225,6 @@ pub(crate) struct PassState {
     announced: Option<Revision>,
     /// The newest link state seen, so an unchanged level does not re-run the link's card sweep.
     link: Option<crate::ble::BleStatus>,
-    /// Whether a bulk transfer is streaming — `CoreMode`'s heavy-work verdict rests on it.
-    transfer: TransferState,
     /// The active route's durable identity as of the last pass — Navigator's activation edge.
     active_route: Option<crate::CatalogObjectId>,
     /// What the device can currently do, recalculated at stage 12.
@@ -246,7 +244,6 @@ impl PassState {
             store: None,
             announced: None,
             link: None,
-            transfer: TransferState::Idle,
             active_route: None,
             capabilities: Capabilities::NONE,
             in_pass: false,
@@ -382,7 +379,7 @@ impl App {
             }
         }
         if let Some(state) = facts.transfer() {
-            self.pass.transfer = state;
+            self.mode.note_transfer(matches!(state, TransferState::Active));
         }
         if let Some(link) = facts.link() {
             if self.pass.link != Some(link) {
@@ -620,7 +617,7 @@ impl App {
             }
         }
         if effects.navigator.is_empty() {
-            if let Some(effect) = self.navigator.next_effect() {
+            if let Some(effect) = self.navigator.next_effect(&mut self.mode) {
                 let _ = effects.navigator.try_put(effect);
             }
         }
@@ -676,9 +673,11 @@ impl App {
     /// Stage 12 — `CoreMode`: recalculate what this device can do at all.
     ///
     /// A capability is a level, never latched: it is recomputed from what the image implements and
-    /// what is currently true (a mounted store, a routing graph, a streaming transfer, a recording
-    /// ride). Heavy work is withdrawn while a transfer holds the store — which is what stops a plan
-    /// or an install from starting, rather than letting one start and fail.
+    /// what is currently true (a mounted store, a routing graph, a recording ride) and from
+    /// [`CoreMode`](crate::device_core::core_mode::CoreMode)'s heavy-work verdict. Heavy work is
+    /// withdrawn while a transfer holds the store **or a planner run holds the nav arm** — which is
+    /// what stops a second plan or an install from starting, rather than letting one start and
+    /// fail. The mode is the only store of either level; this stage re-derives nothing.
     ///
     /// **One axis cannot yet come back down.** `store_writable` reads "a store has reported a
     /// revision", and [`ExternalFacts`] has no unmount fact to retract it with, so a pulled card
@@ -692,7 +691,7 @@ impl App {
             weather_data: self.weather.installed().is_some(),
             link_connected: matches!(self.state.device.ble_link, crate::ble::BleLink::Connected),
             ride_recording: self.activity.is_tracking(),
-            heavy_operations: matches!(self.pass.transfer, TransferState::Idle),
+            heavy_operations: self.mode.admits_heavy(),
         };
         self.pass.capabilities = Capabilities::calculate(support, facts);
     }
@@ -1208,6 +1207,34 @@ mod tests {
         idle.note_transfer(TransferState::Idle);
         pass_with(&mut app, 30, &[], &mut OutcomeSlots::new(), &mut idle);
         assert!(app.pass.capabilities.dfu.install, "and it comes straight back");
+    }
+
+    /// The axis this stage did not have before #1397 S5: a **live search** is heavy too. The nav
+    /// arm is one block, so a second plan started mid-search could only fail — withdrawing the
+    /// capability is what stops it being offered rather than offered and refused.
+    #[test]
+    fn admission_withdraws_heavy_work_while_a_search_holds_the_nav_arm() {
+        let mut app = navigating();
+        app.state.has_nav_graph = true; // planning needs a graph before admission can be the deciding axis
+        let mut facts = committed(1);
+        pass_with(&mut app, 10, &[], &mut OutcomeSlots::new(), &mut facts);
+        let caps = app.pass.capabilities;
+        assert!(caps.navigator.plan_route && caps.navigator.plan_detour && caps.dfu.install);
+
+        app.debug_set_plan_live(true);
+        let mut none = ExternalFacts::NONE;
+        pass_with(&mut app, 20, &[], &mut OutcomeSlots::new(), &mut none);
+        let caps = app.pass.capabilities;
+        assert!(!caps.navigator.plan_route, "a second route plan cannot start while one runs");
+        assert!(!caps.navigator.plan_detour, "nor a detour");
+        assert!(!caps.dfu.install, "nor an install — it reboots, and the search would go with it");
+        assert!(caps.navigator.commit_detour, "but a splice is a write, not a search: still offered");
+        assert!(caps.catalog.mutate, "and the store is still writable — this is admission, not a fault");
+
+        app.debug_set_plan_live(false);
+        let mut none = ExternalFacts::NONE;
+        pass_with(&mut app, 30, &[], &mut OutcomeSlots::new(), &mut none);
+        assert!(app.pass.capabilities.navigator.plan_route, "the answer hands the arm back");
     }
 
     /// A platform callback cannot change DeviceCore in the middle of a pass. `run_pass` holds

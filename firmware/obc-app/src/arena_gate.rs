@@ -3,10 +3,9 @@
 //! The board time-shares **one** RAM block between three arms that are never live together — the
 //! per-frame render scratch, the nav block (`NavScratch` + `NavTileCache` + `NavPlanner`), and the
 //! USB staging buffer. The union itself is device-only (`obc-fw-nrf54l`'s `arena.rs`, the one place
-//! `unsafe` lives); *who may hold it, and when* is plain bookkeeping, and it lives here for the same
-//! reason [`crate::link_gate`] does: the board crate has no `test` harness in CI, and "a claim while
-//! a search is running must be refused" is exactly the kind of statement that should be asserted
-//! rather than reviewed.
+//! `unsafe` lives); *who may hold it, and when* is plain bookkeeping, and it lives here because the
+//! board crate has no `test` harness in CI, and "a claim while a search is running must be refused"
+//! is exactly the kind of statement that should be asserted rather than reviewed.
 //!
 //! # The arms are disjoint because the product says so
 //!
@@ -20,17 +19,18 @@
 //! | nav ⊥ usb | no route search while the cable owns upload scratch | [`TransferReady`] |
 //!
 //! A gate that is merely *documented* is a gate that gets skipped, so each precondition is a token
-//! only its `prove` constructor can mint: [`claim_nav`](ArenaGate::claim_nav) cannot even be
-//! *called* without evidence that the map plane is quiesced.
+//! only [`CoreMode`](crate::device_core::core_mode::CoreMode) can mint:
+//! [`claim_nav`](ArenaGate::claim_nav) cannot even be *called* without evidence that the map plane
+//! is quiesced, and there is exactly one place that decides the token is owed.
 //!
 //! # No atomics
 //!
 //! [`ArenaGate`] takes `&mut self` because the **ride loop is the sole owner-switcher** — the USB
-//! plane never claims directly, it requests through the [`TransferGate`](crate::TransferGate) and
-//! the loop grants between frames (the #677 async-frame discipline: guards are `!Send` and never
-//! held across an `.await` where another claimant could run). If a second switcher ever appears,
-//! this becomes an `AtomicU8` compare-exchange like the transfer gate — and the `&mut` is what
-//! makes that a *compile* error to skip rather than a race to debug.
+//! plane never claims directly, it raises a request the loop grants between frames (the #677
+//! async-frame discipline: guards are `!Send` and never held across an `.await` where another
+//! claimant could run). If a second switcher ever appears, this becomes an `AtomicU8`
+//! compare-exchange — and the `&mut` is what makes that a *compile* error to skip rather than a
+//! race to debug.
 //!
 //! # The bug class this creates
 //!
@@ -61,9 +61,8 @@ pub enum ArenaError {
     /// refused by a live search is normal and expected; one refused by a transfer is a UI bug).
     Busy(ArenaOwner),
     /// A release naming an arm that does not hold the arena. Carries the actual owner. Never a
-    /// silent no-op — unlike [`TransferGate::release`](crate::TransferGate::release), where two
-    /// wires legitimately tear down independently, there is exactly one owner-switcher here, so a
-    /// mismatched release means the caller lost track of its own guard.
+    /// silent no-op: there is exactly one owner-switcher here, so a mismatched release means the
+    /// caller lost track of its own guard.
     NotHeld(ArenaOwner),
 }
 
@@ -73,27 +72,38 @@ pub enum ArenaError {
 /// Two ways to be quiesced, and the second is why this is a token rather than a bool: menu planning
 /// happens on a chrome base (`NavPlanning` is opaque, so there is no map underneath to freeze), and
 /// a mid-ride detour plan happens over a **map** base — the Recalculating freeze is what makes the
-/// second case as safe as the first. See [`App::reroute_freeze_active`](crate::App::reroute_freeze_active).
+/// second case as safe as the first. Both are decided in one place,
+/// [`CoreMode::nav_precondition`](crate::device_core::core_mode::CoreMode).
 #[derive(Debug, Clone, Copy)]
 pub struct MapQuiesced(());
 
 impl MapQuiesced {
-    /// Mint the proof from the two facts the app reports each pass, or `None` when the map plane
-    /// would still draw. Compose it straight off the app with
+    /// The mint, crate-private so [`CoreMode`](crate::device_core::core_mode::CoreMode) is the only
+    /// thing that decides *when*. Reach it from outside through
     /// [`App::nav_arena_precondition`](crate::App::nav_arena_precondition).
-    pub fn prove(freeze_active: bool, base_draws_map: bool) -> Option<MapQuiesced> {
-        (freeze_active || !base_draws_map).then_some(MapQuiesced(()))
+    pub(crate) const fn mint() -> MapQuiesced {
+        MapQuiesced(())
     }
 }
 
-/// Proof that a cable upload may take the arena: its transfer screen is up and no route search is
-/// live. Both facts come from the ride loop, the arena's sole owner-switcher.
+/// Proof that a cable upload may take the arena: its transfer screen is up (`render ⊥ usb`) and no
+/// route search holds the nav arm (`nav ⊥ usb`).
 #[derive(Debug, Clone, Copy)]
 pub struct TransferReady(());
 
 impl TransferReady {
-    pub fn prove(transfer_screen_up: bool, search_live: bool) -> Option<Self> {
-        (transfer_screen_up && !search_live).then_some(Self(()))
+    /// The mint, crate-private for the same reason [`MapQuiesced::mint`] is. Reach it through
+    /// [`App::usb_stage_precondition`](crate::App::usb_stage_precondition).
+    pub(crate) const fn mint() -> TransferReady {
+        TransferReady(())
+    }
+
+    /// The one named escape: the card-recovery USB boot path, where **no ride loop, no renderer and
+    /// no planner exist**. There is no `App` to ask, and nothing that could draw a map or start a
+    /// search — the two facts the mint would check are true by the absence of the code that could
+    /// falsify them.
+    pub const fn recovery_boot() -> TransferReady {
+        TransferReady(())
     }
 }
 
@@ -219,19 +229,6 @@ impl ArenaGate {
 mod tests {
     use super::*;
 
-    /// The proof tokens are the gate. Minting them is the *only* way to call the guarded claims, so
-    /// pin exactly which facts mint one.
-    #[test]
-    fn the_nav_precondition_is_a_quiet_map_plane_however_it_got_quiet() {
-        assert!(MapQuiesced::prove(false, false).is_some(), "menu planning: chrome base, no map to freeze");
-        assert!(MapQuiesced::prove(true, true).is_some(), "mid-ride detour: map base, freeze engaged");
-        assert!(MapQuiesced::prove(true, false).is_some(), "belt and braces");
-        assert!(
-            MapQuiesced::prove(false, true).is_none(),
-            "a map base with no freeze is the regression: the search would eat the scratch the next frame renders from"
-        );
-    }
-
     #[test]
     fn a_fresh_gate_is_idle_and_a_render_may_take_it() {
         let mut gate = ArenaGate::new();
@@ -252,7 +249,7 @@ mod tests {
     #[test]
     fn a_live_search_refuses_every_render_claim_until_it_finishes() {
         let mut gate = ArenaGate::new();
-        let proof = MapQuiesced::prove(true, true).expect("the freeze is engaged");
+        let proof = MapQuiesced::mint();
         assert_eq!(gate.claim_nav(proof), Ok(()));
 
         for _ in 0..3 {
@@ -266,13 +263,11 @@ mod tests {
 
     #[test]
     fn usb_stage_requires_a_visible_transfer_and_excludes_render_and_nav() {
-        assert!(TransferReady::prove(false, false).is_none());
-        assert!(TransferReady::prove(true, true).is_none());
-        let ready = TransferReady::prove(true, false).expect("visible transfer, no search");
+        let ready = TransferReady::mint();
         let mut gate = ArenaGate::new();
         assert_eq!(gate.claim_usb(ready), Ok(()));
         assert_eq!(gate.claim_render(), Err(ArenaError::Busy(ArenaOwner::Usb)));
-        let quiet = MapQuiesced::prove(true, true).unwrap();
+        let quiet = MapQuiesced::mint();
         assert_eq!(gate.claim_nav(quiet), Err(ArenaError::Busy(ArenaOwner::Usb)));
         assert_eq!(gate.release(ArenaOwner::Usb), Ok(()));
     }
@@ -284,7 +279,7 @@ mod tests {
         let mut gate = ArenaGate::new();
         assert_eq!(gate.claim_render(), Ok(ArenaInit::Required));
 
-        let quiesced = MapQuiesced::prove(true, true).unwrap();
+        let quiesced = MapQuiesced::mint();
         assert_eq!(gate.claim_nav(quiesced), Err(ArenaError::Busy(ArenaOwner::Render)));
     }
 
@@ -300,12 +295,11 @@ mod tests {
 
     /// **The regression** a wrong release would cause: the render frame ends, drops its guard, and
     /// (with a mismatched arm) hands the arena to nobody while the search still reads it. Loud
-    /// rather than silent — this is the mirror of `link_gate`'s no-op release, and it differs on
-    /// purpose: there, two wires tear down independently; here there is one owner-switcher.
+    /// rather than silent: there is one owner-switcher, so there is no benign mismatched release.
     #[test]
     fn releasing_an_arm_that_does_not_hold_the_arena_is_an_error() {
         let mut gate = ArenaGate::new();
-        let proof = MapQuiesced::prove(false, false).unwrap();
+        let proof = MapQuiesced::mint();
         assert_eq!(gate.claim_nav(proof), Ok(()));
 
         assert_eq!(gate.release(ArenaOwner::Render), Err(ArenaError::NotHeld(ArenaOwner::Nav)));
@@ -345,7 +339,7 @@ mod tests {
         // foreign owner while the USB staging arm existed; with two arms the loop is the nav case
         // written awkwardly, so it is written plainly. If a third arm is ever added, this becomes a
         // loop again — and the const assert in `arena.rs` is what will say so first.
-        assert_eq!(gate.claim_nav(MapQuiesced::prove(false, false).unwrap()), Ok(()));
+        assert_eq!(gate.claim_nav(MapQuiesced::mint()), Ok(()));
         assert_eq!(gate.release(ArenaOwner::Nav), Ok(()));
         assert_eq!(gate.claim_render(), Ok(ArenaInit::Required), "the nav arm left its own bytes behind");
         assert_eq!(gate.release(ArenaOwner::Render), Ok(()));
@@ -361,7 +355,7 @@ mod tests {
             assert_eq!(gate.claim_render(), Ok(init));
             assert_eq!(gate.release(ArenaOwner::Render), Ok(()));
         }
-        assert_eq!(gate.claim_nav(MapQuiesced::prove(true, true).unwrap()), Ok(()));
+        assert_eq!(gate.claim_nav(MapQuiesced::mint()), Ok(()));
         assert_eq!(gate.release(ArenaOwner::Nav), Ok(()));
         assert_eq!(gate.claim_render(), Ok(ArenaInit::Required), "the search left its A* table in the block");
         assert_eq!(gate.release(ArenaOwner::Render), Ok(()));

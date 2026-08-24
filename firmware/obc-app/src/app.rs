@@ -11,14 +11,15 @@ use crate::activity::{Activity, Mode};
 use crate::card_scheduler::{BootUpdate, DfuLanding, PendingUpload, UploadEvent};
 use crate::catalog_state::CatalogState;
 use crate::device_core::compat::{dfu_row, navigator_row, settings_row, storage_info_row};
+use crate::device_core::core_mode::{CoreMode, ModeState};
 use crate::device_core::storage_info::StorageInfo;
 use crate::dfu::DfuState;
 use crate::dirty::Dirty;
 use crate::host::{DrainStatus, HostCommand, HostCommandClass, HostEvent, HostMailbox, HOST_COMMAND_CLASSES};
 use crate::input::Gesture;
+use crate::navigator::PlanFamily;
 use crate::navigator::{NavigatorIntent, NavigatorMachine, PlanPhase};
 use crate::placement::define_placement_constructors;
-use crate::reroute_freeze::PlanFamily;
 use crate::ride::RideSummary;
 use crate::ride_engine::RideEngine;
 use crate::route::RouteSummary;
@@ -563,9 +564,15 @@ pub struct App {
     /// commits between drains is never coalesced into a single missed rescan.
     store_changed: u32,
     /// The **Navigator** domain (#1397 S2): the rider's undelivered plan requests, the per-family
-    /// phase, the operation token every planner answer must carry back, and the Recalculating
-    /// freeze those transitions drive. The only writer of any of them.
+    /// phase, and the operation token every planner answer must carry back. The only writer of any
+    /// of them, and of [`mode`](App::mode)'s two search levels.
     pub(crate) navigator: NavigatorMachine,
+    /// **`CoreMode`** (#1397 S5): the one owner of "what heavy work may run now, and what the rider
+    /// is looking at" — the two search levels Navigator writes, the transfer level
+    /// [`set_map_transfer`](App::set_map_transfer) writes, and the Recalculating banner's
+    /// level→edge bit. Every reader of "a search is live" derives from it; nothing keeps a second
+    /// copy.
+    pub(crate) mode: CoreMode,
     /// The **settings-persistence** machine (#810, #1397 S2): the dirty revision, the subtree
     /// debounce, the retry backoff and the stale-answer rule.
     pub(crate) settings_ops: crate::settings::SettingsMachine,
@@ -644,6 +651,7 @@ impl App {
             weather: crate::weather::WeatherDomain::new(),
             store_changed: 0,
             navigator: NavigatorMachine::new(),
+            mode: CoreMode::new(),
             settings_ops: crate::settings::SettingsMachine::new(),
             dfu: DfuState::new(),
             storage: StorageInfo::new(),
@@ -690,6 +698,7 @@ impl App {
             weather,
             store_changed,
             navigator,
+            mode,
             settings_ops,
             dfu,
             storage,
@@ -723,6 +732,7 @@ impl App {
         assert_eq!(*store_changed, 0, "no store commit pending");
         assert!(settings_ops.is_empty(), "settings Clean at revision 0");
         navigator.assert_boot_state();
+        assert_eq!(*mode, CoreMode::new(), "nothing searching, nothing streaming, no banner shown");
         dfu.assert_boot_state();
         storage.assert_boot_state();
         assert_eq!(*pass, crate::device_core::pass::PassState::new(), "no connection wired, no pass in flight");
@@ -774,7 +784,7 @@ impl App {
         self.activity.note_sensor_clock(now_ms);
         // Read the freeze once, before anything below can move the stack: while a planner run holds
         // the arena over a map base, this tick must not advance route-match progress (see the fix
-        // path below for why, and `crate::reroute_freeze` for the whole rule).
+        // path below for why, and `device_core::core_mode` for the whole rule).
         let frozen = self.reroute_freeze_active();
         // The once-per-load route/session sync — matcher re-lock, session restart (accumulators +
         // breadcrumb), the route-length mirror, and the climbs/waypoints cache builds — is the
@@ -1194,16 +1204,17 @@ impl App {
     /// [`nav_arena_precondition`](App::nav_arena_precondition) hands to
     /// [`ArenaGate::claim_nav`](crate::arena_gate::ArenaGate::claim_nav).
     pub fn reroute_freeze_active(&self) -> bool {
-        self.navigator.freeze_active(self.ui.base_draws_map())
+        self.mode.frozen(self.ui.base_draws_map())
     }
 
-    /// Whether a host planner run is live at all — including a **menu** plan, where no freeze is
-    /// engaged because the planning screen is itself the (chrome) base. The "is the arena's nav arm
-    /// claimed?" fact; hosts that arbitrate a search against something else (the cable transfer
-    /// gate's search arm, [`TransferGate::begin_search`](crate::TransferGate::begin_search)) read
-    /// this rather than the freeze.
-    pub fn plan_in_flight(&self) -> bool {
-        self.navigator.plan_live()
+    /// What the device is busy with, ranked and payload-free — [`CoreMode`]'s one public read.
+    /// (Named apart from [`mode`](App::mode), which is the rider's *activity* — Idle or Riding.)
+    ///
+    /// A search outranks a transfer because it is the one the rider is waiting on and the one with
+    /// a banner. Admission never reads this: it reads the levels, so the ranking cannot hide one
+    /// behind the other.
+    pub fn core_mode(&self) -> ModeState {
+        self.mode.state()
     }
 
     /// The proof that the map plane is quiesced, minted from this app's own state — `None` when a
@@ -1211,7 +1222,14 @@ impl App {
     /// `claim_nav` call site is `app.nav_arena_precondition().ok_or(…)?`, so the gate cannot be
     /// called without the evidence.
     pub fn nav_arena_precondition(&self) -> Option<crate::arena_gate::MapQuiesced> {
-        crate::arena_gate::MapQuiesced::prove(self.reroute_freeze_active(), self.base_draws_map())
+        self.mode.nav_precondition(self.base_draws_map())
+    }
+
+    /// The proof that a cable upload may take the arena's staging arm: the transfer card is up
+    /// (`render ⊥ usb`) and no search holds the nav arm (`nav ⊥ usb`). The board's `claim_usb` call
+    /// site reads this rather than assembling the two facts itself.
+    pub fn usb_stage_precondition(&self) -> Option<crate::arena_gate::TransferReady> {
+        self.mode.usb_precondition(self.map_transfer_card_up())
     }
 
     /// Whether the frame needs the streamed-map [`Reader`] built and passed to
@@ -1612,7 +1630,7 @@ impl App {
     /// No production path reaches it. Stands in for a [`Route`](PlanFamily::Route) run, so a stray
     /// detour edge cannot release it (see [`PlanFamily`]).
     pub fn debug_set_plan_live(&mut self, live: bool) {
-        if self.navigator.debug_set_plan_live(live) {
+        if self.navigator.debug_set_plan_live(live, &mut self.mode) {
             self.ui.map_dirty = true;
         }
     }
@@ -1830,7 +1848,7 @@ impl App {
         if !self.navigator.take_cancel(family) {
             return false;
         }
-        if self.navigator.note_cancel_delivered(family) {
+        if self.navigator.note_cancel_delivered(family, &mut self.mode) {
             self.ui.map_dirty = true;
         }
         true
@@ -1906,7 +1924,7 @@ impl App {
     /// [`take_dirty`](App::take_dirty) level edge that put it up. Idempotent: several release edges
     /// can land for one run.
     fn end_plan(&mut self, family: PlanFamily, phase: PlanPhase) {
-        if self.navigator.note_answer(family, phase) {
+        if self.navigator.note_answer(family, phase, &mut self.mode) {
             self.ui.map_dirty = true;
         }
     }
@@ -2151,6 +2169,10 @@ impl App {
     /// ([`MapTransfer::Installed`](crate::screen::MapTransfer::Installed) /
     /// [`Failed`](crate::screen::MapTransfer::Failed)) stay up to be dismissed.
     pub fn set_map_transfer(&mut self, state: Option<crate::screen::MapTransfer>) {
+        // The one place a streaming map upload becomes `CoreMode`'s transfer level. A terminal card
+        // (Installed / Failed) is a *report*, not a stream: the store is free again the moment the
+        // bytes stopped, so heavy work is re-admitted while the rider is still reading the card.
+        self.mode.note_transfer(state.is_some_and(|s| s.is_receiving()));
         self.ui.cards.set_map_transfer(state);
         self.sweep_cards();
     }
@@ -3228,7 +3250,7 @@ impl App {
         // a hold charging during a search still bulges over it.
         if self.reroute_freeze_active() {
             let text = crate::i18n::t(crate::Msg::MapRecalculating, self.settings.language);
-            crate::reroute_freeze::draw_banner(target, &color_fn, w, h, text);
+            crate::screen::vocab::chrome::recalculating_banner(target, &color_fn, w, h, text);
         }
     }
 
@@ -3237,7 +3259,7 @@ impl App {
     /// for a partial-overlay host (the board re-presents overlay *rows*, not whole frames). A host
     /// that pushes the union of this and the bulge's rows presents exactly what changed.
     pub fn reroute_banner_rows(&self, h: f32) -> Option<(u16, u16)> {
-        self.reroute_freeze_active().then(|| crate::reroute_freeze::banner_rows(h))
+        self.reroute_freeze_active().then(|| crate::screen::vocab::chrome::recalculating_banner_rows(h))
     }
 
     /// Whether the overlay plane has live content this frame — a hold bulge charging, popping, or
@@ -3266,9 +3288,9 @@ impl App {
     /// the plan seams on purpose: the freeze is a *level* (a live plan **and** a map base), and
     /// either half can move without the other. Deriving its repaint edge at the drain is what makes
     /// the banner appear on the pass a map base lands back under a search that is still running —
-    /// see [`RerouteFreeze::take_engaged_edge`](crate::reroute_freeze::RerouteFreeze::take_engaged_edge).
+    /// see [`CoreMode::take_engaged_edge`](crate::device_core::core_mode::CoreMode::take_engaged_edge).
     pub fn take_dirty(&mut self) -> Dirty {
-        if self.navigator.take_freeze_edge(self.ui.base_draws_map()) {
+        if self.mode.take_engaged_edge(self.ui.base_draws_map()) {
             self.ui.overlay_edge = true;
         }
         self.ui.take_dirty()
@@ -3497,12 +3519,14 @@ impl App {
             // The three planner commands are Navigator's own effects, spelled in the old
             // vocabulary: the domain decides that work is owed and engages the freeze as it hands
             // the operation over, and `navigator_row` names the command each effect becomes.
-            HostCommandClass::PlanRoute => {
-                self.navigator.next_plan_effect(PlanFamily::Route).and_then(|e| navigator_row(e).command())
-            }
-            HostCommandClass::PlanDetour => {
-                self.navigator.next_plan_effect(PlanFamily::Detour).and_then(|e| navigator_row(e).command())
-            }
+            HostCommandClass::PlanRoute => self
+                .navigator
+                .next_plan_effect(PlanFamily::Route, &mut self.mode)
+                .and_then(|e| navigator_row(e).command()),
+            HostCommandClass::PlanDetour => self
+                .navigator
+                .next_plan_effect(PlanFamily::Detour, &mut self.mode)
+                .and_then(|e| navigator_row(e).command()),
             HostCommandClass::CommitDetour => {
                 self.navigator.next_commit_effect().and_then(|e| navigator_row(e).command())
             }
