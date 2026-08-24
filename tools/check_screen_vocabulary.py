@@ -38,7 +38,7 @@ CONSTANTS = ["SPIN_DPS", "SPIN_FRAME_MS", "PAGE_FLIP_MS"]
 # the elevation band's connected top stroke, copied into three screens before `vocab/band.rs`.
 RETIRED = ["prev_top"]
 
-# `route_received.rs` draws the received card's mini sparkline from the host's min–max-normalized
+# `route_received.rs` draws the received card's mini sparkline from the host's min-max-normalized
 # byte band — no profile, no window, no pyramid level — so it is a different raster, not a band
 # copy, and it carries the only other connected stroke in the tree.
 RETIRED_EXEMPT = {"route_received.rs"}
