@@ -1925,10 +1925,13 @@ impl App {
     /// identity, the revision its bytes were last known to change at, and the view generation — so a
     /// route change, a re-plan over the same id, or a committed detour all stale it automatically.
     pub fn set_nav_preview(&mut self, pts: &[(i32, i32)]) {
-        use crate::device_core::derived::{DerivedInput, DerivedInputs};
+        use crate::device_core::derived::{DerivedInput, DerivedInputs, DerivedTargets};
         let Some(key) = self.catalogs.nav_preview_key(self.activity.active_route) else { return };
         let input = DerivedInput::filled(key);
-        self.apply_derived(DerivedInputs::nav_preview(input), pts);
+        self.apply_derived(
+            DerivedInputs::nav_preview(input),
+            DerivedTargets { nav_preview: pts, ..DerivedTargets::NONE },
+        );
     }
 
     /// Feed the host's BLE link snapshot ([`BleStatus`](crate::BleStatus)) — the host→app event seam
@@ -3406,19 +3409,28 @@ impl App {
     /// Accept keyed derived inputs. An input whose key is not the one the need currently carries is
     /// **stale**: it changes nothing at all, and the need stays up.
     ///
-    /// The bulk stays DeviceCore-owned: a `Filled` ride-track answer publishes whatever the
-    /// executor wrote through [`begin_ride_profile_fill`](App::begin_ride_profile_fill), and the
-    /// nav-preview points come in beside their input because the target is a 64-point polyline.
-    pub fn apply_derived(&mut self, inputs: crate::device_core::derived::DerivedInputs, nav_preview: &[(i32, i32)]) {
+    /// One ride-track answer publishes **both** of that need's targets, from the one key: the
+    /// profile the executor wrote in place through
+    /// [`begin_ride_profile_fill`](App::begin_ride_profile_fill), and the track shape it hands in
+    /// through `targets`. They cannot diverge here, which is the point of them sharing a key — the
+    /// legacy wrappers reach the same state in two calls only because every host makes both in one
+    /// drain.
+    pub fn apply_derived(
+        &mut self,
+        inputs: crate::device_core::derived::DerivedInputs,
+        targets: crate::device_core::derived::DerivedTargets,
+    ) {
         if let Some(input) = inputs.ride_track {
             let current = self.catalogs.ride_track_key(self.activity.viewed_ride);
-            if self.catalogs.accept_ride_profile(current, input, None) {
+            let profile = self.catalogs.accept_ride_profile(current, input, None);
+            let preview = self.catalogs.accept_ride_preview(current, input, targets.ride_preview);
+            if profile || preview {
                 self.ui.map_dirty = true;
             }
         }
         if let Some(input) = inputs.nav_preview {
             let current = self.catalogs.nav_preview_key(self.activity.active_route);
-            if self.catalogs.accept_nav_preview(current, input, nav_preview) {
+            if self.catalogs.accept_nav_preview(current, input, targets.nav_preview) {
                 self.ui.map_dirty = true;
             }
         }
@@ -3441,7 +3453,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::device_core::derived::{DerivedInput, DerivedInputs};
+    use crate::device_core::derived::{DerivedInput, DerivedInputs, DerivedTargets};
     use crate::host::SETTINGS_RETRY_BACKOFF_MS;
     use obc_ports::{CompassSource, LocationSource};
 
@@ -6863,9 +6875,24 @@ mod tests {
         let mut app = viewing_ride(&[7]);
         let key = app.derived_needs().ride_track.unwrap();
 
-        app.apply_derived(DerivedInputs::ride_track(DerivedInput::failed(key)), &[]);
+        app.apply_derived(DerivedInputs::ride_track(DerivedInput::failed(key)), DerivedTargets::NONE);
         assert!(app.derived_needs().ride_track.is_none(), "a failure answers the key like a fill");
         assert_eq!(app.ride_track_request(), None, "and the level does not grind on the dead file");
+    }
+
+    /// One ride-track answer publishes both of the need's targets, from the one key — the typed path
+    /// cannot leave the track page drawing an empty shape beside a filled profile.
+    #[test]
+    fn one_ride_track_answer_fills_the_profile_and_the_preview() {
+        let mut app = viewing_ride(&[7]);
+        let key = app.derived_needs().ride_track.unwrap();
+
+        let shape = [(1, 1), (2, 2), (3, 3)];
+        let targets = DerivedTargets { ride_preview: &shape, ..DerivedTargets::NONE };
+        app.apply_derived(DerivedInputs::ride_track(DerivedInput::filled(key)), targets);
+
+        assert!(app.derived_needs().ride_track.is_none(), "the need is answered");
+        assert_eq!(app.catalogs.ride_preview_for(Some(key)), &shape, "…and the shape landed under the same key");
     }
 
     /// A stale key changes nothing. The subject moves while a read is out; when the answer finally
@@ -6879,7 +6906,7 @@ mod tests {
         let second = app.derived_needs().ride_track.unwrap();
         assert_ne!(first, second, "a different ride is a different need");
 
-        app.apply_derived(DerivedInputs::ride_track(DerivedInput::filled(first)), &[]);
+        app.apply_derived(DerivedInputs::ride_track(DerivedInput::filled(first)), DerivedTargets::NONE);
         assert_eq!(app.derived_needs().ride_track, Some(second), "the late answer left the live need up");
         assert_eq!(app.ride_track_request(), Some(8));
     }
@@ -6939,7 +6966,8 @@ mod tests {
         assert_ne!(fresh.source, key.source, "the source revision moved with the bytes");
 
         // …and the answer produced from the old bytes can no longer land.
-        app.apply_derived(DerivedInputs::nav_preview(DerivedInput::filled(key)), &[(5, 5)]);
+        let stale = DerivedTargets { nav_preview: &[(5, 5)], ..DerivedTargets::NONE };
+        app.apply_derived(DerivedInputs::nav_preview(DerivedInput::filled(key)), stale);
         assert_eq!(app.derived_needs().nav_preview, Some(fresh), "the stale shape was refused");
     }
 }

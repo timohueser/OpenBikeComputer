@@ -20,18 +20,56 @@
 //!
 //! `home` is prose for the same reason [`LegacyMigration::home`](super::migration::LegacyMigration)
 //! is: a third of the destinations name fields that do not exist yet, and inventing placeholder
-//! types for them is the speculative structure this repository bans. What *is* guarded is the thing
-//! that matters — [`Feeder::ALL`] is checked against [`Feeder::COUNT`], and
-//! [`feeder_migration`] is an exhaustive match, so a feeder cannot be added without a row.
+//! types for them is the speculative structure this repository bans.
+//!
+//! ## What is actually guarded, and what is not
+//!
+//! Two of the three things this table could get wrong are structural:
+//!
+//! - **A variant cannot be missing from [`Feeder::ALL`], and cannot be listed twice.** The enum,
+//!   `ALL` and [`COUNT`](Feeder::COUNT) are all generated from one list by [`feeders!`], and a
+//!   repeated name would not be a legal enum. No test is needed, and none is written.
+//! - **A variant cannot be missing a row.** [`feeder_migration`] is an exhaustive match.
+//!
+//! The third is **not** guarded and is stated here rather than implied: nothing ties this enum to
+//! `App`'s actual method surface, so a twenty-eighth public feeder *method* could land with no
+//! variant. [`migration`](super::migration) has an anchor for its half — `HostCommand::DRAIN_ORDER`
+//! — and the feeders, being free-standing methods, have no such registry to anchor on. The list was
+//! enumerated by hand against `App` when this slice landed: 24 `pub fn set_*` plus
+//! `begin_ride_profile_fill`, `finish_ride_profile_fill` and `weather_feed_changed`. Anyone adding a
+//! feeder before DC6 #1439 deletes this file adds its row here too.
 
 use super::migration::LegacyOwner;
 
-/// One public bulk feeder on `App`, named after the method.
-///
-/// The list is the complete public feeding surface: every `App::set_*`, plus the in-place ride
-/// profile fill pair and the weather snapshot pulse, which feed data without being named `set_`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Feeder {
+/// Declare the feeder vocabulary once: the enum, [`Feeder::ALL`] and [`Feeder::COUNT`] all come out
+/// of this single list, so a variant cannot exist outside `ALL` and `COUNT` cannot drift from
+/// either. That is the completeness guard this table's whole value rests on, made structural
+/// instead of asserted — a hand-written `ALL` beside a hand-written `COUNT` would let a new variant
+/// be invisible to every test in this file.
+macro_rules! feeders {
+    ($( $(#[$meta:meta])* $variant:ident ),+ $(,)?) => {
+        /// One public bulk feeder on `App`, named after the method.
+        ///
+        /// The list is the complete public feeding surface: every `App::set_*`, plus the in-place
+        /// ride profile fill pair and the weather snapshot pulse, which feed data without being
+        /// named `set_`.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum Feeder {
+            $( $(#[$meta])* $variant, )+
+        }
+
+        impl Feeder {
+            /// Every public bulk feeder, in declaration order.
+            pub const ALL: &'static [Feeder] = &[ $( Feeder::$variant, )+ ];
+
+            /// How many public bulk feeders exist. The migration is complete when only the
+            /// [`DeletingSlice::Kept`] rows are left.
+            pub const COUNT: usize = Feeder::ALL.len();
+        }
+    };
+}
+
+feeders! {
     /// `App::set_nav_profiles`
     NavProfiles,
     /// `App::set_fw_version`
@@ -134,43 +172,6 @@ const fn row(kind: FeederKind, owner: LegacyOwner, home: &'static str, deletes_i
     FeederMigration { kind, owner, home, deletes_in }
 }
 
-impl Feeder {
-    /// Every public bulk feeder. Pinned against [`COUNT`](Feeder::COUNT) by test.
-    pub const ALL: [Feeder; Feeder::COUNT] = [
-        Feeder::NavProfiles,
-        Feeder::FwVersion,
-        Feeder::MapInfo,
-        Feeder::MapMpp,
-        Feeder::MapNavGraph,
-        Feeder::Routes,
-        Feeder::RoutesWithIds,
-        Feeder::RoutesWithMeta,
-        Feeder::RouteMeta,
-        Feeder::Trips,
-        Feeder::Rides,
-        Feeder::RideRetentionInventory,
-        Feeder::RideProfile,
-        Feeder::RideProfileFillBegin,
-        Feeder::RideProfileFillFinish,
-        Feeder::RidePreview,
-        Feeder::NavPreview,
-        Feeder::DetourPreview,
-        Feeder::Settings,
-        Feeder::BleStatus,
-        Feeder::MapTransfer,
-        Feeder::SensorStatus,
-        Feeder::SensorScanHits,
-        Feeder::RainView,
-        Feeder::WeatherFeed,
-        Feeder::HoldProgress,
-        Feeder::RenderClip,
-    ];
-
-    /// How many public bulk feeders exist. The migration is complete when this reaches the number
-    /// of [`DeletingSlice::Kept`] rows.
-    pub const COUNT: usize = 27;
-}
-
 /// Where `feeder`'s data goes. Exhaustive by construction: a twenty-eighth feeder does not compile
 /// until it has a row here.
 pub fn feeder_migration(feeder: Feeder) -> FeederMigration {
@@ -232,9 +233,15 @@ pub fn feeder_migration(feeder: Feeder) -> FeederMigration {
         Feeder::WeatherFeed => {
             row(Kind::ExternalFact, Own::Weather, "ExternalFacts::weather_data", When::WeatherCutover)
         }
-        Feeder::RainView => {
-            row(Kind::ExternalFact, Own::Weather, "WeatherDomain visible view state", When::WeatherCutover)
-        }
+        // Two halves with two homes: the step range and zoom floor are weather view state, but the
+        // method also re-clamps the map camera into the product's regime — UI-plane work no
+        // `WeatherVisible` field models, and the awkward half of this row to move.
+        Feeder::RainView => row(
+            Kind::ExternalFact,
+            Own::Weather,
+            "WeatherDomain visible view state + a UiRuntime rain-zoom clamp",
+            When::WeatherCutover,
+        ),
 
         // ---- boot inputs: supplied once, before any pass.
         Feeder::Settings => {
@@ -247,8 +254,11 @@ pub fn feeder_migration(feeder: Feeder) -> FeederMigration {
 
         // ---- platform state around a pass. These are not legacy shims: the runtime owns the
         // display and the input plane on every platform, and says so through these.
-        Feeder::MapMpp | Feeder::RenderClip => {
-            row(Kind::PlatformState, Own::Fault, "UiRuntime render state", When::Kept)
+        Feeder::RenderClip => row(Kind::PlatformState, Own::Fault, "UiRuntime render state", When::Kept),
+        // Kept, but not ordinary render state: this is the USB-CDC `Z` command's hook into the
+        // strippable render-instrumentation seam, and the table is only worth having if it says so.
+        Feeder::MapMpp => {
+            row(Kind::PlatformState, Own::Fault, "UiRuntime render-instrumentation seam (debug)", When::Kept)
         }
         Feeder::HoldProgress => row(Kind::PlatformState, Own::Fault, "UiRuntime input plane", When::Kept),
     }
@@ -258,24 +268,11 @@ pub fn feeder_migration(feeder: Feeder) -> FeederMigration {
 mod tests {
     use super::*;
 
-    /// The inventory is complete and each feeder appears exactly once — the same guarantee
-    /// [`migration`](super::super::migration) gets from `HostCommand::DRAIN_ORDER`, which the
-    /// feeders have no equivalent of because they are free-standing methods.
-    #[test]
-    fn every_feeder_is_listed_exactly_once() {
-        assert_eq!(Feeder::ALL.len(), Feeder::COUNT);
-        let mut seen: heapless::Vec<Feeder, { Feeder::COUNT }> = heapless::Vec::new();
-        for &feeder in &Feeder::ALL {
-            assert!(!seen.contains(&feeder), "{feeder:?} appears twice in the inventory");
-            seen.push(feeder).unwrap();
-        }
-    }
-
     /// Every row names a real home and a real deleting slice — an inventory is only useful while no
     /// row is a placeholder.
     #[test]
     fn every_row_names_a_home_and_a_deleting_slice() {
-        for &feeder in &Feeder::ALL {
+        for &feeder in Feeder::ALL {
             let row = feeder_migration(feeder);
             assert!(!row.home.is_empty(), "{feeder:?} has no home");
             // A feeder that survives must be platform state; anything a domain owns is a shim.

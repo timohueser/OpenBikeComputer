@@ -130,6 +130,26 @@ impl DerivedNeeds {
     }
 }
 
+/// The bulk that rides *beside* the keyed inputs — the small polyline targets, which are cheaper to
+/// copy in than to expose as borrowed buffers.
+///
+/// Named fields rather than two positional `&[(i32, i32)]` parameters: they are the same type, one
+/// call site fills only one of them, and swapping them would draw a ride's track over a route
+/// overview with nothing to catch it. The profile target is absent for the opposite reason — at
+/// ~5 KiB it stays DeviceCore-owned and the executor fills it in place.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DerivedTargets<'a> {
+    /// The viewed ride's decimated track shape, for a ride-track answer.
+    pub ride_preview: &'a [(i32, i32)],
+    /// The previewed route's decimated shape, for a nav-preview answer.
+    pub nav_preview: &'a [(i32, i32)],
+}
+
+impl DerivedTargets<'_> {
+    /// No polylines — an answer that carries none (a failure, or an in-place profile fill).
+    pub const NONE: DerivedTargets<'static> = DerivedTargets { ride_preview: &[], nav_preview: &[] };
+}
+
 /// The keyed answers arriving this pass — one optional input per need, mirroring [`DerivedNeeds`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DerivedInputs {
