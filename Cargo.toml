@@ -70,3 +70,12 @@ opt-level = 2
 opt-level = 2
 [profile.dev.package.obc-formats]
 opt-level = 2
+# The captured weather products arrive inside bzip2, HDF5 and gzip containers, and every cycle a
+# fixture test bakes decodes them again. That decode is the largest remaining cost in
+# `canonical_mosaic` and it is entirely third-party inner loops.
+[profile.dev.package.bzip2-rs]
+opt-level = 2
+[profile.dev.package.hdf5-pure]
+opt-level = 2
+[profile.dev.package.flate2]
+opt-level = 2
