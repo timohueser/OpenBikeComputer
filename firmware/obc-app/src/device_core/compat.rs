@@ -42,9 +42,38 @@
 //! The old protocol is coarser than the new one in ten specific places — a namespaced delete where
 //! the store now removes by object identity, a plan command that acquires, steps and commits in
 //! one, a stamp that is never acknowledged. Each is a named [`LegacyOwned`] row that says what the
-//! legacy side still owns and which slice deletes the row. Nothing falls through silently: an
-//! effect with no legacy expression is **left in its slot** (exactly as the pass leaves an outcome
-//! with no owner), and the row it hit comes back in the [`LegacyReport`].
+//! legacy side still owns and which slice deletes the row, and every row a translation hits comes
+//! back in the [`LegacyReport`], so nothing is silently skipped.
+//!
+//! ## One operation per domain, and why
+//!
+//! **This path completes at most one operation for each of `CatalogMachine`, `RetentionMachine` and
+//! `WeatherDomain` — for the whole life of the device.** It is the honest cost of the migration
+//! being half done, and it is worth stating rather than discovering.
+//!
+//! All three latch an in-flight marker the moment they emit an effect, and clear it only in their
+//! `apply_outcome`. The adapter can build a `NavigatorOutcome`, a `SettingsOutcome`, a `DfuOutcome`
+//! and a `StorageInfoOutcome`, because those four legacy commands have a terminal [`HostEvent`]. It
+//! can build **no** catalog, retention or weather outcome, because the legacy protocol answers those
+//! commands with a bulk re-feed, a store-changed edge, or nothing at all. Synthesising one anyway —
+//! reading a `StoreChanged` as "the delete I asked for finished" — would be the adapter deciding a
+//! product rule from an unrelated fact, which is exactly what it must not do.
+//!
+//! So the latch stays, and it stays whether the effect was translated or not: a *successful*
+//! `StampRouteUsed` wedges retention exactly as hard as an untranslatable `RemoveObject` wedges the
+//! catalog. #1397 S6 clears it, by giving those domains executors that answer.
+//!
+//! ## What "put back" does and does not mean
+//!
+//! An effect the adapter cannot send is put back into the [`EffectSlots`] it came from. That
+//! preserves it **for the caller**, which is what makes staging one plan across several calls
+//! lossless — the board's spine translates a domain at a time before its first await, and a full
+//! mailbox on the first step must not lose an effect by the third.
+//!
+//! It does **not** hand the effect back to the domain that decided it.
+//! [`PassPlan::effects`](super::pass::PassPlan) is pass *output*, built fresh every pass, so the
+//! domain will not offer it again — see above for why. The genuinely caller-owned half of the seam
+//! is [`PassInputs::outcomes`](super::pass::PassInputs), which does survive to the next pass.
 //!
 //! ## Bulk stays where it is
 //!
@@ -442,15 +471,27 @@ impl LegacyPending {
     }
 }
 
-/// Take the token a reply answers. An event whose class has nothing in flight is an explicit error:
-/// nobody asked for it, and inventing a token would forge an answer.
-fn claim<Tag>(slot: &mut Option<OperationToken<Tag>>, class: LegacyReply) -> Result<OperationToken<Tag>, LegacyError> {
-    slot.take().ok_or(LegacyError::NoPendingOperation(class))
+/// Read the token a reply answers **without consuming it**. An event whose class has nothing in
+/// flight is an explicit error: nobody asked for it, and inventing a token would forge an answer.
+fn peek<Tag>(slot: &Option<OperationToken<Tag>>, class: LegacyReply) -> Result<OperationToken<Tag>, LegacyError> {
+    slot.ok_or(LegacyError::NoPendingOperation(class))
 }
 
-/// Put a translated outcome into its domain slot, or say the slot was already full.
-fn deliver<T>(slot: &mut Slot<T>, outcome: T, class: LegacyReply) -> Result<(), LegacyError> {
-    slot.try_put(outcome).map_err(|_| LegacyError::OutcomeSlotFull(class))
+/// Put a translated outcome into its domain slot and close the operation out — but **only** once
+/// the outcome is actually in the slot.
+///
+/// The order matters: a refused delivery means the pass has not consumed the previous answer yet,
+/// so the executor will offer this one again. Consuming the correlation slot first would make that
+/// retry an unrequested event and lose the result for good.
+fn settle<T, Tag>(
+    slot: &mut Slot<T>,
+    outcome: T,
+    class: LegacyReply,
+    pending: &mut Option<OperationToken<Tag>>,
+) -> Result<(), LegacyError> {
+    slot.try_put(outcome).map_err(|_| LegacyError::OutcomeSlotFull(class))?;
+    *pending = None;
+    Ok(())
 }
 
 // ==================== the adapter ====================
@@ -470,9 +511,9 @@ pub enum LegacyError {
 
 /// What one [`effects_to_commands`](LegacyAdapter::effects_to_commands) call did.
 ///
-/// The counters exist so nothing is silently lost: every effect is translated, put back for the
-/// next pass, or left in its slot against a named [`LegacyOwned`] row, and the four counts add up
-/// to the number of occupied slots.
+/// The counters exist so nothing is silently skipped: every occupied slot is translated, put back
+/// because the mailbox was full, put back because its reply class is busy, or left because the
+/// legacy protocol cannot express it — and the four counts add up to the number of occupied slots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct LegacyReport {
     /// Effects that became legacy commands.
@@ -565,8 +606,10 @@ impl LegacyAdapter {
     /// Translate this pass's effects into legacy commands.
     ///
     /// Each domain slot is taken, mapped through its table, and either pushed to `mailbox` or **put
-    /// back unchanged**. Nothing is dropped: a full mailbox, a busy reply class and a row the legacy
-    /// protocol cannot express all leave the effect where its owner can offer it again.
+    /// back into `effects` unchanged** — a full mailbox, a busy reply class and a row the legacy
+    /// protocol cannot express all leave the effect for the caller to offer on a later call. That is
+    /// what makes staging one plan across several calls lossless; it does not make the *domain* try
+    /// again (see the module docs on the in-flight latch).
     pub fn effects_to_commands<const N: usize>(
         &mut self,
         effects: &mut EffectSlots,
@@ -585,8 +628,14 @@ impl LegacyAdapter {
                             true
                         }
                         UnansweredRow::Command { command, owned } => {
-                            report.owned.insert(owned);
-                            !report.send(command, mailbox)
+                            // The row is recorded only on a command that actually went out: a
+                            // deferred effect has not hit the row yet, it was never sent.
+                            if report.send(command, mailbox) {
+                                report.owned.insert(owned);
+                                false
+                            } else {
+                                true
+                            }
                         }
                     };
                     if keep {
@@ -632,16 +681,21 @@ impl LegacyAdapter {
         unanswered!(catalog, catalog_row);
         unanswered!(retention, retention_row);
         unanswered!(recorder, recorder_row);
+        // Every class named explicitly: this is the one module whose whole job is correlation, so a
+        // future table edit must not be able to file a reply under the wrong slot by falling into a
+        // catch-all. `navigator_row` names exactly these three, and the tables are exhaustive.
         answered!(navigator, navigator_row, class => match class {
+            LegacyReply::RoutePlan => &mut self.pending.route_plan,
             LegacyReply::DetourPlan => &mut self.pending.detour_plan,
             LegacyReply::DetourCommit => &mut self.pending.detour_commit,
-            _ => &mut self.pending.route_plan,
+            _ => unreachable!("navigator_row names only navigation reply classes"),
         });
         answered!(settings, settings_row, _class => &mut self.pending.settings_write);
         unanswered!(weather, weather_row);
         answered!(dfu, dfu_row, class => match class {
+            LegacyReply::DfuScan => &mut self.pending.dfu_scan,
             LegacyReply::DfuInstall => &mut self.pending.dfu_install,
-            _ => &mut self.pending.dfu_scan,
+            _ => unreachable!("dfu_row names only the two DFU reply classes"),
         });
         unanswered!(bond, bond_row);
         answered!(storage_info, storage_info_row, _class => &mut self.pending.card_scan);
@@ -674,65 +728,67 @@ impl LegacyAdapter {
         match event {
             // ---- terminal answers: the stored token comes back with the result ----
             HostEvent::NavPlanned(result) => {
-                let token = claim(&mut pending.route_plan, LegacyReply::RoutePlan)?;
+                let token = peek(&pending.route_plan, LegacyReply::RoutePlan)?;
                 let outcome = match result {
                     Ok(route) => NavigatorOutcome::PlanFinished { token, route },
                     Err(error) => NavigatorOutcome::Failed { token, error: NavigatorError::Plan(error) },
                 };
-                deliver(&mut next.outcomes.navigator, outcome, LegacyReply::RoutePlan)
+                settle(&mut next.outcomes.navigator, outcome, LegacyReply::RoutePlan, &mut pending.route_plan)
             }
             HostEvent::DetourPlanned(result) => {
-                let token = claim(&mut pending.detour_plan, LegacyReply::DetourPlan)?;
+                let token = peek(&pending.detour_plan, LegacyReply::DetourPlan)?;
                 let outcome = match result {
                     Ok(preview) => NavigatorOutcome::DetourFinished { token, preview },
                     Err(error) => NavigatorOutcome::Failed { token, error: NavigatorError::Plan(error) },
                 };
-                deliver(&mut next.outcomes.navigator, outcome, LegacyReply::DetourPlan)
+                settle(&mut next.outcomes.navigator, outcome, LegacyReply::DetourPlan, &mut pending.detour_plan)
             }
             HostEvent::DetourCommitted(result) => {
-                let token = claim(&mut pending.detour_commit, LegacyReply::DetourCommit)?;
+                let token = peek(&pending.detour_commit, LegacyReply::DetourCommit)?;
                 let outcome = match result {
                     Ok(route) => NavigatorOutcome::DetourCommitted { token, route },
                     Err(error) => NavigatorOutcome::Failed { token, error: NavigatorError::Plan(error) },
                 };
-                deliver(&mut next.outcomes.navigator, outcome, LegacyReply::DetourCommit)
+                settle(&mut next.outcomes.navigator, outcome, LegacyReply::DetourCommit, &mut pending.detour_commit)
             }
             HostEvent::SettingsPersisted { revision } => {
-                let token = claim(&mut pending.settings_write, LegacyReply::SettingsWrite)?;
+                let token = peek(&pending.settings_write, LegacyReply::SettingsWrite)?;
                 let outcome = SettingsOutcome::Persisted { token, revision };
-                deliver(&mut next.outcomes.settings, outcome, LegacyReply::SettingsWrite)
+                settle(&mut next.outcomes.settings, outcome, LegacyReply::SettingsWrite, &mut pending.settings_write)
             }
             HostEvent::SettingsPersistFailed { revision, error } => {
-                let token = claim(&mut pending.settings_write, LegacyReply::SettingsWrite)?;
+                let token = peek(&pending.settings_write, LegacyReply::SettingsWrite)?;
                 let outcome = SettingsOutcome::PersistFailed { token, revision, error };
-                deliver(&mut next.outcomes.settings, outcome, LegacyReply::SettingsWrite)
+                settle(&mut next.outcomes.settings, outcome, LegacyReply::SettingsWrite, &mut pending.settings_write)
             }
             HostEvent::DfuScanned(result) => {
-                let token = claim(&mut pending.dfu_scan, LegacyReply::DfuScan)?;
+                let token = peek(&pending.dfu_scan, LegacyReply::DfuScan)?;
                 let outcome = match result {
                     Ok(report) => DfuOutcome::ScanFinished { token, report },
                     Err(error) => DfuOutcome::ScanFailed { token, error },
                 };
-                deliver(&mut next.outcomes.dfu, outcome, LegacyReply::DfuScan)
+                settle(&mut next.outcomes.dfu, outcome, LegacyReply::DfuScan, &mut pending.dfu_scan)
             }
             HostEvent::DfuInstallBegan => {
-                let token = claim(&mut pending.dfu_install, LegacyReply::DfuInstall)?;
-                deliver(&mut next.outcomes.dfu, DfuOutcome::InstallBegan { token }, LegacyReply::DfuInstall)
+                let token = peek(&pending.dfu_install, LegacyReply::DfuInstall)?;
+                let outcome = DfuOutcome::InstallBegan { token };
+                settle(&mut next.outcomes.dfu, outcome, LegacyReply::DfuInstall, &mut pending.dfu_install)
             }
             HostEvent::DfuInstallFailed(error) => {
-                let token = claim(&mut pending.dfu_install, LegacyReply::DfuInstall)?;
-                deliver(&mut next.outcomes.dfu, DfuOutcome::InstallFailed { token, error }, LegacyReply::DfuInstall)
+                let token = peek(&pending.dfu_install, LegacyReply::DfuInstall)?;
+                let outcome = DfuOutcome::InstallFailed { token, error };
+                settle(&mut next.outcomes.dfu, outcome, LegacyReply::DfuInstall, &mut pending.dfu_install)
             }
             // The legacy `None` folded "no medium" and "the scan failed" into one value. The domain
             // separates them, and the honest translation of an unqualified `None` is the failed scan
             // — "not mounted" is a claim the legacy event never made.
             HostEvent::CardScanned { free_bytes } => {
-                let token = claim(&mut pending.card_scan, LegacyReply::CardScan)?;
+                let token = peek(&pending.card_scan, LegacyReply::CardScan)?;
                 let outcome = match free_bytes {
                     Some(free_bytes) => StorageInfoOutcome::Measured { token, free_bytes },
                     None => StorageInfoOutcome::Failed { token, error: StorageInfoError::ScanFailed },
                 };
-                deliver(&mut next.outcomes.storage_info, outcome, LegacyReply::CardScan)
+                settle(&mut next.outcomes.storage_info, outcome, LegacyReply::CardScan, &mut pending.card_scan)
             }
 
             // ---- facts: nobody asked, so nothing carries a token ----
@@ -1230,14 +1286,15 @@ mod tests {
         effects.storage_info.try_put(effect).unwrap();
         let report = adapter.effects_to_commands(&mut effects, &mut mail);
         assert_eq!(report.deferred, 1);
-        assert_eq!(effects.storage_info.take(), Some(effect));
+        assert!(!effects.storage_info.is_empty(), "the effect is still in the caller's slots");
         assert!(!adapter.pending().holds(LegacyReply::CardScan), "nothing went out, so nothing is owed");
 
-        // Room appears; the retained effect goes out, and only then is a reply owed.
+        // Room appears, and the **same** slots are offered again — the property the put-back
+        // actually has, and the one the board's multi-step staging depends on.
         assert_eq!(mail.pop(), Some(HostCommand::CancelDetour));
-        let mut effects = EffectSlots::new();
-        effects.storage_info.try_put(effect).unwrap();
         assert_eq!(adapter.effects_to_commands(&mut effects, &mut mail).translated, 1);
+        assert!(effects.storage_info.is_empty(), "and now it is consumed exactly once");
+        assert_eq!(mail.pop(), Some(HostCommand::ScanCardFree), "unchanged by the busy call");
         assert!(adapter.pending().holds(LegacyReply::CardScan));
     }
 
@@ -1380,6 +1437,57 @@ mod tests {
             Some(StorageInfoOutcome::Measured { token: first, free_bytes: 1 }),
             "the unconsumed answer stands"
         );
+
+        // …and the refused answer is still addressable, because a refusal did not consume the
+        // correlation slot. An executor that offers it again once the pass has caught up is
+        // answered, rather than told nobody asked.
+        assert!(adapter.pending().holds(LegacyReply::CardScan));
+        adapter.event_to_inputs(HostEvent::CardScanned { free_bytes: Some(2) }, &mut next).unwrap();
+        assert_eq!(
+            next.outcomes.storage_info.take(),
+            Some(StorageInfoOutcome::Measured { token: second, free_bytes: 2 }),
+            "the second measurement was not lost to the busy slot"
+        );
+    }
+
+    /// Two operations of one domain, in sequence, both completing — the correlation slot is per
+    /// *operation*, not per boot.
+    ///
+    /// Worth its own test because the pass's three machine-owning domains cannot do this on the
+    /// adapter path at all (see the module docs on the in-flight latch): this pins that the limit
+    /// belongs to the unanswerable domains, and not to the adapter's bookkeeping.
+    #[test]
+    fn two_operations_of_one_domain_complete_in_sequence() {
+        let mut ops = Ops::new();
+        let mut adapter = LegacyAdapter::new();
+        let mut mail = mailbox();
+        let mut next = LegacyInputs::new();
+
+        let mut measure = |adapter: &mut LegacyAdapter, token| {
+            let mut effects = EffectSlots::new();
+            effects.storage_info.try_put(StorageInfoEffect::MeasureFreeSpace { token }).unwrap();
+            assert_eq!(adapter.effects_to_commands(&mut effects, &mut mail).translated, 1);
+            assert_eq!(mail.pop(), Some(HostCommand::ScanCardFree));
+        };
+
+        let first = ops.storage.issue();
+        measure(&mut adapter, first);
+        adapter.event_to_inputs(HostEvent::CardScanned { free_bytes: Some(1) }, &mut next).unwrap();
+        assert_eq!(
+            next.outcomes.storage_info.take(),
+            Some(StorageInfoOutcome::Measured { token: first, free_bytes: 1 })
+        );
+        assert!(adapter.pending().is_empty(), "the answer freed the class");
+
+        let second = ops.storage.issue();
+        measure(&mut adapter, second);
+        adapter.event_to_inputs(HostEvent::CardScanned { free_bytes: Some(2) }, &mut next).unwrap();
+        assert_eq!(
+            next.outcomes.storage_info.take(),
+            Some(StorageInfoOutcome::Measured { token: second, free_bytes: 2 }),
+            "the second operation is answered under its own token"
+        );
+        assert_ne!(first, second, "and the two are distinguishable");
     }
 
     /// Uploads, warnings and the boot's update verdict become named external facts — no token, no

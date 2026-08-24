@@ -651,13 +651,6 @@ impl App {
         }
     }
 
-    /// What this device can currently do, as of the last pass's admission stage. Public alongside
-    /// [`run_pass`](App::run_pass) (#1439): a host that runs the pass needs the same answer the
-    /// screens do, and it must read it rather than re-derive it.
-    pub fn capabilities(&self) -> Capabilities {
-        self.pass.capabilities
-    }
-
     /// The stages the last pass ran, in order.
     #[cfg(test)]
     pub(crate) fn pass_trace(&self) -> &[PassStage] {
@@ -1106,17 +1099,17 @@ mod tests {
         let mut app = navigating();
         let mut facts = committed(1);
         pass_with(&mut app, 10, &[], &mut OutcomeSlots::new(), &mut facts);
-        assert!(app.capabilities().catalog.mutate, "a mounted store may be mutated");
+        assert!(app.pass.capabilities.catalog.mutate, "a mounted store may be mutated");
 
         let mut streaming = ExternalFacts::NONE;
         streaming.note_transfer(TransferState::Active);
         pass_with(&mut app, 20, &[], &mut OutcomeSlots::new(), &mut streaming);
-        assert!(!app.capabilities().dfu.install, "an install is heavy — never while a transfer streams");
+        assert!(!app.pass.capabilities.dfu.install, "an install is heavy — never while a transfer streams");
 
         let mut idle = ExternalFacts::NONE;
         idle.note_transfer(TransferState::Idle);
         pass_with(&mut app, 30, &[], &mut OutcomeSlots::new(), &mut idle);
-        assert!(app.capabilities().dfu.install, "and it comes straight back");
+        assert!(app.pass.capabilities.dfu.install, "and it comes straight back");
     }
 
     /// A platform callback cannot change DeviceCore in the middle of a pass. `run_pass` holds

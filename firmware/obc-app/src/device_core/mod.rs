@@ -63,7 +63,7 @@ pub use derived::{
 };
 
 pub use compat::{LegacyAdapter, LegacyInputs, LegacyOwned, LegacyPending, LegacyReply, LegacyReport};
-pub use pass::{PassClock, PassInputs, PassPlan, PassStage, SourceNeeds};
+pub use pass::{PassClock, PassInputs, PassPlan};
 pub use slots::{EffectSlots, OutcomeSlots, Slot, SlotFull};
 pub use storage_info::{StorageInfoEffect, StorageInfoError, StorageInfoIntent, StorageInfoOutcome};
 
