@@ -395,6 +395,14 @@ impl Revision {
     pub const fn new(raw: u64) -> Self {
         Revision(raw)
     }
+
+    /// The next revision — how a DeviceCore-side generation (a derived view, a locally-known commit)
+    /// moves forward. Saturating rather than wrapping: a revision is compared with `>` as well as
+    /// `==`, so a wrap would let an ancient value read as newer. 2⁶⁴ commits is not a reachable
+    /// device lifetime, and saturating simply stops the counter instead of lying about order.
+    pub const fn next(self) -> Revision {
+        Revision(self.0.saturating_add(1))
+    }
 }
 
 /// The mounted store moved. Producer: the store executor on every commit or delete. Consumer:

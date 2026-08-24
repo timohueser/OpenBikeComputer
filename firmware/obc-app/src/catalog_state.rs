@@ -2,9 +2,10 @@
 //!
 //! One component owns every id ↔ summary pairing and every piece of state keyed by catalog
 //! *identity* (the #450 contract): the route and ride catalogs with their durable ids, the trip
-//! folders resolving stage ids against the route catalog, and the host-filled view caches (the
-//! viewed ride's profile/preview, the route overview's shape preview) whose staleness keys are
-//! catalog indices that must follow identity across a live rescan.
+//! folders resolving stage ids against the route catalog, and the executor-filled derived targets
+//! (the viewed ride's profile/preview, the route overview's shape preview) held under the
+//! [`derived`](crate::device_core::derived) keys of #1437 — durable identity plus a source and view
+//! revision, so no cache key has to be walked across a live rescan.
 //!
 //! **The pairing invariant is encoded here, not policed by callers**: ids and summaries are only
 //! ever replaced together ([`replace_routes`](CatalogState::replace_routes) /
@@ -21,6 +22,8 @@
 use obc_route::Profile;
 
 use crate::app::NAV_PREVIEW_MAX;
+use crate::device_core::derived::{DerivedInput, NavPreviewKey, RideTrackKey};
+use crate::device_core::Revision;
 use crate::placement::define_placement_constructors;
 use crate::retention::{RideRetentionRecord, RouteRetentionMeta};
 use crate::ride::{RideCatalog, RideSummary, MAX_RIDES, UI_RIDES_CAP};
@@ -93,23 +96,39 @@ pub(crate) struct CatalogState {
     /// Kept separate so the board can stream directly into the resident buffer without returning
     /// a ~5 KiB value through its task frame.
     ride_profile_present: bool,
-    /// The ride index [`ride_profile`](CatalogState::ride_profile) was **answered** for (a failed
-    /// fill parks `None` under the same key so a dead file isn't re-streamed), remapped by
-    /// identity across rescans like every held ride index.
-    ride_profile_for: Option<usize>,
+    /// The [`RideTrackKey`] [`ride_profile`](CatalogState::ride_profile) was **answered** for — a
+    /// failed fill parks the same key with `present == false`, so a dead file is answered once
+    /// rather than re-streamed every pass.
+    ride_profile_for: Option<RideTrackKey>,
     /// The viewed ride's decimated recorded-track shape polyline (#678 rework 3), host-filled in
     /// the same drain as the profile.
     ride_preview: heapless::Vec<(i32, i32), NAV_PREVIEW_MAX>,
-    /// The ride index the [`ride_preview`](CatalogState::ride_preview) was handed in for — its
-    /// staleness key, remapped like the profile key.
-    ride_preview_for: Option<usize>,
+    /// The key the [`ride_preview`](CatalogState::ride_preview) was handed in for.
+    ride_preview_for: Option<RideTrackKey>,
     /// The Route overview's decimated route-shape preview polyline (#685 §4), host-decimated and
-    /// handed in via [`set_nav_preview`](CatalogState::set_nav_preview).
+    /// handed in via [`accept_nav_preview`](CatalogState::accept_nav_preview).
     nav_preview: heapless::Vec<(i32, i32), NAV_PREVIEW_MAX>,
-    /// The route index the [`nav_preview`](CatalogState::nav_preview) was handed in for — the
+    /// The [`NavPreviewKey`] the [`nav_preview`](CatalogState::nav_preview) was handed in for — the
     /// staleness key (the render gates on it so an old plan's shape can never draw under a
-    /// different route). Cleared when a plan commits so every plan starts preview-less.
-    nav_preview_route: Option<usize>,
+    /// different route, and a *re-committed* one can never draw under fresh geometry).
+    nav_preview_route: Option<NavPreviewKey>,
+    /// The revision of the object bytes this component knows about: bumped by
+    /// [`note_commit`](CatalogState::note_commit) whenever something committed new bytes over a
+    /// durable identity. It is the `source` half of every derived key, and the reason a route
+    /// upload that *replaces* a stored route cannot leave its old preview standing.
+    ///
+    /// Deliberately one store-wide counter rather than one per namespace: a re-commit is rare, the
+    /// only cost of the coarser key is one extra derived read when an unrelated route is replaced
+    /// while a ride detail is open, and a rides-only revision would have nothing to bump it — a
+    /// finalised ride's bytes never change.
+    source_revision: Revision,
+    /// The ride-track view generation — bumped by an explicit invalidate (an in-place fill that
+    /// starts), so an abandoned fill leaves the need up instead of a half-written buffer answered.
+    ride_track_view: Revision,
+    /// The nav-preview view generation — bumped by
+    /// [`invalidate_nav_preview`](CatalogState::invalidate_nav_preview) so every committed plan
+    /// starts preview-less even when the route identity and its bytes are unchanged.
+    nav_preview_view: Revision,
     /// The **detour preview** polyline (#882): the planned-but-uncommitted detour's decimated
     /// shape, drawn by the Detour preview screen *over* the still-active original route.
     /// Host-filled when the detour plan completes; cleared on commit, cancel, or route change.
@@ -143,6 +162,9 @@ impl CatalogState {
             ride_preview_for: None,
             nav_preview: heapless::Vec::new(),
             nav_preview_route: None,
+            source_revision: Revision::ZERO,
+            ride_track_view: Revision::ZERO,
+            nav_preview_view: Revision::ZERO,
             detour_preview: heapless::Vec::new(),
             detour_preview_route: None,
         }
@@ -345,16 +367,10 @@ impl CatalogState {
             let _ =
                 self.ride_inventory.push(RideRetentionRecord { id, synced: s.synced, synced_at_utc: s.synced_at_utc });
         }
-        // The view caches follow their subject's identity (identity survives → the resident
-        // profile moves with it, no re-stream; vanished → the buffer drops).
-        self.ride_profile_for = self.ride_profile_for.and_then(|i| self.remap_ride(&old_ids, i));
-        if self.ride_profile_for.is_none() {
-            self.ride_profile_present = false; // the profiled ride vanished (or none was profiled)
-        }
-        self.ride_preview_for = self.ride_preview_for.and_then(|i| self.remap_ride(&old_ids, i));
-        if self.ride_preview_for.is_none() {
-            self.ride_preview.clear(); // the previewed ride vanished (or none was previewed)
-        }
+        // The view caches need no remap at all: their keys name a *durable ride identity*, so a
+        // surviving ride keeps its answer (no re-stream) and a vanished one simply stops matching
+        // any key the need can produce. That is the whole point of #1437's keyed derived data —
+        // the index walk that used to live here was the bug surface it removes.
         old_ids
     }
 
@@ -379,111 +395,177 @@ impl CatalogState {
         false
     }
 
-    // ---- identity-keyed view caches ----
+    // ---- keyed derived data (#1437) ----
+    //
+    // Two derived reads, two [`DerivedNeeds`](crate::device_core::derived::DerivedNeeds) slots, and
+    // one rule for both: the answer is stored under the key the need carried, and every read
+    // compares that key with the key the need would carry *now*. Nothing is remapped, nothing is
+    // "invalidated on rescan" — a subject change, fresh bytes, or an explicit invalidate simply
+    // produces a different key, and the old answer becomes unreachable in the same instant.
 
-    /// Park the host's ride-track answer in the single resident ride-profile buffer, keyed to
-    /// `viewed_ride` (`None` profile = the stream failed; the cue stops re-firing).
-    pub(crate) fn set_ride_profile(&mut self, profile: Option<Profile>, viewed_ride: Option<usize>) {
-        if let Some(profile) = profile {
-            self.ride_profile = profile;
-            self.ride_profile_present = true;
-        } else {
-            self.ride_profile_present = false;
-        }
-        self.ride_profile_for = viewed_ride;
+    /// The derived **ride-track** key for the ride at catalog index `viewed_ride`, or `None` when
+    /// no detail is open (or its subject vanished) — the key the need carries and the key an answer
+    /// must bring back.
+    pub(crate) fn ride_track_key(&self, viewed_ride: Option<usize>) -> Option<RideTrackKey> {
+        let ride = *self.ride_ids.get(viewed_ride?)?;
+        Some(RideTrackKey { ride, source: self.source_revision, view: self.ride_track_view })
     }
 
-    /// Borrow the one resident profile buffer for an in-place host fill. The matching
-    /// [`finish_ride_profile_fill`](Self::finish_ride_profile_fill) call publishes or rejects it.
+    /// The derived **nav-preview** key for the route at catalog index `active_route` — the route
+    /// twin of [`ride_track_key`](Self::ride_track_key).
+    pub(crate) fn nav_preview_key(&self, active_route: Option<usize>) -> Option<NavPreviewKey> {
+        let route = *self.route_ids.get(active_route?)?;
+        Some(NavPreviewKey { route, source: self.source_revision, view: self.nav_preview_view })
+    }
+
+    /// Whether the ride-track need for `key` is already answered — a recorded failure counts, so a
+    /// dead file is read once rather than on every pass.
+    ///
+    /// The **profile** is the authoritative answer, not the profile *and* the preview, and that is
+    /// deliberate: it is the rule the index-keyed `ride_profile_answered_for` had before #1437, and
+    /// all three hosts fill both targets in one drain of the same read (the board's `flat_store`
+    /// pair, the simulator, and `obc-host-core`'s dispatcher). Requiring both would make a host that
+    /// legitimately has no track shape to hand in re-fire the read on every pass forever — the exact
+    /// grind the level is built to avoid.
+    pub(crate) fn ride_track_answered(&self, key: RideTrackKey) -> bool {
+        self.ride_profile_for == Some(key)
+    }
+
+    /// Whether the nav-preview need for `key` is already answered.
+    pub(crate) fn nav_preview_answered(&self, key: NavPreviewKey) -> bool {
+        self.nav_preview_route == Some(key)
+    }
+
+    /// Note that something committed **new bytes over a durable identity** (an upload that replaced
+    /// a stored object, a spliced route). Every derived key moves with it, so an answer produced
+    /// from the previous bytes stops matching — the one case identity alone cannot catch.
+    pub(crate) fn note_commit(&mut self) {
+        self.source_revision = self.source_revision.next();
+    }
+
+    /// Accept a keyed ride-**profile** answer. A stale key changes nothing at all: the payload is
+    /// dropped and the need stays up, so a fill that finished after the rider moved on cannot land
+    /// on the ride they are looking at now. Returns whether it was accepted.
+    ///
+    /// That refusal only *bites* once an executor carries the key it was asked with. The temporary
+    /// [`App::set_ride_profile`](crate::App::set_ride_profile) wrapper derives `current` from the
+    /// live subject and hands the same value as `input.key`, so it can never refuse — the legacy
+    /// command it answers carries no key back. DC6 #1439 is where the guard starts holding; until
+    /// then the late-answer misattribution stays the characterized defect the DC1 traces record.
+    pub(crate) fn accept_ride_profile(
+        &mut self,
+        current: Option<RideTrackKey>,
+        input: DerivedInput<RideTrackKey>,
+        profile: Option<Profile>,
+    ) -> bool {
+        if current != Some(input.key) {
+            return false;
+        }
+        // A `Filled` result with no payload is an in-place fill: the buffer is already written.
+        if let Some(profile) = profile {
+            self.ride_profile = profile;
+        }
+        self.ride_profile_present = input.result.is_filled();
+        self.ride_profile_for = Some(input.key);
+        true
+    }
+
+    /// Borrow the one resident profile buffer for an in-place fill, **invalidating** the ride-track
+    /// view first: until the matching accept lands, the need carries a new key and re-emits. An
+    /// abandoned fill therefore leaves a need up rather than a half-written buffer marked answered.
     pub(crate) fn begin_ride_profile_fill(&mut self) -> &mut Profile {
         self.ride_profile_present = false;
+        self.ride_track_view = self.ride_track_view.next();
         &mut self.ride_profile
     }
 
-    /// Complete an in-place profile fill, including a failed answer so the level-triggered request
-    /// does not grind on malformed media every pass.
-    pub(crate) fn finish_ride_profile_fill(&mut self, valid: bool, viewed_ride: Option<usize>) {
-        self.ride_profile_present = valid;
-        self.ride_profile_for = viewed_ride;
-    }
-
-    /// The resident ride profile **iff** it was answered for `viewed_ride` (a `None` key never
-    /// matches — the buffer is only reachable through the identity it was filled for).
-    pub(crate) fn ride_profile_for(&self, viewed_ride: Option<usize>) -> Option<&Profile> {
-        (self.ride_profile_present && self.ride_profile_for.is_some() && self.ride_profile_for == viewed_ride)
-            .then_some(&self.ride_profile)
-    }
-
-    /// Whether the ride-profile buffer is answered for `viewed_ride` — the derived
-    /// [`LoadRideTrack`](crate::host::HostCommand::LoadRideTrack) cue's "already answered" half
-    /// (a recorded failure counts as answered, so a dead file never grinds).
-    pub(crate) fn ride_profile_answered_for(&self, viewed_ride: usize) -> bool {
-        self.ride_profile_for == Some(viewed_ride)
-    }
-
-    /// Hand in the viewed ride's decimated track-shape polyline (≤ [`NAV_PREVIEW_MAX`] points,
-    /// more truncated), keyed to `viewed_ride`.
-    pub(crate) fn set_ride_preview(&mut self, pts: &[(i32, i32)], viewed_ride: Option<usize>) {
-        self.ride_preview.clear();
-        for &p in pts.iter().take(NAV_PREVIEW_MAX) {
-            let _ = self.ride_preview.push(p);
+    /// Accept a keyed ride-**preview** answer (≤ [`NAV_PREVIEW_MAX`] points, more truncated), under
+    /// the same staleness rule as the profile.
+    pub(crate) fn accept_ride_preview(
+        &mut self,
+        current: Option<RideTrackKey>,
+        input: DerivedInput<RideTrackKey>,
+        pts: &[(i32, i32)],
+    ) -> bool {
+        if current != Some(input.key) {
+            return false;
         }
-        self.ride_preview_for = viewed_ride;
+        self.ride_preview.clear();
+        if input.result.is_filled() {
+            for &p in pts.iter().take(NAV_PREVIEW_MAX) {
+                let _ = self.ride_preview.push(p);
+            }
+        }
+        self.ride_preview_for = Some(input.key);
+        true
     }
 
-    /// The ride-shape preview for `viewed_ride`, or the empty slice when missing/stale — the
-    /// screens draw whatever this hands them, so a stale shape is unreachable.
-    pub(crate) fn ride_preview_for(&self, viewed_ride: Option<usize>) -> &[(i32, i32)] {
-        if self.ride_preview_for.is_some() && self.ride_preview_for == viewed_ride {
+    /// The resident ride profile **iff** it was answered for `key` — the buffer is only reachable
+    /// through the exact key it was filled for.
+    pub(crate) fn ride_profile_for(&self, key: Option<RideTrackKey>) -> Option<&Profile> {
+        (self.ride_profile_present && key.is_some() && self.ride_profile_for == key).then_some(&self.ride_profile)
+    }
+
+    /// The ride-shape preview for `key`, or the empty slice when missing or stale — the screens
+    /// draw whatever this hands them, so a stale shape is unreachable.
+    pub(crate) fn ride_preview_for(&self, key: Option<RideTrackKey>) -> &[(i32, i32)] {
+        if key.is_some() && self.ride_preview_for == key {
             &self.ride_preview
         } else {
             &[]
         }
     }
 
-    /// Drop the ride profile + preview the moment they stop matching the viewed ride (#680): the
-    /// detail exited or moved subjects. Filling is the host's; only the drop lives here.
-    pub(crate) fn drop_stale_ride_views(&mut self, viewed_ride: Option<usize>) {
-        if self.ride_profile_for != viewed_ride {
+    /// Release the ride profile + preview once they stop matching the live key (#680): the detail
+    /// exited or moved subjects. The key gate already makes them unreachable; dropping the keys is
+    /// what lets the need re-fire when the rider comes back.
+    pub(crate) fn drop_stale_ride_views(&mut self, key: Option<RideTrackKey>) {
+        if self.ride_profile_for != key {
             self.ride_profile_present = false;
             self.ride_profile_for = None;
         }
-        if self.ride_preview_for != viewed_ride {
+        if self.ride_preview_for != key {
             self.ride_preview.clear();
             self.ride_preview_for = None;
         }
     }
 
-    /// Hand in the previewed route's decimated shape polyline (#685 §4), keyed to `active_route`.
-    pub(crate) fn set_nav_preview(&mut self, pts: &[(i32, i32)], active_route: Option<usize>) {
-        self.nav_preview.clear();
-        for &p in pts.iter().take(NAV_PREVIEW_MAX) {
-            let _ = self.nav_preview.push(p);
+    /// Accept a keyed **nav-preview** answer (#685 §4) — the previewed route's decimated shape.
+    pub(crate) fn accept_nav_preview(
+        &mut self,
+        current: Option<NavPreviewKey>,
+        input: DerivedInput<NavPreviewKey>,
+        pts: &[(i32, i32)],
+    ) -> bool {
+        if current != Some(input.key) {
+            return false;
         }
-        self.nav_preview_route = active_route;
+        self.nav_preview.clear();
+        if input.result.is_filled() {
+            for &p in pts.iter().take(NAV_PREVIEW_MAX) {
+                let _ = self.nav_preview.push(p);
+            }
+        }
+        self.nav_preview_route = Some(input.key);
+        true
     }
 
-    /// The route-shape preview for `active_route`, or the empty slice when missing/stale.
-    pub(crate) fn nav_preview_for(&self, active_route: Option<usize>) -> &[(i32, i32)] {
-        if self.nav_preview_route.is_some() && self.nav_preview_route == active_route {
+    /// The route-shape preview for `key`, or the empty slice when missing or stale.
+    pub(crate) fn nav_preview_for(&self, key: Option<NavPreviewKey>) -> &[(i32, i32)] {
+        if key.is_some() && self.nav_preview_route == key {
             &self.nav_preview
         } else {
             &[]
         }
     }
 
-    /// Whether the nav preview is **stale** for `active_route` — the derived
-    /// [`RefreshNavPreview`](crate::host::HostCommand::RefreshNavPreview) cue's data half (the
-    /// screen half — is an overview up? — is the UI's).
-    pub(crate) fn nav_preview_stale(&self, active_route: Option<usize>) -> bool {
-        self.nav_preview_route != active_route
-    }
-
-    /// Clear the nav preview and its key — every committed plan starts preview-less (#685 §4), so
-    /// a re-route's old shape can never survive into the new overview.
-    pub(crate) fn clear_nav_preview(&mut self) {
+    /// Invalidate the nav preview: drop it **and bump the view generation**, so every committed
+    /// plan starts preview-less (#685 §4) even when the route identity and its bytes are unchanged.
+    /// The bump is what makes this an invalidate rather than a clear a late answer could undo.
+    pub(crate) fn invalidate_nav_preview(&mut self) {
         self.nav_preview.clear();
         self.nav_preview_route = None;
+        self.nav_preview_view = self.nav_preview_view.next();
     }
 
     /// Hand in a planned detour's decimated polyline (#882), keyed to the route it was planned
@@ -523,7 +605,7 @@ impl CatalogState {
 // outcome reports only the store revision it was read at; a member read fills the domain's bounded
 // member target and the outcome reports only how many landed.
 
-use crate::device_core::{CatalogTag, OperationToken, Revision};
+use crate::device_core::{CatalogTag, OperationToken};
 
 /// What the UI (or another domain) asks of the catalog.
 ///
@@ -631,6 +713,9 @@ impl CatalogState {
             ride_preview_for,
             nav_preview,
             nav_preview_route,
+            source_revision,
+            ride_track_view,
+            nav_preview_view,
             detour_preview,
             detour_preview_route,
         } = self;
@@ -641,6 +726,10 @@ impl CatalogState {
         assert!(!*ride_profile_present && ride_profile_for.is_none(), "no ride profile answered");
         assert!(ride_preview.is_empty() && ride_preview_for.is_none(), "no ride preview cached");
         assert!(nav_preview.is_empty() && nav_preview_route.is_none(), "no route-shape preview cached");
+        assert!(
+            [*source_revision, *ride_track_view, *nav_preview_view].iter().all(|r| *r == Revision::ZERO),
+            "the derived key revisions start at zero — nothing committed, nothing invalidated"
+        );
         assert!(detour_preview.is_empty() && detour_preview_route.is_none(), "no detour preview cached");
     }
 }

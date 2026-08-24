@@ -545,11 +545,17 @@ pub struct App {
     /// advances it. Read through [`clock_trusted`](App::clock_trusted); the auto-expiry sweep (#638
     /// S3) gates every stamp and deletion on it. **Never persisted.**
     clock_trust: ClockTrust,
-    /// The auto-expiry runtime (epic #638, S3): the pending sweep-action queue, the hourly-sweep
-    /// gate, and the once-per-activation stamp memory. Fed from [`tick`](App::tick) (gated on a
-    /// trusted clock + no ride recording); drained into the typed [`HostCommand`] protocol as route/
-    /// ride deletes and `last_used` / `synced_at` stamps.
-    retention: crate::retention::RetentionRuntime,
+    /// The retention domain (epic #638 S3, #1437): the whole auto-expiry policy — the trusted-clock
+    /// and hourly gates, the usage and sync stamps, expiry discovery, live revalidation, and the
+    /// delete retry pacing. Advanced from [`tick`](App::tick); it emits typed metadata effects and
+    /// catalog expiry intents, which the compatibility seam below still translates into the legacy
+    /// [`HostCommand`] protocol.
+    retention: crate::retention::RetentionMachine,
+    /// The weather domain (#1437): the installed data's identity and revision, visible freshness,
+    /// the refresh request and its in-flight operation, the last terminal result, and the alert
+    /// decision. The bundle itself stays in the platform's store — this owns what the rider is
+    /// *told*, never the frames.
+    weather: crate::weather::WeatherDomain,
     /// The app-side pending protocol state that isn't a one-shot slot on [`Activity`]: the
     /// counted store-changed cue (#450) and the #810 settings-persistence state machine
     /// (revision, handshake state, bounded retry pacing). Drained and answered only through the
@@ -627,7 +633,8 @@ impl App {
             wall_clock: WallClock::new(Settings::default().local_clock()),
             // A persisted set-point is display-only until GPS or BLE establishes trust this boot.
             clock_trust: ClockTrust::Untrusted,
-            retention: crate::retention::RetentionRuntime::new(),
+            retention: crate::retention::RetentionMachine::new(),
+            weather: crate::weather::WeatherDomain::new(),
             host: HostPending::new(),
             freeze: crate::reroute_freeze::RerouteFreeze::new(),
             fw_version: heapless::String::new(),
@@ -670,6 +677,7 @@ impl App {
             wall_clock,
             clock_trust,
             retention,
+            weather,
             host,
             freeze,
             fw_version,
@@ -694,6 +702,10 @@ impl App {
                 .iter()
                 .all(|k| !retention.has(*k)),
             "no retention sweep in flight"
+        );
+        assert!(
+            weather.installed().is_none() && !weather.refreshing() && weather.last_refresh().is_none(),
+            "no weather installed, none requested, nothing completed this boot"
         );
         assert!(host.is_empty(), "no host work pending, settings Clean at revision 0");
         assert!(!freeze.plan_live() && !freeze.active(true), "no planner running, no freeze banner");
@@ -977,59 +989,75 @@ impl App {
         true
     }
 
-    /// The per-tick auto-expiry step (epic #638, S3): the once-per-activation active-route
-    /// `last_used` stamp and the roughly-hourly deletion sweep. Both are hard-gated on the epic's
-    /// safety core — **nothing runs, nothing is stamped or deleted, without a clock established from
-    /// a real source this boot** ([`clock_trusted`](App::clock_trusted)) — and the sweep is
-    /// additionally suppressed while a ride is recording (invariant 4). Enqueued actions drain into
-    /// the typed [`HostCommand`] protocol.
+    /// Advance [`RetentionMachine`](crate::retention::RetentionMachine) one pass (epic #638 S3,
+    /// #1437). The whole policy — the trusted-clock and recording gates included — lives in the
+    /// domain; all this does is assemble the [`RetentionView`](crate::retention::RetentionView) of
+    /// the catalogs, the clocks and the live gates that the domain reads.
     fn retention_tick(&mut self) {
-        if !self.clock_trusted() {
-            return; // invariant 1: no trusted clock this boot → no stamps, no deletions
-        }
-        let now = self.wall_unix_now();
+        self.with_retention(|retention, view| retention.advance(view));
+    }
 
-        // Once-per-activation stamp: when the active nav route *changes*, mark it used now so a
-        // freshly-started route can't expire underneath the ride it is guiding (invariant 3's
-        // companion). `note_active_route` fires the stamp only on a change, not every tick — and
-        // only for a route that actually expires: a `Never` route (the migration default, and every
-        // route until S4 sets retention) needs no `last_used`, so stamping it would just churn the
-        // sidecar on each activation for no benefit.
-        let active_non_never = self
-            .activity
-            .active_route
-            .and_then(|i| self.catalogs.route_metas().get(i))
-            .is_some_and(|m| m.retention.days().is_some());
-        let active_id =
-            active_non_never.then(|| self.activity.active_route.and_then(|i| self.catalogs.route_id_at(i))).flatten();
-        self.retention.note_active_route(active_id);
+    /// Run `f` against the retention domain and the read-only [`RetentionView`] of the rest of the
+    /// app it decides from — disjoint field borrows, so the machine mutates its own queue while it
+    /// reads the catalogs.
+    ///
+    /// The view is assembled fresh at every call site (the tick *and* each drain), so discovery and
+    /// the just-in-time recheck can never read two different pictures.
+    ///
+    /// [`RetentionView`]: crate::retention::RetentionView
+    fn with_retention<T>(
+        &mut self,
+        f: impl FnOnce(&mut crate::retention::RetentionMachine, &crate::retention::RetentionView) -> T,
+    ) -> T {
+        // A `None` clock is invariant 1: no real time source established it this boot, so the
+        // domain stamps nothing, deletes nothing and sweeps nothing.
+        let now_utc = self.clock_trusted().then(|| self.wall_unix_now());
+        let now_ms = self.ui.now_ms;
+        let recording = self.activity.is_tracking();
+        let App { retention, catalogs, activity, settings, .. } = self;
+        let view = crate::retention::RetentionView {
+            now_utc,
+            now_ms,
+            recording,
+            route_ids: catalogs.route_ids(),
+            route_metas: catalogs.route_metas(),
+            active_route: activity.active_route,
+            ride_records: catalogs.ride_records(),
+            ride_retention: settings.ride_retention,
+        };
+        f(retention, &view)
+    }
 
-        // Eager ride `synced_at` stamp (epic #638, S3): a ride acked synced under a trusted clock
-        // starts its delete countdown at ~ack-time — **not** deferred to the recording-gated hourly
-        // sweep, which would leave a ride acked mid-tour un-started until the ride ends. A metadata
-        // stamp is safe mid-ride (invariant 4 gates *deletions*, not stamps), so this runs regardless
-        // of `is_tracking`. (Rides acked while *untrusted* — an old app with no `setClock` — keep
-        // `synced_at == 0` until this fires on the first trusted tick: the lazy fallback.)
-        self.retention.stamp_synced_rides(self.catalogs.ride_records());
-
-        // The roughly-hourly delete sweep (invariant 4: not while recording). `maybe_sweep` gates on the
-        // wall-clock hour and an empty queue, then fills the batch from the pure policy function. The
-        // final delete/stamp decision is re-derived from live state at drain (`drain_host_command`),
-        // so a candidate collected here is only ever a suggestion, never an authorized deletion.
-        if !self.activity.is_tracking() {
-            let App { retention, catalogs, activity, settings, .. } = self;
-            retention.maybe_sweep(now, |queue| {
-                let inputs = crate::retention::SweepInputs {
-                    now_utc: now,
-                    route_ids: catalogs.route_ids(),
-                    route_metas: catalogs.route_metas(),
-                    active_route: activity.active_route,
-                    ride_records: catalogs.ride_records(),
-                    ride_retention: settings.ride_retention,
-                };
-                crate::retention::collect_sweep_actions(&inputs, queue);
-            });
-        }
+    /// Take one retention metadata effect and answer it, translating it into the legacy stamp
+    /// command — the #1437 compatibility seam.
+    ///
+    /// The legacy protocol has no acknowledgement for a stamp: the host writes the sidecar and says
+    /// nothing. So the adapter *is* the executor, and it answers on dispatch — the honest
+    /// translation of "dispatch means done" for a protocol with no other terminal event. DC6
+    /// replaces this synthetic answer with the real outcome the executor reports.
+    fn retention_stamp_command(&mut self, kind: crate::retention::SweepKind) -> Option<HostCommand> {
+        let effect = self.with_retention(|retention, view| retention.next_metadata_effect(kind, view))?;
+        let token = effect.token();
+        let command = match effect {
+            crate::retention::RetentionEffect::WriteRouteMetadata { id, meta, .. } => {
+                let utc = meta.last_used_utc;
+                // Mirror the stamp into the resident meta so a re-derivation before the host's
+                // rescan lands doesn't re-enqueue it (the sidecar write itself is the host's).
+                self.catalogs.stamp_route_last_used(id, utc);
+                self.retention.apply_outcome(crate::retention::RetentionOutcome::RouteMetadataWritten { token, id });
+                HostCommand::StampRouteUsed { id, utc }
+            }
+            crate::retention::RetentionEffect::WriteRideMetadata { id, synced_at, .. } => {
+                // Mirror into both the resident summary (UI repaint) and the full retention
+                // inventory (finding #876-2), so a ride outside the newest-32 display catalog also
+                // stops re-enqueuing its stamp.
+                self.catalogs.stamp_ride_synced_at(id, synced_at);
+                self.catalogs.stamp_inventory_synced_at(id, synced_at);
+                self.retention.apply_outcome(crate::retention::RetentionOutcome::RideMetadataWritten { token, id });
+                HostCommand::StampRideSynced { id, utc: synced_at }
+            }
+        };
+        Some(command)
     }
 
     /// Force the auto-expiry sweep to run on the next eligible tick, ignoring the hourly gate (epic
@@ -1423,36 +1451,61 @@ impl App {
         self.catalogs.ride_ids()
     }
 
-    /// Park the host's answer to [`take_ride_track_request`](App::ride_track_request) in the
-    /// app's single resident ride-profile buffer, keyed to the currently-viewed ride (`None` =
-    /// the stream failed; the band keeps its loading note and the request doesn't re-fire).
-    /// Dirties the map once — the open detail's band appears with the answer.
+    /// Park the host's answer to [`ride_track_request`](App::ride_track_request) in the app's single
+    /// resident ride-profile buffer (`None` = the stream failed; the band keeps its loading note and
+    /// the level does not re-fire).
+    ///
+    /// **Temporary wrapper — deleted by DC6 #1439** with the compatibility executor, together with
+    /// the rest of the legacy `set_*` façade. It builds the matching keyed
+    /// [`DerivedInput`](crate::device_core::derived::DerivedInput) from the live need, which is why
+    /// it cannot itself carry a key the way the real path does: the legacy command the host answered
+    /// does not carry one back.
     pub fn set_ride_profile(&mut self, profile: Option<Profile>) {
-        self.catalogs.set_ride_profile(profile, self.activity.viewed_ride);
-        self.ui.map_dirty = true;
+        use crate::device_core::derived::DerivedInput;
+        let Some(key) = self.catalogs.ride_track_key(self.activity.viewed_ride) else { return };
+        let input = if profile.is_some() { DerivedInput::filled(key) } else { DerivedInput::failed(key) };
+        if self.catalogs.accept_ride_profile(Some(key), input, profile) {
+            self.ui.map_dirty = true;
+        }
     }
 
-    /// Borrow the app's one resident ride-profile buffer for an in-place host fill.
-    /// Finish with [`finish_ride_profile_fill`](App::finish_ride_profile_fill), including on error.
+    /// Borrow the app's one resident ride-profile buffer for an in-place host fill. **Invalidates**
+    /// the ride-track view: until [`finish_ride_profile_fill`](App::finish_ride_profile_fill)
+    /// accepts the answer the level re-fires, so an abandoned fill leaves a need up rather than a
+    /// half-written buffer marked answered.
+    ///
+    /// **Temporary wrapper — deleted by DC6 #1439.**
     pub fn begin_ride_profile_fill(&mut self) -> &mut Profile {
         self.catalogs.begin_ride_profile_fill()
     }
 
-    /// Publish or reject an in-place ride-profile fill for the currently viewed ride.
+    /// Publish or reject an in-place ride-profile fill. A rejected fill is still an *answer*: the
+    /// need clears for that key, so malformed media is read once rather than every pass.
+    ///
+    /// **Temporary wrapper — deleted by DC6 #1439.**
     pub fn finish_ride_profile_fill(&mut self, valid: bool) {
-        self.catalogs.finish_ride_profile_fill(valid, self.activity.viewed_ride);
-        self.ui.map_dirty = true;
+        use crate::device_core::derived::DerivedInput;
+        let Some(key) = self.catalogs.ride_track_key(self.activity.viewed_ride) else { return };
+        let input = if valid { DerivedInput::filled(key) } else { DerivedInput::failed(key) };
+        if self.catalogs.accept_ride_profile(Some(key), input, None) {
+            self.ui.map_dirty = true;
+        }
     }
 
     /// Hand in the viewed ride's decimated recorded-track shape polyline (#678 rework 3 — the
     /// Ride detail's track pager page): ≤ [`NAV_PREVIEW_MAX`] `(lon, lat)` µdeg points (more are
     /// truncated), built by obc-route's `ride_preview_polyline` in the **same host drain** as
-    /// [`set_ride_profile`](App::set_ride_profile) (one `take_ride_track_request` answer fills
-    /// both residents, so the file streams at most twice per entry, never per pass). Keyed to the
-    /// currently-viewed ride; exit/rescan invalidation drops it alongside the profile.
+    /// [`set_ride_profile`](App::set_ride_profile) (one answer fills both residents, so the file
+    /// streams at most twice per entry, never per pass).
+    ///
+    /// **Temporary wrapper — deleted by DC6 #1439.**
     pub fn set_ride_preview(&mut self, pts: &[(i32, i32)]) {
-        self.catalogs.set_ride_preview(pts, self.activity.viewed_ride);
-        self.ui.map_dirty = true;
+        use crate::device_core::derived::DerivedInput;
+        let Some(key) = self.catalogs.ride_track_key(self.activity.viewed_ride) else { return };
+        let input = DerivedInput::filled(key);
+        if self.catalogs.accept_ride_preview(Some(key), input, pts) {
+            self.ui.map_dirty = true;
+        }
     }
 
     /// Open the on-glass DFU check flow from a **remote** request — the BLE `installFw` command
@@ -1664,26 +1717,27 @@ impl App {
     /// no card ever shown. So the refusal is read back, not assumed away (review F4); the next
     /// tick, once the stack has room again, re-fires.
     pub fn weather_alert_tick(&mut self, snap: Option<&crate::weather::WeatherSnapshot>) {
-        let Some(snap) = snap else { return };
+        use crate::weather_alerts::AlertAction;
         let now = self.wall_unix_now() as i64;
-        let candidates = crate::weather_alerts::evaluate(snap, now);
         let open_card = self.ui.stack.iter().find_map(|s| match s {
             Screen::WeatherAlert(alert) => Some(alert.kind()),
             _ => None,
         });
-        match crate::weather_alerts::govern(&candidates, &self.settings.weather_alert_marks, open_card) {
-            crate::weather_alerts::AlertAction::Fire(c) => {
+        // The decision is [`WeatherDomain`]'s (#1437): thresholds, dedup and cooldown all live
+        // there. What is left here is the presentation seam and the persistence handshake.
+        match self.weather.alert_action(snap, now, &self.settings.weather_alert_marks, open_card) {
+            AlertAction::Fire(c) => {
                 if self.show_weather_alert(c.class.kind(), c.minutes) {
-                    self.settings.weather_alert_marks[c.class.slot()] = Some(crate::weather_alerts::mark_of(&c));
+                    self.weather.mark_fired(&c, &mut self.settings.weather_alert_marks);
                     // The mark must survive the next boot: arm the #810 persistence handshake
                     // exactly like a rider edit (alert-fire rate, so the write cost is negligible).
                     self.host.note_settings_edited();
                 }
             }
-            crate::weather_alerts::AlertAction::Update(c) => {
+            AlertAction::Update(c) => {
                 self.show_weather_alert(c.class.kind(), c.minutes);
             }
-            crate::weather_alerts::AlertAction::None => {}
+            AlertAction::None => {}
         }
     }
 
@@ -1749,7 +1803,7 @@ impl App {
                 // the same id/index, so an old shape must never survive into the new overview.
                 // The host hands the fresh decimated polyline via `set_nav_preview` (the sim's
                 // commit tail does it in the same pass; the board on the next one).
-                self.catalogs.clear_nav_preview();
+                self.catalogs.invalidate_nav_preview();
                 Screen::RouteOverview(crate::screen::RouteOverviewScreen::computed(idx, prev))
             }
             // Exhaustion is the device's honest "too far" — the range tier's trigger now that
@@ -1812,6 +1866,9 @@ impl App {
                     _ => None,
                 });
                 self.drop_route_derived_state();
+                // The splice committed new geometry, often under the same route identity — the
+                // derived keys move with the bytes (#1437).
+                self.catalogs.note_commit();
                 self.activity.active_route = Some(idx);
                 self.activity.request_seam(idx, anchor.unwrap_or(0));
                 self.catalogs.clear_detour_preview();
@@ -1857,18 +1914,24 @@ impl App {
     /// elevation-profile rebuild streams on), so the fill runs once per overview entry — `false`
     /// the moment the preview is in (or the overview is gone), never per pass.
     pub fn nav_preview_missing(&self) -> bool {
-        self.ui.stack.iter().any(|s| matches!(s, Screen::RouteOverview(_)))
-            && self.catalogs.nav_preview_stale(self.activity.active_route)
+        self.derived_needs().nav_preview.is_some()
     }
 
     /// Hand in the previewed route's decimated shape polyline (#685 §4) — ≤
     /// [`NAV_PREVIEW_MAX`] `(lon, lat)` µdeg points (more are truncated), **decimated host-side**
-    /// (the sim/web hosts' per-pass fill; the board's ride loop; a plan's commit tail). Keyed to
-    /// the current [`active_route`](Activity::active_route) — the route the overview activated —
-    /// so a later route change stales it automatically.
+    /// (the sim/web hosts' per-pass fill; the board's ride loop; a plan's commit tail).
+    ///
+    /// **Temporary wrapper — deleted by DC6 #1439.** Keyed to the previewed route's durable
+    /// identity, the revision its bytes were last known to change at, and the view generation — so a
+    /// route change, a re-plan over the same id, or a committed detour all stale it automatically.
     pub fn set_nav_preview(&mut self, pts: &[(i32, i32)]) {
-        self.catalogs.set_nav_preview(pts, self.activity.active_route);
-        self.ui.map_dirty = true;
+        use crate::device_core::derived::{DerivedInput, DerivedInputs, DerivedTargets};
+        let Some(key) = self.catalogs.nav_preview_key(self.activity.active_route) else { return };
+        let input = DerivedInput::filled(key);
+        self.apply_derived(
+            DerivedInputs::nav_preview(input),
+            DerivedTargets { nav_preview: pts, ..DerivedTargets::NONE },
+        );
     }
 
     /// Feed the host's BLE link snapshot ([`BleStatus`](crate::BleStatus)) — the host→app event seam
@@ -2018,6 +2081,12 @@ impl App {
     ) {
         let active_id = self.activity.active_route.and_then(|i| self.catalogs.route_id_at(i));
         let active_replace = replaced && active_id == Some(id);
+        if replaced {
+            // New bytes under a durable identity: every derived key moves, so a preview or profile
+            // produced from the old geometry stops matching. Identity alone cannot catch this one —
+            // the id is exactly what did *not* change (#1437).
+            self.catalogs.note_commit();
+        }
         if active_replace {
             // Same index, same id — but new bytes. Invalidate everything derived from the old
             // geometry (the remap deliberately preserves same-id state; a replace is the one case
@@ -2867,7 +2936,8 @@ impl App {
         // the viewed ride (#680; the preview joined in #678 rework 3): the detail exited
         // (`viewed_ride` cleared) or moved subjects. Filling is the host's (`set_ride_profile` /
         // `set_ride_preview`); only the drop lives here, so a stale band/shape is never drawn.
-        self.catalogs.drop_stale_ride_views(self.activity.viewed_ride);
+        let key = self.catalogs.ride_track_key(self.activity.viewed_ride);
+        self.catalogs.drop_stale_ride_views(key);
 
         // Pre-draw acquisition (#803): the base screen resolves any streamed-reader state (POI
         // snapshot / hours or Detour route geometry) before the draw loop, so `Render` carries
@@ -2922,8 +2992,10 @@ impl App {
         } = self;
         // The shape previews draw only for the subject they were decimated for — a stale key
         // (route/ride changed, preview not re-fed yet) hands the screens an empty slice.
-        let nav_preview: &[(i32, i32)] = catalogs.nav_preview_for(activity.active_route);
-        let ride_preview: &[(i32, i32)] = catalogs.ride_preview_for(activity.viewed_ride);
+        let nav_key = catalogs.nav_preview_key(activity.active_route);
+        let ride_key = catalogs.ride_track_key(activity.viewed_ride);
+        let nav_preview: &[(i32, i32)] = catalogs.nav_preview_for(nav_key);
+        let ride_preview: &[(i32, i32)] = catalogs.ride_preview_for(ride_key);
         let detour_preview: &[(i32, i32)] = catalogs.detour_preview_for(activity.active_route);
         // Bundle the active climb for the screens: the resident detail buffer is only meaningful
         // when a climb is active, so hand out the `(seg, profile)` pair exactly when `active_climb`
@@ -2947,7 +3019,7 @@ impl App {
             nav_profiles,
             route,
             profile: ride.profile.as_ref(),
-            ride_profile: catalogs.ride_profile_for(activity.viewed_ride),
+            ride_profile: catalogs.ride_profile_for(ride_key),
             climb,
             waypoints: &ride.waypoints,
             breadcrumb: &ride.breadcrumb,
@@ -3242,7 +3314,7 @@ impl App {
                 if let Some(idx) = self.activity.take_route_delete() {
                     Some(HostCommand::DeleteRoute { id: self.catalogs.route_entry(idx)?.id })
                 } else {
-                    self.retention_delete_route()
+                    self.retention_expiry_command(crate::retention::SweepKind::DeleteRoute)
                 }
             }
             HostCommandClass::DeleteTrip => self.activity.take_trip_delete().map(|id| HostCommand::DeleteTrip { id }),
@@ -3250,27 +3322,11 @@ impl App {
                 if let Some(idx) = self.activity.take_ride_delete() {
                     Some(HostCommand::DeleteRide { id: self.catalogs.ride_entry(idx)?.id })
                 } else {
-                    self.retention_delete_ride()
+                    self.retention_expiry_command(crate::retention::SweepKind::DeleteRide)
                 }
             }
-            HostCommandClass::StampRouteUsed => {
-                let id = self.retention.take(crate::retention::SweepKind::StampRoute)?;
-                let utc = self.wall_unix_now();
-                // Mirror the stamp into the resident meta so a re-derivation before the host's rescan
-                // lands doesn't re-enqueue it (the sidecar write is the host's, applied on drain).
-                self.catalogs.stamp_route_last_used(id, utc);
-                Some(HostCommand::StampRouteUsed { id, utc })
-            }
-            HostCommandClass::StampRideSynced => {
-                let id = self.retention.take(crate::retention::SweepKind::StampRide)?;
-                let utc = self.wall_unix_now();
-                // Mirror into both the resident summary (UI repaint) and the full retention inventory
-                // (finding #876-2) so a re-derivation before the host's rescan doesn't re-enqueue the
-                // stamp — including for a ride outside the newest-32 display catalog.
-                self.catalogs.stamp_ride_synced_at(id, utc);
-                self.catalogs.stamp_inventory_synced_at(id, utc);
-                Some(HostCommand::StampRideSynced { id, utc })
-            }
+            HostCommandClass::StampRouteUsed => self.retention_stamp_command(crate::retention::SweepKind::StampRoute),
+            HostCommandClass::StampRideSynced => self.retention_stamp_command(crate::retention::SweepKind::StampRide),
             HostCommandClass::FinishTrack => self.activity.take_track_action().map(HostCommand::FinishTrack),
             // The two plan commands are the freeze's engaging edge: draining one is the moment the
             // host actually begins a planner run (a request the rider cancelled first is
@@ -3304,131 +3360,104 @@ impl App {
         }
     }
 
-    /// Drain one retention **route** delete, re-deriving the whole policy from live state at dispatch
-    /// (finding #876-1). A candidate is only a suggestion; the just-in-time decision is what becomes
-    /// a command:
+    /// Turn the retention domain's next **expiry intent** into the legacy delete command — the
+    /// #1437 compatibility seam for the deletion half.
     ///
-    /// - no trusted clock this boot, or a ride recording → **defer** (candidates stay queued —
-    ///   invariants 1 & 4);
-    /// - the route is now active → **never delete**; re-stamp it instead (invariant 3);
-    /// - the route vanished, went `Never`, has an unknown `last_used`, or is no longer expired →
-    ///   **cancel** the candidate (an absent object is a completed no-op — invariants 2 & 6);
-    /// - otherwise **dispatch** the delete and **keep** the candidate (it is retired only when the
-    ///   authoritative rescan drops the id), paced by the bounded re-dispatch backoff so a failing
-    ///   write retries without hammering (finding #876-3).
-    fn retention_delete_route(&mut self) -> Option<HostCommand> {
-        use crate::retention::SweepKind;
-        if !self.clock_trusted() || self.activity.is_tracking() {
-            return None; // defer — invariants 1 & 4, evaluated at execution time
-        }
-        let now_ms = self.ui.now_ms;
-        loop {
-            let id = self.retention.peek(SweepKind::DeleteRoute)?;
-            if self.route_delete_still_due(id) {
-                if !self.retention.delete_dispatch_ready(SweepKind::DeleteRoute, id, now_ms) {
-                    return None; // one route delete in flight — wait out the bounded backoff
-                }
-                self.retention.mark_delete_dispatched(SweepKind::DeleteRoute, id, now_ms);
-                return Some(HostCommand::DeleteRoute { id });
-            }
-            // Invalid / already applied: drop this candidate and try the next.
-            self.retention.cancel(SweepKind::DeleteRoute, id);
+    /// The decision is entirely the domain's: `RetentionMachine::next_expiry` applies the trust and
+    /// recording gates, re-derives the whole rule from live state at this instant, converts an
+    /// active or unstamped route into a re-stamp, cancels a candidate that stopped qualifying, and
+    /// paces the retry. All that is left here is naming the command a
+    /// [`CatalogIntent`](crate::catalog_state::CatalogIntent) becomes while `CatalogMachine` still
+    /// speaks the legacy protocol — an auto-expired object and a rider-deleted one leave by exactly
+    /// the same path.
+    fn retention_expiry_command(&mut self, kind: crate::retention::SweepKind) -> Option<HostCommand> {
+        use crate::catalog_state::CatalogIntent;
+        match self.with_retention(|retention, view| retention.next_expiry(kind, view))? {
+            CatalogIntent::DeleteRoute { id } => Some(HostCommand::DeleteRoute { id }),
+            CatalogIntent::DeleteRide { id } => Some(HostCommand::DeleteRide { id }),
+            // Retention only ever expires a single route or ride: it never files a trip cascade and
+            // never orders a refresh.
+            CatalogIntent::DeleteTrip { .. } | CatalogIntent::Refresh => None,
         }
     }
 
-    /// The just-in-time route-delete predicate (finding #876-1): whether route `id` is *still* a
-    /// legal auto-delete right now. Converts an active/unknown-stamp route into a re-stamp instead of
-    /// a delete (so the safety stamp is never lost), and reports `false` for a route that vanished,
-    /// went `Never`, or is no longer expired.
-    fn route_delete_still_due(&mut self, id: crate::CatalogObjectId) -> bool {
-        use crate::retention::Retention;
-        let now = self.wall_unix_now();
-        let Some(idx) = self.catalogs.route_ids().iter().position(|&x| x == id) else {
-            return false; // route gone — already absent
-        };
-        let meta = self.catalogs.route_metas().get(idx).copied().unwrap_or_default();
-        // Invariant 3: the active route is never deleted — re-stamp it when it would otherwise expire.
-        if self.activity.active_route == Some(idx) {
-            if !matches!(meta.retention, Retention::Never) {
-                self.retention.ensure_stamp_route(id);
-            }
-            return false;
-        }
-        if matches!(meta.retention, Retention::Never) {
-            return false; // invariant 6
-        }
-        if meta.needs_clock_started() {
-            self.retention.ensure_stamp_route(id); // invariant 2: stamp, never delete on sight
-            return false;
-        }
-        meta.is_expired(now)
-    }
+    // ==================== keyed derived data (#1437) ====================
 
-    /// Drain one retention **ride** delete, re-deriving the policy from live state at dispatch
-    /// (finding #876-1) — the ride twin of [`retention_delete_route`](App::retention_delete_route).
-    /// A ride is only deleted while it is still synced, `synced_at > 0`, and its configured interval
-    /// has fully elapsed (invariant 5); anything else cancels the candidate.
-    fn retention_delete_ride(&mut self) -> Option<HostCommand> {
-        use crate::retention::SweepKind;
-        if !self.clock_trusted() || self.activity.is_tracking() {
-            return None; // defer — invariants 1 & 4
-        }
-        let now_ms = self.ui.now_ms;
-        loop {
-            let id = self.retention.peek(SweepKind::DeleteRide)?;
-            if self.ride_delete_still_due(id) {
-                if !self.retention.delete_dispatch_ready(SweepKind::DeleteRide, id, now_ms) {
-                    return None;
-                }
-                self.retention.mark_delete_dispatched(SweepKind::DeleteRide, id, now_ms);
-                return Some(HostCommand::DeleteRide { id });
-            }
-            self.retention.cancel(SweepKind::DeleteRide, id);
-        }
-    }
-
-    /// The just-in-time ride-delete predicate (finding #876-1/5): whether ride `id` is *still* a
-    /// legal auto-delete — read from the full compact inventory, so a re-sync or a lengthened
-    /// interval discovered after the sweep wins.
-    fn ride_delete_still_due(&self, id: crate::CatalogObjectId) -> bool {
-        let now = self.wall_unix_now();
-        let Some(rec) = self.catalogs.ride_records().iter().find(|r| r.id == id) else {
-            return false; // gone from the inventory — already absent
-        };
-        if !rec.synced || rec.synced_at_utc == 0 {
-            return false; // unsynced, or the countdown has not started
-        }
-        let Some(days) = self.settings.ride_retention.days() else {
-            return false; // ride_retention == Never
-        };
-        now >= rec.synced_at_utc.saturating_add(days * crate::retention::DAY_SECS)
-    }
-
-    /// The Ride detail's derived track-fill cue (#680): the viewed ride's durable id while the
-    /// resident profile buffer isn't answered for it — the shared predicate behind
-    /// [`take_ride_track_request`](App::ride_track_request) and
-    /// [`HostCommand::LoadRideTrack`]. Pure state derivation: nothing is stored, so nothing can go
-    /// stale across a rescan (the identity remap moves the keys, and the cue follows).
+    /// What DeviceCore needs read right now — a **level**, recomputed from state, never stored.
     ///
-    /// `pub` (with [`nav_preview_missing`](App::nav_preview_missing), already public) so a
-    /// fully-typed host answers the two **derived fill levels** at their fill sites off the pure
-    /// predicate — the mailbox pops [`LoadRideTrack`](crate::HostCommand::LoadRideTrack) /
-    /// [`RefreshNavPreview`](crate::HostCommand::RefreshNavPreview) and ignores them, because a cue
-    /// re-derived *after* the drain (a same-pass `nav_finish` creating a fresh
-    /// [`RefreshNavPreview`](crate::HostCommand::RefreshNavPreview) need) must still be seen this
-    /// pass (#812).
+    /// A need stays up until an input carrying *exactly its key* is accepted, and a failure is such
+    /// an input, so a dead file costs one read rather than one per pass. Because nothing is stored,
+    /// nothing can go stale across a rescan: the key names a durable identity, the source revision
+    /// the bytes were last known to change at, and the view generation, so a subject change, a
+    /// re-commit or an explicit invalidate all simply produce a different key.
+    pub fn derived_needs(&self) -> crate::device_core::derived::DerivedNeeds {
+        use crate::device_core::derived::DerivedNeeds;
+        let ride_track = self
+            .catalogs
+            .ride_track_key(self.activity.viewed_ride)
+            .filter(|&key| !self.catalogs.ride_track_answered(key));
+        // The screen half of the preview level — is an overview up? — is the UI's; the data half is
+        // the key's.
+        let overview_open = self.ui.stack.iter().any(|s| matches!(s, Screen::RouteOverview(_)));
+        let nav_preview = overview_open
+            .then(|| self.catalogs.nav_preview_key(self.activity.active_route))
+            .flatten()
+            .filter(|&key| !self.catalogs.nav_preview_answered(key));
+        DerivedNeeds { ride_track, nav_preview }
+    }
+
+    /// Accept keyed derived inputs. An input whose key is not the one the need currently carries is
+    /// **stale**: it changes nothing at all, and the need stays up.
+    ///
+    /// One ride-track answer publishes **both** of that need's targets, from the one key: the
+    /// profile the executor wrote in place through
+    /// [`begin_ride_profile_fill`](App::begin_ride_profile_fill), and the track shape it hands in
+    /// through `targets`. They cannot diverge here, which is the point of them sharing a key — the
+    /// legacy wrappers reach the same state in two calls only because every host makes both in one
+    /// drain.
+    pub fn apply_derived(
+        &mut self,
+        inputs: crate::device_core::derived::DerivedInputs,
+        targets: crate::device_core::derived::DerivedTargets,
+    ) {
+        // "The key the need currently carries" is the *need's* key, not the subject's — the two
+        // differ, and only this one is right. A nav preview is wanted only while an overview is
+        // open, so an answer that lands after the rider closed it is about a question nobody is
+        // asking any more; keying on the active route alone would accept it and mark the level
+        // answered on a pass that never wanted it.
+        let needs = self.derived_needs();
+        if let Some(input) = inputs.ride_track {
+            let profile = self.catalogs.accept_ride_profile(needs.ride_track, input, None);
+            let preview = self.catalogs.accept_ride_preview(needs.ride_track, input, targets.ride_preview);
+            if profile || preview {
+                self.ui.map_dirty = true;
+            }
+        }
+        if let Some(input) = inputs.nav_preview {
+            if self.catalogs.accept_nav_preview(needs.nav_preview, input, targets.nav_preview) {
+                self.ui.map_dirty = true;
+            }
+        }
+    }
+
+    /// The Ride detail's derived track-fill cue (#680): the viewed ride's durable id while its
+    /// track is unanswered — [`derived_needs`](App::derived_needs)`.ride_track` in the shape the
+    /// legacy [`LoadRideTrack`](crate::HostCommand::LoadRideTrack) command carries.
+    ///
+    /// `pub` (with [`nav_preview_missing`](App::nav_preview_missing)) so a fully-typed host answers
+    /// the two derived levels at their fill sites off the pure predicate — the mailbox pops
+    /// `LoadRideTrack` / [`RefreshNavPreview`](crate::HostCommand::RefreshNavPreview) and ignores
+    /// them, because a level re-derived *after* the drain (a same-pass `nav_finish` creating a fresh
+    /// preview need) must still be seen this pass (#812).
     pub fn ride_track_request(&self) -> Option<crate::CatalogObjectId> {
-        let viewed = self.activity.viewed_ride?;
-        if self.catalogs.ride_profile_answered_for(viewed) {
-            return None; // already answered for this ride (profile or a recorded failure)
-        }
-        Some(self.catalogs.ride_entry(viewed)?.id)
+        self.derived_needs().ride_track.map(|key| key.ride)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::device_core::derived::{DerivedInput, DerivedInputs, DerivedTargets};
     use crate::host::SETTINGS_RETRY_BACKOFF_MS;
     use obc_ports::{CompassSource, LocationSource};
 
@@ -5602,6 +5631,9 @@ mod tests {
         use crate::host::{DrainStatus, HostCommand, HostMailbox, HOST_COMMAND_CLASSES};
 
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        // The two stamp classes are metadata writes carrying a UTC instant, so the domain refuses
+        // to emit either without a clock established this boot (invariant 1).
+        app.stamp_clock(DateTime { year: 2026, month: 7, day: 1, hour: 12, minute: 0 }, 0, None, ClockTrust::Gps);
         app.set_routes_with_ids(&[summary("Alpha"), summary("Beta")], &[10, 11]);
         app.set_rides(&[ride_summary("R")], &[7]);
 
@@ -6809,5 +6841,158 @@ mod tests {
         app.weather_alert_tick(Some(&snap));
         let Screen::WeatherAlert(card) = app.top_screen() else { panic!("dangerous gusts fire the card") };
         assert_eq!(card.kind(), crate::screen::WeatherAlertKind::Gust);
+    }
+    // ==================== keyed derived data (#1437) ====================
+    //
+    // The four rules the epic locks for a level-triggered read, exercised through the real seam:
+    // a need repeats until answered, a failure answers it, an input for a key that is no longer
+    // current changes nothing, and changing the subject creates a new key.
+
+    /// A `set_rides` catalog with one ride at durable id `7`, and its detail opened.
+    fn viewing_ride(ids: &[crate::CatalogObjectId]) -> App {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let summaries: heapless::Vec<crate::ride::RideSummary, 4> =
+            ids.iter().map(|id| ride_summary(if *id == 7 { "First" } else { "Second" })).collect();
+        app.set_rides(&summaries, ids);
+        app.activity.viewed_ride = Some(0);
+        app
+    }
+
+    /// The level repeats: an unanswered ride-track need is re-derived on every pass, unchanged,
+    /// because nothing about it is stored.
+    #[test]
+    fn the_ride_track_request_repeats_until_it_is_answered() {
+        let mut app = viewing_ride(&[7]);
+        let first = app.derived_needs().ride_track.expect("an open detail wants its track");
+        assert_eq!(first.ride, 7, "the need names the durable identity, not the catalog index");
+        assert_eq!(app.derived_needs().ride_track, Some(first), "re-derived identically next pass");
+        assert_eq!(app.ride_track_request(), Some(7));
+
+        app.set_ride_profile(Some(obc_route::Profile::EMPTY));
+        assert!(app.derived_needs().ride_track.is_none(), "answered — the level drops");
+        assert_eq!(app.ride_track_request(), None);
+    }
+
+    /// A failure is a matching answer: a dead ride file costs one read, not one per pass.
+    #[test]
+    fn a_failed_ride_track_read_answers_the_need() {
+        let mut app = viewing_ride(&[7]);
+        let key = app.derived_needs().ride_track.unwrap();
+
+        app.apply_derived(DerivedInputs::ride_track(DerivedInput::failed(key)), DerivedTargets::NONE);
+        assert!(app.derived_needs().ride_track.is_none(), "a failure answers the key like a fill");
+        assert_eq!(app.ride_track_request(), None, "and the level does not grind on the dead file");
+    }
+
+    /// One ride-track answer publishes both of the need's targets, from the one key — the typed path
+    /// cannot leave the track page drawing an empty shape beside a filled profile.
+    #[test]
+    fn one_ride_track_answer_fills_the_profile_and_the_preview() {
+        let mut app = viewing_ride(&[7]);
+        let key = app.derived_needs().ride_track.unwrap();
+
+        let shape = [(1, 1), (2, 2), (3, 3)];
+        let targets = DerivedTargets { ride_preview: &shape, ..DerivedTargets::NONE };
+        app.apply_derived(DerivedInputs::ride_track(DerivedInput::filled(key)), targets);
+
+        assert!(app.derived_needs().ride_track.is_none(), "the need is answered");
+        assert_eq!(app.catalogs.ride_preview_for(Some(key)), &shape, "…and the shape landed under the same key");
+    }
+
+    /// A stale key changes nothing. The subject moves while a read is out; when the answer finally
+    /// lands it is about a ride nobody is looking at, and must not be filed under the one they are.
+    #[test]
+    fn a_stale_ride_track_input_changes_nothing() {
+        let mut app = viewing_ride(&[7, 8]);
+        let first = app.derived_needs().ride_track.unwrap();
+
+        app.activity.viewed_ride = Some(1); // the rider moved on while the read was out
+        let second = app.derived_needs().ride_track.unwrap();
+        assert_ne!(first, second, "a different ride is a different need");
+
+        app.apply_derived(DerivedInputs::ride_track(DerivedInput::filled(first)), DerivedTargets::NONE);
+        assert_eq!(app.derived_needs().ride_track, Some(second), "the late answer left the live need up");
+        assert_eq!(app.ride_track_request(), Some(8));
+    }
+
+    /// Changing the subject creates a new key — including *back*: returning to a ride whose answer
+    /// was released asks again rather than showing what is left in the buffer.
+    #[test]
+    fn changing_the_viewed_ride_creates_a_new_ride_track_key() {
+        let mut app = viewing_ride(&[7, 8]);
+        app.set_ride_profile(Some(obc_route::Profile::EMPTY));
+        assert!(app.derived_needs().ride_track.is_none());
+
+        app.activity.viewed_ride = Some(1);
+        assert_eq!(app.ride_track_request(), Some(8), "the second ride is unanswered");
+        // The render pass releases the views that stopped matching the live key, every frame.
+        let live = app.catalogs.ride_track_key(app.activity.viewed_ride);
+        app.catalogs.drop_stale_ride_views(live);
+
+        app.activity.viewed_ride = Some(0);
+        assert_eq!(app.ride_track_request(), Some(7), "coming back asks again rather than showing stale data");
+    }
+
+    /// An abandoned in-place fill leaves the need up: `begin` invalidates the view, and only the
+    /// matching `finish` answers the new key.
+    #[test]
+    fn an_abandoned_ride_track_fill_leaves_the_need_up() {
+        let mut app = viewing_ride(&[7]);
+        let before = app.derived_needs().ride_track.unwrap();
+
+        let _buffer = app.begin_ride_profile_fill(); // …and the executor dies here
+        let after = app.derived_needs().ride_track.expect("still wanted");
+        assert_ne!(before, after, "starting a fill invalidates the view generation");
+        assert_eq!(after.ride, before.ride, "…without pretending the subject changed");
+
+        app.finish_ride_profile_fill(true);
+        assert!(app.derived_needs().ride_track.is_none(), "the completed fill answers the new key");
+    }
+
+    /// A need is not its subject: closing the Route overview ends the nav-preview level even though
+    /// the route stays active, so an answer that arrives afterwards is about a question nobody is
+    /// asking and must not mark the level answered on a later entry.
+    #[test]
+    fn an_answer_that_lands_after_the_overview_closed_is_refused() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_routes_with_ids(&[summary("Col")], &[10]);
+        app.activity.active_route = Some(0);
+        let overview = || Screen::RouteOverview(crate::screen::RouteOverviewScreen::new(0, None));
+        let _ = app.ui.stack.push(overview());
+        let key = app.derived_needs().nav_preview.expect("an open overview wants its shape");
+
+        app.ui.stack.pop(); // the rider leaves while the read is out
+        assert!(app.derived_needs().nav_preview.is_none(), "nothing is asking any more");
+        let late = DerivedTargets { nav_preview: &[(5, 5)], ..DerivedTargets::NONE };
+        app.apply_derived(DerivedInputs::nav_preview(DerivedInput::filled(key)), late);
+
+        let _ = app.ui.stack.push(overview()); // …and comes back
+        assert_eq!(app.derived_needs().nav_preview, Some(key), "the level is up again, not silently answered");
+    }
+
+    /// The nav-preview twin of the staleness rule, over the one thing identity cannot catch: an
+    /// upload that replaces a stored route keeps the identity and changes the geometry.
+    #[test]
+    fn a_replacing_upload_stales_the_nav_preview_under_the_same_route_id() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        app.set_routes_with_ids(&[summary("Col")], &[10]);
+        app.activity.active_route = Some(0);
+        let _ = app.ui.stack.push(Screen::RouteOverview(crate::screen::RouteOverviewScreen::new(0, None)));
+
+        let key = app.derived_needs().nav_preview.expect("an open overview wants its shape");
+        assert_eq!(key.route, 10);
+        app.set_nav_preview(&[(0, 0), (1, 1)]);
+        assert!(!app.nav_preview_missing(), "fed once — the level retires");
+
+        // New bytes under the same id: the identity is exactly what did not change.
+        app.apply_event(HostEvent::RouteUploaded { id: 10, replaced: true, elevation: None });
+        let fresh = app.derived_needs().nav_preview.expect("fresh geometry wants a fresh shape");
+        assert_eq!(fresh.route, key.route);
+        assert_ne!(fresh.source, key.source, "the source revision moved with the bytes");
+
+        // …and the answer produced from the old bytes can no longer land.
+        let stale = DerivedTargets { nav_preview: &[(5, 5)], ..DerivedTargets::NONE };
+        app.apply_derived(DerivedInputs::nav_preview(DerivedInput::filled(key)), stale);
+        assert_eq!(app.derived_needs().nav_preview, Some(fresh), "the stale shape was refused");
     }
 }

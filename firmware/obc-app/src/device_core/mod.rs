@@ -22,13 +22,27 @@
 //!   `Outcome` or `Intent` enum anywhere.
 //! - [`migration`] — the Appendix A inventory of the legacy protocol, as compile-checked test data.
 //!
+//! …and the boundary that is not a command at all (#1437):
+//!
+//! - [`derived`] — [`DerivedNeeds`] / [`DerivedInputs`]: level-triggered reads guarded by a *key*
+//!   (identity + source revision + view revision) instead of an operation token, because nobody
+//!   asks for them once. See [`derived`] for why a key survives what a token cannot.
+//! - [`feeders`] — the inventory of every public bulk feeder on `App` and its new home, the feeder
+//!   twin of [`migration`].
+//!
 //! The pass entry point arrives in a later slice; nothing here changes the legacy
 //! [`HostCommand`](crate::HostCommand) / [`HostEvent`](crate::HostEvent) protocol.
 
+pub mod derived;
+pub mod feeders;
 pub mod migration;
 mod shared;
 pub mod slots;
 pub mod storage_info;
+
+pub use derived::{
+    DerivedInput, DerivedInputs, DerivedNeeds, DerivedResult, DerivedTargets, NavPreviewKey, RideTrackKey,
+};
 
 pub use slots::{EffectSlots, OutcomeSlots, Slot, SlotFull};
 pub use storage_info::{StorageInfoEffect, StorageInfoError, StorageInfoIntent, StorageInfoOutcome};
