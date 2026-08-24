@@ -163,16 +163,36 @@ class SuiteRegistryTests(unittest.TestCase):
         workflow = self.root / ".github/workflows/ci.yml"
         workflow.parent.mkdir(parents=True)
         workflow.write_text(
-            "steps:\n"
-            "  - run: npm test\n"
-            "  - run: |\n"
-            "      python3 tools/check.py\n"
-            "      echo ignored\n"
-            '  - { name: test, cmd: "cargo test --locked" }\n',
+            "on:\n"
+            "  pull_request:\n"
+            "jobs:\n"
+            "  test:\n"
+            "    steps:\n"
+            "      - run: npm test\n"
+            "      - run: |\n"
+            "          python3 tools/check.py\n"
+            "          echo ignored\n"
+            '      - { name: test, cmd: "cargo test --locked" }\n'
+            "  board:\n"
+            "    defaults:\n"
+            "      run:\n"
+            "        working-directory: crates/board\n"
+            "    steps:\n"
+            "      - run: cargo build --release\n",
             encoding="utf-8",
         )
-        commands = {item.name for item in registry.discover_workflow(self.root)}
-        self.assertEqual(commands, {"npm test", "python3 tools/check.py", "cargo test --locked"})
+        steps = {(item.command, item.job, item.working_directory) for item in registry.scan_workflow(self.root)}
+        self.assertEqual(
+            steps,
+            {
+                ("npm test", "test", ""),
+                ("python3 tools/check.py", "test", ""),
+                ("cargo test --locked", "test", ""),
+                ("cargo build --release", "board", "crates/board"),
+            },
+        )
+        # The `on:` block is not a job, so its keys never become CI routes.
+        self.assertEqual(set(registry.workflow_jobs(self.root)), {"test", "board"})
 
 
 class SuiteSelectionTests(unittest.TestCase):
@@ -217,21 +237,20 @@ class SuiteSelectionTests(unittest.TestCase):
                 "desktop": frozenset(),
             },
         )
-        self.routes = {suite["id"]: ["rust"] for suite in self.suites}
+        self.routes = {suite["id"]: ["test"] for suite in self.suites}
         self.routes.update(
             {
                 "rust.desktop": ["desktop"],
                 "web.unit": ["web"],
-                "swift.contract": ["ios"],
-                "python.weather": ["rust"],
-                "python.tool": ["always"],
-                "python.builder": ["rust"],
-                "fixture.consumer": ["always"],
-                "ci.policy": ["always"],
+                "swift.contract": ["ios-unit"],
+                "python.tool": ["policy"],
+                "fixture.consumer": ["policy"],
+                "ci.policy": ["policy"],
                 "ci.docs": ["docs"],
                 "missing.route": [],
             }
         )
+        self.unconditional = {"policy"}
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -274,7 +293,9 @@ class SuiteSelectionTests(unittest.TestCase):
         return suite
 
     def plan(self, path):
-        return registry.select_suites(self.inventory, [path], self.graph, self.routes)
+        return registry.select_suites(
+            self.inventory, [path], self.graph, self.routes, unconditional=self.unconditional
+        )
 
     def selected(self, path):
         return {selection.suite["id"] for selection in self.plan(path).selected}
@@ -347,12 +368,16 @@ class SuiteSelectionTests(unittest.TestCase):
         self.assertIn("missing.route", {item.suite["id"] for item in plan.selected})
         self.assertTrue(any("no executable CI route" in error for error in plan.errors))
 
-    def test_json_reports_platforms_and_non_selected_reasons(self) -> None:
-        data = registry.selection_plan_data(self.plan("apps/desktop/src/main.rs"))
+    def test_json_reports_platforms_jobs_and_non_selected_reasons(self) -> None:
+        jobs = {"desktop": registry.WorkflowJob("desktop", "ubuntu-latest", ("bundle",), True)}
+        data = registry.selection_plan_data(self.plan("apps/desktop/src/main.rs"), jobs)
         desktop = next(item for item in data["suites"] if item["id"] == "rust.desktop")
         web = next(item for item in data["suites"] if item["id"] == "web.unit")
         self.assertEqual(desktop["platforms"], ["linux", "macos", "windows"])
-        self.assertEqual(web["reasons"], ["no changed path, Cargo edge, or required cadence selected this suite"])
+        self.assertEqual(desktop["jobs"], ["desktop"])
+        self.assertEqual(web["reasons"], [registry.NOT_SELECTED])
+        # The plan's job list closes over the workflow `needs` graph so producers still run.
+        self.assertIn("bundle", data["required_jobs"])
 
     def test_git_diff_input_works_in_a_temporary_repository(self) -> None:
         subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
@@ -367,6 +392,282 @@ class SuiteSelectionTests(unittest.TestCase):
         source.write_text("export const value = 2;\n", encoding="utf-8")
         subprocess.run(["git", "commit", "-qam", "head"], cwd=self.root, check=True)
         self.assertEqual(registry.git_changed_paths(self.root, base, "HEAD"), ["web/src/view.ts"])
+
+
+class LocalInterfaceTests(unittest.TestCase):
+    """The level, surface, and dry-run behavior of `obc test`, on a synthetic registry."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.marker = self.root / "ran"
+        self.suites = [
+            self._suite("unit.formats", "unit", "formats"),
+            self._suite("unit.maps", "unit", "maps"),
+            self._suite("component.maps", "component", "maps"),
+            self._suite("contract.formats", "contract", "formats"),
+            self._suite("fixture.weather", "fixture", "weather"),
+            self._suite("e2e.ios", "end-to-end", "ios", platforms=["nonexistent-os"]),
+        ]
+        self.inventory = registry.Inventory(self.suites, [], [], {s["id"]: [] for s in self.suites})
+        self.routes = {suite["id"]: ["test"] for suite in self.suites}
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def _suite(self, suite_id, level, surface, platforms=None):
+        suite = {
+            "id": suite_id,
+            "surface": surface,
+            "level": level,
+            "command": f"echo {suite_id} >> ran",
+            "fixtures": [],
+            "pull_request": "affected",
+            "scheduled": "none",
+            "extra_triggers": [],
+            "ownership": [],
+        }
+        if platforms:
+            suite["platforms"] = platforms
+        return suite
+
+    def selected(self, level, surface=None):
+        plan = registry.select_by_level(self.inventory, self.routes, level, surface)
+        return [selection.suite["id"] for selection in plan.selected]
+
+    def test_level_and_surface_selection(self) -> None:
+        cases = [
+            (("unit", None), ["unit.formats", "unit.maps"]),
+            (("unit", "maps"), ["unit.maps"]),
+            (("component", None), ["component.maps"]),
+            (("contract", None), ["contract.formats"]),
+            (("fixtures", None), ["fixture.weather"]),
+            (("fixture", None), ["fixture.weather"]),
+            (("e2e", None), ["e2e.ios"]),
+            (("end-to-end", None), ["e2e.ios"]),
+        ]
+        for (level, surface), expected in cases:
+            with self.subTest(level=level, surface=surface):
+                self.assertEqual(self.selected(level, surface), expected)
+
+    def test_unknown_level_surface_and_alias_are_rejected(self) -> None:
+        for level, surface, expected in [
+            ("integration", None, "unknown test level"),
+            ("fixture-tests", None, "unknown test level"),
+            ("end2end", None, "unknown test level"),
+            ("unit", "storage", "unknown surface"),
+        ]:
+            with self.subTest(level=level, surface=surface):
+                with self.assertRaisesRegex(registry.RegistryError, expected):
+                    registry.select_by_level(self.inventory, self.routes, level, surface)
+
+    def test_missing_ci_route_is_an_error_in_the_run_form(self) -> None:
+        routes = dict(self.routes, **{"unit.maps": []})
+        plan = registry.select_by_level(self.inventory, routes, "unit")
+        self.assertTrue(any("no executable CI route" in error for error in plan.errors))
+        self.assertEqual(registry.run_plan(plan, self.root), 1)
+        self.assertFalse(self.marker.exists())
+
+    def test_dry_run_executes_nothing(self) -> None:
+        plan = registry.select_by_level(self.inventory, self.routes, "unit")
+        self.assertEqual(registry.run_plan(plan, self.root, dry_run=True), 0)
+        self.assertFalse(self.marker.exists())
+
+    def test_platform_restricted_suite_is_skipped_not_passed(self) -> None:
+        plan = registry.select_by_level(self.inventory, self.routes, "e2e")
+        self.assertEqual(registry.run_plan(plan, self.root), 0)
+        self.assertFalse(self.marker.exists())
+
+    def test_run_stops_on_the_first_failing_suite(self) -> None:
+        self.suites[0]["command"] = "exit 3"
+        plan = registry.select_by_level(self.inventory, self.routes, "unit")
+        self.assertEqual(registry.run_plan(plan, self.root), 1)
+        self.assertFalse(self.marker.exists())
+
+    def test_affected_without_a_base_is_an_actionable_failure(self) -> None:
+        arguments = registry.build_parser().parse_args(["run", "--affected"])
+        with self.assertRaisesRegex(registry.RegistryError, "--base origin/develop"):
+            registry.command_run(arguments)
+
+
+def synthetic_workflow(runs_on: str = "    runs-on: ubuntu-latest\n") -> str:
+    return (
+        "name: CI\non:\n  pull_request:\njobs:\n"
+        "  selection:\n    runs-on: ubuntu-latest\n    steps:\n"
+        "      - run: python3 tools/suite_registry.py select --base x\n"
+        "  unit:\n    needs: selection\n"
+        "    if: contains(fromJSON(needs.selection.outputs.jobs), 'unit')\n"
+        f"{runs_on}    steps:\n      - run: cargo test --workspace --locked\n"
+        "  ci:\n    needs: [selection, unit]\n    runs-on: ubuntu-latest\n    steps:\n"
+        "      - run: python3 tools/ci_aggregate.py\n"
+    )
+
+
+def synthetic_suite(suite_id, command, ownership, pull_request="affected"):
+    return {
+        "id": suite_id,
+        "surface": suite_id.split(".", 1)[0],
+        "level": "unit",
+        "command": command,
+        "fixtures": [],
+        "pull_request": pull_request,
+        "scheduled": "none",
+        "extra_triggers": [],
+        "ownership": ownership,
+    }
+
+
+class CiRoutingTests(unittest.TestCase):
+    """Job routing and its four post-cutover validation failures, on a synthetic workflow."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.workflow = self.root / ".github/workflows/ci.yml"
+        self.workflow.parent.mkdir(parents=True)
+        self.workflow.write_text(synthetic_workflow(), encoding="utf-8")
+        self.policy_command = "python3 tools/suite_registry.py select --base x"
+        self.suites = [
+            synthetic_suite("rust.core", "cargo test -p core --locked", [{"kind": "rust-package", "name": "core"}]),
+            synthetic_suite(
+                "ci.policy",
+                "obc check fmt",
+                [{"kind": "workflow", "pattern": "python3 tools/suite_registry.py *"}],
+                "always",
+            ),
+        ]
+        matches = {
+            "rust.core": [],
+            "ci.policy": [
+                registry.Discovered(
+                    "workflow-command", self.policy_command, ".github/workflows/ci.yml", "selection"
+                )
+            ],
+        }
+        self.inventory = registry.Inventory(self.suites, [], [], matches)
+        self.graph = registry.CargoGraph(
+            {"core": registry.CargoPackage("core", "crates/core", "crates/core/Cargo.toml", frozenset())},
+            {"core": frozenset()},
+        )
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def routes(self):
+        return registry.suite_workflow_jobs(self.inventory, self.root, self.graph)
+
+    def test_routing_is_derived_from_workflow_commands_and_cargo_coverage(self) -> None:
+        # The aggregate gate reports suites; it is never a route for one.
+        self.assertEqual(registry.aggregate_job(self.root), "ci")
+        self.assertEqual(self.routes(), {"rust.core": ["unit"], "ci.policy": ["selection"]})
+        self.assertEqual(registry.unconditional_jobs(self.root), {"selection"})
+
+    def test_validation_rejects_the_post_cutover_failures(self) -> None:
+        cases = [
+            ("unrouted suite", lambda routes: routes.update(**{"rust.core": ["ghost"]}), "unknown workflow job ghost"),
+            ("unrouted job", lambda routes: routes.update(**{"rust.core": []}), "job unit runs no registry suite"),
+        ]
+        for name, mutate, expected in cases:
+            with self.subTest(name=name):
+                routes = self.routes()
+                mutate(routes)
+                with self.assertRaisesRegex(registry.RegistryError, expected):
+                    registry.validate_ci_routing(self.root, self.inventory, self.graph, routes)
+
+    def test_validation_rejects_an_unprovisioned_runner_image(self) -> None:
+        self.workflow.write_text(synthetic_workflow(runs_on=""), encoding="utf-8")
+        with self.assertRaisesRegex(registry.RegistryError, "provisions no runner image"):
+            registry.validate_ci_routing(self.root, self.inventory, self.graph, self.routes())
+
+    def test_validation_rejects_a_leftover_suite_policy_filter(self) -> None:
+        self.workflow.write_text(
+            synthetic_workflow().replace(
+                f"      - run: {self.policy_command}\n",
+                f"      - run: {self.policy_command}\n"
+                "      - uses: dorny/paths-filter@v3\n        with:\n          filters: |\n"
+                "            rust:\n              - 'testing/**'\n",
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(registry.RegistryError, "encodes suite policy"):
+            registry.validate_ci_routing(self.root, self.inventory, self.graph, self.routes())
+
+    def test_gate_claims_come_from_obc_check_commands(self) -> None:
+        self.assertEqual(registry.gate_claims(self.suites), {"fmt": {"ci.policy"}})
+        (self.root / "testing").mkdir()
+        (self.root / "testing/suites.toml").write_text(
+            'schema = 1\n[[suite]]\nid = "ci.policy"\ncommand = "obc check fmt"\n', encoding="utf-8"
+        )
+        arguments = registry.build_parser().parse_args(["--root", str(self.root), "gates", "clippy"])
+        with self.assertRaisesRegex(registry.RegistryError, "reproduce no registry suite"):
+            registry.command_gates(arguments)
+
+    def test_a_workspace_gate_claims_every_package_suite_it_compiles(self) -> None:
+        suites = [
+            dict(
+                self.suites[1],
+                command="obc check test",
+                ownership=[{"kind": "workflow", "pattern": "cargo test --workspace --locked"}],
+            ),
+            self.suites[0],
+        ]
+        graph = registry.CargoGraph(
+            {"core": registry.CargoPackage("core", "crates/core", "crates/core/Cargo.toml", frozenset(), True)},
+            {"core": frozenset()},
+        )
+        self.assertEqual(registry.gate_claims(suites, graph)["test"], {"ci.policy", "rust.core"})
+
+
+class ShippedRoutingTests(unittest.TestCase):
+    """The shipped registry's own routing, so a real change class cannot drift silently."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.root = registry.repository_root()
+        cls.inventory = registry.load_inventory(cls.root)
+        cls.graph = registry.build_cargo_graph(cls.root)
+        cls.routes = registry.suite_workflow_jobs(cls.inventory, cls.root, cls.graph)
+        cls.jobs = registry.workflow_jobs(cls.root)
+        cls.unconditional = registry.unconditional_jobs(cls.root)
+
+    def jobs_for(self, *paths):
+        plan = registry.select_suites(
+            self.inventory, list(paths), self.graph, self.routes, unconditional=self.unconditional
+        )
+        self.assertEqual(plan.errors, [])
+        return set(registry.required_jobs(plan, self.jobs)) | self.unconditional
+
+    def test_every_suite_routes_to_the_job_that_executes_it(self) -> None:
+        expected = {
+            "rust.obc-crc": ["clippy", "fmt", "test"],
+            "rust.obc-fw-nrf54l": ["embedded", "fmt"],
+            "rust.obc-boot": ["boot", "fmt"],
+            "rust.obc-desktop": ["desktop", "fmt"],
+            "rust.obc-web-convert": ["clippy", "fmt", "test", "wasm-bridges"],
+            "swift.obckit-host": ["ios-unit"],
+            "ci.docs": ["docs"],
+            "web.builder-vitest": ["web"],
+        }
+        for suite_id, jobs in expected.items():
+            with self.subTest(suite=suite_id):
+                self.assertEqual(self.routes[suite_id], jobs)
+
+    def test_selected_job_set_per_change_class(self) -> None:
+        heavy = {"ios-unit", "ios-app", "web", "desktop", "desktop-frontend", "wasm-bridges"}
+        cases = [
+            ("documentation only", ["docs/content/ride.md"], {"docs"}, heavy | {"test", "fmt", "clippy"}),
+            ("leaf Rust crate", ["host/obc-bench/src/main.rs"], {"test", "fmt", "clippy"}, heavy),
+            ("foundational Rust crate", ["firmware/obc-crc/src/lib.rs"], {"test", "embedded", "device"}, set()),
+            ("shared vectors", ["specs/vectors/obcm-v2.json"], {"ios-unit", "test", "web"}, set()),
+            ("iOS only", ["companion-ios/OBCCompanion/App.swift"], {"ios-app"}, {"test", "web", "desktop"}),
+            ("web only", ["builder/app/src/lib/panel.ts"], {"web"}, {"ios-unit", "embedded", "boot"}),
+            ("workflow", [".github/workflows/ci.yml"], {"test", "docs", "deny", "embedded"}, set()),
+        ]
+        for name, paths, required, forbidden in cases:
+            with self.subTest(change=name):
+                jobs = self.jobs_for(*paths)
+                self.assertTrue(required <= jobs, f"{name}: missing {sorted(required - jobs)}")
+                self.assertFalse(forbidden & jobs, f"{name}: unexpected {sorted(forbidden & jobs)}")
 
 
 if __name__ == "__main__":

@@ -45,156 +45,17 @@ permissions:
   contents: read
 
 jobs:
-  # Per-surface path filtering: a docs-only PR shouldn't pay for the Rust matrix, and vice
-  # versa. Downstream jobs gate on these outputs; the `ci` job at the bottom is the single
-  # required status check, so skipped jobs never wedge branch protection.
-  changes:
-    runs-on: ubuntu-latest
-    outputs:
-      rust: ${{ steps.filter.outputs.rust }}
-      docs: ${{ steps.filter.outputs.docs }}
-      wasm: ${{ steps.filter.outputs.wasm }}
-      ios: ${{ steps.filter.outputs.ios }}
-      web: ${{ steps.filter.outputs.web }}
-      desktop: ${{ steps.filter.outputs.desktop }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
-        id: filter
-        with:
-          filters: |
-            rust:
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - 'firmware/**'
-              # host/ holds the packer, the bench + its golden hashes, and the test oracles
-              # (obcm-testkit, obc-vectors) that firmware crates dev-depend on.
-              - 'host/**'
-              # apps/ holds the shells: the simulator, the wasm hosts, and the Tauri app.
-              - 'apps/**'
-              - 'builder/presets/**'
-              # builder/tests/ drives the real obc-pack binary and the builder's pure API
-              # endpoints, so the packer, the presets it round-trips, and the server module
-              # under test all have to be able to trigger it.
-              - 'builder/tests/**'
-              - 'builder/server/**/*.py'
-              - 'builder/requirements*.txt'
-              - 'rust-toolchain.toml'
-              - 'rustfmt.toml'
-              - '.cargo/**'
-              - 'specs/vectors/**'
-              - 'ops/weather/**'
-              - 'deny.toml'
-              # The other half of the dependency-licence pair (#1149): the config, the template
-              # and the generator all decide what THIRD-PARTY.md should contain, and the `deny`
-              # job is what compares that to the committed file.
-              - 'about.toml'
-              - 'THIRD-PARTY.md'
-              - 'tools/licenses/**'
-              - 'tools/fixtures.py'
-              - 'tools/check_fixture_policy.py'
-              - 'tools/tests/**'
-              - 'fixtures/**'
-              - 'testing/**'
-              - 'tools/suite_registry.py'
-              - 'tools/ci_aggregate.py'
-              - 'docs/testing.md'
-              - 'CONTRIBUTING.md'
-              - 'AGENTS.md'
-              - '.github/workflows/**'
-              - '.github/actions/**'
-            docs:
-              - 'docs/**'
-              - 'testing/**'
-              - 'tools/suite_registry.py'
-              - 'tools/ci_aggregate.py'
-              - 'CONTRIBUTING.md'
-              - 'AGENTS.md'
-              - '.github/workflows/**'
-            wasm:
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - 'firmware/**'
-              - 'host/**'
-              - 'apps/**'
-              - 'docs/**'
-              # The root cargo config is gone (`MapCache::new_boxed` removed the wasm
-              # shadow-stack flag it carried — PRs #661/#666), but rustflags placed there
-              # reach the wasm build via cargo's config walk-up, so a re-introduced file
-              # must still rebuild the demo or a stack regression lands unbuilt.
-              - '.cargo/config.toml'
-              - 'rust-toolchain.toml'
-              - 'rustfmt.toml'
-              - 'testing/**'
-              - 'tools/suite_registry.py'
-              - 'tools/ci_aggregate.py'
-              - 'docs/testing.md'
-              - 'CONTRIBUTING.md'
-              - 'AGENTS.md'
-              - '.github/workflows/**'
-            ios:
-              - 'companion-ios/**'
-              # The Swift suite pins the shared protocol vectors byte-for-byte, so a regenerated
-              # fixture is an iOS change even when no Swift file moved. Missing this is why the
-              # `obcm_version` assertion sat a version behind for the whole of v12 (#1105): the
-              # vector changed, the pin did not, and nothing ran to say so.
-              - 'specs/vectors/**'
-              - 'fixtures/**'
-              - 'testing/**'
-              - 'tools/suite_registry.py'
-              - 'tools/ci_aggregate.py'
-              - 'docs/testing.md'
-              - 'CONTRIBUTING.md'
-              - 'AGENTS.md'
-              - '.github/workflows/**'
-            desktop:
-              # The Tauri shell embeds the same published-cell frontend, so either
-              # half can break the packaged app.
-              - 'apps/obc-desktop/**'
-              - 'apps/obc-skin-preview/**'
-              - 'builder/app/**'
-              - 'rust-toolchain.toml'
-              - 'rustfmt.toml'
-              - '.cargo/**'
-              - 'testing/**'
-              - 'tools/suite_registry.py'
-              - 'tools/ci_aggregate.py'
-              - 'docs/testing.md'
-              - 'CONTRIBUTING.md'
-              - 'AGENTS.md'
-              - '.github/workflows/**'
-            web:
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - 'builder/app/**'
-              # The frontend now embeds firmware and host code: obc-web-convert (#896) compiles the
-              # shared obc-route conversion path to wasm and obc-web-assemble (#1034) the
-              # obcm-assemble OBCA engine — so any shared-
-              # crate change can move those bytes. The conversion bridge's byte-identity guard reads
-              # specs/vectors/ and the assembly bridge's reads its own checked-in cell fixture under
-              # apps/, and the toolchain file picks the compiler that produces both modules.
-              - 'firmware/**'
-              - 'host/**'
-              - 'apps/**'
-              - 'specs/vectors/**'
-              - 'fixtures/**'
-              - 'rust-toolchain.toml'
-              - 'rustfmt.toml'
-              - '.cargo/**'
-              - 'testing/**'
-              - 'tools/suite_registry.py'
-              - 'tools/ci_aggregate.py'
-              - 'docs/testing.md'
-              - 'CONTRIBUTING.md'
-              - 'AGENTS.md'
-              - '.github/workflows/**'
-
-  # The registry is the only suite selector. TS2 records and checks this plan while the existing
-  # coarse filters still start broad runner/toolchain jobs; delivery step 3 consumes it as a matrix.
+  # The registry is the only suite selector. This job runs it and publishes two outputs: the
+  # per-suite plan the `ci` gate evaluates, and the list of jobs that plan requires. Every gated
+  # job below reads that list — there is no second path-filter selector, and no job decides its
+  # own policy. `python3 tools/suite_registry.py select` is the same command `obc test affected`
+  # runs locally (just is not installed on the runners), so a developer and CI answer "which
+  # suites does this change require" with one implementation.
   selection:
     runs-on: ubuntu-latest
     outputs:
       plan: ${{ steps.plan.outputs.plan }}
+      jobs: ${{ steps.plan.outputs.jobs }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -213,11 +74,15 @@ jobs:
           else
             base="HEAD^"
           fi
+          echo '[]' > selection-jobs.json
           set +e
-          python3 tools/suite_registry.py select --base "$base" --format json > selection-plan.json
+          python3 tools/suite_registry.py select --base "$base" --format json \
+            --jobs-file selection-jobs.json > selection-plan.json
           rc=$?
           set -e
           echo "plan=$(cat selection-plan.json)" >> "$GITHUB_OUTPUT"
+          echo "jobs=$(cat selection-jobs.json)" >> "$GITHUB_OUTPUT"
+          echo "required jobs: $(cat selection-jobs.json)"
           cat selection-plan.json
           exit "$rc"
 
@@ -250,7 +115,7 @@ jobs:
         run: python3 tools/suite_registry.py check
       - name: Registry unit tests
         run: python3 -m unittest discover -s tools/tests -v
-      - name: Coarse runner filters cover registry selection
+      - name: Plan-derived job routing matches the workflow
         run: python3 tools/suite_registry.py validate-filters
       - name: Large fixture policy
         run: python3 tools/check_fixture_policy.py
@@ -259,8 +124,8 @@ jobs:
   # shared rustfmt.toml at the repo root, so the excluded crates inherit it; the virtual workspace
   # manifest needs `--all`, the board crate + bootloader are checked on their own.
   fmt:
-    needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    needs: selection
+    if: contains(fromJSON(needs.selection.outputs.jobs), 'fmt')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -286,8 +151,8 @@ jobs:
 
   # Blocking clippy on the host workspace: -D warnings from day one (the baseline is clean).
   clippy:
-    needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    needs: selection
+    if: contains(fromJSON(needs.selection.outputs.jobs), 'clippy')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -306,8 +171,8 @@ jobs:
 
   # The current inventory is generated by `python3 tools/suite_registry.py list`.
   test:
-    needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    needs: selection
+    if: contains(fromJSON(needs.selection.outputs.jobs), 'test')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -394,8 +259,8 @@ jobs:
   # The display is the LS021 panel via the FLPR (the VPR RISC-V coprocessor, issue #173): every leg
   # cross-compiles a `rv32emc` C blob via `build.rs`, so the RISC-V gcc is installed first for all.
   embedded:
-    needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    needs: selection
+    if: contains(fromJSON(needs.selection.outputs.jobs), 'embedded')
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -617,8 +482,8 @@ jobs:
   # the 32 KB slot below the app (see firmware/obc-boot/memory.x), with the measured number in
   # the failure so a regression is diagnosable from the log.
   boot:
-    needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    needs: selection
+    if: contains(fromJSON(needs.selection.outputs.jobs), 'boot')
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -651,8 +516,8 @@ jobs:
   # std-creep guard for the real device: the shared no_std stack (obc-app pulls in reader /
   # route / render) must still compile for the nRF54L's thumbv8m target.
   device:
-    needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    needs: selection
+    if: contains(fromJSON(needs.selection.outputs.jobs), 'device')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -674,8 +539,8 @@ jobs:
 
   # Supply-chain gate: advisories + licenses + bans + sources, for both lockfiles (deny.toml).
   deny:
-    needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    needs: selection
+    if: contains(fromJSON(needs.selection.outputs.jobs), 'deny')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -711,10 +576,10 @@ jobs:
   # The web demo (apps/obc-web-demo) is the firmware's own render path compiled to wasm
   # behind a thin JS-driven host; build it on PRs (not just on the deploy-to-Pages push) so a
   # wasm-only breakage — bindgen surface, embedded assets, Trunk config — is caught before merge.
-  # (The `wasm` path filter's firmware/** covers apps/obc-web-demo/** and every shared crate.)
+  # (`ci.wasm-size` owns the Trunk build, so the plan starts this job for the demo's own inputs.)
   wasm:
-    needs: changes
-    if: needs.changes.outputs.wasm == 'true'
+    needs: selection
+    if: contains(fromJSON(needs.selection.outputs.jobs), 'wasm')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -758,8 +623,8 @@ jobs:
   # against them and runs the byte-identity tests on them — the shipped module and the tested
   # module are the same file, not two builds that happen to agree.
   wasm-bridges:
-    needs: changes
-    if: needs.changes.outputs.web == 'true'
+    needs: selection
+    if: contains(fromJSON(needs.selection.outputs.jobs), 'wasm-bridges')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -801,8 +666,8 @@ jobs:
   # anchor audit CLAUDE.md otherwise asks for by hand: every internal ../page/#anchor must
   # resolve to a real heading id.
   docs:
-    needs: changes
-    if: needs.changes.outputs.docs == 'true'
+    needs: selection
+    if: contains(fromJSON(needs.selection.outputs.jobs), 'docs')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -818,8 +683,8 @@ jobs:
   # companion-ios/CLAUDE.md) so a runner-image update can't silently move it — when the
   # image drops this version the job fails loudly and the pin gets bumped on purpose.
   ios-unit:
-    needs: changes
-    if: needs.changes.outputs.ios == 'true'
+    needs: selection
+    if: contains(fromJSON(needs.selection.outputs.jobs), 'ios-unit')
     runs-on: macos-26
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.5.app
@@ -844,8 +709,8 @@ jobs:
   # OBCMock's build marker must be present in the Debug binary (proves the grep isn't
   # vacuous) and absent from Release (mock/dev-panel code must never ship).
   ios-app:
-    needs: changes
-    if: needs.changes.outputs.ios == 'true'
+    needs: selection
+    if: contains(fromJSON(needs.selection.outputs.jobs), 'ios-app')
     runs-on: macos-26
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.5.app
@@ -886,8 +751,6 @@ jobs:
             exit 1
           fi
 
-  # Single aggregate gate: make THIS the required status check on main/develop. It succeeds
-  # only if no needed job failed or was cancelled; jobs skipped by the path filters are fine.
   # The web builder's Svelte frontend: type-check, unit tests, production builds.
   #
   # One source tree, three hosts (#895): `npm run build` is the local FastAPI one,
@@ -903,10 +766,9 @@ jobs:
   # type-checks against them, and the vitest suites and `build:all` fail without the artifacts.
   # The assembly bridge's suite is also the *headless smoke* for #1034: it assembles the checked-in
   # cell fixture in Node and compares the result to the bytes the native CLI wrote.
-  # The two jobs share one path filter so they are always skipped or run together.
   web:
-    needs: [changes, wasm-bridges]
-    if: needs.changes.outputs.web == 'true'
+    needs: [selection, wasm-bridges]
+    if: contains(fromJSON(needs.selection.outputs.jobs), 'web')
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -937,6 +799,13 @@ jobs:
         run: npm test
       - name: production builds (dev + web + desktop hosts)
         run: npm run build:all
+      # The standalone rain-radar viewer's suite. It is maintained and selectable but had no CI
+      # route at all, which made any change under tools/rain-radar-demo/ a fail-closed selection
+      # error. This is the job that already provisions Node, so the route lands here rather than
+      # in a job of its own.
+      - name: rain-radar demo tests
+        working-directory: tools/rain-radar-demo
+        run: npm ci && npm test
 
   # The Tauri desktop shell (apps/obc-desktop, #906). Workspace-excluded like the
   # board crate and the bootloader, and for the same kind of reason: Tauri drags in
@@ -958,8 +827,8 @@ jobs:
   # because that job builds the *web* host and runs the test suite; this is one
   # `--mode desktop` bundle and nothing else.
   desktop-frontend:
-    needs: [changes, wasm-bridges]
-    if: needs.changes.outputs.desktop == 'true'
+    needs: [selection, wasm-bridges]
+    if: contains(fromJSON(needs.selection.outputs.jobs), 'desktop-frontend')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -992,8 +861,8 @@ jobs:
           retention-days: 1
 
   desktop:
-    needs: [changes, desktop-frontend]
-    if: needs.changes.outputs.desktop == 'true'
+    needs: [selection, desktop-frontend]
+    if: contains(fromJSON(needs.selection.outputs.jobs), 'desktop')
     runs-on: ${{ matrix.os }}
     env:
       # Baked into packaged apps; a runtime variable can still override it for a
@@ -1084,9 +953,13 @@ jobs:
           cargo build --release --locked --target x86_64-apple-darwin
           file target/x86_64-apple-darwin/release/obc-desktop
 
+  # Single aggregate gate: make THIS the required status check on main/develop. It reports every
+  # planned suite against the jobs the plan routed it to, so a job the plan never selected is
+  # "not selected" and a selected job that was skipped is a failure. A failed `selection` job
+  # publishes no plan, which fails this gate rather than silently passing.
   ci:
     if: always()
-    needs: [changes, selection, retired-map-stack, card-scheduler-guard, screen-vocabulary-guard, fixture-registry, fmt, clippy, test, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, web, desktop-frontend, desktop]
+    needs: [selection, retired-map-stack, card-scheduler-guard, screen-vocabulary-guard, fixture-registry, fmt, clippy, test, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, web, desktop-frontend, desktop]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

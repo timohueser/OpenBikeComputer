@@ -539,8 +539,14 @@ build:
     cd "$OBC_ROOT"; _run cargo build --release
 
 # Run focused host tests by default. A scope is required: `obc test -p obc-pack`.
-# `fixtures` syncs captured inputs but remains scoped; `full` is the explicit
-# complete all-feature workspace suite.
+# The registry selectors run whole suites and print why each one was selected:
+#
+#   obc test affected --base origin/develop [--head REF] [--dry-run]
+#   obc test unit|component|contract|fixtures|e2e [--surface NAME] [--dry-run]
+#
+# `obc test fixtures -p <crate>` keeps its scoped meaning (sync + external-fixtures) and
+# needs neither the registry nor Git. `full` stays the exceptional cross-cutting gate.
+# See docs/testing.md for the level and cadence policy.
 test *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -551,6 +557,8 @@ test *args:
       _err "a test scope is required"
       _hint "focused: obc test -p <crate> [test-filter]"
       _hint "captured fixtures: obc test fixtures -p <crate>"
+      _hint "by change: obc test affected --base origin/develop [--dry-run]"
+      _hint "by level: obc test unit|component|contract|fixtures|e2e [--surface NAME]"
       _hint "cross-cutting only: obc test full"
       exit 2
     }
@@ -561,29 +569,43 @@ test *args:
           -p|--package|--package=*|--manifest-path|--manifest-path=*) return 0 ;;
         esac
       done
-      _err "a Cargo package scope is required (-p/--package or --manifest-path)"
-      return 2
+      return 1
+    }
+    fixture_env() {
+      _run python3 "$OBC_TOOLS/fixtures.py" sync test
+      export OBC_FIXTURE_ROOT
+      OBC_FIXTURE_ROOT="$(python3 "$OBC_TOOLS/fixtures.py" root)"
+      export OBC_REQUIRE_FIXTURES=1
     }
     case "$mode" in
       full)
         shift
-        _run python3 "$OBC_TOOLS/fixtures.py" sync test
-        export OBC_FIXTURE_ROOT
-        OBC_FIXTURE_ROOT="$(python3 "$OBC_TOOLS/fixtures.py" root)"
-        export OBC_REQUIRE_FIXTURES=1
+        fixture_env
         _run cargo test --workspace --all-features --locked "$@"
+        ;;
+      affected)
+        shift
+        _run python3 "$OBC_TOOLS/suite_registry.py" run --affected "$@"
+        ;;
+      unit|component|contract|e2e)
+        shift
+        _run python3 "$OBC_TOOLS/suite_registry.py" run --level "$mode" "$@"
         ;;
       fixtures)
         shift
-        require_scope "$@" || { _hint "example: obc test fixtures -p obc-wx-bake"; exit 2; }
-        _run python3 "$OBC_TOOLS/fixtures.py" sync test
-        export OBC_FIXTURE_ROOT
-        OBC_FIXTURE_ROOT="$(python3 "$OBC_TOOLS/fixtures.py" root)"
-        export OBC_REQUIRE_FIXTURES=1
-        _run cargo test --locked --features external-fixtures "$@"
+        if require_scope "$@"; then
+          fixture_env
+          _run cargo test --locked --features external-fixtures "$@"
+        else
+          _run python3 "$OBC_TOOLS/suite_registry.py" run --level fixtures "$@"
+        fi
         ;;
       *)
-        require_scope "$@" || { _hint "example: obc test -p obc-weather"; exit 2; }
+        require_scope "$@" || {
+          _err "a Cargo package scope is required (-p/--package or --manifest-path)"
+          _hint "example: obc test -p obc-weather"
+          exit 2
+        }
         _run cargo test --locked "$@"
         ;;
     esac
@@ -627,28 +649,34 @@ check-device:
     source "{{lib}}"; obc_init
     cd "$OBC_ROOT"; _run cargo build -p obc-app --target thumbv8m.main-none-eabihf
 
-# Run explicitly selected CI gates locally. `full` mirrors the broad required
-# gate (fmt/clippy/test+bench/device/docs; board legs if a RISC-V gcc is present;
-# deny/wasm if cargo-deny/trunk are installed). Examples:
+# Run explicitly selected CI gates locally. Each gate names the registry suites it
+# reproduces; `full` runs every gate the registry declares and then names the required
+# suites the run does NOT reproduce. Examples:
 #   obc check fmt         obc check test         obc check board docs
 #   obc check full        # cross-cutting changes only
+# Level and cadence policy lives in docs/testing.md.
 check *args:
     #!/usr/bin/env bash
     set -uo pipefail
     source "{{lib}}"; obc_init; ensure_geos
+    gates=($(python3 "$OBC_TOOLS/suite_registry.py" gates --list)) || exit 1
     sel=("$@")
     (( ${#sel[@]} )) || {
-      _err "select one or more gates (fmt, clippy, test, device, docs, board, frontend, deny, wasm)"
+      _err "select one or more gates (${gates[*]:-})"
       _hint "use package-scoped checks during development; use 'obc check full' only for cross-cutting changes"
       exit 2
     }
+    full=0
     if [[ "${sel[0]}" == full ]]; then
       (( ${#sel[@]} == 1 )) || { _err "'full' cannot be combined with individual gates"; exit 2; }
-      sel=(fmt clippy test device docs board frontend deny wasm)
+      full=1
+      sel=("${gates[@]}")
     fi
+    # A renamed gate that no longer reproduces a registry suite fails here, before any work.
+    python3 "$OBC_TOOLS/suite_registry.py" gates "${sel[@]}" || exit 1
     want() { local x; for x in "${sel[@]}"; do [[ "$x" == "$1" ]] && return 0; done; return 1; }
-    FAILED=(); PASSED=(); SKIPPED=()
-    step() { local label="$1"; shift; printf '\n'; _say "▶ $label"
+    FAILED=(); PASSED=(); SKIPPED=(); RAN=()
+    step() { local label="$1"; shift; RAN+=("$*"); printf '\n'; _say "▶ $label"
              if _run "$@"; then PASSED+=("$label"); else _err "$label FAILED"; FAILED+=("$label"); fi; }
     cd "$OBC_ROOT"
     if want fmt; then
@@ -697,6 +725,7 @@ check *args:
       else _warn "skip frontend — npm not installed"; SKIPPED+=("frontend"); fi
     fi
     if want deny; then
+      step "firmware production dependency direction" python3 "$OBC_ROOT/firmware/tools/check_dependencies.py"
       if command -v cargo-deny >/dev/null 2>&1; then
         step "deny (workspace)"    cargo deny --manifest-path "$OBC_ROOT/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
         step "deny (board crate)"  cargo deny --manifest-path "$OBC_ROOT/firmware/obc-fw-nrf54l/Cargo.toml" --all-features check --config "$OBC_ROOT/deny.toml"
@@ -718,6 +747,8 @@ check *args:
     printf '\n'; _say "check summary"
     (( ${#PASSED[@]} ))  && _ok   "passed:  ${PASSED[*]}"
     (( ${#SKIPPED[@]} )) && _warn "skipped: ${SKIPPED[*]}"
+    # No unqualified CI-parity claim: the registry names what this run leaves to CI.
+    (( full )) && python3 "$OBC_TOOLS/suite_registry.py" gates --unreproduced "${sel[@]}" ${RAN[@]+--ran "${RAN[@]}"}
     if (( ${#FAILED[@]} )); then _err "failed:  ${FAILED[*]}"; exit 1; fi
     _ok "all run gates passed"
 
@@ -734,7 +765,7 @@ clean *args:
 
 # Inspect the machine-readable test and validation inventory from any directory.
 # The full taxonomy and suite-granularity policy live in docs/testing.md.
-# Args: check | list [--json] | explain SUITE_ID | select --base REF | validate-filters
+# Args: check | list [--json] | explain SUITE_ID | select --base REF | run | gates | validate-filters
 suites *args:
     #!/usr/bin/env bash
     set -euo pipefail
