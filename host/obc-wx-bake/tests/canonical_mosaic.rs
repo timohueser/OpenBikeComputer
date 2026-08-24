@@ -25,6 +25,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
+use std::sync::LazyLock;
 
 use obc_formats::obcg;
 use obc_formats::precip4::{self, INTENSITY_DRY, INTENSITY_NODATA};
@@ -111,15 +112,22 @@ const ICON_RUN: &str = "2026-08-09T06:00:00Z";
 const RV_ETAG: &str = "\"6a788c2a-273800\"";
 const DWD_GAIN: f64 = 0.000_999_999_931_780_621_3;
 
+/// The European fixture members, read out of the package once. Every cycle consumes its
+/// `FixtureUpstream` mutably, so each caller still gets its own — but the bytes behind it are the
+/// same 14 members every time, and re-reading them per construction is work no test observes.
+static EUROPEAN_MEMBERS: LazyLock<Vec<(String, Vec<u8>)>> = LazyLock::new(|| {
+    std::iter::once((dwd_rv::LATEST_URL.to_string(), fixture("composite_rv_20260809_1420.tar")))
+        .chain((0..=12u32).map(|lead| {
+            (icon_eu::lead_url(ts(ICON_RUN), lead), fixture(&format!("icon-eu-2026080906_{lead:03}.grib2.bz2")))
+        }))
+        .collect()
+});
+
 fn european_upstream() -> FixtureUpstream {
     let mut upstream = FixtureUpstream::default();
-    upstream.insert(dwd_rv::LATEST_URL, fixture("composite_rv_20260809_1420.tar"), Some(RV_ETAG));
-    for lead in 0..=12u32 {
-        upstream.insert(
-            icon_eu::lead_url(ts(ICON_RUN), lead),
-            fixture(&format!("icon-eu-2026080906_{lead:03}.grib2.bz2")),
-            None,
-        );
+    for (url, bytes) in EUROPEAN_MEMBERS.iter() {
+        let etag = (url == dwd_rv::LATEST_URL).then_some(RV_ETAG);
+        upstream.insert(url.clone(), bytes.clone(), etag);
     }
     upstream
 }
@@ -444,17 +452,25 @@ fn every_canonical_instant_of_a_cycle_is_a_native_dwd_member() {
         assert_eq!(native, CYCLE_FRAMES as usize, "phase {phase_min}: every one of the nine frames must be native");
         assert_eq!(exact, reachable, "phase {phase_min}: {exact} exact of the {reachable} instants that could be");
 
+        // 3. Nothing left for the derivation stage to do over Germany.
+        let cells_before: Vec<usize> = source.frames.iter().map(|frame| frame.cells.len()).collect();
+        let added = obc_wx_bake::derive::uniform_frames(&mut source, times);
+        assert_eq!(added, 0, "phase {phase_min}: DWD RV must never be morphed — it published the frame already");
+        assert_eq!(source.frames.iter().map(|frame| frame.cells.len()).collect::<Vec<_>>(), cells_before);
+
         // …and f0 is the **observation**, at every run phase (#1278 r2, R2-2). Round 2 caught the
         // anchor going to an exact-instant lead-5 forecast when the run sat 300 s after it, which
         // put Germany's `FLAG_OBSERVED` on RV's publication schedule. Measured through the real
         // mosaic and emitter here, not inferred from the frame list.
         // Well inside the radar footprint (50.0 N, 10.0 E — Thuringia), so `all_observed` is about
         // which frame won and not about whether the composite reaches the window's corner.
+        // It is the source baked above rather than a second bake of the same tar at the same
+        // instant. Assertion 3 has just proved the derivation stage added no frame, and the sort it
+        // runs on its way out cannot reorder this one: `bake_tar` accepts a member only at the next
+        // five-minute lead, so the frames are already ascending and `sort_by_key` is stable.
         let lattice = sub_lattice(50_000_000, 10_000_000, 64, 64);
-        let cells_before: Vec<usize> = source.frames.iter().map(|frame| frame.cells.len()).collect();
         let anchor_flags = {
-            let mosaic =
-                Mosaic::from_sources(vec![bake(&dwd_rv::DwdRv, &mut european_upstream(), now)]).expect("ranked");
+            let mosaic = Mosaic::from_sources(vec![source]).expect("ranked");
             let object = emit_shard(&lattice, &mosaic, times, 0, 0).expect("emits");
             let mut scratch = vec![0u8; usize::from(lattice.tile_edge) * usize::from(lattice.tile_edge)];
             obcg::validate(&object.bytes, &mut scratch).expect("valid").flags
@@ -475,11 +491,6 @@ fn every_canonical_instant_of_a_cycle_is_a_native_dwd_member() {
             "phase {phase_min}: anchor is {} s after the run; Germany's f0 is the wrong kind of frame",
             times.reference_time - run
         );
-
-        // 3. Nothing left for the derivation stage to do over Germany.
-        let added = obc_wx_bake::derive::uniform_frames(&mut source, times);
-        assert_eq!(added, 0, "phase {phase_min}: DWD RV must never be morphed — it published the frame already");
-        assert_eq!(source.frames.iter().map(|frame| frame.cells.len()).collect::<Vec<_>>(), cells_before);
     }
 }
 
@@ -1459,43 +1470,6 @@ fn a_corrupt_upstream_publishes_nothing_and_leaves_the_previous_generation_stand
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The retention contract WXR8's sweep derives its delete set from: a generation names the two
-/// before it, newest first, and nothing older. The baker keeps no state, so this is read back out
-/// of the manifest it published last time and nowhere else.
-#[cfg(feature = "external-fixtures")]
-#[test]
-fn each_generation_names_the_two_before_it() {
-    let lattice = sub_lattice(45_680_000, 1_460_000, 64, 48);
-    let dwd = dwd_rv::DwdRv;
-    let icon = icon_eu::IconEu;
-    let adapters: [&dyn Adapter; 2] = [&dwd, &icon];
-    let dir = std::env::temp_dir().join(format!("obc-wx-generations-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let mut store = DirStore::new(&dir);
-
-    let mut chains = Vec::new();
-    for step in 0..4 {
-        let now = ts("2026-08-09T14:30:00Z") + step * 900;
-        let mut upstream = european_upstream();
-        run_cycle(&lattice, &adapters, &mut upstream, &mut store, now, 2, false).expect("publishes");
-        let raw = std::fs::read(dir.join(manifest_v2::MANIFEST_KEY)).expect("the manifest");
-        let document = manifest_v2::from_json(&raw).expect("v2");
-        chains.push((document.generation, document.previous_generations));
-    }
-    assert_eq!(
-        chains,
-        vec![
-            ("20260809T1430Z".to_string(), vec![]),
-            ("20260809T1445Z".to_string(), vec!["20260809T1430Z".to_string()]),
-            ("20260809T1500Z".to_string(), vec!["20260809T1445Z".to_string(), "20260809T1430Z".to_string()]),
-            ("20260809T1515Z".to_string(), vec!["20260809T1500Z".to_string(), "20260809T1445Z".to_string()]),
-        ],
-        "current plus exactly two, newest first"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
 /// **Publish, then sweep, then check what is left** (WXR8 #1247) — the end-to-end half of the
 /// retention story, over the real `run_cycle` and a real store rather than a recording double.
 ///
@@ -1504,6 +1478,10 @@ fn each_generation_names_the_two_before_it() {
 /// N-3", because it also fails if the sweep ever deleted something still on the chain — the
 /// failure mode this feature introduced and the reason it is gated this way rather than by counting
 /// deletions.
+///
+/// It states the contract the sweep derives that delete set from as well — a generation names the
+/// two before it, newest first, and nothing older, read back out of the manifest the previous cycle
+/// published, because the baker keeps no state.
 #[cfg(feature = "external-fixtures")]
 #[test]
 fn the_tree_holds_exactly_the_generations_the_published_manifest_names() {
@@ -1526,6 +1504,7 @@ fn the_tree_holds_exactly_the_generations_the_published_manifest_names() {
     };
 
     let mut swept = Vec::new();
+    let mut chains = Vec::new();
     for step in 0..5 {
         let now = ts("2026-08-09T14:30:00Z") + step * 900;
         let mut upstream = european_upstream();
@@ -1542,7 +1521,21 @@ fn the_tree_holds_exactly_the_generations_the_published_manifest_names() {
             "step {step}: the tree and the manifest disagree about which generations exist"
         );
         swept.push((report.swept.generations.clone(), report.swept.deleted_objects > 0));
+        chains.push((document.generation, document.previous_generations));
     }
+
+    // The chain the sweep reads its delete set from: current plus exactly two, newest first.
+    assert_eq!(
+        chains,
+        vec![
+            ("20260809T1430Z".to_string(), vec![]),
+            ("20260809T1445Z".to_string(), vec!["20260809T1430Z".to_string()]),
+            ("20260809T1500Z".to_string(), vec!["20260809T1445Z".to_string(), "20260809T1430Z".to_string()]),
+            ("20260809T1515Z".to_string(), vec!["20260809T1500Z".to_string(), "20260809T1445Z".to_string()]),
+            ("20260809T1530Z".to_string(), vec!["20260809T1515Z".to_string(), "20260809T1500Z".to_string()]),
+        ],
+        "current plus exactly two, newest first"
+    );
 
     // Nothing to retire until a fourth generation exists; from then on, exactly one per cycle, and
     // it is the one that just fell off the chain.
