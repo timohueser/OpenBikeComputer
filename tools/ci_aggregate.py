@@ -11,28 +11,9 @@ from pathlib import Path
 import sys
 from typing import Any, Mapping, Sequence
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-RUNNER_JOBS = {
-    "always": (
-        "changes",
-        "selection",
-        "retired-map-stack",
-        "card-scheduler-guard",
-        "screen-vocabulary-guard",
-        "fixture-registry",
-    ),
-    "rust": ("fmt", "clippy", "test", "embedded", "boot", "device", "deny"),
-    "wasm": ("wasm",),
-    "web": ("wasm-bridges", "web"),
-    "docs": ("docs",),
-    "ios": ("ios-unit", "ios-app"),
-    "desktop": ("desktop-frontend", "desktop"),
-}
-UPSTREAM_JOBS = {
-    "web": ("wasm-bridges",),
-    "desktop-frontend": ("wasm-bridges",),
-    "desktop": ("desktop-frontend",),
-}
+import suite_registry
 
 
 class AggregateError(RuntimeError):
@@ -66,21 +47,38 @@ def _job_result(needs: Mapping[str, Any], job: str) -> str:
     return str(result) if result else "missing"
 
 
-def _blocked_upstream(needs: Mapping[str, Any], jobs: Sequence[str]) -> list[str]:
+def _blocked_upstream(
+    needs: Mapping[str, Any], jobs: Sequence[str], upstream_jobs: Mapping[str, Sequence[str]]
+) -> list[str]:
+    """Walk the whole upstream closure: a producer two hops up still blocks the work."""
+
     blocked: list[str] = []
-    for job in jobs:
-        for upstream in UPSTREAM_JOBS.get(job, ()):
+    seen: set[str] = set()
+    pending = list(jobs)
+    while pending:
+        for upstream in upstream_jobs.get(pending.pop(), ()):
+            if upstream in seen:
+                continue
+            seen.add(upstream)
             if _job_result(needs, upstream) in {"failure", "cancelled"}:
                 blocked.append(upstream)
+            else:
+                # A healthy producer can still hide a failed producer of its own.
+                pending.append(upstream)
     return sorted(set(blocked))
 
 
-def evaluate(plan: Mapping[str, Any], needs: Mapping[str, Any]) -> AggregateResult:
+def evaluate(
+    plan: Mapping[str, Any],
+    needs: Mapping[str, Any],
+    upstream_jobs: Mapping[str, Sequence[str]] | None = None,
+) -> AggregateResult:
+    """Report every planned suite against the jobs the plan itself routed it to."""
+
     if plan.get("schema") != 1 or not isinstance(plan.get("suites"), list):
         raise AggregateError("selection plan must use schema 1 and contain a suites list")
+    upstream_jobs = upstream_jobs or {}
     suites: list[SuiteResult] = []
-    changes = needs.get("changes", {})
-    change_outputs = changes.get("outputs", {}) if isinstance(changes, Mapping) else {}
     for suite in plan["suites"]:
         suite_id = str(suite.get("id", "<missing-id>"))
         reasons = suite.get("reasons") or ["no reason supplied"]
@@ -88,25 +86,13 @@ def evaluate(plan: Mapping[str, Any], needs: Mapping[str, Any]) -> AggregateResu
         if not suite.get("selected"):
             suites.append(SuiteResult(suite_id, "not selected", reason, ()))
             continue
-        candidate_runners = suite.get("runner_surfaces") or []
-        runners = [
-            runner
-            for runner in candidate_runners
-            if runner == "always"
-            or (
-                isinstance(change_outputs, Mapping)
-                and str(change_outputs.get(str(runner), "")).lower() == "true"
-            )
-        ]
-        jobs = tuple(
-            dict.fromkeys(job for runner in runners for job in RUNNER_JOBS.get(str(runner), ()))
-        )
+        jobs = tuple(dict.fromkeys(str(job) for job in suite.get("jobs") or ()))
         if not jobs:
             suites.append(
                 SuiteResult(
                     suite_id,
                     "selected but not run",
-                    f"{reason}; no selected coarse runner has an executable route",
+                    f"{reason}; the registry routes this suite to no workflow job",
                     (),
                 )
             )
@@ -114,7 +100,7 @@ def evaluate(plan: Mapping[str, Any], needs: Mapping[str, Any]) -> AggregateResu
         results = {job: _job_result(needs, job) for job in jobs}
         failed = [job for job, result in results.items() if result in {"failure", "cancelled"}]
         incomplete = [job for job, result in results.items() if result in {"skipped", "missing"}]
-        blockers = _blocked_upstream(needs, incomplete)
+        blockers = _blocked_upstream(needs, incomplete, upstream_jobs)
         if incomplete and blockers:
             suites.append(
                 SuiteResult(
@@ -182,7 +168,9 @@ def markdown_summary(result: AggregateResult) -> str:
 def _json_argument(value: str | None, environment: str) -> Mapping[str, Any]:
     raw = value if value is not None else os.environ.get(environment, "")
     if not raw:
-        raise AggregateError(f"missing JSON input ({environment})")
+        raise AggregateError(
+            f"missing JSON input ({environment}); a failed or cancelled job publishes no output"
+        )
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -199,12 +187,20 @@ def parser() -> argparse.ArgumentParser:
     return root
 
 
+def upstream_jobs() -> dict[str, tuple[str, ...]]:
+    """The blocking relation stays derived from the workflow `needs` graph."""
+
+    jobs = suite_registry.workflow_jobs(suite_registry.repository_root())
+    return {name: job.needs for name, job in jobs.items()}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
         result = evaluate(
             _json_argument(args.plan_json, "OBC_SELECTION_PLAN"),
             _json_argument(args.needs_json, "OBC_NEEDS_RESULTS"),
+            upstream_jobs(),
         )
         summary = markdown_summary(result)
         print(summary, end="")

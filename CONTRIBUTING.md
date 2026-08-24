@@ -24,6 +24,17 @@ cargo clippy -p obc-weather --all-targets -- -D warnings
 `obc test` deliberately requires a scope. It does not silently expand to the workspace. Multiple
 affected packages may be supplied with repeated `-p` arguments.
 
+When the change spans packages, ask the registry which suites it selects instead of guessing:
+
+```sh
+obc test affected --base origin/develop --dry-run
+obc test affected --base origin/develop
+obc test unit --surface formats
+```
+
+`affected` is the same selection CI runs. Every form prints the selected suites and one reason each,
+and `--dry-run` executes nothing.
+
 Run `obc suites check` after changing test sources, validation commands, workflows, registries, or
 test policy. Use `obc suites list` and `obc suites explain SUITE_ID` to inspect the derived
 inventory; counts and durations do not belong in the registry.
@@ -58,7 +69,8 @@ obc check fmt clippy device
 
 The `clippy` and `test` gates cover the complete host workspace, so prefer package-scoped Cargo
 commands during development. `frontend`, `board`, `docs`, `deny`, and `wasm` are independent
-surfaces; include one only when the change can affect it.
+surfaces; include one only when the change can affect it. Each gate prints the registry suites it
+reproduces, and `obc check full` names the required suites it does not — it is not CI parity.
 
 ### 4. Full gates — exceptional and explicit
 

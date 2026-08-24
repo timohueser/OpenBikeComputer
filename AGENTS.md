@@ -49,6 +49,9 @@ Use the nearest README for surface-specific setup. `companion-ios/CLAUDE.md` is 
 - Use `obc test fixtures -p <crate>` only for captured external data. For non-Rust work, run the
   affected surface's native focused command. Unit, component, and contract suites are the fast,
   hermetic tier; select whole suites, never individual test functions.
+- For a change spanning packages, let the registry choose: `obc test affected --base origin/develop`
+  (add `--dry-run` to see the plan first). It is the same selection CI runs, and it prints one
+  reason per suite. `obc test unit|component|contract|fixtures|e2e [--surface NAME]` runs one level.
 - Run `obc test full` or `obc check full` only for cross-cutting changes, such as workspace or
   feature-resolution changes, shared contracts, foundational crates, CI/tooling, or releases.
 - Run `obc suites check` after changing test sources, validation commands, workflows, registries,
