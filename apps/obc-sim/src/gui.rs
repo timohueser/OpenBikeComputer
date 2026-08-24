@@ -102,6 +102,8 @@ pub(crate) const SIM_SUPPORT: PlatformSupport = PlatformSupport {
     weather: true,
     bonding: true,
     storage_space_report: true,
+    // Unlike the board, which has no ObjectId-keyed metadata kind until #1398: the folder stores keep sidecars beside their objects.
+    retention_metadata: true,
 };
 
 /// What only this host can do: the RRAM stand-in file, the injected panel "bond", and the fixed

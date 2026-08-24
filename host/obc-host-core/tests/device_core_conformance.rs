@@ -200,6 +200,8 @@ const EVERYTHING: PlatformSupport = PlatformSupport {
     weather: true,
     bonding: true,
     storage_space_report: true,
+    // Unlike the board, which has no ObjectId-keyed metadata kind until #1398: the folder stores keep sidecars beside their objects.
+    retention_metadata: true,
 };
 
 /// The rider-visible projection two runners must agree on.

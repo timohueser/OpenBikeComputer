@@ -23,6 +23,9 @@
 //!   `settings`, `weather`, `dfu` and `ble`. There is deliberately **no** combined `Effect`,
 //!   `Outcome` or `Intent` enum anywhere.
 //! - [`migration`] — the Appendix A inventory of the legacy protocol, as compile-checked test data.
+//! - [`residual`] — the three legacy commands **every** typed executor still drains, as one shared
+//!   list. Both executors check it, so S6c can delete the protocol mechanically rather than
+//!   per-host.
 //!
 //! …the one deterministic frame every platform runs (#1438):
 //!
@@ -57,6 +60,7 @@ pub mod derived;
 pub mod feeders;
 pub mod migration;
 pub mod pass;
+pub mod residual;
 mod shared;
 pub mod slots;
 pub mod storage_info;
@@ -68,6 +72,7 @@ pub use derived::{
 pub use compat::{LegacyAdapter, LegacyInputs, LegacyOwned, LegacyPending, LegacyReply, LegacyReport};
 pub use core_mode::ModeState;
 pub use pass::{PassClock, PassInputs, PassPlan};
+pub use residual::{assert_residual, declined_level, declined_stamp, residual, RESIDUAL};
 pub use slots::{EffectSlots, OutcomeSlots, Slot, SlotFull};
 pub use storage_info::{StorageInfoEffect, StorageInfoError, StorageInfoIntent, StorageInfoOutcome};
 
