@@ -111,9 +111,10 @@ mod ble;
 // not an option of it. Spawned beside the ride loop (see `spawn_usb_stack`).
 mod usb;
 // The transport-free companion-link core: the §4.4 command handler, descriptor classification, the
-// cross-transport one-transfer gate, the identity blobs, and the one shared `ObjectStore`. Both the
-// radio and the USB plane call into it, which is what keeps "USB is a second transport, not a second
-// protocol" true in the code rather than only in the spec.
+// identity blobs, and the one shared `ObjectStore`. Both the radio and the USB plane call into it,
+// which is what keeps "USB is a second transport, not a second protocol" true in the code rather than
+// only in the spec. (One transfer at a time is the flat engine's, scoped per wire by
+// `Engine::on_link_up` / `on_link_lost`.)
 #[cfg(feature = "ble")]
 mod link;
 // The device object store: object ids / revision / upload state over the SD catalog, and the Config ↔

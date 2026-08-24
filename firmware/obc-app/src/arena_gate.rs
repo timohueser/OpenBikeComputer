@@ -19,9 +19,14 @@
 //! | nav ⊥ usb | no route search while the cable owns upload scratch | [`TransferReady`] |
 //!
 //! A gate that is merely *documented* is a gate that gets skipped, so each precondition is a token
-//! only [`CoreMode`](crate::device_core::core_mode::CoreMode) can mint:
-//! [`claim_nav`](ArenaGate::claim_nav) cannot even be *called* without evidence that the map plane
-//! is quiesced, and there is exactly one place that decides the token is owed.
+//! [`CoreMode`](crate::device_core::core_mode::CoreMode) mints: [`claim_nav`](ArenaGate::claim_nav)
+//! cannot even be *called* without evidence that the map plane is quiesced, and there is exactly one
+//! place that decides the token is owed.
+//!
+//! How far that goes, precisely: the `mint` constructors are `pub(crate)`, not private, because this
+//! module's own tests need them — so another `obc-app` module *could* assemble a proof without
+//! asking `CoreMode`. Nothing does, and the point of the tightening is that doing so would be a
+//! visible edit to a named constructor rather than a one-line re-derivation of the facts.
 //!
 //! # No atomics
 //!

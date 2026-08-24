@@ -16,6 +16,33 @@ failure only a running board can show. Once that run is recorded, the mechanism 
     python3 tools/s5_core_mode_soak.py B --rtt-log /tmp/s5-rtt.log
     python3 tools/s5_core_mode_soak.py C --rtt-log /tmp/s5-rtt.log --minutes 60
 
+## Which flow the scenarios drive, and why it is `N` and not the Detour menu
+
+Every plan below is posted with the debug link's `N <from_lon> <from_lat> <to_lon> <to_lat>` line
+(`obc-platform/src/debug_link.rs`, consumed by `ride.rs`'s `debug_start_nav` arm), which is a real
+`PlanRoute`. **The Detour menu cannot drive this soak**: the board has no detour half yet and answers
+`DetourPlanned(Err(NoPath))` the moment the command drains (`ride.rs`'s `PlanDetour` arm), so
+`nav_take_arena` is never called, `nav_begin` never runs, and neither `nav plan: start` nor any arena
+claim ever happens. A detour-driven run reports failure on a perfectly healthy board.
+
+`N` is the one flow that actually arms the planner, claims the arena's nav arm for the whole search,
+and gives it back — which is the `render ⊥ nav` cycle these soaks exist to stress.
+
+## What is *not* automatable here, stated rather than discovered
+
+**The banner's on-glass appearance is not reachable by any gesture.** The freeze needs a live search
+*and* a map base, and on the board the only gesture that puts a map base back under a running search
+— Back on the planning screen — also posts the cancellation, which the ride loop drains **in the same
+pass**: gestures are taken at the top of the loop body and `drain_host_commands` runs below them,
+both before the render. `obc-app`'s own `the_board_loop_renders_the_map_again_the_pass_a_cancel_lands`
+pins that ordering, and `App::debug_set_plan_live` exists precisely because of it.
+
+So [`Cycle`] **counts** banner repaints and fails on more than one (a level repainting per pass is a
+real regression), but does not require one. The banner's pixels are proven off-device by
+`obc-sim --freeze --png`, and its legibility on the reflective panel is the human check #1487 already
+flags. If a board detour half or a deferred drain ever makes the window real, the
+`freeze: banner repaint` line is there and the ordering check picks it up.
+
 ## The rig, and the two ways it lies to you
 
 * Build `--release --features debug-uart` — the sensors are swapped for the VCOM feed so a ride can
@@ -23,13 +50,13 @@ failure only a running board can show. Once that run is recorded, the mechanism 
   silently ignored; `stty` + `printf` does not work, which is why this is pyserial at 115200 with
   `rtscts=False`.
 * **The J-Link CDC wedges silently**: `write()` succeeds, RTT keeps flowing, and nothing lands — a
-  blind script then "passes" every step. [`liveness_probe`] runs before every scenario and between
-  scenario A's cycles: snapshot the RTT log size, send six taps, wait, re-check. Zero growth means
-  wedged, and only a physical DK power-cycle clears it.
+  blind script then "passes" every step against a board that heard nothing. [`liveness_probe`] runs
+  before every scenario and between scenario A's cycles: snapshot the RTT log size, send six taps,
+  wait, re-check. Zero growth means wedged, and only a physical DK power-cycle clears it.
 * `nav plan: start` is a `defmt::debug!`, so the RTT shell needs `DEFMT_LOG=debug`. Without it every
   cycle reports a missing start line and the run is worthless.
 
-Everything above `Link` is pure log/plan analysis with no pyserial in it, which is what
+Everything above `Link` is pure log analysis with no pyserial in it, which is what
 `tools/tests/test_s5_core_mode_soak.py` drives against recorded RTT text.
 """
 
@@ -38,7 +65,6 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass, field
 import glob
-import os
 from pathlib import Path
 import sys
 import time
@@ -46,9 +72,13 @@ import time
 # ── the RTT vocabulary this soak reads (mirrors `firmware/obc-fw-nrf54l/src/ride.rs`) ────────────
 
 PLAN_START = "nav plan: start"
-MAP_FRAME = "map frame:"
-UI_FRAME = "ui frame:"
+PLAN_ANSWER = "nav route:"
 PLAN_REFUSED = "nav: cannot start a plan"
+MAP_FRAME = "map frame:"
+# The frozen-overlay repaint's **own** line. Deliberately not `ui frame:` — the menus, the station
+# steps and the planning spinner all take that same non-map branch, so counting `ui frame:` as a
+# banner reports three banners for one healthy cycle and masks the ordering check behind it.
+BANNER = "freeze: banner repaint"
 USB_GRANTED = "arena: 64 KiB USB write-combining arm granted"
 USB_RECLAIMED = "arena: USB write-combining arm reclaimed"
 ARENA_REFUSED = "claim refused"
@@ -61,17 +91,19 @@ BOOT_FAULT = "boot fault"
 REFUSAL_TRANSFER = "a cable transfer holds the store"
 REFUSAL_ARENA = "the scratch arena is busy"
 
-# `deep_ride_margin_min` from `firmware/tools/resource_baseline.json` — scenario C fails if a
-# reported stack peak eats into it.
+# `stack_reserve` / `deep_ride_margin_min` from `firmware/tools/resource_baseline.json` — scenario C
+# fails if a reported stack peak eats into the margin.
 STACK_RESERVE = 65_536
 DEEP_RIDE_MARGIN_MIN = 8_704
 
 
 @dataclass
 class Cycle:
-    """What one plan cycle produced, as read back out of the RTT log."""
+    """What one `N` plan cycle produced, as read back out of the RTT log."""
 
     started: bool = False
+    answered: bool = False
+    outcome: str = ""
     banner_frames: int = 0
     map_frames: int = 0
     arena_refusals: list[str] = field(default_factory=list)
@@ -80,15 +112,19 @@ class Cycle:
     def verdict(self) -> str | None:
         """`None` when the cycle passed, else why it did not."""
         if not self.started:
+            if self.refusals:
+                return f"the plan was refused: {self.refusals[0]}"
             return f"no `{PLAN_START}` line — the plan never armed (or DEFMT_LOG is not debug)"
-        if self.banner_frames == 0:
-            return "the freeze raised no banner frame — the rider saw a map that simply stopped"
-        if self.banner_frames > 1:
-            return f"{self.banner_frames} banner frames for one freeze — the edge is repainting per pass"
-        if self.map_frames != 1:
-            return f"{self.map_frames} full map repaints after the answer — expected exactly one catch-up"
+        if not self.answered:
+            return "the search never answered — a spinner that never resolves holds the nav arm forever"
         if self.arena_refusals:
             return f"the arena refused a claim: {'; '.join(self.arena_refusals)}"
+        if self.map_frames == 0:
+            # **The regression this whole soak exists for.** A refused claim degrades silently: the
+            # frame skips its map redraw and tries again, so the only witness is a map that stops.
+            return "no map frame after the answer — the arm came back but the map never caught up"
+        if self.banner_frames > 1:
+            return f"{self.banner_frames} banner repaints for one freeze — the edge is repainting per pass"
         return None
 
 
@@ -99,9 +135,13 @@ def read_cycle(lines: list[str]) -> Cycle:
     for line in lines:
         if PLAN_START in line:
             cycle.started = True
-        elif UI_FRAME in line and cycle.started:
+        elif PLAN_ANSWER in line:
+            cycle.answered = True
+            tail = line.split(PLAN_ANSWER, 1)[1].split()
+            cycle.outcome = tail[0] if tail else ""
+        elif BANNER in line:
             cycle.banner_frames += 1
-        elif MAP_FRAME in line and cycle.started:
+        elif MAP_FRAME in line and cycle.answered:
             cycle.map_frames += 1
         elif ARENA_REFUSED in line or ARENA_RELEASE_REFUSED in line:
             cycle.arena_refusals.append(line.strip())
@@ -111,16 +151,21 @@ def read_cycle(lines: list[str]) -> Cycle:
 
 
 def assert_sequence(lines: list[str]) -> str | None:
-    """The order scenario A pins: start → banner → the catch-up repaint. A map frame *before* the
-    banner means the map plane drew while the nav arm was out, which is the whole regression."""
+    """The order a cycle must walk: start → answer → the map catches up, with any banner repaint
+    strictly between the start and that catch-up.
+
+    Counts alone pass a transcript where the map frame landed *first*, which is exactly the
+    regression: the map plane drawing while the nav arm is still out."""
     order = [
         kind
         for line in lines
         for kind in (
             ["start"]
             if PLAN_START in line
+            else ["answer"]
+            if PLAN_ANSWER in line
             else ["banner"]
-            if UI_FRAME in line
+            if BANNER in line
             else ["map"]
             if MAP_FRAME in line
             else []
@@ -129,10 +174,16 @@ def assert_sequence(lines: list[str]) -> str | None:
     if "start" not in order:
         return "no plan start in this window"
     after = order[order.index("start") :]
-    if "banner" not in after:
-        return "no banner after the start"
-    if "map" in after and after.index("map") < after.index("banner"):
-        return "a full map repaint landed between the start and the banner — the freeze did not hold"
+    if "answer" not in after:
+        return "no plan answer after the start"
+    answer_at = after.index("answer")
+    if "map" in after[:answer_at]:
+        return "a full map repaint landed while the search still held the arm — the arena was not exclusive"
+    if "map" not in after[answer_at:]:
+        return "no map frame after the answer — the map did not catch up"
+    catch_up_at = answer_at + after[answer_at:].index("map")
+    if "banner" in after and after.index("banner") > catch_up_at:
+        return "a banner repaint after the catch-up — the freeze outlived its search"
     return None
 
 
@@ -194,7 +245,18 @@ class Link:
             fh.seek(mark)
             return fh.readlines()
 
-    # -- the gestures, in the debug-link vocabulary --
+    def wait_for(self, mark: int, needle: str, timeout: float) -> bool:
+        """Poll the log until `needle` appears after `mark`, or give up. The plan phases run for
+        hundreds of ms to seconds, so every step waits on its own landmark rather than on a sleep
+        long enough to cover the worst case."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if any(needle in line for line in self.since(mark)):
+                return True
+            time.sleep(0.1)
+        return False
+
+    # -- the gestures and commands, in the debug-link vocabulary --
 
     def press(self) -> None:
         self.send("K s d")
@@ -206,11 +268,6 @@ class Link:
         time.sleep(0.05)
         self.send("K b u")
 
-    def back_hold(self, ms: int = 900) -> None:
-        self.send("K b d")
-        time.sleep(ms / 1000)
-        self.send("K b u")
-
     def step(self, n: int) -> None:
         self.send(f"K t {n}")
 
@@ -219,6 +276,10 @@ class Link:
 
     def zoom(self, mpp: float) -> None:
         self.send(f"Z {mpp}")
+
+    def plan(self, frm: tuple[int, int], to: tuple[int, int]) -> None:
+        """`N <from_lon> <from_lat> <to_lon> <to_lat>` — **LON FIRST**, unlike the lat-first `F`."""
+        self.send(f"N {frm[0]} {frm[1]} {to[0]} {to[1]}")
 
 
 def liveness_probe(link: Link) -> None:
@@ -256,135 +317,161 @@ def stream_fixes(link: Link, base: tuple[int, int], steps: int, delay: float = 1
         time.sleep(delay)
 
 
-def scenario_a(link: Link, cycles: int, base: tuple[int, int]) -> int:
-    """**A — the freeze window over a map base (`render ⊥ nav`).**
+def plan_cycle(
+    link: Link, frm: tuple[int, int], to: tuple[int, int], base: tuple[int, int]
+) -> tuple[Cycle, list[str]]:
+    """One whole `N` plan: post it, wait for the arm, let it search under a live ride, wait for the
+    answer, then Back off the result screen so the map base is what catches up.
 
-    The only way a map base lands under a live search: back out of the planning spinner while the
-    planner is still running. Each cycle must show start → banner → answer → exactly one full
-    repaint, with no arena refusal anywhere."""
-    print(f"A: {cycles} freeze cycles over a map base")
+    The Back is exactly one press: `land_route_plan` **replaces** the `NavPlanning` entry in place
+    (with `RouteOverview` on success, `NavFail` on either failure tier), so the stack is
+    `[…, Map, <result>]` and one Back leaves the Map on top."""
+    mark = link.mark()
+    link.plan(frm, to)
+    if link.wait_for(mark, PLAN_START, timeout=4.0):
+        # A live ride under the search: fixes keep landing (a freeze pauses the map, never the ride)
+        # and the planner steps between frames.
+        stream_fixes(link, base, 3)
+        link.wait_for(mark, PLAN_ANSWER, timeout=20.0)
+    link.back()  # off the result screen, back onto the map base
+    time.sleep(0.3)
+    stream_fixes(link, base, 3)
+    lines = link.since(mark)
+    return read_cycle(lines), lines
+
+
+def report(prefix: str, cycle: Cycle, lines: list[str]) -> int:
+    """Print a cycle's verdict; return 1 when it failed. A failure prints its landmark tally, because
+    the usual cause is the key sequence drifting, not the firmware."""
+    why = cycle.verdict() or assert_sequence(lines)
+    if not why:
+        return 0
+    print(f"  {prefix}: FAIL — {why}")
+    print(
+        f"    landmarks: start={cycle.started} answer={cycle.outcome or '-'} "
+        f"banner={cycle.banner_frames} map={cycle.map_frames} "
+        f"arena_refusals={len(cycle.arena_refusals)} plan_refusals={len(cycle.refusals)}"
+    )
+    return 1
+
+
+def scenario_a(link: Link, cycles: int, frm: tuple[int, int], to: tuple[int, int], base: tuple[int, int]) -> int:
+    """**A — the `render ⊥ nav` claim/release cycle**, ≥50 times.
+
+    Each cycle must arm the planner, answer, give the arm back and let the map catch up, with zero
+    arena refusals in between. The failure it hunts is a map that stops redrawing — silent on a
+    shipping build, which is why it is only visible here."""
+    print(f"A: {cycles} plan cycles (render ⊥ nav claim/release)")
     ride_to_map(link)
     stream_fixes(link, base, 3)
     failures = 0
+    banners = 0
     for i in range(cycles):
         if i % 10 == 0:
             liveness_probe(link)
-        mark = link.mark()
-        link.back_hold()  # the ride menu
-        time.sleep(0.4)
-        link.step(1)  # → Detour
-        time.sleep(0.2)
-        link.press()  # the rejoin chooser
-        time.sleep(0.4)
-        link.press()  # posts the plan and pushes the spinner
-        time.sleep(0.15)
-        link.back()  # …and pop it *while the planner runs* — THE window
-        stream_fixes(link, (base[0] + i, base[1] + i), 3)
-        lines = link.since(mark)
-        cycle = read_cycle(lines)
-        why = cycle.verdict() or assert_sequence(lines)
-        if why:
-            failures += 1
-            print(f"  cycle {i}: FAIL — {why}")
-        elif i % 10 == 0:
-            print(f"  cycle {i}: ok")
-    print(f"A: {cycles - failures}/{cycles} cycles passed")
+        cycle, lines = plan_cycle(link, frm, to, (base[0] + i, base[1] + i))
+        banners += cycle.banner_frames
+        failed = report(f"cycle {i}", cycle, lines)
+        failures += failed
+        if i % 10 == 0 and not failed:
+            print(f"  cycle {i}: ok ({cycle.outcome})")
+    print(f"A: {cycles - failures}/{cycles} cycles passed; {banners} banner repaints observed")
+    print("   (0 banner repaints is expected — see the module docs on why no gesture engages the freeze)")
     return failures
 
 
-def scenario_b(link: Link) -> int:
+def scenario_b(link: Link, frm: tuple[int, int], to: tuple[int, int]) -> int:
     """**B — `nav ⊥ usb` and `render ⊥ usb`.** Semi-automatic: a hand on the cable.
 
-    The plan offered during an upload must be refused *before* the planner arms, and the refusal
-    must name the transfer — not "the scratch arena is busy", and not a `NoPath`."""
+    The plan offered during an upload must be refused *before* the planner arms, and the refusal must
+    name the transfer — not "the scratch arena is busy", and not a `NoPath`.
+
+    **The precondition, and it is the whole basis of the claim:** the refusal is reachable only while
+    the USB **write-combining arm** is actually held, which the ride loop takes on
+    `usb::stage_requested()` and announces as `arena: 64 KiB USB write-combining arm granted`. Without
+    that grant the arena is free and the plan proceeds beside the upload exactly as it did before this
+    slice — so the step below checks for the grant first and says so rather than failing the board."""
     print("B: plug the cable into J3, load a route, and start a map upload; press Enter when the")
     print("   transfer card is up.")
     input()
     mark = link.mark()
-    link.back_hold()
-    time.sleep(0.4)
-    link.step(1)
-    time.sleep(0.2)
-    link.press()
-    time.sleep(0.4)
-    link.press()
-    time.sleep(1.0)
+    if not link.wait_for(mark, USB_GRANTED, timeout=10.0):
+        print("  SKIP — the USB write-combining arm was never granted, so the arena is free and this")
+        print("         step tests nothing. Re-run with an upload large enough to request it.")
+        return 0
+
+    mark = link.mark()
+    link.plan(frm, to)
+    time.sleep(2.0)
     lines = link.since(mark)
-    refusals = [line for line in lines if PLAN_REFUSED in line]
+    refusals = [line.strip() for line in lines if PLAN_REFUSED in line]
     failures = 0
-    if not refusals:
-        print("  FAIL — the plan was not refused during the upload")
+    if any(PLAN_START in line for line in lines):
+        print("  FAIL — the planner armed during the upload; `nav ⊥ usb` did not hold")
         failures += 1
-    elif not any(REFUSAL_TRANSFER in line for line in refusals):
-        print(f"  FAIL — refused, but not by name: {refusals[0].strip()}")
+    elif not refusals:
+        print("  FAIL — the plan was neither armed nor refused")
         failures += 1
     elif any(REFUSAL_ARENA in line for line in refusals):
-        print("  FAIL — the rider was told the arena is busy; the cable is the actionable fact")
+        print(f"  FAIL — the rider was told the arena is busy; the cable is the actionable fact: {refusals[0]}")
+        failures += 1
+    elif not any(REFUSAL_TRANSFER in line for line in refusals):
+        print(f"  FAIL — refused, but not by name: {refusals[0]}")
         failures += 1
     else:
-        print("  refusal names the transfer: ok")
+        print("  refused before the planner armed, and the refusal names the transfer: ok")
 
     print("B: end the upload, then press Enter.")
     input()
     mark = link.mark()
-    link.back_hold()
-    time.sleep(0.4)
-    link.step(1)
-    time.sleep(0.2)
-    link.press()
-    time.sleep(0.4)
-    link.press()
-    time.sleep(1.0)
-    lines = link.since(mark)
-    if any(PLAN_REFUSED in line for line in lines):
-        print("  FAIL — the same input is still refused after the upload ended")
+    link.plan(frm, to)
+    if not link.wait_for(mark, PLAN_START, timeout=5.0):
+        print("  FAIL — no plan armed after the upload ended")
         failures += 1
-    elif not any(PLAN_START in line for line in lines):
-        print("  FAIL — no plan started after the upload ended")
+    elif any(PLAN_REFUSED in line for line in link.since(mark)):
+        print("  FAIL — the same input is still refused after the upload ended")
         failures += 1
     else:
         print("  the plan arms normally afterwards: ok")
+        link.wait_for(mark, PLAN_ANSWER, timeout=20.0)
+        link.back()
 
-    grants = sum(1 for line in lines if USB_GRANTED in line)
-    reclaims = sum(1 for line in lines if USB_RECLAIMED in line)
-    print(f"  arena arm: {grants} granted / {reclaims} reclaimed (expect one each per upload)")
+    whole = link.since(0)
+    granted = sum(USB_GRANTED in line for line in whole)
+    reclaimed = sum(USB_RECLAIMED in line for line in whole)
+    print(f"  arena arm: {granted} granted / {reclaimed} reclaimed (expect one each per upload)")
     return failures
 
 
-def scenario_c(link: Link, minutes: int, base: tuple[int, int]) -> int:
-    """**C — the stuck-freeze soak.** A continuous ride with a plan cycle every ~60 s and a periodic
-    zoom nudge. Every freeze release must be followed by a map render within two wakes, and the
-    stack must never eat into `deep_ride_margin_min`."""
-    print(f"C: {minutes} minutes of continuous riding with a plan cycle every 60 s")
+def scenario_c(link: Link, minutes: int, frm: tuple[int, int], to: tuple[int, int], base: tuple[int, int]) -> int:
+    """**C — the stuck-arm soak.** A continuous ride with a plan cycle every ~60 s and a periodic
+    zoom nudge. Every released nav arm must be followed by a map render, and the stack must never eat
+    into `deep_ride_margin_min`."""
+    print(f"C: {minutes} minutes of continuous riding with a plan cycle every ~60 s")
     ride_to_map(link)
     deadline = time.time() + minutes * 60
     failures = 0
-    cycle_no = 0
+    n = 0
     while time.time() < deadline:
         mark = link.mark()
-        link.zoom(30.0 if cycle_no % 2 else 20.0)
-        stream_fixes(link, (base[0] + cycle_no * 10, base[1]), 25)
-        link.back_hold()
-        time.sleep(0.4)
-        link.step(1)
-        time.sleep(0.2)
-        link.press()
-        time.sleep(0.4)
-        link.press()
-        time.sleep(0.15)
-        link.back()
-        stream_fixes(link, (base[0] + cycle_no * 10, base[1]), 20)
-        lines = link.since(mark)
-        why = read_cycle(lines).verdict()
-        fault_lines = faults(lines)
-        margin = margin_verdict(stack_peaks(lines))
-        for problem in [why, margin] + fault_lines:
+        link.zoom(30.0 if n % 2 else 20.0)
+        stream_fixes(link, (base[0] + n * 10, base[1]), 25)
+        cycle, lines = plan_cycle(link, frm, to, (base[0] + n * 10, base[1]))
+        failures += report(f"cycle {n}", cycle, lines)
+        window = link.since(mark)
+        for problem in [margin_verdict(stack_peaks(window))] + faults(window):
             if problem:
                 failures += 1
-                print(f"  cycle {cycle_no}: FAIL — {problem}")
-        cycle_no += 1
-    print(f"C: {cycle_no} cycles over {minutes} min, {failures} failures")
+                print(f"  cycle {n}: FAIL — {problem}")
+        n += 1
+    print(f"C: {n} cycles over {minutes} min, {failures} failures")
     return failures
+
+
+def coord(raw: str) -> tuple[int, int]:
+    """`LON,LAT` in integer microdegrees — the `N` line's own order."""
+    lon, lat = raw.split(",")
+    return int(lon), int(lat)
 
 
 def resolve_port(explicit: str | None) -> str:
@@ -403,8 +490,12 @@ def main() -> int:
     parser.add_argument("--rtt-log", required=True, type=Path, help="the file `cargo rtt` is tee'd into")
     parser.add_argument("--cycles", type=int, default=50, help="scenario A plan cycles (>=50 is the gate)")
     parser.add_argument("--minutes", type=int, default=60, help="scenario C duration (60 is the gate)")
-    parser.add_argument("--lat", type=int, default=47_990_000, help="starting fix latitude, microdegrees")
-    parser.add_argument("--lon", type=int, default=7_850_000, help="starting fix longitude, microdegrees")
+    # Grimsel defaults, on the map the fixture registry ships. Both ends must lie on the mounted
+    # map's routing graph or every cycle answers `no-path` — which the run reports as its outcome.
+    parser.add_argument("--nav-from", type=coord, default=(8_337_000, 46_562_000), help="LON,LAT µdeg")
+    parser.add_argument("--nav-to", type=coord, default=(8_248_000, 46_570_000), help="LON,LAT µdeg")
+    parser.add_argument("--lat", type=int, default=46_562_000, help="streamed fix latitude, µdeg")
+    parser.add_argument("--lon", type=int, default=8_337_000, help="streamed fix longitude, µdeg")
     args = parser.parse_args()
 
     if not args.rtt_log.exists():
@@ -414,11 +505,11 @@ def main() -> int:
     liveness_probe(link)
     base = (args.lat, args.lon)
     if args.scenario == "A":
-        failures = scenario_a(link, args.cycles, base)
+        failures = scenario_a(link, args.cycles, args.nav_from, args.nav_to, base)
     elif args.scenario == "B":
-        failures = scenario_b(link)
+        failures = scenario_b(link, args.nav_from, args.nav_to)
     else:
-        failures = scenario_c(link, args.minutes, base)
+        failures = scenario_c(link, args.minutes, args.nav_from, args.nav_to, base)
 
     print("PASS" if failures == 0 else f"FAIL ({failures})")
     return 0 if failures == 0 else 1

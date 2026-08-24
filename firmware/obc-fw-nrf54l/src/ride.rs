@@ -1106,11 +1106,11 @@ pub(crate) async fn run_app(
                         // router, so it answers the failure tier here instead of arming.
                         //
                         // Since #1146 P2 the slot lives in the scratch arena, so the search must
-                        // *take* the arena first — and the gate's search arm before it, because a
-                        // cable transfer streaming into the same store outranks a reroute. Either
-                        // refusal answers the app immediately (the polite failure path): a plan whose
-                        // spinner never resolves would now also hold the Recalculating freeze, i.e. a
-                        // map that never redraws again.
+                        // *take* the arena first — and a cable transfer streaming into the same store
+                        // outranks a reroute, which `nav_take_arena` enforces by asking the arena who
+                        // holds it. A refusal answers the app immediately (the polite failure path):
+                        // a plan whose spinner never resolves would now also hold the Recalculating
+                        // freeze, i.e. a map that never redraws again.
                         #[cfg(has_nav)]
                         match nav_take_arena(app, &mut nav_guard) {
                             Ok(()) => {
@@ -1529,9 +1529,9 @@ pub(crate) async fn run_app(
             let nav_cancel = host_pass.cancel_plan;
             #[cfg(has_nav)]
             {
-                // Whether this pass ended the search — the one place the arena's nav arm and the
-                // gate's search arm are given back. A flag rather than an inline release because the
-                // guard is borrowed by the step view below and must die first.
+                // Whether this pass ended the search — the one place the arena's nav arm is given
+                // back. A flag rather than an inline release because the guard is borrowed by the
+                // step view below and must die first.
                 let mut search_ended = false;
                 if host_pass.plan_armed {
                     // The planner slot was already written from the request at the pass-top drain
@@ -2240,6 +2240,13 @@ pub(crate) async fn run_app(
                             app.render_overlay(&mut fbdev, FRAME_W as f32, FRAME_H as f32, color_fn);
                             obc_render::RenderStats::default()
                         });
+                        // Named apart from the `ui frame:` line every other non-map redraw shares:
+                        // the menus, the station steps and the planning spinner all take this same
+                        // branch, so a log reader (and the #1487 soak driver) cannot tell a banner
+                        // repaint from a menu repaint without it. `debug-uart` only — the harness is
+                        // its only reader and the shipping image should not carry the string.
+                        #[cfg(feature = "debug-uart")]
+                        defmt::info!("freeze: banner repaint rows {=u16}..{=u16}", y0, y0 + rows);
                         Some(RenderedFrame { needs_map: false, stats, render_us })
                     }
                     // Mid-freeze with no edge: nothing changed on either plane, so nothing to push.
@@ -2533,10 +2540,11 @@ pub(crate) async fn run_app(
         // it stays fluid; otherwise arm the app's single next-wake deadline, or sleep indefinitely
         // until input/sensor.
         let charging = hold_p > 0.0 || display.hold_charging();
-        #[cfg(has_nav)]
-        let planning = nav_run.is_some();
-        #[cfg(not(has_nav))]
-        let planning = false;
+        // "A search is live" is the app's fact, never the board's run handle: `CoreMode` is set when
+        // the plan command drains and cleared by the answer, which brackets `nav_run` on both sides.
+        // It costs a hot loop rather than an exclusion if it is wrong, and it is the last place the
+        // board derived this a second way.
+        let planning = app.core_mode() == obc_app::device_core::ModeState::Searching;
         let animating = charging || planning || pending_map_redraw || overlay_dirty || overlay_span.is_some();
         let next_ms = if animating { Some(LOOP_MS as u32) } else { app.ms_until_next_wake(now) };
         // debug-uart host build: keep a ~2 Hz floor so streamed telemetry / `Z` zoom commands stay
