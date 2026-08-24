@@ -12,9 +12,9 @@ use crate::RouteRepository;
 /// (the [`RouteIndex`]'s non-persisted `identity`, #799) rides with the parse, so a settled Map view
 /// re-uses one parse indefinitely.
 ///
-/// The ~8 KB `RouteIndex` is **boxed**: a [`HostLoop`](crate::HostLoop) embeds this session, and a
-/// host that holds its loop as a stack value (the deep sim tour test) must not carry a resident
-/// 8 KB inline field down the render call chain. The heap slot keeps the loop pointer-small.
+/// The ~8 KB `RouteIndex` is **boxed**: a host holds this session as a field beside its app, and a
+/// host that holds it as a stack value (the deep sim tour test) must not carry a resident 8 KB
+/// inline field down the render call chain. The heap slot keeps the host pointer-small.
 #[derive(Default)]
 pub struct ActiveRouteSession {
     index: Option<Box<RouteIndex>>,
@@ -39,6 +39,14 @@ impl ActiveRouteSession {
     /// The resident parse, for building a [`RouteReader`] over the store's active bytes.
     pub fn index(&self) -> Option<&RouteIndex> {
         self.index.as_deref()
+    }
+
+    /// Point the store at the app's active route and reparse only if its bytes moved — the two
+    /// lines every frame-stepped host runs before it opens the reader it lends to the pass *and*
+    /// to its render.
+    pub fn sync(&mut self, app: &App, routes: &mut dyn RouteRepository) {
+        let changed = routes.sync_active(app.active_route_index());
+        self.reparse(changed, routes);
     }
 }
 

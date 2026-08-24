@@ -32,6 +32,7 @@
 pub mod conformance;
 mod dispatch;
 mod frame;
+mod legacy;
 mod nav;
 mod replay;
 mod repo;
@@ -41,11 +42,23 @@ mod stores;
 pub mod terrain;
 pub mod trace;
 
-pub use dispatch::{HostLoop, PlanHold};
+pub use dispatch::{HostLoop, HostPlatform, InflightPlan, PlanHold, RESIDUAL};
 pub use frame::RgbaFrame;
+pub use legacy::LegacyLoop;
 pub use nav::{finish_detour_commit, finish_detour_plan, finish_nav_plan, DetourPlan, DetourReady, NavPlan};
-pub use replay::{initial_camera, replay_step, ReplaySensors};
+pub use replay::{initial_camera, replay_advance, ReplaySensors};
 pub use repo::{RideRepository, RouteRepository, TrackRepository, TripCatalog};
 pub use session::{fill_nav_preview, ActiveRouteSession};
 pub use sink::VecSink;
 pub use stores::{MemRideStore, MemRouteStore, MemTrackStore};
+
+/// The id band a host's **ride** objects live in.
+///
+/// [`CatalogEffect::RemoveObject`](obc_app::catalog_state::CatalogEffect) names an object by
+/// identity and never by namespace, because the flat store the board runs numbers every object out
+/// of one space (FS7 #1389). The simulator's folder stores and the in-memory family below number
+/// each family from zero, so a route and a ride could share an id and a removal would take the
+/// wrong one. Carving the rides out of a high band gives the executor the same one-space identity
+/// without renaming a file on disk: the band is added when a store *reads* an id and stripped when
+/// it builds a path.
+pub const RIDE_ID_BASE: obc_app::CatalogObjectId = 1 << 32;

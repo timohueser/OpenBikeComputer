@@ -270,7 +270,11 @@ fn legacy_facts_reach_the_rider_through_the_pass() {
 
     host.pass(20);
     assert!(host.app.debug_stack_len() > 1, "the facts put something in front of the rider");
-    assert!(host.app.store_changed_pending() > 0, "the commit became the catalog's refresh cue");
+    // The commit becomes `CatalogIntent::Refresh` (#1397 S6a), not the legacy rescan cue: the fact
+    // reports that the store moved, and the *intent* is what orders the re-read — which the adapter
+    // then expresses as the one legacy command the old protocol has for it.
+    assert_eq!(host.app.store_changed_pending(), 0, "no legacy rescan cue is latched behind it");
+    assert_eq!(host.count(&HostCommand::RescanStore { commits: 1 }), 1, "one commit, one re-read");
 }
 
 // ==================== derived levels ====================

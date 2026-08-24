@@ -1,7 +1,7 @@
 //! Board ↔ dispatcher protocol-ordering parity (#801).
 //!
 //! The board keeps its **async** ride loop and its per-latch `take_*` drains (#801 non-goal; #809
-//! owns the board loop), while the frame-stepped hosts run the shared [`HostLoop`] dispatcher. Both
+//! owns the board loop), while the frame-stepped hosts ran the shared [`LegacyLoop`] dispatcher. Both
 //! consume the *same* typed `HostCommand` protocol, so the orderings the board hand-codes must hold
 //! through the dispatcher too. The class-order / annihilation / counted-rescan mechanics are pinned
 //! crate-internally in `obc-app` (`tests/host_protocol.rs`); this file pins that the **dispatcher**
@@ -17,7 +17,7 @@
 
 use obc_app::{App, AppState};
 use obc_host_core::trace::{reconcile_fixture_pass, reconcile_fixture_to_completion};
-use obc_host_core::{HostLoop, MemRouteStore};
+use obc_host_core::{LegacyLoop, MemRouteStore};
 
 /// The board rescans the object store on a store-changed edge and re-feeds the catalog; the
 /// dispatcher's `RescanStore` must do the same, so a subsequent id resolves against the rescanned
@@ -38,7 +38,7 @@ fn rescan_refeeds_the_catalog_like_the_board() {
     assert!(routes.delete_by_id(gone));
     app.apply_event(obc_app::HostEvent::StoreChanged);
 
-    let mut host = HostLoop::new();
+    let mut host = LegacyLoop::new();
     reconcile_fixture_pass(&mut host, &mut app, &mut routes, &map).expect("grimsel map parses");
 
     assert_eq!(app.routes().len(), 1, "the dispatcher's RescanStore re-fed the rescanned catalog");
@@ -57,7 +57,7 @@ fn plan_route_enters_the_resumable_planner_like_the_board() {
     app.set_routes_with_ids(routes.catalog(), routes.ids());
     app.debug_start_nav((8_330_000, 46_570_000), (8_340_000, 46_575_000), "Parity Plan");
 
-    let mut host = HostLoop::new();
+    let mut host = LegacyLoop::new();
     assert!(!host.is_planning(), "nothing planning before the pass");
     reconcile_fixture_pass(&mut host, &mut app, &mut routes, &map).expect("grimsel map parses");
     assert!(host.is_planning(), "the dispatcher consumed PlanRoute into the resumable planner");
@@ -75,7 +75,7 @@ fn completion_matches_repeated_frame_steps() {
         let mut routes = MemRouteStore::new(&[&route]);
         app.set_routes_with_ids(routes.catalog(), routes.ids());
         app.debug_start_nav((8_169_610, 46_694_536), (8_217_309, 46_706_261), "Same Plan");
-        let mut host = HostLoop::new();
+        let mut host = LegacyLoop::new();
         if complete {
             reconcile_fixture_to_completion(&mut host, &mut app, &mut routes, &map).expect("grimsel map parses");
         } else {
@@ -109,7 +109,7 @@ fn cancel_before_the_pass_starts_no_plan() {
     // the undrained request through the real screen path.
     app.apply_gesture(obc_app::Gesture::Back);
 
-    let mut host = HostLoop::new();
+    let mut host = LegacyLoop::new();
     reconcile_fixture_pass(&mut host, &mut app, &mut routes, &map).expect("grimsel map parses");
     assert!(!host.is_planning(), "an annihilated request never starts a plan in the dispatcher");
 }
