@@ -350,7 +350,10 @@ impl App {
         if let Some(outcome) = outcomes.settings.take() {
             let now_ms = self.ui.now_ms;
             if self.settings_ops.apply_outcome(outcome, now_ms) {
-                self.on_warning(crate::screen::WarningFlags::SETTINGS_ERROR);
+                // Through the fault connection, not straight to a card: every notice raised in a
+                // pass reaches the rider together at stage 13, so a failed save shares the card
+                // with whatever else this pass found rather than displacing it.
+                self.pass.connections.faults.raise(crate::screen::WarningFlags::SETTINGS_ERROR);
             }
         }
         if let Some(outcome) = outcomes.dfu.take() {

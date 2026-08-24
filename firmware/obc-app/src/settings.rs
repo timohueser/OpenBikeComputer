@@ -2272,7 +2272,12 @@ impl SettingsMachine {
     }
 
     /// The write for `revision` failed. Keep it dirty and re-arm the bounded backoff, but only
-    /// while it is still the in-flight latest. Returns whether the rider is told.
+    /// while it is still the in-flight latest.
+    ///
+    /// **Always returns `true`:** the rider is told a save failed whatever the revision guard says,
+    /// which is what the legacy handler did and the honest thing to show — a write *did* fail. The
+    /// guard decides only whether that revision stays retryable; a stale failure leaves the newer
+    /// content pending exactly as it was and re-arms nothing.
     pub(crate) fn note_persist_failed(&mut self, revision: u16, now_ms: u32) -> bool {
         if self.persist == PersistState::Awaiting && revision == self.revision {
             self.retry_at_ms = (now_ms as u16).wrapping_add(SETTINGS_RETRY_BACKOFF_MS as u16);
@@ -2356,7 +2361,7 @@ mod settings_machine_tests {
         machine.note_edited();
         let (_, revision) = emit(&mut machine, 1_000);
 
-        assert!(machine.note_persist_failed(revision, 1_000), "the rider is told a save failed");
+        machine.note_persist_failed(revision, 1_000);
         assert!(!machine.wants_write(false, 1_000 + SETTINGS_RETRY_BACKOFF_MS - 1), "not before the window");
         assert!(machine.wants_write(false, 1_000 + SETTINGS_RETRY_BACKOFF_MS), "and exactly once at it");
 
@@ -2383,6 +2388,22 @@ mod settings_machine_tests {
         let (token, _) = emit(&mut machine, 2_000_000);
         assert!(!machine.apply_outcome(SettingsOutcome::Cancelled { token }, 2_000_000));
         assert!(machine.wants_write(false, 2_000_001), "the write is owed again");
+    }
+
+    /// The rider is told a save failed even when the failure is for a superseded revision — a write
+    /// did fail, and hiding it would be the quieter lie. What the revision guard decides is only
+    /// whether *that* revision stays retryable: a stale failure re-arms nothing, so the newer
+    /// content is still owed immediately rather than parked behind a backoff it never earned.
+    #[test]
+    fn a_stale_failure_is_still_shown_but_re_arms_nothing() {
+        let mut machine = SettingsMachine::new();
+        machine.note_edited(); // revision 1
+        emit(&mut machine, 100);
+        machine.note_edited(); // revision 2 supersedes it
+
+        assert!(machine.note_persist_failed(1, 100), "the rider is told a save failed");
+        assert!(machine.wants_write(false, 100), "but revision 2 is owed now, not after a backoff");
+        assert_eq!(emit(&mut machine, 100).1, 2);
     }
 
     /// The token and the revision are independent guards: an answer to a *superseded operation* is

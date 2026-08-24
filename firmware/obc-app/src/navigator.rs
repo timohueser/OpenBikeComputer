@@ -201,11 +201,25 @@ pub(crate) enum PlanPhase {
 /// the rider asked for.
 #[derive(Debug, Default)]
 pub struct NavigatorMachine {
-    /// The one operation token. `EffectSlots::navigator` holds one effect, so Navigator has at most
-    /// one physical operation in flight; [`live_family`](Self::live_family) says whose it is.
+    /// The one operation token, and it is genuinely **one**:
+    /// [`TokenSource::issue`](crate::device_core::TokenSource::issue) bumps a single generation, so
+    /// only the newest operation is ever current *across both families*. A second concurrent
+    /// operation would therefore make the first one's answer stale, `accepts` would refuse it, and
+    /// its family's freeze flag would never be released — the "map that never redraws again"
+    /// [`RerouteFreeze`] names. That is why [`next_plan_effect`](Self::next_plan_effect) and
+    /// [`next_commit_effect`](Self::next_commit_effect) hand out **at most one operation at a
+    /// time**: the constraint is enforced where the token is minted, not assumed.
+    ///
+    /// `RerouteFreeze`'s two flags are not the same question. They track *edges* — which family's
+    /// terminal edge may release what — and they stay per-family (#1146) whatever the token layer
+    /// allows.
     ops: TokenSource<NavigatorTag>,
-    /// Which family the current token belongs to, while an executor holds an operation. At most
-    /// one: `EffectSlots::navigator` carries one effect and the token source is one generation.
+    /// The family whose operation an executor is currently holding, if any. `Some` is what makes
+    /// [`next_plan_effect`](Self::next_plan_effect) refuse a second one; it is cleared by the
+    /// terminal answer, by a superseding intent, and by a cancellation reaching the executor.
+    ///
+    /// A [`Release`](NavigatorEffect::Release) never sets it: handing the workspace back owes no
+    /// product answer, so it is not an operation anyone is waiting on.
     live: Option<PlanFamily>,
     /// The **Recalculating freeze** (#1146): a live planner run over a map base stops map redraws,
     /// pauses the matcher and raises the banner. Navigator is its only writer — the four scattered
@@ -320,22 +334,50 @@ impl NavigatorMachine {
             .or_else(|| self.next_commit_effect())
     }
 
-    /// The workspace release a cancellation implies. Consumes the same one-shot
-    /// [`take_cancel`](Self::take_cancel) does, so a cancellation reaches the executor exactly once
-    /// however the two protocols are composed.
+    /// The workspace release a cancellation implies.
+    ///
+    /// Consumes the **same one-shot** [`take_cancel`](Self::take_cancel) does — the door
+    /// `App::deliver_plan_cancel` uses for the legacy `CancelRoutePlan` / `CancelDetour` arms — so a
+    /// cancellation reaches an executor exactly once however the two protocols are composed. Stage 8
+    /// runs before `drain_host_commands`, so a composition that runs both consumes it *here*.
+    ///
+    /// **The known gap that leaves, stated rather than discovered:** under the pass *plus*
+    /// [`LegacyAdapter`](crate::device_core::LegacyAdapter),
+    /// [`navigator_row`](crate::device_core::compat::navigator_row) maps this `Release` to
+    /// [`LegacyOwned::PlannerRelease`](crate::device_core::compat::LegacyOwned::PlannerRelease) —
+    /// untranslatable by design, because a `Release` is issued on success too — so that composition
+    /// never tells the executor to drop the planner. No shipped host runs both (nothing calls
+    /// `App::run_pass` until #1397 S6, which is also what gives Navigator an executor that answers a
+    /// `Release`), and the legacy hosts take the cancellation through the drain arm exactly as
+    /// before.
+    ///
+    /// A release is offered only when this family's own operation was the one in flight. A cancel
+    /// with nothing running is a host-side no-op — and minting a token for it while *another*
+    /// family's search is live would supersede that search's answer, which is the failure
+    /// [`ops`](Self::ops) describes.
     fn next_release(&mut self, family: PlanFamily) -> Option<NavigatorEffect> {
         if !self.take_cancel(family) {
             return None;
         }
         self.note_cancel_delivered(family);
-        self.live = Some(family);
-        Some(NavigatorEffect::Release { token: self.ops.issue() })
+        // `admit_intent` already invalidated this family's operation, so `live` is clear exactly
+        // when the cancellation had something of its own to stop.
+        self.live.is_none().then(|| NavigatorEffect::Release { token: self.ops.issue() })
     }
 
     /// Hand `family`'s undelivered request to an executor: the operation the search runs under, and
     /// the moment the freeze engages. **The engaging edge is here, not at admission** — a request
     /// the rider cancelled before anyone took it froze nothing, so nothing needs releasing.
+    ///
+    /// Refused while an executor already holds an operation, whichever family's. The request stays
+    /// queued and goes out on a later pass — backpressure, never a loss, and the same shape
+    /// [`CatalogState`](crate::catalog_state::CatalogState) uses. Handing out a second one would
+    /// mint a token that supersedes the first, so the running search's genuine answer would be
+    /// refused and its freeze flag would be stuck forever (see [`ops`](Self::ops)).
     pub(crate) fn next_plan_effect(&mut self, family: PlanFamily) -> Option<NavigatorEffect> {
+        if self.live.is_some() {
+            return None;
+        }
         let work = match family {
             PlanFamily::Route => PlannerWork::Route(self.route_request.take()?),
             PlanFamily::Detour => PlannerWork::Detour(self.detour_request.take()?),
@@ -350,8 +392,12 @@ impl NavigatorMachine {
     }
 
     /// Hand the previewed detour's splice to an executor. No freeze edge: a commit is a write, not
-    /// a search, and it does not take the nav arm.
+    /// a search, and it does not take the nav arm. Refused while another operation is in flight,
+    /// for the same reason [`next_plan_effect`](Self::next_plan_effect) is.
     pub(crate) fn next_commit_effect(&mut self) -> Option<NavigatorEffect> {
+        if self.live.is_some() {
+            return None;
+        }
         core::mem::take(&mut self.detour_commit).then(|| {
             self.detour = PlanPhase::Committing;
             self.live = Some(PlanFamily::Detour);
@@ -497,6 +543,11 @@ impl NavigatorMachine {
         self.detour_request = None;
         self.detour_commit = false;
         self.detour_cancel = false;
+        // The phase describes a plan that is gone, so it goes with it — otherwise `detour_planned`
+        // and `detour_committing` would keep reporting a preview or a splice that no longer exists.
+        // `live` and the token are deliberately left: an executor may still be holding this
+        // family's operation, and its answer is what hands the workspace back.
+        self.detour = PlanPhase::Idle;
     }
 
     /// The detour family's phase — the preview/commit gate, and what the tests read.
@@ -582,29 +633,68 @@ mod machine_tests {
         }
     }
 
-    /// **#1146, both directions.** A family's terminal edge releases only its own freeze, and two
-    /// live searches hold it until the last one ends. The regression is a map that never redraws
-    /// again with the nav arm still claimed underneath it.
+    /// **#1146.** A stray edge of one family must never release the freeze a *route* search is
+    /// holding the nav arm behind, and the running search's own answer must still be accepted when
+    /// it arrives. The regression is a map that never redraws again with an unfrozen matcher
+    /// drifting under it.
+    ///
+    /// Driven through the real seam — `next_effect` and `accepts`, not `note_answer` — because the
+    /// token layer is where this can go wrong: a second operation would mint a generation that
+    /// supersedes the first, its genuine answer would be refused, and nothing would ever release
+    /// its flag. The machine refuses the second operation instead, so both halves hold.
     #[test]
     fn a_detours_terminal_edge_never_releases_a_route_freeze() {
         let mut nav = NavigatorMachine::new();
         nav.admit_intent(NavigatorIntent::PlanRoute(route_request("col")));
-        nav.next_plan_effect(PlanFamily::Route).expect("the route search starts");
+        let route = nav.next_plan_effect(PlanFamily::Route).expect("the route search starts");
         assert!(nav.freeze_active(true), "a search over a map base is the freeze");
 
-        // A detour cancellation, delivered while the route search is still running.
+        // A detour cancellation while the route search runs. It is not this run's edge, and it
+        // mints no token — a `Release` here would supersede the search that is still going.
         nav.admit_intent(NavigatorIntent::CancelDetour);
-        assert!(nav.take_cancel(PlanFamily::Detour));
-        assert!(!nav.note_cancel_delivered(PlanFamily::Detour), "not this run's edge");
+        assert!(nav.next_effect().is_none(), "a cancellation with nothing of its own to stop asks for no work");
         assert!(nav.freeze_active(true), "the route search still holds the nav arm");
 
-        // And two live searches: the first to end does not release it.
+        // A detour *request* while it runs: refused, and the request waits rather than being lost.
         nav.admit_intent(NavigatorIntent::PlanDetour(detour_request()));
-        nav.next_plan_effect(PlanFamily::Detour).expect("the detour search starts too");
-        assert!(!nav.note_answer(PlanFamily::Detour, PlanPhase::PreviewReady), "one down, one to go");
-        assert!(nav.freeze_active(true));
-        assert!(nav.note_answer(PlanFamily::Route, PlanPhase::Active), "the last one out releases it");
+        assert!(nav.next_effect().is_none(), "one navigation operation at a time");
+        assert!(nav.request_pending(PlanFamily::Detour), "…and the rider's detour is still queued");
+
+        // The route search's genuine answer is still this operation's — which is the half a
+        // superseding second token would have destroyed.
+        let answer = NavigatorOutcome::PlanFinished { token: route.token(), route: 9 };
+        assert!(nav.accepts(&answer), "the running search's answer is accepted");
+        assert!(nav.note_answer(PlanFamily::Route, PlanPhase::Active), "and it is what releases the freeze");
         assert!(!nav.freeze_active(true));
+
+        // Only now does the queued detour go out, and it freezes on its own account.
+        assert!(matches!(acquired(nav.next_effect()), Some(PlannerWork::Detour(_))), "nothing was lost");
+        assert!(nav.freeze_active(true));
+        assert!(nav.note_answer(PlanFamily::Detour, PlanPhase::PreviewReady), "released by its own edge");
+        assert!(!nav.freeze_active(true));
+    }
+
+    /// The freeze's own two-flag rule, kept where the machine cannot reach it: two runs live at
+    /// once is not a state today's UI can produce — and `next_plan_effect` now refuses to create
+    /// one — but the arm is a single block, so if it ever becomes reachable the freeze must hold
+    /// until the *last* run is done, not the first. `RerouteFreeze`'s own tests pin that;
+    /// Navigator's contribution is that it never hands out the second operation that would strand
+    /// the first one's answer.
+    #[test]
+    fn a_second_operation_is_refused_rather_than_superseding_the_first() {
+        let mut nav = NavigatorMachine::new();
+        nav.admit_intent(NavigatorIntent::PlanDetour(detour_request()));
+        let detour = nav.next_plan_effect(PlanFamily::Detour).expect("the detour search starts");
+
+        // A route plan and a commit, both while it runs.
+        nav.admit_intent(NavigatorIntent::PlanRoute(route_request("col")));
+        nav.admit_intent(NavigatorIntent::CommitDetour);
+        assert!(nav.next_plan_effect(PlanFamily::Route).is_none(), "no second search");
+        assert!(nav.next_commit_effect().is_none(), "and no splice beside one");
+        assert!(nav.accepts(&NavigatorOutcome::Acquired { token: detour.token() }), "the first is still current");
+
+        nav.note_answer(PlanFamily::Detour, PlanPhase::PreviewReady);
+        assert!(nav.next_plan_effect(PlanFamily::Route).is_some(), "the queued plan goes out once it is free");
     }
 
     /// A plan answer that arrives after the rider cancelled changes nothing: the token stopped being
@@ -682,6 +772,26 @@ mod machine_tests {
         nav.next_commit_effect().expect("…and the retry goes out");
         nav.note_commit(true);
         assert_eq!(nav.detour_phase(), PlanPhase::Active);
+    }
+
+    /// A fresh tracking session drops the detour, and nothing is left describing it: the phase goes
+    /// with the one-shots, so `detour_planned` and `detour_committing` cannot keep reporting a
+    /// preview or a splice the session reset just threw away.
+    #[test]
+    fn a_session_reset_leaves_nothing_describing_the_dropped_detour() {
+        let mut nav = NavigatorMachine::new();
+        nav.admit_intent(NavigatorIntent::PlanDetour(detour_request()));
+        nav.next_plan_effect(PlanFamily::Detour).expect("the search starts");
+        nav.note_answer(PlanFamily::Detour, PlanPhase::PreviewReady);
+        nav.admit_intent(NavigatorIntent::CommitDetour);
+        assert!(nav.detour_planned() && nav.commit_pending());
+
+        nav.reset_detour();
+        assert!(!nav.detour_planned(), "no plan");
+        assert!(!nav.detour_committing(), "no splice");
+        assert!(!nav.commit_pending() && !nav.request_pending(PlanFamily::Detour));
+        assert!(!nav.cancel_pending(PlanFamily::Detour));
+        assert_eq!(nav.detour_phase(), PlanPhase::Idle);
     }
 
     /// One stream, one order: the pass takes cancellations before new work, so both compositions ask
