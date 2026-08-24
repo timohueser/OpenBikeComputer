@@ -48,7 +48,6 @@ following temporary conflicts:
   expensive exhaustive codec test.
 - required XCUITest currently runs two screenshot methods while the rest of the application suite
   has no scheduled full route.
-- the rain-radar demo has a local route but no current CI execution route.
 
 These are inventory findings, not permission to hide a conflict. The linked issues in the registry
 keep every temporary state accountable.
@@ -96,45 +95,54 @@ review baselines; this scaffold does not invent a number or enforce coverage too
 
 ## Commands
 
-Run from any directory:
+`tools/suite_registry.py` is the only selection implementation. `obc` and the CI workflow are thin
+entry points into it, so a developer and CI answer "which suites does this change require" with one
+answer. CI calls the Python entry point directly because `just` is not installed on the runners;
+`obc test affected` is the same call with the same output.
 
 ```sh
-python3 /path/to/OpenBikeComputer/tools/suite_registry.py check
-python3 /path/to/OpenBikeComputer/tools/suite_registry.py list
-python3 /path/to/OpenBikeComputer/tools/suite_registry.py list --json
-python3 /path/to/OpenBikeComputer/tools/suite_registry.py explain rust.obc-storage
-python3 /path/to/OpenBikeComputer/tools/suite_registry.py select --base develop --format text
-python3 /path/to/OpenBikeComputer/tools/suite_registry.py validate-filters
+obc suites check                         # registry drift, discovery, and command resolution
+obc suites list [--json]
+obc suites explain rust.obc-storage
+obc suites select --base REF [--head REF] [--format text|json]
+obc suites validate-filters              # plan and workflow describe the same jobs
 ```
 
-From a checkout, the same interface is available as
-`obc suites check|list|explain|select|validate-filters`. `check` is
-the always-run CI policy command. It parses both registries, derives Cargo metadata and every
-supported non-Rust source, validates command and trigger resolution from the repository root, and
-requires exactly one registry owner for every discovered execution unit and required CI command.
+`check` is the always-run CI policy command. It parses both registries, derives Cargo metadata and
+every supported non-Rust source, validates command and trigger resolution from the repository root,
+and requires exactly one registry owner for every discovered execution unit and required CI command.
 It does not contact a live service.
 
-`select --base REF [--head REF] [--format text|json]` reads changed paths from Git, derives Rust
-package and reverse-dependency edges from Cargo metadata, applies only the extra cross-language
-edges declared by the registry, and prints every selected and non-selected suite with its reason
-and required runner surface. Unknown production paths and selected suites without an executable CI
-route are errors. `validate-filters` proves the transitional runner-image filters cover the audited
-selection classes; those filters do not select suites and remain deliberately broad until delivery
-step 3 consumes the generated plan as the CI matrix.
+`select` reads changed paths from Git, derives Rust package and reverse-dependency edges from Cargo
+metadata, applies only the extra cross-language edges declared by the registry, and prints every
+selected and non-selected suite with its reason and its CI jobs. Unknown production paths and
+selected suites without an executable CI route are errors; a selection error never degrades to
+"run everything".
 
-Some transitional validation suites have executable routes on more than one runner surface. The
-plan lists those candidates; the aggregate requires every candidate whose coarse runner filter was
-started for the change, and fails when a selected suite has no started route.
-
-Use the focused commands from `CONTRIBUTING.md` while developing. Fixture work is explicit, and
-the complete workspace remains exceptional:
+### Running suites locally
 
 ```sh
-obc test -p obc-weather
+obc test affected --base origin/develop [--head REF] [--dry-run]
+obc test unit|component|contract|fixtures|e2e [--surface NAME] [--dry-run]
+obc test -p obc-weather                  # focused package work, no registry involved
 obc test fixtures -p obc-wx-bake canonical_mosaic
-obc check fmt
-obc test full            # cross-cutting changes only
+obc test full                            # cross-cutting changes only
 ```
+
+Every form prints the selected suite IDs with one reason each before it runs anything, and
+`--dry-run` prints that plan and executes nothing. `affected` runs each selected suite's registry
+command in registry order and stops at the first failure. `fixtures` means the `fixture` level and
+`e2e` means `end-to-end`; those are the only two aliases. A suite whose `platforms` exclude the
+current host is reported as skipped with that restriction, never as passed. `obc test fixtures`
+keeps its scoped meaning whenever a Cargo scope is present, and that path needs neither the
+registry, Git, nor Cargo metadata.
+
+### Reproducing CI gates locally
+
+`obc check <gates>` runs the primitive commands of the named gates and prints the registry suites
+those gates reproduce; a gate that resolves to no registry suite fails before any work starts.
+`obc check full` runs every gate the registry declares and then names each suite required on a pull
+request that the run did not reproduce, with the reason. It makes no unqualified CI-parity claim.
 
 ## Exceptions, quarantines, and sleeps
 
@@ -149,9 +157,11 @@ a small bounded sleep only when its exception explains why.
 
 ## Change selection
 
-This table is implemented by `suite_registry.py select`, the shared local/CI selection core. CI
-records the same plan and its aggregate gate evaluates required jobs against it. Delivery step 3
-will expose the stable `obc test affected` wrapper and make the job matrix consume the plan.
+This table is implemented by `suite_registry.py select`, the shared local and CI selection core.
+CI's `selection` job publishes the plan and the list of workflow jobs it requires; every gated job
+starts only when that list names it, and the aggregate `ci` job evaluates the same plan. There is no
+path-filter selector — a suite's CI jobs are derived from the workflow commands the registry says it
+owns and, for Cargo packages, from the workflow steps that compile them.
 
 | Change type | Required pull-request work |
 | --- | --- |
@@ -171,4 +181,5 @@ will expose the stable `obc test affected` wrapper and make the job matrix consu
 | Live-service or hardware path | Hermetic contracts on the pull request; scheduled, manual, or release evidence as required |
 
 The aggregate gate reports pass, fail, not selected, selected but not run, or blocked by an upstream
-failure for every suite. A skipped selected job is a failure, never evidence that the suite passed.
+failure for every suite. A skipped selected job is a failure, never evidence that the suite passed,
+and a failed or cancelled `selection` job fails the gate because no plan can then be trusted.

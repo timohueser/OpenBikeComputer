@@ -615,8 +615,10 @@ pull_request = "affected"
 scheduled = "none"
 extra_triggers = ["tools/rain-radar-demo/**"]
 coverage_component = "web"
-ownership = [{ kind = "path", source = "rain-radar-test", pattern = "tools/rain-radar-demo/tests/*.test.ts" }]
-cadence_conflict = { reason = "The maintained demo tests have no current CI job; TS2 owns adding their selected route.", issue = "#1451" }
+ownership = [
+  { kind = "path", source = "rain-radar-test", pattern = "tools/rain-radar-demo/tests/*.test.ts" },
+  { kind = "workflow", pattern = "npm ci && npm test" },
+]
 
 [[suite]]
 id = "swift.obckit-host"
@@ -667,7 +669,7 @@ cadence_conflict = { reason = "Required CI runs two screenshot methods while the
 id = "ci.rust-workspace-tests"
 surface = "ci"
 level = "component"
-command = "cargo test --workspace --all-features --locked"
+command = "obc check test"
 fixtures = ["test"]
 pull_request = "affected"
 scheduled = "none"
@@ -676,6 +678,7 @@ ownership = [
   { kind = "workflow", pattern = "cargo test --workspace --all-features --locked" },
   { kind = "workflow", pattern = "cargo test -p obc-formats --locked" },
   { kind = "workflow", pattern = "cargo test --release --locked -- --nocapture" },
+  { kind = "workflow", pattern = "python3 tools/fixtures.py sync test" },
 ]
 cadence_conflict = { reason = "The aggregate workspace command still mixes fast and captured-fixture cadences; TS2 will consume the per-suite routes.", issue = "#1451" }
 
@@ -716,7 +719,7 @@ ownership = [{ kind = "workflow", pattern = "*cargo build *" }]
 id = "ci.dependencies"
 surface = "ci"
 level = "contract"
-command = "python3 firmware/tools/check_dependencies.py"
+command = "obc check deny"
 fixtures = []
 pull_request = "affected"
 scheduled = "none"
@@ -759,7 +762,12 @@ command = "bash builder/build-wasm-bridges.sh"
 fixtures = []
 pull_request = "affected"
 scheduled = "none"
-extra_triggers = ["builder/app/package-lock.json", "builder/build-wasm-bridges.sh", "firmware/tools/wasm_size_guard.py"]
+extra_triggers = [
+  "builder/app/package-lock.json",
+  "builder/build-wasm-bridges.sh",
+  "firmware/tools/wasm_size_guard.py",
+  "docs/Trunk.toml",
+]
 coverage_component = "web"
 ownership = [
   { kind = "workflow", pattern = "bash builder/build-wasm-bridges.sh" },
@@ -771,7 +779,7 @@ ownership = [
 id = "ci.web-build"
 surface = "web"
 level = "contract"
-command = "cd builder/app && npm run check && npm run build:all"
+command = "obc check frontend"
 fixtures = []
 pull_request = "affected"
 scheduled = "none"
@@ -786,7 +794,7 @@ ownership = [
 id = "ci.docs"
 surface = "docs"
 level = "contract"
-command = "python3 docs/build_docs.py --check-links"
+command = "obc check docs"
 fixtures = []
 pull_request = "always"
 scheduled = "none"
@@ -801,7 +809,7 @@ command = "tools/licenses/gen-third-party.sh --check"
 fixtures = []
 pull_request = "affected"
 scheduled = "none"
-extra_triggers = ["Cargo.lock", "builder/app/package-lock.json", "about.toml", "tools/licenses/**"]
+extra_triggers = ["Cargo.lock", "builder/app/package-lock.json", "about.toml", "THIRD-PARTY.md", "tools/licenses/**"]
 ownership = [{ kind = "workflow", pattern = "tools/licenses/gen-third-party.sh --check" }]
 
 [[suite]]
@@ -813,10 +821,7 @@ fixtures = []
 pull_request = "always"
 scheduled = "none"
 extra_triggers = ["fixtures/catalog.toml", "tools/check_fixture_policy.py", "tools/fixtures.py"]
-ownership = [
-  { kind = "workflow", pattern = "python3 tools/check_fixture_policy.py" },
-  { kind = "workflow", pattern = "python3 tools/fixtures.py sync test" },
-]
+ownership = [{ kind = "workflow", pattern = "python3 tools/check_fixture_policy.py" }]
 
 [[suite]]
 id = "ci.card-scheduler-guard"
