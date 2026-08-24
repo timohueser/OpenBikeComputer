@@ -1270,11 +1270,17 @@ impl WeatherDomain {
         }
     }
 
-    /// Apply a [`WeatherIntent`]. A repeat while one is already requested or in flight **coalesces**:
-    /// the companion link is metered, and two taps of the same button are one question.
+    /// Apply a [`WeatherIntent`]. A repeat while one is already requested **or in flight**
+    /// coalesces, which is [`WeatherIntent::RefreshRequested`]'s own contract: the companion link is
+    /// metered, and two taps of the same button are one question. The in-flight answer *is* the
+    /// answer to the second tap, so it is dropped rather than queued behind the first.
+    ///
+    /// The trade-off, stated because it is a real one: a rider who moves a long way and taps refresh
+    /// mid-fetch gets the fetch that was started at the old position. #1401 owns the request cutover
+    /// and can revisit it against a real position delta rather than a guess.
     pub fn apply_intent(&mut self, intent: WeatherIntent) {
         match intent {
-            WeatherIntent::RefreshRequested => self.refresh_requested = true,
+            WeatherIntent::RefreshRequested => self.refresh_requested |= self.in_flight.is_none(),
         }
     }
 
@@ -1315,18 +1321,28 @@ impl WeatherDomain {
         }
         self.ops.invalidate(); // terminal: a duplicate of this outcome is no longer current
         self.in_flight = None;
-        self.last_result = Some(match outcome {
-            WeatherOutcome::Refreshed { data, revision, .. } | WeatherOutcome::Opened { data, revision, .. } => {
+        match outcome {
+            WeatherOutcome::Refreshed { data, revision, .. } => {
                 self.note_installed(WeatherData { data, revision });
-                RefreshResult::Installed
+                self.last_result = Some(RefreshResult::Installed);
             }
-            WeatherOutcome::Failed { error, .. } => RefreshResult::Failed(error),
-            WeatherOutcome::Cancelled { .. } => RefreshResult::Cancelled,
-        });
+            // Opening installed data is not a refresh: it fetched nothing, so it records the
+            // identity it opened and leaves the last *refresh* verdict standing. Reporting
+            // "installed" here would tell the rider a fetch succeeded when none ran.
+            WeatherOutcome::Opened { data, revision, .. } => self.note_installed(WeatherData { data, revision }),
+            WeatherOutcome::Failed { error, .. } => self.last_result = Some(RefreshResult::Failed(error)),
+            WeatherOutcome::Cancelled { .. } => self.last_result = Some(RefreshResult::Cancelled),
+        }
     }
 
     /// Everything the screens may say about freshness right now: the snapshot's own honest claim,
     /// plus the two device-side facts a snapshot cannot know about itself.
+    ///
+    /// The one part of this domain that is a *new shape* rather than a moved value, so it has no
+    /// reader before the UI cutover. It exists as one call rather than three getters precisely so
+    /// #1401 consumes it whole instead of re-deriving freshness from
+    /// [`installed`](Self::installed) and [`refreshing`](Self::refreshing) at each screen — which is
+    /// how the three states drifted apart in the first place.
     pub fn visible(&self, snapshot: Option<&WeatherSnapshot>, now: i64) -> WeatherVisible {
         WeatherVisible {
             outlook: snapshot.map(|snap| rain_outlook(snap, now)),
@@ -1417,6 +1433,29 @@ mod domain_tests {
         assert_eq!(wx.last_refresh(), Some(RefreshResult::Installed), "a repeated outcome is stale");
     }
 
+    /// A request raised while one is in flight is dropped, not queued: the in-flight answer is the
+    /// answer to it. Only once that operation is terminal does a fresh tap start a second fetch.
+    #[test]
+    fn a_repeat_while_one_is_in_flight_is_coalesced_away() {
+        let mut wx = WeatherDomain::new();
+        wx.apply_intent(WeatherIntent::RefreshRequested);
+        let Some(effect) = wx.next_effect(can_refresh()) else { panic!("the first request goes out") };
+
+        wx.apply_intent(WeatherIntent::RefreshRequested); // the rider taps again mid-fetch
+        assert!(!wx.refresh_pending(), "the repeat coalesced into the operation already running");
+
+        wx.apply_outcome(WeatherOutcome::Refreshed {
+            token: effect.token(),
+            data: DataIdentity::new(1),
+            revision: Revision::new(1),
+        });
+        assert!(wx.next_effect(can_refresh()).is_none(), "the coalesced tap did not queue a second fetch");
+
+        // …and a tap *after* the operation ended is a new question, which does go out.
+        wx.apply_intent(WeatherIntent::RefreshRequested);
+        assert!(wx.next_effect(can_refresh()).is_some());
+    }
+
     /// Without a companion there is nothing to ask, but the *request* survives: the rider asked, and
     /// the link coming back is what answers them.
     #[test]
@@ -1446,6 +1485,31 @@ mod domain_tests {
         assert_eq!(wx.last_refresh(), Some(RefreshResult::Failed(WeatherError::NoData)));
         assert_eq!(wx.installed(), Some(data(1, 5)), "a failure never drops what is installed");
         assert!(!wx.refreshing());
+    }
+
+    /// Opening installed data records what was opened without claiming a fetch happened.
+    #[test]
+    fn opening_installed_data_is_not_a_refresh_result() {
+        let mut wx = WeatherDomain::new();
+        wx.apply_intent(WeatherIntent::RefreshRequested);
+        let Some(effect) = wx.next_effect(can_refresh()) else { panic!("requested") };
+        wx.apply_outcome(WeatherOutcome::Failed { token: effect.token(), error: WeatherError::NoData });
+        assert_eq!(wx.last_refresh(), Some(RefreshResult::Failed(WeatherError::NoData)));
+
+        wx.apply_intent(WeatherIntent::RefreshRequested);
+        let Some(effect) = wx.next_effect(can_refresh()) else { panic!("requested") };
+        wx.apply_outcome(WeatherOutcome::Opened {
+            token: effect.token(),
+            data: DataIdentity::new(3),
+            revision: Revision::new(1),
+        });
+        assert_eq!(wx.installed(), Some(data(3, 1)), "the opened product is what is installed");
+        assert_eq!(
+            wx.last_refresh(),
+            Some(RefreshResult::Failed(WeatherError::NoData)),
+            "an open never overwrites the last fetch's verdict"
+        );
+        assert!(!wx.refreshing(), "an open is still terminal for its own operation");
     }
 
     /// Installed-data identity follows the DC2 fact rule: a stale revision of the same product

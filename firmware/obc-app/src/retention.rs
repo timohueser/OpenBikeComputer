@@ -611,6 +611,13 @@ pub(crate) struct RetentionMachine {
     ops: crate::device_core::TokenSource<crate::device_core::RetentionTag>,
     /// The stamp currently out with the executor, so a failure can be re-queued for the id it was
     /// actually about (the outcome carries the token, not the subject).
+    ///
+    /// **Deliberately untimed, and a DC6 #1439 decision rather than a discovery.** An executor that
+    /// consumed a [`RetentionEffect`] and never answered would park this slot forever, and *every*
+    /// retention stamp would stop — silently, and in the safe direction (an unwritten stamp reads
+    /// back as unknown, which never deletes), but permanently. Under this slice's seam that cannot
+    /// happen: the adapter answers synchronously in the same call. The real executor owes either an
+    /// outcome on every path or a bound here.
     inflight_write: Option<(SweepKind, crate::CatalogObjectId)>,
 }
 
@@ -712,7 +719,11 @@ impl RetentionMachine {
         if matches!(outcome, RetentionOutcome::Failed { .. } | RetentionOutcome::Cancelled { .. }) {
             let _ = match kind {
                 SweepKind::StampRoute => self.ensure_stamp_route(id),
-                _ => self.ensure_stamp_ride(id),
+                SweepKind::StampRide => self.ensure_stamp_ride(id),
+                // `next_metadata_effect` returns before it records an in-flight write for the delete
+                // kinds — expiries are intents, not effects — so this is unreachable. Written out
+                // rather than caught by a `_` arm so the invariant is checked where it is relied on.
+                SweepKind::DeleteRoute | SweepKind::DeleteRide => false,
             };
         }
     }

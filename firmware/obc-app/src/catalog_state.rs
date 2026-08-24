@@ -420,6 +420,13 @@ impl CatalogState {
 
     /// Whether the ride-track need for `key` is already answered — a recorded failure counts, so a
     /// dead file is read once rather than on every pass.
+    ///
+    /// The **profile** is the authoritative answer, not the profile *and* the preview, and that is
+    /// deliberate: it is the rule the index-keyed `ride_profile_answered_for` had before #1437, and
+    /// all three hosts fill both targets in one drain of the same read (the board's `flat_store`
+    /// pair, the simulator, and `obc-host-core`'s dispatcher). Requiring both would make a host that
+    /// legitimately has no track shape to hand in re-fire the read on every pass forever — the exact
+    /// grind the level is built to avoid.
     pub(crate) fn ride_track_answered(&self, key: RideTrackKey) -> bool {
         self.ride_profile_for == Some(key)
     }
@@ -439,6 +446,12 @@ impl CatalogState {
     /// Accept a keyed ride-**profile** answer. A stale key changes nothing at all: the payload is
     /// dropped and the need stays up, so a fill that finished after the rider moved on cannot land
     /// on the ride they are looking at now. Returns whether it was accepted.
+    ///
+    /// That refusal only *bites* once an executor carries the key it was asked with. The temporary
+    /// [`App::set_ride_profile`](crate::App::set_ride_profile) wrapper derives `current` from the
+    /// live subject and hands the same value as `input.key`, so it can never refuse — the legacy
+    /// command it answers carries no key back. DC6 #1439 is where the guard starts holding; until
+    /// then the late-answer misattribution stays the characterized defect the DC1 traces record.
     pub(crate) fn accept_ride_profile(
         &mut self,
         current: Option<RideTrackKey>,

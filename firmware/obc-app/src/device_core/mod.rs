@@ -40,7 +40,9 @@ mod shared;
 pub mod slots;
 pub mod storage_info;
 
-pub use derived::{DerivedInput, DerivedInputs, DerivedNeeds, DerivedResult, NavPreviewKey, RideTrackKey};
+pub use derived::{
+    DerivedInput, DerivedInputs, DerivedNeeds, DerivedResult, DerivedTargets, NavPreviewKey, RideTrackKey,
+};
 
 pub use slots::{EffectSlots, OutcomeSlots, Slot, SlotFull};
 pub use storage_info::{StorageInfoEffect, StorageInfoError, StorageInfoIntent, StorageInfoOutcome};
