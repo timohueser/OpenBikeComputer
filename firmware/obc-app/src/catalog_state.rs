@@ -137,6 +137,15 @@ pub(crate) struct CatalogState {
     /// its staleness key (a route swap or rescan mid-preview blanks the overlay rather than
     /// drawing a stale detour over different geometry).
     detour_preview_route: Option<usize>,
+    /// The token source for the catalog's one operation (#1438). One operation is in flight at a
+    /// time — the domain's single effect slot — so one source is all it needs.
+    ops: crate::device_core::TokenSource<crate::device_core::CatalogTag>,
+    /// An admitted [`CatalogIntent`] that has not become an effect yet. Capacity one: later work
+    /// stays with whoever asked for it, where it can still be superseded or cancelled.
+    pending: Option<CatalogIntent>,
+    /// Whether an effect is out with the executor. Its outcome clears this, which is what lets the
+    /// next intent go out.
+    in_flight: bool,
 }
 
 impl CatalogState {
@@ -167,6 +176,9 @@ impl CatalogState {
             nav_preview_view: Revision::ZERO,
             detour_preview: heapless::Vec::new(),
             detour_preview_route: None,
+            ops: crate::device_core::TokenSource::new(),
+            pending: None,
+            in_flight: false,
         }
     );
 
@@ -687,6 +699,75 @@ impl CatalogOutcome {
     }
 }
 
+/// The catalog domain's operation seam (#1438): admit an intent, issue the one effect it implies,
+/// and accept the answer.
+///
+/// This is the first piece of `CatalogMachine` living where the catalog already lives. It owns the
+/// two things a domain owner must own — its [`OperationToken`] and how many operations may be in
+/// flight — and nothing more: the delete-then-refresh ordering, the trip cascade and the identity
+/// remap arrive with the store cutover (#1397).
+///
+/// Reached from the pass alone for now, which has no production caller until #1439 — see
+/// [`pass`](crate::device_core::pass).
+#[allow(dead_code)]
+impl CatalogState {
+    /// Admit `intent`, or refuse it and hand it back.
+    ///
+    /// Two refusals, both of them backpressure rather than failure: one intent is already waiting to
+    /// become an effect, or the intent is a **trip cascade**, whose bounded member read the domain
+    /// cannot perform until #1397 lands it. Refusing the cascade is what keeps "a busy catalog
+    /// delays a delete, it never loses one" true of it too — its producer keeps it, and it stays on
+    /// the legacy path. Admitting one and quietly doing nothing would strand it here instead.
+    pub(crate) fn admit_intent(
+        &mut self,
+        intent: CatalogIntent,
+    ) -> Result<(), crate::device_core::SlotFull<CatalogIntent>> {
+        if self.pending.is_some() || matches!(intent, CatalogIntent::DeleteTrip { .. }) {
+            return Err(crate::device_core::SlotFull { rejected: intent });
+        }
+        self.pending = Some(intent);
+        Ok(())
+    }
+
+    /// The next bounded catalog operation, or `None` while one is already in flight or nothing is
+    /// admitted.
+    ///
+    /// The admitted intent is taken **before** the match, so no arm can leave the domain holding an
+    /// intent it has already decided about — an intent that stayed pending would refuse every later
+    /// one for the rest of the boot.
+    pub(crate) fn next_effect(&mut self) -> Option<CatalogEffect> {
+        if self.in_flight {
+            return None;
+        }
+        let effect = match self.pending.take()? {
+            CatalogIntent::Refresh => CatalogEffect::ReadCatalog { token: self.ops.issue() },
+            CatalogIntent::DeleteRoute { id } | CatalogIntent::DeleteRide { id } => {
+                CatalogEffect::RemoveObject { token: self.ops.issue(), object: id }
+            }
+            // Refused at admission, so nothing can be holding one here.
+            CatalogIntent::DeleteTrip { .. } => {
+                debug_assert!(false, "a trip cascade is refused by admit_intent, never admitted");
+                return None;
+            }
+        };
+        self.in_flight = true;
+        Some(effect)
+    }
+
+    /// Consume the answer to a [`CatalogEffect`]. A stale token — a superseded operation, or a
+    /// repeat of one already accounted for — changes nothing.
+    ///
+    /// The resident catalogs are not touched here: what is *in* the store reaches them through the
+    /// refresh feed, and inventing a removal locally would make the two disagree until it did.
+    pub(crate) fn apply_outcome(&mut self, outcome: CatalogOutcome) {
+        if !self.ops.is_current(outcome.token()) {
+            return;
+        }
+        self.ops.invalidate(); // terminal: a duplicate of this answer is no longer current
+        self.in_flight = false;
+    }
+}
+
 // Layout tripwires: an identity, a revision, a count — never a catalog.
 const _: () = assert!(core::mem::size_of::<CatalogIntent>() <= 16, "a request with one identity");
 const _: () = assert!(core::mem::size_of::<CatalogEffect>() <= 16, "a token and one identity");
@@ -718,6 +799,9 @@ impl CatalogState {
             nav_preview_view,
             detour_preview,
             detour_preview_route,
+            ops,
+            pending,
+            in_flight,
         } = self;
         assert!(routes.is_empty() && route_ids.is_empty() && route_meta.is_empty(), "no routes catalogued");
         assert!(trips.is_empty(), "no trips catalogued");
@@ -731,12 +815,32 @@ impl CatalogState {
             "the derived key revisions start at zero — nothing committed, nothing invalidated"
         );
         assert!(detour_preview.is_empty() && detour_preview_route.is_none(), "no detour preview cached");
+        assert!(pending.is_none() && !*in_flight, "no catalog operation admitted or in flight");
+        assert_eq!(format!("{ops:?}"), "TokenSource(0)", "no catalog operation has been issued");
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A trip cascade is refused at the door rather than admitted and quietly abandoned: its
+    /// producer keeps it, and the domain stays able to serve every later intent. Admitting one and
+    /// returning no effect would strand it in the pending slot and refuse every delete for the rest
+    /// of the boot.
+    #[test]
+    fn a_trip_cascade_is_refused_without_wedging_the_domain() {
+        let mut catalogs = CatalogState::new();
+        let cascade = CatalogIntent::DeleteTrip { id: 5 };
+        assert_eq!(catalogs.admit_intent(cascade).unwrap_err().rejected, cascade, "handed back to its producer");
+        assert!(catalogs.next_effect().is_none(), "and nothing is owed");
+
+        catalogs.admit_intent(CatalogIntent::DeleteRoute { id: 9 }).unwrap();
+        assert!(
+            matches!(catalogs.next_effect(), Some(CatalogEffect::RemoveObject { object: 9, .. })),
+            "the next intent is served normally"
+        );
+    }
 
     /// The placement path must land exactly the state the by-value path builds.
     #[test]

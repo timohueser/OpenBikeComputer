@@ -22,6 +22,16 @@
 //!   `Outcome` or `Intent` enum anywhere.
 //! - [`migration`] — the Appendix A inventory of the legacy protocol, as compile-checked test data.
 //!
+//! …the one deterministic frame every platform runs (#1438):
+//!
+//! - `pass` — `PassInputs` in, fourteen fixed stages, `PassPlan` out. No loop, no re-entry, no
+//!   component reaching into another.
+//! - `connections` — every way one domain reaches another, named, typed and capacity-bounded, with
+//!   the delivery rule (same pass forwards, next pass backwards) following from the stage order.
+//!
+//! Both stay crate-private until the runtime hosts move onto the pass, so they are documented for
+//! the crate rather than published as an API with no caller.
+//!
 //! …and the boundary that is not a command at all (#1437):
 //!
 //! - [`derived`] — [`DerivedNeeds`] / [`DerivedInputs`]: level-triggered reads guarded by a *key*
@@ -30,12 +40,15 @@
 //! - [`feeders`] — the inventory of every public bulk feeder on `App` and its new home, the feeder
 //!   twin of [`migration`].
 //!
-//! The pass entry point arrives in a later slice; nothing here changes the legacy
-//! [`HostCommand`](crate::HostCommand) / [`HostEvent`](crate::HostEvent) protocol.
+//! Nothing here changes the legacy [`HostCommand`](crate::HostCommand) /
+//! [`HostEvent`](crate::HostEvent) protocol: the pass is private to `obc-app` until #1397 S6
+//! migrates the runtime hosts onto it.
 
+pub(crate) mod connections;
 pub mod derived;
 pub mod feeders;
 pub mod migration;
+pub(crate) mod pass;
 mod shared;
 pub mod slots;
 pub mod storage_info;
@@ -44,6 +57,10 @@ pub use derived::{
     DerivedInput, DerivedInputs, DerivedNeeds, DerivedResult, DerivedTargets, NavPreviewKey, RideTrackKey,
 };
 
+// The coordinator and its wires stay inside `obc-app` for Phase 1 (#1438): `App::run_pass` is
+// crate-private, so publishing their vocabulary would be a public API with no caller, and everything
+// in the crate names them through `device_core::pass` / `device_core::connections`. #1439 opens the
+// door when the compatibility adapter needs it.
 pub use slots::{EffectSlots, OutcomeSlots, Slot, SlotFull};
 pub use storage_info::{StorageInfoEffect, StorageInfoError, StorageInfoIntent, StorageInfoOutcome};
 
