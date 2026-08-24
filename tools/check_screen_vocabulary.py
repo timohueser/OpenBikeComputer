@@ -20,11 +20,31 @@ SCREEN = ROOT / "firmware/obc-app/src/screen"
 VOCAB = SCREEN / "vocab"
 
 # One landmark per vocabulary module, spelled as its definition site.
-LANDMARKS = ["title_frame", "card_triangle", "ledger_row", "draw_guarded_rows", "tile", "waypoint_panel"]
+LANDMARKS = [
+    "title_frame",
+    "card_triangle",
+    "ledger_row",
+    "draw_guarded_rows",
+    "tile",
+    "waypoint_panel",
+    "needle_region",
+]
+
+# Constants that tune a shared mechanism. Each was copied verbatim into a second screen before the
+# mechanism was unified; a re-declaration is how that drift comes back.
+CONSTANTS = ["SPIN_DPS", "SPIN_FRAME_MS", "PAGE_FLIP_MS"]
+
+# Spellings that only appear when a screen has re-grown a raster the vocabulary owns. `prev_top` is
+# the elevation band's connected top stroke, copied into three screens before `vocab/band.rs`.
+RETIRED = ["prev_top"]
+
+# `route_received.rs` draws the received card's mini sparkline from the host's min-max-normalized
+# byte band — no profile, no window, no pyramid level — so it is a different raster, not a band
+# copy, and it carries the only other connected stroke in the tree.
+RETIRED_EXEMPT = {"route_received.rs"}
 
 
-def definitions(name: str, paths: list[Path]) -> list[str]:
-    pattern = re.compile(r"\bfn " + re.escape(name) + r"\s*[(<]")
+def matches(pattern: re.Pattern[str], paths: list[Path]) -> list[str]:
     hits = []
     for path in paths:
         for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
@@ -33,24 +53,41 @@ def definitions(name: str, paths: list[Path]) -> list[str]:
     return hits
 
 
+def check_once(kind: str, name: str, pattern: re.Pattern[str], vocab: list[Path], screens: list[Path]) -> list[str]:
+    """`name` must be defined exactly once under vocab/ and nowhere else under screen/."""
+    failures = []
+    outside = matches(pattern, screens)
+    if outside:
+        failures.append(f"`{kind} {name}` is defined outside vocab/ ({', '.join(outside)}) — import it instead")
+    in_vocab = matches(pattern, vocab)
+    if len(in_vocab) != 1:
+        where = ", ".join(in_vocab) or "nowhere"
+        failures.append(f"`{kind} {name}` must be defined exactly once under screen/vocab/, found {where}")
+    return failures
+
+
 def main() -> int:
     failures: list[str] = []
     vocab_files = sorted(VOCAB.rglob("*.rs"))
     screen_files = [p for p in sorted(SCREEN.rglob("*.rs")) if VOCAB not in p.parents]
     for name in LANDMARKS:
-        outside = definitions(name, screen_files)
-        if outside:
-            failures.append(f"`fn {name}` is defined outside vocab/ ({', '.join(outside)}) — import it instead")
-        in_vocab = definitions(name, vocab_files)
-        if len(in_vocab) != 1:
-            where = ", ".join(in_vocab) or "nowhere"
-            failures.append(f"`fn {name}` must be defined exactly once under screen/vocab/, found {where}")
+        pattern = re.compile(r"\bfn " + re.escape(name) + r"\s*[(<]")
+        failures += check_once("fn", name, pattern, vocab_files, screen_files)
+    for name in CONSTANTS:
+        pattern = re.compile(r"\bconst " + re.escape(name) + r"\s*:")
+        failures += check_once("const", name, pattern, vocab_files, screen_files)
+    scanned = [p for p in screen_files if p.name not in RETIRED_EXEMPT]
+    for name in RETIRED:
+        hits = matches(re.compile(r"\b" + re.escape(name) + r"\b"), scanned)
+        if hits:
+            failures.append(f"`{name}` is back outside vocab/ ({', '.join(hits)}) — draw through the vocabulary")
 
     if failures:
         print("The shared screen vocabulary has drifted out of `screen/vocab/`:")
         print("\n".join(failures))
         return 1
-    print(f"screen vocabulary intact: {len(LANDMARKS)} landmark helpers, each defined once under screen/vocab/")
+    pinned = len(LANDMARKS) + len(CONSTANTS)
+    print(f"screen vocabulary intact: {pinned} landmark definitions, each exactly once under screen/vocab/")
     return 0
 
 

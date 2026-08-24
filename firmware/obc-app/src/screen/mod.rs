@@ -74,7 +74,7 @@ pub use home::HomeScreen;
 pub use map::{MapScreen, ROUTE_WEIGHT};
 pub use map_transfer::{MapTransfer, MapTransferError, MapTransferScreen};
 pub use menu::MenuScreen;
-pub use nav_route::{needle_region, NavConfirmScreen, NavFailScreen, NavPlanningScreen, PlanKind};
+pub use nav_route::{NavConfirmScreen, NavFailScreen, NavPlanningScreen, PlanKind};
 pub use passkey::PasskeyScreen;
 pub use poi_detail::PoiDetailScreen;
 pub use poi_list::{PoiListScreen, PoiScratch};
@@ -98,6 +98,10 @@ pub use statistics::StatisticsScreen;
 pub use trip_delete::TripDeleteScreen;
 pub(crate) use up_ahead::poi_row_name;
 pub use up_ahead::{UpAheadScreen, OFF_ROUTE_HINT_M};
+/// The one exception to the vocabulary's import rule: the wait spinner's dirty disc is part of the
+/// host-facing repaint contract (`ScreenTick::region`), so it is re-exported for the integration
+/// tests that pin it. In-crate callers still import `vocab::spinner`.
+pub use vocab::spinner::needle_region;
 pub use warning::{WarningFlags, WarningScreen};
 pub use weather_alert::{WeatherAlertKind, WeatherAlertScreen};
 pub use weather_dash::WeatherScreen;
