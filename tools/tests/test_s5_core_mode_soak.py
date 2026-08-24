@@ -21,6 +21,7 @@ from tools.s5_core_mode_soak import (
     margin_verdict,
     read_cycle,
     stack_peaks,
+    step_acks,
 )
 
 START = "0.100 DEBUG nav plan: start planner=0x2000a000 scratch=0x2000b000 tiles=0x2000c000"
@@ -30,6 +31,10 @@ BANNER = "0.200 INFO  freeze: banner repaint rows 96..132"
 ANSWER = "0.800 INFO  nav route: ok len=4210 total_ms=690 snap_ms=12 search_ms=540 emit_ms=90"
 MAP = "0.900 INFO  map frame: render 41000 us + push 3000 us | lod 2 | feat 900/1200 | chunks 8"
 BUSY = "0.400 ERROR arena: render claim refused — held by Nav"
+STEP = "0.050 INFO  input: Step 1 on Map"
+# What a wedged VCOM looks like: RTT keeps flowing from sensors and frames, so the log grows while
+# not one injected tap has landed.
+WEDGED = [MAP, "0.3 INFO  gps: fix 46562000 8337000", SPINNER]
 REFUSED = "0.120 WARN  nav: cannot start a plan (a cable transfer holds the store) — answering the failure tier"
 
 # What a healthy `N` cycle actually looks like: the spinner repaints several times while the planner
@@ -85,6 +90,17 @@ class CycleVerdicts(unittest.TestCase):
 
     def test_a_banner_after_the_catch_up_means_the_freeze_outlived_its_search(self):
         self.assertIn("outlived", assert_sequence([START, ANSWER, MAP, BANNER]))
+
+
+class Liveness(unittest.TestCase):
+    def test_a_wedged_vcom_still_grows_the_log(self):
+        """**The trap the probe exists for.** Counting bytes passes here; counting the board's own
+        acknowledgements does not."""
+        self.assertEqual(step_acks(WEDGED), 0)
+
+    def test_acknowledgements_are_counted_not_merely_detected(self):
+        """A lossy cable is worth reporting and is not a wedge, so the probe needs the count."""
+        self.assertEqual(step_acks([STEP, MAP, STEP, STEP]), 3)
 
 
 class StackAndFaults(unittest.TestCase):

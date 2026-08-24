@@ -51,8 +51,10 @@ flags. If a board detour half or a deferred drain ever makes the window real, th
   `rtscts=False`.
 * **The J-Link CDC wedges silently**: `write()` succeeds, RTT keeps flowing, and nothing lands — a
   blind script then "passes" every step against a board that heard nothing. [`liveness_probe`] runs
-  before every scenario and between scenario A's cycles: snapshot the RTT log size, send six taps,
-  wait, re-check. Zero growth means wedged, and only a physical DK power-cycle clears it.
+  before every scenario and between scenario A's cycles: send six taps and require the board's own
+  `input: Step` acknowledgements back. A *grown log* is not enough — sensors and frames keep logging
+  right through a wedge. Zero acknowledgements means wedged, and only a physical DK power-cycle
+  clears it.
 * `nav plan: start` is a `defmt::debug!`, so the RTT shell needs `DEFMT_LOG=debug`. Without it every
   cycle reports a missing start line and the run is worthless.
 
@@ -85,6 +87,10 @@ ARENA_REFUSED = "claim refused"
 ARENA_RELEASE_REFUSED = "release refused"
 STACK_PEAK = "stack high-water"
 BOOT_FAULT = "boot fault"
+# The board's own acknowledgement of an injected selection step (`ride.rs`'s input log). The liveness
+# probe requires *this*, not merely a log that grew: RTT keeps flowing from sensors and frames while
+# VCOM input is wedged, so growth alone passes a probe against a board that heard nothing.
+STEP_ACK = "input: Step"
 
 # The refusal string `nav_take_arena` answers a live cable transfer with. Scenario B's whole point:
 # the rider must be told about the cable, not about "the scratch arena".
@@ -211,6 +217,11 @@ def margin_verdict(peaks: list[int]) -> str | None:
     return None
 
 
+def step_acks(lines: list[str]) -> int:
+    """How many injected selection steps the board acknowledged in this window."""
+    return sum(STEP_ACK in line for line in lines)
+
+
 def faults(lines: list[str]) -> list[str]:
     """Boot faults and WDT resets seen in the window — either one ends a soak."""
     return [line.strip() for line in lines if BOOT_FAULT in line.lower() or "watchdog" in line.lower()]
@@ -285,18 +296,25 @@ class Link:
 def liveness_probe(link: Link) -> None:
     """**Run this before trusting a single assertion.** The J-Link CDC wedges with `write()` still
     succeeding and RTT still flowing, and a blind script then passes every step against a board that
-    heard nothing. Six taps must move the RTT log; zero growth is a wedge, and only a physical DK
-    power-cycle clears it."""
+    heard nothing.
+
+    Six taps must come back as the board's own `input: Step` acknowledgements. A grown log is *not*
+    enough — sensors and frames keep logging through a wedge. Zero acknowledgements is a wedge, and
+    only a physical DK power-cycle clears it; fewer than six is a lossy cable, worth saying out loud
+    but not worth sending someone to the power switch."""
     mark = link.mark()
     for _ in range(6):
         link.step(1)
         time.sleep(0.1)
     time.sleep(2.0)
-    if link.mark() == mark:
+    acks = step_acks(link.since(mark))
+    if acks == 0:
         raise SystemExit(
-            "VCOM is wedged: six injected taps produced no RTT output at all.\n"
+            "VCOM is wedged: six injected taps produced no `input: Step` acknowledgement.\n"
             "Power-cycle the DK physically (a re-flash does not clear it) and start again."
         )
+    if acks < 6:
+        print(f"  liveness: only {acks}/6 taps acknowledged — the cable is lossy, results may be noisy")
 
 
 # ── the scenarios ────────────────────────────────────────────────────────────────────────────────
