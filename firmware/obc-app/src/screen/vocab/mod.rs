@@ -3,6 +3,7 @@
 //!
 //! - [`band`] — the elevation silhouette, its connected top stroke, and the peak label.
 //! - [`chrome`] — the framed page header, the card glyphs, and the shared text/stroke helpers.
+//! - [`fmt`] — every quantity readout: distance, speed, elevation, duration, date, temperature.
 //! - [`list`] — the windowed scrolling-list widget and its wrapping cursor.
 //! - [`pager`] — the two-page auto-flip the detail compositions share.
 //! - [`rows`] — the settings row, the value picker, the stat-ledger row, the guarded option rows.
@@ -14,6 +15,7 @@
 
 pub(crate) mod band;
 pub(crate) mod chrome;
+pub(crate) mod fmt;
 pub(crate) mod list;
 pub(crate) mod pager;
 pub(crate) mod rows;

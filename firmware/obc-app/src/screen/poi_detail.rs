@@ -38,6 +38,7 @@ use crate::Msg;
 
 use super::poi_list::draw_bearing_arrow;
 use super::vocab::chrome::{title_frame, LIST_TOP};
+use super::vocab::fmt::write_distance_coarse;
 use super::{palette, Ctx, Render, Screen, Transition};
 
 /// The POI detail. Carries the selected [`Poi`] (name / coords / subtype / `hours_ref`) plus a
@@ -186,7 +187,7 @@ impl PoiDetailScreen {
             dist_x = x + 2 * arrow_r + 8;
         }
         let mut dist: heapless::String<12> = heapless::String::new();
-        super::write_off_route(&mut dist, "", self.poi.distance_m, rx.settings.units);
+        write_distance_coarse(&mut dist, "", self.poi.distance_m, rx.settings.units);
         cv.text(&dist, Point::new(dist_x, dist_y), Font::Body, TextAlign::Left, INK);
         let mut dist_bot = dist_y + Font::Body.cap_height() as i32;
 
@@ -196,7 +197,7 @@ impl PoiDetailScreen {
         // glance at. Muted Label under the distance, so the two route numbers stack.
         if let Some(off) = self.off_route_m {
             let mut line: heapless::String<24> = heapless::String::new();
-            super::write_off_route(&mut line, "", off.unsigned_abs() as u32, rx.settings.units);
+            write_distance_coarse(&mut line, "", off.unsigned_abs() as u32, rx.settings.units);
             let _ = line.push(' ');
             let _ = line.push_str(rx.t(if off > 0 { Msg::PoiDetailSideRight } else { Msg::PoiDetailSideLeft }));
             let off_y = dist_bot + 6;

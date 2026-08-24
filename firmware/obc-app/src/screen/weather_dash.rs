@@ -24,6 +24,7 @@ use crate::weather::{local_hour_minute, rain_outlook, RainOutlook, WeatherSnapsh
 use crate::Msg;
 
 use super::vocab::chrome::{card_triangle, title_frame, wrapped, LIST_TOP};
+use super::vocab::fmt::temperature_short;
 use super::weather_icons::{self, DayPhase, WeatherIcon, WeatherIconTheme};
 use super::weather_map::WeatherRainMapScreen;
 use super::{palette, Ctx, Render, Screen, ScreenTick, Transition};
@@ -111,7 +112,7 @@ impl WeatherScreen {
         let icon_now = now_record
             .map(|rec| hourly_icon(rec.condition, now, rx.settings.utc_offset_min))
             .unwrap_or(WeatherIcon::Unavailable);
-        let temp = now_record.and_then(|rec| fmt_temp(rec.temperature_deci_c));
+        let temp = now_record.and_then(|rec| temperature_short(rec.temperature_deci_c));
         let temp = temp.as_deref();
 
         let outlook = rain_outlook(snap, now);
@@ -258,18 +259,6 @@ fn wrapped_line_count(text: &str, per_line: usize) -> usize {
         }
     }
     lines + 1
-}
-
-/// The current temperature as a compact `14°` readout, or `None` on the wire sentinel — shared
-/// by the dashboard card and the hourly rows so the two can never round differently.
-pub(super) fn fmt_temp(deci_c: i16) -> Option<heapless::String<8>> {
-    if deci_c == obc_formats::obcw::TEMP_UNAVAILABLE {
-        return None;
-    }
-    let deg = ((deci_c as i32) + if deci_c >= 0 { 5 } else { -5 }) / 10;
-    let mut s: heapless::String<8> = heapless::String::new();
-    let _ = write!(s, "{}°", deg.clamp(-99, 99));
-    Some(s)
 }
 
 /// The card's honest-fallback face: the shared warning triangle on the left with the wrapped

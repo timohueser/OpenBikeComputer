@@ -14,9 +14,9 @@ use obc_render::{
     Surface,
 };
 
+use super::vocab::fmt::{distance_figure, duration_hms};
 use crate::activity::TrackAction;
 use crate::input::Gesture;
-use crate::stat_fields::{fmt_hms, fmt_km};
 use crate::Msg;
 
 use super::vocab::chrome::{title_frame, TITLE_BAR_H};
@@ -96,8 +96,8 @@ impl RideRecoveryScreen {
         // host could restore only part of the summary these safely render zero, never invented data.
         let units = rx.settings.units;
         let activity = rx.activity;
-        let time = fmt_hms(activity.moving_s);
-        let distance = fmt_km(units.dist(activity.ridden_m / 1000.0));
+        let time = duration_hms(activity.moving_s);
+        let distance = distance_figure(units.dist(activity.ridden_m / 1000.0));
         let distance_unit = if units.is_imperial() { "mi" } else { "km" };
         let mut climb: heapless::String<8> = heapless::String::new();
         let _ = write!(climb, "{}", units.elev(activity.climb_m()) as u32);

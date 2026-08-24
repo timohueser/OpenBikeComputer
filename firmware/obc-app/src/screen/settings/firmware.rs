@@ -24,6 +24,7 @@ use obc_render::{
 
 use crate::input::Gesture;
 use crate::screen::vocab::chrome::{title_frame, LIST_TOP};
+use crate::screen::vocab::fmt::write_bytes_short;
 use crate::screen::{palette, Ctx, DfuCheckScreen, Render, Screen, Transition};
 use crate::Msg;
 
@@ -99,7 +100,7 @@ impl FirmwareScreen {
         }
         let mut free_val: heapless::String<16> = heapless::String::new();
         match rx.card_free_bytes {
-            Some(bytes) => fmt_bytes(&mut free_val, bytes),
+            Some(bytes) => write_bytes_short(&mut free_val, bytes),
             None => {
                 let _ = free_val.push_str("--");
             }
@@ -118,22 +119,6 @@ impl FirmwareScreen {
             cv.text(cap, Point::new(20, by), Font::Label, TextAlign::Left, SUBTEXT);
             cv.text(val, Point::new(20, by + 24), Font::Body, TextAlign::Left, INK);
         }
-    }
-}
-
-/// Format a byte count as a compact `N.N GB` / `NNN MB` / `NNN KB` string (T8 item 6) — GB with one
-/// decimal at or above 1 GiB, whole MB / KB below (rounded).
-fn fmt_bytes(s: &mut heapless::String<16>, bytes: u64) {
-    const KIB: u64 = 1024;
-    const MIB: u64 = KIB * 1024;
-    const GIB: u64 = MIB * 1024;
-    if bytes >= GIB {
-        let tenths = (bytes * 10 + GIB / 2) / GIB; // round to 0.1 GB
-        let _ = write!(s, "{}.{} GB", tenths / 10, tenths % 10);
-    } else if bytes >= MIB {
-        let _ = write!(s, "{} MB", (bytes + MIB / 2) / MIB);
-    } else {
-        let _ = write!(s, "{} KB", (bytes + KIB / 2) / KIB);
     }
 }
 

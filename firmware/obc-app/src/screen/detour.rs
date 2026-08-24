@@ -32,6 +32,7 @@ use crate::Msg;
 
 use super::map::{draw_map_scene, DetourMapOverlay};
 use super::nav_route::NavPlanningScreen;
+use super::vocab::fmt::{distance_short, elevation_delta};
 use super::{Ctx, Prepare, Render, RenderFrame, Screen, Transition};
 
 /// One Up/Down step changes the requested along-route rejoin distance by 100 m. A detour is for
@@ -276,7 +277,7 @@ impl DetourScreen {
         } else if rx.activity.off_route {
             Err(rx.t(Msg::RideMenuOffRoute))
         } else if let Some(m) = self.actual_detour_m() {
-            Ok(crate::stat_fields::fmt_dist_short(m, rx.settings.units))
+            Ok(distance_short(m, rx.settings.units))
         } else {
             Err(rx.t(Msg::RideMenuRouteEnd))
         };
@@ -477,14 +478,14 @@ impl DetourPreviewScreen {
         let inset = 14;
 
         let sign = if self.cost_delta_m < 0 { "-" } else { "+" };
-        let dist = crate::stat_fields::fmt_dist_short(self.cost_delta_m.unsigned_abs(), rx.settings.units);
+        let dist = distance_short(self.cost_delta_m.unsigned_abs(), rx.settings.units);
         let mut line: heapless::String<12> = heapless::String::new();
         let _ = line.push_str(sign);
         let _ = line.push_str(dist.as_str());
         cv.text(line.as_str(), Point::new(x + inset, fy), Font::Display, TextAlign::Left, WARNING);
 
         let delta = self.climb_delta_m(rx.profile, rx.activity.route_total_m);
-        draw_climb_figure(cv, x + w - inset, fy, fmt_climb_delta(delta, rx.settings.units).as_str());
+        draw_climb_figure(cv, x + w - inset, fy, elevation_delta(delta, rx.settings.units).as_str());
     }
 
     /// The climb the detour costs: **its own ascent minus the replaced span's**, or `None` when
@@ -502,22 +503,6 @@ impl DetourPreviewScreen {
         let replaced_m = profile.ascent_between_m(self.anchor_m, self.rejoin_m, route_total_m);
         Some(detour_m as i32 - replaced_m as i32)
     }
-}
-
-/// The climb figure's text: `+120m` / `-40m` in the rider's elevation unit — signed exactly like
-/// the distance figure beside it — or `--` when there is no honest number
-/// ([`climb_delta_m`](DetourPreviewScreen::climb_delta_m)).
-fn fmt_climb_delta(delta_m: Option<i32>, units: crate::settings::Units) -> heapless::String<12> {
-    use core::fmt::Write;
-    let mut s: heapless::String<12> = heapless::String::new();
-    let Some(delta_m) = delta_m else {
-        let _ = s.push_str("--");
-        return s;
-    };
-    let magnitude = (units.elev(delta_m.unsigned_abs() as f32) + 0.5) as u32;
-    let sign = if delta_m < 0 { '-' } else { '+' };
-    let _ = write!(s, "{sign}{magnitude}{}", units.elev_label());
-    s
 }
 
 /// Draw the climb figure — an ink up-triangle followed by `text` — as one group ending at `right`,
@@ -877,11 +862,11 @@ mod tests {
 
             let costly = hill_preview(Some(replaced + 120), 0, 2_000);
             assert_eq!(costly.climb_delta_m(Some(profile), 4_000), Some(120), "a hillier detour costs climb");
-            assert_eq!(fmt_climb_delta(Some(120), Settings::default().units).as_str(), "+120m");
+            assert_eq!(elevation_delta(Some(120), Settings::default().units).as_str(), "+120m");
 
             let cheaper = hill_preview(Some(replaced - 40), 0, 2_000);
             assert_eq!(cheaper.climb_delta_m(Some(profile), 4_000), Some(-40), "a flatter one saves it");
-            assert_eq!(fmt_climb_delta(Some(-40), Settings::default().units).as_str(), "-40m");
+            assert_eq!(elevation_delta(Some(-40), Settings::default().units).as_str(), "-40m");
 
             // The descent-only second half books no ascent, so a flat detour around it is a wash.
             let wash = hill_preview(Some(0), 2_000, 4_000);
@@ -905,7 +890,7 @@ mod tests {
             let staged = hill_preview(Some(50), 0, 2_000);
             assert_eq!(staged.climb_delta_m(None, 4_000), None, "profile not built yet → no figure");
 
-            assert_eq!(fmt_climb_delta(None, Settings::default().units).as_str(), "--");
+            assert_eq!(elevation_delta(None, Settings::default().units).as_str(), "--");
         });
     }
 
