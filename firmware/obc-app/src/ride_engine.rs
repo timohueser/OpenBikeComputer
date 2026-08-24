@@ -288,7 +288,12 @@ impl RideEngine {
     ///   list before the fix is matched. Only advance a build key when the geometry is actually
     ///   streamable: a `None` route (idle, or a transient SD glitch) leaves the old state in place
     ///   and retries next tick, rather than latching an empty result for the route.
-    pub(crate) fn sync_route_state(&mut self, activity: &mut Activity, route: Option<&RouteReader>) -> bool {
+    pub(crate) fn sync_route_state(
+        &mut self,
+        activity: &mut Activity,
+        navigator: &mut crate::navigator::NavigatorMachine,
+        route: Option<&RouteReader>,
+    ) -> bool {
         let mut dirty = false;
         if activity.active_route != self.matched_route {
             // Deliberately do NOT clear a pending seam re-anchor here: a detour commit queues it
@@ -308,6 +313,7 @@ impl RideEngine {
             self.route_match.reset();
             if !activity.take_resume_session() {
                 activity.reset_ride();
+                navigator.reset_detour(); // a fresh session starts with no detour in flight
             }
             self.breadcrumb.clear();
             // A new session is a new pace too (WX12's projection window restarts with the ride).
@@ -595,11 +601,10 @@ impl RideEngine {
         // navigation unloads and the stale per-route state is dropped with it.
         let old_active = activity.active_route;
         activity.active_route = old_active.and_then(remap);
-        // A queued seam re-anchor (one tick between detour commit and geometry) and a queued
-        // detour-plan request both follow the same durable route identity as `active_route`, or
-        // are cancelled if that route vanished.
+        // A queued seam re-anchor (one tick between detour commit and geometry) follows the same
+        // durable route identity as `active_route`, or is cancelled if that route vanished. So does
+        // Navigator's undelivered detour request, which its owner remaps beside this call.
         activity.remap_seam_route(remap);
-        activity.remap_detour_route(remap);
         if old_active.is_some() && activity.active_route.is_none() {
             self.route_match.reset(); // drop stale progress/off-route from the vanished route
         }

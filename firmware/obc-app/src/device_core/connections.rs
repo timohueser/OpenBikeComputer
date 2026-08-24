@@ -19,6 +19,14 @@
 //! the legacy drain that still performs it — provisioning for a lifecycle nobody owns, at the cost of
 //! destroying a rider request. #1397 S6 brings the connection back with the domain that needs it.
 //!
+//! There is deliberately **no** `UiRuntime` → `Navigator`, `DfuState` or `StorageInfo` row either,
+//! and for the opposite reason: those domains exist, so a screen names its request straight to the
+//! owner as the gesture happens (`Ctx::navigator`, `Ctx::dfu`, `Ctx::storage`). That is stronger
+//! than a same-pass slot — the request is with its owner before stage 1 rather than at stage 4 —
+//! and it is the only shape that also works for the hosts still driving `drain_host_commands`,
+//! which run no pass at all until #1397 S6. A slot beside it would be a second place a rider's plan
+//! lives, which is the defect #1397 S2 exists to remove.
+//!
 //! ## Which direction decides the timing
 //!
 //! The pass order (see [`pass`](super::pass)) is fixed, so a connection's timing is not a policy

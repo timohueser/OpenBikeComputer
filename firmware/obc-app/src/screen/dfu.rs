@@ -127,7 +127,7 @@ impl DfuConfirmScreen {
             Gesture::Press if self.selected == INSTALL => {
                 // Arm: post the install one-shot (the board snapshots the rollback + arms + reboots)
                 // and swap to the progress spinner. The confirm was pushed over the System menu.
-                cx.activity.request_dfu(crate::activity::DfuAction::Install);
+                cx.dfu.admit_intent(crate::dfu::DfuIntent::InstallRequested);
                 Transition::Replace(Screen::DfuProgress(DfuProgressScreen::new()))
             }
             Gesture::Press => Transition::Pop, // Cancel
@@ -476,17 +476,26 @@ mod tests {
         DfuScanReport::new(installed, staged, first_install)
     }
 
-    /// Build a throwaway `Ctx`, run a gesture, and hand back the transition + the drained DFU
-    /// one-shot the screen posted (if any).
+    /// Build a throwaway `Ctx`, run a gesture, and hand back the transition + the update phase the
+    /// screen posted to the DFU domain (if any), taken as an executor would.
     fn run(scr: &mut impl FnMut(&mut Ctx) -> Transition) -> (Transition, Option<DfuAction>) {
         let mut st = AppState::new(0, 0, 1.0);
         let mut act = Activity::new(Mode::Idle);
         let mut settings = Settings::default();
+        let mut dfu = crate::dfu::DfuState::new();
         let t = {
-            let mut cx = test_ctx(&mut st, &mut act, &mut settings);
+            let mut cx = Ctx { dfu: &mut dfu, ..test_ctx(&mut st, &mut act, &mut settings) };
             scr(&mut cx)
         };
-        (t, act.take_dfu_request())
+        (t, drained_dfu(&mut dfu))
+    }
+
+    /// The phase the DFU domain is holding, in the legacy vocabulary the tests already speak.
+    fn drained_dfu(dfu: &mut crate::dfu::DfuState) -> Option<DfuAction> {
+        dfu.next_effect().map(|effect| match effect {
+            crate::dfu::DfuEffect::Scan { .. } => DfuAction::Scan,
+            crate::dfu::DfuEffect::ArmInstall { .. } => DfuAction::Install,
+        })
     }
 
     /// The same-version warning fires only on a byte-for-byte match.

@@ -178,21 +178,7 @@ mod tests {
         let mut st = AppState::new(0, 0, 1.0);
         let mut s = crate::Settings::default();
         let mut act = crate::activity::Activity::new(crate::Mode::Idle);
-        let scratch = crate::screen::PoiScratch::new();
-        let mut cx = Ctx {
-            state: &mut st,
-            activity: &mut act,
-            settings: &mut s,
-            routes: &[],
-            rides: &[],
-            trips: &[],
-            nav_profiles: &crate::NavProfiles::EMPTY,
-            poi_scratch: &scratch,
-            waypoints: &[],
-            corridor: &[],
-            sensor_scan_hits: &[],
-            now_ms: 0,
-        };
+        let mut cx = crate::screen::test_ctx(&mut st, &mut act, &mut s);
         scr.handle(g, &mut cx)
     }
 

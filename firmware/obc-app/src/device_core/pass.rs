@@ -51,13 +51,22 @@
 //! executor answers through ([`App::apply_event`], [`App::apply_derived`]) refuse while a pass is in
 //! flight. The next pass consumes what an executor completed; nothing mutates mid-pass.
 //!
-//! ## What this slice does not yet do
+//! ## What this pass does not yet own
 //!
-//! Three domains own an operation token today — retention, weather and the catalog — and those are
-//! exactly the three whose outcomes a pass may consume: **a domain that cannot validate a token
-//! cannot be the owner of an outcome** (epic §4.3). An outcome for a domain whose state machine has
-//! not landed is therefore *left in its slot*, not dropped and not guessed at. The stage where that
-//! machine will advance already exists and already runs, because the order is what this slice pins.
+//! Seven domains own an operation token — the catalog, retention and weather, and the four #1397 S2
+//! added (Navigator, `SettingsMachine`, `DfuState`, `StorageInfo`) — and those are exactly the
+//! seven whose outcomes a pass may consume: **a domain that cannot validate a token cannot be the
+//! owner of an outcome** (epic §4.3). Recorder and Bond cannot: the legacy protocol answers a ride
+//! close with a catalog re-feed and a bond removal with a link-status fact, so an outcome for
+//! either is *left in its slot*, not dropped and not guessed at. The stages where their machines
+//! will advance already exist and already run, because the order is what #1438 pinned.
+//!
+//! **The rider's own requests do not wait for a stage.** A screen names what it wants to the domain
+//! that owns it as the gesture happens (`Ctx::navigator`, `Ctx::dfu`, `Ctx::storage`), so a plan, an
+//! update phase or a free-space refresh is already with its owner before stage 1 — earlier than a
+//! same-pass slot could deliver it, in exactly one place, and by the one path that also serves the
+//! hosts still driving `drain_host_commands` (no host runs this pass until #1397 S6). A connection
+//! into those domains would be a second copy of the pending state this slice exists to remove.
 
 use obc_ports::{InputClock, RideClock, Sensors};
 use obc_route::RouteReader;
@@ -306,10 +315,10 @@ impl App {
         self.stage_retention(&mut effects);
         self.stage_catalog(&mut effects);
         self.stage_recorder();
-        self.stage_navigator();
-        self.stage_settings();
+        self.stage_navigator(&mut effects);
+        self.stage_settings(&mut effects);
         self.stage_weather(&mut effects);
-        self.stage_platform();
+        self.stage_platform(&mut effects);
         self.stage_admission(support);
         self.stage_faults();
         let plan = self.stage_plan(now, effects);
@@ -321,9 +330,9 @@ impl App {
     /// Stage 1 — validate and consume each domain's outcome slot.
     ///
     /// A domain accepts an outcome only while its own [`OperationToken`](super::OperationToken) is
-    /// current, which is why only a domain that *owns a token source* may consume one. The rest
-    /// stay in their slots: an outcome nobody can validate is not something to guess at, and the
-    /// slot's capacity of one is the executor's backpressure until the owner lands.
+    /// current, which is why only a domain that *owns a token source* may consume one. Recorder's
+    /// and Bond's stay in their slots: an outcome nobody can validate is not something to guess at,
+    /// and the slot's capacity of one is the executor's backpressure until the owner lands.
     fn stage_outcomes(&mut self, outcomes: &mut OutcomeSlots) {
         self.pass.record(PassStage::Outcomes);
         if let Some(outcome) = outcomes.catalog.take() {
@@ -334,6 +343,23 @@ impl App {
         }
         if let Some(outcome) = outcomes.weather.take() {
             self.weather.apply_outcome(outcome);
+        }
+        if let Some(outcome) = outcomes.navigator.take() {
+            self.apply_navigator_outcome(outcome);
+        }
+        if let Some(outcome) = outcomes.settings.take() {
+            let now_ms = self.ui.now_ms;
+            if self.settings_ops.apply_outcome(outcome, now_ms) {
+                self.on_warning(crate::screen::WarningFlags::SETTINGS_ERROR);
+            }
+        }
+        if let Some(outcome) = outcomes.dfu.take() {
+            self.apply_dfu_outcome(outcome);
+        }
+        if let Some(outcome) = outcomes.storage_info.take() {
+            if self.storage.apply_outcome(outcome) {
+                self.ui.map_dirty = true;
+            }
         }
     }
 
@@ -349,7 +375,7 @@ impl App {
         if let Some(store) = facts.store_revision() {
             if self.pass.store != Some(store) {
                 self.pass.store = Some(store);
-                self.host.note_store_changed();
+                self.note_store_changed();
             }
         }
         if let Some(state) = facts.transfer() {
@@ -414,6 +440,10 @@ impl App {
     /// The rider's ride *close* is deliberately not taken here. Recorder has no machine yet, so
     /// there is no domain to name it to; taking the one-shot anyway would only remove it from the
     /// legacy drain that still performs it, and the rider's save would be destroyed on the way.
+    ///
+    /// Navigation, update and free-space requests are not taken here either, for the opposite
+    /// reason: their domains **do** exist, so the screens name them directly and there is nothing
+    /// left in `Activity` to collect (see the module docs).
     fn stage_ui(&mut self, now: PassClock) {
         self.pass.record(PassStage::Ui);
         self.advance_animations(now.ui);
@@ -564,8 +594,13 @@ impl App {
     ///
     /// Consumes the catalog's [`ActiveRouteRemoved`] in the same pass it was sent, and reports an
     /// activation to retention in the next one — an active route must not expire underneath the ride
-    /// it is guiding.
-    fn stage_navigator(&mut self) {
+    /// it is guiding. Then hands the executor at most one planning operation.
+    ///
+    /// There is no `UiRuntime` → `Navigator` connection to drain: a planning screen names its
+    /// request to Navigator as it happens (`Ctx::navigator`), so the rider's plan is already with
+    /// its owner before stage 1 of this pass — earlier than a slot could deliver it, and in the one
+    /// place that also works for the hosts still driving the legacy drain.
+    fn stage_navigator(&mut self, effects: &mut EffectSlots) {
         self.pass.record(PassStage::Navigator);
         if let Some(removed) = self.pass.connections.active_route_removed.take() {
             if self.activity.active_route.and_then(|idx| self.catalogs.route_id_at(idx)) == Some(removed.route) {
@@ -581,16 +616,27 @@ impl App {
                 self.pass.connections.route_activated.defer(RouteActivated { route });
             }
         }
+        if effects.navigator.is_empty() {
+            if let Some(effect) = self.navigator.next_effect() {
+                let _ = effects.navigator.try_put(effect);
+            }
+        }
     }
 
-    /// Stage 9 — advance `SettingsMachine`.
+    /// Stage 9 — advance [`SettingsMachine`](crate::settings::SettingsMachine).
     ///
-    /// The dirty revision, the debounce, the retry backoff and the stale-ack rule live in
-    /// [`HostPending`](crate::host::HostPending) and advance on the frame clock stage 3 set. The
-    /// write itself is still owed through the legacy protocol: an effect needs an operation token,
-    /// and the token needs the owner that #1397 lands.
-    fn stage_settings(&mut self) {
+    /// The dirty revision, the subtree debounce, the retry backoff and the stale-answer rule are the
+    /// domain's; what the stage supplies is the two *levels* the decision is made against — where
+    /// the rider is standing, and the frame clock stage 3 set. A write owed while the rider is
+    /// still inside the settings subtree simply is not offered.
+    fn stage_settings(&mut self, effects: &mut EffectSlots) {
         self.pass.record(PassStage::Settings);
+        if effects.settings.is_empty() {
+            let (in_subtree, now_ms) = (self.ui.top_is_settings(), self.ui.now_ms);
+            if let Some(effect) = self.settings_ops.next_effect(in_subtree, now_ms) {
+                let _ = effects.settings.try_put(effect);
+            }
+        }
     }
 
     /// Stage 10 — advance `WeatherDomain`: one refresh at a time, and only while the device can
@@ -606,9 +652,22 @@ impl App {
     /// Stage 11 — advance `DfuState`, `BondState` and `StorageInfo`.
     ///
     /// The three domains whose product state is a scan result, a bond and a number of free bytes.
-    /// Their machines arrive with their cutovers (#1397); the stage is where they advance.
-    fn stage_platform(&mut self) {
+    /// Two of them have their machine; `BondState`'s arrives with #1397 S6, because the legacy bond
+    /// removal is confirmed by a link-status fact rather than by a reply — a domain with nothing to
+    /// validate cannot own an outcome (epic §4.3), so it keeps the legacy path and this stage does
+    /// not reach for it.
+    fn stage_platform(&mut self, effects: &mut EffectSlots) {
         self.pass.record(PassStage::Platform);
+        if effects.dfu.is_empty() {
+            if let Some(effect) = self.dfu.next_effect() {
+                let _ = effects.dfu.try_put(effect);
+            }
+        }
+        if effects.storage_info.is_empty() {
+            if let Some(effect) = self.storage.next_effect() {
+                let _ = effects.storage_info.try_put(effect);
+            }
+        }
     }
 
     /// Stage 12 — `CoreMode`: recalculate what this device can do at all.

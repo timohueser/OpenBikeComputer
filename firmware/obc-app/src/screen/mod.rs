@@ -201,6 +201,14 @@ pub struct Ctx<'a> {
     /// `Gesture::Press` reads the highlighted hit's address out of it to save + connect. Empty outside
     /// a scan; every other screen leaves it untouched.
     pub sensor_scan_hits: &'a [crate::sensors::SensorScanHit],
+    /// The **Navigator** domain (#1397 S2) — the planning screens name what they want to it
+    /// (`admit_intent`) rather than latching a request of their own. A rider's plan, cancel or
+    /// commit therefore exists in exactly one place from the instant they press.
+    pub navigator: &'a mut crate::navigator::NavigatorMachine,
+    /// The **DFU** domain — the Firmware and update-confirm screens post their phase here.
+    pub dfu: &'a mut crate::dfu::DfuState,
+    /// The **StorageInfo** domain — the System screen asks for a free-space refresh on entry.
+    pub storage: &'a mut crate::device_core::storage_info::StorageInfo,
     pub now_ms: u32,
 }
 
@@ -208,6 +216,11 @@ pub struct Ctx<'a> {
 /// the shape essentially every screen test wants. The handful that need one field populated say so
 /// with struct-update syntax, so the other eleven stay out of the way:
 /// `Ctx { routes, ..test_ctx(&mut st, &mut act, &mut s) }`.
+///
+/// The three domain seams are **leaked**, one fresh set per call: they need `&mut` for a lifetime
+/// the helper cannot own, and a test that asserts on one passes its own instead
+/// (`Ctx { navigator: &mut nav, ..test_ctx(…) }`). A few dozen bytes per screen test, in a build
+/// that has `std`.
 #[cfg(test)]
 pub(crate) fn test_ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, settings: &'a mut Settings) -> Ctx<'a> {
     // Shared empty borrows: the screens under test read these but never fill them, so one immutable
@@ -227,6 +240,9 @@ pub(crate) fn test_ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, 
         waypoints: &[],
         corridor: &[],
         sensor_scan_hits: &[],
+        navigator: Box::leak(Box::new(crate::navigator::NavigatorMachine::new())),
+        dfu: Box::leak(Box::new(crate::dfu::DfuState::new())),
+        storage: Box::leak(Box::new(crate::device_core::storage_info::StorageInfo::new())),
         now_ms: 0,
     }
 }
@@ -402,8 +418,9 @@ pub struct Render<'a> {
     pub map_name: &'a str,
     /// The loaded map's OBCM format version — the right half of the `Map` row (`0` = no map yet).
     pub map_obcm_version: u8,
-    /// Free space on the SD card in bytes (T8 item 6), or `None` until the host answers the System
-    /// screen's on-entry scan ([`App::apply_event`](crate::App::apply_event)).
+    /// Free space on the medium in bytes (T8 item 6), or `None` until a measurement answers the
+    /// System screen's on-entry refresh — the figure
+    /// [`StorageInfo`](crate::device_core::storage_info::StorageInfo) owns.
     pub card_free_bytes: Option<u64>,
     /// The host-fed resident **weather snapshot** (WX11, epic #1185) — the 24 hourly records +
     /// sampled rain-frame table the weather screens derive every claim from

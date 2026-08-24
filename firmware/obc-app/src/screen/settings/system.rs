@@ -48,7 +48,7 @@ impl SystemScreen {
                     // The Firmware page shows `Card free`, so run the one-shot FAT scan on entry (the
                     // host answers via `App::apply_event`) — the same trigger the old top-level
                     // System row carried.
-                    cx.activity.request_card_scan();
+                    cx.storage.admit_intent(crate::device_core::storage_info::StorageInfoIntent::RefreshRequested);
                     Transition::Push(Screen::Firmware(FirmwareScreen::new()))
                 }
                 ABOUT => Transition::Push(Screen::About(AboutScreen::new())),
@@ -77,13 +77,20 @@ impl SystemScreen {
 mod tests {
     use super::*;
     use crate::activity::Activity;
+    use crate::device_core::storage_info::StorageInfo;
     use crate::screen::test_ctx;
     use crate::{AppState, Mode, Settings};
 
     fn run(scr: &mut SystemScreen, act: &mut Activity, g: Gesture) -> Transition {
+        run_with(scr, act, &mut StorageInfo::new(), g)
+    }
+
+    /// The same, over the caller's own StorageInfo — the Firmware row's free-space refresh lands
+    /// there, so a test that asserts on it hands its own in.
+    fn run_with(scr: &mut SystemScreen, act: &mut Activity, storage: &mut StorageInfo, g: Gesture) -> Transition {
         let mut st = AppState::new(0, 0, 1.0);
         let mut s = Settings::default();
-        let mut cx = test_ctx(&mut st, act, &mut s);
+        let mut cx = Ctx { storage, ..test_ctx(&mut st, act, &mut s) };
         scr.handle(g, &mut cx)
     }
 
@@ -99,8 +106,12 @@ mod tests {
         assert!(matches!(run(&mut scr, &mut act, Gesture::Press), Transition::Push(Screen::Language(_))));
         run(&mut scr, &mut act, Gesture::Step(1)); // → Firmware update
         assert_eq!(scr.selected, FIRMWARE);
-        assert!(matches!(run(&mut scr, &mut act, Gesture::Press), Transition::Push(Screen::Firmware(_))));
-        assert!(act.take_card_scan_request(), "opening Firmware arms the free-cluster scan");
+        let mut storage = StorageInfo::new();
+        assert!(matches!(
+            run_with(&mut scr, &mut act, &mut storage, Gesture::Press),
+            Transition::Push(Screen::Firmware(_))
+        ));
+        assert!(storage.next_effect().is_some(), "opening Firmware arms the free-space measurement");
         run(&mut scr, &mut act, Gesture::Step(1)); // → About
         assert_eq!(scr.selected, ABOUT);
         assert!(matches!(run(&mut scr, &mut act, Gesture::Press), Transition::Push(Screen::About(_))));
