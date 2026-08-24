@@ -80,11 +80,13 @@ jobs:
             --jobs-file selection-jobs.json > selection-plan.json
           rc=$?
           set -e
+          cat selection-plan.json
+          # A failed selection publishes nothing, so the gate fails on a missing plan instead of
+          # evaluating one the selector itself rejected.
+          [ "$rc" -eq 0 ] || exit "$rc"
           echo "plan=$(cat selection-plan.json)" >> "$GITHUB_OUTPUT"
           echo "jobs=$(cat selection-jobs.json)" >> "$GITHUB_OUTPUT"
           echo "required jobs: $(cat selection-jobs.json)"
-          cat selection-plan.json
-          exit "$rc"
 
   retired-map-stack:
     runs-on: ubuntu-latest

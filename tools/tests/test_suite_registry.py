@@ -574,6 +574,47 @@ class CiRoutingTests(unittest.TestCase):
                 with self.assertRaisesRegex(registry.RegistryError, expected):
                     registry.validate_ci_routing(self.root, self.inventory, self.graph, routes)
 
+    def test_a_trunk_build_routes_the_package_its_html_target_links(self) -> None:
+        self.workflow.write_text(
+            synthetic_workflow().replace(
+                "      - run: cargo test --workspace --locked\n",
+                "      - run: trunk build --config site/Trunk.toml\n",
+            ),
+            encoding="utf-8",
+        )
+        (self.root / "site").mkdir()
+        (self.root / "site/Trunk.toml").write_text('[build]\ntarget = "page.html"\n', encoding="utf-8")
+        (self.root / "site/page.html").write_text(
+            '<link data-trunk rel="rust" href="../crates/core/Cargo.toml" data-wasm-opt="z" />\n',
+            encoding="utf-8",
+        )
+        self.assertEqual(self.routes()["rust.core"], ["unit"])
+
+    def test_validation_rejects_a_gate_that_names_another_job(self) -> None:
+        self.workflow.write_text(
+            synthetic_workflow().replace("jobs), 'unit')", "jobs), 'unitx')"), encoding="utf-8"
+        )
+        with self.assertRaisesRegex(registry.RegistryError, "gates on unitx"):
+            registry.validate_ci_routing(self.root, self.inventory, self.graph, self.routes())
+
+    def test_validation_rejects_a_job_outside_the_aggregate_gate(self) -> None:
+        self.workflow.write_text(
+            synthetic_workflow().replace("needs: [selection, unit]", "needs: [selection]"),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(registry.RegistryError, "not in the aggregate gate's needs"):
+            registry.validate_ci_routing(self.root, self.inventory, self.graph, self.routes())
+
+    def test_validation_rejects_an_ungated_job_hosting_an_affected_suite(self) -> None:
+        self.workflow.write_text(
+            synthetic_workflow().replace(
+                "    if: contains(fromJSON(needs.selection.outputs.jobs), 'unit')\n", ""
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(registry.RegistryError, "runs unconditionally but hosts"):
+            registry.validate_ci_routing(self.root, self.inventory, self.graph, self.routes())
+
     def test_validation_rejects_an_unprovisioned_runner_image(self) -> None:
         self.workflow.write_text(synthetic_workflow(runs_on=""), encoding="utf-8")
         with self.assertRaisesRegex(registry.RegistryError, "provisions no runner image"):
@@ -644,6 +685,8 @@ class ShippedRoutingTests(unittest.TestCase):
             "rust.obc-boot": ["boot", "fmt"],
             "rust.obc-desktop": ["desktop", "fmt"],
             "rust.obc-web-convert": ["clippy", "fmt", "test", "wasm-bridges"],
+            # Routed by `trunk build --config docs/Trunk.toml`, whose HTML target links its manifest.
+            "rust.obc-web-demo": ["clippy", "fmt", "test", "wasm"],
             "swift.obckit-host": ["ios-unit"],
             "ci.docs": ["docs"],
             "web.builder-vitest": ["web"],
@@ -652,22 +695,63 @@ class ShippedRoutingTests(unittest.TestCase):
             with self.subTest(suite=suite_id):
                 self.assertEqual(self.routes[suite_id], jobs)
 
+    def test_every_gated_job_gates_on_its_own_name_and_reports_to_the_gate(self) -> None:
+        gate = registry.aggregate_job(self.root)
+        for name, job in self.jobs.items():
+            if name == gate:
+                continue
+            with self.subTest(job=name):
+                self.assertIn(name, self.jobs[gate].needs)
+                if job.plan_gated:
+                    self.assertEqual(job.gates_on, name)
+
     def test_selected_job_set_per_change_class(self) -> None:
-        heavy = {"ios-unit", "ios-app", "web", "desktop", "desktop-frontend", "wasm-bridges"}
+        """The exact conditional job set per class. The last three classes are the crates whose
+        only build is a non-Cargo command, which a subset assertion let regress once."""
+
         cases = [
-            ("documentation only", ["docs/content/ride.md"], {"docs"}, heavy | {"test", "fmt", "clippy"}),
-            ("leaf Rust crate", ["host/obc-bench/src/main.rs"], {"test", "fmt", "clippy"}, heavy),
-            ("foundational Rust crate", ["firmware/obc-crc/src/lib.rs"], {"test", "embedded", "device"}, set()),
-            ("shared vectors", ["specs/vectors/obcm-v2.json"], {"ios-unit", "test", "web"}, set()),
-            ("iOS only", ["companion-ios/OBCCompanion/App.swift"], {"ios-app"}, {"test", "web", "desktop"}),
-            ("web only", ["builder/app/src/lib/panel.ts"], {"web"}, {"ios-unit", "embedded", "boot"}),
-            ("workflow", [".github/workflows/ci.yml"], {"test", "docs", "deny", "embedded"}, set()),
+            ("documentation only", ["docs/content/ride.md"], ["docs"]),
+            ("leaf Rust crate", ["host/obc-bench/src/main.rs"], ["clippy", "fmt", "test"]),
+            (
+                "foundational Rust crate",
+                ["firmware/obc-crc/src/lib.rs"],
+                ["boot", "clippy", "desktop", "desktop-frontend", "device", "embedded", "fmt", "test", "wasm", "wasm-bridges"],
+            ),
+            (
+                "shared vectors",
+                ["specs/vectors/obcm-v2.json"],
+                ["clippy", "device", "fmt", "ios-unit", "test", "wasm-bridges", "web"],
+            ),
+            ("iOS application", ["companion-ios/OBCCompanion/App.swift"], ["ios-app"]),
+            (
+                "web only",
+                ["builder/app/src/lib/panel.ts"],
+                ["desktop", "desktop-frontend", "fmt", "wasm-bridges", "web"],
+            ),
+            (
+                "workflow",
+                [".github/workflows/ci.yml"],
+                ["boot", "clippy", "deny", "desktop", "desktop-frontend", "device", "docs", "embedded", "fmt", "ios-app", "ios-unit", "test", "wasm", "wasm-bridges", "web"],
+            ),
+            # The web demo is built only by `trunk build`, the OBCKit package is compiled into the
+            # app only by `xcodebuild`, and tools/fixtures.py is run only by a workflow step.
+            ("web demo crate", ["apps/obc-web-demo/src/lib.rs"], ["clippy", "fmt", "test", "wasm"]),
+            ("web demo Trunk target", ["docs/index.html"], ["docs", "wasm", "wasm-bridges"]),
+            (
+                "OBCKit package source",
+                ["companion-ios/Packages/OBCKit/Sources/OBCTransport/BLE/Client.swift"],
+                ["ios-app", "ios-unit"],
+            ),
+            (
+                "repository tooling",
+                ["tools/fixtures.py"],
+                ["desktop", "desktop-frontend", "test", "wasm-bridges"],
+            ),
         ]
-        for name, paths, required, forbidden in cases:
+        for name, paths, expected in cases:
             with self.subTest(change=name):
-                jobs = self.jobs_for(*paths)
-                self.assertTrue(required <= jobs, f"{name}: missing {sorted(required - jobs)}")
-                self.assertFalse(forbidden & jobs, f"{name}: unexpected {sorted(forbidden & jobs)}")
+                jobs = self.jobs_for(*paths) - self.unconditional
+                self.assertEqual(sorted(jobs), expected)
 
 
 if __name__ == "__main__":
