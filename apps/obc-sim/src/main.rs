@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use embedded_graphics::pixelcolor::Rgb888;
 use obc_app::{App, AppState};
-use obc_ports::{Button, ButtonEvent, Fix, InputClock, InputEvent, InputSource, LocationSource, TrackSink};
+use obc_ports::{Button, ButtonEvent, Fix, InputClock, InputEvent, InputSource, LocationSource};
 use obc_reader::{rgb565_to_device64, Reader};
 
 mod calib;
@@ -35,9 +35,11 @@ mod weather_companion;
 mod weather_live;
 mod weather_store;
 use framebuffer::Framebuffer;
-use obc_host_core::{initial_camera, replay_step, HostLoop, PlanHold, ReplaySensors};
+use obc_host_core::{
+    initial_camera, replay_advance, ActiveRouteSession, HostLoop, HostPlatform, PlanHold, ReplaySensors,
+};
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
-use obc_route::{RouteIndex, RouteReader};
+use obc_route::RouteReader;
 use rides::RideStore;
 use routes::RouteStore;
 use track::TrackStore;
@@ -727,45 +729,132 @@ fn fake_scan_hits() -> [obc_app::SensorScanHit; 4] {
     ]
 }
 
-/// Drive one headless pass through the same host protocol object as the interactive simulator.
-/// The tuple keeps the three folder-backed catalogs visibly one repository family; the only
-/// headless-only behavior is selective planning-screen holds and the deferred track-folder open.
-fn reconcile_headless(
-    host: &mut HostLoop,
-    app: &mut App,
-    stores: (&mut RouteStore, &mut RideStore, &mut TripStore),
-    reader: &Reader,
-    elev: &mut dyn obc_route::ElevationSource,
-    hold: PlanHold,
-) {
-    let (routes, rides, trips) = stores;
-    let changed = routes.sync_active(app.active_route_index());
-    host.session.reparse(changed, routes);
-
-    let finish = host.reconcile_to_completion(app, routes, rides, trips, reader, elev, hold, |app, cmd| {
-        if matches!(cmd, obc_app::HostCommand::ScanCardFree) {
-            app.apply_event(obc_app::HostEvent::CardScanned { free_bytes: Some(SIM_CARD_FREE) });
-        }
-    });
-    if let Some(action) = finish {
-        app.activity.request_track(action);
-    }
-
-    // A completed route plan or detour commit can replace the active bytes under this pass.
-    let changed = routes.sync_active(app.active_route_index());
-    host.session.reparse(changed, routes);
+/// The headless driver's repositories, threaded as one value: three folder stores plus the open
+/// ride log. The tuple keeps them visibly one repository family and keeps [`settle`]'s signature
+/// from growing four more parameters.
+struct Stores<'a> {
+    routes: &'a mut RouteStore,
+    rides: &'a mut RideStore,
+    trips: &'a mut TripStore,
+    tracks: &'a mut TrackStore,
 }
 
-/// Reconcile the track store to the app's tracking intent (drains the one-shot action,
-/// opens / closes the `.obct` log). The save name comes from the active route's catalog entry.
-fn reconcile_tracks(app: &mut App, tracks: &mut TrackStore) {
-    let action = app.activity.take_track_action();
-    let session = app.activity.session();
-    let name = app.active_route_index().and_then(|i| app.routes().get(i)).map(|r| r.name.as_str().to_string());
-    // Snapshot the ride totals for a Save so the desktop `ride-{id}.obcr` object the Rides screen
-    // lists carries them, exactly as the device object's footer does (#454).
-    let stats = matches!(action, Some(obc_app::TrackAction::Save)).then(|| app.ride_stats());
-    tracks.reconcile(action, session, name.as_deref(), stats);
+/// What only the headless driver can do: a fixed card-free figure (the sim has no FAT to scan) and
+/// the update answers `--dfu` stages. Settings persistence is deliberately absent — a `--png` run
+/// must not write the developer's settings file — and the default acknowledges the write so the
+/// domain settles instead of parking.
+#[derive(Default)]
+struct HeadlessPlatform {
+    /// The `--dfu` scan answer, taken by the first scan the flow asks for.
+    scan: Option<Result<obc_app::dfu::DfuScanReport, obc_app::dfu::DfuScanError>>,
+    /// The `--dfu` install answer. `None` leaves the arm in flight — the progress spinner.
+    install: Option<Result<(), obc_app::dfu::DfuInstallError>>,
+}
+
+impl HostPlatform for HeadlessPlatform {
+    fn measure_free_space(&mut self) -> Result<u64, obc_app::device_core::StorageInfoError> {
+        Ok(SIM_CARD_FREE)
+    }
+
+    fn scan_update(&mut self) -> Option<Result<obc_app::dfu::DfuScanReport, obc_app::dfu::DfuScanError>> {
+        self.scan.take()
+    }
+
+    fn arm_install(&mut self) -> Option<Result<(), obc_app::dfu::DfuInstallError>> {
+        self.install.take()
+    }
+}
+
+/// The most passes one settle runs. A route plan is stepped once per pass here exactly as it is on
+/// the board, so the ceiling has to clear a whole A* search; it is a runaway guard, not a budget.
+const MAX_SETTLE_PASSES: usize = 100_000;
+
+/// Passes with nothing owed before the device counts as settled. Two, because an outcome the
+/// executor produced is consumed by the *next* pass — one quiet pass alone would stop with an
+/// answer still in the inbox.
+const QUIET_PASSES: usize = 2;
+
+/// Run DeviceCore passes until the device stops asking for anything.
+///
+/// A scripted host has no display frame to yield between bounded steps, so it settles here instead
+/// of once per frame: the same `App::run_pass` + typed executor the GUI runs, looped until no
+/// effect is owed, no deferred value is in flight and no planner step is left.
+///
+/// The **ride clock stands still** at zero and the UI clock is the script's own, which is exactly
+/// what the headless path has always done: it drives the UI with synthesized button events and only
+/// ever ticked the ride on an explicit `T`. A settling pass must not age a ride nobody is riding.
+#[allow(clippy::too_many_arguments)]
+fn settle(
+    host: &mut HostLoop,
+    session: &mut ActiveRouteSession,
+    app: &mut App,
+    stores: &mut Stores<'_>,
+    reader: &Reader,
+    elev: &mut dyn obc_route::ElevationSource,
+    platform: &mut HeadlessPlatform,
+    now: u32,
+) {
+    let mut quiet = 0usize;
+    for _ in 0..MAX_SETTLE_PASSES {
+        session.sync(app, stores.routes);
+        let (mut plan, owed) = {
+            let src = stores.routes.active_source();
+            let route = match (session.index(), src.as_ref()) {
+                (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
+                _ => None,
+            };
+            let mut loc = NoFix;
+            let sensors = obc_ports::Sensors { track: stores.tracks.sink(), ..obc_ports::Sensors::new(&mut loc) };
+            let plan = host.pass(
+                app,
+                obc_app::device_core::PassClock { ride: obc_ports::RideClock(0), ui: InputClock(now) },
+                &[],
+                sensors,
+                route.as_ref(),
+                gui::SIM_SUPPORT,
+            );
+            let owed = plan.effects.has_pending() || plan.immediate || !plan.derived_needs.is_empty();
+            (plan, owed)
+        };
+        host.execute(
+            app,
+            &mut plan,
+            session,
+            stores.routes,
+            stores.rides,
+            stores.tracks,
+            stores.trips,
+            reader,
+            elev,
+            platform,
+        );
+        if owed || host.is_planning() {
+            quiet = 0;
+        } else {
+            quiet += 1;
+            if quiet >= QUIET_PASSES {
+                return;
+            }
+        }
+    }
+    eprintln!("warning: the headless device did not settle in {MAX_SETTLE_PASSES} passes");
+}
+
+/// The planner error a `--inject nav-fail=` / `detour-fail=` seed stands for.
+fn nav_error(kind: NavFailure) -> obc_route::NavError {
+    match kind {
+        NavFailure::Exhausted => obc_route::NavError::Exhausted,
+        NavFailure::NoPath => obc_route::NavError::NoPath,
+    }
+}
+
+/// A location port that never has a fix — the settling pass's sensor input. The headless driver
+/// drives position through the GPX replay below, never through a settle.
+struct NoFix;
+impl obc_ports::LocationSource for NoFix {
+    fn poll(&mut self) -> Option<obc_ports::Fix> {
+        None
+    }
 }
 
 /// Encode a framebuffer to a PNG, upscaling by `scale` with nearest-neighbor so the
@@ -795,7 +884,7 @@ impl InputSource for ScriptInput {
 enum ScriptHook {
     /// Draw one throwaway frame (the `f` token).
     Render,
-    /// Run one route-aware tick (the `T` token).
+    /// Run one route-aware pass (the `T` token).
     Tick,
 }
 
@@ -817,11 +906,11 @@ fn feed(app: &mut App, now: u32, events: Vec<InputEvent>) {
 /// but the headless script path never does — so route-derived `Activity` state (`route_total_m`,
 /// the climbs/waypoints caches) stays unbuilt without it. A mid-ride flow that *reads* that state
 /// (the Detour chooser, #882) scripts a `T` after starting the ride.
-fn apply_script(app: &mut App, script: &str, hook: &mut dyn FnMut(&mut App, ScriptHook)) {
+fn apply_script(app: &mut App, script: &str, start_ms: u32, hook: &mut dyn FnMut(&mut App, ScriptHook, u32)) -> u32 {
     let down = |b| InputEvent::Button(ButtonEvent::Down(b));
     let up = |b| InputEvent::Button(ButtonEvent::Up(b));
     let hold = obc_app::DEFAULT_HOLD_MS;
-    let mut now: u32 = 100;
+    let mut now: u32 = start_ms;
 
     // One selection step: feed it, then nudge the clock.
     let step = |app: &mut App, now: &mut u32, dir: i32| {
@@ -876,10 +965,10 @@ fn apply_script(app: &mut App, script: &str, hook: &mut dyn FnMut(&mut App, Scri
             // Draw one throwaway frame to flush lazy draw-time state (the POI-list snapshot / the
             // detail's hours read) so the next gesture sees it — e.g. `p f p` opens a POI list, fills
             // its snapshot, then presses a POI into its detail.
-            'f' => hook(app, ScriptHook::Render),
+            'f' => hook(app, ScriptHook::Render, now),
             // One route-aware tick (see the fn doc): sync + open the active route and run the
             // once-per-load state builds the GUI's per-frame tick would have run.
-            'T' => hook(app, ScriptHook::Tick),
+            'T' => hook(app, ScriptHook::Tick, now),
             // Idle-elapse: jump the clock 5 min forward with no input and run one animation pass, so
             // the app-level idle-return timeout (Part B) fires deterministically for a snapshot —
             // e.g. `B u p I` sits in Settings, elapses, and lands back on Home. Longer than every
@@ -891,6 +980,7 @@ fn apply_script(app: &mut App, script: &str, hook: &mut dyn FnMut(&mut App, Scri
             other => eprintln!("warning: ignoring unknown --script token '{other}'"),
         }
     }
+    now
 }
 
 const HELP: &str = r#"OpenBikeComputer desktop simulator
@@ -1262,89 +1352,76 @@ fn main() {
         // replay below feeds the map-referenced altimeter from it (EL8) — so it is mounted here,
         // above both, rather than once per user (mounting borrows the whole file for the session).
         let mut elev = map.elevation();
+        // The open ride log. Opened here, above the script, because every settling pass reconciles
+        // it against the app's tracking session exactly as a frame loop does.
+        let mut tracks = TrackStore::open(args.tracks_dir());
+        // The resident active-route parse, shared by every settle and by the final render.
+        let mut session = ActiveRouteSession::new();
+        // What only this host can do: the fixed card-free figure, and the `--dfu` answers.
+        //
+        // Staged **here**, above the script, because `DfuState` asks exactly once: the "Checking
+        // card…" wait the script leaves on top emits one `DfuEffect::Scan`, and an executor with no
+        // answer ready would consume that operation and leave the flow parked. `Progress`
+        // deliberately stages no install answer — that unanswered arm *is* the spinner.
+        let mut platform = HeadlessPlatform::default();
+        if let Some(dfu) = &args.dfu {
+            platform.scan = match dfu {
+                DfuSeed::Scan(kind) | DfuSeed::Progress(kind) | DfuSeed::Installing(kind) => Some(kind.report()),
+                DfuSeed::Error(e) => Some(Err(*e)),
+                _ => None,
+            };
+            platform.install = matches!(dfu, DfuSeed::Installing(_)).then_some(Ok(()));
+        }
+        // `--hold nav` / `--inject nav-fail=...` **acquire** the search without starting it, so the
+        // planning screen stays up (for its own snapshot) and the injected answer below is a real
+        // answer to the operation the rider actually started.
+        let hold = PlanHold::new(
+            args.hold == Some(Hold::Nav) || matches!(args.inject, Some(Injection::NavFail(_))),
+            args.hold == Some(Hold::Detour) || matches!(args.inject, Some(Injection::DetourFail(_))),
+        );
+        host.set_plan_hold(hold);
+        // The script's synthesized button events reach the app through its own input plane, exactly
+        // as the board's high-priority plane feeds gestures between passes; a *frame* — the `f`
+        // token, the `T` token and the settle after the script — is what runs `App::run_pass`.
+        let mut script_now = 100u32;
         if let Some(script) = &args.script {
             // The `f` token flushes lazy draw-time state (the POI snapshot / detail hours / the
-            // Up-ahead corridor snapshot) by drawing one throwaway frame against the map reader and
-            // the active route. It then drains a pending create-route request (epic #116, R4), so a
-            // script can walk the whole POI→route flow: the request's answer swaps the confirm for
-            // the overview / failure card, which the next token (or the final render) sees.
+            // Up-ahead corridor snapshot) by settling the device and then drawing one throwaway
+            // frame against the map reader and the active route. Settling first is what lets a
+            // script walk the whole POI→route flow: the plan's answer swaps the confirm for the
+            // overview / failure card, and the frame after it draws what the next token acts on.
             let (rw, rh) = (args.width, args.height);
-            // `--hold nav` / `--inject nav-fail=...` consume the request without starting it so the
-            // planning screen stays up (for its own snapshot, or for the injected answer to land in).
-            let hold = PlanHold::new(
-                args.hold == Some(Hold::Nav) || matches!(args.inject, Some(Injection::NavFail(_))),
-                args.hold == Some(Hold::Detour) || matches!(args.inject, Some(Injection::DetourFail(_))),
-            );
             // One render scratch for the whole script run, lent to each throwaway frame — the
             // host owns it since #1146, and ~90 KB is not something to re-allocate per token.
             let mut scratch = Box::new(obc_render::RenderScratch::new());
-            let mut hook = |app: &mut App, what: ScriptHook| match what {
-                ScriptHook::Render => {
-                    // A pending Ride-detail track request (#680) fills before the draw, so an `f` frame
-                    // (and every gesture after it) sees the elevation band, mirroring the GUI's
-                    // per-frame drain. `LoadRideTrack` is a derived level — answered off the pure
-                    // predicate, nothing consumed.
-                    if let Some(id) = app.ride_track_request() {
-                        app.set_ride_profile(ride_store.profile_by_id(id));
-                        app.set_ride_preview(&ride_store.preview_by_id(id));
-                    }
+            let mut stores =
+                Stores { routes: &mut store, rides: &mut ride_store, trips: &mut trip_store, tracks: &mut tracks };
+            let mut hook = |app: &mut App, what: ScriptHook, now: u32| {
+                // Both tokens are the same device frame; only `f` also draws. The keyed ride-track
+                // fill and the route overview's shape preview are answered inside the executor from
+                // the plan's `derived_needs`, so nothing here reaches for them by hand.
+                settle(&mut host, &mut session, app, &mut stores, &reader, &mut *elev, &mut platform, now);
+                if matches!(what, ScriptHook::Render) {
                     // The frame carries the **streamed route** when one is active, exactly as the
                     // GUI's per-frame render does: the Up-ahead timeline's corridor snapshot (epic
                     // #946) is taken in the pre-draw `prepare` pass off that route, so a routeless
                     // throwaway frame would leave it pending and the next gesture would step an
-                    // empty list. Scoped so the borrow of `store` ends before the drain below.
-                    {
-                        store.sync_active(app.active_route_index());
-                        let src = store.active_source();
-                        let idx = src.as_ref().and_then(|s| RouteIndex::read(s).ok());
-                        let route = match (idx.as_ref(), src.as_ref()) {
-                            (Some(i), Some(s)) => Some(RouteReader::new(i, s)),
-                            _ => None,
-                        };
-                        let mut fb = Framebuffer::new(rw, rh);
-                        let _ = app.render_frame(
-                            Some(&mut scratch),
-                            &mut fb,
-                            &reader,
-                            route.as_ref(),
-                            rw as f32,
-                            rh as f32,
-                            color_of,
-                        );
-                    }
-                    // Drain the typed host protocol each `f` (mirroring the GUI's per-frame dispatch):
-                    // a create-route request's answer swaps the confirm for the overview/failure card
-                    // so the next token acts on it; a scripted delete re-feeds the catalog.
-                    reconcile_headless(
-                        &mut host,
-                        app,
-                        (&mut store, &mut ride_store, &mut trip_store),
-                        &reader,
-                        &mut *elev,
-                        hold,
-                    );
-                }
-                ScriptHook::Tick => {
-                    // One route-aware tick (`T`): open the active route and run the once-per-load
-                    // state builds (`route_total_m`, climbs, waypoints) the GUI's per-frame tick
-                    // would have run — a mid-ride flow that reads them (the Detour chooser, #882)
-                    // scripts this right after starting the ride.
-                    store.sync_active(app.active_route_index());
-                    let src = store.active_source();
-                    let idx = src.as_ref().and_then(|s| RouteIndex::read(s).ok());
-                    let route = match (idx.as_ref(), src.as_ref()) {
+                    // empty list.
+                    let src = stores.routes.active_source();
+                    let route = match (session.index(), src.as_ref()) {
                         (Some(i), Some(s)) => Some(RouteReader::new(i, s)),
                         _ => None,
                     };
-                    struct NoFix;
-                    impl obc_ports::LocationSource for NoFix {
-                        fn poll(&mut self) -> Option<obc_ports::Fix> {
-                            None
-                        }
-                    }
-                    let mut loc = NoFix;
-                    let sensors = obc_ports::Sensors::new(&mut loc);
-                    app.tick(obc_ports::RideClock(0), sensors, route.as_ref());
+                    let mut fb = Framebuffer::new(rw, rh);
+                    let _ = app.render_frame(
+                        Some(&mut scratch),
+                        &mut fb,
+                        &reader,
+                        route.as_ref(),
+                        rw as f32,
+                        rh as f32,
+                        color_of,
+                    );
                 }
             };
             // WX11: a scripted rain-map time-step must clamp against the real frame count, so the
@@ -1362,124 +1439,115 @@ fn main() {
                     app.set_rain_view(snap.steps_ahead(now), floor);
                 }
             }
-            apply_script(&mut app, script, &mut hook);
-            // Anything the script's last press recorded with no trailing `f`: drain + apply it now so
-            // the final render reflects the answer (the create-route commit, the detour plan/commit,
-            // the hold-to-delete re-feed, the trip cascade — all in the canonical order).
-            reconcile_headless(
-                &mut host,
-                &mut app,
-                (&mut store, &mut ride_store, &mut trip_store),
-                &reader,
-                &mut *elev,
-                hold,
-            );
-            // An open Ride detail's track request left by the script's last press (no trailing
-            // `f`): fill the resident ride profile now so the final render draws the band.
-            if let Some(id) = app.ride_track_request() {
-                app.set_ride_profile(ride_store.profile_by_id(id));
-                app.set_ride_preview(&ride_store.preview_by_id(id));
-            }
+            script_now = apply_script(&mut app, script, script_now, &mut hook);
         }
+        // Everything the script's last press asked for, with no trailing `f`: settle it now so the
+        // final render reflects the answer (the create-route commit, the detour plan/commit, the
+        // hold-to-delete re-feed, the trip cascade, the open Ride detail's track — all of it).
+        let mut stores =
+            Stores { routes: &mut store, rides: &mut ride_store, trips: &mut trip_store, tracks: &mut tracks };
+        let mut settle_now =
+            |app: &mut App, stores: &mut Stores<'_>, host: &mut HostLoop, platform: &mut HeadlessPlatform| {
+                settle(host, &mut session, app, stores, &reader, &mut *elev, platform, script_now);
+            };
+        settle_now(&mut app, &mut stores, &mut host, &mut platform);
 
-        // Inject a routing failure (epic #116, R4) after the script left the CREATE ROUTE
-        // confirm on top: the answer goes through the real `NavPlanned` seam, so the snapshot pins
-        // the exact error→tier mapping (`exhausted` → "Too far to route here.", anything else →
-        // "Couldn't find a route.").
+        // ── The scripted injections ──────────────────────────────────────────────────────────
+        // Every one of these used to be an `apply_event` push into the app. They are now what the
+        // device actually sees: an **outcome** answering the operation the rider started (carrying
+        // the token the executor is holding for it), or an external **fact** nobody asked for. The
+        // pass consumes them at its first two stages, so the snapshot pins the same seam the board
+        // will run.
+        //
+        // A routing failure lands in the CREATE ROUTE confirm's own planning screen: `--hold nav`
+        // acquired the operation without starting the search, so this is a genuine answer to it.
         if let Some(Injection::NavFail(kind)) = args.inject {
-            let err = match kind {
-                NavFailure::Exhausted => obc_route::NavError::Exhausted,
-                NavFailure::NoPath => obc_route::NavError::NoPath,
-            };
-            app.apply_event(obc_app::HostEvent::NavPlanned(Err(err)));
+            let error = obc_app::navigator::NavigatorError::Plan(nav_error(kind));
+            if let Some(token) = host.plan_token() {
+                let _ =
+                    host.outcomes().navigator.try_put(obc_app::navigator::NavigatorOutcome::Failed { token, error });
+            } else {
+                eprintln!("warning: --inject nav-fail= has no planning operation to answer");
+            }
+            settle(&mut host, &mut session, &mut app, &mut stores, &reader, &mut *elev, &mut platform, script_now);
         }
 
-        // Inject a detour-planning failure (#882) after the script left the detour planning
-        // screen on top: the answer goes through the real `DetourPlanned` seam, so the snapshot
-        // pins the fail card with its "try a farther rejoin" hint.
+        // The detour twin: the same failure, against the detour search the script left running.
         if let Some(Injection::DetourFail(kind)) = args.inject {
-            let err = match kind {
-                NavFailure::Exhausted => obc_route::NavError::Exhausted,
-                NavFailure::NoPath => obc_route::NavError::NoPath,
-            };
-            app.apply_event(obc_app::HostEvent::DetourPlanned(Err(err)));
+            let error = obc_app::navigator::NavigatorError::Plan(nav_error(kind));
+            if let Some(token) = host.plan_token() {
+                let _ =
+                    host.outcomes().navigator.try_put(obc_app::navigator::NavigatorOutcome::Failed { token, error });
+            } else {
+                eprintln!("warning: --inject detour-fail= has no detour operation to answer");
+            }
+            settle(&mut host, &mut session, &mut app, &mut stores, &reader, &mut *elev, &mut platform, script_now);
         }
 
-        // Inject a committed route upload (epic #447, P4) after the script (so a `p p p` script
-        // is already riding when the event lands): the catalog above is the "already rescanned"
-        // store, and this is the upload event with the id — the device's exact order.
+        // A committed route upload (epic #447, P4): the catalog above is the "already rescanned"
+        // store, and this is the fact that names the committed id — the device's exact order. The
+        // route's mini elevation band is built from the committed OBCR at "commit time", exactly the
+        // seam the board fills (#682); the idle card draws it.
         if let Some(Injection::Upload { id, replaced }) = args.inject {
-            // Build the route's mini elevation band from the committed OBCR at "commit time",
-            // exactly the seam the board fills (#682) — the idle card draws it.
-            let elevation = store.elevation_sparkline(id);
-            app.apply_event(obc_app::HostEvent::RouteUploaded { id, replaced, elevation });
+            let elevation = stores.routes.elevation_sparkline(id);
+            host.facts().note_route_upload(obc_app::device_core::RouteUpload { id, replaced, elevation });
+            settle(&mut host, &mut session, &mut app, &mut stores, &reader, &mut *elev, &mut platform, script_now);
         }
-        // Inject a committed **trip** upload (epic #526): the trip catalog was fed above from the
-        // `--routes-dir`'s `.obt` files (the "already rescanned" store), and this is the event that
-        // names the committed id — the device's exact order. A trip always lands after its member
-        // routes, so the one "TRIP RECEIVED" card replaces the burst's last per-route popup.
+        // The **trip** twin (epic #526): a trip always lands after its member routes, so the one
+        // "TRIP RECEIVED" card replaces the burst's last per-route popup.
         if let Some(Injection::TripUpload { id }) = args.inject {
-            app.apply_event(obc_app::HostEvent::TripUploaded { id, replaced: false });
+            host.facts().note_trip_upload(obc_app::device_core::TripUpload { id, replaced: false });
+            settle(&mut host, &mut session, &mut app, &mut stores, &reader, &mut *elev, &mut platform, script_now);
         }
-        // Feed the board's live map-transfer state (issue #927) through the same level-style seam
-        // the ride loop polls each pass, so the card is raised exactly as a real upload raises it.
+        // The board's live map-transfer state (issue #927) — a level the ride loop polls each pass,
+        // and a feeder rather than a fact until the flat engine's `busy` is wired (S6b).
         if let Some(Injection::MapTransfer(state)) = args.inject {
             app.set_map_transfer(Some(state));
         }
-        // Raise device warnings (issue #504) through the real `Warning` event, so the advisory
-        // card renders — the sim has no I²C probe / fragmented card to trip it for real.
+        // Device warnings (issue #504): the sim has no I²C probe / fragmented card to trip them for
+        // real, so they arrive as the fact the board raises.
         if let Some(Injection::Warning(w)) = args.inject {
-            app.apply_event(obc_app::HostEvent::Warning(w));
+            host.facts().raise_warnings(w);
+            settle(&mut host, &mut session, &mut app, &mut stores, &reader, &mut *elev, &mut platform, script_now);
         }
 
-        // The System screen's card-free scan (T8 item 6) is answered by `reconcile_headless` above
-        // when the `ScanCardFree` command drains (the sim has no FAT — a fixed 1.2 GB stand-in).
-
-        // DFU sideload snapshots (epic #615 S5, #620). The scan runs board-side on the device; here
-        // the script left the "Checking card..." wait on top (System menu → Install) and these
-        // answer it through the real `DfuScanned` / `UpdateConfirmed` seams — so the confirm /
-        // progress / error / toast screens render off the same app state the device reaches. The sim
-        // stages a synthetic `UPDATE.BIN` and runs the real `obc-dfu` scan.
+        // DFU sideload snapshots (epic #615 S5, #620). The scan ran board-side above, answered by
+        // the staged platform when the "Checking card…" wait asked for it — so the confirm /
+        // progress / error cards render off the same app state the device reaches, behind the same
+        // operation token. What is left is the rider's own Confirm.
         if let Some(dfu) = &args.dfu {
-            let kind = match dfu {
-                DfuSeed::Scan(kind) | DfuSeed::Progress(kind) | DfuSeed::Installing(kind) => Some(*kind),
-                _ => None,
-            };
-            if let Some(kind) = kind {
-                app.apply_event(obc_app::HostEvent::DfuScanned(kind.report()));
-            }
             if matches!(dfu, DfuSeed::Progress(_) | DfuSeed::Installing(_)) {
-                // Confirm (Install is the default selection) → the arm one-shot + the progress
-                // spinner. A tap: down, then up 80 ms later, well under the long-press threshold.
-                let now = 500_000u32;
+                // Confirm (Install is the default selection) → the arm request. A tap: down, then up
+                // 80 ms later, well under the long-press threshold.
+                //
+                // Long after any script (~110 ms a token), but taken as a *floor* on the script's
+                // own clock rather than as an absolute: the UI clock must never move backwards, and
+                // a script long enough to pass this mark would otherwise re-open every bounded
+                // window it had already closed.
+                let now = script_now.max(500_000);
                 feed(&mut app, now, vec![InputEvent::Button(ButtonEvent::Down(Button::Select))]);
                 feed(&mut app, now + 80, vec![InputEvent::Button(ButtonEvent::Up(Button::Select))]);
-                // The board drain's terminal swap: spinner → the static "Installing update" card
-                // (the pre-reset frame), through the same `DfuInstallBegan` seam the device uses.
-                if matches!(dfu, DfuSeed::Installing(_)) {
-                    app.apply_event(obc_app::HostEvent::DfuInstallBegan);
-                }
-            }
-            if let DfuSeed::Error(e) = dfu {
-                app.apply_event(obc_app::HostEvent::DfuScanned(Err(*e)));
+                settle(&mut host, &mut session, &mut app, &mut stores, &reader, &mut *elev, &mut platform, now + 80);
             }
         }
-        // The one-time post-update toast: raise the confirmed-update fact, then run one animation
-        // pass — the card scheduler pushes the "Updated to vX" card there, like the device.
-        if let Some(DfuSeed::Confirmed(version)) = &args.dfu {
-            app.apply_event(obc_app::HostEvent::UpdateConfirmed(obc_app::dfu::clamp(version)));
-            app.advance_animations(InputClock(500_000));
-        }
-        // The failure twin: the boot-outcome reconcile found the armed update is not what is
-        // running. Same shape as the toast above — raise the fact, then one animation pass drains it
-        // into the one-time "UPDATE FAILED" card.
-        if let Some(DfuSeed::Failed(why, staged)) = &args.dfu {
-            app.apply_event(obc_app::HostEvent::UpdateFailed {
+        // The one-time post-update toast and its failure twin: this boot's update result is a fact,
+        // and the pass's card scheduler pushes the "Updated to vX" / "UPDATE FAILED" card from it.
+        let boot_update = match &args.dfu {
+            Some(DfuSeed::Confirmed(version)) => {
+                Some(obc_app::device_core::UpdateResult::Confirmed(obc_app::dfu::clamp(version)))
+            }
+            Some(DfuSeed::Failed(why, staged)) => Some(obc_app::device_core::UpdateResult::Failed {
                 why: *why,
                 staged: staged.as_deref().map(obc_app::dfu::clamp),
-            });
-            app.advance_animations(InputClock(500_000));
+            }),
+            _ => None,
+        };
+        if let Some(result) = boot_update {
+            let _ = host.facts().note_update_result(result);
+            let now = script_now.max(500_000);
+            settle(&mut host, &mut session, &mut app, &mut stores, &reader, &mut *elev, &mut platform, now);
         }
+
         // `--sensors screen` (SE7, epic #707): after the script lands on the Sensors screen (or its
         // scan list), push the per-slot status + the canned scan-hit set — the fake central manager,
         // so the three-row screen reads Connected · 78 % / Searching / Not set and the scan list shows
@@ -1494,29 +1562,11 @@ fn main() {
             app.set_sensor_scan_hits(&fake_scan_hits());
         }
 
-        // The script may have loaded a route; open its geometry for the Map.
-        store.sync_active(app.active_route_index());
-        let route_src = store.active_source();
-        let route_index = route_src.as_ref().and_then(|s| RouteIndex::read(s).ok());
-        let route = match (route_index.as_ref(), route_src.as_ref()) {
-            (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
-            _ => None,
-        };
-        // An open Route overview wants the route's decimated shape preview (#678 rework 3's
-        // track/elevation pager): decimate the just-opened geometry once — the cue is false again
-        // the moment the copy is in, mirroring the board's ride-loop fill and the GUI's per-frame one.
-        if app.nav_preview_missing() {
-            if let Some(r) = route.as_ref() {
-                let pts = r.preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>();
-                app.set_nav_preview(&pts);
-            }
-        }
-
-        let mut tracks = TrackStore::open(args.tracks_dir());
-
-        // Replay the track from the start up to `--at`, ticking the app each step so the
-        // map-matcher locks on and the ride accumulators + breadcrumb fill. A coarse-but-
-        // bounded step keeps long tracks fast while staying under the dropout/teleport gates.
+        // Replay the track from the start up to `--at`, one **device frame** per step so the
+        // map-matcher locks on and the ride accumulators + breadcrumb fill. A coarse-but-bounded
+        // step keeps long tracks fast while staying under the dropout/teleport gates. The UI clock
+        // stands still at the script's own mark: a replay drives the *ride*, and aging the UI on top
+        // of it would run every card and idle timer through the whole track in one go.
         if let Some(p) = player.as_mut() {
             let mut baro = BaroSensor::new();
             p.seek(0.0);
@@ -1524,18 +1574,45 @@ fn main() {
             let step = (replay_to / 400.0).clamp(1.0, 8.0);
             let mut t = 0.0;
             while t < replay_to {
-                reconcile_tracks(&mut app, &mut tracks);
-                let sink: Option<&mut dyn TrackSink> = tracks.sink();
-                replay_step(&mut app, p, &mut baro, None, step, route.as_ref(), sink, ReplaySensors::default());
+                session.sync(&app, stores.routes);
+                let mut plan = {
+                    let src = stores.routes.active_source();
+                    let route = match (session.index(), src.as_ref()) {
+                        (Some(i), Some(s)) => Some(RouteReader::new(i, s)),
+                        _ => None,
+                    };
+                    let (ride, sensors) =
+                        replay_advance(p, &mut baro, None, step, stores.tracks.sink(), ReplaySensors::default());
+                    host.pass(
+                        &mut app,
+                        obc_app::device_core::PassClock { ride, ui: InputClock(script_now) },
+                        &[],
+                        sensors,
+                        route.as_ref(),
+                        gui::SIM_SUPPORT,
+                    )
+                };
+                host.execute(
+                    &mut app,
+                    &mut plan,
+                    &mut session,
+                    stores.routes,
+                    stores.rides,
+                    stores.tracks,
+                    stores.trips,
+                    &reader,
+                    &mut *elev,
+                    &mut platform,
+                );
                 // The map-referenced altimeter's one terrain read per fix (EL8, #1076) — the same
-                // mounted `.obcd` the router emits from, drained right behind the tick exactly as
+                // mounted `.obcd` the router emits from, drained right behind the pass exactly as
                 // the board's ride loop does.
                 app.sample_terrain(&mut *elev);
                 t += step;
             }
         }
 
-        // `--sensors demo` (epic #707, SE5): one final tick fed a **fixed synthetic** HR/power/
+        // `--sensors demo` (epic #707, SE5): one final frame fed a **fixed synthetic** HR/power/
         // cadence through SE2's HAL sensor traits, so the three new stat tiles render live values in
         // the Statistics-grid snapshot (the grid was pinned to HR/PWR/RPM in the settings seed
         // above). Stamped at the replay's own `now_ms` so `Activity`'s 5 s staleness gate reads them
@@ -1560,17 +1637,53 @@ fn main() {
                         Some(88)
                     }
                 }
-                let now_ms = (p.time() * 1000.0) as u32;
-                let (mut hr, mut power, mut cadence) = (DemoHr, DemoPower, DemoCadence);
-                let sensors = obc_ports::Sensors {
-                    hr: Some(&mut hr),
-                    power: Some(&mut power),
-                    cadence: Some(&mut cadence),
-                    ..obc_ports::Sensors::new(p)
+                session.sync(&app, stores.routes);
+                let ride = obc_ports::RideClock((p.time() * 1000.0) as u32);
+                let mut plan = {
+                    let src = stores.routes.active_source();
+                    let route = match (session.index(), src.as_ref()) {
+                        (Some(i), Some(s)) => Some(RouteReader::new(i, s)),
+                        _ => None,
+                    };
+                    let (mut hr, mut power, mut cadence) = (DemoHr, DemoPower, DemoCadence);
+                    let sensors = obc_ports::Sensors {
+                        hr: Some(&mut hr),
+                        power: Some(&mut power),
+                        cadence: Some(&mut cadence),
+                        ..obc_ports::Sensors::new(p)
+                    };
+                    host.pass(
+                        &mut app,
+                        obc_app::device_core::PassClock { ride, ui: InputClock(script_now) },
+                        &[],
+                        sensors,
+                        route.as_ref(),
+                        gui::SIM_SUPPORT,
+                    )
                 };
-                app.tick(obc_ports::RideClock(now_ms), sensors, route.as_ref());
+                host.execute(
+                    &mut app,
+                    &mut plan,
+                    &mut session,
+                    stores.routes,
+                    stores.rides,
+                    stores.tracks,
+                    stores.trips,
+                    &reader,
+                    &mut *elev,
+                    &mut platform,
+                );
             }
         }
+
+        // The final frame's geometry: whatever the script, the injections and the replay left
+        // active, re-opened from the resident session.
+        session.sync(&app, stores.routes);
+        let route_src = stores.routes.active_source();
+        let route = match (session.index(), route_src.as_ref()) {
+            (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
+            _ => None,
+        };
 
         // `--freeze` (#1146 P2): engage the Recalculating freeze through the same seam a drained
         // plan command takes, so the snapshot shows the real banner over the real frozen map.

@@ -24,7 +24,7 @@ use obc_host_core::trace::{
     RevisionKey, RunnerMode, ScenarioStep, TimeKey, Trace, TraceHarness, TraceInput, TraceOutput, TraceRecorder,
     TraceScenario, TraceSink,
 };
-use obc_host_core::{HostLoop, PlanHold, RideRepository, RouteRepository, TripCatalog};
+use obc_host_core::{LegacyLoop, PlanHold, RideRepository, RouteRepository, TripCatalog};
 use obc_map_scene::BBox;
 use obc_ports::{Fix, InputClock, LocationSource, RideClock, Sensors, SettingsSaveError};
 use obc_route::{gpx_to_obcr, NavError, RouteIndex, RouteReader};
@@ -249,7 +249,7 @@ pub enum PendingSettingsResult {
     PersistRevision(u16),
 }
 
-/// The legacy adapter uses the real `App` protocol doors and `HostLoop`'s passive trace observer.
+/// The legacy adapter uses the real `App` protocol doors and `LegacyLoop`'s passive trace observer.
 /// Inputs are real public app operations or UI gestures; each pass runs the real command dispatcher;
 /// deliveries call the real `set_*` feeders and `apply_event`. Planner, detour-commit, recorder-finalize,
 /// and derived-fill completions are scripted at that protocol boundary because the legacy interfaces
@@ -264,7 +264,7 @@ pub struct LegacyHarness {
     pub trip_stage_ids: Vec<u64>,
     pub trip_present: bool,
     pub nav_generation: u16,
-    pub host: HostLoop,
+    pub host: LegacyLoop,
     pub fail_next_finalize: bool,
     pub commit_success_pending: bool,
     pub pending_nav_plan: Option<Result<u64, NavError>>,
@@ -297,7 +297,7 @@ impl LegacyHarness {
             trip_stage_ids,
             trip_present: true,
             nav_generation: 0,
-            host: HostLoop::new(),
+            host: LegacyLoop::new(),
             fail_next_finalize: false,
             commit_success_pending: false,
             pending_nav_plan: None,

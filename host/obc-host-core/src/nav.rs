@@ -5,11 +5,9 @@ use crate::trace::{DataKey, FeederCall, FeederKind, TraceSink};
 use crate::VecSink;
 
 /// An in-flight route plan (#499): the resumable planner plus its caller-owned buffers and the
-/// in-memory sink. [`HostLoop`](crate::HostLoop) owns it under both host cadences: a live host calls
-/// [`HostLoop::reconcile`](crate::HostLoop::reconcile) once per frame so the UI stays interactive,
-/// while a scripted/headless host calls
-/// [`HostLoop::reconcile_to_completion`](crate::HostLoop::reconcile_to_completion) to step the same
-/// resident plan until it reaches a terminal result.
+/// in-memory sink. [`HostLoop`](crate::HostLoop) owns it under both host cadences: a live host runs
+/// [`HostLoop::execute`](crate::HostLoop::execute) once per frame so the UI stays interactive,
+/// while a scripted/headless host loops the same call until the plan reaches a terminal result.
 ///
 /// The A* table is the capped sim/LM20 size (`NAV_MAX_NODES` = 1536 ⇒ ~39 KB — the final
 /// device's 40 kB nav budget, deliberately emulated so sim range = final-device range) and is
@@ -139,6 +137,23 @@ pub fn finish_detour_plan(
     orig: Option<&obc_route::RouteReader>,
     trace: &mut dyn TraceSink,
 ) -> Option<DetourReady> {
+    let (ready, result) = plan_detour_preview(app, outcome, plan, orig, trace);
+    let event = obc_app::HostEvent::DetourPlanned(result);
+    trace.event(&event);
+    app.apply_event(event);
+    ready
+}
+
+/// [`finish_detour_plan`]'s body without the legacy answer: the preview figures the typed
+/// [`NavigatorOutcome::DetourFinished`](obc_app::navigator::NavigatorOutcome) carries, and the
+/// [`DetourReady`] the executor holds until the rider commits or cancels.
+pub fn plan_detour_preview(
+    app: &mut obc_app::App,
+    outcome: Result<obc_route::RouteStats, obc_route::NavError>,
+    plan: DetourPlan,
+    orig: Option<&obc_route::RouteReader>,
+    trace: &mut dyn TraceSink,
+) -> (Option<DetourReady>, Result<obc_app::DetourPreview, obc_route::NavError>) {
     match outcome {
         Ok(stats) => {
             let mut bytes = plan.sink.into_bytes();
@@ -198,23 +213,18 @@ pub fn finish_detour_plan(
                 ));
             }
             eprintln!("detour plan: ok len={detour_len_m} m (Δ {:+} m)", preview.cost_delta_m);
-            let event = obc_app::HostEvent::DetourPlanned(Ok(preview));
-            trace.event(&event);
-            app.apply_event(event);
-            Some(DetourReady {
+            let ready = DetourReady {
                 bytes,
                 detour_len_m,
                 progress_m: plan.progress_m,
                 rejoin_m,
                 has_elevation: stats.has_elevation,
-            })
+            };
+            (Some(ready), Ok(preview))
         }
         Err(e) => {
             eprintln!("detour plan: failed ({e:?})");
-            let event = obc_app::HostEvent::DetourPlanned(Err(e));
-            trace.event(&event);
-            app.apply_event(event);
-            None
+            (None, Err(e))
         }
     }
 }
@@ -225,7 +235,6 @@ pub fn finish_detour_plan(
 ///
 /// `#[inline(never)]`: the splice runs one-shot here with its ~9 kB emitter frame — keep it out of
 /// the dispatcher's frame (the same one-large-frame-at-a-time rule as the plan phases).
-#[inline(never)]
 pub fn finish_detour_commit(
     app: &mut obc_app::App,
     store: &mut dyn crate::RouteRepository,
@@ -233,6 +242,22 @@ pub fn finish_detour_commit(
     ready: Option<DetourReady>,
     trace: &mut dyn TraceSink,
 ) {
+    let result = commit_detour(app, store, orig_index, ready, trace);
+    let event = obc_app::HostEvent::DetourCommitted(result);
+    trace.event(&event);
+    app.apply_event(event);
+}
+
+/// [`finish_detour_commit`]'s body without the legacy answer — the splice's result, which the typed
+/// executor reports as [`NavigatorOutcome::DetourCommitted`](obc_app::navigator::NavigatorOutcome).
+#[inline(never)]
+pub fn commit_detour(
+    app: &mut obc_app::App,
+    store: &mut dyn crate::RouteRepository,
+    orig_index: Option<&obc_route::RouteIndex>,
+    ready: Option<DetourReady>,
+    trace: &mut dyn TraceSink,
+) -> Result<obc_app::CatalogObjectId, obc_route::NavError> {
     use obc_route::NavError;
     let result = (|| {
         let ready = ready.ok_or(NavError::NoPath)?;
@@ -271,9 +296,7 @@ pub fn finish_detour_commit(
     if let Err(e) = &result {
         eprintln!("detour commit: failed ({e:?})");
     }
-    let event = obc_app::HostEvent::DetourCommitted(result);
-    trace.event(&event);
-    app.apply_event(event);
+    result
 }
 
 /// Commit / report a finished plan and answer the app — the shared tail of the live hosts' stepped
@@ -291,6 +314,36 @@ pub fn finish_nav_plan(
     tile_stats: obc_reader::NavCacheStats,
     trace: &mut dyn TraceSink,
 ) {
+    let result = commit_nav_plan(app, store, outcome, sink_bytes, tile_stats, trace);
+    let event = obc_app::HostEvent::NavPlanned(result);
+    trace.event(&event);
+    app.apply_event(event);
+    // The computed-route overview's shape preview (#685 §4), decimated host-side from the
+    // just-committed bytes. After the `NavPlanned` answer (which activates the route and clears any
+    // stale preview) so the copy keys to the fresh `active_route`. Skipped when the answer was
+    // dropped (rider cancelled — no overview is up to draw it). The typed executor answers the same
+    // preview from the next plan's `derived_needs` key instead.
+    if result.is_ok() && app.nav_preview_missing() {
+        let src = obc_formats::io::SliceSource(sink_bytes);
+        if let Ok(idx) = obc_route::RouteIndex::read(&src) {
+            let pts = obc_route::RouteReader::new(&idx, &src).preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>();
+            app.set_nav_preview(&pts);
+            trace.feeder(FeederCall::new(FeederKind::NavPreview, DataKey::from("host.nav-preview"), pts.len()));
+        }
+    }
+}
+
+/// [`finish_nav_plan`]'s body without the legacy answer: write the reserved nav route, re-feed the
+/// id-carrying catalog, and report the committed identity — what the typed executor turns into
+/// [`NavigatorOutcome::PlanFinished`](obc_app::navigator::NavigatorOutcome).
+pub fn commit_nav_plan(
+    app: &mut obc_app::App,
+    store: &mut dyn crate::RouteRepository,
+    outcome: Result<obc_route::RouteStats, obc_route::NavError>,
+    sink_bytes: &[u8],
+    tile_stats: obc_reader::NavCacheStats,
+    trace: &mut dyn TraceSink,
+) -> Result<obc_app::CatalogObjectId, obc_route::NavError> {
     use obc_route::NavError;
     let result = outcome.and_then(|stats| {
         let id = store.write_nav_route(sink_bytes).ok_or(NavError::NoPath)?;
@@ -316,19 +369,5 @@ pub fn finish_nav_plan(
     if let Err(e) = &result {
         eprintln!("nav route: failed ({e:?})");
     }
-    let event = obc_app::HostEvent::NavPlanned(result);
-    trace.event(&event);
-    app.apply_event(event);
-    // The computed-route overview's shape preview (#685 §4), decimated host-side from the
-    // just-committed bytes. After the `NavPlanned` answer (which activates the route and clears any
-    // stale preview) so the copy keys to the fresh `active_route`. Skipped when the answer was
-    // dropped (rider cancelled — no overview is up to draw it).
-    if result.is_ok() && app.nav_preview_missing() {
-        let src = obc_formats::io::SliceSource(sink_bytes);
-        if let Ok(idx) = obc_route::RouteIndex::read(&src) {
-            let pts = obc_route::RouteReader::new(&idx, &src).preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>();
-            app.set_nav_preview(&pts);
-            trace.feeder(FeederCall::new(FeederKind::NavPreview, DataKey::from("host.nav-preview"), pts.len()));
-        }
-    }
+    result
 }

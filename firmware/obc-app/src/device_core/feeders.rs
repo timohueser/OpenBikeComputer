@@ -147,10 +147,11 @@ pub enum FeederKind {
 /// Which slice removes the method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeletingSlice {
-    /// #1397 S6 — every host runs `App::run_pass`, so the legacy protocol and its feeders go with
-    /// the frame methods they belong to. DC6 #1439 built the replacement path
-    /// ([`compat`](super::compat)) but deliberately left the production call sites alone, so the
-    /// methods themselves survive until the cutover.
+    /// #1397 **S6c** — the sweep after the *last* host runs `App::run_pass`. S6a moved the
+    /// simulator and the web demo onto the pass; S6b moves the board. Until then the board still
+    /// calls most of these, so the whole shared surface — the façade wrappers, these feeders and
+    /// the legacy protocol behind them — stays compiling. DC6 #1439 built the replacement path
+    /// ([`compat`](super::compat)) and deliberately left the call sites alone for that reason.
     PassCutover,
     /// #1401 — the weather storage and request cutover, after FS7.
     WeatherCutover,

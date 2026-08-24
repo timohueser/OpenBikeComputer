@@ -12,11 +12,13 @@
 //! from `firmware/`); only the thin `#[wasm_bindgen]` surface in `main.rs` is wasm-only.
 
 use embedded_graphics::pixelcolor::Rgb888;
-use obc_app::{App, AppState, CameraMode, Gesture, HostEvent};
+use obc_app::device_core::{PassClock, PassPlan, PlatformSupport, RouteUpload};
+use obc_app::{App, AppState, CameraMode, Gesture};
 use obc_host_core::{
-    fill_nav_preview, initial_camera, replay_step, HostLoop, MemRideStore, MemRouteStore, MemTrackStore, ReplaySensors,
-    RgbaFrame, TrackRepository,
+    initial_camera, replay_advance, ActiveRouteSession, HostLoop, MemRideStore, MemRouteStore, MemTrackStore,
+    ReplaySensors, RgbaFrame, TrackRepository,
 };
+use obc_ports::InputClock;
 use obc_reader::{rgb565_to_device64, MapCache, MapTables, Reader, SliceSource};
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 use obc_route::RouteReader;
@@ -49,6 +51,20 @@ const TOUR_BASELINE_S: f64 = 1500.0;
 /// rAF loop; without the clamp the first frame back would teleport the ride by minutes and the
 /// map-matcher/breadcrumb would see one giant jump.
 const MAX_FRAME_DT_S: f64 = 0.25;
+
+/// What this host implements. Everything the shared screens can reach, because the page can walk
+/// anywhere the device can: a capability withdrawn here would show the visitor a screen the real
+/// device does not have. The bounded work behind DFU and free-space is simply never answered (the
+/// [`HostPlatform`](obc_host_core::HostPlatform) defaults), exactly as the page's old `|_, _| {}`
+/// command sink dropped those requests.
+const SUPPORT: PlatformSupport = PlatformSupport {
+    detour: true,
+    settings_persistence: true,
+    dfu: true,
+    weather: true,
+    bonding: true,
+    storage_space_report: true,
+};
 
 /// One queued page command, drained per [`Demo::tick`]. Gestures are injected through the app's
 /// deterministic [`apply_gesture`](App::apply_gesture) seam (finished gestures only — the
@@ -145,10 +161,12 @@ pub struct Demo {
     tracks: MemTrackStore,
     player: GpxPlayer,
     baro: BaroSensor,
-    /// The shared host loop: the command/event dispatcher, the in-flight route plan (stepped once
-    /// per tick), and the resident active-route session (so the map opens without a per-frame
-    /// `RouteIndex` reparse). Every sequencing decision lives in `obc-host-core`, not here.
+    /// The shared typed executor: the next pass's outcomes and facts, and the in-flight route plan
+    /// (stepped once per tick). Every sequencing decision lives in `obc-host-core`, not here.
     host: HostLoop,
+    /// The resident active-route parse, opened once per frame and lent to both the pass and the
+    /// render (so the map opens without a per-frame `RouteIndex` reparse).
+    session: ActiveRouteSession,
     frame: RgbaFrame,
     /// Page commands queued since the last [`tick`](Demo::tick), drained **in full, in order,
     /// once per tick** (not one-per-tick — a guided-tour step deliberately pushes several cmds in
@@ -169,6 +187,14 @@ pub struct Demo {
     queue: Vec<Cmd>,
     /// The previous `tick` timestamp (rAF `now_ms`), for the replay `dt`.
     last_now_ms: Option<f64>,
+    /// How far the device's UI clock runs **ahead of** the rAF timestamp: the time the guided-demo
+    /// pre-roll's own render-free passes consumed.
+    ///
+    /// The UI clock (holds, animations, card dwell, the next wake) is `now_ms + this`, so it is
+    /// monotonic *and* it keeps running. Clamping it to the larger of the two instead would freeze
+    /// the device for as long as the pre-roll took — about eight minutes of wall clock after every
+    /// `enter`, which is the whole guided tour.
+    ui_offset_ms: u32,
     /// Guided-demo mode: the page's tour engine owns playback + baseline resets, so the ambient
     /// summit auto-restart is suspended (a `start_session` mid-demo would reset progress under
     /// the script).
@@ -205,9 +231,11 @@ impl Demo {
             player,
             baro: BaroSensor::new(),
             host: HostLoop::new(),
+            session: ActiveRouteSession::new(),
             frame: RgbaFrame::new(FRAME_W, FRAME_H),
             queue: Vec::new(),
             last_now_ms: None,
+            ui_offset_ms: 0,
             tour_active: false,
             ready: false,
         });
@@ -252,61 +280,21 @@ impl Demo {
         };
 
         // Drain the page's commands first, so a gesture's transition is visible in this same
-        // frame's render (and the closed-loop tour never waits an extra frame). The whole queue
-        // drains before the render below — see [`queue`](Self::queue) for the no-draw-between-cmds
-        // caveat that constrains how tour steps are grouped.
+        // frame's render (and the closed-loop tour never waits an extra frame). Gestures go into
+        // *this* frame's pass rather than straight into the app: the pass applies them at its own
+        // stage, after what the executor finished and after the facts, so a page command and a
+        // rider's button land by exactly the same path. See [`queue`](Self::queue) for the
+        // no-draw-between-cmds caveat that constrains how tour steps are grouped.
+        let mut gestures: Vec<Gesture> = Vec::new();
         for cmd in std::mem::take(&mut self.queue) {
-            self.apply(cmd);
+            self.apply(cmd, &mut gestures);
         }
 
-        // Host reconciliation through the shared dispatcher (`obc-host-core`): drain the typed
-        // command protocol in canonical order — deletes + catalog re-feeds, the resumable planner's
-        // lifecycle (one bounded step per tick, the board's one-step-per-pass shape), the ride-track
-        // fill, and the memory ride log's session reconcile. The web demo has no trips (`&mut ()`)
-        // and none of the host-specific commands (`|_, _| {}` — no card scan, bond, settings, or DFU
-        // on the page), so the whole loop is repository sequencing that lives once, not here.
-        {
-            let src = SliceSource(self.bytes);
-            let reader = Reader::new(&src, &self.tables, &self.cache);
-            let mut no_trips = ();
-            self.host.reconcile(
-                &mut self.app,
-                &mut self.routes,
-                &mut self.rides,
-                &mut self.tracks,
-                &mut no_trips,
-                &reader,
-                // The demo page ships one embedded `.obcm` and no terrain beside it (EL7): the null
-                // source keeps a planned route exactly as flat as it has always been here.
-                &mut obc_route::NullElevation,
-                |_app, _cmd| {},
-            );
-        }
-
-        // Open the active route's geometry from the resident session — no per-frame `RouteIndex`
-        // reparse (the acceptance-criterion fix): the index is kept until the active bytes change.
-        let changed = self.routes.sync_active(self.app.active_route_index());
-        self.host.session.reparse(changed, &self.routes);
-        let route_src = self.routes.active_source();
-        let route = match (self.host.session.index(), route_src.as_ref()) {
-            (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
-            _ => None,
-        };
-        // The open Route overview's decimated shape preview — the shared once-per-entry fill.
-        fill_nav_preview(&mut self.app, route.as_ref());
-
-        // Advance the ride and tick the app on the playback clock (no compass on the web — the
-        // replay's GPS course orients the heading-up map).
-        replay_step(
-            &mut self.app,
-            &mut self.player,
-            &mut self.baro,
-            None,
-            dt,
-            route.as_ref(),
-            self.tracks.sink(),
-            ReplaySensors::default(),
-        );
+        let plan = self.device_frame(self.ui_now(), dt, &gestures);
+        // A single-loop host has no second recognizer to cancel, so it consumes the hold-cancel
+        // latch the pass may have armed rather than leaving it set for a plane that does not exist
+        // — the same rule `App::handle_input` applies for the hosts that still go through it.
+        let _ = self.app.take_hold_cancel();
 
         // Ambient: restart the climb at the summit so the page stays alive. Point-to-point, so
         // bump the tracking session to clear the breadcrumb + totals (a fresh lap instead of
@@ -316,10 +304,21 @@ impl Demo {
             self.app.activity.start_session();
         }
 
-        // Render on demand — the same dirty signal the firmware gates its repaints on. The first
-        // frame always renders (`ready` doubles as the page's poster-swap signal).
-        let dirty = self.app.take_dirty();
-        if dirty.map || dirty.overlay || !self.ready {
+        // `plan.next_wake_ms` and `plan.immediate` are deliberately **ignored**: the page is
+        // rAF-paced, so the browser decides when the next frame happens and the next rAF frame is
+        // already the "come straight back" an immediate wake asks for.
+        //
+        // Render on demand — `plan.render` is the same signal the firmware gates its repaints on.
+        // The first frame always renders (`ready` doubles as the page's poster-swap signal).
+        if plan.render.map || plan.render.overlay || !self.ready {
+            // Re-open the active route: the executor may have committed new geometry under it (a
+            // planned route, a spliced detour), and the frame must draw what is there now.
+            self.session.sync(&self.app, &mut self.routes);
+            let route_src = self.routes.active_source();
+            let route = match (self.session.index(), route_src.as_ref()) {
+                (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
+                _ => None,
+            };
             let src = SliceSource(self.bytes);
             let reader = Reader::new(&src, &self.tables, &self.cache);
             self.app.render_frame(
@@ -340,17 +339,80 @@ impl Demo {
         false
     }
 
-    /// Apply one drained command.
-    fn apply(&mut self, cmd: Cmd) {
+    /// The device's UI clock: the rAF timestamp plus whatever a guided pre-roll ran through on its
+    /// own. Monotonic, because the rAF clock is and the offset only ever grows.
+    fn ui_now(&self) -> u32 {
+        (self.last_now_ms.unwrap_or(0.0).max(0.0) as u32).wrapping_add(self.ui_offset_ms)
+    }
+
+    /// One device frame: the active route opened once, one [`App::run_pass`], and the typed
+    /// executor behind it. The shape the page's tick and the guided pre-roll share.
+    ///
+    /// Named `device_frame` and not `frame` because [`frame`](Self::frame) is the page's RGBA buffer.
+    fn device_frame(&mut self, ui_ms: u32, dt: f64, gestures: &[Gesture]) -> PassPlan {
+        // Open the active route's geometry from the resident session — no per-frame `RouteIndex`
+        // reparse (the acceptance-criterion fix): the index is kept until the active bytes change.
+        self.session.sync(&self.app, &mut self.routes);
+        let mut plan = {
+            let route_src = self.routes.active_source();
+            let route = match (self.session.index(), route_src.as_ref()) {
+                (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
+                _ => None,
+            };
+            // Advance the ride and hand the pass the playback clock (no compass on the web — the
+            // replay's GPS course orients the heading-up map).
+            let (ride, sensors) = replay_advance(
+                &mut self.player,
+                &mut self.baro,
+                None,
+                dt,
+                self.tracks.sink(),
+                ReplaySensors::default(),
+            );
+            self.host.pass(
+                &mut self.app,
+                PassClock { ride, ui: InputClock(ui_ms) },
+                gestures,
+                sensors,
+                route.as_ref(),
+                SUPPORT,
+            )
+        };
+        // The typed executor: the plan's bounded effects against the in-memory stores, and
+        // token-carrying outcomes for the next pass. The demo has no trips (`&mut ()`) and no
+        // platform work of its own (`&mut ()` — no card scan, bond, settings store or DFU on the
+        // page), so the whole loop is repository sequencing that lives once in `obc-host-core`.
+        let src = SliceSource(self.bytes);
+        let reader = Reader::new(&src, &self.tables, &self.cache);
+        self.host.execute(
+            &mut self.app,
+            &mut plan,
+            &mut self.session,
+            &mut self.routes,
+            &mut self.rides,
+            &mut self.tracks,
+            &mut (),
+            &reader,
+            // The demo page ships one embedded `.obcm` and no terrain beside it (EL7): the null
+            // source keeps a planned route exactly as flat as it has always been here.
+            &mut obc_route::NullElevation,
+            &mut (),
+        );
+        plan
+    }
+
+    /// Apply one drained command. A gesture joins this frame's batch; everything else drives the
+    /// replay or a baseline reset.
+    fn apply(&mut self, cmd: Cmd, gestures: &mut Vec<Gesture>) {
         match cmd {
-            Cmd::Gesture(g) => self.app.apply_gesture(g),
+            Cmd::Gesture(g) => gestures.push(g),
             Cmd::Play => self.player.play(),
             Cmd::Pause => self.player.pause(),
             Cmd::Seek(t) => self.player.seek(t),
             Cmd::StageUpload => self.reset(Baseline::Upload),
             Cmd::ReceiveRoute => {
                 if let Some(&id) = self.routes.ids().first() {
-                    self.app.apply_event(HostEvent::RouteUploaded { id, replaced: false, elevation: None });
+                    self.host.facts().note_route_upload(RouteUpload { id, replaced: false, elevation: None });
                 }
             }
             Cmd::Enter => self.reset(Baseline::Tour),
@@ -396,15 +458,32 @@ impl Demo {
         app.set_rides(self.rides.catalog(), self.rides.ids());
         // Manual climb mode for *both* baselines — see [`Baseline`]: the whole demo ride is a
         // climb, so Auto would swap the opening Map for the Climb profile within the first frames.
-        app.set_settings(Settings { climb_mode: ClimbMode::Manual, ..Settings::default() });
+        //
+        // `IdleReturn::Never`, because the page has no rider whose idleness means anything: the
+        // pass runs the device's animation clock (the legacy frame here never did), and a guided
+        // step that dwells on a menu while the visitor reads it would otherwise be swept back to
+        // the Map thirty seconds in.
+        app.set_settings(Settings {
+            climb_mode: ClimbMode::Manual,
+            idle_return: obc_app::settings::IdleReturn::Never,
+            ..Settings::default()
+        });
         // Select the embedded demo route and open a session so its line + ride stats show
         // (through the invariant-preserving `activate_route`, never a direct field poke).
         if baseline != Baseline::Upload && !self.routes.catalog().is_empty() {
             app.activate_route(0);
             app.activity.start_session();
         }
-        // Overwrite in the existing heap slot (no fresh allocation, no lingering old app).
+        // Overwrite in the existing heap slot (no fresh allocation, no lingering old app). The
+        // executor is rebuilt with it: its inbox holds outcomes and operation tokens minted by the
+        // app that is being replaced, and none of them answer anything in the new one.
         *self.app = app;
+        self.host = HostLoop::new();
+        // The resident parse goes with it, and the store's active binding has to be dropped in the
+        // same breath: `sync_active` only reparses on a *change*, so a store still bound to route 0
+        // would answer "unchanged" and the fresh session would never open the route at all.
+        self.session = ActiveRouteSession::new();
+        self.routes.invalidate_active();
 
         self.player.seek(0.0);
         if baseline == Baseline::Upload {
@@ -420,25 +499,15 @@ impl Demo {
             // distance/time/climb totals from the exact GPX it later shows in the phone capture.
             // About 500 cheap, render-free ticks at 3×; paid only when a guided chapter starts.
             self.baro = BaroSensor::new();
-            let changed = self.routes.sync_active(self.app.active_route_index());
-            self.host.session.reparse(changed, &self.routes);
-            let route_src = self.routes.active_source();
-            let route = match (self.host.session.index(), route_src.as_ref()) {
-                (Some(idx), Some(src)) => Some(RouteReader::new(idx, src)),
-                _ => None,
-            };
             while self.player.time() < TOUR_BASELINE_S {
                 let wall_dt = ((TOUR_BASELINE_S - self.player.time()) / self.player.speed() as f64).min(1.0);
-                replay_step(
-                    &mut self.app,
-                    &mut self.player,
-                    &mut self.baro,
-                    None,
-                    wall_dt,
-                    route.as_ref(),
-                    self.tracks.sink(),
-                    ReplaySensors::default(),
-                );
+                // Full frames, not bare ticks: a pass whose effects nobody serves leaves its
+                // domains in flight, and the device the guided demo hands over would then refuse
+                // the first delete or stamp it is asked for.
+                // The pre-roll's own time joins the offset, so the clock the page resumes on
+                // carries it and keeps ticking from there.
+                self.ui_offset_ms = self.ui_offset_ms.wrapping_add((wall_dt * 1000.0) as u32);
+                let _ = self.device_frame(self.ui_now(), wall_dt, &[]);
             }
         }
     }

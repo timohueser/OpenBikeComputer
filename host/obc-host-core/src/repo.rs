@@ -1,4 +1,4 @@
-//! The narrow repository interfaces the shared host dispatcher ([`crate::HostLoop`]) drives — one
+//! The narrow repository interfaces the shared typed executor ([`crate::HostLoop`]) drives — one
 //! trait per store family the app talks to, so the *sequencing* (delete → rescan → re-feed, the
 //! nav commit order, the track lifecycle) lives once in [`crate::dispatch`] and every host store —
 //! the simulator's folder-backed stores and the in-memory [`MemRouteStore`](crate::MemRouteStore)

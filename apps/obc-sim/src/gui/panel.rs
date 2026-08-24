@@ -771,6 +771,18 @@ impl SimGui {
             });
             ui.end_row();
 
+            // The pass's own sleep decision (`PassPlan::next_wake_ms`) — the timer a firmware host
+            // would arm before parking. The sim repaints continuously so its Controls window stays
+            // live, so this is **shown, not obeyed**: `now` = decided work is still in flight,
+            // `event` = nothing is time-animating.
+            ui.label("Next wake");
+            match self.last_wake_ms {
+                Some(0) => ui.colored_label(on, "now"),
+                Some(ms) => ui.label(format!("{ms} ms")),
+                None => ui.colored_label(off, "event"),
+            };
+            ui.end_row();
+
             // Self-diffing present: rows actually *pushed* this frame vs. the full height, decided
             // by the per-row hash diff — idle → 0 (free), a Home minute tick → a few clock rows, a
             // map pan → ~all. An exact full-frame diff oracle backs each number (a miss panics).

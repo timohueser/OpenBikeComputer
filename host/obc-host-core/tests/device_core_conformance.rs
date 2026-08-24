@@ -331,6 +331,10 @@ struct CoreHarness {
     served: BTreeSet<&'static str>,
     /// Effects the adapter could not express at all, by row.
     left: BTreeSet<LegacyOwned>,
+    /// The store revision a catalog read reports. The old protocol had none
+    /// (`LegacyOwned::StoreRevision`) and this fixture's repositories have none either, so the
+    /// executor mints a monotonic one per read — exactly what `HostLoop` does.
+    store_revision: u64,
     /// The settings write the typed executor is holding. A real asynchronous executor keeps the
     /// token of the operation it is performing; the corpus scripts some settings answers at the
     /// *action* rather than at the request, so they are built against whatever is actually running.
@@ -351,6 +355,7 @@ impl CoreHarness {
             served: BTreeSet::new(),
             left: BTreeSet::new(),
             settings_token: None,
+            store_revision: 0,
         }
     }
 
@@ -476,10 +481,15 @@ impl CoreHarness {
 
     fn serve_catalog(&mut self, effect: CatalogEffect) -> Done {
         match effect {
-            CatalogEffect::ReadCatalog { .. } => {
-                // A refresh needs `CatalogIntent::Refresh`, which the pass does not produce yet: a
-                // store commit still becomes the legacy `RescanStore` cue (LegacyOwned::StoreRevision).
-                panic!("no catalog refresh intent exists until #1397 S6 moves the store executor")
+            CatalogEffect::ReadCatalog { token } => {
+                // The re-read the store commit ordered (#1397 S6a). The fixture's catalogs are the
+                // resident ones, so a refresh re-feeds exactly what it already holds and the outcome
+                // reports only the revision it read at — bulk never enters the protocol.
+                self.store_revision += 1;
+                Done::Catalog {
+                    outcome: CatalogOutcome::CatalogRead { token, revision: Revision::new(self.store_revision) },
+                    refeed: Refeed::Routes,
+                }
             }
             CatalogEffect::RemoveObject { token, object } => {
                 if let Some(index) = self.state.route_ids.iter().position(|&id| id == object) {
@@ -918,8 +928,11 @@ const DIFFERENCES: &[Difference] = &[
         what: "the compatibility runner keeps the object",
         why: "CatalogEffect::RemoveObject is namespace-free because the flat store removes by \
               identity; the legacy deletes are namespaced, and the namespace cannot be recovered \
-              from the effect. The adapter leaves it rather than guessing (#1397 S6). The typed \
-              runner removes it, which is what that row costs until the store executor lands.",
+              from the effect. The adapter leaves it rather than guessing. #1397 S6a built the \
+              typed store executor and moved every production host onto it, so this row is now the \
+              cost of the *adapter* alone — the path a host runs only before its own executor \
+              migrates (the board, at S6b). The typed runner removes the object, which is what the \
+              production hosts now do.",
     },
     Difference {
         scenario: "catalog.ride-delete",
@@ -927,7 +940,8 @@ const DIFFERENCES: &[Difference] = &[
         disposition: Disposition::Accepted,
         owner: Some(LegacyOwned::ObjectNamespace),
         what: "the compatibility runner keeps the object",
-        why: "the same namespace-free removal, and the same row (#1397 S6).",
+        why: "the same namespace-free removal, and the same row — carried by the adapter alone \
+              since #1397 S6a moved the production hosts to the typed executor.",
     },
     Difference {
         scenario: "retention.expiry-retry-and-trusted-clock",
@@ -937,8 +951,9 @@ const DIFFERENCES: &[Difference] = &[
         what: "the compatibility runner expires nothing",
         why: "an expiry reaches the catalog as the same namespace-free removal, so it hits the same \
               row — and the catalog then stays in flight, because no legacy event can build a \
-              CatalogOutcome. That is the documented one-operation cost of running the pass before \
-              the executors migrate (#1439, closed by #1397 S6).",
+              CatalogOutcome. That is the documented one-operation cost of running the pass through \
+              the adapter (#1439). #1397 S6a closed it for the simulator and the web demo by giving \
+              them an executor that answers; the adapter keeps it until the board follows at S6b.",
     },
 ];
 
@@ -1204,9 +1219,7 @@ const MANDATORY_TRACES: [MandatoryTrace; 16] = [
     MandatoryTrace {
         row: "store change during catalog refresh",
         test: "a_store_change_during_a_catalog_operation_is_not_lost",
-        substitution: Some(
-            "a catalog *refresh* cannot be in flight in Phase 1: the pass produces no              CatalogIntent::Refresh, so a store commit still becomes the legacy RescanStore cue              (LegacyOwned::StoreRevision). The trace runs the store-revision fact against an              in-flight catalog **removal** — the same one-operation-in-flight rule, on the only              catalog operation the pass can produce. The refresh arrives with the store executor at              #1397 S6, and this row becomes literal then.",
-        ),
+        substitution: None,
     },
     MandatoryTrace {
         row: "transfer start during route planning",
@@ -1232,7 +1245,7 @@ const MANDATORY_TRACES: [MandatoryTrace; 16] = [
         row: "trip member disappearance before delete commit",
         test: "an_object_that_vanished_before_the_commit_is_a_success",
         substitution: Some(
-            "the trip cascade never becomes an effect — CatalogState::admit_intent refuses it              (LegacyOwned::TripCascade), so there is no bounded member read to race with. The trace              runs the same disappearance against a route removal, which is where the rule lives: an              object already gone is `existed: false`, a success, never a failure the rider sees. The              cascade's own member read lands with #1397 S6.",
+            "the trip cascade never becomes an effect — CatalogState::admit_intent refuses it              (LegacyOwned::TripCascade), so there is no bounded member read to race with. The trace              runs the same disappearance against a route removal, which is where the rule lives: an              object already gone is `existed: false`, a success, never a failure the rider sees. The              cascade's own member read lands with #1491.",
         ),
     },
     MandatoryTrace {
@@ -1298,7 +1311,11 @@ fn every_mandatory_trace_has_a_test_that_runs_it() {
         }
     }
     let substituted = MANDATORY_TRACES.iter().filter(|trace| trace.substitution.is_some()).count();
-    assert_eq!(substituted, 2, "two rows are unreachable in Phase 1, and both say so");
+    assert_eq!(
+        substituted, 1,
+        "the store-refresh row became literal at #1397 S6a; only the trip cascade is still \
+         unreachable, and it says so"
+    );
 }
 
 fn typed() -> CoreHarness {
@@ -1430,8 +1447,12 @@ fn an_outcome_after_a_replacement_request_changes_nothing() {
     assert_eq!(harness.state.route_ids.len(), 1, "both removals landed, neither twice");
 }
 
-/// **A store change during a catalog operation.** The commit is an edge the pass records once, the
-/// domain keeps one operation in flight, and neither loses the other.
+/// **A store change during a catalog refresh.** The commit is an edge the pass records once, the
+/// domain keeps one operation in flight, and neither loses the other — the refresh the commit
+/// ordered simply waits for the removal that is already running.
+///
+/// Literal since #1397 S6a: `ExternalFacts::store_revision` raises `CatalogIntent::Refresh`, so
+/// there is a real catalog refresh for a real store change to race.
 #[test]
 fn a_store_change_during_a_catalog_operation_is_not_lost() {
     let mut harness = expiring(1);
@@ -1441,16 +1462,29 @@ fn a_store_change_during_a_catalog_operation_is_not_lost() {
     harness.inbox.facts.note_store_revision(StoreRevision { store: StoreIdentity::new(1), revision: Revision::new(4) });
     let plan = harness.pass();
     assert!(plan.effects.catalog.is_empty(), "one catalog operation at a time");
-    assert!(harness.state.app.store_changed_pending() > 0, "the commit became the refresh cue");
+    assert_eq!(harness.state.app.store_changed_pending(), 0, "and no legacy rescan cue behind it");
 
-    // The same revision again is the same edge, not a second one.
-    let before = harness.state.app.store_changed_pending();
+    // The same revision again is the same edge, not a second one: the refresh is owed once.
     harness.inbox.facts.note_store_revision(StoreRevision { store: StoreIdentity::new(1), revision: Revision::new(4) });
     harness.pass();
-    assert_eq!(harness.state.app.store_changed_pending(), before, "one commit, one cue");
 
+    // The removal's answer frees the domain, and the commit's own re-read is what goes out next —
+    // once, not twice.
     harness.answer_catalog(effect);
-    harness.pass();
+    let refresh = harness.next_catalog_effect();
+    assert!(matches!(refresh, CatalogEffect::RemoveObject { .. } | CatalogEffect::ReadCatalog { .. }));
+    let refresh = match refresh {
+        CatalogEffect::ReadCatalog { .. } => refresh,
+        // The expiry sweep can re-offer its own removal first; the refresh is right behind it.
+        other => {
+            harness.answer_catalog(other);
+            harness.next_catalog_effect()
+        }
+    };
+    assert!(matches!(refresh, CatalogEffect::ReadCatalog { .. }), "the commit ordered exactly one re-read");
+    harness.answer_catalog(refresh);
+    let plan = harness.pass();
+    assert!(plan.effects.catalog.is_empty(), "one commit, one refresh");
     assert_eq!(harness.state.route_ids.len(), 2, "and the removal completed");
 }
 
@@ -1619,7 +1653,7 @@ fn a_ride_finalize_failure_after_the_last_checkpoint_reaches_the_rider() {
     let mut mail: HostMailbox = HostMailbox::new();
     assert_eq!(adapter.effects_to_commands(&mut effects, &mut mail).translated, 1);
     assert_eq!(mail.pop(), Some(HostCommand::FinishTrack(TrackAction::Save)));
-    assert!(LegacyOwned::RideCloseAck.deletes_in().contains("#1397"), "the acknowledgement is still owed");
+    assert!(LegacyOwned::RideCloseAck.deletes_in().contains("#1398"), "the acknowledgement is still owed");
 }
 
 /// **A trip member disappears before the delete commit.** The goal state holds, so the removal is a

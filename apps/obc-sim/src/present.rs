@@ -820,6 +820,7 @@ mod tests {
         baro: &mut obc_replay::BaroSensor,
         store: &mut crate::routes::RouteStore,
         host: &mut obc_host_core::HostLoop,
+        session: &mut obc_host_core::ActiveRouteSession,
         reader: &obc_reader::Reader,
         tour_active: bool,
         frame_no: &mut usize,
@@ -830,42 +831,70 @@ mod tests {
         const W: u32 = FRAME_W as u32;
         const H: u32 = FRAME_H as u32;
 
-        // Reconcile through the shared dispatcher — the same `obc-host-core::HostLoop` gui.rs drives
-        // (route planner lifecycle, one bounded step per frame). This tour uses only routes, so the
-        // ride/track/trip repositories are empty stand-ins and no host-specific command fires.
+        // This tour uses only routes, so the ride/track/trip repositories are empty stand-ins and
+        // the platform has nothing of its own to do.
         let mut rides = obc_host_core::MemRideStore::new(Vec::new());
         let mut tracks = obc_host_core::MemTrackStore::new();
         let mut no_trips = ();
         // The tour drives geometry, not terrain: the null source keeps its frames byte-comparable
         // with the pre-EL7 ones.
         let mut elev = obc_route::NullElevation;
-        host.reconcile(app, store, &mut rides, &mut tracks, &mut no_trips, reader, &mut elev, |_app, _cmd| {});
 
-        // Open the active route's geometry from the resident session (gui.rs's per-frame open).
-        let changed = store.sync_active(app.active_route_index());
-        host.session.reparse(changed, &*store);
-        let route_src = store.active_source();
-        let route = match (host.session.index(), route_src.as_ref()) {
-            (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
-            _ => None,
+        // Open the active route's geometry from the resident session (gui.rs's per-frame open) and
+        // run one DeviceCore pass over it.
+        //
+        // The **UI clock stands still at zero**, which is what this tour has always run at: it
+        // drives gestures directly and never had an animation clock, and the ambient reset seeks the
+        // replay *backwards*, so a UI clock taken from playback time would run backwards with it.
+        // A still clock advances no needle and arms no idle return — the tour asserts presents, not
+        // animation phases.
+        session.sync(app, store);
+        let mut plan = {
+            let route_src = store.active_source();
+            let route = match (session.index(), route_src.as_ref()) {
+                (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
+                _ => None,
+            };
+            let (ride, sensors) =
+                obc_host_core::replay_advance(player, baro, None, 1.0 / 60.0, None, Default::default());
+            host.pass(
+                app,
+                obc_app::device_core::PassClock { ride, ui: obc_ports::InputClock(0) },
+                &[],
+                sensors,
+                route.as_ref(),
+                crate::gui::SIM_SUPPORT,
+            )
         };
-
-        // Advance the replay + tick on the playback clock, then the wasm demo's ambient
-        // auto-restart (suppressed while a tour runs — the branch's `!tour_active` gate).
-        crate::replay_step(
+        // The typed executor — the same `obc-host-core::HostLoop` gui.rs drives (the route planner's
+        // lifecycle, one bounded step per frame).
+        host.execute(
             app,
-            player,
-            baro,
-            None,
-            1.0 / 60.0,
-            route.as_ref(),
-            None,
-            obc_host_core::ReplaySensors::default(),
+            &mut plan,
+            session,
+            store,
+            &mut rides,
+            &mut tracks,
+            &mut no_trips,
+            reader,
+            &mut elev,
+            &mut (),
         );
+
+        // The wasm demo's ambient auto-restart (suppressed while a tour runs — the branch's
+        // `!tour_active` gate).
         if !tour_active && !player.is_playing() {
             player.play();
             app.activity.start_session();
         }
+
+        // Re-open the route for the render: the executor may have committed new geometry under it.
+        session.sync(app, store);
+        let route_src = store.active_source();
+        let route = match (session.index(), route_src.as_ref()) {
+            (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
+            _ => None,
+        };
 
         // Render the whole frame into the resident device-64 plane.
         let mut fbdev = FbDevice64::new(fb, W, H);
@@ -934,6 +963,7 @@ mod tests {
         player.set_speed(3.0); // the page's ambient pace (obc-web-demo's `DEMO_SPEED`)
         let mut baro = BaroSensor::new();
         let mut host = obc_host_core::HostLoop::new();
+        let mut session = obc_host_core::ActiveRouteSession::new();
         let mut fb = vec![0u8; (W * H) as usize];
         let mut present = Present::new(W, H);
         let mut frame_no = 0usize;
@@ -973,6 +1003,7 @@ mod tests {
                         &mut baro,
                         &mut store,
                         &mut host,
+                        &mut session,
                         &reader,
                         true,
                         &mut frame_no,
@@ -994,6 +1025,7 @@ mod tests {
                         &mut baro,
                         &mut store,
                         &mut host,
+                        &mut session,
                         &reader,
                         true,
                         &mut frame_no,
@@ -1017,6 +1049,7 @@ mod tests {
                 &mut baro,
                 &mut store,
                 &mut host,
+                &mut session,
                 &reader,
                 false,
                 &mut frame_no,
@@ -1075,6 +1108,7 @@ mod tests {
                 &mut baro,
                 &mut store,
                 &mut host,
+                &mut session,
                 &reader,
                 false,
                 &mut frame_no,
@@ -1126,6 +1160,7 @@ mod tests {
         player.set_speed(3.0);
         let mut baro = BaroSensor::new();
         let mut host = obc_host_core::HostLoop::new();
+        let mut session = obc_host_core::ActiveRouteSession::new();
         let mut fb = vec![0u8; (W * H) as usize];
         let mut present = Present::new(W, H);
         let mut frame_no = 0usize;
@@ -1154,6 +1189,7 @@ mod tests {
                        baro: &mut BaroSensor,
                        store: &mut crate::routes::RouteStore,
                        host: &mut obc_host_core::HostLoop,
+                       session: &mut obc_host_core::ActiveRouteSession,
                        tour: bool,
                        n: usize,
                        label: &str| {
@@ -1167,6 +1203,7 @@ mod tests {
                     baro,
                     store,
                     host,
+                    session,
                     &reader,
                     tour,
                     &mut frame_no,
@@ -1179,11 +1216,35 @@ mod tests {
         let mut app = build_app(Settings::default(), &store);
         player.seek(0.0);
         player.play();
-        run(&mut app, &mut fb, &mut present, &mut player, &mut baro, &mut store, &mut host, false, 60, "ambient");
+        run(
+            &mut app,
+            &mut fb,
+            &mut present,
+            &mut player,
+            &mut baro,
+            &mut store,
+            &mut host,
+            &mut session,
+            false,
+            60,
+            "ambient",
+        );
         app = build_app(Settings { climb_mode: ClimbMode::Manual, ..Settings::default() }, &store);
         player.seek(1500.0);
         player.play();
-        run(&mut app, &mut fb, &mut present, &mut player, &mut baro, &mut store, &mut host, true, 300, "after enter");
+        run(
+            &mut app,
+            &mut fb,
+            &mut present,
+            &mut player,
+            &mut baro,
+            &mut store,
+            &mut host,
+            &mut session,
+            true,
+            300,
+            "after enter",
+        );
 
         // The `ambient` reset: rebuild + seek backward to the start.
         app = build_app(Settings::default(), &store);
@@ -1197,6 +1258,7 @@ mod tests {
             &mut baro,
             &mut store,
             &mut host,
+            &mut session,
             false,
             300,
             "after ambient",
