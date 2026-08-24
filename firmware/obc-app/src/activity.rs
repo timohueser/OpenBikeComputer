@@ -90,13 +90,15 @@ pub(crate) struct SeamRequest {
     pub anchor_m: u32,
 }
 
-/// A one-shot **detour-plan request** (#882): the Detour chooser's Press asks the host to plan
-/// an A* detour from the rider's fix to the rejoin point at `target_m`, blacklisting the
-/// corridor around the skipped span `[progress_m, target_m]`. The host resolves the rejoin
-/// *coordinate* itself (`position_at(target_m)`) — it owns the active `RouteReader`; the screen
-/// deliberately carries only distances, keeping the request tiny and `Copy`. Drained as
-/// [`HostCommand::PlanDetour`](crate::host::HostCommand::PlanDetour); answered through
-/// [`App::apply_event`](crate::App::apply_event) as `DetourPlanned`.
+/// A **detour-plan request** (#882): the Detour chooser's Press asks the planner for an A* detour
+/// from the rider's fix to the rejoin point at `target_m`, blacklisting the corridor around the
+/// skipped span `[progress_m, target_m]`. The executor resolves the rejoin *coordinate* itself
+/// (`position_at(target_m)`) — it owns the active `RouteReader`; the screen deliberately carries
+/// only distances, keeping the request tiny and `Copy`.
+///
+/// Lives with [`NavigatorMachine`](crate::navigator::NavigatorMachine), which is where the rider's
+/// request waits until an executor takes it. The type stays here because [`Activity`] is the ride
+/// model the chooser measures it against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DetourRequest {
     /// The active catalog slot the request is keyed to (durable-remapped across rescans).
@@ -110,8 +112,8 @@ pub struct DetourRequest {
     pub target_m: u32,
 }
 
-/// Which phase of the SD-sideload firmware update (epic #615 S5, #620) a [`DfuAction`] one-shot
-/// asks the board to run. The two phases are separate so the UI can **confirm before arming**:
+/// Which phase of the SD-sideload firmware update (epic #615 S5, #620)
+/// [`DfuState`](crate::dfu::DfuState) asks the board to run. The two phases are separate so the UI can **confirm before arming**:
 /// [`Scan`](DfuAction::Scan) is read-only (validate `UPDATE.BIN`, cost nothing on failure) and
 /// answers a [`DfuScanReport`](crate::dfu::DfuScanReport); [`Install`](DfuAction::Install) is the
 /// irreversible arm-and-reboot (snapshot the rollback, write the boot-state page, reset into the
@@ -126,13 +128,13 @@ pub enum DfuAction {
     Install,
 }
 
-/// A one-shot **route-planning request** (epic #116, R4): the POI create-route confirm asks the
-/// host to run the on-device router from the rider's fix to the POI. Coordinates are `(lon, lat)`
-/// microdegrees (the OBCM/renderer convention); the name is the POI's stored name (or its subtype
-/// fallback label, matching the list row), carried as a fixed inline buffer so the request — like
-/// every other one-shot on [`Activity`] — stays `Copy`. Drained by
-/// [`App::drain_host_commands`](crate::App::drain_host_commands); the host answers with
-/// [`App::apply_event`](crate::App::apply_event).
+/// A **route-planning request** (epic #116, R4): the POI create-route confirm asks the on-device
+/// router for a route from the rider's fix to the POI. Coordinates are `(lon, lat)` microdegrees
+/// (the OBCM/renderer convention); the name is the POI's stored name (or its subtype fallback
+/// label, matching the list row), carried as a fixed inline buffer so the request stays `Copy` and
+/// bounded.
+///
+/// Lives with [`NavigatorMachine`](crate::navigator::NavigatorMachine) until an executor takes it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NavRequest {
     /// The rider's fix, `(lon, lat)` µdeg — the route's start.
@@ -239,44 +241,10 @@ pub struct Activity {
     /// vanished in a racing rescan simply drains to a no-op at the host. The host deletes the
     /// `TP{id}.OBT` **and** every member route file, then rescans + re-feeds trips + routes.
     delete_trip: Option<crate::CatalogObjectId>,
-    /// A one-shot **route-planning request** (epic #116, R4), set by the POI create-route confirm
-    /// and drained by the host via [`App::drain_host_commands`](crate::App::drain_host_commands), which
-    /// steps the resumable router, writes the reserved nav route, rescans, and answers through
-    /// [`App::apply_event`](crate::App::apply_event).
-    nav_request: Option<NavRequest>,
     /// A seam re-anchor queued by the detour commit handler (#882);
     /// [`RideEngine`](crate::ride_engine::RideEngine) consumes it on the next tick that has the
     /// matching active geometry, installing matcher progress + floor at the splice seam.
     seam_request: Option<SeamRequest>,
-    /// A one-shot detour-plan request (#882), set by the Detour chooser's Press and drained via
-    /// [`App::drain_host_commands`](crate::App::drain_host_commands) as `PlanDetour`.
-    detour_request: Option<DetourRequest>,
-    /// A one-shot detour **commit** (#882): the preview screen's Press asks the host to splice
-    /// the planned detour into the active route (Phase B) and re-adopt the result.
-    detour_commit: bool,
-    /// A one-shot detour **cancel** (#882): Back on the planning or preview screen drops the
-    /// in-flight plan / the held detour bytes host-side. Same annihilation semantics as
-    /// [`nav_cancel`](Activity::nav_cancel).
-    detour_cancel: bool,
-    /// A one-shot **DFU request** (epic #615 S5, #620): the SD-sideload firmware-update flow. The
-    /// System settings screen posts [`DfuAction::Scan`] (validate `UPDATE.BIN`, answer through
-    /// [`App::apply_event`](crate::App::apply_event)); the confirm screen
-    /// posts [`DfuAction::Install`] (snapshot the rollback, arm the boot-state page, reboot into
-    /// the bootloader). The board's ride loop drains it as the `Dfu` command via
-    /// [`App::drain_host_commands`](crate::App::drain_host_commands) — the same slot the `dfu-install`
-    /// debug command drives by staging a `Dfu(Install)` directly after the drain.
-    dfu_request: Option<DfuAction>,
-    /// A one-shot **plan-cancel request** (#499): Back on the planning screen pops it *and*
-    /// records this; the host drains it via [`App::drain_host_commands`](crate::App::drain_host_commands)
-    /// and aborts the in-flight plan (discarding the partial file, answering nothing — the rider
-    /// is already back on the POI detail).
-    nav_cancel: bool,
-    /// A one-shot **card-free scan request** (T8 item 6): posted when the System settings screen is
-    /// opened, so the host runs a FAT free-cluster scan *once on entry* (never per frame — the scan is
-    /// expensive) and answers through [`App::apply_event`](crate::App::apply_event). Drained via
-    /// [`App::drain_host_commands`](crate::App::drain_host_commands); until it answers the
-    /// System screen shows `--`.
-    card_scan_request: bool,
     /// The **sensor scan mode** level (BLE sensors epic #707, SE7): raised by the Sensors screen while
     /// a scan-list sub-screen is open (entering a HR/power/cadence row) and lowered on exit/Back.
     /// Unlike the delete/scan *one-shots* this is a **level**, not a drained edge — the enter/leave
@@ -616,70 +584,6 @@ impl Activity {
             .and_then(|req| remap(req.route).map(|route| SeamRequest { route, anchor_m: req.anchor_m }));
     }
 
-    /// Record a one-shot detour-plan request (#882) — set by the Detour chooser's Press, drained
-    /// by [`App::drain_host_commands`](crate::App::drain_host_commands) as `PlanDetour`.
-    pub(crate) fn request_detour(&mut self, req: DetourRequest) {
-        self.detour_request = Some(req);
-    }
-
-    /// Take (and clear) the pending detour-plan request, if any.
-    pub(crate) fn take_detour_request(&mut self) -> Option<DetourRequest> {
-        self.detour_request.take()
-    }
-
-    /// Non-consuming peek at whether a detour-plan request is pending.
-    pub(crate) fn has_detour_request(&self) -> bool {
-        self.detour_request.is_some()
-    }
-
-    /// Non-consuming peek at the pending detour-plan request itself — the durable-identity tests
-    /// pin the remap through it without draining the one-shot.
-    #[cfg(test)]
-    pub(crate) fn pending_detour_request(&self) -> Option<DetourRequest> {
-        self.detour_request
-    }
-
-    /// Follow a queued detour-plan request through a route-catalog rescan by durable identity;
-    /// a vanished route drops the request (the host-side gate would refuse it anyway).
-    pub(crate) fn remap_detour_route(&mut self, remap: &dyn Fn(usize) -> Option<usize>) {
-        self.detour_request =
-            self.detour_request.and_then(|req| remap(req.route).map(|route| DetourRequest { route, ..req }));
-    }
-
-    /// Record a one-shot detour commit (#882) — the preview screen's Press.
-    pub(crate) fn request_detour_commit(&mut self) {
-        self.detour_commit = true;
-    }
-
-    /// Take (and clear) the pending detour commit, if any.
-    pub(crate) fn take_detour_commit(&mut self) -> bool {
-        core::mem::take(&mut self.detour_commit)
-    }
-
-    /// Non-consuming peek at whether a detour commit is pending.
-    pub(crate) fn detour_commit_pending(&self) -> bool {
-        self.detour_commit
-    }
-
-    /// Record a one-shot detour cancel (#882) — Back on the detour planning or preview screen.
-    /// **Post-time annihilation** (the `request_nav_cancel` rule): an undrained plan request or
-    /// commit is cleared here, so the host never receives work the rider already dismissed.
-    pub(crate) fn request_detour_cancel(&mut self) {
-        self.detour_request = None;
-        self.detour_commit = false;
-        self.detour_cancel = true;
-    }
-
-    /// Take (and clear) the pending detour cancel, if any.
-    pub(crate) fn take_detour_cancel(&mut self) -> bool {
-        core::mem::take(&mut self.detour_cancel)
-    }
-
-    /// Non-consuming peek at whether a detour cancel is pending.
-    pub(crate) fn detour_cancel_pending(&self) -> bool {
-        self.detour_cancel
-    }
-
     /// Record a one-shot disposition for the open ride log, drained by the host.
     pub fn request_track(&mut self, action: TrackAction) {
         self.track_action = Some(action);
@@ -760,46 +664,6 @@ impl Activity {
         self.delete_trip.is_some()
     }
 
-    /// Record a one-shot route-planning request (epic #116, R4) — set by the POI create-route
-    /// confirm, drained by [`App::drain_host_commands`](crate::App::drain_host_commands).
-    pub(crate) fn request_nav(&mut self, req: NavRequest) {
-        self.nav_request = Some(req);
-    }
-
-    /// Take (and clear) the pending route-planning request, if any.
-    pub(crate) fn take_nav_request(&mut self) -> Option<NavRequest> {
-        self.nav_request.take()
-    }
-
-    /// Non-consuming peek at whether a route-planning request is pending.
-    pub(crate) fn has_nav_request(&self) -> bool {
-        self.nav_request.is_some()
-    }
-
-    /// Record a one-shot [`DfuAction`] (epic #615 S5, #620) — set by the System settings screen
-    /// (`Scan`) and the update-confirm screen (`Install`), drained by the board via
-    /// [`App::drain_host_commands`](crate::App::drain_host_commands). A later post overwrites an
-    /// undrained earlier one (there is never more than one DFU phase in flight).
-    pub(crate) fn request_dfu(&mut self, action: DfuAction) {
-        self.dfu_request = Some(action);
-    }
-
-    /// Take (and clear) the pending [`DfuAction`], if any.
-    pub(crate) fn take_dfu_request(&mut self) -> Option<DfuAction> {
-        self.dfu_request.take()
-    }
-
-    /// Record the one-shot **card-free scan request** (T8 item 6) — posted when the System settings
-    /// screen opens, drained by the host via [`App::drain_host_commands`](crate::App::drain_host_commands).
-    pub(crate) fn request_card_scan(&mut self) {
-        self.card_scan_request = true;
-    }
-
-    /// Take (and clear) the pending card-free scan request.
-    pub(crate) fn take_card_scan_request(&mut self) -> bool {
-        core::mem::take(&mut self.card_scan_request)
-    }
-
     /// Set the **sensor scan mode** level (BLE sensors epic #707, SE7): `true` when the scan-list
     /// screen opens on a HR/power/cadence row, `false` on exit/Back. A level, not a one-shot — the host
     /// polls it via [`App::sensor_scan_active`](crate::App::sensor_scan_active) each pass.
@@ -811,43 +675,6 @@ impl Activity {
     /// `true`, clears the app scan list when it falls).
     pub(crate) fn sensor_scan_active(&self) -> bool {
         self.sensor_scan
-    }
-
-    /// Non-consuming peek at whether a [`DfuAction`] is posted but undrained — the remote-check
-    /// deferral gate (S6, #621): a BLE-initiated check must not overwrite a phase already in flight
-    /// (a later [`request_dfu`](Self::request_dfu) overwrites, by design, for the *rider's* posts).
-    pub(crate) fn has_dfu_request(&self) -> bool {
-        self.dfu_request.is_some()
-    }
-
-    /// Record a one-shot plan-cancel (#499) — set by the planning screen's Back, drained by
-    /// [`App::drain_host_commands`](crate::App::drain_host_commands).
-    ///
-    /// **Annihilates** a still-undrained [`request_nav`](Self::request_nav): Back always comes
-    /// from the planning screen of the *latest* request, so a request still latched at
-    /// cancel-post time was confirmed and cancelled inside one input batch — the net intent is
-    /// "no plan", and executing it anyway would commit a ghost route whose answer nobody is
-    /// showing. The cancel itself still
-    /// latches: with nothing in flight it is a harmless host-side no-op, and a plan the host
-    /// already drained is still aborted.
-    pub(crate) fn request_nav_cancel(&mut self) {
-        self.nav_request = None;
-        self.nav_cancel = true;
-    }
-
-    /// Take (and clear) the pending plan-cancel request.
-    pub(crate) fn take_nav_cancel(&mut self) -> bool {
-        core::mem::take(&mut self.nav_cancel)
-    }
-
-    /// Non-consuming peek at the pending plan-cancel one-shot (the typed drain's pendency check).
-    pub(crate) fn nav_cancel_pending(&self) -> bool {
-        self.nav_cancel
-    }
-
-    /// Non-consuming peek at the pending card-free scan one-shot (the typed drain's pendency check).
-    pub(crate) fn card_scan_pending(&self) -> bool {
-        self.card_scan_request
     }
 
     /// The elevation (m) to stamp on a logged [`TrackPoint`](obc_ports::TrackPoint): the
@@ -863,16 +690,6 @@ impl Activity {
     /// Called when a session starts, so tracking accumulators begin fresh.
     pub(crate) fn reset_ride(&mut self) {
         self.seam_request = None;
-        // Dropping the detour pair here cannot strand the Recalculating freeze's `Detour` level,
-        // even though no `note_plan_ended` runs with it (#1150 review). Both halves are covered
-        // without one: an **undrained request** never engaged the freeze (the drain is the engaging
-        // edge), and a dropped **cancel** only forfeits one of two release edges — the host is
-        // still running the plan that cancel would have aborted, and it answers every plan it was
-        // given, so `on_detour_planned`'s unconditional release lands anyway (idempotent, and it
-        // fires before its own late-answer early-return for exactly this kind of reason).
-        self.detour_request = None;
-        self.detour_commit = false;
-        self.detour_cancel = false;
         self.progress_m = 0;
         self.off_route = false;
         self.dist_to_route_m = 0;

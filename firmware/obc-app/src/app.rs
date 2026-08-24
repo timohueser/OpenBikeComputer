@@ -10,11 +10,13 @@ use obc_route::{Profile, RouteReader};
 use crate::activity::{Activity, Mode};
 use crate::card_scheduler::{BootUpdate, DfuLanding, PendingUpload, UploadEvent};
 use crate::catalog_state::CatalogState;
+use crate::device_core::compat::{dfu_row, navigator_row, settings_row, storage_info_row};
+use crate::device_core::storage_info::StorageInfo;
+use crate::dfu::DfuState;
 use crate::dirty::Dirty;
-use crate::host::{
-    DrainStatus, HostCommand, HostCommandClass, HostEvent, HostMailbox, HostPending, HOST_COMMAND_CLASSES,
-};
+use crate::host::{DrainStatus, HostCommand, HostCommandClass, HostEvent, HostMailbox, HOST_COMMAND_CLASSES};
 use crate::input::Gesture;
+use crate::navigator::{NavigatorIntent, NavigatorMachine, PlanPhase};
 use crate::placement::define_placement_constructors;
 use crate::reroute_freeze::PlanFamily;
 use crate::ride::RideSummary;
@@ -556,20 +558,26 @@ pub struct App {
     /// decision. The bundle itself stays in the platform's store — this owns what the rider is
     /// *told*, never the frames.
     pub(crate) weather: crate::weather::WeatherDomain,
-    /// The app-side pending protocol state that isn't a one-shot slot on [`Activity`]: the
-    /// counted store-changed cue (#450) and the #810 settings-persistence state machine
-    /// (revision, handshake state, bounded retry pacing). Drained and answered only through the
-    /// typed protocol below.
-    pub(crate) host: HostPending,
+    /// Count of [`HostEvent::StoreChanged`] facts not yet acted on (#450). The host drains it once
+    /// per pass as the counted [`HostCommand::RescanStore`]. A counter, not a bool, so a burst of
+    /// commits between drains is never coalesced into a single missed rescan.
+    store_changed: u32,
+    /// The **Navigator** domain (#1397 S2): the rider's undelivered plan requests, the per-family
+    /// phase, the operation token every planner answer must carry back, and the Recalculating
+    /// freeze those transitions drive. The only writer of any of them.
+    pub(crate) navigator: NavigatorMachine,
+    /// The **settings-persistence** machine (#810, #1397 S2): the dirty revision, the subtree
+    /// debounce, the retry backoff and the stale-answer rule.
+    pub(crate) settings_ops: crate::settings::SettingsMachine,
+    /// The **DFU** domain (#1397 S2): the single most-recent-wins update phase and its token.
+    pub(crate) dfu: DfuState,
+    /// The **StorageInfo** domain (#1397 S2): the free-space refresh, its token, and the figure the
+    /// System screen prints.
+    pub(crate) storage: StorageInfo,
     /// The DeviceCore coordinator's own state (#1438): every cross-domain connection, the levels a
     /// stage detects an edge against, the current [`Capabilities`](crate::device_core::Capabilities)
     /// and the re-entrancy guard. Not domain state — nothing here decides a product rule.
     pub(crate) pass: crate::device_core::pass::PassState,
-    /// The **Recalculating freeze** (issue #1146, P2): whether a host planner run is live, which
-    /// (over a map base) stops map redraws, pauses the matcher, and raises the overlay banner —
-    /// the product rule that makes the render and nav arms of the board's scratch arena disjoint.
-    /// See [`crate::reroute_freeze`].
-    freeze: crate::reroute_freeze::RerouteFreeze,
     /// The running firmware version string (T8 item 6) — the same value the DFU confirm shows as
     /// "Installed", fed by the host at boot via [`set_fw_version`](App::set_fw_version). The System
     /// settings screen's `Firmware` ledger row renders it (empty ⇒ `--`). Resident because that frame
@@ -581,11 +589,6 @@ pub struct App {
     map_name: heapless::String<24>,
     /// The loaded map's OBCM format version, the right half of the `Map` row. `0` until a map loads.
     map_obcm_version: u8,
-    /// Free space on the SD card in bytes (T8 item 6), answered by the host's FAT free-cluster scan
-    /// after the System screen posts its one-shot on entry
-    /// ([`take_card_scan_request`](App::drain_host_commands) → [`set_card_free`](App::apply_event)).
-    /// `None` until the host answers — the screen shows `--`.
-    card_free_bytes: Option<u64>,
     /// Whether a recovered-ride offer has already reached the screen this boot. A recorder may
     /// report the same resumable object on every host pass; the rider sees one decision card.
     recovered_ride_offered: bool,
@@ -639,13 +642,15 @@ impl App {
             clock_trust: ClockTrust::Untrusted,
             retention: crate::retention::RetentionMachine::new(),
             weather: crate::weather::WeatherDomain::new(),
-            host: HostPending::new(),
+            store_changed: 0,
+            navigator: NavigatorMachine::new(),
+            settings_ops: crate::settings::SettingsMachine::new(),
+            dfu: DfuState::new(),
+            storage: StorageInfo::new(),
             pass: crate::device_core::pass::PassState::new(),
-            freeze: crate::reroute_freeze::RerouteFreeze::new(),
             fw_version: heapless::String::new(),
             map_name: heapless::String::new(),
             map_obcm_version: 0,
-            card_free_bytes: None,
             recovered_ride_offered: false,
         }
     );
@@ -683,13 +688,15 @@ impl App {
             clock_trust,
             retention,
             weather,
-            host,
+            store_changed,
+            navigator,
+            settings_ops,
+            dfu,
+            storage,
             pass,
-            freeze,
             fw_version,
             map_name,
             map_obcm_version,
-            card_free_bytes,
             recovered_ride_offered,
         } = self;
         assert_eq!(*camera, state, "the camera state is preserved verbatim");
@@ -713,13 +720,20 @@ impl App {
             weather.installed().is_none() && !weather.refreshing() && weather.last_refresh().is_none(),
             "no weather installed, none requested, nothing completed this boot"
         );
-        assert!(host.is_empty(), "no host work pending, settings Clean at revision 0");
+        assert_eq!(*store_changed, 0, "no store commit pending");
+        assert!(settings_ops.is_empty(), "settings Clean at revision 0");
+        navigator.assert_boot_state();
+        dfu.assert_boot_state();
+        storage.assert_boot_state();
         assert_eq!(*pass, crate::device_core::pass::PassState::new(), "no connection wired, no pass in flight");
-        assert!(!freeze.plan_live() && !freeze.active(true), "no planner running, no freeze banner");
         assert!(fw_version.is_empty() && map_name.is_empty(), "the host has identified nothing yet");
         assert_eq!(*map_obcm_version, 0, "no map format known yet");
-        assert!(card_free_bytes.is_none(), "the card scan has not answered");
         assert!(!*recovered_ride_offered, "no recovered ride offered this boot");
+    }
+
+    /// Record one [`HostEvent::StoreChanged`] fact (saturating — a burst rides as a count).
+    pub(crate) fn note_store_changed(&mut self) {
+        self.store_changed = self.store_changed.saturating_add(1);
     }
 
     /// Advance one tick from the sensors.
@@ -766,7 +780,7 @@ impl App {
         // breadcrumb), the route-length mirror, and the climbs/waypoints cache builds — is the
         // ride engine's; a change there (route line appeared/vanished, breadcrumb cleared)
         // repaints the map even on a frame with no fresh fix.
-        if self.ride.sync_route_state(&mut self.activity, route) {
+        if self.ride.sync_route_state(&mut self.activity, &mut self.navigator, route) {
             self.ui.map_dirty = true;
         }
         // A detour commit queues a seam re-anchor because the commit handler owns no host
@@ -1180,7 +1194,7 @@ impl App {
     /// [`nav_arena_precondition`](App::nav_arena_precondition) hands to
     /// [`ArenaGate::claim_nav`](crate::arena_gate::ArenaGate::claim_nav).
     pub fn reroute_freeze_active(&self) -> bool {
-        self.freeze.active(self.ui.base_draws_map())
+        self.navigator.freeze_active(self.ui.base_draws_map())
     }
 
     /// Whether a host planner run is live at all — including a **menu** plan, where no freeze is
@@ -1189,7 +1203,7 @@ impl App {
     /// gate's search arm, [`TransferGate::begin_search`](crate::TransferGate::begin_search)) read
     /// this rather than the freeze.
     pub fn plan_in_flight(&self) -> bool {
-        self.freeze.plan_live()
+        self.navigator.plan_live()
     }
 
     /// The proof that the map plane is quiesced, minted from this app's own state — `None` when a
@@ -1337,13 +1351,16 @@ impl App {
     /// `old_ids` → that id's new index (or `None` if the route vanished). See
     /// [`set_routes_with_ids`](App::set_routes_with_ids).
     fn remap_route_indices(&mut self, old_ids: &[crate::CatalogObjectId]) {
-        let App { catalogs, ride, activity, ui, .. } = self;
+        let App { catalogs, ride, activity, ui, navigator, .. } = self;
         let remap = |i: usize| -> Option<usize> { catalogs.remap_route(old_ids, i) };
 
         // The navigated route + every ride-engine cache keyed on it follow the identity together
         // (survives → nothing resets; vanished → navigation unloads and the stale per-route state
         // drops with it) — the ride engine owns that walk.
         ride.remap_route_keys(activity, &remap);
+        // The undelivered detour request follows the same durable identity as the route it plans
+        // around, or is dropped with it — Navigator's half of the same walk.
+        navigator.remap_detour_route(&remap);
 
         // Every screen on the stack that holds a catalog index. The Route menu also takes the
         // re-resolved trips (`replace_routes` re-filed them before returning) + the new route count
@@ -1551,12 +1568,12 @@ impl App {
         if self.passkey_card_up()
             || self.ui.hold_charging()
             || dfu_screen_up
-            || self.activity.has_dfu_request()
+            || self.dfu.request_pending()
             || self.activity.is_tracking()
         {
             return false;
         }
-        self.activity.request_dfu(crate::activity::DfuAction::Scan);
+        self.dfu.admit_intent(crate::dfu::DfuIntent::ScanRequested);
         let r = self.ui.stack.push(Screen::DfuCheck(crate::screen::DfuCheckScreen::new()));
         debug_assert!(r.is_ok(), "screen stack overflow — raise MAX_DEPTH");
         self.ui.map_dirty = true;
@@ -1577,7 +1594,7 @@ impl App {
         if self.ui.stack.iter().any(|s| matches!(s, Screen::NavPlanning(_))) {
             return false;
         }
-        self.activity.request_nav(crate::activity::NavRequest::new(from, to, name));
+        self.admit_navigator_intent(NavigatorIntent::PlanRoute(crate::activity::NavRequest::new(from, to, name)));
         let _ = self.ui.stack.push(Screen::NavPlanning(crate::screen::NavPlanningScreen::new(name)));
         self.ui.map_dirty = true;
         true
@@ -1595,10 +1612,8 @@ impl App {
     /// No production path reaches it. Stands in for a [`Route`](PlanFamily::Route) run, so a stray
     /// detour edge cannot release it (see [`PlanFamily`]).
     pub fn debug_set_plan_live(&mut self, live: bool) {
-        if live {
-            self.note_plan_started(PlanFamily::Route);
-        } else {
-            self.note_plan_ended(PlanFamily::Route);
+        if self.navigator.debug_set_plan_live(live) {
+            self.ui.map_dirty = true;
         }
     }
 
@@ -1749,7 +1764,7 @@ impl App {
                     self.weather.mark_fired(&c, &mut self.settings.weather_alert_marks);
                     // The mark must survive the next boot: arm the #810 persistence handshake
                     // exactly like a rider edit (alert-fire rate, so the write cost is negligible).
-                    self.host.note_settings_edited();
+                    self.settings_ops.note_edited();
                 }
             }
             AlertAction::Update(c) => {
@@ -1775,32 +1790,126 @@ impl App {
         self.ui.next_ahead.invalidate();
     }
 
-    /// Engage the Recalculating freeze (issue #1146, P2) — the host begins a planner run this pass.
-    /// Nothing is dirtied here, and both halves of that are deliberate. The *map* isn't, because the
-    /// host is about to stop redrawing it and a demand raised now would be drained and lost. The
-    /// *overlay* isn't either, because a plan start is not the banner's edge: this plan may well have
-    /// begun under the opaque planning spinner, where there is no map to freeze and no banner to
-    /// draw. [`take_dirty`](App::take_dirty) derives that edge from the engaged level instead.
-    fn note_plan_started(&mut self, family: PlanFamily) {
-        self.freeze.plan_started(family);
+    /// Hand one rider request to Navigator, and repaint.
+    ///
+    /// The map is dirtied on any navigation intent because every screen that produces one is
+    /// changing what the rider is looking at. A plan **start** deliberately dirties nothing extra:
+    /// the executor is about to stop redrawing the map, and the banner's edge is the engaged
+    /// *level*, which [`take_dirty`](App::take_dirty) derives (a plan begun under the opaque
+    /// planning spinner freezes nothing at all).
+    pub(crate) fn admit_navigator_intent(&mut self, intent: NavigatorIntent) {
+        let planned = self.navigator.detour_planned();
+        self.navigator.admit_intent(intent);
+        self.sync_detour_preview(planned);
+        self.ui.map_dirty = true;
     }
 
-    /// Release the freeze — the run answered, failed, or was cancelled. Dirties the **map**: it held
-    /// still for the whole search and has a fix, a route, or a whole new geometry to catch up on. The
-    /// banner comes off with the same [`take_dirty`](App::take_dirty) level edge that put it up.
-    /// Idempotent: several release edges can land for one run.
-    fn note_plan_ended(&mut self, family: PlanFamily) {
-        if self.freeze.plan_ended(family) {
+    /// Drop the detour preview polyline when Navigator drops the plan it previews.
+    ///
+    /// The shape is *derived* from the plan: it is drawn over the still-active route, so a preview
+    /// of a detour that no longer exists is a line to nowhere. `was_planned` is the level from
+    /// before the intent, so this fires on the falling edge and never on a boot with nothing cached.
+    fn sync_detour_preview(&mut self, was_planned: bool) {
+        if was_planned && !self.navigator.detour_planned() {
+            self.catalogs.clear_detour_preview();
+        }
+    }
+
+    /// Hand `family`'s undelivered cancellation to the executor, and repaint the map the freeze
+    /// held still. `false` when there was nothing to deliver.
+    fn deliver_plan_cancel(&mut self, family: PlanFamily) -> bool {
+        if !self.navigator.take_cancel(family) {
+            return false;
+        }
+        if self.navigator.note_cancel_delivered(family) {
+            self.ui.map_dirty = true;
+        }
+        true
+    }
+
+    /// Consume a typed [`NavigatorOutcome`](crate::navigator::NavigatorOutcome). The token is the
+    /// whole admission test: a cancelled or superseded operation refuses its own late answer, and
+    /// nothing downstream runs.
+    ///
+    /// What each accepted answer *means* to the rider is the same code the legacy events reach —
+    /// there is one `land_*` per product event, not one per protocol.
+    pub(crate) fn apply_navigator_outcome(&mut self, outcome: crate::navigator::NavigatorOutcome) {
+        use crate::navigator::{NavigatorError, NavigatorOutcome};
+        if !self.navigator.accepts(&outcome) {
+            return;
+        }
+        match outcome {
+            NavigatorOutcome::PlanFinished { route, .. } => self.land_route_plan(Ok(route)),
+            NavigatorOutcome::DetourFinished { preview, .. } => self.land_detour_plan(Ok(preview)),
+            NavigatorOutcome::DetourCommitted { route, .. } => self.land_detour_commit(Ok(route)),
+            NavigatorOutcome::Failed { error, .. } => {
+                // The planner's own verdict is the one the rider is shown; the two resource
+                // failures have no tier of their own and land on the generic card, which is what
+                // the legacy protocol has always done with them.
+                let error = match error {
+                    NavigatorError::Plan(error) => error,
+                    NavigatorError::Workspace | NavigatorError::Store => obc_route::nav::NavError::NoPath,
+                };
+                match self.navigator.live_family() {
+                    Some(PlanFamily::Detour) if self.navigator.detour_committing() => {
+                        self.land_detour_commit(Err(error))
+                    }
+                    Some(PlanFamily::Detour) => self.land_detour_plan(Err(error)),
+                    _ => self.land_route_plan(Err(error)),
+                }
+            }
+            // The workspace came back, or the operation was abandoned: the run is over and the
+            // freeze must not outlive it, but there is nothing new to put in front of the rider.
+            NavigatorOutcome::Released { .. } | NavigatorOutcome::Cancelled { .. } => {
+                let family = self.navigator.live_family().unwrap_or(PlanFamily::Route);
+                self.end_plan(family, PlanPhase::Idle);
+            }
+            // Pacing is `LegacyOwned::PlannerPacing` — one legacy `PlanRoute` acquires, steps and
+            // commits inside the executor, so no protocol in this slice produces these. They are
+            // accepted and change nothing until #1397 S6 gives Navigator the stepping loop.
+            NavigatorOutcome::Acquired { .. } | NavigatorOutcome::Stepped { .. } => {}
+        }
+    }
+
+    /// Consume a typed [`DfuOutcome`](crate::dfu::DfuOutcome) — the same terminal cards the legacy
+    /// events post, behind the token that says this answer is still the phase being waited for.
+    pub(crate) fn apply_dfu_outcome(&mut self, outcome: crate::dfu::DfuOutcome) {
+        use crate::dfu::DfuOutcome;
+        if !self.dfu.accepts(&outcome) {
+            return;
+        }
+        self.dfu.note_answer();
+        match outcome {
+            DfuOutcome::ScanFinished { report, .. } => self.post_dfu_landing(DfuLanding::Scanned(Ok(report))),
+            DfuOutcome::ScanFailed { error, .. } => self.post_dfu_landing(DfuLanding::Scanned(Err(error))),
+            DfuOutcome::InstallBegan { .. } => self.post_dfu_landing(DfuLanding::InstallBegan),
+            DfuOutcome::InstallFailed { error, .. } => self.post_dfu_landing(DfuLanding::InstallFailed(error)),
+            // An abandoned phase leaves the rider where they were: the wait screen is still up and
+            // the menu still works, which is more honest than a failure card for work never done.
+            DfuOutcome::Cancelled { .. } => {}
+        }
+    }
+
+    /// Note a terminal planner answer for `family` and repaint the map the freeze held still.
+    ///
+    /// Dirties the **map**: it held still for the whole search and has a fix, a route, or a whole
+    /// new geometry to catch up on. The banner comes off with the same
+    /// [`take_dirty`](App::take_dirty) level edge that put it up. Idempotent: several release edges
+    /// can land for one run.
+    fn end_plan(&mut self, family: PlanFamily, phase: PlanPhase) {
+        if self.navigator.note_answer(family, phase) {
             self.ui.map_dirty = true;
         }
     }
 
-    /// [`HostEvent::NavPlanned`]: land the plan answer in the planning screen, or drop it.
-    fn on_nav_planned(&mut self, result: Result<crate::CatalogObjectId, obc_route::nav::NavError>) {
+    /// The UI's reaction to Navigator finishing a **route** plan: land it in the planning screen,
+    /// or drop it. Not a protocol handler — both protocols reach it through Navigator, which has
+    /// already decided that this answer is the one being waited for.
+    fn land_route_plan(&mut self, result: Result<crate::CatalogObjectId, obc_route::nav::NavError>) {
         use obc_route::nav::NavError;
         // The run is over whatever happens below — including for a *late* answer whose planning
         // screen the rider already cancelled away, which returns early two lines down.
-        self.note_plan_ended(PlanFamily::Route);
+        self.end_plan(PlanFamily::Route, if result.is_ok() { PlanPhase::Active } else { PlanPhase::Failed });
         let Some(i) = self.ui.stack.iter().position(|s| matches!(s, Screen::NavPlanning(_))) else {
             return;
         };
@@ -1838,9 +1947,10 @@ impl App {
     /// [`set_detour_preview`](App::set_detour_preview)), failure with the fail card carrying the
     /// "try a farther rejoin" hint. A late answer whose planning screen is gone (the rider
     /// cancelled) is dropped, and the stale preview slot cleared.
-    fn on_detour_planned(&mut self, result: Result<crate::host::DetourPreview, obc_route::nav::NavError>) {
+    fn land_detour_plan(&mut self, result: Result<crate::host::DetourPreview, obc_route::nav::NavError>) {
         use obc_route::nav::NavError;
-        self.note_plan_ended(PlanFamily::Detour); // the run is over — see `on_nav_planned` for the late-answer case
+        // The run is over — see `land_route_plan` for the late-answer case.
+        self.end_plan(PlanFamily::Detour, if result.is_ok() { PlanPhase::PreviewReady } else { PlanPhase::Failed });
         let Some(i) = self
             .ui
             .stack
@@ -1875,7 +1985,8 @@ impl App {
     /// RouteSwap precedent), queue the seam re-anchor (the tick that owns the `RouteReader`
     /// installs matcher progress + floor at the splice seam), then truncate the detour flow off
     /// the stack so the rider lands on the exact riding view they left.
-    fn on_detour_committed(&mut self, result: Result<crate::CatalogObjectId, obc_route::nav::NavError>) {
+    fn land_detour_commit(&mut self, result: Result<crate::CatalogObjectId, obc_route::nav::NavError>) {
+        self.navigator.note_commit(result.is_ok());
         let resolved = result.and_then(|id| self.catalogs.route_index_of(id).ok_or(obc_route::nav::NavError::NoPath));
         match resolved {
             Ok(idx) => {
@@ -2087,7 +2198,7 @@ impl App {
     /// resets it — there is no other way to *observe* the accumulated burst without consuming it, so
     /// the `ble`/screen seam tests read it here. Kept deliberately; not part of the host protocol.
     pub fn store_changed_pending(&self) -> u32 {
-        self.host.store_changed_pending()
+        self.store_changed
     }
 
     /// [`HostEvent::RouteUploaded`]: forced adoption on an active replace + the advisory prompt.
@@ -2291,7 +2402,7 @@ impl App {
         // revision handshake to Clean. Any pending edit is discarded — seeding is a boot/reload
         // operation, not a rider edit (the BLE-merge path uses `merge_ble_settings`, which preserves
         // a pending device-edit save).
-        self.host.reset_settings_clean();
+        self.settings_ops.note_seeded();
     }
 
     /// Merge the BLE-owned fields (units + device name) of a phone Config write into the live
@@ -2373,7 +2484,7 @@ impl App {
         let epoch = self.ui.now_ms.wrapping_sub(second as u32 * 1000);
         self.wall_clock.set(self.settings.local_clock(), epoch);
         if first_trusted_this_boot || self.settings.utc_offset_min != offset_before {
-            self.host.note_settings_edited();
+            self.settings_ops.note_edited();
         }
         self.clock_trust = source;
     }
@@ -2497,14 +2608,14 @@ impl App {
     /// the rider has left the settings subtree, and we are neither already Awaiting an ack nor inside
     /// a failed-write backoff window. The shared predicate behind the `PersistSettings` peek/drain.
     fn settings_persist_ready(&self) -> bool {
-        self.host.settings_persist_ready(self.ui.top_is_settings(), self.ui.now_ms)
+        self.settings_ops.wants_write(self.ui.top_is_settings(), self.ui.now_ms)
     }
 
     /// Test hook: arm a pending settings save without driving a real edit (bumps the revision and
     /// marks Dirty), standing in for a settings-screen edit the drain/gating tests don't replay.
     #[cfg(test)]
     fn arm_settings_save(&mut self) {
-        self.host.arm_settings_save();
+        self.settings_ops.arm_save();
     }
 
     /// Whether the top screen would draw a live **hold fill** for its current selection/state —
@@ -2595,11 +2706,17 @@ impl App {
         // Snapshot the settings so a settings-screen edit is detected by one `==` (Settings is
         // `Copy + Eq`). A change flags a save for the host to pick up via `take_settings_dirty`.
         let settings_before = self.settings;
-        let App { state, activity, settings, catalogs, nav_profiles, ride, ui, .. } = self;
+        // Navigator's detour level before the screen speaks, so a cancellation it admits takes the
+        // preview polyline with it (see `sync_detour_preview`).
+        let detour_planned_before = self.navigator.detour_planned();
+        let App { state, activity, settings, catalogs, nav_profiles, ride, ui, navigator, dfu, storage, .. } = self;
         let mut cx = Ctx {
             state,
             activity,
             settings,
+            navigator,
+            dfu,
+            storage,
             routes: catalogs.routes(),
             rides: catalogs.rides(),
             trips: catalogs.trips(),
@@ -2621,6 +2738,7 @@ impl App {
             screen::Transition::Pop | screen::Transition::Home => depth_before > 1,
             screen::Transition::Push(_) | screen::Transition::Replace(_) | screen::Transition::Root(_) => true,
         };
+        self.sync_detour_preview(detour_planned_before);
         screen::apply(&mut self.ui.stack, t);
         // Opening a POI list drops any previous snapshot so its first draw re-queries at the current
         // fix — the "re-enter to refresh" contract (issue #425). Gated on this being a fresh open
@@ -2653,8 +2771,8 @@ impl App {
         }
         if self.settings != settings_before {
             // A rider edit: bump the revision and (re-)arm the save — superseding any in-flight or
-            // backing-off older revision (#810); see `HostPending::note_settings_edited`.
-            self.host.note_settings_edited();
+            // backing-off older revision (#810); see `SettingsMachine::note_edited`.
+            self.settings_ops.note_edited();
             // A change to the *local* set-point re-stamps the wall clock so Home shows the new local
             // time: the only settings-screen edit that shifts it now is a UTC-offset step (manual
             // date/time editing was removed in #641). It does **not** touch `clock_trust` — nudging
@@ -3005,7 +3123,7 @@ impl App {
             fw_version,
             map_name,
             map_obcm_version,
-            card_free_bytes,
+            storage,
             ..
         } = self;
         // The shape previews draw only for the subject they were decimated for — a stale key
@@ -3063,7 +3181,7 @@ impl App {
             fw_version: fw_version.as_str(),
             map_name: map_name.as_str(),
             map_obcm_version: *map_obcm_version,
-            card_free_bytes: *card_free_bytes,
+            card_free_bytes: storage.free_bytes(),
             weather: weather.snapshot,
             weather_refreshing: weather.refreshing,
             travel_deg: ride.travel_deg,
@@ -3141,7 +3259,7 @@ impl App {
     /// the banner appear on the pass a map base lands back under a search that is still running —
     /// see [`RerouteFreeze::take_engaged_edge`](crate::reroute_freeze::RerouteFreeze::take_engaged_edge).
     pub fn take_dirty(&mut self) -> Dirty {
-        if self.freeze.take_engaged_edge(self.ui.base_draws_map()) {
+        if self.navigator.take_freeze_edge(self.ui.base_draws_map()) {
             self.ui.overlay_edge = true;
         }
         self.ui.take_dirty()
@@ -3243,41 +3361,52 @@ impl App {
             return;
         }
         match event {
-            HostEvent::StoreChanged => self.host.note_store_changed(),
+            HostEvent::StoreChanged => self.note_store_changed(),
             HostEvent::RouteUploaded { id, replaced, elevation } => self.on_route_uploaded(id, replaced, elevation),
             HostEvent::TripUploaded { id, replaced } => self.on_trip_uploaded(id, replaced),
             HostEvent::Warning(flags) => self.on_warning(flags),
-            HostEvent::NavPlanned(result) => self.on_nav_planned(result),
-            HostEvent::DetourPlanned(result) => self.on_detour_planned(result),
-            HostEvent::DetourCommitted(result) => self.on_detour_committed(result),
+            HostEvent::NavPlanned(result) => self.land_route_plan(result),
+            HostEvent::DetourPlanned(result) => self.land_detour_plan(result),
+            HostEvent::DetourCommitted(result) => self.land_detour_commit(result),
             HostEvent::CardScanned { free_bytes } => {
-                self.card_free_bytes = free_bytes;
-                self.ui.map_dirty = true;
+                // The legacy `None` folded "no medium" and "the scan failed" into one value; the
+                // domain separates them, and an unqualified `None` is the failed scan.
+                self.land_card_scan(free_bytes);
             }
-            HostEvent::DfuScanned(result) => self.post_dfu_landing(DfuLanding::Scanned(result)),
-            HostEvent::DfuInstallFailed(reason) => self.post_dfu_landing(DfuLanding::InstallFailed(reason)),
-            HostEvent::DfuInstallBegan => self.post_dfu_landing(DfuLanding::InstallBegan),
+            HostEvent::DfuScanned(result) => {
+                self.dfu.note_answer();
+                self.post_dfu_landing(DfuLanding::Scanned(result));
+            }
+            HostEvent::DfuInstallFailed(reason) => {
+                self.dfu.note_answer();
+                self.post_dfu_landing(DfuLanding::InstallFailed(reason));
+            }
+            HostEvent::DfuInstallBegan => {
+                self.dfu.note_answer();
+                self.post_dfu_landing(DfuLanding::InstallBegan);
+            }
             HostEvent::UpdateConfirmed(version) => self.post_boot_update(BootUpdate::Confirmed(version)),
             HostEvent::UpdateFailed { why, staged } => self.post_boot_update(BootUpdate::Failed(why, staged)),
-            HostEvent::SettingsPersisted { revision } => self.on_settings_persisted(revision),
-            HostEvent::SettingsPersistFailed { revision, error } => self.on_settings_persist_failed(revision, error),
+            HostEvent::SettingsPersisted { revision } => self.settings_ops.note_persisted(revision),
+            HostEvent::SettingsPersistFailed { revision, error: _ } => self.land_settings_failure(revision),
         }
     }
 
-    /// [`HostEvent::SettingsPersisted`]: the host durably wrote `revision`. Clear to Clean **only**
-    /// when it is still the latest — a stale ack (a newer edit already moved us back to Dirty) is
-    /// ignored, so the newer content stays pending. Revision equality is the supersede guard (#810).
-    fn on_settings_persisted(&mut self, revision: u16) {
-        self.host.on_settings_persisted(revision);
+    /// The product half of a settings write's failure, whichever protocol carried it:
+    /// [`SettingsMachine`](crate::settings::SettingsMachine) decides what the answer means, and
+    /// what is left here is the one thing it cannot do — telling the rider a save failed, on the
+    /// shared advisory warning card (#810).
+    fn land_settings_failure(&mut self, revision: u16) {
+        if self.settings_ops.note_persist_failed(revision, self.ui.now_ms) {
+            self.on_warning(WarningFlags::SETTINGS_ERROR);
+        }
     }
 
-    /// [`HostEvent::SettingsPersistFailed`]: the write for `revision` failed. Keep the revision dirty
-    /// and re-arm a bounded backoff (retried on a later frame that runs anyway — no idle wake), but
-    /// only when it is still the in-flight latest; a stale failure is ignored. Surface the failure on
-    /// the shared advisory warning card so it is more than a log line (#810).
-    fn on_settings_persist_failed(&mut self, revision: u16, _error: obc_ports::SettingsSaveError) {
-        self.host.on_settings_persist_failed(revision, self.ui.now_ms);
-        self.on_warning(WarningFlags::SETTINGS_ERROR);
+    /// The product half of a free-space measurement's answer. The figure is StorageInfo's; the
+    /// repaint is the System screen's.
+    fn land_card_scan(&mut self, free_bytes: Option<u64>) {
+        self.storage.note_measured(free_bytes);
+        self.ui.map_dirty = true;
     }
 
     /// Non-consuming per-class pendency for the drain's backpressure check. For delete classes this
@@ -3285,9 +3414,9 @@ impl App {
     /// peeks `true` and then drains to nothing.
     fn peek_host_command(&self, class: HostCommandClass) -> bool {
         match class {
-            HostCommandClass::RescanStore => self.host.store_changed_pending() > 0,
-            HostCommandClass::CancelRoutePlan => self.activity.nav_cancel_pending(),
-            HostCommandClass::CancelDetour => self.activity.detour_cancel_pending(),
+            HostCommandClass::RescanStore => self.store_changed > 0,
+            HostCommandClass::CancelRoutePlan => self.navigator.cancel_pending(PlanFamily::Route),
+            HostCommandClass::CancelDetour => self.navigator.cancel_pending(PlanFamily::Detour),
             // The delete classes are pended by either the UI hold-to-delete (an Activity slot) or the
             // auto-expiry sweep (a queued action) — the host handles both identically (#638 S3).
             HostCommandClass::DeleteRoute => {
@@ -3300,13 +3429,13 @@ impl App {
             HostCommandClass::StampRouteUsed => self.retention.has(crate::retention::SweepKind::StampRoute),
             HostCommandClass::StampRideSynced => self.retention.has(crate::retention::SweepKind::StampRide),
             HostCommandClass::FinishTrack => self.activity.has_track_action(),
-            HostCommandClass::PlanRoute => self.activity.has_nav_request(),
-            HostCommandClass::PlanDetour => self.activity.has_detour_request(),
-            HostCommandClass::CommitDetour => self.activity.detour_commit_pending(),
-            HostCommandClass::Dfu => self.activity.has_dfu_request(),
+            HostCommandClass::PlanRoute => self.navigator.request_pending(PlanFamily::Route),
+            HostCommandClass::PlanDetour => self.navigator.request_pending(PlanFamily::Detour),
+            HostCommandClass::CommitDetour => self.navigator.commit_pending(),
+            HostCommandClass::Dfu => self.dfu.request_pending(),
             HostCommandClass::ForgetBond => self.state.ble_forget_pending,
             HostCommandClass::PersistSettings => self.settings_persist_ready(),
-            HostCommandClass::ScanCardFree => self.activity.card_scan_pending(),
+            HostCommandClass::ScanCardFree => self.storage.refresh_pending(),
             HostCommandClass::LoadRideTrack => self.ride_track_request().is_some(),
             HostCommandClass::RefreshNavPreview => self.nav_preview_missing(),
         }
@@ -3320,21 +3449,20 @@ impl App {
     fn drain_host_command(&mut self, class: HostCommandClass) -> Option<HostCommand> {
         match class {
             HostCommandClass::RescanStore => {
-                let commits = self.host.take_store_changed();
+                let commits = core::mem::take(&mut self.store_changed);
                 (commits > 0).then_some(HostCommand::RescanStore { commits })
             }
-            HostCommandClass::CancelRoutePlan => self.activity.take_nav_cancel().then(|| {
-                // The host is being told to drop the planner: the run is over, so the freeze
-                // releases here rather than on an answer that will never come (#1146 P2).
-                self.note_plan_ended(PlanFamily::Route);
-                HostCommand::CancelRoutePlan
-            }),
-            HostCommandClass::CancelDetour => self.activity.take_detour_cancel().then(|| {
-                // The preview polyline dies with the plan it previewed.
-                self.catalogs.clear_detour_preview();
-                self.note_plan_ended(PlanFamily::Detour);
-                HostCommand::CancelDetour
-            }),
+            // Navigator decided the cancellation when the rider asked for it — the request
+            // annihilated, the token invalidated, the preview dropped. All that is left here is the
+            // command the legacy protocol spells it with, which `LegacyOwned::PlannerRelease`
+            // refuses to derive from the domain's `Release` effect (that one is also issued on
+            // success).
+            HostCommandClass::CancelRoutePlan => {
+                self.deliver_plan_cancel(PlanFamily::Route).then_some(HostCommand::CancelRoutePlan)
+            }
+            HostCommandClass::CancelDetour => {
+                self.deliver_plan_cancel(PlanFamily::Detour).then_some(HostCommand::CancelDetour)
+            }
             HostCommandClass::DeleteRoute => {
                 // The UI hold-to-delete (index-resolved to a durable id) takes priority; a retention
                 // delete drains after it, re-validated against live state and one in flight at a time
@@ -3356,33 +3484,27 @@ impl App {
             HostCommandClass::StampRouteUsed => self.retention_stamp_command(crate::retention::SweepKind::StampRoute),
             HostCommandClass::StampRideSynced => self.retention_stamp_command(crate::retention::SweepKind::StampRide),
             HostCommandClass::FinishTrack => self.activity.take_track_action().map(HostCommand::FinishTrack),
-            // The two plan commands are the freeze's engaging edge: draining one is the moment the
-            // host actually begins a planner run (a request the rider cancelled first is
-            // annihilated in `Activity` and never drains, so it never freezes anything).
-            HostCommandClass::PlanRoute => self.activity.take_nav_request().map(|req| {
-                self.note_plan_started(PlanFamily::Route);
-                HostCommand::PlanRoute(req)
-            }),
-            HostCommandClass::PlanDetour => self.activity.take_detour_request().map(|req| {
-                self.note_plan_started(PlanFamily::Detour);
-                HostCommand::PlanDetour(req)
-            }),
-            HostCommandClass::CommitDetour => self.activity.take_detour_commit().then_some(HostCommand::CommitDetour),
-            HostCommandClass::Dfu => self.activity.take_dfu_request().map(HostCommand::Dfu),
+            // The three planner commands are Navigator's own effects, spelled in the old
+            // vocabulary: the domain decides that work is owed and engages the freeze as it hands
+            // the operation over, and `navigator_row` names the command each effect becomes.
+            HostCommandClass::PlanRoute => {
+                self.navigator.next_plan_effect(PlanFamily::Route).and_then(|e| navigator_row(e).command())
+            }
+            HostCommandClass::PlanDetour => {
+                self.navigator.next_plan_effect(PlanFamily::Detour).and_then(|e| navigator_row(e).command())
+            }
+            HostCommandClass::CommitDetour => {
+                self.navigator.next_commit_effect().and_then(|e| navigator_row(e).command())
+            }
+            HostCommandClass::Dfu => self.dfu.next_effect().and_then(|e| dfu_row(e).command()),
             HostCommandClass::ForgetBond => {
                 core::mem::take(&mut self.state.ble_forget_pending).then_some(HostCommand::ForgetBond)
             }
             HostCommandClass::PersistSettings => {
-                // Emit the current revision and await its ack — the pending state is *not* cleared
-                // (the #810 fix): a failed write must keep the revision retryable, so Clean is
-                // reached only by a matching `SettingsPersisted` ack in `apply_event`.
-                self.host
-                    .drain_settings_persist(self.ui.top_is_settings(), self.ui.now_ms)
-                    .map(|revision| HostCommand::PersistSettings { revision })
+                let (in_subtree, now_ms) = (self.ui.top_is_settings(), self.ui.now_ms);
+                self.settings_ops.next_effect(in_subtree, now_ms).and_then(|e| settings_row(e).command())
             }
-            HostCommandClass::ScanCardFree => {
-                self.activity.take_card_scan_request().then_some(HostCommand::ScanCardFree)
-            }
+            HostCommandClass::ScanCardFree => self.storage.next_effect().and_then(|e| storage_info_row(e).command()),
             HostCommandClass::LoadRideTrack => self.ride_track_request().map(|id| HostCommand::LoadRideTrack { id }),
             HostCommandClass::RefreshNavPreview => self.nav_preview_missing().then_some(HostCommand::RefreshNavPreview),
         }
@@ -3505,7 +3627,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::device_core::derived::{DerivedInput, DerivedInputs, DerivedTargets};
-    use crate::host::SETTINGS_RETRY_BACKOFF_MS;
+    use crate::settings::SETTINGS_RETRY_BACKOFF_MS;
     use obc_ports::{CompassSource, LocationSource};
 
     /// A location source that yields one fix then runs dry (so a single `tick` integrates it).
@@ -5025,12 +5147,12 @@ mod tests {
         assert_eq!(app.activity.active_route, Some(2), "active navigation followed Beta to index 2");
 
         app.apply_gesture(Gesture::Press);
-        assert_eq!(app.activity.pending_detour_request().unwrap().route, 2, "the open chooser followed Beta too");
+        assert_eq!(app.navigator.pending_detour_request().unwrap().route, 2, "the open chooser followed Beta too");
 
         // Before the host drains the request, another rescan moves Beta again.
         app.set_routes_with_ids(&[summary("Beta"), summary("Gamma"), summary("Alpha")], &[20, 30, 10]);
         assert_eq!(app.activity.active_route, Some(0));
-        assert_eq!(app.activity.pending_detour_request().unwrap().route, 0, "the queued plan request follows Beta");
+        assert_eq!(app.navigator.pending_detour_request().unwrap().route, 0, "the queued plan request follows Beta");
     }
 
     #[test]
@@ -5040,13 +5162,13 @@ mod tests {
         assert_eq!(open.activity.active_route, None, "vanished Beta unloads navigation");
         open.apply_gesture(Gesture::Press);
         assert!(matches!(open.top_screen(), Screen::Detour(_)), "an unavailable chooser stays safely cancellable");
-        assert!(open.activity.pending_detour_request().is_none(), "it never retargets the route now at old index 1");
+        assert!(open.navigator.pending_detour_request().is_none(), "it never retargets the route now at old index 1");
 
         let mut queued = app_with_detour_chooser_on_beta();
         queued.apply_gesture(Gesture::Press);
-        assert!(queued.activity.pending_detour_request().is_some());
+        assert!(queued.navigator.pending_detour_request().is_some());
         queued.set_routes_with_ids(&[summary("Alpha"), summary("Gamma")], &[10, 30]);
-        assert!(queued.activity.pending_detour_request().is_none(), "a queued plan for vanished Beta is cancelled");
+        assert!(queued.navigator.pending_detour_request().is_none(), "a queued plan for vanished Beta is cancelled");
     }
 
     /// Drive the active-climb state directly through `App::update_active_climb` with a controlled
@@ -5162,6 +5284,44 @@ mod tests {
         );
     }
 
+    /// The preview polyline is *derived* from the detour plan, so Back on the preview takes it with
+    /// the plan it previewed. It is drawn over the still-active route: a shape that outlived its
+    /// detour is a line to nowhere, and the rider would be looking at a turn nobody is going to
+    /// make.
+    #[test]
+    fn cancelling_a_detour_drops_its_preview_polyline() {
+        use crate::screen::{DetourPreviewScreen, DetourScreen};
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.set_routes_with_ids(&[summary("Road")], &[7]);
+        app.state.has_nav_graph = true;
+        app.state.user_fix = Some(Fix { lon: 7_800_000, lat: 48_000_000, course: None, speed_mps: None });
+        app.activity.active_route = Some(0);
+        app.activity.progress_m = 1_000;
+        app.activity.route_total_m = 20_000;
+        app.activity.start_session();
+
+        // Plan a detour and land its preview, exactly as the flow does.
+        let chooser = DetourScreen::new(&app.activity);
+        let preview =
+            crate::host::DetourPreview { cost_delta_m: 420, total_distance_m: 1_220, rejoin_m: 2_000, ascent_m: None };
+        app.admit_navigator_intent(NavigatorIntent::PlanDetour(crate::activity::DetourRequest {
+            route: 0,
+            from: (7_800_000, 48_000_000),
+            progress_m: 1_000,
+            target_m: 1_800,
+        }));
+        let _ = app.ui.stack.push(Screen::Detour(chooser));
+        let _ = app.ui.stack.push(Screen::DetourPreview(DetourPreviewScreen::new(&chooser, preview)));
+        app.set_detour_preview(&[(7_812_000, 48_001_000), (7_816_000, 48_001_000)]);
+        assert!(!app.catalogs.detour_preview_for(Some(0)).is_empty(), "the host's shape is cached");
+
+        app.apply_gesture(Gesture::Back); // the rider drops the detour
+        assert!(
+            app.catalogs.detour_preview_for(Some(0)).is_empty(),
+            "and the shape goes with the plan, not one frame later"
+        );
+    }
+
     /// The Detour chooser is map-backed and live, but it is an interaction in progress rather
     /// than an auto-switch sibling. A climb entry must preserve both the chooser and its
     /// selected distance.
@@ -5184,7 +5344,7 @@ mod tests {
         assert!(matches!(app.top_screen(), Screen::Detour(_)), "climb entry preserves the open chooser");
 
         app.apply_gesture(Gesture::Press);
-        let req = app.activity.pending_detour_request().expect("the preserved chooser still plans");
+        let req = app.navigator.pending_detour_request().expect("the preserved chooser still plans");
         assert_eq!((req.route, req.target_m), (0, 5_800), "the 800 m selection survives the climb edge");
     }
 
@@ -5531,7 +5691,7 @@ mod tests {
         use crate::activity::DfuAction;
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         assert_eq!(drain_dfu(&mut app), None, "nothing pending at boot");
-        app.activity.request_dfu(DfuAction::Install);
+        app.dfu.admit_intent(crate::dfu::DfuIntent::InstallRequested);
         assert_eq!(drain_dfu(&mut app), Some(DfuAction::Install), "the posted request drains");
         assert_eq!(drain_dfu(&mut app), None, "…exactly once");
     }
@@ -5687,21 +5847,21 @@ mod tests {
         // Every class, posted through the same doors the UI / hosts use (arrival order shuffled
         // on purpose — the drain order is the class order, not arrival).
         app.state.ble_forget_pending = true;
-        app.activity.request_card_scan();
+        app.storage.admit_intent(crate::device_core::storage_info::StorageInfoIntent::RefreshRequested);
         app.activity.request_track(TrackAction::Save);
         app.apply_event(crate::HostEvent::StoreChanged);
         app.apply_event(crate::HostEvent::StoreChanged);
-        app.activity.request_nav_cancel(); // posted before the plan — a later cancel annihilates it
-        app.activity.request_nav(NavRequest::new((0, 0), (500, 500), "To the col"));
-        app.activity.request_detour_cancel(); // same annihilation rule as the nav pair (#882)
-        app.activity.request_detour(crate::activity::DetourRequest {
+        app.admit_navigator_intent(NavigatorIntent::CancelPlan); // posted before the plan — a later cancel annihilates it
+        app.admit_navigator_intent(NavigatorIntent::PlanRoute(NavRequest::new((0, 0), (500, 500), "To the col")));
+        app.admit_navigator_intent(NavigatorIntent::CancelDetour); // same annihilation rule as the nav pair (#882)
+        app.admit_navigator_intent(NavigatorIntent::PlanDetour(crate::activity::DetourRequest {
             route: 0,
             from: (0, 0),
             progress_m: 100,
             target_m: 800,
-        });
-        app.activity.request_detour_commit();
-        app.activity.request_dfu(DfuAction::Scan);
+        }));
+        app.admit_navigator_intent(NavigatorIntent::CommitDetour);
+        app.dfu.admit_intent(crate::dfu::DfuIntent::ScanRequested);
         app.activity.request_route_delete(1);
         app.activity.request_trip_delete(42);
         app.activity.request_ride_delete(0);
@@ -5778,10 +5938,10 @@ mod tests {
         let mut mailbox: HostMailbox = HostMailbox::new();
 
         // Fill the mailbox artificially by draining a command per pass without popping…
-        app.activity.request_nav_cancel();
+        app.admit_navigator_intent(NavigatorIntent::CancelPlan);
         assert_eq!(app.drain_host_commands(&mut mailbox), DrainStatus::Complete);
         while !mailbox.is_full() {
-            app.activity.request_card_scan();
+            app.storage.admit_intent(crate::device_core::storage_info::StorageInfoIntent::RefreshRequested);
             let _ = app.drain_host_commands(&mut mailbox);
         }
         // …then post a destructive command with no room left.
@@ -5825,8 +5985,8 @@ mod tests {
     fn dfu_slot_is_most_recent_wins() {
         use crate::activity::DfuAction;
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        app.activity.request_dfu(DfuAction::Scan);
-        app.activity.request_dfu(DfuAction::Install);
+        app.dfu.admit_intent(crate::dfu::DfuIntent::ScanRequested);
+        app.dfu.admit_intent(crate::dfu::DfuIntent::InstallRequested);
         assert_eq!(drain_dfu(&mut app), Some(DfuAction::Install), "the later phase superseded");
         assert_eq!(drain_dfu(&mut app), None);
     }
@@ -5993,8 +6153,8 @@ mod tests {
 
         // Confirm + Back in one batch → drain yields exactly [CancelRoutePlan].
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        app.activity.request_nav(NavRequest::new((0, 0), (1, 1), "A"));
-        app.activity.request_nav_cancel();
+        app.admit_navigator_intent(NavigatorIntent::PlanRoute(NavRequest::new((0, 0), (1, 1), "A")));
+        app.admit_navigator_intent(NavigatorIntent::CancelPlan);
         let mut mailbox: HostMailbox = HostMailbox::new();
         let _ = app.drain_host_commands(&mut mailbox);
         assert_eq!(mailbox.pop(), Some(HostCommand::CancelRoutePlan));
@@ -6002,18 +6162,18 @@ mod tests {
 
         // Per-class drains observe the same pending state.
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        app.activity.request_nav(NavRequest::new((0, 0), (1, 1), "A"));
-        app.activity.request_nav_cancel();
+        app.admit_navigator_intent(NavigatorIntent::PlanRoute(NavRequest::new((0, 0), (1, 1), "A")));
+        app.admit_navigator_intent(NavigatorIntent::CancelPlan);
         assert_eq!(drain_nav(&mut app), None, "annihilated before any host saw it");
         assert!(drain_cancel(&mut app), "the cancel still latches (a stale cancel is a host no-op)");
 
         // Three gestures in one batch: Back on in-flight A's spinner, confirm B, Back on B's.
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        app.activity.request_nav(NavRequest::new((0, 0), (1, 1), "A"));
+        app.admit_navigator_intent(NavigatorIntent::PlanRoute(NavRequest::new((0, 0), (1, 1), "A")));
         assert!(drain_nav(&mut app).is_some(), "the host already holds plan A");
-        app.activity.request_nav_cancel(); // Back on A's spinner — nothing undrained to annihilate
-        app.activity.request_nav(NavRequest::new((0, 0), (2, 2), "B")); // confirm B
-        app.activity.request_nav_cancel(); // Back on B's spinner — annihilates the undrained B
+        app.admit_navigator_intent(NavigatorIntent::CancelPlan); // Back on A's spinner — nothing undrained to annihilate
+        app.admit_navigator_intent(NavigatorIntent::PlanRoute(NavRequest::new((0, 0), (2, 2), "B"))); // confirm B
+        app.admit_navigator_intent(NavigatorIntent::CancelPlan); // Back on B's spinner — annihilates the undrained B
         let mut mailbox: HostMailbox = HostMailbox::new();
         let _ = app.drain_host_commands(&mut mailbox);
         assert_eq!(mailbox.pop(), Some(HostCommand::CancelRoutePlan), "one cancel: aborts the in-flight A");

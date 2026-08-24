@@ -33,6 +33,7 @@ use obc_render::{
 
 use crate::activity::NavRequest;
 use crate::input::Gesture;
+use crate::navigator::NavigatorIntent;
 use crate::Msg;
 
 use super::vocab::chrome::{card_triangle, title_frame, wrapped, TITLE_BAR_H};
@@ -87,7 +88,11 @@ impl NavConfirmScreen {
                 let Some(fix) = cx.state.user_fix else {
                     return Transition::Replace(Screen::NavFail(NavFailScreen::not_found()));
                 };
-                cx.activity.request_nav(NavRequest::new((fix.lon, fix.lat), self.to, &self.name));
+                cx.navigator.admit_intent(NavigatorIntent::PlanRoute(NavRequest::new(
+                    (fix.lon, fix.lat),
+                    self.to,
+                    &self.name,
+                )));
                 // Swap to the planning screen (#499): the host steps the resumable router across
                 // its passes and answers into it — the UI stays live (spinner + Back-to-cancel).
                 Transition::Replace(Screen::NavPlanning(NavPlanningScreen::new(&self.name)))
@@ -188,8 +193,8 @@ impl NavPlanningScreen {
             // discards the partial work. No failure card — the rider changed their mind.
             Gesture::Back => {
                 match self.kind {
-                    PlanKind::Nav => cx.activity.request_nav_cancel(),
-                    PlanKind::Detour => cx.activity.request_detour_cancel(),
+                    PlanKind::Nav => cx.navigator.admit_intent(NavigatorIntent::CancelPlan),
+                    PlanKind::Detour => cx.navigator.admit_intent(NavigatorIntent::CancelDetour),
                 }
                 Transition::Pop
             }

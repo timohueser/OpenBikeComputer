@@ -37,16 +37,19 @@
 //! is rediscovered and re-issued on every later pass.
 //! [`a_stamp_that_was_answered_is_not_enqueued_again`] pins the ride arm.
 //!
-//! ## What Phase 1 does and does not own
+//! ## What DeviceCore owns here, and what it does not
 //!
-//! Three domains have a state machine today — the catalog, retention and weather — and those are
-//! the three whose effects a pass emits and whose outcomes it consumes. Two of them can be reached
-//! from outside `obc-app`: weather's refresh intent has no public door until #1401 lands the request
-//! cutover, so this executor serves the catalog and retention, and asserts the rest stays empty.
+//! Seven domains have a state machine: the catalog, retention and weather from #1438, and the four
+//! #1397 S2 added — Navigator, `SettingsMachine`, `DfuState` and `StorageInfo`. Six of them can be
+//! reached from outside `obc-app` (weather's refresh intent has no public door until #1401 lands the
+//! request cutover), so this executor serves those six and asserts the rest stays empty.
 //!
-//! The other six domains speak the legacy protocol still, so both DeviceCore runners drain the
-//! legacy mailbox for them. [`store_owned`] and [`derived_level`] are the line between the two, and
-//! every class still on the old protocol has a [`LegacyOwned`] row naming the slice that moves it.
+//! **Two** domains still speak the legacy protocol: Recorder and Bond. Both are named in
+//! [`LegacyOwned`] with the reason — a ride close is answered by a catalog re-feed rather than by a
+//! ride identity, and a bond removal by a link-status fact rather than by a reply — and a domain
+//! that cannot validate a token cannot own an outcome (epic §4.3). [`pass_owned`] and
+//! [`derived_level`] are the line between the two halves, and every class still on the old protocol
+//! has a row naming the slice that moves it.
 
 mod device_core_corpus;
 
@@ -58,13 +61,13 @@ use obc_app::device_core::compat::{event_reply, LegacyOwned, LegacyReply};
 use obc_app::device_core::derived::{
     DerivedInput, DerivedInputs, DerivedNeeds, DerivedResult, DerivedTargets, NavPreviewKey, RideTrackKey,
 };
-use obc_app::device_core::storage_info::StorageInfoEffect;
+use obc_app::device_core::storage_info::{StorageInfoEffect, StorageInfoOutcome};
 use obc_app::device_core::{
-    Capabilities, DeviceFacts, EffectSlots, LegacyAdapter, LegacyInputs, NavigatorTag, OutcomeSlots, PassClock,
-    PassInputs, PassPlan, PlatformSupport, Revision, SettingsTag, StoreIdentity, StoreRevision, TokenSource,
+    Capabilities, DeviceFacts, EffectSlots, LegacyAdapter, LegacyInputs, NavigatorTag, OperationToken, OutcomeSlots,
+    PassClock, PassInputs, PassPlan, PlatformSupport, Revision, SettingsTag, StoreIdentity, StoreRevision, TokenSource,
     TransferState,
 };
-use obc_app::dfu::DfuEffect;
+use obc_app::dfu::{DfuEffect, DfuOutcome};
 use obc_app::navigator::{NavigatorEffect, NavigatorError, NavigatorOutcome, PlannerWork};
 use obc_app::recorder::RecorderEffect;
 use obc_app::retention::{Retention, RetentionEffect, RetentionError, RetentionOutcome, RouteRetentionMeta};
@@ -216,19 +219,30 @@ fn rider_visible(mut state: VisibleState) -> VisibleState {
 
 // ==================== what the pass owns today ====================
 
-/// The legacy classes DeviceCore's pass has taken over outright.
+/// The twelve legacy classes DeviceCore's pass has taken over outright.
 ///
-/// A rider's delete is consumed at stage 4 and a retention stamp leaves as a `RetentionEffect`, so
-/// neither pends on the old protocol any more. A DeviceCore runner asserts they do not appear rather
-/// than filtering them: executing one beside the effect that already carries it would delete or
-/// stamp twice, and a class that quietly came back would be the migration coming undone.
-fn store_owned(command: &HostCommand) -> bool {
+/// Four from #1438 — a rider's delete is consumed at stage 4 and a retention stamp leaves as a
+/// `RetentionEffect` — and the eight #1397 S2 moved: every class whose terminal answer the legacy
+/// protocol already delivers, and which therefore has a domain able to validate a token for it.
+///
+/// A DeviceCore runner asserts they never appear in the mailbox rather than filtering them:
+/// executing one beside the effect that already carries it would plan, install or delete twice, and
+/// a class that quietly came back would be the migration coming undone.
+fn pass_owned(command: &HostCommand) -> bool {
     matches!(
         command,
         HostCommand::DeleteRoute { .. }
             | HostCommand::DeleteRide { .. }
             | HostCommand::StampRouteUsed { .. }
             | HostCommand::StampRideSynced { .. }
+            | HostCommand::PlanRoute(_)
+            | HostCommand::PlanDetour(_)
+            | HostCommand::CommitDetour
+            | HostCommand::CancelRoutePlan
+            | HostCommand::CancelDetour
+            | HostCommand::Dfu(_)
+            | HostCommand::PersistSettings { .. }
+            | HostCommand::ScanCardFree
     )
 }
 
@@ -280,6 +294,11 @@ enum Done {
         refeed: Refeed,
     },
     Retention(RetentionOutcome),
+    /// A typed answer for one of the four domains #1397 S2 gave a machine.
+    Navigator(NavigatorOutcome),
+    Settings(SettingsOutcome),
+    Dfu(DfuOutcome),
+    Storage(StorageInfoOutcome),
     /// A legacy answer, for a domain whose machine has not landed.
     Event(HostEvent),
     /// The ride the recorder just finalized — answered, as the legacy protocol answers it, by a
@@ -312,6 +331,10 @@ struct CoreHarness {
     served: BTreeSet<&'static str>,
     /// Effects the adapter could not express at all, by row.
     left: BTreeSet<LegacyOwned>,
+    /// The settings write the typed executor is holding. A real asynchronous executor keeps the
+    /// token of the operation it is performing; the corpus scripts some settings answers at the
+    /// *action* rather than at the request, so they are built against whatever is actually running.
+    settings_token: Option<OperationToken<SettingsTag>>,
 }
 
 impl CoreHarness {
@@ -327,6 +350,7 @@ impl CoreHarness {
             moved: BTreeSet::new(),
             served: BTreeSet::new(),
             left: BTreeSet::new(),
+            settings_token: None,
         }
     }
 
@@ -369,9 +393,9 @@ impl CoreHarness {
 
     /// Serve what a host outside `obc-app` can actually cause.
     ///
-    /// The catalog and retention are the two domains whose effects a rider action or a retention
-    /// sweep produces. Weather has a machine too, but its refresh intent has no public door yet
-    /// (#1401 owns the request cutover), and the remaining six have no machine at all — so nothing
+    /// Six domains reach this executor: the catalog and retention from #1438, and the four #1397 S2
+    /// gave a machine. Weather has a machine too, but its refresh intent has no public door yet
+    /// (#1401 owns the request cutover), and Recorder and Bond have no machine at all — so nothing
     /// else may appear. Asserted rather than assumed: an effect this executor cannot serve turning
     /// up would be a silent change of who decides, and the run must stop rather than skip it.
     fn serve_typed(&mut self, effects: &mut EffectSlots, done: &mut Vec<Done>) {
@@ -383,7 +407,71 @@ impl CoreHarness {
             self.served.insert("retention");
             done.push(Done::Retention(self.serve_retention(effect)));
         }
-        assert!(!effects.has_pending(), "only catalog and retention effects are reachable from a host in Phase 1");
+        if let Some(effect) = effects.navigator.take() {
+            self.served.insert("navigator");
+            if let Some(outcome) = self.serve_navigator(effect) {
+                done.push(Done::Navigator(outcome));
+            }
+        }
+        let mut persisted = None;
+        if let Some(effect) = effects.settings.take() {
+            self.served.insert("settings");
+            let SettingsEffect::PersistRevision { token, revision } = effect;
+            self.settings_token = Some(token);
+            persisted = Some(revision);
+        }
+        if let Some(effect) = effects.dfu.take() {
+            self.served.insert("dfu");
+            if let Some(outcome) = self.serve_dfu(effect) {
+                done.push(Done::Dfu(outcome));
+            }
+        }
+        if let Some(effect) = effects.storage_info.take() {
+            self.served.insert("storage");
+            let StorageInfoEffect::MeasureFreeSpace { token } = effect;
+            done.push(Done::Storage(StorageInfoOutcome::Measured { token, free_bytes: 8 * 1024 * 1024 }));
+        }
+        assert!(!effects.has_pending(), "recorder, weather and bond are the domains a host cannot reach in Phase 1");
+        self.serve_scripted(persisted, done);
+    }
+
+    /// Serve one navigation operation from the corpus's scripted planner answers.
+    ///
+    /// `None` means "the executor is still working": the corpus scripts a **detour** search's answer
+    /// at the action that opens the preview rather than at the request (the commit it leads to needs
+    /// that preview to exist), so that one arrives through the app's own event door.
+    fn serve_navigator(&mut self, effect: NavigatorEffect) -> Option<NavigatorOutcome> {
+        let token = effect.token();
+        match effect {
+            NavigatorEffect::Acquire { work: PlannerWork::Route(_), .. } => {
+                self.state.pending_nav_plan.take().map(|result| match result {
+                    Ok(route) => NavigatorOutcome::PlanFinished { token, route },
+                    Err(error) => NavigatorOutcome::Failed { token, error: NavigatorError::Plan(error) },
+                })
+            }
+            NavigatorEffect::Acquire { work: PlannerWork::Detour(_), .. } => None,
+            // The splice's answer is scripted at the action, like the detour search's — see
+            // `serve_scripted`.
+            NavigatorEffect::CommitDetour { .. } => None,
+            NavigatorEffect::Release { .. } => Some(NavigatorOutcome::Released { token }),
+            NavigatorEffect::Step { .. } | NavigatorEffect::CommitRoute { .. } => {
+                panic!("one legacy request runs the whole search (LegacyOwned::PlannerPacing) — {effect:?}")
+            }
+        }
+    }
+
+    /// Serve one update operation from the corpus's scripted scan and install answers.
+    fn serve_dfu(&mut self, effect: DfuEffect) -> Option<DfuOutcome> {
+        match effect {
+            DfuEffect::Scan { token } => self.state.pending_dfu_scan.take().map(|result| match result {
+                Ok(report) => DfuOutcome::ScanFinished { token, report },
+                Err(error) => DfuOutcome::ScanFailed { token, error },
+            }),
+            DfuEffect::ArmInstall { token } => self.state.pending_dfu_install.take().map(|result| match result {
+                Ok(()) => DfuOutcome::InstallBegan { token },
+                Err(error) => DfuOutcome::InstallFailed { token, error },
+            }),
+        }
     }
 
     fn serve_catalog(&mut self, effect: CatalogEffect) -> Done {
@@ -465,6 +553,7 @@ impl CoreHarness {
             }
         }
         self.adapter.needs_to_commands(needs, &mut mail);
+        let mut persisted = None;
         while let Some(command) = mail.pop() {
             if let Some(level) = derived_level(&command) {
                 // The adapter re-emits the two levels as their old cues; this runner answers them
@@ -472,64 +561,93 @@ impl CoreHarness {
                 self.moved.insert(level);
                 continue;
             }
+            if let HostCommand::PersistSettings { revision } = command {
+                persisted = Some(revision);
+            }
             self.served.insert("adapter");
             trace.record_command(&command);
             self.serve_legacy(command, done, trace);
         }
+        self.serve_scripted(persisted, done);
     }
 
-    // ---- the legacy half, for the six domains without a machine ----
+    // ---- the legacy half, for the two domains without a machine ----
+    //
+    // Recorder and Bond, and nothing else. Both are named in `LegacyOwned` with the reason they are
+    // not here: the legacy ride close is answered by a catalog re-feed rather than by a ride
+    // identity (`RideCloseAck`), and the legacy bond removal is confirmed by a link-status fact
+    // rather than by a reply (`BondAck`). A domain that cannot validate a token cannot own an
+    // outcome (epic §4.3), so both keep the old protocol until #1397 S6.
 
     fn serve_mailbox(&mut self, done: &mut Vec<Done>, trace: &mut TraceRecorder<VisibleState>) {
         let mut mail: HostMailbox = HostMailbox::new();
         let _ = self.state.app.drain_host_commands(&mut mail);
-        let mut persisted = None;
         while let Some(command) = mail.pop() {
             if let Some(level) = derived_level(&command) {
                 self.moved.insert(level);
                 continue;
             }
             assert!(
-                !store_owned(&command),
+                !pass_owned(&command),
                 "{command:?} is DeviceCore's now — running it here would repeat the effect that carries it"
             );
-            if let HostCommand::PersistSettings { revision } = command {
-                // The first, as `LegacyHarness::run_pass`'s `find_map` takes it — a second in one
-                // drain would be a coalescing bug, and taking the last would hide it.
-                persisted.get_or_insert(revision);
-            }
             trace.record_command(&command);
             self.serve_legacy(command, done, trace);
         }
-        // The scripted answers the legacy corpus arms at its protocol boundary, drained exactly as
-        // the legacy runner drains them — this half of both DeviceCore runners is unchanged by
-        // design, because these six domains have not migrated.
-        if let Some(result) = self.state.pending_nav_plan.take() {
-            done.push(Done::Event(HostEvent::NavPlanned(result)));
-        }
+    }
+
+    /// The corpus's answers that are scripted at the **action** rather than at the request,
+    /// delivered once per pass exactly as `LegacyHarness::run_pass` delivers them — so all three
+    /// frames answer the same script.
+    ///
+    /// Two are not request-keyed and cannot be: the detour splice's answer is armed by the Press
+    /// that asks for it and arrives without a command (like `DetourPlanned`, whose preview that
+    /// Press happens on), and a settings answer may be a *stale* ack for a revision a newer edit
+    /// has already superseded — the whole point of that scenario, and something no in-flight write
+    /// of its own would carry.
+    ///
+    /// `persisted` is the revision a write went out for on this pass, when one did: the corpus's
+    /// retry case is the one answer that must not precede its own request.
+    fn serve_scripted(&mut self, persisted: Option<u16>, done: &mut Vec<Done>) {
         if std::mem::take(&mut self.state.commit_success_pending) {
             done.push(Done::Event(HostEvent::DetourCommitted(Ok(10))));
         }
+        let Some((revision, failed)) = self.scripted_settings(persisted) else { return };
+        // The typed executor answers with the token of the write it is holding, so the domain
+        // checks the operation *and* the revision — two independent guards (#810). The
+        // compatibility executor has no token to give: the adapter is holding it, and hands it back
+        // itself when the legacy event arrives.
+        let typed = matches!(self.executor, Executor::Typed).then_some(self.settings_token).flatten();
+        done.push(match (typed, failed) {
+            (Some(token), true) => {
+                Done::Settings(SettingsOutcome::PersistFailed { token, revision, error: SettingsSaveError::Backend })
+            }
+            (Some(token), false) => Done::Settings(SettingsOutcome::Persisted { token, revision }),
+            (None, true) => {
+                Done::Event(HostEvent::SettingsPersistFailed { revision, error: SettingsSaveError::Backend })
+            }
+            (None, false) => Done::Event(HostEvent::SettingsPersisted { revision }),
+        });
+    }
+
+    /// The corpus's scripted settings answer, if one is due this pass.
+    ///
+    /// `persisted` is the revision a write went out for on this pass, when one did — the corpus's
+    /// retry case is the one answer that must not precede its own request.
+    fn scripted_settings(&mut self, persisted: Option<u16>) -> Option<(u16, bool)> {
         let ready = !matches!(self.state.pending_settings_result, Some(PendingSettingsResult::PersistLatest))
             || persisted.is_some();
-        if ready {
-            if let Some(result) = self.state.pending_settings_result.take() {
-                let revision = match result {
-                    PendingSettingsResult::PersistRevision(revision) => revision,
-                    PendingSettingsResult::PersistLatest | PendingSettingsResult::FailLatest => {
-                        persisted.unwrap_or(self.state.settings_revision)
-                    }
-                };
-                done.push(Done::Event(match result {
-                    PendingSettingsResult::FailLatest => {
-                        HostEvent::SettingsPersistFailed { revision, error: SettingsSaveError::Backend }
-                    }
-                    PendingSettingsResult::PersistLatest | PendingSettingsResult::PersistRevision(_) => {
-                        HostEvent::SettingsPersisted { revision }
-                    }
-                }));
-            }
+        if !ready {
+            return None;
         }
+        let result = self.state.pending_settings_result.take()?;
+        let revision = match result {
+            PendingSettingsResult::PersistRevision(revision) => revision,
+            PendingSettingsResult::PersistLatest | PendingSettingsResult::FailLatest => {
+                persisted.unwrap_or(self.state.settings_revision)
+            }
+        };
+        Some((revision, matches!(result, PendingSettingsResult::FailLatest)))
     }
 
     fn serve_legacy(&mut self, command: HostCommand, done: &mut Vec<Done>, trace: &mut TraceRecorder<VisibleState>) {
@@ -554,6 +672,9 @@ impl CoreHarness {
                     self.state.feed_trips("core.cascade-trips", trace);
                 }
             }
+            // The four domains #1397 S2 gave a machine reach this executor as *translated* effects,
+            // so the corpus's scripted answers are keyed to the command that carries the request —
+            // and go back through the adapter, which is holding the token.
             HostCommand::Dfu(DfuAction::Scan) => {
                 if let Some(result) = self.state.pending_dfu_scan.take() {
                     done.push(Done::Event(HostEvent::DfuScanned(result)));
@@ -569,6 +690,11 @@ impl CoreHarness {
             }
             HostCommand::ScanCardFree => {
                 done.push(Done::Event(HostEvent::CardScanned { free_bytes: Some(8 * 1024 * 1024) }));
+            }
+            HostCommand::PlanRoute(_) => {
+                if let Some(result) = self.state.pending_nav_plan.take() {
+                    done.push(Done::Event(HostEvent::NavPlanned(result)));
+                }
             }
             // The sidecar stamps are fire-and-forget in the old protocol: the write happens and
             // nothing acknowledges it (`LegacyOwned::SidecarAck`), which is exactly why
@@ -589,15 +715,15 @@ impl CoreHarness {
                 }
             }
             HostCommand::FinishTrack(TrackAction::Discard) => {}
-            // Cancels, plan requests and the detour commit are consumed without being started: the
-            // corpus scripts their completion at the protocol boundary, exactly as the legacy runner
-            // does (`PlanHold`, `hold_detour_commit`).
-            HostCommand::PersistSettings { .. }
-            | HostCommand::CancelRoutePlan
+            // A cancellation is consumed without being started (the search it aborts was never run
+            // here), the detour search's answer is scripted at the action that opens its preview,
+            // and the legacy bond removal is confirmed by a link fact rather than by a reply
+            // (`LegacyOwned::BondAck`).
+            HostCommand::CancelRoutePlan
             | HostCommand::CancelDetour
-            | HostCommand::PlanRoute(_)
             | HostCommand::PlanDetour(_)
             | HostCommand::CommitDetour
+            | HostCommand::PersistSettings { .. }
             | HostCommand::ForgetBond => {}
             other => panic!("{other:?} is pass-owned and must not reach the legacy executor"),
         }
@@ -675,6 +801,21 @@ impl TraceHarness<Action> for CoreHarness {
             }
             Done::Retention(outcome) => {
                 let _ = self.inbox.outcomes.retention.try_put(outcome);
+            }
+            Done::Navigator(outcome) => {
+                let _ = self.inbox.outcomes.navigator.try_put(outcome);
+            }
+            Done::Settings(outcome) => {
+                if matches!(outcome, SettingsOutcome::PersistFailed { .. }) && self.state.settings_retry_requested {
+                    self.clock_ms = self.clock_ms.max(SETTINGS_FAILURE_RETRY_MS);
+                }
+                let _ = self.inbox.outcomes.settings.try_put(outcome);
+            }
+            Done::Dfu(outcome) => {
+                let _ = self.inbox.outcomes.dfu.try_put(outcome);
+            }
+            Done::Storage(outcome) => {
+                let _ = self.inbox.outcomes.storage_info.try_put(outcome);
             }
             Done::Event(event) => {
                 trace.record_event(&event);
@@ -972,6 +1113,24 @@ fn the_pass_owns_the_classes_it_took_over() {
     .expect("the scenario runs");
     assert!(harness.moved.contains("LoadRideTrack"), "the ride-track cue is answered from the plan's key");
     assert!(harness.moved.contains("RefreshNavPreview"), "and so is the nav preview");
+
+    // The eight classes #1397 S2 moved, each through the scenario that produces it: the rider's
+    // request leaves as its domain's typed effect, and `serve_mailbox`'s `pass_owned` assertion —
+    // which every one of these runs through — is what proves the legacy class did not pend beside
+    // it. `Cancel*` rides its own family's scenario, and `PersistSettings` the settings ones.
+    for (scenario, domain) in [
+        ("navigation.plan-cancel-late-replacement", "navigator"),
+        ("navigation.detour-lifecycle", "navigator"),
+        ("dfu.scan-outcomes", "dfu"),
+        ("dfu.install-start", "dfu"),
+        ("platform.bond-and-card-space", "storage"),
+        ("settings.revision-success-and-stale-result", "settings"),
+    ] {
+        let mut harness = CoreHarness::new(Executor::Typed);
+        run_scenario_seeded(&definition(named(scenario)), RunnerMode::Immediate, &normalization_seed(), &mut harness)
+            .expect("the scenario runs");
+        assert!(harness.served.contains(domain), "{scenario}: the rider's request left as a {domain} effect");
+    }
 }
 
 fn named(name: &'static str) -> &'static Scenario {
@@ -1213,8 +1372,24 @@ fn an_outcome_after_cancellation_changes_nothing() {
     assert!(plan.effects.catalog.is_empty(), "a repeat of a terminal answer starts no work");
     assert_eq!(harness.state.route_ids.len(), 2, "and removes nothing a second time");
 
-    // The navigator half of the same rule, through the adapter: a cancelled plan does not accept its
-    // own result, and it is the *domain* that refuses it — the adapter hands the token straight back.
+    // The navigator half of the same rule, on the real machine (#1397 S2): the rider's Back
+    // invalidates the operation, so the planner's answer commits no route at all.
+    let mut harness = typed();
+    assert!(harness.app().debug_start_nav((0, 0), (1_000, 1_000), "col"), "the plan is admitted");
+    let mut plan = harness.pass();
+    let effect = plan.effects.navigator.take().expect("and leaves as one bounded planner operation");
+    harness.app().apply_gesture(Gesture::Back); // the rider walks away from the spinner
+    let _ =
+        harness.inbox.outcomes.navigator.try_put(NavigatorOutcome::PlanFinished { token: effect.token(), route: 10 });
+    harness.pass();
+    assert_eq!(harness.state.app.active_route_index(), None, "the cancelled plan adopted nothing");
+    assert!(
+        !matches!(harness.state.app.top_screen(), Screen::RouteOverview(_)),
+        "and the rider is not shown an overview for a route they cancelled"
+    );
+
+    // The same rule seen from the adapter's side: it hands the stored token straight back, and it is
+    // the *domain* that refuses it.
     let mut navigator: TokenSource<NavigatorTag> = TokenSource::new();
     let token = navigator.issue();
     let mut adapter = LegacyAdapter::new();
@@ -1318,8 +1493,14 @@ fn a_transfer_during_planning_withdraws_heavy_capability() {
     // The pass sees the transfer and starts nothing; it also fails nothing.
     let mut harness = expiring(0);
     harness.inbox.facts.note_transfer(TransferState::Active);
-    let plan = harness.pass();
-    assert!(!plan.effects.has_pending(), "no work is admitted while the transfer holds the store");
+    let mut plan = harness.pass();
+    assert!(plan.effects.navigator.is_empty(), "no plan is started while the transfer holds the store");
+    assert!(plan.effects.dfu.is_empty(), "nor an install");
+    assert!(plan.effects.catalog.is_empty() && plan.effects.retention.is_empty(), "nor a store operation");
+    // The settings write is not heavy and is not withdrawn: the trusted-clock stamp this fixture
+    // makes is a rider edit like any other, and a transfer holding the *store* has nothing to say
+    // about a settings revision. That distinction is what `Capabilities` is for.
+    let _ = plan.effects.settings.take();
     assert!(adapter.pending().holds(LegacyReply::RoutePlan), "and the running plan is untouched");
     assert!(navigator.is_current(token), "its operation is still the current one");
 

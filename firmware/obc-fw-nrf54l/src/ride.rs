@@ -1157,7 +1157,7 @@ pub(crate) async fn run_app(
                     // design, with its own on-glass acceptance — a separate issue.
                     //
                     // So: answer the typed failure the moment the request drains, exactly as the
-                    // router-less image answers `PlanRoute`. `on_detour_planned` swaps the spinner for
+                    // router-less image answers `PlanRoute`. the detour answer swaps the spinner for
                     // the "Try a farther rejoin." card and releases the freeze in the same pass.
                     obc_app::HostCommand::PlanDetour(_) => {
                         defmt::warn!("nav: detour planning has no board half yet (#882) — answering the failure tier");
@@ -2193,7 +2193,7 @@ pub(crate) async fn run_app(
             // the reflective panel keeps the last frame on glass for free. Two things follow, and
             // both are load-bearing. The map redraw is **skipped, not queued** — latched into
             // `pending_map_redraw` so nothing is lost and the catch-up lands the pass the freeze
-            // lifts (`App::note_plan_ended` dirties the map for exactly that). And the *overlay*
+            // lifts (Navigator dirties the map for exactly that). And the *overlay*
             // still paints: `dirty.overlay` carries the freeze's edge, and the banner is what turns
             // a frozen screen from "the device wedged" into "it is recalculating".
             //
