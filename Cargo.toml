@@ -72,10 +72,12 @@ opt-level = 2
 opt-level = 2
 # The captured weather products arrive inside bzip2, HDF5 and gzip containers, and every cycle a
 # fixture test bakes decodes them again. That decode is the largest remaining cost in
-# `canonical_mosaic` and it is entirely third-party inner loops.
+# `canonical_mosaic` and it is entirely third-party inner loops. `bzip2-rs` carries most of it;
+# gzip belongs to `miniz_oxide`, which is where flate2's `rust_backend` actually inflates, so an
+# override on flate2 itself would reach nothing but stream plumbing.
 [profile.dev.package.bzip2-rs]
 opt-level = 2
 [profile.dev.package.hdf5-pure]
 opt-level = 2
-[profile.dev.package.flate2]
+[profile.dev.package.miniz_oxide]
 opt-level = 2

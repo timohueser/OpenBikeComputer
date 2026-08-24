@@ -464,8 +464,10 @@ fn every_canonical_instant_of_a_cycle_is_a_native_dwd_member() {
         // mosaic and emitter here, not inferred from the frame list.
         // Well inside the radar footprint (50.0 N, 10.0 E — Thuringia), so `all_observed` is about
         // which frame won and not about whether the composite reaches the window's corner.
-        // It is the source baked above: assertion 3 has just proved the derivation stage added
-        // nothing, so a second bake of the same tar at the same instant would only re-decode it.
+        // It is the source baked above rather than a second bake of the same tar at the same
+        // instant. Assertion 3 has just proved the derivation stage added no frame, and the sort it
+        // runs on its way out cannot reorder this one: `bake_tar` accepts a member only at the next
+        // five-minute lead, so the frames are already ascending and `sort_by_key` is stable.
         let lattice = sub_lattice(50_000_000, 10_000_000, 64, 64);
         let anchor_flags = {
             let mosaic = Mosaic::from_sources(vec![source]).expect("ranked");
@@ -1477,10 +1479,9 @@ fn a_corrupt_upstream_publishes_nothing_and_leaves_the_previous_generation_stand
 /// failure mode this feature introduced and the reason it is gated this way rather than by counting
 /// deletions.
 ///
-/// It carries the contract the sweep derives that delete set from as well — a generation names the
+/// It states the contract the sweep derives that delete set from as well — a generation names the
 /// two before it, newest first, and nothing older, read back out of the manifest the previous cycle
-/// published, because the baker keeps no state. That chain used to be a second test publishing this
-/// same sequence into a store of its own, one step shorter.
+/// published, because the baker keeps no state.
 #[cfg(feature = "external-fixtures")]
 #[test]
 fn the_tree_holds_exactly_the_generations_the_published_manifest_names() {
