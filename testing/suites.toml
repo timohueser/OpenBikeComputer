@@ -64,8 +64,6 @@ scheduled = "weekly"
 extra_triggers = []
 coverage_component = "storage"
 ownership = [{ kind = "rust-package", name = "obc-storage" }]
-budget_exception = { reason = "The valuable crash matrices currently share the library harness with fast storage tests.", issue = "#1449" }
-cadence_conflict = { reason = "Crash matrices need their own executable before fast and scheduled cadence can be selected independently.", issue = "#1449" }
 
 [[suite]]
 id = "rust.obc-dfu"
@@ -439,7 +437,7 @@ scheduled = "weekly"
 extra_triggers = ["ops/weather/**"]
 coverage_component = "weather"
 ownership = [{ kind = "rust-package", name = "obc-wx-bake" }]
-budget_exception = { reason = "Canonical mosaic and event-pack binaries exceed the temporary per-suite target while repeated bake work is removed.", issue = "#1449" }
+budget_exception = { reason = "The repeated bake work is gone; one bake per assertion still puts the canonical-mosaic and event-pack binaries over the per-binary cap.", issue = "#1496" }
 cadence_conflict = { reason = "Fast codec tests, captured fixtures, expensive bakes, and ignored generators still share this package.", issue = "#1449" }
 
 [[suite]]
