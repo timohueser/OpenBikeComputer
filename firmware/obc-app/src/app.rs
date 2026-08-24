@@ -514,7 +514,7 @@ pub struct App {
     /// identity-keyed view caches (ride profile/preview, nav preview) — the one component owning
     /// the id ↔ summary pairing and every rescan-remap invariant (#450, epic #526). Populated by
     /// the host through the `set_*` façade methods below.
-    catalogs: CatalogState,
+    pub(crate) catalogs: CatalogState,
     /// The loaded map's routing-profile **names** (routing-v2 N5), refreshed by the host on map load
     /// ([`set_nav_profiles`](App::set_nav_profiles)) — resident because the Bike-type settings screen
     /// and the created-route overview label render them on frames the host draws without a `Reader`.
@@ -550,17 +550,21 @@ pub struct App {
     /// delete retry pacing. Advanced from [`tick`](App::tick); it emits typed metadata effects and
     /// catalog expiry intents, which the compatibility seam below still translates into the legacy
     /// [`HostCommand`] protocol.
-    retention: crate::retention::RetentionMachine,
+    pub(crate) retention: crate::retention::RetentionMachine,
     /// The weather domain (#1437): the installed data's identity and revision, visible freshness,
     /// the refresh request and its in-flight operation, the last terminal result, and the alert
     /// decision. The bundle itself stays in the platform's store — this owns what the rider is
     /// *told*, never the frames.
-    weather: crate::weather::WeatherDomain,
+    pub(crate) weather: crate::weather::WeatherDomain,
     /// The app-side pending protocol state that isn't a one-shot slot on [`Activity`]: the
     /// counted store-changed cue (#450) and the #810 settings-persistence state machine
     /// (revision, handshake state, bounded retry pacing). Drained and answered only through the
     /// typed protocol below.
-    host: HostPending,
+    pub(crate) host: HostPending,
+    /// The DeviceCore coordinator's own state (#1438): every cross-domain connection, the levels a
+    /// stage detects an edge against, the current [`Capabilities`](crate::device_core::Capabilities)
+    /// and the re-entrancy guard. Not domain state — nothing here decides a product rule.
+    pub(crate) pass: crate::device_core::pass::PassState,
     /// The **Recalculating freeze** (issue #1146, P2): whether a host planner run is live, which
     /// (over a map base) stops map redraws, pauses the matcher, and raises the overlay banner —
     /// the product rule that makes the render and nav arms of the board's scratch arena disjoint.
@@ -636,6 +640,7 @@ impl App {
             retention: crate::retention::RetentionMachine::new(),
             weather: crate::weather::WeatherDomain::new(),
             host: HostPending::new(),
+            pass: crate::device_core::pass::PassState::new(),
             freeze: crate::reroute_freeze::RerouteFreeze::new(),
             fw_version: heapless::String::new(),
             map_name: heapless::String::new(),
@@ -679,6 +684,7 @@ impl App {
             retention,
             weather,
             host,
+            pass,
             freeze,
             fw_version,
             map_name,
@@ -708,6 +714,7 @@ impl App {
             "no weather installed, none requested, nothing completed this boot"
         );
         assert!(host.is_empty(), "no host work pending, settings Clean at revision 0");
+        assert_eq!(*pass, crate::device_core::pass::PassState::new(), "no connection wired, no pass in flight");
         assert!(!freeze.plan_live() && !freeze.active(true), "no planner running, no freeze banner");
         assert!(fw_version.is_empty() && map_name.is_empty(), "the host has identified nothing yet");
         assert_eq!(*map_obcm_version, 0, "no map format known yet");
@@ -725,7 +732,23 @@ impl App {
     /// `clock` is the [`RideClock`] (fix-consistent millis) so moving-time isn't scaled by the sim's
     /// replay multiplier; button holds use [`InputClock`] in [`handle_input`](App::handle_input).
     /// Loading or swapping a route resets the matcher and ride totals here, once per load.
+    ///
+    /// Two things happen, and the DeviceCore pass runs them at different stages: the world is
+    /// applied ([`advance_inputs`](App::advance_inputs), stage 3) and then the retention domain
+    /// advances ([`retention_tick`](App::retention_tick), stage 5). One implementation of each,
+    /// reached by both compositions.
     pub fn tick(&mut self, clock: RideClock, sensors: Sensors, route: Option<&RouteReader>) {
+        self.advance_inputs(clock, sensors, route);
+        // Auto-expiry (epic #638, S3): stamp the active route's `last_used` on activation, then run
+        // the roughly-hourly sweep — both gated on a trusted clock and no ride recording. Deletes +
+        // stamps leave here as typed host commands.
+        self.retention_tick();
+    }
+
+    /// Apply the world to the app: the sensor ports, the fix and its derived readouts, and the
+    /// repaint edges they imply. The sensor half of [`tick`](App::tick), and the DeviceCore pass's
+    /// third stage.
+    pub(crate) fn advance_inputs(&mut self, clock: RideClock, sensors: Sensors, route: Option<&RouteReader>) {
         let now_ms = clock.0;
         // BLE-sensor freshness is judged on the `RideClock` (`now_ms`) — the clock ride samples and
         // summaries use. Remember it so the stat tiles, which render *after*
@@ -956,11 +979,6 @@ impl App {
                 self.ride.prev_live_sensors = live;
             }
         }
-
-        // Auto-expiry (epic #638, S3): stamp the active route's `last_used` on activation, then run
-        // the roughly-hourly sweep — both gated on a trusted clock (GPS stamped it above / BLE will
-        // in S2) and no ride recording. Deletes + stamps leave here as typed host commands.
-        self.retention_tick();
     }
 
     /// Give the **map-referenced altimeter** (EL8, epic #1068) its one terrain read for the latest
@@ -993,7 +1011,7 @@ impl App {
     /// #1437). The whole policy — the trusted-clock and recording gates included — lives in the
     /// domain; all this does is assemble the [`RetentionView`](crate::retention::RetentionView) of
     /// the catalogs, the clocks and the live gates that the domain reads.
-    fn retention_tick(&mut self) {
+    pub(crate) fn retention_tick(&mut self) {
         self.with_retention(|retention, view| retention.advance(view));
     }
 
@@ -1005,7 +1023,7 @@ impl App {
     /// the just-in-time recheck can never read two different pictures.
     ///
     /// [`RetentionView`]: crate::retention::RetentionView
-    fn with_retention<T>(
+    pub(crate) fn with_retention<T>(
         &mut self,
         f: impl FnOnce(&mut crate::retention::RetentionMachine, &crate::retention::RetentionView) -> T,
     ) -> T {
@@ -1752,7 +1770,7 @@ impl App {
     /// same-index/new-bytes replace leaves the catalog index untouched — so the cache's own
     /// route-identity check sees nothing change, and an entry measured on the old geometry would
     /// name a different place on the new.
-    fn drop_route_derived_state(&mut self) {
+    pub(crate) fn drop_route_derived_state(&mut self) {
         self.ride.drop_route_derived_state(&mut self.activity);
         self.ui.next_ahead.invalidate();
     }
@@ -1990,7 +2008,7 @@ impl App {
 
     /// [`HostEvent::UpdateConfirmed`] / [`UpdateFailed`](HostEvent::UpdateFailed): post this boot's
     /// one-time update verdict for the toast (or its failure twin).
-    fn post_boot_update(&mut self, result: BootUpdate) {
+    pub(crate) fn post_boot_update(&mut self, result: BootUpdate) {
         self.ui.cards.post_update(result);
         self.sweep_cards();
     }
@@ -2073,7 +2091,7 @@ impl App {
     }
 
     /// [`HostEvent::RouteUploaded`]: forced adoption on an active replace + the advisory prompt.
-    fn on_route_uploaded(
+    pub(crate) fn on_route_uploaded(
         &mut self,
         id: crate::CatalogObjectId,
         replaced: bool,
@@ -2114,7 +2132,7 @@ impl App {
     /// pushed from the host (hosts edit a trip exclusively by replace-at-same-id — the desktop's
     /// rename / add / remove / reorder is one upload per click), so it is silent: the user just
     /// made the change, and a card per click would be the exact parade this event exists to kill.
-    fn on_trip_uploaded(&mut self, id: crate::CatalogObjectId, replaced: bool) {
+    pub(crate) fn on_trip_uploaded(&mut self, id: crate::CatalogObjectId, replaced: bool) {
         if replaced {
             return;
         }
@@ -2123,7 +2141,7 @@ impl App {
     }
 
     /// [`HostEvent::Warning`]: accumulate the flags and deliver (or defer) the advisory card.
-    fn on_warning(&mut self, flags: WarningFlags) {
+    pub(crate) fn on_warning(&mut self, flags: WarningFlags) {
         if flags.is_empty() {
             return;
         }
@@ -3213,7 +3231,14 @@ impl App {
     /// Apply one host answer or fact. Events are owned, so a host can hold one across asynchronous
     /// work and apply it later; a late answer whose screen is gone is dropped, while advisory
     /// prompts defer behind the passkey card or a charging hold.
+    ///
+    /// **Refused while a DeviceCore pass runs** (#1438): a platform callback must not change
+    /// DeviceCore mid-pass, or a later stage would decide from a picture the earlier ones never
+    /// saw. The next pass consumes whatever the executor completed.
     pub fn apply_event(&mut self, event: HostEvent) {
+        if self.pass.in_pass() {
+            return; // #1438: nothing may change DeviceCore mid-pass
+        }
         match event {
             HostEvent::StoreChanged => self.host.note_store_changed(),
             HostEvent::RouteUploaded { id, replaced, elevation } => self.on_route_uploaded(id, replaced, elevation),
@@ -3415,7 +3440,23 @@ impl App {
     /// through `targets`. They cannot diverge here, which is the point of them sharing a key — the
     /// legacy wrappers reach the same state in two calls only because every host makes both in one
     /// drain.
+    ///
+    /// Refused while a DeviceCore pass runs, like [`apply_event`](App::apply_event); the pass reaches
+    /// the same acceptance through [`accept_derived`](App::accept_derived) at its own stage.
     pub fn apply_derived(
+        &mut self,
+        inputs: crate::device_core::derived::DerivedInputs,
+        targets: crate::device_core::derived::DerivedTargets,
+    ) {
+        if self.pass.in_pass() {
+            return; // #1438: nothing may change DeviceCore mid-pass
+        }
+        self.accept_derived(inputs, targets);
+    }
+
+    /// Accept keyed derived inputs — the implementation behind
+    /// [`apply_derived`](App::apply_derived) and the pass's own second stage.
+    pub(crate) fn accept_derived(
         &mut self,
         inputs: crate::device_core::derived::DerivedInputs,
         targets: crate::device_core::derived::DerivedTargets,

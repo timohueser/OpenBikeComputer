@@ -22,6 +22,13 @@
 //!   `Outcome` or `Intent` enum anywhere.
 //! - [`migration`] — the Appendix A inventory of the legacy protocol, as compile-checked test data.
 //!
+//! …the one deterministic frame every platform runs (#1438):
+//!
+//! - [`pass`] — [`PassInputs`] in, fourteen fixed stages, [`PassPlan`] out. No loop, no re-entry, no
+//!   component reaching into another.
+//! - [`connections`] — every way one domain reaches another, named, typed and capacity-bounded, with
+//!   the delivery rule (same pass forwards, next pass backwards) following from the stage order.
+//!
 //! …and the boundary that is not a command at all (#1437):
 //!
 //! - [`derived`] — [`DerivedNeeds`] / [`DerivedInputs`]: level-triggered reads guarded by a *key*
@@ -30,12 +37,15 @@
 //! - [`feeders`] — the inventory of every public bulk feeder on `App` and its new home, the feeder
 //!   twin of [`migration`].
 //!
-//! The pass entry point arrives in a later slice; nothing here changes the legacy
-//! [`HostCommand`](crate::HostCommand) / [`HostEvent`](crate::HostEvent) protocol.
+//! Nothing here changes the legacy [`HostCommand`](crate::HostCommand) /
+//! [`HostEvent`](crate::HostEvent) protocol: the pass is private to `obc-app` until #1397 S6
+//! migrates the runtime hosts onto it.
 
+pub mod connections;
 pub mod derived;
 pub mod feeders;
 pub mod migration;
+pub mod pass;
 mod shared;
 pub mod slots;
 pub mod storage_info;
@@ -44,6 +54,10 @@ pub use derived::{
     DerivedInput, DerivedInputs, DerivedNeeds, DerivedResult, DerivedTargets, NavPreviewKey, RideTrackKey,
 };
 
+pub use connections::{
+    ActiveRouteRemoved, CatalogIdentityChanged, Connections, Deferred, FaultNotices, Merge, RideClosed, RouteActivated,
+};
+pub use pass::{PassClock, PassInputs, PassPlan, PassStage, SourceNeeds};
 pub use slots::{EffectSlots, OutcomeSlots, Slot, SlotFull};
 pub use storage_info::{StorageInfoEffect, StorageInfoError, StorageInfoIntent, StorageInfoOutcome};
 

@@ -137,6 +137,15 @@ pub(crate) struct CatalogState {
     /// its staleness key (a route swap or rescan mid-preview blanks the overlay rather than
     /// drawing a stale detour over different geometry).
     detour_preview_route: Option<usize>,
+    /// The token source for the catalog's one operation (#1438). One operation is in flight at a
+    /// time — the domain's single effect slot — so one source is all it needs.
+    ops: crate::device_core::TokenSource<crate::device_core::CatalogTag>,
+    /// An admitted [`CatalogIntent`] that has not become an effect yet. Capacity one: later work
+    /// stays with whoever asked for it, where it can still be superseded or cancelled.
+    pending: Option<CatalogIntent>,
+    /// Whether an effect is out with the executor. Its outcome clears this, which is what lets the
+    /// next intent go out.
+    in_flight: bool,
 }
 
 impl CatalogState {
@@ -167,6 +176,9 @@ impl CatalogState {
             nav_preview_view: Revision::ZERO,
             detour_preview: heapless::Vec::new(),
             detour_preview_route: None,
+            ops: crate::device_core::TokenSource::new(),
+            pending: None,
+            in_flight: false,
         }
     );
 
@@ -687,6 +699,69 @@ impl CatalogOutcome {
     }
 }
 
+/// The catalog domain's operation seam (#1438): admit an intent, issue the one effect it implies,
+/// and accept the answer.
+///
+/// This is the first piece of `CatalogMachine` living where the catalog already lives. It owns the
+/// two things a domain owner must own — its [`OperationToken`] and how many operations may be in
+/// flight — and nothing more: the delete-then-refresh ordering, the trip cascade and the identity
+/// remap arrive with the store cutover (#1397).
+///
+/// Reached from the pass alone for now, which has no production caller until #1439 — see
+/// [`pass`](crate::device_core::pass).
+#[allow(dead_code)]
+impl CatalogState {
+    /// Admit `intent`, or refuse it when one is already waiting to become an effect.
+    ///
+    /// The refusal hands the intent back rather than dropping or replacing it: whoever asked keeps
+    /// it and offers it again next pass. That is the whole backpressure rule — a busy catalog delays
+    /// a delete, it never loses one.
+    pub(crate) fn admit_intent(
+        &mut self,
+        intent: CatalogIntent,
+    ) -> Result<(), crate::device_core::SlotFull<CatalogIntent>> {
+        if self.pending.is_some() {
+            return Err(crate::device_core::SlotFull { rejected: intent });
+        }
+        self.pending = Some(intent);
+        Ok(())
+    }
+
+    /// The next bounded catalog operation, or `None` while one is already in flight or nothing is
+    /// admitted.
+    ///
+    /// A trip deletion yields nothing yet: its cascade needs the member read the machine owns, so it
+    /// stays on the legacy path rather than being half-performed here.
+    pub(crate) fn next_effect(&mut self) -> Option<CatalogEffect> {
+        if self.in_flight {
+            return None;
+        }
+        let effect = match self.pending? {
+            CatalogIntent::Refresh => CatalogEffect::ReadCatalog { token: self.ops.issue() },
+            CatalogIntent::DeleteRoute { id } | CatalogIntent::DeleteRide { id } => {
+                CatalogEffect::RemoveObject { token: self.ops.issue(), object: id }
+            }
+            CatalogIntent::DeleteTrip { .. } => return None,
+        };
+        self.pending = None;
+        self.in_flight = true;
+        Some(effect)
+    }
+
+    /// Consume the answer to a [`CatalogEffect`]. A stale token — a superseded operation, or a
+    /// repeat of one already accounted for — changes nothing.
+    ///
+    /// The resident catalogs are not touched here: what is *in* the store reaches them through the
+    /// refresh feed, and inventing a removal locally would make the two disagree until it did.
+    pub(crate) fn apply_outcome(&mut self, outcome: CatalogOutcome) {
+        if !self.ops.is_current(outcome.token()) {
+            return;
+        }
+        self.ops.invalidate(); // terminal: a duplicate of this answer is no longer current
+        self.in_flight = false;
+    }
+}
+
 // Layout tripwires: an identity, a revision, a count — never a catalog.
 const _: () = assert!(core::mem::size_of::<CatalogIntent>() <= 16, "a request with one identity");
 const _: () = assert!(core::mem::size_of::<CatalogEffect>() <= 16, "a token and one identity");
@@ -718,6 +793,9 @@ impl CatalogState {
             nav_preview_view,
             detour_preview,
             detour_preview_route,
+            ops,
+            pending,
+            in_flight,
         } = self;
         assert!(routes.is_empty() && route_ids.is_empty() && route_meta.is_empty(), "no routes catalogued");
         assert!(trips.is_empty(), "no trips catalogued");
@@ -731,6 +809,8 @@ impl CatalogState {
             "the derived key revisions start at zero — nothing committed, nothing invalidated"
         );
         assert!(detour_preview.is_empty() && detour_preview_route.is_none(), "no detour preview cached");
+        assert!(pending.is_none() && !*in_flight, "no catalog operation admitted or in flight");
+        assert_eq!(format!("{ops:?}"), "TokenSource(0)", "no catalog operation has been issued");
     }
 }
 
