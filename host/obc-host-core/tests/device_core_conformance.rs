@@ -22,6 +22,22 @@
 //! it is this file failing, because a difference with no approved row is one nothing may ship over.
 //! At the time of writing there is none.
 //!
+//! ## Two production defects came out of this gate
+//!
+//! **The rider's ride close was destroyed.** The pass took the finish one-shot at stage 4 and
+//! dropped it at stage 7, where Recorder has no machine to act on it — so the ride was never
+//! finalized and no executor was told. The fix was to delete the `UiRuntime` → `Recorder`
+//! connection rather than document the loss: it provisioned for a lifecycle nobody owns, and its
+//! only effect was destroying a rider request. The close is back on the legacy drain, where it is
+//! performed, and [`a_ride_finalize_failure_after_the_last_checkpoint_reaches_the_rider`] runs the
+//! mandated trace for real instead of pinning a gap.
+//!
+//! **A decided sidecar stamp was rediscovered forever.** The retention sweep re-derives its
+//! candidates from the resident view, and the pass never mirrored the stamp it had just issued — so
+//! the same write went out again on the pass after the executor answered it, one per pass, for the
+//! rest of the boot. Found by the settle probe in [`Run::finish`]: a scenario that never came to
+//! rest. [`a_stamp_that_was_answered_is_not_enqueued_again`] pins it.
+//!
 //! ## What Phase 1 does and does not own
 //!
 //! Three domains have a state machine today — the catalog, retention and weather — and those are
@@ -37,11 +53,13 @@ mod device_core_corpus;
 
 use std::collections::BTreeSet;
 
+use obc_app::ble::BondEffect;
 use obc_app::catalog_state::{CatalogEffect, CatalogError, CatalogOutcome};
-use obc_app::device_core::compat::{event_reply, LegacyOwned};
+use obc_app::device_core::compat::{event_reply, LegacyOwned, LegacyReply};
 use obc_app::device_core::derived::{
     DerivedInput, DerivedInputs, DerivedNeeds, DerivedResult, DerivedTargets, NavPreviewKey, RideTrackKey,
 };
+use obc_app::device_core::storage_info::StorageInfoEffect;
 use obc_app::device_core::{
     Capabilities, DeviceFacts, EffectSlots, LegacyAdapter, LegacyInputs, NavigatorTag, OutcomeSlots, PassClock,
     PassInputs, PassPlan, PlatformSupport, Revision, SettingsTag, StoreIdentity, StoreRevision, TokenSource,
@@ -49,7 +67,7 @@ use obc_app::device_core::{
 };
 use obc_app::dfu::DfuEffect;
 use obc_app::navigator::{NavigatorEffect, NavigatorError, NavigatorOutcome, PlannerWork};
-use obc_app::recorder::{RecorderEffect, RecorderIntent};
+use obc_app::recorder::RecorderEffect;
 use obc_app::retention::{Retention, RetentionEffect, RetentionError, RetentionOutcome, RouteRetentionMeta};
 use obc_app::screen::Screen;
 use obc_app::settings::{SettingsEffect, SettingsOutcome};
@@ -151,7 +169,18 @@ impl Run {
                 harness.deliver(done, &mut recorder);
             }
         }
-        Run { settled: harness.snapshot(), trace }
+        // At rest means at rest: a runner still producing work here would be compared mid-flight,
+        // and the matrix would be reading a snapshot of a device that had not finished.
+        let settled = harness.snapshot();
+        assert!(
+            harness.run_pass(&mut recorder).is_empty(),
+            "{} has not settled in {} passes under {}",
+            scenario.name,
+            SETTLE_PASSES,
+            runner.name()
+        );
+        assert_eq!(harness.snapshot(), settled, "and a quiet pass changes nothing");
+        Run { settled, trace }
     }
 }
 
@@ -173,11 +202,13 @@ const EVERYTHING: PlatformSupport = PlatformSupport {
 
 /// The rider-visible projection two runners must agree on.
 ///
-/// Two fields are dropped, and both for the same reason: they are *legacy* internals rather than
+/// Two fields are dropped, and both for the same reason: they count *legacy* events rather than
 /// anything the rider can see. `pending_host_command` asks the old protocol whether it has a command
-/// queued, which a domain that no longer speaks it will always answer `false` to;
-/// `retention_delete_attempts` counts calls into the legacy repository trait, which the typed
-/// executor does not implement. Requiring either would be requiring the legacy command sequence.
+/// queued, which a domain that no longer speaks it answers `false` to by construction.
+/// `retention_delete_attempts` counts calls into `BorrowedRoutes::delete_by_id`, which counts every
+/// call including one for an id already gone; the typed executor reaches the store by identity and
+/// counts only the calls whose object is still catalogued, so the two count different events for the
+/// same behaviour. Requiring either would be requiring the legacy command sequence.
 fn rider_visible(mut state: VisibleState) -> VisibleState {
     state.pending_host_command = false;
     state.retention_delete_attempts = 0;
@@ -252,6 +283,9 @@ enum Done {
     Retention(RetentionOutcome),
     /// A legacy answer, for a domain whose machine has not landed.
     Event(HostEvent),
+    /// The ride the recorder just finalized — answered, as the legacy protocol answers it, by a
+    /// catalog re-feed rather than by a terminal ride identity (`LegacyOwned::RideCloseAck`).
+    RideSaved,
     RideTrack(DerivedInput<RideTrackKey>),
     NavPreview(DerivedInput<NavPreviewKey>),
 }
@@ -461,7 +495,9 @@ impl CoreHarness {
                 "{command:?} is DeviceCore's now — running it here would repeat the effect that carries it"
             );
             if let HostCommand::PersistSettings { revision } = command {
-                persisted = Some(revision);
+                // The first, as `LegacyHarness::run_pass`'s `find_map` takes it — a second in one
+                // drain would be a coalescing bug, and taking the last would hide it.
+                persisted.get_or_insert(revision);
             }
             trace.record_command(&command);
             self.serve_legacy(command, done, trace);
@@ -541,16 +577,28 @@ impl CoreHarness {
             HostCommand::StampRouteUsed { .. } | HostCommand::StampRideSynced { .. } => {
                 self.served.insert("legacy-stamp");
             }
-            // Cancels, plan requests, the detour commit and the ride close are consumed without
-            // being started: the corpus scripts their completion at the protocol boundary, exactly
-            // as the legacy runner does (`PlanHold`, `hold_detour_commit`).
+            // The ride close: still a legacy command, because Recorder has no machine — and the
+            // pass deliberately leaves the rider's one-shot here rather than taking it somewhere it
+            // cannot be acted on.
+            HostCommand::FinishTrack(TrackAction::Save) => {
+                if std::mem::take(&mut self.state.fail_next_finalize) {
+                    // The legacy vocabulary has no recorder-finalize outcome; a host reports the
+                    // failure through the generic warning, which is DC1's own recorded limitation.
+                    done.push(Done::Event(HostEvent::Warning(WarningFlags::REC_ERROR)));
+                } else {
+                    done.push(Done::RideSaved);
+                }
+            }
+            HostCommand::FinishTrack(TrackAction::Discard) => {}
+            // Cancels, plan requests and the detour commit are consumed without being started: the
+            // corpus scripts their completion at the protocol boundary, exactly as the legacy runner
+            // does (`PlanHold`, `hold_detour_commit`).
             HostCommand::PersistSettings { .. }
             | HostCommand::CancelRoutePlan
             | HostCommand::CancelDetour
             | HostCommand::PlanRoute(_)
             | HostCommand::PlanDetour(_)
             | HostCommand::CommitDetour
-            | HostCommand::FinishTrack(_)
             | HostCommand::ForgetBond => {}
             other => panic!("{other:?} is pass-owned and must not reach the legacy executor"),
         }
@@ -566,6 +614,21 @@ impl CoreHarness {
         }
         if let Some(key) = needs.nav_preview {
             done.push(Done::NavPreview(DerivedInput::filled(key)));
+        }
+    }
+
+    /// Serve one plan and hand every answer straight back — the trace runner's frame, without the
+    /// delivery scheduling.
+    fn serve(&mut self, mut plan: PassPlan, trace: &mut TraceRecorder<VisibleState>) {
+        let mut done = Vec::new();
+        match self.executor {
+            Executor::Typed => self.serve_typed(&mut plan.effects, &mut done),
+            Executor::Compatibility => self.serve_compat(&mut plan.effects, &plan.derived_needs, &mut done, trace),
+        }
+        self.serve_mailbox(&mut done, trace);
+        self.serve_derived(&plan.derived_needs, &mut done);
+        for item in done {
+            self.deliver(item, trace);
         }
     }
 
@@ -633,6 +696,7 @@ impl TraceHarness<Action> for CoreHarness {
                     self.clock_ms = self.clock_ms.max(SETTINGS_FAILURE_RETRY_MS);
                 }
             }
+            Done::RideSaved => self.state.feed_rides("core.recorder-saved", trace),
             Done::RideTrack(input) => {
                 self.ride_preview = vec![(0, 0), (1, 1)];
                 self.inbox.derived.ride_track = Some(input);
@@ -662,66 +726,79 @@ enum Disposition {
     Accepted,
 }
 
-/// One approved difference between the legacy runners and the DeviceCore ones.
+/// One approved difference between the legacy baseline and one or more DeviceCore runners.
+///
+/// `runners` is what makes the table exact at the level the result is reported at: a difference that
+/// *moved* from one runner to another — the typed executor regressing into the compatibility
+/// executor's shape, say — changes the set of `(scenario, runner)` cells even when the scenario list
+/// and the cell count are unchanged.
 #[derive(Debug, Clone, Copy)]
 struct Difference {
-    /// The scenario it shows up in, or `""` for one that is not scenario-scoped.
     scenario: &'static str,
+    /// Exactly the runners this difference appears in.
+    runners: &'static [Runner],
     disposition: Disposition,
+    /// The legacy row that owns the difference, when one does. Cross-checked against the rows the
+    /// compatibility executor actually reports, so a citation cannot be prose that stopped being
+    /// true. `None` says no legacy row owns it, and `why` then has to say what does.
+    owner: Option<LegacyOwned>,
     /// What differs.
     what: &'static str,
     /// The expected target (`Corrected`) or the reason and later owner (`Accepted`).
     why: &'static str,
 }
 
-/// Every difference this gate found, with its disposition. A scenario whose runners disagree
-/// without a row here fails [`every_scenario_agrees_or_has_an_approved_disposition`].
+impl Difference {
+    /// The `(scenario, runner)` cells this row accounts for.
+    fn cells(&self) -> impl Iterator<Item = (&'static str, &'static str)> + '_ {
+        self.runners.iter().map(|runner| (self.scenario, runner.name()))
+    }
+}
+
+/// Every difference this gate found, with its disposition and the cells it appears in.
 const DIFFERENCES: &[Difference] = &[
     Difference {
         scenario: "derived-data.repeats-until-matching-fill",
+        runners: &[Runner::CoreImmediate, Runner::CoreDelayed, Runner::Compatibility],
         disposition: Disposition::Corrected,
-        what: "both DeviceCore runners settle one screen shallower than the legacy baseline",
-        why: "the legacy bulk feeders carry no subject, so a fill for the route the rider *was* \
-              previewing satisfies the need for the one they are previewing now and leaves an extra \
-              overview on the stack — DC1 records the stack depth moving with delivery cadence as a \
-              known defect. DeviceCore keys every derived read (#1437), drops an answer about \
-              something else, and reaches the same state immediate or delayed. The shallower stack \
-              is the expected target.",
-    },
-    Difference {
-        scenario: "recorder.failure-and-session-replacement",
-        disposition: Disposition::Accepted,
-        what: "no REC_ERROR card, because the ride close reaches no executor",
-        why: "the pass consumes the rider's finish one-shot at stage 4 and stage 7 emits no \
-              RecorderEffect — Recorder has no machine yet (LegacyOwned::RideCloseAck, #1397 S6). \
-              With no finalize there is no failure to report. The production hosts still run the \
-              legacy frame methods, so nothing shipping is affected; the mapping the effect will use \
-              already exists, and this row goes with Recorder's machine.",
+        owner: None,
+        what: "every DeviceCore runner settles one screen shallower than the legacy baseline",
+        why: "no legacy row owns a corrected defect. The legacy bulk feeders carry no subject, so a \
+              fill for the route the rider *was* previewing satisfies the need for the one they are \
+              previewing now and leaves an extra overview on the stack — DC1 records that stack \
+              depth moving with delivery cadence as a known defect. DeviceCore keys every derived \
+              read (#1437), drops an answer about something else, and reaches the same state \
+              immediate or delayed. The shallower stack is the expected target.",
     },
     Difference {
         scenario: "catalog.route-delete",
+        runners: &[Runner::Compatibility],
         disposition: Disposition::Accepted,
+        owner: Some(LegacyOwned::ObjectNamespace),
         what: "the compatibility runner keeps the object",
         why: "CatalogEffect::RemoveObject is namespace-free because the flat store removes by \
               identity; the legacy deletes are namespaced, and the namespace cannot be recovered \
-              from the effect. The adapter therefore leaves it against LegacyOwned::ObjectNamespace \
-              (#1397 S6) rather than guessing. The typed runner removes it, which is exactly what \
-              that row costs until the store executor lands.",
+              from the effect. The adapter leaves it rather than guessing (#1397 S6). The typed \
+              runner removes it, which is what that row costs until the store executor lands.",
     },
     Difference {
         scenario: "catalog.ride-delete",
+        runners: &[Runner::Compatibility],
         disposition: Disposition::Accepted,
+        owner: Some(LegacyOwned::ObjectNamespace),
         what: "the compatibility runner keeps the object",
-        why: "the same LegacyOwned::ObjectNamespace row (#1397 S6).",
+        why: "the same namespace-free removal, and the same row (#1397 S6).",
     },
     Difference {
         scenario: "retention.expiry-retry-and-trusted-clock",
+        runners: &[Runner::Compatibility],
         disposition: Disposition::Accepted,
+        owner: Some(LegacyOwned::ObjectNamespace),
         what: "the compatibility runner expires nothing",
         why: "an expiry reaches the catalog as the same namespace-free removal, so it hits the same \
-              LegacyOwned::ObjectNamespace row — and the catalog then stays in flight, because no \
-              legacy event can build a CatalogOutcome. That is the documented one-operation cost of \
-              running the pass before the executors migrate (#1439, closed by #1397 S6).",
+              row — and the catalog then stays in flight, because no legacy event can build a \
+              CatalogOutcome. That is the documented one-operation cost of running the pass before \
+              the executors migrate (#1439, closed by #1397 S6).",
     },
 ];
 
@@ -767,38 +844,65 @@ fn every_scenario_agrees_or_has_an_approved_disposition() {
 
     assert_eq!(compared, SCENARIOS.len() * Runner::ALL.len(), "every scenario runs in every runner");
 
-    let approved: BTreeSet<&str> = DIFFERENCES.iter().map(|row| row.scenario).collect();
-    let found: BTreeSet<&str> = differing.iter().map(|(scenario, _)| *scenario).collect();
+    // Exact at the level the result is reported at: one approved `(scenario, runner)` cell per
+    // difference. A difference that moves between runners inside a listed scenario changes this set
+    // even though the scenario list and the cell count do not.
+    let approved: BTreeSet<(&str, &str)> = DIFFERENCES.iter().flat_map(Difference::cells).collect();
     assert_eq!(
-        found, approved,
-        "the disposition table is exact in both directions: every difference is approved, and no row \
-         documents a difference that no longer exists"
+        differing, approved,
+        "the disposition table is exact per cell: every difference is approved in the runner it \
+         appears in, and no row documents one that no longer exists"
     );
-    assert_eq!(differing.len(), 9, "nine runner cells differ, and every one of them is dispositioned");
 }
 
-/// Every row of the disposition table is usable: a corrected row states its target, an accepted row
-/// names its later owner, and a blocking row fails the gate outright.
+/// Every row of the disposition table is usable, and its citation is checked rather than read.
+///
+/// An `owner` is not prose: for a compatibility-runner row it must be a row the compatibility
+/// executor **actually reports leaving** on that scenario, so a citation that stopped being true
+/// fails here. A row with no owner has to say what owns the difference instead.
 #[test]
-fn every_difference_carries_a_usable_disposition() {
+fn every_difference_carries_a_verified_disposition() {
     assert!(!DIFFERENCES.is_empty());
+    let names: BTreeSet<&str> = SCENARIOS.iter().map(|scenario| scenario.name).collect();
+
     for row in DIFFERENCES {
         assert!(!row.what.is_empty() && !row.why.is_empty(), "{row:?}");
-        match row.disposition {
-            Disposition::Corrected => {
-                assert!(row.why.contains('#'), "a corrected defect names the slice that owns the target: {row:?}")
+        assert!(names.contains(row.scenario), "{} is not a scenario", row.scenario);
+        assert!(!row.runners.is_empty(), "a difference appears in at least one runner: {row:?}");
+        assert!(row.why.contains('#'), "every disposition names the slice that owns its target: {row:?}");
+
+        match (row.disposition, row.owner) {
+            // A corrected defect is DeviceCore being right; no legacy row owns it.
+            (Disposition::Corrected, owner) => {
+                assert!(owner.is_none(), "a corrected defect is not owned by a legacy row: {row:?}");
+                assert!(row.why.contains("no legacy row owns"), "and it has to say so: {row:?}");
             }
-            Disposition::Accepted => assert!(
-                row.why.contains('#'),
-                "an accepted difference names its later owner and deletion slice: {row:?}"
+            (Disposition::Accepted, Some(owner)) => {
+                assert!(owner.deletes_in().starts_with('#'), "{owner:?} must name its deletion slice");
+                if row.runners.contains(&Runner::Compatibility) {
+                    let left = compatibility_rows_left(named(row.scenario));
+                    assert!(
+                        left.contains(&owner),
+                        "{}: cites {owner:?}, but the compatibility executor reported {left:?}",
+                        row.scenario
+                    );
+                }
+            }
+            (Disposition::Accepted, None) => assert!(
+                row.why.contains("no legacy row owns"),
+                "an accepted difference with no owning row has to say what owns it instead: {row:?}"
             ),
         }
     }
-    // Every scenario a row names is a real one.
-    let names: BTreeSet<&str> = SCENARIOS.iter().map(|scenario| scenario.name).collect();
-    for row in DIFFERENCES {
-        assert!(names.contains(row.scenario), "{} is not a scenario", row.scenario);
-    }
+}
+
+/// The `LegacyOwned` rows the compatibility executor reports leaving on one scenario — the evidence
+/// an `owner` citation is checked against.
+fn compatibility_rows_left(scenario: &Scenario) -> BTreeSet<LegacyOwned> {
+    let mut harness = CoreHarness::new(Executor::Compatibility);
+    run_scenario_seeded(&definition(scenario), RunnerMode::Immediate, &normalization_seed(), &mut harness)
+        .expect("the scenario runs");
+    harness.left
 }
 
 /// Every `LegacyOwned` row has a later owner and a deletion slice — the epic's Phase 1 gate on the
@@ -913,39 +1017,130 @@ fn the_compatibility_executor_leaves_what_the_old_protocol_cannot_say() {
 
 // ==================== the mandatory traces (#1440) ====================
 
-/// The sixteen traces #1440 requires, each bound to the test that runs it.
-///
-/// The binding is checked rather than written down: the test below looks each name up in this
-/// file's own source, so a renamed or deleted trace fails the gate instead of quietly leaving a row
-/// of the issue uncovered.
-const MANDATORY_TRACES: [(&str, &str); 16] = [
-    ("outcome after cancellation", "an_outcome_after_cancellation_changes_nothing"),
-    ("outcome after a replacement request", "an_outcome_after_a_replacement_request_changes_nothing"),
-    ("store change during catalog refresh", "a_store_change_during_a_catalog_operation_is_not_lost"),
-    ("transfer start during route planning", "a_transfer_during_planning_withdraws_heavy_capability"),
-    (
-        "route-plan completion after active-route change",
-        "a_route_plan_that_lands_after_the_active_route_changed_is_refused",
-    ),
-    ("settings result with an old revision", "a_settings_result_with_an_old_revision_is_refused"),
-    ("ride finalize failure after the last checkpoint", "a_ride_close_reaches_no_executor_until_recorder_lands"),
-    ("trip member disappearance before delete commit", "an_object_that_vanished_before_the_commit_is_a_success"),
-    ("capability change after a new map mounts", "capabilities_follow_the_mounted_data_and_the_platform"),
-    ("detour without a path", "a_detour_without_a_path_is_a_failure_and_not_an_absent_capability"),
-    ("device without detour capability", "capabilities_follow_the_mounted_data_and_the_platform"),
-    ("active-route deletion with same-pass Navigator delivery", "deleting_the_active_route_drops_it_in_the_same_pass"),
-    ("Navigator activation with next-pass Retention delivery", "an_activation_reaches_retention_on_the_next_pass"),
-    ("full effect slot and full outcome slot", "a_full_slot_preserves_work_on_both_sides_of_the_seam"),
-    ("deferred slot which forces a pass before sleep", "a_deferred_value_forces_a_pass_before_sleep"),
-    ("stale derived input after a subject change", "a_stale_derived_fill_is_dropped_and_the_level_asks_again"),
+/// One of the sixteen traces #1440 requires, bound to the test that runs it.
+struct MandatoryTrace {
+    /// The row, in the issue's words.
+    row: &'static str,
+    /// The `#[test]` that runs it.
+    test: &'static str,
+    /// Set when the test exercises a *different* situation than the row names, saying why the row's
+    /// own situation is unreachable in Phase 1 and which slice makes it reachable. A row that
+    /// silently tested something else would let the issue's checklist read as covered when it is not.
+    substitution: Option<&'static str>,
+}
+
+/// All sixteen. The binding is checked rather than written down: the test below looks each name up
+/// in this file's own source as a real `#[test]`, so a renamed, deleted or un-attributed trace fails
+/// the gate instead of quietly leaving a row of the issue uncovered.
+const MANDATORY_TRACES: [MandatoryTrace; 16] = [
+    MandatoryTrace {
+        row: "outcome after cancellation",
+        test: "an_outcome_after_cancellation_changes_nothing",
+        substitution: None,
+    },
+    MandatoryTrace {
+        row: "outcome after a replacement request",
+        test: "an_outcome_after_a_replacement_request_changes_nothing",
+        substitution: None,
+    },
+    MandatoryTrace {
+        row: "store change during catalog refresh",
+        test: "a_store_change_during_a_catalog_operation_is_not_lost",
+        substitution: Some(
+            "a catalog *refresh* cannot be in flight in Phase 1: the pass produces no              CatalogIntent::Refresh, so a store commit still becomes the legacy RescanStore cue              (LegacyOwned::StoreRevision). The trace runs the store-revision fact against an              in-flight catalog **removal** — the same one-operation-in-flight rule, on the only              catalog operation the pass can produce. The refresh arrives with the store executor at              #1397 S6, and this row becomes literal then.",
+        ),
+    },
+    MandatoryTrace {
+        row: "transfer start during route planning",
+        test: "a_transfer_during_planning_withdraws_heavy_capability",
+        substitution: None,
+    },
+    MandatoryTrace {
+        row: "route-plan completion after active-route change",
+        test: "a_route_plan_that_lands_after_the_active_route_changed_is_refused",
+        substitution: None,
+    },
+    MandatoryTrace {
+        row: "settings result with an old revision",
+        test: "a_settings_result_with_an_old_revision_is_refused",
+        substitution: None,
+    },
+    MandatoryTrace {
+        row: "ride finalize failure after the last checkpoint",
+        test: "a_ride_finalize_failure_after_the_last_checkpoint_reaches_the_rider",
+        substitution: None,
+    },
+    MandatoryTrace {
+        row: "trip member disappearance before delete commit",
+        test: "an_object_that_vanished_before_the_commit_is_a_success",
+        substitution: Some(
+            "the trip cascade never becomes an effect — CatalogState::admit_intent refuses it              (LegacyOwned::TripCascade), so there is no bounded member read to race with. The trace              runs the same disappearance against a route removal, which is where the rule lives: an              object already gone is `existed: false`, a success, never a failure the rider sees. The              cascade's own member read lands with #1397 S6.",
+        ),
+    },
+    MandatoryTrace {
+        row: "capability change after a new map mounts",
+        test: "capabilities_follow_the_mounted_data_and_the_platform",
+        substitution: None,
+    },
+    MandatoryTrace {
+        row: "detour without a path",
+        test: "a_detour_without_a_path_is_a_failure_and_not_an_absent_capability",
+        substitution: None,
+    },
+    MandatoryTrace {
+        row: "device without detour capability",
+        test: "capabilities_follow_the_mounted_data_and_the_platform",
+        substitution: None,
+    },
+    MandatoryTrace {
+        row: "active-route deletion with same-pass Navigator delivery",
+        test: "deleting_the_active_route_drops_it_in_the_same_pass",
+        substitution: None,
+    },
+    MandatoryTrace {
+        row: "Navigator activation with next-pass Retention delivery",
+        test: "an_activation_reaches_retention_on_the_next_pass",
+        substitution: None,
+    },
+    MandatoryTrace {
+        row: "full effect slot and full outcome slot",
+        test: "a_full_slot_preserves_work_on_both_sides_of_the_seam",
+        substitution: None,
+    },
+    MandatoryTrace {
+        row: "deferred slot which forces a pass before sleep",
+        test: "a_deferred_value_forces_a_pass_before_sleep",
+        substitution: None,
+    },
+    MandatoryTrace {
+        row: "stale derived input after a subject change",
+        test: "a_stale_derived_fill_is_dropped_and_the_level_asks_again",
+        substitution: None,
+    },
 ];
 
 #[test]
 fn every_mandatory_trace_has_a_test_that_runs_it() {
     let source = include_str!("device_core_conformance.rs");
-    for (trace, test) in MANDATORY_TRACES {
-        assert!(source.contains(&format!("fn {test}(")), "{trace}: no test named {test}");
+    for trace in MANDATORY_TRACES {
+        // `#[test]` and not merely `fn`: a private helper of the same name, or a trace that lost its
+        // attribute, would otherwise satisfy the binding without ever running.
+        assert!(
+            source.contains(&format!("#[test]\nfn {}(", trace.test)),
+            "{}: no `#[test] fn {}` in this file",
+            trace.row,
+            trace.test
+        );
+        if let Some(substitution) = trace.substitution {
+            assert!(
+                substitution.contains('#'),
+                "{}: a substituted situation names the slice that makes the row literal",
+                trace.row
+            );
+        }
     }
+    let substituted = MANDATORY_TRACES.iter().filter(|trace| trace.substitution.is_some()).count();
+    assert_eq!(substituted, 2, "two rows are unreachable in Phase 1, and both say so");
 }
 
 fn typed() -> CoreHarness {
@@ -1086,9 +1281,25 @@ fn a_store_change_during_a_catalog_operation_is_not_lost() {
 }
 
 /// **A transfer starts during route planning.** Heavy work is withdrawn while a transfer holds the
-/// store, so a plan or an install is never *started* and then failed.
+/// store, so a *new* plan is never started — and the one already running is not failed by it either.
+///
+/// The distinction is the rule: admission decides what may *begin*, and a capability going away is
+/// not a reason to cancel an operation that is already owed an answer.
 #[test]
 fn a_transfer_during_planning_withdraws_heavy_capability() {
+    // A plan is admitted and goes out under Navigator's live token.
+    let mut navigator: TokenSource<NavigatorTag> = TokenSource::new();
+    let token = navigator.issue();
+    let mut adapter = LegacyAdapter::new();
+    let mut mail: HostMailbox = HostMailbox::new();
+    let mut effects = EffectSlots::new();
+    let work = PlannerWork::Route(NavRequest::new((0, 0), (1, 1), "goal"));
+    effects.navigator.try_put(NavigatorEffect::Acquire { token, work }).unwrap();
+    adapter.effects_to_commands(&mut effects, &mut mail);
+    assert!(matches!(mail.pop(), Some(HostCommand::PlanRoute(_))), "the planner was asked");
+    assert!(adapter.pending().holds(LegacyReply::RoutePlan), "and is owed an answer");
+
+    // The transfer starts. Admission is a level, recalculated from what is true now.
     let facts = |heavy| DeviceFacts {
         store_writable: true,
         nav_graph: true,
@@ -1100,17 +1311,29 @@ fn a_transfer_during_planning_withdraws_heavy_capability() {
     let idle = Capabilities::calculate(EVERYTHING, facts(true));
     let streaming = Capabilities::calculate(EVERYTHING, facts(false));
     assert!(idle.navigator.plan_route && idle.navigator.plan_detour && idle.dfu.install);
-    assert!(!streaming.navigator.plan_route, "a route plan is heavy");
-    assert!(!streaming.navigator.plan_detour, "and so is a detour");
-    assert!(!streaming.dfu.install, "and so is an install");
+    assert!(!streaming.navigator.plan_route, "a second route plan cannot start");
+    assert!(!streaming.navigator.plan_detour, "nor a detour");
+    assert!(!streaming.dfu.install, "nor an install");
     assert!(streaming.catalog.mutate, "but the store is still writable — this is admission, not a fault");
 
-    // The one capability a Phase 1 stage actually consults: a weather refresh needs the link, and a
-    // withdrawn capability stops the effect being emitted at all rather than failing it.
+    // The pass sees the transfer and starts nothing; it also fails nothing.
     let mut harness = expiring(0);
     harness.inbox.facts.note_transfer(TransferState::Active);
     let plan = harness.pass();
-    assert!(plan.effects.weather.is_empty(), "no refresh is started without the capability");
+    assert!(!plan.effects.has_pending(), "no work is admitted while the transfer holds the store");
+    assert!(adapter.pending().holds(LegacyReply::RoutePlan), "and the running plan is untouched");
+    assert!(navigator.is_current(token), "its operation is still the current one");
+
+    // So when the planner finally answers, it is still this operation's answer.
+    let mut inbox = LegacyInputs::new();
+    adapter.event_to_inputs(HostEvent::NavPlanned(Ok(10)), &mut inbox).unwrap();
+    let outcome = inbox.outcomes.navigator.take().expect("the answer is delivered");
+    assert!(navigator.is_current(outcome.token()), "a withdrawn capability never cancelled the running plan");
+
+    // …and the capability comes straight back when the transfer ends.
+    harness.inbox.facts.note_transfer(TransferState::Idle);
+    harness.pass();
+    assert!(Capabilities::calculate(EVERYTHING, facts(true)).navigator.plan_route);
 }
 
 /// **A route plan completes after the active route changed.** The answer carries the token the
@@ -1166,31 +1389,48 @@ fn a_settings_result_with_an_old_revision_is_refused() {
     assert_eq!(rider_visible(core.settled.clone()), rider_visible(legacy.settled.clone()));
 }
 
-/// **A ride finalize failure after the last checkpoint.** The accepted Phase 1 difference, pinned:
-/// the pass consumes the rider's close at stage 4 and stage 7 emits no `RecorderEffect`, so no
-/// executor sees it.
+/// **A ride finalize failure after the last checkpoint.** The ride close survives the pass, the
+/// executor that performs it fails it, and the rider is told.
 ///
-/// Stated as a fact rather than left as prose, because it is the one place a rider request currently
-/// ends inside the pass. The mapping table already holds the row it will use
-/// ([`LegacyOwned::RideCloseAck`]); what is missing is Recorder's machine, at #1397 S6. Nothing
-/// shipping is affected — the production hosts still run the legacy frame methods.
+/// This trace is why the `ui_recorder` → `ride_closed` wiring is gone. It used to take the rider's
+/// finish one-shot at stage 4 and drop it at stage 7, so the ride was never finalized and no
+/// executor was told — a rider request destroyed to serve a lifecycle Recorder does not own yet.
+/// The pass now leaves it alone, which is what "the close reaches the platform on the legacy path"
+/// has to mean to be true.
 #[test]
-fn a_ride_close_reaches_no_executor_until_recorder_lands() {
+fn a_ride_finalize_failure_after_the_last_checkpoint_reaches_the_rider() {
     let mut harness = expiring(0);
     harness.app().activity.start_session();
     harness.pass();
 
+    // The last checkpoint is behind us; the finalize is the one that fails.
+    harness.state.fail_next_finalize = true;
     harness.app().activity.request_track(TrackAction::Save);
     let plan = harness.pass();
-    assert!(plan.effects.recorder.is_empty(), "no RecorderEffect is emitted");
-    assert!(plan.immediate, "the close is not lost outright: retention is told, before sleep");
-    assert!(!harness.state.app.activity.has_track_action(), "and the legacy class was consumed by the pass");
+    assert!(plan.effects.recorder.is_empty(), "Recorder has no machine, so the pass emits no effect");
+    assert!(harness.state.app.activity.has_track_action(), "and it leaves the rider's finish for the drain");
 
-    // The row that closes it exists and names its owner, so this is a scheduled gap, not a hole.
-    assert!(LegacyOwned::RideCloseAck.deletes_in().contains("#1397"));
+    let mut done = Vec::new();
+    let mut trace = recorder();
+    harness.serve_mailbox(&mut done, &mut trace);
+    // The legacy vocabulary has no recorder-finalize outcome, so a host reports the failure through
+    // the generic warning — DC1's own recorded compatibility limitation, unchanged here.
+    assert!(
+        matches!(done.as_slice(), [Done::Event(HostEvent::Warning(flags))] if flags.contains(WarningFlags::REC_ERROR)),
+        "the finalize failed and said so: {done:?}"
+    );
+    for item in done {
+        harness.deliver(item, &mut trace);
+    }
+    harness.pass();
+    assert!(
+        matches!(harness.state.app.top_screen(), Screen::Warning(card)
+            if card.flags().contains(WarningFlags::REC_ERROR)),
+        "and the rider is told rather than left believing the ride was saved"
+    );
 
-    // The mapping is already in place: once Recorder emits the effect, the adapter knows where it
-    // goes. The missing piece is one domain's machine, and nothing in the protocol.
+    // The typed replacement is already mapped: when Recorder emits the effect, the adapter knows
+    // where it goes, so what is missing is one domain's machine and nothing in the protocol.
     let mut recorder_ops = TokenSource::new();
     let mut effects = EffectSlots::new();
     effects.recorder.try_put(RecorderEffect::Finalize { token: recorder_ops.issue() }).unwrap();
@@ -1198,7 +1438,7 @@ fn a_ride_close_reaches_no_executor_until_recorder_lands() {
     let mut mail: HostMailbox = HostMailbox::new();
     assert_eq!(adapter.effects_to_commands(&mut effects, &mut mail).translated, 1);
     assert_eq!(mail.pop(), Some(HostCommand::FinishTrack(TrackAction::Save)));
-    assert_eq!(RecorderIntent::Save, RecorderIntent::Save, "the intent type is the seam that survives");
+    assert!(LegacyOwned::RideCloseAck.deletes_in().contains("#1397"), "the acknowledgement is still owed");
 }
 
 /// **A trip member disappears before the delete commit.** The goal state holds, so the removal is a
@@ -1357,18 +1597,23 @@ fn a_full_slot_preserves_work_on_both_sides_of_the_seam() {
 
 /// **A deferred slot forces a pass before sleep.** Work that is already decided must not sit until
 /// the next rider input.
+///
+/// Written on the route activation, which is the deferred producer the wiring actually has:
+/// Navigator runs after retention, so an activation cannot reach backwards and waits a pass.
 #[test]
 fn a_deferred_value_forces_a_pass_before_sleep() {
-    let mut harness = expiring(0);
-    harness.app().activity.start_session();
-    harness.pass();
+    let mut harness = typed();
+    harness.app().activate_route(0);
 
-    harness.app().activity.request_track(TrackAction::Save);
     let plan = harness.pass();
     assert!(plan.immediate && plan.next_wake_ms == Some(0), "the runtime comes straight back");
 
     let plan = harness.pass();
-    assert!(!plan.immediate && plan.next_wake_ms != Some(0), "and then there is nothing to hurry for");
+    assert!(!plan.immediate && plan.next_wake_ms != Some(0), "consumed, and nothing is left to hurry for");
+
+    harness.app().activate_route(1);
+    let plan = harness.pass();
+    assert!(plan.immediate, "a second activation is deposited just the same");
 }
 
 /// **A stale derived input after a subject change** — the corrected defect of this gate.
@@ -1487,6 +1732,96 @@ fn a_failed_retention_write_is_retried() {
     assert!(retried, "a failed write keeps its candidate and offers it again");
 }
 
+/// A decided sidecar stamp is mirrored into the resident view, so it is not rediscovered forever.
+///
+/// The second defect this gate found. The sweep re-derives its candidates from the resident view, so
+/// a stamp that left as an effect but was not mirrored came back on the pass after the executor
+/// answered it — one sidecar write per pass, for the rest of the boot, on a device whose whole
+/// power budget is not waking up. The legacy drain has always mirrored at
+/// `App::retention_stamp_command`; the pass does now too.
+#[test]
+fn a_stamp_that_was_answered_is_not_enqueued_again() {
+    let mut harness = typed();
+    harness.app().stamp_clock_ble(1_720_000_000, 60);
+    let now = harness.state.app.wall_unix_now();
+    harness.app().set_route_meta(&[
+        RouteRetentionMeta::new(Retention::Week1, now),
+        RouteRetentionMeta::new(Retention::Never, 0),
+        RouteRetentionMeta::new(Retention::Never, 0),
+    ]);
+    harness.app().activate_route(0);
+
+    let mut plan = harness.pass();
+    let effect = plan.effects.retention.take().expect("the activation's use stamp goes out");
+    let outcome = harness.serve_retention(effect);
+    harness.deliver(Done::Retention(outcome), &mut recorder());
+
+    for step in 0..8 {
+        let plan = harness.pass();
+        assert!(
+            plan.effects.retention.is_empty(),
+            "the answered stamp came back on settle pass {step} — an endless sidecar write"
+        );
+    }
+}
+
+/// The conformance replay's wake profile and pass cost — #1440's last two resource rows.
+///
+/// The wake counts are deterministic, so they are asserted: a pass that starts polling, or a
+/// deferred connection that stops settling, moves them and this fails. The times are
+/// machine-dependent, so they are printed under `--nocapture` rather than gated. What the test
+/// guarantees is that both figures are reproducible from one command, instead of from a measurement
+/// harness someone ran once and deleted.
+#[test]
+fn the_conformance_replay_wake_profile_and_pass_cost() {
+    let mut passes = 0u32;
+    let mut immediate = 0u32;
+    let mut timed = 0u32;
+    let mut sleeps = 0u32;
+    let mut total = std::time::Duration::ZERO;
+    let mut worst = std::time::Duration::ZERO;
+
+    for scenario in SCENARIOS {
+        for executor in [Executor::Typed, Executor::Compatibility] {
+            let mut harness = CoreHarness::new(executor);
+            let mut trace = recorder();
+            let actions = scenario.actions.iter().chain(std::iter::repeat_n(&Action::Settle, SETTLE_PASSES));
+            for action in actions {
+                harness.apply(*action);
+                let start = std::time::Instant::now();
+                let plan = harness.pass();
+                let elapsed = start.elapsed();
+                total += elapsed;
+                worst = worst.max(elapsed);
+                passes += 1;
+                match plan.next_wake_ms {
+                    Some(0) => immediate += 1,
+                    Some(_) => timed += 1,
+                    None => sleeps += 1,
+                }
+                harness.serve(plan, &mut trace);
+            }
+        }
+    }
+
+    println!("passes {passes}: {immediate} immediate, {timed} timed, {sleeps} sleep-until-event");
+    println!(
+        "pass time: mean {:.3} us, worst {:.3} us",
+        total.as_secs_f64() * 1e6 / f64::from(passes),
+        worst.as_secs_f64() * 1e6
+    );
+
+    assert_eq!(passes, WAKE_PROFILE.0, "the replay's pass count is fixed by the scenario table");
+    assert_eq!(immediate, WAKE_PROFILE.1, "an immediate wake is decided work that has not reached its consumer");
+    assert_eq!(timed, WAKE_PROFILE.2);
+    assert_eq!(sleeps, WAKE_PROFILE.3);
+    assert!(immediate * 10 < passes, "immediate wakes stay a small minority — nothing here polls");
+}
+
+/// `(passes, immediate, timed, sleep-until-event)` for the replay above. A ratchet, not a budget:
+/// the numbers move when the pass's wake decisions do, and #1397 compares against them.
+const WAKE_PROFILE: (u32, u32, u32, u32) = (366, 6, 236, 124);
+
 // ==================== the resource gate ====================
 
 /// The pass protocol's size budget, re-asserted from outside `obc-app`.
@@ -1513,6 +1848,8 @@ fn the_pass_protocol_stays_within_its_budget() {
         size_of::<SettingsEffect>(),
         size_of::<WeatherEffect>(),
         size_of::<DfuEffect>(),
+        size_of::<BondEffect>(),
+        size_of::<StorageInfoEffect>(),
     ]
     .into_iter()
     .max()

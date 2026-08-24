@@ -8,13 +8,16 @@
 //! | Producer | Consumer | Type | Delivery |
 //! |---|---|---|---|
 //! | `UiRuntime` | `CatalogMachine` | [`CatalogIntent`] | same pass |
-//! | `UiRuntime` | `Recorder` | [`RecorderIntent`] | same pass |
 //! | `RetentionMachine` | `CatalogMachine` | [`CatalogIntent`] (an expiry) | same pass |
 //! | `CatalogMachine` | `Navigator` | [`ActiveRouteRemoved`] | same pass |
 //! | `CatalogMachine` | `RetentionMachine` | [`CatalogIdentityChanged`] | next pass |
-//! | `Recorder` | `RetentionMachine` | [`RideClosed`] | next pass |
 //! | `Navigator` | `RetentionMachine` | [`RouteActivated`] | next pass |
 //! | any domain | `FaultState` | [`FaultNotices`] | same pass, producer is earlier |
+//!
+//! There is deliberately **no** `UiRuntime` → `Recorder` row and no ride-closed row. Recorder has no
+//! machine in Phase 1, so a connection into it could only take the rider's finish one-shot away from
+//! the legacy drain that still performs it — provisioning for a lifecycle nobody owns, at the cost of
+//! destroying a rider request. #1397 S6 brings the connection back with the domain that needs it.
 //!
 //! ## Which direction decides the timing
 //!
@@ -32,12 +35,14 @@
 //! Every slot holds **one** value. What a *second* value of the same kind means is different per
 //! connection, so each one states its rule rather than sharing a default:
 //!
-//! - **Intents and one-shots** ([`Slot`], [`Merge::KeepFirst`]): the first value stands and the
-//!   second is handed back. The producer keeps it and offers it again next pass — backpressure,
-//!   never a silent drop. This is why a producer checks [`Slot::is_empty`] *before* consuming its
-//!   own one-shot: an intent it cannot deliver must stay where the rider left it.
-//! - **Identity changes** ([`Merge::KeepLatest`]): a level, not an event. The newest revision
-//!   replaces the older one, because acting on a superseded identity is worse than acting late.
+//! - **Intents and one-shots** ([`Slot`]): the first value stands and the second is handed back. The
+//!   producer keeps it and offers it again next pass — backpressure, never a silent drop. This is
+//!   why a producer checks [`Slot::is_empty`] *before* consuming its own one-shot: an intent it
+//!   cannot deliver must stay where the rider left it.
+//! - **Later-to-earlier deposits** ([`Deferred`]): the newest value replaces the older one. Both of
+//!   them are levels — which identity the catalog holds, which route is active — and acting on a
+//!   superseded level is worse than acting late. A deposit that must *queue* rather than replace
+//!   arrives with the first connection that needs one.
 //! - **Fault notices** ([`FaultNotices`]): accumulate. Two domains raising a warning in one pass
 //!   both reach the rider; a bit set is the only shape that cannot lose one.
 //!
@@ -49,11 +54,10 @@
 #![allow(dead_code)]
 
 use crate::catalog_state::CatalogIntent;
-use crate::recorder::RecorderIntent;
 use crate::screen::WarningFlags;
 use crate::CatalogObjectId;
 
-use super::slots::{Slot, SlotFull};
+use super::slots::Slot;
 use super::Revision;
 
 // ==================== the connection payloads ====================
@@ -75,28 +79,15 @@ pub struct ActiveRouteRemoved {
 /// changed, so it re-discovers rather than draining candidates against a picture that is gone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CatalogIdentityChanged {
-    /// The store revision the catalog now reflects. [`Merge::KeepLatest`]: an older revision never
-    /// displaces a newer one.
+    /// The store revision the catalog now reflects. A newer revision replaces an older deposit —
+    /// an older one never displaces it.
     pub revision: Revision,
-}
-
-/// `Recorder` → `RetentionMachine`, **next pass**: the open ride was closed.
-///
-/// The epic's table calls this row "ride finalized or synced". The *synced* half reaches retention
-/// today as a fact about the ride inventory (it stamps `synced_at` eagerly from its own view), so
-/// what the recorder itself has to say is the half only it knows: the ride is over, and the
-/// inventory is about to change.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RideClosed {
-    /// Whether the ride was thrown away rather than kept.
-    pub discarded: bool,
 }
 
 /// `Navigator` → `RetentionMachine`, **next pass**: a route became the active one.
 ///
 /// An active route must not expire underneath the ride it is guiding, so retention stamps it once
-/// per activation. [`Merge::KeepLatest`]: two activations in one pass leave the route that is
-/// actually active.
+/// per activation. Two activations before the next pass leave the route that is actually active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RouteActivated {
     /// The durable identity of the newly active route.
@@ -104,16 +95,6 @@ pub struct RouteActivated {
 }
 
 // ==================== the deferred slot ====================
-
-/// What a second value in an occupied slot means.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Merge {
-    /// The first value stands; the second is handed back to its producer, which keeps it pending.
-    KeepFirst,
-    /// The newest value replaces the held one — for a *level*, where the older value is simply
-    /// wrong once a newer one exists.
-    KeepLatest,
-}
 
 /// A **later-to-earlier** connection: one value, deposited in one pass and consumed in the next.
 ///
@@ -124,34 +105,23 @@ pub enum Merge {
 /// backwards edge the pass order forbids is impossible rather than merely discouraged.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Deferred<T> {
-    merge: Merge,
     pending: Option<T>,
     ready: Option<T>,
 }
 
 impl<T> Deferred<T> {
-    /// An empty slot with the given merge rule.
-    pub const fn new(merge: Merge) -> Self {
-        Deferred { merge, pending: None, ready: None }
+    /// An empty slot.
+    pub const fn new() -> Self {
+        Deferred { pending: None, ready: None }
     }
 
-    /// Deposit a value for the next pass.
+    /// Deposit a value for the next pass, replacing any deposit not yet promoted.
     ///
-    /// Under [`Merge::KeepFirst`] a full slot refuses and hands `value` back — its producer keeps it
-    /// and offers it again once the slot drains. Under [`Merge::KeepLatest`] it replaces, so this
-    /// never fails.
-    pub fn defer(&mut self, value: T) -> Result<(), SlotFull<T>> {
-        match self.merge {
-            Merge::KeepLatest => {
-                self.pending = Some(value);
-                Ok(())
-            }
-            Merge::KeepFirst if self.pending.is_some() => Err(SlotFull { rejected: value }),
-            Merge::KeepFirst => {
-                self.pending = Some(value);
-                Ok(())
-            }
-        }
+    /// Both connections that use this carry a *level* — which identity the catalog holds, which
+    /// route is active — so a newer deposit makes an older one wrong rather than second in line.
+    /// A connection whose deposits must queue instead arrives with the domain that needs one.
+    pub fn defer(&mut self, value: T) {
+        self.pending = Some(value);
     }
 
     /// Make a value deposited on an earlier pass visible to its consumer. Called once per pass,
@@ -217,8 +187,6 @@ impl FaultNotices {
 pub struct Connections {
     /// `UiRuntime` → `CatalogMachine`: the rider's delete, resolved to a durable identity.
     pub ui_catalog: Slot<CatalogIntent>,
-    /// `UiRuntime` → `Recorder`: save or discard the open ride.
-    pub ui_recorder: Slot<RecorderIntent>,
     /// `RetentionMachine` → `CatalogMachine`: an expiry, as the same intent a rider's delete uses,
     /// so an auto-expired object leaves by exactly the path a deleted one does.
     pub expiry: Slot<CatalogIntent>,
@@ -228,8 +196,6 @@ pub struct Connections {
     pub faults: FaultNotices,
     /// `CatalogMachine` → `RetentionMachine`, next pass.
     pub catalog_identity: Deferred<CatalogIdentityChanged>,
-    /// `Recorder` → `RetentionMachine`, next pass.
-    pub ride_closed: Deferred<RideClosed>,
     /// `Navigator` → `RetentionMachine`, next pass.
     pub route_activated: Deferred<RouteActivated>,
 }
@@ -239,16 +205,11 @@ impl Connections {
     pub const fn new() -> Self {
         Connections {
             ui_catalog: Slot::new(),
-            ui_recorder: Slot::new(),
             expiry: Slot::new(),
             active_route_removed: Slot::new(),
             faults: FaultNotices::NONE,
-            // An identity is a level: the newest one is the only one worth acting on.
-            catalog_identity: Deferred::new(Merge::KeepLatest),
-            // A closed ride is an event: the second one waits rather than erasing the first.
-            ride_closed: Deferred::new(Merge::KeepFirst),
-            // An activation is a level: what matters is which route is active now.
-            route_activated: Deferred::new(Merge::KeepLatest),
+            catalog_identity: Deferred::new(),
+            route_activated: Deferred::new(),
         }
     }
 
@@ -256,14 +217,13 @@ impl Connections {
     /// before any new gesture, sensor reading or fact is applied.
     pub fn promote_deferred(&mut self) {
         self.catalog_identity.promote();
-        self.ride_closed.promote();
         self.route_activated.promote();
     }
 
     /// Whether any deferred connection still holds a value — the pass's "run again before sleep"
     /// test.
     pub fn has_deferred(&self) -> bool {
-        self.catalog_identity.is_pending() || self.ride_closed.is_pending() || self.route_activated.is_pending()
+        self.catalog_identity.is_pending() || self.route_activated.is_pending()
     }
 }
 
@@ -277,10 +237,9 @@ impl Default for Connections {
 // identity, a revision or a flag — a growth means bulk crept into a message.
 const _: () = assert!(core::mem::size_of::<ActiveRouteRemoved>() <= 8, "one durable identity");
 const _: () = assert!(core::mem::size_of::<CatalogIdentityChanged>() <= 8, "one revision");
-const _: () = assert!(core::mem::size_of::<RideClosed>() <= 1, "one flag");
 const _: () = assert!(core::mem::size_of::<RouteActivated>() <= 8, "one durable identity");
 const _: () = assert!(core::mem::size_of::<FaultNotices>() <= 4, "a bit set");
-const _: () = assert!(core::mem::size_of::<Connections>() <= 192, "eight bounded slots");
+const _: () = assert!(core::mem::size_of::<Connections>() <= 160, "six bounded slots");
 
 #[cfg(test)]
 mod tests {
@@ -295,11 +254,11 @@ mod tests {
     /// impossible rather than merely discouraged.
     #[test]
     fn a_deferred_value_is_invisible_until_the_next_pass_promotes_it() {
-        let mut slot: Deferred<RouteActivated> = Deferred::new(Merge::KeepLatest);
+        let mut slot: Deferred<RouteActivated> = Deferred::new();
         assert!(!slot.is_pending());
 
         // Pass 1, a late stage deposits.
-        slot.defer(RouteActivated { route: 7 }).unwrap();
+        slot.defer(RouteActivated { route: 7 });
         assert!(slot.take().is_none(), "an earlier stage of the same pass cannot see it");
         assert!(slot.is_pending(), "…and it is what asks for another pass");
 
@@ -311,34 +270,13 @@ mod tests {
         assert!(slot.take().is_none(), "promotion invents nothing");
     }
 
-    /// `KeepFirst`: a full slot refuses and hands the value back, so its producer keeps it. Nothing
-    /// is overwritten and nothing is lost.
+    /// An identity is a level, so a newer revision replaces an older deposit rather than queueing
+    /// behind it.
     #[test]
-    fn a_full_keep_first_slot_hands_the_second_value_back() {
-        let mut slot: Deferred<RideClosed> = Deferred::new(Merge::KeepFirst);
-        let first = RideClosed { discarded: false };
-        let second = RideClosed { discarded: true };
-
-        slot.defer(first).unwrap();
-        let err = slot.defer(second).expect_err("a full slot refuses");
-        assert_eq!(err.rejected, second, "the producer gets its value back unchanged");
-
-        slot.promote();
-        assert_eq!(slot.take(), Some(first), "the first value is what the consumer sees");
-
-        // The producer offers the retained value again, and now it fits.
-        slot.defer(second).unwrap();
-        slot.promote();
-        assert_eq!(slot.take(), Some(second));
-    }
-
-    /// `KeepLatest`: an identity is a level, so a newer revision replaces an older deposit rather
-    /// than queueing behind it.
-    #[test]
-    fn a_keep_latest_slot_holds_the_newest_identity() {
-        let mut slot: Deferred<CatalogIdentityChanged> = Deferred::new(Merge::KeepLatest);
-        slot.defer(identity(4)).unwrap();
-        slot.defer(identity(9)).unwrap();
+    fn a_deferred_slot_holds_the_newest_identity() {
+        let mut slot: Deferred<CatalogIdentityChanged> = Deferred::new();
+        slot.defer(identity(4));
+        slot.defer(identity(9));
 
         slot.promote();
         assert_eq!(slot.take(), Some(identity(9)), "acting on a superseded identity is the worse failure");
@@ -349,12 +287,12 @@ mod tests {
     /// through promotion, so the deposit simply waits its turn.
     #[test]
     fn promotion_never_displaces_an_unconsumed_value() {
-        let mut slot: Deferred<CatalogIdentityChanged> = Deferred::new(Merge::KeepLatest);
-        slot.defer(identity(1)).unwrap();
+        let mut slot: Deferred<CatalogIdentityChanged> = Deferred::new();
+        slot.defer(identity(1));
         slot.promote();
 
         // The consumer skipped its stage this pass; a newer deposit arrives.
-        slot.defer(identity(2)).unwrap();
+        slot.defer(identity(2));
         slot.promote();
         assert_eq!(slot.take(), Some(identity(1)), "the promoted value stands");
         slot.promote();
@@ -399,7 +337,7 @@ mod tests {
         wires.faults.raise(WarningFlags::NO_GPS);
         assert!(!wires.has_deferred(), "a same-pass slot is drained by the pass that filled it");
 
-        wires.route_activated.defer(RouteActivated { route: 1 }).unwrap();
+        wires.route_activated.defer(RouteActivated { route: 1 });
         assert!(wires.has_deferred());
         wires.promote_deferred();
         assert!(wires.has_deferred(), "promoted but unconsumed still counts");

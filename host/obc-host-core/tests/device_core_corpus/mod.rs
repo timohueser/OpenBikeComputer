@@ -201,7 +201,9 @@ pub enum ScreenState {
     DfuError,
     Warning,
     WeatherAlert,
-    Other,
+    /// Any screen the projection does not name, carrying its variant name so two runners resting on
+    /// *different* unnamed screens still compare unequal.
+    Other(&'static str),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -405,7 +407,7 @@ pub fn visible_state(app: &App, settings_revision: u16, retention_delete_attempt
         Screen::DfuError(_) => ScreenState::DfuError,
         Screen::Warning(_) => ScreenState::Warning,
         Screen::WeatherAlert(_) => ScreenState::WeatherAlert,
-        _ => ScreenState::Other,
+        other => ScreenState::Other(other.name()),
     };
     VisibleState {
         screen,
@@ -797,7 +799,7 @@ impl TraceHarness<Action> for LegacyHarness {
                 let settings_failed = matches!(event, HostEvent::SettingsPersistFailed { .. });
                 self.event(event, trace);
                 if settings_failed && self.settings_retry_requested {
-                    self.app.advance_animations(InputClock(6_003));
+                    self.app.advance_animations(InputClock(SETTINGS_FAILURE_RETRY_MS));
                 }
             }
             Outcome::FinishSave => self.feed_rides("recorder.saved", trace),
@@ -1199,9 +1201,9 @@ pub const SCENARIOS: &[Scenario] = &[
     },
 ];
 
-/// The animation clock `Action::RetrySettingsPersist` moves the app to when a settings failure has
-/// already been delivered. Its twin lives in [`LegacyHarness::deliver`]; a runner that owns a pass
-/// clock of its own has to know both marks.
+/// The animation clock a delivered settings failure moves the app to, so the bounded retry window
+/// has elapsed by the time the retry action runs. Used by [`LegacyHarness::deliver`] and by any
+/// runner that owns a pass clock of its own.
 pub const SETTINGS_FAILURE_RETRY_MS: u32 = 6_003;
 
 /// The `InputClock` an action advances the app's animation clock to, or `0` for one that does not.
