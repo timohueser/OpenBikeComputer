@@ -11,6 +11,7 @@
 //! LRU rather than a clock hand, because a single bilinear sample can touch four tiles at a cell
 //! corner and a round-robin hand would evict the tile the *next* corner needs.
 
+use obc_formats::cache::lru_victim;
 use obc_formats::obct::TILE_BYTES;
 
 /// A slot holds one tile keyed by its **absolute byte offset in the file**. `0` is the empty key:
@@ -96,17 +97,9 @@ impl<const N: usize> TileCache<N> {
     /// the least recently used. Returns the buffer to fill; the key is stamped immediately, so a
     /// failed fill must be undone with [`invalidate`](Self::invalidate).
     pub(crate) fn reserve(&mut self, key: u32) -> (usize, &mut [u8; TILE_BYTES]) {
-        let slot = self.keys.iter().position(|&k| k == EMPTY).unwrap_or_else(|| {
-            // Lowest stamp = least recently touched. `tick` wraps only after 4 · 10⁹ accesses,
-            // and the worst a wrap can do is evict a warm tile once.
-            let mut victim = 0;
-            for slot in 1..N {
-                if self.stamps[slot] < self.stamps[victim] {
-                    victim = slot;
-                }
-            }
-            victim
-        });
+        // `tick` wraps only after 4 · 10⁹ accesses, and the worst a wrap can do is evict a warm
+        // tile once, so the shared rule needs no wrap handling here.
+        let slot = lru_victim(self.keys.iter().zip(&self.stamps).map(|(&k, &stamp)| (k == EMPTY, stamp)));
         self.tick = self.tick.wrapping_add(1);
         self.stamps[slot] = self.tick;
         self.keys[slot] = key;

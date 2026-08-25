@@ -12,6 +12,7 @@ use core::{
 
 use heapless::{String, Vec};
 
+use obc_formats::cache::lru_victim;
 use obc_formats::io::{rd_i16, rd_i32, rd_u16, rd_u32, ByteSource, DecodeError, Error};
 use obc_map_scene::BBox;
 
@@ -886,7 +887,7 @@ impl RouteCache {
         let mut inner = self.inner.borrow_mut();
         inner.adopt(identity);
         inner.misses = inner.misses.saturating_add(1);
-        let i = route_lru(inner.slots.iter().map(|s| (s.tag == 0, s.used)));
+        let i = lru_victim(inner.slots.iter().map(|s| (s.tag == 0, s.used)));
         let t = inner.touch();
         let s = &mut inner.slots[i];
         // Bounded by `RouteIndex::index`; zero remains reserved for an empty slot.
@@ -898,16 +899,19 @@ impl RouteCache {
 }
 
 impl RouteCacheInner {
-    fn new() -> Self {
-        // `zeroed()` lowers to a `memset` (`.bss`); a struct literal zeroing the point buffers
-        // would emit a `.rodata` const then `memcpy` it — which overflowed flash for the larger
-        // `MapCache`.
-        //
-        // SAFETY: all-zero is a valid `RouteCacheInner` — no references or non-zero-discriminant
-        // enums, a zero slot tag means empty, and each `heapless::Vec` is
-        // `{ len: 0, uninit buffer }` whose `MaybeUninit<RoutePoint>` backing is not read while
-        // `len == 0`.
-        unsafe { core::mem::MaybeUninit::zeroed().assume_init() }
+    /// A `const` struct literal rather than a `zeroed()` `assume_init`: `heapless::Vec::new()` is
+    /// `const`, so the whole value is a constant and the buffers are never materialised in
+    /// `.rodata` to be copied from. Measured on the board link, not assumed — the failure mode of
+    /// the `.rodata`-plus-`memcpy` lowering is a boot brick (#1084/#1108), and `MapCacheInner` keeps
+    /// its `zeroed()` because that proof is per-site.
+    const fn new() -> Self {
+        RouteCacheInner {
+            identity: 0,
+            tick: 0,
+            slots: [const { RouteSlot { tag: 0, used: 0, pts: Vec::new() } }; ROUTE_CHUNK_SLOTS],
+            hits: 0,
+            misses: 0,
+        }
     }
 
     fn adopt(&mut self, identity: u32) {
@@ -954,23 +958,6 @@ impl RouteCacheInner {
     }
 }
 
-/// Pick a slot to (re)fill: the first empty slot, else the least-recently-used. Input is
-/// `(is_empty, used)` per slot in order. Mirrors `obc_reader`'s `lru`.
-fn route_lru(slots: impl Iterator<Item = (bool, u16)>) -> usize {
-    let mut best = 0usize;
-    let mut best_used = u16::MAX;
-    for (i, (empty, used)) in slots.enumerate() {
-        if empty {
-            return i;
-        }
-        if used < best_used {
-            best_used = used;
-            best = i;
-        }
-    }
-    best
-}
-
 #[cfg(test)]
 mod cache_tests {
     use super::*;
@@ -987,7 +974,7 @@ mod cache_tests {
         assert_eq!(inner.touch(), 3);
         assert_eq!(inner.slots[0].used, 1);
         assert_eq!(inner.slots[1].used, 2);
-        assert_eq!(route_lru(inner.slots[..2].iter().map(|s| (s.tag == 0, s.used))), 0);
+        assert_eq!(lru_victim(inner.slots[..2].iter().map(|s| (s.tag == 0, s.used))), 0);
     }
 }
 

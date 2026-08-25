@@ -81,6 +81,14 @@ impl IndexBlock {
 /// off-by-ones, so a driver that grew a counter of its own would silently change which blocks they
 /// evict. [`hits`](Self::hits) and [`misses`](Self::misses) are a report, never an input.
 ///
+/// The counters live here and the *reporting* seam stays the caller's: no cache-stats struct grows
+/// an index row. `obc_reader`'s `MapCacheInner` embeds this type, reads neither counter, and pays
+/// 8 bytes plus a `saturating_add` per node read — priced and accepted, not an oversight. Moving
+/// them behind the caller needs a second hook (`misses` is already `on_fill`'s `fill`; `hits` has
+/// none) to free 8 bytes that cannot be spent: `map_cache` is an exact-equality RAM pin, so they
+/// would come straight back as a reserve field. Widening `CacheStats` only becomes a gate if
+/// `RenderStats` and `golden.txt` widen with it; the `overview-cold` golden row already covers it.
+///
 /// All-zero is a valid empty cache, so an embedding cache may zero-init it. Tags mean nothing
 /// across files: reset before binding to a different source.
 pub struct IndexBlockCache<const SLOTS: usize> {
@@ -222,6 +230,32 @@ fn rrip_victim(slots: &mut [IndexBlock]) -> usize {
     }
 }
 
+/// Pick the next LRU victim: the first empty slot, else the lowest stamp, ties to the lowest index.
+/// Input is `(is_empty, stamp)` per slot in slot order; `stamp` is whatever monotonic recency
+/// counter the caller writes on access — `u16` for a route chunk slot's four-byte header, `u32` for
+/// a terrain tile's parallel array.
+///
+/// The LRU counterpart of [`rrip_victim`], shared because it was the one eviction rule written
+/// twice. A *rule*, not a cache: both callers keep their own slots, keys, payloads and I/O, and both
+/// chose LRU deliberately — a bilinear sample touches four tiles at one cell corner, and a frame's
+/// route working set is the matcher's chunk plus the view.
+/// An empty iterator answers `0` — an out-of-range index the caller must not dereference; both
+/// embedding caches have `SLOTS >= 1`, so the case is unreachable there and stays undefined here.
+pub fn lru_victim<S: Ord>(slots: impl Iterator<Item = (bool, S)>) -> usize {
+    let mut victim = 0usize;
+    let mut lowest: Option<S> = None;
+    for (i, (empty, stamp)) in slots.enumerate() {
+        if empty {
+            return i;
+        }
+        if lowest.as_ref().is_none_or(|low| stamp < *low) {
+            lowest = Some(stamp);
+            victim = i;
+        }
+    }
+    victim
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -355,5 +389,14 @@ mod tests {
             "the block number must not wrap into a resident window's tag"
         );
         assert_eq!(cache.misses(), 0);
+    }
+
+    /// The three clauses of the one LRU rule: an empty slot outranks any stamp, the lowest stamp
+    /// wins otherwise, and ties — including an all-equal set — resolve to the lowest index.
+    #[test]
+    fn the_lru_victim_takes_an_empty_slot_then_the_lowest_stamp() {
+        assert_eq!(lru_victim([(false, 9u16), (true, 1), (false, 0)].into_iter()), 1, "empty first");
+        assert_eq!(lru_victim([(false, 9u16), (false, 2), (false, 7)].into_iter()), 1, "lowest stamp");
+        assert_eq!(lru_victim([(false, 4u32), (false, 4), (false, 4)].into_iter()), 0, "ties to the lowest index");
     }
 }
