@@ -713,11 +713,12 @@ impl Settings {
 /// field is appended carrying `since(VERSION + 1)`, `VERSION` is bumped, and the version's golden
 /// blob is committed. A retired field is **never** dropped — it becomes `reserved(n)`, so every
 /// field after it keeps its offset. Nothing is reordered, no stored discriminant is renumbered (a
-/// build error), and no composite silently changes size. Under that rule any stored
-/// blob is a *prefix* of the current one, which is what lets [`decode`] read the fields the stored
-/// version declared and default the tail instead of resetting the rider's settings on every update
-/// — see [`MIN_SUPPORTED`]. The per-field history the fifteen bumps up to here recorded here in
-/// prose is now the table's `since` column, on the rows it describes.
+/// build error), and no composite silently changes size. Under that rule a stored version's field
+/// *payload* is a prefix of the current payload — the full encoded blob is not, since the CRC and
+/// padding sit after whichever payload length its version defined — which is what lets [`decode`]
+/// read the fields the stored version declared and default the tail instead of resetting the
+/// rider's settings on every update — see [`MIN_SUPPORTED`]. Each row's `since` column records the
+/// version that introduced it.
 pub const VERSION: u8 = 16;
 
 /// The oldest stored version [`decode`] accepts. A version joins this floor only when its exact
