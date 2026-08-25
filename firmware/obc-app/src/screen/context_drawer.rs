@@ -349,16 +349,16 @@ impl ContextDrawerScreen {
             if selected {
                 cv.round(area.intersection(&rect(8, y + 3, rx.w - 16, ROW_H - 6)), 6, AMBER);
             }
-            self.draw_root_row(cv, rx, row, y, x, selected);
+            self.draw_root_row(cv, rx, row, y, x);
         }
     }
 
-    fn draw_root_row(&self, cv: &mut impl Surface, rx: &Render, row: &Row, y: i32, x: i32, selected: bool) {
+    fn draw_root_row(&self, cv: &mut impl Surface, rx: &Render, row: &Row, y: i32, x: i32) {
         use palette::*;
 
-        let bullet = if selected { INK } else { SUBTEXT };
-        cv.triangle(Point::new(x + 18, y + 15), Point::new(x + 18, y + 29), Point::new(x + 27, y + 22), bullet);
-        cv.text_vcentered(row.label, x + 35, (y, ROW_H), Font::Label, TextAlign::Left, INK);
+        // No leading bullet: the right chevron already says "opens more", and one arrow per row
+        // keeps the list quiet.
+        cv.text_vcentered(row.label, x + 22, (y, ROW_H), Font::Label, TextAlign::Left, INK);
 
         let value = match row.value {
             Value::None => None,
