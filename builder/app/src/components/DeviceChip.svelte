@@ -9,7 +9,7 @@
   connect button.
 
   Entry-chunk discipline: this component is part of the header, which is part of the entry bundle,
-  so it must not import anything from `lib/usb` at runtime (`usb/bundle.test.ts`). `deviceHolder`
+  so it must not import anything from `lib/usb` at runtime (`platform/bundle.test.ts`). `deviceHolder`
   is safe — its usb imports are type-only — and the transport arrives through `platform.device`'s
   own dynamic import, exactly as before.
 -->

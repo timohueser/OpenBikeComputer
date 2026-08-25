@@ -12,7 +12,7 @@
   scrolls them to it. Both read the one shared check (`lib/firmware/check.svelte.ts`), which is also
   where the "at most once per (device, version)" memory lives.
 
-  Entry-chunk discipline (`usb/bundle.test.ts`): the root is the entry bundle, so nothing here may
+  Entry-chunk discipline (`platform/bundle.test.ts`): the root is the entry bundle, so nothing here may
   reach `lib/usb` at runtime. `deviceHolder` and `jobRegistry` are already in it — the header's
   device chip imports both — and the check is a plain `fetch` module with no device code in it.
 -->
