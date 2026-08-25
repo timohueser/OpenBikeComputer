@@ -2043,11 +2043,23 @@ pub(crate) async fn run_app(
                         obc_app::HostCommand::ForgetBond => crate::ble::request_forget_bond(),
                         // The cascade: `CatalogState::admit_intent` refuses one, so it never becomes
                         // an effect and nothing is owed an answer — which is exactly why it may stay
-                        // on the answerless queue (#1491). A full queue keeps the id for retry.
+                        // on the answerless queue (#1491).
+                        //
+                        // A full queue **drops** the id, and that is stated rather than dressed up:
+                        // the rider's one-shot was consumed by the drain above, so nothing retries
+                        // it and the folder stays until they hold again. It is the same shape the
+                        // route and ride deletes had before they moved to the answering path, and it
+                        // is the last one left — the queue is eight deep with a single consumer, so
+                        // reaching it takes a burst no menu can produce, and #1491 removes the queue
+                        // with the cascade. Answering it properly needs the bounded member read the
+                        // domain does not have.
                         obc_app::HostCommand::DeleteTrip { id } => {
                             let queued = crate::flat_store::request_trip_cascade(id);
                             if !queued {
-                                defmt::warn!("ride: trip-delete queue full — object {=u64} retained for retry", id);
+                                defmt::warn!(
+                                    "ride: trip-delete queue full — object {=u64} dropped; hold again to retry",
+                                    id
+                                );
                             }
                         }
                         _ => {}
