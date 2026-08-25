@@ -72,7 +72,7 @@ pub use derived::{
 pub use compat::{LegacyAdapter, LegacyInputs, LegacyOwned, LegacyPending, LegacyReply, LegacyReport};
 pub use core_mode::ModeState;
 pub use pass::{PassClock, PassInputs, PassPlan};
-pub use residual::{assert_residual, declined_level, declined_stamp, residual, RESIDUAL};
+pub use residual::{assert_residual, declined_level, residual, RESIDUAL};
 pub use slots::{EffectSlots, OutcomeSlots, Slot, SlotFull};
 pub use storage_info::{StorageInfoEffect, StorageInfoError, StorageInfoIntent, StorageInfoOutcome};
 

@@ -60,19 +60,6 @@ pub fn declined_level(command: &HostCommand) -> bool {
     matches!(command, HostCommand::LoadRideTrack { .. } | HostCommand::RefreshNavPreview)
 }
 
-/// Whether `command` is a **retention stamp** — the class a platform without
-/// [`PlatformSupport::retention_metadata`](crate::device_core::PlatformSupport::retention_metadata)
-/// declines.
-///
-/// On such a platform the pass emits no [`RetentionEffect`](crate::retention::RetentionEffect), so
-/// the candidate stays queued and the legacy drain keeps offering it. Draining and dropping it is
-/// what the board has always done (there is no sidecar to write since FS7/FS8) and it is what keeps
-/// the resident mirror from rediscovering the same stamp forever. An executor that *does* have the
-/// store never sees one here: its pass consumed the candidate.
-pub fn declined_stamp(command: &HostCommand) -> bool {
-    matches!(command, HostCommand::StampRouteUsed { .. } | HostCommand::StampRideSynced { .. })
-}
-
 /// The production assertion behind [`RESIDUAL`]: a class DeviceCore owns must never come back on the
 /// old protocol, because executing it beside the effect that carries it would plan, install or
 /// delete twice — and a class that quietly reappeared would be the migration coming undone.
@@ -136,6 +123,11 @@ mod tests {
             HostCommand::RescanStore { commits: 1 },
             HostCommand::DeleteRoute { id: 1 },
             HostCommand::DeleteRide { id: 1 },
+            // The stamps are the domain's own on **every** platform: the pass decides, mirrors and
+            // consumes them whether or not there is a durable store to write to, so a typed
+            // executor never sees one here.
+            HostCommand::StampRouteUsed { id: 1, utc: 2 },
+            HostCommand::StampRideSynced { id: 1, utc: 2 },
             HostCommand::CancelRoutePlan,
             HostCommand::CancelDetour,
             HostCommand::CommitDetour,
@@ -147,11 +139,7 @@ mod tests {
         }
         for command in [HostCommand::LoadRideTrack { id: 1 }, HostCommand::RefreshNavPreview] {
             assert!(declined_level(&command), "{command:?} is a level the plan's keys answer");
-            assert!(!residual(&command) && !declined_stamp(&command), "and it is neither residual nor a stamp");
-        }
-        for command in [HostCommand::StampRouteUsed { id: 1, utc: 2 }, HostCommand::StampRideSynced { id: 1, utc: 2 }] {
-            assert!(declined_stamp(&command), "{command:?} is declined without a metadata store");
-            assert!(!residual(&command) && !declined_level(&command), "and it is neither residual nor a level");
+            assert!(!residual(&command), "and it is not a residual either");
         }
     }
 }

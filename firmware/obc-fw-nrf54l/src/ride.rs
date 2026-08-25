@@ -2024,17 +2024,15 @@ pub(crate) async fn run_app(
             // block and dropped at its close, before the reconcile's `.await`, so it never enters
             // the ride-loop task future (it would re-inflate the #808 poll frame).
             let finish = {
-                use obc_app::device_core::residual::{declined_level, declined_stamp, residual};
+                use obc_app::device_core::residual::{declined_level, residual};
                 let mut finish: Option<obc_app::TrackAction> = None;
                 let mut mailbox: obc_app::HostMailbox = obc_app::HostMailbox::new();
                 let _ = app.drain_residual_commands(&mut mailbox);
                 while let Some(cmd) = mailbox.pop() {
-                    // The two derived cues are levels the plan's keys answer, and the two retention
-                    // stamps are the class `PlatformSupport::retention_metadata = false` declines —
-                    // the pass emits no sidecar effect for them, so the drain keeps offering the
-                    // candidate and draining it is what mirrors the stamp into the resident view.
-                    // Neither is a residual: nothing is left owed.
-                    if declined_level(&cmd) || declined_stamp(&cmd) {
+                    // The two derived cues are levels the plan's keys answer — re-derived on every
+                    // drain, so they keep coming back and are declined every time rather than
+                    // performed. Not a residual: nothing is left owed.
+                    if declined_level(&cmd) {
                         continue;
                     }
                     if !residual(&cmd) {
