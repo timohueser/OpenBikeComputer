@@ -239,6 +239,8 @@ fn rrip_victim(slots: &mut [IndexBlock]) -> usize {
 /// twice. A *rule*, not a cache: both callers keep their own slots, keys, payloads and I/O, and both
 /// chose LRU deliberately — a bilinear sample touches four tiles at one cell corner, and a frame's
 /// route working set is the matcher's chunk plus the view.
+/// An empty iterator answers `0` — an out-of-range index the caller must not dereference; both
+/// embedding caches have `SLOTS >= 1`, so the case is unreachable there and stays undefined here.
 pub fn lru_victim<S: Ord>(slots: impl Iterator<Item = (bool, S)>) -> usize {
     let mut victim = 0usize;
     let mut lowest: Option<S> = None;
