@@ -21,7 +21,20 @@
 //! `no_std` and `defmt`-free by construction: the board reports a violation through its own
 //! transport, the hosts through [`assert_residual`].
 
+use crate::host::HostCommandClass;
 use crate::HostCommand;
+
+/// The three residual classes in the **drain's** own vocabulary — what
+/// [`App::drain_residual_commands`](crate::App::drain_residual_commands) asks for by name, and what
+/// [`App::has_pending_residual_command`](crate::App::has_pending_residual_command) peeks at.
+///
+/// Asking by class rather than filtering a full drain is not a tidiness choice. For every class
+/// DeviceCore owns, the full walk *pulls* from the domain — it mints the operation as it passes —
+/// so an executor that walked it would consume the rider's request and then decline to perform it.
+/// [`RESIDUAL`] is the same three classes as prose and [`residual`] as a predicate;
+/// `the_residual_table_names_exactly_what_the_predicate_admits` pins all three together.
+pub(crate) const RESIDUAL_CLASSES: [HostCommandClass; 3] =
+    [HostCommandClass::FinishTrack, HostCommandClass::ForgetBond, HostCommandClass::DeleteTrip];
 
 /// The legacy classes a typed executor still drains, and nothing else.
 ///
@@ -96,6 +109,17 @@ mod tests {
             assert!(RESIDUAL.contains(&name), "{name} is admitted but not in the printed table");
         }
         assert_eq!(RESIDUAL.len(), 3, "three classes, and the table says which");
+        assert_eq!(
+            RESIDUAL_CLASSES.len(),
+            RESIDUAL.len(),
+            "the class list the drain asks for is the same residual the predicate admits"
+        );
+        for class in RESIDUAL_CLASSES {
+            assert!(
+                admitted.iter().any(|(_, c)| c.class() == class),
+                "{class:?} is asked for by name but is not one of the admitted commands"
+            );
+        }
 
         // Everything DeviceCore took over is refused, including the declined classes — those are
         // filtered earlier and must never reach the assertion at all.

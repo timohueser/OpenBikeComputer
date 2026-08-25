@@ -3419,6 +3419,41 @@ impl App {
         DrainStatus::Complete
     }
 
+    /// Drain **only** the residual classes — the three a typed executor still performs
+    /// ([`device_core::residual`](crate::device_core::residual)).
+    ///
+    /// **This is not `drain_host_commands` with a filter afterwards, and the difference is the whole
+    /// point.** For every class DeviceCore owns, that walk is not a read: it *pulls* from the domain
+    /// — `next_plan_effect`, `SettingsMachine::next_effect`, `DfuState::next_effect`,
+    /// `StorageInfo::next_effect`, `next_expiry`, `deliver_plan_cancel` — taking the rider's request
+    /// and minting the operation on the way past. A typed executor that walked it would therefore
+    /// **destroy** any intent admitted since its own last pass, leave the domain holding an
+    /// operation nobody will ever answer, and see the loss only as a command it then declines to
+    /// perform.
+    ///
+    /// That is not hypothetical: it is what a board seam running between the drain and
+    /// [`run_pass`](App::run_pass) does on every frame — the debug link's route plan, the phone's
+    /// remote update check, a BLE clock stamp arming a settings write. Asking for the three classes
+    /// by name is what makes those seams safe, and it leaves
+    /// [`assert_residual`](crate::device_core::residual::assert_residual) as the belt-and-braces
+    /// check it was meant to be rather than the thing that notices.
+    pub fn drain_residual_commands<const N: usize>(&mut self, out: &mut HostMailbox<N>) -> DrainStatus {
+        for class in crate::device_core::residual::RESIDUAL_CLASSES {
+            if out.is_full() {
+                let remaining = crate::device_core::residual::RESIDUAL_CLASSES
+                    .iter()
+                    .skip_while(|&&c| c != class)
+                    .any(|&c| self.peek_host_command(c));
+                return if remaining { DrainStatus::MailboxFull } else { DrainStatus::Complete };
+            }
+            if let Some(cmd) = self.drain_host_command(class) {
+                let pushed = out.push_coalesced(cmd);
+                debug_assert!(pushed, "room was checked before the class was drained");
+            }
+        }
+        DrainStatus::Complete
+    }
+
     /// Whether any host-directed command is currently pending — what a
     /// [`drain_host_commands`](App::drain_host_commands) call would emit at least one command for.
     /// This consumes nothing.
@@ -3440,9 +3475,7 @@ impl App {
     /// a wake would spin the loop forever. All three classes here are one-shots the drain clears,
     /// which is what makes this safe to ask for an immediate pass on.
     pub fn has_pending_residual_command(&self) -> bool {
-        [HostCommandClass::FinishTrack, HostCommandClass::ForgetBond, HostCommandClass::DeleteTrip]
-            .iter()
-            .any(|&c| self.peek_host_command(c))
+        crate::device_core::residual::RESIDUAL_CLASSES.iter().any(|&c| self.peek_host_command(c))
     }
 
     /// Whether the "Installing update" card is on the stack — the frame an arming executor freezes

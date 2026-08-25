@@ -1146,6 +1146,72 @@ mod tests {
         );
     }
 
+    /// **The regression #1494's on-glass soak found.** An intent admitted *between* one pass and the
+    /// next must survive the residual drain that runs in between, and with
+    /// [`App::drain_host_commands`](crate::App::drain_host_commands) it does not: that walk **pulls**
+    /// from every domain — `next_plan_effect` here — so it takes the rider's request, mints the
+    /// operation, hands back a `PlanRoute` command the executor then declines to perform, and leaves
+    /// Navigator holding an operation nobody will ever answer. On the board that was a planning
+    /// spinner that redrew at ~15 Hz forever, and every later plan silently refused, because
+    /// `next_plan_effect` returns `None` while an operation is live.
+    ///
+    /// Every board seam that runs between the drain and the pass is exposed to it: the debug link's
+    /// route plan, the phone's remote update check (`open_remote_dfu_check`), a BLE clock stamp
+    /// arming a settings write. `drain_residual_commands` asks for the three residual classes **by
+    /// name** instead, which is what makes them safe — and this test is what says so.
+    #[test]
+    fn an_intent_admitted_between_two_passes_survives_the_residual_drain() {
+        let mut app = navigating();
+        quiet(&mut app, 10);
+
+        // A seam outside the pass admits a plan — exactly what the board's debug `N` arm does.
+        app.admit_navigator_intent(crate::navigator::NavigatorIntent::PlanRoute(crate::activity::NavRequest::new(
+            (0, 0),
+            (1, 1),
+            "Bench",
+        )));
+
+        // The executor's residual drain runs before its next pass. It must not touch Navigator.
+        let mut mail: crate::HostMailbox = crate::HostMailbox::new();
+        let _ = app.drain_residual_commands(&mut mail);
+        let mut drained = Vec::new();
+        while let Some(command) = mail.pop() {
+            drained.push(command);
+        }
+        assert!(drained.is_empty(), "the residual drain reached past its three classes: {drained:?}");
+
+        let plan = quiet(&mut app, 20);
+        let mut effects = plan.effects;
+        assert!(
+            matches!(effects.navigator.take(), Some(crate::navigator::NavigatorEffect::Acquire { .. })),
+            "the plan admitted between the passes reached the executor"
+        );
+
+        // And the whole-order drain is what would have eaten it — pinned so the two cannot be
+        // confused again. A second request, a full drain, and the effect never comes.
+        let mut app = navigating();
+        quiet(&mut app, 10);
+        app.admit_navigator_intent(crate::navigator::NavigatorIntent::PlanRoute(crate::activity::NavRequest::new(
+            (0, 0),
+            (1, 1),
+            "Bench",
+        )));
+        let mut mail: crate::HostMailbox = crate::HostMailbox::new();
+        let _ = app.drain_host_commands(&mut mail);
+        let mut drained = Vec::new();
+        while let Some(command) = mail.pop() {
+            drained.push(command);
+        }
+        assert!(
+            drained.iter().any(|c| matches!(c, crate::HostCommand::PlanRoute(_))),
+            "the full walk mints the operation on the way past: {drained:?}"
+        );
+        assert!(
+            quiet(&mut app, 20).effects.navigator.is_empty(),
+            "…and Navigator is then holding an operation the pass can never hand out"
+        );
+    }
+
     /// A typed executor's wake is blind to the legacy mailbox, and the rider's **ride save** lives
     /// there. `has_pending_residual_command` is what a runtime that sleeps until the next event
     /// folds in so the close costs one immediate pass rather than one wake — which on a static
@@ -1167,7 +1233,7 @@ mod tests {
         assert!(app.has_pending_residual_command(), "the rider's save is owed to the residual drain");
 
         let mut mail: crate::HostMailbox = crate::HostMailbox::new();
-        let _ = app.drain_host_commands(&mut mail);
+        let _ = app.drain_residual_commands(&mut mail);
         assert!(!app.has_pending_residual_command(), "and the drain clears it — one pass, not a spin");
 
         // The distinction that makes the narrow predicate necessary: a viewed ride keeps
