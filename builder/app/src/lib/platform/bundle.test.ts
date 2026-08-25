@@ -4,13 +4,12 @@
 // (#909). Each block asserts against what Rollup put in the emitted output, not
 // against source imports or a grep of them.
 //
-// Those were four files with four build wrappers, ten Vite builds between them
-// for four distinct products. Vitest isolates by file, not by test, so one file
-// is the only unit of sharing it offers: they are one file now, and each
-// product is built once. Four is the floor — `web`, `web` built the way the
-// deploy builds it, `production` (the dev host) and `desktop` are four
-// different build inputs and so four different products. Count the calls to
-// {@link product} below; there are four.
+// One file, because Vitest isolates by file and not by test: a build shared
+// inside a file is the only sharing it offers, so four subjects in four files
+// cannot see each other's builds. Four builds, because `web`, `web` built the
+// way the deploy builds it, `production` (the dev host) and `desktop` are four
+// different build inputs and therefore four different products. Every block
+// below reads one of those four — count the calls to {@link product}.
 
 import { build } from "vite";
 import { describe, expect, it } from "vitest";
