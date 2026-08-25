@@ -12,10 +12,10 @@
 //! them below — so the blob's six kinds are readable in one place instead of spread through a
 //! 76-line `encode`.
 //!
-//! What is **not** here: the version byte's meaning, the CRC, the `ENCODED_LEN` rounding and the
-//! decode-side version gate all stay in [`settings`](crate::settings) next to the version history
-//! they belong to. The macro emits the fixed framing (`b[0] = VERSION`, the trailing CRC) and the
-//! per-field loops between them.
+//! What is **not** here: the version byte's meaning, the supported floor, the CRC and the
+//! `ENCODED_LEN` rounding all stay in [`settings`](crate::settings) next to the migration rule they
+//! belong to. The macro emits the fixed framing (`b[0] = VERSION`, the trailing CRC, the
+//! `MIN_SUPPORTED..=VERSION` gate) and the per-field loops between them.
 
 use crate::retention::RideRetention;
 use crate::settings::{DeviceName, SavedSensor, DEVICE_NAME_MAX, SENSOR_SLOTS};
@@ -286,14 +286,21 @@ macro_rules! setting_enum_codec {
 ///
 /// ```ignore
 /// /// Metric or imperial readouts.
-/// units: Units = Units::Metric, ble_writable, reserved(1);
+/// units: Units = Units::Metric, since(16), ble_writable, reserved(1);
 /// /// Local time's offset from UTC, in minutes.
-/// utc_offset_min: i16 = 0, range(UTC_OFFSET_MIN, UTC_OFFSET_MAX);
+/// utc_offset_min: i16 = 0, since(16), range(UTC_OFFSET_MIN, UTC_OFFSET_MAX);
 /// /// The last time source's UTC set-point.
-/// clock: DateTime = DateTime::DEFAULT, sanitize_with(DateTimeEditorExt::sanitize);
+/// clock: DateTime = DateTime::DEFAULT, since(16), sanitize_with(DateTimeEditorExt::sanitize);
 /// ```
 ///
-/// A row is `name: Type = default` plus any of four optional markers:
+/// A row is `name: Type = default, since(v)` — `since` is **required** and positional, because a
+/// marker whose absence silently means "v1" is a default nobody can see. It is the version that
+/// first wrote this field's bytes: a blob stamped older than that decodes the field as its declared
+/// `default` instead of reading bytes the writer never wrote (see the generated `decode`). Rows are
+/// in append order, so the column is non-decreasing and no greater than `VERSION` — both are
+/// compile errors.
+///
+/// After `since` come any of four optional markers:
 ///
 /// - `ble_writable` — the phone owns this field, so the generated `adopt_ble_fields` pulls it
 ///   across. Its absence is what makes every other field device-only.
@@ -304,7 +311,7 @@ macro_rules! setting_enum_codec {
 ///   written as zeros and ignored on decode, holding the layout of every field after it.
 ///
 /// Generated: the struct (with every row's doc verbatim), `Default`, the named `const` default,
-/// the `off::…` offset chain and `off::END`, `encode`, `decode`, `sanitize` and
+/// the `off::…` offset chain and `off::END`, `payload_len`, `encode`, `decode`, `sanitize` and
 /// `adopt_ble_fields`. The last five sections carry only their doc and name — the prose about
 /// *this* blob belongs at the declaration, not in the generator.
 ///
@@ -316,7 +323,7 @@ macro_rules! settings_table {
         $svis:vis struct $S:ident {
             $(
                 $(#[$fm:meta])*
-                $name:ident : $ty:ty = $default:expr
+                $name:ident : $ty:ty = $default:expr, since($sv:literal)
                 $(, $( $mk:ident $(( $($arg:tt)* ))? ),+ )?
                 ;
             )+
@@ -398,6 +405,43 @@ macro_rules! settings_table {
             $crate::settings_table::settings_table!(@offsets 1; $( $name: $ty, [ $( $( $mk $(( $($arg)* ))? , )+ )? ]; )+);
         }
 
+        /// The append-only law as build errors. No assert restates the token that generated it:
+        /// each holds the generated `since` column against a **different** declaration — the row
+        /// above it, and the hand-written `VERSION` / `MIN_SUPPORTED` consts.
+        const _: () = {
+            const SINCE: &[u8] = &[ $( $sv, )+ ];
+            assert!(MIN_SUPPORTED <= VERSION, "the supported floor is newer than the version being written");
+            // Without this, a first row newer than the floor collapses `payload_len(floor)` to 1,
+            // and `decode` launders a blob whose CRC covers byte 0 alone into an all-default
+            // `Some`. The floor has to sit inside the table it decodes.
+            assert!(SINCE[0] <= MIN_SUPPORTED, "the oldest supported version predates the first row");
+            let mut i = 0;
+            while i < SINCE.len() {
+                assert!(SINCE[i] <= VERSION, "a row is `since` a version newer than VERSION — bump VERSION with the row");
+                assert!(i == 0 || SINCE[i - 1] <= SINCE[i], "rows are append-only: a row's `since` may not precede the row above it");
+                i += 1;
+            }
+        };
+
+        /// The payload length of a blob written by version `v`: the offset past the last row that
+        /// version declared. A running sum in declaration order, like the `off::…` chain — and
+        /// pinned against hand-written literals at the declaration for the same reason it is, since
+        /// an assert derived from the `since` column could not fail.
+        ///
+        /// Only `MIN_SUPPORTED..=VERSION` is ever decoded; a lower `v` still answers, which is what
+        /// gives the literal block something to catch a mistyped `since` with.
+        const fn payload_len(v: u8) -> usize {
+            let mut len = 1; // byte 0 is the version, which is not a field
+            $(
+                if v >= $sv {
+                    len = off::$name
+                        + <$ty as $crate::settings_table::SettingCodec>::LEN
+                        $($( + $crate::settings_table::settings_table!(@gap $mk $(( $($arg)* ))?) )+)?;
+                }
+            )+
+            len
+        }
+
         $(#[$em])*
         $evis fn $encode(s: &$S) -> [u8; ENCODED_LEN] {
             let mut b = [0u8; ENCODED_LEN];
@@ -415,22 +459,34 @@ macro_rules! settings_table {
 
         $(#[$cm])*
         $cvis fn $decode(bytes: &[u8]) -> Option<$S> {
-            if bytes.len() < ENCODED_LEN {
+            // Everything below is relative to the **stored** version, not the running one: its
+            // payload length, its encoded length, and the span its CRC covers. That is what lets a
+            // blob written before the last field was appended still be read.
+            let v = *bytes.first()?;
+            if !(MIN_SUPPORTED..=VERSION).contains(&v) {
                 return None;
             }
-            let b = &bytes[..ENCODED_LEN];
-            if b[0] != VERSION {
+            let plen = payload_len(v);
+            if bytes.len() < encoded_len(plen) {
                 return None;
             }
-            let crc = u16::from_le_bytes([b[PAYLOAD_LEN], b[PAYLOAD_LEN + 1]]);
-            if crc != $crate::store_meta::crc16(&b[0..PAYLOAD_LEN]) {
+            let b = &bytes[..plen + 2];
+            let crc = u16::from_le_bytes([b[plen], b[plen + 1]]);
+            if crc != $crate::store_meta::crc16(&b[0..plen]) {
                 return None;
             }
             let mut s = $S {
                 $(
-                    $name: <$ty as $crate::settings_table::SettingCodec>::read(
-                        &b[off::$name..off::$name + <$ty as $crate::settings_table::SettingCodec>::LEN],
-                    ),
+                    $name: if v >= $sv {
+                        <$ty as $crate::settings_table::SettingCodec>::read(
+                            &b[off::$name..off::$name + <$ty as $crate::settings_table::SettingCodec>::LEN],
+                        )
+                    } else {
+                        // The declared default, verbatim — the same token `DEFAULT` is built from,
+                        // so a tail-defaulted field costs no `.rodata` projection of the whole
+                        // struct.
+                        $default
+                    },
                 )+
             };
             s.$sanitize();

@@ -507,7 +507,7 @@ settings_table! {
     /// the `settings_table!` declaration below carries the four markers a row may take.
     pub struct Settings {
         /// Metric or imperial readouts.
-        units: Units = Units::Metric, ble_writable, reserved(1);
+        units: Units = Units::Metric, since(16), ble_writable, reserved(1);
         // The reserved byte 2 was the `gps_time` flag (removed #641). Its offset is frozen so v11
         // blobs keep their layout — written as a constant `0` and ignored on decode. (Repurpose
         // it, don't reorder, if a future field wants a byte here.)
@@ -517,44 +517,44 @@ settings_table! {
         /// folds in [`utc_offset_min`](Settings::utc_offset_min). Persisted so it seeds the boot display
         /// clock — display-only until re-stamped this boot (see
         /// [`App::clock_trusted`](crate::App::clock_trusted)).
-        clock: DateTime = DateTime::DEFAULT, sanitize_with(DateTimeEditorExt::sanitize);
+        clock: DateTime = DateTime::DEFAULT, since(16), sanitize_with(DateTimeEditorExt::sanitize);
         /// Local time's offset from UTC, in minutes (`+02:00` → `120`).
-        utc_offset_min: i16 = 0, range(UTC_OFFSET_MIN, UTC_OFFSET_MAX);
+        utc_offset_min: i16 = 0, since(16), range(UTC_OFFSET_MIN, UTC_OFFSET_MAX);
         /// Seconds between GPS fixes (the Power screen's interval).
-        fix_interval_s: u16 = 1, range(FIX_INTERVAL_MIN, FIX_INTERVAL_MAX);
+        fix_interval_s: u16 = 1, since(16), range(FIX_INTERVAL_MIN, FIX_INTERVAL_MAX);
         /// GPS low-power mode (the Power screen's toggle).
-        power_saver: bool = false;
+        power_saver: bool = false, since(16);
         /// The rider's ordered Statistics-grid field selection (the Stat Fields screen edits it).
-        stat_fields: StatFieldList = StatFieldList::DEFAULT;
+        stat_fields: StatFieldList = StatFieldList::DEFAULT, since(16);
         /// Seconds the Statistics grid dwells on each page before auto-cycling to the next.
-        stat_cycle_s: u16 = STAT_CYCLE_DEFAULT, range(STAT_CYCLE_MIN, STAT_CYCLE_MAX);
+        stat_cycle_s: u16 = STAT_CYCLE_DEFAULT, since(16), range(STAT_CYCLE_MIN, STAT_CYCLE_MAX);
         /// The user-facing device name (empty = factory `OBC-XXXX`). Written by the companion app over
         /// BLE, not any on-device screen — it lives here so the one settings blob persists it.
-        device_name: DeviceName = DeviceName::EMPTY, ble_writable;
+        device_name: DeviceName = DeviceName::EMPTY, since(16), ble_writable;
         /// The Bluetooth radio switch (the Bluetooth screen's toggle, epic #447 P8). Off = stop
         /// advertising + drop any live connection; on = the normal advertising lifecycle. **Device-only**
         /// — deliberately *not* one of the BLE-writable fields [`adopt_ble_fields`](Settings::adopt_ble_fields)
         /// pulls across (a phone must never be able to switch the radio out from under the rider, and
         /// couldn't turn it back on). Default **on**.
-        ble_enabled: bool = true;
+        ble_enabled: bool = true, since(16);
         /// How the Climb screen (epic #506) is reached — Off / Manual / Auto (the Stats settings screen
         /// cycles it). **Device-only**, like [`ble_enabled`](Settings::ble_enabled): deliberately *not*
         /// one of the BLE-writable fields [`adopt_ble_fields`](Settings::adopt_ble_fields) pulls across.
         /// Default **Auto** — the climb panel auto-shows on the first climb.
-        climb_mode: ClimbMode = ClimbMode::Auto;
+        climb_mode: ClimbMode = ClimbMode::Auto, since(16);
         /// How long the UI sits idle before it navigates itself back to where it belongs (Home when not
         /// tracking, the Map mid-ride). **Device-only**, like [`climb_mode`](Settings::climb_mode):
         /// deliberately *not* one of the BLE-writable fields [`adopt_ble_fields`](Settings::adopt_ble_fields)
         /// pulls across. Default **30 s**; [`Never`](IdleReturn::Never) disables it entirely.
-        idle_return: IdleReturn = IdleReturn::S30;
+        idle_return: IdleReturn = IdleReturn::S30, since(16);
         /// Show the small floating `HH:MM` clock on the Map (the Display settings screen's toggle).
         /// **Device-only**, like [`climb_mode`](Settings::climb_mode): deliberately *not* one of the
         /// BLE-writable fields [`adopt_ble_fields`](Settings::adopt_ble_fields) pulls across. Default
         /// **on**.
-        map_clock: bool = true;
+        map_clock: bool = true, since(16);
         /// Show the scale bar at the Map's bottom-left (the Display settings screen's toggle).
         /// **Device-only**, like [`map_clock`](Settings::map_clock). Default **on**.
-        map_scale_bar: bool = true;
+        map_scale_bar: bool = true, since(16);
         /// The rider's selected routing profile, an **index** into the loaded map's §8.6 profile table
         /// (N2/N5, epic #533). The Bike-type settings screen cycles it through the map's profile *names*;
         /// the planner is constructed with it ([`NavPlanner::new`](obc_route::NavPlanner)). Stored as a
@@ -564,19 +564,19 @@ settings_table! {
         /// [`NavProfiles`](crate::NavProfiles)). Not range-clamped on decode for that reason — the value
         /// only means anything against a map. **Device-only** (a bike type is picked on the device), so
         /// [`adopt_ble_fields`](Settings::adopt_ble_fields) never pulls it across. Default **0**.
-        bike_profile_idx: u8 = 0;
+        bike_profile_idx: u8 = 0, since(16);
         /// Whether — and when — the Map's bottom-centre waypoint chip appears (epic #523, the Stats
         /// settings screen cycles it). **Device-only**, like [`climb_mode`](Settings::climb_mode):
         /// deliberately *not* one of the BLE-writable fields [`adopt_ble_fields`](Settings::adopt_ble_fields)
         /// pulls across — a BLE Config write must never flip the rider's on-glass chrome. Default
         /// **Approach** (the chip surfaces only as a waypoint nears).
-        waypoint_mode: WaypointMode = WaypointMode::Approach;
+        waypoint_mode: WaypointMode = WaypointMode::Approach, since(16);
         /// The UI language (epic #602, the Language settings screen cycles it). **Device-only**, like
         /// [`climb_mode`](Settings::climb_mode): deliberately *not* one of the BLE-writable fields
         /// [`adopt_ble_fields`](Settings::adopt_ble_fields) pulls across — the phone never repicks the
         /// rider's on-device language. Default **English**; every user-facing string is looked up in
         /// this language via [`t`](crate::i18n::t) at draw time.
-        language: Language = Language::En;
+        language: Language = Language::En, since(16);
         /// The saved BLE sensors (SE7, epic #707), one slot per quantity — index **0 HR · 1 Power ·
         /// 2 Cadence**. An empty slot ([`SavedSensor::present`] `== false`) is "no sensor saved". Written
         /// by the Sensors settings screen on pair/forget; the board's central manager reconnects to a
@@ -584,20 +584,20 @@ settings_table! {
         /// [`ble_enabled`](Settings::ble_enabled): never pulled across by
         /// [`adopt_ble_fields`](Settings::adopt_ble_fields) — a phone can't repick the rider's sensors.
         /// Default: all three slots empty.
-        saved_sensors: [SavedSensor; SENSOR_SLOTS] = [SavedSensor::EMPTY; SENSOR_SLOTS];
+        saved_sensors: [SavedSensor; SENSOR_SLOTS] = [SavedSensor::EMPTY; SENSOR_SLOTS], since(16);
         /// How long after a ride is verifiably synced to the phone the device auto-deletes it (epic
         /// #638): Never / 1 day / 1 week / 1 month. **Device-only**, like
         /// [`climb_mode`](Settings::climb_mode) — the auto-expiry setting is device-local (the app never
         /// surfaces it), so [`adopt_ble_fields`](Settings::adopt_ble_fields) never pulls it across.
         /// Default **1 week**. Only synced rides are ever deleted; unsynced rides are never touched. S5
         /// adds the Auto-delete settings screen that edits this.
-        ride_retention: RideRetention = RideRetention::Week1;
+        ride_retention: RideRetention = RideRetention::Week1, since(16);
         /// Which sources feed the **"Up ahead" timeline** (epic #946, U4, the Ride settings screen
         /// cycles it): both, custom waypoints only, or map POIs only. **Device-only**, like
         /// [`climb_mode`](Settings::climb_mode) — a phone must never repick what the rider's ride menu
         /// shows, so [`adopt_ble_fields`](Settings::adopt_ble_fields) never pulls it across. Default
         /// **Both**; the scope is the Up-ahead list *only* (see [`UpAheadSource`]).
-        up_ahead_source: UpAheadSource = UpAheadSource::Both;
+        up_ahead_source: UpAheadSource = UpAheadSource::Both, since(16);
         /// Draw the map's **terrain layer** — today the E3 contour lines (the Display settings screen's
         /// toggle). **Device-only**, like [`map_clock`](Settings::map_clock): deliberately *not* one of
         /// the BLE-writable fields [`adopt_ble_fields`](Settings::adopt_ble_fields) pulls across.
@@ -618,7 +618,7 @@ settings_table! {
         /// It is **expected to be removed**: if contours win the toggle goes and they are simply on; if
         /// they lose the whole feature goes. Built as the cheapest honest switch, not a settled
         /// preference — don't grow migration concerns around it.
-        map_contours: bool = true;
+        map_contours: bool = true, since(16);
         /// How often the device raises a **scheduled weather request** (weather epic #1185: WX8
         /// #1193's due scheduler consumes it, WX11 #1196's Weather settings screen edits it) — the
         /// typed [`WeatherRefresh`] whose discriminants ARE the BLE §11.8 wire bytes (pinned by
@@ -632,7 +632,7 @@ settings_table! {
         /// rider choice may disable weather. **BLE-writable** (like [`units`](Settings::units) /
         /// [`device_name`](Settings::device_name)): the companion writes it via Config §7.3, so
         /// [`adopt_ble_fields`](Settings::adopt_ble_fields) pulls it across.
-        weather_refresh: WeatherRefresh = WeatherRefresh::Every30, ble_writable;
+        weather_refresh: WeatherRefresh = WeatherRefresh::Every30, since(16), ble_writable;
         /// The last **fired weather alert** per class (WX12 #1197): the dedup/cooldown anchors —
         /// event onset + position + severity, indexed by
         /// [`AlertClass::slot`](crate::weather_alerts::AlertClass). Persisted in this blob (the RRAM
@@ -641,7 +641,7 @@ settings_table! {
         /// [`App::weather_alert_tick`](crate::App::weather_alert_tick) at alert-fire rate (rare),
         /// through the same #810 persistence handshake as any rider edit. **Device-only** state, not
         /// a preference: [`adopt_ble_fields`](Settings::adopt_ble_fields) never touches it.
-        weather_alert_marks: crate::weather_alerts::AlertMarks = [None; crate::weather_alerts::ALERT_CLASSES];
+        weather_alert_marks: crate::weather_alerts::AlertMarks = [None; crate::weather_alerts::ALERT_CLASSES], since(16);
     }
 
     /// The factory settings as a **`const`** — the same value [`Default`] returns (`default()`
@@ -679,9 +679,16 @@ settings_table! {
     /// and the device RRAM store so one round-trip test covers both.
     pub fn encode;
 
-    /// Decode a blob written by [`encode`], or `None` if it is too short, the wrong version, or
-    /// fails the CRC — i.e. anything but a clean read of *this* format. The decoded value is
-    /// range-sanitised, so a `Some` is always a usable [`Settings`].
+    /// Decode a blob written by [`encode`] at **any supported version** — every field the stored
+    /// version declared is read, and the fields appended after it take their declared defaults. A
+    /// firmware update that appends a setting therefore keeps the rider's units, clock anchor, stat
+    /// grid, device name, paired sensors and alert anchors instead of resetting all of them.
+    ///
+    /// `None` — the host then falls back to [`Settings::default`] — if the version is outside
+    /// [`MIN_SUPPORTED`]`..=`[`VERSION`], if the blob is shorter than that version's
+    /// [`encoded_len`], or if the CRC over that version's payload fails. Bytes past its encoded
+    /// length are ignored, which is what makes the board's fixed-`SLOT_LEN` read work after a bump.
+    /// The decoded value is range-sanitised, so a `Some` is always a usable [`Settings`].
     pub fn decode;
 }
 
@@ -700,28 +707,48 @@ impl Settings {
     }
 }
 
-/// Codec version — bump when the byte layout changes; [`decode`] rejects any other version (the
-/// host then falls back to [`Settings::default`], i.e. settings reset on a format change).
-/// v4 appended the `ble_enabled` byte (#455); v5 appended the `climb_mode` byte (#511); v6 appended
-/// the `idle_return` byte; v7 appended the `map_clock` + `map_scale_bar` bytes; v8 appended the
-/// `bike_profile_idx` byte (routing-v2 N5, #538); v9 appended the `waypoint_mode` byte (epic #523);
-/// v10 appended the `language` byte (epic #602); v11 appended the 24-byte `saved_sensors` block
-/// (BLE-sensors SE7, #714) — 3 slots × 8 B (`present · addr_kind · addr[6]`); v12 appended the
-/// `ride_retention` byte (auto-expiry epic #638, S3); v13 appended the `up_ahead_source` byte
-/// ("Up ahead" epic #946, U4); v14 appended the `map_contours` byte (elevation EL10c, #1096 — a
-/// **provisional** field; removing it is a version bump like any other, which is exactly the point
-/// of it costing one appended byte); v15 appended the `weather_refresh` byte (weather epic #1185
-/// — WX8 #1193's scheduler field and WX11 #1196's settings screen, one byte carrying the BLE
-/// §11.8 discriminants); v16 appended the 54-byte `weather_alert_marks` block (WX12 #1197) —
-/// 3 classes × 18 B (`flags · onset i64 · lat i32 · lon i32 · severity`), the persisted alert
-/// dedup/cooldown anchors.
+/// Codec version — the layout [`encode`] writes, and the newest layout [`decode`] can read.
+///
+/// **The migration rule, which is this format's whole contract:** the blob is append-only. A new
+/// field is appended carrying `since(VERSION + 1)`, `VERSION` is bumped, and the version's golden
+/// blob is committed. A retired field is **never** dropped — it becomes `reserved(n)`, so every
+/// field after it keeps its offset. Nothing is reordered, no stored discriminant is renumbered (a
+/// build error), and no composite silently changes size. Under that rule a stored version's field
+/// *payload* is a prefix of the current payload — the full encoded blob is not, since the CRC and
+/// padding sit after whichever payload length its version defined — which is what lets [`decode`]
+/// read the fields the stored version declared and default the tail instead of resetting the
+/// rider's settings on every update — see [`MIN_SUPPORTED`]. Each row's `since` column records the
+/// version that introduced it.
 pub const VERSION: u8 = 16;
 
-/// Fixed encoded length: the [`PAYLOAD_LEN`] CRC-covered bytes + a 2-byte CRC, **rounded up to the
-/// device RRAM's 16-byte write line** (the firmware store writes whole 128-bit lines) — so a codec
-/// bump never needs the device store re-padded, the RRAM store reads a known span, and the file
-/// store needs no length framing. Bytes past the CRC are unused zero padding.
-pub const ENCODED_LEN: usize = (PAYLOAD_LEN + 2).div_ceil(16) * 16;
+/// The oldest stored version [`decode`] accepts. A version joins this floor only when its exact
+/// bytes are committed as a golden pair — v16 is the only version whose bytes exist in the
+/// repository.
+///
+/// That evidence rule is also why every current row reads `since(16)` rather than the version that
+/// historically appended it: below the floor a `since` decodes nothing, so older values would be
+/// transcribed inference — and inference applied to a rider's stored settings is *silent
+/// reinterpretation*, which is worse than the reset it would replace. Real `since` values start
+/// arriving with the rows appended at v17 and later.
+///
+/// A blob **newer** than the running firmware stays rejected outright: its payload length is
+/// unknown, so its CRC cannot even be checked. A downgrade therefore resets, deliberately.
+pub const MIN_SUPPORTED: u8 = 16;
+
+/// The encoded length of a `payload`-byte payload: the CRC-covered bytes + a 2-byte CRC, **rounded
+/// up to the device RRAM's 16-byte write line** (the firmware store writes whole 128-bit lines) —
+/// so a codec bump never needs the device store re-padded, the RRAM store reads a known span, and
+/// the file store needs no length framing. Bytes past the CRC are unused zero padding.
+///
+/// A function rather than only [`ENCODED_LEN`] because [`decode`] applies the same rounding to the
+/// **stored** version's payload: after a bump the simulator hands it a shorter file and the board
+/// hands it a longer fixed-`SLOT_LEN` read, and one rule covers both.
+pub const fn encoded_len(payload: usize) -> usize {
+    (payload + 2).div_ceil(16) * 16
+}
+
+/// Fixed encoded length of a blob written by *this* version.
+pub const ENCODED_LEN: usize = encoded_len(PAYLOAD_LEN);
 
 /// Payload size before the trailing CRC. The CRC follows immediately at this offset.
 const PAYLOAD_LEN: usize = off::END;
@@ -757,6 +784,17 @@ const _: () = {
     assert!(off::weather_alert_marks == 114, "weather_alert_marks moved");
     assert!(PAYLOAD_LEN == 168, "the CRC moved");
     assert!(ENCODED_LEN == 176, "the blob is no longer 11 RRAM lines");
+};
+
+// The per-version payload lengths, in literals — read off the versions' bytes and written by hand,
+// **not** derived from the table, for the same reason the offsets above are: an assert generated
+// from the `since` tokens that produced `payload_len` could not fail. The failure mode this guards
+// is not a reset but a *silent* one, a field the blob does contain being handed back as its
+// default. One rung today, because one version's bytes are committed; the rung only becomes
+// independently load-bearing at v17, when a row below `VERSION` can be mistyped without tripping
+// the `since <= VERSION` guard. Every future bump adds its literal here beside its golden blob.
+const _: () = {
+    assert!(payload_len(16) == 168, "the v16 payload length moved — a `since` or a row's size changed");
 };
 
 #[cfg(test)]
@@ -1206,6 +1244,155 @@ mod tests {
         wrong[0] = VERSION + 1; // bump version, fix the CRC so only the version differs
         re_stamp_crc(&mut wrong);
         assert_eq!(decode(&wrong), None, "a future version is rejected");
+        let mut below = encode(&Settings::default());
+        below[0] = MIN_SUPPORTED - 1; // a version below the floor, CRC re-stamped so only it differs
+        re_stamp_crc(&mut below);
+        assert_eq!(decode(&below), None, "a version below the supported floor is rejected");
+    }
+
+    /// A miniature settings table, declared for one purpose: **tail-defaulting**, which the real
+    /// table cannot exercise — it has exactly one supported version, so nothing in it is ever
+    /// defaulted. Four rows across three versions, one composite among them. Its blobs and its
+    /// expectations are hand-written; nothing here is derived from the table it tests, and unlike
+    /// the real ladder ("whatever versions happened to ship") this v1/v2/v3 case never changes.
+    mod mini {
+        #![allow(dead_code)] // `adopt_ble_fields` and `Mini::DEFAULT` are generated, not exercised
+
+        use crate::settings::{encoded_len, SavedSensor, SENSOR_SLOTS};
+        use crate::settings_table::settings_table;
+
+        /// The newest layout `encode` writes, as the real table's `VERSION` is.
+        pub const VERSION: u8 = 3;
+        /// Every version here is supported — this table's whole point is the ladder below the top.
+        pub const MIN_SUPPORTED: u8 = 1;
+        const PAYLOAD_LEN: usize = off::END;
+        pub const ENCODED_LEN: usize = encoded_len(PAYLOAD_LEN);
+
+        // The layout in literals, as at the real declaration: v1 is 3 payload bytes (encoded 16),
+        // v2 is 5 (encoded 16), v3 is 29 (encoded 32) — so the versions straddle a write line and
+        // the encoded length really is version-relative.
+        const _: () = {
+            assert!(payload_len(1) == 3 && encoded_len(payload_len(1)) == 16);
+            assert!(payload_len(2) == 5 && encoded_len(payload_len(2)) == 16);
+            assert!(payload_len(3) == 29 && encoded_len(payload_len(3)) == 32);
+        };
+
+        settings_table! {
+            /// Four fields, appended one version at a time.
+            pub struct Mini {
+                /// A scalar from v1.
+                a: u8 = 7, since(1);
+                /// A flag from v1.
+                b: bool = true, since(1), ble_writable;
+                /// A clamped scalar appended at v2.
+                c: u16 = 500, since(2), range(10, 1000);
+                /// A 24-byte composite appended at v3.
+                d: [SavedSensor; SENSOR_SLOTS] = [SavedSensor::EMPTY; SENSOR_SLOTS], since(3);
+            }
+
+            /// The factory value.
+            pub const DEFAULT;
+
+            /// Generated for every table; unused here.
+            pub fn adopt_ble_fields;
+
+            /// Clamps `c`.
+            fn sanitize;
+
+            /// Writes the v3 layout.
+            pub fn encode;
+
+            /// Reads v1, v2 or v3.
+            pub fn decode;
+        }
+
+        /// Stamp the CRC of a hand-written blob over its own `plen` bytes. Everything but the two
+        /// CRC bytes is written by hand — a hand-computed CRC would test arithmetic, not framing.
+        pub fn stamped<const N: usize>(mut b: [u8; N], plen: usize) -> [u8; N] {
+            let crc = crate::store_meta::crc16(&b[0..plen]);
+            b[plen..plen + 2].copy_from_slice(&crc.to_le_bytes());
+            b
+        }
+
+        /// A v1 blob: version, `a`, `b`, its CRC, then the write line's padding.
+        pub fn v1_blob() -> [u8; 16] {
+            stamped([1, 42, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 3)
+        }
+    }
+
+    /// The headline behaviour this codec exists for: a blob written by an older version decodes on this
+    /// firmware, field-precisely, with the fields that version did not have taking their **declared
+    /// defaults** — instead of the whole value being thrown away. Proven per version on the
+    /// miniature table, against hand-written blobs and hand-written expectations.
+    #[test]
+    fn an_older_versions_blob_decodes_with_its_tail_defaulted() {
+        use mini::Mini;
+
+        assert_eq!(
+            mini::decode(&mini::v1_blob()),
+            Some(Mini { a: 42, b: true, c: 500, d: [SavedSensor::EMPTY; SENSOR_SLOTS] }),
+            "v1 declared a and b; c and d take their declared defaults"
+        );
+
+        let v2 = mini::stamped([2, 42, 0, 0x2C, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 5);
+        assert_eq!(
+            mini::decode(&v2),
+            Some(Mini { a: 42, b: false, c: 300, d: [SavedSensor::EMPTY; SENSOR_SLOTS] }),
+            "v2 declared c as well; only d is defaulted"
+        );
+
+        let v3 = mini::stamped(
+            [
+                3, 42, 1, 0x2C, 0x01, // version · a · b · c
+                1, 1, 1, 2, 3, 4, 5, 6, // slot 0: present, random address 01:02:03:04:05:06
+                0, 0, 0, 0, 0, 0, 0, 0, // slot 1: absent
+                1, 0, 9, 9, 9, 9, 9, 9, // slot 2: present, public address 09:…
+                0, 0, 0, // CRC (stamped) and the write line's last byte
+            ],
+            29,
+        );
+        let full = Mini {
+            a: 42,
+            b: true,
+            c: 300,
+            d: [
+                SavedSensor::saved(1, [1, 2, 3, 4, 5, 6]),
+                SavedSensor::EMPTY,
+                SavedSensor::saved(0, [9, 9, 9, 9, 9, 9]),
+            ],
+        };
+        assert_eq!(mini::decode(&v3), Some(full), "the newest version reads every field");
+        assert_eq!(mini::decode(&mini::encode(&full)), Some(full), "and round-trips through its own encode");
+    }
+
+    /// Length and CRC are relative to the **stored** version, not the running one — the property
+    /// that makes the simulator's shorter file and the board's longer fixed-`SLOT_LEN` read both
+    /// work after a version bump, without weakening any rejection.
+    #[test]
+    fn the_framing_checks_follow_the_stored_version() {
+        let v1 = mini::v1_blob();
+        assert!(mini::decode(&v1).is_some(), "the blob these cases are built from is valid");
+
+        assert_eq!(mini::decode(&v1[..15]), None, "a byte short of its own encoded length → rejected");
+
+        let mut padded = [0xAA; mini::ENCODED_LEN];
+        padded[..16].copy_from_slice(&v1);
+        assert_eq!(mini::decode(&padded), mini::decode(&v1), "bytes past its encoded length are ignored");
+
+        let mut wrong = [0u8; mini::ENCODED_LEN];
+        wrong[..3].copy_from_slice(&v1[..3]);
+        assert_eq!(
+            mini::decode(&mini::stamped(wrong, 29)),
+            None,
+            "a v1 blob whose CRC covers the current version's payload is rejected"
+        );
+
+        let mut future = v1;
+        future[0] = mini::VERSION + 1;
+        assert_eq!(mini::decode(&mini::stamped(future, 3)), None, "a newer version is still rejected");
+        let mut ancient = v1;
+        ancient[0] = mini::MIN_SUPPORTED - 1;
+        assert_eq!(mini::decode(&mini::stamped(ancient, 3)), None, "a version below the floor is still rejected");
     }
 
     /// A valid-CRC blob carrying an out-of-range field is sanitised on decode, not trusted.
