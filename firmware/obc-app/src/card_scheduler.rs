@@ -264,6 +264,11 @@ pub(crate) struct CardScheduler {
     passkey: Option<u32>,
     /// The desired **map-transfer level** (issue #927), re-fed every pass while a write runs.
     map_transfer: Option<MapTransfer>,
+    /// Whether the level above is currently **represented on the stack** by a card this scheduler
+    /// landed. It is what lets a dismissal be told apart from a first delivery: with the level
+    /// unchanged and the card gone, the rider popped it, and re-landing it would be the scheduler
+    /// undoing the press. Cleared whenever the level changes, so a *new* state always re-raises.
+    map_transfer_delivered: bool,
     /// The one pending upload prompt — most recent route or trip commit wins. Carried by durable
     /// object id, never a catalog index, so a rescan between arrival and a deferred delivery cannot
     /// retarget it.
@@ -284,6 +289,7 @@ impl CardScheduler {
         CardScheduler {
             passkey: None,
             map_transfer: None,
+            map_transfer_delivered: false,
             upload: None,
             warnings: WarningFlags::NONE,
             warned: WarningFlags::NONE,
@@ -306,6 +312,11 @@ impl CardScheduler {
 
     /// Set the desired map-transfer level (the tail of [`App::set_map_transfer`](crate::App::set_map_transfer)).
     pub(crate) fn set_map_transfer(&mut self, state: Option<MapTransfer>) {
+        // A *changed* level is a new fact and always re-raises the card, even if the rider dismissed
+        // the previous one. An unchanged re-feed — the steady state, fed every pass — must not.
+        if state != self.map_transfer {
+            self.map_transfer_delivered = false;
+        }
         self.map_transfer = state;
     }
 
@@ -428,17 +439,30 @@ impl CardScheduler {
     /// re-feed (the steady state, fed every pass) reports no change, so a multi-minute write does
     /// not repaint the panel continuously.
     fn deliver_map_transfer(&mut self, stack: &mut Stack) -> bool {
-        let Some(state) = self.map_transfer else { return false };
+        let Some(state) = self.map_transfer else {
+            self.map_transfer_delivered = false;
+            return false;
+        };
         match find(stack, CardKind::MapTransfer) {
             Some(i) => {
                 let Screen::MapTransfer(card) = &mut stack[i] else { return false };
+                self.map_transfer_delivered = true;
                 if card.state() == state {
                     return false;
                 }
                 card.set_state(state);
                 true
             }
-            None => land(stack, None, Screen::MapTransfer(screen::MapTransferScreen::new(state))),
+            // **The dismissal.** A terminal card pops itself on a press, and the press and this
+            // sweep are stages of the *same* pass — so re-landing here puts it back before the pass
+            // ends, the platform's "the card was up and no longer is" latch never observes it, the
+            // level is never cleared, and the rider is locked on the card until reboot.
+            None if self.map_transfer_delivered => false,
+            None => {
+                self.map_transfer_delivered =
+                    land(stack, None, Screen::MapTransfer(screen::MapTransferScreen::new(state)));
+                self.map_transfer_delivered
+            }
         }
     }
 
@@ -584,9 +608,13 @@ impl CardScheduler {
     /// [`new`](CardScheduler::new) state. The destructure is exhaustive, so a new slot must state
     /// its empty value here too.
     pub(crate) fn is_empty(&self) -> bool {
-        let CardScheduler { passkey, map_transfer, upload, warnings, warned, update, dfu } = self;
+        let CardScheduler { passkey, map_transfer, map_transfer_delivered, upload, warnings, warned, update, dfu } =
+            self;
         passkey.is_none()
             && map_transfer.is_none()
+            // Implied by the line above — the latch is cleared whenever the level goes `None` — and
+            // asserted anyway, because that invariant is the whole reason a dismissal is legible.
+            && !*map_transfer_delivered
             && upload.is_none()
             && *warnings == WarningFlags::NONE
             && *warned == WarningFlags::NONE
@@ -796,6 +824,39 @@ mod tests {
         app.set_map_transfer(None);
         assert!(!app.map_transfer_card_up(), "clearing the state removes the card");
         assert_eq!(cards(&app), 0);
+    }
+
+    /// A dismissed card must stay dismissed **across sweeps**, and a *new* level must still raise it.
+    ///
+    /// The sibling test above asserts the dismissal only up to the `apply_gesture` that pops it. The
+    /// card is a level family, so what decides whether the rider can actually leave the screen is
+    /// what the *next* sweep does — and the pass runs a sweep after every gesture batch.
+    #[test]
+    fn a_dismissed_card_stays_dismissed_until_the_level_changes() {
+        use crate::screen::{MapTransfer, MapTransferError};
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+
+        app.set_map_transfer(Some(MapTransfer::Installed));
+        assert!(app.map_transfer_card_up(), "a terminal state raises the card");
+        app.apply_gesture(Gesture::Press);
+        assert!(!app.map_transfer_card_up(), "a terminal card dismisses on a press");
+
+        // The steady state: the platform keeps re-feeding the same level until it observes the card
+        // gone. Re-landing here is what used to trap the rider on the screen.
+        app.set_map_transfer(Some(MapTransfer::Installed));
+        assert!(!app.map_transfer_card_up(), "an unchanged re-feed must not resurrect a dismissed card");
+
+        // ...but a genuinely new fact is not a re-feed, and must be shown.
+        app.set_map_transfer(Some(MapTransfer::Receiving { received_kib: 0, total_kib: 400_000 }));
+        assert!(app.map_transfer_card_up(), "a new transfer raises the card again");
+        app.set_map_transfer(Some(MapTransfer::Failed(MapTransferError::Damaged)));
+        assert!(app.map_transfer_card_up(), "a terminal outcome replaces the progress state in place");
+        app.apply_gesture(Gesture::Press);
+        assert!(!app.map_transfer_card_up(), "and it dismisses too");
+
+        // Clearing the level is still the platform's way to close it silently.
+        app.set_map_transfer(None);
+        assert!(!app.map_transfer_card_up());
     }
 
     /// The post-update toast (epic #615 S5): a confirmed-update fact surfaces the "Updated to vX"

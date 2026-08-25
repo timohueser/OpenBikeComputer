@@ -898,6 +898,49 @@ mod tests {
         )
     }
 
+    /// A **dismissed terminal map-transfer card must stay dismissed.**
+    ///
+    /// The card is a *level* family: the scheduler re-delivers it every sweep for as long as the
+    /// desired state is `Some`. A terminal card pops itself on a press, but the press and the sweep
+    /// that re-lands it are stages of the **same** pass — so the card is back before the pass ends,
+    /// and the board's dismissal latch (which clears the published state only when it observes a
+    /// card that *was* up and no longer is) never gets to fire. The card then outlives every
+    /// dismissal and the rider cannot leave it.
+    ///
+    /// `card_scheduler::map_transfer_card_opens_updates_and_closes` misses this because it asserts
+    /// right after `apply_gesture` and never runs another pass.
+    #[test]
+    fn a_dismissed_terminal_map_transfer_card_does_not_come_back() {
+        use crate::screen::MapTransfer;
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+
+        app.set_map_transfer(Some(MapTransfer::Installed));
+        quiet_without_metadata(&mut app, 1_000);
+        assert!(app.map_transfer_card_up(), "a terminal state raises the card");
+
+        let mut facts = ExternalFacts::NONE;
+        pass_supported(
+            &mut app,
+            PlatformSupport { retention_metadata: false, ..EVERYTHING },
+            PassClock { ride: RideClock(2_000), ui: InputClock(2_000) },
+            &[Gesture::Press],
+            &mut OutcomeSlots::new(),
+            &mut facts,
+            DerivedInputs::NONE,
+            DerivedTargets::NONE,
+        );
+        assert!(
+            !app.map_transfer_card_up(),
+            "the press that pops a terminal card must leave it popped for the rest of that pass"
+        );
+
+        quiet_without_metadata(&mut app, 3_000);
+        assert!(
+            !app.map_transfer_card_up(),
+            "the dismissed card came back on the next pass — the rider cannot get off this screen"
+        );
+    }
+
     fn summary(name: &str) -> RouteSummary {
         RouteSummary {
             name: heapless::String::try_from(name).unwrap(),
