@@ -727,11 +727,11 @@ pub const ENCODED_LEN: usize = (PAYLOAD_LEN + 2).div_ceil(16) * 16;
 const PAYLOAD_LEN: usize = off::END;
 
 // The v16 layout, in literals. Every number below was read off the bytes on disk and written by
-// hand — **not** derived from the table — so this is a real gate rather than the tautology PR
-// #1472's review found: reorder two rows, mistype a `SettingCodec::LEN`, or resize a composite and
-// the build stops here instead of silently rewriting every rider's stored settings. Byte 0 is the
-// version and byte 2 is the retired `gps_time` tombstone, both pinned by the gap between `units`
-// and `clock`.
+// hand — **not** derived from the table — so this is a real gate rather than a tautology: an
+// assert generated from the same token that produced the value cannot fail. Reorder two rows,
+// mistype a `SettingCodec::LEN`, or resize a composite and the build stops here instead of
+// silently rewriting every rider's stored settings. Byte 0 is the version and byte 2 is the
+// retired `gps_time` tombstone, both pinned by the gap between `units` and `clock`.
 const _: () = {
     assert!(off::units == 1, "units moved");
     assert!(off::clock == 3, "clock moved (or the retired gps_time byte lost its reservation)");
@@ -892,7 +892,31 @@ mod tests {
 
         let mut adopted = base;
         adopted.adopt_ble_fields(&other);
-        Settings::assert_field_table(&base, &other, &adopted);
+        // Hand-written, like the offset literals: the three fields the phone owns (BLE Config
+        // §7.3). Deriving this from the table's own `ble_writable` markers would restate the token
+        // that generates `adopt_ble_fields` and could never fail — so a marker added to a
+        // device-only row, or dropped from one of these three, fails here by field name.
+        Settings::assert_field_table(&base, &other, &adopted, &["units", "device_name", "weather_refresh"]);
+    }
+
+    /// M1's end-to-end pin: an unknown stored byte sanitises **through `decode`**, not merely
+    /// through `T::from_byte` in isolation — the generated `SettingCodec::read` has to actually
+    /// route the blob's byte through the type's clamp. Once for a `setting_enum!` row (and it is
+    /// the row that carries a rule: §7.3 pins that only an explicit rider choice may disable
+    /// weather, so corruption must land on 30 min, never `Off`) and once for `ride_retention`,
+    /// which is not a `setting_enum!` and has no other blob-level cover.
+    #[test]
+    fn decode_sanitises_an_unknown_enum_byte_through_the_blob() {
+        let mut b = encode(&Settings { weather_refresh: WeatherRefresh::Off, ..Settings::default() });
+        b[off::weather_refresh] = 200;
+        re_stamp_crc(&mut b);
+        let got = decode(&b).expect("valid CRC → Some, just sanitised");
+        assert_eq!(got.weather_refresh, WeatherRefresh::Every30, "§7.3: unknown → 30 min, never Off");
+
+        let mut b = encode(&Settings { ride_retention: RideRetention::Never, ..Settings::default() });
+        b[off::ride_retention] = 200;
+        re_stamp_crc(&mut b);
+        assert_eq!(decode(&b).unwrap().ride_retention, RideRetention::Week1, "unknown → the 1-week default");
     }
 
     /// The weather-refresh knob's own semantics, kept from the codec test the table replaced: it
