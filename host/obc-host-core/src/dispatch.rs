@@ -26,8 +26,9 @@
 //! | `ForgetBond` | The removal is confirmed by a link-status fact, not by a reply (`LegacyOwned::BondAck`) | #1398/#1400 |
 //! | `DeleteTrip` | `CatalogState::admit_intent` **refuses** a trip cascade: the bounded member read does not exist, and the sim's folder stores number routes and trips from separate counters, so a namespace-free `RemoveObject` could not tell them apart (`LegacyOwned::TripCascade` + `ObjectNamespace`) | #1491 |
 //!
-//! [`RESIDUAL`] is that list as data, and [`assert_residual`] is the production assertion that
-//! nothing else comes back.
+//! `obc_app::device_core::residual` is that list as data, and its `assert_residual` is the
+//! production assertion that nothing else comes back — one list, checked by this executor and by the
+//! board's ride loop alike, so #1397 S6c can delete the protocol mechanically rather than per-host.
 //!
 //! ## What stays with the caller
 //!
@@ -149,24 +150,11 @@ impl HostPlatform for () {}
 /// revision moves.
 const HOST_STORE: StoreIdentity = StoreIdentity::new(1);
 
-/// The legacy classes these hosts still drain, and nothing else — the named residual of #1397 S6.
-/// Prose for [`assert_residual`]'s message; [`residual`] is what actually decides, and
-/// `the_residual_table_names_exactly_what_the_predicate_admits` pins the two together.
-const RESIDUAL: [&str; 3] = ["FinishTrack", "ForgetBond", "DeleteTrip"];
-
-/// Whether `command` is one of the three the typed executor deliberately leaves on the old
-/// protocol. Anything else in the mailbox is a class DeviceCore already owns, and running it beside
-/// the effect that carries it would perform the same work twice.
-fn residual(command: &HostCommand) -> bool {
-    matches!(command, HostCommand::FinishTrack(_) | HostCommand::ForgetBond | HostCommand::DeleteTrip { .. })
-}
-
-/// The two derived cues are **levels**, not one-shots: they are re-derived on every drain, so they
-/// keep pending and this executor declines them every time — the plan's keyed
-/// [`DerivedNeeds`](obc_app::device_core::DerivedNeeds) is what it answers instead (#1437).
-fn derived_level(command: &HostCommand) -> bool {
-    matches!(command, HostCommand::LoadRideTrack { .. } | HostCommand::RefreshNavPreview)
-}
+// The residual list, the predicate and the assertion live in `obc_app::device_core::residual` since
+// #1397 S6b: the board's ride loop is a second typed executor and both have to check the *same*
+// three commands, or S6c's deletion becomes a per-host argument instead of a compiler-verified
+// sweep. Re-exported here so this module reads as the reference executor it is.
+use obc_app::device_core::residual::{assert_residual, declined_level};
 
 /// Everything the executor leaves for the next pass: the domain outcome slots, the external facts,
 /// the keyed derived answers, and the bounded polylines a derived answer carries beside its key.
@@ -587,7 +575,7 @@ impl HostLoop {
         debug_assert_eq!(status, DrainStatus::Complete, "a canonical-capacity mailbox always drains completely");
         let mut finish = None;
         while let Some(command) = self.mailbox.pop() {
-            if derived_level(&command) {
+            if declined_level(&command) {
                 continue;
             }
             assert_residual(&command);
@@ -701,17 +689,6 @@ fn serve_retention(
     }
 }
 
-/// The production assertion behind [`RESIDUAL`]: a class DeviceCore owns must never come back on
-/// the old protocol, because executing it beside the effect that carries it would plan, install or
-/// delete twice — and a class that quietly reappeared would be the migration coming undone.
-fn assert_residual(command: &HostCommand) {
-    assert!(
-        residual(command),
-        "{command:?} is DeviceCore's now — running it here would repeat the effect that carries it \
-         (the residual is {RESIDUAL:?})"
-    );
-}
-
 /// Phase 3 — reconcile the ride recorder: the drained finish action + the live session, with the
 /// save name (the active route) and totals (for a `Save`). Refresh + re-feed the catalog so a saved
 /// ride appears without a relaunch — the legacy ride close is answered by exactly that re-feed
@@ -740,50 +717,4 @@ pub(crate) fn reconcile_track(
 pub(crate) fn active_route_name(app: &App) -> Option<String> {
     let i = app.active_route_index()?;
     app.routes().get(i).map(|r| r.name.as_str().to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use obc_app::{DfuAction, TrackAction};
-
-    /// [`RESIDUAL`] is the prose an `assert_residual` failure prints and [`residual`] is what
-    /// actually decides — so they have to name the same three classes. A class added to one and not
-    /// the other would either fail with a message that lists the wrong residual, or quietly widen
-    /// the residual without anyone reading the list noticing.
-    #[test]
-    fn the_residual_table_names_exactly_what_the_predicate_admits() {
-        let admitted = [
-            ("FinishTrack", HostCommand::FinishTrack(TrackAction::Save)),
-            ("FinishTrack", HostCommand::FinishTrack(TrackAction::Discard)),
-            ("ForgetBond", HostCommand::ForgetBond),
-            ("DeleteTrip", HostCommand::DeleteTrip { id: 7 }),
-        ];
-        for (name, command) in admitted {
-            assert!(residual(&command), "{command:?} is in the residual and the predicate refuses it");
-            assert!(RESIDUAL.contains(&name), "{name} is admitted but not in the printed table");
-        }
-        assert_eq!(RESIDUAL.len(), 3, "three classes, and the table says which");
-
-        // Everything DeviceCore took over is refused, including the two derived levels — those are
-        // declined earlier, by `derived_level`, and must never reach the assertion at all.
-        for command in [
-            HostCommand::RescanStore { commits: 1 },
-            HostCommand::DeleteRoute { id: 1 },
-            HostCommand::DeleteRide { id: 1 },
-            HostCommand::StampRouteUsed { id: 1, utc: 2 },
-            HostCommand::StampRideSynced { id: 1, utc: 2 },
-            HostCommand::CancelRoutePlan,
-            HostCommand::CancelDetour,
-            HostCommand::CommitDetour,
-            HostCommand::Dfu(DfuAction::Scan),
-            HostCommand::PersistSettings { revision: 1 },
-            HostCommand::ScanCardFree,
-        ] {
-            assert!(!residual(&command), "{command:?} is DeviceCore's — the executor must refuse it");
-        }
-        for command in [HostCommand::LoadRideTrack { id: 1 }, HostCommand::RefreshNavPreview] {
-            assert!(derived_level(&command), "{command:?} is a level the plan's keys answer");
-        }
-    }
 }

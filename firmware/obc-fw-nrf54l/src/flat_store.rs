@@ -441,6 +441,14 @@ pub(crate) enum Request {
     /// Compensate a cancellation that raced the synchronous publish. The exact revision is carried
     /// so this can never remove a later replacement that happens to share the object id.
     RemoveComputedRoute { id: ObjectId, revision: Revision },
+    /// `CatalogEffect::RemoveObject` — the device UI's own removal, on the **answering** path.
+    ///
+    /// Namespace-free by design: FS7 numbers every object out of one id space, so the head at `id`
+    /// *is* the subject whatever kind it is, and the catalog domain is what knows which cascade step
+    /// this is. Replies with whether the entry was there
+    /// ([`Outcome::Removed`]) — a subject that vanished before the commit is a **success** for the
+    /// goal state (#1433 §13), not a failure, and only the store can tell the two apart.
+    RemoveObject { id: ObjectId },
     /// §5.5's atomic batch. Replies with the commit sequence.
     Commit { batch: heapless::Vec<Mutation, MAX_BATCH> },
     /// §7.2's ride checkpoint.
@@ -518,6 +526,11 @@ pub(crate) enum Outcome {
     Published(ObjectId),
     /// §5.5's commit sequence.
     Committed(u64),
+    /// A [`Request::RemoveObject`] ran. `false` = the entry was already absent, which the catalog
+    /// domain reads as a success rather than a failure.
+    Removed {
+        existed: bool,
+    },
     /// Nothing to hand back: `journal`, `cancel`, `close`.
     Done,
     /// What the engine wants done, and the caller's buffer back with the bytes in it.
@@ -561,24 +574,19 @@ pub(crate) struct Job {
 /// The queue itself. One producer-agnostic channel: any task may send, exactly one task receives.
 static REQUESTS: Channel<CriticalSectionRawMutex, Job, REQUEST_QUEUE> = Channel::new();
 
-/// A menu-originated removal. Kept outside the protocol engine so the device UI does not have to
-/// impersonate a link, but consumed by the same one writer task.
+/// The **answerless** removal path: the trip cascade, and nothing else since #1397 S6b.
+///
+/// Route and ride deletes moved to [`Request::RemoveObject`] on the ticketed writer path, because a
+/// `CatalogEffect::RemoveObject` has to be *answered* — a full queue here drops the id, and the
+/// domain's one in-flight slot would never clear. The cascade stays because
+/// `CatalogState::admit_intent` still refuses one (#1491): it never becomes an effect, so there is
+/// no answer owed, and the member-aware order below is the only place that knows it.
 #[derive(Clone, Copy)]
 enum MenuDelete {
-    Route(ObjectId),
-    Ride(ObjectId),
     TripCascade(ObjectId),
 }
 
 static MENU_DELETES: Channel<CriticalSectionRawMutex, MenuDelete, 8> = Channel::new();
-
-pub(crate) fn request_route_delete(id: u64) -> bool {
-    MENU_DELETES.try_send(MenuDelete::Route(ObjectId(id))).is_ok()
-}
-
-pub(crate) fn request_ride_delete(id: u64) -> bool {
-    MENU_DELETES.try_send(MenuDelete::Ride(ObjectId(id))).is_ok()
-}
 
 pub(crate) fn request_trip_cascade(id: u64) -> bool {
     MENU_DELETES.try_send(MenuDelete::TripCascade(ObjectId(id))).is_ok()
@@ -828,8 +836,28 @@ pub(crate) fn writer() -> Option<Writer> {
     ARMED.load(core::sync::atomic::Ordering::Relaxed).then(|| Writer { requests: REQUESTS.sender() })
 }
 
-static CATALOG_COMMITS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+/// The ride loop's **wake source** on a catalog movement — not a level and not a count.
+///
+/// The level is [`FlatStore::sequence`], read straight off the store as
+/// `ExternalFacts::note_store_revision`; the commit-edge counter this used to sit beside is gone
+/// with #1397 S6b, because counting edges to synthesise a revision the store already has was the
+/// only thing it did.
 static CATALOG_WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// Whether the protocol-v4 engine is holding a live transfer — `CoreMode`'s transfer level, at its
+/// source (#1397 S6b, closing S5 open question 2).
+///
+/// Published from [`publish_upload`] on every engine call, which is the one execution context that
+/// holds the engine, and read once per pass by the ride loop into
+/// [`ExternalFacts::note_transfer`](obc_app::device_core::ExternalFacts::note_transfer). It covers
+/// **every** kind — a route, a trip or a weather bundle streaming holds the store exactly as a map
+/// does, and none of those three raises the #927 progress card the level used to be derived from.
+static LIVE_TRANSFER: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Whether a bulk transfer is streaming into the store right now.
+pub(crate) fn transfer_active() -> bool {
+    LIVE_TRANSFER.load(core::sync::atomic::Ordering::Relaxed)
+}
 
 /// One successful protocol-v4 route/trip upload waiting for the app's post-rescan event seam.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -934,14 +962,9 @@ pub(crate) fn take_catalog_upload_loss() -> bool {
 }
 
 fn note_catalog_commit() {
-    CATALOG_COMMITS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     CATALOG_WAKE.signal(());
     #[cfg(feature = "ble")]
     crate::ble::weather_catalog_changed();
-}
-
-pub(crate) fn take_catalog_commits() -> u32 {
-    CATALOG_COMMITS.swap(0, core::sync::atomic::Ordering::Relaxed)
 }
 
 pub(crate) async fn wait_catalog_commit() {
@@ -1008,8 +1031,6 @@ pub(crate) async fn storage_task(
 fn serve_menu_delete(store: &FlatStore<FlatCard>, delete: MenuDelete) {
     let before = store.sequence();
     match delete {
-        MenuDelete::Route(id) => remove_head(store, id, ObjectKind::Route),
-        MenuDelete::Ride(id) => remove_head(store, id, ObjectKind::Ride),
         MenuDelete::TripCascade(id) => {
             let stages = store
                 .with_source(id, None, |source| obc_route::TripMeta::read(source).ok().map(|m| m.stage_ids))
@@ -1017,10 +1038,10 @@ fn serve_menu_delete(store: &FlatStore<FlatCard>, delete: MenuDelete) {
                 .flatten();
             if let Some(stages) = stages {
                 for stage in stages {
-                    remove_head(store, ObjectId(stage), ObjectKind::Route);
+                    let _ = remove_head(store, ObjectId(stage), Some(ObjectKind::Route));
                 }
             }
-            remove_head(store, id, ObjectKind::Trip);
+            let _ = remove_head(store, id, Some(ObjectKind::Trip));
         }
     }
     if store.sequence() != before {
@@ -1028,18 +1049,30 @@ fn serve_menu_delete(store: &FlatStore<FlatCard>, delete: MenuDelete) {
     }
 }
 
-fn remove_head(store: &FlatStore<FlatCard>, id: ObjectId, kind: ObjectKind) {
-    let Some(meta) = store.entries().find(|entry| entry.id == id && entry.kind == kind) else {
-        return;
+/// Remove the head revision of `id`, optionally constrained to one `kind`.
+///
+/// `Ok(false)` = there was nothing at `id` — the goal state already holds, which
+/// [`Request::RemoveObject`] answers as a success. `Err` = the store refused or failed the commit.
+///
+/// The `kind` is `None` for the namespace-free effect (FS7 gives every object one id space, so the
+/// head at an id is unambiguous) and `Some` inside the cascade, which knows exactly what each step
+/// is removing.
+fn remove_head(store: &FlatStore<FlatCard>, id: ObjectId, kind: Option<ObjectKind>) -> Result<bool, StoreError> {
+    let Some(meta) = store.entries().find(|entry| entry.id == id && kind.is_none_or(|k| entry.kind == k)) else {
+        return Ok(false);
     };
-    if let Err(error) = store.commit(&[Mutation::Remove { id, revision: meta.revision }]) {
-        defmt::warn!(
-            "flat: menu removal of {} object {=u64} revision {=u64} failed: {}",
-            defmt::Debug2Format(&kind),
-            id.0,
-            meta.revision.0,
-            defmt::Debug2Format(&error)
-        );
+    match store.commit(&[Mutation::Remove { id, revision: meta.revision }]) {
+        Ok(_) => Ok(true),
+        Err(error) => {
+            defmt::warn!(
+                "flat: removal of {} object {=u64} revision {=u64} failed: {}",
+                defmt::Debug2Format(&meta.kind),
+                id.0,
+                meta.revision.0,
+                defmt::Debug2Format(&error)
+            );
+            Err(error)
+        }
     }
 }
 
@@ -1101,6 +1134,7 @@ fn serve(
         Request::RemoveComputedRoute { id, revision } => {
             store.commit(&[Mutation::Remove { id, revision }]).map(|_| Outcome::Done)
         }
+        Request::RemoveObject { id } => remove_head(store, id, None).map(|existed| Outcome::Removed { existed }),
         Request::Commit { batch } => store.commit(&batch).map(Outcome::Committed),
         Request::Journal { checkpoint } => store.journal(checkpoint).map(|()| Outcome::Done),
         Request::Cancel { allocation } => {
@@ -1192,6 +1226,13 @@ fn serve(
             // with the live `RequestId` as context, whichever wire asked, which is exactly what the
             // spec commit's §10 sentence promises.
             engine.on_link_up(link, store, ceilings);
+            // **The reconnecting link may have owned the live transfer**, and `on_link_up` abandons
+            // it — so the engine's transfer state moved here exactly as it does on a `LinkLost`.
+            // Without this the `LIVE_TRANSFER` level the ride loop reads as
+            // `ExternalFacts::note_transfer` would stay `true` until some later engine request
+            // happened to run, withdrawing heavy-operation admission in between; the #927 card would
+            // stay up for the same window.
+            publish_upload(engine);
             defmt::info!(
                 "flat/v4: link up ({}) — control {=usize} B, stream {=usize} B",
                 match link {
@@ -1230,6 +1271,8 @@ fn serve(
 fn publish_upload(engine: &mut BoardEngine) {
     let live = engine.live_upload();
     let ended = engine.take_upload_end();
+    // The transfer *level* — every kind, not just the map the card shows. See [`LIVE_TRANSFER`].
+    LIVE_TRANSFER.store(engine.live_transfer().is_some(), core::sync::atomic::Ordering::Relaxed);
     if let Some((kind, obc_link::flat::UploadEnd::Committed { id, replaced })) = ended {
         let kind = match kind {
             obc_link::flat::ObjectKind::Route => Some(CatalogUploadKind::Route),
@@ -1805,15 +1848,28 @@ pub(crate) fn load_rides(store: &'static FlatStore<FlatCard>, app: &mut obc_app:
     true
 }
 
-/// Answer the detail screen's level-triggered profile and preview request from one immutable flat
-/// object revision. The two consumers stream the exact recorded sample bytes; neither rewrites or
-/// converts the object.
+/// Answer one keyed **ride-track** derived need from one immutable flat object revision: the
+/// elevation profile, filled in place into the app's resident buffer, and the decimated track
+/// shape, decimated into the caller's stack buffer.
+///
+/// The polyline goes to the caller rather than through `App::set_ride_preview` because it reaches
+/// DeviceCore as `DerivedTargets::ride_preview` beside the key that guards it — and because at
+/// `NAV_PREVIEW_MAX` it is 512 B that must not become resident (the board has 72 B of resident
+/// headroom). Returns whether the profile is showable; the preview is handed over either way.
+///
+/// The two consumers stream the exact recorded sample bytes; neither rewrites or converts the
+/// object.
 #[inline(never)]
-pub(crate) fn fill_ride_track(store: &'static FlatStore<FlatCard>, app: &mut obc_app::App) {
-    let Some(id) = app.ride_track_request() else { return };
-    let id = ObjectId(id);
-    fill_ride_profile(store, app, id);
-    fill_ride_preview(store, app, id);
+pub(crate) fn fill_ride_track(
+    store: &'static FlatStore<FlatCard>,
+    app: &mut obc_app::App,
+    ride: u64,
+    preview: &mut heapless::Vec<(i32, i32), { obc_app::NAV_PREVIEW_MAX }>,
+) -> bool {
+    let id = ObjectId(ride);
+    let valid = fill_ride_profile(store, app, id);
+    read_ride_preview(store, id, preview);
+    valid
 }
 
 // Keep the returned ~5 KiB profile and the independent preview/source walk out of one combined
@@ -1821,7 +1877,7 @@ pub(crate) fn fill_ride_track(store: &'static FlatStore<FlatCard>, app: &mut obc
 // ride task's already-live stack; inlining both readers made LLVM reserve 22+ KiB at once even
 // though their results are consumed sequentially.
 #[inline(never)]
-fn fill_ride_profile(store: &'static FlatStore<FlatCard>, app: &mut obc_app::App, id: ObjectId) {
+fn fill_ride_profile(store: &'static FlatStore<FlatCard>, app: &mut obc_app::App, id: ObjectId) -> bool {
     let valid = {
         let profile = app.begin_ride_profile_fill();
         matches!(
@@ -1832,15 +1888,20 @@ fn fill_ride_profile(store: &'static FlatStore<FlatCard>, app: &mut obc_app::App
     if !valid {
         defmt::warn!("flat: ride profile fill for object {=u64} failed", id.0);
     }
-    app.finish_ride_profile_fill(valid);
+    valid
 }
 
 #[inline(never)]
-fn fill_ride_preview(store: &'static FlatStore<FlatCard>, app: &mut obc_app::App, id: ObjectId) {
+fn read_ride_preview(
+    store: &'static FlatStore<FlatCard>,
+    id: ObjectId,
+    out: &mut heapless::Vec<(i32, i32), { obc_app::NAV_PREVIEW_MAX }>,
+) {
+    out.clear();
     let preview = store
         .with_source(id, None, |source| {
             obc_route::ride_preview_polyline::<{ obc_app::NAV_PREVIEW_MAX }>(source).unwrap_or_default()
         })
         .unwrap_or_default();
-    app.set_ride_preview(&preview);
+    let _ = out.extend_from_slice(&preview);
 }
