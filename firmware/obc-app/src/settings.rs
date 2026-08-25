@@ -682,8 +682,7 @@ settings_table! {
     /// Decode a blob written by [`encode`] at **any supported version** — every field the stored
     /// version declared is read, and the fields appended after it take their declared defaults. A
     /// firmware update that appends a setting therefore keeps the rider's units, clock anchor, stat
-    /// grid, device name, paired sensors and alert anchors instead of resetting all of them
-    /// (#1399 §1.2).
+    /// grid, device name, paired sensors and alert anchors instead of resetting all of them.
     ///
     /// `None` — the host then falls back to [`Settings::default`] — if the version is outside
     /// [`MIN_SUPPORTED`]`..=`[`VERSION`], if the blob is shorter than that version's
@@ -714,16 +713,16 @@ impl Settings {
 /// field is appended carrying `since(VERSION + 1)`, `VERSION` is bumped, and the version's golden
 /// blob is committed. A retired field is **never** dropped — it becomes `reserved(n)`, so every
 /// field after it keeps its offset. Nothing is reordered, no stored discriminant is renumbered (a
-/// build error since #1466), and no composite silently changes size. Under that rule any stored
+/// build error), and no composite silently changes size. Under that rule any stored
 /// blob is a *prefix* of the current one, which is what lets [`decode`] read the fields the stored
 /// version declared and default the tail instead of resetting the rider's settings on every update
 /// — see [`MIN_SUPPORTED`]. The per-field history the fifteen bumps up to here recorded here in
 /// prose is now the table's `since` column, on the rows it describes.
 pub const VERSION: u8 = 16;
 
-/// The oldest stored version [`decode`] accepts. A version joins this floor when a golden blob for
-/// it is committed — v16's pair landed with #1466, and it is the only version whose bytes exist in
-/// the repository.
+/// The oldest stored version [`decode`] accepts. A version joins this floor only when its exact
+/// bytes are committed as a golden pair — v16 is the only version whose bytes exist in the
+/// repository.
 ///
 /// That evidence rule is also why every current row reads `since(16)` rather than the version that
 /// historically appended it: below the floor a `since` decodes nothing, so older values would be
@@ -788,14 +787,13 @@ const _: () = {
 
 // The per-version payload lengths, in literals — read off the versions' bytes and written by hand,
 // **not** derived from the table, for the same reason the offsets above are: an assert generated
-// from the `since` tokens that produced `payload_len` could not fail. This is what a mistyped
-// `since`, a reordered row or a resized composite hits — the failure mode it guards is not a reset
-// but a *silent* one, a field the blob does contain being handed back as its default. One rung
-// today, because one version's bytes are committed; every future bump adds its own literal here
-// beside its golden blob.
+// from the `since` tokens that produced `payload_len` could not fail. The failure mode this guards
+// is not a reset but a *silent* one, a field the blob does contain being handed back as its
+// default. One rung today, because one version's bytes are committed; the rung only becomes
+// independently load-bearing at v17, when a row below `VERSION` can be mistyped without tripping
+// the `since <= VERSION` guard. Every future bump adds its literal here beside its golden blob.
 const _: () = {
     assert!(payload_len(16) == 168, "the v16 payload length moved — a `since` or a row's size changed");
-    assert!(payload_len(VERSION) == PAYLOAD_LEN, "the newest version must span the whole table");
 };
 
 #[cfg(test)]
@@ -1321,7 +1319,7 @@ mod tests {
         }
     }
 
-    /// The headline behaviour of #1399 §1.2: a blob written by an older version decodes on this
+    /// The headline behaviour this codec exists for: a blob written by an older version decodes on this
     /// firmware, field-precisely, with the fields that version did not have taking their **declared
     /// defaults** — instead of the whole value being thrown away. Proven per version on the
     /// miniature table, against hand-written blobs and hand-written expectations.
