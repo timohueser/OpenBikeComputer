@@ -60,6 +60,7 @@ pub mod screen;
 pub mod sensors;
 pub mod settings;
 mod settings_enum;
+mod settings_table;
 pub mod stat_fields;
 pub mod store_meta;
 pub mod trip;
