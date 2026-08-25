@@ -102,6 +102,8 @@ pub(crate) const SIM_SUPPORT: PlatformSupport = PlatformSupport {
     weather: true,
     bonding: true,
     storage_space_report: true,
+    // The folder stores keep the retention sidecars beside their objects.
+    retention_metadata: true,
 };
 
 /// What only this host can do: the RRAM stand-in file, the injected panel "bond", and the fixed

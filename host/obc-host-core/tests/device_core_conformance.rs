@@ -200,6 +200,8 @@ const EVERYTHING: PlatformSupport = PlatformSupport {
     weather: true,
     bonding: true,
     storage_space_report: true,
+    // The folder stores keep the retention sidecars beside their objects.
+    retention_metadata: true,
 };
 
 /// The rider-visible projection two runners must agree on.

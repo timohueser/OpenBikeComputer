@@ -64,6 +64,8 @@ const SUPPORT: PlatformSupport = PlatformSupport {
     weather: true,
     bonding: true,
     storage_space_report: true,
+    // The in-memory repositories hold the route-use and ride-sync stamps for the session.
+    retention_metadata: true,
 };
 
 /// One queued page command, drained per [`Demo::tick`]. Gestures are injected through the app's

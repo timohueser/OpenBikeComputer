@@ -1407,17 +1407,14 @@ async fn main(_spawner: Spawner) {
         {
             // Routes and trips are flat-store objects. One bounded snapshot seeds the menu, newest
             // first so a fresh upload remains visible on a card with more than the UI cap.
-            let routes_loaded = flat_store::load_routes(flat, app);
-            let trips_loaded = flat_store::load_trips(flat, app);
-            if !routes_loaded || !trips_loaded {
-                // Preserve the empty boot snapshot and retry from the ride loop; a transient media
-                // read must not require another catalog commit before the first menu can appear.
-                app.apply_event(obc_app::HostEvent::StoreChanged);
-            }
-            let rides_loaded = flat_store::load_rides(flat, app);
-            if !rides_loaded {
-                app.apply_event(obc_app::HostEvent::StoreChanged);
-            }
+            // A transient media read here needs no re-arm of its own: the ride loop reports the
+            // store's live `sequence()` as `ExternalFacts::note_store_revision`,
+            // and the very first pass sees that level move from "no store" to a revision — which is
+            // one `CatalogIntent::Refresh`, i.e. exactly one `CatalogEffect::ReadCatalog`, on the
+            // first frame. The boot snapshot below is what the menu shows until that read lands.
+            let _ = flat_store::load_routes(flat, app);
+            let _ = flat_store::load_trips(flat, app);
+            let _ = flat_store::load_rides(flat, app);
             // Mirror the map's §8.6 routing-profile names into the app for the Bike-type settings
             // screen + created-route overview label (N5). Map metadata, so it runs on the `ble` image
             // too — the setting renders there but is inert (no router in that build).

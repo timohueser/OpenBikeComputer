@@ -1618,6 +1618,17 @@ impl App {
         true
     }
 
+    /// **Debug only**: arm an install exactly as the confirm screen's press does, for the board's
+    /// physical `dfu-install` VCOM command (#620) — which deliberately skips the confirm.
+    ///
+    /// It names the intent to [`DfuState`](crate::dfu::DfuState) rather than reaching for the
+    /// executor, so the debug path and the rider's path produce the *same*
+    /// [`DfuEffect::ArmInstall`](crate::dfu::DfuEffect) under the same operation token. A typed
+    /// executor has no other way to mint one — the token source is the domain's.
+    pub fn debug_request_dfu_install(&mut self) {
+        self.dfu.admit_intent(crate::dfu::DfuIntent::InstallRequested);
+    }
+
     /// **Debug / snapshot only** (#1146 P2): engage the Recalculating freeze as if the host had just
     /// begun a planner run — the same seam a drained `PlanRoute`/`PlanDetour` takes, so the banner,
     /// the paused matcher and the skipped redraws are the real ones.
@@ -2168,11 +2179,15 @@ impl App {
     /// explaining what they just did is noise. Only outcomes they can act on
     /// ([`MapTransfer::Installed`](crate::screen::MapTransfer::Installed) /
     /// [`Failed`](crate::screen::MapTransfer::Failed)) stay up to be dismissed.
+    /// **The card only.** This seam used to also drive [`CoreMode`]'s transfer level, and that was
+    /// the level's whole source — so a route, trip or weather upload streamed without admission ever
+    /// seeing it, and a map upload paced to the card's own throttle reported the level at that pace.
+    /// Since #1397 S6b the level comes from the store engine's own live transfer, through
+    /// [`ExternalFacts::note_transfer`](crate::device_core::ExternalFacts::note_transfer), and this
+    /// is a screen feeder like every other.
+    ///
+    /// [`CoreMode`]: crate::device_core::core_mode::CoreMode
     pub fn set_map_transfer(&mut self, state: Option<crate::screen::MapTransfer>) {
-        // The one place a streaming map upload becomes `CoreMode`'s transfer level. A terminal card
-        // (Installed / Failed) is a *report*, not a stream: the store is free again the moment the
-        // bytes stopped, so heavy work is re-admitted while the rider is still reading the card.
-        self.mode.note_transfer(state.is_some_and(|s| s.is_receiving()));
         self.ui.cards.set_map_transfer(state);
         self.sweep_cards();
     }
@@ -3409,6 +3424,36 @@ impl App {
     /// This consumes nothing.
     pub fn has_pending_host_command(&self) -> bool {
         HostCommand::DRAIN_ORDER.iter().any(|&c| self.peek_host_command(c))
+    }
+
+    /// Whether a **residual** legacy command is pending — one of the three classes a typed executor
+    /// still drains ([`device_core::residual`](crate::device_core::residual)). Consumes nothing.
+    ///
+    /// A typed executor's wake is otherwise blind to the legacy mailbox: it folds in its own
+    /// undelivered outcomes and effects, but the rider's ride **save** is a `FinishTrack` sitting
+    /// here, and nothing else can see it. On a device that sleeps until the next event, that turns
+    /// "the close costs one immediate frame" into "the close costs one wake", which on a static
+    /// post-Finish screen is the watchdog feed cap.
+    ///
+    /// Deliberately **not** [`has_pending_host_command`](App::has_pending_host_command): that one
+    /// includes the two derived cues, which are levels re-derived on every drain, so folding it into
+    /// a wake would spin the loop forever. All three classes here are one-shots the drain clears,
+    /// which is what makes this safe to ask for an immediate pass on.
+    pub fn has_pending_residual_command(&self) -> bool {
+        [HostCommandClass::FinishTrack, HostCommandClass::ForgetBond, HostCommandClass::DeleteTrip]
+            .iter()
+            .any(|&c| self.peek_host_command(c))
+    }
+
+    /// Whether the "Installing update" card is on the stack — the frame an arming executor freezes
+    /// onto the panel for the whole SD→flash stream and the warm reset that never paints.
+    ///
+    /// [`CardScheduler`](crate::card_scheduler::CardScheduler) can *bounce* the install-began answer
+    /// when it has to **push** rather than replace a wait (the debug arm, with no spinner up) and
+    /// the stack is full; it re-queues, but a board that armed anyway would have handed the panel a
+    /// frame showing something else. This is how it asks.
+    pub fn dfu_installing_card_up(&self) -> bool {
+        self.ui.stack.iter().any(|s| matches!(s, Screen::DfuInstalling(_)))
     }
 
     /// Apply one host answer or fact. Events are owned, so a host can hold one across asynchronous
