@@ -503,7 +503,11 @@ def ride_to_map(link: Link, frm: tuple[int, int], to: tuple[int, int]) -> None:
         time.sleep(0.25)
     mark = link.mark()
     link.plan(frm, to)
-    if link.wait_for(mark, PLAN_ANSWER, timeout=30.0) and "ok" in "".join(link.since(mark)):
+    # `read_cycle` takes the first token *on the `nav route:` record itself*. A bare substring search
+    # for "ok" over the window matches any unrelated line that happens to contain it — including a
+    # `no-path` answer sitting beside one — and would then press on into a Map that never opened.
+    answered = link.wait_for(mark, PLAN_ANSWER, timeout=30.0)
+    if answered and read_cycle(link.since(mark)).outcome == "ok":
         link.press()  # off the computed-route overview, onto the Map
         time.sleep(0.5)
         if reached_map(link):

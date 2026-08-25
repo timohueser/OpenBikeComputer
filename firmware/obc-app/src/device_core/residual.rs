@@ -114,10 +114,19 @@ mod tests {
             RESIDUAL.len(),
             "the class list the drain asks for is the same residual the predicate admits"
         );
+        // Both directions, because either one alone lets a class be *substituted*: the length check
+        // above only catches a shortened list, and a one-way containment check passes just as
+        // happily when `DeleteTrip` is swapped for something the predicate never admits.
         for class in RESIDUAL_CLASSES {
             assert!(
                 admitted.iter().any(|(_, c)| c.class() == class),
                 "{class:?} is asked for by name but is not one of the admitted commands"
+            );
+        }
+        for (_, command) in &admitted {
+            assert!(
+                RESIDUAL_CLASSES.contains(&command.class()),
+                "{command:?} is admitted by the predicate but the drain never asks for its class"
             );
         }
 
