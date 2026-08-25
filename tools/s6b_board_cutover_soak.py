@@ -125,10 +125,15 @@ EXEC_ALARMS = (
     "answered twice in one frame",
     "came back on the legacy protocol",
     "a trip member read has no board half",
-    "detour has no board half",
     "a sidecar write reached the board",
     "the executor paces the search",
 )
+# **Not an alarm**, deliberately: nothing consults `Capabilities::navigator` yet, so the ride menu's
+# Detour row is still live and a rider pressing it produces an operation the board refuses by
+# capability. That is an expected condition, and an alarm set that fails a run for one is an alarm
+# set nobody trusts. It stays worth counting — a *rising* number across a soak would say the row
+# should have been gated — so scenario K reports it.
+DETOUR_REFUSED = "nav: detour is not supported on this board"
 
 # The refusal string `nav_take_arena` answers a live cable transfer with. Scenario B's whole point:
 # the rider must be told about the cable, not about "the scratch arena".
@@ -288,8 +293,12 @@ def stack_peaks(lines: list[str]) -> list[tuple[int, int]]:
 
 
 def margin_verdict(peaks: list[tuple[int, int]]) -> str | None:
-    """Scenario C's stack gate: the deepest reported peak must leave `deep_ride_margin_min` free of
-    the stack the **board says it has**, not of the linker's reserve."""
+    """Scenario C's stack gate: the **smallest margin** any reported peak leaves must clear
+    `deep_ride_margin_min`, measured against the stack the board says it has rather than the linker's
+    reserve.
+
+    The smallest margin, not the deepest peak: a DFU install reboots mid-soak, so one log can carry
+    two images with different totals, and the deeper peak is not always the tighter one."""
     if not peaks:
         return None
     worst, total = min(peaks, key=lambda p: p[1] - p[0])
@@ -853,6 +862,8 @@ def scenario_k() -> int:
     lands as fast as it did (#348 — bulge-first is unchanged by this slice, and this is what says so
     to a person)."""
     print("K: human-eye checks — record the answers on #1494:")
+    print("   0. If you pressed Detour: the board refuses it by capability (a `nav: detour is not")
+    print("      supported` line, not an alarm). Confirm the spinner cleared and the map redrew.")
     print("   1. Is the Recalculating banner legible on the reflective panel, in daylight?")
     print("   2. Does the catch-up repaint after a freeze read as a catch-up, not as a glitch?")
     print("   3. After a hold fires, does the confirm pop still land immediately (bulge-first, #348)?")

@@ -1146,6 +1146,43 @@ mod tests {
         );
     }
 
+    /// A typed executor's wake is blind to the legacy mailbox, and the rider's **ride save** lives
+    /// there. `has_pending_residual_command` is what a runtime that sleeps until the next event
+    /// folds in so the close costs one immediate pass rather than one wake — which on a static
+    /// post-Finish screen is the board's watchdog feed cap.
+    ///
+    /// The other half is why it may be folded at all: all three classes are **one-shots the drain
+    /// clears**, so the answer goes false again and the loop settles. The two derived cues are
+    /// levels that re-derive on every drain, so `has_pending_host_command` — which includes them —
+    /// would spin forever; this test pins the difference.
+    #[test]
+    fn a_pending_residual_command_is_a_one_shot_a_runtime_can_fold_into_its_wake() {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.activity.mode = Mode::Riding;
+        quiet(&mut app, 10);
+        assert!(!app.has_pending_residual_command(), "nothing owed on a quiet pass");
+
+        app.activity.request_track(crate::TrackAction::Save);
+        quiet(&mut app, 20);
+        assert!(app.has_pending_residual_command(), "the rider's save is owed to the residual drain");
+
+        let mut mail: crate::HostMailbox = crate::HostMailbox::new();
+        let _ = app.drain_host_commands(&mut mail);
+        assert!(!app.has_pending_residual_command(), "and the drain clears it — one pass, not a spin");
+
+        // The distinction that makes the narrow predicate necessary: a viewed ride keeps
+        // `LoadRideTrack` pending across every drain, because a derived need is a level. Folding
+        // `has_pending_host_command` into a wake would therefore never let the runtime sleep.
+        let mut viewing = App::new(AppState::new(0, 0, 1.0));
+        viewing.set_rides(&[ride_summary()], &[7]);
+        viewing.activity.viewed_ride = Some(0);
+        quiet(&mut viewing, 10);
+        let mut mail: crate::HostMailbox = crate::HostMailbox::new();
+        let _ = viewing.drain_host_commands(&mut mail);
+        assert!(viewing.has_pending_host_command(), "the derived level is still pending after a drain");
+        assert!(!viewing.has_pending_residual_command(), "…but it is not a residual, so the wake is not held");
+    }
+
     /// The backpressure rule, end to end: two intents reach the catalog in one pass, it can admit
     /// one, and the refused one goes **back into the slot it came from** rather than being dropped —
     /// so a busy pass costs a delay, never a delete.

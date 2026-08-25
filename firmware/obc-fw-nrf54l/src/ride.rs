@@ -682,20 +682,50 @@ struct RideExec {
     /// than a stale menu.
     rescan_owed: bool,
     /// A `DfuEffect::ArmInstall` passed its go/no-go and is waiting for the "Installing update" card
-    /// to reach glass. The arm runs in the store **tail**, after the present, and never returns on
-    /// success — so the frame the MIP holds through the whole flash is a real presented frame rather
-    /// than a hand-rolled render inside the effect.
-    arm_pending: bool,
+    /// to reach glass — the count is how many frames it has waited. The arm runs in the store
+    /// **tail**, after the present, and never returns on success, so the frame the MIP holds through
+    /// the whole flash is a real presented frame rather than a hand-rolled render inside the effect.
+    ///
+    /// It waits because `CardScheduler::deliver_dfu` can **bounce** an install-began answer that has
+    /// to *push* rather than replace a wait (the `dfu-install` debug arm, with no spinner up) when
+    /// the stack is full; it re-queues, and arming meanwhile would freeze a frame showing something
+    /// else onto the panel for the whole flash and the reboot. The wait is bounded by
+    /// [`ARM_CARD_FRAMES`] rather than open-ended: the install matters more than the frame, which is
+    /// the same stance the inline path took when a present failed.
+    arm_pending: Option<u8>,
 }
 
+/// How many frames the arm waits for the "Installing update" card before going ahead without it.
+/// A bounced push lands on the very next sweep in practice; this is that with room.
+const ARM_CARD_FRAMES: u8 = 8;
+
 impl RideExec {
-    /// Whether the executor is holding something the next pass must see — an answer to consume, an
-    /// effect to serve, or a re-read it owes itself.
+    /// Whether the executor is holding something the next pass must see — an answer to consume, or
+    /// an effect to serve, or a derived read it has been asked for.
+    ///
+    /// `residual_pending` is the **legacy mailbox's** half, which this struct cannot see and which
+    /// carries the rider's ride save: a `FinishTrack` produced by one pass is performed by the next
+    /// pass's residual drain, and without folding it in here that "next pass" is the next *wake* —
+    /// on a static post-Finish screen, the watchdog feed cap. `App::has_pending_residual_command`
+    /// is narrow on purpose; see its docs for why the wider query would spin.
+    ///
+    /// `rescan_owed` is deliberately **not** here — see its field docs. Neither is the in-flight
+    /// catalog removal, which keeps the short animation cadence instead of an immediate re-pass: it
+    /// is a round trip to another task, and spinning at full speed against a commit that takes
+    /// hundreds of milliseconds would starve the executor that has to answer it.
     ///
     /// Folds into the wake exactly as [`PassPlan::immediate`] does for a deferred connection: the
     /// work is already decided, and parking on it would leave it sitting until the next rider input.
-    fn owed(&self) -> bool {
-        self.outcomes.has_pending() || self.effects.has_pending() || !self.needs.is_empty()
+    fn owed(&self, residual_pending: bool) -> bool {
+        self.outcomes.has_pending() || self.effects.has_pending() || !self.needs.is_empty() || residual_pending
+    }
+
+    /// Whether a store round trip is outstanding — the removal ticket. A committed removal wakes the
+    /// loop through `CATALOG_WAKE`, but an `existed: false` answer and a refused commit move no
+    /// sequence and therefore raise no wake, so without this the answer would sit until something
+    /// else happened to wake the loop.
+    fn polling_store(&self) -> bool {
+        self.catalog.is_some()
     }
 
     /// Hand one outcome to its domain's slot.
@@ -1120,6 +1150,11 @@ pub(crate) async fn run_app(
         // *observed* card (never the intent, so a push deferred mid-hold isn't mistaken for a
         // dismissal), and a card that was up and no longer is means the rider closed it — so the
         // published state is cleared instead of re-fed.
+        //
+        // This block is a **feed**, so it runs ahead of the pass that applies the gestures — which
+        // means the press that pops the card is observed on the frame *after* it happens. Benign,
+        // and it is the shape the latch was built for: it observes rather than being told, and a
+        // terminal state is never re-fed once cleared.
         #[cfg(feature = "ble")]
         {
             if map_card_shown && !app.map_transfer_card_up() {
@@ -1258,7 +1293,7 @@ pub(crate) async fn run_app(
                             // the guard-free present a property of the phase rather than of this
                             // block remembering to release the lock.
                             RideExec::deliver(&mut exec.outcomes.dfu, DfuOutcome::InstallBegan { token }, "dfu");
-                            exec.arm_pending = true;
+                            exec.arm_pending = Some(0);
                         }
                     }
                 }
@@ -1384,8 +1419,11 @@ pub(crate) async fn run_app(
                 // A partial read kept the previous whole snapshot. The **domain** was answered
                 // (`Failed`), so it is free to serve the next delete; the *re-read* is this
                 // executor's own to retry, because a store that did not move raises no new revision
-                // and would therefore order no second refresh. One bounded retry per pass, exactly
-                // the cadence the re-armed `StoreChanged` cue used to give it.
+                // and would therefore order no second refresh. One bounded retry per **wake** —
+                // this arm runs once per frame and nothing asks for an extra frame on its account,
+                // so a card that has genuinely stopped answering costs one read per wake rather
+                // than a loop spinning against it. That is the cadence the re-armed `StoreChanged`
+                // cue used to give it.
                 if read_catalogs(flat, app, &mut exec.facts, &mut weather_bundle, &mut weather_sample_key) {
                     exec.rescan_owed = false;
                     prev_active = None;
@@ -1534,16 +1572,23 @@ pub(crate) async fn run_app(
                             "navigator",
                         );
                     }
-                    // `PlatformSupport::detour = false` on this board, so nothing should decide one:
-                    // #882's splice holds the planned detour's OBCR in RAM until the rider commits,
-                    // and the board has one flat-store reservation and no heap to read it from while
-                    // it writes. That is Gate 4 item 5 (#1400), and until the capability is actually
-                    // consulted by the screens a stray request must not wedge the freeze — so it is
-                    // refused loudly rather than answered as a routing verdict.
+                    // `PlatformSupport::detour = false` on this board: #882's splice holds the
+                    // planned detour's OBCR in RAM until the rider commits, and the board has one
+                    // flat-store reservation and no heap to read it from while it writes. That is
+                    // Gate 4 item 5 (#1400).
+                    //
+                    // **This arm is reachable today**, and says so rather than asserting otherwise:
+                    // nothing consults `Capabilities::navigator` yet, so the ride menu's Detour row
+                    // is still live and a rider pressing it produces this operation. It is refused
+                    // — the capability is absent, not the path — and the refusal must not read as a
+                    // fault: an unanswered one would wedge the Recalculating freeze for the rest of
+                    // the ride, and a fabricated `NoPath` would tell the rider the device searched.
+                    // A `warn`, not an `error`, because a rider pressing a row the firmware still
+                    // offers is an expected condition; the alarm class is for effects nobody should
+                    // ever have decided.
                     NavigatorEffect::Acquire { token, work: PlannerWork::Detour(_) }
                     | NavigatorEffect::CommitDetour { token } => {
-                        defmt::error!("nav: detour has no board half — PlatformSupport::detour is false (#1400)");
-                        debug_assert!(false, "an unsupported detour must not reach the executor");
+                        defmt::warn!("nav: detour is not supported on this board — refusing the operation");
                         RideExec::deliver(
                             &mut exec.outcomes.navigator,
                             NavigatorOutcome::Failed { token, error: NavigatorError::Workspace },
@@ -2083,7 +2128,9 @@ pub(crate) async fn run_app(
             // effect. WX8 owns the request scheduler; what was missing was the one board seam that
             // says the rider actually opened the WX11 dashboard. Sampled here, before the pass
             // applies this frame's gestures, and compared after it — so Back from Hourly/Rain map
-            // does not manufacture another urgent request.
+            // does not manufacture another urgent request. **Batch-scoped**, where it used to be
+            // per gesture: a Weather → Back → Weather round trip inside one 40 ms batch is one
+            // entry, not two, so it asks once. That is the intended reading of an entry edge.
             #[cfg(feature = "ble")]
             let was_on_weather = matches!(
                 app.top_screen(),
@@ -2113,14 +2160,29 @@ pub(crate) async fn run_app(
                     // The Ride detail's track profile + shape (#678 T2 / #680): stream the flat ride
                     // object once into the app's resident profile buffer and this frame's stack buffer.
                     let filled = crate::flat_store::fill_ride_track(flat, app, key.ride, &mut derived_pts);
-                    // The ~5 KB profile is filled **in place**, which invalidates the view — so the key
-                    // the answer must carry is the one the need has *after* the fill, not before.
-                    if let Some(key) = app.derived_needs().ride_track {
-                        derived.ride_track = Some(if filled {
-                            obc_app::device_core::DerivedInput::filled(key)
-                        } else {
-                            obc_app::device_core::DerivedInput::failed(key)
-                        });
+                    // The ~5 KB profile is filled **in place**, which invalidates the view — so the
+                    // `view` generation the answer carries has to be the one the need has *after*
+                    // the fill, not before, or the domain would reject its own executor's answer.
+                    //
+                    // The **subject** is the opposite: it must stay the one that was actually read.
+                    // `accept_ride_profile`'s only staleness guard is that the answer's key equals
+                    // the need's, so minting the whole key from the *current* need would make that
+                    // check vacuous here — and it is reachable, not theoretical: `read_catalogs`
+                    // ran earlier in this same store phase and remaps the held indices by durable
+                    // id, so a delete landing between the plan and this fill can move the viewed
+                    // ride. Answering under the new ride's key would put ride A's profile and
+                    // polyline on ride B's detail screen. A moved subject (or fresh bytes under it)
+                    // is answered by *not answering*: the need re-emits and the next pass reads the
+                    // ride the rider is actually looking at.
+                    match app.derived_needs().ride_track {
+                        Some(now) if now.ride == key.ride && now.source == key.source => {
+                            derived.ride_track = Some(if filled {
+                                obc_app::device_core::DerivedInput::filled(now)
+                            } else {
+                                obc_app::device_core::DerivedInput::failed(now)
+                            });
+                        }
+                        _ => defmt::info!("derived: the ride-track subject moved under the read — re-asking next pass"),
                     }
                 } else if let Some(key) = exec.needs.nav_preview {
                     // The Route overview's shape preview (#685 §4; widened to stored routes by #678
@@ -2432,6 +2494,16 @@ pub(crate) async fn run_app(
                 dirty.map = true;
                 dirty.region = None;
             }
+            // An install is armed and this is the frame the panel keeps: the warm reset into the
+            // bootloader never paints, so whatever is on glass when the tail arms stays there for the
+            // whole SD→flash stream and the reboot — and there is no later frame to fix it with. The
+            // "Installing update" card landing does dirty the screen full-frame in practice, but on an
+            // irreversible path that must be a property of *this* code rather than of the domain's
+            // dirty behaviour, so the fullness is forced here beside the other board demands.
+            if exec.arm_pending.is_some() {
+                dirty.map = true;
+                dirty.region = None;
+            }
             // While a hold *charges* on a cheap (non-map) screen — the factory-Reset prompt, the
             // hold-to-delete bar — redraw it each frame so its bar tracks the live progress, **and** once
             // more on the frame the hold drops back to 0 (the falling edge), so an early release clears the
@@ -2686,7 +2758,7 @@ pub(crate) async fn run_app(
             // **full-frame**: the arm's `exclude` would leave the bulge rows showing the previous
             // screen for the whole install, and a live hold mid-confirm is gone after the reset
             // anyway. Every other frame goes around a live bulge as usual.
-            let exclude = if exec.arm_pending { None } else { overlay_span };
+            let exclude = if exec.arm_pending.is_some() { None } else { overlay_span };
             let (ok, push_us) = display.present_frame(exclude).await;
             presented_ok = ok;
 
@@ -2794,7 +2866,25 @@ pub(crate) async fn run_app(
             // ride-loop-owned (neither can appear meanwhile), a yanked card re-refuses here, and a
             // BLE `UPDATE.BIN` rewrite in the window is the DR6 stale-ref case — the bootloader
             // re-verifies the staged image after the reset regardless.
-            if core::mem::take(&mut exec.arm_pending) {
+            // The card must actually be on the stack before the panel is handed to the reset: the
+            // scheduler can bounce an install-began answer it has to *push* onto a full stack (the
+            // debug arm, with no spinner to replace) and re-queue it, and arming meanwhile would
+            // freeze the previous frame on for the whole flash. Bounded, because the install matters
+            // more than the frame — the same stance the inline path took when a present failed.
+            let arm_now = match exec.arm_pending {
+                None => false,
+                Some(_) if app.dfu_installing_card_up() => true,
+                Some(waited) if waited < ARM_CARD_FRAMES => {
+                    exec.arm_pending = Some(waited + 1);
+                    false
+                }
+                Some(_) => {
+                    defmt::warn!("dfu: arming without the installing card on glass — the panel keeps the frame it has");
+                    true
+                }
+            };
+            if arm_now {
+                exec.arm_pending = None;
                 let SharedStore { storage, settings: settings_store } = &mut *store_guard;
                 // DR6 (#734): hand the confirm's carried scan ref to the arm (consumed either way).
                 // Absent ⇒ `run_install` re-scans (the `dfu-install` debug path). On success this
@@ -2879,15 +2969,18 @@ pub(crate) async fn run_app(
         // board derived this a second way.
         let planning = app.core_mode() == obc_app::device_core::ModeState::Searching;
         let animating = charging || planning || pending_map_redraw || overlay_dirty || overlay_span.is_some();
-        // The pass's own deadline (`plan.next_wake_ms`), plus the two "come straight back" reasons:
-        // the plan's `immediate` — a later-to-earlier connection is in flight, so work already
-        // decided would otherwise sit until the next rider input — and the executor's own
-        // `owed`: an answer to consume, an effect to serve, or a re-read it owes itself. The second
-        // is what keeps the typed protocol's one-pass hops (a delete, a rescan, a plan's arming)
-        // feeling like the single pass they used to be.
-        let next_ms = if animating {
+        // The pass's own deadline (`plan.next_wake_ms`), plus the reasons to come straight back: the
+        // plan's `immediate` — a later-to-earlier connection is in flight, so work already decided
+        // would otherwise sit until the next rider input — and the executor's own `owed`: an answer
+        // to consume, an effect to serve, a derived read it was asked for, or a residual command in
+        // the legacy mailbox. That last one is the rider's **ride save**, which nothing else here
+        // can see; without it a `FinishTrack` produced by this pass would wait for the next *wake*,
+        // and on a static post-Finish screen that is the watchdog feed cap. An outstanding store
+        // round trip takes the short animation cadence instead, because spinning at full speed
+        // against a commit that runs for hundreds of milliseconds would starve the task answering it.
+        let next_ms = if animating || exec.polling_store() {
             Some(LOOP_MS as u32)
-        } else if immediate || exec.owed() {
+        } else if immediate || exec.owed(app.has_pending_residual_command()) {
             Some(0)
         } else {
             next_wake_ms

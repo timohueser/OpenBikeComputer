@@ -134,6 +134,14 @@ class ExecutorAlarms(unittest.TestCase):
     def test_a_healthy_cycle_raises_none(self):
         self.assertEqual(alarms(HEALTHY), [])
 
+    def test_the_expected_detour_refusal_is_not_an_alarm(self):
+        """A rider pressing the ride menu's Detour row gets a capability refusal, because nothing
+        consults `Capabilities::navigator` yet and the row is still live. Failing a 60-minute soak
+        for that is how an alarm set stops being trusted."""
+        refusal = "4.0 WARN  nav: detour is not supported on this board — refusing the operation"
+        self.assertEqual(alarms([START, refusal, ANSWER, MAP]), [])
+        self.assertIsNone(read_cycle([START, refusal, ANSWER, MAP]).verdict())
+
 
 class TypedRemoval(unittest.TestCase):
     def test_a_real_object_and_an_absent_one_are_told_apart(self):
