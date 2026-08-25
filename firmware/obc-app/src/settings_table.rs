@@ -72,29 +72,24 @@ impl SettingCodec for bool {
     }
 }
 
-impl SettingCodec for u16 {
-    const LEN: usize = 2;
-    #[inline]
-    fn write(&self, dst: &mut [u8]) {
-        dst.copy_from_slice(&self.to_le_bytes());
-    }
-    #[inline]
-    fn read(src: &[u8]) -> Self {
-        u16::from_le_bytes([src[0], src[1]])
-    }
+/// The little-endian integer kinds — identical but for the type, so they are written once.
+macro_rules! impl_le_scalar {
+    ($($T:ty),+) => { $(
+        impl SettingCodec for $T {
+            const LEN: usize = core::mem::size_of::<$T>();
+            #[inline]
+            fn write(&self, dst: &mut [u8]) {
+                dst.copy_from_slice(&self.to_le_bytes());
+            }
+            #[inline]
+            fn read(src: &[u8]) -> Self {
+                <$T>::from_le_bytes([src[0], src[1]])
+            }
+        }
+    )+ };
 }
 
-impl SettingCodec for i16 {
-    const LEN: usize = 2;
-    #[inline]
-    fn write(&self, dst: &mut [u8]) {
-        dst.copy_from_slice(&self.to_le_bytes());
-    }
-    #[inline]
-    fn read(src: &[u8]) -> Self {
-        i16::from_le_bytes([src[0], src[1]])
-    }
-}
+impl_le_scalar!(u16, i16);
 
 impl SettingCodec for DateTime {
     const LEN: usize = 6;
@@ -286,29 +281,16 @@ macro_rules! setting_enum_codec {
 
 /// Declare the persisted settings set: one row per field, in **blob order**.
 ///
-/// ```ignore
-/// settings_table! {
-///     /// The whole persisted settings set.
-///     pub struct Settings {
-///         /// Metric or imperial readouts.
-///         units: Units = Units::Metric, ble_writable, reserved(1);
-///         /// The last time source's UTC set-point.
-///         clock: DateTime = DateTime::DEFAULT, sanitize_with(DateTimeEditorExt::sanitize);
-///         /// Local time's offset from UTC, in minutes.
-///         utc_offset_min: i16 = 0, range(UTC_OFFSET_MIN, UTC_OFFSET_MAX);
-///     }
+/// The live declaration is [`Settings`](crate::settings::Settings) in `settings.rs` — read that
+/// for the real thing. One row of each shape:
 ///
-///     /// The factory settings as a `const`.
-///     pub const DEFAULT;
-///     /// Adopt the BLE-writable fields from `other`.
-///     pub fn adopt_ble_fields;
-///     /// Clamp every field into its valid range.
-///     fn sanitize;
-///     /// Pack `Settings` into its fixed blob.
-///     pub fn encode;
-///     /// Decode a blob written by `encode`.
-///     pub fn decode;
-/// }
+/// ```ignore
+/// /// Metric or imperial readouts.
+/// units: Units = Units::Metric, ble_writable, reserved(1);
+/// /// Local time's offset from UTC, in minutes.
+/// utc_offset_min: i16 = 0, range(UTC_OFFSET_MIN, UTC_OFFSET_MAX);
+/// /// The last time source's UTC set-point.
+/// clock: DateTime = DateTime::DEFAULT, sanitize_with(DateTimeEditorExt::sanitize);
 /// ```
 ///
 /// A row is `name: Type = default` plus any of four optional markers:
@@ -383,20 +365,27 @@ macro_rules! settings_table {
 
             /// Table-driven coverage for every declared field (see the one settings-table test):
             /// `other` moves **every** row off `base`, and `adopted` — `base` after
-            #[doc = concat!("[`", stringify!($adopt), "`](Self::", stringify!($adopt), ") of `other` — took exactly the `ble_writable` rows.")]
+            #[doc = concat!("[`", stringify!($adopt), "`](Self::", stringify!($adopt), ") of `other` — took the fields named in `ble_writable` and no others.")]
             ///
-            /// Generated with the table so a new row is covered the moment it is declared: there
-            /// is no per-field test to copy, and forgetting the fixture fails here by name.
+            /// Generated with the table so a new row is covered the moment it is declared, but the
+            /// **expectation is not**: `ble_writable` is a hand-written list of names, held against
+            /// the generated behaviour the same way the hand-written offset literals are held
+            /// against the generated chain. Deriving it from the row's marker would only restate
+            /// the token that produced the behaviour, and could not fail. Adding or dropping a
+            /// marker without editing that list fails here, by field name.
             #[cfg(test)]
-            pub(crate) fn assert_field_table(base: &$S, other: &$S, adopted: &$S) {
+            pub(crate) fn assert_field_table(base: &$S, other: &$S, adopted: &$S, ble_writable: &[&str]) {
+                let mut named = 0;
                 $(
                     assert_ne!(base.$name, other.$name, concat!(stringify!($name), " is never moved off its default"));
-                    if false $( $( || $crate::settings_table::settings_table!(@is_ble $mk $(( $($arg)* ))?) )+ )? {
+                    if ble_writable.contains(&stringify!($name)) {
+                        named += 1;
                         assert_eq!(adopted.$name, other.$name, concat!(stringify!($name), " is ble_writable → adopted"));
                     } else {
                         assert_eq!(adopted.$name, base.$name, concat!(stringify!($name), " is device-only → untouched"));
                     }
                 )+
+                assert_eq!(named, ble_writable.len(), "every name in `ble_writable` is a declared field");
             }
         }
 
@@ -476,8 +465,6 @@ macro_rules! settings_table {
     (@sanitize sanitize_with($f:path), $s:ident, $name:ident) => { $f(&mut $s.$name); };
     (@sanitize $mk:ident $(( $($arg:tt)* ))?, $s:ident, $name:ident) => {};
 
-    (@is_ble ble_writable) => { true };
-    (@is_ble $mk:ident $(( $($arg:tt)* ))?) => { false };
 }
 
 pub(crate) use setting_enum_codec;
