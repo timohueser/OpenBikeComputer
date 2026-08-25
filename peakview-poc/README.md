@@ -2,8 +2,11 @@
 
 This throwaway Python renderer tests a PeakFinder-style screen at the OpenBikeComputer's native
 240 x 268 resolution and 64-colour RGB222 palette. It is deliberately self-contained and does not
-share code or formats with the device. The display uses a white background, progressively darker
-green terrain layers, and amber only for the heading marker.
+share code or formats with the device, with one exception: text is drawn from the firmware's own
+Terminus 12 x 24 glyph strip (`firmware/obc-render/fonts/terminus/ter_u24b.raw`, the Label tier),
+so every name renders the exact pixels — and the exact space cost — the device would. The display
+uses a white background, progressively darker green terrain layers, amber for the heading marker,
+the selected peak, and the sun, and the device's route magenta for the route crossing.
 
 ## Setup and use
 
@@ -34,11 +37,31 @@ are drawn by default; use `--layers 4` for another depth step or `--layers 1` fo
 silhouette. `--strip` additionally produces a 720 x 268 full-360-degree image. Run `python
 peakview.py --help` for the complete CLI.
 
-The quiet default draws at most five major peak names. One peak is selected independently and
-marked in amber, with its full name, elevation, and distance in the bottom panel. Selection starts
-at the peak nearest the heading line. The intended device controls are Up for the previous peak and
+The quiet default draws at most five major peak names, each as a vertical label rising from its
+summit (a horizontal name in the device font would span most of the screen). A label slides down
+over the terrain when the sky above its peak is too short; a one-pixel white halo keeps it readable
+there. One peak is selected independently and marked with an amber triangle, echoed in the bottom
+panel beside its full name, elevation, distance, and compass direction. Selection starts at the
+peak nearest the heading line. The intended device controls are Up for the previous peak and
 Down for the next peak in azimuth order, wrapping at both ends. Since this renderer produces static
 PNGs, `--peak-step -1` and `--peak-step 1` preview those button states.
+
+Two overlays preview how PeakView would tie into the rest of the product:
+
+- **Sun.** A real solar ephemeris (NOAA approximation) with a mocked clock: `--date`, `--time`
+  (default 17:30), and `--tz` (default CEST). When the sun is low enough to be in frame it is drawn
+  as an amber disc; independently, the renderer scans forward in one-minute steps for the next
+  moment the sun crosses the *computed skyline* — sinking behind a ridge or clearing one — and
+  marks that spot with a half-sunk amber disc and the clock time. In the mountains this differs
+  from geometric sunset by hours, which is exactly the camp-spot question. From Kleine Scheidegg
+  it finds the morning sun emerging past the Eiger's shoulder. `--no-sun` disables it.
+- **Route.** A mock route (straight ride along `--route-bearing`, default heading + 8, capped at
+  25 km) sampled against the DEM to find where it disappears over the skyline — the pass you are
+  heading for. Marked with two climbing chevrons in the device's route magenta plus the distance.
+  On device this would walk the active route's real polyline. `--no-route` disables it.
+
+Overlays claim screen space in glanceability order — selected peak, sun, route — and the generic
+name labels fill the space that remains, so a label is dropped rather than colliding.
 
 Rendered native and 4x examples for every preset are in `examples/`; Gornergrat also includes the
 360-degree strip.
@@ -61,8 +84,9 @@ Labels are ranked by an OSM prominence tag when present, otherwise elevation tim
 isolation, and greedily placed without overlap. Optional Wikidata P2660 lookups can replace that
 estimate.
 
-The final image is explicitly reduced to the device's channel values 0, 85, 170, and 255. Text and
-geometry are drawn without resampling, and the enlarged preview uses nearest-neighbour scaling.
+The final image is explicitly reduced to the device's channel values 0, 85, 170, and 255. Text is
+blitted 1:1 from the firmware glyph strip (rotated 90 degrees for the skyline labels), geometry is
+drawn without resampling, and the enlarged preview uses nearest-neighbour scaling.
 
 ## Known limitations
 
