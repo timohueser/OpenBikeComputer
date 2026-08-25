@@ -30,6 +30,7 @@ use crate::route::RouteSummary;
 use crate::settings::{DateTime, Settings};
 
 mod climb;
+mod context_drawer;
 mod detour;
 mod dfu;
 mod home;
@@ -41,6 +42,7 @@ mod passkey;
 mod poi_detail;
 mod poi_list;
 pub(crate) mod poi_menu;
+mod quick_drawer;
 mod ride_control;
 mod ride_detail;
 mod ride_menu;
@@ -64,6 +66,8 @@ pub mod weather_icons;
 mod weather_map;
 
 pub use climb::ClimbScreen;
+pub(crate) use context_drawer::dim_color as dim_context_color;
+pub use context_drawer::{ContextBackdrop, ContextDrawerKind, ContextDrawerScreen};
 pub use detour::{DetourPreviewScreen, DetourScreen};
 pub use dfu::{
     DfuCheckScreen, DfuConfirmScreen, DfuErrorReason, DfuErrorScreen, DfuFailedScreen, DfuInstallingScreen,
@@ -78,6 +82,7 @@ pub use passkey::PasskeyScreen;
 pub use poi_detail::PoiDetailScreen;
 pub use poi_list::{PoiListScreen, PoiScratch};
 pub use poi_menu::PoiMenuScreen;
+pub use quick_drawer::QuickDrawerScreen;
 pub use ride_control::RideControl;
 pub use ride_detail::RideDetailScreen;
 pub use ride_menu::RideMenuScreen;
@@ -694,6 +699,11 @@ impl Caps {
         Caps { idle_exempt: true, ..Caps::nav() }
     }
 
+    /// A transparent overlay composited over the current opaque screen.
+    pub const fn overlay() -> Self {
+        Caps { kind: ScreenKind::Overlay, ..Caps::nav() }
+    }
+
     /// Mark the screen a deliberate ride view (stays put on the idle timeout while tracking) — for
     /// the Ride-control page, whose base is chrome but which is a live ride view.
     pub const fn ride_view(mut self) -> Self {
@@ -821,6 +831,10 @@ macro_rules! screens {
 
 screens! {
     Home(HomeScreen) => Caps::nav().timed(),
+    /// Temporary simulator-reachable bottom-sheet prototype for the contextual-action UX review.
+    ContextDrawer(ContextDrawerScreen) => Caps::overlay().timed(),
+    /// Temporary simulator-reachable top-sheet prototype for device-wide quick controls.
+    QuickDrawer(QuickDrawerScreen) => Caps::overlay().timed().hold_fill(),
     Map(MapScreen) => Caps::map().timed(),
     Statistics(StatisticsScreen) => Caps::riding().timed(),
     /// The Climb view (epic #506, C4): the current climb's grade-striped elevation profile + cursor
@@ -1042,6 +1056,7 @@ impl Screen {
             Screen::Reset(s) => s.hold_fill_active(),
             Screen::StatFields(s) => s.selection_is_deletable(settings),
             Screen::Bluetooth(s) => s.selection_is_guarded(state.device.ble_paired),
+            Screen::QuickDrawer(s) => s.selection_is_guarded(),
             Screen::Sensors(s) => s.selection_is_guarded(settings),
             Screen::RouteOverview(s) => s.selection_is_guarded(activity, routes),
             Screen::RideDetail(s) => s.selection_is_guarded(activity, rides.len()),
@@ -1079,6 +1094,8 @@ impl Screen {
         tracking: bool,
     ) -> ScreenTick {
         match self {
+            Screen::ContextDrawer(s) => s.tick_timers(now_ms),
+            Screen::QuickDrawer(s) => s.tick_timers(now_ms),
             Screen::Statistics(s) => s.tick_timers(now_ms, settings),
             Screen::Home(s) => s.tick_timers(now, ms_to_next_minute),
             // The Map's clock overlay ticks over each minute (region-clipped to the pill), armed only

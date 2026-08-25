@@ -191,6 +191,12 @@ struct DeviceHit {
     scroll_dy: f32,
 }
 
+#[derive(Clone, Copy)]
+enum DrawerChord {
+    Quick,
+    Context,
+}
+
 struct SimGui {
     /// The opened map: one `.obcm` (see [`LoadedMap`]) — held for the session, like the device's,
     /// and only the cheap `Reader` view is rebuilt per frame. It carries the immutable tables
@@ -299,6 +305,9 @@ struct SimGui {
     /// egui draw); the pass is what applies them, so they wait one frame here — exactly the frame
     /// they already waited for before, when `handle_input` applied them behind the render.
     pending_gestures: Vec<Gesture>,
+    /// Suppresses the constituent button actions after either temporary drawer chord fires, until
+    /// that chord's pair is fully released.
+    drawer_chord_latched: Option<DrawerChord>,
     /// The map's terrain (EL7): the `.obcd` sidecar beside the `.obcm`, mounted once for the
     /// session like the map, or the null source when there is none. The planner samples it as it
     /// emits, so a route created in the GUI arrives with a real elevation profile and climbs.
@@ -462,6 +471,7 @@ impl SimGui {
             host: HostLoop::new(),
             session: ActiveRouteSession::new(),
             pending_gestures: Vec::new(),
+            drawer_chord_latched: None,
             colorway,
             kbd_steps: 0,
             kbd_up: false,
@@ -901,13 +911,28 @@ impl SimGui {
     /// events reach [`handle_input`](obc_app::App::handle_input) in the same order, with the same
     /// coordinates, they did inline.
     fn apply_device_input(&mut self, hit: DeviceHit) {
+        if self.drawer_chord_latched.is_none() && hit.up_down && hit.select_down {
+            self.drawer_chord_latched = Some(DrawerChord::Quick);
+            self.pending_gestures.clear();
+            self.input.cancel_buttons();
+            let _ = self.app.debug_toggle_quick_drawer(obc_app::screen::ContextBackdrop::DimLut);
+        } else if self.drawer_chord_latched.is_none() && hit.down_down && hit.back_down {
+            self.drawer_chord_latched = Some(DrawerChord::Context);
+            self.pending_gestures.clear();
+            self.input.cancel_buttons();
+            let _ = self.app.debug_toggle_context_drawer(false, obc_app::screen::ContextBackdrop::DimLut);
+        }
+        let suppress_chord_parts = self.drawer_chord_latched.is_some();
+
         // Mouse-wheel scroll → steps (non-zero only when a UP/DOWN pad was hovered this frame).
-        if hit.scroll_dy != 0.0 {
+        if hit.scroll_dy != 0.0 && !suppress_chord_parts {
             self.input.scroll(hit.scroll_dy);
         }
-        self.input.step(hit.steps);
-        self.input.set_button(Button::Select, hit.select_down);
-        self.input.set_button(Button::Back, hit.back_down);
+        if !suppress_chord_parts {
+            self.input.step(hit.steps);
+        }
+        self.input.set_button(Button::Select, hit.select_down && !suppress_chord_parts);
+        self.input.set_button(Button::Back, hit.back_down && !suppress_chord_parts);
         // UP/DOWN held state is visual only (the housing pads sink) — the app already got the step.
         let _ = (hit.up_down, hit.down_down);
         let now = self.input.now_ms();
@@ -916,6 +941,14 @@ impl SimGui {
         // That is the same one-frame delay the old order had (the transition used to happen behind
         // the render it would first be visible on), moved to the one place that owns it.
         self.pending_gestures.extend(self.app.recognize(InputClock(now), &mut self.input));
+        let released = match self.drawer_chord_latched {
+            Some(DrawerChord::Quick) => !hit.up_down && !hit.select_down,
+            Some(DrawerChord::Context) => !hit.down_down && !hit.back_down,
+            None => false,
+        };
+        if released {
+            self.drawer_chord_latched = None;
+        }
     }
 
     /// The 1:1 calibration screen: draw a reference bar of a known point-width; the user

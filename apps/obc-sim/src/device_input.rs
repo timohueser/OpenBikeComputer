@@ -76,6 +76,15 @@ impl DeviceInput {
         }
     }
 
+    /// Drop queued constituent input when a two-button drawer chord wins. The shared recognizer is
+    /// cancelled by the App hook at the same edge; suppressing releases here prevents a chord from
+    /// turning into a stray Select/Back tap on the newly opened drawer.
+    pub fn cancel_buttons(&mut self) {
+        self.pending.clear();
+        self.select_down = false;
+        self.back_down = false;
+    }
+
     /// Pull whole steps out of the scroll accumulator, keeping the remainder.
     fn take_steps(&mut self) -> i32 {
         let n = self.accum.trunc();
@@ -139,6 +148,17 @@ mod tests {
         assert_eq!(d.poll(), Some(InputEvent::Button(ButtonEvent::Down(Button::Select))));
         assert_eq!(d.poll(), Some(InputEvent::Button(ButtonEvent::Up(Button::Select))));
         assert_eq!(d.poll(), None);
+    }
+
+    #[test]
+    fn cancelling_a_chord_drops_its_edges_and_release() {
+        let mut d = DeviceInput::new();
+        d.set_button(Button::Select, true);
+        d.cancel_buttons();
+        assert_eq!(d.poll(), None);
+
+        d.set_button(Button::Select, false);
+        assert_eq!(d.poll(), None, "the physical release is not a tap on the opened drawer");
     }
 
     /// A zero-count step must queue nothing — a frame with no Up/Down activity mustn't emit a
