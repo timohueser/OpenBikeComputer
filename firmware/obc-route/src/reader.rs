@@ -899,16 +899,19 @@ impl RouteCache {
 }
 
 impl RouteCacheInner {
-    fn new() -> Self {
-        // `zeroed()` lowers to a `memset` (`.bss`); a struct literal zeroing the point buffers
-        // would emit a `.rodata` const then `memcpy` it — which overflowed flash for the larger
-        // `MapCache`.
-        //
-        // SAFETY: all-zero is a valid `RouteCacheInner` — no references or non-zero-discriminant
-        // enums, a zero slot tag means empty, and each `heapless::Vec` is
-        // `{ len: 0, uninit buffer }` whose `MaybeUninit<RoutePoint>` backing is not read while
-        // `len == 0`.
-        unsafe { core::mem::MaybeUninit::zeroed().assume_init() }
+    /// A `const` struct literal rather than a `zeroed()` `assume_init`: `heapless::Vec::new()` is
+    /// `const`, so the whole value is a constant and the buffers are never materialised in
+    /// `.rodata` to be copied from. Measured on the board link, not assumed — the failure mode of
+    /// the `.rodata`-plus-`memcpy` lowering is a boot brick (#1084/#1108), and `MapCacheInner` keeps
+    /// its `zeroed()` because that proof is per-site.
+    const fn new() -> Self {
+        RouteCacheInner {
+            identity: 0,
+            tick: 0,
+            slots: [const { RouteSlot { tag: 0, used: 0, pts: Vec::new() } }; ROUTE_CHUNK_SLOTS],
+            hits: 0,
+            misses: 0,
+        }
     }
 
     fn adopt(&mut self, identity: u32) {
