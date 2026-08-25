@@ -3426,6 +3426,36 @@ impl App {
         HostCommand::DRAIN_ORDER.iter().any(|&c| self.peek_host_command(c))
     }
 
+    /// Whether a **residual** legacy command is pending — one of the three classes a typed executor
+    /// still drains ([`device_core::residual`](crate::device_core::residual)). Consumes nothing.
+    ///
+    /// A typed executor's wake is otherwise blind to the legacy mailbox: it folds in its own
+    /// undelivered outcomes and effects, but the rider's ride **save** is a `FinishTrack` sitting
+    /// here, and nothing else can see it. On a device that sleeps until the next event, that turns
+    /// "the close costs one immediate frame" into "the close costs one wake", which on a static
+    /// post-Finish screen is the watchdog feed cap.
+    ///
+    /// Deliberately **not** [`has_pending_host_command`](App::has_pending_host_command): that one
+    /// includes the two derived cues, which are levels re-derived on every drain, so folding it into
+    /// a wake would spin the loop forever. All three classes here are one-shots the drain clears,
+    /// which is what makes this safe to ask for an immediate pass on.
+    pub fn has_pending_residual_command(&self) -> bool {
+        [HostCommandClass::FinishTrack, HostCommandClass::ForgetBond, HostCommandClass::DeleteTrip]
+            .iter()
+            .any(|&c| self.peek_host_command(c))
+    }
+
+    /// Whether the "Installing update" card is on the stack — the frame an arming executor freezes
+    /// onto the panel for the whole SD→flash stream and the warm reset that never paints.
+    ///
+    /// [`CardScheduler`](crate::card_scheduler::CardScheduler) can *bounce* the install-began answer
+    /// when it has to **push** rather than replace a wait (the debug arm, with no spinner up) and
+    /// the stack is full; it re-queues, but a board that armed anyway would have handed the panel a
+    /// frame showing something else. This is how it asks.
+    pub fn dfu_installing_card_up(&self) -> bool {
+        self.ui.stack.iter().any(|s| matches!(s, Screen::DfuInstalling(_)))
+    }
+
     /// Apply one host answer or fact. Events are owned, so a host can hold one across asynchronous
     /// work and apply it later; a late answer whose screen is gone is dropped, while advisory
     /// prompts defer behind the passkey card or a charging hold.

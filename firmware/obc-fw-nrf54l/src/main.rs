@@ -1407,8 +1407,8 @@ async fn main(_spawner: Spawner) {
         {
             // Routes and trips are flat-store objects. One bounded snapshot seeds the menu, newest
             // first so a fresh upload remains visible on a card with more than the UI cap.
-            // A transient media read here needs no re-arm of its own since #1397 S6b: the ride
-            // loop reports the store's live `sequence()` as `ExternalFacts::note_store_revision`,
+            // A transient media read here needs no re-arm of its own: the ride loop reports the
+            // store's live `sequence()` as `ExternalFacts::note_store_revision`,
             // and the very first pass sees that level move from "no store" to a revision — which is
             // one `CatalogIntent::Refresh`, i.e. exactly one `CatalogEffect::ReadCatalog`, on the
             // first frame. The boot snapshot below is what the menu shows until that read lands.
