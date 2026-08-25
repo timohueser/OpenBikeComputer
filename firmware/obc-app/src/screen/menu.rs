@@ -553,8 +553,8 @@ fn icon_map(cv: &mut impl Surface, c: Point, k: f32, color: u16) {
     cv.disc(c, si(k, 2.5) as u32, color);
 }
 
-/// Three slider tracks with offset knobs — the settings glyph.
-fn icon_sliders(cv: &mut impl Surface, c: Point, k: f32, color: u16) {
+/// Three slider tracks with offset knobs — the settings glyph (shared with the quick drawer).
+pub(super) fn icon_sliders(cv: &mut impl Surface, c: Point, k: f32, color: u16) {
     let hw = si(k, 12.0);
     let track_h = si(k, 3.0).max(2) as u32;
     let knob_r = si(k, 3.5) as u32;

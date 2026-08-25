@@ -11,13 +11,14 @@ use obc_render::{
 
 use crate::input::Gesture;
 
+use super::vocab::chrome::stroke2;
 use super::{palette, ContextBackdrop, Ctx, Render, Screen, ScreenTick, SettingsScreen, Transition};
 
 const OPEN_MS: u32 = 220;
 const SLIDE_MS: u32 = 180;
 const FRAME_MS: u32 = 16;
 const ROOT_H: i32 = 108;
-const BRIGHTNESS_H: i32 = 150;
+const BRIGHTNESS_H: i32 = 136;
 const POWER_H: i32 = 174;
 const POWERING_OFF_H: i32 = 132;
 const ITEM_COUNT: usize = 4;
@@ -247,34 +248,48 @@ impl QuickDrawerScreen {
     fn draw_root(&self, cv: &mut impl Surface, rx: &Render, top: i32, x: i32) {
         use palette::*;
 
-        const CELL_W: i32 = 50;
-        const GAP: i32 = 6;
-        let first_x = (rx.w - (CELL_W * ITEM_COUNT as i32 + GAP * (ITEM_COUNT as i32 - 1))) / 2;
+        const CELL: i32 = 46;
+        const GAP: i32 = 10;
+        let first_x = (rx.w - (CELL * ITEM_COUNT as i32 + GAP * (ITEM_COUNT as i32 - 1))) / 2;
         for index in 0..ITEM_COUNT {
-            let left = x + first_x + index as i32 * (CELL_W + GAP);
-            let area = rect(left, top + 12, CELL_W, 70);
+            let left = x + first_x + index as i32 * (CELL + GAP);
+            let area = rect(left, top + 10, CELL, CELL);
             let selected = index == self.selected;
             if selected {
-                cv.round(area.intersection(&rect(6, top + 12, rx.w - 12, 70)), 8, AMBER);
+                cv.round(area.intersection(&rect(8, top + 10, rx.w - 16, CELL)), 10, AMBER);
             }
+            // One ink for the whole row — state lives in the badge and the caption, never in a
+            // per-icon hue (the dial's single-ink glyph language).
+            let ink = if selected { INK } else { WOOD };
             let bg = if selected { AMBER } else { PARCHMENT };
-            let center = Point::new(left + CELL_W / 2, top + 45);
+            let center = Point::new(left + CELL / 2, top + 10 + CELL / 2);
             match index {
-                LIGHT => draw_bulb(cv, center, if selected { INK } else { WOOD }, bg, self.brightness),
+                LIGHT => draw_sun(cv, center, ink),
                 BLE => {
-                    let color = if rx.settings.ble_enabled { DETOUR } else { CONTOUR };
-                    draw_bluetooth(cv, center, color);
-                    cv.disc(
-                        Point::new(center.x + 14, center.y + 20),
-                        3,
-                        if rx.settings.ble_enabled { ON } else { CONTOUR },
-                    );
+                    draw_ble_rune(cv, center, ink);
+                    draw_state_badge(cv, Point::new(center.x + 13, center.y + 12), rx.settings.ble_enabled, bg);
                 }
-                SETTINGS => draw_gear(cv, center, if selected { INK } else { WOOD }, bg),
-                POWER => draw_power(cv, center, RED),
+                SETTINGS => super::menu::icon_sliders(cv, center, 0.9, ink),
+                POWER => draw_power(cv, center, ink, bg),
                 _ => {}
             }
         }
+
+        // The selected item's name — the row stays icon-only while every station is still
+        // discoverable by browsing (same voice as the context drawer's WOOD header).
+        let caption = match self.selected {
+            LIGHT => "BRIGHTNESS",
+            BLE => {
+                if rx.settings.ble_enabled {
+                    "BLUETOOTH ON"
+                } else {
+                    "BLUETOOTH OFF"
+                }
+            }
+            SETTINGS => "SETTINGS",
+            _ => "POWER OFF",
+        };
+        cv.text(caption, Point::new(x + rx.w / 2, top + 68), Font::Label, TextAlign::Center, WOOD);
     }
 
     fn draw_brightness(&self, cv: &mut impl Surface, rx: &Render, top: i32, x: i32) {
@@ -282,7 +297,7 @@ impl QuickDrawerScreen {
 
         cv.text("BRIGHTNESS", Point::new(x + 14, top + 18), Font::Label, TextAlign::Left, WOOD);
         cv.hline(x + 12, top + 47, rx.w - 24, RULE);
-        draw_bulb(cv, Point::new(x + 26, top + 82), WOOD, PARCHMENT, self.brightness_cursor as u8);
+        draw_sun(cv, Point::new(x + 26, top + 82), WOOD);
 
         let x0 = x + 52;
         let x1 = x + rx.w - 24;
@@ -305,7 +320,7 @@ impl QuickDrawerScreen {
 
         cv.text("POWER OFF?", Point::new(x + 14, top + 18), Font::Label, TextAlign::Left, WARNING);
         cv.hline(x + 12, top + 47, rx.w - 24, RULE);
-        draw_power(cv, Point::new(x + rx.w / 2, top + 77), RED);
+        draw_power(cv, Point::new(x + rx.w / 2, top + 77), WARNING, PARCHMENT);
         cv.text("HOLD SELECT", Point::new(x + rx.w / 2, top + 105), Font::Label, TextAlign::Center, INK);
 
         let button = rect(x + 20, top + 125, rx.w - 40, 32);
@@ -320,7 +335,7 @@ impl QuickDrawerScreen {
     fn draw_powering_off(&self, cv: &mut impl Surface, top: i32, _panel_h: i32, x: i32, width: i32) {
         use palette::*;
 
-        draw_power(cv, Point::new(x + width / 2, top + 43), RED);
+        draw_power(cv, Point::new(x + width / 2, top + 43), WARNING, PARCHMENT);
         cv.text("POWERING OFF...", Point::new(x + width / 2, top + 75), Font::Body, TextAlign::Center, INK);
     }
 }
@@ -334,59 +349,60 @@ fn slider_x(x0: i32, x1: i32, index: usize) -> i32 {
     x0 + (x1 - x0) * index as i32 / (BRIGHTNESS_LEVELS as i32 - 1)
 }
 
-fn draw_bulb(cv: &mut impl Surface, center: Point, color: u16, bg: u16, level: u8) {
-    cv.disc(Point::new(center.x, center.y - 4), 9, color);
-    cv.disc(Point::new(center.x, center.y - 4), 6, bg);
-    cv.fill(rect(center.x - 5, center.y + 2, 10, 7), color);
-    cv.hline(center.x - 4, center.y + 11, 8, color);
-    if level > 0 {
-        cv.line(Point::new(center.x - 13, center.y - 4), Point::new(center.x - 17, center.y - 4), color);
-        cv.line(Point::new(center.x + 13, center.y - 4), Point::new(center.x + 17, center.y - 4), color);
-        cv.line(Point::new(center.x, center.y - 17), Point::new(center.x, center.y - 21), color);
-    }
-    if level >= 3 {
-        cv.line(Point::new(center.x - 10, center.y - 14), Point::new(center.x - 13, center.y - 17), color);
-        cv.line(Point::new(center.x + 10, center.y - 14), Point::new(center.x + 13, center.y - 17), color);
+/// Brightness sun: a filled core with four cardinal bars and four diagonal ray dots — the same
+/// filled-geometry sun the Weather station glyph established.
+fn draw_sun(cv: &mut impl Surface, center: Point, color: u16) {
+    cv.disc(center, 6, color);
+    cv.vline(center.x - 1, center.y - 13, 5, 2, color);
+    cv.vline(center.x - 1, center.y + 9, 5, 2, color);
+    cv.fill(rect(center.x - 13, center.y - 1, 5, 2), color);
+    cv.fill(rect(center.x + 9, center.y - 1, 5, 2), color);
+    for (dx, dy) in [(-9, -9), (9, -9), (9, 9), (-9, 9)] {
+        cv.disc(Point::new(center.x + dx, center.y + dy), 2, color);
     }
 }
 
-fn draw_bluetooth(cv: &mut impl Surface, center: Point, color: u16) {
-    let top = Point::new(center.x, center.y - 17);
-    let bottom = Point::new(center.x, center.y + 17);
-    cv.line(top, bottom, color);
-    cv.line(top, Point::new(center.x + 10, center.y - 8), color);
-    cv.line(Point::new(center.x + 10, center.y - 8), Point::new(center.x - 8, center.y + 8), color);
-    cv.line(Point::new(center.x - 8, center.y - 8), Point::new(center.x + 10, center.y + 8), color);
-    cv.line(Point::new(center.x + 10, center.y + 8), bottom, color);
+/// The Bluetooth bind-rune at drawer scale: the title-bar rune's geometry, doubled to the panel's
+/// 2 px stroke idiom so it carries the same visual mass as the filled glyphs beside it.
+fn draw_ble_rune(cv: &mut impl Surface, center: Point, color: u16) {
+    let half = 11;
+    let quarter = 5;
+    let stem_x = center.x - 2;
+    let (top, mid, bot) =
+        (Point::new(stem_x, center.y - half), Point::new(stem_x, center.y), Point::new(stem_x, center.y + half));
+    let up_tip = Point::new(center.x + 6, center.y - half + quarter);
+    let lo_tip = Point::new(center.x + 6, center.y + half - quarter);
+    let up_left = Point::new(center.x - 8, center.y - half + quarter);
+    let lo_left = Point::new(center.x - 8, center.y + half - quarter);
+    stroke2(cv, top, bot, color);
+    stroke2(cv, top, up_tip, color);
+    stroke2(cv, up_tip, mid, color);
+    stroke2(cv, bot, lo_tip, color);
+    stroke2(cv, lo_tip, mid, color);
+    stroke2(cv, up_tip, lo_left, color);
+    stroke2(cv, lo_tip, up_left, color);
 }
 
-fn draw_gear(cv: &mut impl Surface, center: Point, color: u16, bg: u16) {
-    for (a, b) in [
-        ((0, -10), (0, -15)),
-        ((0, 10), (0, 15)),
-        ((-10, 0), (-15, 0)),
-        ((10, 0), (15, 0)),
-        ((-7, -7), (-11, -11)),
-        ((7, -7), (11, -11)),
-        ((-7, 7), (-11, 11)),
-        ((7, 7), (11, 11)),
-    ] {
-        cv.line(Point::new(center.x + a.0, center.y + a.1), Point::new(center.x + b.0, center.y + b.1), color);
+/// On/off badge in the cell corner: a filled green dot for on, a hollow grey ring for off — the
+/// settings toggle-pill colour vocabulary, anchored to the icon box instead of dangling.
+fn draw_state_badge(cv: &mut impl Surface, at: Point, on: bool, bg: u16) {
+    use palette::*;
+    cv.disc(at, 6, bg);
+    if on {
+        cv.disc(at, 4, ON);
+    } else {
+        cv.disc(at, 4, CONTOUR);
+        cv.disc(at, 2, bg);
     }
+}
+
+/// Power symbol as filled geometry: a 3 px ring with its top arc broken, and a heavy stem through
+/// the gap.
+fn draw_power(cv: &mut impl Surface, center: Point, color: u16, bg: u16) {
     cv.disc(center, 10, color);
-    cv.disc(center, 4, bg);
-}
-
-fn draw_power(cv: &mut impl Surface, center: Point, color: u16) {
-    let points = [(-7, -10), (-12, -5), (-13, 2), (-10, 9), (-4, 13), (4, 13), (10, 9), (13, 2), (12, -5), (7, -10)];
-    for pair in points.windows(2) {
-        cv.line(
-            Point::new(center.x + pair[0].0, center.y + pair[0].1),
-            Point::new(center.x + pair[1].0, center.y + pair[1].1),
-            color,
-        );
-    }
-    cv.vline(center.x - 1, center.y - 18, 18, 3, color);
+    cv.disc(center, 7, bg);
+    cv.fill(rect(center.x - 3, center.y - 12, 7, 8), bg);
+    cv.vline(center.x - 1, center.y - 14, 11, 3, color);
 }
 
 fn draw_check(cv: &mut impl Surface, x: i32, cy: i32, color: u16) {
