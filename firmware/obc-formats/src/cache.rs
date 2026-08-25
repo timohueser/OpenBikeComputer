@@ -96,6 +96,13 @@ impl<const SLOTS: usize> Default for IndexBlockCache<SLOTS> {
 }
 
 impl<const SLOTS: usize> IndexBlockCache<SLOTS> {
+    /// A zero-slot cache would hang: nothing is ever resident, no slot is empty, and
+    /// [`rrip_victim`] ages an empty slice forever looking for a victim. The two hand-written
+    /// caches this replaced had fixed arrays and could not express it; making the count a caller's
+    /// knob is what opens the hole, so close it where the knob is. Const-generic asserts are lazy,
+    /// so [`read`](Self::read) forces this one.
+    const NON_EMPTY: () = assert!(SLOTS > 0, "an index cache needs at least one window");
+
     pub const fn new() -> Self {
         Self { blocks: [IndexBlock::EMPTY; SLOTS], hits: 0, misses: 0 }
     }
@@ -139,6 +146,7 @@ impl<const SLOTS: usize> IndexBlockCache<SLOTS> {
         out: &mut [u8],
         on_fill: &mut dyn FnMut(usize, u32) -> bool,
     ) -> Result<(), IoError> {
+        let () = Self::NON_EMPTY;
         let mut filled = 0usize;
         while filled < out.len() {
             let cur = off.checked_add(filled as u64).ok_or(IoError::BadOffset)?;
@@ -255,18 +263,31 @@ mod tests {
     }
 
     /// Run `passes` ordered scans over `working` blocks and report `(hits, misses)`.
+    ///
+    /// Also pins `on_fill`'s **`bytes`** argument, which is what carries a caller's byte accounting
+    /// and so has no other cover at this tier: every window of this source is whole, so the reported
+    /// bytes must total exactly one [`INDEX_BLOCK`] per fill and nothing per hit.
     fn scan(on_fill: &mut dyn FnMut(usize, u32) -> bool, working: usize, passes: usize) -> (u32, u32) {
         let data = source(working);
         let src = SliceSource(&data);
         let mut cache = IndexBlockCache::<MAP_SLOTS>::new();
         let mut word = [0u8; 4];
-        for _ in 0..passes {
-            for block in 0..working {
-                cache.read(&src, (block * INDEX_BLOCK) as u64, &mut word, on_fill).unwrap();
-                assert_eq!(word[0], block as u8, "a served window must carry its own block's bytes");
+        let mut reported = 0usize;
+        let (hits, misses) = {
+            let mut counted = |bytes: usize, fill: u32| {
+                reported += bytes;
+                on_fill(bytes, fill)
+            };
+            for _ in 0..passes {
+                for block in 0..working {
+                    cache.read(&src, (block * INDEX_BLOCK) as u64, &mut word, &mut counted).unwrap();
+                    assert_eq!(word[0], block as u8, "a served window must carry its own block's bytes");
+                }
             }
-        }
-        (cache.hits(), cache.misses())
+            (cache.hits(), cache.misses())
+        };
+        assert_eq!(reported, misses as usize * INDEX_BLOCK, "`on_fill` must report one whole window per fill");
+        (hits, misses)
     }
 
     /// The insertion decision is the caller's, and the driver has none of its own: one access

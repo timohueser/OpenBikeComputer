@@ -199,7 +199,7 @@ pub struct MapCache {
 /// LLVM folds [`MapCacheInner::new`]'s `zeroed()` into a `.bss` memset at that placement site; at
 /// alignment 8 it stops folding and materialises the whole cache as a stack temporary instead —
 /// measured on the nRF54LM20 image, the boot task's frame went **7,456 → 74,240 B against a 49 KB
-/// residual stack**, a boot overflow and the exact failure mode of #1084/#1108. The one field that
+/// residual stack** — an overflow before the app ever runs. The one field that
 /// can move it is the index driver's key, which is why
 /// [`IndexBlockCache`](obc_formats::cache::IndexBlockCache) tags a window by a `u32` block number
 /// rather than a `u64` byte offset. CI's `boot_chain_ceiling` and `task_frame_limit` are the
