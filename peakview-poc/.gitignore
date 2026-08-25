@@ -1,0 +1,5 @@
+cache/
+__pycache__/
+.venv/
+out.png
+out_*x.png
