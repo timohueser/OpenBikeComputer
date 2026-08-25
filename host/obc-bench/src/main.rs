@@ -281,27 +281,39 @@ fn run_matrix() -> Vec<SceneResult> {
         .iter()
         .map(|&(name, mpp, heading)| {
             let r = run_scene(&map, name, mpp, heading, true, &clock);
-            if name.starts_with("overview") {
-                assert!(
-                    r.stats.features_dropped > 0,
-                    "scene `{name}` must saturate the frame budget (features_dropped > 0); \
-                     the fixture isn't dense enough — grow obcm_testkit::build_bench_map"
-                );
-            }
+            assert_overview_saturates(&r);
             r
         })
         .collect();
     let (cold, cold_mpp, cold_heading) = COLD_SCENE;
-    results.push(run_scene(&map, cold, cold_mpp, cold_heading, false, &clock));
-    // The route-overlay scene (issue #332): the map scenes carry no route, so this eighth frame
-    // is what puts `draw_route`'s stroke + chevrons under the hash tripwire.
+    let cold = run_scene(&map, cold, cold_mpp, cold_heading, false, &clock);
+    assert_overview_saturates(&cold);
+    results.push(cold);
+    // The route-overlay scene: the map scenes carry no route, so this eighth frame is what puts
+    // `draw_route`'s stroke + chevrons under the hash tripwire.
     results.push(run_route_scene(&map, &clock));
     results
+}
+
+/// Every overview scene — the cold one included — must push past the frame's feature ceiling, or
+/// the fixture isn't dense enough and the priority-drop path went unexercised.
+fn assert_overview_saturates(r: &SceneResult) {
+    if r.name.starts_with("overview") {
+        assert!(
+            r.stats.features_dropped > 0,
+            "scene `{}` must saturate the frame budget (features_dropped > 0); \
+             the fixture isn't dense enough — grow obcm_testkit::build_bench_map",
+            r.name
+        );
+    }
 }
 
 /// The scene table. `chunks`/`hit/miss`/`sd`/`bytes` are the gated read counters — `sd` is
 /// `ByteSource::read_at` calls (one card read each on the device, index blocks included) and
 /// `bytes` what they moved.
+///
+/// The timing columns are the min of [`ITERS`] warmed renders **except** on a `-cold` row, whose
+/// times are its one un-warmed render and are not comparable with its neighbours'.
 fn print_table(results: &[SceneResult]) {
     println!(
         "{:<13} {:>3} {:>10} {:>8} {:>9} {:>9}  {:>6} {:>6} {:>7}  {:>6} {:>9} {:>5} {:>8}  hash",
@@ -342,11 +354,16 @@ fn print_table(results: &[SceneResult]) {
     }
 }
 
-/// Repeat the complete matrix and summarize each scene's end-to-end time. Each matrix result is
-/// already the min of [`ITERS`] warmed renders; the outer median rejects process/scheduler noise,
-/// while min/max expose the observed envelope used to set a review tolerance. Every gated value —
-/// hash and read counters alike — must agree on every repeat, keeping this timing mode covered by
-/// the same determinism contract the golden file gates.
+/// Repeat the complete matrix and summarize each scene's end-to-end time. Every warmed matrix
+/// result is already the min of [`ITERS`] renders; the outer median rejects process/scheduler noise,
+/// while min/max expose the observed envelope used to set a review tolerance.
+///
+/// The [`COLD_SCENE`] row is the exception and must be read differently: it is a **single**
+/// un-warmed render, so its median is one sample and its envelope is ordinary run-to-run noise plus
+/// the cold fills — wider and slower than its warm twin for reasons that are not a regression. Set
+/// tolerances from the warmed rows. Every gated value — hash and read counters alike — must agree
+/// on every repeat regardless, keeping this timing mode covered by the same determinism contract
+/// the golden file gates.
 fn print_repeat_table(repeats: usize) {
     let runs: Vec<Vec<SceneResult>> = (0..repeats).map(|_| run_matrix()).collect();
     println!("{:13} {:>8} {:>8} {:>8} {:>8}  hash", "scene", "min", "median", "max", "spread");
