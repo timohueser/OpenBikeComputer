@@ -485,10 +485,11 @@ impl App {
     /// without a trusted clock — the two guards
     /// [`note_route_activated`](crate::retention::RetentionMachine::note_route_activated) applies,
     /// which are the same ones the sweep applies.
-    /// The sidecar write is offered only on a device that has somewhere to put it
-    /// ([`PlatformSupport::retention_metadata`]). Without one the candidate simply stays queued: an
-    /// effect nobody can answer parks `inflight_write` for the rest of the boot, and an invented
-    /// `…Written` would claim a durability the device does not have.
+    /// The sidecar write is *offered* only on a device that has somewhere to put it
+    /// ([`PlatformSupport::retention_metadata`]) — but the candidate is **decided, mirrored and
+    /// consumed either way**. Leaving it queued would park the whole sweep: `maybe_sweep` returns
+    /// early while the queue is non-empty, so the first stamp would be the last hourly sweep the
+    /// device ever ran. See [`consume_unstored_stamp`](App::consume_unstored_stamp).
     fn stage_retention(&mut self, effects: &mut EffectSlots, support: PlatformSupport) {
         self.pass.record(PassStage::Retention);
         if let Some(activated) = self.pass.connections.route_activated.take() {
@@ -507,16 +508,51 @@ impl App {
                 }
             }
         }
-        if support.retention_metadata && effects.retention.is_empty() {
+        if effects.retention.is_empty() {
             for kind in [SweepKind::StampRoute, SweepKind::StampRide] {
                 if let Some(effect) = self.with_retention(|retention, view| retention.next_metadata_effect(kind, view))
                 {
                     self.mirror_stamp(effect);
-                    let _ = effects.retention.try_put(effect);
+                    if support.retention_metadata {
+                        let _ = effects.retention.try_put(effect);
+                    } else {
+                        self.consume_unstored_stamp(effect);
+                    }
                     break;
                 }
             }
         }
+    }
+
+    /// Answer a stamp on a platform with **no durable metadata store** — the mirror above is the
+    /// whole of the write, so the operation is already over when it is decided.
+    ///
+    /// **The candidate must leave the queue, and that is the load-bearing half.** `maybe_sweep`
+    /// returns early while the queue is non-empty, so a stamp that is decided and never consumed
+    /// stops the hourly sweep for the rest of the boot — and with it every auto-expiry the device
+    /// would have run (#638). One committed route upload under a trusted clock is enough to reach
+    /// that state, and nothing about it is visible: the queue is domain-private, the sweep simply
+    /// never fires again.
+    ///
+    /// [`RouteMetadataWritten`](crate::retention::RetentionOutcome::RouteMetadataWritten) is the
+    /// honest answer rather than a claim of durability. The outcome says *the operation is over*;
+    /// what claims persistence is the resident mirror, and on such a platform that mirror is
+    /// per-boot by construction — the board's `load_rides` feeds `synced: false, synced_at_utc: 0`
+    /// on every catalog read, so nothing survives a reboot and nothing pretends to. `Cancelled`
+    /// would be the lie: it re-queues, which is exactly the state this exists to avoid.
+    ///
+    /// This is the legacy drain's own behaviour, moved to the one path that still runs: the adapter
+    /// mirrored and answered on dispatch, because a protocol with no acknowledgement has no other
+    /// terminal event.
+    fn consume_unstored_stamp(&mut self, effect: crate::retention::RetentionEffect) {
+        use crate::retention::{RetentionEffect, RetentionOutcome};
+        let outcome = match effect {
+            RetentionEffect::WriteRouteMetadata { token, id, .. } => {
+                RetentionOutcome::RouteMetadataWritten { token, id }
+            }
+            RetentionEffect::WriteRideMetadata { token, id, .. } => RetentionOutcome::RideMetadataWritten { token, id },
+        };
+        self.retention.apply_outcome(outcome);
     }
 
     /// Mirror a decided sidecar stamp into the resident view, the moment the effect leaves.
@@ -1036,35 +1072,53 @@ mod tests {
     }
 
     /// A device with no durable retention metadata (`PlatformSupport::retention_metadata = false` —
-    /// the board since FS7/FS8) emits **no** sidecar write at all, and keeps emitting none.
+    /// the board since FS7/FS8) emits **no** sidecar effect, and keeps emitting none. But it still
+    /// *decides* the stamp, mirrors it into the resident view, and **consumes the candidate**.
     ///
-    /// Both halves are the point. An effect nobody can answer parks `inflight_write` for the rest of
-    /// the boot; an effect re-decided every pass would be one write per pass on a device whose whole
-    /// power budget is not waking up. The candidate stays queued, which is exactly what the resident
-    /// mirror the legacy stamp drain still performs is for.
+    /// That last part is the one that bites, and it is invisible: `maybe_sweep` returns early while
+    /// the stamp queue is non-empty, so a candidate that is never consumed makes the first stamp the
+    /// last hourly sweep the device ever runs — and auto-expiry (#638) stops for the rest of the
+    /// boot with nothing to see. One committed route upload under a trusted clock reaches it.
+    ///
+    /// So all three are asserted together: no effect, a mirror that moved, and a sweep that still
+    /// produces expiries afterwards.
     #[test]
-    fn no_metadata_store_means_no_sidecar_effect_and_no_per_pass_re_decision() {
+    fn no_metadata_store_still_consumes_the_stamp_so_the_sweep_keeps_running() {
         let mut app = navigating();
         trust_clock(&mut app);
         let now = app.wall_unix_now();
-        app.set_route_meta(&[expiring(Retention::Week1, now), expiring(Retention::Never, 0)]);
+        // Route 11 is stale-but-live under a Week1 clock (so it earns a use stamp on activation);
+        // route 22 is a month past its Week1 deadline and is the expiry the sweep must still find.
+        app.set_route_meta(&[
+            expiring(Retention::Week1, now.saturating_sub(3600)),
+            expiring(Retention::Week1, now.saturating_sub(30 * 24 * 3600)),
+        ]);
 
         let plan = quiet_without_metadata(&mut app, 10);
         assert!(plan.effects.retention.is_empty(), "there is nowhere durable to write it");
-        assert!(app.retention.has(SweepKind::StampRoute), "so the candidate is not consumed either");
 
-        for ms in [20, 30, 40] {
-            let plan = quiet_without_metadata(&mut app, ms);
-            assert!(plan.effects.retention.is_empty(), "and no later pass invents one");
-        }
+        // (a) the queue drains. It is domain-private, so ask the way the sweep does: a queued stamp
+        // is what `has` reports, and an unconsumed one is what would park `maybe_sweep`.
+        assert!(!app.retention.has(SweepKind::StampRoute), "the candidate was consumed, not left queued");
 
-        // The same app on a platform that *has* the store answers it once, the ordinary way — so the
-        // absence above is the capability speaking, not a wedged domain.
-        let plan = quiet(&mut app, 50);
-        assert!(
-            matches!(plan.effects.retention, ref slot if !slot.is_empty()),
-            "with a metadata store the queued stamp goes out"
+        // (b) the mirror moved — which is also what stops the same stamp being rediscovered next
+        // pass, since retention re-derives its candidates from that view.
+        assert_eq!(
+            app.route_metas().first().map(|m| m.last_used_utc),
+            Some(now),
+            "the resident last_used carries the stamp the effect decided"
         );
+
+        // (c) and the sweep still runs. With the queue parked this produces nothing at all, ever.
+        app.force_retention_sweep();
+        let mut sweeps = 0;
+        for ms in [20, 30, 40, 50] {
+            let plan = quiet_without_metadata(&mut app, ms);
+            if matches!(plan.effects.catalog, ref slot if !slot.is_empty()) {
+                sweeps += 1;
+            }
+        }
+        assert!(sweeps > 0, "the hourly sweep never reached the expired route — the queue parked it");
     }
 
     /// The delivered id is a pass old, so the domain re-derives the rule rather than trusting it:
@@ -1146,6 +1200,72 @@ mod tests {
         );
     }
 
+    /// **The regression #1494's on-glass soak found.** An intent admitted *between* one pass and the
+    /// next must survive the residual drain that runs in between, and with
+    /// [`App::drain_host_commands`](crate::App::drain_host_commands) it does not: that walk **pulls**
+    /// from every domain — `next_plan_effect` here — so it takes the rider's request, mints the
+    /// operation, hands back a `PlanRoute` command the executor then declines to perform, and leaves
+    /// Navigator holding an operation nobody will ever answer. On the board that was a planning
+    /// spinner that redrew at ~15 Hz forever, and every later plan silently refused, because
+    /// `next_plan_effect` returns `None` while an operation is live.
+    ///
+    /// Every board seam that runs between the drain and the pass is exposed to it: the debug link's
+    /// route plan, the phone's remote update check (`open_remote_dfu_check`), a BLE clock stamp
+    /// arming a settings write. `drain_residual_commands` asks for the three residual classes **by
+    /// name** instead, which is what makes them safe — and this test is what says so.
+    #[test]
+    fn an_intent_admitted_between_two_passes_survives_the_residual_drain() {
+        let mut app = navigating();
+        quiet(&mut app, 10);
+
+        // A seam outside the pass admits a plan — exactly what the board's debug `N` arm does.
+        app.admit_navigator_intent(crate::navigator::NavigatorIntent::PlanRoute(crate::activity::NavRequest::new(
+            (0, 0),
+            (1, 1),
+            "Bench",
+        )));
+
+        // The executor's residual drain runs before its next pass. It must not touch Navigator.
+        let mut mail: crate::HostMailbox = crate::HostMailbox::new();
+        let _ = app.drain_residual_commands(&mut mail);
+        let mut drained = Vec::new();
+        while let Some(command) = mail.pop() {
+            drained.push(command);
+        }
+        assert!(drained.is_empty(), "the residual drain reached past its three classes: {drained:?}");
+
+        let plan = quiet(&mut app, 20);
+        let mut effects = plan.effects;
+        assert!(
+            matches!(effects.navigator.take(), Some(crate::navigator::NavigatorEffect::Acquire { .. })),
+            "the plan admitted between the passes reached the executor"
+        );
+
+        // And the whole-order drain is what would have eaten it — pinned so the two cannot be
+        // confused again. A second request, a full drain, and the effect never comes.
+        let mut app = navigating();
+        quiet(&mut app, 10);
+        app.admit_navigator_intent(crate::navigator::NavigatorIntent::PlanRoute(crate::activity::NavRequest::new(
+            (0, 0),
+            (1, 1),
+            "Bench",
+        )));
+        let mut mail: crate::HostMailbox = crate::HostMailbox::new();
+        let _ = app.drain_host_commands(&mut mail);
+        let mut drained = Vec::new();
+        while let Some(command) = mail.pop() {
+            drained.push(command);
+        }
+        assert!(
+            drained.iter().any(|c| matches!(c, crate::HostCommand::PlanRoute(_))),
+            "the full walk mints the operation on the way past: {drained:?}"
+        );
+        assert!(
+            quiet(&mut app, 20).effects.navigator.is_empty(),
+            "…and Navigator is then holding an operation the pass can never hand out"
+        );
+    }
+
     /// A typed executor's wake is blind to the legacy mailbox, and the rider's **ride save** lives
     /// there. `has_pending_residual_command` is what a runtime that sleeps until the next event
     /// folds in so the close costs one immediate pass rather than one wake — which on a static
@@ -1167,7 +1287,7 @@ mod tests {
         assert!(app.has_pending_residual_command(), "the rider's save is owed to the residual drain");
 
         let mut mail: crate::HostMailbox = crate::HostMailbox::new();
-        let _ = app.drain_host_commands(&mut mail);
+        let _ = app.drain_residual_commands(&mut mail);
         assert!(!app.has_pending_residual_command(), "and the drain clears it — one pass, not a spin");
 
         // The distinction that makes the narrow predicate necessary: a viewed ride keeps

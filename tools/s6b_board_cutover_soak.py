@@ -433,6 +433,17 @@ def liveness_probe(link: Link, retry: bool = True) -> None:
         print(f"  liveness: only {acks}/6 taps acknowledged — the cable is lossy, results may be noisy")
 
 
+def reached_map(link: Link) -> bool:
+    """Whether the base screen is the Map, probed the only way a quiet screen can be.
+
+    A correct Map redraws nothing when nothing changed, so waiting for `map frame:` with no stimulus
+    times out on a perfectly healthy one. `Z` pins the camera scale and forces exactly one redraw,
+    and that redraw is a `map frame:` line **only** if the base actually draws the map."""
+    mark = link.mark()
+    link.zoom(22.0)
+    return link.wait_for(mark, MAP_FRAME, timeout=2.0)
+
+
 class Aborted(SystemExit):
     """The run cannot continue: the rig lost the screen it drives from."""
 
@@ -450,10 +461,8 @@ def heal_to_map(link: Link, attempts: int = 6) -> None:
     line **only** if the base screen actually draws the map — which is the question. If it will not
     come back after `attempts` Backs, stop the run and say so instead of producing evidence about the
     wrong screen."""
-    for attempt in range(attempts):
-        mark = link.mark()
-        link.zoom(20.0 if attempt % 2 else 25.0)
-        if link.wait_for(mark, MAP_FRAME, timeout=2.0):
+    for _ in range(attempts):
+        if reached_map(link):
             return
         link.back()
         time.sleep(0.3)
@@ -467,11 +476,53 @@ def heal_to_map(link: Link, attempts: int = 6) -> None:
 # ── the scenarios ────────────────────────────────────────────────────────────────────────────────
 
 
-def ride_to_map(link: Link) -> None:
-    """Fresh boot → Home → RouteMenu → RouteOverview → Map; the ride starts."""
+def ride_to_map(link: Link, frm: tuple[int, int], to: tuple[int, int]) -> None:
+    """Get a **map base** under the rig, whatever the card holds.
+
+    The stored-route walk (Home → Route menu → overview → Map, three presses) is the fast path and
+    the one a soak card normally takes. It assumes a stored route exists, and a freshly formatted
+    card has none — the presses then land on an empty menu, the rig never reaches a map base, and
+    every later scenario reports failures about the wrong screen. That is a **rig** gap, not a board
+    one, and it cost a run.
+
+    So: walk, probe, and if there is no map base, *make* a route rather than giving up — plan one
+    with `N`, which needs no catalog at all. A finished plan is published, adopted and previewed, so
+    one press off the overview opens the Map on it. Only if that fails too is the run stopped, with
+    a message that names the precondition instead of leaving the operator to infer it from 50 failed
+    cycles."""
     for _ in range(3):
         link.press()
         time.sleep(0.4)
+    if reached_map(link):
+        return
+
+    print("  boot walk: no map base after the stored-route walk — planning one instead")
+    print("             (an empty card has no route to open; the plan does not need one)")
+    for _ in range(4):  # back out of whatever the presses landed on
+        link.back()
+        time.sleep(0.25)
+    mark = link.mark()
+    link.plan(frm, to)
+    # `read_cycle` takes the first token *on the `nav route:` record itself*. A bare substring search
+    # for "ok" over the window matches any unrelated line that happens to contain it — including a
+    # `no-path` answer sitting beside one — and would then press on into a Map that never opened.
+    answered = link.wait_for(mark, PLAN_ANSWER, timeout=30.0)
+    if answered and read_cycle(link.since(mark)).outcome == "ok":
+        link.press()  # off the computed-route overview, onto the Map
+        time.sleep(0.5)
+        if reached_map(link):
+            print("  boot walk: planned a route and opened it — map base reached")
+            return
+
+    raise Aborted(
+        "ABORT — the rig could not reach a map base.\n"
+        "Precondition: the mounted card needs a routable map covering the `--nav-from`/`--nav-to`\n"
+        "coordinates, and either at least one stored route or a plan that succeeds between them.\n"
+        "The defaults are the Freiburg N-S axis; the Grimsel coordinates the S5 rig shipped are\n"
+        "outside this map's bbox and every plan there answers `no-path`.\n"
+        "Check the RTT log for `nav route:` (did the plan run at all?) and `flat: Route menu loaded\n"
+        "N route(s)` (does the card hold any?), then re-run."
+    )
 
 
 def stream_fixes(link: Link, base: tuple[int, int], steps: int, delay: float = 1.0) -> None:
@@ -533,7 +584,7 @@ def scenario_a(link: Link, cycles: int, frm: tuple[int, int], to: tuple[int, int
     arena refusals and zero executor alarms in between. The failure it hunts is a map that stops
     redrawing — silent on a shipping build, which is why it is only visible here."""
     print(f"A: {cycles} plan cycles (render ⊥ nav claim/release, on `App::run_pass`)")
-    ride_to_map(link)
+    ride_to_map(link, frm, to)
     stream_fixes(link, base, 3)
     failures = 0
     banners = 0
@@ -635,7 +686,7 @@ def scenario_c(link: Link, minutes: int, frm: tuple[int, int], to: tuple[int, in
     and a periodic zoom nudge. Every released nav arm must be followed by a map render, the stack
     must never eat into `deep_ride_margin_min`, and no executor alarm may appear in an hour."""
     print(f"C: {minutes} minutes of continuous riding with a plan cycle every ~60 s")
-    ride_to_map(link)
+    ride_to_map(link, frm, to)
     deadline = time.time() + minutes * 60
     failures = 0
     n = 0
@@ -782,7 +833,7 @@ def scenario_g(link: Link) -> int:
     return 0
 
 
-def scenario_h(link: Link, base: tuple[int, int]) -> int:
+def scenario_h(link: Link, frm: tuple[int, int], to: tuple[int, int], base: tuple[int, int]) -> int:
     """**H — the recorder still closes** (the residual `FinishTrack`).
 
     The one open question this scenario settles: the pass applies the rider's Save and the **next**
@@ -790,7 +841,7 @@ def scenario_h(link: Link, base: tuple[int, int]) -> int:
     otherwise append to a closing object. The footer totals must match the last samples, and the ride
     must appear in the menu."""
     print("H: start a ride, let it record for a minute, then Finish → Save.")
-    ride_to_map(link)
+    ride_to_map(link, frm, to)
     stream_fixes(link, base, 60, delay=1.0)
     mark = link.mark()
     input("   Drive Finish → Save on the device, then press Enter. ")
@@ -932,7 +983,7 @@ def main() -> int:
         elif name == "G":
             failures += scenario_g(link)
         elif name == "H":
-            failures += scenario_h(link, base)
+            failures += scenario_h(link, args.nav_from, args.nav_to, base)
         elif name == "I":
             failures += scenario_i(link)
         elif name == "J":

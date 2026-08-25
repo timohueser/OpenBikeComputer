@@ -2006,25 +2006,33 @@ pub(crate) async fn run_app(
             // `FinishTrack`, `ForgetBond` and `DeleteTrip` are the classes whose domains cannot
             // validate an operation token, so they cannot own an outcome (epic #1433 §4.3) — the
             // same three every typed executor still drains, pinned by
-            // `obc_app::device_core::residual`. Anything else here is a class DeviceCore already
-            // owns, and running it beside the effect that carries it would do the work twice: the
-            // board reports and skips rather than panicking mid-ride.
+            // `obc_app::device_core::residual`.
+            //
+            // **Asked for by name**, and that is load-bearing rather than tidy: the whole-order
+            // `drain_host_commands` *pulls* from every domain it walks past — it mints the operation
+            // as it goes — so it would take an intent admitted since this frame's pass and hand back
+            // a command this loop then declines to perform, leaving the domain holding an operation
+            // nobody answers. Everything running between here and `run_pass` is exposed to that: the
+            // debug link's route plan, the phone's remote update check, a BLE clock stamp arming a
+            // settings write.
+            //
+            // The predicate below stays as belt and braces. Anything that still reaches it is a
+            // class DeviceCore owns, and running it beside the effect that carries it would do the
+            // work twice — so the board reports and skips rather than panicking mid-ride.
             //
             // The mailbox — a ~600 B `Deque<HostCommand>` — is a stack temporary scoped to this
             // block and dropped at its close, before the reconcile's `.await`, so it never enters
             // the ride-loop task future (it would re-inflate the #808 poll frame).
             let finish = {
-                use obc_app::device_core::residual::{declined_level, declined_stamp, residual};
+                use obc_app::device_core::residual::{declined_level, residual};
                 let mut finish: Option<obc_app::TrackAction> = None;
                 let mut mailbox: obc_app::HostMailbox = obc_app::HostMailbox::new();
-                let _ = app.drain_host_commands(&mut mailbox);
+                let _ = app.drain_residual_commands(&mut mailbox);
                 while let Some(cmd) = mailbox.pop() {
-                    // The two derived cues are levels the plan's keys answer, and the two retention
-                    // stamps are the class `PlatformSupport::retention_metadata = false` declines —
-                    // the pass emits no sidecar effect for them, so the drain keeps offering the
-                    // candidate and draining it is what mirrors the stamp into the resident view.
-                    // Neither is a residual: nothing is left owed.
-                    if declined_level(&cmd) || declined_stamp(&cmd) {
+                    // The two derived cues are levels the plan's keys answer — re-derived on every
+                    // drain, so they keep coming back and are declined every time rather than
+                    // performed. Not a residual: nothing is left owed.
+                    if declined_level(&cmd) {
                         continue;
                     }
                     if !residual(&cmd) {
