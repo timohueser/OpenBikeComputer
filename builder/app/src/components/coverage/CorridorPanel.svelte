@@ -155,7 +155,7 @@
         deviceError = null;
         try {
             // Dynamic, like every other reach into `lib/usb` from this panel: the panel is in the
-            // entry chunk and `usb/bundle.test.ts` fails if the stack follows it there.
+            // entry chunk and `platform/bundle.test.ts` fails if the stack follows it there.
             const { ObjectKind } = await import("../../lib/usb/protocol");
             deviceEntries = [...(await client.list({ kind: ObjectKind.Route })).entries];
             listedClient = client;
