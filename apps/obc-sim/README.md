@@ -55,6 +55,13 @@ remaining option.
 - `--script TOKENS` applies device input before a headless render. `d`/`u` step, `p` selects, `h`
   holds Select, `b` goes back, `B` holds Back, `H`/`M` leave a partial hold, `w` settles animation,
   `f` draws one preparation frame, `T` performs one route-aware tick, and `I` triggers idle return.
+  The temporary context-drawer prototype uses `c` for no backdrop, `D` for palette-LUT dimming, `S`
+  for a stippled scrim, `C` for fullscreen, and `A` to advance one quarter through its rise (`w`
+  settles it). In the GUI, Down+Back opens the LUT-dimmed drawer. Up/Down browses; Select opens or
+  commits the POI-filter and bike-type editors, while Back cancels an editor or closes the drawer.
+  The top quick-drawer uses `q` (plain) or `Q` (dimmed); in the GUI the physical upper pair,
+  Up+Select, opens it (`Left Arrow`+`Enter` on the keyboard). Its brightness and power-confirmation
+  pages use the same controls.
 - `--expect-screen NAME` refuses the render if the script lands on another screen.
 - `--hold nav|detour` consumes exactly one planner request without starting it, preserving its
   spinner snapshot.

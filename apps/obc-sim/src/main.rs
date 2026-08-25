@@ -951,6 +951,31 @@ fn apply_script(app: &mut App, script: &str, start_ms: u32, hook: &mut dyn FnMut
             'B' => press_hold(app, &mut now, Button::Back),
             'H' => partial_hold(app, &mut now, Button::Select),
             'M' => partial_hold(app, &mut now, Button::Back),
+            // Temporary context-drawer prototype: adaptive with no backdrop (`c`), the dim LUT
+            // (`D`), stipple (`S`), or fullscreen (`C`). Each `A` advances one quarter of the rise.
+            'c' => {
+                let _ = app.debug_toggle_context_drawer(false, obc_app::screen::ContextBackdrop::None);
+            }
+            'D' => {
+                let _ = app.debug_toggle_context_drawer(false, obc_app::screen::ContextBackdrop::DimLut);
+            }
+            'S' => {
+                let _ = app.debug_toggle_context_drawer(false, obc_app::screen::ContextBackdrop::Stipple);
+            }
+            'C' => {
+                let _ = app.debug_toggle_context_drawer(true, obc_app::screen::ContextBackdrop::None);
+            }
+            // Matching top quick-drawer variants (`q` plain, `Q` with the preferred dim LUT).
+            'q' => {
+                let _ = app.debug_toggle_quick_drawer(obc_app::screen::ContextBackdrop::None);
+            }
+            'Q' => {
+                let _ = app.debug_toggle_quick_drawer(obc_app::screen::ContextBackdrop::DimLut);
+            }
+            'A' => {
+                now += 60;
+                feed(app, now, vec![]);
+            }
             // Settle: step the clock ~800 ms in animation-sized ticks (a sweep integrates a
             // dt-capped step per poll, so one big jump would leave it mid-flight) until any
             // time-driven animation (the Menu needle) has finished. Not for use after `H`/`M` —

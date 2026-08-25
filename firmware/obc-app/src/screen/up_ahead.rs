@@ -321,6 +321,18 @@ impl UpAheadScreen {
         self.source.shows_pois().then_some(CorridorKey { filter: self.filter, anchor_m: self.anchor_m })
     }
 
+    /// Apply the temporary context drawer's filter choice through the same state seam as the
+    /// inline picker. Re-homing the cursor also lets `reconcile_corridor` replace its snapshot.
+    pub(crate) fn set_context_filter(&mut self, filter: PoiCategorySet) {
+        self.filter = filter;
+        self.selected = None;
+        self.picker = None;
+    }
+
+    pub(crate) fn context_filter(&self) -> PoiCategorySet {
+        self.filter
+    }
+
     /// The merged rows for this frame's tables, in route order, already source-scoped and filtered.
     fn rows<'a>(&self, waypoints: &'a [WptEntry], corridor: &'a [CorridorPoi], route_loaded: bool) -> Merge<'a> {
         Merge::new(

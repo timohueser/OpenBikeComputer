@@ -23,7 +23,10 @@ use crate::placement::define_placement_constructors;
 use crate::ride::RideSummary;
 use crate::ride_engine::RideEngine;
 use crate::route::RouteSummary;
-use crate::screen::{self, Ctx, MapScreen, Render, RenderFrame, Screen, WarningFlags};
+use crate::screen::{
+    self, ContextBackdrop, ContextDrawerKind, ContextDrawerScreen, Ctx, MapScreen, QuickDrawerScreen, Render,
+    RenderFrame, Screen, WarningFlags,
+};
 use crate::settings::{DateTime, Settings};
 use crate::ui_runtime::UiRuntime;
 use crate::wall_clock::WallClock;
@@ -599,6 +602,9 @@ pub struct App {
     /// Whether a recovered-ride offer has already reached the screen this boot. A recorder may
     /// report the same resumable object on every host pass; the rider sees one decision card.
     recovered_ride_offered: bool,
+    /// Temporary top-drawer brightness level. Kept outside persisted settings until the backlight
+    /// has a real platform port; this only makes repeated simulator opens internally consistent.
+    quick_brightness: u8,
 }
 
 /// Cap on the computed route's shape-preview polyline (#685 §4): the host decimates the planned
@@ -660,6 +666,7 @@ impl App {
             map_name: heapless::String::new(),
             map_obcm_version: 0,
             recovered_ride_offered: false,
+            quick_brightness: 3,
         }
     );
 
@@ -707,6 +714,7 @@ impl App {
             map_name,
             map_obcm_version,
             recovered_ride_offered,
+            quick_brightness,
         } = self;
         assert_eq!(*camera, state, "the camera state is preserved verbatim");
         assert_eq!(activity.mode, Mode::Idle, "boots Idle, not Riding");
@@ -739,6 +747,7 @@ impl App {
         assert!(fw_version.is_empty() && map_name.is_empty(), "the host has identified nothing yet");
         assert_eq!(*map_obcm_version, 0, "no map format known yet");
         assert!(!*recovered_ride_offered, "no recovered ride offered this boot");
+        assert_eq!(*quick_brightness, 3, "the temporary brightness starts one step below maximum");
     }
 
     /// Record one [`HostEvent::StoreChanged`] fact (saturating — a burst rides as a count).
@@ -2368,6 +2377,73 @@ impl App {
         self.ui.stack.last().expect("the stack always has the Home root")
     }
 
+    /// Toggle the temporary contextual-action drawer over a supported screen.
+    ///
+    /// The simulator maps Down+Back to the adaptive LUT-dimmed sheet; its headless script exposes
+    /// every backdrop plus the fullscreen variant for direct comparison. This deliberately
+    /// bypasses the production gesture enum while the interaction is still a mockup.
+    pub fn debug_toggle_context_drawer(&mut self, fullscreen: bool, backdrop: ContextBackdrop) -> bool {
+        if matches!(self.ui.stack.last(), Some(Screen::ContextDrawer(_))) {
+            self.ui.stack.pop();
+            self.ui.map_dirty = true;
+            self.ui.input.cancel_holds();
+            self.ui.hold_cancel_pending = true;
+            return true;
+        }
+        if matches!(self.ui.stack.last(), Some(Screen::QuickDrawer(_))) {
+            self.ui.stack.pop();
+        }
+
+        let Some(base) = self.ui.stack.iter().rev().find(|screen| !screen.is_overlay()) else {
+            return false;
+        };
+        let Some(kind) = ContextDrawerKind::for_screen(base) else {
+            return false;
+        };
+        let filter = match base {
+            Screen::UpAhead(up_ahead) => up_ahead.context_filter(),
+            _ => obc_reader::PoiCategorySet::ALL,
+        };
+        screen::apply(
+            &mut self.ui.stack,
+            screen::Transition::Push(Screen::ContextDrawer(
+                ContextDrawerScreen::new(kind, self.ui.now_ms, fullscreen, backdrop).with_filter(filter),
+            )),
+        );
+        self.ui.map_dirty = true;
+        self.ui.input.cancel_holds();
+        self.ui.hold_cancel_pending = true;
+        true
+    }
+
+    /// Toggle the temporary device-wide quick drawer. The simulator maps the physical upper pair
+    /// (Up+Select) to this hook while the production chord grammar is still being designed.
+    pub fn debug_toggle_quick_drawer(&mut self, backdrop: ContextBackdrop) -> bool {
+        if matches!(self.ui.stack.last(), Some(Screen::QuickDrawer(_))) {
+            self.ui.stack.pop();
+            self.ui.map_dirty = true;
+            self.ui.input.cancel_holds();
+            self.ui.hold_cancel_pending = true;
+            return true;
+        }
+        if matches!(self.ui.stack.last(), Some(Screen::ContextDrawer(_))) {
+            self.ui.stack.pop();
+        }
+
+        screen::apply(
+            &mut self.ui.stack,
+            screen::Transition::Push(Screen::QuickDrawer(QuickDrawerScreen::new(
+                self.ui.now_ms,
+                backdrop,
+                self.quick_brightness,
+            ))),
+        );
+        self.ui.map_dirty = true;
+        self.ui.input.cancel_holds();
+        self.ui.hold_cancel_pending = true;
+        true
+    }
+
     /// Number of POIs in the current [`poi_scratch`](App::poi_scratch) snapshot (0 when none has
     /// been taken). A test/introspection hook for the POIs browser's static snapshot.
     pub fn poi_snapshot_len(&self) -> usize {
@@ -2788,7 +2864,20 @@ impl App {
         // Navigator's detour level before the screen speaks, so a cancellation it admits takes the
         // preview polyline with it (see `sync_detour_preview`).
         let detour_planned_before = self.navigator.detour_planned();
-        let App { state, activity, settings, catalogs, nav_profiles, ride, ui, navigator, dfu, storage, .. } = self;
+        let App {
+            state,
+            activity,
+            settings,
+            catalogs,
+            nav_profiles,
+            ride,
+            ui,
+            navigator,
+            dfu,
+            storage,
+            quick_brightness,
+            ..
+        } = self;
         let mut cx = Ctx {
             state,
             activity,
@@ -2809,6 +2898,24 @@ impl App {
             now_ms: ui.now_ms,
         };
         let t = ui.stack.last_mut().expect("the stack always has the Home root").handle(g, &mut cx);
+        let drawer_filter = match ui.stack.last_mut() {
+            Some(Screen::ContextDrawer(drawer)) => drawer.take_filter_commit(),
+            _ => None,
+        };
+        if let Some(filter) = drawer_filter {
+            for screen in ui.stack.iter_mut().rev().skip(1) {
+                if let Screen::UpAhead(up_ahead) = screen {
+                    up_ahead.set_context_filter(filter);
+                    break;
+                }
+            }
+        }
+        if let Some(brightness) = match ui.stack.last_mut() {
+            Some(Screen::QuickDrawer(drawer)) => drawer.take_brightness_commit(),
+            _ => None,
+        } {
+            *quick_brightness = brightness;
+        }
         let depth_before = ui.stack.len();
         // Whether this transition actually changes the stack (Pop/Home at the root are no-ops).
         // A change invalidates any in-flight hold's target — see `hold_cancel_pending`.
@@ -3267,14 +3374,34 @@ impl App {
             travel_deg: ride.travel_deg,
         };
         let mut rx = RenderFrame { scene, render: rx };
-        // The one Canvas of the frame: every screen draws through it (the base screen — the only
-        // possible Map — writes `rx.stats`; the overlays above it leave the stats untouched).
-        // A drained region clip makes it reject whole out-of-region primitives — the half of a
-        // region-scoped repaint the target's pixel clip can't save (#500 follow-up).
-        let mut cv = Canvas::new(target, &color_fn);
-        cv.set_clip(render_clip);
-        for scr in ui.stack.iter().skip(base) {
-            scr.draw(&mut cv, &mut rx);
+        let backdrop = ui.stack.iter().skip(base + 1).find_map(|screen| match screen {
+            Screen::ContextDrawer(drawer) => Some(drawer.backdrop()),
+            Screen::QuickDrawer(drawer) => Some(drawer.backdrop()),
+            _ => None,
+        });
+        if backdrop == Some(ContextBackdrop::DimLut) {
+            // The base and overlay intentionally use separate colour policies: quantize every base
+            // colour through the complete device-64 dim LUT, then draw the drawer in the untouched
+            // palette. No framebuffer readback or alpha blend is involved.
+            let dim_color = |color| color_fn(crate::screen::dim_context_color(color));
+            {
+                let mut cv = Canvas::new(target, &dim_color);
+                cv.set_clip(render_clip);
+                ui.stack[base].draw(&mut cv, &mut rx);
+            }
+
+            let mut cv = Canvas::new(target, &color_fn);
+            cv.set_clip(render_clip);
+            for scr in ui.stack.iter().skip(base + 1) {
+                scr.draw(&mut cv, &mut rx);
+            }
+        } else {
+            // The normal one-Canvas frame: base plus every overlay share the host colour policy.
+            let mut cv = Canvas::new(target, &color_fn);
+            cv.set_clip(render_clip);
+            for scr in ui.stack.iter().skip(base) {
+                scr.draw(&mut cv, &mut rx);
+            }
         }
         rx.stats
     }
