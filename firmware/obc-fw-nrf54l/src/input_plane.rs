@@ -25,7 +25,7 @@ use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::channel::{Channel, Sender};
 use embassy_sync::signal::Signal;
 use embassy_time::{Instant, Timer};
-use obc_app::{Gesture, InputPlane};
+use obc_app::{DrawerGesture, Gesture, InputPlane};
 use obc_platform::ButtonInput;
 use obc_ports::{InputClock, InputEvent, InputSource};
 
@@ -52,6 +52,10 @@ pub(crate) const GESTURE_QUEUE: usize = 16;
 /// Recognised gestures flowing from the input plane (high priority) to the map plane (thread mode) —
 /// the only lock-free shared state between the two planes.
 pub(crate) static GESTURES: Channel<CriticalSectionRawMutex, Gesture, GESTURE_QUEUE> = Channel::new();
+
+/// Global drawer chords flowing beside ordinary screen gestures. They stay out of [`Gesture`] so
+/// every screen continues to handle only its local five-action vocabulary.
+pub(crate) static DRAWERS: Channel<CriticalSectionRawMutex, DrawerGesture, 2> = Channel::new();
 
 /// Wakes the event-driven map loop the moment a hold starts **charging** (and keeps it awake while
 /// the bulge is live). Without it the loop has no wake source for a press: a button-*down* emits no
@@ -142,6 +146,7 @@ pub(crate) async fn input_task(
     mut buttons: ButtonInput<Input<'static>>,
     input_plane: &'static BlockingMutex<CriticalSectionRawMutex, RefCell<InputPlane>>,
     gestures: Sender<'static, CriticalSectionRawMutex, Gesture, GESTURE_QUEUE>,
+    drawers: Sender<'static, CriticalSectionRawMutex, DrawerGesture, 2>,
 ) {
     loop {
         let now = Instant::now().as_millis() as u32;
@@ -156,11 +161,17 @@ pub(crate) async fn input_task(
             let plane = &mut *cell.borrow_mut();
             let mut dbg = debug_input();
             let mut input = ChainedInput { a: &mut buttons, b: &mut dbg };
-            plane.recognize(InputClock(now), &mut input, |g| {
+            let drawer = plane.recognize(InputClock(now), &mut input, |g| {
                 if gestures.try_send(g).is_err() {
                     defmt::warn!("gesture channel full — dropped a gesture (map plane stalled?)");
                 }
             });
+            if let Some(drawer) = drawer {
+                if drawers.try_send(drawer).is_err() {
+                    defmt::warn!("drawer channel full — dropped a chord (map plane stalled?)");
+                }
+                INPUT_WAKE.signal(());
+            }
             (plane.overlay_active(), plane.select_hold_progress() > 0.0 || plane.back_hold_progress() > 0.0)
         });
         // Nudge the event-driven map loop for the whole hold lifecycle (charge → pop/retract). On

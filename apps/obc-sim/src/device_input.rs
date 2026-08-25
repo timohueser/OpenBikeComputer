@@ -25,7 +25,8 @@ pub struct DeviceInput {
     pending: VecDeque<InputEvent>,
     /// Sub-step scroll accumulator, in fractional steps.
     accum: f32,
-    /// Debounced button-held state, so we only emit edges on transitions.
+    up_down: bool,
+    down_down: bool,
     select_down: bool,
     back_down: bool,
 }
@@ -36,6 +37,8 @@ impl DeviceInput {
             start: Instant::now(),
             pending: VecDeque::new(),
             accum: 0.0,
+            up_down: false,
+            down_down: false,
             select_down: false,
             back_down: false,
         }
@@ -66,6 +69,8 @@ impl DeviceInput {
     /// only on a transition, so holding produces exactly one Down.
     pub fn set_button(&mut self, b: Button, down: bool) {
         let cur = match b {
+            Button::Up => &mut self.up_down,
+            Button::Down => &mut self.down_down,
             Button::Select => &mut self.select_down,
             Button::Back => &mut self.back_down,
         };
@@ -74,15 +79,6 @@ impl DeviceInput {
             let edge = if down { ButtonEvent::Down(b) } else { ButtonEvent::Up(b) };
             self.pending.push_back(InputEvent::Button(edge));
         }
-    }
-
-    /// Drop queued constituent input when a two-button drawer chord wins. The shared recognizer is
-    /// cancelled by the App hook at the same edge; suppressing releases here prevents a chord from
-    /// turning into a stray Select/Back tap on the newly opened drawer.
-    pub fn cancel_buttons(&mut self) {
-        self.pending.clear();
-        self.select_down = false;
-        self.back_down = false;
     }
 
     /// Pull whole steps out of the scroll accumulator, keeping the remainder.
@@ -148,17 +144,6 @@ mod tests {
         assert_eq!(d.poll(), Some(InputEvent::Button(ButtonEvent::Down(Button::Select))));
         assert_eq!(d.poll(), Some(InputEvent::Button(ButtonEvent::Up(Button::Select))));
         assert_eq!(d.poll(), None);
-    }
-
-    #[test]
-    fn cancelling_a_chord_drops_its_edges_and_release() {
-        let mut d = DeviceInput::new();
-        d.set_button(Button::Select, true);
-        d.cancel_buttons();
-        assert_eq!(d.poll(), None);
-
-        d.set_button(Button::Select, false);
-        assert_eq!(d.poll(), None, "the physical release is not a tap on the opened drawer");
     }
 
     /// A zero-count step must queue nothing — a frame with no Up/Down activity mustn't emit a

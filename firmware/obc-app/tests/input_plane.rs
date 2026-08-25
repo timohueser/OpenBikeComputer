@@ -4,7 +4,7 @@
 //! the single-call [`App::handle_input`] the simulator uses, with the firmware's own-plane overlay
 //! staying in lock-step with the gestures the map plane applies.
 
-use obc_app::{App, AppState, Gesture, InputPlane, RouteSummary};
+use obc_app::{App, AppState, Gesture, InputPlane, RouteSummary, Screen};
 use obc_map_scene::BBox;
 use obc_ports::{Button, InputClock, InputEvent};
 
@@ -25,7 +25,9 @@ fn one_route() -> RouteSummary {
 /// draining the gesture channel.
 fn drive_split(app: &mut App, plane: &mut InputPlane, t: u32, evs: &[InputEvent]) {
     let mut pending: Vec<Gesture> = Vec::new();
-    plane.recognize(InputClock(t), &mut keys(evs), |g| pending.push(g));
+    if let Some(drawer) = plane.recognize(InputClock(t), &mut keys(evs), |g| pending.push(g)) {
+        app.apply_drawer_gesture(drawer, InputClock(t));
+    }
     for g in pending {
         app.apply_gesture(g);
     }
@@ -101,18 +103,18 @@ fn standalone_input_plane_recognizes_the_same_gestures_as_handle_input() {
     let mut plane = InputPlane::new();
     let mut got: Vec<Gesture> = Vec::new();
 
-    plane.recognize(InputClock(0), &mut keys(&[down(Button::Select)]), |g| got.push(g));
+    let _ = plane.recognize(InputClock(0), &mut keys(&[down(Button::Select)]), |g| got.push(g));
     assert!(got.is_empty(), "a bare button-down recognises nothing");
-    plane.recognize(InputClock(300), &mut keys(&[]), |g| got.push(g));
+    let _ = plane.recognize(InputClock(300), &mut keys(&[]), |g| got.push(g));
     assert!(got.is_empty(), "still charging before the threshold");
     assert!(plane.overlay_active(), "the bulge is live past the dead zone");
 
-    plane.recognize(InputClock(600), &mut keys(&[]), |g| got.push(g));
+    let _ = plane.recognize(InputClock(600), &mut keys(&[]), |g| got.push(g));
     assert_eq!(got, vec![Gesture::Hold], "the long-press fires the instant it crosses 500 ms");
 
     // A step recognises immediately; a release after the hold is silent.
     got.clear();
-    plane.recognize(InputClock(620), &mut keys(&[step(3), up(Button::Select)]), |g| got.push(g));
+    let _ = plane.recognize(InputClock(620), &mut keys(&[step(3), up(Button::Select)]), |g| got.push(g));
     assert_eq!(got, vec![Gesture::Step(3)], "the step fires immediately; the post-hold release is silent");
 }
 
@@ -126,7 +128,7 @@ fn multiple_events_in_one_poll_all_fire_in_order() {
 
     // One frame's worth: two zoom steps, a reverse step, then a quick Select tap
     // (down+up under the hold threshold → a single `Press`), all in one poll batch.
-    plane.recognize(
+    let _ = plane.recognize(
         InputClock(1000),
         &mut keys(&[step(1), step(2), step(-1), down(Button::Select), up(Button::Select)]),
         |g| got.push(g),
@@ -136,4 +138,19 @@ fn multiple_events_in_one_poll_all_fire_in_order() {
         vec![Gesture::Step(1), Gesture::Step(2), Gesture::Step(-1), Gesture::Press],
         "every queued event surfaces once, in arrival order, from a single frame"
     );
+}
+
+#[test]
+fn app_handle_input_applies_the_global_quick_drawer_chord_without_local_actions() {
+    let mut app = App::new_idle(AppState::new(0, 0, 0.05));
+    let _ = app.take_dirty();
+
+    app.handle_input(InputClock(10), &mut keys(&[down(Button::Up), down(Button::Select)]));
+    assert!(matches!(app.top_screen(), Screen::QuickDrawer(_)));
+
+    app.handle_input(InputClock(20), &mut keys(&[up(Button::Up), up(Button::Select)]));
+    assert!(matches!(app.top_screen(), Screen::QuickDrawer(_)), "constituent releases are silent");
+
+    app.handle_input(InputClock(30), &mut keys(&[down(Button::Up), down(Button::Select)]));
+    assert!(matches!(app.top_screen(), Screen::Home(_)), "a second chord toggles the drawer closed");
 }

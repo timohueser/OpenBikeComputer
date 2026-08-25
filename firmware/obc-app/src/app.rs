@@ -16,7 +16,7 @@ use crate::device_core::storage_info::StorageInfo;
 use crate::dfu::DfuState;
 use crate::dirty::Dirty;
 use crate::host::{DrainStatus, HostCommand, HostCommandClass, HostEvent, HostMailbox, HOST_COMMAND_CLASSES};
-use crate::input::Gesture;
+use crate::input::{DrawerGesture, Gesture};
 use crate::navigator::PlanFamily;
 use crate::navigator::{NavigatorIntent, NavigatorMachine, PlanPhase};
 use crate::placement::define_placement_constructors;
@@ -2379,10 +2379,13 @@ impl App {
 
     /// Toggle the temporary contextual-action drawer over a supported screen.
     ///
-    /// The simulator maps Down+Back to the adaptive LUT-dimmed sheet; its headless script exposes
-    /// every backdrop plus the fullscreen variant for direct comparison. This deliberately
-    /// bypasses the production gesture enum while the interaction is still a mockup.
+    /// The production Down+Back chord uses the adaptive LUT-dimmed sheet; headless scripts expose
+    /// the other backdrop variants for visual comparison.
     pub fn debug_toggle_context_drawer(&mut self, fullscreen: bool, backdrop: ContextBackdrop) -> bool {
+        self.toggle_context_drawer(fullscreen, backdrop, self.ui.now_ms)
+    }
+
+    fn toggle_context_drawer(&mut self, fullscreen: bool, backdrop: ContextBackdrop, now_ms: u32) -> bool {
         if matches!(self.ui.stack.last(), Some(Screen::ContextDrawer(_))) {
             self.ui.stack.pop();
             self.ui.map_dirty = true;
@@ -2407,7 +2410,7 @@ impl App {
         screen::apply(
             &mut self.ui.stack,
             screen::Transition::Push(Screen::ContextDrawer(
-                ContextDrawerScreen::new(kind, self.ui.now_ms, fullscreen, backdrop).with_filter(filter),
+                ContextDrawerScreen::new(kind, now_ms, fullscreen, backdrop).with_filter(filter),
             )),
         );
         self.ui.map_dirty = true;
@@ -2416,9 +2419,12 @@ impl App {
         true
     }
 
-    /// Toggle the temporary device-wide quick drawer. The simulator maps the physical upper pair
-    /// (Up+Select) to this hook while the production chord grammar is still being designed.
+    /// Toggle the temporary device-wide quick drawer. Production maps Up+Select to this action.
     pub fn debug_toggle_quick_drawer(&mut self, backdrop: ContextBackdrop) -> bool {
+        self.toggle_quick_drawer(backdrop, self.ui.now_ms)
+    }
+
+    fn toggle_quick_drawer(&mut self, backdrop: ContextBackdrop, now_ms: u32) -> bool {
         if matches!(self.ui.stack.last(), Some(Screen::QuickDrawer(_))) {
             self.ui.stack.pop();
             self.ui.map_dirty = true;
@@ -2433,7 +2439,7 @@ impl App {
         screen::apply(
             &mut self.ui.stack,
             screen::Transition::Push(Screen::QuickDrawer(QuickDrawerScreen::new(
-                self.ui.now_ms,
+                now_ms,
                 backdrop,
                 self.quick_brightness,
             ))),
@@ -2442,6 +2448,14 @@ impl App {
         self.ui.input.cancel_holds();
         self.ui.hold_cancel_pending = true;
         true
+    }
+
+    /// Apply a global drawer chord recognized by the shared input plane.
+    pub fn apply_drawer_gesture(&mut self, gesture: DrawerGesture, clock: InputClock) -> bool {
+        match gesture {
+            DrawerGesture::Quick => self.toggle_quick_drawer(ContextBackdrop::DimLut, clock.0),
+            DrawerGesture::Context => self.toggle_context_drawer(false, ContextBackdrop::DimLut, clock.0),
+        }
     }
 
     /// Number of POIs in the current [`poi_scratch`](App::poi_scratch) snapshot (0 when none has
@@ -2783,9 +2797,12 @@ impl App {
         // `self.ui.input`). Recognition depends only on the raw events + clock, so this is identical to
         // applying inline; the buffer capacity dwarfs one frame's bounded events.
         let mut pending: heapless::Vec<Gesture, GESTURE_BUF> = heapless::Vec::new();
-        self.ui.input.recognize(clock, input, |g| {
+        let drawer = self.ui.input.recognize(clock, input, |g| {
             let _ = pending.push(g);
         });
+        if let Some(drawer) = drawer {
+            self.apply_drawer_gesture(drawer, clock);
+        }
         self.apply_gesture_batch(&pending);
         // A single-loop host has no second recognizer to cancel, so it consumes the latch the batch
         // may have set rather than leaving it for a plane that does not exist.
@@ -2802,9 +2819,12 @@ impl App {
     /// its input stage, from the same frame's clock.
     pub fn recognize(&mut self, clock: InputClock, input: &mut dyn InputSource) -> heapless::Vec<Gesture, GESTURE_BUF> {
         let mut pending: heapless::Vec<Gesture, GESTURE_BUF> = heapless::Vec::new();
-        self.ui.input.recognize(clock, input, |g| {
+        let drawer = self.ui.input.recognize(clock, input, |g| {
             let _ = pending.push(g);
         });
+        if let Some(drawer) = drawer {
+            self.apply_drawer_gesture(drawer, clock);
+        }
         pending
     }
 

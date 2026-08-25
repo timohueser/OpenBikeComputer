@@ -1,7 +1,7 @@
 //! Gesture recognition — the shared input layer.
 //!
-//! Turns raw [`InputEvent`]s (Up/Down steps + Select/Back button edges) plus a millis clock into
-//! the five UI [`Gesture`]s, identically across host and MCU. `no_std`, zero-alloc, and
+//! Turns raw four-button edges plus directly injected steps and a millis clock into UI gestures
+//! and global drawer chords, identically across host and MCU. `no_std`, zero-alloc, and
 //! clock-agnostic — the caller passes the current time in, so no platform timer is baked in.
 
 use obc_ports::{Button, ButtonEvent, InputEvent};
@@ -16,6 +16,23 @@ pub const DEFAULT_HOLD_MS: u32 = 500;
 /// So the three outcomes are: release ≤ tap → press; tap < release < hold → ignored; held ≥ hold →
 /// long-press.
 pub const DEFAULT_TAP_MS: u32 = 200;
+
+/// Maximum separation between the two press edges of a drawer chord. Directional movement waits
+/// this long before firing, unless released first, so a chord never leaks a navigation step.
+pub const DEFAULT_CHORD_MS: u32 = 100;
+/// Delay from a directional press to its first repeat, measured from the original press edge.
+pub const DEFAULT_REPEAT_DELAY_MS: u32 = 350;
+/// Directional auto-repeat interval after the first repeat.
+pub const DEFAULT_REPEAT_INTERVAL_MS: u32 = 120;
+
+/// Device-wide button combinations handled above the current screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DrawerGesture {
+    /// Up + Select: toggle the quick-settings drawer.
+    Quick,
+    /// Down + Back: toggle the contextual-action drawer.
+    Context,
+}
 
 /// The five UI gestures, recognized from raw [`InputEvent`]s + a millis clock by [`Gestures`]. A
 /// screen's `handle` reacts to exactly these.
@@ -40,6 +57,15 @@ struct Held {
     since: Option<u32>,
     /// Whether the long-press already fired for the current press.
     fired_long: bool,
+}
+
+/// State for one directional button. Its first step is delayed just long enough to arbitrate a
+/// drawer chord; a quick release fires immediately.
+#[derive(Debug, Clone, Copy, Default)]
+struct DirectionHeld {
+    since: Option<u32>,
+    fired_initial: bool,
+    next_repeat: Option<u32>,
 }
 
 impl Held {
@@ -68,12 +94,25 @@ pub struct Gestures {
     tap_ms: u32,
     select: Held,
     back: Held,
+    up: DirectionHeld,
+    down: DirectionHeld,
+    chord: Option<DrawerGesture>,
+    pending_drawer: Option<DrawerGesture>,
 }
 
 impl Gestures {
     /// A recognizer with a custom long-press threshold (ms) and the [`DEFAULT_TAP_MS`] tap window.
     pub fn new(hold_ms: u32) -> Self {
-        Gestures { hold_ms, tap_ms: DEFAULT_TAP_MS.min(hold_ms), select: Held::default(), back: Held::default() }
+        Gestures {
+            hold_ms,
+            tap_ms: DEFAULT_TAP_MS.min(hold_ms),
+            select: Held::default(),
+            back: Held::default(),
+            up: DirectionHeld::default(),
+            down: DirectionHeld::default(),
+            chord: None,
+            pending_drawer: None,
+        }
     }
 
     /// A recognizer with the [`DEFAULT_HOLD_MS`] threshold.
@@ -82,7 +121,8 @@ impl Gestures {
     }
 
     /// Feed one raw event captured at time `now` (ms). Returns the gesture it completes, if any:
-    /// `Step` fires immediately; `Press`/`Back` fire on a release **within the tap window**
+    /// Directly injected `Step` fires immediately; Up/Down edges are chord-arbitrated.
+    /// `Press`/`Back` fire on a release **within the tap window**
     /// ([`tap_ms`](Self::tap_ms)). A release after the tap window (cancelled long-press) or after
     /// the long-press already fired yields nothing.
     pub fn on_event(&mut self, ev: InputEvent, now: u32) -> Option<Gesture> {
@@ -90,14 +130,37 @@ impl Gestures {
             InputEvent::Step(0) => None,
             InputEvent::Step(n) => Some(Gesture::Step(n)),
             InputEvent::Button(ButtonEvent::Down(b)) => {
-                let h = self.btn(b);
-                h.since = Some(now);
-                h.fired_long = false;
+                match b {
+                    Button::Up | Button::Down => {
+                        let h = self.direction(b);
+                        if h.since.is_none() {
+                            *h = DirectionHeld { since: Some(now), fired_initial: false, next_repeat: None };
+                        }
+                    }
+                    Button::Select | Button::Back => {
+                        let h = self.action(b);
+                        if h.since.is_none() {
+                            h.since = Some(now);
+                            h.fired_long = false;
+                        }
+                    }
+                }
+                self.try_chord(now);
                 None
             }
             InputEvent::Button(ButtonEvent::Up(b)) => {
+                if self.release_chord_part(b) {
+                    return None;
+                }
+                if matches!(b, Button::Up | Button::Down) {
+                    let dir = direction_step(b);
+                    let h = self.direction(b);
+                    let fire = h.since.is_some() && !h.fired_initial;
+                    *h = DirectionHeld::default();
+                    return fire.then_some(Gesture::Step(dir));
+                }
                 let tap_ms = self.tap_ms;
-                let h = self.btn(b);
+                let h = self.action(b);
                 let since = h.since;
                 let fired = h.fired_long;
                 *h = Held::default();
@@ -107,18 +170,45 @@ impl Gestures {
                 is_tap.then_some(match b {
                     Button::Select => Gesture::Press,
                     Button::Back => Gesture::Back,
+                    Button::Up | Button::Down => unreachable!(),
                 })
             }
         }
+    }
+
+    /// Take the global drawer chord recognized by the most recent event drain, if any.
+    pub fn take_drawer(&mut self) -> Option<DrawerGesture> {
+        self.pending_drawer.take()
     }
 
     /// Call once per frame with the current millis. Fires `Hold`/`BackHold` the
     /// instant a held button crosses the threshold. At most one gesture per call;
     /// if both buttons cross in the same frame, the other fires next frame.
     pub fn tick(&mut self, now: u32) -> Option<Gesture> {
+        for b in [Button::Up, Button::Down] {
+            if self.chord_uses(b) {
+                continue;
+            }
+            let h = self.direction(b);
+            let Some(t0) = h.since else { continue };
+            let elapsed = now.wrapping_sub(t0);
+            if !h.fired_initial && elapsed >= DEFAULT_CHORD_MS {
+                h.fired_initial = true;
+                h.next_repeat = Some(t0.wrapping_add(DEFAULT_REPEAT_DELAY_MS));
+                return Some(Gesture::Step(direction_step(b)));
+            }
+            if h.fired_initial && h.next_repeat.is_some_and(|due| now.wrapping_sub(due) < u32::MAX / 2) {
+                h.next_repeat = Some(now.wrapping_add(DEFAULT_REPEAT_INTERVAL_MS));
+                return Some(Gesture::Step(direction_step(b)));
+            }
+        }
+
         let hold_ms = self.hold_ms;
         for (b, long) in [(Button::Select, Gesture::Hold), (Button::Back, Gesture::BackHold)] {
-            let h = self.btn(b);
+            if self.chord_uses(b) {
+                continue;
+            }
+            let h = self.action(b);
             if let Some(t0) = h.since {
                 if !h.fired_long && now.wrapping_sub(t0) >= hold_ms {
                     h.fired_long = true;
@@ -164,11 +254,90 @@ impl Gestures {
         }
     }
 
-    fn btn(&mut self, b: Button) -> &mut Held {
+    fn action(&mut self, b: Button) -> &mut Held {
         match b {
             Button::Select => &mut self.select,
             Button::Back => &mut self.back,
+            Button::Up | Button::Down => unreachable!(),
         }
+    }
+
+    fn direction(&mut self, b: Button) -> &mut DirectionHeld {
+        match b {
+            Button::Up => &mut self.up,
+            Button::Down => &mut self.down,
+            Button::Select | Button::Back => unreachable!(),
+        }
+    }
+
+    fn try_chord(&mut self, now: u32) {
+        if self.chord.is_some() {
+            return;
+        }
+        let candidate = [
+            (DrawerGesture::Quick, self.up.since, self.up.fired_initial, self.select.since, self.select.fired_long),
+            (DrawerGesture::Context, self.down.since, self.down.fired_initial, self.back.since, self.back.fired_long),
+        ]
+        .into_iter()
+        .find(|(_, direction, moved, action, held)| {
+            !*moved
+                && !*held
+                && direction.is_some_and(|t| now.wrapping_sub(t) <= DEFAULT_CHORD_MS)
+                && action.is_some_and(|t| now.wrapping_sub(t) <= DEFAULT_CHORD_MS)
+        })
+        .map(|(drawer, ..)| drawer);
+
+        if let Some(drawer) = candidate {
+            self.chord = Some(drawer);
+            self.pending_drawer = Some(drawer);
+            match drawer {
+                DrawerGesture::Quick => {
+                    self.up.fired_initial = true;
+                    self.up.next_repeat = None;
+                    self.select.fired_long = true;
+                }
+                DrawerGesture::Context => {
+                    self.down.fired_initial = true;
+                    self.down.next_repeat = None;
+                    self.back.fired_long = true;
+                }
+            }
+        }
+    }
+
+    fn chord_uses(&self, b: Button) -> bool {
+        matches!(
+            (self.chord, b),
+            (Some(DrawerGesture::Quick), Button::Up | Button::Select)
+                | (Some(DrawerGesture::Context), Button::Down | Button::Back)
+        )
+    }
+
+    fn release_chord_part(&mut self, b: Button) -> bool {
+        if !self.chord_uses(b) {
+            return false;
+        }
+        match b {
+            Button::Up | Button::Down => *self.direction(b) = DirectionHeld::default(),
+            Button::Select | Button::Back => *self.action(b) = Held::default(),
+        }
+        let released = match self.chord {
+            Some(DrawerGesture::Quick) => self.up.since.is_none() && self.select.since.is_none(),
+            Some(DrawerGesture::Context) => self.down.since.is_none() && self.back.since.is_none(),
+            None => false,
+        };
+        if released {
+            self.chord = None;
+        }
+        true
+    }
+}
+
+fn direction_step(b: Button) -> i32 {
+    match b {
+        Button::Up => -1,
+        Button::Down => 1,
+        Button::Select | Button::Back => unreachable!(),
     }
 }
 
@@ -302,5 +471,65 @@ mod tests {
         // The Back long-press wasn't lost — it fires on the next tick, even with no new input.
         assert_eq!(g.tick(500), Some(Gesture::BackHold), "the other hold fires next frame, not dropped");
         assert_eq!(g.tick(500), None, "and each long-press fires exactly once");
+    }
+
+    #[test]
+    fn directional_tap_steps_on_release_and_hold_repeats() {
+        let mut g = Gestures::with_defaults();
+        g.on_event(down(Button::Up), 0);
+        assert_eq!(g.on_event(up(Button::Up), 50), Some(Gesture::Step(-1)), "a quick tap has no grace-window lag");
+
+        g.on_event(down(Button::Down), 1_000);
+        assert_eq!(g.tick(1_099), None, "movement waits while a chord is still possible");
+        assert_eq!(g.tick(1_100), Some(Gesture::Step(1)));
+        assert_eq!(g.tick(1_349), None);
+        assert_eq!(g.tick(1_350), Some(Gesture::Step(1)), "repeat keeps the established 350 ms cadence");
+        assert_eq!(g.tick(1_470), Some(Gesture::Step(1)));
+        assert_eq!(g.on_event(up(Button::Down), 1_500), None, "release after movement is silent");
+    }
+
+    #[test]
+    fn quick_drawer_chord_suppresses_both_constituent_actions() {
+        let mut g = Gestures::with_defaults();
+        assert_eq!(g.on_event(down(Button::Up), 0), None);
+        assert_eq!(g.on_event(down(Button::Select), 60), None);
+        assert_eq!(g.take_drawer(), Some(DrawerGesture::Quick));
+        assert_eq!(g.tick(600), None, "neither a step nor Select hold leaks through");
+        assert_eq!(g.on_event(up(Button::Up), 610), None);
+        assert_eq!(g.on_event(up(Button::Select), 620), None, "the last release is not a tap");
+
+        g.on_event(down(Button::Up), 700);
+        assert_eq!(g.on_event(up(Button::Up), 750), Some(Gesture::Step(-1)), "the latch clears after both releases");
+    }
+
+    #[test]
+    fn context_drawer_chord_works_in_reverse_press_order() {
+        let mut g = Gestures::with_defaults();
+        g.on_event(down(Button::Back), 10);
+        g.on_event(down(Button::Down), 80);
+        assert_eq!(g.take_drawer(), Some(DrawerGesture::Context));
+        assert_eq!(g.on_event(up(Button::Back), 100), None);
+        assert_eq!(g.on_event(up(Button::Down), 120), None);
+    }
+
+    #[test]
+    fn presses_outside_the_chord_window_remain_independent() {
+        let mut g = Gestures::with_defaults();
+        g.on_event(down(Button::Select), 0);
+        g.on_event(down(Button::Up), DEFAULT_CHORD_MS + 1);
+        assert_eq!(g.take_drawer(), None);
+        assert_eq!(g.on_event(up(Button::Up), 150), Some(Gesture::Step(-1)));
+        assert_eq!(g.on_event(up(Button::Select), 180), Some(Gesture::Press));
+    }
+
+    #[test]
+    fn directional_repeat_survives_millis_wrap_and_rebases_after_a_stall() {
+        let mut g = Gestures::with_defaults();
+        let t0 = u32::MAX - 50;
+        g.on_event(down(Button::Down), t0);
+        assert_eq!(g.tick(t0.wrapping_add(DEFAULT_CHORD_MS)), Some(Gesture::Step(1)));
+        assert_eq!(g.tick(10_000), Some(Gesture::Step(1)), "one catch-up repeat across wrap/stall");
+        assert_eq!(g.tick(10_119), None, "the next repeat is rebased to the resumed tick");
+        assert_eq!(g.tick(10_120), Some(Gesture::Step(1)));
     }
 }

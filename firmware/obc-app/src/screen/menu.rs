@@ -400,6 +400,7 @@ fn draw_icon(cv: &mut impl Surface, i: usize, c: Point, k: f32, color: u16, bg: 
 /// Partly cloudy weather in the same layered grammar as the detailed weather icons: a compact sun
 /// behind an outlined cloud. The cloud's background fill keeps both silhouettes distinct.
 fn icon_weather(cv: &mut impl Surface, c: Point, k: f32, color: u16, bg: u16) {
+    let c = Point::new(c.x, c.y + si(k, 2.0));
     let sun = Point::new(c.x - si(k, 6.0), c.y - si(k, 7.0));
     cv.disc(sun, si(k, 5.0) as u32, color);
     for (dx, dy) in [(-6.0, -6.0), (6.0, -6.0), (-6.0, 6.0), (6.0, 6.0)] {

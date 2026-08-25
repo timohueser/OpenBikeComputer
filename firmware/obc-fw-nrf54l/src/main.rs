@@ -172,7 +172,7 @@ use ls021_flpr::{launch_flpr, relaunch_flpr, FlprError, Frame64, Ls021Flpr};
 // and the map plane's display handle + boot-fault screen. (Unqualified so the input-plane items don't
 // read against the `input_plane` value binding constructed below — they're different namespaces, but
 // this keeps the call sites clean.)
-use input_plane::{input_task, EXECUTOR_HP, GESTURES};
+use input_plane::{input_task, DRAWERS, EXECUTOR_HP, GESTURES};
 use map_plane::{show_boot_fault, MapDisplay};
 
 // VCOM debug-sensor / telemetry stream, behind `debug-uart`: the interrupt-buffered UARTE on the DK's
@@ -1212,7 +1212,7 @@ async fn main(_spawner: Spawner) {
                 info!("FLPR LS021: COM on hardware TIMER21+DPPI+GPIOTE20 (zero-CPU); M33 can WFI between events");
                 c
             };
-            hp.spawn(defmt::unwrap!(input_task(buttons, input_plane, GESTURES.sender())));
+            hp.spawn(defmt::unwrap!(input_task(buttons, input_plane, GESTURES.sender(), DRAWERS.sender())));
             info!("FLPR LS021: gesture/bulge plane on SWI01 @ P3; map plane: thread mode (event-driven, #219)");
             MapDisplay {
                 frame,

@@ -19,7 +19,7 @@
 use embedded_graphics::draw_target::DrawTarget;
 
 use crate::hold_hint::HoldHints;
-use crate::input::{Gesture, Gestures, DEFAULT_HOLD_MS};
+use crate::input::{DrawerGesture, Gesture, Gestures, DEFAULT_HOLD_MS};
 use obc_ports::{InputClock, InputSource};
 
 /// The high-priority input + overlay plane: gesture recognition, the long-press hint
@@ -32,7 +32,7 @@ use obc_ports::{InputClock, InputSource};
 /// confirm-ring progress / last gesture for a host readout. It touches **nothing** the map
 /// plane owns, so it is safe to run preemptively against a long map render.
 pub struct InputPlane {
-    /// The shared gesture recognizer (raw events + clock → the five gestures).
+    /// The shared recognizer (raw events + clock → local gestures and global drawer chords).
     gestures: Gestures,
     /// The global long-press hint overlay (the charge-in-place bulge at the Select / Back
     /// edges), drawn above every screen on the dedicated overlay layer.
@@ -72,8 +72,14 @@ impl InputPlane {
     /// may apply each gesture inline or buffer them into a channel; both are identical.
     ///
     /// Call once per frame even with no pending events: that is how a held button's long-press
-    /// fires at its threshold and how the bulge animates while charging.
-    pub fn recognize(&mut self, clock: InputClock, input: &mut dyn InputSource, mut on_gesture: impl FnMut(Gesture)) {
+    /// fires at its threshold and how the bulge animates while charging. Returns a global drawer
+    /// chord separately from the screen-local gesture callback.
+    pub fn recognize(
+        &mut self,
+        clock: InputClock,
+        input: &mut dyn InputSource,
+        mut on_gesture: impl FnMut(Gesture),
+    ) -> Option<DrawerGesture> {
         let now_ms = clock.0;
         self.now_ms = now_ms;
         while let Some(ev) = input.poll() {
@@ -97,6 +103,7 @@ impl InputPlane {
         self.enc_progress = self.gestures.select_progress(now_ms);
         self.back_progress = self.gestures.back_progress(now_ms);
         self.hold_hints.update(now_ms, self.enc_progress, self.back_progress, enc_fired, back_fired);
+        self.gestures.take_drawer()
     }
 
     /// Render **only the overlay plane** — the transient hold bulge / confirm ring — over whatever
