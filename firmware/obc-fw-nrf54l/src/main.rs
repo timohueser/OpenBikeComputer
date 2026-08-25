@@ -565,7 +565,7 @@ static mut MAP_CACHE: MaybeUninit<MapCache> = MaybeUninit::uninit();
 static mut MAP_TABLES: MaybeUninit<MapTables> = MaybeUninit::uninit();
 static mut APP: MaybeUninit<App> = MaybeUninit::uninit();
 /// The decoded-route-geometry cache, placed in `.bss` and built in place like [`MAP_CACHE`]
-/// ([`RouteCache::new`](obc_route::RouteCache) is an all-zero `MaybeUninit::zeroed`). The session-long
+/// ([`RouteCache::new`](obc_route::RouteCache) is a `const fn` all-zero literal). The session-long
 /// cache spares a redraw of the unchanged route + the matcher's per-fix decode from re-reading `.obcr`
 /// geometry off the card every frame.
 static mut ROUTE_CACHE: MaybeUninit<RouteCache> = MaybeUninit::uninit();
@@ -1431,8 +1431,8 @@ async fn main(_spawner: Spawner) {
             }
         }
 
-        // Place the decoded-route-geometry cache in `.bss`, built in place (a zeroed
-        // `MaybeUninit::zeroed` → a `.bss` memset, never a stack temporary — like `MAP_CACHE`).
+        // Place the decoded-route-geometry cache in `.bss`, built in place (an all-zero const
+        // literal folded by `init_static`'s inline-always write — never a stack temporary).
         // SAFETY: sole owner of ROUTE_CACHE; single map plane → no aliasing.
         let route_cache: &RouteCache = unsafe { init_static(core::ptr::addr_of_mut!(ROUTE_CACHE), RouteCache::new()) };
 
