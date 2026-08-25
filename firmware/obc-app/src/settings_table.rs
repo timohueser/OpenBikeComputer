@@ -405,12 +405,16 @@ macro_rules! settings_table {
             $crate::settings_table::settings_table!(@offsets 1; $( $name: $ty, [ $( $( $mk $(( $($arg)* ))? , )+ )? ]; )+);
         }
 
-        /// The append-only law as build errors. Neither assert restates the token that generated
-        /// it: both hold the generated `since` column against a **different** declaration — the row
-        /// above it, and the hand-written `VERSION`.
+        /// The append-only law as build errors. No assert restates the token that generated it:
+        /// each holds the generated `since` column against a **different** declaration — the row
+        /// above it, and the hand-written `VERSION` / `MIN_SUPPORTED` consts.
         const _: () = {
             const SINCE: &[u8] = &[ $( $sv, )+ ];
             assert!(MIN_SUPPORTED <= VERSION, "the supported floor is newer than the version being written");
+            // Without this, a first row newer than the floor collapses `payload_len(floor)` to 1,
+            // and `decode` launders a blob whose CRC covers byte 0 alone into an all-default
+            // `Some`. The floor has to sit inside the table it decodes.
+            assert!(SINCE[0] <= MIN_SUPPORTED, "the oldest supported version predates the first row");
             let mut i = 0;
             while i < SINCE.len() {
                 assert!(SINCE[i] <= VERSION, "a row is `since` a version newer than VERSION — bump VERSION with the row");
@@ -480,7 +484,7 @@ macro_rules! settings_table {
                     } else {
                         // The declared default, verbatim — the same token `DEFAULT` is built from,
                         // so a tail-defaulted field costs no `.rodata` projection of the whole
-                        // struct (#1197).
+                        // struct.
                         $default
                     },
                 )+
