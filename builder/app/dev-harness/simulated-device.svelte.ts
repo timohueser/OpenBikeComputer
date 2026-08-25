@@ -9,7 +9,7 @@
  *
  * **Why it lives outside `src/`.** C3 drew a hard line: no shipping module may import
  * `lib/usb/loopback`, guarded twice — a source scan in `usb/vectors.test.ts` and a chunk assertion
- * in `usb/bundle.test.ts`. A dev-only dynamic import inside `src/` would satisfy neither, and the
+ * in `platform/bundle.test.ts`. A dev-only dynamic import inside `src/` would satisfy neither, and the
  * chunk guard is right to refuse it: whether such a branch is tree-shaken depends on how the build
  * was invoked (`import.meta.env.DEV` is not `false` when Rollup runs under vitest), so "it gets
  * dropped in production" would be a property nothing in CI actually checks. A separate entry point
