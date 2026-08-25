@@ -393,27 +393,43 @@ fn draw_icon(cv: &mut impl Surface, i: usize, c: Point, k: f32, color: u16, bg: 
         2 => icon_poi(cv, c, k, color, bg),
         3 => icon_map(cv, c, k, color),
         4 => icon_weather(cv, c, k, color, bg),
-        _ => icon_sliders(cv, c, k, color),
+        _ => icon_gear(cv, c, k, color, bg),
     }
 }
 
-/// The Weather station glyph: a sun disc peeking over a simple cloud silhouette — the dial's
-/// single-ink glyph language (the WX17 content icons stay on the weather screens themselves,
-/// where their two-color art belongs).
+/// Partly cloudy weather in the same layered grammar as the detailed weather icons: a compact sun
+/// behind an outlined cloud. The cloud's background fill keeps both silhouettes distinct.
 fn icon_weather(cv: &mut impl Surface, c: Point, k: f32, color: u16, bg: u16) {
-    // Sun: a filled disc up-right, with four short diagonal rays (drawn as small discs so they
-    // survive the dial's scale).
-    let sun = Point::new(c.x + si(k, 5.0), c.y + si(k, -6.0));
+    let sun = Point::new(c.x - si(k, 6.0), c.y - si(k, 7.0));
     cv.disc(sun, si(k, 5.0) as u32, color);
-    for (dx, dy) in [(-7.0, -7.0), (7.0, -7.0), (7.0, 7.0), (-7.0, 7.0)] {
+    for (dx, dy) in [(-6.0, -6.0), (6.0, -6.0), (-6.0, 6.0), (6.0, 6.0)] {
         cv.disc(Point::new(sun.x + si(k, dx), sun.y + si(k, dy)), si(k, 1.5).max(1) as u32, color);
     }
-    // Cloud: two overlapped lobes over a flat base, punched apart from the sun by the bg gap.
-    let base_y = c.y + si(k, 6.0);
-    cv.disc(Point::new(c.x - si(k, 5.0), base_y - si(k, 3.0)), si(k, 5.5) as u32, color);
-    cv.disc(Point::new(c.x + si(k, 2.0), base_y - si(k, 5.0)), si(k, 4.5) as u32, color);
-    cv.fill(rect(c.x - si(k, 10.0), base_y - si(k, 2.0), si(k, 20.0), si(k, 5.0)), color);
-    let _ = bg; // same signature family as the punched glyphs; this one needs no cutout
+
+    // Clear the foreground cloud out of the sun before stroking its low-resolution outline.
+    cv.disc(Point::new(c.x - si(k, 5.0), c.y + si(k, 2.0)), si(k, 7.0) as u32, bg);
+    cv.disc(Point::new(c.x + si(k, 3.0), c.y), si(k, 9.0) as u32, bg);
+    cv.disc(Point::new(c.x + si(k, 9.0), c.y + si(k, 3.0)), si(k, 6.0) as u32, bg);
+    cv.round(rect(c.x - si(k, 12.0), c.y + si(k, 1.0), si(k, 25.0), si(k, 8.0)), 3, bg);
+
+    let at = |dx: f32, dy: f32| Point::new(c.x + si(k, dx), c.y + si(k, dy));
+    let outline = [
+        at(-11.0, 6.0),
+        at(-11.0, 2.0),
+        at(-8.0, -1.0),
+        at(-4.0, -1.0),
+        at(-2.0, -4.0),
+        at(2.0, -6.0),
+        at(6.0, -4.0),
+        at(8.0, -1.0),
+        at(11.0, -1.0),
+        at(13.0, 2.0),
+        at(11.0, 6.0),
+        at(-11.0, 6.0),
+    ];
+    for segment in outline.windows(2) {
+        icon_thick_line(cv, segment[0], segment[1], si(k, 2.0).max(2), color);
+    }
 }
 
 /// Ride-menu station glyphs in ring order: waypoints, skip ahead, POIs, routes, main menu.
@@ -553,16 +569,20 @@ fn icon_map(cv: &mut impl Surface, c: Point, k: f32, color: u16) {
     cv.disc(c, si(k, 2.5) as u32, color);
 }
 
-/// Three slider tracks with offset knobs — the settings glyph (shared with the quick drawer).
-pub(super) fn icon_sliders(cv: &mut impl Surface, c: Point, k: f32, color: u16) {
-    let hw = si(k, 12.0);
-    let track_h = si(k, 3.0).max(2) as u32;
-    let knob_r = si(k, 3.5) as u32;
-    for (row, knob) in [(-7.0, 6.0), (0.0, -8.0), (7.0, 0.0)] {
-        let y = c.y + si(k, row);
-        cv.fill(rect(c.x - hw, y - track_h as i32 / 2, 2 * hw, track_h as i32), color);
-        cv.disc(Point::new(c.x + si(k, knob), y), knob_r, color);
+/// Filled pixel gear shared by the main menu and quick drawer.
+pub(super) fn icon_gear(cv: &mut impl Surface, c: Point, k: f32, color: u16, bg: u16) {
+    let tooth = si(k, 5.0).max(3);
+    let half = tooth / 2;
+    let reach = si(k, 9.0);
+    for (dx, dy) in [(0, -reach), (reach, 0), (0, reach), (-reach, 0)] {
+        cv.fill(rect(c.x + dx - half, c.y + dy - half, tooth, tooth), color);
     }
+    let diag = si(k, 7.0);
+    for (dx, dy) in [(-diag, -diag), (diag, -diag), (diag, diag), (-diag, diag)] {
+        cv.fill(rect(c.x + dx - half, c.y + dy - half, tooth, tooth), color);
+    }
+    cv.disc(c, si(k, 9.0) as u32, color);
+    cv.disc(c, si(k, 4.0).max(2) as u32, bg);
 }
 
 #[cfg(test)]

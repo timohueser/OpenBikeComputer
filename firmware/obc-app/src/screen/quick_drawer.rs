@@ -17,9 +17,9 @@ use super::{palette, ContextBackdrop, Ctx, Render, Screen, ScreenTick, SettingsS
 const OPEN_MS: u32 = 220;
 const SLIDE_MS: u32 = 180;
 const FRAME_MS: u32 = 16;
-const ROOT_H: i32 = 108;
+const ROOT_H: i32 = 104;
 const BRIGHTNESS_H: i32 = 136;
-const POWER_H: i32 = 174;
+const POWER_H: i32 = 150;
 const POWERING_OFF_H: i32 = 132;
 const ITEM_COUNT: usize = 4;
 const LIGHT: usize = 0;
@@ -248,37 +248,33 @@ impl QuickDrawerScreen {
     fn draw_root(&self, cv: &mut impl Surface, rx: &Render, top: i32, x: i32) {
         use palette::*;
 
-        const CELL: i32 = 46;
-        const GAP: i32 = 10;
-        let first_x = (rx.w - (CELL * ITEM_COUNT as i32 + GAP * (ITEM_COUNT as i32 - 1))) / 2;
+        const STEP: i32 = 57;
+        let first_x = x + (rx.w - STEP * (ITEM_COUNT as i32 - 1)) / 2;
         for index in 0..ITEM_COUNT {
-            let left = x + first_x + index as i32 * (CELL + GAP);
-            let area = rect(left, top + 10, CELL, CELL);
+            let center = Point::new(first_x + index as i32 * STEP, top + 32);
             let selected = index == self.selected;
+            let active = match index {
+                LIGHT => self.brightness > 0,
+                BLE => rx.settings.ble_enabled,
+                _ => false,
+            };
+            let (fill, ink) = if active { (AMBER, INK) } else { (CONTOUR, PARCHMENT) };
             if selected {
-                cv.round(area.intersection(&rect(8, top + 10, rx.w - 16, CELL)), 10, AMBER);
+                cv.disc(center, 24, INK);
+                cv.disc(center, 22, PARCHMENT);
             }
-            // One ink for the whole row — state lives in the badge and the caption, never in a
-            // per-icon hue (the dial's single-ink glyph language).
-            let ink = if selected { INK } else { WOOD };
-            let bg = if selected { AMBER } else { PARCHMENT };
-            let center = Point::new(left + CELL / 2, top + 10 + CELL / 2);
+            cv.disc(center, if selected { 19 } else { 20 }, fill);
             match index {
-                LIGHT => draw_sun(cv, center, ink),
-                BLE => {
-                    draw_ble_rune(cv, center, ink);
-                    draw_state_badge(cv, Point::new(center.x + 13, center.y + 12), rx.settings.ble_enabled, bg);
-                }
-                SETTINGS => super::menu::icon_sliders(cv, center, 0.9, ink),
-                POWER => draw_power(cv, center, ink, bg),
+                LIGHT => draw_bulb(cv, center, ink, fill),
+                BLE => draw_ble_rune(cv, center, ink),
+                SETTINGS => super::menu::icon_gear(cv, center, 0.9, ink, fill),
+                POWER => draw_power(cv, center, ink, fill),
                 _ => {}
             }
         }
 
-        // The selected item's name — the row stays icon-only while every station is still
-        // discoverable by browsing (same voice as the context drawer's WOOD header).
         let caption = match self.selected {
-            LIGHT => "BRIGHTNESS",
+            LIGHT => level_caption(self.brightness as usize),
             BLE => {
                 if rx.settings.ble_enabled {
                     "BLUETOOTH ON"
@@ -289,15 +285,21 @@ impl QuickDrawerScreen {
             SETTINGS => "SETTINGS",
             _ => "POWER OFF",
         };
-        cv.text(caption, Point::new(x + rx.w / 2, top + 68), Font::Label, TextAlign::Center, WOOD);
+        cv.text(caption, Point::new(x + rx.w / 2, top + 67), Font::Label, TextAlign::Center, WOOD);
     }
 
     fn draw_brightness(&self, cv: &mut impl Surface, rx: &Render, top: i32, x: i32) {
         use palette::*;
 
-        cv.text("BRIGHTNESS", Point::new(x + 14, top + 18), Font::Label, TextAlign::Left, WOOD);
+        cv.text(
+            level_caption(self.brightness_cursor),
+            Point::new(x + 14, top + 18),
+            Font::Label,
+            TextAlign::Left,
+            WOOD,
+        );
         cv.hline(x + 12, top + 47, rx.w - 24, RULE);
-        draw_sun(cv, Point::new(x + 26, top + 82), WOOD);
+        draw_bulb(cv, Point::new(x + 26, top + 82), WOOD, PARCHMENT);
 
         let x0 = x + 52;
         let x1 = x + rx.w - 24;
@@ -318,18 +320,22 @@ impl QuickDrawerScreen {
     fn draw_power_confirm(&self, cv: &mut impl Surface, rx: &Render, top: i32, x: i32) {
         use palette::*;
 
-        cv.text("POWER OFF?", Point::new(x + 14, top + 18), Font::Label, TextAlign::Left, WARNING);
-        cv.hline(x + 12, top + 47, rx.w - 24, RULE);
-        draw_power(cv, Point::new(x + rx.w / 2, top + 77), WARNING, PARCHMENT);
-        cv.text("HOLD SELECT", Point::new(x + rx.w / 2, top + 105), Font::Label, TextAlign::Center, INK);
+        let icon = Point::new(x + rx.w / 2, top + 32);
+        cv.disc(icon, 21, WARNING);
+        draw_power(cv, icon, PARCHMENT, WARNING);
+        cv.text("POWER OFF?", Point::new(x + rx.w / 2, top + 59), Font::Label, TextAlign::Center, INK);
+        cv.text("HOLD SELECT", Point::new(x + rx.w / 2, top + 83), Font::Label, TextAlign::Center, WOOD);
 
-        let button = rect(x + 20, top + 125, rx.w - 40, 32);
-        cv.round(button, 6, PARCHMENT_SHADE);
-        let fill_w = ((button.size.width as f32 * rx.hold_progress.clamp(0.0, 1.0)) + 0.5) as i32;
-        if fill_w > 0 {
-            cv.round(rect(button.top_left.x, button.top_left.y, fill_w, button.size.height as i32), 6, WARNING);
+        const SEGMENTS: i32 = 5;
+        const SEGMENT_W: i32 = 32;
+        const GAP: i32 = 5;
+        let x0 = x + (rx.w - (SEGMENTS * SEGMENT_W + (SEGMENTS - 1) * GAP)) / 2;
+        let progress = rx.hold_progress.clamp(0.0, 1.0) * SEGMENTS as f32;
+        for index in 0..SEGMENTS {
+            let area = rect(x0 + index * (SEGMENT_W + GAP), top + 111, SEGMENT_W, 10);
+            cv.round(area, 3, if progress > index as f32 { WARNING } else { PARCHMENT_SHADE });
+            cv.round_outline(area, 3, WARNING);
         }
-        cv.round_outline(button, 6, WARNING);
     }
 
     fn draw_powering_off(&self, cv: &mut impl Surface, top: i32, _panel_h: i32, x: i32, width: i32) {
@@ -349,17 +355,29 @@ fn slider_x(x0: i32, x1: i32, index: usize) -> i32 {
     x0 + (x1 - x0) * index as i32 / (BRIGHTNESS_LEVELS as i32 - 1)
 }
 
-/// Brightness sun: a filled core with four cardinal bars and four diagonal ray dots — the same
-/// filled-geometry sun the Weather station glyph established.
-fn draw_sun(cv: &mut impl Surface, center: Point, color: u16) {
-    cv.disc(center, 6, color);
-    cv.vline(center.x - 1, center.y - 13, 5, 2, color);
-    cv.vline(center.x - 1, center.y + 9, 5, 2, color);
-    cv.fill(rect(center.x - 13, center.y - 1, 5, 2), color);
-    cv.fill(rect(center.x + 9, center.y - 1, 5, 2), color);
-    for (dx, dy) in [(-9, -9), (9, -9), (9, 9), (-9, 9)] {
-        cv.disc(Point::new(center.x + dx, center.y + dy), 2, color);
+fn level_caption(level: usize) -> &'static str {
+    match level {
+        0 => "BACKLIGHT 0%",
+        1 => "BACKLIGHT 25%",
+        2 => "BACKLIGHT 50%",
+        3 => "BACKLIGHT 75%",
+        _ => "BACKLIGHT 100%",
     }
+}
+
+/// Compact outline bulb with a distinct filament and screw base at the drawer's 22 px scale.
+fn draw_bulb(cv: &mut impl Surface, center: Point, color: u16, bg: u16) {
+    let dome = Point::new(center.x, center.y - 4);
+    cv.disc(dome, 9, color);
+    cv.disc(dome, 6, bg);
+    cv.fill(rect(center.x - 10, center.y + 1, 21, 12), bg);
+    stroke2(cv, Point::new(center.x - 8, center.y - 1), Point::new(center.x - 4, center.y + 5), color);
+    stroke2(cv, Point::new(center.x + 8, center.y - 1), Point::new(center.x + 4, center.y + 5), color);
+    cv.line(Point::new(center.x - 3, center.y - 2), Point::new(center.x, center.y + 2), color);
+    cv.line(Point::new(center.x + 3, center.y - 2), Point::new(center.x, center.y + 2), color);
+    cv.hline(center.x - 4, center.y + 6, 9, color);
+    cv.hline(center.x - 4, center.y + 9, 9, color);
+    cv.hline(center.x - 2, center.y + 12, 5, color);
 }
 
 /// The Bluetooth bind-rune at drawer scale: the title-bar rune's geometry, doubled to the panel's
@@ -381,19 +399,6 @@ fn draw_ble_rune(cv: &mut impl Surface, center: Point, color: u16) {
     stroke2(cv, lo_tip, mid, color);
     stroke2(cv, up_tip, lo_left, color);
     stroke2(cv, lo_tip, up_left, color);
-}
-
-/// On/off badge in the cell corner: a filled green dot for on, a hollow grey ring for off — the
-/// settings toggle-pill colour vocabulary, anchored to the icon box instead of dangling.
-fn draw_state_badge(cv: &mut impl Surface, at: Point, on: bool, bg: u16) {
-    use palette::*;
-    cv.disc(at, 6, bg);
-    if on {
-        cv.disc(at, 4, ON);
-    } else {
-        cv.disc(at, 4, CONTOUR);
-        cv.disc(at, 2, bg);
-    }
 }
 
 /// Power symbol as filled geometry: a 3 px ring with its top arc broken, and a heavy stem through
@@ -430,6 +435,16 @@ mod tests {
         now_ms: u32,
     ) -> Ctx<'a> {
         Ctx { now_ms, ..test_ctx(state, activity, settings) }
+    }
+
+    #[test]
+    fn backlight_levels_have_exact_percentage_labels() {
+        for (level, expected) in ["BACKLIGHT 0%", "BACKLIGHT 25%", "BACKLIGHT 50%", "BACKLIGHT 75%", "BACKLIGHT 100%"]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(level_caption(level), expected);
+        }
     }
 
     #[test]
