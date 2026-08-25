@@ -12,6 +12,7 @@ use core::{
 
 use heapless::{String, Vec};
 
+use obc_formats::cache::lru_victim;
 use obc_formats::io::{rd_i16, rd_i32, rd_u16, rd_u32, ByteSource, DecodeError, Error};
 use obc_map_scene::BBox;
 
@@ -886,7 +887,7 @@ impl RouteCache {
         let mut inner = self.inner.borrow_mut();
         inner.adopt(identity);
         inner.misses = inner.misses.saturating_add(1);
-        let i = route_lru(inner.slots.iter().map(|s| (s.tag == 0, s.used)));
+        let i = lru_victim(inner.slots.iter().map(|s| (s.tag == 0, s.used)));
         let t = inner.touch();
         let s = &mut inner.slots[i];
         // Bounded by `RouteIndex::index`; zero remains reserved for an empty slot.
@@ -954,23 +955,6 @@ impl RouteCacheInner {
     }
 }
 
-/// Pick a slot to (re)fill: the first empty slot, else the least-recently-used. Input is
-/// `(is_empty, used)` per slot in order. Mirrors `obc_reader`'s `lru`.
-fn route_lru(slots: impl Iterator<Item = (bool, u16)>) -> usize {
-    let mut best = 0usize;
-    let mut best_used = u16::MAX;
-    for (i, (empty, used)) in slots.enumerate() {
-        if empty {
-            return i;
-        }
-        if used < best_used {
-            best_used = used;
-            best = i;
-        }
-    }
-    best
-}
-
 #[cfg(test)]
 mod cache_tests {
     use super::*;
@@ -987,7 +971,7 @@ mod cache_tests {
         assert_eq!(inner.touch(), 3);
         assert_eq!(inner.slots[0].used, 1);
         assert_eq!(inner.slots[1].used, 2);
-        assert_eq!(route_lru(inner.slots[..2].iter().map(|s| (s.tag == 0, s.used))), 0);
+        assert_eq!(lru_victim(inner.slots[..2].iter().map(|s| (s.tag == 0, s.used))), 0);
     }
 }
 
