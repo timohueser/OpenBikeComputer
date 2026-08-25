@@ -529,7 +529,6 @@ ownership = [
   { kind = "path", source = "web-test", pattern = "builder/app/**/*.test.ts" },
   { kind = "workflow", pattern = "npm test" },
 ]
-budget_exception = { reason = "Device waits, repeated Vite builds, and the large SHA boundary test exceed the temporary suite budget.", issue = "#1449" }
 
 [[suite]]
 id = "python.repository-tools"

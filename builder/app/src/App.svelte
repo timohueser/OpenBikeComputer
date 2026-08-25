@@ -20,7 +20,7 @@
     const openEditor = load ? () => (editor ??= load()) : null;
 
     // The device and rides pages reach the protocol codecs and the library —
-    // exactly the modules the entry chunk must not contain (usb/bundle.test.ts)
+    // exactly the modules the entry chunk must not contain (platform/bundle.test.ts)
     // — so both live behind memoized dynamic imports, the same shape the device
     // surfaces already use. Gated on caps, not on a host name: a tier without
     // the page treats its hash as home.
