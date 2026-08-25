@@ -321,15 +321,14 @@ impl<'a> Sensors<'a> {
     }
 }
 
-/// A physical control button whose press **edges** the gesture layer times.
-///
-/// The device has four buttons: **Up** / **Down** on the left flank, **Select** / **Back** on the
-/// right. Up and Down are step controls — they move the selection the instant they go down (and
-/// auto-repeat while held), so they arrive as [`InputEvent::Step`] rather than as timed edges. Only
-/// Select and Back carry both a short-press *and* a long-press meaning, so only those two need edge
-/// timing and appear here.
+/// One of the device's four physical controls. Every button reaches the shared gesture layer as
+/// press/release edges, so timing-sensitive combinations behave identically on hosts and hardware.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Button {
+    /// The left-flank **Up** button: previous / decrease.
+    Up,
+    /// The left-flank **Down** button: next / increase.
+    Down,
     /// The right-flank **Select** button (upper): confirm / open.
     Select,
     /// The right-flank **Back** button (lower).
@@ -348,9 +347,9 @@ pub enum ButtonEvent {
 /// A raw control event before gesture recognition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputEvent {
-    /// Signed selection steps from the Up/Down pair: **negative = Up** ("previous"), **positive =
-    /// Down** ("next"). One press is ±1; a source that batches — auto-repeat catch-up, or a host
-    /// injecting a jump — may send several at once.
+    /// A directly injected signed movement: **negative = Up**, **positive = Down**. Physical
+    /// buttons use edges; this variant remains useful for scroll wheels, scripts, and batched host
+    /// input.
     Step(i32),
     /// One button edge.
     Button(ButtonEvent),

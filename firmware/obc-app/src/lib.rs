@@ -87,7 +87,10 @@ pub use fault::{draw_boot_fault, BootFault};
 pub use hold_hint::HoldHints;
 pub use host::{DetourPreview, DrainStatus, HostCommand, HostEvent, HostMailbox, HOST_COMMAND_CLASSES};
 pub use i18n::{t, Msg};
-pub use input::{Gesture, Gestures, DEFAULT_HOLD_MS, DEFAULT_TAP_MS};
+pub use input::{
+    DrawerGesture, Gesture, Gestures, DEFAULT_CHORD_MS, DEFAULT_HOLD_MS, DEFAULT_REPEAT_DELAY_MS,
+    DEFAULT_REPEAT_INTERVAL_MS, DEFAULT_TAP_MS,
+};
 pub use input_plane::InputPlane;
 pub use map_catalog::{
     boot_fault, choose_map, classify_map_entry, flat_boot_fault, is_superseded_upload, newest_set,

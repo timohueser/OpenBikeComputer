@@ -51,7 +51,7 @@ use obc_reader::{MapCache, MapTables, Reader};
 // index, and the streamed route reader the matcher + map render share.
 use obc_route::{RouteCache, RouteIndex, RouteReader};
 
-use crate::input_plane::{GESTURES, INPUT_HB_MS, INPUT_WAKE, LOOP_MS};
+use crate::input_plane::{DRAWERS, GESTURES, INPUT_HB_MS, INPUT_WAKE, LOOP_MS};
 use crate::map_plane::MapDisplay;
 use crate::{stackmeter, SharedStore, SharedStoreMutex};
 
@@ -2227,6 +2227,14 @@ pub(crate) async fn run_app(
                 } else {
                     obc_app::device_core::DerivedTargets { ride_preview: &[], nav_preview: derived_pts.as_slice() }
                 };
+
+                // Global chords change the overlay stack before local gestures are handed to the
+                // resulting top screen. INPUT_WAKE wakes this loop when the high-priority plane
+                // enqueues one, so the drawer appears without waiting for another app deadline.
+                while let Ok(drawer) = DRAWERS.try_receive() {
+                    let _ = app.apply_drawer_gesture(drawer, InputClock(now));
+                    defmt::info!("input: drawer chord on {=str}", app.top_screen().name());
+                }
 
                 // ── This frame's gestures, as one batch ──
                 // The high-priority plane recognised them; the pass applies them in order and owns

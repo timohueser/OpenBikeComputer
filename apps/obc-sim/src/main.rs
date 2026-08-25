@@ -939,6 +939,12 @@ fn apply_script(app: &mut App, script: &str, start_ms: u32, hook: &mut dyn FnMut
         *now += hold * 55 / 100; // ~55% toward the threshold
         feed(app, *now, vec![]); // samples the in-flight progress for the render
     };
+    let chord = |app: &mut App, now: &mut u32, a, b| {
+        feed(app, *now, vec![down(a), down(b)]);
+        *now += 30;
+        feed(app, *now, vec![up(a), up(b)]);
+        *now += 30;
+    };
 
     for ch in script.chars() {
         match ch {
@@ -957,7 +963,7 @@ fn apply_script(app: &mut App, script: &str, start_ms: u32, hook: &mut dyn FnMut
                 let _ = app.debug_toggle_context_drawer(false, obc_app::screen::ContextBackdrop::None);
             }
             'D' => {
-                let _ = app.debug_toggle_context_drawer(false, obc_app::screen::ContextBackdrop::DimLut);
+                chord(app, &mut now, Button::Down, Button::Back);
             }
             'S' => {
                 let _ = app.debug_toggle_context_drawer(false, obc_app::screen::ContextBackdrop::Stipple);
@@ -970,7 +976,7 @@ fn apply_script(app: &mut App, script: &str, start_ms: u32, hook: &mut dyn FnMut
                 let _ = app.debug_toggle_quick_drawer(obc_app::screen::ContextBackdrop::None);
             }
             'Q' => {
-                let _ = app.debug_toggle_quick_drawer(obc_app::screen::ContextBackdrop::DimLut);
+                chord(app, &mut now, Button::Up, Button::Select);
             }
             'A' => {
                 now += 60;
