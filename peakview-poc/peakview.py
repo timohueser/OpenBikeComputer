@@ -9,19 +9,24 @@ import json
 import math
 import re
 import time
+from datetime import date, datetime, time as dtime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 import requests
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
 
 WIDTH, HEIGHT = 240, 268
 STRIP_WIDTH = 720
+FONT_PATH = Path(__file__).resolve().parent.parent / "firmware" / "obc-render" / "fonts" / "terminus" / "ter_u24b.raw"
+CELL_W, CELL_H = 12, 24
+COMPASS_BOTTOM = 34
+HUD_HEIGHT = 54
+WINDS = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
 DEM_ZOOM = 11
 EARTH_RADIUS_M = 6_371_000.0
 REFRACTION_K = 0.13
@@ -38,6 +43,7 @@ INK = (85, 85, 85)
 BLACK = (0, 0, 0)
 AMBER = (255, 170, 0)
 PAPER = (255, 255, 255)
+ROUTE = (255, 0, 255)  # the device's route overlay magenta (obc-app palette)
 
 # Ordered nearest to farthest. RGB222 limits a same-hue ramp to four coarse
 # lightness steps, but the white background keeps all four readable.
@@ -373,33 +379,150 @@ def quantize_rgb222(image: Image.Image) -> Image.Image:
     return Image.fromarray(((pixels >> 6) * 85).astype(np.uint8), "RGB")
 
 
-def text_size(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont) -> tuple[int, int]:
-    box = draw.multiline_textbbox((0, 0), text, font=font, spacing=0)
-    return box[2] - box[0], box[3] - box[1]
+class DeviceFont:
+    """The device's Label text tier: Terminus 12x24 bold, read from the firmware's glyph strip.
+
+    The strip is 1bpp MSB-first, 16 glyphs per row, in the firmware's `latin` charset order
+    (ASCII, Latin-1 Supplement, Latin Extended-A), so this renders the exact pixels the
+    device would.
+    """
+
+    def __init__(self, path: Path):
+        bits = np.unpackbits(np.frombuffer(path.read_bytes(), dtype=np.uint8))
+        strip = bits.reshape(-1, 16 * CELL_W).astype(bool)
+        self.glyphs = [
+            strip[row * CELL_H:(row + 1) * CELL_H, col * CELL_W:(col + 1) * CELL_W]
+            for row in range(strip.shape[0] // CELL_H)
+            for col in range(16)
+        ]
+
+    @staticmethod
+    def _index(char: str) -> int:
+        point = ord(char)
+        if 0x20 <= point <= 0x7F:
+            return point - 0x20
+        if 0xA0 <= point <= 0xFF:
+            return point - 0xA0 + 96
+        if 0x100 <= point <= 0x17F:
+            return point - 0x100 + 192
+        return ord("?") - 0x20
+
+    def mask(self, text: str) -> np.ndarray:
+        if not text:
+            return np.zeros((CELL_H, 0), dtype=bool)
+        return np.concatenate([self.glyphs[self._index(char)] for char in text], axis=1)
+
+    def trimmed(self, text: str) -> np.ndarray:
+        """Glyph mask with empty leading/trailing rows removed, for tight boxes and rotation."""
+        mask = self.mask(text)
+        rows = np.nonzero(mask.any(axis=1))[0]
+        return mask[rows[0]:rows[-1] + 1] if rows.size else mask[:0]
 
 
-def fit_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, max_width: int) -> str:
-    if text_size(draw, text, font)[0] <= max_width:
-        return text
-    suffix = "..."
-    shortened = text
-    while shortened and text_size(draw, shortened + suffix, font)[0] > max_width:
-        shortened = shortened[:-1]
-    return shortened.rstrip() + suffix
+def paint(image: Image.Image, mask: np.ndarray, xy: tuple[int, int], colour: tuple[int, int, int],
+          halo: tuple[int, int, int] | None = None) -> None:
+    """Blit a glyph mask; an optional 1 px 8-neighbour halo keeps text legible over terrain."""
+    if mask.size == 0:
+        return
+    if halo is not None:
+        padded = np.pad(mask, 1)
+        dilated = np.zeros_like(padded)
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                dilated |= np.roll(padded, (dy, dx), (0, 1))
+        image.paste(halo, (xy[0] - 1, xy[1] - 1), Image.fromarray(dilated.astype(np.uint8) * 255, "L"))
+    image.paste(colour, xy, Image.fromarray(mask.astype(np.uint8) * 255, "L"))
 
 
-def overlaps(box: tuple[int, int, int, int], others: Iterable[tuple[int, int, int, int]]) -> bool:
-    return any(not (box[2] + 2 < other[0] or box[0] > other[2] + 2 or box[3] + 1 < other[1] or box[1] > other[3] + 1) for other in others)
+def short_name(name: str, limit: int) -> str:
+    """Device-width peak name: first alternative, no parenthetical, whole words up to `limit` glyphs."""
+    name = name.split("/")[0].split("(")[0].strip()
+    if len(name) <= limit:
+        return name
+    cut = name[:limit]
+    word_cut = cut.rsplit(" ", 1)[0] if " " in cut else cut
+    return word_cut if len(word_cut) >= 8 else cut.rstrip()
 
 
-def render(horizon_angles: np.ndarray, layer_horizons: np.ndarray, peaks: list[Peak], observer_elevation: float,
-           lat: float, lon: float, heading: float, fov: float, width: int, max_labels: int,
-           min_score: float, peak_step: int) -> tuple[Image.Image, list[Peak], Peak | None]:
+def wind_name(azimuth: float) -> str:
+    return WINDS[int(((azimuth + 22.5) % 360.0) // 45.0)]
+
+
+def solar_position(lat: float, lon: float, when_utc: datetime) -> tuple[float, float]:
+    """Sun azimuth (degrees clockwise from north) and elevation, NOAA's approximation."""
+    day = when_utc.timetuple().tm_yday
+    hours = when_utc.hour + when_utc.minute / 60.0
+    gamma = 2.0 * math.pi / 365.0 * (day - 1 + (hours - 12.0) / 24.0)
+    eqtime = 229.18 * (0.000075 + 0.001868 * math.cos(gamma) - 0.032077 * math.sin(gamma)
+                       - 0.014615 * math.cos(2 * gamma) - 0.040849 * math.sin(2 * gamma))
+    decl = (0.006918 - 0.399912 * math.cos(gamma) + 0.070257 * math.sin(gamma)
+            - 0.006758 * math.cos(2 * gamma) + 0.000907 * math.sin(2 * gamma)
+            - 0.002697 * math.cos(3 * gamma) + 0.00148 * math.sin(3 * gamma))
+    hour_angle = math.radians((hours * 60.0 + eqtime + 4.0 * lon) / 4.0 - 180.0)
+    lat_r = math.radians(lat)
+    cos_zenith = math.sin(lat_r) * math.sin(decl) + math.cos(lat_r) * math.cos(decl) * math.cos(hour_angle)
+    zenith = math.acos(max(-1.0, min(1.0, cos_zenith)))
+    azimuth = (math.degrees(math.atan2(math.sin(hour_angle),
+               math.cos(hour_angle) * math.sin(lat_r) - math.tan(decl) * math.cos(lat_r))) + 180.0) % 360.0
+    return azimuth, 90.0 - math.degrees(zenith)
+
+
+def sun_track(lat: float, lon: float, local: datetime, tz_hours: float, heading: float, fov: float,
+              horizon_angles: np.ndarray, width: int) -> tuple[tuple[float, float], tuple[str, float, str] | None]:
+    """Current sun position, plus the next minute the sun crosses the visible skyline.
+
+    Scans forward a day in one-minute steps; a crossing only counts while the sun's azimuth is
+    inside the current field of view, because that is the only horizon this render computed.
+    On device the cached 360-degree horizon profile makes this a whole-day, whole-horizon scan.
+    """
+    utc = local - timedelta(hours=tz_hours)
+
+    def skyline_at(azimuth: float) -> float | None:
+        x = (angular_delta(azimuth, heading) + fov / 2.0) * width / fov
+        return float(horizon_angles[int(x)]) if 0 <= x < width else None
+
+    event = None
+    previous = None
+    for minute in range(24 * 60):
+        azimuth, elevation = solar_position(lat, lon, utc + timedelta(minutes=minute))
+        skyline = skyline_at(azimuth) if elevation > -8.0 else None
+        visible = None if skyline is None else elevation > skyline
+        if previous is not None and visible is not None and visible != previous:
+            when = (local + timedelta(minutes=minute)).strftime("%H:%M")
+            event = (when, azimuth, "sets behind the ridge" if previous else "clears the ridge")
+            break
+        previous = visible
+    return solar_position(lat, lon, utc), event
+
+
+def route_crossing(dem: TerrariumDEM, lat: float, lon: float, observer_elevation: float, eye_height: float,
+                   bearing: float, max_range_m: float) -> tuple[float, float] | None:
+    """Where a mock straight route along `bearing` disappears over the skyline: (bearing, metres).
+
+    On device this walks the active route's real polyline instead; the crest search is the same.
+    The mock ride stops at 25 km — a plausible route horizon, not the DEM's.
+    """
+    ranges = np.arange(200.0, min(max_range_m, 25_000.0), 60.0)
+    lats, lons = destination_grid(lat, lon, np.asarray([bearing]), ranges)
+    try:
+        dem.preload(lats.ravel(), lons.ravel())
+        elevation = dem.sample(lats, lons)[:, 0]
+    except (RuntimeError, KeyError):
+        return None  # tiles beyond the rendered fan are not cached in --offline runs
+    drop = ranges ** 2 / (2.0 * EARTH_RADIUS_M) * (1.0 - REFRACTION_K)
+    angles = np.degrees(np.arctan2(elevation - (observer_elevation + eye_height) - drop, ranges))
+    crest = int(np.argmax(angles))
+    return bearing, float(ranges[crest])
+
+
+def render(horizon_angles: np.ndarray, layer_horizons: np.ndarray, peaks: list[Peak],
+           heading: float, fov: float, width: int, max_labels: int, min_score: float, peak_step: int,
+           sun_now: tuple[float, float] | None, sun_event: tuple[str, float, str] | None,
+           route_cross: tuple[float, float] | None) -> tuple[Image.Image, list[Peak], Peak | None]:
+    font = DeviceFont(FONT_PATH)
     image = Image.new("RGB", (width, HEIGHT), SKY)
     draw = ImageDraw.Draw(image)
-    draw.fontmode = "1"
-    font = ImageFont.load_default()
-    compass_bottom, hud_top = 17, HEIGHT - 27
+    compass_bottom, hud_top = COMPASS_BOTTOM, HEIGHT - HUD_HEIGHT
 
     low = float(np.min(horizon_angles))
     high = float(np.max(horizon_angles))
@@ -408,7 +531,7 @@ def render(horizon_angles: np.ndarray, layer_horizons: np.ndarray, peaks: list[P
         angle_bottom, angle_top = -20.0, 20.0
     else:
         angle_bottom = low - max(1.0, span * 0.12)
-        angle_top = high + max(3.0, span * 0.38)
+        angle_top = high + max(3.0, span * 0.42)
 
     def y_for(angle: float | np.ndarray):
         return hud_top - (np.asarray(angle) - angle_bottom) / (angle_top - angle_bottom) * (hud_top - compass_bottom)
@@ -425,26 +548,33 @@ def render(horizon_angles: np.ndarray, layer_horizons: np.ndarray, peaks: list[P
 
     degrees_per_pixel = fov / width
     left_bearing = heading - fov / 2.0
-    first_tick = math.ceil(left_bearing / 10.0) * 10
-    tick = first_tick
+    centre = width // 2
+    heading_mask = font.trimmed(f"{heading % 360:03.0f}\N{DEGREE SIGN}")
+    heading_box = (centre - heading_mask.shape[1] // 2 - 2, 0,
+                   centre + (heading_mask.shape[1] + 1) // 2 + 2, heading_mask.shape[0] + 4)
+
+    tick = math.ceil(left_bearing / 10.0) * 10
     while tick < left_bearing + fov:
         x = int(round((tick - left_bearing) / degrees_per_pixel))
-        major = int(round(tick)) % 90 == 0
+        bearing = int(round(tick)) % 360
+        major = bearing % 45 == 0
         draw.line((x, 0, x, 6 if major else 3), fill=INK)
         if major:
-            cardinal = ("N", "E", "S", "W")[(int(round(tick)) % 360) // 90]
-            draw.text((x - 3, 6), cardinal, font=font, fill=INK)
+            mask = font.trimmed(WINDS[bearing // 45])
+            left = x - mask.shape[1] // 2
+            clear_of_heading = left + mask.shape[1] < heading_box[0] - 2 or left > heading_box[2] + 2
+            if clear_of_heading and 0 <= left and left + mask.shape[1] <= width:
+                paint(image, mask, (left, 8), INK, halo=PAPER)
         tick += 10
-    centre = width // 2
-    draw.line((centre, 0, centre, hud_top), fill=AMBER)
-    heading_text = f"{heading % 360:03.0f}\N{DEGREE SIGN}"
-    heading_width, _ = text_size(draw, heading_text, font)
-    draw.rectangle((centre - heading_width // 2 - 1, 0, centre + (heading_width + 1) // 2, 10), fill=PAPER)
-    draw.text((centre - heading_width // 2, 0), heading_text, font=font, fill=INK)
+
+    # The heading line goes down first so the readout box and label halos mask it.
+    draw.line((centre, 0, centre, hud_top - 1), fill=AMBER)
+    draw.rectangle(heading_box, fill=PAPER)
+    paint(image, heading_mask, (heading_box[0] + 2, 2), INK)
 
     candidates = sorted((peak for peak in peaks if peak.score >= min_score), key=lambda peak: peak.score, reverse=True)
     separated: list[Peak] = []
-    min_separation = max(0.35, degrees_per_pixel * 2)
+    min_separation = max(0.35, degrees_per_pixel * 4)
     for peak in candidates:
         if all(abs(peak.offset - other.offset) >= min_separation for other in separated):
             separated.append(peak)
@@ -459,66 +589,126 @@ def render(horizon_angles: np.ndarray, layer_horizons: np.ndarray, peaks: list[P
         centre_index = min(range(len(focus_pool)), key=lambda index: abs(focus_pool[index].offset))
         selected_peak = focus_pool[(centre_index + peak_step) % len(focus_pool)]
 
-    boxes: list[tuple[int, int, int, int]] = []
+    # Overlays claim space in glanceability order — selected peak, sun, route — and the generic
+    # name labels fill whatever room is left.
+    rects: list[tuple[int, int, int, int]] = [(heading_box[0] - 2, heading_box[1], heading_box[2] + 2, heading_box[3] + 2)]
+
+    def collides(box: tuple[int, int, int, int]) -> bool:
+        return any(box[0] <= r[2] + 2 and box[2] >= r[0] - 2 and box[1] <= r[3] + 1 and box[3] >= r[1] - 1
+                   for r in rects)
+
+    def place_text(mask: np.ndarray, spots: list[tuple[int, int]]) -> None:
+        boxes = [(x, y, x + mask.shape[1], y + mask.shape[0]) for x, y in spots]
+        boxes = [box for box in boxes
+                 if 1 <= box[0] and box[2] < width - 1 and compass_bottom + 2 <= box[1] and box[3] < hud_top - 1]
+        if not boxes:
+            return
+        box = next((candidate for candidate in boxes if not collides(candidate)), boxes[0])
+        rects.append(box)
+        paint(image, mask, (box[0], box[1]), INK, halo=PAPER)
+
+    def x_for(azimuth: float) -> int | None:
+        x = int(round((angular_delta(azimuth, heading) + fov / 2.0) / degrees_per_pixel))
+        return x if 6 <= x < width - 6 else None
+
+    if selected_peak:
+        selected_x = int(np.clip(round((selected_peak.offset + fov / 2.0) / degrees_per_pixel), 0, width - 1))
+        selected_y = int(skyline_y[selected_x])
+        draw.polygon(((selected_x, selected_y - 1), (selected_x - 4, selected_y - 7),
+                      (selected_x + 4, selected_y - 7)), fill=AMBER)
+        rects.append((selected_x - 5, selected_y - 8, selected_x + 5, selected_y))
+
+    if sun_now:
+        sun_x = x_for(sun_now[0])
+        sun_y = int(round(float(y_for(sun_now[1]))))
+        if sun_x is not None and compass_bottom + 8 <= sun_y < hud_top - 8 \
+                and sun_now[1] > horizon_angles[sun_x]:
+            draw.ellipse((sun_x - 3, sun_y - 3, sun_x + 3, sun_y + 3), fill=AMBER)
+            for step in range(8):
+                dx, dy = math.cos(step * math.pi / 4.0), math.sin(step * math.pi / 4.0)
+                draw.line((sun_x + round(5 * dx), sun_y + round(5 * dy),
+                           sun_x + round(7 * dx), sun_y + round(7 * dy)), fill=AMBER)
+            rects.append((sun_x - 8, sun_y - 8, sun_x + 8, sun_y + 8))
+
+    if sun_event and abs(angular_delta(sun_event[1], heading)) <= fov / 2.0:
+        # Clamp an in-view event to the frame edge rather than dropping a sunset pixels away.
+        event_x = int(np.clip(round((angular_delta(sun_event[1], heading) + fov / 2.0) / degrees_per_pixel),
+                              6, width - 7))
+        event_y = int(skyline_y[event_x])
+        # A half-sunk sun disc on the ridge line, with the crossing time beside it.
+        draw.pieslice((event_x - 5, event_y - 5, event_x + 5, event_y + 5), 180, 360, fill=AMBER)
+        rects.append((event_x - 6, event_y - 6, event_x + 6, event_y + 1))
+        mask = font.trimmed(sun_event[0])
+        half = mask.shape[0] // 2
+        place_text(mask, [(event_x + 9, event_y - half), (event_x - 9 - mask.shape[1], event_y - half),
+                          (min(max(1, event_x - mask.shape[1] // 2), width - mask.shape[1] - 1),
+                           event_y - 12 - mask.shape[0])])
+
+    if route_cross:
+        route_x = x_for(route_cross[0])
+        if route_x is not None:
+            route_y = int(skyline_y[route_x])
+            # The map overlay's travel chevrons, climbing over the pass in the route magenta.
+            for lift in (0, 7):
+                draw.polygon(((route_x - 5, route_y + 3 + lift), (route_x, route_y - 3 + lift),
+                              (route_x + 5, route_y + 3 + lift), (route_x + 5, route_y + 6 + lift),
+                              (route_x, route_y + lift), (route_x - 5, route_y + 6 + lift)), fill=ROUTE)
+            rects.append((route_x - 6, route_y - 4, route_x + 6, route_y + 14))
+            kilometres = route_cross[1] / 1000.0
+            mask = font.trimmed(f"{kilometres:.1f} km" if kilometres < 9.95 else f"{kilometres:.0f} km")
+            half = mask.shape[0] // 2
+            place_text(mask, [(min(max(1, route_x - mask.shape[1] // 2), width - mask.shape[1] - 1),
+                               route_y - 12 - mask.shape[0]),
+                              (route_x + 9, route_y - half), (route_x - 9 - mask.shape[1], route_y - half)])
+
+    # Vertical labels rise from each summit; a name is cut to the sky room above its own peak.
     labelled: list[Peak] = []
-    placements: list[tuple[Peak, int, int, tuple[int, int, int, int], str]] = []
-    row_tops = list(range(compass_bottom + 2, max(compass_bottom + 3, hud_top - 20), 15))
+    columns: list[tuple[int, int]] = []
+    used_names: set[str] = set()
     for peak in separated:
         if peak is selected_peak:
             continue
         if len(labelled) >= max_labels:
             break
         x = int(round((peak.offset + fov / 2.0) / degrees_per_pixel))
-        if not 0 <= x < width:
+        if not 2 <= x < width - 2:
             continue
         marker_y = int(skyline_y[x])
-        label = fit_text(draw, peak.name, font, width - 4)
-        label_width, label_height = text_size(draw, label, font)
-        label_width = min(label_width, width - 2)
-        preferred = max(compass_bottom + 2, marker_y - label_height - 6)
-        ordered_rows = sorted(row_tops, key=lambda row: abs(row - preferred))
-        placement = None
-        for row in ordered_rows:
-            if row + label_height >= marker_y - 2:
-                continue
-            left = min(max(1, x - label_width // 2), width - label_width - 1)
-            box = (left, row, left + label_width, row + label_height)
-            if not overlaps(box, boxes):
-                placement = box
-                break
-        if placement is None:
+        label = short_name(peak.name, 14)
+        if len(label) < 3 or label in used_names:
             continue
-        left, top, right, bottom = placement
-        boxes.append(placement)
+        mask = np.rot90(font.trimmed(label))
+        height, glyph_width = mask.shape
+        left = min(max(1, x - glyph_width // 2), width - glyph_width - 1)
+        if any(left <= stop + 2 and left + glyph_width >= start - 2 for start, stop in columns):
+            continue
+        # Rise from the summit; when the sky is too short, slide down over the terrain — the
+        # halo keeps the name readable there.
+        top = max(compass_bottom + 2, marker_y - 8 - height)
+        if collides((left, top, left + glyph_width, top + height)):
+            continue
+        paint(image, mask, (left, top), INK, halo=PAPER)
+        if top + height < marker_y - 2:
+            draw.line((x, marker_y - 2, x, top + height + 1), fill=INK)
+        columns.append((left, left + glyph_width))
+        rects.append((left, top, left + glyph_width, top + height))
+        used_names.add(label)
         labelled.append(peak)
-        placements.append((peak, x, marker_y, placement, label))
-
-    # Leaders go down first so later labels mask any line that passes through them.
-    for _, x, marker_y, placement, _ in placements:
-        draw.line((x, marker_y, x, placement[3] + 1), fill=INK)
-        draw.line((x - 1, marker_y, x + 1, marker_y), fill=INK)
-    for _, _, _, placement, label in placements:
-        left, top, right, bottom = placement
-        draw.rectangle((left - 1, top - 1, right + 1, bottom + 1), fill=PAPER)
-        draw.multiline_text((left, top), label, font=font, fill=INK, spacing=0)
-
-    if selected_peak:
-        selected_x = int(np.clip(round((selected_peak.offset + fov / 2.0) / degrees_per_pixel), 0, width - 1))
-        selected_y = int(skyline_y[selected_x])
-        draw.polygon(((selected_x, selected_y), (selected_x - 3, selected_y - 5),
-                      (selected_x + 3, selected_y - 5)), fill=AMBER)
 
     draw.rectangle((0, hud_top, width - 1, HEIGHT - 1), fill=PAPER)
+    draw.line((0, hud_top, width - 1, hud_top), fill=INK)
     if selected_peak:
-        distance_text = f"{selected_peak.distance / 1000:.0f} km" if selected_peak.distance >= 950 else f"{selected_peak.distance / 1000:.1f} km"
-        metrics = f"  {selected_peak.elevation:,.0f} m  {distance_text}".replace(",", " ")
-        name = fit_text(draw, selected_peak.name, font, width - text_size(draw, metrics, font)[0] - 4)
-        detail = name + metrics
+        # The same amber triangle as the skyline marker links the panel to the summit it describes.
+        draw.polygon(((3, hud_top + 11), (13, hud_top + 11), (8, hud_top + 17)), fill=AMBER)
+        name = short_name(selected_peak.name, (width - 20) // CELL_W)
+        paint(image, font.mask(name), (18, hud_top + 3), BLACK)
+        kilometres = selected_peak.distance / 1000.0
+        distance_text = f"{kilometres:.1f} km" if kilometres < 9.95 else f"{kilometres:.0f} km"
+        metrics = f"{selected_peak.elevation:.0f} m  {distance_text}  {wind_name(selected_peak.azimuth)}"
+        paint(image, font.mask(metrics), (18, hud_top + 27), INK)
     else:
-        detail = "No visible named peak"
-    observer = f"OBS {observer_elevation:.0f} m  {lat:.4f}, {lon:.4f}"
-    draw.text((2, hud_top + 2), detail, font=font, fill=INK)
-    draw.text((2, hud_top + 13), observer, font=font, fill=INK)
+        paint(image, font.mask("No named peak"), (18, hud_top + 3), INK)
+        paint(image, font.mask("in view"), (18, hud_top + 27), INK)
     return quantize_rgb222(image), labelled, selected_peak
 
 
@@ -547,9 +737,22 @@ def render_view(args, lat: float, lon: float, heading: float, width: int, fov: f
     data = fetch_peak_data(lat, lon, args.max_range * 1000.0, args.offline)
     visible = prepare_peaks(data, lat, lon, observer_elevation, args.max_range * 1000.0, heading, fov / 2.0,
                             horizon_angles, bearings, args.visibility_tolerance, args.wikidata_prominence, args.offline)
+
+    sun_now = sun_event = None
+    if not args.no_sun:
+        local = datetime.combine(date.fromisoformat(args.date), dtime.fromisoformat(args.time))
+        sun_now, sun_event = sun_track(lat, lon, local, args.tz, heading, fov, horizon_angles, width)
+    route_cross = None
+    if not args.no_route:
+        bearing = (heading + 8.0 if args.route_bearing is None else args.route_bearing) % 360.0
+        if abs(angular_delta(bearing, heading)) < fov / 2.0 - 2.0:
+            route_cross = route_crossing(dem, lat, lon, observer_elevation, args.eye_height,
+                                         bearing, args.max_range * 1000.0)
+
     image, labelled, selected_peak = render(
-        horizon_angles, layer_horizons, visible, observer_elevation, lat, lon, heading, fov,
-        width, args.max_labels, args.min_score, args.peak_step
+        horizon_angles, layer_horizons, visible, heading, fov,
+        width, args.max_labels, args.min_score, args.peak_step,
+        sun_now, sun_event, route_cross
     )
     save_pair(image, path, args.scale)
     names = ", ".join(peak.name for peak in labelled) or "none"
@@ -557,6 +760,12 @@ def render_view(args, lat: float, lon: float, heading: float, width: int, fov: f
     print(f"Adaptive layer edges: {bands} km")
     if selected_peak:
         print(f"Selected peak: {selected_peak.name} ({args.peak_step:+d} steps from heading)")
+    if sun_now:
+        print(f"Sun now: azimuth {sun_now[0]:.1f}, elevation {sun_now[1]:.1f}")
+    if sun_event:
+        print(f"Sun {sun_event[2]} at {sun_event[0]} (azimuth {sun_event[1]:.1f})")
+    if route_cross:
+        print(f"Route crosses the skyline at bearing {route_cross[0]:.1f}, {route_cross[1] / 1000:.1f} km out")
     print(f"Observer elevation {observer_elevation:.0f} m; {len(visible)} visible named peaks; labelled: {names}")
 
 
@@ -577,6 +786,13 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--min-score", type=float, default=0.0, help="minimum elevation x isolation score")
     result.add_argument("--visibility-tolerance", type=float, default=0.15, help="peak/DEM skyline tolerance in degrees")
     result.add_argument("--wikidata-prominence", action="store_true", help="use cached P2660 prominence when available")
+    result.add_argument("--date", default=date.today().isoformat(), help="local date for the sun, YYYY-MM-DD")
+    result.add_argument("--time", default="17:30", help="local time of day for the sun, HH:MM")
+    result.add_argument("--tz", type=float, default=2.0, help="local offset from UTC in hours (default: CEST)")
+    result.add_argument("--no-sun", action="store_true", help="drop the sun disc and skyline-crossing time")
+    result.add_argument("--route-bearing", type=float,
+                        help="mock route bearing in degrees (default: heading + 8)")
+    result.add_argument("--no-route", action="store_true", help="drop the mock route's skyline crossing")
     result.add_argument("--strip", action="store_true", help="also render a 720 px full-360-degree strip")
     result.add_argument("--offline", action="store_true", help="fail rather than download missing cache entries")
     result.add_argument("--scale", type=int, choices=range(2, 9), default=4, help="nearest-neighbour preview scale")
