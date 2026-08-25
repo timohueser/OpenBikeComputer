@@ -183,6 +183,14 @@ macro_rules! setting_enum {
             }
         }
 
+        // The settings-blob codec: the declared discriminant is the stored byte, so a declared
+        // enum is a `settings_table!` row without a second declaration.
+        //
+        // Every declared enum gets this, persisted or not — the two sets coincide today, and one
+        // unused one-byte impl is cheaper than a marker column that would have to be kept true. An
+        // enum that is *not* persisted simply never appears in the table; nothing else changes.
+        $crate::settings_table::setting_enum_codec!($Name);
+
         // The on-disk contract, enforced: the table still runs `0..COUNT` in declaration order,
         // which is exactly what `ALL`, `cycled`, `stepped`, and `from_byte` all assume. Renumber a
         // row, reorder two, or shift the range and the build stops, instead of a stored byte
