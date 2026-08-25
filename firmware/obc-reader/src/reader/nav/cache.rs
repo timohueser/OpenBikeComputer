@@ -1,8 +1,8 @@
 //! Caller-owned navigation tile and quadtree-index cache.
 
-use super::super::cache::{rrip_victim, IndexBlock, INDEX_BLOCK};
 use super::super::QuadIndex;
 use super::NAV_MAX_CHUNK_BYTES;
+use obc_formats::cache::IndexBlockCache;
 use obc_formats::io::{ByteSource, Error as IoError};
 
 /// Graph-tile cache slots. **Thirty-two**: the earlier 8-slot measurement covered one route, while
@@ -68,16 +68,16 @@ pub struct NavTileCache {
     next: u8,
     hits: u32,
     misses: u32,
-    index: [IndexBlock; NAV_INDEX_BLOCKS],
-    index_hits: u32,
-    index_misses: u32,
+    /// The shared index-block driver, sixteen windows wide; its own counters are this cache's
+    /// `index_hits`/`index_misses`.
+    index: IndexBlockCache<NAV_INDEX_BLOCKS>,
 }
 
 // On-device: 32 graph sectors + tags/counters and sixteen 520-byte index windows. It was 24,852 B
 // while a slot tag was a `u32`; the u64 read seam adds 128 B of tags and eight of alignment. Unlike
 // `MapCache`, this cache may take the `u64`'s 8-byte alignment: it lives in the scratch arena's
 // route arm rather than in a `.bss` slot the boot task fills, so no placement of it is on a poll
-// frame — the distinction [`IndexBlock::block`] documents, checked here by measurement.
+// frame — the distinction `MapCache`'s `align_of` assert documents, checked here by measurement.
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(core::mem::size_of::<NavTileCache>() == 24_984);
 
@@ -89,9 +89,7 @@ impl NavTileCache {
             next: 0,
             hits: 0,
             misses: 0,
-            index: [IndexBlock::EMPTY; NAV_INDEX_BLOCKS],
-            index_hits: 0,
-            index_misses: 0,
+            index: IndexBlockCache::new(),
         }
     }
 
@@ -103,11 +101,7 @@ impl NavTileCache {
         self.next = 0;
         self.hits = 0;
         self.misses = 0;
-        for block in &mut self.index {
-            block.meta = 0;
-        }
-        self.index_hits = 0;
-        self.index_misses = 0;
+        self.index.reset();
     }
 
     /// Snapshot of the hit/miss counters since the last [`NavTileCache::reset`].
@@ -116,8 +110,8 @@ impl NavTileCache {
         NavCacheStats {
             hits: self.hits,
             misses: self.misses,
-            index_hits: self.index_hits,
-            index_misses: self.index_misses,
+            index_hits: self.index.hits(),
+            index_misses: self.index.misses(),
         }
     }
 
@@ -155,52 +149,18 @@ impl NavTileCache {
         Ok(u32::from_le_bytes(word))
     }
 
+    /// Read through the route-private index working set.
+    ///
+    /// The bimodal insertion decision stays this cache's and stays spelled as it always was: its
+    /// own miss counter, sampled *after* this fill is counted — one step later than the render
+    /// cache's phase. `fill` is that post-increment count.
     pub(in crate::reader) fn index_read(
         &mut self,
         src: &dyn ByteSource,
         off: u64,
         out: &mut [u8],
     ) -> Result<(), IoError> {
-        let mut filled = 0usize;
-        while filled < out.len() {
-            let cur = off.checked_add(filled as u64).ok_or(IoError::BadOffset)?;
-            let block_off = cur - cur % INDEX_BLOCK as u64;
-            let slot = self.index_block(src, block_off)?;
-            let within = (cur - block_off) as usize;
-            let blen = self.index[slot].len as usize;
-            if within >= blen {
-                return Err(IoError::BadOffset);
-            }
-            let take = (blen - within).min(out.len() - filled);
-            out[filled..filled + take].copy_from_slice(&self.index[slot].buf[within..within + take]);
-            filled += take;
-        }
-        Ok(())
-    }
-
-    fn index_block(&mut self, src: &dyn ByteSource, block_off: u64) -> Result<usize, IoError> {
-        // See [`IndexBlock::block`]: a block number, checked rather than cast.
-        let tag = u32::try_from(block_off / INDEX_BLOCK as u64).map_err(|_| IoError::BadOffset)?;
-        if let Some(i) = self.index.iter().position(|b| b.valid() && b.block == tag) {
-            self.index[i].set_rrpv(0);
-            self.index_hits = self.index_hits.saturating_add(1);
-            return Ok(i);
-        }
-        let remaining = src.len().checked_sub(block_off).ok_or(IoError::BadOffset)?;
-        let want = remaining.min(INDEX_BLOCK as u64) as usize;
-        if want == 0 {
-            return Err(IoError::BadOffset);
-        }
-        let empty = self.index.iter().position(|b| !b.valid());
-        let i = empty.unwrap_or_else(|| rrip_victim(&mut self.index));
-        self.index[i].meta = 0;
-        src.read_at(block_off, &mut self.index[i].buf[..want])?;
-        self.index[i].block = tag;
-        self.index[i].len = want as u16;
-        self.index_misses = self.index_misses.saturating_add(1);
-        let rrpv = if empty.is_some() || self.index_misses.is_multiple_of(8) { 2 } else { 3 };
-        self.index[i].commit(rrpv);
-        Ok(i)
+        self.index.read(src, off, out, &mut |_bytes, fill| fill.is_multiple_of(8))
     }
 }
 
@@ -214,6 +174,7 @@ impl Default for NavTileCache {
 mod tests {
     use super::*;
     use crate::SliceSource;
+    use obc_formats::cache::INDEX_BLOCK;
     use obc_formats::obcm::NAV_CHUNK_SIZE;
 
     /// The graph-tile cache holds [`NAV_TILE_SLOTS`] distinct chunks resident at once, and

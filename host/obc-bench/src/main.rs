@@ -1,6 +1,6 @@
 //! Host render benchmark harness + pixel-hash and read-counter golden gate (issues #327, #1467).
 //!
-//! Renders a fixed 7-scene matrix through the **real pipeline** — `obcm-testkit`'s deterministic
+//! Renders a fixed 8-scene matrix through the **real pipeline** — `obcm-testkit`'s deterministic
 //! fixture → `SliceSource` → `MapTables`/`MapCache`/`Reader` → `RenderScratch::render_timed` → the
 //! device-resolution [`Framebuffer565`] — and prints per-stage timings (min of 10 after a warm-up),
 //! the [`RenderStats`] counters, and an FNV-1a 64 hash of the frame's pixels.
@@ -15,7 +15,7 @@
 //!   stays identical (epic #1402 §2.5). A pure refactor must touch neither; an intentional change
 //!   regenerates the file with `--write-golden` in the same PR — that is the review signal.
 //!
-//! `--check`/`--write-golden` cover **two** matrices against one file: the 7 render scenes and the
+//! `--check`/`--write-golden` cover **two** matrices against one file: the 8 render scenes and the
 //! 9 route-corridor snapshot cases, the latter under `corridor/` names.
 //!
 //! Modes: default (print the table), `--repeat <N>` (repeat the whole matrix and report
@@ -64,6 +64,13 @@ const SCENES: [(&str, f32, f32); 6] = [
     ("overview-rot", 30.0, 35.0),
 ];
 
+/// The one **cold** record: `overview` rendered once into a fresh cache, counters taken from that
+/// first frame. Every scene above is warmed first, and a warmed frame performs zero quadtree-index
+/// fills — so without this row the golden file cannot see the index cache at all, only the geometry
+/// one. Overview is the pick: it walks the most nodes, so its first frame carries the most index
+/// traffic of any scene in the matrix.
+const COLD_SCENE: (&str, f32, f32) = ("overview-cold", 30.0, 0.0);
+
 /// [`Clock`] over [`std::time::Instant`]: µs since construction, threaded through `render_timed`
 /// so `collect_us`/`sort_us`/`draw_us` are real host wall time.
 struct StdClock(Instant);
@@ -104,7 +111,10 @@ struct SceneResult {
 /// across iterations, camera at the map's bbox center. Warm-up once (fills the chunk cache), then
 /// time [`ITERS`] renders and keep the min of each stage; counters come from the last iteration and
 /// the hash from the final frame.
-fn run_scene(map: &[u8], name: &str, mpp: f32, heading_deg: f32, clock: &StdClock) -> SceneResult {
+///
+/// `warm == false` reports that first frame instead — one render into an empty cache, which is the
+/// only shape in which the counters include index-block fills (see [`COLD_SCENE`]).
+fn run_scene(map: &[u8], name: &str, mpp: f32, heading_deg: f32, warm: bool, clock: &StdClock) -> SceneResult {
     let src = SliceSource(map);
     let tables = MapTables::parse(&src).expect("bench map must parse");
     let cache = MapCache::new();
@@ -122,9 +132,23 @@ fn run_scene(map: &[u8], name: &str, mpp: f32, heading_deg: f32, clock: &StdCloc
     let vp = Viewport::new_rotated(WIDTH as f32, HEIGHT as f32, cx, cy, zoom_for_mpp(mpp), heading_deg.to_radians());
 
     // Warm-up: fills the chunk cache, so the timed iterations measure the steady state the device
-    // sees (a slow pan re-hits last frame's chunks), not the cold SD-fill.
+    // sees (a slow pan re-hits last frame's chunks), not the cold SD-fill. A cold case reports this
+    // very frame and stops.
     let mut fb = Framebuffer565::new(&mut buf, WIDTH, HEIGHT);
-    scratch.render_timed(&mut fb, &reader, &vp, bg, RenderConfig::default(), color_fn, clock);
+    let t0 = clock.now_us();
+    let first = scratch.render_timed(&mut fb, &reader, &vp, bg, RenderConfig::default(), color_fn, clock);
+    let first_us = clock.now_us() - t0;
+    if !warm {
+        return SceneResult {
+            name: name.into(),
+            collect_us: first.collect_us,
+            sort_us: first.sort_us,
+            draw_us: first.draw_us,
+            total_us: first_us,
+            stats: first,
+            hash: frame_hash(&buf),
+        };
+    }
 
     let (mut collect_us, mut sort_us, mut draw_us, mut total_us) = (u32::MAX, u32::MAX, u32::MAX, u64::MAX);
     let mut stats = RenderStats::default();
@@ -256,26 +280,40 @@ fn run_matrix() -> Vec<SceneResult> {
     let mut results: Vec<SceneResult> = SCENES
         .iter()
         .map(|&(name, mpp, heading)| {
-            let r = run_scene(&map, name, mpp, heading, &clock);
-            if name.starts_with("overview") {
-                assert!(
-                    r.stats.features_dropped > 0,
-                    "scene `{name}` must saturate the frame budget (features_dropped > 0); \
-                     the fixture isn't dense enough — grow obcm_testkit::build_bench_map"
-                );
-            }
+            let r = run_scene(&map, name, mpp, heading, true, &clock);
+            assert_overview_saturates(&r);
             r
         })
         .collect();
-    // The route-overlay scene (issue #332): the map scenes carry no route, so this seventh frame
-    // is what puts `draw_route`'s stroke + chevrons under the hash tripwire.
+    let (cold, cold_mpp, cold_heading) = COLD_SCENE;
+    let cold = run_scene(&map, cold, cold_mpp, cold_heading, false, &clock);
+    assert_overview_saturates(&cold);
+    results.push(cold);
+    // The route-overlay scene: the map scenes carry no route, so this eighth frame is what puts
+    // `draw_route`'s stroke + chevrons under the hash tripwire.
     results.push(run_route_scene(&map, &clock));
     results
+}
+
+/// Every overview scene — the cold one included — must push past the frame's feature ceiling, or
+/// the fixture isn't dense enough and the priority-drop path went unexercised.
+fn assert_overview_saturates(r: &SceneResult) {
+    if r.name.starts_with("overview") {
+        assert!(
+            r.stats.features_dropped > 0,
+            "scene `{}` must saturate the frame budget (features_dropped > 0); \
+             the fixture isn't dense enough — grow obcm_testkit::build_bench_map",
+            r.name
+        );
+    }
 }
 
 /// The scene table. `chunks`/`hit/miss`/`sd`/`bytes` are the gated read counters — `sd` is
 /// `ByteSource::read_at` calls (one card read each on the device, index blocks included) and
 /// `bytes` what they moved.
+///
+/// The timing columns are the min of [`ITERS`] warmed renders **except** on a `-cold` row, whose
+/// times are its one un-warmed render and are not comparable with its neighbours'.
 fn print_table(results: &[SceneResult]) {
     println!(
         "{:<13} {:>3} {:>10} {:>8} {:>9} {:>9}  {:>6} {:>6} {:>7}  {:>6} {:>9} {:>5} {:>8}  hash",
@@ -316,11 +354,16 @@ fn print_table(results: &[SceneResult]) {
     }
 }
 
-/// Repeat the complete matrix and summarize each scene's end-to-end time. Each matrix result is
-/// already the min of [`ITERS`] warmed renders; the outer median rejects process/scheduler noise,
-/// while min/max expose the observed envelope used to set a review tolerance. Every gated value —
-/// hash and read counters alike — must agree on every repeat, keeping this timing mode covered by
-/// the same determinism contract the golden file gates.
+/// Repeat the complete matrix and summarize each scene's end-to-end time. Every warmed matrix
+/// result is already the min of [`ITERS`] renders; the outer median rejects process/scheduler noise,
+/// while min/max expose the observed envelope used to set a review tolerance.
+///
+/// The [`COLD_SCENE`] row is the exception and must be read differently: it is a **single**
+/// un-warmed render, so its median is one sample and its envelope is ordinary run-to-run noise plus
+/// the cold fills — wider and slower than its warm twin for reasons that are not a regression. Set
+/// tolerances from the warmed rows. Every gated value — hash and read counters alike — must agree
+/// on every repeat regardless, keeping this timing mode covered by the same determinism contract
+/// the golden file gates.
 fn print_repeat_table(repeats: usize) {
     let runs: Vec<Vec<SceneResult>> = (0..repeats).map(|_| run_matrix()).collect();
     println!("{:13} {:>8} {:>8} {:>8} {:>8}  hash", "scene", "min", "median", "max", "spread");
@@ -876,7 +919,7 @@ fn main() -> ExitCode {
                 }
             };
             let clock = StdClock(Instant::now());
-            print_table(&[run_scene(&bytes, "custom", mpp, heading, &clock)]);
+            print_table(&[run_scene(&bytes, "custom", mpp, heading, true, &clock)]);
         }
     }
     ExitCode::SUCCESS
@@ -899,7 +942,7 @@ mod tests {
     fn overview_scene_saturates_frame_budget() {
         let map = obcm_testkit::build_bench_map();
         let clock = StdClock(Instant::now());
-        let r = run_scene(&map, "overview", 30.0, 0.0, &clock);
+        let r = run_scene(&map, "overview", 30.0, 0.0, true, &clock);
         assert!(r.stats.features_tried > obc_render::MAX_SPANS, "fixture density under the feature ceiling MAX_SPANS");
         assert!(r.stats.features_dropped > 0, "overview must overflow the frame budget");
         // Single-ring features consume one span and one ring each. The rebalanced arena has more
@@ -914,8 +957,8 @@ mod tests {
     fn scene_matrix_switches_lod() {
         let map = obcm_testkit::build_bench_map();
         let clock = StdClock(Instant::now());
-        let riding = run_scene(&map, "riding", 0.5, 0.0, &clock);
-        let overview = run_scene(&map, "overview", 30.0, 0.0, &clock);
+        let riding = run_scene(&map, "riding", 0.5, 0.0, true, &clock);
+        let overview = run_scene(&map, "overview", 30.0, 0.0, true, &clock);
         assert_eq!(riding.stats.lod, 1, "riding must select the fine LOD");
         assert_eq!(overview.stats.lod, 0, "overview must select the coarse LOD");
         assert!(riding.stats.features_drawn > 0, "riding scene must draw features");
@@ -959,13 +1002,31 @@ mod tests {
         assert!(white_gain > 20, "chevrons must add white pixels over the stroke, gained {white_gain} px");
     }
 
+    /// Why [`COLD_SCENE`] is in the matrix, as an assertion. `map_sd_reads` counts every `read_at`,
+    /// `map_chunk_misses` only the geometry fills, so their difference *is* the frame's
+    /// quadtree-index fills. Every warmed scene has none — which is what left the index cache
+    /// invisible to the golden file — and the cold record is the one that has some. If a later
+    /// change warms it by accident this fails, instead of the row quietly becoming a second
+    /// `overview`.
+    #[test]
+    fn only_the_cold_scene_fills_index_blocks() {
+        for r in run_matrix() {
+            let s = &r.stats;
+            if r.name == COLD_SCENE.0 {
+                assert!(s.map_sd_reads > s.map_chunk_misses, "the cold scene must fill quadtree-index blocks");
+            } else {
+                assert_eq!(s.map_sd_reads, s.map_chunk_misses, "warmed scene `{}` must fill no index block", r.name);
+            }
+        }
+    }
+
     /// Two renders of the same scene hash identically — the tripwire's own repeatability.
     #[test]
     fn frame_hash_is_repeatable() {
         let map = obcm_testkit::build_bench_map();
         let clock = StdClock(Instant::now());
-        let a = run_scene(&map, "mid-rot", 4.0, 35.0, &clock);
-        let b = run_scene(&map, "mid-rot", 4.0, 35.0, &clock);
+        let a = run_scene(&map, "mid-rot", 4.0, 35.0, true, &clock);
+        let b = run_scene(&map, "mid-rot", 4.0, 35.0, true, &clock);
         assert_eq!(a.hash, b.hash);
     }
 

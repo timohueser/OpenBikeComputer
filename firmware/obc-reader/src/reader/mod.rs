@@ -654,9 +654,10 @@ fn expand_walk_bbox(query: &BBox, root: &BBox) -> BBox {
 
 #[cfg(test)]
 mod tests {
-    use super::cache::{ChunkLoc, WalkEntry, INDEX_BLOCK, MAP_CHUNK_SLOTS};
+    use super::cache::{ChunkLoc, WalkEntry, MAP_CHUNK_SLOTS};
     use super::*;
     use crate::SliceSource;
+    use obc_formats::cache::INDEX_BLOCK;
     use obc_formats::io::Error as IoError;
 
     /// A `ByteSource` reproducing a flaky-SD partial-overwrite: the read at offset `fail_at` copies
@@ -992,14 +993,15 @@ mod tests {
     fn clear_invalidates_index_blocks() {
         let data = [0x5Au8; 1024];
         let src = SliceSource(&data);
+        let mut word = [0u8; 4];
 
         let cache = MapCache::new();
         let mut inner = cache.inner.borrow_mut();
 
         // Resident, then a hit (no source read).
-        inner.index_block(&src, 0).unwrap();
+        inner.index_read(&src, 0, &mut word).unwrap();
         let before = inner.stats();
-        inner.index_block(&src, 0).unwrap();
+        inner.index_read(&src, 0, &mut word).unwrap();
         assert_eq!(inner.stats().sd_reads, before.sd_reads, "a resident block must hit, not re-read");
         drop(inner);
 
@@ -1007,7 +1009,7 @@ mod tests {
         cache.clear().unwrap();
         let mut inner = cache.inner.borrow_mut();
         let before = inner.stats();
-        inner.index_block(&src, 0).unwrap();
+        inner.index_read(&src, 0, &mut word).unwrap();
         assert_eq!(inner.stats().sd_reads, before.sd_reads + 1, "post-clear index read must re-read");
     }
 }
