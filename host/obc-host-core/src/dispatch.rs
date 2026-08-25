@@ -571,7 +571,12 @@ impl HostLoop {
         routes: &mut dyn RouteRepository,
         platform: &mut dyn HostPlatform,
     ) -> Option<TrackAction> {
-        let status = app.drain_host_commands(&mut self.mailbox);
+        // Asked for **by name**, not filtered out of the whole walk: `drain_host_commands` pulls
+        // from every domain it passes — minting the operation — so it would consume an intent
+        // admitted between this executor's passes and leave its domain waiting on an answer that is
+        // never coming. This host admits its intents inside `pass`, so it never hit that; the board
+        // did, and the shape is the same on both.
+        let status = app.drain_residual_commands(&mut self.mailbox);
         debug_assert_eq!(status, DrainStatus::Complete, "a canonical-capacity mailbox always drains completely");
         let mut finish = None;
         while let Some(command) = self.mailbox.pop() {
