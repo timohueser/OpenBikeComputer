@@ -3,6 +3,7 @@
 use core::cell::{RefCell, RefMut};
 
 use heapless::Vec;
+use obc_formats::cache::IndexBlockCache;
 use obc_formats::io::{ByteSource, Error as IoError};
 use obc_map_scene::BBox;
 
@@ -21,13 +22,10 @@ const CACHE_SLOT_BYTES: usize = 4096;
 /// zooms can expose dozens of chunks and remain intentionally streaming on the LM20 RAM budget.
 pub(crate) const MAP_CHUNK_SLOTS: usize = 4;
 
-/// Block size + count of the quadtree-index cache. The leaf walk reads 4-byte nodes (siblings
-/// adjacent in the file); caching a few aligned blocks coalesces those into a handful of SD
-/// reads per walk rather than one read per node. ≈3.5 KB total. Its replacement is scan-resistant
-/// RRIP rather than LRU: the renderer repeats an ordered walk whose working set can exceed these
-/// seven slots, and LRU otherwise evicts every block just before the next frame asks for it. The
-/// eighth former block's 520-byte budget holds the expanded-view leaf cache below.
-pub(in crate::reader) const INDEX_BLOCK: usize = 512;
+/// Windows of the shared [`IndexBlockCache`] the render walk gets. ≈3.5 KB: the leaf walk reads
+/// 4-byte nodes whose siblings are adjacent in the file, so seven aligned windows coalesce a whole
+/// walk into a handful of SD reads rather than one per node. The eighth former window's 520-byte
+/// budget holds the expanded-view leaf cache below.
 const INDEX_BLOCKS: usize = 7;
 
 /// Two recent geometry walks (normally the one or two volume shards touching the viewport), each
@@ -163,83 +161,6 @@ impl ScratchSlot {
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(core::mem::size_of::<ScratchSlot>() == 8);
 
-const INDEX_META_RRPV_SHIFT: u8 = 5;
-const INDEX_META_VALID: u8 = 0x80;
-
-/// One quadtree-index cache block: a resident, block-aligned window of the index region. The
-/// validity bit and the two-bit RRIP prediction share `meta`; `len` is bounded by the 512-byte
-/// window. Compacting those tags pays for the leaf bbox stored in each chunk slot, so the pass-B
-/// fast path adds no net resident RAM. (`meta`'s low five bits were the volume-set shard index
-/// until FS7.5, #1420 — one file, nothing to index.)
-#[derive(Clone, Copy)]
-#[repr(C)]
-pub(in crate::reader) struct IndexBlock {
-    /// Which window of the file this holds, as a **block number** — `byte_offset / INDEX_BLOCK` —
-    /// rather than the byte offset itself. Exact, never a rounding: every fill is block-aligned by
-    /// construction, because [`MapCacheInner::index_read`] rounds the request down to a block
-    /// boundary before it asks for one.
-    ///
-    /// **It is a `u32`, and that is a measurement rather than a preference.** FS7.5-seam widened
-    /// file offsets to `u64`, and spelling this field as one costs nothing in *size* (the struct
-    /// has four spare bytes) but changes the whole cache's **alignment** from 4 to 8 — after which
-    /// LLVM stopped folding [`MapCacheInner::new`]'s `zeroed()` into a `.bss` memset at the board's
-    /// placement site and materialised the ~37 KB cache as a stack temporary instead. Measured on
-    /// the nRF54LM20 image: the boot task's frame went **7,456 → 74,240 B against a 49 KB residual
-    /// stack** — a boot overflow, and the exact failure mode of #1084/#1108. Storing the block
-    /// number keeps this 4-aligned and the fold intact.
-    ///
-    /// Nothing is given up. A `u32` block number addresses `INDEX_BLOCK × 2^32` = **2 TiB**, which
-    /// is thirty-two times §1.1's interior at the scale every producer writes (`U = 16`, 64 GiB)
-    /// and — at the largest scale §1.1 permits — reaches its last byte **exactly**. So this
-    /// narrowing is never the wall that binds; the const assert below is that sentence as
-    /// arithmetic. `index_block` still refuses rather than wraps if it is ever handed one past
-    /// `u32`.
-    pub(in crate::reader) block: u32,
-    pub(in crate::reader) len: u16,
-    pub(in crate::reader) meta: u8,
-    /// Keep `buf` word-aligned so a full-sector extent read bypasses the board's alignment bounce.
-    pub(in crate::reader) _align: u8,
-    pub(in crate::reader) buf: [u8; INDEX_BLOCK],
-}
-
-// On-device each compact tagged window is 520 bytes including alignment — unmoved by the u64 read
-// seam, which is the point of the block-number tag above.
-#[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::size_of::<IndexBlock>() == INDEX_BLOCK + 8);
-// The last byte of the largest interior §1.1 permits — `2^32` units at the largest legal
-// `Offset Scale` — must still have a block number a `u32` can hold, or `IndexBlock::block` would be
-// the wall instead of the format. It fits, and at that extreme it fits exactly.
-const _: () = assert!(
-    ((1u64 << 32) * (1u64 << obc_formats::obcm::OFFSET_SCALE_MAX) - 1) / INDEX_BLOCK as u64 <= u32::MAX as u64,
-    "a block number must reach every byte an `Offset Scale` can cover"
-);
-
-impl IndexBlock {
-    pub(in crate::reader) const EMPTY: Self = Self { block: 0, len: 0, meta: 0, _align: 0, buf: [0; INDEX_BLOCK] };
-
-    #[inline]
-    pub(in crate::reader) fn valid(&self) -> bool {
-        self.meta & INDEX_META_VALID != 0
-    }
-
-    /// Re-reference prediction (0 = near, 3 = distant). A hit promotes to 0; most one-pass fills
-    /// enter at 3 so an ordered tree scan churns one probation slot instead of flushing all seven.
-    #[inline]
-    pub(in crate::reader) fn rrpv(&self) -> u8 {
-        (self.meta >> INDEX_META_RRPV_SHIFT) & 0x03
-    }
-
-    #[inline]
-    pub(in crate::reader) fn set_rrpv(&mut self, rrpv: u8) {
-        self.meta = (self.meta & !(0x03 << INDEX_META_RRPV_SHIFT)) | ((rrpv & 0x03) << INDEX_META_RRPV_SHIFT);
-    }
-
-    #[inline]
-    pub(in crate::reader) fn commit(&mut self, rrpv: u8) {
-        self.meta = INDEX_META_VALID | ((rrpv & 0x03) << INDEX_META_RRPV_SHIFT);
-    }
-}
-
 #[derive(Clone, Copy)]
 pub(in crate::reader) struct WalkEntry {
     pub(in crate::reader) cid: u32,
@@ -248,7 +169,7 @@ pub(in crate::reader) struct WalkEntry {
 
 /// One complete expanded-view leaf result. The all-zero form is an empty cache record, like the
 /// geometry/index slots. Field order and `repr(C)` pin this to 260 B on the 32-bit target; two
-/// records replace one 520-byte [`IndexBlock`] exactly.
+/// records replace one 520-byte index window exactly.
 #[repr(C)]
 struct WalkCache {
     cover: BBox,
@@ -258,8 +179,9 @@ struct WalkCache {
     len: u8,
 }
 
+// An index window is its 512-byte buffer plus 8 bytes of tag and alignment.
 #[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::size_of::<WalkCache>() * WALK_CACHE_SLOTS == core::mem::size_of::<IndexBlock>());
+const _: () = assert!(core::mem::size_of::<WalkCache>() * WALK_CACHE_SLOTS == obc_formats::cache::INDEX_BLOCK + 8);
 
 /// The streamed-map cache: a scan-resistant five-slot geometry working set (absorbing the
 /// renderer's per-priority-pass re-reads), a small block cache for quadtree-node reads, and two
@@ -271,6 +193,19 @@ const _: () = assert!(core::mem::size_of::<WalkCache>() * WALK_CACHE_SLOTS == co
 pub struct MapCache {
     pub(in crate::reader) inner: RefCell<MapCacheInner>,
 }
+
+/// **`MapCache` must stay 4-aligned, and that is a measurement rather than a preference.** The
+/// board `ptr::write`s this ~37 KB value into a reserved static from the boot task. At alignment 4
+/// LLVM folds [`MapCacheInner::new`]'s `zeroed()` into a `.bss` memset at that placement site; at
+/// alignment 8 it stops folding and materialises the whole cache as a stack temporary instead —
+/// measured on the nRF54LM20 image, the boot task's frame went **7,456 → 74,240 B against a 49 KB
+/// residual stack**, a boot overflow and the exact failure mode of #1084/#1108. The one field that
+/// can move it is the index driver's key, which is why
+/// [`IndexBlockCache`](obc_formats::cache::IndexBlockCache) tags a window by a `u32` block number
+/// rather than a `u64` byte offset. CI's `boot_chain_ceiling` and `task_frame_limit` are the
+/// backstop; they fire late and diagnose badly, so this fires first.
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::align_of::<MapCache>() == 4);
 
 impl Default for MapCache {
     fn default() -> Self {
@@ -350,13 +285,13 @@ pub(in crate::reader) struct MapCacheInner {
     pub(in crate::reader) generation: u32,
     tick: u32,
     pub(in crate::reader) chunks: [ChunkSlot; MAP_CHUNK_SLOTS],
-    index: [IndexBlock; INDEX_BLOCKS],
+    /// The shared index-block driver, seven windows wide. Its own hit/miss counters are the eight
+    /// bytes the chunk tags' packing had been holding in reserve for a future field — spent here,
+    /// exactly as intended, so `map_cache` stays byte-identical. They are not reported: `CacheStats`
+    /// keeps its shape, and `sd_reads` already counts every fill this cache makes.
+    index: IndexBlockCache<INDEX_BLOCKS>,
     walks: [WalkCache; WALK_CACHE_SLOTS],
     scratch_slot: ScratchSlot,
-    /// The packed four regular chunk tags save sixteen bytes; the scratch tag uses eight. Keep the
-    /// other eight explicit so the resource baseline stays byte-identical and future fields have a
-    /// named place to live rather than silently spending stack margin.
-    _chunk_layout_reserve: [u8; 8],
     /// Decode buffer for a chunk too large to cache (`> CACHE_SLOT_BYTES`, up to the accepted
     /// `MAX_CHUNK_BYTES`). Its first 4 KiB are also the fifth ordinary-chunk slot; an oversized
     /// load invalidates that tag before overwriting it.
@@ -386,9 +321,7 @@ impl MapCacheInner {
             s.meta = 0;
         }
         self.scratch_slot.meta = 0;
-        for b in &mut self.index {
-            b.meta = 0;
-        }
+        self.index.reset();
         for walk in &mut self.walks {
             walk.valid = false;
         }
@@ -411,8 +344,7 @@ impl MapCacheInner {
 
     #[inline]
     fn count_read(&mut self, bytes: usize) {
-        self.sd_reads = self.sd_reads.saturating_add(1);
-        self.bytes_read = self.bytes_read.saturating_add(bytes as u32);
+        count_source_read(&mut self.sd_reads, &mut self.bytes_read, bytes);
     }
 
     pub(in crate::reader) fn cached_walk(&self, lod: u8, query: &BBox) -> Option<Vec<WalkEntry, WALK_CACHE_ENTRIES>> {
@@ -514,81 +446,34 @@ impl MapCacheInner {
         Ok(loc)
     }
 
-    /// Fill `out` from index-region offset `off`, assembling from cached blocks (reading any
-    /// missing block from the source). A node read is 4 bytes and may straddle a block edge, so
-    /// this loops over blocks.
+    /// Fill `out` from index-region offset `off` through the shared index-block driver, which
+    /// assembles it from resident windows and reads any that are missing.
+    ///
+    /// The bimodal insertion decision is this cache's, not the driver's, and it is spelled exactly
+    /// as it always was: sample `sd_reads` — the counter that also counts geometry fills — *before*
+    /// this fill is counted. The router samples a different counter one step later; those two
+    /// phases are what a merged driver with a counter of its own would silently erase.
     pub(in crate::reader) fn index_read(
         &mut self,
         src: &dyn ByteSource,
         off: u64,
         out: &mut [u8],
     ) -> Result<(), IoError> {
-        let mut filled = 0usize;
-        while filled < out.len() {
-            let cur = off + filled as u64;
-            let block_off = cur - cur % INDEX_BLOCK as u64;
-            let slot = self.index_block(src, block_off)?;
-            let within = (cur - block_off) as usize;
-            let blen = self.index[slot].len as usize;
-            if within >= blen {
-                return Err(IoError::BadOffset);
-            }
-            let take = (blen - within).min(out.len() - filled);
-            out[filled..filled + take].copy_from_slice(&self.index[slot].buf[within..within + take]);
-            filled += take;
-        }
-        Ok(())
-    }
-
-    /// Ensure the `INDEX_BLOCK`-aligned block at `block_off` is resident, returning its slot.
-    pub(in crate::reader) fn index_block(&mut self, src: &dyn ByteSource, block_off: u64) -> Result<usize, IoError> {
-        // Checked, not cast: the const assert on [`IndexBlock::block`] proves no *legal* file
-        // reaches a block number past `u32`, but `block_off` is derived from directory bytes and a
-        // corrupt one is not legal. A wrap here would alias two different windows of the file and
-        // serve one for the other, which is the one failure a cache must never have.
-        let tag = u32::try_from(block_off / INDEX_BLOCK as u64).map_err(|_| IoError::BadOffset)?;
-        if let Some(i) = self.index.iter().position(|b| b.valid() && b.block == tag) {
-            self.index[i].set_rrpv(0);
-            return Ok(i);
-        }
-        // Checked rather than `-`: `block_off` is derived from file data, so a corrupt directory can
-        // name a block past the source's end. It used to be a `u32` subtraction that wrapped into a
-        // vast `want` and was clamped back down by the `min`; in `u64` the same wrap would be a
-        // panic in debug and an absurd length in release, so it refuses instead.
-        let want = src.len().saturating_sub(block_off).min(INDEX_BLOCK as u64) as usize;
-        if want == 0 {
-            return Err(IoError::BadOffset);
-        }
-        let empty = self.index.iter().position(|b| !b.valid());
-        let i = empty.unwrap_or_else(|| rrip_victim(&mut self.index));
-        // Invalidate before the read (see `load_chunk`): a partial read failure must not leave a
-        // poisoned slot still keyed to the old block offset.
-        self.index[i].meta = 0;
-        src.read_at(block_off, &mut self.index[i].buf[..want])?;
-        self.index[i].block = tag;
-        self.index[i].len = want as u16;
-        // Bimodal RRIP insertion: an initial fill gets a normal prediction so all slots seed;
-        // thereafter seven of eight source misses enter as immediate probation (3), while the
-        // periodic 2 ages out stale protected blocks after the viewport genuinely moves. Stable
-        // repeated scans keep their hit blocks at 0 and churn the probation slot.
-        let rrpv = if empty.is_some() || self.sd_reads.is_multiple_of(8) { 2 } else { 3 };
-        self.index[i].commit(rrpv);
-        self.count_read(want);
-        Ok(i)
+        let Self { index, sd_reads, bytes_read, .. } = self;
+        index.read(src, off, out, &mut |bytes, _fill| {
+            let protected = sd_reads.is_multiple_of(8);
+            count_source_read(sd_reads, bytes_read, bytes);
+            protected
+        })
     }
 }
 
-/// Pick the next RRIP victim. If no entry currently predicts a distant re-reference, age every
-/// entry one step and try again. Bounded: predictions saturate at 3, so at most three passes.
-pub(in crate::reader) fn rrip_victim(slots: &mut [IndexBlock]) -> usize {
-    loop {
-        if let Some(i) = slots.iter().position(|slot| slot.rrpv() >= 3) {
-            return i;
-        }
-        for slot in slots.iter_mut() {
-            slot.set_rrpv((slot.rrpv() + 1).min(3));
-        }
-    }
+/// Bump the raw source-read counters. A free function so [`MapCacheInner::index_read`] can count
+/// through a field-split borrow while the index driver holds `&mut self.index`.
+#[inline]
+fn count_source_read(sd_reads: &mut u32, bytes_read: &mut u32, bytes: usize) {
+    *sd_reads = sd_reads.saturating_add(1);
+    *bytes_read = bytes_read.saturating_add(bytes as u32);
 }
 
 fn chunk_rrip_victim(slots: &mut [ChunkSlot], scratch: &mut ScratchSlot) -> ChunkVictim {
