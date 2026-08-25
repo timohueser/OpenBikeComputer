@@ -4,6 +4,7 @@ mid hash=0x3071f09bdcd8bbe5 chunks_visited=4 map_chunk_hits=4 map_chunk_misses=0
 mid-rot hash=0x8b3421f22d2e8ef5 chunks_visited=4 map_chunk_hits=4 map_chunk_misses=0 map_sd_reads=0 map_bytes_read=0
 overview hash=0xf953e5888b2ec1da chunks_visited=32 map_chunk_hits=3064 map_chunk_misses=40 map_sd_reads=40 map_bytes_read=100608
 overview-rot hash=0x0523871bee60349f chunks_visited=32 map_chunk_hits=3064 map_chunk_misses=40 map_sd_reads=40 map_bytes_read=100608
+overview-cold hash=0xf953e5888b2ec1da chunks_visited=32 map_chunk_hits=3062 map_chunk_misses=42 map_sd_reads=43 map_bytes_read=106080
 route hash=0xe26019c8e500f2c0 chunks_visited=4 map_chunk_hits=4 map_chunk_misses=0 map_sd_reads=0 map_bytes_read=0
 corridor/thin/all/cold rows=6 map_reads=42 map_bytes=21216 route_reads=6 route_bytes=7902
 corridor/thin/all/full-walk rows=6 map_reads=36 map_bytes=18144 route_reads=6 route_bytes=7902
