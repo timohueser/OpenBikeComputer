@@ -21,7 +21,20 @@
 //! `no_std` and `defmt`-free by construction: the board reports a violation through its own
 //! transport, the hosts through [`assert_residual`].
 
+use crate::host::HostCommandClass;
 use crate::HostCommand;
+
+/// The three residual classes in the **drain's** own vocabulary — what
+/// [`App::drain_residual_commands`](crate::App::drain_residual_commands) asks for by name, and what
+/// [`App::has_pending_residual_command`](crate::App::has_pending_residual_command) peeks at.
+///
+/// Asking by class rather than filtering a full drain is not a tidiness choice. For every class
+/// DeviceCore owns, the full walk *pulls* from the domain — it mints the operation as it passes —
+/// so an executor that walked it would consume the rider's request and then decline to perform it.
+/// [`RESIDUAL`] is the same three classes as prose and [`residual`] as a predicate;
+/// `the_residual_table_names_exactly_what_the_predicate_admits` pins all three together.
+pub(crate) const RESIDUAL_CLASSES: [HostCommandClass; 3] =
+    [HostCommandClass::FinishTrack, HostCommandClass::ForgetBond, HostCommandClass::DeleteTrip];
 
 /// The legacy classes a typed executor still drains, and nothing else.
 ///
@@ -45,19 +58,6 @@ pub fn residual(command: &HostCommand) -> bool {
 /// [`assert_residual`] and never reach it.
 pub fn declined_level(command: &HostCommand) -> bool {
     matches!(command, HostCommand::LoadRideTrack { .. } | HostCommand::RefreshNavPreview)
-}
-
-/// Whether `command` is a **retention stamp** — the class a platform without
-/// [`PlatformSupport::retention_metadata`](crate::device_core::PlatformSupport::retention_metadata)
-/// declines.
-///
-/// On such a platform the pass emits no [`RetentionEffect`](crate::retention::RetentionEffect), so
-/// the candidate stays queued and the legacy drain keeps offering it. Draining and dropping it is
-/// what the board has always done (there is no sidecar to write since FS7/FS8) and it is what keeps
-/// the resident mirror from rediscovering the same stamp forever. An executor that *does* have the
-/// store never sees one here: its pass consumed the candidate.
-pub fn declined_stamp(command: &HostCommand) -> bool {
-    matches!(command, HostCommand::StampRouteUsed { .. } | HostCommand::StampRideSynced { .. })
 }
 
 /// The production assertion behind [`RESIDUAL`]: a class DeviceCore owns must never come back on the
@@ -96,6 +96,26 @@ mod tests {
             assert!(RESIDUAL.contains(&name), "{name} is admitted but not in the printed table");
         }
         assert_eq!(RESIDUAL.len(), 3, "three classes, and the table says which");
+        assert_eq!(
+            RESIDUAL_CLASSES.len(),
+            RESIDUAL.len(),
+            "the class list the drain asks for is the same residual the predicate admits"
+        );
+        // Both directions, because either one alone lets a class be *substituted*: the length check
+        // above only catches a shortened list, and a one-way containment check passes just as
+        // happily when `DeleteTrip` is swapped for something the predicate never admits.
+        for class in RESIDUAL_CLASSES {
+            assert!(
+                admitted.iter().any(|(_, c)| c.class() == class),
+                "{class:?} is asked for by name but is not one of the admitted commands"
+            );
+        }
+        for (_, command) in &admitted {
+            assert!(
+                RESIDUAL_CLASSES.contains(&command.class()),
+                "{command:?} is admitted by the predicate but the drain never asks for its class"
+            );
+        }
 
         // Everything DeviceCore took over is refused, including the declined classes — those are
         // filtered earlier and must never reach the assertion at all.
@@ -103,6 +123,11 @@ mod tests {
             HostCommand::RescanStore { commits: 1 },
             HostCommand::DeleteRoute { id: 1 },
             HostCommand::DeleteRide { id: 1 },
+            // The stamps are the domain's own on **every** platform: the pass decides, mirrors and
+            // consumes them whether or not there is a durable store to write to, so a typed
+            // executor never sees one here.
+            HostCommand::StampRouteUsed { id: 1, utc: 2 },
+            HostCommand::StampRideSynced { id: 1, utc: 2 },
             HostCommand::CancelRoutePlan,
             HostCommand::CancelDetour,
             HostCommand::CommitDetour,
@@ -114,11 +139,7 @@ mod tests {
         }
         for command in [HostCommand::LoadRideTrack { id: 1 }, HostCommand::RefreshNavPreview] {
             assert!(declined_level(&command), "{command:?} is a level the plan's keys answer");
-            assert!(!residual(&command) && !declined_stamp(&command), "and it is neither residual nor a stamp");
-        }
-        for command in [HostCommand::StampRouteUsed { id: 1, utc: 2 }, HostCommand::StampRideSynced { id: 1, utc: 2 }] {
-            assert!(declined_stamp(&command), "{command:?} is declined without a metadata store");
-            assert!(!residual(&command) && !declined_level(&command), "and it is neither residual nor a level");
+            assert!(!residual(&command), "and it is not a residual either");
         }
     }
 }
