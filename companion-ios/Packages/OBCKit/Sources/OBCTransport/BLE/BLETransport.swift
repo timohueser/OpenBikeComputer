@@ -2078,14 +2078,16 @@ extension BLETransport: TransferLink {
         }
     }
 
-    /// Release the control receive its transfer has walked away from. The cancel is remembered
-    /// when it beats its own receive to the queue, so the answer never parks behind a request
-    /// nobody is waiting on any more; the next control write re-arms the lane.
+    /// Release the control receive its transfer has walked away from. A parked receive takes the
+    /// cancellation here and now; only a cancel that found nobody — because it beat its own
+    /// receive to the queue — is remembered for the receive about to park. Remembering it in both
+    /// cases would leave a second, unclaimed cancellation for whichever receive comes next, and
+    /// the next one is the reconciliation LIST. The next control write re-arms the lane.
     public func cancelControlReceive() async {
         let waiters = queue.sync { () -> [CheckedContinuation<Data, Error>] in
-            objectControlReceiveCancelled = true
             let parked = objectControlWaiters
             objectControlWaiters.removeAll()
+            objectControlReceiveCancelled = parked.isEmpty
             return parked
         }
         for waiter in waiters { waiter.resume(throwing: CancellationError()) }
