@@ -5,7 +5,7 @@
 //!   [`NavRequest`](crate::activity::NavRequest) (rider fix → POI coord + the POI's name) and
 //!   swaps itself for the planning screen; the host drains the request via
 //!   the pass and steps the resumable router.
-//! - [`NavPlanningScreen`] — up while the host plans (#499): a **spinning compass needle** (the
+//! - [`NavPlanningScreen`] — up while the host plans: a **spinning compass needle** (the
 //!   Menu dial's needle, shared drawing) over plain copy, animated by
 //!   [`tick_timers`](NavPlanningScreen::tick_timers) between the host's planner steps. **Back
 //!   cancels**: it pops straight back to the POI detail *and* records a one-shot the host drains

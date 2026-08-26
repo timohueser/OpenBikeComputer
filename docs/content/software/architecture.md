@@ -217,15 +217,15 @@ Each host processes sensor data, input, dirty regions, and host messages.
   <text class="d-tag" x="20" y="24">One frame — then redraw only what changed</text>
 
   <rect class="d-panel" x="28" y="74" width="128" height="52" rx="10" />
-  <text class="d-label" x="92" y="98" text-anchor="middle">tick</text>
-  <text class="d-sub" x="92" y="113" text-anchor="middle">sensors → camera</text>
+  <text class="d-label" x="92" y="98" text-anchor="middle">stage_input</text>
+  <text class="d-sub" x="92" y="113" text-anchor="middle">sensors · gestures</text>
 
   <rect class="d-panel" x="186" y="74" width="150" height="52" rx="10" />
-  <text class="d-label" x="261" y="98" text-anchor="middle">handle_input</text>
-  <text class="d-sub" x="261" y="113" text-anchor="middle">controls → gestures</text>
+  <text class="d-label" x="261" y="98" text-anchor="middle">the domains</text>
+  <text class="d-sub" x="261" y="113" text-anchor="middle">one bounded effect each</text>
 
   <rect class="d-panel" x="366" y="74" width="126" height="52" rx="10" />
-  <text class="d-label" x="429" y="98" text-anchor="middle">take_dirty</text>
+  <text class="d-label" x="429" y="98" text-anchor="middle">stage_plan</text>
   <text class="d-sub" x="429" y="113" text-anchor="middle">what changed?</text>
 
   <rect class="d-hot" x="544" y="48" width="150" height="40" rx="9" style="fill:#f8efe4" />
@@ -337,12 +337,12 @@ It writes a normal OBCR object to the reserved navigation slot.
   <text class="d-sub" x="40" y="102" style="font-size:9px">"Create a route?" confirm</text>
 
   <rect class="d-hot" x="24" y="124" width="252" height="44" rx="10" style="fill:#f8efe4" />
-  <text class="d-label" x="40" y="143" style="fill:#a9501c;font-size:10.5px">NavRequest (one-shot)</text>
+  <text class="d-label" x="40" y="143" style="fill:#a9501c;font-size:10.5px">NavRequest (one operation)</text>
   <text class="d-sub" x="40" y="158" style="font-size:9px">from = rider fix · to = POI coord · name</text>
 
   <!-- request arrow to host -->
   <line class="d-flow" x1="276" y1="146" x2="404" y2="146" marker-end="url(#aR1)" />
-  <text class="d-sub" x="340" y="138" text-anchor="middle" style="font-size:8.5px">PlanRoute command</text>
+  <text class="d-sub" x="340" y="138" text-anchor="middle" style="font-size:8.5px">Acquire (carries the token)</text>
 
   <!-- host side -->
   <rect class="d-panel" x="404" y="70" width="292" height="120" rx="10" />
@@ -355,7 +355,7 @@ It writes a normal OBCR object to the reserved navigation slot.
 
   <!-- answer arrow back -->
   <line class="d-flow" x1="404" y1="210" x2="276" y2="210" marker-end="url(#aR2)" stroke="#cf6a2a" stroke-width="2" />
-  <text class="d-sub" x="340" y="202" text-anchor="middle" style="font-size:8.5px;fill:#a9501c">NavPlanned(Result) event</text>
+  <text class="d-sub" x="340" y="202" text-anchor="middle" style="font-size:8.5px;fill:#a9501c">PlanFinished / Failed (same token)</text>
 
   <!-- ok / err -->
   <rect class="d-panel-2" x="24" y="224" width="252" height="40" rx="9" />

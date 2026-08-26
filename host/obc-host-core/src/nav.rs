@@ -116,7 +116,7 @@ pub struct DetourReady {
     /// The plan's own [`RouteStats::has_elevation`](obc_route::RouteStats) — did the mounted
     /// terrain answer for this detour? Carried (never re-derived from the bytes: `0 m` is a real
     /// height) so the splice knows whether the leg's stored heights are sampled terrain to keep or
-    /// the `0` placeholder to replace (#1091).
+    /// the `0` placeholder to replace.
     has_elevation: bool,
 }
 
