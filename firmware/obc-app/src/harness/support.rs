@@ -17,8 +17,13 @@
 use std::collections::VecDeque;
 
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
-use obc_app::App;
-use obc_ports::{Button, ButtonEvent, Fix, InputEvent, InputSource, LocationSource, RideClock, Sensors};
+use obc_app::device_core::{
+    DerivedInputs, DerivedTargets, ExternalFacts, NavigatorTag, OperationToken, OutcomeSlots, PassClock, PassInputs,
+    PassPlan, PlatformSupport,
+};
+use obc_app::navigator::{NavigatorEffect, NavigatorOutcome, PlannerWork};
+use obc_app::{App, Dirty};
+use obc_ports::{Button, ButtonEvent, Fix, InputClock, InputEvent, InputSource, LocationSource, RideClock, Sensors};
 use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, PoiCategory, Reader, SliceSource};
 use obc_route::{Waypoints, WptEntry};
 
@@ -335,4 +340,148 @@ pub fn wpts_detailed(items: &[(u32, &str, Option<PoiCategory>, i16)]) -> Waypoin
         w.entries.push(WptEntry { dist_along_m, lon: 0, lat: 0, category, lateral_offset_m, name: n }).unwrap();
     }
     w
+}
+
+// The DeviceCore pass.
+
+/// Every capability the test platform implements. A suite that needs a device without one names it.
+pub const EVERY_CAPABILITY: PlatformSupport = PlatformSupport {
+    detour: true,
+    settings_persistence: true,
+    dfu: true,
+    weather: true,
+    bonding: true,
+    storage_space_report: true,
+    retention_metadata: true,
+};
+
+/// Run one DeviceCore pass at `ms` with the executor's answers — the production frame every host
+/// drives. The ports these suites do not exercise (a fix, an open route reader, keyed derived
+/// answers) stay empty; a suite that needs one drives [`App::run_pass`] itself.
+pub fn pass(app: &mut App, ms: u32, outcomes: &mut OutcomeSlots, facts: &mut ExternalFacts) -> PassPlan {
+    let mut loc = NoFix;
+    app.run_pass(PassInputs {
+        now: PassClock { ride: RideClock(ms), ui: InputClock(ms) },
+        gestures: &[],
+        sensors: Sensors::new(&mut loc),
+        route: None,
+        support: EVERY_CAPABILITY,
+        outcomes,
+        facts,
+        derived: DerivedInputs::NONE,
+        targets: DerivedTargets::NONE,
+    })
+}
+
+/// One pass with nothing owed — the frame that only collects what the app already decided.
+pub fn quiet_pass(app: &mut App, ms: u32) -> PassPlan {
+    let mut facts = ExternalFacts::NONE;
+    pass(app, ms, &mut OutcomeSlots::new(), &mut facts)
+}
+
+/// One pass carrying a single external fact.
+pub fn pass_with_fact(app: &mut App, ms: u32, note: impl FnOnce(&mut ExternalFacts)) -> PassPlan {
+    let mut facts = ExternalFacts::NONE;
+    note(&mut facts);
+    pass(app, ms, &mut OutcomeSlots::new(), &mut facts)
+}
+
+// The navigation executor.
+
+/// The suites' navigation executor: one pass at a time, it takes the search DeviceCore hands out,
+/// answers it with a scripted terminal result and returns the workspace when Navigator asks for it.
+///
+/// A legacy host ran a whole search per request and this planner keeps that shape — Navigator's
+/// pacing effects (`Step` / `CommitRoute`) belong to an executor that paces, and one arriving here
+/// is a change of who decides rather than something to serve quietly.
+///
+/// The passes it runs are the app's frames, so it also collects what they asked to repaint: after a
+/// pass there is no dirt left for [`App::take_dirty`] to report.
+#[derive(Default)]
+pub struct Planner {
+    /// The clock its passes run at.
+    ms: u32,
+    /// The operation the app is running, when it handed one out.
+    token: Option<OperationToken<NavigatorTag>>,
+    /// The last operation the app abandoned — what a late answer carries.
+    abandoned: Option<OperationToken<NavigatorTag>>,
+    /// The work the running operation went out with.
+    work: Option<PlannerWork>,
+    /// Whether the app asked for the workspace back since the last read.
+    released: bool,
+    /// What its passes asked to repaint since the last read.
+    render: Dirty,
+}
+
+impl Planner {
+    /// A planner whose passes run at `ms` — for a suite that drives the animation clock itself.
+    pub fn at(ms: u32) -> Self {
+        Planner { ms, ..Planner::default() }
+    }
+
+    /// Run passes until DeviceCore stops handing out navigation work, starting with `seed` in the
+    /// outcome slot. The search it asks for is kept; the workspace it asks back is returned.
+    fn settle(&mut self, app: &mut App, seed: Option<NavigatorOutcome>) {
+        let mut outcomes = OutcomeSlots::new();
+        if let Some(outcome) = seed {
+            let _ = outcomes.navigator.try_put(outcome);
+        }
+        for _ in 0..8 {
+            let mut facts = ExternalFacts::NONE;
+            let mut plan = pass(app, self.ms, &mut outcomes, &mut facts);
+            self.render.map |= plan.render.map;
+            self.render.overlay |= plan.render.overlay;
+            match plan.effects.navigator.take() {
+                Some(NavigatorEffect::Acquire { token, work }) => {
+                    self.token = Some(token);
+                    self.work = Some(work);
+                }
+                Some(NavigatorEffect::Release { token }) => {
+                    self.released = true;
+                    self.abandoned = self.token.take();
+                    let _ = outcomes.navigator.try_put(NavigatorOutcome::Released { token });
+                    continue;
+                }
+                Some(other) => panic!("one request runs the whole search here — {other:?}"),
+                None if outcomes.navigator.is_empty() && !plan.immediate => break,
+                None => {}
+            }
+        }
+    }
+
+    /// The search DeviceCore handed out since the last call, if it handed one out.
+    pub fn take_work(&mut self, app: &mut App) -> Option<PlannerWork> {
+        self.settle(app, None);
+        self.work.take()
+    }
+
+    /// Answer the running search. `outcome` is built from the operation's own token, which is what
+    /// Navigator validates the answer against.
+    pub fn answer(&mut self, app: &mut App, outcome: impl FnOnce(OperationToken<NavigatorTag>) -> NavigatorOutcome) {
+        self.settle(app, None);
+        let token = self.token.take().expect("an operation is running to answer");
+        self.settle(app, Some(outcome(token)));
+    }
+
+    /// Answer an operation the app already abandoned — the slow executor that finished its search
+    /// after the rider walked away.
+    pub fn answer_late(
+        &mut self,
+        app: &mut App,
+        outcome: impl FnOnce(OperationToken<NavigatorTag>) -> NavigatorOutcome,
+    ) {
+        let token = self.abandoned.take().expect("an operation was abandoned to answer late");
+        self.settle(app, Some(outcome(token)));
+    }
+
+    /// Whether DeviceCore asked for the workspace back since the last read — one-shot.
+    pub fn took_release(&mut self, app: &mut App) -> bool {
+        self.settle(app, None);
+        core::mem::take(&mut self.released)
+    }
+
+    /// What its passes asked to repaint since the last read — one-shot, like [`App::take_dirty`].
+    pub fn take_render(&mut self) -> Dirty {
+        core::mem::take(&mut self.render)
+    }
 }

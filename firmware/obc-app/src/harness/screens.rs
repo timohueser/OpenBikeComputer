@@ -3,49 +3,33 @@
 //! map view for the full-screen Paused page.
 
 use crate::activity::Activity;
+use crate::catalog_state::CatalogEffect;
 use crate::screen::{
     apply, test_ctx, ClimbScreen, Ctx, HomeScreen, MapScreen, MenuScreen, RideControl, RouteMenuScreen,
     RouteOverviewScreen, RouteSwapScreen, Screen, ScreenTick, Stack, StatisticsScreen, Transition,
 };
 use crate::{
-    App, AppState, CameraMode, Gesture, HostCommand, HostMailbox, Mode, PanBasis, PanTool, RouteSummary, Settings,
-    TrackAction, MAX_ROUTES,
+    App, AppState, CameraMode, Gesture, Mode, PanBasis, PanTool, RouteSummary, Settings, TrackAction, MAX_ROUTES,
 };
 use embedded_graphics::prelude::RgbColor; // for `Rgb888::r()` in the compositing snapshot
 use obc_map_scene::BBox;
 use obc_ports::{Button, ButtonEvent, Fix, InputClock, InputEvent};
 use obc_reader::{MapTables, SliceSource};
 
-use super::support::{build_min_obcm, build_min_obcm_profiles, keys, render_120, ReplayFix};
+use super::support::{build_min_obcm, build_min_obcm_profiles, keys, quiet_pass, render_120, ReplayFix};
 
-/// The drained `DeleteRoute` id, if pending.
+/// The object one pass asks the store to remove, if the rider's guarded hold requested a delete.
+/// The durable id is the pass's own resolve of the menu index.
 fn took_route_delete(app: &mut App) -> Option<crate::CatalogObjectId> {
-    let mut mb: HostMailbox = HostMailbox::new();
-    let _ = app.drain_host_commands(&mut mb);
-    core::iter::from_fn(|| mb.pop()).find_map(|c| match c {
-        HostCommand::DeleteRoute { id } => Some(id),
+    match quiet_pass(app, 0).effects.catalog.take() {
+        Some(CatalogEffect::RemoveObject { object, .. }) => Some(object),
         _ => None,
-    })
+    }
 }
 
-/// The drained `RescanStore` commit count (0 if none) — the `take_store_changed` successor. #812.
-fn rescan_commits(app: &mut App) -> u32 {
-    let mut mb: HostMailbox = HostMailbox::new();
-    let _ = app.drain_host_commands(&mut mb);
-    core::iter::from_fn(|| mb.pop())
-        .find_map(|c| match c {
-            HostCommand::RescanStore { commits } => Some(commits),
-            _ => None,
-        })
-        .unwrap_or(0)
-}
-
-/// Whether leaving the settings subtree emitted a `PersistSettings` this pass — the emit-only
-/// `take_settings_dirty` successor. FAR-19, #812.
+/// Whether one pass owes the platform a settings write — the debounced save leaving the subtree.
 fn settings_dirty(app: &mut App) -> bool {
-    let mut mb: HostMailbox = HostMailbox::new();
-    let _ = app.drain_host_commands(&mut mb);
-    core::iter::from_fn(|| mb.pop()).any(|c| matches!(c, HostCommand::PersistSettings { .. }))
+    quiet_pass(app, 0).effects.settings.take().is_some()
 }
 
 /// A throwaway default [`Settings`] satisfying [`Ctx`]'s `&mut` borrow. The non-settings screens
@@ -682,7 +666,7 @@ fn hold_delete_requests_the_highlighted_route_id() {
     app.apply_gesture(Gesture::Step(1)); // cursor → the Delete row
     app.apply_gesture(Gesture::Hold); // guarded hold on the selected Delete row = delete Beta
     assert_eq!(took_route_delete(&mut app), Some(20), "the hold recorded Beta's durable id, not its index");
-    assert_eq!(took_route_delete(&mut app), None, "the one-shot drains");
+    assert_eq!(took_route_delete(&mut app), None, "the request is consumed once");
     assert!(matches!(app.top_screen(), Screen::RouteMenu(_)), "the delete popped back to the Routes list");
 }
 
@@ -773,20 +757,6 @@ fn rescan_cancels_a_swap_whose_pick_vanished() {
     assert!(matches!(app.top_screen(), Screen::RouteMenu(_)), "the prompt popped back to the menu");
     let active = app.active_route_index().expect("the original navigation is untouched");
     assert_eq!(app.routes()[active].name.as_str(), "Alpha", "still navigating the original route");
-}
-
-/// The store-changed drain: the `RescanStore` command carries the pending count once and resets it
-/// — the edge the board's live rescan keys on. The `store_changed_pending` read-only observer sees
-/// the count without consuming it.
-#[test]
-fn take_store_changed_drains_the_pending_count() {
-    let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-    assert_eq!(rescan_commits(&mut app), 0);
-    app.apply_event(crate::HostEvent::StoreChanged);
-    app.apply_event(crate::HostEvent::StoreChanged);
-    assert_eq!(app.store_changed_pending(), 2, "the read-only observer still sees the count");
-    assert_eq!(rescan_commits(&mut app), 2);
-    assert_eq!(app.store_changed_pending(), 0, "drained");
 }
 
 /// Feed a single Select press (down+up within the threshold) to the app.

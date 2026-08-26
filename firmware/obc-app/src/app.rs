@@ -2150,7 +2150,7 @@ impl App {
     /// [`HostEvent::DfuScanned`] / [`DfuInstallBegan`](HostEvent::DfuInstallBegan) /
     /// [`DfuInstallFailed`](HostEvent::DfuInstallFailed): post the terminal answer for the DFU wait
     /// on the stack. The scheduler drops it when that wait is gone (the rider pressed Back).
-    fn post_dfu_landing(&mut self, landing: DfuLanding) {
+    pub(crate) fn post_dfu_landing(&mut self, landing: DfuLanding) {
         self.ui.cards.post_dfu(landing);
         self.sweep_cards();
     }
