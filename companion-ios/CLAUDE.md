@@ -64,6 +64,7 @@ Copy remains English-only until localization is adopted as a complete feature.
 
 ## Conventions
 
+- Use ASD-STE100 Simplified Technical English for documentation, issues, and pull requests.
 - Swift 6, async/await, `AsyncStream`, and `@Observable` view models.
 - Decode formats at the edges into canonical domain models.
 - Persist canonical models, never transport bytes.

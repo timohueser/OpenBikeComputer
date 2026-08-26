@@ -14,7 +14,7 @@ this log is for: short entries from the workbench, written as things happen.
 
 Entries are plain markdown files in the repo, one folder per post with its images
 sitting right next to the text. The renderer is the same tiny stdlib-only Python
-that builds the docs, so nothing about publishing changed — push to `main` and CI
+that builds the docs, so nothing about publishing changed — push to `develop` and CI
 ships it.
 
 Every image opens in a lightbox (click the map above — scroll zooms, drag pans).

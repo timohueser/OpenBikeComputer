@@ -1,28 +1,15 @@
 ---
 title: Rendering pipeline
-description: How OpenBikeComputer draws one map frame — projection, level-of-detail, the quadtree cull, the stub-select collector, and the polygon/line rasterisers — running identically on the simulator and the device.
+description: How OpenBikeComputer selects, draws, and presents one map frame.
 ---
 
 # The rendering pipeline
 
-Drawing a map on a microcontroller is a budgeting problem. A dense city view holds far more geometry than a 512 KB-RAM device can hold at once, the panel is only 240×320, and every millisecond and every byte of RAM is spoken for. The renderer ([`obc-render`](src:firmware/obc-render)) is the machinery that turns a map far larger than memory into one frame, **without allocating a single byte on the heap**, and it runs *byte-for-byte identically* on the desktop simulator and on the device.
+The renderer converts streamed map data into a 240×320-pixel frame. It uses fixed memory and does not allocate heap memory.
 
-This page walks one frame from map bytes to lit pixels.
+## Shared render path
 
-## One render path, two surfaces
-
-The whole renderer is a single `no_std`, zero-allocation crate. The only things that differ between the desktop and the device are **where the pixels go** and **what colour they end up** — and both are injected as parameters, so the drawing code never knows which machine it's on.
-
-```rust
-scratch.render(target, scene, vp, bg, cfg, color_fn)
-//  │          │       │      │   │   │    └ RGB565 → this panel's pixel
-//  │          │       │      │   │   └ what to draw (RenderConfig)
-//  │          │       │      │   └ the backdrop colour
-//  │          │       │      └ the camera (Viewport)
-//  │          │       └ a streamed map scene
-//  │          └ where pixels land (a DrawTarget)
-//  └ the caller's per-frame scratch buffers (RenderScratch)
-```
+[obc-render](src:firmware/obc-render) is a no_std crate. The simulator and device use the same geometry code.
 
 <figure class="fig">
 <svg viewBox="0 0 720 300" role="img" aria-label="The shared render code in the middle connects through two pluggable seams — a DrawTarget for pixels and a colour function — to two hosts: the simulator and the device.">
@@ -65,16 +52,23 @@ scratch.render(target, scene, vp, bg, cfg, color_fn)
   <text class="d-sub" x="605" y="178" text-anchor="middle">64 colours (RGB222)</text>
   <line class="d-flow" x1="476" y1="153" x2="528" y2="153" marker-end="url(#aS)" />
 </svg>
-<figcaption>The renderer is generic over a streamed <b>map scene</b> as well as a <b>DrawTarget</b> (the pixel sink), and takes a <b>colour function</b> (RGB565 → the panel's native pixel). The normal scene is the OBCM reader's thin adapter; tests can supply static geometry. The concrete source and pixel target are monomorphised, so identical geometry code runs between hosts without per-feature dispatch.</figcaption>
+<figcaption>The renderer receives a map scene, a pixel target, and a color conversion function.</figcaption>
 </figure>
 
-The base-map input is the allocation-free [`obc-map-scene`](src:firmware/obc-map-scene/src/lib.rs) seam: LOD and style metadata, a visible-candidate visit, complete selected-feature decode into caller-owned scratch, and optional source counters. It exposes no OBCM offsets, quadtree records, cache slots, or retained scene graph. The production [`Reader` adapter](src:firmware/obc-reader/src/scene.rs) keeps streaming the same chunks through the same cache; its opaque six-byte candidate token replaces the same six bytes the renderer's stub formerly devoted to chunk and offset, so neither the 14-byte slot nor resident RAM grows.
+The render call receives these inputs:
 
-Styles in the map store **device-independent RGB565**; each host's `color_fn` resolves it through the same [64-colour RGB222 quantisation](src:firmware/obc-reader/src/color.rs). Because of these seams, the simulator you can [run in your browser](../../) is not a mock-up: it is the device's exact rendering code, so the two can never drift apart.
+| Input | Purpose |
+| --- | --- |
+| MapScene | Supplies styles, LOD data, candidates, geometry, and diagnostics. |
+| Viewport | Defines camera position, scale, rotation, and panel size. |
+| RenderConfig | Selects per-frame presentation options. |
+| DrawTarget | Receives pixels. |
+| Color function | Converts RGB565 styles to target pixels. |
+| RenderScratch | Supplies all per-frame work buffers. |
 
-## The frame, end to end
+The [Reader adapter](src:firmware/obc-reader/src/scene.rs) streams OBCM chunks through MapScene. The interface does not expose file offsets or cache slots.
 
-Here's the whole journey before we slow down for each step: seven stages, most of them cheap, two where the real work happens.
+## Frame stages
 
 <figure class="fig">
 <svg viewBox="0 0 820 250" role="img" aria-label="A frame's pipeline as a trail with seven waypoints: project, pick level of detail, quadtree cull, priority decode, painter sort, rasterise, overlays — from map bytes to the panel.">
@@ -122,27 +116,22 @@ Here's the whole journey before we slow down for each step: seven stages, most o
   <rect class="d-panel" x="770" y="104" width="36" height="32" rx="5" style="fill:#e7ead8" />
   <text class="d-sub" x="788" y="156" text-anchor="middle">panel</text>
 </svg>
-<figcaption>Stages <b>1–3 and 5</b> only touch lightweight index data — they're cheap. The two coral waypoints, <b>priority decode</b> and <b>rasterise</b>, are where the time goes, so the rest of this page spends most of its words there.</figcaption>
+<figcaption>A frame selects visible data, draws it in z-order, and adds overlays.</figcaption>
 </figure>
 
-The orange waypoints matter for a reason worth stating up front: the cheap stages (walking the tree, scanning headers) are allowed to run more than once per frame, because re-running them is nearly free. The expensive work — decoding a feature's coordinates, and rasterising pixels — happens **at most once per feature per frame**. Keep that asymmetry in mind; it explains several design choices below.
+The renderer performs these stages:
 
-## 1 · Projection: ground to screen
+1. Project map coordinates to screen coordinates.
+2. Select a level of detail.
+3. Find visible chunks.
+4. Select and decode features.
+5. Sort selected features by paint order.
+6. Rasterize polygons and lines.
+7. Draw route and rider overlays.
 
-The camera is a [`Viewport`](src:firmware/obc-render/src/viewport.rs) — a centre point in microdegrees, a zoom, an aspect correction for the latitude, and a rotation. Its hot path is `to_screen`, called once per vertex, so it's written to keep full precision while staying fast:
+## Projection
 
-```rust
-let delta_lon = lon.wrapping_sub(self.cam_lon);   // i32 µdeg, relative to camera
-let delta_lat = lat.wrapping_sub(self.cam_lat);
-let ex = (delta_lon as f32) * self.aspect;        // squash longitude by cos(lat)
-let ny =  delta_lat as f32;
-let rx = self.cos_c * ex - self.sin_c * ny;       // rotate to heading-up
-let ry = -self.sin_c * ex - self.cos_c * ny;
-let x = rx * self.zoom + self.w / 2.0;            // scale, centre
-let y = ry * self.zoom + self.h / 2.0;
-(round_coord(x), round_coord(y))                  // round to nearest — a branch + add,
-                                                  // no soft-float roundf on the hot path
-```
+The [Viewport](src:firmware/obc-render/src/viewport.rs) stores camera position, zoom, latitude correction, and rotation.
 
 <figure class="fig">
 <svg viewBox="0 0 720 300" role="img" aria-label="Ground coordinates in microdegrees, relative to the camera, are squashed by cosine of latitude, rotated to heading-up, scaled by zoom and centred, then rounded to the nearest pixel.">
@@ -185,14 +174,16 @@ let y = ry * self.zoom + self.h / 2.0;
   <text class="d-sub" x="624" y="186" style="font-size:11px">④ × zoom</text>
   <text class="d-sub" x="624" y="208" style="font-size:11px">⑤ round</text>
 </svg>
-<figcaption>Only the small <b>delta</b> from the camera is cast to <code>f32</code>, so absolute microdegree precision is preserved no matter where on Earth you are. Longitude is squashed by <code>cos(latitude)</code> so things stay the right shape, then the whole view is rotated for heading-up navigation.</figcaption>
+<figcaption>Projection keeps the camera delta precise. It then corrects longitude, rotates, scales, and rounds.</figcaption>
 </figure>
 
-Two small decisions there carry weight. Keeping the **delta** in integer microdegrees until the last moment means precision doesn't degrade far from the origin. And **rounding to nearest** (rather than truncating) is symmetric about the camera — truncation biases toward the screen centre, which, combined with how chunks are clipped, used to crack open hairline gaps at chunk seams under rotation. The inverse, `to_map`, reuses the very same coefficients because the screen↔ground rotation is its own inverse, so panning and the visible-area computation need no extra trigonometry.
+to_screen keeps the camera delta as an integer before conversion to f32. It then corrects longitude, rotates, scales, and rounds.
 
-## 2 · Level of detail: pick the right layer
+to_map applies the inverse transform. Panning and viewport bounds use this operation.
 
-A map at riding zoom and the same map zoomed out to the whole region are not the same data drawn smaller — they're **different, pre-simplified layers**. An OBCM map is a pyramid of level-of-detail (LOD) tiers, each with its own simplified geometry and a maximum meters-per-pixel it's good for. Zooming out reads a small coarse layer instead of decimating fine geometry on the fly.
+## Level of detail
+
+An OBCM file contains pre-simplified level-of-detail (LOD) tiers. Each tier specifies its maximum meters per pixel.
 
 <figure class="fig">
 <svg viewBox="0 0 720 300" role="img" aria-label="A level-of-detail pyramid: coarse tiers at the top are narrow (little, simplified geometry) and cover any zoom; fine tiers at the bottom are wide (dense detail) with a small meters-per-pixel range. A current view of 0.5 meters per pixel selects LOD 3, the finest tier whose range still covers it.">
@@ -230,28 +221,16 @@ A map at riding zoom and the same map zoomed out to the whole region are not the
   <text class="d-label" x="652" y="206" style="fill:#a9501c">this view</text>
   <text class="d-sub" x="652" y="222">0.5 m/px</text>
 </svg>
-<figcaption>The renderer turns zoom into meters-per-pixel — <i>independent of screen size</i>, so a desktop window and the 240 px panel showing the same ground span pick the same tier — then scans for the <b>finest</b> LOD whose range still covers it. Here 0.5 m/px lands on LOD 3; the coarsest tier covers any zoom, so a choice always exists.</figcaption>
+<figcaption>The renderer selects the finest LOD that supports the current meters-per-pixel value.</figcaption>
 </figure>
 
-The selection itself is a short scan — keep the finest tier whose range still covers the current resolution:
+The renderer selects the finest supported tier. The selection depends on zoom and latitude.
 
-```rust
-pub fn select_lod_for_mpp(&self, mpp: f32) -> usize {
-    let mut chosen = 0;
-    for (i, lod) in self.lods.iter().enumerate() {
-        if lod.max_mpp >= mpp {
-            chosen = i; // a finer tier still covers this zoom — prefer it
-        }
-    }
-    chosen
-}
-```
+The selection does not depend on display size. Equal geographic views select the same tier on all hosts.
 
-Because `meters_per_pixel` depends only on zoom and latitude, not on the display, the device and the simulator agree on the LOD for any given view.
+## Visible chunks
 
-## 3 · The quadtree cull: only the chunks you can see
-
-Within an OBCM source's chosen LOD, geometry is bucketed into fixed-size **chunks**, indexed by a **quadtree** over the map's bounding box. The reader adapter walks that tree from the root, descending only into children whose box intersects the view, and streams every non-empty leaf's candidates through the scene seam. The renderer sees candidates, not the tree or chunks that produced them.
+Each LOD stores geometry in chunks. A quadtree indexes the chunks by geographic bounds.
 
 <figure class="fig">
 <svg viewBox="0 0 720 320" role="img" aria-label="A region split into four quadrants. The viewport straddles the boundary between the north-east and south-east quadrants, so the walk descends into both and prunes the north-west and south-west quadrants whole. Within north-east only the two lower sub-cells meet the view; within south-east only the two upper sub-cells do — four visited leaves in all. The tree on the right mirrors this: the root descends into the NE and SE branches, each with two visited and two pruned leaves, while NW and SW are pruned.">
@@ -335,39 +314,22 @@ Within an OBCM source's chosen LOD, geometry is bucketed into fixed-size **chunk
   <text class="d-sub" x="430" y="278" style="font-size:10px">a high bit marks a branch;</text>
   <text class="d-sub" x="430" y="292" style="font-size:10px">a sentinel marks an empty leaf</text>
 </svg>
-<figcaption>Children split <b>NW · NE · SW · SE</b> at floor-division midpoints — identical math at every level. Here the view <b>straddles the NE/SE boundary</b>, so the walk descends into both — and within each it visits only the sub-cells the view actually touches, pruning the other two along with the whole NW and SW quadrants. The walk reads only <code>u32</code> index nodes (no geometry), and a bounded result cache usually reuses its ordered leaves during a slow pan. It remains <b>uncapped</b> — a wide view can overlap hundreds of leaves and every one is visited.</figcaption>
+<figcaption>The quadtree walk prunes nodes outside the viewport. It streams candidates from intersecting leaves.</figcaption>
 </figure>
 
-The walk is a recursive descent that prunes whole subtrees by bounding box and reads the index as raw bits — a high bit flags a branch, a sentinel marks an empty leaf ([`walk_leaves`](src:firmware/obc-reader/src/reader/mod.rs)):
+The reader descends only into nodes that intersect the viewport. It streams candidates from each nonempty leaf.
 
-```rust
-if idx >= lod.node_count || depth > MAX_DEPTH || !node.intersects(view) {
-    return Ok(());                   // prune: out of range, too deep, or off-screen
-}
-let val = self.read_node(lod, idx)?; // medium/cache failures stay distinct
-if val & BRANCH_BIT == 0 {
-    if val != EMPTY_LEAF {
-        visit(val, node);            // a non-empty leaf = a chunk to decode
-    }
-    return Ok(());
-}
-// branch: child must advance (child > idx) — reject a corrupt back-reference —
-// then split `node`'s bbox into NW/NE/SW/SE and recurse into each child
-```
+The walk limits recursion depth and rejects backward child references. These checks protect the device from invalid map data.
 
-The `depth > MAX_DEPTH` bound and the `child > idx` check are pure robustness. A well-formed tree is only ~30 levels deep and always stores a branch's children *after* it, so neither ever fires on a real map — but a truncated or hostile `.obcm` off the SD card could otherwise point a branch back at itself and drive the walk into unbounded recursion. On the MCU there's no MMU guard page, so that's a stack overflow straight into a HardFault; bounding the depth makes the walk safe on any bytes. (This caps recursion *depth*, not the number of chunks visited — a different axis from the next paragraph.)
+The walk does not limit the total number of visible chunks. The next stage applies the global feature budget.
 
-That "uncapped" property is load-bearing. An earlier version capped the visited chunks at a fixed number; a wide zoomed-out view overlaps far more leaves than the cap, so it silently dropped half the map *before* any importance logic could weigh in. Streaming the leaves through a callback instead means the decision about *what to drop* belongs entirely to the next stage — where it can be made by priority, not by accident.
+## Feature selection
 
-## 4 · Decode by priority
+Dense views can exceed the frame buffers. Each style supplies a retention priority from 1 through 4.
 
-Here is the central problem. A dense view holds far more geometry than the fixed frame buffers can hold. When they fill up, *something* must be dropped — and the dropped things must be the **least important features, globally**, no matter which chunk they live in. You never want to drop the coastline or a motorway because an unimportant forest patch in an early chunk got there first.
+Priority 1 has the highest retention priority. The z-index does not affect retention.
 
-Two mechanisms work together to solve this within the memory and time budget.
-
-**Priority, and cheap skipping.** Each feature's style carries a 2-bit **priority** (1 = keep first … 4 = drop first) — the axis the drop decision turns on. And a feature is cheap to *step over*: its header is a fixed 12 bytes, so the reader can advance past a feature it doesn't want with pure offset arithmetic — no coordinate math, no buffer writes. That skip primitive is what lets the collector touch a chunk's bytes selectively: past features whose style isn't drawn at all, and — the payoff below — straight to the handful of *winners* it must re-decode.
-
-"Whose style isn't drawn at all" is a **256-bit mask**, built once per frame from the style table and handed to the source as its decode filter. Normally it just says *this id has a style*, but it is also the one honest place to switch a whole class of feature off: with the rider's [contour toggle](../ui/#settings-a-second-level-of-focus) off, every style carrying the [terrain-layer bit](../formats/#the-header) is left out of the mask, so those features are skipped by offset arithmetic and never decoded, never ranked against the frame budget, never drawn. Suppressing at the mask rather than by painting over matters for a reason beyond speed: an overpaint would have to know what was *underneath* each contour, and it doesn't — so a hidden layer would scar every road it crossed. Suppressed here, the frame is pixel-identical to one rendered from a map that never carried contours at all.
+A 256-bit style mask removes hidden styles before geometry decode. The terrain-layer setting uses this mask.
 
 <figure class="fig">
 <svg viewBox="0 0 720 168" role="img" aria-label="A chunk's byte stream is a row of feature cells. The OBCM adapter resolves each winning opaque token to its source position and seeks straight to that feature, skipping everything in between by advancing the read pointer.">
@@ -389,24 +351,16 @@ Two mechanisms work together to solve this within the memory and time budget.
   <text class="d-sub" x="24" y="130">read head jumps offset → offset →</text>
   <text class="d-sub" x="24" y="152" style="font-size:11px">re-decoded winners (coral) cost coordinate math; the features between them cost only a pointer add.</text>
 </svg>
-<figcaption>A feature header is 12 bytes, so skipping is pure offset arithmetic inside the OBCM adapter. Pass A saves an <b>opaque source token</b> in each winner's stub; pass B gives it back to the source, which seeks straight to the feature — re-decoding only survivors without exposing byte offsets to the renderer.</figcaption>
+<figcaption>Pass A stores candidate metadata and an opaque token. Pass B decodes selected candidates.</figcaption>
 </figure>
 
-**Stub-select.** The global-priority drop is easy to state and hard to do cheaply. The original reader had one geometry-chunk slot and made four passes over the visible chunks — one per priority level — filling the buffers level by level. That kept the guarantee, but it re-read every visible chunk *four times*; the slot absorbed none of it, so a wide view cost `4 × N` chunk reads off the card and the frame crawled. The fix (issue #564) splits **selection** from **geometry**:
+Selection uses two passes:
 
-```rust
-let candidates = self.collect_stubs(scene, lod, view, &vis_mask, stats); // pass A
-let winners    = self.select(scene);                                     // RAM only
-self.decode_winners(scene, lod, view, winners, stats);                   // pass B
-```
+- Pass A stores style, bounds, size, and an opaque source token.
+- An in-memory selection admits candidates against point and ring budgets.
+- Pass B decodes only admitted candidates into caller-owned buffers.
 
-- **Pass A** asks the scene source to visit visible candidates once, decoding every drawn feature just far enough to get its bounding box, and records a fixed-size *stub* — style, opaque token, vertex/ring counts — but keeps **no geometry**. When the stub buffer fills, the lowest-priority stub is evicted, so it always holds the best candidates.
-- **Select** is pure RAM: sort the stubs by priority and admit them greedily against the exact **point and ring** budgets — the two the frame buffers actually meter; the stub reservoir's own size is never a term in the sum. Drops are strictly lowest-priority-first, *globally* — the same guarantee as before, now with the exact vertex cost of every candidate known before a single coordinate is copied. Because every admitted feature is charged at least one ring, the ring budget is also the frame's hard ceiling on feature *count*: a busy coarse frame stops at that number no matter how much room the reservoir has left, which is why the two capacities are sized level with each other.
-- **Pass B** returns the winning tokens to the scene source, which preserves its natural chunk-major order and re-decodes only those **winners** directly into caller-owned scratch. The OBCM adapter first resolves a token straight from its resident chunk; only an evicted winner falls back to the cached leaf list and a chunk fetch.
-
-There are two deliberately separate kinds of degradation here. A **frame-budget drop** happens only after a complete feature produced a stub; it follows the deterministic priority policy above and increments `features_dropped`. A **decode failure** never produces partial geometry: an over-capacity feature is consumed and dropped whole, malformed feature bytes are rejected, structural map/index corruption is distinguished from them, and medium/cache failures remain typed. The renderer counts these separately as capacity drops, malformed features, structural-map failures, read failures, and cache contentions. Pass A simply omits a failed feature's stub and continues when its byte extent is known. If a winner refetch or fallback index walk fails in pass B, the collector rolls back any point/ring prefix and compacts only successfully decoded spans; failed placeholders and untouched stubs never reach the painter.
-
-A feature that survives is decoded twice (cheap, in RAM); a chunk is fetched at most twice instead of four times. Common riding views fit the current five-slot working set, so pass B and subsequent frames generally fetch it zero times. The stubs live in the same buffer the spans end up in — a stub is sized to fit a span slot — so the split costs no extra RAM.
+A full candidate can evict a lower-priority candidate. The decision applies across all visible chunks.
 
 <figure class="fig">
 <svg viewBox="0 0 720 330" role="img" aria-label="Four priority lanes feed a fixed frame buffer in order. Priority 1, 2 and 3 fit; the buffer saturates partway through priority 4, so the remaining priority-4 features are dropped.">
@@ -454,44 +408,22 @@ A feature that survives is decoded twice (cheap, in RAM); a chunk is fetched at 
   <text class="d-sub" x="540" y="256" style="font-size:11px">priority 4 fit — exactly</text>
   <text class="d-sub" x="540" y="272" style="font-size:11px">the right things to lose</text>
 </svg>
-<figcaption>Select admits stubs priority-1 first, so when the budget saturates the undrawn remainder is strictly the lowest priority, across <i>all</i> chunks. Only the survivors' geometry is ever built — a dropped feature cost only its stub, never a copied vertex.</figcaption>
+<figcaption>Selection keeps high-priority candidates within the fixed point and ring budgets.</figcaption>
 </figure>
 
-Every kept feature becomes a 14-byte **span** — a compact draw record that says *what* and *where* without copying the geometry again ([`Span`](src:firmware/obc-render/src/collect.rs)):
+The renderer drops an invalid or oversized feature as one unit. It does not publish partial geometry.
 
-```rust
-struct Span {
-    kind: Kind,      // polygon or line
-    z: i8,           // paint order
-    weight: u8,      // nominal line width — ramped by zoom at draw (see §6)
-    style_id: u8,    // → the full Style (dashed / color2) at draw time (a spare byte)
-    color: u16,      // RGB565
-    pt_start: u16,   // where its points sit in the frame buffer
-    ring_start: u16,
-    ring_count: u16,
-    seq: u16,        // collection order — the stable-sort tiebreak
-}
-```
+Each selected feature becomes a compact span. The span references points and rings in the frame buffers.
 
-Thousands of spans can be buffered at coarse zoom, so they're kept small (`u16` offsets, not `usize`). The two chunk walks cost little on their own — the leaf walk reads only the cheap index — and the expensive part, copying vertices into the frame buffers, happens once, for the winners alone.
+RenderStats reports budget drops, decode failures, malformed data, source failures, cache activity, and stage time.
 
-## 5 · Painter's order
+## Paint order
 
-With the visible features collected, the renderer sorts the spans — not the geometry, just the little records — into back-to-front draw order:
+The renderer sorts spans by z-index and collection sequence.
 
-```rust
-self.frame.spans_mut().sort_unstable_by_key(|s| (s.z, s.seq));
-```
+Priority controls feature retention. The z-index controls paint order. Collection sequence gives deterministic order for equal z-index values.
 
-Each style carries a `z_index`; the shipped map clears to its land style, then sea geometry draws under forest, which draws under roads. Ties break on `seq`, the order the feature was collected in — a stable, allocation-free tiebreak so the result is deterministic. Note that **priority and z-index are different axes**: priority decides *whether* a feature survives the memory budget; z-index decides *where in the stack* the survivors are painted.
-
-## 6 · Rasterising: fills and strokes
-
-The draw loop walks the sorted spans and dispatches on kind — polygons fill, lines stroke.
-
-### Polygons: even-odd scanline fill
-
-Each polygon is filled with a classic scanline algorithm. For every screen row the polygon covers, the renderer collects where the row crosses each edge, sorts those crossings, and fills between consecutive pairs. This is the **general** filler — it makes no assumption about the shape, so it handles arbitrary polygons, concave outlines, and holes. (Thick line strokes reuse the *same span contract* but skip most of this machinery through a convex fast path — see [Lines](#lines-clip-first-then-stroke) below.)
+## Polygon fill
 
 <figure class="fig">
 <svg viewBox="0 0 720 300" role="img" aria-label="A polygon with a square hole on a pixel grid. A horizontal scanline crosses the outer edge twice and the hole twice; the fill covers the two outer spans and leaves the hole empty, because the even-odd rule pairs the four crossings as two filled spans.">
@@ -525,14 +457,14 @@ Each polygon is filled with a classic scanline algorithm. For every screen row t
   <text class="d-sub" x="470" y="240" style="font-size:11px">the same crossing list — no</text>
   <text class="d-sub" x="470" y="256" style="font-size:11px">special case needed.</text>
 </svg>
-<figcaption>Holes cost nothing extra: they're additional rings whose crossings join the same sorted list, so the even-odd pairing leaves them empty automatically. Each span is rounded <b>outward</b> (left floored, right ceiled) so adjacent fills overlap by at most a pixel — cheap insurance that closes hairline cracks at chunk seams.</figcaption>
+<figcaption>The even-odd fill rule supports concave polygons and holes.</figcaption>
 </figure>
 
-The fill leans on one `DrawTarget` primitive: a fast clipped horizontal-rectangle blit, one per span. There's no per-pixel plotting in the hot loop. A row whose crossing list would overflow its small fixed buffer is skipped entirely rather than filled from a truncated list — keeping the even-odd parity correct is more important than one stray row.
+The polygon filler uses the even-odd scanline rule. It sorts edge crossings for each row and fills between pairs.
 
-### Lines: clip first, then stroke
+The filler writes clipped horizontal rectangles. It skips a row if its crossing buffer is full.
 
-Lines are where a naïve approach gets expensive. A loaded route or a long road is mostly *off-screen* at riding zoom, and a thick-line rasteriser that walks the whole polyline pays for every off-screen pixel. The renderer's line path is built to never pay for what it can't see.
+## Line stroke
 
 <figure class="fig">
 <svg viewBox="0 0 720 300" role="img" aria-label="On the left, a long route crosses a small viewport; only the visible portion is stroked while the off-screen majority costs nothing. On the right, a thick line drawn as a chain of filled rectangles leaves a notch at each joint, smoothed by filling a disc at the run ends and at the vertices where the line bends sharply.">
@@ -560,38 +492,30 @@ Lines are where a naïve approach gets expensive. A loaded route or a long road 
   <text class="d-sub" x="600" y="260" style="font-size:11px">corners + run ends →</text>
   <text class="d-sub" x="600" y="276" style="font-size:11px">smooth arc, no gaps</text>
 </svg>
-<figcaption>Each segment is clipped to the view (grown by the stroke's half-width so edge-hugging lines keep full thickness) <i>before</i> it's drawn, so the stroker only ever touches on-screen pixels. The points are also deduplicated in screen space at a subpixel tolerance — folding away the integer-projection staircase — so a dense line hands the stroker far fewer segments without ever shifting a visible pixel.</figcaption>
+<figcaption>The stroker clips lines before rasterization. It removes subpixel duplicate points.</figcaption>
 </figure>
 
-A **1 px** line is stroked by embedded-graphics directly — a thin Bresenham line it draws cheaply, and the one width the span fill below can't (a zero-width rectangle has no scanline crossings). **Everything else** — width-2 roads on up, plus the route and breadcrumb — goes through the **same span contract as the polygons**, because a per-pixel thick-line rasteriser generates every stroke pixel one at a time, and that generation was measured to dominate the overlay (~10× a span stroke even at 2 px). Each segment becomes a rectangle — the segment swept ±half-width along its perpendicular — filled row-by-row as one `fill_solid` span apiece. A swept rectangle is always **convex**, crossing any row exactly twice, so a specialized quad filler keeps the row's leftmost and rightmost crossing directly instead of running the general filler's crossing buffer and per-row sort. The pixels are **byte-for-byte identical** to the general even-odd filler on the same quad — same half-open edge rule, same crossing math, same outward rounding — and if rounding ever collapses a degenerate quad into something that crosses a row more than twice, that row falls back to the exact sort-and-pair, so the fast path can never disagree with the general one.
+Embedded Graphics strokes 1-pixel lines. The renderer converts wider segments to convex quadrilaterals and fills them as spans.
 
-Two filled rectangles butt-joined at a vertex leave a small notch on the outside of a bend and don't round the line's ends, so a disc the width of the stroke is filled (also as spans) to smooth each joint and cap. The disc is the overlay's biggest remaining cost, so it's spent only where it shows: at the two **run ends** (which round the cap and close the gap to the next feature at a chunk seam) and at interior vertices where the line **bends sharply**. The uncovered notch at a turn of `θ` off straight is only about `r·sin(θ/2)` deep (`r` = half the stroke width), so a gentle bend leaves a sub-pixel notch and needs no disc at all.
+Discs close run ends and sharp joints. Normal line width changes with zoom and stays from 1 through 12 pixels.
 
-The half-width `r` above is **not** the style's stored `weight` directly — a line's on-screen thickness **ramps with zoom**. A style's `weight` is its width at a *reference* ground scale (mid-riding zoom); each frame the renderer multiplies it by `(ref_mpp / mpp)^0.6` — one factor for the whole frame — so a road thickens as you zoom in and thins as you zoom out, the way a physical thing looks closer or farther. The exponent is deliberately **sub-linear**: true physical scaling (`^1`) would make every road sub-pixel at continent zoom and let one motorway swallow the panel up close, so the ramp is clamped to `1…12 px` and rounded to whole pixels (the map zooms in fixed ×1.2 steps, so the width steps cleanly with no shimmer). This also rights the cost curve — a wide overview, where hundreds of roads are on screen and the frame budget is tightest, now strokes each at 1–2 px instead of its full authored weight; the fat strokes happen only zoomed in, where a handful of features are visible. Dashed lines (admin borders, railway stripes) ride the same ramped width, so their dash rhythm tracks the line's thickness rather than fighting it.
+Fixed-width styles bypass the zoom scale. Contours use this style property.
 
-**Some lines opt out — and it's a property of the style, not an exception.** The ramp models a *thing on the ground*: a road really is wider than a footpath, and both look wider from 1 m/px than from 100. Not every mark on a map is a thing on the ground. A [contour line](../packer-routing/#contours-traced-from-the-terrain) is a statement about the terrain with no width at all, and ramping it comes out backwards — an authored `weight 1` draws a 1 px hairline at the planning zoom, where the nesting of the ladder is exactly what you want to read, and 4 px at street zoom, where it buries the streets. A style record's flags therefore carry a **fixed-width** bit: its `weight` is the on-screen stroke in device pixels, used verbatim, and the ramp is skipped for it. Thin is not a weight you can author — `weight: 0` clamps to 1 px and the lightest grey in the panel's gamut is already spent — so it has to be an opt-out from the ramp instead. The `1…12 px` clamp still applies: the bit opts out of the zoom ramp, not out of the panel. Contours are the only shipped style that takes it, because they're the only shipped mark; a future grid or hatch would take the same bit, and the road classes never should.
+### Style combinations
 
-### A second colour and a dash: line styles
+| Feature | Dashed | color2 | Result |
+| --- | --- | --- | --- |
+| Line | No | None | Solid stroke |
+| Line | No | Set | Road casing and road fill |
+| Line | Yes | None | Dashed stroke |
+| Line | Yes | Set | Solid base and dashed top stroke |
+| Polygon | Ignored | Set | Fill and ring outline |
 
-Everything above strokes a line in one flat colour. But a railway isn't flat, an admin border is dashed, a road at riding zoom wants a darker *casing* down each side so it reads as a road and not a scratch, and a building at the finest zoom wants a crisp wall instead of a grey slab. Version 10 of the map format gives every style two extra knobs — a **`line_style`** (solid or dashed) and an optional **secondary colour `color2`** — and the renderer fans those two bits, crossed with whether the feature is a line or a polygon, into five distinct looks:
+Dashed lines use screen-space arc length after clipping. A railway style draws a solid color2 base and color dashes.
 
-| Feature | `line_style` | `color2` | Renders as |
-| :-- | :-- | :-- | :-- |
-| Line | solid | — | a flat stroke — the unchanged path |
-| Line | solid | set | **road casing** — a wider `color2` base under the fill (finest LOD only) |
-| Line | dashed | — | **dashes** in `color`, gaps transparent (admin borders) |
-| Line | dashed | set | **railway stripe** — a solid `color2` base with `color` dashes on top |
-| Polygon | *(ignored)* | set | fill in `color`, plus a `color2` **ring outline** (finest LOD only) |
+### Road casing
 
-Each span already carries its one-byte `style_id`, so the draw loop re-resolves the full style from the scene source's `O(1)` style table at draw time — no extra per-span RAM. Two of the five (casing, outline) are *extra passes* that cost real time, so they're gated to the finest LOD; the other three ride the existing stroke path. A config that uses **none** of them renders byte-for-byte what it did before — the whole feature is built to be free when unused, and each renderer sub-issue proved it with a before/after PNG md5 diff on a fixed camera.
-
-**Dashes, for free.** A dashed line reuses the entire clip-then-stroke pipeline unchanged and diverges only at the very end: instead of filling the whole visible run, it walks that run in **screen-space arc length** and emits only the "on" intervals. Because the clip happens *first*, the walker only ever sees on-screen geometry — so a dashed line is actually *cheaper* than the solid one, not dearer: it clips away the same off-screen majority, then paints only half of what survives. The phase resets at each clipped run (each time the line re-enters the view), which lets a dash straddle a bend seamlessly but also means the pattern can "crawl" a pixel or two as you pan — every slippy map does this, and it isn't worth carrying feature-space arc length to avoid. A **railway stripe** is just this composed with a base: stroke the whole line once in `color2`, then stroke `color` dashes on top, so the gaps between the dark dashes show the light base through — alternating stripes, no perpendicular crossties.
-
-### Road casing, and the z-boundary that makes junctions work
-
-A casing is a `weight + 2 px` stroke in `color2` painted **under** a road's fill, giving the road a darker edge down each side — the OSM-carto / Komoot "roads have borders" look. The subtlety isn't the stroke; it's *when* to paint it. Paint all the casings first, before the map, and the low-z fills that blanket a town (landuse, forest, water) paint straight over them — the casings vanish. Paint each casing right before its own road, and where two roads cross, one road's casing slices across the other's fill and the junction reads as cut.
-
-The spans are already sorted by `(z, seq)`, so the cased road lines form one contiguous z-band. The casing pass is inserted at exactly the **z boundary where that band begins** — a split index into the sorted array, not a re-sort — so the casings land *above* the low-z fills that would erase them yet *under* every road fill.
+A road casing uses color2 and adds 2 pixels to the road width. Casings run only at the finest LOD.
 
 <figure class="fig">
 <svg viewBox="0 0 800 320" role="img" aria-label="Left: the frame's spans, sorted by z-index and drawn bottom-up — water, landuse and building fills at the bottom, then a dashed split line marking the first cased road line, then the road casings, then the road fills on top. The casing pass is inserted at that split: after the low-z fills, so they cannot paint over it, but under every road fill. Right: a junction where two roads cross — the road fills stay continuous through the crossing and the darker casing hugs only the outside of each road, with no casing line slicing across the junction.">
@@ -638,14 +562,16 @@ The spans are already sorted by `(z, seq)`, so the cased road lines form one con
   <text class="d-sub" x="620" y="284" text-anchor="middle" style="font-size:9.5px">fills continuous through the junction</text>
   <text class="d-sub" x="620" y="298" text-anchor="middle" style="font-size:9.5px">casing hugs the outside of each road only</text>
 </svg>
-<figcaption>Because the spans are already <code>(z, seq)</code>-sorted, the cased road lines are a contiguous band; the draw phase draws <b>①</b> everything below that band, then runs the <b>②</b> casing pass, then draws <b>③</b> the road band on top. So a casing survives the landuse/water fills below it, yet sits under all the road fills above it — at a junction (right) the fills stay continuous and no casing slices across the crossing. With no cased style the split is the whole array, the casing pass is empty, and ①+③ collapse to today's single pass; coarser LODs skip the pass outright.</figcaption>
+<figcaption>The casing pass starts at the road z-band. Road fills then cover casing inside intersections.</figcaption>
 </figure>
 
-### Building outlines: all the fills, then all the walls
+The renderer draws casings at the start of the road z-band. It then draws all road fills.
 
-A polygon whose style carries a `color2` gets **every ring — its exterior and any courtyard holes — stroked closed** in that colour at the finest LOD, so a building stops reading as a flat grey slab when you zoom in. Here too the interesting part is ordering. Touching row-house buildings share a wall, so if you outline each building right after its own fill, the *next* building's fill paints over the wall the previous one just drew — the terrace merges into one blob.
+This order keeps the casing above land fills. It also prevents casing lines inside road intersections.
 
-The fix reuses the same `(z, seq)` sort. Within each contiguous **equal-z group** the draw loop runs two passes: **all the fills first**, then **all the outlines**. Nothing paints a fill after an outline within the group, so a neighbour can no longer erase a shared wall — both buildings stroke that edge, and it survives. The group closes before the next z begins, so a road at a higher z still paints over a building outline where it crosses.
+### Polygon outlines
+
+A polygon with color2 receives a closed outline at the finest LOD.
 
 <figure class="fig">
 <svg viewBox="0 0 760 300" role="img" aria-label="Top row, per-feature order (wrong): building A is filled and outlined, then building B's fill lands over the shared edge and erases A's wall there, then B is outlined — the two touching buildings merge into one block with no divider. Bottom row, per-z-group order (right): both buildings are filled first, then both are outlined — the shared middle wall is drawn last, after every fill, so it survives and the two buildings read as distinct.">
@@ -696,61 +622,39 @@ The fix reuses the same `(z, seq)` sort. Within each contiguous **equal-z group*
   <text x="560" y="210" style="font-family:var(--mono);font-size:9.5px;fill:#3c6b39">drawn after every fill</text>
   <text x="560" y="224" style="font-family:var(--mono);font-size:9.5px;fill:#3c6b39">→ two crisp buildings ✓</text>
 </svg>
-<figcaption>Both shared-wall neighbours sit in the same z-group (buildings share a z), so drawing every fill before any outline is what keeps the wall. The outline is a <b>fixed 1-px hairline</b>, not the zoom-ramped stroke width: ramped, a closed ring hits 3–4 px at the sub-metre finest-LOD scale and its round joins flood a small footprint until the fill drowns and the building reads as a dark slab — the opposite of the goal. With no outlined polygon the group takes the single-loop path, byte-identical to before.</figcaption>
+<figcaption>The renderer fills every polygon in a z-group before it draws the outlines.</figcaption>
 </figure>
 
-**What the finest-LOD passes cost.** Both casing and outlines run **only at the finest LOD**, so every coarser zoom — where the frame budget is already tightest — pays exactly nothing. Where they do run, the numbers (measured `draw_us`, dense street scenes) are modest: casing adds **~20–25%** to the draw (at 4 m/px on a dense grid, ~170–179 µs climbs to ~206–250 µs for 152 cased roads; ~+55–80 µs at a busier zoom), because a casing is one extra wide stroke — wider than the fill it underlies, so its cost is the raster, not the re-projection. Building outlines are far cheaper still — **~7–9% of the casing pass** (about +10 µs at 2 m/px, +25 µs at 4 m/px) — because a hairline ring is the thin Bresenham line path, a fraction of a filled stroke.
+The renderer fills all polygons in one z-group first. It then draws all outlines in that group.
 
-### Rain below the roads: the raster overlay hook
+This order keeps shared walls between adjacent buildings.
 
-Weather (epic #1185) adds one optional stage *inside* this same paint order: a **precipitation raster** drawn after every span below the road band and before the road band itself, so rain shades the ground while roads, the route, the rider and the map chrome all stay legible above it. *Whether* it is lent at all is not the host's call but the **screen's**: a host mounts a weather store once and offers the frame's rain lease on every pass, and the app hands it on only to a base screen that declares it wants rain — today the rain map alone. The ordinary Map, and every map screen added later, is rain-free by declaration rather than by an exit hook a screen transition could forget to run. The hook mirrors the casing insertion — a z-boundary split into the already-sorted spans at `RAIN_BELOW_Z = 20` — and with no rain lent the split is skipped entirely, byte-identical to the frame before the feature existed. Skins **do** carry `z_index`, so the boundary is not a fact about skins but a *contract on the z ladder*: the schema and every skin keep the band gap `(16, 24)` empty, the assembler refuses a skin that parks a style inside the gap or moves one across the boundary when it is stamped, and a repo test pins the shipped presets to both rules.
+## Rain layer
 
-Intensity maps to colour through a **firmware-owned RGB222-exact table** that lives with the renderer — rain is semantics, not cartography; skins have no field that reaches the rain colours. And the ordered **Bayer dither is transparency, not smoothing**: a band's coverage says how many cells of the fixed screen-anchored 4×4 matrix show the rain colour; every other pixel keeps the already-rendered basemap, so light drizzle reads as a sparse tint the map shows through and a storm core reads nearly solid.
+The optional rain raster uses the gap between the ground and road z-bands. Roads, routes, markers, and UI chrome remain visible.
 
-**Sampling: where the honesty line actually falls.** The screen→grid transform is affine, so cell coordinates are walked with per-pixel fixed-point increments — but *what a pixel does with the cell it lands in* was the one genuinely contested decision in the overlay. The first rule was nearest-neighbour everywhere: each pixel takes exactly the intensity of the one lattice cell under it, no interpolation anywhere in the system. Rendered on real 1 km radar that turned out to look like what it is — a lattice of hard kilometre squares — and the rule was reopened, with all four candidate samplers drawn side by side over the same frames of MRMS and DWD data. (The cell is one constant now, not a per-source figure: the published dataset is a single 0.01 degree lattice, so "about three pixels per cell" is one threshold rather than one per source.)
+Only the rain-map screen requests this layer. A frame without rain uses the normal paint path.
 
-The mode that shipped is **bilinear**: the 4-bit band index is interpolated between the four surrounding cell centres and the fractional part is spent as an ordered dither between the two real bands either side of it, since the palette has no colour in between to land on. That is a real concession — between a dry cell and a heavy one, bilinear paints intermediate bands that no radar cell reported — and it is confined to pixels by a line the [OBCW](../formats/) and OBCG specs now draw explicitly:
+The display path can use bilinear sampling. All weather decisions use nearest-neighbor samples from actual cells.
 
-- **Data queries stay nearest-neighbour, normatively.** Anything answering *"what is the intensity here"* for a purpose other than colouring a pixel — the snapshot's recorded intensity, corridor and dry-claim walks, alert thresholds and their clears — must return a value some single cell actually holds.
-- **Display may interpolate**, and only display.
-- **No claim, alert, alert-clear or dry decision may derive from an interpolated value.** Rendering can change what the rider is *shown*, never what they are *told*.
+No-data cells do not take part in interpolation. The renderer reports when the zoom is outside the supported rain regime.
 
-The device honours that structurally — the decision path reads the weather store's nearest-neighbour lookup and never enters the renderer — and a test parks a rider a hair inside a dry cell hard against three torrential neighbours, where the two samplers disagree most, then re-runs the entire decision under all four display modes and requires the same answer every time.
+## Map overlays
 
-Two rules survived the change untouched. **No-data never participates in sampling, in either direction**: if either the smoothed sample or the pixel's own cell is no-data, reserved or off-grid, the pixel falls back to plain nearest-neighbour. So a coverage edge — the "no rain" versus "no radar" boundary the weather screens are built on — is pixel-identical in every mode and can never blur into something that reads as drizzle. And a rotated heading-up view still just rotates the same grid; nothing about sampling is heading-dependent.
+The renderer draws moving map content after the base map:
 
-The overlay also states its own **zoom regime**: it draws only while every weather cell spans at least ~3 px on screen. That is now one threshold rather than one per product — a bundle's cells are the dataset's, ~1,113 m square whatever the rider's latitude, so the regime is a fixed zoom and not a function of which source answered. Inside the regime, sampling cannot skip a strong cell (a storm core is always at least a few pixels) and each visible 16×16 tile decodes once per frame through the weather store's bounded cache.
+1. Active route and direction chevrons
+2. Breadcrumb trail
+3. Waypoints and rider marker
+4. Map status and tool indicators
 
-That last bound had to be re-derived when smoothing arrived, and how it was got wrong first is worth the detour. An interpolating kernel reaches a cell further than nearest-neighbour, which widens the worst-case scanline tile staircase — so the cache was re-measured across every zoom and every heading, and the answer came back "no change needed". It was wrong, because the sweep held the **camera** fixed. Zoom and heading fix the *shape* of the staircase; where the tile lattice happens to fall underneath it is a third free parameter, and the smoothing kernels are precisely the thing that is sensitive to it. Sweeping sub-tile camera offsets as well, bilinear turned out to re-decode eleven tiles a frame — a third more SD reads — at the coarse end of the regime, which is exactly where the rain map's zoom clamp parks the camera. The cache is sized from all three axes now, across all four modes rather than the shipped one, and deliberately above the smallest size that passed: the lesson of the phase axis is that a measured minimum is not a bound, and it kept being relearned — a finer 64×64 grid later found a failing case at fifteen slots that the 16×16 sweep had called clean. Camera phase is continuous, so no finite grid can prove a bound; the constant is empirical and the margin is what absorbs the next finer sweep. Outside it — far zoomed out, where cells would shrink toward sub-pixel and sampling would start silently dropping cores — the overlay draws nothing and *reports* that (`rain_out_of_regime` / `rain_in_regime`), so the weather screens can show an explicit out-of-regime state; dry, expired or missing data likewise draws nothing at all: staleness gating happens before the renderer ever sees a frame, and neither no-data nor out-of-regime is ever allowed to look dry.
+The route and breadcrumb use the shared line stroker. Markers use the shared polygon filler.
 
-## 7 · The overlays
+## Frame storage and presentation
 
-The map underneath is the base; everything that moves with *you* is drawn on top, after the map, in a fixed order:
+The device stores one RGB222 frame byte per pixel. The 240×320 frame uses 75 KiB.
 
-1. **Route** — the planned line (magenta), stroked through the same clip-then-stroke path, with direction **chevrons** laid down in a second sweep so they sit on top even where the route doubles back. Chevrons are spaced by *ground distance* derived from a fixed pixel cadence, so they stay evenly spread as you zoom and stay pinned to the ground as you pan. The Detour chooser suppresses the chevrons and streams only its skipped interval again as a narrower warning-orange stroke — and on the Detour preview the planned detour's decimated polyline is stroked in blue on top; the magenta edges remain visible and no second route copy is retained.
-2. **Breadcrumb** — the recorded trail behind you (navy), a two-tier coarse-spine-plus-recent-tail path.
-3. **Waypoints and markers** — route waypoint diamonds, then the rider's course-pointing chevron (or stationary diamond), followed by the Detour flow's fixed-size rejoin ring when its chooser or preview is open.
-4. **HUD chrome** — the off-route readout and pan-mode indicators, or the Detour flow's floating distance/cost panel.
-
-Each is just another polyline through the stroker or a triangle through the polygon fill — and since a thick stroke is itself rectangles and discs filled as spans, nearly everything on screen comes down to the one scanline span fill, reused.
-
-## To the panel: the banded push
-
-Everything above is shared — byte-for-byte identical on the simulator and the device. This last step is where the *transport* parts, because the device has neither the memory nor the display hardware a desktop takes for granted. The device has **512 KB of RAM and no external memory**, and **no scan-out engine** that would stream a framebuffer to the panel on its own. So it does two things a PC never has to: it draws into a *device-native* RGB222 framebuffer, and then it ships that framebuffer to the panel itself, a strip at a time. The **simulator's interactive window is the second backend of the very same [display contracts](src:firmware/obc-display/src/display_contracts/mod.rs)**: it renders into the identical RGB222 framebuffer and runs the identical self-diffing present, differing only in the final hop — it uploads the changed rows to an `egui` texture instead of scanning them to a panel. The headless `--png` path writes that same device-gamut frame in one blit.
-
-### The RGB222 framebuffer
-
-The renderer draws into a single resident **RGB222** plane: one byte per pixel over the 240×320 panel — 75 KB, the whole frame held in `.bss`. Each byte is `0b00_RR_GG_BB`, the top two bits of each channel: the 64-colour gamut the [style table is tuned to](src:firmware/obc-reader/src/color.rs). The renderer's `color_fn` is the identity (styles are already RGB565) and the framebuffer quantises to those 64 colours *on store* — so the expensive geometry code from sections 1–7 is exactly the simulator's, and only the pixel sink differs. This is the [`DrawTarget` seam](../architecture/#two-hosts-one-core-and-the-seams-between-them) from the top of the page, realised for the device.
-
-### Getting it onto glass
-
-A finished frame now sits in RAM, but nothing is putting it on glass. During bring-up the firmware did that itself in software: walk the framebuffer top to bottom and DMA it to a stand-in **ST7789** a **band** of a few rows at a time, each band packed to the panel's 12-bit RGB444 wire in a ~7 KB scratch the 320-row frame tiled through ~23 times. That band push *was* the visible refresh — a wipe you could watch sweep down the panel — and the property that mattered is the one that survived it: the frame lives **once**, in the RGB222 plane, never as a second full-frame copy. The shipping device drops the band scratch entirely; the FLPR coprocessor (below) packs each line straight out of the resident frame. What made that swap a firmware detail rather than a rewrite is that the wire format lives behind the board-agnostic [display contracts](src:firmware/obc-display/src/display_contracts/mod.rs) (in **obc-display**), so the render stack never couples to it — and the seam has **two live implementations** keeping it honest: the LS021/FLPR panel on-device and the simulator on the host, the latter compiled and tested in the workspace on every CI run.
-
-That seam is **two separable contracts**, spelled out by the [generic display contracts](src:firmware/obc-display/src/display_contracts/mod.rs): a **native-frame format** — geometry, the device's own pixel storage, and a `DrawTarget` writing straight into the backing — and **presenter capabilities** — presenting the clean resident frame, and compositing a bounded transient overlay over it (next section). Rust's borrows encode when render and present may touch the bytes: rendering borrows the frame mutably, a base present shares it for the whole scan, and the overlay present borrows it mutably for its composite-and-restore. What counts as a *changed region* deliberately belongs to the presenter, not the contract: the per-row hashing and span masking below are the [LS021 pairing's own damage strategy](src:firmware/obc-display/src/ls021/mod.rs), and a different panel could diff tiles or lean on a controller's dirty window without the render stack noticing.
-
-The panel the device ships on is a reflective **memory-LCD (LS021B7DD02-class MIP)**, driven by the nRF's **FLPR** coprocessor — the only display path. The FLPR scans the frame top-to-bottom in one pass: the M33 renders into the RGB222 plane, publishes the dirty-row list, rings a doorbell, and *awaits* the coprocessor's end-of-frame interrupt — the FLPR reads the framebuffer directly out of shared SRAM and packs each line to the panel wire itself, so the present costs the M33 almost nothing and it is free to run storage or sensor work for the whole scan. A *full* MIP frame is still ~44 ms, so the present doesn't rewrite the whole frame when it needn't: it keeps a **per-row hash of the last-pushed frame**, re-hashes on each present, and drives a **span-masked scan** over only the rows whose hash changed — the FLPR fast-forwards its gate over the unchanged rows and stops early after the last, so frame cost scales with *changed rows*, not a flat 320.
-
-The screens never say *where* they changed — they stay immediate-mode, clearing and redrawing the whole frame — so the present detects the changed region **automatically**: a Home clock ticking a minute re-hashes to find just its clock band and repaints that (~44 ms → a few ms), with zero per-screen code. A collision — a changed row hashing equal, so skipped — is ~2⁻³² per row-change and self-heals the next time the row changes; the simulator runs an exact full-frame diff as a CI oracle. (That oracle earned its keep once: a word-folded FNV variant had a structural blind spot for changes confined to every fourth pixel column, caught the moment a demo parked on a static screen — each word is now avalanche-mixed before it meets the accumulator, [issue #626](https://github.com/timohueser/OpenBikeComputer/issues/626).) That's render-on-demand carried onto the glass; the overlay below rides the very same masked scan.
+Each byte has the 00_RR_GG_BB format. The framebuffer converts RGB565 pixels when it stores them.
 
 <figure class="fig">
 <svg viewBox="0 0 800 366" role="img" aria-label="The self-diffing present. Left: the framebuffer, drawn as 16 stacked rows; an immediate-mode screen redraws all 320 rows every frame, but only a band in the middle — the clock — actually changed. Middle: a per-row 32-bit hash (a 1.28 KB store of one hash per row) is compared to last frame; rows whose hash equals the stored one are skipped, the contiguous run of changed rows coalesces into one span. Right: the FLPR runs one masked scan of the panel — it fast-forwards its gate over the unchanged rows, writes only the changed span, and stops early, so only those rows reach the glass and the rest of the image is retained. A one-minute clock tick costs a few rows instead of a full ~44 ms frame.">
@@ -840,34 +744,46 @@ The screens never say *where* they changed — they stay immediate-mode, clearin
   <rect x="250" y="324" width="360" height="28" rx="9" style="fill:#f8efe4;stroke:#cf6a2a;stroke-width:1.3" />
   <text x="430" y="342" text-anchor="middle" style="font-family:var(--sans);font-size:11.5px;fill:#a9501c">one-minute clock tick: <tspan font-weight="700">~44 ms full frame → a few ms</tspan></text>
 </svg>
-<figcaption>Screens stay <b>immediate-mode</b> — they clear and redraw the whole frame, never declaring <i>where</i> they changed. The present works it out: one <b>32-bit hash per row</b> (320×u32 = 1.28 KB) compared against last frame, the changed rows coalesced into a <b>span</b>, and one masked FLPR scan that fast-forwards over the unchanged rows and <b>stops early</b>. A minute's clock tick repaints a few rows, not a full ~44 ms frame — the rest of the picture is retained on the glass.</figcaption>
+<figcaption>The presenter hashes rows and sends only changed row spans to the panel.</figcaption>
 </figure>
 
-### The overlay composites on the push
+The LS021 presenter hashes each row. It sends the changed row spans through the FLPR coprocessor.
 
-The hold-progress bulge — the little arc that swells as you hold a button — is never baked into the framebuffer. If it were, dismissing it would force a full map re-render just to paint it back out. Instead it **composites on the push**: over a static map the [input plane](../architecture/#staying-responsive-the-two-planes) re-presents *only* the region the bulge occupies, reading the clean framebuffer back as the backdrop and drawing the bulge over it — the resident frame stays the untouched map. The MIP/FLPR addresses that region in its native grain: the bulge's **rows**, through the span-masked scan above (fast-forward the gate to them, write just those, early-stop). And when the map *does* redraw mid-animation, the present goes *around* the bulge's rows so it never flashes off — the display seam's present takes the live bulge span as an exclude and clips its push with the same shared span logic (issues [#163](https://github.com/timohueser/OpenBikeComputer/issues/163), [#345](https://github.com/timohueser/OpenBikeComputer/issues/345)). Either way the map underneath is never touched and the expensive `render_map` stays asleep — [render-on-demand](../architecture/#the-per-frame-loop) taken to its limit: repaint the region that changed, and nothing else.
+The M33 renders the frame and publishes dirty rows. The FLPR reads shared SRAM and writes the panel wire format.
 
-## Zero allocation, by budget
+The simulator implements the same display contracts. Its final presenter writes changed rows to the host texture.
 
-Everything above happens in fixed-size buffers owned by the renderer and **cleared, not freed, each frame** — so steady-state rendering does no heap work at all, which is what makes it safe on a microcontroller. The capacities are tuned for a 512 KB-RAM device and checked at compile time:
+### Transient overlays
 
-| Buffer | Holds | Capacity |
-| :-- | :-- | --: |
-| `frame_points` | every visible feature's projected vertices, packed as two `i16`s | 16 323 |
-| `frame_ring_lens` | per-feature ring lengths | 3 328 |
-| `spans` | candidate / per-feature 12-byte draw records | 3 072 |
-| `dec_points` | one feature's vertices during decode | 2 048 |
-| `screen` | unpacked points for the feature being drawn | 2 048 |
-| `xs` | scanline crossings for one row | 384 |
+A transient overlay is not stored in the clean base frame. The presenter reads the required base-frame window and composites the overlay.
 
-A target-side compile-time assertion requires the renderer to match the existing 128 KiB scratch arena exactly — so you can't accidentally blow the memory ceiling by bumping a constant, and the bytes already reserved by the arena are not left idle. The frame buffers are the reason the collector drops by priority: they're deliberately finite, and the global priority order is what makes saturation degrade gracefully instead of catastrophically.
+Clearing the overlay presents the clean window again. It does not require a map render.
 
----
+A base-frame update can exclude a live overlay region. This rule prevents overlay flicker during a map update.
 
-## Where this lives
+## Memory budgets
 
-- The renderer and all its rasterisers: [`obc-render/src/`](src:firmware/obc-render/src) — the frame loop and buffers in `lib.rs`; projection, collection, stroking, polygon fill and the overlays in `viewport.rs` / `collect.rs` / `stroke.rs` / `fill.rs` / `overlay.rs`
-- The streamed scene contract: [`obc-map-scene/src/lib.rs`](src:firmware/obc-map-scene/src/lib.rs); the production OBCM adapter: [`obc-reader/src/scene.rs`](src:firmware/obc-reader/src/scene.rs)
-- The map parsing, quadtree walk, and skip-don't-decode: [`obc-reader/src/reader/mod.rs`](src:firmware/obc-reader/src/reader/mod.rs)
+RenderScratch contains fixed-capacity buffers. The device initializes it in place in the shared scratch arena.
 
-For how this renderer gets *driven* — the camera, the screen stack, and the per-frame loop — see [system architecture](../architecture/). For the map format it reads, see [data formats](../formats/).
+| Buffer | Purpose | Capacity |
+| --- | --- | ---: |
+| Frame points | Selected projected vertices | 16,323 |
+| Frame ring lengths | Selected feature rings | 3,328 |
+| Candidate spans | Candidate and draw records | 3,072 |
+| Decode points | One decoded feature | 2,048 |
+| Screen points | One drawn feature | 2,048 |
+| Scanline crossings | One polygon row | 384 |
+
+The board build checks the complete scratch size against its arena budget. Increasing a capacity is a device-memory decision.
+
+## Source map
+
+- Renderer and scratch budgets: [lib.rs](src:firmware/obc-render/src/lib.rs)
+- Projection: [viewport.rs](src:firmware/obc-render/src/viewport.rs)
+- Collection and selection: [collect.rs](src:firmware/obc-render/src/collect.rs)
+- Polygon and line rasterization: [fill.rs](src:firmware/obc-render/src/fill.rs), [stroke.rs](src:firmware/obc-render/src/stroke.rs)
+- Streamed map contract: [obc-map-scene](src:firmware/obc-map-scene/src/lib.rs)
+- OBCM adapter and quadtree walk: [scene.rs](src:firmware/obc-reader/src/scene.rs), [reader/mod.rs](src:firmware/obc-reader/src/reader/mod.rs)
+- Frame and presenters: [display contracts](src:firmware/obc-display/src/display_contracts), [LS021](src:firmware/obc-display/src/ls021)
+
+See [system architecture](../architecture/) for the host loop. See [data formats](../formats/) for the OBCM format.
