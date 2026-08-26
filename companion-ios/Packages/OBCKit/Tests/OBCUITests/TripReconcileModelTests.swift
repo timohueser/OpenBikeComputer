@@ -246,6 +246,45 @@ struct TripReconcileModelTests {
         #expect(plan.tripObject == .replace(deviceTripID))
     }
 
+    /// The rename twin of the case above (#1527, the trip sibling of #1521): the
+    /// trip name lives inside the trip object, so a trip renamed while unlinked no
+    /// longer matches its device copy by content. The catalog reports the name that
+    /// copy was stored under, which is what makes the stored bytes reconstructible —
+    /// without it the app reads the trip as absent and the next send mints a twin.
+    @Test
+    func aRenamedTripAdoptsItsDeviceCopyAndReplacesIt() async {
+        let (model, control, library) = await makeMainWithLibrary()
+        await uploadTrip(model)
+        let deviceTripID = control.deviceTripObjectIDs.first!
+
+        // Rename first, then drop the link: `renameTrip` saves the model's cached
+        // trip, so stripping before it would only be written back.
+        model.renameTrip(tripID, to: "Driftless, the long way")
+        stripTripLink(library, model)
+        model.reloadTrips()
+        #expect(
+            model.trip(tripID)?.deviceLink == nil,
+            "precondition: the model reads the trip as unlinked before the reconcile")
+
+        model.reload()
+        await poll("the renamed trip adopts its device copy") {
+            model.trip(tripID)?.deviceLink?.objectID == deviceTripID
+        }
+        #expect(
+            model.tripOnDeviceState(tripID) == .outdated,
+            "the device holds it under the old name — on the device, out of date")
+        #expect(model.planTripUpload(tripID)?.tripObject == .replace(deviceTripID))
+
+        let upload = model.makeTripUploadModel(tripID, timing: Self.fastTiming)!
+        upload.start()
+        upload.beginUpload()  // clear the epic #638 Auto-delete confirm (capable device)
+        await poll("the renamed send landed") { upload.phase == .done }
+        #expect(control.deviceTripCount == 1, "a renamed send replaces by id — never a duplicate")
+        #expect(
+            control.deviceTripObjectIDs.first == deviceTripID,
+            "…and the device copy kept its id, so the send was a replace")
+    }
+
     /// The user's exact retry path: upload "failed" (ack lost after the device
     /// committed), they tap **Upload trip** again. `prepareTripUpload` re-reads
     /// the catalogs first, the reconcile adopts what actually landed, and the
