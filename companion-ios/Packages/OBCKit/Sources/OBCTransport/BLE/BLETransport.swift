@@ -181,6 +181,9 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     // reconciliation belong to TransferClient; the transport only preserves received records.
     private var pendingObjectControlRecords: [Data] = []
     private var objectControlWaiters: [CheckedContinuation<Data, Error>] = []
+    /// A control receive was abandoned before it parked — the next one resolves as cancelled
+    /// instead of waiting for an answer its request will never get.
+    private var objectControlReceiveCancelled = false
 
     public override convenience init() {
         self.init(discoveryStore: UserDefaultsBLEDiscoveryStore())
@@ -2049,6 +2052,7 @@ extension BLETransport: TransferLink {
     public func sendControlRecord(_ record: Data) async throws {
         do {
             _ = try ControlFrame(decoding: record, direction: .request)
+            queue.async { [self] in objectControlReceiveCancelled = false }  // a request re-arms the lane
             try await write(record, to: GATT.objectControl)
         } catch is WireError {
             throw DeviceError.writeFailed
@@ -2060,7 +2064,10 @@ extension BLETransport: TransferLink {
     public func receiveControlRecord() async throws -> Data {
         try await withCheckedThrowingContinuation { continuation in
             queue.async { [self] in
-                if !pendingObjectControlRecords.isEmpty {
+                if objectControlReceiveCancelled {
+                    objectControlReceiveCancelled = false
+                    continuation.resume(throwing: CancellationError())
+                } else if !pendingObjectControlRecords.isEmpty {
                     continuation.resume(returning: pendingObjectControlRecords.removeFirst())
                 } else if peripheral?.state == .connected {
                     objectControlWaiters.append(continuation)
@@ -2069,6 +2076,19 @@ extension BLETransport: TransferLink {
                 }
             }
         }
+    }
+
+    /// Release the control receive its transfer has walked away from. The cancel is remembered
+    /// when it beats its own receive to the queue, so the answer never parks behind a request
+    /// nobody is waiting on any more; the next control write re-arms the lane.
+    public func cancelControlReceive() async {
+        let waiters = queue.sync { () -> [CheckedContinuation<Data, Error>] in
+            objectControlReceiveCancelled = true
+            let parked = objectControlWaiters
+            objectControlWaiters.removeAll()
+            return parked
+        }
+        for waiter in waiters { waiter.resume(throwing: CancellationError()) }
     }
 
     public func sendStreamRecord(_ record: Data) async throws {
