@@ -797,6 +797,38 @@ const _: () = {
     assert!(payload_len(16) == 168, "the v16 payload length moved — a `since` or a row's size changed");
 };
 
+// ==================== the one-time v16 alert-mark carry-across (#1542) ====================
+
+/// The version that stored the weather alert marks inside the preferences blob — the only one that
+/// ever did.
+const LEGACY_MARKS_VERSION: u8 = 16;
+/// The frozen offset of that span, and its length. Hand-written literals: they describe bytes that
+/// are already on devices and can therefore never move. The span is a `reserved(54)` tombstone now,
+/// so nothing after it can shift either.
+const LEGACY_MARKS_OFFSET: usize = 114;
+const LEGACY_MARKS_LEN: usize = 54;
+/// The v16 payload length — the CRC-covered prefix this reader validates before believing a byte
+/// of the span. Hand-written for the same reason.
+const LEGACY_MARKS_PAYLOAD_LEN: usize = 168;
+
+/// Read the weather alert marks out of a stored **v16** preferences blob, or `None` for any other
+/// version, a short read, or a failed CRC.
+///
+/// v17 retired the row: those 54 bytes are reserved and written as zeros, so a v17 blob must return
+/// `None` rather than resurrect zeros over live anchors. Called once at boot by each adapter, and
+/// only when the marks record itself did not answer — so an update carries the rider's dedup
+/// anchors across instead of costing them one duplicate storm card per class.
+pub fn legacy_alert_marks(bytes: &[u8]) -> Option<crate::weather_alerts::AlertMarks> {
+    if *bytes.first()? != LEGACY_MARKS_VERSION || bytes.len() < encoded_len(LEGACY_MARKS_PAYLOAD_LEN) {
+        return None;
+    }
+    let crc = u16::from_le_bytes([bytes[LEGACY_MARKS_PAYLOAD_LEN], bytes[LEGACY_MARKS_PAYLOAD_LEN + 1]]);
+    if crc != crate::store_meta::crc16(&bytes[0..LEGACY_MARKS_PAYLOAD_LEN]) {
+        return None;
+    }
+    Some(crate::weather_alerts::unpack_marks(&bytes[LEGACY_MARKS_OFFSET..LEGACY_MARKS_OFFSET + LEGACY_MARKS_LEN]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1763,36 +1795,74 @@ pub enum SettingsIntent {
     RetryDue,
 }
 
+/// Which durable record an effect or outcome names.
+///
+/// Two records share this domain's slot, its machine and its vocabulary — and therefore need one
+/// discriminator that is **not** the token: each record has its own
+/// [`SettingsMachine`] instance, each instance mints from its own
+/// [`TokenSource`](crate::device_core::TokenSource), and two independent sources issue equal
+/// generations. Routing an answer by token alone would let a preferences ack clear a newer mark.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsRecord {
+    /// The rider's preferences blob — [`Settings`].
+    Preferences,
+    /// The weather alert-mark record
+    /// ([`AlertMarks`](crate::weather_alerts::AlertMarks)): device state, not a preference.
+    AlertMarks,
+}
+
 /// The one bounded settings operation, carrying the [`OperationToken`] the domain issued.
+///
+/// The record is named by the **variant**, not by a field: the two size tripwires below leave a
+/// token and a revision exactly filling the word, and the enum tag is a byte that is already paid
+/// for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsEffect {
     /// Write the live settings to durable storage as `revision`. The values themselves are read
     /// from the resident [`Settings`] under the snapshot-at-execute rule — no settings copy ever
     /// rides the effect.
     PersistRevision { token: OperationToken<SettingsTag>, revision: u16 },
+    /// Write the live alert-mark record as `revision`, under the same snapshot-at-execute rule.
+    PersistAlertMarks { token: OperationToken<SettingsTag>, revision: u16 },
 }
 
 impl SettingsEffect {
     /// The operation this effect belongs to.
     pub fn token(&self) -> OperationToken<SettingsTag> {
         match self {
-            SettingsEffect::PersistRevision { token, .. } => *token,
+            SettingsEffect::PersistRevision { token, .. } | SettingsEffect::PersistAlertMarks { token, .. } => *token,
+        }
+    }
+
+    /// The record this effect writes.
+    pub fn record(&self) -> SettingsRecord {
+        match self {
+            SettingsEffect::PersistRevision { .. } => SettingsRecord::Preferences,
+            SettingsEffect::PersistAlertMarks { .. } => SettingsRecord::AlertMarks,
         }
     }
 }
 
-/// The result of one [`SettingsEffect`]. The typed failure reuses
-/// [`SettingsSaveError`](obc_ports::SettingsSaveError) — the port already names every way a
-/// settings write can fail, and a second vocabulary for the same thing would only drift.
+/// The result of one [`SettingsEffect`], named per record like the effect it answers. The typed
+/// failure reuses [`SettingsSaveError`](obc_ports::SettingsSaveError) — the port already names
+/// every way a settings write can fail, and a second vocabulary for the same thing would only
+/// drift.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsOutcome {
-    /// `revision` reached durable storage.
+    /// `revision` of the preferences blob reached durable storage.
     Persisted { token: OperationToken<SettingsTag>, revision: u16 },
-    /// The write for `revision` failed; the value stays live in RAM and the revision stays owed.
+    /// The preferences write for `revision` failed; the value stays live in RAM and the revision
+    /// stays owed.
     PersistFailed { token: OperationToken<SettingsTag>, revision: u16, error: obc_ports::SettingsSaveError },
-    /// The executor abandoned the write without completing it — a platform with no durable store
-    /// says so here instead of leaving the handshake parked forever.
+    /// The executor abandoned the preferences write without completing it — a platform with no
+    /// durable store says so here instead of leaving the handshake parked forever.
     Cancelled { token: OperationToken<SettingsTag> },
+    /// `revision` of the alert-mark record reached durable storage.
+    MarksPersisted { token: OperationToken<SettingsTag>, revision: u16 },
+    /// The marks write for `revision` failed.
+    MarksPersistFailed { token: OperationToken<SettingsTag>, revision: u16, error: obc_ports::SettingsSaveError },
+    /// The executor abandoned the marks write without completing it.
+    MarksCancelled { token: OperationToken<SettingsTag> },
 }
 
 impl SettingsOutcome {
@@ -1801,7 +1871,22 @@ impl SettingsOutcome {
         match self {
             SettingsOutcome::Persisted { token, .. }
             | SettingsOutcome::PersistFailed { token, .. }
-            | SettingsOutcome::Cancelled { token } => *token,
+            | SettingsOutcome::Cancelled { token }
+            | SettingsOutcome::MarksPersisted { token, .. }
+            | SettingsOutcome::MarksPersistFailed { token, .. }
+            | SettingsOutcome::MarksCancelled { token } => *token,
+        }
+    }
+
+    /// The record this outcome answers for — the routing key, checked *before* the token.
+    pub fn record(&self) -> SettingsRecord {
+        match self {
+            SettingsOutcome::Persisted { .. }
+            | SettingsOutcome::PersistFailed { .. }
+            | SettingsOutcome::Cancelled { .. } => SettingsRecord::Preferences,
+            SettingsOutcome::MarksPersisted { .. }
+            | SettingsOutcome::MarksPersistFailed { .. }
+            | SettingsOutcome::MarksCancelled { .. } => SettingsRecord::AlertMarks,
         }
     }
 }
@@ -1933,16 +2018,29 @@ impl SettingsMachine {
         }
     }
 
-    /// The next bounded settings operation, or `None` when none is owed this pass.
+    /// The next bounded operation for `record`, or `None` when none is owed this pass.
+    ///
+    /// `record` is an *input*, not state: this machine is record-agnostic — a revision, a token, a
+    /// debounce, a backoff and a stale-ack rule — and each record owns one instance of it, so which
+    /// record an instance speaks for is settled where the instances are wired, not stored twice.
     ///
     /// The dirty state is *not* cleared here (the #810 fix): a failed write must keep the revision
     /// retryable, so Clean is reached only by a matching success.
-    pub(crate) fn next_effect(&mut self, in_settings_subtree: bool, now_ms: u32) -> Option<SettingsEffect> {
+    pub(crate) fn next_effect(
+        &mut self,
+        record: SettingsRecord,
+        in_settings_subtree: bool,
+        now_ms: u32,
+    ) -> Option<SettingsEffect> {
         if !self.wants_write(in_settings_subtree, now_ms) {
             return None;
         }
         self.persist = PersistState::Awaiting;
-        Some(SettingsEffect::PersistRevision { token: self.ops.issue(), revision: self.revision })
+        let (token, revision) = (self.ops.issue(), self.revision);
+        Some(match record {
+            SettingsRecord::Preferences => SettingsEffect::PersistRevision { token, revision },
+            SettingsRecord::AlertMarks => SettingsEffect::PersistAlertMarks { token, revision },
+        })
     }
 
     /// Consume the answer to a write. Returns `true` when the write **failed** and the rider must
@@ -1957,14 +2055,16 @@ impl SettingsMachine {
         }
         self.ops.invalidate(); // terminal: a duplicate of this answer is no longer current
         match outcome {
-            SettingsOutcome::Persisted { revision, .. } => {
+            SettingsOutcome::Persisted { revision, .. } | SettingsOutcome::MarksPersisted { revision, .. } => {
                 self.note_persisted(revision);
                 false
             }
-            SettingsOutcome::PersistFailed { revision, .. } => self.note_persist_failed(revision, now_ms),
+            SettingsOutcome::PersistFailed { revision, .. } | SettingsOutcome::MarksPersistFailed { revision, .. } => {
+                self.note_persist_failed(revision, now_ms)
+            }
             // A platform with no durable store says so here instead of parking the handshake
             // forever. The value stays dirty and retryable; nothing is claimed to have been written.
-            SettingsOutcome::Cancelled { .. } => {
+            SettingsOutcome::Cancelled { .. } | SettingsOutcome::MarksCancelled { .. } => {
                 if self.persist == PersistState::Awaiting {
                     self.persist = PersistState::Dirty;
                 }
@@ -2024,14 +2124,18 @@ mod settings_machine_tests {
     use super::*;
     use obc_ports::SettingsSaveError;
 
+    /// The machine is record-agnostic; these tests exercise it as the preferences instance.
+    const RECORD: SettingsRecord = SettingsRecord::Preferences;
+
     /// The token a write went out under, so a test can answer the operation the machine is actually
     /// holding.
     fn emit(
         machine: &mut SettingsMachine,
         now_ms: u32,
     ) -> (crate::device_core::OperationToken<crate::device_core::SettingsTag>, u16) {
-        match machine.next_effect(false, now_ms).expect("a write is owed") {
+        match machine.next_effect(SettingsRecord::Preferences, false, now_ms).expect("a write is owed") {
             SettingsEffect::PersistRevision { token, revision } => (token, revision),
+            other => panic!("the preferences instance emits its own record, not {other:?}"),
         }
     }
 
@@ -2041,12 +2145,12 @@ mod settings_machine_tests {
     fn no_write_leaves_while_the_rider_is_inside_the_settings_subtree() {
         let mut machine = SettingsMachine::new();
         machine.note_edited();
-        assert!(machine.next_effect(true, 100).is_none(), "still editing");
-        assert!(machine.next_effect(true, 200).is_none(), "…and still editing");
+        assert!(machine.next_effect(RECORD, true, 100).is_none(), "still editing");
+        assert!(machine.next_effect(RECORD, true, 200).is_none(), "…and still editing");
 
         let (_, revision) = emit(&mut machine, 300);
         assert_eq!(revision, 1, "the edit's revision leaves once");
-        assert!(machine.next_effect(false, 400).is_none(), "awaiting an answer — never re-emitted");
+        assert!(machine.next_effect(RECORD, false, 400).is_none(), "awaiting an answer — never re-emitted");
     }
 
     /// **#810.** A stale ack — one for a revision a newer edit has already superseded — must not
@@ -2081,7 +2185,10 @@ mod settings_machine_tests {
 
         let (_, retried) = emit(&mut machine, 1_000 + SETTINGS_RETRY_BACKOFF_MS);
         assert_eq!(retried, revision, "the same content, not a new one");
-        assert!(machine.next_effect(false, 1_000 + 4 * SETTINGS_RETRY_BACKOFF_MS).is_none(), "one retry in flight");
+        assert!(
+            machine.next_effect(RECORD, false, 1_000 + 4 * SETTINGS_RETRY_BACKOFF_MS).is_none(),
+            "one retry in flight"
+        );
     }
 
     /// A platform that takes the write and never answers (the web demo has no durable store) parks
@@ -2093,7 +2200,7 @@ mod settings_machine_tests {
         machine.note_edited();
         emit(&mut machine, 100);
         for ms in [200, 10_000, 100_000, 1_000_000] {
-            assert!(machine.next_effect(false, ms).is_none(), "no RRAM spam under a silent executor");
+            assert!(machine.next_effect(RECORD, false, ms).is_none(), "no RRAM spam under a silent executor");
         }
 
         // …and a `Cancelled` answer is how such a platform says so honestly: the value stays dirty

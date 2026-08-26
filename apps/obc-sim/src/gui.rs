@@ -120,6 +120,15 @@ impl HostPlatform for SimPlatform<'_> {
         self.settings.save(settings)
     }
 
+    /// Persist the alert-mark record to its own stand-in file, beside the settings one.
+    fn persist_alert_marks(
+        &mut self,
+        marks: &obc_app::weather_alerts::AlertMarks,
+        _revision: u16,
+    ) -> Result<(), SettingsSaveError> {
+        self.settings.save_alert_marks(marks)
+    }
+
     /// A fixed ~1.2 GiB stand-in — the sim has no allocation table to walk.
     fn measure_free_space(&mut self) -> Result<u64, obc_app::device_core::StorageInfoError> {
         Ok(crate::SIM_CARD_FREE)
@@ -401,6 +410,10 @@ impl SimGui {
             boot_settings.utc_offset_min = 0;
         }
         app.set_settings(boot_settings);
+        // The alert-mark record's own seed (#1542). A seed carried across from a stored v16 blob
+        // arms the record's write, so the rider's dedup anchors survive the update.
+        let (boot_marks, marks_provenance) = settings_store.load_alert_marks();
+        app.set_alert_marks(boot_marks, marks_provenance);
         // Mirror the map's §8.6 routing-profile names into the app for the Bike-type screen +
         // created-route overview label (N5). The map is loaded once in the sim, so this is a one-shot
         // (a device re-runs it on every map load).

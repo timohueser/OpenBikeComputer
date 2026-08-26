@@ -399,8 +399,7 @@ impl App {
             self.apply_navigator_outcome(outcome);
         }
         if let Some(outcome) = outcomes.settings.take() {
-            let now_ms = self.ui.now_ms;
-            if self.settings_ops.apply_outcome(outcome, now_ms) {
+            if self.apply_settings_outcome(outcome) {
                 // Through the fault connection, not straight to a card: every notice raised in a
                 // pass reaches the rider together at stage 13, so a failed save shares the card
                 // with whatever else this pass found rather than displacing it.
@@ -728,19 +727,45 @@ impl App {
         }
     }
 
-    /// Stage 9 — advance [`SettingsMachine`](crate::settings::SettingsMachine).
+    /// Stage 9 — advance the two [`SettingsMachine`](crate::settings::SettingsMachine) instances:
+    /// the rider's preferences blob first, then the weather alert-mark record.
     ///
     /// The dirty revision, the subtree debounce, the retry backoff and the stale-answer rule are the
     /// domain's; what the stage supplies is the two *levels* the decision is made against — where
-    /// the rider is standing, and the frame clock stage 3 set. A write owed while the rider is
-    /// still inside the settings subtree simply is not offered.
+    /// the rider is standing, and the frame clock stage 3 set. A preferences write owed while the
+    /// rider is still inside the settings subtree simply is not offered: they are mid-edit.
+    ///
+    /// **The marks write is not subtree-gated.** A storm is not a rider edit, and holding a dedup
+    /// anchor because the rider happens to have a settings screen open is the behaviour #1542
+    /// exists to end. Both records share the one slot — one operation per pass per domain is the
+    /// slot's contract — so the loser simply re-offers next pass.
     fn stage_settings(&mut self, effects: &mut EffectSlots) {
+        use crate::settings::SettingsRecord;
         self.pass.record(PassStage::Settings);
         if effects.settings.is_empty() {
             let (in_subtree, now_ms) = (self.ui.top_is_settings(), self.ui.now_ms);
-            if let Some(effect) = self.settings_ops.next_effect(in_subtree, now_ms) {
+            let effect = self
+                .settings_ops
+                .next_effect(SettingsRecord::Preferences, in_subtree, now_ms)
+                .or_else(|| self.alert_marks_ops.next_effect(SettingsRecord::AlertMarks, false, now_ms));
+            if let Some(effect) = effect {
                 let _ = effects.settings.try_put(effect);
             }
+        }
+    }
+
+    /// Route one settings answer to the instance that owns its record, and report whether the rider
+    /// must be told a save failed.
+    ///
+    /// **By record first, token second.** The two instances mint from independent
+    /// [`TokenSource`](crate::device_core::TokenSource)s, so their generations collide freely; the
+    /// record is what keeps a preferences ack from clearing a newer mark.
+    pub(crate) fn apply_settings_outcome(&mut self, outcome: crate::settings::SettingsOutcome) -> bool {
+        use crate::settings::SettingsRecord;
+        let now_ms = self.ui.now_ms;
+        match outcome.record() {
+            SettingsRecord::Preferences => self.settings_ops.apply_outcome(outcome, now_ms),
+            SettingsRecord::AlertMarks => self.alert_marks_ops.apply_outcome(outcome, now_ms),
         }
     }
 
