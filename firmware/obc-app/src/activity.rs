@@ -199,7 +199,7 @@ pub struct Activity {
     /// #678 T2 / #680) — the ride namespace's `active_route`: set on detail entry, cleared on
     /// exit, and the key the host's one-shot track-profile fill hangs off
     /// ([`App::ride_track_request`](crate::App::ride_track_request) → the host streams the Ride
-    /// object once → [`App::set_ride_profile`](crate::App::set_ride_profile)).
+    /// object once → the keyed ride-track answer).
     pub(crate) viewed_ride: Option<usize>,
 
     // tracking session (distinct from the navigated route)

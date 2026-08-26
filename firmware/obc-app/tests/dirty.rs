@@ -120,7 +120,7 @@ fn statistics_inspect_has_no_automatic_snap_back_dirty_edge() {
     // Navigate to Statistics, enter profile Inspect with a step, then prove it remains quiet and
     // persistent until an explicit Back resets it.
     let mut app = App::new_idle(AppState::new(0, 0, 0.05)); // [Home]
-    app.set_routes(&[one_route()]);
+    app.set_routes_with_ids(&[one_route()], &[0]);
 
     let _ = frame(&mut app, &mut NoFix, 0, &tap(Button::Select)); // Home press → Menu (Routes selected)
     let _ = frame(&mut app, &mut NoFix, 5, &tap(Button::Select)); // press Routes → Route menu

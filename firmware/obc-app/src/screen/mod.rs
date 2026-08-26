@@ -318,7 +318,7 @@ pub struct Render<'a> {
     pub profile: Option<&'a Profile>,
     /// The **viewed ride's** recorded-track elevation profile (epic #678 T2 / #680) — the Ride
     /// detail's band source, host-filled into the app's single resident ride-profile buffer on
-    /// detail entry ([`App::set_ride_profile`](crate::App::set_ride_profile)) and invalidated on
+    /// detail entry (the keyed ride-track answer) and invalidated on
     /// exit. `None` while the fill is still streaming (the band shows its loading note) and on
     /// every other screen.
     pub ride_profile: Option<&'a Profile>,
@@ -343,7 +343,7 @@ pub struct Render<'a> {
     pub nav_preview: &'a [(i32, i32)],
     /// The viewed ride's decimated recorded-track shape polyline (#678 rework 3) — ≤ 64
     /// `(lon, lat)` µdeg points, host-filled alongside the ride profile on detail entry
-    /// (`App::set_ride_preview`) and keyed to [`Activity::viewed_ride`](crate::Activity) (the App
+    /// (the keyed ride-track answer) and keyed to [`Activity::viewed_ride`](crate::Activity) (the App
     /// hands an empty slice when it's missing or stale). Only the Ride detail's track pager page
     /// draws it.
     pub ride_preview: &'a [(i32, i32)],

@@ -454,7 +454,7 @@ impl CatalogState {
     /// on the ride they are looking at now. Returns whether it was accepted.
     ///
     /// That refusal only *bites* once an executor carries the key it was asked with. The temporary
-    /// [`App::set_ride_profile`](crate::App::set_ride_profile) wrapper derives `current` from the
+    /// The keyed ride-track answer derives `current` from the
     /// live subject and hands the same value as `input.key`, so it can never refuse — the legacy
     /// command it answers carries no key back. DC6 #1439 is where the guard starts holding; until
     /// then the late-answer misattribution stays the characterized defect the DC1 traces record.
