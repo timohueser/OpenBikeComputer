@@ -462,6 +462,23 @@ fn riding_device(camera: AppState) -> App {
     app
 }
 
+/// A map whose POI section carries drinking water and a bike shop **inside the route's 300 m
+/// corridor** — the only fixture in this file a corridor query answers from, and therefore the only
+/// one whose `Next: <category>` tiles ever name anything.
+///
+/// The water POIs are spaced so the tile's named entry changes as the rider rides past them, which
+/// is the exact mutation #1538 asks about.
+fn poi_map_bytes() -> Vec<u8> {
+    use obcm_testkit::{build_poi_map, PoiSpec};
+    let water = vec![
+        PoiSpec { lat: 48_000_800, lon: 7_806_000, subtype: 1, name: "Fontaine".into(), hours_ref: 0xFFFF },
+        PoiSpec { lat: 47_999_200, lon: 7_818_000, subtype: 1, name: "Brunnen".into(), hours_ref: 0xFFFF },
+        PoiSpec { lat: 48_000_400, lon: 7_836_000, subtype: 1, name: "Quelle".into(), hours_ref: 0xFFFF },
+    ];
+    let shops = vec![PoiSpec { lat: 48_000_500, lon: 7_842_000, subtype: 18, name: "Velo".into(), hours_ref: 0xFFFF }];
+    build_poi_map((7_000_000, 47_000_000, 9_000_000, 49_000_000), 512, &[(1, water), (6, shops)])
+}
+
 /// The catalog entry for the climbing route.
 fn climb_summary() -> RouteSummary {
     static SUMMARY: std::sync::OnceLock<RouteSummary> = std::sync::OnceLock::new();
@@ -813,6 +830,97 @@ fn pages_replay() -> Vec<Step> {
         steps.push(step("quiet tail", 12_000 + i * 200));
     }
     steps
+}
+
+/// The `Next: <category>` replay (#1538): a grid with two of the tiles pinned, on the one fixture
+/// whose map answers a corridor query.
+///
+/// The cache behind the tiles is refreshed **one category per pass**, round-robin, and the query it
+/// asks for runs only inside a map render. So the second tile's request is armed on a pass where
+/// nothing else moved — and unless the arming itself is a repaint, a render-on-demand host never
+/// runs the query and that tile keeps showing `--`.
+///
+/// Every quiet step here is deliberate: the tiles must fill, then hold still.
+fn tiles_replay() -> Vec<Step> {
+    let mut steps = vec![
+        step("boot", 0).expect("Map"),
+        step("the route arrives", 500).feed(|app| app.set_routes_with_ids(&[route_summary()], &[7])),
+        step("open the start card", 1_000).keys(&tap(Button::Select)).expect("RideStart"),
+        step("start the ride", 1_400).keys(&tap(Button::Select)).expect("Map"),
+        step("adopt the route", 1_800).feed(|app| app.activate_route(0)),
+        step("the first fix", 2_000).fix(0),
+        // Entering the grid is what starts the refreshes: the tiles draw nowhere else.
+        step("swap to the riding grid", 2_500).keys(&tap(Button::Back)).expect("Statistics").probe(|app| {
+            assert_eq!(first_corridor_poi(app), Some("Fontaine"), "the water tile's first answer landed on entry");
+        }),
+        // **The step this replay exists for.** No fix, no key, no gesture — only the scheduler
+        // taking its turn at the second placed category.
+        step("the scheduler serves the second tile", 2_700).expect("Statistics").probe(|app| {
+            assert_eq!(first_corridor_poi(app), Some("Velo"), "the bike-shop tile filled on a pass nothing moved in");
+        }),
+        step("both tiles are settled", 2_900).expect("Statistics"),
+        step("and stay settled", 3_100).expect("Statistics"),
+    ];
+    // Riding on: each fountain is passed in turn, so the water tile's *named* entry changes under a
+    // grid whose other figures move with it.
+    for i in 1..12 {
+        let mut riding = step("riding under the grid", 3_000 + i * 1_000).fix(i).expect("Statistics");
+        if i == 4 {
+            riding = riding.probe(|app| {
+                assert_eq!(first_corridor_poi(app), Some("Brunnen"), "past the first fountain, the tile names the next")
+            });
+        }
+        if i == 10 {
+            riding = riding
+                .probe(|app| assert_eq!(first_corridor_poi(app), Some("Quelle"), "…and past the second, the third"));
+        }
+        steps.push(riding);
+        steps.push(step("quiet between fixes", 3_400 + i * 1_000).expect("Statistics"));
+    }
+    steps
+}
+
+/// The name of the nearest POI in the corridor snapshot that last landed — what the tile the
+/// snapshot was taken for now names. `None` when the query found nothing.
+fn first_corridor_poi(app: &App) -> Option<&str> {
+    app.corridor_snapshot().first().map(|e| e.poi.name.as_str())
+}
+
+/// **The `Next: <category>` tiles.** A tile whose answer arrives from the card, on a device that
+/// only renders when something moved.
+#[test]
+fn the_next_category_tiles_stay_in_parity() {
+    use obc_app::{StatField, StatFieldList};
+    let map = poi_map_bytes();
+    let map_src = SliceSource(&map);
+    let tables = MapTables::parse(&map_src).expect("the POI map parses");
+    let cache = MapCache::new();
+    let reader = Reader::new(&map_src, &tables, &cache);
+
+    let obcr = route_bytes();
+    let route_src = SliceSource(&obcr);
+    let idx = RouteIndex::read(&route_src).expect("the replay route parses");
+    let route = RouteReader::new(&idx, &route_src);
+
+    let camera = AppState::new((LON0 * 1e6) as i32, (LAT * 1e6) as i32, 0.05);
+    let steps = tiles_replay();
+    let ((map_repaints, _), _) = run_replay(
+        "tiles",
+        || {
+            let mut app = App::new(camera);
+            // Two of the six tiles, which is what makes the round-robin visible: with one placed,
+            // the single request is armed by the same pass the screen transition already dirtied.
+            let fields = StatFieldList::decode(2, &[StatField::NextWater as u8, StatField::NextBikeShop as u8]);
+            app.set_settings(obc_app::Settings { stat_fields: fields, ..*app.settings() });
+            app
+        },
+        &steps,
+        Some(&route),
+        &reader,
+    );
+    // A settled cache must stop asking: were every pass to re-arm, the grid would repaint at the
+    // frame rate for six tiles nobody touched.
+    assert!(map_repaints < steps.len(), "the grid does not repaint every pass while the tiles sit still");
 }
 
 /// The parked-device replay: everything Home draws, and nothing that needs a fix.

@@ -157,6 +157,18 @@ impl NextAhead {
         self.want.map(|(_, key)| key)
     }
 
+    /// The same request as the Statistics grid's render key names it (#1538): the category being
+    /// re-taken, and the progress the take is anchored at. `None` is the settled state.
+    ///
+    /// The key names the request rather than the six cached entries because a landing is distilled
+    /// inside the map render, ahead of the draw — the frame that fills a slot is the frame that
+    /// draws it. The **arming** is the half a pass-boundary comparison can see, and must: the query
+    /// runs only during a render, so a request armed on an otherwise quiet pass would never run.
+    #[inline]
+    pub(crate) fn pending_refresh(&self) -> Option<(PoiCategory, u32)> {
+        self.want.map(|(i, key)| (PoiCategory::ALL[i], key.anchor_m))
+    }
+
     /// Drop every cached entry because the **geometry under the current route index changed** —
     /// the same-index/new-bytes replace [`reconcile`](Self::reconcile) cannot see, because it keys
     /// identity on the catalog index alone.
