@@ -865,11 +865,16 @@ impl SimGui {
                 // UP/DOWN now carry held state like the other two pads, so a held pad or arrow key
                 // auto-repeats through the shared recognizer at the device's own cadence. Only the
                 // one-shot keyboard aliases still inject finished steps.
+                //
+                // `clicked()` is OR-ed in because held state alone is sampled once a frame: a press
+                // and its release inside one long frame — a deep map render is easily 100 ms — would
+                // otherwise show no transition and the tap would vanish. The extra frame of "held"
+                // still yields exactly one Down/Up pair.
                 let steps = self.kbd_steps;
-                let up_down = up.is_pointer_button_down_on() || self.kbd_up;
-                let down_down = down.is_pointer_button_down_on() || self.kbd_down;
-                let select_down = select.is_pointer_button_down_on() || self.kbd_select;
-                let back_down = back.is_pointer_button_down_on() || self.kbd_back;
+                let up_down = up.is_pointer_button_down_on() || up.clicked() || self.kbd_up;
+                let down_down = down.is_pointer_button_down_on() || down.clicked() || self.kbd_down;
+                let select_down = select.is_pointer_button_down_on() || select.clicked() || self.kbd_select;
+                let back_down = back.is_pointer_button_down_on() || back.clicked() || self.kbd_back;
 
                 // Mirror the live control state onto the housing.
                 let ctrl = housing::ControlVisual { up_down, down_down, select_down, back_down };
@@ -1033,20 +1038,18 @@ impl eframe::App for SimGui {
             {
                 steps -= 1;
             }
-            // ←/→ are read as *held state*, but their press events are still eaten so a focused
-            // slider or text field does not also act on them: the device keys belong to the
-            // device. Consuming does not touch `key_down`, and a key-repeat can queue more than
-            // one press per frame, so drain them.
+            // The four device keys are read as *held state*, OR-ed with "pressed this frame" so a
+            // tap that also releases inside one long frame still produces an edge. ←/→ then have
+            // their press events eaten, so a focused slider or text field does not act on them as
+            // well: the device keys belong to the device. Consuming does not touch `key_down`, and
+            // a key-repeat can queue more than one press per frame, so drain them.
+            let held = |i: &egui::InputState, k| i.key_down(k) || i.key_pressed(k);
+            let (left, right) = (held(i, egui::Key::ArrowLeft), held(i, egui::Key::ArrowRight));
+            let (enter, back) = (held(i, egui::Key::Enter), held(i, egui::Key::Backspace));
             for key in [egui::Key::ArrowLeft, egui::Key::ArrowRight] {
                 while i.consume_key(egui::Modifiers::NONE, key) {}
             }
-            (
-                steps,
-                i.key_down(egui::Key::ArrowLeft),
-                i.key_down(egui::Key::ArrowRight),
-                i.key_down(egui::Key::Enter),
-                i.key_down(egui::Key::Backspace),
-            )
+            (steps, left, right, enter, back)
         });
         (self.kbd_steps, self.kbd_up, self.kbd_down, self.kbd_select, self.kbd_back) = keys;
 
