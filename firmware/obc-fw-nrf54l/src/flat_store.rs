@@ -60,13 +60,16 @@
 
 use core::{cell::RefCell, mem::MaybeUninit};
 
-use embassy_futures::select::{select, Either};
+use embassy_futures::select::{select3, Either3};
 use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, Mutex};
 use embassy_sync::channel::{Channel, Receiver, Sender};
 use embassy_sync::signal::Signal;
+use embassy_time::{Duration, Instant, Timer};
 use heapless::Deque;
 
-use obc_link::flat::{Ceilings, Engine, Link, Policy, Reaction, RequestId, StreamBuffers, UsbMapBatch};
+use obc_link::flat::{
+    Ceilings, Engine, Link, Policy, Reaction, RequestId, Stall, StreamBuffers, UsbMapBatch, STALL_TIMEOUT_MS,
+};
 use obc_storage::flat::store::MAX_BATCH;
 use obc_storage::flat::{
     Allocation, BlockDevice, DisplayName, EntryFlags, EntryMeta, FlatStore, Handle, Mode, Mutation, ObjectId,
@@ -1008,9 +1011,19 @@ pub(crate) async fn storage_task(
     // The engine and its policy live in `.bss`, built out of line: see `engine_slot`.
     let engine = engine_slot();
     let mut policy = BoardPolicy;
+    // **When the stall watchdog next looks** — `None` while no transfer is live, and then this arm
+    // never fires at all. That gate is the point: a free-running ticker would wake a parked device
+    // every second, and the ride loop deliberately dozes to its watchdog-feed cap instead.
+    let mut next_look: Option<Instant> = None;
     loop {
-        match select(requests.receive(), MENU_DELETES.receive()).await {
-            Either::First(job) => {
+        let watch = async {
+            match next_look {
+                Some(at) => Timer::at(at).await,
+                None => core::future::pending().await,
+            }
+        };
+        match select3(requests.receive(), MENU_DELETES.receive(), watch).await {
+            Either3::First(job) => {
                 let before = store.sequence();
                 // The FLPR is switched per card command by `flpr_mux::with_storage`, so nothing is held
                 // across this call and there is no mode session to acquire around the batch.
@@ -1022,8 +1035,31 @@ pub(crate) async fn storage_task(
                 // has to be able to tell that this value is not theirs. See `Reply`.
                 job.reply.signal((job.tag, outcome));
             }
-            Either::Second(delete) => serve_menu_delete(store, delete),
+            Either3::Second(delete) => serve_menu_delete(store, delete),
+            // The deadline came round. Nothing to do here: the watchdog runs below on every pass,
+            // and this arm exists only so a wedged peer's silence still produces one.
+            Either3::Third(()) => {}
         }
+        // **The stall watchdog, on every pass** — after a served request, so byte progress re-anchors
+        // the deadline, and after the timer, so silence expires it. It runs here rather than in the
+        // timer arm because the requests this task serves are not all the transfer's: a ride
+        // journalling every few seconds would otherwise keep resetting a wedged transfer's clock.
+        let now = Instant::now();
+        next_look = match engine.watch_stall(store, now.as_millis() as u32) {
+            Stall::Idle => None,
+            Stall::Watching { again_in_ms } => Some(now + Duration::from_millis(again_in_ms.into())),
+            Stall::Abandoned(request) => {
+                defmt::error!(
+                    "flat/v4: transfer {=u32} moved no bytes for {=u32} s — abandoned, the store is released",
+                    request.0,
+                    STALL_TIMEOUT_MS / 1_000
+                );
+                // The level the ride loop reads as `ExternalFacts::note_transfer` is published from
+                // here, so a plan the rider asks for next is no longer refused by a peer that left.
+                publish_upload(engine);
+                None
+            }
+        };
     }
 }
 
