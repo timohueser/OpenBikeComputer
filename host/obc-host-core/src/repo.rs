@@ -47,7 +47,7 @@ pub trait RouteRepository {
     }
     /// Stamp route `id`'s `last_used` to `utc` in the retention sidecar — the sweep's clock-start /
     /// active re-stamp, and the once-per-activation stamp
-    /// ([`StampRouteUsed`](obc_app::HostCommand::StampRouteUsed)). Default no-op (a retention-less
+    /// (a `RetentionEffect::WriteRouteMetadata`). Default no-op (a retention-less
     /// host has no sidecar).
     fn stamp_route_used(&mut self, id: CatalogObjectId, utc: u32) {
         let _ = (id, utc);
@@ -63,7 +63,7 @@ pub trait RideRepository {
     /// Delete the ride with durable id `id` (the hold-to-delete). `true` = removed.
     fn delete_by_id(&mut self, id: CatalogObjectId) -> bool;
     /// The ride's recorded-track elevation [`Profile`] — the Ride detail's band fill (answers the
-    /// [`LoadRideTrack`](obc_app::HostCommand::LoadRideTrack) cue). `None` = unknown/unreadable.
+    /// keyed ride-track need). `None` = unknown/unreadable.
     fn profile_by_id(&self, id: CatalogObjectId) -> Option<Profile>;
     /// The ride's decimated recorded-track shape polyline (the detail's track page). Empty =
     /// unknown/unreadable.
@@ -73,7 +73,7 @@ pub trait RideRepository {
     fn refresh(&mut self) {}
     /// Stamp ride `id`'s `synced_at` to `utc` in the synced sidecar (epic #638, S3) — the sweep's
     /// legacy synced-without-stamp countdown start
-    /// ([`StampRideSynced`](obc_app::HostCommand::StampRideSynced)). Default no-op.
+    /// (a `RetentionEffect::WriteRideMetadata`). Default no-op.
     fn stamp_synced_at(&mut self, id: CatalogObjectId, utc: u32) {
         let _ = (id, utc);
     }
