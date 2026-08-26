@@ -637,20 +637,26 @@ A static screen with no new input, data, or timer event does not render.
 
 ### The render key
 
-Each screen row declares a **render key**: the exact facts its drawing reads. The Map names the
-camera, the fix, the pan mode, the route-relative chrome, and the low-battery cue. The riding grid
-names the ride readouts and the live sensor values of the fields the rider pinned. Home names the
-battery level, the connected indicator, and the screensaver backdrop. A screen whose content moves only on input
-declares no facts of its own.
+Each screen row **declares a render-key kind** — the name of the facts its drawing reads. The frame
+**builds the key** from that declaration: it reads the named facts out of the current state and
+returns their exact values.
+
+Each kind names what its screen draws. The Map names the camera, the fix, the pan mode, the
+route-relative chrome, the low-battery cue, and, on the rain map alone, the selected rain frame. The
+riding grid names the ride readouts and the live sensor values of the fields the rider pinned. The
+Climb view names the climb and the cursor on it. The Up-ahead timeline names the progress its rows
+measure from. Home names the battery level, the connected indicator, and the screensaver backdrop. A
+screen whose content moves only on input declares no facts of its own.
 
 One frame builds the visible screens' key before its work and again after it. A changed key requests
 a base-frame render. The rule this keeps is per screen, not per screen class: a heart-rate reading
 repaints the grid that shows it and not the map beside it.
 
-Two changes cannot move a key. A host feeds some data between two frames, so the change is already
-in both keys; that seam requests its own render. A screen also keeps its own selection and scroll
-position, which no key names; each recognized gesture therefore requests a render. Over-redraw is
-safe. Under-redraw is a defect.
+Five kinds of change cannot move a key, and each asks for its render directly. A host feeds some
+data between two frames, so the change is already in both keys. A screen keeps its own selection and
+scroll position, so each recognized gesture requests a render. The card scheduler answers for the
+cards it owns. A planner landing rewrites the screen stack. Some resident data — the catalogs, the
+derived route data — no row names. Over-redraw is safe. Under-redraw is a defect.
 
 <figure class="fig">
 <svg viewBox="0 0 720 250" role="img" aria-label="On the left, the stack: Home at the bottom, Map above it marked opaque, and a notification on top marked overlay. An arrow shows render_map starts from the topmost opaque screen, Map, and draws upward. On the right, a device screen mock: the map fills it, with a small route-received toast floating over the lower half, and a note that the map still updates underneath.">
