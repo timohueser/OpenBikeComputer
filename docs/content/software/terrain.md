@@ -185,7 +185,7 @@ It also returns `None` if a required sample is `NODATA`.
 Consumers must not replace `None` with zero elevation.
 Zero meters is a valid height.
 
-For ascent integration, `None` pauses the shared 3 m dead band.
+For packer edge-ascent integration, `None` pauses the shared 3 m dead band.
 The next valid sample starts a new segment.
 Thus, a coverage gap contributes no ascent.
 Valid samples on each side can still contribute ascent in their segments.
@@ -195,7 +195,7 @@ Valid samples on each side can still contribute ascent in their segments.
 | Map rendering | Rendering continues. Baked contour geometry does not require the raster. |
 | Routing | Routing continues with the graph's baked ascent values. |
 | Imported GPX route | The route keeps its supplied heights. |
-| Device-planned route | The route uses zero heights and a flat profile. |
+| Device-planned route | Before the first valid sample, the route uses zero heights. After that sample, it carries the last valid height across gaps. |
 | Detour | The splice interpolates between the seam elevations. |
 | Ride recording | The recorder stores the barometer measurement. |
 | Current elevation | The UI uses the raw barometric estimate. |
@@ -211,7 +211,9 @@ Route elevation parity requires terrain coverage for the complete route.
 OBCR has no per-point unknown-height value.
 Points before coverage starts use zero height.
 The route integrator does not use these placeholder points as an ascent anchor.
-The same pause rule applies at coverage boundaries and `NODATA` gaps.
+The packer applies the pause rule at coverage boundaries and `NODATA` gaps.
+Device route filling carries the last valid height after coverage starts.
+A resumed sample can add ascent from that carried height.
 
 ## Attribution
 
