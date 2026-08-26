@@ -96,6 +96,11 @@ pub(crate) struct MapKey {
     /// Whether the top-left low-battery glyph is up — the one thing a map base draws off the gauge.
     /// The *cue*, not the level, so the 30 s poll only repaints the crossing.
     low_battery: bool,
+    /// The rain map's selected step and how many frames lie ahead of it, and `None` on every other
+    /// map base. Gated on the row's own [`rain_overlay`](crate::screen::Caps::rain_overlay)
+    /// declaration, because the raster is the property of the screen the rider is on: an ageing
+    /// bundle must never repaint the ordinary Map, which draws no raster at all.
+    rain: Option<(u8, u8)>,
 }
 
 /// The Statistics grid: the ride readouts, the route-relative fields, and the live sensor tiles —
@@ -134,12 +139,31 @@ pub(crate) struct SensorsKey {
     status: [crate::sensors::SensorStatus; crate::settings::SENSOR_SLOTS],
 }
 
-/// The weather pages: which data is installed and which rain step is selected.
+/// The weather pages: which data is installed.
+///
+/// The **rain map is not one of these** — it declares [`Map`](crate::screen::RenderKeyKind::Map),
+/// because what it draws is a map scene with a raster in it, and its selected step therefore lives
+/// in [`MapKey`] beside the camera it is drawn through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct WeatherKey {
     installed: Option<crate::device_core::WeatherData>,
-    rain_step: u8,
-    rain_steps_ahead: u8,
+}
+
+/// The Up-ahead timeline: the live progress every row's distance-to-go is measured from, the route
+/// length the ascent figures are taken over, and the corridor snapshot the rows are merged from.
+///
+/// This one exists because deleting the next-waypoint dirty site would otherwise have left the
+/// timeline frozen: that site fired on a waypoint *crossing*, which is the coarsest possible
+/// approximation of "the distances moved". Naming progress itself is both smaller and correct —
+/// every row's figure now refreshes with the fix that changed it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct UpAheadKey {
+    progress_m: u32,
+    route_total_m: u32,
+    active_route: Option<u32>,
+    /// The merged rows' POI half: how many the snapshot holds, and whether it has settled (an
+    /// unsettled list draws its "still looking" hint instead of the rows).
+    corridor: (usize, bool),
 }
 
 /// One pass's answer: the visible stack's shape, plus the exact facts each declared kind names.
@@ -156,13 +180,14 @@ pub(crate) struct RenderKey {
     climb: Option<ClimbKey>,
     sensors: Option<SensorsKey>,
     weather: Option<WeatherKey>,
+    up_ahead: Option<UpAheadKey>,
 }
 
 // The pass keeps two of these on its own (non-`async`) frame, so growth here is residual stack, not
 // resident RAM and not a poll frame. It is still the ride loop's deepest frame, so it is pinned like
-// any arena arm: 248 B on a 64-bit host, less on the board, where a `usize` is four bytes.
+// any arena arm: 272 B on a 64-bit host, less on the board, where a `usize` is four bytes.
 const _: () =
-    assert!(core::mem::size_of::<RenderKey>() <= 256, "a render key is the visible facts, not a copy of the app state");
+    assert!(core::mem::size_of::<RenderKey>() <= 288, "a render key is the visible facts, not a copy of the app state");
 
 impl App {
     /// The exact facts the currently visible screens draw.
@@ -183,6 +208,7 @@ impl App {
             climb: None,
             sensors: None,
             weather: None,
+            up_ahead: None,
         };
         // Drawing starts at the lowest opaque screen: anything below it is covered and draws
         // nothing, so it is not part of the frame and not part of the key.
@@ -191,14 +217,16 @@ impl App {
         for screen in self.ui.stack.iter().skip(base) {
             // Cannot overflow: the stack itself is `MAX_DEPTH` long.
             let _ = key.shape.push(screen.row());
-            match screen.caps().render_key {
+            let caps = screen.caps();
+            match caps.render_key {
                 RenderKeyKind::Static => {}
                 RenderKeyKind::Home => key.home = Some(self.home_key(screen)),
-                RenderKeyKind::Map => key.map = Some(self.map_key(no_fix)),
+                RenderKeyKind::Map => key.map = Some(self.map_key(no_fix, caps.rain_overlay)),
                 RenderKeyKind::Statistics => key.stats = Some(self.stats_key(no_fix)),
                 RenderKeyKind::Climb => key.climb = Some(self.climb_key()),
                 RenderKeyKind::SensorSettings => key.sensors = Some(self.sensors_key()),
                 RenderKeyKind::Weather => key.weather = Some(self.weather_key()),
+                RenderKeyKind::UpAhead => key.up_ahead = Some(self.up_ahead_key()),
             }
         }
         key
@@ -216,7 +244,7 @@ impl App {
         }
     }
 
-    fn map_key(&self, no_fix: bool) -> MapKey {
+    fn map_key(&self, no_fix: bool, rain_overlay: bool) -> MapKey {
         MapKey {
             cam_lon: self.state.cam_lon,
             cam_lat: self.state.cam_lat,
@@ -232,6 +260,7 @@ impl App {
             no_fix,
             tracking: self.activity.is_tracking(),
             low_battery: crate::screen::low_battery_cue(self.state.device.battery_pct),
+            rain: rain_overlay.then_some((self.state.rain_step, self.state.rain_steps_ahead)),
         }
     }
 
@@ -265,12 +294,17 @@ impl App {
         SensorsKey { status: self.ui.sensor_status }
     }
 
-    fn weather_key(&self) -> WeatherKey {
-        WeatherKey {
-            installed: self.weather.installed(),
-            rain_step: self.state.rain_step,
-            rain_steps_ahead: self.state.rain_steps_ahead,
+    fn up_ahead_key(&self) -> UpAheadKey {
+        UpAheadKey {
+            progress_m: self.activity.progress_m,
+            route_total_m: self.activity.route_total_m,
+            active_route: self.activity.active_route.map(|i| i as u32),
+            corridor: (self.ui.corridor_scratch.len(), !self.ui.corridor_scratch.pending()),
         }
+    }
+
+    fn weather_key(&self) -> WeatherKey {
+        WeatherKey { installed: self.weather.installed() }
     }
 }
 
@@ -298,6 +332,7 @@ mod tests {
                 ("Map", RenderKeyKind::Map),
                 ("Statistics", RenderKeyKind::Statistics),
                 ("Climb", RenderKeyKind::Climb),
+                ("UpAhead", RenderKeyKind::UpAhead),
                 ("Detour", RenderKeyKind::Map),
                 ("DetourPreview", RenderKeyKind::Map),
                 ("Weather", RenderKeyKind::Weather),
@@ -319,13 +354,30 @@ mod tests {
     }
 
     /// A navigation moves the shape, so no screen has to remember to dirty the map on the way in or
-    /// out — including a move between two screens that declare the *same* kind.
+    /// out.
+    ///
+    /// The **same-kind** move is the one that needs the shape: swapping the Map for the Detour
+    /// chooser leaves every declared fact identical (both rows declare
+    /// [`Map`](RenderKeyKind::Map), and the facts are the device's, not the screen's), so the
+    /// identity of the row is the only thing that moved. Delete the `shape.push` and this half
+    /// fails.
     #[test]
     fn a_screen_transition_moves_the_key() {
-        let mut app = App::new(AppState::new(0, 0, 1.0));
+        let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
         let before = app.render_key();
         let _ = app.ui.stack.push(Screen::Menu(MenuScreen::new()));
-        assert_ne!(app.render_key(), before, "the visible stack's shape is part of the key");
+        assert_ne!(app.render_key(), before, "a move to another kind changes which slot is filled");
+
+        // Back to a map base, then sideways to a screen declaring the very same kind.
+        app.ui.stack.truncate(2);
+        let on_map = app.render_key();
+        app.ui.stack[1] = Screen::Detour(crate::screen::DetourScreen::new(&app.activity));
+        assert_eq!(
+            app.render_key().map,
+            on_map.map,
+            "the two rows declare one kind over one device, so the facts are the same value"
+        );
+        assert_ne!(app.render_key(), on_map, "…and the shape is what tells the two frames apart");
     }
 
     /// **Exact, never hashed, and never IEEE.** A float goes into the key as its bit pattern, so a

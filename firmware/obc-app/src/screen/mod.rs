@@ -611,8 +611,11 @@ pub enum RenderKeyKind {
     Climb,
     /// The saved sensors' per-slot status and the live scan list's revision.
     SensorSettings,
-    /// The installed weather data's identity and the selected rain step.
+    /// The installed weather data's identity.
     Weather,
+    /// The Up-ahead timeline: live route progress, the route's length, and the corridor snapshot
+    /// the rows are merged from.
+    UpAhead,
 }
 
 /// Which durable catalog a screen's held **indices** are remapped against after a store rescan
@@ -908,7 +911,7 @@ screens! {
     /// The "Up ahead" timeline (epic #946, U3): the route-ordered merge of the resident waypoint
     /// table and the App-owned corridor-POI snapshot, with the Hold category picker as an in-screen
     /// mode. Reads the snapshot the App arms from its `corridor_key`; holds no rows itself.
-    UpAhead(UpAheadScreen) => Caps::nav(),
+    UpAhead(UpAheadScreen) => Caps::nav().key(RenderKeyKind::UpAhead),
     /// Detour chooser (#882): a map base with streamed skipped-stretch ink and an auto-fit camera.
     Detour(DetourScreen) => Caps::map().remap(RemapKind::Route),
     /// Detour preview (#882): the planned detour + cost line over the map; Press commits the splice.

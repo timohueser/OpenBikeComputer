@@ -27,18 +27,31 @@ use embedded_graphics::primitives::Rectangle;
 ///    builds the visible stack's key before its stages and again after them, and a moved key sets
 ///    this flag. This covers every mutation that happens *inside* a pass, and it covers it per
 ///    screen: a heart-rate sample repaints the grid that draws it and not the map beside it.
-/// 2. **An explicit request**, for a mutation no key can see. There are two classes, and a site
-///    that is neither is a site that should be a key:
+/// 2. **An explicit request**, for a mutation no key can see. There are **five** classes, and a
+///    site that is in none of them is a site that should be a key:
 ///    - **A host seam that runs between two passes** — `set_routes_with_ids`, `set_ble_status`,
-///      `set_sensor_status`, `weather_feed_changed`, `set_map_transfer` and their siblings. The fact
-///      has already moved by the time the next pass builds its *before* key, so both keys agree.
-///      They become key-covered as each seam moves into
+///      `set_sensor_status`, `weather_feed_changed`, `set_rain_view`, `set_map_transfer` and their
+///      siblings. The fact has already moved by the time the next pass builds its *before* key, so
+///      both keys agree. They become key-covered as each seam moves into
 ///      [`ExternalFacts`](crate::device_core::ExternalFacts) and is consumed at stage 2.
 ///    - **State inside a screen** — a menu's highlighted row, a list's scroll position, a chooser's
 ///      anchor. It lives in the screen's own typed state, which no key names, so
 ///      `apply_gesture` dirties the map for every recognised gesture. Conservative by design: a
 ///      gesture a screen ignores still costs one redraw, and the idle path stays exact because no
 ///      gesture means no call.
+///    - **The card scheduler's sweep** —
+///      [`run_card_sweep`](crate::ui_runtime::UiRuntime::run_card_sweep). The scheduler is the one
+///      writer of every host-pushed card and it already answers "did anything visible move" exactly,
+///      once per sweep, at its single door onto the stack. A revision counter beside that bool would
+///      be a second, resident copy of the same answer. It is in its own class because it sweeps from
+///      *both* sides of the boundary: inside the pass each frame, and again from every host seam
+///      that posts a fact.
+///    - **A planner landing that rewrites the stack** — `land_route_plan`, `land_detour_plan`,
+///      `land_detour_commit`, `end_plan`, `admit_navigator_intent`. Each replaces a screen in place
+///      and moves domain state behind it, some of which no row draws.
+///    - **Resident data no row declares** — the route and ride catalogs the lists draw, the derived
+///      ride profile and preview, the geometry the matcher re-anchors after a splice, plus the two
+///      debug doors and the non-region screen tick.
 ///
 /// [`region`](Dirty::region) is unaffected by either: a full-frame demand still folds a region away.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

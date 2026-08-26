@@ -35,8 +35,8 @@ use obc_app::screen::MapTransfer;
 use obc_app::{App, AppState, BleLink, BleStatus, Dirty, SensorPhase, SensorStatus};
 use obc_formats::io::{ByteSink, SliceSource};
 use obc_ports::{
-    Button, ButtonEvent, CadenceSource, Fix, FuelGauge, HeartRateSource, InputClock, InputEvent, InputSource,
-    LocationSource, PowerSource, RideClock, Sensors,
+    Button, ButtonEvent, CadenceSource, CompassSource, Fix, FuelGauge, HeartRateSource, InputClock, InputEvent,
+    InputSource, LocationSource, PowerSource, RideClock, Sensors,
 };
 use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader};
 use obc_route::{RouteIndex, RouteReader, RouteSummary};
@@ -139,6 +139,10 @@ struct Ports {
     power: Option<u16>,
     cadence: Option<u8>,
     battery: Option<u8>,
+    /// An electronic-compass heading (degrees CW from north). The app adopts it only where it would
+    /// actually drive the rotation — heading-up, not panning, and a fix with no course — which is
+    /// the one way the map's orientation moves with no gesture and no camera move behind it.
+    compass: Option<f32>,
 }
 
 struct One<T>(Option<T>);
@@ -167,6 +171,11 @@ impl FuelGauge for One<(u8,)> {
         self.0.map(|v| v.0)
     }
 }
+impl CompassSource for One<f32> {
+    fn poll(&mut self) -> Option<f32> {
+        self.0.take()
+    }
+}
 
 /// Raw button events for one frame, drained by the shared recogniser.
 struct Keys(std::collections::VecDeque<InputEvent>);
@@ -192,6 +201,11 @@ struct Step {
     feed: Option<fn(&mut App)>,
     /// An external fact the pass consumes at stage 2 — the door a runtime's own facts come through.
     fact: Option<fn(&mut ExternalFacts)>,
+    /// What must be true of the device after this step. The replay's own coverage check: a segment
+    /// that silently stopped exercising its category (a route that is no longer active, a heading
+    /// that never went up) fails here rather than passing as a comparison of two identical
+    /// nothings.
+    probe: Option<fn(&App)>,
     /// The screen this step must leave on top. Every navigation in the replay states its
     /// destination, so a binding that moves elsewhere fails here instead of quietly draining the
     /// replay of the screens it exists to visit.
@@ -227,6 +241,17 @@ impl Step {
         self.ports.battery = Some(pct);
         self
     }
+    fn compass(mut self, deg: f32) -> Step {
+        self.ports.compass = Some(deg);
+        self
+    }
+    /// A stationary fix — a rider stopped at a light. No `course`, so the heading-up map falls back
+    /// to the compass.
+    fn stopped_at(mut self, i: u32) -> Step {
+        let f = fix_at(i);
+        self.ports.fix = Some(Fix { course: None, speed_mps: Some(0.0), ..f });
+        self
+    }
     fn feed(mut self, f: fn(&mut App)) -> Step {
         self.feed = Some(f);
         self
@@ -237,6 +262,10 @@ impl Step {
     }
     fn expect(mut self, screen: &'static str) -> Step {
         self.expect = Some(screen);
+        self
+    }
+    fn probe(mut self, f: fn(&App)) -> Step {
+        self.probe = Some(f);
         self
     }
 }
@@ -255,6 +284,15 @@ fn fix_off_route(i: u32) -> Fix {
 
 fn tap(b: Button) -> [InputEvent; 2] {
     [InputEvent::Button(ButtonEvent::Down(b)), InputEvent::Button(ButtonEvent::Up(b))]
+}
+
+/// A long press takes three frames: the button goes down, an empty frame past the threshold fires
+/// the `Hold`/`BackHold`, and the release lands after it.
+fn hold_down(b: Button) -> InputEvent {
+    InputEvent::Button(ButtonEvent::Down(b))
+}
+fn release(b: Button) -> InputEvent {
+    InputEvent::Button(ButtonEvent::Up(b))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -310,6 +348,7 @@ impl Instance {
         let mut power = One(s.ports.power.map(|w| (w,)));
         let mut cadence = One(s.ports.cadence);
         let mut fuel = One(s.ports.battery.map(|p| (p,)));
+        let mut compass = One(s.ports.compass);
         let mut facts = ExternalFacts::NONE;
         if let Some(note) = s.fact {
             note(&mut facts);
@@ -322,6 +361,7 @@ impl Instance {
                 power: Some(&mut power),
                 cadence: Some(&mut cadence),
                 fuel: Some(&mut fuel),
+                compass: Some(&mut compass),
                 ..Sensors::new(&mut loc)
             },
             route,
@@ -355,13 +395,31 @@ impl Instance {
 // The fixtures.
 // ---------------------------------------------------------------------------------------------
 
-/// A due-east 40-point route along 48.0000° N from 7.8000° E, with two named waypoints so the
-/// next-waypoint chip has something to move between.
+/// A due-east 40-point route along 48.0000° N from 7.8000° E, with four named waypoints along it —
+/// so the Map's waypoint chip has something to move between, and the Up-ahead timeline has rows
+/// whose distance-to-go figures move with the rider.
 fn route_bytes() -> Vec<u8> {
-    let mut gpx = String::from(r#"<?xml version="1.0"?><gpx version="1.1"><trk><trkseg>"#);
+    route_gpx(|_| 200.0)
+}
+
+/// The same geometry with a 300 m climb over points 12..28 — the relief the Climb view needs.
+fn climb_route_bytes() -> Vec<u8> {
+    route_gpx(|i| {
+        let rise = i.clamp(12, 28) - 12;
+        200.0 + rise as f64 * (300.0 / 16.0)
+    })
+}
+
+fn route_gpx(relief: impl Fn(u32) -> f64) -> Vec<u8> {
+    let mut gpx = String::from(r#"<?xml version="1.0"?><gpx version="1.1">"#);
+    for (i, name) in [(6u32, "Bridge"), (14, "Pass Summit"), (24, "Water"), (34, "Village")] {
+        let lon = LON0 + 0.0020 * i as f64;
+        gpx.push_str(&format!(r#"<wpt lat="{LAT:.4}" lon="{lon:.4}"><name>{name}</name></wpt>"#));
+    }
+    gpx.push_str("<trk><trkseg>");
     for i in 0..40 {
         let lon = LON0 + 0.0020 * i as f64;
-        gpx.push_str(&format!(r#"<trkpt lat="{LAT:.4}" lon="{lon:.4}"><ele>200.0</ele></trkpt>"#));
+        gpx.push_str(&format!(r#"<trkpt lat="{LAT:.4}" lon="{lon:.4}"><ele>{:.1}</ele></trkpt>"#, relief(i)));
     }
     gpx.push_str("</trkseg></trk></gpx>");
     let mut sink = VecSink::default();
@@ -404,6 +462,20 @@ fn riding_device(camera: AppState) -> App {
     app
 }
 
+/// The catalog entry for the climbing route.
+fn climb_summary() -> RouteSummary {
+    static SUMMARY: std::sync::OnceLock<RouteSummary> = std::sync::OnceLock::new();
+    SUMMARY.get_or_init(|| RouteSummary::read(&SliceSource(&climb_route_bytes())).expect("its header reads")).clone()
+}
+
+/// One installed weather product at `revision` — the external fact the dashboard's key names.
+fn weather_data(product: u64, revision: u64) -> obc_app::device_core::WeatherData {
+    obc_app::device_core::WeatherData {
+        data: obc_app::device_core::DataIdentity::new(product),
+        revision: obc_app::device_core::Revision::new(revision),
+    }
+}
+
 /// A saved, connected heart-rate sensor — the Sensors page's status row.
 fn connected_hr() -> [SensorStatus; 3] {
     let mut s = [SensorStatus::default(); 3];
@@ -430,10 +502,15 @@ fn replay() -> Vec<Step> {
             .expect("RouteReceived"),
         step("quiet with the upload card up", 800),
         step("dismiss the upload card", 1_000).keys(&tap(Button::Back)).expect("Map"),
-        step("activate the route", 1_200).feed(|app| app.activate_route(0)),
         // --- start a ride, so the Map has its Statistics sibling to swap to --------------------
         step("open the start card", 1_400).keys(&tap(Button::Select)).expect("RideStart"),
+        // Starting the ride enters the riding view, which is what turns the map heading-up — and it
+        // begins a route-*less* session, so the route is adopted after it rather than before.
         step("start the ride", 1_600).keys(&tap(Button::Select)).expect("Map"),
+        step("adopt the route", 1_800).feed(|app| app.activate_route(0)).probe(|app| {
+            assert!(app.state.heading_up, "the riding view is heading-up — the compass segment needs it");
+            assert_eq!(app.active_route_index(), Some(0), "the ride follows the route");
+        }),
     ];
 
     // --- fix acquisition, movement, staleness and recovery ------------------------------------
@@ -447,11 +524,13 @@ fn replay() -> Vec<Step> {
 
     // --- off route and back --------------------------------------------------------------------
     steps.push(Step { ports: Ports { fix: Some(fix_off_route(7)), ..Ports::default() }, ..step("off route", 17_000) });
-    steps.push(Step {
-        ports: Ports { fix: Some(fix_off_route(8)), ..Ports::default() },
-        ..step("still off route", 18_000)
-    });
-    steps.push(step("back on route", 19_000).fix(9));
+    steps.push(
+        Step { ports: Ports { fix: Some(fix_off_route(8)), ..Ports::default() }, ..step("still off route", 18_000) }
+            .probe(|app| assert!(app.activity.off_route(), "the excursion is genuinely off the corridor")),
+    );
+    steps.push(step("back on route", 19_000).fix(9).probe(|app| {
+        assert!(app.activity.progress_m() > 0, "the matcher is locked on — the progress segment is live");
+    }));
     // Far enough along that the next waypoint and the active climb move on.
     for i in 10..16 {
         steps.push(step("route progress and the next waypoint", 19_000 + (i - 9) * 1_000).fix(i));
@@ -492,10 +571,38 @@ fn replay() -> Vec<Step> {
     steps.push(step("pan the camera", 74_900).keys(&[InputEvent::Step(1)]));
     steps.push(step("leave pan mode", 75_400).keys(&tap(Button::Back)).expect("Map"));
 
+    // --- camera **orientation**, which moves with no gesture and no camera move -------------------
+    // Heading-up plus a stopped rider is the one state where the electronic compass drives the
+    // projection: `App::advance_inputs` adopts a reading only when the map is heading-up, not
+    // panning, and the latest fix carries no course. So the map rotates *inside* a pass off a sensor
+    // nothing else in the frame reacts to — which is exactly why `course_rad` is in the Map key.
+    steps.push(step("the rider stops at a light", 75_600).stopped_at(19));
+    steps.push(step("the compass turns the map", 75_700).compass(40.0));
+    steps.push(step("the same heading again", 75_800).compass(40.0));
+    steps.push(step("the rider turns their bars", 75_900).compass(115.0));
+    steps.push(step("the compass goes quiet", 76_000));
+
+    // --- the Up-ahead timeline: live distances under a chrome base --------------------------------
+    // Its rows measure from `activity.progress_m`, and the row set never changes as the rider
+    // advances — so nothing about the *stack* moves and no fix-driven map key is even built. Before
+    // this row declared its own key, the only thing that refreshed the figures was the next-waypoint
+    // dirty site, which fired on a waypoint crossing rather than on the distances actually moving.
+    steps.push(step("open the ride menu", 76_100).keys(&[hold_down(Button::Back)]));
+    steps.push(step("the back-hold fires", 76_700).expect("RideMenu"));
+    steps.push(step("release", 76_800).keys(&[release(Button::Back)]));
+    steps.push(step("press the Up ahead station", 77_000).keys(&tap(Button::Select)).expect("UpAhead"));
+    steps.push(step("the corridor snapshot settles", 77_100).expect("UpAhead"));
+    steps.push(step("quiet on the timeline", 77_200).expect("UpAhead"));
+    steps.push(step("the rider advances under the timeline", 77_500).fix(20).expect("UpAhead"));
+    steps.push(step("and again", 78_000).fix(21).expect("UpAhead"));
+    steps.push(step("quiet again", 78_200).expect("UpAhead"));
+    steps.push(step("leave the timeline", 78_400).keys(&tap(Button::Back)).expect("RideMenu"));
+    steps.push(step("leave the ride menu", 78_600).keys(&tap(Button::Back)).expect("Map"));
+
     // --- the freeze banner ----------------------------------------------------------------------
-    steps.push(step("a planner run starts (freeze on)", 76_000).feed(|app| app.debug_set_plan_live(true)));
-    steps.push(step("frozen, with fixes still arriving", 77_000).fix(18));
-    steps.push(step("the planner answers (freeze off)", 78_000).feed(|app| app.debug_set_plan_live(false)));
+    steps.push(step("a planner run starts (freeze on)", 79_000).feed(|app| app.debug_set_plan_live(true)));
+    steps.push(step("frozen, with fixes still arriving", 79_500).fix(22));
+    steps.push(step("the planner answers (freeze off)", 80_000).feed(|app| app.debug_set_plan_live(false)));
 
     // --- the cards: arrival, replacement, removal ------------------------------------------------
     steps.push(
@@ -564,6 +671,147 @@ fn replay() -> Vec<Step> {
     steps
 }
 
+/// The climbing replay: start a ride on a route with relief and let the auto-switch open the Climb
+/// view, then keep riding under it.
+fn climb_replay() -> Vec<Step> {
+    let mut steps = vec![
+        step("boot", 0).expect("Map"),
+        step("the route arrives", 500).feed(|app| app.set_routes_with_ids(&[climb_summary()], &[9])),
+        step("open the start card", 1_000).keys(&tap(Button::Select)).expect("RideStart"),
+        step("start the ride", 1_400).keys(&tap(Button::Select)).expect("Map"),
+        step("adopt the route", 1_800).feed(|app| app.activate_route(0)),
+    ];
+    // The rider is on the climb from the first match, so the auto-switch lands the Climb view.
+    steps.push(step("the first fix opens the Climb view", 2_000).fix(0).expect("Climb"));
+    steps.push(step("quiet on the climb", 2_200).expect("Climb"));
+    for i in 1..6 {
+        steps.push(
+            step("the cursor advances up the climb", 2_000 + i * 1_000)
+                .fix(i)
+                .expect("Climb")
+                .probe(|app| assert!(app.activity.progress_m() > 0, "the matcher is following the climb")),
+        );
+    }
+    steps.push(step("quiet at the top", 9_000).expect("Climb"));
+    for i in 0..4 {
+        steps.push(step("quiet tail", 9_500 + i * 200));
+    }
+    steps
+}
+
+/// The settings-and-weather replay: the three screens whose keys the other two replays declare but
+/// never build, because the device is on the Map or on Home while their seams fire.
+///
+/// The idle return is off, so the walk into the settings tree has as long as it needs.
+fn pages_replay() -> Vec<Step> {
+    let mut steps = vec![
+        step("boot on Home", 0).expect("Home"),
+        // Home -> Menu -> Settings -> Connections -> Sensors, the recorded snapshot path.
+        step("open the menu", 500).keys(&tap(Button::Select)).expect("Menu"),
+        step("step to Settings", 1_000).keys(&[InputEvent::Step(-1)]).expect("Menu"),
+        step("the needle settles", 1_400).expect("Menu"),
+        step("open Settings", 1_800).keys(&tap(Button::Select)).expect("Settings"),
+        step("step to Connections", 2_000).keys(&[InputEvent::Step(1), InputEvent::Step(1), InputEvent::Step(1)]),
+        step("open Connections", 2_400).keys(&tap(Button::Select)).expect("Connections"),
+        step("step to Sensors", 2_600).keys(&[InputEvent::Step(1)]),
+        step("open the Sensors page", 3_000).keys(&tap(Button::Select)).expect("Sensors"),
+    ];
+    // The two sensor seams, with the page that draws them actually up. Both are host feeders that
+    // run between passes, so each keeps its own repaint request; what this proves is that the
+    // page's declared key is built, holds still when the seam re-feeds the same value, and stays in
+    // parity across every one of them.
+    steps.push(
+        step("a saved sensor connects", 3_500).feed(|app| app.set_sensor_status(&connected_hr())).expect("Sensors"),
+    );
+    steps.push(
+        step("the same status again", 3_700).feed(|app| app.set_sensor_status(&connected_hr())).expect("Sensors"),
+    );
+    steps.push(step("its battery reading moves", 4_000).feed(|app| {
+        let mut s = connected_hr();
+        s[0].battery = Some(64);
+        app.set_sensor_status(&s)
+    }));
+    steps.push(step("open the scan list", 4_400).keys(&tap(Button::Select)).expect("SensorScan"));
+    steps
+        .push(step("a scan hit appears", 4_800).feed(|app| {
+            app.set_sensor_scan_hits(&[obc_app::SensorScanHit::new(0, 0, [1, 2, 3, 4, 5, 6], "HRM", -55)])
+        }));
+    steps.push(step("a second hit appears", 5_200).feed(|app| {
+        app.set_sensor_scan_hits(&[
+            obc_app::SensorScanHit::new(0, 0, [1, 2, 3, 4, 5, 6], "HRM", -55),
+            obc_app::SensorScanHit::new(0, 1, [9, 8, 7, 6, 5, 4], "Strap", -71),
+        ])
+    }));
+    steps.push(step("the scan list clears", 5_600).feed(|app| app.set_sensor_scan_hits(&[])));
+    steps.push(step("quiet on the scan list", 5_800).expect("SensorScan"));
+
+    // A passkey card arrives over the settings tree, and its **digits change** while it is up — the
+    // in-place card rewrite the scheduler's sweep is the one writer of.
+    steps.push(
+        step("a passkey card arrives", 6_000)
+            .feed(|app| {
+                app.set_ble_status(BleStatus { link: BleLink::Connected, paired: false, passkey: Some(123_456) })
+            })
+            .expect("Passkey"),
+    );
+    steps.push(
+        step("the same passkey again", 6_200).feed(|app| {
+            app.set_ble_status(BleStatus { link: BleLink::Connected, paired: false, passkey: Some(123_456) })
+        }),
+    );
+    steps.push(
+        step("the digits change", 6_400)
+            .feed(|app| {
+                app.set_ble_status(BleStatus { link: BleLink::Connected, paired: false, passkey: Some(987_654) })
+            })
+            .expect("Passkey"),
+    );
+    steps.push(
+        step("pairing ends", 6_800)
+            .feed(|app| app.set_ble_status(BleStatus { link: BleLink::Connected, paired: true, passkey: None }))
+            .expect("SensorScan"),
+    );
+
+    // Out of the settings tree and into the weather pages.
+    for (ms, what) in [(7_200, "leave the scan list"), (7_400, "leave Sensors"), (7_600, "leave Connections")] {
+        steps.push(step(what, ms).keys(&tap(Button::Back)));
+    }
+    steps.push(step("leave Settings", 7_800).keys(&tap(Button::Back)).expect("Menu"));
+    // The dial is still on Settings, where it was left; one step back is Weather.
+    steps.push(step("step to Weather", 8_000).keys(&[InputEvent::Step(-1)]));
+    steps.push(step("the needle settles", 8_400).expect("Menu"));
+    steps.push(step("open the weather dashboard", 8_800).keys(&tap(Button::Select)).expect("Weather"));
+    // The installed-data identity is an **external fact**, consumed at the pass's stage 2 — inside
+    // the pass, so the dashboard's key is what carries it to the frame.
+    steps.push(step("weather data is installed", 9_200).fact(|f| f.note_weather_data(weather_data(1, 4))));
+    steps.push(step("the same data again", 9_400).fact(|f| f.note_weather_data(weather_data(1, 4))));
+    steps.push(step("a newer bundle lands", 9_800).fact(|f| f.note_weather_data(weather_data(1, 9))));
+    steps.push(step("quiet on the dashboard", 10_000).expect("Weather"));
+
+    // The rain map, whose selected step is the one weather fact drawn through a map scene — which is
+    // why it sits in the Map key beside the camera rather than in the dashboard's.
+    steps.push(step("the host reports four frames ahead", 10_200).feed(|app| app.set_rain_view(4, 0.0)));
+    steps.push(step("step to the rain map action", 10_400).keys(&[InputEvent::Step(1)]));
+    steps.push(step("open the rain map", 10_800).keys(&tap(Button::Select)).expect("WeatherRainMap"));
+    steps.push(
+        step("select the next rain frame", 11_200)
+            .keys(&[InputEvent::Step(1)])
+            .expect("WeatherRainMap")
+            .probe(|app| assert_eq!(app.state.rain_step, 1, "the Step arm moved the selection")),
+    );
+    steps.push(
+        step("and the one after it", 11_600)
+            .keys(&[InputEvent::Step(1)])
+            .expect("WeatherRainMap")
+            .probe(|app| assert_eq!(app.state.rain_step, 2, "…and again")),
+    );
+    steps.push(step("quiet on the rain map", 11_800).expect("WeatherRainMap"));
+    for i in 0..5 {
+        steps.push(step("quiet tail", 12_000 + i * 200));
+    }
+    steps
+}
+
 /// The parked-device replay: everything Home draws, and nothing that needs a fix.
 fn home_replay() -> Vec<Step> {
     let mut steps = vec![
@@ -617,6 +865,9 @@ fn run_replay(
         if let Some(want) = s.expect {
             assert_eq!(candidate.app.top_screen().name(), want, "{label} step {n} ({}) must land on {want}", s.what);
         }
+        if let Some(probe) = s.probe {
+            probe(&candidate.app);
+        }
         if let Some((first, count)) = reference.glass.diff(&candidate.glass) {
             panic!(
                 "{label} step {n} ({}) at {} ms: on-demand rendering lost {count} pixel(s), first at ({}, {}).\n\
@@ -669,6 +920,58 @@ fn on_demand_rendering_is_pixel_identical_to_rendering_every_pass() {
         steps.len()
     );
     assert!(overlay <= ref_overlay, "candidate overlay repaints {overlay} exceeded the reference's {ref_overlay}");
+}
+
+/// **The settings and weather pages.** Two render keys the other replays declare but never build,
+/// because the device is elsewhere while their seams fire — plus the passkey card's in-place digit
+/// rewrite and the rain map's selected frame.
+#[test]
+fn the_settings_and_weather_pages_stay_in_parity() {
+    let map = map_bytes();
+    let map_src = SliceSource(&map);
+    let tables = MapTables::parse(&map_src).expect("the replay map parses");
+    let cache = MapCache::new();
+    let reader = Reader::new(&map_src, &tables, &cache);
+
+    let camera = AppState::new((LON0 * 1e6) as i32, (LAT * 1e6) as i32, 0.05);
+    let steps = pages_replay();
+    let ((map_repaints, _), _) = run_replay(
+        "pages",
+        || {
+            let mut app = App::new_idle(camera);
+            // The walk into the settings tree takes longer than the 30 s default, and a return to
+            // Home mid-replay would repaint for a reason that is not the one under test.
+            app.set_settings(obc_app::Settings { idle_return: obc_app::IdleReturn::Never, ..*app.settings() });
+            app
+        },
+        &steps,
+        None,
+        &reader,
+    );
+    assert!(map_repaints < steps.len(), "the pages do not repaint every pass");
+}
+
+/// **The Climb view.** The last declared kind, and the only one whose screen the rider never opens:
+/// the C5 auto-switch puts it up the moment a climb becomes active, so a replay that exercises it
+/// has to ride into real relief. The flat replay route is flat on purpose — a climb there would
+/// swap the Map and the grid away and swallow the coverage those segments exist for.
+#[test]
+fn the_climb_view_stays_in_parity_through_a_climb() {
+    let map = map_bytes();
+    let map_src = SliceSource(&map);
+    let tables = MapTables::parse(&map_src).expect("the replay map parses");
+    let cache = MapCache::new();
+    let reader = Reader::new(&map_src, &tables, &cache);
+
+    let obcr = climb_route_bytes();
+    let route_src = SliceSource(&obcr);
+    let idx = RouteIndex::read(&route_src).expect("the climbing route parses");
+    let route = RouteReader::new(&idx, &route_src);
+
+    let camera = AppState::new((LON0 * 1e6) as i32, (LAT * 1e6) as i32, 0.05);
+    let steps = climb_replay();
+    let ((map_repaints, _), _) = run_replay("climb", || riding_device(camera), &steps, Some(&route), &reader);
+    assert!(map_repaints < steps.len(), "the climb view does not repaint every pass");
 }
 
 /// **The parked device.** Home is the screen a bikepacker leaves the computer on, and it draws three

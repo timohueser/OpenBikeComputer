@@ -168,12 +168,18 @@ fn battery_is_polled_on_a_slow_cadence_and_redraws_home_only_on_change() {
     assert_eq!(host.fuel_polls, 1, "not re-read every frame — no per-frame I²C traffic");
 
     // At the cadence it is read again, but the value is unchanged ⇒ Home still does not redraw.
-    assert!(!host.frame(&mut app, 30_000, &[], None, Some(75)).map, "an unchanged reading still redraws nothing");
+    assert!(!host.frame(&mut app, 30_500, &[], None, Some(75)).map, "an unchanged reading still redraws nothing");
     assert_eq!(host.fuel_polls, 2, "read once the 30 s cadence elapsed");
 
+    // Home's clock rolls into a new minute at 60 s and repaints itself for it. Drained on its own
+    // frame, so the gauge assertion below is about the gauge: land it there and this test passes
+    // with the level struck out of Home's key entirely.
+    assert!(host.frame(&mut app, 61_000, &[], None, Some(75)).map, "the minute rollover is Home's own repaint");
+    assert!(!host.frame(&mut app, 61_500, &[], None, Some(75)).map, "…and it settles straight back to quiet");
+
     // A changed level is only seen at the next cadence — and then it repaints Home and is stored.
-    assert!(!host.frame(&mut app, 45_000, &[], None, Some(60)).map, "still inside the window since the last read");
-    assert!(host.frame(&mut app, 60_000, &[], None, Some(60)).map, "a changed level repaints Home");
+    assert!(!host.frame(&mut app, 75_000, &[], None, Some(60)).map, "still inside the window since the last read");
+    assert!(host.frame(&mut app, 91_500, &[], None, Some(60)).map, "a changed level repaints Home");
     assert_eq!(app.state.device.battery_pct, 60, "and the new level is stored");
 }
 
