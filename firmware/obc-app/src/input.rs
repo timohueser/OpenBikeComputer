@@ -465,14 +465,20 @@ mod tests {
         assert_eq!(g.tick(10_120), Some(Gesture::Step(1)), "the next interval fires off the rebased due");
     }
 
-    /// The wrap-tolerant due comparison keeps auto-repeat firing across a u32-millis rollover
-    /// (~49.7 days). A naive `now >= due` would suppress it forever after the wrap.
+    /// The wrap-tolerant due comparison holds the repeat cadence across a u32-millis rollover
+    /// (~49.7 days). A press just before the wrap arms a due time that is numerically *smaller*
+    /// than `now`, so a naive `now >= due` reads it as already reached and dumps the first repeat
+    /// on the next tick, 342 ms early — which is what the pre-wrap assertion below catches.
     #[test]
     fn auto_repeat_survives_a_millis_wrap() {
         let mut g = Gestures::with_defaults(); // delay 350, interval 120
 
         let t0 = u32::MAX - 92; // press ~92 ms before the rollover; the armed due wraps to 257
         assert_eq!(g.on_event(down(Button::Down), t0), Some(Gesture::Step(1)));
+
+        // Still before the wrap, 8 ms into the 350 ms delay: nothing is due, even though `now`
+        // (≈4.29e9) is numerically far *above* `due` (257).
+        assert_eq!(g.tick(t0.wrapping_add(8)), None, "the rollover does not short-circuit the repeat delay");
 
         // After the wrap, now = 300 is past due (257) by 43 ms; `wrapping_sub` keeps that small
         // and positive → the step fires.
