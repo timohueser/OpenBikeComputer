@@ -94,7 +94,7 @@ impl RideStore {
     /// [`App::ride_track_request`](obc_app::App::ride_track_request). One read of the
     /// stored `ride-{id}.obcr` through the shared `ride_elevation_profile` (the firmware streams the
     /// same object bytes in chunks). `None` = unknown id / unreadable file — the caller parks the
-    /// failure via `set_ride_profile(None)`.
+    /// failure via a `Failed` keyed answer.
     pub fn profile_by_id(&self, id: CatalogObjectId) -> Option<Profile> {
         let pos = self.ids.iter().position(|&x| x == id)?;
         let bytes = std::fs::read(&self.paths[pos]).ok()?;

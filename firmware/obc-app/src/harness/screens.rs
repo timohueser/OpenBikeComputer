@@ -18,6 +18,11 @@ use obc_reader::{MapTables, SliceSource};
 
 use super::support::{build_min_obcm, build_min_obcm_profiles, keys, quiet_pass, render_120, ReplayFix};
 
+/// Positional durable ids, `0..n` — what a catalog fed without an id column carried.
+fn positional_ids(n: usize) -> Vec<crate::CatalogObjectId> {
+    (0..n as crate::CatalogObjectId).collect()
+}
+
 /// The object one pass asks the store to remove, if the rider's guarded hold requested a delete.
 /// The durable id is the pass's own resolve of the menu index.
 fn took_route_delete(app: &mut App) -> Option<crate::CatalogObjectId> {
@@ -500,7 +505,7 @@ fn boot_flow_walks_home_to_route_menu_to_riding_map() {
     // End to end through `App`: Idle Home → press → Menu → press (Routes) → Route menu → press →
     // overview → press → Map.
     let mut app = App::new_idle(AppState::new(0, 0, 0.05));
-    app.set_routes(&test_routes());
+    app.set_routes_with_ids(&test_routes(), &IDS3);
     assert_eq!(app.mode(), Mode::Idle);
     press(&mut app); // Home → Menu (Routes selected)
     assert_eq!(app.mode(), Mode::Idle, "opening the menu doesn't start riding yet");
@@ -514,7 +519,7 @@ fn boot_flow_walks_home_to_route_menu_to_riding_map() {
     assert_eq!(app.active_route_index(), Some(0));
 }
 
-// Route catalog capacity: `set_routes` truncates a host store larger than the resident catalog
+// Route catalog capacity: the catalog feed truncates a host store larger than the resident catalog
 // (`MAX_ROUTES = 64`). A full SD card hits this; an off-by-one or missing `.take` would overflow the
 // fixed `heapless::Vec`.
 
@@ -538,9 +543,10 @@ fn many_routes(n: usize) -> Vec<RouteSummary> {
 
 /// A store larger than `MAX_ROUTES` is truncated to the first `MAX_ROUTES` in order, not overflowed.
 #[test]
-fn set_routes_truncates_at_max_routes() {
+fn the_catalog_feed_truncates_at_max_routes() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-    app.set_routes(&many_routes(MAX_ROUTES + 50)); // 114 routes — well over the cap
+    let routes = many_routes(MAX_ROUTES + 50);
+    app.set_routes_with_ids(&routes, &positional_ids(routes.len())); // 114 routes — well over the cap
     assert_eq!(app.routes().len(), MAX_ROUTES, "the catalog is capped at MAX_ROUTES, not overflowed");
     assert_eq!(app.routes()[0].name.as_str(), "R0", "the first scanned route is kept");
     assert_eq!(
@@ -553,20 +559,22 @@ fn set_routes_truncates_at_max_routes() {
 /// Exactly `MAX_ROUTES` routes fit with none dropped — the cap is inclusive, guarding a `>=`/`>`
 /// off-by-one.
 #[test]
-fn set_routes_keeps_exactly_max_routes() {
+fn the_catalog_feed_keeps_exactly_max_routes() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-    app.set_routes(&many_routes(MAX_ROUTES));
+    let routes = many_routes(MAX_ROUTES);
+    app.set_routes_with_ids(&routes, &positional_ids(routes.len()));
     assert_eq!(app.routes().len(), MAX_ROUTES, "a card with exactly 64 routes loses none");
 }
 
-/// `set_routes` replaces, not appends: a rescan of a now-emptied card leaves an empty catalog, not
+/// The catalog feed replaces, not appends: a rescan of a now-emptied card leaves an empty catalog, not
 /// the stale entries.
 #[test]
-fn set_routes_replaces_the_previous_catalog() {
+fn the_catalog_feed_replaces_the_previous_catalog() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-    app.set_routes(&many_routes(10));
+    let routes = many_routes(10);
+    app.set_routes_with_ids(&routes, &positional_ids(routes.len()));
     assert_eq!(app.routes().len(), 10);
-    app.set_routes(&[]); // card removed / emptied
+    app.set_routes_with_ids(&[], &[]); // card removed / emptied
     assert!(app.routes().is_empty(), "a rescan replaces the catalog rather than appending");
 }
 

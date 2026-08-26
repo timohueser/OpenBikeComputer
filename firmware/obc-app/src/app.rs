@@ -1261,14 +1261,6 @@ impl App {
         &self.nav_profiles
     }
 
-    pub fn set_routes(&mut self, summaries: &[RouteSummary]) {
-        let mut ids: heapless::Vec<crate::CatalogObjectId, { crate::route::MAX_ROUTES }> = heapless::Vec::new();
-        for i in 0..summaries.len().min(crate::route::MAX_ROUTES) {
-            let _ = ids.push(i as crate::CatalogObjectId);
-        }
-        self.set_routes_with_ids(summaries, &ids);
-    }
-
     /// Replace the resident route catalog from the host's store, carrying each route's **durable
     /// object id** (`ids` parallel to `summaries`), then remap every held catalog index by id
     /// (#450). Clones up to [`MAX_ROUTES`](crate::MAX_ROUTES) entries; any beyond that are ignored.
@@ -1459,61 +1451,14 @@ impl App {
         self.catalogs.ride_ids()
     }
 
-    /// Park the host's answer to [`ride_track_request`](App::ride_track_request) in the app's single
-    /// resident ride-profile buffer (`None` = the stream failed; the band keeps its loading note and
-    /// the level does not re-fire).
-    ///
-    /// **Temporary wrapper — deleted by DC6 #1439** with the compatibility executor, together with
-    /// the rest of the legacy `set_*` façade. It builds the matching keyed
-    /// [`DerivedInput`](crate::device_core::derived::DerivedInput) from the live need, which is why
-    /// it cannot itself carry a key the way the real path does: the legacy command the host answered
-    /// does not carry one back.
-    pub fn set_ride_profile(&mut self, profile: Option<Profile>) {
-        use crate::device_core::derived::DerivedInput;
-        let Some(key) = self.catalogs.ride_track_key(self.activity.viewed_ride) else { return };
-        let input = if profile.is_some() { DerivedInput::filled(key) } else { DerivedInput::failed(key) };
-        if self.catalogs.accept_ride_profile(Some(key), input, profile) {
-            self.ui.map_dirty = true;
-        }
-    }
-
     /// Borrow the app's one resident ride-profile buffer for an in-place host fill. **Invalidates**
-    /// the ride-track view: until [`finish_ride_profile_fill`](App::finish_ride_profile_fill)
-    /// accepts the answer the level re-fires, so an abandoned fill leaves a need up rather than a
-    /// half-written buffer marked answered.
+    /// the ride-track view: until a keyed answer for the *post-fill* key lands
+    /// ([`apply_derived`](App::apply_derived)) the level re-fires, so an abandoned fill leaves a
+    /// need up rather than a half-written buffer marked answered.
     ///
     /// **Temporary wrapper — deleted by DC6 #1439.**
     pub fn begin_ride_profile_fill(&mut self) -> &mut Profile {
         self.catalogs.begin_ride_profile_fill()
-    }
-
-    /// Publish or reject an in-place ride-profile fill. A rejected fill is still an *answer*: the
-    /// need clears for that key, so malformed media is read once rather than every pass.
-    ///
-    /// **Temporary wrapper — deleted by DC6 #1439.**
-    pub fn finish_ride_profile_fill(&mut self, valid: bool) {
-        use crate::device_core::derived::DerivedInput;
-        let Some(key) = self.catalogs.ride_track_key(self.activity.viewed_ride) else { return };
-        let input = if valid { DerivedInput::filled(key) } else { DerivedInput::failed(key) };
-        if self.catalogs.accept_ride_profile(Some(key), input, None) {
-            self.ui.map_dirty = true;
-        }
-    }
-
-    /// Hand in the viewed ride's decimated recorded-track shape polyline (#678 rework 3 — the
-    /// Ride detail's track pager page): ≤ [`NAV_PREVIEW_MAX`] `(lon, lat)` µdeg points (more are
-    /// truncated), built by obc-route's `ride_preview_polyline` in the **same host drain** as
-    /// [`set_ride_profile`](App::set_ride_profile) (one answer fills both residents, so the file
-    /// streams at most twice per entry, never per pass).
-    ///
-    /// **Temporary wrapper — deleted by DC6 #1439.**
-    pub fn set_ride_preview(&mut self, pts: &[(i32, i32)]) {
-        use crate::device_core::derived::DerivedInput;
-        let Some(key) = self.catalogs.ride_track_key(self.activity.viewed_ride) else { return };
-        let input = DerivedInput::filled(key);
-        if self.catalogs.accept_ride_preview(Some(key), input, pts) {
-            self.ui.map_dirty = true;
-        }
     }
 
     /// Open the on-glass DFU check flow from a **remote** request — the BLE `installFw` command
@@ -3067,8 +3012,8 @@ impl App {
         self.ride.refresh_route_profile(self.activity.active_route, route);
         // Invalidate the resident **ride** profile + track preview the moment they stop matching
         // the viewed ride (#680; the preview joined in #678 rework 3): the detail exited
-        // (`viewed_ride` cleared) or moved subjects. Filling is the host's (`set_ride_profile` /
-        // `set_ride_preview`); only the drop lives here, so a stale band/shape is never drawn.
+        // (`viewed_ride` cleared) or moved subjects. Filling is the executor's keyed answer; only
+        // the drop lives here, so a stale band/shape is never drawn.
         let key = self.catalogs.ride_track_key(self.activity.viewed_ride);
         self.catalogs.drop_stale_ride_views(key);
 
@@ -3262,7 +3207,8 @@ impl App {
         self.ui.take_dirty()
     }
 
-    /// The most recently recognized gesture (host input readout), if any.
+    /// The most recently recognized gesture. No production host reads it; the two-plane input tests
+    /// do, to prove the map plane's own recogniser stays dormant when the input plane owns it.
     pub fn last_gesture(&self) -> Option<Gesture> {
         self.ui.input.last_gesture()
     }
@@ -5693,7 +5639,9 @@ mod tests {
         assert_eq!(ride_track_request(&app), Some(9), "the viewed ride's durable id");
         assert_eq!(ride_track_request(&app), Some(9), "re-polls until the host answers");
 
-        app.set_ride_profile(None); // a failed stream still answers — no per-pass grind
+        // A failed stream still answers — no per-pass grind.
+        let key = app.derived_needs().ride_track.expect("the open detail wants its track");
+        app.apply_derived(DerivedInputs::ride_track(DerivedInput::failed(key)), DerivedTargets::NONE);
         assert_eq!(ride_track_request(&app), None, "answered for this ride");
 
         // A rescan drops ride A: id 9 moves to index 0. The viewed key and the answer key both
@@ -6985,7 +6933,7 @@ mod tests {
         assert_eq!(app.derived_needs().ride_track, Some(first), "re-derived identically next pass");
         assert_eq!(ride_track_request(&app), Some(7));
 
-        app.set_ride_profile(Some(obc_route::Profile::EMPTY));
+        app.apply_derived(DerivedInputs::ride_track(DerivedInput::filled(first)), DerivedTargets::NONE);
         assert!(app.derived_needs().ride_track.is_none(), "answered — the level drops");
         assert_eq!(ride_track_request(&app), None);
     }
@@ -7037,7 +6985,8 @@ mod tests {
     #[test]
     fn changing_the_viewed_ride_creates_a_new_ride_track_key() {
         let mut app = viewing_ride(&[7, 8]);
-        app.set_ride_profile(Some(obc_route::Profile::EMPTY));
+        let key = app.derived_needs().ride_track.expect("the open detail wants its track");
+        app.apply_derived(DerivedInputs::ride_track(DerivedInput::filled(key)), DerivedTargets::NONE);
         assert!(app.derived_needs().ride_track.is_none());
 
         app.activity.viewed_ride = Some(1);
@@ -7062,7 +7011,8 @@ mod tests {
         assert_ne!(before, after, "starting a fill invalidates the view generation");
         assert_eq!(after.ride, before.ride, "…without pretending the subject changed");
 
-        app.finish_ride_profile_fill(true);
+        // The executor answers the key the need has *after* the fill — exactly what `HostLoop` does.
+        app.apply_derived(DerivedInputs::ride_track(DerivedInput::filled(after)), DerivedTargets::NONE);
         assert!(app.derived_needs().ride_track.is_none(), "the completed fill answers the new key");
     }
 
