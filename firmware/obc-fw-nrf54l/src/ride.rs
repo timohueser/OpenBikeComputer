@@ -882,6 +882,10 @@ pub(crate) async fn run_app(
     let mut backlight = crate::panel_power::PanelBacklight;
     let mut power_off = crate::panel_power::SystemOff;
     let mut backlight_level = u8::MAX; // never a real level: the first pass always applies
+                                       // The panel-light capability, straight from the port that answers it. On this board it is
+                                       // `false`, which takes the quick drawer's brightness control off the root row — a slider with
+                                       // no photons behind it is the same lie the port refuses to tell, one layer up (#1515 D2).
+    app.set_backlight_available(obc_ports::Backlight::available(&backlight));
     #[cfg(feature = "debug-uart")]
     let mut last_telem_ms: u32 = 0;
     #[cfg(feature = "debug-uart")]

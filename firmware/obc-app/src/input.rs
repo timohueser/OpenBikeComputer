@@ -327,8 +327,31 @@ impl Gestures {
                 }
             }
         }
+        // **A constituent re-pressed while the latch still holds is still the chord's.** The arm
+        // above just gave it a fresh, unspent press — a direction owing a step again, a timed
+        // button with `fired_long` cleared — and [`latch_chord`] will not spend it, because it
+        // returns at once while a latch exists. Without this the rider's thumb rolling off and back
+        // on mid-squeeze charges the confirm ring and lands a `Hold` on the screen the sheet covers.
+        if self.edges.latch.is_some_and(|p| p.holds(b)) {
+            self.spend(b);
+        }
         self.latch_chord(now);
         None
+    }
+
+    /// Mark one constituent **spent by the latch**: a direction stops owing its first step, a timed
+    /// button counts its long-press as already fired — which is also the bit that keeps the confirm
+    /// ring at zero. The one definition of "spent", used by [`latch_chord`] on the completing edge
+    /// and by [`press`](Self::press) on every re-press underneath a held latch.
+    fn spend(&mut self, b: Button) {
+        match step_axis(b) {
+            Some((axis, _)) => self.edges.flags &= !(DEFER << axis),
+            None => {
+                if let Some((h, _)) = self.timed(b) {
+                    h.fired_long = true;
+                }
+            }
+        }
     }
 
     /// A release edge. A latched chord's constituent is silent. Otherwise Up/Down emit the step
@@ -358,8 +381,11 @@ impl Gestures {
     /// At most one gesture per call; anything else due fires on the next call.
     pub fn tick(&mut self, now: u32) -> Option<Gesture> {
         let hold_ms = self.hold_ms;
-        // No latch check for the two timed buttons: latching already marked them `fired_long`,
-        // which is the same bit that keeps the confirm ring at zero. One authority, not two.
+        // No latch check for the two timed buttons: every press edge under a held latch is spent
+        // by [`press`](Self::press), so a latched Select or Back always reads `fired_long`. That is
+        // the same bit the confirm ring reads, which is what makes one authority enough — the
+        // direction pair needs its own gate in [`Edges::due_step`] only because a spent direction
+        // still carries a live repeat due-time.
         for (b, long) in [(Button::Select, Gesture::Hold), (Button::Back, Gesture::BackHold)] {
             let Some((h, _)) = self.timed(b) else { continue };
             if let Some(t0) = h.since {
@@ -390,16 +416,8 @@ impl Gestures {
         self.edges.latch = Some(pair);
         self.edges.pending = pair.chord();
         let (a, b) = pair.buttons();
-        for c in [a, b] {
-            match step_axis(c) {
-                Some((axis, _)) => self.edges.flags &= !(DEFER << axis),
-                None => {
-                    if let Some((h, _)) = self.timed(c) {
-                        h.fired_long = true;
-                    }
-                }
-            }
-        }
+        self.spend(a);
+        self.spend(b);
     }
 
     /// Whether `b` may still join a chord at `now`: down, pressed inside the window, and nothing
@@ -826,6 +844,42 @@ mod tests {
         g.on_event(down(Button::Down), 0);
         g.on_event(down(Button::Back), DEFAULT_CHORD_MS);
         assert_eq!(g.take_chord(), Some(Chord::Context), "exactly at the window still pairs");
+    }
+
+    /// **The thumb roll.** A rider squeezing slowly lets one button go and puts it back while the
+    /// other is still down. Every button of both meaningful pairs must survive that unspent-press
+    /// edge with nothing to show for it — no step, no long press, and no confirm ring charging
+    /// through the sheet at the screen underneath.
+    #[test]
+    fn a_repressed_constituent_inside_a_held_chord_leaks_nothing() {
+        // Up + Select: the rolled button is Select, so the leak would be a `Hold`.
+        let mut g = Gestures::with_defaults();
+        g.on_event(down(Button::Up), 0);
+        g.on_event(down(Button::Select), 30);
+        assert_eq!(g.take_chord(), Some(Chord::Quick));
+        assert_eq!(g.on_event(up(Button::Select), 100), None, "Up is still down, so the latch holds");
+        assert_eq!(g.on_event(down(Button::Select), 120), None, "…and the thumb rolls back on");
+        assert_eq!(g.select_progress(400), 0.0, "no confirm ring charges under a held chord");
+        assert_eq!(g.tick(620), None, "and no Hold reaches the screen the sheet covers");
+        assert_eq!(g.on_event(up(Button::Select), 700), None);
+        assert_eq!(g.on_event(up(Button::Up), 720), None, "the last release ends the chord, silently");
+
+        // Down + Back: the rolled button is Back, so the leak would be a `BackHold` — which D3
+        // turns into an escape to the main menu, from inside a squeeze.
+        let mut g = Gestures::with_defaults();
+        g.on_event(down(Button::Down), 0);
+        g.on_event(down(Button::Back), 30);
+        assert_eq!(g.take_chord(), Some(Chord::Context));
+        assert_eq!(g.on_event(up(Button::Back), 100), None);
+        assert_eq!(g.on_event(down(Button::Back), 120), None);
+        assert_eq!(g.back_progress(400), 0.0);
+        assert_eq!(g.tick(620), None, "no BackHold either");
+        assert_eq!(g.on_event(up(Button::Back), 700), None);
+        assert_eq!(g.on_event(up(Button::Down), 720), None);
+
+        // …and the recogniser is clean afterwards: a fresh Back tap taps.
+        g.on_event(down(Button::Back), 800);
+        assert_eq!(g.on_event(up(Button::Back), 860), Some(Gesture::Back), "the latch re-armed");
     }
 
     /// Releasing one constituent does not re-arm the latch: the other is still down, so its own

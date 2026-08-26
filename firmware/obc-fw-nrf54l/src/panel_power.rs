@@ -16,13 +16,21 @@ use obc_ports::{Backlight, BacklightUnsupported, PowerOff};
 /// So there is nothing here to dim, and a stub that returned `Ok(())` would be a lie the rider
 /// could read off the screen: the drawer's editor would move a slider that changes nothing while
 /// the firmware reported success. It returns [`BacklightUnsupported`] instead, which the caller
-/// logs once — see the open hardware question on #1515.
+/// logs once — and, because a refusal only the RTT log can see is not honesty either,
+/// [`available`](Backlight::available) answers `false`, which takes the whole brightness control
+/// off the drawer's root row. See the open hardware question on #1515.
 ///
-/// **When a light does exist**, this is the whole seam: give the struct its PWM channel and map the
-/// level to a duty cycle. Nothing above it changes.
+/// **When a light does exist**, this is the whole seam: give the struct its PWM channel, map the
+/// level to a duty cycle, and answer `true`. Nothing above it changes.
 pub(crate) struct PanelBacklight;
 
 impl Backlight for PanelBacklight {
+    /// **No.** The app asks this once at boot and removes the quick drawer's brightness control,
+    /// so the rider is not offered a slider with nothing behind it.
+    fn available(&self) -> bool {
+        false
+    }
+
     fn apply(&mut self, level: u8) -> Result<(), BacklightUnsupported> {
         let _ = level;
         Err(BacklightUnsupported)

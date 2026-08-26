@@ -725,6 +725,12 @@ QUICK=(--routes-dir "$ROUTES" --clock "2025-06-29T14:40" --gpx "$GPX" --at 30)
 "$SIM" "$MAP" --boot "${QUICK[@]}" --script "p p p p Q p w"       --expect-screen QuickDrawer --png "$OUT/quick-brightness.png"
 "$SIM" "$MAP" --boot "${QUICK[@]}" --script "p p p p Q d d d p w" --expect-screen QuickDrawer --png "$OUT/quick-power-confirm.png"
 "$SIM" "$MAP" --boot "${QUICK[@]}" --script "p p p p Q d d d p w H" --expect-screen QuickDrawer --png "$OUT/quick-power-hold.png"
+# The **other** root row: a platform whose panel has no controllable light offers three controls,
+# not four, and opens on the radio instead of on brightness. That is the shipping board today (no
+# light line exists on it — see `PanelBacklight`), so this frame is the arrangement a rider actually
+# gets on hardware. English only: it is an arrangement, and the copy is already swept in four
+# languages above.
+"$SIM" "$MAP" --boot "${QUICK[@]}" --no-backlight --script "p p p p Q" --expect-screen QuickDrawer --png "$OUT/quick-root-no-backlight.png"
 
 # Per-language sweep (epic #602, L5). The i18n catalog (obc-app/i18n/*.toml -> Msg/TABLE) renders
 # every screen in the runtime Language setting; `--lang de|fr|es` seeds it into the headless
