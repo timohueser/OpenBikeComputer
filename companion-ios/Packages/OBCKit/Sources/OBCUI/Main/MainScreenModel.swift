@@ -630,10 +630,20 @@ public final class MainScreenModel {
     }
 
     /// Adopt-by-content (#770): an **unlinked** catalog entry whose non-zero
-    /// `crc32` equals a record's *current* OBCR encoding re-links to it (the
-    /// badge lights, no upload needed), and a subsequent upload replaces that
-    /// object by id instead of creating a duplicate. Heals the app-reinstall
+    /// `crc32` matches a record re-links to it, and a subsequent upload replaces
+    /// that object by id instead of creating a duplicate. Heals the app-reinstall
     /// (link lost, device kept) and device-switch-back cases silently.
+    ///
+    /// **The ObjectId is identity; the payload CRC is a content fingerprint,
+    /// never an identity.** A fingerprint is how an unlinked record *finds* the
+    /// object it belongs to, and it must survive the one edit that moves the bytes
+    /// without changing the route: a rename. The name lives inside the OBCR
+    /// payload, so a record renamed while unlinked no longer matches its own
+    /// device copy under its current encoding — but the catalog carries that
+    /// copy's name, so splicing it back in reconstructs the stored bytes exactly,
+    /// with no download. The adopted record therefore pins the **entry's** CRC:
+    /// that is what the device holds, so the badge reads "on the device, out of
+    /// date" and the next send is a same-id replace carrying the new name.
     ///
     /// Ambiguity is resolved first-come, each side claimed at most once: two
     /// catalog entries with the same CRC → the first (device order) is adopted,
@@ -660,13 +670,20 @@ public final class MainScreenModel {
             }
             .sorted { $0.id.rawValue < $1.id.rawValue }
         for record in candidates {
-            let currentCRC = RouteObjectCodec.payloadCRC(for: record)
-            guard let entry = adoptable.first(where: {
-                $0.crc32 == currentCRC && !claimed.contains($0.id)
+            let payload = RouteObjectCodec.encode(
+                points: record.route.points, waypoints: record.route.waypoints, name: record.summary.name)
+            let currentCRC = CRC32.checksum(payload)
+            guard let entry = adoptable.first(where: { entry in
+                guard !claimed.contains(entry.id) else { return false }
+                if entry.crc32 == currentCRC { return true }
+                // The rename case: same route, the device's copy still under the
+                // name the catalog reports.
+                guard entry.name != record.summary.name else { return false }
+                return entry.crc32 == CRC32.checksum(RouteObjectCodec.renamed(payload, to: entry.name))
             }) else { continue }
             var adopted = record
             adopted.deviceLink = DeviceRouteLink(scope: scope, objectID: entry.id)
-            adopted.uploadedCRC32 = currentCRC
+            adopted.uploadedCRC32 = entry.crc32
             plannedRecords[record.id] = adopted
             library.savePlannedRoute(adopted)
             claimed.insert(entry.id)
