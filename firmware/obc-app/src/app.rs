@@ -3249,7 +3249,7 @@ impl App {
 // living once inside `App` (a typed slot, a counter, or a derived predicate).
 
 impl App {
-    /// Drain **only** the residual classes — the three a typed executor still performs
+    /// Drain **only** the residual classes — the two a typed executor still performs
     /// ([`device_core::residual`](crate::device_core::residual)).
     ///
     /// **This is not a whole-order walk with a filter afterwards, and the difference is the whole
