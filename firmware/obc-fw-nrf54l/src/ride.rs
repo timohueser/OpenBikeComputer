@@ -1319,8 +1319,9 @@ pub(crate) async fn run_app(
                             read_catalogs(flat, app, &mut exec.facts, &mut weather_bundle, &mut weather_sample_key);
                         prev_active = None; // force reconcile_route/track to re-run against the new indexing
                         index_route = None; // and the chunk index to rebuild off the freshly-opened file
-                                            // A partial read is answered `Unreadable`, and the **domain** re-offers the
-                                            // read from there (#1541) — one per pass, which is one per wake.
+
+                        // A partial read is answered `Unreadable`, and the **domain** re-offers the read from there
+                        // (#1541) — one per pass, which is one per wake.
                         let outcome = if read {
                             CatalogOutcome::CatalogRead { token }
                         } else {
