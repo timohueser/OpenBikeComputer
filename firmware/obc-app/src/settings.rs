@@ -9,6 +9,7 @@
 
 use crate::i18n::{t, Msg};
 use crate::retention::RideRetention;
+use crate::screen::BRIGHTNESS_MAX;
 use crate::settings_enum::setting_enum;
 use crate::settings_table::settings_table;
 use crate::stat_fields::StatFieldList;
@@ -640,6 +641,17 @@ settings_table! {
         // marks here and v17 writes zeros, which is why `VERSION` moved; the span itself is frozen
         // so a stored v16 blob keeps its layout — and `legacy_alert_marks` reads the rider's
         // anchors back out of it exactly once, at the update.
+        /// The panel's brightness, as a **level index** into the five discrete backlight steps the
+        /// quick drawer's editor offers (#1515 D2) — `0` the dimmest, [`BRIGHTNESS_MAX`] the
+        /// brightest, which is also the factory default.
+        ///
+        /// **There is no level that turns the light off**: a rider who cannot read the panel cannot
+        /// find the control that turns it back on. Stored as a level rather than a duty cycle
+        /// because the steps are the rider's vocabulary; what a level *does* to the hardware is the
+        /// [`Backlight`](obc_ports::Backlight) port's business. **Device-only**, like
+        /// [`map_clock`](Settings::map_clock): a phone must never dim the rider's screen, so
+        /// [`adopt_ble_fields`](Settings::adopt_ble_fields) never pulls it across.
+        brightness: u8 = BRIGHTNESS_MAX, since(18), range(0, BRIGHTNESS_MAX);
     }
 
     /// The factory settings as a **`const`** — the same value [`Default`] returns (`default()`
@@ -693,7 +705,10 @@ settings_table! {
 /// The in-memory footprint, pinned. [`Settings`] is copied whole (the live `App` copy, the board's
 /// Config cache, the `.rodata` [`DEFAULT`](Settings::DEFAULT) image), so a field that silently
 /// widens the struct widens every one of those — this makes the growth an explicit decision.
-const _: () = assert!(core::mem::size_of::<Settings>() == 112, "Settings grew — was that deliberate?");
+///
+/// The v18 `brightness` row cost two bytes for one: the struct is 2-aligned, so the byte took a
+/// pad byte with it. The next `u8` row here is already paid for.
+const _: () = assert!(core::mem::size_of::<Settings>() == 114, "Settings grew — was that deliberate?");
 
 impl Settings {
     /// The **local** wall-clock set-point the device shows: the UTC [`clock`](Settings::clock)
@@ -717,7 +732,7 @@ impl Settings {
 /// read the fields the stored version declared and default the tail instead of resetting the
 /// rider's settings on every update — see [`MIN_SUPPORTED`]. Each row's `since` column records the
 /// version that introduced it.
-pub const VERSION: u8 = 17;
+pub const VERSION: u8 = 18;
 
 /// The oldest stored version [`decode`] accepts. A version joins this floor only when its exact
 /// bytes are committed as a golden pair — v16 is the only version whose bytes exist in the
@@ -751,7 +766,7 @@ pub const ENCODED_LEN: usize = encoded_len(PAYLOAD_LEN);
 /// Payload size before the trailing CRC. The CRC follows immediately at this offset.
 const PAYLOAD_LEN: usize = off::END;
 
-// The v16 layout, in literals. Every number below was read off the bytes on disk and written by
+// The v16 layout and its v18 tail, in literals. Every number below was read off the bytes on disk and written by
 // hand — **not** derived from the table — so this is a real gate rather than a tautology: an
 // assert generated from the same token that produced the value cannot fail. Reorder two rows,
 // mistype a `SettingCodec::LEN`, or resize a composite and the build stops here instead of
@@ -780,8 +795,10 @@ const _: () = {
     assert!(off::map_contours == 112, "map_contours moved");
     assert!(off::weather_refresh == 113, "weather_refresh moved");
     // 114..168 is the retired alert-mark span, held by `weather_refresh`'s `reserved(54)`. It has
-    // no offset of its own to pin; that the reservation still holds it is `PAYLOAD_LEN` below.
-    assert!(PAYLOAD_LEN == 168, "the CRC moved");
+    // no offset of its own to pin; that the reservation still holds it is `off::brightness` below,
+    // which the v18 row was appended straight after it.
+    assert!(off::brightness == 168, "brightness moved");
+    assert!(PAYLOAD_LEN == 169, "the CRC moved");
     assert!(ENCODED_LEN == 176, "the blob is no longer 11 RRAM lines");
 };
 
@@ -789,12 +806,13 @@ const _: () = {
 // **not** derived from the table, for the same reason the offsets above are: an assert generated
 // from the `since` tokens that produced `payload_len` could not fail. The failure mode this guards
 // is not a reset but a *silent* one, a field the blob does contain being handed back as its
-// default. One rung today, because one version's bytes are committed; the rung only becomes
-// independently load-bearing at v17, when a row below `VERSION` can be mistyped without tripping
-// the `since <= VERSION` guard. Every future bump adds its literal here beside its golden blob.
+// default. Now that a row sits below `VERSION`, the rungs are independently load-bearing: mistype
+// `brightness`'s `since` and the v16 rung moves without tripping the `since <= VERSION` guard.
+// Every future bump adds its literal here beside its golden blob.
 const _: () = {
     assert!(payload_len(16) == 168, "the v16 payload length moved — a `since` or a row's size changed");
     assert!(payload_len(17) == 168, "the v17 payload length moved — a `since` or a row's size changed");
+    assert!(payload_len(18) == 169, "the v18 payload length moved — a `since` or a row's size changed");
 };
 
 // ==================== the one-time v16 alert-mark carry-across (#1542) ====================
@@ -877,6 +895,23 @@ const V17_FULL_BLOB: [u8; ENCODED_LEN] = [
 ];
 
 #[cfg(test)]
+const V18_DEFAULT_BLOB: [u8; ENCODED_LEN] = [
+    18, 0, 0, 233, 7, 1, 1, 12, 0, 0, 0, 1, 0, 0, 6, 0, 1, 2, 3, 4, 5, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 1, 2, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 1, 2, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 72, 23, 0, 0, 0, 0, 0
+];
+#[cfg(test)]
+const V18_FULL_BLOB: [u8; ENCODED_LEN] = [
+    18, 1, 0, 234, 7, 6, 29, 14, 40, 120, 0, 5, 0, 1, 6, 1, 2, 3, 4, 5, 9, 0, 0, 0, 0, 0, 0, 8, 0, 10, 84, 105, 109,
+    111, 39, 115, 32, 79, 66, 67, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 3, 0, 0, 3, 2, 1, 1, 1, 1, 2, 3, 4, 5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 6, 5, 4, 3,
+    2, 1, 3, 2, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 79, 7, 0, 0, 0, 0, 0
+];
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::settings_table::SAVED_SENSOR_LEN;
@@ -938,6 +973,7 @@ mod tests {
             ride_retention: RideRetention::Month1,
             up_ahead_source: UpAheadSource::MapPoisOnly,
             weather_refresh: WeatherRefresh::Every120,
+            brightness: 1,
         }
     }
 
@@ -956,22 +992,31 @@ mod tests {
         assert_eq!(decode(&encode(&s)), Some(s));
     }
 
-    /// The golden blobs: `encode` writes exactly the bytes it wrote before the `setting_enum!`
-    /// table replaced the hand-written enum kits (#1466) — for [`Settings::DEFAULT`] and for a
-    /// value with every field set. Each value enum stores its **declared** discriminant, so a
-    /// renumbered variant moves a byte here: this is the codec-side twin of the macro's
-    /// compile-time discriminant asserts, and the pin the codec/table slices inherit.
+    /// The golden pairs. `encode` writes exactly these bytes for [`Settings::DEFAULT`] and for a
+    /// value with every field set — captured, not derived, so a renumbered `setting_enum!`
+    /// discriminant or a resized composite moves a byte here. This is the codec-side twin of the
+    /// macro's compile-time discriminant asserts.
+    ///
+    /// **Three versions' bytes are committed** — v16 the floor, v17 T3b's, v18 this firmware's —
+    /// which is what makes the tail-defaulting rungs real rather than theoretical. Only the newest
+    /// pair is what `encode` writes; the two older ones are what `decode` is held against, and
+    /// re-capturing either of *those* would void every claim about a blob already on a device.
     #[test]
     fn encode_matches_the_golden_blobs() {
-        assert_eq!(encode(&Settings::DEFAULT), V17_DEFAULT_BLOB, "the default blob is frozen");
-        assert_eq!(encode(&every_field_set()), V17_FULL_BLOB, "the fully-populated blob is frozen");
-        assert_eq!(decode(&V17_DEFAULT_BLOB), Some(Settings::DEFAULT), "…and both decode back");
-        assert_eq!(decode(&V17_FULL_BLOB), Some(every_field_set()));
+        assert_eq!(encode(&Settings::DEFAULT), V18_DEFAULT_BLOB, "the default blob is frozen");
+        assert_eq!(encode(&every_field_set()), V18_FULL_BLOB, "the fully-populated blob is frozen");
+        assert_eq!(decode(&V18_DEFAULT_BLOB), Some(Settings::DEFAULT), "…and both decode back");
+        assert_eq!(decode(&V18_FULL_BLOB), Some(every_field_set()));
 
-        // The v16 rung still decodes, and to the *same* value: the 54 bytes it wrote as marks are
-        // reserved now, so every surviving field reads exactly as it did before the bump.
+        // **Tail-defaulting, on two versions of real stored bytes.** Neither v16 nor v17 carried a
+        // `brightness` byte, so every field they do carry survives the update and only the appended
+        // row takes its default — and the value that default lands on is the one that matters: a
+        // device that has never seen v18 comes up at full brightness, not at a dark panel.
+        let carried = Settings { brightness: BRIGHTNESS_MAX, ..every_field_set() };
+        assert_eq!(decode(&V17_DEFAULT_BLOB), Some(Settings::DEFAULT), "a stored v17 default still reads");
+        assert_eq!(decode(&V17_FULL_BLOB), Some(carried), "…and a v17 full blob keeps every field it had");
         assert_eq!(decode(&V16_DEFAULT_BLOB), Some(Settings::DEFAULT), "a stored v16 default still reads");
-        assert_eq!(decode(&V16_FULL_BLOB), Some(every_field_set()), "…and so does a stored v16 full blob");
+        assert_eq!(decode(&V16_FULL_BLOB), Some(carried), "…and so does a stored v16 full blob");
     }
 
     /// A v16 blob decodes to **exactly** the shrunken fixture — every surviving field, unmoved —
@@ -981,12 +1026,18 @@ mod tests {
     /// CRC never matched into a `Some`.
     #[test]
     fn a_v16_blob_decodes_every_surviving_field_and_reserves_the_tail() {
-        assert_eq!(decode(&V16_FULL_BLOB), Some(every_field_set()), "every surviving field, exactly");
+        assert_eq!(
+            decode(&V16_FULL_BLOB),
+            Some(Settings { brightness: BRIGHTNESS_MAX, ..every_field_set() }),
+            "every surviving field, exactly — only the later v18 row defaults"
+        );
         assert_eq!(off::weather_refresh, 113, "the row above the tail is where it was");
-        assert_eq!(PAYLOAD_LEN, 168, "the reservation still holds the payload length");
-        // v17 writes the span as zeros; v16 wrote the rider's anchors into the same bytes. That
-        // difference in *meaning* under an identical layout is the whole reason `VERSION` moved.
-        assert_eq!(&encode(&every_field_set())[114..168], &[0u8; 54], "v17 reserves the span");
+        // The reservation is what keeps the *next* row where it is: dropping it would slide
+        // `brightness` down to 114 and every stored blob would be reinterpreted.
+        assert_eq!(off::brightness, 168, "the reservation still holds the tail");
+        // v17 and v18 write the span as zeros; v16 wrote the rider's anchors into the same bytes.
+        // That difference in *meaning* under an identical layout is the whole reason `VERSION` moved.
+        assert_eq!(&encode(&every_field_set())[114..168], &[0u8; 54], "v17 and after reserve the span");
         assert_ne!(&V16_FULL_BLOB[114..168], &[0u8; 54], "…where v16 carried the anchors");
     }
 
@@ -1009,6 +1060,7 @@ mod tests {
 
         assert_eq!(legacy_alert_marks(&V17_DEFAULT_BLOB), None, "a v17 blob never answers");
         assert_eq!(legacy_alert_marks(&V17_FULL_BLOB), None, "…whatever else it carries");
+        assert_eq!(legacy_alert_marks(&V18_FULL_BLOB), None, "and neither does a v18 one");
 
         let mut torn = V16_FULL_BLOB;
         torn[120] ^= 0xFF; // a mark byte, without fixing the CRC

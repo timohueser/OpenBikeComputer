@@ -15,14 +15,14 @@ use crate::device_core::storage_info::StorageInfo;
 use crate::dfu::DfuState;
 use crate::dirty::Dirty;
 use crate::host::{DrainStatus, HostCommand, HostCommandClass, HostMailbox};
-use crate::input::Gesture;
+use crate::input::{Chord, Gesture};
 use crate::navigator::PlanFamily;
 use crate::navigator::{NavigatorIntent, NavigatorMachine, PlanPhase};
 use crate::placement::define_placement_constructors;
 use crate::ride::RideSummary;
 use crate::ride_engine::RideEngine;
 use crate::route::RouteSummary;
-use crate::screen::{self, Ctx, MapScreen, Render, RenderFrame, Screen, WarningFlags};
+use crate::screen::{self, Ctx, MapScreen, QuickDrawerScreen, Render, RenderFrame, Screen, WarningFlags};
 use crate::settings::{DateTime, Settings};
 use crate::ui_runtime::UiRuntime;
 use crate::wall_clock::WallClock;
@@ -2212,6 +2212,80 @@ impl App {
         self.ui.stack.last().expect("the stack always has the Home root")
     }
 
+    /// Apply one device-wide [`Chord`] — **the drawer owner**, and the only place a drawer opens
+    /// or closes. Returns whether it moved anything.
+    ///
+    /// Resolved here rather than in a screen because a chord is not a screen's input: the
+    /// recogniser already swallowed its constituents, and the sheet has to be able to open over
+    /// whatever the rider is on. Two rules live here and nowhere else — the **suppression set**
+    /// (a genuinely blocking modal declares [`Caps::blocks_chords`](crate::screen::Caps) and no
+    /// chord reaches past it) and **mutual exclusion** (one drawer at a time; the same chord again
+    /// closes the one that is up).
+    pub fn apply_chord(&mut self, chord: Chord) -> bool {
+        if self.ui.stack.last().is_some_and(|s| s.caps().blocks_chords) {
+            return false;
+        }
+        match chord {
+            Chord::Quick => self.toggle_drawer(Screen::QuickDrawer(QuickDrawerScreen::new(self.ui.now_ms))),
+            // D3 gives the contextual drawer its declarative per-screen content. Until then the
+            // chord is recognised — so a Down+Back squeeze can never leak a step and a Back — and
+            // deliberately does nothing on every screen.
+            Chord::Context => false,
+        }
+    }
+
+    /// Put `drawer` on the stack, taking off whatever drawer was already there. A repeat of the
+    /// same drawer therefore toggles it shut, and the other one swaps in rather than stacking.
+    fn toggle_drawer(&mut self, drawer: Screen) -> bool {
+        let opening = drawer.row();
+        let closed = match self.ui.stack.last() {
+            Some(top) if top.is_overlay() => {
+                let row = top.row();
+                self.ui.stack.pop();
+                Some(row)
+            }
+            _ => None,
+        };
+        if closed != Some(opening) {
+            screen::apply(&mut self.ui.stack, screen::Transition::Push(drawer));
+        }
+        // The stack moved either way, so the frame is dirty and any hold charging underneath was
+        // aimed at a screen the sheet has just covered (or uncovered) — the #480 rule, which a
+        // chord earns exactly like a gesture. A chord is also user activity: the idle clock resets.
+        self.ui.map_dirty = true;
+        self.ui.last_input_ms = self.ui.now_ms;
+        self.ui.idle_return_timing = true;
+        self.ui.input.cancel_holds();
+        self.ui.hold_cancel_pending = true;
+        true
+    }
+
+    /// The brightness the panel should be driven at **this frame**: the quick drawer's staged
+    /// preview while its editor is open, and the committed
+    /// [`Settings::brightness`](crate::Settings) row everywhere else.
+    ///
+    /// A host applies it through the [`Backlight`](obc_ports::Backlight) port. Because the answer
+    /// is *derived* rather than latched, "Back cancels and reverts the preview" needs no undo
+    /// path: the editor closes and the next frame reads the committed row again.
+    pub fn backlight_level(&self) -> u8 {
+        self.ui
+            .stack
+            .iter()
+            .find_map(|s| match s {
+                Screen::QuickDrawer(d) => d.staged_brightness(),
+                _ => None,
+            })
+            .unwrap_or(self.settings.brightness)
+            .min(crate::screen::BRIGHTNESS_MAX)
+    }
+
+    /// Whether the rider completed the quick drawer's guarded power-off hold. The host renders the
+    /// powering-off frame this reports on, presents it, and then calls the
+    /// [`PowerOff`](obc_ports::PowerOff) port — which does not return.
+    pub fn power_off_requested(&self) -> bool {
+        matches!(self.ui.stack.last(), Some(Screen::QuickDrawer(d)) if d.powering_off())
+    }
+
     /// Number of POIs in the current [`poi_scratch`](App::poi_scratch) snapshot (0 when none has
     /// been taken). A test/introspection hook for the POIs browser's static snapshot.
     pub fn poi_snapshot_len(&self) -> usize {
@@ -2569,9 +2643,14 @@ impl App {
         // `self.ui.input`). Recognition depends only on the raw events + clock, so this is identical to
         // applying inline; the buffer capacity dwarfs one frame's bounded events.
         let mut pending: heapless::Vec<Gesture, GESTURE_BUF> = heapless::Vec::new();
-        self.ui.input.recognize(clock, input, |g| {
+        let chord = self.ui.input.recognize(clock, input, |g| {
             let _ = pending.push(g);
         });
+        // Above the screen: the chord resolves first, so this frame's gestures (which by
+        // construction are not its constituents) land on whatever the drawer left on top.
+        if let Some(chord) = chord {
+            self.apply_chord(chord);
+        }
         self.apply_gesture_batch(&pending);
         // A single-loop host has no second recognizer to cancel, so it consumes the latch the batch
         // may have set rather than leaving it for a plane that does not exist.
@@ -2588,9 +2667,14 @@ impl App {
     /// its input stage, from the same frame's clock.
     pub fn recognize(&mut self, clock: InputClock, input: &mut dyn InputSource) -> heapless::Vec<Gesture, GESTURE_BUF> {
         let mut pending: heapless::Vec<Gesture, GESTURE_BUF> = heapless::Vec::new();
-        self.ui.input.recognize(clock, input, |g| {
+        let chord = self.ui.input.recognize(clock, input, |g| {
             let _ = pending.push(g);
         });
+        // A chord is not a gesture and never reaches the pass's gesture batch: it is resolved here,
+        // above the screen stack, exactly as `handle_input` resolves it.
+        if let Some(chord) = chord {
+            self.apply_chord(chord);
+        }
         pending
     }
 
@@ -3133,9 +3217,20 @@ impl App {
         // possible Map — writes `rx.stats`; the overlays above it leave the stats untouched).
         // A drained region clip makes it reject whole out-of-region primitives — the half of a
         // region-scoped repaint the target's pixel clip can't save (#500 follow-up).
+        // A drawer **recesses** the base rather than replacing it: the base is drawn through the
+        // dim LUT composed with the host's own colour policy, the sheet through the untouched one.
+        // Two `Canvas`es over the same target — no capture buffer, no second framebuffer, no alpha
+        // for a 64-colour panel to approximate.
+        let recessed = ui.stack.iter().skip(base + 1).any(|s| s.is_overlay());
+        if recessed {
+            let dim = |c| color_fn(screen::dim_color(c));
+            let mut cv = Canvas::new(target, &dim);
+            cv.set_clip(render_clip);
+            ui.stack[base].draw(&mut cv, &mut rx);
+        }
         let mut cv = Canvas::new(target, &color_fn);
         cv.set_clip(render_clip);
-        for scr in ui.stack.iter().skip(base) {
+        for scr in ui.stack.iter().skip(if recessed { base + 1 } else { base }) {
             scr.draw(&mut cv, &mut rx);
         }
         rx.stats
@@ -3759,6 +3854,22 @@ mod tests {
     /// One pass with nothing on any port — the quiet frame.
     fn pass_idle(app: &mut App, now_ms: u32) -> Dirty {
         pass_ports(app, now_ms, None, None)
+    }
+
+    /// The frozen base, through a **real pass**: a fresh fix under an open drawer moves the camera
+    /// and plans no repaint, while the same fix on the bare Map plans one. The render-key tests pin
+    /// the mechanism; this pins that the mechanism is what the frame boundary actually reads.
+    #[test]
+    fn a_fix_under_an_open_drawer_plans_no_repaint() {
+        let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
+        assert!(pass_fix(&mut app, moving(90.0), 1_000).map, "the bare Map repaints on a fresh fix");
+
+        assert!(app.apply_chord(crate::input::Chord::Quick));
+        let _ = pass_idle(&mut app, 1_100); // drain the chord's own dirt + the sheet's open frames
+        let _ = pass_idle(&mut app, 1_600); // …and the rest of the open animation
+        let quiet = pass_fix(&mut app, moving(180.0), 2_000);
+        assert!(!quiet.map, "the sheet has settled and the map under it is frozen");
+        assert!(app.state.user_fix.is_some(), "…even though the fix landed and moved the camera");
     }
 
     /// `has_live_fix` is `false` before the first fix (acquiring) and once the last fix ages past the

@@ -22,6 +22,7 @@ mod framebuffer;
 mod gui;
 mod map_file;
 mod palette;
+mod panel_power;
 mod present;
 mod rides;
 mod routes;
@@ -123,7 +124,8 @@ struct Args {
     /// ~800 ms so an in-flight animation (the Menu needle sweep) settles before the snapshot,
     /// `f` = draw one throwaway frame so draw-time lazy state (the POI-list snapshot) is filled
     /// before the next gesture, `T` = one route-aware tick (sync + open the active route and run
-    /// the once-per-load state builds), `I` = elapse 5 min with no input so the idle-return
+    /// the once-per-load state builds), `Q` = the Up+Select squeeze that opens the universal quick
+    /// drawer, with its slide-down settled, `I` = elapse 5 min with no input so the idle-return
     /// timeout fires.
     script: Option<String>,
     /// `--expect-screen NAME`: headless `--png` only — refuse to render unless the script landed
@@ -946,6 +948,16 @@ fn apply_script(app: &mut App, script: &str, start_ms: u32, hook: &mut dyn FnMut
         *now += hold * 55 / 100; // ~55% toward the threshold
         feed(app, *now, vec![]); // samples the in-flight progress for the render
     };
+    // A **chord** (#1515 D2): two buttons squeezed inside the 100 ms window, released together.
+    // The recognizer swallows both, so the script gets the drawer and no constituent gesture.
+    let chord = |app: &mut App, now: &mut u32, a, b| {
+        feed(app, *now, vec![down(a)]);
+        *now += 30;
+        feed(app, *now, vec![down(b)]);
+        *now += 60;
+        feed(app, *now, vec![up(b), up(a)]);
+        *now += 30;
+    };
 
     for ch in script.chars() {
         match ch {
@@ -980,6 +992,15 @@ fn apply_script(app: &mut App, script: &str, start_ms: u32, hook: &mut dyn FnMut
             // the app-level idle-return timeout (Part B) fires deterministically for a snapshot —
             // e.g. `B u p I` sits in Settings, elapses, and lands back on Home. Longer than every
             // configurable timeout (max 5 min), so it fires for any `Idle return` setting but Never.
+            // The universal quick drawer's Up+Select squeeze, then its slide-down settled — one
+            // token, because every drawer frame starts with it.
+            'Q' => {
+                chord(app, &mut now, Button::Up, Button::Select);
+                for _ in 0..8 {
+                    now += 40;
+                    feed(app, now, vec![]);
+                }
+            }
             'I' => {
                 now += 5 * 60_000 + 1_000;
                 feed(app, now, vec![]);
@@ -1025,6 +1046,8 @@ Device state:
 
 Scripted snapshots:
   --script TOKENS         Apply device-button script tokens before rendering
+                          (d/u step, p press, b back, h/B hold, H/M partial hold,
+                           Q quick-drawer squeeze, w wait, f frame, T tick, I idle)
   --expect-screen NAME    Refuse unless the script lands on this screen
   --hold PLAN             Consume without starting one request: nav|detour
   --inject EVENT          nav-fail=KIND|detour-fail=KIND|upload=ID|

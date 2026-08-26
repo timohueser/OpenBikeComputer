@@ -51,7 +51,7 @@ use obc_reader::{MapCache, MapTables, Reader};
 // index, and the streamed route reader the matcher + map render share.
 use obc_route::{RouteCache, RouteIndex, RouteReader};
 
-use crate::input_plane::{GESTURES, INPUT_HB_MS, INPUT_WAKE, LOOP_MS};
+use crate::input_plane::{CHORDS, GESTURES, INPUT_HB_MS, INPUT_WAKE, LOOP_MS};
 use crate::map_plane::MapDisplay;
 use crate::{stackmeter, SharedStore, SharedStoreMutex};
 
@@ -563,6 +563,14 @@ fn gesture_name(g: obc_app::Gesture) -> &'static str {
     }
 }
 
+/// The drained chord's name, for the same field-forensics RTT record as [`gesture_name`].
+fn chord_name(c: obc_app::Chord) -> &'static str {
+    match c {
+        obc_app::Chord::Quick => "Quick",
+        obc_app::Chord::Context => "Context",
+    }
+}
+
 /// One pass's sync-render output, carried from the **store phase** (render, under the guard) to
 /// the **present phase** (push, guard-free) — the #809 split. `None` = no frame rendered this
 /// pass, so nothing to present. `needs_map` picks the RTT log line's shape (map vs. UI frame).
@@ -869,6 +877,11 @@ pub(crate) async fn run_app(
     let mut route_index_valid = false;
     let mut index_route: Option<usize> = None;
     let mut pending_map_redraw = false;
+    // The two panel-power ports (#1515 D2) and the level last handed to the backlight, so the
+    // board's standing refusal is logged on a change rather than every pass.
+    let mut backlight = crate::panel_power::PanelBacklight;
+    let mut power_off = crate::panel_power::SystemOff;
+    let mut backlight_level = u8::MAX; // never a real level: the first pass always applies
     #[cfg(feature = "debug-uart")]
     let mut last_telem_ms: u32 = 0;
     #[cfg(feature = "debug-uart")]
@@ -2143,6 +2156,20 @@ pub(crate) async fn run_app(
                     obc_app::device_core::DerivedTargets { ride_preview: &[], nav_preview: derived_pts.as_slice() }
                 };
 
+                // ── This frame's chords, above the screen stack ──
+                // A drawer opens or closes before the gestures below are handed to whatever screen
+                // it left on top. The constituents were swallowed by the recogniser, so nothing
+                // here can also move the selection underneath.
+                while let Ok(chord) = CHORDS.try_receive() {
+                    let acted = app.apply_chord(chord);
+                    defmt::info!(
+                        "input: chord {=str} on {=str} ({=str})",
+                        chord_name(chord),
+                        app.top_screen().name(),
+                        if acted { "opened/closed" } else { "refused" }
+                    );
+                }
+
                 // ── This frame's gestures, as one batch ──
                 // The high-priority plane recognised them; the pass applies them in order and owns
                 // #480's rule that a `Hold`/`BackHold` queued behind a stack-changing gesture is dropped
@@ -2746,6 +2773,24 @@ pub(crate) async fn run_app(
                     push_us
                 );
             }
+        }
+
+        // The panel's brightness follows whatever the app says it should be this frame — the quick
+        // drawer's live preview while its editor is open, the committed setting otherwise. Applied
+        // only on a change, so the refusal below is logged once rather than every pass. **This
+        // board refuses**: see `PanelBacklight` and the open hardware question on #1515.
+        let level = app.backlight_level();
+        if level != backlight_level {
+            backlight_level = level;
+            if obc_ports::Backlight::apply(&mut backlight, level).is_err() {
+                defmt::warn!("backlight: level {=u8} not applied — this panel has no light line (#1515)", level);
+            }
+        }
+
+        // The rider completed the guarded power-off hold, and the frame that says so has just been
+        // pushed. `power_off` does not return.
+        if app.power_off_requested() && presented_ok {
+            obc_ports::PowerOff::power_off(&mut power_off);
         }
 
         // The hold bulge already pushed at the top of this pass (bulge-first, see above). But if a

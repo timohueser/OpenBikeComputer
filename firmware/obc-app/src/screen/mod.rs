@@ -41,6 +41,7 @@ mod passkey;
 mod poi_detail;
 mod poi_list;
 pub(crate) mod poi_menu;
+mod quick_drawer;
 mod ride_control;
 mod ride_detail;
 mod ride_menu;
@@ -79,6 +80,7 @@ pub use passkey::PasskeyScreen;
 pub use poi_detail::PoiDetailScreen;
 pub use poi_list::{PoiListScreen, PoiScratch};
 pub use poi_menu::PoiMenuScreen;
+pub use quick_drawer::{QuickDrawerScreen, BRIGHTNESS_LEVELS, BRIGHTNESS_MAX};
 pub use ride_control::RideControl;
 pub use ride_detail::RideDetailScreen;
 pub use ride_menu::RideMenuScreen;
@@ -616,6 +618,15 @@ pub enum RenderKeyKind {
     /// The Up-ahead timeline: live route progress, the route's length, and the corridor snapshot
     /// the rows are merged from.
     UpAhead,
+    /// A **drawer**: the page it shows, the row selected on it, and the value it has staged
+    /// against the one already committed.
+    ///
+    /// This kind does one thing no other does — it **shadows** every other kind. A drawer freezes
+    /// the base it covers: while one is visible the key names only these facts, so a camera move,
+    /// a fresh fix or an arriving weather bundle under an open drawer cannot dirty the map, and
+    /// closing it changes the key's shape exactly once. That is the whole of "the frozen base" —
+    /// there is no capture buffer and no second framebuffer, only a key that stops looking.
+    Drawer,
 }
 
 /// Which durable catalog a screen's held **indices** are remapped against after a store rescan
@@ -667,6 +678,11 @@ pub struct Caps {
     /// Declares the screen can draw a live **hold fill** for a guarded selection — it has a
     /// [`wants_hold_fill`](Screen::wants_hold_fill) arm.
     pub hold_fill: bool,
+    /// Declares the screen a **genuinely blocking** modal: while it is on top the device-wide
+    /// drawer chords ([`Chord`](crate::input::Chord)) are refused, so a squeeze cannot open a
+    /// drawer over a pairing passkey, a running map transfer, or the terminal install card. Every
+    /// *other* screen is eligible — the quick drawer is global by design.
+    pub blocks_chords: bool,
     /// Declares the screen **wants the rain overlay** (WX10/WX11): the frame's rain lease is
     /// handed to it and the precipitation raster draws inside its map scene. Off for every other
     /// screen — including the ordinary Map and the Detour pair, which draw the same scene through
@@ -695,10 +711,19 @@ impl Caps {
             reader: ReaderNeed::Never,
             timed: false,
             hold_fill: false,
+            blocks_chords: false,
             rain_overlay: false,
             remap: RemapKind::None,
             render_key: RenderKeyKind::Static,
         }
+    }
+
+    /// A **drawer**: an overlay sheet composited over the still-visible base, which the frame
+    /// draws through the dim LUT for as long as one is up (see
+    /// [`dim_color`](crate::screen::dim_color)). Its key kind shadows the base's, which is what
+    /// freezes it.
+    pub const fn overlay() -> Self {
+        Caps { kind: ScreenKind::Overlay, timed: true, render_key: RenderKeyKind::Drawer, ..Caps::nav() }
     }
 
     /// A map-base screen: reads the `Reader` every frame, and is both a tracking ride view and a
@@ -761,6 +786,12 @@ impl Caps {
     /// Declare the screen can draw a hold fill (a [`wants_hold_fill`](Screen::wants_hold_fill) arm).
     pub const fn hold_fill(mut self) -> Self {
         self.hold_fill = true;
+        self
+    }
+
+    /// Declare the screen a genuinely blocking modal — see [`blocks_chords`](Caps::blocks_chords).
+    pub const fn blocking(mut self) -> Self {
+        self.blocks_chords = true;
         self
     }
 
@@ -963,11 +994,11 @@ screens! {
     TripReceived(TripReceivedScreen) => Caps::modal().timed(),
     /// The BLE pairing passkey card (epic #447, P2). **Host-pushed** by [`App::set_ble_status`]
     /// when the seam's passkey goes `Some`, popped when it clears. Opaque + non-dismissible.
-    Passkey(PasskeyScreen) => Caps::modal(),
+    Passkey(PasskeyScreen) => Caps::modal().blocking(),
     /// The map-transfer card (issue #927). **Host-pushed** by [`App::set_map_transfer`] when a map
     /// upload starts and popped when the state clears — the one screen a multi-minute SD write is
     /// visible on. Non-dismissible while bytes land, dismissable once terminal.
-    MapTransfer(MapTransferScreen) => Caps::modal(),
+    MapTransfer(MapTransferScreen) => Caps::modal().blocking(),
     /// The advisory warning card (issue #504): missing sensors / a slow (fragmented) map.
     /// **Host-pushed** by the pass's fact stage, coalesced, dismissed on any press.
     Warning(WarningScreen) => Caps::modal(),
@@ -1035,7 +1066,7 @@ screens! {
     DfuProgress(DfuProgressScreen) => Caps::modal().timed(),
     /// The static, terminal "Installing update" card: board-pushed right before the arm's warm
     /// reset — the last painted frame, which the MIP panel holds through the whole install.
-    DfuInstalling(DfuInstallingScreen) => Caps::modal(),
+    DfuInstalling(DfuInstallingScreen) => Caps::modal().blocking(),
     /// The scan-error card (epic #615 S5): a typed [`DfuScanError`](crate::dfu::DfuScanError) as a
     /// plain sentence; Back dismisses.
     DfuError(DfuErrorScreen) => Caps::modal(),
@@ -1046,6 +1077,12 @@ screens! {
     /// boot after an armed update that did not end with the staged image running (never started /
     /// reverted).
     DfuFailed(DfuFailedScreen) => Caps::modal(),
+    /// The **universal quick drawer** (#1515 D2): the top sheet Up+Select opens from anywhere the
+    /// chord is not suppressed. Four unlabelled device-wide controls — brightness, the BLE radio,
+    /// central settings, power — plus the nested brightness editor and the guarded power
+    /// confirmation. The first `Overlay` row: it composites over the base, which the frame then
+    /// draws through the dim LUT, and its `Drawer` key freezes that base while it is up.
+    QuickDrawer(QuickDrawerScreen) => Caps::overlay().hold_fill(),
 }
 
 impl Screen {
@@ -1111,6 +1148,7 @@ impl Screen {
             Screen::Reset(s) => s.hold_fill_active(),
             Screen::StatFields(s) => s.selection_is_deletable(settings),
             Screen::Bluetooth(s) => s.selection_is_guarded(state.device.ble_paired),
+            Screen::QuickDrawer(s) => s.selection_is_guarded(),
             Screen::Sensors(s) => s.selection_is_guarded(settings),
             Screen::RouteOverview(s) => s.selection_is_guarded(activity, routes),
             Screen::RideDetail(s) => s.selection_is_guarded(activity, rides.len()),
@@ -1148,6 +1186,9 @@ impl Screen {
         tracking: bool,
     ) -> ScreenTick {
         match self {
+            // The drawer's sheet animation: the slide-down on open, the horizontal page slide, and
+            // the height the sheet adapts to the page it lands on.
+            Screen::QuickDrawer(s) => s.tick_timers(now_ms),
             Screen::Statistics(s) => s.tick_timers(now_ms, settings),
             Screen::Home(s) => s.tick_timers(now, ms_to_next_minute),
             // The Map's clock overlay ticks over each minute (region-clipped to the pill), armed only
@@ -1337,9 +1378,43 @@ pub mod palette {
     pub const BREADCRUMB: u16 = rgb565(0, 0, 170); // → (0,0,170) navy
 }
 
+/// One RGB222 channel level, stepped down. Index by the channel's stored level (0-3); the result
+/// is another level, so the dimmed colour stays exactly on the device gamut and nothing has to be
+/// re-quantized. Four bytes in `.rodata`, carried over from the prototype's tuned captures.
+const DIM_LEVEL: [u8; 4] = [0, 1, 1, 2];
+
+/// The **dim policy** a frame draws its base through while a drawer covers it: an RGB565 colour in,
+/// the same colour one device-64 level darker out.
+///
+/// This is a colour function, not a layer. [`App::draw_frame`](crate::App) composes it with the
+/// host's own `color_fn` for the base screen and hands the sheet the untouched `color_fn`, so the
+/// recession costs one table lookup per channel per drawn pixel and **zero** bytes of RAM - no
+/// capture buffer, no second framebuffer, no alpha, and nothing for the 64-colour panel to
+/// approximate.
+pub(crate) fn dim_color(rgb565: u16) -> u16 {
+    let r = DIM_LEVEL[((rgb565 >> 14) & 0x3) as usize];
+    let g = DIM_LEVEL[((rgb565 >> 9) & 0x3) as usize];
+    let b = DIM_LEVEL[((rgb565 >> 3) & 0x3) as usize];
+    palette::rgb565(r * 85, g * 85, b * 85)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The dim LUT never brightens a channel, and lands the two extremes where the prototype's
+    /// captures did: parchment recedes to a mid grey, and the near-black chrome stays black.
+    #[test]
+    fn the_dim_lut_only_darkens_and_stays_on_the_gamut() {
+        for level in 0..4u16 {
+            for shift in [14, 9, 3] {
+                let dimmed = dim_color(level << shift);
+                assert!((dimmed >> shift) & 0x3 <= level, "channel at bit {shift} brightened");
+            }
+        }
+        assert_eq!(dim_color(palette::PARCHMENT), palette::rgb565(170, 170, 170), "parchment recedes to grey");
+        assert_eq!(dim_color(palette::HUD), palette::rgb565(0, 0, 0), "the darkest chrome has nowhere to go");
+    }
 
     /// `Screen::NAMES` is a usable drift-guard key set: every name unique and non-empty, and the
     /// table agrees with [`Screen::name`] (both are generated from the one `screens!` table, so
@@ -1440,6 +1515,25 @@ mod tests {
             if c.remap == RemapKind::Ride {
                 assert_eq!(c.base, BaseContent::Chrome, "{name}: a ride-remap screen is chrome-based");
             }
+            // A drawer is an overlay sheet, and the two halves of that are one declaration: the
+            // frame dims the base under any `Overlay` row, and the pass freezes it because that
+            // row's key kind shadows the base's. Declaring one without the other would either dim
+            // a base that keeps repainting or freeze one that never recedes.
+            assert_eq!(
+                c.kind.is_overlay(),
+                c.render_key == RenderKeyKind::Drawer,
+                "{name}: the Drawer key kind and the Overlay screen kind are one declaration"
+            );
+            if c.kind.is_overlay() {
+                assert_eq!(c.base, BaseContent::Chrome, "{name}: a sheet draws chrome over the base it covers");
+                assert!(c.timed, "{name}: a sheet animates, so it needs a tick arm");
+                assert!(!c.idle_exempt, "{name}: a drawer is not a modal the idle return must respect");
+                assert!(!c.blocks_chords, "{name}: a drawer must not suppress the chord that closes it");
+            }
+            // Only a genuinely blocking modal may refuse the device-wide chords.
+            if c.blocks_chords {
+                assert!(c.idle_exempt, "{name}: only an idle-exempt modal is blocking enough to refuse a chord");
+            }
         }
     }
 
@@ -1469,6 +1563,12 @@ mod tests {
         // The rain overlay belongs to the rain map and to nothing else — the Map and the Detour
         // pair draw the very same scene through `draw_map_scene`, so a stray `.rain_overlay()` on
         // one of them is exactly how the raster would start outliving its screen again.
+        // The suppression set, named: exactly the three screens a squeeze must not reach past.
+        let blocking: std::vec::Vec<&str> =
+            Screen::NAMES.iter().zip(caps).filter(|(_, c)| c.blocks_chords).map(|(n, _)| *n).collect();
+        assert_eq!(blocking, ["Passkey", "MapTransfer", "DfuInstalling"], "the chord suppression set, in table order");
+        assert_eq!(caps.iter().filter(|c| c.kind.is_overlay()).count(), 1, "one drawer today: the quick drawer");
+        assert!(named("QuickDrawer").kind.is_overlay() && named("QuickDrawer").hold_fill);
         assert!(named("WeatherRainMap").rain_overlay, "the rain map is the screen rain belongs to");
         assert!(!named("Map").rain_overlay, "the ordinary Map never draws rain");
         assert_eq!(caps.iter().filter(|c| c.rain_overlay).count(), 1, "exactly one screen wants rain");

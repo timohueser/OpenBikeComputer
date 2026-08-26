@@ -606,3 +606,14 @@ s = "S"
 sw = "SO"
 w = "O"
 nw = "NO"
+
+# --- El cajon rapido universal (Arriba + Seleccion) ---
+[quick]
+brightness = "BRILLO"
+bluetooth_on = "BLUETOOTH ACTIVO"
+bluetooth_off = "BLUETOOTH INACTIVO"
+settings = "AJUSTES"
+power = "APAGAR"
+power_confirm = "APAGAR?"
+power_hold = "MANTENER SELECC."
+powering_off = "APAGANDO..."
