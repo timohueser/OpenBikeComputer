@@ -306,9 +306,9 @@ Bulk data stays in caller-owned buffers.
 [`obc-host-core`](src:host/obc-host-core/src/dispatch.rs) performs the effects for every frame-stepped host.
 The board performs the same effects with its own asynchronous execution.
 
-Three requests still use the older mailbox: close the ride log, forget the paired phone, and delete a trip.
+Two requests still use the older mailbox: close the ride log and forget the paired phone.
 No domain can yet validate their completion.
-[`device_core/residual.rs`](src:firmware/obc-app/src/device_core/residual.rs) lists the three and the issue that removes each one.
+[`device_core/residual.rs`](src:firmware/obc-app/src/device_core/residual.rs) lists the two and the issue that removes each one.
 
 ## On-device routing: the router seam
 

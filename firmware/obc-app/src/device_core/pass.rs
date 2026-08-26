@@ -465,7 +465,9 @@ impl App {
             } else if let Some(idx) = self.activity.take_ride_delete() {
                 self.catalogs.ride_entry(idx).map(|entry| CatalogIntent::DeleteRide { id: entry.id })
             } else {
-                None
+                // The trip delete already *is* a durable id — the confirm dialog holds the folder's
+                // identity rather than a menu row — so there is nothing to resolve here.
+                self.activity.take_trip_delete().map(|id| CatalogIntent::DeleteTrip { id })
             };
             if let Some(intent) = intent {
                 let _ = self.pass.connections.ui_catalog.try_put(intent);
@@ -1249,12 +1251,12 @@ mod tests {
     /// operation, hand back a command the executor then declines to perform, and leave Navigator
     /// holding an operation nobody will ever answer. On the board that was a planning spinner that
     /// redrew at ~15 Hz forever, and every later plan silently refused, because `next_plan_effect`
-    /// returns `None` while an operation is live. The drain asks for three classes by name, so it
+    /// returns `None` while an operation is live. The drain asks for two classes by name, so it
     /// cannot reach Navigator at all.
     ///
     /// Every board seam that runs between the drain and the pass is exposed to it: the debug link's
     /// route plan, the phone's remote update check (`open_remote_dfu_check`), a BLE clock stamp
-    /// arming a settings write. `drain_residual_commands` asks for the three residual classes **by
+    /// arming a settings write. `drain_residual_commands` asks for the two residual classes **by
     /// name** instead, which is what makes them safe — and this test is what says so.
     #[test]
     fn an_intent_admitted_between_two_passes_survives_the_residual_drain() {
@@ -1275,7 +1277,7 @@ mod tests {
         while let Some(command) = mail.pop() {
             drained.push(command);
         }
-        assert!(drained.is_empty(), "the residual drain reached past its three classes: {drained:?}");
+        assert!(drained.is_empty(), "the residual drain reached past its two classes: {drained:?}");
 
         let plan = quiet(&mut app, 20);
         let mut effects = plan.effects;
@@ -1290,7 +1292,7 @@ mod tests {
     /// folds in so the close costs one immediate pass rather than one wake — which on a static
     /// post-Finish screen is the board's watchdog feed cap.
     ///
-    /// The other half is why it may be folded at all: all three classes are **one-shots the drain
+    /// The other half is why it may be folded at all: both classes are **one-shots the drain
     /// clears**, so the answer goes false again and the loop settles. The two derived cues are
     /// levels that re-derive on every drain, so `has_pending_host_command` — which includes them —
     /// would spin forever; this test pins the difference.

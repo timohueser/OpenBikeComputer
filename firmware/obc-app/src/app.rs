@@ -3245,11 +3245,11 @@ impl App {
 // ==================== The typed app↔host protocol (FAR-07, #800) ====================
 //
 // One vocabulary, one pending state. Every host-directed one-shot/counter is drained here as a
-// typed [`HostCommand`] through the residual drain — three classes, one door, with the pending state
+// typed [`HostCommand`] through the residual drain — two classes, one door, with the pending state
 // living once inside `App` (a typed slot, a counter, or a derived predicate).
 
 impl App {
-    /// Drain **only** the residual classes — the three a typed executor still performs
+    /// Drain **only** the residual classes — the two a typed executor still performs
     /// ([`device_core::residual`](crate::device_core::residual)).
     ///
     /// **This is not a whole-order walk with a filter afterwards, and the difference is the whole
@@ -3263,7 +3263,7 @@ impl App {
     ///
     /// That is not hypothetical: it is what a board seam running between the drain and
     /// [`run_pass`](App::run_pass) does on every frame — the debug link's route plan, the phone's
-    /// remote update check, a BLE clock stamp arming a settings write. Asking for the three classes
+    /// remote update check, a BLE clock stamp arming a settings write. Asking for the two classes
     /// by name is what makes those seams safe, and it leaves
     /// [`assert_residual`](crate::device_core::residual::assert_residual) as the belt-and-braces
     /// check it was meant to be rather than the thing that notices.
@@ -3284,7 +3284,7 @@ impl App {
         DrainStatus::Complete
     }
 
-    /// Whether a **residual** legacy command is pending — one of the three classes a typed executor
+    /// Whether a **residual** legacy command is pending — one of the two classes a typed executor
     /// still drains ([`device_core::residual`](crate::device_core::residual)). Consumes nothing.
     ///
     /// A typed executor's wake is otherwise blind to the legacy mailbox: it folds in its own
@@ -3295,7 +3295,7 @@ impl App {
     ///
     /// Deliberately **not** [`has_pending_host_command`](App::has_pending_host_command): that one
     /// includes the two derived cues, which are levels re-derived on every drain, so folding it into
-    /// a wake would spin the loop forever. All three classes here are one-shots the drain clears,
+    /// a wake would spin the loop forever. Both classes here are one-shots the drain clears,
     /// which is what makes this safe to ask for an immediate pass on.
     pub fn has_pending_residual_command(&self) -> bool {
         crate::device_core::residual::RESIDUAL_CLASSES.iter().any(|&c| self.peek_host_command(c))
@@ -3312,22 +3312,18 @@ impl App {
         self.ui.stack.iter().any(|s| matches!(s, Screen::DfuInstalling(_)))
     }
 
-    /// Non-consuming per-class pendency for the drain's backpressure check. For the trip delete this
-    /// reports the request slot itself: a request whose subject vanished in a racing rescan still
-    /// peeks `true` and then drains to nothing.
+    /// Non-consuming per-class pendency for the drain's backpressure check.
     fn peek_host_command(&self, class: HostCommandClass) -> bool {
         match class {
-            HostCommandClass::DeleteTrip => self.activity.has_trip_delete(),
             HostCommandClass::FinishTrack => self.activity.has_track_action(),
             HostCommandClass::ForgetBond => self.state.ble_forget_pending,
         }
     }
 
-    /// Drain one command class from its single pending slot. All three are one-shots: they drain
+    /// Drain one command class from its single pending slot. Both are one-shots: they drain
     /// exactly once, and a vanished subject consumes the slot and yields nothing.
     fn drain_host_command(&mut self, class: HostCommandClass) -> Option<HostCommand> {
         match class {
-            HostCommandClass::DeleteTrip => self.activity.take_trip_delete().map(|id| HostCommand::DeleteTrip { id }),
             HostCommandClass::FinishTrack => self.activity.take_track_action().map(HostCommand::FinishTrack),
             HostCommandClass::ForgetBond => {
                 core::mem::take(&mut self.state.ble_forget_pending).then_some(HostCommand::ForgetBond)
@@ -5698,11 +5694,11 @@ mod tests {
         app.set_routes_with_ids(&[summary("Alpha"), summary("Beta")], &[10, 11]);
         app.set_rides(&[ride_summary("R")], &[7]);
 
-        // The three residual classes…
+        // The two residual classes…
         app.activity.request_track(TrackAction::Save);
         app.state.ble_forget_pending = true;
-        app.activity.request_trip_delete(42);
         // …and a request from every domain that owns its own lifecycle now.
+        app.activity.request_trip_delete(42);
         app.storage.admit_intent(crate::device_core::storage_info::StorageInfoIntent::RefreshRequested);
         app.admit_navigator_intent(NavigatorIntent::PlanRoute(NavRequest::new((0, 0), (500, 500), "To the col")));
         app.dfu.admit_intent(crate::dfu::DfuIntent::ScanRequested);
@@ -5718,15 +5714,8 @@ mod tests {
             let _ = drained.push(cmd);
         }
         assert!(
-            matches!(
-                drained.as_slice(),
-                [
-                    HostCommand::FinishTrack(TrackAction::Save),
-                    HostCommand::ForgetBond,
-                    HostCommand::DeleteTrip { id: 42 },
-                ]
-            ),
-            "three classes, in the order the drain asks for them: {drained:?}"
+            matches!(drained.as_slice(), [HostCommand::FinishTrack(TrackAction::Save), HostCommand::ForgetBond]),
+            "two classes, in the order the drain asks for them: {drained:?}"
         );
 
         // The domains it walked past still hold their work, untouched.
@@ -5735,8 +5724,9 @@ mod tests {
         assert!(drain_persist(&mut app).is_some());
         assert!(app.retention.has(crate::retention::SweepKind::StampRoute), "and the sweep's stamp is retention's");
         assert!(app.activity.take_route_delete().is_some(), "and the rider's route delete is the catalog's to take");
+        assert_eq!(app.activity.take_trip_delete(), Some(42), "and the trip cascade is the catalog's too");
 
-        // And the three are one-shots the drain clears.
+        // And the two are one-shots the drain clears.
         assert!(!app.has_pending_residual_command());
         assert_eq!(app.drain_residual_commands(&mut mailbox), DrainStatus::Complete);
         assert!(mailbox.is_empty(), "nothing pending, nothing drained");
