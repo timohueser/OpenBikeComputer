@@ -342,7 +342,7 @@ pub(crate) const ALERT_MARK_PRESENT: u8 = 1 << 0;
 pub(crate) const ALERT_MARK_HAS_POS: u8 = 1 << 1;
 
 /// The marks record's fixed length. Layout: `magic(4) OBCL · version(1) · pad(1) · marks(3 × 18) ·
-/// crc16 LE(2) · pad(6)` — CRC-16 over bytes `[0..60]`. 64 B = four RRAM write lines, like the
+/// crc16 LE(2) · pad(2)` — CRC-16 over bytes `[0..60]`. 64 B = four RRAM write lines, like the
 /// bond slot.
 pub const ALERT_MARKS_LEN: usize = 64;
 /// The marks record's tag; anything else there (blank page, torn write, an older layout) decodes
