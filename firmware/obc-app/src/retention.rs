@@ -375,17 +375,17 @@ pub fn decode_route_retention(bytes: &[u8]) -> RouteRetentionStore {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SweepAction {
     /// Delete the expired route with this durable id (via the existing
-    /// [`HostCommand::DeleteRoute`](crate::HostCommand::DeleteRoute)).
+    /// a `CatalogIntent::DeleteRoute`).
     DeleteRoute(crate::CatalogObjectId),
     /// Stamp this route's `last_used` to now — start the clock on an unknown stamp, or re-stamp the
     /// active route so it never expires underneath a ride
-    /// ([`HostCommand::StampRouteUsed`](crate::HostCommand::StampRouteUsed)).
+    /// (a `RetentionEffect::WriteRouteMetadata`).
     StampRoute(crate::CatalogObjectId),
     /// Delete the synced-and-aged-out ride with this durable id
-    /// ([`HostCommand::DeleteRide`](crate::HostCommand::DeleteRide)).
+    /// (a `CatalogIntent::DeleteRide`).
     DeleteRide(crate::CatalogObjectId),
     /// Stamp this ride's `synced_at` to now — start the countdown on a legacy synced-without-stamp
-    /// ride ([`HostCommand::StampRideSynced`](crate::HostCommand::StampRideSynced)).
+    /// ride (a `RetentionEffect::WriteRideMetadata`).
     StampRide(crate::CatalogObjectId),
 }
 

@@ -6,7 +6,7 @@
 //! measuring free space is a real, slow, failable scan: on the board a FAT free-cluster walk, on the
 //! simulator a filesystem query.
 //!
-//! The legacy shape is [`HostCommand::ScanCardFree`](crate::HostCommand) answered by
+//! The legacy shape was a `ScanCardFree` command answered by
 //! the legacy card-scan answer, whose `Option<u64>` folded "unavailable" and
 //! "the scan failed" into one `None`. Here they are separate, because they are different sentences
 //! to put in front of a rider.

@@ -2064,7 +2064,12 @@ pub(crate) async fn run_app(
                                 );
                             }
                         }
-                        _ => {}
+                        // No radio in this image, so there is no bond to forget and the screen that
+                        // asks for one cannot be reached. Spelled out rather than caught by a
+                        // wildcard: the match is exhaustive in both feature configs, which is what
+                        // makes the compiler the thing that says the residual is exactly three.
+                        #[cfg(not(feature = "ble"))]
+                        obc_app::HostCommand::ForgetBond => {}
                     }
                 }
                 finish
