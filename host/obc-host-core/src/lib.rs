@@ -55,8 +55,16 @@ pub use stores::{MemRideStore, MemRouteStore, MemTrackStore};
 /// [`CatalogEffect::RemoveObject`](obc_app::catalog_state::CatalogEffect) names an object by
 /// identity and never by namespace, because the flat store the board runs numbers every object out
 /// of one space (FS7 #1389). The simulator's folder stores and the in-memory family below number
-/// each family from zero, so a route and a ride could share an id and a removal would take the
-/// wrong one. Carving the rides out of a high band gives the executor the same one-space identity
-/// without renaming a file on disk: the band is added when a store *reads* an id and stripped when
-/// it builds a path.
+/// each family from zero (routes) or from a `TP{id}.OBT` filename (trips), so two families could
+/// share an id and a removal would take the wrong one. Carving each non-route family out of a high
+/// band gives the executor the same one-space identity without renaming a file on disk: the band is
+/// added when a store *reads* an id and stripped when it builds a path.
+///
+/// Routes keep `[0, RIDE_ID_BASE)`, rides `[RIDE_ID_BASE, TRIP_ID_BASE)`, trips
+/// `[TRIP_ID_BASE, ..)`.
 pub const RIDE_ID_BASE: obc_app::CatalogObjectId = 1 << 32;
+
+/// The id band a host's **trip** objects live in — the twin of [`RIDE_ID_BASE`], and what lets the
+/// trip cascade's last step name the folder through the same namespace-free removal its member
+/// steps use (#1491).
+pub const TRIP_ID_BASE: obc_app::CatalogObjectId = 1 << 48;

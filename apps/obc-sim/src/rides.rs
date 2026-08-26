@@ -169,10 +169,10 @@ impl obc_host_core::RideRepository for RideStore {
 /// written for), and this folder store numbers each family from zero. Only the id moves — the file
 /// on disk keeps its plain name.
 ///
-/// A filename number the band cannot hold (`N >= 2^64 - 2^32`) is therefore **not listed at all**,
-/// rather than listed under an id that collides with a route: the allocator below never mints one,
-/// so the only way to see this is a hand-written fixture, and an absent row is the honest answer to
-/// a file whose identity this store cannot state.
+/// A filename number the band cannot hold is therefore **not listed at all**, rather than listed
+/// under an id that collides with a route or a trip: the allocator below never mints one, so the
+/// only way to see this is a hand-written fixture, and an absent row is the honest answer to a file
+/// whose identity this store cannot state.
 fn fixture_object_id_in(p: &Path) -> Option<CatalogObjectId> {
     p.file_name()
         .and_then(|n| n.to_str())
@@ -180,6 +180,7 @@ fn fixture_object_id_in(p: &Path) -> Option<CatalogObjectId> {
         .and_then(|n| n.strip_suffix(".obcr"))
         .and_then(|n| n.parse::<CatalogObjectId>().ok())
         .and_then(|n| n.checked_add(obc_host_core::RIDE_ID_BASE))
+        .filter(|&id| id < obc_host_core::TRIP_ID_BASE)
 }
 
 #[cfg(test)]

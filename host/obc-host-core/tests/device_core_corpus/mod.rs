@@ -83,6 +83,10 @@ pub enum Requirement {
     WeatherAlertDelivery,
 }
 
+/// The corpus's one trip folder, and the two routes it groups — one id space, as every store the
+/// namespace-free `CatalogEffect::RemoveObject` runs against has.
+pub const TRIP: u64 = 50;
+
 pub const ALL_REQUIREMENTS: &[Requirement] = &[
     Requirement::CatalogStoreChange,
     Requirement::CatalogRefresh,
@@ -295,7 +299,7 @@ impl CorpusState {
         let mut app = App::new_idle(AppState::new(8_330_000, 46_570_000, 1.0));
         app.set_routes_with_ids(&routes, &route_ids);
         app.set_rides(&rides, &ride_ids);
-        app.set_trips(&[TripInput { id: 50, name: "Alps", stage_ids: &trip_stage_ids }]);
+        app.set_trips(&[TripInput { id: TRIP, name: "Alps", stage_ids: &trip_stage_ids }]);
         Self {
             app,
             routes,
@@ -359,7 +363,7 @@ impl CorpusState {
 
     pub fn feed_trips(&mut self, key: &'static str, trace: &mut TraceRecorder<VisibleState>) {
         if self.trip_present {
-            self.app.set_trips(&[TripInput { id: 50, name: "Alps", stage_ids: &self.trip_stage_ids }]);
+            self.app.set_trips(&[TripInput { id: TRIP, name: "Alps", stage_ids: &self.trip_stage_ids }]);
         } else {
             self.app.set_trips(&[]);
         }
@@ -433,7 +437,7 @@ impl CorpusState {
             }
             Action::UploadTrip => {
                 self.feed_trips("upload.trip", trace);
-                self.facts.note_trip_upload(TripUpload { id: 50, replaced: false });
+                self.facts.note_trip_upload(TripUpload { id: TRIP, replaced: false });
             }
             Action::RemapCatalogIdentity => {
                 self.routes.swap(0, 2);
@@ -823,16 +827,8 @@ struct BorrowedTrips<'a> {
 }
 
 impl TripCatalog for BorrowedTrips<'_> {
-    fn member_route_ids(&self, id: u64) -> Vec<u64> {
-        if *self.present && id == 50 {
-            self.stage_ids.to_vec()
-        } else {
-            Vec::new()
-        }
-    }
-
     fn delete_by_id(&mut self, id: u64) -> bool {
-        if *self.present && id == 50 {
+        if *self.present && id == TRIP {
             *self.present = false;
             true
         } else {
@@ -842,7 +838,7 @@ impl TripCatalog for BorrowedTrips<'_> {
 
     fn refeed(&self, app: &mut App) {
         if *self.present {
-            app.set_trips(&[TripInput { id: 50, name: "Alps", stage_ids: self.stage_ids }]);
+            app.set_trips(&[TripInput { id: TRIP, name: "Alps", stage_ids: self.stage_ids }]);
         } else {
             app.set_trips(&[]);
         }
@@ -884,7 +880,7 @@ pub fn fixture_object_key(kind: ObjectKind, id: u64) -> ObjectKey {
         (ObjectKind::Route, 30) => ObjectKey(2),
         (ObjectKind::Ride, 70) => ObjectKey(3),
         (ObjectKind::Ride, 90) => ObjectKey(4),
-        (ObjectKind::Trip, 50) => ObjectKey(5),
+        (ObjectKind::Trip, TRIP) => ObjectKey(5),
         _ => panic!("unseeded fixture identity {kind:?}:{id}"),
     }
 }

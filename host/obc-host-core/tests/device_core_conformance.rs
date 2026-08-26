@@ -78,7 +78,7 @@ use obc_route::NavError;
 
 use device_core_corpus::{
     clock_watermark, definition, normalization_seed, visible_state, Action, CorpusState, PendingSettingsResult,
-    Scenario, ScreenState, VisibleState, ALL_REQUIREMENTS, SCENARIOS, SETTINGS_FAILURE_RETRY_MS,
+    Scenario, ScreenState, VisibleState, ALL_REQUIREMENTS, SCENARIOS, SETTINGS_FAILURE_RETRY_MS, TRIP,
 };
 
 // ==================== the runners ====================
@@ -201,6 +201,7 @@ enum Refeed {
     None,
     Routes,
     Rides,
+    Trips,
 }
 
 /// One thing the executor finished, on its way back into the next pass.
@@ -415,15 +416,21 @@ impl CoreHarness {
                         refeed: Refeed::Rides,
                     };
                 }
+                // The folder's own object — the cascade's last step, decided by the domain and not
+                // composed here.
+                if self.state.trip_present && object == TRIP {
+                    self.state.trip_present = false;
+                    return Done::Catalog {
+                        outcome: CatalogOutcome::ObjectRemoved { token, object, existed: true },
+                        refeed: Refeed::Trips,
+                    };
+                }
                 // The subject vanished before the commit — a success for the goal state, and the
                 // one shape that must not read as a failure (epic §13).
                 Done::Catalog {
                     outcome: CatalogOutcome::ObjectRemoved { token, object, existed: false },
                     refeed: Refeed::None,
                 }
-            }
-            CatalogEffect::ReadTripMembers { .. } => {
-                panic!("the trip cascade is refused at admission until #1397 lands the bounded member read")
             }
         }
     }
@@ -442,12 +449,11 @@ impl CoreHarness {
 
     // ---- the residual half, for the domains without a machine ----
     //
-    // Recorder, Bond and the trip cascade, and nothing else. The ride close is answered by a catalog
-    // re-feed rather than by a ride identity (#1398), the bond removal by a link-status fact rather
-    // than by a reply (#1400), and `CatalogState::admit_intent` refuses a trip cascade outright
-    // (#1491). A domain that cannot validate a token cannot own an outcome (epic §4.3).
+    // Recorder and Bond, and nothing else. The ride close is answered by a catalog re-feed rather
+    // than by a ride identity (#1398) and the bond removal by a link-status fact rather than by a
+    // reply (#1400). A domain that cannot validate a token cannot own an outcome (epic §4.3).
 
-    /// Asked for **by name**: the three residual classes, and nothing else. A class DeviceCore owns
+    /// Asked for **by name**: the two residual classes, and nothing else. A class DeviceCore owns
     /// is not filtered out of a full walk here — it is never drained, because the full walk *pulls*
     /// from each domain as it passes and would mint the operation the pass's own effect already
     /// carries. The harness is therefore unable to reach past its classes rather than asserting
@@ -511,22 +517,8 @@ impl CoreHarness {
     }
 
     fn serve_legacy(&mut self, command: HostCommand, done: &mut Vec<Done>, trace: &mut TraceRecorder<VisibleState>) {
+        let _ = trace;
         match command {
-            HostCommand::DeleteTrip { id } => {
-                // The trip cascade runs inside one command: `CatalogState::admit_intent` refuses it,
-                // because the bounded member read does not exist yet (#1491).
-                if self.state.trip_present && id == 50 {
-                    for member in self.state.trip_stage_ids.clone() {
-                        if let Some(index) = self.state.route_ids.iter().position(|&id| id == member) {
-                            self.state.routes.remove(index);
-                            self.state.route_ids.remove(index);
-                        }
-                    }
-                    self.state.trip_present = false;
-                    self.state.feed_routes("core.cascade-routes", trace);
-                    self.state.feed_trips("core.cascade-trips", trace);
-                }
-            }
             // The ride close: still a legacy command, because Recorder has no machine — and the
             // pass deliberately leaves the rider's one-shot here rather than taking it somewhere it
             // cannot be acted on.
@@ -578,6 +570,7 @@ impl CoreHarness {
             Refeed::None => {}
             Refeed::Routes => self.state.feed_routes("core.routes", trace),
             Refeed::Rides => self.state.feed_rides("core.rides", trace),
+            Refeed::Trips => self.state.feed_trips("core.trips", trace),
         }
     }
 }
@@ -817,13 +810,8 @@ const MANDATORY_TRACES: [MandatoryTrace; 16] = [
     },
     MandatoryTrace {
         row: "trip member disappearance before delete commit",
-        test: "an_object_that_vanished_before_the_commit_is_a_success",
-        substitution: Some(
-            "the trip cascade never becomes an effect — CatalogState::admit_intent refuses it \
-             (#1491), so there is no bounded member read to race with. The trace runs the same \
-             disappearance against a route removal, which is where the rule lives: an object \
-             already gone is `existed: false`, a success, never a failure the rider sees.",
-        ),
+        test: "a_trip_member_that_vanished_before_the_commit_is_a_success",
+        substitution: None,
     },
     MandatoryTrace {
         row: "capability change after a new map mounts",
@@ -889,9 +877,9 @@ fn every_mandatory_trace_has_a_test_that_runs_it() {
     }
     let substituted = MANDATORY_TRACES.iter().filter(|trace| trace.substitution.is_some()).count();
     assert_eq!(
-        substituted, 1,
-        "the store-refresh row became literal at #1397 S6a; only the trip cascade is still \
-         unreachable, and it says so"
+        substituted, 0,
+        "the store-refresh row became literal at #1397 S6a and the trip cascade at #1491 — every \
+         row now runs the situation it names"
     );
 }
 
@@ -1225,8 +1213,51 @@ fn a_ride_finalize_failure_after_the_last_checkpoint_reaches_the_rider() {
     );
 }
 
-/// **A trip member disappears before the delete commit.** The goal state holds, so the removal is a
-/// success with `existed: false` — never a failure the rider is shown.
+/// **A trip member disappears before the delete commit.** The rider holds to delete a folder, and
+/// one of its member routes is gone by the time that member's removal commits. The goal state holds,
+/// so the step is a success with `existed: false` — never a failure the rider is shown — and the
+/// cascade walks on to the remaining member and then the folder.
+///
+/// The literal situation, on the domain's own cascade (#1491). The generic rule — an object already
+/// absent is a success — is the trace below it.
+#[test]
+fn a_trip_member_that_vanished_before_the_commit_is_a_success() {
+    let mut harness = typed();
+    harness.apply(Action::CascadeDeleteTrip);
+
+    // The first member's removal is decided; something else takes the file first.
+    let first = harness.next_catalog_effect();
+    let CatalogEffect::RemoveObject { object: member, .. } = first else { panic!("a removal") };
+    assert!(harness.state.trip_stage_ids.contains(&member), "the cascade starts with a member, not the folder");
+    let index = harness.state.route_ids.iter().position(|&id| id == member).expect("still catalogued");
+    harness.state.routes.remove(index);
+    harness.state.route_ids.remove(index);
+
+    let outcome = harness.answer_catalog(first);
+    assert_eq!(
+        outcome,
+        CatalogOutcome::ObjectRemoved { token: first.token(), object: member, existed: false },
+        "a member that vanished first is a success for the goal state"
+    );
+
+    // The walk is unaffected: the remaining member, then the folder itself.
+    let mut removed = vec![member];
+    for _ in 0..2 {
+        let effect = harness.next_catalog_effect();
+        let CatalogEffect::RemoveObject { object, .. } = effect else { panic!("a removal") };
+        removed.push(object);
+        harness.answer_catalog(effect);
+    }
+    assert_eq!(removed.last(), Some(&TRIP), "the folder is removed last, after every member had its turn");
+    assert!(!harness.state.trip_present, "and the folder is gone from the store");
+    assert!(harness.state.app.trips().is_empty(), "and from the rider's Route menu");
+
+    let plan = harness.pass();
+    assert!(plan.effects.catalog.is_empty(), "the cascade is over — nothing retried, nothing failed");
+}
+
+/// An object that vanished before its removal commits is a success with `existed: false`, whichever
+/// delete decided it — here the retention sweep's.
 #[test]
 fn an_object_that_vanished_before_the_commit_is_a_success() {
     let mut harness = expiring(1);

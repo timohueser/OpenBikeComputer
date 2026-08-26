@@ -4,8 +4,8 @@
 //! `.obcr` routes (the device stores `TP{id}.OBT` beside `RT{id}.OBR`). Scans the folder into a list
 //! of trips, each with a session id, and hands them to [`App::set_trips`](obc_app::App::set_trips)
 //! as [`TripInput`](obc_app::TripInput)s — the app resolves the stage route ids against the route
-//! catalog. Deleting a trip removes its backing `.obt` (the protocol-level trip delete is
-//! non-cascading; a "delete trip *and* its routes" is the initiating UI's composition — TR3).
+//! catalog. Deleting a trip removes its backing `.obt` and nothing else: "delete the trip *and* its
+//! routes" is `CatalogMachine`'s ordering, and reaches this store as one removal per member.
 
 use std::path::{Path, PathBuf};
 
@@ -14,7 +14,12 @@ use obc_formats::io::SliceSource;
 use obc_route::TripMeta;
 
 /// The scanned trips folder: each trip's session id + its decoded [`TripMeta`], parallel to its file
-/// path. Trip ids live in their own namespace (separate from routes/rides, spec §4.1).
+/// path.
+///
+/// Ids are carried into [`TRIP_ID_BASE`](obc_host_core::TRIP_ID_BASE)'s band, exactly as the ride
+/// store carries its own: a `.obt` and a `.obcr` in these folders are numbered from unrelated
+/// counters (`TP1.OBT` beside the first scanned route), and the typed executor removes an object by
+/// identity alone. Only the id moves — the file on disk keeps its plain name.
 pub struct TripStore {
     dir: PathBuf,
     trips: Vec<TripMeta>,
@@ -37,7 +42,7 @@ impl TripStore {
             ids: Vec::new(),
             paths: Vec::new(),
             assigned: Vec::new(),
-            next_id: 0,
+            next_id: obc_host_core::TRIP_ID_BASE,
         };
         s.rescan();
         s
@@ -93,8 +98,8 @@ impl TripStore {
     }
 
     /// The session id for `path`: from a `TP{id}.OBT` filename when present (the device's own naming),
-    /// else the registered / freshly-assigned fake id. Append-only for the session — ids are never
-    /// reused, matching the device's contract.
+    /// else the registered / freshly-assigned fake id — in both cases inside the trip band. Append-only
+    /// for the session — ids are never reused, matching the device's contract.
     fn id_for(&mut self, path: &Path) -> CatalogObjectId {
         if let Some(id) = id_from_filename(path) {
             return id;
@@ -106,16 +111,6 @@ impl TripStore {
         self.assigned.push((path.to_path_buf(), id));
         self.next_id = self.next_id.saturating_add(1);
         id
-    }
-
-    /// The member route object ids of the trip with session id `id` — its stage refs verbatim
-    /// (dangling ids and all), ride order. Used by the on-device **cascade** delete (TR3): the host
-    /// deletes each of these route files alongside the trip's `.obt`. Empty if the id is unknown.
-    pub fn member_route_ids(&self, id: CatalogObjectId) -> Vec<CatalogObjectId> {
-        match self.ids.iter().position(|&x| x == id) {
-            Some(pos) => self.trips[pos].stage_ids.iter().copied().collect(),
-            None => Vec::new(),
-        }
     }
 
     /// Delete the trip with session id `id` (the on-device trip delete): remove its `.obt` from the
@@ -132,12 +127,9 @@ impl TripStore {
     }
 }
 
-/// The shared dispatcher ([`obc_host_core::HostLoop`]) drives the trip cascade delete + re-feed
-/// through this trait (the web demo plugs in the trip-less `()` instead).
+/// The shared dispatcher ([`obc_host_core::HostLoop`]) drives the folder's removal + re-feed through
+/// this trait (the web demo plugs in the trip-less `()` instead).
 impl obc_host_core::TripCatalog for TripStore {
-    fn member_route_ids(&self, id: CatalogObjectId) -> Vec<CatalogObjectId> {
-        self.member_route_ids(id)
-    }
     fn delete_by_id(&mut self, id: CatalogObjectId) -> bool {
         self.delete_by_id(id)
     }
@@ -157,7 +149,9 @@ fn id_from_filename(path: &Path) -> Option<CatalogObjectId> {
     if digits.is_empty() {
         return None;
     }
-    digits.parse().ok()
+    // A filename number the band cannot hold is not listed at all, rather than listed under an id
+    // that collides with a route or a ride — the same honesty the ride store's parser keeps.
+    digits.parse::<CatalogObjectId>().ok()?.checked_add(obc_host_core::TRIP_ID_BASE)
 }
 
 #[cfg(test)]
@@ -241,11 +235,13 @@ mod tests {
         let trip_store = TripStore::open(&dir);
 
         assert_eq!(route_store.catalog().len(), 3);
-        assert_eq!(route_store.ids(), &[0, 1, 2]); // sorted a/b/c → fake scan-order ids
+        // Sorted a/b/c → fake scan-order ids. Route 1 and TP1.OBT share a filename number and must
+        // still be different objects: the trip band is what keeps a namespace-free removal honest.
+        assert_eq!(route_store.ids(), &[0, 1, 2]);
 
         let inputs = trip_store.inputs();
         assert_eq!(inputs.len(), 1);
-        assert_eq!(inputs[0].id, 1); // from the TP1.OBT filename
+        assert_eq!(inputs[0].id, obc_host_core::TRIP_ID_BASE + 1); // TP1.OBT, carried into the trip band
         assert_eq!(inputs[0].name, "Alpen Traverse");
         assert_eq!(inputs[0].stage_ids, &[0, 1, 99]);
 
@@ -272,7 +268,8 @@ mod tests {
         let mut trip_store = TripStore::open(&dir);
         assert_eq!(trip_store.inputs().len(), 1);
 
-        assert!(trip_store.delete_by_id(1));
+        let trip = obc_host_core::TRIP_ID_BASE + 1;
+        assert!(trip_store.delete_by_id(trip));
         assert!(!dir.join("TP1.OBT").exists(), "the trip file is gone");
         // The member route files are untouched (non-cascading, spec §7.7).
         assert!(dir.join("a.obcr").exists());
@@ -281,7 +278,7 @@ mod tests {
 
         assert!(trip_store.inputs().is_empty());
         // A second delete of the retired id is a no-op.
-        assert!(!trip_store.delete_by_id(1));
+        assert!(!trip_store.delete_by_id(trip));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

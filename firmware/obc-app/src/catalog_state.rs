@@ -142,7 +142,17 @@ pub(crate) struct CatalogState {
     ops: crate::device_core::TokenSource<crate::device_core::CatalogTag>,
     /// An admitted [`CatalogIntent`] that has not become an effect yet. Capacity one: later work
     /// stays with whoever asked for it, where it can still be superseded or cancelled.
+    ///
+    /// A [`DeleteTrip`](CatalogIntent::DeleteTrip) stays here for the **whole** cascade rather than
+    /// one effect — see [`cascade`](CatalogState::cascade) — so the same one slot that delays a
+    /// second delete also delays one behind a running cascade.
     pending: Option<CatalogIntent>,
+    /// How far the trip cascade has walked: the **stage ordinal** the next member removal takes,
+    /// or `None` when no cascade is running. Two bytes, and that is the whole resident cost of the
+    /// cascade — the member ids are already resident in
+    /// [`trips`](CatalogState::trips)`[..].stage_ids`, kept verbatim exactly so a delete has
+    /// something to key on, so there is no member buffer to add (#1491).
+    cascade: Option<u8>,
     /// Whether an effect is out with the executor. Its outcome clears this, which is what lets the
     /// next intent go out.
     in_flight: bool,
@@ -178,6 +188,7 @@ impl CatalogState {
             detour_preview_route: None,
             ops: crate::device_core::TokenSource::new(),
             pending: None,
+            cascade: None,
             in_flight: false,
         }
     );
@@ -603,13 +614,12 @@ impl CatalogState {
 // ==================== the Catalog domain protocol (#1436) ====================
 //
 // CatalogMachine owns every ordering the host used to improvise: delete-then-refresh, the trip
-// cascade's member lookup before its one bounded delete commit, and the identity remap a refresh
-// implies. The store executor is left with three operations — read the catalog, read a trip's
-// members, remove an object — and no say in what any of them means.
+// cascade's member-then-folder order, and the identity remap a refresh implies. The store executor
+// is left with two operations — read the catalog, remove an object — and no say in what either of
+// them means.
 //
 // Bulk stays out. A catalog read fills the resident catalogs through their existing feeders and the
-// outcome reports only the store revision it was read at; a member read fills the domain's bounded
-// member target and the outcome reports only how many landed.
+// outcome reports only the store revision it was read at.
 
 use crate::device_core::{CatalogTag, OperationToken};
 
@@ -635,8 +645,6 @@ pub enum CatalogIntent {
 pub enum CatalogEffect {
     /// Re-read the object store into the resident catalogs.
     ReadCatalog { token: OperationToken<CatalogTag> },
-    /// Read `trip`'s member ids into the domain's bounded member target — the cascade's first step.
-    ReadTripMembers { token: OperationToken<CatalogTag>, trip: CatalogObjectId },
     /// Remove one object. Deliberately namespace-free: routes, rides and trips are all objects to
     /// the store, and it is the domain that knows which cascade step this is.
     RemoveObject { token: OperationToken<CatalogTag>, object: CatalogObjectId },
@@ -646,9 +654,7 @@ impl CatalogEffect {
     /// The operation this effect belongs to.
     pub fn token(&self) -> OperationToken<CatalogTag> {
         match self {
-            CatalogEffect::ReadCatalog { token }
-            | CatalogEffect::ReadTripMembers { token, .. }
-            | CatalogEffect::RemoveObject { token, .. } => *token,
+            CatalogEffect::ReadCatalog { token } | CatalogEffect::RemoveObject { token, .. } => *token,
         }
     }
 }
@@ -668,8 +674,6 @@ pub enum CatalogError {
 pub enum CatalogOutcome {
     /// The catalogs were re-read at store revision `revision`; the resident catalogs now hold it.
     CatalogRead { token: OperationToken<CatalogTag>, revision: Revision },
-    /// `members` member ids landed in the domain's bounded member target.
-    TripMembersRead { token: OperationToken<CatalogTag>, members: u8 },
     /// `object` is gone from the store. `existed` is `false` when it was already absent — the
     /// epic's "a trip member disappears before the delete commit" race, which is a *success* for
     /// the cascade (the goal state holds) and must not read as a failure.
@@ -685,7 +689,6 @@ impl CatalogOutcome {
     pub fn token(&self) -> OperationToken<CatalogTag> {
         match self {
             CatalogOutcome::CatalogRead { token, .. }
-            | CatalogOutcome::TripMembersRead { token, .. }
             | CatalogOutcome::ObjectRemoved { token, .. }
             | CatalogOutcome::Failed { token, .. }
             | CatalogOutcome::Cancelled { token } => *token,
@@ -693,30 +696,23 @@ impl CatalogOutcome {
     }
 }
 
-/// The catalog domain's operation seam (#1438): admit an intent, issue the one effect it implies,
-/// and accept the answer.
+/// The catalog domain's operation seam (#1438): admit an intent, issue the effects it implies, and
+/// accept each answer.
 ///
-/// This is the first piece of `CatalogMachine` living where the catalog already lives. It owns the
-/// two things a domain owner must own — its [`OperationToken`] and how many operations may be in
-/// flight — and nothing more: the delete-then-refresh ordering, the trip cascade and the identity
-/// remap arrive with the store cutover (#1397).
-///
-/// Reached from the pass alone for now, which has no production caller until #1439 — see
-/// [`pass`](crate::device_core::pass).
-#[allow(dead_code)]
+/// It owns the two things a domain owner must own — its [`OperationToken`] and how many operations
+/// may be in flight — plus the one ordering no single bounded operation can express: the **trip
+/// cascade**, member routes first and the folder last.
 impl CatalogState {
     /// Admit `intent`, or refuse it and hand it back.
     ///
-    /// Two refusals, both of them backpressure rather than failure: one intent is already waiting to
-    /// become an effect, or the intent is a **trip cascade**, whose bounded member read the domain
-    /// cannot perform until #1397 lands it. Refusing the cascade is what keeps "a busy catalog
-    /// delays a delete, it never loses one" true of it too — its producer keeps it, and it stays on
-    /// the legacy path. Admitting one and quietly doing nothing would strand it here instead.
+    /// One refusal, and it is backpressure rather than failure: something is already in the slot —
+    /// an intent waiting to become an effect, or a cascade still walking. Its producer keeps it, so
+    /// "a busy catalog delays a delete, it never loses one" holds for every intent alike.
     pub(crate) fn admit_intent(
         &mut self,
         intent: CatalogIntent,
     ) -> Result<(), crate::device_core::SlotFull<CatalogIntent>> {
-        if self.pending.is_some() || matches!(intent, CatalogIntent::DeleteTrip { .. }) {
+        if self.pending.is_some() {
             return Err(crate::device_core::SlotFull { rejected: intent });
         }
         self.pending = Some(intent);
@@ -727,25 +723,48 @@ impl CatalogState {
     /// admitted.
     ///
     /// The admitted intent is taken **before** the match, so no arm can leave the domain holding an
-    /// intent it has already decided about — an intent that stayed pending would refuse every later
-    /// one for the rest of the boot.
+    /// intent it has already decided about. A cascade is the one arm that puts it back, and it
+    /// advances [`cascade`](CatalogState::cascade) every time it does — the ordinal only ever grows
+    /// and the stage list is bounded, so the walk always reaches the folder and releases the slot.
     pub(crate) fn next_effect(&mut self) -> Option<CatalogEffect> {
         if self.in_flight {
             return None;
         }
-        let effect = match self.pending.take()? {
+        let intent = self.pending.take()?;
+        let effect = match intent {
             CatalogIntent::Refresh => CatalogEffect::ReadCatalog { token: self.ops.issue() },
             CatalogIntent::DeleteRoute { id } | CatalogIntent::DeleteRide { id } => {
                 CatalogEffect::RemoveObject { token: self.ops.issue(), object: id }
             }
-            // Refused at admission, so nothing can be holding one here.
-            CatalogIntent::DeleteTrip { .. } => {
-                debug_assert!(false, "a trip cascade is refused by admit_intent, never admitted");
-                return None;
+            // The cascade, one member per operation. The trip's stage ids are already resident and
+            // the `.obt` is untouched until the last step, so ordinal `n` names the same member on
+            // every pass — the domain needs a cursor, not a member buffer.
+            CatalogIntent::DeleteTrip { id } => {
+                let ordinal = self.cascade.unwrap_or(0);
+                match self.trip_member(id, ordinal) {
+                    Some(member) => {
+                        self.cascade = Some(ordinal.saturating_add(1));
+                        self.pending = Some(intent); // the folder is still owed
+                        CatalogEffect::RemoveObject { token: self.ops.issue(), object: member }
+                    }
+                    // Every member has had its turn: the folder itself is the last removal, and
+                    // taking the intent above is what ends the cascade.
+                    None => {
+                        self.cascade = None;
+                        CatalogEffect::RemoveObject { token: self.ops.issue(), object: id }
+                    }
+                }
             }
         };
         self.in_flight = true;
         Some(effect)
+    }
+
+    /// The member route id at stage `ordinal` of the resident trip `trip`, or `None` past its last
+    /// stage (or when the trip is not resident at all, which ends the walk at the folder).
+    fn trip_member(&self, trip: CatalogObjectId, ordinal: u8) -> Option<CatalogObjectId> {
+        let trip = self.trips.iter().find(|t| t.id == trip)?;
+        trip.stage_ids.get(usize::from(ordinal)).copied()
     }
 
     /// Consume the answer to a [`CatalogEffect`]. A stale token — a superseded operation, or a
@@ -753,6 +772,11 @@ impl CatalogState {
     ///
     /// The resident catalogs are not touched here: what is *in* the store reaches them through the
     /// refresh feed, and inventing a removal locally would make the two disagree until it did.
+    ///
+    /// A cascade step reads the same as any other answer, including a failed one. The walk advanced
+    /// when the step went out, so a member the store refused is **left behind** rather than retried:
+    /// the folder still goes, and the leftover route comes back as an unfiled row the rider can
+    /// delete. Retrying instead would spin a cascade against a card that has stopped answering.
     pub(crate) fn apply_outcome(&mut self, outcome: CatalogOutcome) {
         if !self.ops.is_current(outcome.token()) {
             return;
@@ -795,6 +819,7 @@ impl CatalogState {
             detour_preview_route,
             ops,
             pending,
+            cascade,
             in_flight,
         } = self;
         assert!(routes.is_empty() && route_ids.is_empty() && route_meta.is_empty(), "no routes catalogued");
@@ -809,7 +834,7 @@ impl CatalogState {
             "the derived key revisions start at zero — nothing committed, nothing invalidated"
         );
         assert!(detour_preview.is_empty() && detour_preview_route.is_none(), "no detour preview cached");
-        assert!(pending.is_none() && !*in_flight, "no catalog operation admitted or in flight");
+        assert!(pending.is_none() && cascade.is_none() && !*in_flight, "no catalog operation admitted or in flight");
         assert_eq!(format!("{ops:?}"), "TokenSource(0)", "no catalog operation has been issued");
     }
 }
@@ -818,22 +843,94 @@ impl CatalogState {
 mod tests {
     use super::*;
 
-    /// A trip cascade is refused at the door rather than admitted and quietly abandoned: its
-    /// producer keeps it, and the domain stays able to serve every later intent. Admitting one and
-    /// returning no effect would strand it in the pending slot and refuse every delete for the rest
-    /// of the boot.
-    #[test]
-    fn a_trip_cascade_is_refused_without_wedging_the_domain() {
-        let mut catalogs = CatalogState::new();
-        let cascade = CatalogIntent::DeleteTrip { id: 5 };
-        assert_eq!(catalogs.admit_intent(cascade).unwrap_err().rejected, cascade, "handed back to its producer");
-        assert!(catalogs.next_effect().is_none(), "and nothing is owed");
+    fn summary() -> RouteSummary {
+        RouteSummary {
+            name: Default::default(),
+            distance_km: 1,
+            climb_m: 1,
+            bbox: obc_map_scene::BBox { min_lon: 0, min_lat: 0, max_lon: 1, max_lat: 1 },
+            start_lon: 0,
+            start_lat: 0,
+        }
+    }
 
-        catalogs.admit_intent(CatalogIntent::DeleteRoute { id: 9 }).unwrap();
-        assert!(
-            matches!(catalogs.next_effect(), Some(CatalogEffect::RemoveObject { object: 9, .. })),
-            "the next intent is served normally"
-        );
+    /// A catalog holding one trip (`id`, stages `stage_ids`) over the routes `route_ids`.
+    fn with_trip(id: CatalogObjectId, stage_ids: &[CatalogObjectId], route_ids: &[CatalogObjectId]) -> CatalogState {
+        let mut catalogs = CatalogState::new();
+        let summaries: heapless::Vec<RouteSummary, MAX_ROUTES> = route_ids.iter().map(|_| summary()).collect();
+        catalogs.replace_routes(&summaries, route_ids);
+        catalogs.set_trips(&[TripInput { id, name: "Alps", stage_ids }]);
+        catalogs
+    }
+
+    /// Take the whole cascade, answering each step as the executor would.
+    fn drain_cascade(catalogs: &mut CatalogState) -> heapless::Vec<CatalogObjectId, 8> {
+        let mut removed = heapless::Vec::new();
+        while let Some(effect) = catalogs.next_effect() {
+            let CatalogEffect::RemoveObject { token, object } = effect else { panic!("a removal") };
+            let _ = removed.push(object);
+            catalogs.apply_outcome(CatalogOutcome::ObjectRemoved { token, object, existed: true });
+        }
+        removed
+    }
+
+    /// The cascade is the domain's ordering, made of the same bounded removal every other delete
+    /// uses: each member route in stage order, then the folder — and nothing else is admitted while
+    /// it walks, so the slot that delays a second delete delays one behind a cascade too.
+    #[test]
+    fn a_trip_cascade_removes_every_member_before_the_folder() {
+        let mut catalogs = with_trip(50, &[10, 20, 30], &[10, 20, 30]);
+        catalogs.admit_intent(CatalogIntent::DeleteTrip { id: 50 }).unwrap();
+
+        // Mid-walk the slot is busy, and the refused intent goes back to its producer intact.
+        let effect = catalogs.next_effect().expect("the first member");
+        let later = CatalogIntent::DeleteRoute { id: 99 };
+        assert_eq!(catalogs.admit_intent(later).unwrap_err().rejected, later, "handed back, never lost");
+        let CatalogEffect::RemoveObject { token, object } = effect else { panic!("a removal") };
+        assert_eq!(object, 10, "stage order, first member first");
+        catalogs.apply_outcome(CatalogOutcome::ObjectRemoved { token, object, existed: true });
+
+        assert_eq!(drain_cascade(&mut catalogs).as_slice(), &[20, 30, 50], "the rest, then the folder");
+        catalogs.admit_intent(later).expect("the cascade released the slot");
+    }
+
+    /// **The same-numbering trap.** A trip and a route may carry the same id (a host that numbers
+    /// its families from separate counters), and an id-only cascade would then take the route's
+    /// file for the folder. The members are resolved through the *trip's own* stage list, so the
+    /// route that merely shares the trip's number is never touched.
+    #[test]
+    fn a_route_that_shares_the_trips_id_is_not_cascaded() {
+        // Trip 1 has one member, route 7. Route 1 exists too, and shares the trip's number.
+        let mut catalogs = with_trip(1, &[7], &[7, 1]);
+        catalogs.admit_intent(CatalogIntent::DeleteTrip { id: 1 }).unwrap();
+        let removed = drain_cascade(&mut catalogs);
+        assert_eq!(removed.as_slice(), &[7, 1], "the member, then the folder — and only twice");
+        // The second removal is the folder's identity, which the executor resolves in the trip
+        // namespace. Nothing in the walk ever named route 1 as a *member*.
+        assert_eq!(removed.iter().filter(|&&id| id == 1).count(), 1, "route 1 is not a member of trip 1");
+    }
+
+    /// A member the store refused is left behind rather than retried: the ordinal advanced when the
+    /// step went out, so the folder still goes and the leftover route reappears as an unfiled row.
+    /// Retrying would spin the cascade against a card that has stopped answering.
+    #[test]
+    fn a_failed_member_step_does_not_stall_the_cascade() {
+        let mut catalogs = with_trip(50, &[10, 20], &[10, 20]);
+        catalogs.admit_intent(CatalogIntent::DeleteTrip { id: 50 }).unwrap();
+
+        let effect = catalogs.next_effect().expect("the first member");
+        catalogs.apply_outcome(CatalogOutcome::Failed { token: effect.token(), error: CatalogError::RemoveFailed });
+
+        assert_eq!(drain_cascade(&mut catalogs).as_slice(), &[20, 50], "the walk moved on and finished");
+    }
+
+    /// A trip that vanished from the resident catalog mid-walk ends the walk at the folder rather
+    /// than re-reading a member list that is no longer there.
+    #[test]
+    fn a_cascade_over_a_vanished_trip_still_removes_the_folder() {
+        let mut catalogs = CatalogState::new();
+        catalogs.admit_intent(CatalogIntent::DeleteTrip { id: 50 }).unwrap();
+        assert_eq!(drain_cascade(&mut catalogs).as_slice(), &[50], "no members to walk, the folder still goes");
     }
 
     /// The placement path must land exactly the state the by-value path builds.
