@@ -11,11 +11,17 @@
 // A shared test corpus is compiled into every binary that includes it, and each uses a subset.
 #![allow(dead_code)]
 
+use obc_app::device_core::ModeState;
+use obc_app::device_core::{
+    DerivedInputs, ExternalFacts, NavigatorTag, OperationToken, OutcomeSlots, Revision, RouteUpload, SettingsTag,
+    StoreIdentity, StoreRevision, TripUpload, UpdateResult,
+};
 use obc_app::dfu::{clamp, DfuFailure, DfuInstallError, DfuScanError, DfuScanReport};
+use obc_app::navigator::NavigatorOutcome;
 use obc_app::screen::Screen;
 use obc_app::{
-    App, AppState, DetourPreview, Gesture, HostEvent, Mode, RideRetentionRecord, RideSummary, RouteSummary,
-    TrackAction, TripInput, WarningFlags,
+    App, AppState, DetourPreview, Gesture, Mode, RideRetentionRecord, RideSummary, RouteSummary, TrackAction,
+    TripInput, WarningFlags,
 };
 use obc_formats::io::{ByteSink, SliceSource};
 use obc_host_core::trace::{
@@ -229,17 +235,6 @@ pub struct VisibleState {
     pub retention_delete_attempts: u16,
 }
 
-#[derive(Debug)]
-pub enum Outcome {
-    Event(HostEvent),
-    FinishSave,
-    FinalizeFailed,
-    CardScanned,
-    RideTrack { id: u64 },
-    NavPreview { generation: u16 },
-    DetourCommitted,
-}
-
 #[derive(Debug, Clone, Copy)]
 pub enum PendingSettingsResult {
     PersistLatest,
@@ -273,6 +268,20 @@ pub struct CorpusState {
     pub route_delete_fail_once: bool,
     pub retention_delete_attempts: u16,
     pub settings_retry_requested: bool,
+    /// What the executor has handed back, waiting for the next pass to read it.
+    pub facts: ExternalFacts,
+    pub outcomes: OutcomeSlots,
+    pub derived: DerivedInputs,
+    /// The store revision this fixture's repositories report. They have none of their own, so the
+    /// executor mints a monotonic one per commit and per read — exactly what `HostLoop` does.
+    pub store_revision: u64,
+    /// The navigation operation the executor is holding. The corpus scripts a detour search's answer
+    /// and the splice's answer at the *action* that produces them rather than at the request, so
+    /// they are built against whatever is actually running.
+    pub nav_token: Option<OperationToken<NavigatorTag>>,
+    /// The settings write the executor is holding, for the same reason: a scripted answer may be a
+    /// *stale* ack for a revision a newer edit already superseded.
+    pub settings_token: Option<OperationToken<SettingsTag>>,
 }
 
 impl CorpusState {
@@ -305,13 +314,36 @@ impl CorpusState {
             route_delete_fail_once: false,
             retention_delete_attempts: 0,
             settings_retry_requested: false,
+            facts: ExternalFacts::NONE,
+            outcomes: OutcomeSlots::new(),
+            derived: DerivedInputs::NONE,
+            store_revision: 0,
+            nav_token: None,
+            settings_token: None,
         }
     }
 
-    /// Record a host answer and apply it.
-    pub fn event(&mut self, event: HostEvent, trace: &mut TraceRecorder<VisibleState>) {
-        trace.record_event(&event);
-        self.app.apply_event(event);
+    /// Whether a search is running — the executor answers it on the pass after the action that
+    /// starts it, so an action that wants a fresh plan waits for the last one to land.
+    pub fn planning(&self) -> bool {
+        self.app.core_mode() == ModeState::Searching
+    }
+
+    /// The store moved underneath the executor — the level a commit reports.
+    pub fn note_store_commit(&mut self) {
+        self.store_revision += 1;
+        self.facts.note_store_revision(StoreRevision {
+            store: StoreIdentity::new(1),
+            revision: Revision::new(self.store_revision),
+        });
+    }
+
+    /// Answer the navigation operation the executor is holding. Nothing to answer means the search
+    /// this action scripts a result for was never handed out.
+    pub fn answer_nav(&mut self, build: impl FnOnce(OperationToken<NavigatorTag>) -> NavigatorOutcome) {
+        if let Some(token) = self.nav_token.take() {
+            let _ = self.outcomes.navigator.try_put(build(token));
+        }
     }
 
     pub fn feed_routes(&mut self, key: &'static str, trace: &mut TraceRecorder<VisibleState>) {
@@ -386,14 +418,14 @@ impl CorpusState {
     pub fn apply_input(&mut self, action: &Action, trace: &mut TraceRecorder<VisibleState>) {
         match action {
             Action::Settle => {}
-            Action::StoreChanged => self.event(HostEvent::StoreChanged, trace),
+            Action::StoreChanged => self.note_store_commit(),
             Action::RefreshCatalogs => {}
             Action::UploadRoutesThenTrip => {
                 self.feed_routes("upload.routes", trace);
-                self.event(HostEvent::RouteUploaded { id: 10, replaced: false, elevation: None }, trace);
-                self.event(HostEvent::RouteUploaded { id: 20, replaced: false, elevation: None }, trace);
+                self.facts.note_route_upload(RouteUpload { id: 10, replaced: false, elevation: None });
+                self.facts.note_route_upload(RouteUpload { id: 20, replaced: false, elevation: None });
                 self.feed_trips("upload.trip", trace);
-                self.event(HostEvent::TripUploaded { id: 50, replaced: false }, trace);
+                self.facts.note_trip_upload(TripUpload { id: 50, replaced: false });
             }
             Action::RemapCatalogIdentity => {
                 self.routes.swap(0, 2);
@@ -430,7 +462,9 @@ impl CorpusState {
             Action::CancelRoutePlan => self.app.apply_gesture(Gesture::Back),
             Action::DeliverLateRouteResult => {
                 self.feed_routes("nav.old-publication", trace);
-                self.event(HostEvent::NavPlanned(Ok(10)), trace);
+                // The operation the rider walked away from, answered late: Navigator refuses a
+                // token it no longer holds, which is the whole point of the scenario.
+                self.answer_nav(|token| NavigatorOutcome::PlanFinished { token, route: 10 });
             }
             Action::ReplaceRoutePlan => {
                 assert!(self.app.debug_start_nav((0, 0), (2_000, 2_000), "Replacement"));
@@ -440,15 +474,15 @@ impl CorpusState {
             Action::CommitDetour => {
                 self.app.set_detour_preview(&[(0, 0), (100, 100)]);
                 trace.record_feeder(FeederCall::new(FeederKind::DetourPreview, "detour.preview", 2));
-                self.event(
-                    HostEvent::DetourPlanned(Ok(DetourPreview {
+                self.answer_nav(|token| NavigatorOutcome::DetourFinished {
+                    token,
+                    preview: DetourPreview {
                         cost_delta_m: 100,
                         total_distance_m: 900,
                         rejoin_m: 1_000,
                         ascent_m: Some(30),
-                    })),
-                    trace,
-                );
+                    },
+                });
                 self.app.apply_gesture(Gesture::Press);
                 self.commit_success_pending = true;
             }
@@ -500,7 +534,7 @@ impl CorpusState {
             }
             Action::StampRouteUse => {
                 self.app.stamp_clock_ble(1_720_000_000, 60);
-                self.event(HostEvent::RouteUploaded { id: 10, replaced: false, elevation: None }, trace);
+                self.facts.note_route_upload(RouteUpload { id: 10, replaced: false, elevation: None });
             }
             Action::StampRideSync => {
                 self.app.stamp_clock_ble(1_720_000_000, 60);
@@ -562,10 +596,13 @@ impl CorpusState {
                 self.app.apply_gesture(Gesture::Press);
                 self.pending_dfu_install = Some(Err(DfuInstallError::Recording));
             }
-            Action::ConfirmUpdate => self.event(HostEvent::UpdateConfirmed(clamp("v2")), trace),
-            Action::FailUpdate => {
-                self.event(HostEvent::UpdateFailed { why: DfuFailure::Reverted, staged: Some(clamp("v3")) }, trace)
+            Action::ConfirmUpdate => {
+                self.facts.note_update_result(UpdateResult::Confirmed(clamp("v2"))).expect("no verdict pending");
             }
+            Action::FailUpdate => self
+                .facts
+                .note_update_result(UpdateResult::Failed { why: DfuFailure::Reverted, staged: Some(clamp("v3")) })
+                .expect("no verdict pending"),
             Action::ForgetBond => self.app.state.ble_forget_pending = true,
             Action::ScanCardSpace => {
                 self.app.apply_gesture(Gesture::Press);
@@ -595,20 +632,25 @@ impl CorpusState {
                 self.app.apply_gesture(Gesture::Press);
             }
             Action::FillRideTrack => {}
+            // A computed overview is what wants a preview, and a plan is how one gets there. The
+            // executor answers the search on the pass that follows this action, so a plan that is
+            // still running is not started again.
             Action::NeedNavPreview => {
-                if !self.app.nav_preview_missing() {
+                if !self.app.nav_preview_missing() && !self.planning() {
                     assert!(self.app.debug_start_nav((0, 0), (1_000, 1_000), "Preview"));
                     self.feed_routes("nav.preview-route", trace);
-                    self.event(HostEvent::NavPlanned(Ok(10)), trace);
+                    self.pending_nav_plan = Some(Ok(10));
                     self.nav_generation = self.nav_generation.wrapping_add(1);
                 }
             }
             Action::ReplaceNavPreviewNeed => {
                 self.app.apply_gesture(Gesture::Back);
-                assert!(self.app.debug_start_nav((0, 0), (2_000, 2_000), "New preview"));
-                self.feed_routes("nav.preview-replacement", trace);
-                self.event(HostEvent::NavPlanned(Ok(10)), trace);
-                self.nav_generation = self.nav_generation.wrapping_add(1);
+                if !self.planning() {
+                    assert!(self.app.debug_start_nav((0, 0), (2_000, 2_000), "New preview"));
+                    self.feed_routes("nav.preview-replacement", trace);
+                    self.pending_nav_plan = Some(Ok(10));
+                    self.nav_generation = self.nav_generation.wrapping_add(1);
+                }
             }
             Action::FillNavPreview => {}
             Action::RefreshWeather => {
