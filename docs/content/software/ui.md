@@ -638,9 +638,9 @@ A static screen with no new input, data, or timer event does not render.
 ### The render key
 
 Each screen row declares a **render key**: the exact facts its drawing reads. The Map names the
-camera, the fix, the pan mode, and the route-relative chrome. The riding grid names the ride
-readouts and the live sensor values of the fields the rider pinned. Home names the battery, the
-connected indicator, and the screensaver backdrop. A screen whose content moves only on input
+camera, the fix, the pan mode, the route-relative chrome, and the low-battery cue. The riding grid
+names the ride readouts and the live sensor values of the fields the rider pinned. Home names the
+battery level, the connected indicator, and the screensaver backdrop. A screen whose content moves only on input
 declares no facts of its own.
 
 One frame builds the visible screens' key before its work and again after it. A changed key requests

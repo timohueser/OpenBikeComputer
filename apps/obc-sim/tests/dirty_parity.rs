@@ -552,6 +552,15 @@ fn replay() -> Vec<Step> {
     for i in 0..5 {
         steps.push(step("quiet tail", 122_000 + i * 1_000));
     }
+
+    // --- the one battery fact a map base draws: the low-battery cue ------------------------------
+    // A map base draws no gauge, but it does draw the top-left low-battery glyph, so the *cue* (not
+    // the level) is in the Map key. Each crossing is placed on the gauge's own ~30 s cadence, which
+    // is what makes the reading land at all.
+    steps.push(step("the battery crosses into the low-battery cue", 155_000).battery(5).expect("Map"));
+    steps.push(step("quiet with the cue up", 156_000).expect("Map"));
+    steps.push(step("the battery charges back over the cue", 190_000).battery(40).expect("Map"));
+    steps.push(step("quiet with the cue gone", 191_000).expect("Map"));
     steps
 }
 

@@ -70,8 +70,8 @@ pub(crate) struct HomeKey {
     backdrop_seed: u32,
 }
 
-/// A map base: the camera, the fix that drives it, the pan HUD, and the route-relative chrome
-/// (the warning chip, the waypoint chip, the drawn route line).
+/// A map base: the camera, the fix that drives it, the pan HUD, the route-relative chrome (the
+/// warning chip, the waypoint chip, the drawn route line), and the low-battery cue.
 ///
 /// Catalog and table indices are narrowed to `u32`: a route slot and a waypoint row are bounded by
 /// their catalogs' own low caps, so the narrowing is lossless on every target this runs on.
@@ -93,6 +93,9 @@ pub(crate) struct MapKey {
     next_waypoint: Option<u32>,
     no_fix: bool,
     tracking: bool,
+    /// Whether the top-left low-battery glyph is up — the one thing a map base draws off the gauge.
+    /// The *cue*, not the level, so the 30 s poll only repaints the crossing.
+    low_battery: bool,
 }
 
 /// The Statistics grid: the ride readouts, the route-relative fields, and the live sensor tiles —
@@ -228,6 +231,7 @@ impl App {
             next_waypoint: self.activity.next_waypoint.map(|i| i as u32),
             no_fix,
             tracking: self.activity.is_tracking(),
+            low_battery: crate::screen::low_battery_cue(self.state.device.battery_pct),
         }
     }
 
@@ -338,10 +342,10 @@ mod tests {
         assert_ne!(negative_zero, before);
     }
 
-    /// Home draws the gauge; the Map does not. The economy the per-screen declaration buys over the
-    /// old base-screen class gate, in one comparison.
+    /// Home draws the gauge as a *level*; a map base draws only the low-battery cue. The economy the
+    /// per-screen declaration buys over the old base-screen class gate, in one comparison.
     #[test]
-    fn the_battery_is_in_homes_key_and_in_no_other() {
+    fn the_battery_level_is_in_homes_key_and_in_no_other() {
         let mut home = App::new_idle(AppState::new(0, 0, 1.0));
         let before = home.render_key();
         home.state.device.battery_pct = 42;
@@ -350,6 +354,20 @@ mod tests {
         let mut map = App::new(AppState::new(0, 0, 1.0));
         let before = map.render_key();
         map.state.device.battery_pct = 42;
-        assert_eq!(map.render_key(), before, "the map view does not, so a 30 s gauge tick costs it nothing");
+        assert_eq!(map.render_key(), before, "a level a map base never draws costs it no render");
+    }
+
+    /// …but the map base *does* draw the low-battery glyph, so the pass must see the threshold
+    /// crossing. Both ways: the cue appearing and the cue clearing on a charge.
+    #[test]
+    fn the_low_battery_cue_moves_the_map_key_in_both_directions() {
+        let mut map = App::new(AppState::new(0, 0, 1.0)); // [Home, Map] — a map base
+        map.state.device.battery_pct = 11;
+        let above = map.render_key();
+        map.state.device.battery_pct = 9;
+        let below = map.render_key();
+        assert_ne!(below, above, "crossing into the cue must repaint — the glyph has to appear");
+        map.state.device.battery_pct = 40;
+        assert_eq!(map.render_key(), above, "and charging back over it takes the glyph away again");
     }
 }

@@ -70,6 +70,7 @@ pub use dfu::{
     DfuProgressScreen, DfuUpdatedScreen,
 };
 pub use home::HomeScreen;
+pub(crate) use map::low_battery_cue;
 pub use map::{MapScreen, ROUTE_WEIGHT};
 pub use map_transfer::{MapTransfer, MapTransferError, MapTransferScreen};
 pub use menu::MenuScreen;
@@ -600,7 +601,8 @@ pub enum RenderKeyKind {
     Static,
     /// Battery, the connected indicator, and the screensaver backdrop's per-open jitter.
     Home,
-    /// The camera, the fix that drives it, the pan HUD, and the route-relative map chrome.
+    /// The camera, the fix that drives it, the pan HUD, the route-relative map chrome, and the
+    /// top-left low-battery cue.
     Map,
     /// The riding grid: progress, off-route, no-fix, the active climb, the next waypoint, and the
     /// live sensor values of the fields actually pinned to the grid.
