@@ -1639,12 +1639,14 @@ impl App {
         });
         // The decision is [`WeatherDomain`]'s (#1437): thresholds, dedup and cooldown all live
         // there. What is left here is the presentation seam and the persistence handshake.
-        match self.weather.alert_action(snap, now, &self.settings.weather_alert_marks, open_card) {
+        match self.weather.alert_action(snap, now, open_card) {
             AlertAction::Fire(c) => {
                 if self.show_weather_alert(c.class.kind(), c.minutes) {
-                    self.weather.mark_fired(&c, &mut self.settings.weather_alert_marks);
-                    // The mark must survive the next boot: arm the #810 persistence handshake
-                    // exactly like a rider edit (alert-fire rate, so the write cost is negligible).
+                    self.weather.mark_fired(&c);
+                    // The mark must survive the next boot: mirror it back into the blob and arm the
+                    // #810 persistence handshake exactly like a rider edit. Both lines go when the
+                    // marks record lands.
+                    self.settings.weather_alert_marks = *self.weather.alert_marks();
                     self.settings_ops.note_edited();
                 }
             }
@@ -2271,6 +2273,9 @@ impl App {
         // operation, not a rider edit (the BLE-merge path uses `merge_ble_settings`, which preserves
         // a pending device-edit save).
         self.settings_ops.note_seeded();
+        // Behaviour-neutral while the marks still ride the blob: the interpreter's copy is seeded
+        // from the row. The row goes when the record lands.
+        self.weather.set_alert_marks(self.settings.weather_alert_marks);
     }
 
     /// Merge the BLE-owned fields (units + device name) of a phone Config write into the live
@@ -6805,12 +6810,13 @@ mod tests {
         // A genuinely new event fires on the rebooted device: age the persisted mark past the
         // cooldown (the equivalent of the storm having been hours ago) and the same-shaped
         // candidate is a new encounter.
-        rebooted.settings.weather_alert_marks[crate::weather_alerts::AlertClass::HeavyRain.slot()] =
-            Some(crate::weather_alerts::AlertMark {
-                onset: rebooted.wall_unix_now() as i64 - crate::weather_alerts::COOLDOWN_S - 4_000,
-                pos: Some((47_000_000, 8_000_000)),
-                severity: 12,
-            });
+        let mut aged = *rebooted.weather.alert_marks();
+        aged[crate::weather_alerts::AlertClass::HeavyRain.slot()] = Some(crate::weather_alerts::AlertMark {
+            onset: rebooted.wall_unix_now() as i64 - crate::weather_alerts::COOLDOWN_S - 4_000,
+            pos: Some((47_000_000, 8_000_000)),
+            severity: 12,
+        });
+        rebooted.weather.set_alert_marks(aged);
         rebooted.weather_alert_tick(Some(&escalated));
         assert!(matches!(rebooted.top_screen(), Screen::WeatherAlert(_)), "an event past the cooldown is a new alert");
     }
