@@ -686,10 +686,8 @@ pub enum CatalogError {
 /// The result of one [`CatalogEffect`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogOutcome {
-    /// The catalogs were re-read; the resident catalogs now hold what the store had.
-    ///
-    /// It carries no revision: the store's revision reaches the domain as an external *fact*, and
-    /// what a read owes back is only that the operation is over.
+    /// The catalogs were re-read. No revision: that arrives as an external *fact*, and all a read
+    /// owes back is that the operation is over.
     CatalogRead { token: OperationToken<CatalogTag> },
     /// `object` is gone from the store. `existed` is `false` when it was already absent — the
     /// epic's "a trip member disappears before the delete commit" race, which is a *success* for
@@ -754,7 +752,7 @@ impl CatalogState {
             return None;
         }
         let Some(intent) = self.pending.take() else {
-            if !self.take_refresh_owed() {
+            if !core::mem::take(&mut self.refresh_owed) {
                 return None;
             }
             self.in_flight = true;
@@ -811,18 +809,15 @@ impl CatalogState {
         }
         self.ops.invalidate(); // terminal: a duplicate of this answer is no longer current
         self.in_flight = false;
-        // A completed removal moved the store, so the resident catalogs are behind it; a read the
-        // store could not answer is still owed, and nothing else would ever order it again. Both
-        // `existed` verdicts arm: an object the store did not have may still be a resident row.
+        // A completed removal moved the store, so the resident catalogs are behind it — both
+        // `existed` verdicts, because an object the store did not have may still be a resident row.
+        // A read the store could not answer is still owed, and nothing else would order it again.
+        // A **refused** removal changed nothing and arms nothing; retention re-queues its own
+        // candidate, and a read per retry would walk the store for a store that did not move.
         //
-        // A removal the store **refused** arms nothing — it changed nothing, retention re-queues
-        // its own candidate, and a read per retry would walk the store for a store that did not
-        // move. Neither does a cancellation.
-        //
-        // **A cascade needs no arm of its own.** Every member step arms this bit and none of them
-        // can spend it: the walk keeps the `DeleteTrip` intent in `pending` until the folder, and
-        // `next_effect` only reaches the owed read when nothing is pending. One bit, spent once,
-        // after the folder.
+        // **A cascade needs no arm of its own.** Every member step arms this bit and none can spend
+        // it: the walk keeps its `DeleteTrip` in `pending` until the folder, and `next_effect` only
+        // reaches the owed read when nothing is pending. One bit, spent once, after the folder.
         match outcome {
             CatalogOutcome::ObjectRemoved { .. } | CatalogOutcome::Failed { error: CatalogError::Unreadable, .. } => {
                 self.refresh_owed = true
@@ -835,12 +830,6 @@ impl CatalogState {
     /// The fact is a level; the owed bit is what turns it into a read.
     pub(crate) fn note_store_moved(&mut self) {
         self.refresh_owed = true;
-    }
-
-    /// Take the owed re-read, if one is owed — [`next_effect`](CatalogState::next_effect)'s last
-    /// arm.
-    fn take_refresh_owed(&mut self) -> bool {
-        core::mem::take(&mut self.refresh_owed)
     }
 }
 
