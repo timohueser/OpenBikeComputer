@@ -850,6 +850,13 @@ public final class MainScreenModel {
     /// fingerprint is the trip's *current* encoding (`currentTripPayloadCRC`:
     /// name + committed device stage ids), so this runs after the **route**
     /// reconcile has trued the stage links up — both call sites order it so.
+    ///
+    /// The trip name lives inside the trip object, so it carries `adoptByContent`'s
+    /// rename rule too: a trip renamed while unlinked no longer matches its own
+    /// device copy under its current encoding, and the catalog's name is what
+    /// reconstructs the stored bytes. A trip object is its name plus its stage ids,
+    /// so re-encoding under the entry's name *is* the reconstruction — no header
+    /// splice, unlike a route's geometry-bearing payload.
     private func adoptTripsByContent(scope: LibraryScope, catalog: [TripCatalogEntry]) {
         var claimed = Set(library.trips().compactMap { trip -> DeviceObjectID? in
             guard let link = trip.deviceLink, link.matches(scope) else { return nil }
@@ -864,12 +871,21 @@ public final class MainScreenModel {
             }
             .sorted { $0.id.rawValue < $1.id.rawValue }
         for var trip in candidates {
-            let currentCRC = currentTripPayloadCRC(for: trip)
-            guard let entry = adoptable.first(where: {
-                $0.crc32 == currentCRC && !claimed.contains($0.id)
+            let stageIDs = currentTripDeviceStageIDs(for: trip)
+            let currentCRC = TripObjectCodec.payloadCRC(name: trip.name, deviceStageIDs: stageIDs)
+            guard let entry = adoptable.first(where: { entry in
+                guard !claimed.contains(entry.id) else { return false }
+                if entry.crc32 == currentCRC { return true }
+                // The rename case: same stages, the device's copy still under the
+                // name the catalog reports.
+                guard entry.name != trip.name else { return false }
+                return entry.crc32
+                    == TripObjectCodec.payloadCRC(name: entry.name, deviceStageIDs: stageIDs)
             }) else { continue }
             trip.deviceLink = DeviceRouteLink(scope: scope, objectID: entry.id)
-            trip.uploadedCRC32 = currentCRC
+            // The entry's CRC, not the record's: that is what the device holds, so the
+            // trip reads "on the device, out of date" and the next send replaces by id.
+            trip.uploadedCRC32 = entry.crc32
             library.saveTrip(trip)
             claimed.insert(entry.id)
         }
