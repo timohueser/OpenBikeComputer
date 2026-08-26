@@ -94,10 +94,7 @@ pub(crate) fn run_command(data: &[u8], store: &RefCell<ObjectStore>, shared: &mu
         }
         (obc_ble::CMD_WEATHER_UNCHANGED, _) => match WeatherUnchanged::decode(data) {
             Ok(ack) => {
-                #[cfg(feature = "ble")]
                 let accepted = crate::ble::weather_unchanged(ack.request_id, ack.retry_after_s);
-                #[cfg(not(feature = "ble"))]
-                let accepted = false;
                 if accepted {
                     info!("link: [cmd] weatherUnchanged: request {} checked", ack.request_id);
                     (CommandStatus::Ok, 0)

@@ -704,8 +704,6 @@ check *args:
         step "board clippy (default)"        cargo clippy --locked -- -D warnings
         step "board clippy (debug-uart)"     cargo clippy --locked --features debug-uart -- -D warnings
         step "board build (default, release)" cargo build --release --locked
-        step "board clippy (ble)"            cargo clippy --locked --no-default-features --features ble -- -D warnings
-        step "board build (ble, release)"    cargo build --release --locked --no-default-features --features ble
         popd >/dev/null
       else _warn "skip board gates — no RISC-V gcc (obc doctor --install)"; SKIPPED+=("board"); fi
     fi

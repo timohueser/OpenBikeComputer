@@ -174,18 +174,13 @@ cargo run --release --features synth
 # Indoor: stream a recorded ride from a host over the VCOM debug-sensor feed (issue #127) — needs
 # HWFC OFF (above). Replaces the real sensors with the host feed.
 cargo run --release --features debug-uart
-
-# The BLE build (issue #270, epic #267): the same firmware with the nrf-sdc + MPSL + TrouBLE
-# stack folded in (`src/ble/`), advertising as `OBC-XXXX` (S0 §2 — the FICR serial tail).
-# Map + BLE run IN ONE IMAGE: the full map/ride app plus the companion link, sharing the SD
-# card + RRAM settings behind one async mutex. `--no-default-features` is REQUIRED (it swaps
-# the critical-section impl to MPSL's — a compile_error catches the wrong invocation).
-# Composes with debug-uart/synth (headless ride beside a live link).
-cargo run --release --no-default-features --features ble
 ```
 
-**There is no `usb` feature.** The USB device plane (#889) is in every build above — see the
-"USB device plane" section further down for the bring-up recipe.
+**There is no `ble` feature and no `usb` feature.** The nrf-sdc + MPSL + TrouBLE stack
+(`src/ble/`, issue #270, epic #267) and the USB device plane (#889) are in every build above: the
+full map/ride app, the companion link over both transports, and one SD card + RRAM settings behind
+one async mutex, in one image. The device advertises as `OBC-XXXX` (S0 §2 — the FICR serial tail).
+See the "USB device plane" section further down for the bring-up recipe.
 
 ```bash
 # The OBC2 media bench (#1354). Storage only — no display, no app, no BLE, no sensors — and
@@ -509,11 +504,11 @@ builds on it:
   live in `.bss` statics built by dedicated `#[inline(never)]` init fns (transient frame, boot
   depth) and the async body holds only `&'static` handles — see `ble::run`'s doc. Three nets
   catch a regression: the compile-time budget assert (floors the stack region), the CI
-  **poll-frame guard** on the ble ELF (largest `sub sp` in any `TaskStorage<F>::poll` ≤ 12 KB —
+  **poll-frame guard** on the release ELF (largest `sub sp` in any `TaskStorage<F>::poll` ≤ 12 KB —
   the `ci.yml` embedded job), and **MSPLIM** (armed first thing in `main`): the ARMv8-M hardware
   stack-limit register turns any residual overflow into an immediate, precise fault instead of
   silent `.bss` corruption. To check a frame by hand, disassemble the release ELF
-  (`cargo objdump --release --no-default-features --features ble -- -d --demangle`) and read the
+  (`cargo objdump --release -- -d --demangle`) and read the
   `sub sp` at each `TaskStorage<F>::poll` entry.
 
 ## BLE — board-specific notes & on-glass verification

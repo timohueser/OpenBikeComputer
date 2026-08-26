@@ -31,7 +31,6 @@ use embassy_nrf::Peri;
 use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
 use obc_app::Settings;
 use obc_ports::SettingsStore;
-#[cfg(feature = "ble")]
 use trouble_host::prelude::{
     AddrKind, Address, BdAddr, BondInformation, Identity, IdentityResolvingKey, LongTermKey, SecurityLevel,
 };
@@ -140,12 +139,10 @@ const _: () = assert!(ARM_MARKER_OFFSET + obc_app::dfu::ARM_MARKER_LEN as u32 <=
 /// (which reserves the low half for a future two-slot upgrade), the boot counter @2048, the id
 /// high-water line @2560, and the retired @2576 (former store-epoch line, now card-resident #776).
 /// One slot: a fresh pairing replaces it (single-peer policy).
-#[cfg(feature = "ble")]
 const BOND_OFFSET: u32 = 3072;
 /// Pin the id high-water line (and the retired @2576 gap above it) clear of the bond slot: the
-/// 16-byte line at @2560 must end at or before @3072, with @2576 left unused. Guarded here where
-/// `BOND_OFFSET` is in scope (both are `cfg(ble)`-relevant).
-#[cfg(feature = "ble")]
+/// 16-byte line at @2560 must end at or before @3072, with @2576 left unused. Asserted here where
+/// `BOND_OFFSET` is in scope.
 const _: () = assert!(ID_MARKS_OFFSET + obc_app::store_meta::ID_MARKS_LEN as u32 <= BOND_OFFSET);
 /// The bond slot's tag; anything else there (blank page, torn write, older layout) reads as
 /// "no bond" rather than garbage — the device falls back to open pairing.
@@ -155,15 +152,12 @@ const _: () = assert!(ID_MARKS_OFFSET + obc_app::store_meta::ID_MARKS_LEN as u32
 /// these separate CRC-framed RRAM records instead of colliding on one tag (DR4, #732). The tag
 /// was `OBCB` before this change: any bond written by an older firmware fails the magic check
 /// once and reads as "no bond", so the first connection after this update is a one-time re-pair.
-#[cfg(feature = "ble")]
 const BOND_MAGIC: [u8; 4] = *b"OBCP";
 /// Bond blob layout version (bump on any field change — an old version reads as no bond).
-#[cfg(feature = "ble")]
 const BOND_VERSION: u8 = 1;
 /// The bond slot's fixed length: 4 RRAM lines (a whole number of the 16-byte write granularity).
 /// Layout: `magic(4) · version(1) · is_bonded(1) · security_level(1) · addr_kind(1) · addr(6) ·
 /// irk_present(1) · pad(1) · LTK(16) · IRK(16) · pad(12) · crc32(4)` over bytes `[0..60]`.
-#[cfg(feature = "ble")]
 const BOND_SLOT_LEN: usize = 64;
 
 /// RRAM-backed settings store: owns the [`Rramc`] controller and reads/writes the carved page.
@@ -365,7 +359,6 @@ impl RramSettingsStore {
     /// the device advertises open and pairs afresh. Reconstructs the full
     /// [`BondInformation`] (LTK, peer identity + IRK, security level) the host adds to its resolving
     /// list so the bonded phone's rotating RPA reconnect resolves and re-encrypts silently.
-    #[cfg(feature = "ble")]
     pub fn load_bond(&mut self) -> Option<BondInformation> {
         let off = region_offset() + BOND_OFFSET;
         let mut buf = [0u8; BOND_SLOT_LEN];
@@ -387,7 +380,6 @@ impl RramSettingsStore {
 
     /// Persist the single BLE bond — a fresh pairing replaces whatever was here (single-peer policy).
     /// One aligned write, no erase (RRAM overwrites in place).
-    #[cfg(feature = "ble")]
     pub fn save_bond(&mut self, bond: &BondInformation) {
         let off = region_offset() + BOND_OFFSET;
         let bytes = encode_bond(bond);
@@ -400,7 +392,6 @@ impl RramSettingsStore {
     /// Clear the stored BLE bond — zero the slot so [`load_bond`](Self::load_bond) reads "no bond"
     /// and the device returns to open pairing. Used when the peer signals it lost
     /// its keys (the app/OS "forgot" the device) so the next contact re-pairs cleanly.
-    #[cfg(feature = "ble")]
     pub fn clear_bond(&mut self) {
         let off = region_offset() + BOND_OFFSET;
         let zero = [0u8; BOND_SLOT_LEN];
@@ -413,7 +404,6 @@ impl RramSettingsStore {
 
 /// Serialize a [`BondInformation`] into the fixed [`BOND_SLOT_LEN`] slot (see the layout note on
 /// [`BOND_SLOT_LEN`]), with a trailing CRC-32 over the payload so a torn write reads back invalid.
-#[cfg(feature = "ble")]
 fn encode_bond(bond: &BondInformation) -> [u8; BOND_SLOT_LEN] {
     let mut buf = [0u8; BOND_SLOT_LEN];
     buf[0..4].copy_from_slice(&BOND_MAGIC);
@@ -442,7 +432,6 @@ fn encode_bond(bond: &BondInformation) -> [u8; BOND_SLOT_LEN] {
 
 /// Reconstruct a [`BondInformation`] from a slot, or `None` if the magic / version / CRC don't
 /// check out (blank page, torn write, older layout).
-#[cfg(feature = "ble")]
 fn decode_bond(buf: &[u8; BOND_SLOT_LEN]) -> Option<BondInformation> {
     if buf[0..4] != BOND_MAGIC || buf[4] != BOND_VERSION {
         return None;

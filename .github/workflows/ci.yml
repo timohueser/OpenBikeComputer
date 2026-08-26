@@ -12,8 +12,7 @@ name: CI
 #     thumbv8m target (a `--manifest-path` from the root would build it for the host and fail on
 #     embassy-nrf). It has its own Cargo.lock, and no test harness (no_std on bare metal), so it gets
 #     `clippy`/`build` but not `--all-targets`/`test`. No `--all-features` build (the `debug-uart`
-#     and `synth` source overrides are mutually exclusive, and `ble` needs `--no-default-features`),
-#     so each config is linted on its own. Every leg cross-compiles a RISC-V blob (see `embedded`).
+#     and `synth` source overrides are mutually exclusive), so each config is linted on its own. Every leg cross-compiles a RISC-V blob (see `embedded`).
 #   * nRF is the only board in the tree — optimise the shared crates for nRF freely.
 #   * There is no board in CI, so every embedded target is build-only.
 #   * The toolchain (channel + rustfmt/clippy + the thumbv8m / wasm32 targets) is declared once in
@@ -253,10 +252,9 @@ jobs:
           PYTHONPATH=. python3 -m pytest builder/tests/ -v
 
   # The real device board crate (nRF54L15) on its thumbv8m target: clippy each feature config + a
-  # release build of the shipping default. Build-only (no board in CI). Each leg runs from the crate
-  # dir so .cargo/config.toml selects thumbv8m. No `--all-features` (the `debug-uart`/`synth` source
-  # overrides are mutually exclusive and `ble` needs `--no-default-features`), so each config is
-  # linted on its own.
+  # release build of the one shipping image. Build-only (no board in CI). Each leg runs from the
+  # crate dir so .cargo/config.toml selects thumbv8m. No `--all-features` (the `debug-uart`/`synth`
+  # source overrides are mutually exclusive), so each config is linted on its own.
   #
   # The display is the LS021 panel via the FLPR (the VPR RISC-V coprocessor, issue #173): every leg
   # cross-compiles a `rv32emc` C blob via `build.rs`, so the RISC-V gcc is installed first for all.
@@ -269,25 +267,15 @@ jobs:
       matrix:
         include:
           # default = the shipping LS021/FLPR map + two-plane path (square-loop GPS, no host feed).
-          # Since 2026-07-26 that includes the **USB device plane** (#889): `usb` is no longer a
-          # feature, so `src/usb/` and the `src/link/` core it shares with the radio are compiled,
-          # linted and resource-gated by the default legs below — no separate USB matrix leg exists
-          # or is needed, and the plane can no longer rot in a profile nobody builds.
+          # It is the whole device: the **USB device plane** (#889) since 2026-07-26 and the **radio**
+          # (#1530) since the `ble` feature was retired are compiled, linted and resource-gated by the
+          # default legs below — no separate USB or BLE matrix leg exists or is needed, and neither
+          # plane can rot in a profile nobody builds.
           - { name: "clippy (default = LS021/FLPR)", cmd: "cargo clippy --locked -- -D warnings" }
           # debug-uart = default + the VCOM host sensor/telemetry feed (the obc-platform debug codec).
           - { name: "clippy (debug-uart)", cmd: "cargo clippy --locked --features debug-uart -- -D warnings" }
           # The real flashed default artifact (LS021/FLPR) under fat LTO + the N3 RAM-budget assert.
           - { name: "build (default = LS021/FLPR, release)", cmd: "set -o pipefail; cargo build --release --locked -vv 2>&1 | tee $RUNNER_TEMP/obc-fw-default-build.log" }
-          # `ble` named explicitly. This leg used to be "the BLE build" against a map-only default,
-          # and later carried a --no-default-features that existed only to keep `cs-single-core` out
-          # of a BLE image. `ble` has been part of `default` since the LM20 retarget,
-          # `cs-single-core` is gone (#931), and the new `sd-bench` map profiler is opt-in — so
-          # Cargo's `default` marker remains part of the resolved configuration even though it
-          # expands only to `ble`: TS2 measured distinct production ELFs (16 B flash difference on
-          # the pinned toolchain). Keep the documented explicit invocation as genuinely separate
-          # clippy/build/resource legs; deleting it would drop a distinct artifact contract.
-          - { name: "clippy (ble)", cmd: "cargo clippy --locked --no-default-features --features ble -- -D warnings" }
-          - { name: "build (ble, release)", cmd: "cargo build --release --locked --no-default-features --features ble" }
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -334,6 +322,9 @@ jobs:
       # `.bss + .data`, exact framebuffer count/size, and the report-only target `size_of` table.
       # Run against the production ELF first; the resource-report rebuild is a separate diagnostic
       # artifact and never changes what ships.
+      # `board` also subsumes #677's steady-state poll-frame parser: the largest single `sub sp` in
+      # every `TaskStorage<F>::poll`, capped at 12 KiB, with stale-symbol and stale-instruction
+      # diagnostics covered by unit tests.
       - name: "obc-fw-nrf54l: default resource baseline"
         if: matrix.name == 'build (default = LS021/FLPR, release)'
         working-directory: firmware/obc-fw-nrf54l
@@ -463,19 +454,6 @@ jobs:
           python3 ../tools/resource_guard.py frames \
             --elf target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l \
             --match 'flat_store' --limit 16384
-      # The BLE board guard also subsumes #677's steady-state poll-frame parser: largest single
-      # `sub sp` in every `TaskStorage<F>::poll`, still capped at 12 KiB, now with stale-symbol and
-      # stale-instruction diagnostics covered by unit tests.
-      - name: "obc-fw-nrf54l: BLE resource + poll-frame baseline"
-        if: matrix.name == 'build (ble, release)'
-        working-directory: firmware/obc-fw-nrf54l
-        run: |
-          rustup component add llvm-tools
-          python3 ../tools/resource_guard.py board --profile ble \
-            --elf target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l
-          cargo build --release --locked --no-default-features --features ble,resource-report
-          python3 ../tools/resource_guard.py report --profile ble \
-            --elf target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l
 
   # The obc-boot bootloader (epic #615, #617): workspace-excluded like the board crate, built
   # from its own directory so its .cargo/config.toml selects thumbv8m. No test harness and no

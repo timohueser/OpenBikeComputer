@@ -73,6 +73,7 @@ use embassy_sync::waitqueue::AtomicWaker;
 use embassy_usb::msos::{self, windows_version};
 use embassy_usb::{Builder, Config, UsbDevice};
 
+use crate::ble::set_usb_radio_inhibited;
 use crate::init_static;
 use crate::link::identity;
 use obc_link::flat::USB_BINDING_MAJOR;
@@ -577,14 +578,6 @@ fn build_plane(usb_p: Peri<'static, peripherals::USBHS>) -> UsbPlane {
     );
 
     UsbPlane { device: builder.build(), ctrl_in, ctrl_out, bulk_in, bulk_out }
-}
-
-#[inline]
-fn set_usb_radio_inhibited(inhibited: bool) {
-    #[cfg(feature = "ble")]
-    crate::ble::set_usb_radio_inhibited(inhibited);
-    #[cfg(not(feature = "ble"))]
-    let _ = inhibited;
 }
 
 /// Bring the USB device up and run it forever: the enumeration pump, the control-frame loop, and
