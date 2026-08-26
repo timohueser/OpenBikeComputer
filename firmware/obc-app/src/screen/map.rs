@@ -720,6 +720,14 @@ fn draw_clock(cv: &mut impl Surface, w: i32, now: DateTime) {
 /// battery indicator at all.
 const LOW_BATTERY_PCT: u8 = 10;
 
+/// Whether the map's low-battery cue is up at `battery_pct` — the *only* thing a map base draws off
+/// the gauge, and therefore the only battery fact [`RenderKeyKind::Map`](super::RenderKeyKind)
+/// names. A boolean rather than the level, so a 30 s gauge tick that crosses nothing still costs a
+/// map base no render.
+pub(crate) const fn low_battery_cue(battery_pct: u8) -> bool {
+    battery_pct < LOW_BATTERY_PCT
+}
+
 /// Draw the low-battery cue: a small warning-red battery silhouette in the top-left corner (a
 /// scaled-down cousin of the Home gauge's shell). Filled solid red — this is the "act now" state, not
 /// a level readout — with an ink halo behind it so it reads over any terrain.

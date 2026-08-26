@@ -835,6 +835,17 @@ extra_triggers = ["tools/check_card_scheduler.py"]
 ownership = [{ kind = "workflow", pattern = "python3 tools/check_card_scheduler.py" }]
 
 [[suite]]
+id = "ci.render-key-guard"
+surface = "firmware-app"
+level = "contract"
+command = "python3 tools/check_render_keys.py"
+fixtures = []
+pull_request = "always"
+scheduled = "none"
+extra_triggers = ["tools/check_render_keys.py"]
+ownership = [{ kind = "workflow", pattern = "python3 tools/check_render_keys.py" }]
+
+[[suite]]
 id = "ci.screen-vocabulary-guard"
 surface = "firmware-app"
 level = "contract"

@@ -8,7 +8,7 @@
 //! poll cadence, the ambient temperature).
 //!
 //! `App::tick` stays the per-frame orchestrator — it owns the camera ([`AppState`]), the screen
-//! stack gates (`shows_live_data`, the Home battery gate), the wall clock, and the dirty flag —
+//! stack gates (the base-screen and Home battery gates), the wall clock, and the dirty flag —
 //! and calls in here for every ride-domain decision. Methods take
 //! [`Activity`] explicitly: the activity is `App`'s public façade field (hosts read it), while
 //! this component owns the caches keyed on it.
@@ -187,9 +187,9 @@ pub(crate) struct RideEngine {
     pub(crate) temp_c: Option<f32>,
     /// Map-plane millis of the last accepted GPS fix, or `None` before the first ever. Drives the
     /// "No GPS Fix" banner via [`has_live_fix`](RideEngine::has_live_fix). Lives **off**
-    /// [`AppState`](crate::AppState) — like [`temp_c`](RideEngine::temp_c) — so advancing it on
-    /// every fix (incl. a stationary one) never trips the `state != state_before` redraw gate; the
-    /// banner's own repaint edge comes from the end-of-tick flip below.
+    /// [`AppState`](crate::AppState) — like [`temp_c`](RideEngine::temp_c) — so a stationary fix
+    /// that advances only freshness moves nothing a screen declares it draws. The banner's own
+    /// repaint comes from `no_fix` in the riding views' render keys.
     pub(crate) last_fix_ms: Option<u32>,
     /// The coordinate `(lat, lon)` of the freshest fix that has **not yet** been handed a terrain
     /// sample (EL8, epic #1068), or `None` once one has been (or before the first fix).
@@ -199,18 +199,8 @@ pub(crate) struct RideEngine {
     /// sampler every frame still reads at most one terrain tile per fix — the whole point, since a
     /// per-frame sample would be an SD read on the render path. Lives **off**
     /// [`AppState`](crate::AppState) for the same reason as
-    /// [`last_fix_ms`](RideEngine::last_fix_ms): it must never trip the redraw gate.
+    /// [`last_fix_ms`](RideEngine::last_fix_ms): no screen draws it, so no render key names it.
     pub(crate) pending_terrain: Option<(i32, i32)>,
-    /// The no-fix state at the previous tick's end, so the timer edge that flips the "No GPS Fix"
-    /// banner dirties the live-data views exactly once. Starts `true` — no fix at boot.
-    pub(crate) prev_no_fix: bool,
-    /// The sensor-tile display values `(hr, power, cadence)` at the previous tick's end, so a
-    /// fresh BLE sample — or the 5 s staleness gate expiring one into `--` — repaints the riding
-    /// views exactly once (the sensor twin of [`prev_no_fix`](RideEngine::prev_no_fix)). The
-    /// samples land in [`Activity`], which the `state != state_before` redraw gate never compares,
-    /// so without this edge a live tile only repainted when something *else* happened to dirty the
-    /// frame — frozen solid on an indoor bench with no fix (epic #744, SR3).
-    pub(crate) prev_live_sensors: (Option<u16>, Option<u16>, Option<u8>),
     /// The rider's **travel direction** (degrees CW from north) for the route-relative wind
     /// arrows (WX12, #1197): the active route's general heading ahead of the matched progress
     /// while on-route (held while stopped — the wind question at a rest stop is about the ride
@@ -266,8 +256,6 @@ impl RideEngine {
             temp_c: None,
             last_fix_ms: None,
             pending_terrain: None,
-            prev_no_fix: true,
-            prev_live_sensors: (None, None, None),
             travel_deg: None,
             travel_at_m: None,
             speed_win: crate::weather::SpeedWindow::new(),
@@ -671,8 +659,6 @@ impl RideEngine {
             temp_c,
             last_fix_ms,
             pending_terrain,
-            prev_no_fix,
-            prev_live_sensors,
             travel_deg,
             travel_at_m,
             speed_win,
@@ -686,8 +672,6 @@ impl RideEngine {
         assert!(ride_session.is_none() && breadcrumb.is_empty(), "no session, no breadcrumb");
         assert!(last_battery_poll_ms.is_none() && temp_c.is_none(), "nothing sensed off the ride path");
         assert!(last_fix_ms.is_none() && pending_terrain.is_none(), "no fix, so no terrain sample armed");
-        assert!(*prev_no_fix, "the no-fix banner edge starts at 'no fix'");
-        assert_eq!(*prev_live_sensors, (None, None, None), "the sensor tiles start blank");
         assert!(travel_deg.is_none() && travel_at_m.is_none(), "no travel direction without a route");
         assert!(speed_win.median_cms().is_none(), "no moving speeds recorded");
     }

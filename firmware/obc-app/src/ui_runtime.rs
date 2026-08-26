@@ -51,12 +51,6 @@ pub(crate) struct UiRuntime {
     /// drained once per frame. Starts `true` so the host's first frame paints. (The overlay flag
     /// isn't accumulated here — it's derived from the live hold-bulge state at drain time.)
     pub(crate) map_dirty: bool,
-    /// A one-shot **overlay** repaint demand from something other than the hold bulge — today only
-    /// the Recalculating freeze flipping (issue #1146, P2), whose banner appears and clears on the
-    /// overlay plane. The bulge's own demand is derived from its live state at drain time
-    /// ([`InputPlane::take_overlay_dirty`]); a freeze edge has no such continuous state to derive
-    /// from, so it is latched here and OR'd in at [`take_dirty`](UiRuntime::take_dirty).
-    pub(crate) overlay_edge: bool,
     /// Accumulated **region-scoped** repaint demand (#500 follow-up): the union of every
     /// region-carrying screen-tick change since the last drain — the nav-planning spinner's
     /// needle disc. Kept apart from [`map_dirty`](App::map_dirty) so the two can't blur: any
@@ -163,7 +157,6 @@ impl UiRuntime {
             now_ms: 0,
             // Force the host's first frame: nothing has been drawn yet, so the map is dirty.
             map_dirty: true,
-            overlay_edge: false,
             region_dirty: None,
             frame_size: (0, 0),
             render_clip: None,
@@ -232,13 +225,6 @@ impl UiRuntime {
     fn base_content(&self) -> BaseContent {
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
         self.stack.get(base).map(|s| s.caps().base).unwrap_or(BaseContent::Chrome)
-    }
-
-    /// Whether the base screen shows live sensor data (user fix / ride accumulators) — the Map and
-    /// the live-riding views ([`BaseContent::Map`] / [`LiveRiding`](BaseContent::LiveRiding)) do, so
-    /// a fresh fix must redraw them; Home and the menus (chrome) don't.
-    pub(crate) fn shows_live_data(&self) -> bool {
-        self.base_content() != BaseContent::Chrome
     }
 
     /// Whether the base (lowest opaque) screen draws the **map** — any [`BaseContent::Map`] screen.
@@ -504,10 +490,15 @@ impl UiRuntime {
 
     /// **The scheduler's one door onto the stack.** Runs a
     /// [`CardScheduler::sweep`](crate::card_scheduler::CardScheduler::sweep) with the
-    /// cross-component facts it needs, and folds its single "something visible moved" answer into
-    /// the map's repaint demand. Called once per
+    /// cross-component facts it needs. Called once per
     /// [`advance_animations`](crate::App::advance_animations) pass and again whenever a host fact is
     /// posted, so an arriving card lands in the same frame unless a rule defers it.
+    ///
+    /// **Not covered by a render key, and deliberately so.** The scheduler already answers "did
+    /// anything visible move" exactly, once per sweep, at the one door onto the stack — and it
+    /// sweeps both inside the pass and from host seams that run between two passes, where a
+    /// stack-local key comparison sees nothing. A revision counter beside this bool would be a
+    /// second copy of the same answer, resident, and would replace no site.
     pub(crate) fn run_card_sweep(&mut self, catalogs: &CatalogState, tracking: bool) {
         let ctx = CardCtx { now_ms: self.now_ms, hold_charging: self.hold_charging(), catalogs, tracking };
         if self.cards.sweep(&mut self.stack, &ctx) {
@@ -623,9 +614,10 @@ impl UiRuntime {
         if self.now_ms.wrapping_sub(self.last_input_ms) < timeout {
             return;
         }
-        // Past the deadline: consume it so the return fires once, not every pass hereafter.
+        // Past the deadline: consume it so the return fires once, not every pass hereafter. The
+        // repaint needs no request: the return moves the visible stack, which is the shape half of
+        // the pass's render key, and the Home reseed below moves Home's own key.
         self.last_input_ms = self.now_ms;
-        self.map_dirty = true;
         if tracking {
             // Mid-ride, on a non-ride screen: return to the Map (the ride base).
             self.stack.truncate(1); // drop back toward the root…
@@ -645,10 +637,9 @@ impl UiRuntime {
     /// render-on-demand loop.
     ///
     /// [`map`](Dirty::map) accumulates every map-affecting mutation since the last drain.
-    /// [`overlay`](Dirty::overlay) is *derived* from the live hold-bulge state: set while the bulge
-    /// is live, plus one trailing frame after it goes quiet so the host can clear it off Layer 2.
-    /// That trailing edge is tracked across calls, so draining twice in one frame swallows it — call
-    /// exactly once per frame.
+    /// [`overlay`](Dirty::overlay) is left `false` here: it is a *level* comparison, not an
+    /// accumulator, and [`App::take_dirty`](crate::App::take_dirty) owns the one converter that
+    /// makes it (see `OverlayKey`).
     ///
     /// [`region`](Dirty::region) carries the accumulated region-scoped tick demand — but only when
     /// no full-frame demand joined it since the last drain: a set `map_dirty` covers any region, so
@@ -656,13 +647,7 @@ impl UiRuntime {
     pub(crate) fn take_dirty(&mut self) -> Dirty {
         let full = core::mem::take(&mut self.map_dirty);
         let region = self.region_dirty.take();
-        Dirty {
-            map: full || region.is_some(),
-            // Drain the bulge's trailing edge unconditionally (it must be called exactly once per
-            // frame, whatever else is on the overlay), then fold in a freeze flip.
-            overlay: self.input.take_overlay_dirty() | core::mem::take(&mut self.overlay_edge),
-            region: if full { None } else { region },
-        }
+        Dirty { map: full || region.is_some(), overlay: false, region: if full { None } else { region } }
     }
 
     /// Drain the pending hold-cancel edge (see `hold_cancel_pending`): `true` when a gesture
@@ -699,7 +684,6 @@ impl UiRuntime {
             input,
             now_ms,
             map_dirty,
-            overlay_edge,
             region_dirty,
             frame_size,
             render_clip,
@@ -720,7 +704,7 @@ impl UiRuntime {
         assert!(!input.overlay_active() && input.last_gesture().is_none(), "no gesture in flight");
         assert_eq!(*now_ms, 0, "the map plane's clock starts at the boot origin");
         assert!(*map_dirty, "the host's first frame must paint");
-        assert!(!*overlay_edge && region_dirty.is_none(), "no accumulated overlay or region demand");
+        assert!(region_dirty.is_none(), "no accumulated region demand");
         assert_eq!(*frame_size, (0, 0), "no frame rendered yet");
         assert!(render_clip.is_none() && next_wake_ms.is_none(), "no clip armed, nothing time-animating");
         assert_eq!(*last_input_ms, 0, "the idle clock runs from power-on");
