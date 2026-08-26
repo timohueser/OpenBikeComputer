@@ -523,7 +523,7 @@ pub struct Prepare<'a, 'd> {
 /// the enum. The two kinds behavior hangs off: [`Overlay`](ScreenKind::Overlay) screens composite
 /// over the screen below instead of replacing the view, and [`Settings`](ScreenKind::Settings)
 /// screens gate the debounced settings save
-/// ([`App::drain_host_commands`](crate::App::drain_host_commands)). `Riding` (the live sensor
+/// (the pass). `Riding` (the live sensor
 /// views) and `Nav` (Home + the menus/prompts) carry no behavior yet — they exist so every row
 /// states what its screen *is*.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -857,8 +857,8 @@ screens! {
     /// [`NavRequest`](crate::activity::NavRequest) and swaps to the planning screen.
     NavConfirm(NavConfirmScreen) => Caps::nav(),
     /// The route-**planning** screen (#499): the spinning-needle wait while the host steps the
-    /// resumable router; Back cancels (pops to the detail + rings [`App::drain_host_commands`]). The
-    /// host's answer ([`App::apply_event`]) replaces it with the computed-route overview
+    /// resumable router; Back cancels (pops to the detail + rings the pass). The
+    /// host's answer (the pass's fact stage) replaces it with the computed-route overview
     /// or the failure card.
     NavPlanning(NavPlanningScreen) => Caps::modal().timed(),
     /// The route-planning failure card (epic #116, R4): the locked two-tier copy ("Too far to
@@ -880,7 +880,7 @@ screens! {
     RouteOverview(RouteOverviewScreen) => Caps::nav().timed().hold_fill().remap(RemapKind::Route),
     RouteSwap(RouteSwapScreen) => Caps::nav().exempt().timed().hold_fill().remap(RemapKind::Route),
     /// The idle route-upload prompt (epic #447, P4): "ROUTE RECEIVED" — Start navigation / Dismiss.
-    /// **Host-pushed** by [`App::apply_event`]; auto-closes (= dismisses) after
+    /// **Host-pushed** by the pass's fact stage; auto-closes (= dismisses) after
     /// [`UPLOAD_POPUP_TIMEOUT_MS`]. Advisory — the route is already committed and in the Route menu.
     RouteReceived(RouteReceivedScreen) => Caps::modal().timed().remap(RemapKind::Route),
     /// The active-route-replaced info card (epic #447, P4). Adoption already happened when it
@@ -900,7 +900,7 @@ screens! {
     /// visible on. Non-dismissible while bytes land, dismissable once terminal.
     MapTransfer(MapTransferScreen) => Caps::modal(),
     /// The advisory warning card (issue #504): missing sensors / a slow (fragmented) map.
-    /// **Host-pushed** by [`App::apply_event`], coalesced, dismissed on any press.
+    /// **Host-pushed** by the pass's fact stage, coalesced, dismissed on any press.
     Warning(WarningScreen) => Caps::modal(),
     /// The Weather dashboard (WX11, epic #1185): the concept-C decision card, the two-hour strip,
     /// and the HOURLY / RAIN MAP actions. Timed: the countdown/freshness copy moves once a minute.

@@ -194,12 +194,6 @@ impl CatalogState {
         &self.route_ids
     }
 
-    /// The paired `{id, summary}` at catalog index `idx`, or `None` out of range — the entry-typed
-    /// read (the id and summary can't be picked from mismatched rows).
-    pub(crate) fn route_entry(&self, idx: usize) -> Option<RouteEntry<'_>> {
-        Some(RouteEntry { id: *self.route_ids.get(idx)?, summary: self.routes.get(idx)? })
-    }
-
     /// The durable id at catalog index `idx`, or `None` out of range — drain-time id resolution
     /// (#837: a vanished subject resolves to nothing).
     pub(crate) fn route_id_at(&self, idx: usize) -> Option<CatalogObjectId> {

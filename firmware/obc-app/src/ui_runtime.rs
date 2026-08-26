@@ -516,7 +516,7 @@ impl UiRuntime {
     }
 
     /// Whether the top (input-receiving) screen is one of the settings screens — the gate
-    /// [`take_settings_dirty`](App::drain_host_commands) uses to hold a pending save until exit.
+    /// `SettingsMachine` uses to hold a pending save until exit.
     /// Reads the [`ScreenKind`](crate::screen::ScreenKind) each screen declares in its `screens!`
     /// table row, so a new settings screen can't be forgotten here.
     pub(crate) fn top_is_settings(&self) -> bool {

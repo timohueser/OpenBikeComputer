@@ -8,7 +8,7 @@
 //! a completed [`Gesture::Hold`] with the Delete row selected records the request. The screen holds
 //! only the trip's **durable object id** (its own device counter), so a catalog rescan racing the
 //! confirm can't retarget it: the id is drained verbatim by
-//! [`App::drain_host_commands`](crate::App::drain_host_commands) and the host cascade-deletes the
+//! the pass and the host cascade-deletes the
 //! `TP{id}.OBT` + member route files, then rescans + re-feeds — the folder disappears and the menu
 //! regroups. Back / Cancel pops to the top level, leaving the trip intact.
 
@@ -39,7 +39,7 @@ const CANCEL: usize = 1;
 #[derive(Debug)]
 pub struct TripDeleteScreen {
     /// The trip's durable object id — drained verbatim by
-    /// [`App::drain_host_commands`](crate::App::drain_host_commands).
+    /// the pass.
     trip_id: crate::CatalogObjectId,
     name: heapless::String<NAME_CAP>,
     selected: usize,

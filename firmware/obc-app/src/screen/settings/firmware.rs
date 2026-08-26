@@ -43,7 +43,7 @@ impl FirmwareScreen {
         match g {
             // Install update from card: refused (greyed) while recording — the arm reboots the
             // device. Otherwise post the scan one-shot and open the "Checking card..." wait; the
-            // board answers through `App::apply_event`, which swaps the wait for the
+            // board answers through the pass's fact stage, which swaps the wait for the
             // confirm screen or an error card.
             Gesture::Press if !cx.activity.is_tracking() => {
                 cx.dfu.admit_intent(crate::dfu::DfuIntent::ScanRequested);

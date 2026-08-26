@@ -811,6 +811,7 @@ impl RetentionMachine {
     }
 
     /// Whether an action of `kind` is queued (the drain's backpressure peek).
+    #[cfg(test)]
     pub(crate) fn has(&self, kind: SweepKind) -> bool {
         self.queue.iter().any(|a| kind.matches(*a))
     }

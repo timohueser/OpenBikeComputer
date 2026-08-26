@@ -4,7 +4,7 @@
 //! `obc-app` stays oblivious to the radio: no `obc-ble` (or board) type crosses this boundary. The
 //! host — the board's BLE plane, or the simulator's control panel — distils its link into a
 //! [`BleStatus`] and pushes it through [`App::set_ble_status`](crate::App::set_ble_status); the
-//! object-store commit/delete paths ring [`App::apply_event`](crate::App::apply_event).
+//! object-store commit/delete paths ring the pass's fact stage.
 //! The app's own consumers (the connected indicator, the Bluetooth settings screen's status line,
 //! the passkey card, the live catalog) read only these app-side types.
 

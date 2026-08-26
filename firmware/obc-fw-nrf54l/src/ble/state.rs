@@ -186,7 +186,7 @@ pub(crate) fn weather_request_remaining() -> Option<Duration> {
 }
 
 /// The Bluetooth screen's **Forget phone** (#455), rung by the ride loop after
-/// [`App::drain_host_commands`](obc_app::App::drain_host_commands): the lifecycle loop clears the RRAM bond
+/// the pass: the lifecycle loop clears the RRAM bond
 /// slot + the host's bond table and drops the bonded connection. Latching, so a request raised
 /// between phases is picked up at the next loop top.
 pub(crate) static FORGET_BOND: Signal<CriticalSectionRawMutex, ()> = Signal::new();

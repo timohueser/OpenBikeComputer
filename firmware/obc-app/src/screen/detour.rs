@@ -355,7 +355,7 @@ impl DetourPreviewScreen {
         self.anchor_m
     }
 
-    /// Mark the commit failed ([`HostEvent::DetourCommitted`](crate::host::HostEvent) `Err` arm):
+    /// Mark the commit failed (the splice's failure answer):
     /// stay up, show the inline error, allow another Press or Back.
     pub(crate) fn set_commit_failed(&mut self) {
         self.committing = false;

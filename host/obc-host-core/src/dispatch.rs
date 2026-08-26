@@ -22,9 +22,9 @@
 //!
 //! | Command | Why | Retires in |
 //! |---|---|---|
-//! | `FinishTrack` | Recorder has no machine — the close is answered by a catalog re-feed, not a ride identity (`LegacyOwned::RideCloseAck`) | #1398 |
-//! | `ForgetBond` | The removal is confirmed by a link-status fact, not by a reply (`LegacyOwned::BondAck`) | #1398/#1400 |
-//! | `DeleteTrip` | `CatalogState::admit_intent` **refuses** a trip cascade: the bounded member read does not exist, and the sim's folder stores number routes and trips from separate counters, so a namespace-free `RemoveObject` could not tell them apart (`LegacyOwned::TripCascade` + `ObjectNamespace`) | #1491 |
+//! | `FinishTrack` | Recorder has no machine — the close is answered by a catalog re-feed, not a ride identity (#1398) | #1398 |
+//! | `ForgetBond` | The removal is confirmed by a link-status fact, not by a reply (#1400) | #1398/#1400 |
+//! | `DeleteTrip` | `CatalogState::admit_intent` **refuses** a trip cascade: the bounded member read does not exist, and the sim's folder stores number routes and trips from separate counters, so a namespace-free `RemoveObject` could not tell them apart | #1491 |
 //!
 //! `obc_app::device_core::residual` is that list as data, and its `assert_residual` is the
 //! production assertion that nothing else comes back — one list, checked by this executor and by the
@@ -154,7 +154,7 @@ const HOST_STORE: StoreIdentity = StoreIdentity::new(1);
 // #1397 S6b: the board's ride loop is a second typed executor and both have to check the *same*
 // three commands, or S6c's deletion becomes a per-host argument instead of a compiler-verified
 // sweep. Re-exported here so this module reads as the reference executor it is.
-use obc_app::device_core::residual::{assert_residual, declined_level};
+use obc_app::device_core::residual::assert_residual;
 
 /// Everything the executor leaves for the next pass: the domain outcome slots, the external facts,
 /// the keyed derived answers, and the bounded polylines a derived answer carries beside its key.
@@ -187,7 +187,7 @@ pub struct HostLoop {
     /// normal frame loop.
     hold: PlanHold,
     /// The store revision a catalog read reports. The old protocol had none
-    /// (`LegacyOwned::StoreRevision`); an in-process repository has none either, so the executor
+    /// (the old protocol reported no revision); an in-process repository has none either, so the executor
     /// mints a monotonic one per read. It deliberately never becomes an
     /// [`ExternalFacts::note_store_revision`] fact: nothing changes these stores behind the
     /// executor's back, so a commit it made itself must not order a re-read of its own work.
@@ -365,7 +365,7 @@ impl HostLoop {
         }
         if plan.effects.bond.take().is_some() {
             // Bond has no machine, so nothing produces a `BondEffect` and the removal arrives as
-            // the residual `ForgetBond` command instead (`LegacyOwned::BondAck`). Performing it
+            // the residual `ForgetBond` command instead (#1400). Performing it
             // here as well would forget the bond **twice in one execute** — the exact
             // double-execution `assert_residual` exists to prevent — so this refuses like every
             // other never-produced arm, and the domain that starts emitting one has to move its
@@ -495,7 +495,7 @@ impl HostLoop {
                 self.plan_token = None;
                 Some(NavigatorOutcome::Released { token })
             }
-            // One request runs the whole search here (`LegacyOwned::PlannerPacing`); stepped pacing
+            // One request runs the whole search here (#1400); stepped pacing
             // is #1400's, with the board's typed effect staging.
             NavigatorEffect::Step { .. } | NavigatorEffect::CommitRoute { .. } => {
                 debug_assert!(false, "the executor paces the search: {effect:?} has no producer yet");
@@ -571,18 +571,15 @@ impl HostLoop {
         routes: &mut dyn RouteRepository,
         platform: &mut dyn HostPlatform,
     ) -> Option<TrackAction> {
-        // Asked for **by name**, not filtered out of the whole walk: `drain_host_commands` pulls
-        // from every domain it passes — minting the operation — so it would consume an intent
-        // admitted between this executor's passes and leave its domain waiting on an answer that is
-        // never coming. This host admits its intents inside `pass`, so it never hit that; the board
-        // did, and the shape is the same on both.
+        // Asked for **by name**, not filtered out of a whole-order walk: such a walk pulls from
+        // every domain it passes — minting the operation — so it would consume an intent admitted
+        // between this executor's passes and leave its domain waiting on an answer that is never
+        // coming. This host admits its intents inside `pass`, so it never hit that; the board did,
+        // and the shape is the same on both.
         let status = app.drain_residual_commands(&mut self.mailbox);
         debug_assert_eq!(status, DrainStatus::Complete, "a canonical-capacity mailbox always drains completely");
         let mut finish = None;
         while let Some(command) = self.mailbox.pop() {
-            if declined_level(&command) {
-                continue;
-            }
             assert_residual(&command);
             match command {
                 HostCommand::FinishTrack(action) => finish = Some(action),
@@ -598,7 +595,6 @@ impl HostLoop {
                         trips.refeed(app);
                     }
                 }
-                _ => unreachable!("assert_residual already refused it"),
             }
         }
         finish
@@ -675,7 +671,7 @@ fn deliver<T: core::fmt::Debug>(slot: &mut obc_app::device_core::Slot<T>, outcom
 
 /// The sidecar writes. A repository stamp cannot report a failure, so the answer *is* the write —
 /// what matters is that it carries the operation's token back, which the legacy protocol had no way
-/// to do (`LegacyOwned::SidecarAck`). A host whose sidecar *can* fail answers
+/// to do (the old stamp was fire-and-forget). A host whose sidecar *can* fail answers
 /// [`RetentionOutcome::Failed`] instead and the domain re-queues the candidate.
 fn serve_retention(
     effect: RetentionEffect,
@@ -697,7 +693,7 @@ fn serve_retention(
 /// Phase 3 — reconcile the ride recorder: the drained finish action + the live session, with the
 /// save name (the active route) and totals (for a `Save`). Refresh + re-feed the catalog so a saved
 /// ride appears without a relaunch — the legacy ride close is answered by exactly that re-feed
-/// rather than by a ride identity (`LegacyOwned::RideCloseAck`).
+/// rather than by a ride identity (#1398).
 pub(crate) fn reconcile_track(
     app: &mut App,
     rides: &mut dyn RideRepository,

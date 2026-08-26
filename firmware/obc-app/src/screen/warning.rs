@@ -6,11 +6,11 @@
 //! card).
 //!
 //! **Raised as each fault is discovered**, coalesced onto one card: the host calls
-//! [`App::apply_event`](crate::App::apply_event) for the boot-time faults (sensor presence
+//! the pass's fact stage for the boot-time faults (sensor presence
 //! lands a moment after boot, the map-slow flag at open), and the app raises the recording-error
 //! flag itself the first time [`TrackSink::record`](obc_ports::TrackSink::record) fails. Each distinct
 //! flag is shown **once per boot** — a dismissed notice doesn't nag, but a *new* flag arriving
-//! later re-opens the card (see `App::apply_event`). The absent sensors are listed by name so
+//! later re-opens the card (see the pass's fact stage). The absent sensors are listed by name so
 //! the rider knows which module to check.
 
 use embedded_graphics::prelude::Point;
@@ -49,7 +49,7 @@ impl WarningFlags {
     /// A settings write to the persistent store failed, so an edit did not reach RRAM/the file. The
     /// value stays live in RAM and the app keeps retrying (bounded backoff); this is the advisory that
     /// the persist is not yet durable (#810). Raised by the app on a
-    /// [`HostEvent::SettingsPersistFailed`](crate::HostEvent::SettingsPersistFailed).
+    /// [`SettingsOutcome::PersistFailed`](crate::settings::SettingsOutcome).
     pub const SETTINGS_ERROR: WarningFlags = WarningFlags(1 << 5);
 
     /// No bits set.
@@ -96,7 +96,7 @@ impl core::ops::Not for WarningFlags {
 }
 
 /// The advisory warning card. Carries the coalesced [`WarningFlags`] it lists; opened / updated by
-/// [`App::apply_event`](crate::App::apply_event), dismissed on any press.
+/// the pass's fact stage, dismissed on any press.
 #[derive(Debug)]
 pub struct WarningScreen {
     flags: WarningFlags,
