@@ -106,6 +106,7 @@ private actor AbandonedAnswerLink: TransferLink {
 
     private let answersTheAbandonedRequest: Bool
     private var livePut: RequestID?
+    private var cancelledRequest: RequestID?
     private var abandoned: RequestID?
     private let payload: Data
     private let storeID = Data([0x14, 0x7b, 0xc0, 0x39, 0x8a, 0x62, 0x4d, 0x11,
@@ -133,6 +134,14 @@ private actor AbandonedAnswerLink: TransferLink {
     }
 
     func receiveControlRecord() async throws -> Data {
+        // A cancel can reach the link before the receive it names ever runs. The receive resolves
+        // as cancelled instead of parking for an answer nobody waits for — the rule
+        // `BLETransport` keeps in `objectControlReceiveCancelled`.
+        if let cancelledRequest, let pending, cancelledRequest == pending.requestID {
+            self.cancelledRequest = nil
+            self.pending = nil
+            throw CancellationError()
+        }
         // The peer answers every request exactly once, whenever it terminates — including the one
         // the client walked away from. That answer reaches the lane ahead of the live request's.
         if let abandoned {
@@ -196,8 +205,14 @@ private actor AbandonedAnswerLink: TransferLink {
     func cancelControlReceive() async {
         state.controlCancels += 1
         if answersTheAbandonedRequest { abandoned = livePut }
-        answerWaiter?.resume(throwing: CancellationError())
-        answerWaiter = nil
+        // A parked receive takes the cancellation; one that has not run yet is named instead, so
+        // either arrival order resolves it exactly once.
+        if let answerWaiter {
+            self.answerWaiter = nil
+            answerWaiter.resume(throwing: CancellationError())
+        } else {
+            cancelledRequest = livePut
+        }
     }
 
     func cancelStreamReceive() async {}
