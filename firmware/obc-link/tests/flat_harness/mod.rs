@@ -11,7 +11,7 @@
 use obc_link::flat::store::Policy;
 use obc_link::flat::wire::{flags, HEADER_LEN, STREAM_HEADER_LEN};
 use obc_link::flat::{
-    CancelCause, Ceilings, Channel, Engine, Link, ObjectKind, OpenPolicy, Reaction, RequestId, StreamBuffers,
+    CancelCause, Ceilings, Channel, Engine, Link, ObjectKind, OpenPolicy, Reaction, RequestId, Stall, StreamBuffers,
 };
 use obc_storage::flat::sim::{FaultOnce, SparseDisk};
 use obc_storage::flat::{
@@ -238,6 +238,11 @@ impl<D: BlockDevice> Device<D> {
     pub fn link_lost(&mut self) {
         self.engine.on_link_lost(Link::Ble, &self.store);
         self.engine.on_link_up(Link::Ble, &self.store, self.ceilings);
+    }
+
+    /// One turn of the stall watchdog, on the caller's own fake clock.
+    pub fn watch_stall(&mut self, now_ms: u32) -> Stall {
+        self.engine.watch_stall(&self.store, now_ms)
     }
 
     /// The device drops the live transfer of its own accord (§3.8's other direction).

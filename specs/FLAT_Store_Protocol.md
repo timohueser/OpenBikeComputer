@@ -534,6 +534,12 @@ also receives its own error response, `cancelled`. The device cancels by answeri
 `PUT` or `GET` with an error and dropping the transfer. Either way the allocation is released and the
 catalog is unchanged; there is nothing else to unwind.
 
+A transfer that moves **no payload byte for 21 seconds** is one such device-side cancel, and the only
+one a well-behaved client can provoke. Nothing else bounds how long a wedged peer holds the store —
+the device withdraws heavy rider-facing work while a transfer is live, so an unbounded one is a
+device that refuses its rider indefinitely. The deadline is on *progress*, never on duration: a
+300 MB map is not on a clock, and a slow link is never the reason a transfer ends.
+
 Link teardown is the third form of the same thing: the adapter calls the engine once, the live
 transfer is dropped, the allocation is released, and no record of it exists.
 
