@@ -42,13 +42,33 @@ const BRIGHTNESS_H: i32 = 136;
 const POWER_H: i32 = 150;
 const POWERING_OFF_H: i32 = 132;
 
-/// The four root controls, in the order they sit on the row.
-const LIGHT: u8 = 0;
-const BLE: u8 = 1;
-const SETTINGS: u8 = 2;
-/// Power is index 3 — the `_` arm of every match over the selection, because a `u8` selection has
-/// no exhaustive fourth pattern.
-const ITEMS: u8 = 4;
+/// One device-wide control on the sheet's root row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Control {
+    Brightness,
+    Ble,
+    Settings,
+    Power,
+}
+
+/// The controls this device actually has, in row order.
+///
+/// **A deviation from #1515, and a deliberate one.** The issue names *exactly four* icons. On a
+/// platform whose panel has no light (see [`Backlight::available`](obc_ports::Backlight) and the
+/// board's `PanelBacklight`), the brightness row is dropped and the rider gets three. A control the
+/// hardware cannot honour is not a smaller lie than a port that returns `Ok(())` — it is the same
+/// lie one layer up, with a slider that moves, a check-mark that relocates and a setting that
+/// persists, over zero photons. The row comes back the moment the hardware does; nothing else about
+/// the sheet changes.
+fn controls(backlight: bool) -> &'static [Control] {
+    const WITH_LIGHT: [Control; 4] = [Control::Brightness, Control::Ble, Control::Settings, Control::Power];
+    const NO_LIGHT: [Control; 3] = [Control::Ble, Control::Settings, Control::Power];
+    if backlight {
+        &WITH_LIGHT
+    } else {
+        &NO_LIGHT
+    }
+}
 
 /// How many discrete backlight steps the brightness editor offers.
 ///
@@ -106,9 +126,9 @@ pub struct QuickDrawerScreen {
 }
 
 impl QuickDrawerScreen {
-    /// A freshly opened drawer, sliding down from `now_ms` with the brightness icon selected.
+    /// A freshly opened drawer, sliding down from `now_ms` with the first control selected.
     pub fn new(now_ms: u32) -> Self {
-        QuickDrawerScreen { opened_ms: now_ms, slide: None, page: Page::Root, selected: LIGHT, staged: 0 }
+        QuickDrawerScreen { opened_ms: now_ms, slide: None, page: Page::Root, selected: 0, staged: 0 }
     }
 
     /// The brightness the panel should show **right now**: the editor's staged preview while it is
@@ -152,30 +172,34 @@ impl QuickDrawerScreen {
     }
 
     fn handle_root(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
+        let row = controls(cx.backlight);
         match g {
             Gesture::Step(n) => {
-                self.selected = super::vocab::list::step_selection(self.selected as usize, n, ITEMS as usize) as u8;
+                self.selected = super::vocab::list::step_selection(self.selected as usize, n, row.len()) as u8;
                 Transition::None
             }
-            Gesture::Press => match self.selected {
-                LIGHT => {
+            Gesture::Press => match row.get(self.selected as usize) {
+                Some(Control::Brightness) => {
                     self.staged = cx.settings.brightness.min(BRIGHTNESS_MAX);
                     self.slide_to(Page::Brightness, cx.now_ms);
                     Transition::None
                 }
                 // The radio switch is the persisted setting itself: the App's before/after `==`
                 // arms the save, and the board re-reads the row it already watches.
-                BLE => {
+                Some(Control::Ble) => {
                     cx.settings.ble_enabled = !cx.settings.ble_enabled;
                     Transition::None
                 }
                 // Central settings **replace** the sheet, so Back out of settings lands on the
                 // base screen rather than on a drawer the rider has finished with.
-                SETTINGS => Transition::Replace(Screen::Settings(SettingsScreen::new())),
-                _ => {
+                Some(Control::Settings) => Transition::Replace(Screen::Settings(SettingsScreen::new())),
+                Some(Control::Power) => {
                     self.slide_to(Page::PowerConfirm, cx.now_ms);
                     Transition::None
                 }
+                // Unreachable: the selection is stepped within `row`. A drawer opened on a platform
+                // with a light and redrawn without one would land here rather than on a wrong row.
+                None => Transition::None,
             },
             Gesture::Back | Gesture::BackHold => Transition::Pop,
             Gesture::Hold => Transition::None,
@@ -307,19 +331,20 @@ impl QuickDrawerScreen {
         }
     }
 
-    /// The four unlabelled icons, plus one line naming the selected one.
+    /// The unlabelled icons, plus one line naming the selected one.
     fn draw_root(&self, cv: &mut impl Surface, rx: &Render, top: i32, x: i32) {
         const STEP: i32 = 57;
-        let first = x + (rx.w - STEP * (ITEMS as i32 - 1)) / 2;
-        for i in 0..ITEMS {
+        let row = controls(rx.backlight);
+        let first = x + (rx.w - STEP * (row.len() as i32 - 1)) / 2;
+        for (i, control) in row.iter().enumerate() {
             let c = Point::new(first + i as i32 * STEP, top + 32);
-            let selected = i == self.selected;
+            let selected = i as u8 == self.selected;
             // "On" is the amber disc; "off" is the recessive grey one. Only the two stateful
             // controls have an off state — settings and power are always simply available.
-            let on = match i {
-                LIGHT => true,
-                BLE => rx.settings.ble_enabled,
-                _ => false,
+            let on = match control {
+                Control::Brightness => true,
+                Control::Ble => rx.settings.ble_enabled,
+                Control::Settings | Control::Power => false,
             };
             let (fill, ink) = if on { (palette::AMBER, palette::INK) } else { (palette::CONTOUR, palette::PARCHMENT) };
             if selected {
@@ -327,19 +352,22 @@ impl QuickDrawerScreen {
                 cv.disc(c, 22, palette::PARCHMENT);
             }
             cv.disc(c, if selected { 19 } else { 20 }, fill);
-            match i {
-                LIGHT => draw_bulb(cv, c, ink, fill),
-                BLE => draw_ble_rune(cv, c, ink),
-                SETTINGS => draw_gear(cv, c, ink, fill),
-                _ => draw_power(cv, c, ink, fill),
+            match control {
+                Control::Brightness => draw_bulb(cv, c, ink, fill),
+                Control::Ble => draw_ble_rune(cv, c, ink),
+                Control::Settings => draw_gear(cv, c, ink, fill),
+                Control::Power => draw_power(cv, c, ink, fill),
             }
         }
 
-        let caption = match self.selected {
-            LIGHT => rx.t(Msg::QuickBrightness),
-            BLE => rx.t(if rx.settings.ble_enabled { Msg::QuickBluetoothOn } else { Msg::QuickBluetoothOff }),
-            SETTINGS => rx.t(Msg::QuickSettings),
-            _ => rx.t(Msg::QuickPower),
+        let caption = match row.get(self.selected as usize) {
+            Some(Control::Brightness) => rx.t(Msg::QuickBrightness),
+            Some(Control::Ble) => {
+                rx.t(if rx.settings.ble_enabled { Msg::QuickBluetoothOn } else { Msg::QuickBluetoothOff })
+            }
+            Some(Control::Settings) => rx.t(Msg::QuickSettings),
+            Some(Control::Power) => rx.t(Msg::QuickPower),
+            None => "",
         };
         cv.text(caption, Point::new(x + rx.w / 2, top + 67), Font::Label, TextAlign::Center, palette::WOOD);
     }

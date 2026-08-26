@@ -223,9 +223,20 @@ pub struct BacklightUnsupported;
 /// So a host that applies the app's answer every frame gets all three for free, and the port keeps
 /// no state a cancel would have to unwind.
 pub trait Backlight {
+    /// Whether this panel has a light at all. `false` is a standing property of the hardware, not
+    /// a transient state, and it means every [`apply`](Backlight::apply) refuses.
+    ///
+    /// It exists because a *refusal the rider cannot see* is not honesty. A host states this
+    /// answer to the app once at composition, and the app removes the brightness control rather
+    /// than drawing a slider that moves while nothing changes.
+    fn available(&self) -> bool;
+
     /// Drive the panel at `level` (`0..`[`BACKLIGHT_LEVELS`], saturating above), or refuse when
     /// this hardware has no light to drive. Idempotent: applying the level already showing is a
     /// no-op, so a caller may apply every frame.
+    ///
+    /// Refusal and [`available`](Backlight::available) must agree: an implementation that answers
+    /// `false` refuses every level, and one that answers `true` accepts every level in range.
     fn apply(&mut self, level: u8) -> Result<(), BacklightUnsupported>;
 }
 

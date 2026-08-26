@@ -599,6 +599,14 @@ pub struct App {
     /// Whether a recovered-ride offer has already reached the screen this boot. A recorder may
     /// report the same resumable object on every host pass; the rider sees one decision card.
     recovered_ride_offered: bool,
+    /// Whether this platform's panel has a **controllable light** —
+    /// [`Backlight::available`](obc_ports::Backlight)'s answer, declared once by the host at
+    /// composition through [`set_backlight_available`](App::set_backlight_available). A constant
+    /// of the hardware, not a preference, which is why it is not a settings row.
+    ///
+    /// `false` removes the quick drawer's brightness control altogether. Defaults to `false`, so a
+    /// platform that says nothing does not offer a control it has no port for.
+    backlight_available: bool,
 }
 
 /// Where a boot seed of the weather alert-mark anchors came from — the one thing
@@ -672,6 +680,7 @@ impl App {
             map_name: heapless::String::new(),
             map_obcm_version: 0,
             recovered_ride_offered: false,
+            backlight_available: false,
         }
     );
 
@@ -719,6 +728,7 @@ impl App {
             map_name,
             map_obcm_version,
             recovered_ride_offered,
+            backlight_available,
         } = self;
         assert_eq!(*camera, state, "the camera state is preserved verbatim");
         assert_eq!(activity.mode, Mode::Idle, "boots Idle, not Riding");
@@ -752,6 +762,7 @@ impl App {
         assert!(fw_version.is_empty() && map_name.is_empty(), "the host has identified nothing yet");
         assert_eq!(*map_obcm_version, 0, "no map format known yet");
         assert!(!*recovered_ride_offered, "no recovered ride offered this boot");
+        assert!(!*backlight_available, "no host has claimed a panel light yet");
     }
 
     /// Advance one tick from the sensors.
@@ -1227,6 +1238,27 @@ impl App {
             }
         }
         self.map_obcm_version = obcm_version;
+    }
+
+    /// Declare whether this platform's panel has a controllable light — the host asks its
+    /// [`Backlight`](obc_ports::Backlight) port ([`available`](obc_ports::Backlight::available))
+    /// once at composition and states the answer here.
+    ///
+    /// `false` **removes** the quick drawer's brightness control, leaving three icons. A control
+    /// the hardware cannot honour is worse than no control: a slider that moves, a check-mark that
+    /// relocates and a setting that persists, with no photons — the same lie the port refuses to
+    /// tell, moved to the screen. See the deviation note in `screen/quick_drawer.rs`.
+    pub fn set_backlight_available(&mut self, available: bool) {
+        if self.backlight_available != available {
+            self.backlight_available = available;
+            self.ui.map_dirty = true;
+        }
+    }
+
+    /// Whether the panel has a controllable light (see
+    /// [`set_backlight_available`](App::set_backlight_available)).
+    pub fn backlight_available(&self) -> bool {
+        self.backlight_available
     }
 
     /// The loaded map's resident routing-profile names (read-only), for host inspection / tests.
@@ -2261,22 +2293,25 @@ impl App {
     }
 
     /// The brightness the panel should be driven at **this frame**: the quick drawer's staged
-    /// preview while its editor is open, and the committed
+    /// preview while its editor is on top, and the committed
     /// [`Settings::brightness`](crate::Settings) row everywhere else.
     ///
     /// A host applies it through the [`Backlight`](obc_ports::Backlight) port. Because the answer
     /// is *derived* rather than latched, "Back cancels and reverts the preview" needs no undo
     /// path: the editor closes and the next frame reads the committed row again.
+    ///
+    /// **Only the top screen is asked**, exactly as [`power_off_requested`](App::power_off_requested)
+    /// does. A host-pushed modal is pushed *above* the drawer, which stays on the stack mid-edit:
+    /// scanning the whole stack would hold an uncommitted preview behind a card the rider cannot
+    /// dismiss — for the length of a map transfer, whose own card also refuses the chord that would
+    /// close the sheet. A preview belongs to a control the rider can see.
     pub fn backlight_level(&self) -> u8 {
-        self.ui
-            .stack
-            .iter()
-            .find_map(|s| match s {
-                Screen::QuickDrawer(d) => d.staged_brightness(),
-                _ => None,
-            })
-            .unwrap_or(self.settings.brightness)
-            .min(crate::screen::BRIGHTNESS_MAX)
+        match self.ui.stack.last() {
+            Some(Screen::QuickDrawer(d)) => d.staged_brightness(),
+            _ => None,
+        }
+        .unwrap_or(self.settings.brightness)
+        .min(crate::screen::BRIGHTNESS_MAX)
     }
 
     /// Whether the rider completed the quick drawer's guarded power-off hold. The host renders the
@@ -2734,6 +2769,7 @@ impl App {
         // Navigator's detour level before the screen speaks, so a cancellation it admits takes the
         // preview polyline with it (see `sync_detour_preview`).
         let detour_planned_before = self.navigator.detour_planned();
+        let backlight_available = self.backlight_available;
         let App { state, activity, settings, catalogs, nav_profiles, ride, ui, navigator, dfu, storage, .. } = self;
         let mut cx = Ctx {
             state,
@@ -2746,6 +2782,7 @@ impl App {
             rides: catalogs.rides(),
             trips: catalogs.trips(),
             nav_profiles,
+            backlight: backlight_available,
             poi_scratch: &ui.poi_scratch,
             // The Up-ahead timeline's two source tables, read-only: `handle` must see exactly the
             // merged rows `draw` drew, or a Press would open the wrong row (epic #946, U3).
@@ -3138,6 +3175,7 @@ impl App {
         // firmware's separate input plane); fall back to `App`'s own input on the single-loop hosts.
         let hold_progress = self.ui.hold_progress_override.unwrap_or_else(|| self.ui.input.select_hold_progress());
         let no_fix = !self.has_live_fix(self.ui.now_ms);
+        let backlight_available = self.backlight_available;
         let App {
             state,
             activity,
@@ -3211,6 +3249,7 @@ impl App {
             weather: weather.snapshot,
             weather_refreshing: weather.refreshing,
             travel_deg: ride.travel_deg,
+            backlight: backlight_available,
         };
         let mut rx = RenderFrame { scene, render: rx };
         // The one Canvas of the frame: every screen draws through it (the base screen — the only
@@ -3225,7 +3264,9 @@ impl App {
         // second closure type, and that is not a style choice: `Screen::draw` is generic over the
         // colour function, so a second closure type monomorphises the *entire* screen catalogue and
         // the map renderer a second time — measured at +147 KB of flash on the board. One closure
-        // type, one branch per colour lookup.
+        // type, and one load-and-branch per **colour resolution** — `Canvas` resolves `color_fn`
+        // once per primitive (a span, an outline, a string), so this is O(primitives), not
+        // O(pixels).
         let recess = core::cell::Cell::new(ui.stack.iter().skip(base + 1).any(|s| s.is_overlay()));
         let policy = |c: u16| color_fn(if recess.get() { screen::dim_color(c) } else { c });
         // The one Canvas of the frame: every screen draws through it (the base screen — the only

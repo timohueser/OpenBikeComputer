@@ -434,6 +434,9 @@ impl SimGui {
         // Device-info built-ins for the System settings screen (T8 item 6): firmware version (the
         // sim's crate version) + the loaded map's name (filename stem) & OBCM version. The card-free
         // scan is answered per-frame in `update` when the screen posts its on-entry request.
+        // The panel-light capability, straight from the port that answers it — the drawer's root
+        // row is built from this (#1515 D2).
+        app.set_backlight_available(obc_ports::Backlight::available(&crate::panel_power::SimBacklight::new()));
         app.set_fw_version(env!("CARGO_PKG_VERSION"));
         let map_name = map.source.display_name();
         app.set_map_info(&map_name, map_tables.version);

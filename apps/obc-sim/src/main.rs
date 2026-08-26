@@ -128,6 +128,10 @@ struct Args {
     /// drawer, with its slide-down settled, `I` = elapse 5 min with no input so the idle-return
     /// timeout fires.
     script: Option<String>,
+    /// `--no-backlight`: model a platform whose panel has **no controllable light**
+    /// ([`Backlight::available`](obc_ports::Backlight) `== false`, which is the shipping board
+    /// today). The quick drawer then draws three controls instead of four; nothing else changes.
+    no_backlight: bool,
     /// `--expect-screen NAME`: headless `--png` only — refuse to render unless the script landed
     /// on that screen ([`Screen::name`](obc_app::Screen::name), the `screens!` table's own
     /// variant string). A recipe that walks a menu is a hostage to that menu's station order:
@@ -244,6 +248,7 @@ impl Default for Args {
             center: None,
             zoom_mul: 1.0,
             script: None,
+            no_backlight: false,
             expect_screen: None,
             boot: false,
             routes_dir: None,
@@ -617,6 +622,7 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
                 ));
             }
             "--zoom" => a.zoom_mul = it.next().and_then(|s| s.parse().ok()).ok_or("bad --zoom")?,
+            "--no-backlight" => a.no_backlight = true,
             "--script" => a.script = Some(it.next().ok_or("--script needs a token string")?),
             "--expect-screen" => a.expect_screen = Some(it.next().ok_or("--expect-screen needs a screen name")?),
             "--boot" => a.boot = true,
@@ -1048,6 +1054,7 @@ Scripted snapshots:
   --script TOKENS         Apply device-button script tokens before rendering
                           (d/u step, p press, b back, h/B hold, H/M partial hold,
                            Q quick-drawer squeeze, w wait, f frame, T tick, I idle)
+  --no-backlight          Model a panel with no controllable light (three quick-drawer controls)
   --expect-screen NAME    Refuse unless the script lands on this screen
   --hold PLAN             Consume without starting one request: nav|detour
   --inject EVENT          nav-fail=KIND|detour-fail=KIND|upload=ID|
@@ -1339,6 +1346,11 @@ fn main() {
         // version (the sim's own crate version stands in for the board's git-describe tag) and the
         // loaded map's name (filename stem) + OBCM version from the parsed header. The card-free scan
         // is answered after the script (below), mirroring the on-entry FAT scan seam.
+        // The panel-light capability the drawer's root row is built from (#1515 D2). The headless
+        // host models a lit panel, like the window does, so a snapshot shows the four-icon
+        // arrangement a rider gets on a device with a light; `--no-backlight` renders the other
+        // one, which is what the board has today.
+        app.set_backlight_available(!args.no_backlight);
         app.set_fw_version(env!("CARGO_PKG_VERSION"));
         let map_name = map.source.display_name();
         app.set_map_info(&map_name, tables.version);

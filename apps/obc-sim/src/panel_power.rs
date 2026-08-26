@@ -31,6 +31,12 @@ impl SimBacklight {
 }
 
 impl Backlight for SimBacklight {
+    /// **Yes.** A window can always be drawn darker, so the simulator shows the rider the same four
+    /// controls a lit device would — which is what makes the five levels reviewable at all.
+    fn available(&self) -> bool {
+        true
+    }
+
     fn apply(&mut self, level: u8) -> Result<(), BacklightUnsupported> {
         self.level = level.min(BACKLIGHT_LEVELS - 1);
         Ok(())

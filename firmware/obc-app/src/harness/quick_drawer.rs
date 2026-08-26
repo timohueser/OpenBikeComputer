@@ -44,11 +44,19 @@ fn drawer_up(app: &App) -> bool {
     matches!(app.top_screen(), Screen::QuickDrawer(_))
 }
 
+/// An app on `[Home, Map]` whose platform **has** a panel light — the simulator's shape, and the
+/// four-icon arrangement every test below but one is about.
+fn lit() -> App {
+    let mut app = App::new(AppState::new(0, 0, 1.0));
+    app.set_backlight_available(true);
+    app
+}
+
 /// The squeeze opens the sheet **over** the screen the rider was on — the base is still there, so
 /// closing puts them back where they were without a navigation — and the same squeeze closes it.
 #[test]
 fn the_quick_chord_opens_the_sheet_over_the_base_and_closes_it_again() {
-    let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
+    let mut app = lit(); // [Home, Map]
     let mut f = Frames::new();
     let depth = app.debug_stack_len();
 
@@ -73,7 +81,7 @@ fn the_quick_chord_opens_the_sheet_over_the_base_and_closes_it_again() {
 #[test]
 fn a_blocking_modal_refuses_the_chord() {
     // The passkey card, host-pushed by the BLE seam.
-    let mut app = App::new(AppState::new(0, 0, 1.0));
+    let mut app = lit();
     let mut f = Frames::new();
     app.set_ble_status(BleStatus { link: crate::BleLink::Advertising, passkey: Some(123_456), paired: false });
     quiet_pass(&mut app, 100);
@@ -82,7 +90,7 @@ fn a_blocking_modal_refuses_the_chord() {
     assert!(matches!(app.top_screen(), Screen::Passkey(_)), "the squeeze did not reach past it");
 
     // A map transfer in flight.
-    let mut app = App::new(AppState::new(0, 0, 1.0));
+    let mut app = lit();
     let mut f = Frames::new();
     app.set_map_transfer(Some(MapTransfer::Receiving { received_kib: 10, total_kib: 100 }));
     quiet_pass(&mut app, 100);
@@ -91,7 +99,7 @@ fn a_blocking_modal_refuses_the_chord() {
     assert!(matches!(app.top_screen(), Screen::MapTransfer(_)), "bytes are landing — no sheet over that");
 
     // The terminal "Installing update" card, the last frame before the warm reset.
-    let mut app = App::new(AppState::new(0, 0, 1.0));
+    let mut app = lit();
     let mut f = Frames::new();
     app.debug_request_dfu_install();
     for ms in [100, 200, 300, 400] {
@@ -107,7 +115,7 @@ fn a_blocking_modal_refuses_the_chord() {
 /// Back onto the screen under it — and, until D3 declares content for it, does nothing at all.
 #[test]
 fn the_context_chord_is_swallowed_and_does_nothing() {
-    let mut app = App::new(AppState::new(0, 0, 1.0));
+    let mut app = lit();
     let mut f = Frames::new();
     let depth = app.debug_stack_len();
     chord(&mut app, &mut f, Button::Down, Button::Back, 1_000);
@@ -119,7 +127,7 @@ fn the_context_chord_is_swallowed_and_does_nothing() {
 /// stack a second overlay on it.
 #[test]
 fn no_squeeze_stacks_a_second_sheet() {
-    let mut app = App::new(AppState::new(0, 0, 1.0));
+    let mut app = lit();
     let mut f = Frames::new();
     let ms = chord(&mut app, &mut f, Button::Up, Button::Select, 1_000);
     let depth = app.debug_stack_len();
@@ -133,7 +141,7 @@ fn no_squeeze_stacks_a_second_sheet() {
 /// before/after `==` a settings screen's edit arms, with no new path.
 #[test]
 fn the_ble_icon_toggle_reaches_the_settings_save() {
-    let mut app = App::new(AppState::new(0, 0, 1.0));
+    let mut app = lit();
     let mut f = Frames::new();
     assert!(app.settings().ble_enabled);
 
@@ -148,7 +156,7 @@ fn the_ble_icon_toggle_reaches_the_settings_save() {
 /// to the committed row on Back — the port's preview/commit/revert contract, seen from the app.
 #[test]
 fn the_driven_brightness_previews_commits_and_reverts() {
-    let mut app = App::new(AppState::new(0, 0, 1.0));
+    let mut app = lit();
     let mut f = Frames::new();
     assert_eq!(app.backlight_level(), BRIGHTNESS_MAX, "a fresh device runs at full brightness");
 
@@ -169,10 +177,78 @@ fn the_driven_brightness_previews_commits_and_reverts() {
     assert!(!quiet_pass(&mut app, ms).effects.settings.is_empty(), "a committed level is persisted");
 }
 
+/// **Both arrangements of the root row.** A platform with a panel light offers four controls and
+/// opens on brightness; one without offers three and opens on the radio — and every remaining
+/// control still reaches the page it names, which is the part an index shift would break.
+#[test]
+fn a_platform_without_a_panel_light_drops_the_brightness_control() {
+    // Lit: four controls, and the first press opens the editor.
+    let mut app = lit();
+    let mut f = Frames::new();
+    let ms = chord(&mut app, &mut f, Button::Up, Button::Select, 1_000);
+    let ms = at(&mut app, ms, Gesture::Press);
+    assert_eq!(app.backlight_level(), BRIGHTNESS_MAX, "the editor is open on the committed level");
+    let ms = at(&mut app, ms, Gesture::Step(-1));
+    assert_eq!(app.backlight_level(), BRIGHTNESS_MAX - 1, "…and it previews");
+    at(&mut app, ms, Gesture::Back);
+
+    // Dark: three controls. The first press must toggle the radio, not open an editor that has
+    // nothing behind it, and Step(1)/Step(2) must land on settings and power rather than one short.
+    let mut app = App::new(AppState::new(0, 0, 1.0)); // no host claimed a light
+    let mut f = Frames::new();
+    assert!(!app.backlight_available());
+    let ms = chord(&mut app, &mut f, Button::Up, Button::Select, 1_000);
+    let ms = at(&mut app, ms, Gesture::Press);
+    assert!(!app.settings().ble_enabled, "the first control is the radio");
+    assert_eq!(app.backlight_level(), BRIGHTNESS_MAX, "no editor, and no preview to hold");
+    assert!(drawer_up(&app), "the sheet is still up");
+
+    let ms = at(&mut app, ms, Gesture::Step(2)); // -> power, the last of three
+    let ms = at(&mut app, ms, Gesture::Press);
+    let _ = at(&mut app, ms, Gesture::Hold);
+    assert!(app.power_off_requested(), "the last control is still power");
+
+    // …and the middle one is still central settings.
+    let mut app = App::new(AppState::new(0, 0, 1.0));
+    let mut f = Frames::new();
+    let ms = chord(&mut app, &mut f, Button::Up, Button::Select, 1_000);
+    let ms = at(&mut app, ms, Gesture::Step(1));
+    at(&mut app, ms, Gesture::Press);
+    assert!(matches!(app.top_screen(), Screen::Settings(_)), "the middle control is the gear");
+}
+
+/// A host-pushed modal lands **above** the drawer, so the sheet is no longer what the rider is
+/// looking at — and the panel must stop showing an uncommitted preview it can no longer reach.
+///
+/// The map-transfer card is the worst case on purpose: it also refuses the chord, so a preview held
+/// behind it would stand for the length of a multi-minute upload with no way for the rider to end
+/// it.
+#[test]
+fn a_modal_over_the_editor_reverts_the_preview() {
+    let mut app = lit();
+    let mut f = Frames::new();
+    let ms = chord(&mut app, &mut f, Button::Up, Button::Select, 1_000);
+    let ms = at(&mut app, ms, Gesture::Press); // the brightness editor
+    let ms = at(&mut app, ms, Gesture::Step(-2));
+    assert_eq!(app.backlight_level(), BRIGHTNESS_MAX - 2, "the preview is live while the sheet is on top");
+
+    app.set_map_transfer(Some(MapTransfer::Receiving { received_kib: 10, total_kib: 4_000 }));
+    quiet_pass(&mut app, ms);
+    assert!(matches!(app.top_screen(), Screen::MapTransfer(_)), "the card covered the sheet");
+    assert_eq!(app.backlight_level(), BRIGHTNESS_MAX, "…and the panel is back on the committed level");
+    assert_eq!(app.settings().brightness, BRIGHTNESS_MAX, "nothing was committed on the way");
+
+    // The card clears, the sheet is on top again, and the rider's staged value is where they left it.
+    app.set_map_transfer(None);
+    quiet_pass(&mut app, ms + 100);
+    assert!(matches!(app.top_screen(), Screen::QuickDrawer(_)));
+    assert_eq!(app.backlight_level(), BRIGHTNESS_MAX - 2, "the preview comes back with the sheet");
+}
+
 /// Power needs the completed hold: nothing the rider can *tap* asks the host to switch off.
 #[test]
 fn power_off_needs_the_completed_hold() {
-    let mut app = App::new(AppState::new(0, 0, 1.0));
+    let mut app = lit();
     let mut f = Frames::new();
     let ms = chord(&mut app, &mut f, Button::Up, Button::Select, 1_000);
     let ms = at(&mut app, ms, Gesture::Step(3)); // -> the power icon
@@ -191,7 +267,7 @@ fn power_off_needs_the_completed_hold() {
 /// screen — not back inside a drawer the rider has finished with.
 #[test]
 fn central_settings_replaces_the_sheet_and_back_lands_on_the_base() {
-    let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
+    let mut app = lit(); // [Home, Map]
     let mut f = Frames::new();
     let depth = app.debug_stack_len();
 
@@ -213,7 +289,7 @@ fn the_base_is_recessed_only_while_the_sheet_is_up() {
     use embedded_graphics::pixelcolor::Rgb888;
 
     let bytes = build_min_obcm(0x0000);
-    let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map] over the flat blue backdrop
+    let mut app = lit(); // [Home, Map] over the flat blue backdrop
     let mut f = Frames::new();
     // The backdrop as the host's own colour policy renders it, and the same colour one device-64
     // level down — what `dim_color` turns it into.

@@ -207,6 +207,11 @@ pub struct Ctx<'a> {
     /// The **Navigator** domain (#1397 S2) — the planning screens name what they want to it
     /// (`admit_intent`) rather than latching a request of their own. A rider's plan, cancel or
     /// commit therefore exists in exactly one place from the instant they press.
+    /// Whether the panel has a controllable light
+    /// ([`App::backlight_available`](crate::App::backlight_available)) — the quick drawer's root
+    /// row is one control shorter without one. A constant of the platform, threaded rather than
+    /// stored, because it is the *screen's* content that depends on it.
+    pub backlight: bool,
     pub navigator: &'a mut crate::navigator::NavigatorMachine,
     /// The **DFU** domain — the Firmware and update-confirm screens post their phase here.
     pub dfu: &'a mut crate::dfu::DfuState,
@@ -239,6 +244,7 @@ pub(crate) fn test_ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, 
         rides: &[],
         trips: &[],
         nav_profiles: &EMPTY_PROFILES,
+        backlight: true,
         poi_scratch: &EMPTY_SCRATCH,
         waypoints: &[],
         corridor: &[],
@@ -441,6 +447,9 @@ pub struct Render<'a> {
     /// course, else `None` — the hourly rows then draw neutral arrows, never a fabricated
     /// head/tail ([`wind_class`](crate::weather::wind_class)'s locked fallback).
     pub travel_deg: Option<f32>,
+    /// Whether the panel has a controllable light — see [`Ctx::backlight`]. The quick drawer draws
+    /// three icons instead of four without one.
+    pub backlight: bool,
 }
 
 impl Render<'_> {
@@ -1387,10 +1396,13 @@ const DIM_LEVEL: [u8; 4] = [0, 1, 1, 2];
 /// the same colour one device-64 level darker out.
 ///
 /// This is a colour function, not a layer. [`App::draw_frame`](crate::App) composes it with the
-/// host's own `color_fn` for the base screen and hands the sheet the untouched `color_fn`, so the
-/// recession costs one table lookup per channel per drawn pixel and **zero** bytes of RAM - no
-/// capture buffer, no second framebuffer, no alpha, and nothing for the 64-colour panel to
-/// approximate.
+/// host's own `color_fn` for the base screen and hands the sheet the untouched `color_fn`, and it
+/// costs **zero** bytes of RAM - no capture buffer, no second framebuffer, no alpha, and nothing
+/// for the 64-colour panel to approximate.
+///
+/// **Per colour resolution, not per pixel.** `Canvas` resolves `color_fn` once per primitive - one
+/// span, one outline, one string, one sampled rain cell - so this runs O(primitives), not
+/// O(pixels), and the MIP's partial-line budget never sees it.
 pub(crate) fn dim_color(rgb565: u16) -> u16 {
     let r = DIM_LEVEL[((rgb565 >> 14) & 0x3) as usize];
     let g = DIM_LEVEL[((rgb565 >> 9) & 0x3) as usize];
