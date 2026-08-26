@@ -6890,6 +6890,48 @@ mod tests {
         assert!(matches!(rebooted.top_screen(), Screen::WeatherAlert(_)), "an event past the cooldown is a new alert");
     }
 
+    /// A stored **v16** preferences blob carrying `marks` in its frozen span — what a device holds
+    /// at the moment of this update. Built by doctoring the committed v16 golden, because `encode`
+    /// writes v17 now and those bytes may never be re-captured.
+    fn v16_blob_with(marks: crate::weather_alerts::AlertMarks) -> [u8; crate::settings::ENCODED_LEN] {
+        let mut b = crate::settings::V16_FULL_BLOB;
+        b[114..168].fill(0);
+        crate::weather_alerts::pack_marks(&marks, &mut b[114..168]);
+        let crc = crate::store_meta::crc16(&b[0..168]);
+        b[168..170].copy_from_slice(&crc.to_le_bytes());
+        b
+    }
+
+    /// The update does not cost the rider their anchors. A device holding a v16 blob and **no**
+    /// marks record carries the blob's anchors across, rehomes them into the record once, and the
+    /// storm it was already suppressing stays suppressed.
+    #[test]
+    fn an_upgrade_from_v16_keeps_the_anchors() {
+        let mut old = App::new(AppState::new(0, 0, 1.0));
+        let snap = alert_snap(&old, &[0, 10, 0, 0, 0, 0, 0, 0, 0]);
+        // The last ride on the old firmware: the storm fires, and its anchor lands in the blob.
+        old.weather_alert_tick(Some(&snap));
+        let anchors = *old.alert_marks();
+        assert!(anchors.iter().any(Option::is_some), "the old firmware really did anchor something");
+        let blob = v16_blob_with(anchors);
+
+        // The update boots: a v16 blob, and nothing in the marks record.
+        let mut updated = App::new(AppState::new(0, 0, 1.0));
+        updated.set_settings(crate::settings::decode(&blob).expect("the v16 blob still reads"));
+        let carried = crate::settings::legacy_alert_marks(&blob).expect("the frozen span answers");
+        updated.set_alert_marks(carried, MarksProvenance::LegacyBlob);
+        assert_eq!(updated.alert_marks(), &anchors, "the rider's anchors came across");
+
+        // They are rehomed into the record — once.
+        let record = serve_marks_write(&mut updated).expect("the carried anchors are written to the record");
+        assert_eq!(crate::weather_alerts::decode_alert_marks(&record), Some(anchors));
+        assert!(drain_settings_effect(&mut updated).is_none(), "…and nothing more is owed");
+
+        // And the same storm stays down: no duplicate card bought by the update.
+        updated.weather_alert_tick(Some(&snap));
+        assert!(!matches!(updated.top_screen(), Screen::WeatherAlert(_)), "the same storm stays down");
+    }
+
     /// A storm costs 64 bytes of anchors, not 176 bytes of the rider's preferences. One firing
     /// alert offers `PersistAlertMarks` and **nothing else**: the preferences handshake is not
     /// armed, so a week of weather no longer rewrites the settings blob once per alert.
