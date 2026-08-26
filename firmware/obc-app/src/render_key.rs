@@ -380,6 +380,34 @@ mod tests {
         assert_ne!(app.render_key(), on_map, "…and the shape is what tells the two frames apart");
     }
 
+    /// The **rain gate**, in both directions — the whole reason the selected frame sits in the Map
+    /// key rather than in the weather pages'.
+    ///
+    /// The differential replay cannot pin this half: it fails on under-redraw, and an ungated rain
+    /// field is *over*-redraw, which it is built to tolerate. So the gate is asserted here, where a
+    /// bundle ageing under an ordinary map has to cost nothing.
+    #[test]
+    fn only_the_screen_that_draws_the_raster_has_the_rain_frame_in_its_key() {
+        // A rain bundle ages under the ordinary Map: it draws no raster, so nothing repaints.
+        let mut map = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
+        let quiet = map.render_key();
+        map.state.rain_steps_ahead = 7;
+        map.state.rain_step = 3;
+        assert_eq!(map.render_key(), quiet, "an ageing bundle must never repaint the ordinary Map");
+
+        // On the one row that declares `rain_overlay`, the selected frame is part of the frame.
+        let mut rain = App::new(AppState::new(0, 0, 1.0));
+        rain.ui.stack[1] = Screen::WeatherRainMap(crate::screen::WeatherRainMapScreen::new());
+        rain.state.rain_steps_ahead = 4;
+        let at_zero = rain.render_key();
+        rain.state.rain_step = 1;
+        assert_ne!(rain.render_key(), at_zero, "the rain map repaints when the selected frame moves");
+        rain.state.rain_step = 0;
+        assert_eq!(rain.render_key(), at_zero, "…and back to the same frame is the same frame");
+        rain.state.rain_steps_ahead = 6;
+        assert_ne!(rain.render_key(), at_zero, "a changed count is a changed time strip");
+    }
+
     /// **Exact, never hashed, and never IEEE.** A float goes into the key as its bit pattern, so a
     /// zoom that changed to a value comparing `==` under IEEE rules still repaints.
     #[test]
