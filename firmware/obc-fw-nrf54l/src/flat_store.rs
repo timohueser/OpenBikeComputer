@@ -1051,8 +1051,16 @@ pub(crate) async fn storage_task(
 /// Namespace-free, like the effect it serves: FS7 gives every object one id space, so the head at an
 /// id is unambiguous. A trip cascade reaches this one member at a time, so there is no step here
 /// that would need to say which family it is removing.
+///
+/// A listing that stopped early is a **failure**, never an absent object. `existed: false` is read
+/// as "the goal state holds", and a cascade advances past the member on it — so a media error that
+/// truncated the walk before it reached `id` would orphan a route that is still stored.
 fn remove_head(store: &FlatStore<FlatCard>, id: ObjectId) -> Result<bool, StoreError> {
-    let Some(meta) = store.entries().find(|entry| entry.id == id) else {
+    let found = store.entries().find(|entry| entry.id == id);
+    if !store.entries_ok() {
+        return Err(StoreError::Media);
+    }
+    let Some(meta) = found else {
         return Ok(false);
     };
     match store.commit(&[Mutation::Remove { id, revision: meta.revision }]) {

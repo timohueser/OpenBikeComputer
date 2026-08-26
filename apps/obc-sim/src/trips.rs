@@ -149,8 +149,8 @@ fn id_from_filename(path: &Path) -> Option<CatalogObjectId> {
     if digits.is_empty() {
         return None;
     }
-    // A filename number the band cannot hold is not listed at all, rather than listed under an id
-    // that collides with a route or a ride — the same honesty the ride store's parser keeps.
+    // A filename number the band cannot hold gets no id from its name; `id_for` then lists the file
+    // under a freshly assigned band id, so it can never collide with a route or a ride.
     digits.parse::<CatalogObjectId>().ok()?.checked_add(obc_host_core::TRIP_ID_BASE)
 }
 
