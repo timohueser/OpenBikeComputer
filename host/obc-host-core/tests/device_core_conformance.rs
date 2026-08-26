@@ -221,33 +221,6 @@ fn rider_visible(mut state: VisibleState) -> VisibleState {
 
 // ==================== what the pass owns today ====================
 
-/// The twelve legacy classes DeviceCore's pass has taken over outright.
-///
-/// Four from #1438 — a rider's delete is consumed at stage 4 and a retention stamp leaves as a
-/// `RetentionEffect` — and the eight #1397 S2 moved: every class whose terminal answer the legacy
-/// protocol already delivers, and which therefore has a domain able to validate a token for it.
-///
-/// A DeviceCore runner asserts they never appear in the mailbox rather than filtering them:
-/// executing one beside the effect that already carries it would plan, install or delete twice, and
-/// a class that quietly came back would be the migration coming undone.
-fn pass_owned(command: &HostCommand) -> bool {
-    matches!(
-        command,
-        HostCommand::DeleteRoute { .. }
-            | HostCommand::DeleteRide { .. }
-            | HostCommand::StampRouteUsed { .. }
-            | HostCommand::StampRideSynced { .. }
-            | HostCommand::PlanRoute(_)
-            | HostCommand::PlanDetour(_)
-            | HostCommand::CommitDetour
-            | HostCommand::CancelRoutePlan
-            | HostCommand::CancelDetour
-            | HostCommand::Dfu(_)
-            | HostCommand::PersistSettings { .. }
-            | HostCommand::ScanCardFree
-    )
-}
-
 /// The two derived cues, which are *levels* rather than one-shots: they are re-derived from state on
 /// every drain, so they keep pending and a DeviceCore runner declines them every time — the plan's
 /// keyed [`DerivedNeeds`] is what it answers instead (#1437).
@@ -591,18 +564,15 @@ impl CoreHarness {
     // rather than by a reply (`BondAck`). A domain that cannot validate a token cannot own an
     // outcome (epic §4.3), so both keep the old protocol until #1397 S6.
 
+    /// Asked for **by name**: the three residual classes, and nothing else. A class DeviceCore owns
+    /// is not filtered out of a full walk here — it is never drained, because the full walk *pulls*
+    /// from each domain as it passes and would mint the operation the pass's own effect already
+    /// carries. The harness is therefore unable to reach past its classes rather than asserting
+    /// that it did not.
     fn serve_mailbox(&mut self, done: &mut Vec<Done>, trace: &mut TraceRecorder<VisibleState>) {
         let mut mail: HostMailbox = HostMailbox::new();
-        let _ = self.state.app.drain_host_commands(&mut mail);
+        let _ = self.state.app.drain_residual_commands(&mut mail);
         while let Some(command) = mail.pop() {
-            if let Some(level) = derived_level(&command) {
-                self.moved.insert(level);
-                continue;
-            }
-            assert!(
-                !pass_owned(&command),
-                "{command:?} is DeviceCore's now — running it here would repeat the effect that carries it"
-            );
             trace.record_command(&command);
             self.serve_legacy(command, done, trace);
         }
@@ -747,9 +717,11 @@ impl CoreHarness {
     /// moved by the time this lands, and the pass drops it — which is the corrected defect.
     fn serve_derived(&mut self, needs: &DerivedNeeds, done: &mut Vec<Done>) {
         if let Some(key) = needs.ride_track {
+            self.served.insert("derived.ride-track");
             done.push(Done::RideTrack(DerivedInput::filled(key)));
         }
         if let Some(key) = needs.nav_preview {
+            self.served.insert("derived.nav-preview");
             done.push(Done::NavPreview(DerivedInput::filled(key)));
         }
     }
@@ -1089,7 +1061,7 @@ fn the_pass_owns_the_classes_it_took_over() {
     .expect("the scenario runs");
     assert_eq!(trace.final_state.route_ids.len(), 2, "the rider's delete removed one route");
     assert!(harness.served.contains("catalog"), "and it was the catalog effect that did it");
-    // `serve_mailbox` asserts the class never appears at all, so reaching here is the proof.
+    // `serve_mailbox` never asks for the class, so the removal could only have come from the effect.
 
     // The retention stamps: the same, one layer down — the sweep's candidate leaves as a
     // `RetentionEffect`, so the legacy stamp class is not pending either.
@@ -1119,7 +1091,8 @@ fn the_pass_owns_the_classes_it_took_over() {
     .expect("the scenario runs");
     assert!(harness.served.contains("catalog"), "the expiry was served as one bounded removal");
 
-    // The two derived levels are levels, so they re-derive every drain and are declined every time.
+    // The two derived fills are keyed needs on the plan, not commands: the pass raises them and the
+    // executor answers the key it was handed.
     let mut harness = CoreHarness::new(Executor::Typed);
     run_scenario_seeded(
         &definition(named("derived-data.repeats-until-matching-fill")),
@@ -1128,13 +1101,14 @@ fn the_pass_owns_the_classes_it_took_over() {
         &mut harness,
     )
     .expect("the scenario runs");
-    assert!(harness.moved.contains("LoadRideTrack"), "the ride-track cue is answered from the plan's key");
-    assert!(harness.moved.contains("RefreshNavPreview"), "and so is the nav preview");
+    assert!(harness.served.contains("derived.ride-track"), "the ride-track fill is answered from the plan's key");
+    assert!(harness.served.contains("derived.nav-preview"), "and so is the nav preview");
 
     // The eight classes #1397 S2 moved, each through the scenario that produces it: the rider's
-    // request leaves as its domain's typed effect, and `serve_mailbox`'s `pass_owned` assertion —
-    // which every one of these runs through — is what proves the legacy class did not pend beside
-    // it. `Cancel*` rides its own family's scenario, and `PersistSettings` the settings ones.
+    // request leaves as its domain's typed effect, and the residual drain — which every one of
+    // these runs through, and which asks for three classes by name — is what makes the legacy class
+    // unable to pend beside it. `Cancel*` rides its own family's scenario, and `PersistSettings`
+    // the settings ones.
     for (scenario, domain) in [
         ("navigation.plan-cancel-late-replacement", "navigator"),
         ("navigation.detour-lifecycle", "navigator"),
