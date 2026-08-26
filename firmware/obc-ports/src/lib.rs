@@ -324,12 +324,15 @@ impl<'a> Sensors<'a> {
 /// A physical control button whose press **edges** the gesture layer times.
 ///
 /// The device has four buttons: **Up** / **Down** on the left flank, **Select** / **Back** on the
-/// right. Up and Down are step controls — they move the selection the instant they go down (and
-/// auto-repeat while held), so they arrive as [`InputEvent::Step`] rather than as timed edges. Only
-/// Select and Back carry both a short-press *and* a long-press meaning, so only those two need edge
-/// timing and appear here.
+/// right, and **all four** reach the gesture layer as edges. So one timing model — the step
+/// cadence as well as the long-press threshold — lives in the shared recognizer, and a host that
+/// models real buttons gets exactly the device's behaviour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Button {
+    /// The left-flank **Up** button (upper): previous / decrease.
+    Up,
+    /// The left-flank **Down** button (lower): next / increase.
+    Down,
     /// The right-flank **Select** button (upper): confirm / open.
     Select,
     /// The right-flank **Back** button (lower).
@@ -348,9 +351,11 @@ pub enum ButtonEvent {
 /// A raw control event before gesture recognition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputEvent {
-    /// Signed selection steps from the Up/Down pair: **negative = Up** ("previous"), **positive =
-    /// Down** ("next"). One press is ±1; a source that batches — auto-repeat catch-up, or a host
-    /// injecting a jump — may send several at once.
+    /// Signed selection steps **injected directly**, bypassing the Up/Down edges: **negative = Up**
+    /// ("previous"), **positive = Down** ("next"). This is the variant for the sources a device has
+    /// no button for — a mouse wheel, a `--script` recipe, the debug link's `K t` line — and it may
+    /// carry a batched jump of several steps at once. Physical buttons never use it: they forward
+    /// [`Button::Up`] / [`Button::Down`] edges and the recognizer derives the steps.
     Step(i32),
     /// One button edge.
     Button(ButtonEvent),
