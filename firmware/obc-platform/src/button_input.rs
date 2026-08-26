@@ -5,12 +5,11 @@
 //! the host uses with its keyboard / on-screen controls. This only manufactures the raw events.
 //!
 //! The device's controls are four pushbuttons sharing one common pin — **UP** / **DOWN** on the
-//! left flank, **SELECT** / **BACK** on the right — so:
-//! - **UP** / **DOWN** emit signed selection steps — [`InputEvent::Step(-1)`] /
-//!   [`InputEvent::Step(+1)`] — with auto-repeat while held, for fast menu scrolling.
-//! - **SELECT** forwards [`Button::Select`] edges → `Gestures` yields `Press` (short)
-//!   / `Hold` (long).
-//! - **BACK** forwards [`Button::Back`] edges → `Back` / `BackHold`.
+//! left flank, **SELECT** / **BACK** on the right — and **all four forward debounced
+//! [`ButtonEvent`] edges**. Nothing here decides what an edge means: the shared recogniser turns
+//! UP/DOWN into steps (with auto-repeat while held) and SELECT/BACK into `Press`/`Hold` and
+//! `Back`/`BackHold`. So this module owns exactly one timing — the contact-settle window — and the
+//! rest of the input model has a single home the hosts share.
 //!
 //! ## Wiring convention — active-low
 //! Each switch connects its GPIO to the shared **GND** common pin, and the input uses its
@@ -18,7 +17,7 @@
 //! pressed ≡ [`InputPin::is_low`].
 //!
 //! ## Time
-//! Debounce and auto-repeat need a clock, but [`InputSource::poll`] is clockless, so the board calls
+//! Debounce needs a clock, but [`InputSource::poll`] is clockless, so the board calls
 //! [`ButtonInput::update`] with the current wall-clock millis once per loop *before* `handle_input`;
 //! `update` samples the pins and queues events, `poll` drains the queue. Injecting the clock keeps
 //! the crate board-agnostic and host-testable.
@@ -27,44 +26,14 @@ use embedded_hal::digital::InputPin;
 use heapless::Deque;
 use obc_ports::{Button, ButtonEvent, InputEvent, InputSource};
 
-/// Default contact-settle window (ms): a level must hold this long before its edge is reported.
-/// 8 ms rejects switch bounce without a perceptible press delay.
-pub const DEFAULT_DEBOUNCE_MS: u32 = 8;
-/// Default delay before a held UP/DOWN starts auto-repeating (ms) — long enough that a single tap
-/// never double-fires, short enough to feel responsive on a hold.
-pub const DEFAULT_REPEAT_DELAY_MS: u32 = 350;
-/// Default interval between auto-repeat steps while UP/DOWN stays held (ms) — ~8 steps/s.
-pub const DEFAULT_REPEAT_INTERVAL_MS: u32 = 120;
+/// Contact-settle window (ms): a level must hold this long before its edge is reported. 8 ms
+/// rejects switch bounce without a perceptible press delay.
+pub const DEBOUNCE_MS: u32 = 8;
 
 /// Capacity of the event ring between [`ButtonInput::update`] and the app's drain. One `update`
 /// queues at most one event per button (four) and the app drains to empty every frame, so this
 /// never fills.
 const QUEUE_LEN: usize = 8;
-
-/// Debounce + auto-repeat timing. Set [`auto_repeat`](Timing::auto_repeat) `false` to make
-/// UP/DOWN one step per press.
-#[derive(Debug, Clone, Copy)]
-pub struct Timing {
-    /// Contact-settle window for every button (ms).
-    pub debounce_ms: u32,
-    /// Whether holding UP/DOWN repeats the step (vs. one per press).
-    pub auto_repeat: bool,
-    /// Delay from press to the first auto-repeat step (ms).
-    pub repeat_delay_ms: u32,
-    /// Interval between subsequent auto-repeat steps while held (ms).
-    pub repeat_interval_ms: u32,
-}
-
-impl Default for Timing {
-    fn default() -> Self {
-        Timing {
-            debounce_ms: DEFAULT_DEBOUNCE_MS,
-            auto_repeat: true,
-            repeat_delay_ms: DEFAULT_REPEAT_DELAY_MS,
-            repeat_interval_ms: DEFAULT_REPEAT_INTERVAL_MS,
-        }
-    }
-}
 
 /// One debounced active-low input: a level is committed — and its edge reported — only once it has
 /// held steady for the debounce window.
@@ -90,9 +59,9 @@ impl<P: InputPin> Debounced<P> {
     }
 
     /// Sample the pin at `now` (ms) and report a debounced edge if the level just
-    /// committed. A bounce shorter than `debounce_ms` keeps resetting `since` and so
+    /// committed. A bounce shorter than [`DEBOUNCE_MS`] keeps resetting `since` and so
     /// is never committed.
-    fn update(&mut self, now: u32, debounce_ms: u32) -> Option<Edge> {
+    fn update(&mut self, now: u32) -> Option<Edge> {
         // Active-low: a *low* read is a press. A read error is impossible on real GPIO
         // (`Infallible`); treat any as "released".
         let raw = self.pin.is_low().unwrap_or(false);
@@ -101,7 +70,7 @@ impl<P: InputPin> Debounced<P> {
             self.candidate = raw;
             self.since = now;
             None
-        } else if raw != self.pressed && now.wrapping_sub(self.since) >= debounce_ms {
+        } else if raw != self.pressed && now.wrapping_sub(self.since) >= DEBOUNCE_MS {
             // Raw has held steady past the window and differs from the committed
             // state: commit it and report the edge.
             self.pressed = raw;
@@ -127,30 +96,17 @@ pub struct ButtonInput<P> {
     down: Debounced<P>,
     select: Debounced<P>,
     back: Debounced<P>,
-    timing: Timing,
-    /// Millis the next auto-repeat step is due for UP / DOWN, or `None` while up
-    /// (or when [`Timing::auto_repeat`] is off).
-    up_repeat: Option<u32>,
-    down_repeat: Option<u32>,
     queue: Deque<InputEvent, QUEUE_LEN>,
 }
 
 impl<P: InputPin> ButtonInput<P> {
-    /// Build from the four pins (UP, DOWN, SELECT, BACK) with [`Timing::default`].
+    /// Build from the four pins (UP, DOWN, SELECT, BACK).
     pub fn new(up: P, down: P, select: P, back: P) -> Self {
-        Self::with_timing(up, down, select, back, Timing::default())
-    }
-
-    /// Build from the four pins with explicit [`Timing`].
-    pub fn with_timing(up: P, down: P, select: P, back: P, timing: Timing) -> Self {
         ButtonInput {
             up: Debounced::new(up),
             down: Debounced::new(down),
             select: Debounced::new(select),
             back: Debounced::new(back),
-            timing,
-            up_repeat: None,
-            down_repeat: None,
             queue: Deque::new(),
         }
     }
@@ -159,21 +115,20 @@ impl<P: InputPin> ButtonInput<P> {
     /// Call once per loop, before the app's input handler; the app then drains
     /// the queue via [`InputSource::poll`].
     pub fn update(&mut self, now_ms: u32) {
-        let t = self.timing;
-        // UP / DOWN emit signed selection steps, with auto-repeat while held.
-        Self::step(&mut self.up, &mut self.up_repeat, -1, now_ms, &t, &mut self.queue);
-        Self::step(&mut self.down, &mut self.down_repeat, 1, now_ms, &t, &mut self.queue);
-        // SELECT / BACK forward debounced button edges; the shared Gestures layer
-        // turns those + the clock into Press/Hold and Back/BackHold.
-        Self::edge(&mut self.select, Button::Select, now_ms, t.debounce_ms, &mut self.queue);
-        Self::edge(&mut self.back, Button::Back, now_ms, t.debounce_ms, &mut self.queue);
+        // Every control forwards its debounced edge unchanged. The shared `Gestures` layer turns
+        // UP/DOWN into steps (first one on the press, then auto-repeat) and SELECT/BACK into
+        // Press/Hold and Back/BackHold.
+        Self::edge(&mut self.up, Button::Up, now_ms, &mut self.queue);
+        Self::edge(&mut self.down, Button::Down, now_ms, &mut self.queue);
+        Self::edge(&mut self.select, Button::Select, now_ms, &mut self.queue);
+        Self::edge(&mut self.back, Button::Back, now_ms, &mut self.queue);
     }
 
     /// Whether nothing is in flight: every button is released + settled and the event queue is
     /// drained. The event-driven input plane polls at the loop rate only while *not* idle (a press
-    /// debouncing, a hold repeating); once idle it sleeps on
-    /// [`wait_for_any_press`](ButtonInput::wait_for_any_press). (Auto-repeat is disarmed on release,
-    /// so a settled-released set implies no pending repeat.)
+    /// debouncing, a button held); once idle it sleeps on
+    /// [`wait_for_any_press`](ButtonInput::wait_for_any_press). A held UP/DOWN keeps this `false`,
+    /// which is what keeps the recogniser ticking at the loop rate while it auto-repeats.
     pub fn is_idle(&self) -> bool {
         self.queue.is_empty()
             && self.up.settled_released()
@@ -182,45 +137,9 @@ impl<P: InputPin> ButtonInput<P> {
             && self.back.settled_released()
     }
 
-    /// UP/DOWN handling: a debounced press emits one step and arms auto-repeat; a
-    /// release disarms it; while held, a step is emitted each time the repeat falls
-    /// due (rebased to `now`, so a stalled loop emits one catch-up step, not a burst).
-    fn step(
-        btn: &mut Debounced<P>,
-        repeat: &mut Option<u32>,
-        dir: i32,
-        now: u32,
-        t: &Timing,
-        queue: &mut Deque<InputEvent, QUEUE_LEN>,
-    ) {
-        match btn.update(now, t.debounce_ms) {
-            Some(Edge::Press) => {
-                push(queue, InputEvent::Step(dir));
-                *repeat = t.auto_repeat.then(|| now.wrapping_add(t.repeat_delay_ms));
-            }
-            Some(Edge::Release) => *repeat = None,
-            None => {
-                if let Some(due) = *repeat {
-                    // `due` reached? (wrap-tolerant: now ∈ [due, due + 2^31) ⇒ due).
-                    if btn.pressed && now.wrapping_sub(due) < u32::MAX / 2 {
-                        push(queue, InputEvent::Step(dir));
-                        *repeat = Some(now.wrapping_add(t.repeat_interval_ms));
-                    }
-                }
-            }
-        }
-    }
-
-    /// SELECT/BACK handling: forward each debounced edge as a [`Button`] Down/Up — the
-    /// shared `Gestures` layer derives Press/Hold (or Back/BackHold) from these.
-    fn edge(
-        btn: &mut Debounced<P>,
-        which: Button,
-        now: u32,
-        debounce_ms: u32,
-        queue: &mut Deque<InputEvent, QUEUE_LEN>,
-    ) {
-        match btn.update(now, debounce_ms) {
+    /// Forward one button's debounced edge as a [`Button`] Down/Up.
+    fn edge(btn: &mut Debounced<P>, which: Button, now: u32, queue: &mut Deque<InputEvent, QUEUE_LEN>) {
+        match btn.update(now) {
             Some(Edge::Press) => push(queue, InputEvent::Button(ButtonEvent::Down(which))),
             Some(Edge::Release) => push(queue, InputEvent::Button(ButtonEvent::Up(which))),
             None => {}
@@ -374,117 +293,33 @@ mod tests {
         assert!(bi.poll().is_none(), "a sub-debounce glitch emits nothing");
     }
 
+    /// UP and DOWN forward edges like the other two — no step, no repeat timing. What a held
+    /// direction *means* is the recogniser's business (`obc_app::input`), which owns those tests.
     #[test]
-    fn up_and_down_emit_signed_steps() {
+    fn up_and_down_forward_their_own_edges() {
         let pins = Pins::new();
         let mut bi = pins.input();
 
-        pins.down.set(true); // DOWN → +1
+        pins.down.set(true);
         bi.update(0);
         bi.update(8);
-        assert_eq!(bi.poll(), Some(InputEvent::Step(1)));
+        assert_eq!(bi.poll(), Some(InputEvent::Button(ButtonEvent::Down(Button::Down))));
         pins.down.set(false);
         bi.update(20);
-        bi.update(28); // release is silent (no event)
-        assert!(bi.poll().is_none());
+        bi.update(28);
+        assert_eq!(bi.poll(), Some(InputEvent::Button(ButtonEvent::Up(Button::Down))));
 
-        pins.up.set(true); // UP → -1
+        pins.up.set(true);
         bi.update(40);
         bi.update(48);
-        assert_eq!(bi.poll(), Some(InputEvent::Step(-1)));
+        assert_eq!(bi.poll(), Some(InputEvent::Button(ButtonEvent::Down(Button::Up))));
+
+        bi.update(1_000); // still held, much later: nothing is synthesized here any more
+        assert!(bi.poll().is_none(), "a held direction repeats in the recogniser, not on the board");
     }
 
-    #[test]
-    fn holding_down_auto_repeats_then_stops_on_release() {
-        let pins = Pins::new();
-        let mut bi = pins.input(); // defaults: delay 350, interval 120
-
-        pins.down.set(true);
-        bi.update(0);
-        bi.update(8); // press → first step, repeat armed for 8 + 350 = 358
-        assert_eq!(bi.poll(), Some(InputEvent::Step(1)));
-
-        bi.update(100); // before the repeat delay
-        assert!(bi.poll().is_none());
-        bi.update(358); // first auto-repeat; next due 358 + 120 = 478
-        assert_eq!(bi.poll(), Some(InputEvent::Step(1)));
-        bi.update(478); // second auto-repeat
-        assert_eq!(bi.poll(), Some(InputEvent::Step(1)));
-
-        pins.down.set(false); // release
-        bi.update(490);
-        bi.update(498); // release commits → repeats disarmed
-        bi.update(700); // long after: no more steps
-        assert!(bi.poll().is_none());
-    }
-
-    #[test]
-    fn auto_repeat_can_be_disabled() {
-        let pins = Pins::new();
-        let timing = Timing { auto_repeat: false, ..Timing::default() };
-        let mut bi = ButtonInput::with_timing(
-            MockPin { low: &pins.up },
-            MockPin { low: &pins.down },
-            MockPin { low: &pins.select },
-            MockPin { low: &pins.back },
-            timing,
-        );
-        pins.down.set(true);
-        bi.update(0);
-        bi.update(8); // one step on press
-        assert_eq!(bi.poll(), Some(InputEvent::Step(1)));
-        bi.update(1000); // still held, much later: no repeat
-        assert!(bi.poll().is_none());
-    }
-
-    /// A stalled loop that only re-`update`s long after several repeat intervals must emit exactly
-    /// ONE catch-up step (not one per missed interval) and rebase the next due time to `now` —
-    /// else a long stall would dump a burst and the menu would jump wildly.
-    #[test]
-    fn a_stalled_loop_emits_one_catch_up_step_then_rearms() {
-        let pins = Pins::new();
-        let mut bi = pins.input(); // delay 350, interval 120
-
-        pins.down.set(true);
-        bi.update(0);
-        bi.update(8); // press → first step, repeat armed for 8 + 350 = 358
-        assert_eq!(bi.poll(), Some(InputEvent::Step(1)));
-
-        // Loop stalls, then resumes at 10_000 — past `due` (358) by ~80 intervals.
-        bi.update(10_000);
-        assert_eq!(bi.poll(), Some(InputEvent::Step(1)), "exactly one catch-up step");
-        assert!(bi.poll().is_none(), "not a burst — only one step for the whole stall");
-
-        // Rearmed relative to `now`: nothing is due before 10_000 + 120 = 10_120.
-        bi.update(10_119);
-        assert!(bi.poll().is_none(), "next step rebased to now + interval, not the old due");
-        bi.update(10_120);
-        assert_eq!(bi.poll(), Some(InputEvent::Step(1)), "next interval fires off the rebased due");
-    }
-
-    /// The due-time comparison `now.wrapping_sub(due) < u32::MAX / 2` keeps auto-repeat firing
-    /// across a u32-millis rollover (~49.7 days). A naive `now >= due` would suppress it forever
-    /// after the wrap.
-    #[test]
-    fn auto_repeat_survives_a_millis_wrap() {
-        let pins = Pins::new();
-        let mut bi = pins.input(); // delay 350, interval 120
-
-        let t0 = u32::MAX - 100; // press 100 ms before the rollover
-        pins.down.set(true);
-        bi.update(t0);
-        bi.update(t0.wrapping_add(8)); // committed press; repeat armed for ~(t0+8)+350, which wraps
-        assert_eq!(bi.poll(), Some(InputEvent::Step(1)));
-
-        // `due` = (u32::MAX - 92).wrapping_add(350) = 257. After the wrap, now = 300 is
-        // past due by 43 ms; wrapping_sub keeps that small and positive → step fires.
-        bi.update(300);
-        assert_eq!(bi.poll(), Some(InputEvent::Step(1)), "repeat fires across the millis rollover");
-    }
-
-    /// SELECT held while DOWN taps must not block or swallow the DOWN steps — each button
-    /// debounces independently. SELECT-down stays latched (no spurious repeat) while DOWN emits its
-    /// own step.
+    /// SELECT held while DOWN taps must not block or swallow the DOWN edges — each button
+    /// debounces independently, and a latched SELECT emits nothing further.
     #[test]
     fn select_held_while_down_taps_keeps_both_independent() {
         let pins = Pins::new();
@@ -496,16 +331,16 @@ mod tests {
         assert_eq!(bi.poll(), Some(InputEvent::Button(ButtonEvent::Down(Button::Select))));
         assert!(bi.poll().is_none());
 
-        // DOWN taps while SELECT is still held — independent debounce, independent step.
+        // DOWN taps while SELECT is still held — independent debounce, independent edge.
         pins.down.set(true);
         bi.update(20);
-        bi.update(28); // DOWN commits → Step(1); SELECT already latched, emits nothing
-        assert_eq!(bi.poll(), Some(InputEvent::Step(1)));
+        bi.update(28);
+        assert_eq!(bi.poll(), Some(InputEvent::Button(ButtonEvent::Down(Button::Down))));
         assert!(bi.poll().is_none(), "held SELECT does not re-emit while DOWN taps");
     }
 
     /// UP and DOWN committed on the *same* `update(now)` both enqueue, in UP-then-DOWN order
-    /// (the order `update` calls `step`), and drain intact.
+    /// (the order `update` samples them), and drain intact.
     #[test]
     fn up_and_down_both_pressed_enqueue_in_call_order() {
         let pins = Pins::new();
@@ -514,32 +349,33 @@ mod tests {
         pins.up.set(true);
         pins.down.set(true);
         bi.update(0); // both candidates flip
-        bi.update(8); // both commit in one update: UP (-1) then DOWN (+1)
-        assert_eq!(bi.poll(), Some(InputEvent::Step(-1)), "UP is sampled first");
-        assert_eq!(bi.poll(), Some(InputEvent::Step(1)), "DOWN second");
+        bi.update(8); // both commit in one update: UP then DOWN
+        assert_eq!(bi.poll(), Some(InputEvent::Button(ButtonEvent::Down(Button::Up))), "UP is sampled first");
+        assert_eq!(bi.poll(), Some(InputEvent::Button(ButtonEvent::Down(Button::Down))), "DOWN second");
         assert!(bi.poll().is_none());
     }
 
-    /// Force the "can't happen" queue overflow — never drain, hold all four buttons, pump
-    /// auto-repeat past QUEUE_LEN=8 — and prove the queue caps at QUEUE_LEN, dropping the overflow
-    /// rather than panicking or wrapping.
+    /// Force the "can't happen" queue overflow — never drain, cycle all four buttons past
+    /// QUEUE_LEN=8 edges — and prove the queue caps at QUEUE_LEN, dropping the overflow rather
+    /// than panicking or wrapping.
     #[test]
     fn queue_caps_at_eight_and_drops_overflow() {
         let pins = Pins::new();
         let mut bi = pins.input();
 
-        // Hold all four down; never poll, so nothing drains.
-        pins.up.set(true);
-        pins.down.set(true);
-        pins.select.set(true);
-        pins.back.set(true);
-        bi.update(0);
-        bi.update(8); // 4 events queued (UP, DOWN, SELECT-down, BACK-down) — queue at 4 of 8
-
-        // Pump UP/DOWN auto-repeat many times to push well past QUEUE_LEN=8; every push
+        // Three press/release cycles of all four buttons = 24 edges, never drained. Every push
         // beyond 8 hits the `let _ = push_back` drop path.
-        for f in 1..20 {
-            bi.update(8 + 350 + 120 * f); // repeated catch-up steps, never drained
+        let mut now = 0;
+        for _ in 0..3 {
+            for down in [true, false] {
+                pins.up.set(down);
+                pins.down.set(down);
+                pins.select.set(down);
+                pins.back.set(down);
+                bi.update(now);
+                bi.update(now + 8); // all four commit together
+                now += 20;
+            }
         }
 
         // Drain: exactly QUEUE_LEN events come out, the rest were dropped.
@@ -550,7 +386,7 @@ mod tests {
         assert_eq!(drained, QUEUE_LEN, "queue holds at most QUEUE_LEN; overflow is dropped, not panicked");
     }
 
-    /// A level held for *exactly* `debounce_ms` commits (`>=`, not `>`): at `now - since == 8` the
+    /// A level held for *exactly* [`DEBOUNCE_MS`] commits (`>=`, not `>`): at `now - since == 8` the
     /// edge fires this frame; at `== 7` it does not. Pins the off-by-one a `>` would introduce.
     #[test]
     fn commit_lands_exactly_on_the_debounce_boundary() {
@@ -561,7 +397,7 @@ mod tests {
         bi.update(0); // candidate seen at 0
         bi.update(7); // 7 ms held: one short of the window → no commit
         assert!(bi.poll().is_none(), "7 ms < 8 ms window: not yet committed");
-        bi.update(8); // exactly 8 ms: `now - since >= debounce_ms` → commit
+        bi.update(8); // exactly 8 ms: `now - since >= DEBOUNCE_MS` → commit
         assert_eq!(bi.poll(), Some(InputEvent::Button(ButtonEvent::Down(Button::Select))), "8 ms >= window commits");
     }
 }
