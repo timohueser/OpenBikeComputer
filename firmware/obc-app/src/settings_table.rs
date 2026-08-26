@@ -20,7 +20,7 @@
 use crate::retention::RideRetention;
 use crate::settings::{DeviceName, SavedSensor, DEVICE_NAME_MAX, SENSOR_SLOTS};
 use crate::stat_fields::{StatFieldList, MAX_STAT_FIELDS};
-use crate::weather_alerts::{AlertMark, AlertMarks, ALERT_CLASSES};
+use crate::weather_alerts::{AlertMarks, ALERT_CLASSES};
 use obc_ports::DateTime;
 
 /// How one settings field packs into its own slice of the blob.
@@ -189,62 +189,20 @@ impl SettingCodec for [SavedSensor; SENSOR_SLOTS] {
     }
 }
 
-/// Bytes per persisted alert mark: `flags(1) · onset i64 LE(8) · lat i32 LE(4) · lon i32 LE(4)
-/// · severity(1)`. The leading byte is a flag *pair*, not a bool: bit 0 = the slot holds a mark,
-/// bit 1 = that mark has a position. Position presence has to survive the write — a mark fired
-/// before the first GPS fix has no coordinate, and dedup must compare it by time alone rather
-/// than by ground distance to a fabricated `(0, 0)` (see [`crate::weather_alerts::same_event`]).
-/// Both bits fit the byte that was already there, so the record and the blob keep their size.
-pub(crate) const ALERT_MARK_LEN: usize = 18;
-/// `flags` bit 0: this slot holds a mark at all.
-pub(crate) const ALERT_MARK_PRESENT: u8 = 1 << 0;
-/// `flags` bit 1: the stored `lat`/`lon` are a real position (else the mark has none).
-pub(crate) const ALERT_MARK_HAS_POS: u8 = 1 << 1;
-
+/// The v16 alert-mark row's codec. The packing itself lives with the type it serialises
+/// ([`crate::weather_alerts`]), because the marks now carry their own record and the blob is only
+/// one of two frames those same 54 bytes appear in.
 impl SettingCodec for AlertMarks {
-    const LEN: usize = ALERT_CLASSES * ALERT_MARK_LEN;
+    const LEN: usize = ALERT_CLASSES * crate::weather_alerts::ALERT_MARK_LEN;
 
     #[inline]
     fn write(&self, dst: &mut [u8]) {
-        for (slot, mark) in self.iter().enumerate() {
-            let off = slot * ALERT_MARK_LEN;
-            if let Some(mark) = mark {
-                dst[off] = ALERT_MARK_PRESENT;
-                dst[off + 1..off + 9].copy_from_slice(&mark.onset.to_le_bytes());
-                if let Some((lat, lon)) = mark.pos {
-                    dst[off] |= ALERT_MARK_HAS_POS;
-                    dst[off + 9..off + 13].copy_from_slice(&lat.to_le_bytes());
-                    dst[off + 13..off + 17].copy_from_slice(&lon.to_le_bytes());
-                }
-                dst[off + 17] = mark.severity;
-            }
-        }
+        crate::weather_alerts::pack_marks(self, dst);
     }
 
-    /// An absent slot ([`ALERT_MARK_PRESENT`] clear) reads as `None` regardless of the stored
-    /// payload; a present slot without [`ALERT_MARK_HAS_POS`] keeps its position *absent* rather
-    /// than reading the zeroed coordinate bytes as null island. Every stored value is a legal mark
-    /// (any onset/position/severity is comparable), so there is no range clamp to apply.
     #[inline]
     fn read(src: &[u8]) -> Self {
-        let mut marks: AlertMarks = [None; ALERT_CLASSES];
-        for (slot, mark) in marks.iter_mut().enumerate() {
-            let off = slot * ALERT_MARK_LEN;
-            if src[off] & ALERT_MARK_PRESENT != 0 {
-                let pos = (src[off] & ALERT_MARK_HAS_POS != 0).then(|| {
-                    (
-                        i32::from_le_bytes(src[off + 9..off + 13].try_into().unwrap()),
-                        i32::from_le_bytes(src[off + 13..off + 17].try_into().unwrap()),
-                    )
-                });
-                *mark = Some(AlertMark {
-                    onset: i64::from_le_bytes(src[off + 1..off + 9].try_into().unwrap()),
-                    pos,
-                    severity: src[off + 17],
-                });
-            }
-        }
-        marks
+        crate::weather_alerts::unpack_marks(src)
     }
 }
 

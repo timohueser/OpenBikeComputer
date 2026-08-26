@@ -800,7 +800,8 @@ const _: () = {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings_table::{ALERT_MARK_HAS_POS, ALERT_MARK_LEN, ALERT_MARK_PRESENT, SAVED_SENSOR_LEN};
+    use crate::settings_table::SAVED_SENSOR_LEN;
+    use crate::weather_alerts::{ALERT_MARK_HAS_POS, ALERT_MARK_LEN, ALERT_MARK_PRESENT};
 
     /// `Settings::DEFAULT` (the const the board's `.rodata` store image is built from, #1197)
     /// names every per-type default variant literally — pin each against its type's own
