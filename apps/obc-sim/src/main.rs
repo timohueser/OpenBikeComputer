@@ -467,7 +467,7 @@ fn parse_ble(s: &str) -> Result<BleSeed, String> {
 /// The `--inject` vocabulary, stated once — the parser's error text and the `--help` line both read
 /// it, so an added form cannot advertise itself in only one of them.
 const INJECT_FORMS: &str = "--inject needs nav-fail=KIND|detour-fail=KIND|upload=ID|upload-replace=ID|\
-     trip-upload=ID|map-transfer=receiving:RECEIVED/TOTAL|map-transfer=installed|map-transfer=failed:KIND|\
+     trip-upload=N|map-transfer=receiving:RECEIVED/TOTAL|map-transfer=installed|map-transfer=failed:KIND|\
      warning=LIST";
 
 /// The `--inject map-transfer` forms, stated once (see [`INJECT_FORMS`]).
@@ -517,7 +517,7 @@ fn parse_injection(s: &str) -> Result<Injection, String> {
             replaced: kind == "upload-replace",
         }),
         "trip-upload" => {
-            Ok(Injection::TripUpload { id: value.parse().map_err(|_| "--inject trip-upload needs a u64 object id")? })
+            Ok(Injection::TripUpload { id: value.parse().map_err(|_| "--inject trip-upload needs the N of TP{N}.OBT")? })
         }
         "map-transfer" => Ok(Injection::MapTransfer(parse_map_transfer(value)?)),
         "warning" => Ok(Injection::Warning(parse_warning(value)?)),
@@ -1021,7 +1021,7 @@ Scripted snapshots:
   --expect-screen NAME    Refuse unless the script lands on this screen
   --hold PLAN             Consume without starting one request: nav|detour
   --inject EVENT          nav-fail=KIND|detour-fail=KIND|upload=ID|
-                          upload-replace=ID|trip-upload=ID|warning=LIST|
+                          upload-replace=ID|trip-upload=N (TP{N}.OBT)|warning=LIST|
                           map-transfer=receiving:RECEIVED/TOTAL|
                           map-transfer=installed|map-transfer=failed:KIND
   --dfu STATE             scan=KIND|progress=KIND|installing=KIND|
@@ -1494,7 +1494,13 @@ fn main() {
         }
         // The **trip** twin (epic #526): a trip always lands after its member routes, so the one
         // "TRIP RECEIVED" card replaces the burst's last per-route popup.
+        //
+        // `N` names the file `TP{N}.OBT`, which the trip store lists under `TRIP_ID_BASE + N`:
+        // routes and trips are numbered from unrelated counters in these folders, so the store
+        // carves the trips into their own band and the fact must name the identity the catalog
+        // holds.
         if let Some(Injection::TripUpload { id }) = args.inject {
+            let id = id.saturating_add(obc_host_core::TRIP_ID_BASE);
             host.facts().note_trip_upload(obc_app::device_core::TripUpload { id, replaced: false });
             settle(&mut host, &mut session, &mut app, &mut stores, &reader, &mut *elev, &mut platform, script_now);
         }
@@ -1972,7 +1978,7 @@ mod cli_tests {
         // A grouped flag's *forms* are the actual vocabulary a snapshot recipe writes, so they are
         // documented in both places too — a seed nobody can find is a seed nobody uses.
         for form in [
-            "trip-upload=ID",
+            "trip-upload=N",
             "map-transfer=receiving:RECEIVED/TOTAL",
             "map-transfer=installed",
             "map-transfer=failed:KIND",
