@@ -21,10 +21,12 @@
 //! - `P <watts>` — a power sample (integer watts, `u16`; a signed meter reading is clamped at `0`
 //!   host-side).
 //! - `R <rpm>` — a cadence sample (integer rpm, `u8`).
-//! - `K t <n>` / `K s <d|u>` / `K b <d|u>` — **input injection**: `n` signed Up/Down selection
-//!   steps, or a Select/Back button down/up edge. These feed the gesture recogniser exactly
-//!   like the physical buttons, so a host can drive the UI (taps and — via a delayed up — holds)
-//!   for hardware-in-the-loop work without anyone pressing a button.
+//! - `K t <n>` / `K <u|d|s|b> <d|u>` — **input injection**: `n` directly injected signed selection
+//!   steps, or a down/up edge for one of the four buttons (`u` Up, `d` Down, `s` Select, `b` Back).
+//!   An edge is the same event a physical button produces, so a host can drive the UI over the
+//!   wire — taps, and, via a delayed up, holds and Up/Down auto-repeat — for hardware-in-the-loop
+//!   work without anyone pressing a button. `K t` skips the buttons and hands the recogniser a
+//!   finished step, which is how a script jumps several rows at once.
 //! - `Z <mpp>` — set the map camera to exactly `mpp` meters-per-pixel (float). A
 //!   debug/benchmark hook: it drives the zoom directly instead of stepping the selection (which
 //!   only moves in fixed 1.2× steps) and always forces one map redraw, so a host sweep can
@@ -150,11 +152,13 @@ fn parse_opt_f32(tok: Option<&str>) -> Option<f32> {
     }
 }
 
-/// Parse the tokens after a `K` tag into an injected input event: `K t <n>` `n` signed Up/Down
-/// selection steps, `K s <d|u>` a Select down/up edge, `K b <d|u>` a Back down/up edge.
+/// Parse the tokens after a `K` tag into an injected input event: `K t <n>` is `n` directly
+/// injected signed steps; `K u|d|s|b <d|u>` is a down/up edge for Up / Down / Select / Back.
 fn parse_key(it: &mut core::str::SplitAsciiWhitespace) -> Option<Msg> {
     let ev = match it.next()? {
         "t" => InputEvent::Step(it.next()?.parse::<i32>().ok()?),
+        "u" => InputEvent::Button(edge(it.next()?, Button::Up)?),
+        "d" => InputEvent::Button(edge(it.next()?, Button::Down)?),
         "s" => InputEvent::Button(edge(it.next()?, Button::Select)?),
         "b" => InputEvent::Button(edge(it.next()?, Button::Back)?),
         _ => return None,
@@ -701,6 +705,8 @@ mod tests {
     fn parses_input_injection() {
         assert_eq!(parse_line("K t 1"), Some(Msg::Input(InputEvent::Step(1))));
         assert_eq!(parse_line("K t -2"), Some(Msg::Input(InputEvent::Step(-2))));
+        assert_eq!(parse_line("K u d"), Some(Msg::Input(InputEvent::Button(ButtonEvent::Down(Button::Up)))));
+        assert_eq!(parse_line("K d u"), Some(Msg::Input(InputEvent::Button(ButtonEvent::Up(Button::Down)))));
         assert_eq!(parse_line("K s d"), Some(Msg::Input(InputEvent::Button(ButtonEvent::Down(Button::Select)))));
         assert_eq!(parse_line("K b u"), Some(Msg::Input(InputEvent::Button(ButtonEvent::Up(Button::Back)))));
         assert_eq!(parse_line("K s x"), None); // bad edge
