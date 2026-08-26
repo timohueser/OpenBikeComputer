@@ -135,7 +135,9 @@ pub enum Action {
     Settle,
     StoreChanged,
     RefreshCatalogs,
-    UploadRoutesThenTrip,
+    UploadFirstRoute,
+    UploadSecondRoute,
+    UploadTrip,
     RemapCatalogIdentity,
     DeleteRoute,
     DeleteRide,
@@ -419,10 +421,17 @@ impl CorpusState {
             Action::Settle => {}
             Action::StoreChanged => self.note_store_commit(),
             Action::RefreshCatalogs => {}
-            Action::UploadRoutesThenTrip => {
+            // The burst is three actions, not one, and that is the whole point of the row: the
+            // upload slot is single and most-recent-wins, so two uploads reported before one pass
+            // consumes it would leave the first one unobserved and the *order* untested.
+            Action::UploadFirstRoute => {
                 self.feed_routes("upload.routes", trace);
                 self.facts.note_route_upload(RouteUpload { id: 10, replaced: false, elevation: None });
+            }
+            Action::UploadSecondRoute => {
                 self.facts.note_route_upload(RouteUpload { id: 20, replaced: false, elevation: None });
+            }
+            Action::UploadTrip => {
                 self.feed_trips("upload.trip", trace);
                 self.facts.note_trip_upload(TripUpload { id: 50, replaced: false });
             }
@@ -957,7 +966,9 @@ pub const SCENARIOS: &[Scenario] = &[
         actions: &[
             Action::StoreChanged,
             Action::RefreshCatalogs,
-            Action::UploadRoutesThenTrip,
+            Action::UploadFirstRoute,
+            Action::UploadSecondRoute,
+            Action::UploadTrip,
             Action::RemapCatalogIdentity,
         ],
     },
@@ -1130,7 +1141,9 @@ pub fn action_name(action: Action) -> &'static str {
         Action::Settle => "settle",
         Action::StoreChanged => "store-changed",
         Action::RefreshCatalogs => "refresh-catalogs",
-        Action::UploadRoutesThenTrip => "upload-routes-then-trip",
+        Action::UploadFirstRoute => "upload-first-route",
+        Action::UploadSecondRoute => "upload-second-route",
+        Action::UploadTrip => "upload-trip",
         Action::RemapCatalogIdentity => "remap-catalog-identity",
         Action::DeleteRoute => "delete-route",
         Action::DeleteRide => "delete-ride",

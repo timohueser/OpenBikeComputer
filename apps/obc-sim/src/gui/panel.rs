@@ -373,7 +373,7 @@ impl SimGui {
                         inject = Some(true);
                     }
                 });
-                ui.weak("rescan + upload event → idle / mid-ride / active-replace popup");
+                ui.weak("rescan + upload fact → idle / mid-ride / active-replace popup");
             }
         }
         if let Some(replace) = inject {

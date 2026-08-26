@@ -1453,11 +1453,10 @@ fn main() {
         settle_now(&mut app, &mut stores, &mut host, &mut platform);
 
         // ── The scripted injections ──────────────────────────────────────────────────────────
-        // Every one of these used to be an event pushed straight into the app. They are now what the
-        // device actually sees: an **outcome** answering the operation the rider started (carrying
-        // the token the executor is holding for it), or an external **fact** nobody asked for. The
-        // pass consumes them at its first two stages, so the snapshot pins the same seam the board
-        // will run.
+        // Each of these is what the device actually sees: an **outcome** answering the operation
+        // the rider started (carrying the token the executor is holding for it), or an external
+        // **fact** nobody asked for. The pass consumes them at its first two stages, so the snapshot
+        // pins the same seam the board runs.
         //
         // A routing failure lands in the CREATE ROUTE confirm's own planning screen: `--hold nav`
         // acquired the operation without starting the search, so this is a genuine answer to it.

@@ -11,13 +11,13 @@
 //! baseline and `core-delayed` is what proves behaviour is independent of answer cadence — the
 //! property most likely to regress, and the one the delayed runner exists for.
 //!
-//! ## Dispositions
+//! ## A difference is a failure, not a row
 //!
-//! A difference between two runners would carry a [`Disposition::Accepted`] row naming the reason
-//! and the slice that removes it. [`DIFFERENCES`] is **empty**: the last three rows belonged to the
-//! compatibility executor, and retired with it. A *blocking* conformance failure is not a row
-//! either — it is this file failing, because a difference with no approved row is one nothing may
-//! ship over.
+//! There is no disposition table and no way to record a difference and move on: the runners must
+//! reach the same rider-visible state, and [`every_scenario_agrees_in_every_runner`] failing is what
+//! a difference looks like. Beside it, three coverage gates say the corpus is still reaching what it
+//! claims to — every DC1 behaviour row is claimed by a scenario, every bulk feeder is exercised by a
+//! real call, and each upload in a burst reaches the rider.
 //!
 //! ## Two production defects came out of this gate
 //!
@@ -58,8 +58,8 @@ use obc_app::device_core::derived::{
 };
 use obc_app::device_core::storage_info::{StorageInfoEffect, StorageInfoOutcome};
 use obc_app::device_core::{
-    Capabilities, DeviceFacts, EffectSlots, NavigatorTag, OutcomeSlots, PassClock, PassInputs, PassPlan,
-    PlatformSupport, Revision, SettingsTag, StoreIdentity, StoreRevision, TokenSource, TransferState,
+    Capabilities, DeviceFacts, EffectSlots, ModeState, OutcomeSlots, PassClock, PassInputs, PassPlan, PlatformSupport,
+    Revision, StoreIdentity, StoreRevision, TokenSource, TransferState,
 };
 use obc_app::dfu::{DfuEffect, DfuOutcome};
 use obc_app::navigator::{NavigatorEffect, NavigatorError, NavigatorOutcome, PlannerWork};
@@ -68,16 +68,17 @@ use obc_app::retention::{Retention, RetentionEffect, RetentionError, RetentionOu
 use obc_app::screen::Screen;
 use obc_app::settings::{SettingsEffect, SettingsOutcome};
 use obc_app::weather::WeatherEffect;
-use obc_app::{
-    App, AppState, DetourRequest, Gesture, HostCommand, HostMailbox, RideRetentionRecord, TrackAction, WarningFlags,
+use obc_app::{App, AppState, Gesture, HostCommand, HostMailbox, RideRetentionRecord, TrackAction, WarningFlags};
+use obc_host_core::trace::{
+    run_scenario_seeded, FeederCall, FeederKind, RunnerMode, Trace, TraceHarness, TraceInput, TraceRecorder,
+    ALL_FEEDER_KINDS,
 };
-use obc_host_core::trace::{run_scenario_seeded, RunnerMode, Trace, TraceHarness, TraceInput, TraceRecorder};
 use obc_ports::{Fix, InputClock, LocationSource, RideClock, Sensors, SettingsSaveError};
 use obc_route::NavError;
 
 use device_core_corpus::{
     clock_watermark, definition, normalization_seed, visible_state, Action, CorpusState, PendingSettingsResult,
-    Scenario, VisibleState, SCENARIOS, SETTINGS_FAILURE_RETRY_MS,
+    Scenario, ScreenState, VisibleState, ALL_REQUIREMENTS, SCENARIOS, SETTINGS_FAILURE_RETRY_MS,
 };
 
 // ==================== the runners ====================
@@ -241,6 +242,8 @@ struct CoreHarness {
     nav_preview: Vec<(i32, i32)>,
     /// Effects the executor served, by domain.
     served: BTreeSet<&'static str>,
+    /// Every settings revision the executor was asked to write, in order.
+    settings_writes: Vec<u16>,
 }
 
 impl CoreHarness {
@@ -251,6 +254,7 @@ impl CoreHarness {
             ride_preview: Vec::new(),
             nav_preview: Vec::new(),
             served: BTreeSet::new(),
+            settings_writes: Vec::new(),
         }
     }
 
@@ -316,6 +320,7 @@ impl CoreHarness {
             self.served.insert("settings");
             let SettingsEffect::PersistRevision { token, revision } = effect;
             self.state.settings_token = Some(token);
+            self.settings_writes.push(revision);
             persisted = Some(revision);
         }
         if let Some(effect) = effects.dfu.take() {
@@ -471,11 +476,13 @@ impl CoreHarness {
         if std::mem::take(&mut self.state.commit_success_pending) {
             self.state.answer_nav(|token| NavigatorOutcome::DetourCommitted { token, route: 10 });
         }
-        let Some((revision, failed)) = self.scripted_settings(persisted) else { return };
         // The answer carries the token of the write the executor is holding, so the domain checks
-        // the operation *and* the revision — two independent guards (#810). No write in flight means
-        // there is no operation this scripted answer could belong to.
+        // the operation *and* the revision — two independent guards (#810). The token is read
+        // **first**: with no write in flight there is nothing for this script to answer, and
+        // `scripted_settings` consumes the script, so asking it before knowing that would spend the
+        // scenario's only ack on a pass that could not deliver it.
         let Some(token) = self.state.settings_token else { return };
+        let Some((revision, failed)) = self.scripted_settings(persisted) else { return };
         done.push(if failed {
             Done::Settings(SettingsOutcome::PersistFailed { token, revision, error: SettingsSaveError::Backend })
         } else {
@@ -625,12 +632,27 @@ impl TraceHarness<Action> for CoreHarness {
             }
             Done::Warning(flags) => self.state.facts.raise_warnings(flags),
             Done::RideSaved => self.state.feed_rides("core.recorder-saved", trace),
+            // A keyed ride-track answer fills two resident buffers — the elevation profile and the
+            // preview polyline — and a nav-preview answer fills one. They are recorded as the bulk
+            // feeder calls they are: the data still crosses the seam, it just carries a key now
+            // instead of arriving on a `set_*` method of its own.
             Done::RideTrack(input) => {
                 self.ride_preview = vec![(0, 0), (1, 1)];
+                trace.record_feeder(FeederCall::new(FeederKind::RideProfile, "core.ride-track", 1));
+                trace.record_feeder(FeederCall::new(
+                    FeederKind::RidePreview,
+                    "core.ride-track",
+                    self.ride_preview.len(),
+                ));
                 self.state.derived.ride_track = Some(input);
             }
             Done::NavPreview(input) => {
                 self.nav_preview = vec![(0, 0), (1, 1)];
+                trace.record_feeder(FeederCall::new(
+                    FeederKind::NavPreview,
+                    "core.nav-preview",
+                    self.nav_preview.len(),
+                ));
                 self.state.derived.nav_preview = Some(input);
             }
         }
@@ -677,6 +699,63 @@ fn every_scenario_agrees_in_every_runner() {
 
     assert_eq!(compared, SCENARIOS.len() * Runner::ALL.len(), "every scenario runs in every runner");
     assert!(differing.is_empty(), "the runners disagree, and nothing may ship over that: {differing:?}");
+}
+
+/// **The DC1 checklist is still a checklist.** Every behaviour row #1434 locked is claimed by at
+/// least one scenario, the table's names are stable unique trace keys, and no scenario is empty.
+///
+/// This gate lived in `device_core_legacy_traces.rs` and is corpus-side, not runner-side: it is a
+/// property of `SCENARIOS` × [`ALL_REQUIREMENTS`] and has nothing to do with which frame runs them.
+/// It is here because the file that held it retired with the legacy runner it was written against.
+#[test]
+fn every_dc1_requirement_is_claimed_by_a_scenario() {
+    let names: BTreeSet<_> = SCENARIOS.iter().map(|scenario| scenario.name).collect();
+    assert_eq!(names.len(), SCENARIOS.len(), "scenario names are stable unique trace keys");
+    assert!(SCENARIOS.iter().all(|scenario| !scenario.actions.is_empty()), "a scenario with no actions runs nothing");
+
+    let covered: BTreeSet<_> = SCENARIOS.iter().flat_map(|scenario| scenario.requirements.iter().copied()).collect();
+    let required: BTreeSet<_> = ALL_REQUIREMENTS.iter().copied().collect();
+    assert_eq!(covered, required, "every DC1 behaviour row must be claimed by a scenario");
+}
+
+/// **Every bulk feeder is exercised by a real call.** The feeders outlived the protocol — a typed
+/// executor fills the resident catalogs through them — so the loop that proves the corpus reaches
+/// all of them has to outlive it too, and it moves here from the retired legacy traces (#1516's
+/// open question 5). A feeder no scenario touches is a seam nothing is checking.
+#[test]
+fn every_feeder_kind_is_exercised_by_a_real_call() {
+    let mut seen: BTreeSet<FeederKind> = BTreeSet::new();
+    for scenario in SCENARIOS {
+        for runner in Runner::ALL {
+            let trace = runner.run(scenario).trace;
+            seen.extend(trace.steps.iter().flat_map(|step| &step.feeder_calls).map(|call| call.feeder));
+        }
+    }
+    assert_eq!(seen, ALL_FEEDER_KINDS.into_iter().collect(), "every feeder must be reached by a real call");
+}
+
+/// **The upload burst reaches the rider in order.** `Requirement::CatalogUploadOrder`'s claim is that
+/// each member route's commit is announced, each popup replacing the last, and that the trip object —
+/// which always lands after its members — replaces the final route popup with one card.
+///
+/// The upload fact slot is single and most-recent-wins, so this is only observable when each commit
+/// gets its own pass: two uploads reported before one pass consumes the slot leave the first
+/// unobserved, and the *order* untested. That is why the burst is three scenario actions.
+#[test]
+fn each_upload_in_a_burst_reaches_the_rider_and_the_trip_card_lands_last() {
+    for runner in Runner::ALL {
+        let trace = runner.run(named("catalog.refresh-upload-remap")).trace;
+        let screens: Vec<ScreenState> = trace.steps.iter().map(|step| step.visible_state.screen).collect();
+        let received = screens.iter().filter(|s| **s == ScreenState::Other("RouteReceived")).count();
+        assert_eq!(received, 2, "{}: both member routes were announced, not just the last: {screens:?}", runner.name());
+        let trip = screens.iter().rposition(|s| *s == ScreenState::Other("TripReceived"));
+        let last_route = screens.iter().rposition(|s| *s == ScreenState::Other("RouteReceived"));
+        assert!(
+            matches!((trip, last_route), (Some(trip), Some(route)) if trip > route),
+            "{}: the trip card replaces the burst's last route popup: {screens:?}",
+            runner.name()
+        );
+    }
 }
 
 fn named(name: &'static str) -> &'static Scenario {
@@ -740,7 +819,10 @@ const MANDATORY_TRACES: [MandatoryTrace; 16] = [
         row: "trip member disappearance before delete commit",
         test: "an_object_that_vanished_before_the_commit_is_a_success",
         substitution: Some(
-            "the trip cascade never becomes an effect — CatalogState::admit_intent refuses it              (#1491), so there is no bounded member read to race with. The trace              runs the same disappearance against a route removal, which is where the rule lives: an              object already gone is `existed: false`, a success, never a failure the rider sees. The              cascade's own member read lands with #1491.",
+            "the trip cascade never becomes an effect — CatalogState::admit_intent refuses it \
+             (#1491), so there is no bounded member read to race with. The trace runs the same \
+             disappearance against a route removal, which is where the rule lives: an object \
+             already gone is `existed: false`, a success, never a failure the rider sees.",
         ),
     },
     MandatoryTrace {
@@ -900,12 +982,9 @@ fn an_outcome_after_cancellation_changes_nothing() {
         "and the rider is not shown an overview for a route they cancelled"
     );
 
-    // The answer was *delivered*, not swallowed: it carried the token the request went out with, and
-    // it is the domain that refuses it.
-    let mut navigator: TokenSource<NavigatorTag> = TokenSource::new();
-    let token = navigator.issue();
-    navigator.invalidate(); // the rider pressed Back
-    assert!(!navigator.is_current(NavigatorOutcome::PlanFinished { token, route: 9 }.token()));
+    // And it was *delivered*, not swallowed on the way: the slot the executor put it in is empty
+    // after the pass, so what refused it is the domain and not the plumbing losing it.
+    assert!(harness.state.outcomes.navigator.is_empty(), "the pass took the answer and refused it");
 }
 
 /// **Outcome after a replacement request.** The next operation supersedes the last; an answer that
@@ -1025,10 +1104,20 @@ fn a_transfer_during_planning_withdraws_heavy_capability() {
         "a withdrawn capability never cancelled the running plan — its answer still lands"
     );
 
-    // …and the capability comes straight back when the transfer ends.
+    // The withdrawal above is derived from one level, so the fixture is what has to show that level
+    // arriving — and the pure `Capabilities` verdicts asserted at the top are what it means.
+    assert_eq!(
+        fixture.state.app.core_mode(),
+        ModeState::Transferring,
+        "the fact reached the level the withdrawal reads"
+    );
+
+    // …and the capability comes straight back when the transfer ends. This is the restoration claim,
+    // so it is asserted on the fixture after the fact *and* the pass that consumes it: recomputing
+    // `Capabilities::calculate` here would depend on neither.
     fixture.state.facts.note_transfer(TransferState::Idle);
     fixture.pass();
-    assert!(Capabilities::calculate(EVERYTHING, facts(true)).navigator.plan_route);
+    assert_eq!(fixture.state.app.core_mode(), ModeState::Free, "the transfer ended, so heavy work is admissible again");
 }
 
 /// **A route plan completes after the active route changed.** The answer carries the token the
@@ -1059,19 +1148,36 @@ fn a_route_plan_that_lands_after_the_active_route_changed_is_refused() {
 }
 
 /// **A settings result with an old revision.** The token and the revision are independent guards,
-/// and the rider-visible half is identical in the legacy and DeviceCore runners.
+/// and what a *host* can observe of them is what this row pins: the rider's second edit is written
+/// after the first write's stale answer lands, rather than being swallowed by it.
+///
+/// The token guard's own refusal is [`an_outcome_after_cancellation_changes_nothing`], where a
+/// superseded answer visibly adopts nothing. The revision guard sits behind it — a superseding edit
+/// leaves `Awaiting` for `Dirty` before any stale answer can arrive — so it is belt-and-braces and
+/// is pinned in `obc-app`'s own suite rather than claimed here.
 #[test]
 fn a_settings_result_with_an_old_revision_is_refused() {
-    // The two guards are independent: the operation token and the revision. A `TokenSource` that has
-    // moved on refuses an answer built against the token it issued before.
-    let mut settings: TokenSource<SettingsTag> = TokenSource::new();
-    let token = settings.issue();
-    settings.invalidate(); // the rider edited again — a newer revision is the latest now
-    let outcome = SettingsOutcome::Persisted { token, revision: 4 };
-    assert!(!settings.is_current(outcome.token()), "the superseded write does not clear the dirty state");
+    // The rider edits, the write goes out, the rider edits again, and the *first* write's answer
+    // lands — for a superseded revision. What must not happen is the second edit being lost, so the
+    // observation is the sequence of revisions the executor was actually asked to write.
+    let mut harness = typed();
+    let mut trace = recorder();
+    for action in [Action::DirtySettings, Action::PersistSettings, Action::DeliverStaleSettingsResult] {
+        harness.apply(action);
+        let plan = harness.pass();
+        harness.serve(plan, &mut trace);
+    }
+    for _ in 0..SETTLE_PASSES {
+        let plan = harness.pass();
+        harness.serve(plan, &mut trace);
+    }
+    assert_eq!(
+        harness.settings_writes,
+        [1, 2],
+        "the rider's second edit is written after the first one's stale answer, not swallowed by it"
+    );
 
-    // …and it is real behaviour rather than only a token: the stale ack leaves the newer content
-    // pending at both answer cadences.
+    // …and the whole row settles the same way at both answer cadences.
     let scenario = named("settings.revision-success-and-stale-result");
     let immediate = Runner::CoreImmediate.run(scenario);
     let delayed = Runner::CoreDelayed.run(scenario);
@@ -1174,16 +1280,28 @@ const NO_DETOUR: PlatformSupport = PlatformSupport { detour: false, ..EVERYTHING
 /// of the capability — the epic's "unsupported must not appear as NoPath".
 #[test]
 fn a_detour_without_a_path_is_a_failure_and_not_an_absent_capability() {
-    // A supported device asks the planner, and its "no path" is an *answer* to the operation.
-    let mut navigator: TokenSource<NavigatorTag> = TokenSource::new();
-    let token = navigator.issue();
-    let outcome = NavigatorOutcome::Failed { token, error: NavigatorError::Plan(NavError::NoPath) };
-    assert!(navigator.is_current(outcome.token()), "the failure is this operation's answer");
+    // A supported device asks the planner for real, and its "no path" is an *answer* to that
+    // operation: the rider is shown the generic failure card, and not the range tier.
+    let mut harness = typed();
+    harness.apply(Action::PlanDetour);
+    let mut plan = harness.pass();
+    let effect = plan.effects.navigator.take().expect("the detour search leaves as one operation");
     assert!(
-        matches!(outcome, NavigatorOutcome::Failed { error: NavigatorError::Plan(NavError::NoPath), .. }),
-        "and it carries the planner's own verdict"
+        matches!(effect, NavigatorEffect::Acquire { work: PlannerWork::Detour(_), .. }),
+        "and it is a detour search: {effect:?}"
     );
-    let _ = DetourRequest { route: 0, from: (0, 0), progress_m: 0, target_m: 500 };
+    let _ = harness
+        .state
+        .outcomes
+        .navigator
+        .try_put(NavigatorOutcome::Failed { token: effect.token(), error: NavigatorError::Plan(NavError::NoPath) });
+    harness.pass();
+    match harness.state.app.top_screen() {
+        Screen::NavFail(card) => {
+            assert!(!card.shows_too_far(), "NoPath is the generic tier — the range tier is Exhausted");
+        }
+        other => panic!("the planner's failure must reach the rider, not {}", other.name()),
+    }
 
     // The unsupported device never gets here: the capability is absent, so nothing is requested and
     // there is no failure to report at all.
@@ -1495,11 +1613,16 @@ fn the_conformance_replay_wake_profile_and_pass_cost() {
 /// `(passes, immediate, timed, sleep-until-event)` for the replay above. A ratchet, not a budget:
 /// the numbers move when the pass's wake decisions do.
 ///
-/// The two gating figures — 183 passes and 3 immediate wakes — are the claim that matters: nothing
+/// The two gating figures — 185 passes and 3 immediate wakes — are the claim that matters: nothing
 /// here polls. Both are exactly the typed executor's own contribution to the pre-S6c figures; what
 /// halved is the runner count, not the work per pass.
 ///
-/// Three cells moved with S6c's corpus port, and none of them is a pass decision:
+/// The upload burst is three actions rather than one — the upload slot is single and
+/// most-recent-wins, so reporting two uploads before a pass consumes it left the first unobserved.
+/// The two extra passes are two extra upload-popup frames, each arming that popup's 30 s auto-close:
+/// +2 passes, +2 timed, immediate and sleep unchanged.
+///
+/// Three further cells moved with S6c's corpus port, and none of them is a pass decision:
 /// `catalog.refresh-upload-remap` gained an immediate wake because a store commit is now reported as
 /// a *revision fact*, which raises a refresh intent the next pass consumes;
 /// `navigation.plan-cancel-late-replacement` lost one because a late answer now carries the
@@ -1507,7 +1630,7 @@ fn the_conformance_replay_wake_profile_and_pass_cost() {
 /// `recorder.failure-and-session-replacement` turned one sleep into a timed wake because the
 /// finalize failure arrives as a warning fact the next pass consumes, so the card's 30 s timeout
 /// arms one pass later.
-const WAKE_PROFILE: (u32, u32, u32, u32) = (183, 3, 120, 60);
+const WAKE_PROFILE: (u32, u32, u32, u32) = (185, 3, 122, 60);
 
 // ==================== the resource gate ====================
 
