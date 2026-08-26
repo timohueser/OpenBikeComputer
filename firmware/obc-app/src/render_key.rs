@@ -24,6 +24,15 @@
 //! explicit dirty request, and each says so at its call site. They become key-covered when the seam
 //! moves into [`ExternalFacts`](crate::device_core::ExternalFacts) and is consumed at stage 2.
 //!
+//! One mutation is invisible for the opposite reason, and needs no cover at all: the pre-draw
+//! [`prepare_base`](crate::ui_runtime::UiRuntime::prepare_base) acquisition runs *inside* the map
+//! render, ahead of the draw. What it resolves — the corridor snapshot, the POI list's and the POI
+//! detail's one-shot reads, the `Next: <category>` distillation — is drawn by the very frame that
+//! produced it, so the cache and the glass never disagree and no key could see the landing anyway.
+//! What a key must name is the **request**: the query runs only during a render, so a request armed
+//! inside a pass that nothing else moved would otherwise never run at all
+//! ([`StatsKey::next_ahead`], #1538).
+//!
 //! The alternative — keeping the previous pass's key resident in `App` — is what this design
 //! refuses: it would put a second copy of the visible state next to the state itself, which is the
 //! multiplicity the manual mirrors already were.
@@ -117,6 +126,22 @@ pub(crate) struct StatsKey {
     /// The displayed heart-rate / power / cadence values, each `None` unless its field is on the
     /// grid — the same economy the per-quantity guards spelled out by hand.
     live: (Option<u16>, Option<u16>, Option<u8>),
+    /// The refresh the [`NextAhead`](crate::next_ahead::NextAhead) cache behind the six
+    /// `Next: <category>` tiles is asking for: which category is being re-taken, and the progress
+    /// it is anchored at. `None` — nothing outstanding — is the settled state, the same fact
+    /// [`UpAheadKey::corridor`] carries for the list's own snapshot: what a row or a tile names is
+    /// not final until the request behind it has landed.
+    ///
+    /// It is the **request**, not the six cached entries, because the two move in different places
+    /// (#1538). The scheduler arms a request *inside* the pass; the answer is distilled in
+    /// [`prepare_base`](crate::ui_runtime::UiRuntime::prepare_base), which runs at the top of the
+    /// map render, ahead of the draw — so a landing is drawn by the very frame that produced it,
+    /// and no key can, or need, see it. An arming is the half a stack-local comparison *does* see,
+    /// and must act on: the query runs only during a render, so a render-on-demand host that stays
+    /// clean here never runs it at all. With two `Next:` tiles placed, the round-robin arms the
+    /// second category on a pass where nothing else moved, and that tile stayed `--` until
+    /// unrelated dirt happened to repaint the grid.
+    next_ahead: Option<(obc_reader::PoiCategory, u32)>,
 }
 
 /// The Climb view: which climb, how far along it, and the grade the cursor sits on.
@@ -185,7 +210,7 @@ pub(crate) struct RenderKey {
 
 // The pass keeps two of these on its own (non-`async`) frame, so growth here is residual stack, not
 // resident RAM and not a poll frame. It is still the ride loop's deepest frame, so it is pinned like
-// any arena arm: 272 B on a 64-bit host, less on the board, where a `usize` is four bytes.
+// any arena arm: 280 B on a 64-bit host, less on the board, where a `usize` is four bytes.
 const _: () =
     assert!(core::mem::size_of::<RenderKey>() <= 288, "a render key is the visible facts, not a copy of the app state");
 
@@ -279,6 +304,7 @@ impl App {
                 fields.contains(StatField::Power).then(|| self.activity.live_power_display()).flatten(),
                 fields.contains(StatField::Cadence).then(|| self.activity.live_cadence_display()).flatten(),
             ),
+            next_ahead: self.ui.next_ahead.pending_refresh(),
         }
     }
 

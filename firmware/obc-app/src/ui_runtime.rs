@@ -305,6 +305,11 @@ impl UiRuntime {
         // …and if the snapshot that just landed is the one the `Next: <category>` cache asked for
         // (U5), distil it here — the one place a fresh snapshot is guaranteed to exist. A no-op
         // whenever the scratch is serving a screen instead: `harvest` only takes its own key.
+        //
+        // This runs ahead of the draw, so the tile drawn by *this* frame already names the entry
+        // this landing wrote — which is why no render key names the cached entries, only the
+        // request (`StatsKey::next_ahead`). Move the distillation into a pass stage and that stops
+        // being true: the key would then have to name what the six slots hold.
         if let Some(key) = self.next_ahead.request() {
             if self.corridor_scratch.holds(key) {
                 self.next_ahead.harvest(key, self.corridor_scratch.entries());
