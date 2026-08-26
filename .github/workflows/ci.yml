@@ -43,6 +43,10 @@ concurrency:
 permissions:
   contents: read
 
+# No job below performs an authenticated git operation — the only git commands are local reads
+# (`merge-base`, `diff`, `ls-files`) — so every checkout sets `persist-credentials: false` and the
+# token never lands in a job's .git/config.
+
 jobs:
   # The registry is the only suite selector. This job runs it and publishes two outputs: the
   # per-suite plan the `ci` gate evaluates, and the list of jobs that plan requires. Every gated
@@ -59,6 +63,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Select affected suites
         id: plan
         env:
@@ -91,6 +96,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Deleted catalog and bake APIs stay deleted
         run: python3 tools/check_retired_map_stack.py
 
@@ -98,6 +105,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Host-pushed cards are built only by the card scheduler
         run: python3 tools/check_card_scheduler.py
 
@@ -105,6 +114,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Deleted repaint mirrors stay deleted
         run: python3 tools/check_render_keys.py
 
@@ -112,6 +123,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Shared screen drawing helpers live in screen/vocab
         run: python3 tools/check_screen_vocabulary.py
 
@@ -119,6 +132,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Test-suite registry drift
         run: python3 tools/suite_registry.py check
       - name: Registry unit tests
@@ -137,6 +152,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: false
@@ -164,6 +181,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: false
@@ -184,6 +203,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: false
@@ -285,6 +306,8 @@ jobs:
           - { name: "build (default = LS021/FLPR, release)", cmd: "set -o pipefail; cargo build --release --locked -vv 2>&1 | tee $RUNNER_TEMP/obc-fw-default-build.log" }
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: false
@@ -477,6 +500,8 @@ jobs:
         working-directory: firmware/obc-boot
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: false
@@ -508,6 +533,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: false
@@ -531,6 +558,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: false
@@ -570,6 +599,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: false
@@ -615,6 +646,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: false
@@ -658,6 +691,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: build_docs.py --check-links
         run: python3 docs/build_docs.py --check-links
 
@@ -677,6 +712,8 @@ jobs:
       DEVELOPER_DIR: /Applications/Xcode_26.5.app
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: swift test (OBCKit package, host)
         run: swift test --package-path companion-ios/Packages/OBCKit
 
@@ -696,6 +733,8 @@ jobs:
       DEVELOPER_DIR: /Applications/Xcode_26.5.app
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Install XcodeGen and WebP tools
         run: brew install xcodegen webp
       - name: xcodegen generate
@@ -755,6 +794,8 @@ jobs:
         working-directory: builder/app
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
           name: obc-web-convert-pkg
@@ -812,6 +853,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
           name: obc-web-convert-pkg
@@ -869,6 +912,8 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: false
@@ -943,6 +988,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Verify selected suites and required jobs
         env:
           OBC_SELECTION_PLAN: ${{ needs.selection.outputs.plan }}
