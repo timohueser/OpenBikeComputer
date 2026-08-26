@@ -1022,8 +1022,8 @@ fn an_outcome_after_a_replacement_request_changes_nothing() {
 /// domain keeps one operation in flight, and neither loses the other — the refresh the commit
 /// ordered simply waits for the removal that is already running.
 ///
-/// Literal since #1397 S6a: `ExternalFacts::store_revision` raises `CatalogIntent::Refresh`, so
-/// there is a real catalog refresh for a real store change to race.
+/// Literal since #1397 S6a, re-grounded by #1541: `ExternalFacts::store_revision` arms the
+/// domain's owed refresh, so there is a real catalog refresh for a real store change to race.
 #[test]
 fn a_store_change_during_a_catalog_operation_is_not_lost() {
     let mut harness = expiring(1);

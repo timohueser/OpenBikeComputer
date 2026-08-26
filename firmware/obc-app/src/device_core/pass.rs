@@ -1425,9 +1425,9 @@ mod tests {
         assert!(!app.pass.connections.catalog_identity.is_pending(), "one commit, one announcement");
     }
 
-    /// A store commit becomes a **catalog intent**, not a rescan cue: the fact reports that the
-    /// store moved, `CatalogIntent::Refresh` is what orders the re-read, and one commit orders
-    /// exactly one.
+    /// A store commit arms the domain's owed refresh, not a rescan cue: the fact reports that
+    /// the store moved, `CatalogState::note_store_moved` arms the one bit that orders the
+    /// re-read, and one commit orders exactly one.
     #[test]
     fn a_store_commit_raises_one_catalog_refresh() {
         let mut app = navigating();

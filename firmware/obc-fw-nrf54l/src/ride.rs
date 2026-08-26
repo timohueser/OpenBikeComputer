@@ -1010,8 +1010,8 @@ pub(crate) async fn run_app(
         //
         // The store's own monotonic sequence **is** the revision, so the board reports a level
         // instead of counting commit edges to synthesise one. The fact does not order a re-read;
-        // `CatalogIntent::Refresh` does, and one commit produces exactly one — which is why the
-        // N-events-per-commit loop this replaced could not stay.
+        // the domain's owed refresh does (#1541), and one commit produces exactly one — which is
+        // why the N-events-per-commit loop this replaced could not stay.
         exec.facts.note_store_revision(obc_app::device_core::StoreRevision {
             store: BOARD_STORE,
             revision: obc_app::device_core::Revision::new(flat.sequence()),
