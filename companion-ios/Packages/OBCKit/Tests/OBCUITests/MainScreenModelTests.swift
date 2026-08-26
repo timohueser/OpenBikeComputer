@@ -817,6 +817,52 @@ final class MainScreenModelTests: XCTestCase {
             deviceRouteCountBefore, "an adopted upload replaces by id — never a duplicate")
     }
 
+    /// Renamed-adoption: a route renamed while the phone holds no link (fresh
+    /// install, new phone) still finds its device copy — the catalog reports the
+    /// name that copy was stored under, so the fingerprint is reconstructible
+    /// without a download. Without it the app believes the route is absent and
+    /// the next send creates a duplicate.
+    func testRenamedRouteAdoptsItsDeviceCopyAndReplacesIt() async {
+        let library = InMemoryLibraryStore()
+        let (model, control) = makeModel(.happyPath, library: library, seedLibrary: false)
+        let onDevice = importedRecord(id: "lib-renamed", name: "Kettle Moraine")
+        var fixtures = control.fixtures
+        fixtures.routes.append(RouteEntry(
+            summary: onDevice.summary, points: onDevice.route.points,
+            waypoints: onDevice.route.waypoints, payloadByteCount: 100,
+            deviceObjectID: DeviceObjectID(903)))
+        control.fixtures = fixtures
+        // The library holds the same route under a new name, and no link.
+        var renamed = onDevice
+        renamed.summary.name = "Kettle Moraine (long way)"
+        renamed.route = ImportedRoute(
+            name: renamed.summary.name, points: onDevice.route.points, waypoints: onDevice.route.waypoints)
+        library.savePlannedRoute(renamed)
+
+        await startLoaded(model)
+        await waitFor("the renamed route adopts its device copy") {
+            model.plannedDeviceObjectID(for: renamed.id) == DeviceObjectID(903)
+        }
+        XCTAssertEqual(model.onDeviceState(renamed.id), .outdated,
+                       "the device holds it under the old name — on the device, out of date")
+
+        // The send that follows targets that object instead of creating a twin.
+        let deviceRouteCountBefore = control.fixtures.routes.filter { $0.deviceObjectID != nil }.count
+        let blob = RouteBlob(
+            summary: renamed.summary, waypoints: renamed.route.waypoints,
+            payload: RouteObjectCodec.encode(
+                points: renamed.route.points, waypoints: renamed.route.waypoints,
+                name: renamed.summary.name),
+            targetObjectID: model.plannedDeviceObjectID(for: renamed.id))
+        _ = await MockTransport(control: control).uploadRoute(blob).outcome
+        XCTAssertEqual(
+            control.fixtures.routes.filter { $0.deviceObjectID != nil }.count,
+            deviceRouteCountBefore, "a renamed send replaces by id — never a duplicate")
+        XCTAssertEqual(
+            control.fixtures.routes.first { $0.summary.id == renamed.id }?.deviceObjectID,
+            DeviceObjectID(903), "…and the device copy kept its id, so the send was a replace")
+    }
+
     /// Unknown-CRC conservatism: a device whose route sidecar hasn't filled yet
     /// reports `crc32 = 0`. `0` proves nothing → no badge; but it's not a
     /// *disproof* either, so the link is kept, not dropped (#770).
