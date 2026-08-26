@@ -81,8 +81,31 @@ pub mod synth;
 #[cfg(feature = "sensor-link")]
 pub mod sensor_hub;
 
-pub use button_input::{ButtonInput, Timing};
+pub use button_input::ButtonInput;
 pub use fuel::StubFuelGauge;
 #[cfg(feature = "sensor-link")]
 pub use sensor_hub::SensorHub;
 pub use synth::SynthLocation;
+
+#[cfg(test)]
+mod deleted_knobs {
+    /// The board's own auto-repeat is gone (D1, #1515): all four buttons forward debounced edges
+    /// and the step cadence lives in `obc_app::input`. This reads `button_input.rs` as text so a
+    /// second timing model cannot quietly grow back beside the shared one — the needle is assembled
+    /// here rather than written literally so this guard does not match its own source.
+    ///
+    /// The haystack is lower-cased first: the two constants this deletes were `DEFAULT_REPEAT_
+    /// DELAY_MS` and `DEFAULT_REPEAT_INTERVAL_MS`, so a case-sensitive match would miss the very
+    /// names it guards against.
+    #[test]
+    fn button_input_grows_no_second_repeat_timing() {
+        let source = include_str!("button_input.rs").to_ascii_lowercase();
+        for needle in [concat!("auto_", "repeat"), concat!("repeat_", "delay"), concat!("repeat_", "interval")] {
+            assert!(
+                !source.contains(needle),
+                "`{needle}` is back in obc-platform's button_input.rs; repeat timing belongs to the \
+                 shared recogniser in obc-app's `input.rs`, not to a board adapter"
+            );
+        }
+    }
+}
