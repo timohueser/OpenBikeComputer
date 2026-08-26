@@ -185,6 +185,11 @@ It also returns `None` if a required sample is `NODATA`.
 Consumers must not replace `None` with zero elevation.
 Zero meters is a valid height.
 
+For ascent integration, `None` pauses the shared 3 m dead band.
+The next valid sample starts a new segment.
+Thus, a coverage gap contributes no ascent.
+Valid samples on each side can still contribute ascent in their segments.
+
 | Function | Behavior without terrain |
 | :-- | :-- |
 | Map rendering | Rendering continues. Baked contour geometry does not require the raster. |
@@ -206,6 +211,7 @@ Route elevation parity requires terrain coverage for the complete route.
 OBCR has no per-point unknown-height value.
 Points before coverage starts use zero height.
 The route integrator does not use these placeholder points as an ascent anchor.
+The same pause rule applies at coverage boundaries and `NODATA` gaps.
 
 ## Attribution
 

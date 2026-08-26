@@ -218,6 +218,8 @@ An absent or superseded result means that replacement did not become the head.
 A create has no assigned ID before its commit response.
 After a lost create response, use LIST.
 Match kind, payload length, payload CRC, and display name.
+If multiple entries match, the iOS client keeps the greatest `ObjectId`.
+It removes the other matches with their exact revisions.
 Do not infer state from a notification or operation log.
 
 <figure class="fig">

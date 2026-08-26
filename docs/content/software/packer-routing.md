@@ -487,7 +487,10 @@ Each adjacency stores ascent for its travel direction.
 The packer calculates ascent along the edge polyline.
 It samples terrain at intervals of at most 50 m.
 The shared integrator uses a 3 m dead band.
-Missing terrain produces zero ascent.
+A missing sample pauses the dead band without using zero elevation.
+Valid samples after the gap start a new ascent segment.
+The gap contributes no ascent.
+An edge with no valid sample has zero ascent.
 
 ```text
 edge_cost = weighted_distance + ascent_m × climb_weight
@@ -824,7 +827,7 @@ The device provides the required attribution on its About page.
 
 A published `.obcm` map is a Derivative Database.
 The catalog declares `ODbL-1.0` and publishes the license text.
-A distributor of these map data must follow the same license terms.
+A distributor of this map data must follow the same license terms.
 Maps with terrain-derived contours also require the [Copernicus attribution](../terrain/#attribution).
 
 ## Implementation
