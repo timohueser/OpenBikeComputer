@@ -457,8 +457,8 @@ If `cargo run` prompts to pick a probe (e.g. another ST-LINK is attached), pass
 ## BLE stack — dependency pins & gotchas (issues #269/#270, epic #267)
 
 The A1 spike proved `nrf-sdc` (Nordic's closed-source SoftDevice Controller + MPSL bindings) +
-`trouble-host` on this DK; A2 (#270) folded that stack into the real firmware as `src/ble/`
-behind the `ble` feature (build command above). What the spike settled, for everything Track A
+`trouble-host` on this DK; A2 (#270) folded that stack into the real firmware as `src/ble/`, which
+is in every build (the build command is above). What the spike settled, for everything Track A
 builds on it:
 
 - **Versions.** The crates.io `nrf-sdc`/`nrf-mpsl` releases (0.3.x) predate nRF54L support and
@@ -470,8 +470,8 @@ builds on it:
   (`nrf-mpsl/critical-section-impl`) — global-interrupt-disable critical sections break its
   radio timing, and two impls are a duplicate-symbol link error. It is the **only** impl in the
   tree: `cortex-m/critical-section-single-core` lived behind a `cs-single-core` feature for a
-  radio-less build that stopped compiling and that nothing in CI built, and #931 removed it. `ble`
-  is a default feature, so the plain `cargo build --release` gets the right impl and there is no
+  radio-less build that stopped compiling and that nothing in CI built, and #931 removed it. The
+  radio is in every build, so the plain `cargo build --release` gets the right impl and there is no
   invocation to remember.
 - **`central` is load-bearing.** trouble-host's Controller bound unconditionally requires
   `LeCreateConnCancel`, which only the multirole SDC lib variant exports — a peripheral-only
@@ -488,13 +488,12 @@ builds on it:
 - **MPSL/SDC hardware.** `board.rs` owns the five production MPSL vectors and 31 MPSL/SDC
   timing/PPI claims. `main.rs` intentionally retains CRACEN so store-epoch minting can reborrow it
   before `ble::run` consumes it as the link layer's crypto RNG; `ble::run` owns runtime/stack policy.
-- **RAM.** The map plane compiles into every build now (#270), so on the `ble` build the map and
-  BLE stack are resident together. The budget assert in `main.rs` sums the map-plane residents
-  (`MAP_RESIDENT`) and the BLE stack's (`ble::RESIDENT_BYTES`) and fails a `ble`+map build on this
-  DK at compile time if they overrun the carve. The one piece the `ble` build drops is the
-  on-device router (`has_nav`): its ~14.3 KB of `NAV_*` statics don't fit beside the BLE stack on
-  the 256 KB DK (see `build.rs`); the 512 KB LM20 relaxes the `has_nav` gate to run the router on
-  every build too.
+- **RAM.** The map plane and the BLE stack are both in every build (#270, #1530), so they are
+  resident together. The budget assert in `main.rs` sums the map-plane residents (`MAP_RESIDENT`)
+  and the BLE stack's (`ble::RESIDENT_BYTES`) and fails the build on this DK at compile time if
+  they overrun the carve. The one piece that drops out on the DK is the on-device router
+  (`has_nav`): its ~14.3 KB of `NAV_*` statics don't fit beside the BLE stack on the 256 KB DK
+  (see `build.rs`); the 512 KB LM20 relaxes the `has_nav` gate to run the router as well.
 - **Stack: keep big values out of long-lived async bodies (#677).** Every sizeable value
   constructed inline in an async fn/block gets a construction-temporary slot in the generated
   poll function's **stack frame**, allocated at entry on *every* poll — `ble::run` once carried a
@@ -554,11 +553,11 @@ and the `command` / `status` / `config` characteristics — is canonical in
   to the idle set; disconnect/re-connect + walk out of range bumps the counters and always returns to
   advertising. As an *unbonded* stranger (post-A8): DIS/`protocolVersion` readable, access-denied on
   every gated char + the CoC.
-- **E2E golden path** — share a GPX to the iOS app, upload (B5 sheet), reflash the **map** build; the
-  route is in the device menu and rideable (SD persists across flashes). For sync: record 2–3 rides on
-  the map build (`synth` is fine indoors), reflash `ble`, sync pulls them; spot-check a decoded ride's
-  totals in the app against the device's Paused ledger. Ids must survive a power cycle; the boot
-  counter must increment across them.
+- **E2E golden path** — share a GPX to the iOS app, upload (B5 sheet), then reflash; the route is in
+  the device menu and rideable (SD persists across flashes). For sync: record 2–3 rides (`synth` is
+  fine indoors), then sync pulls them; spot-check a decoded ride's totals in the app against the
+  device's Paused ledger. Ids must survive a power cycle; the boot counter must increment across
+  them.
 - **Single-file map path** — the volume-set run this item used to describe (#1033) is retired with
   the set itself (#1420 FS7.5b/c3b); what replaces it is one map file and the whole of it. Put a
   packed `.obcm` on the card, boot the default image, and ride a route from end to end at fine zoom
@@ -569,7 +568,7 @@ and the `command` / `status` / `config` characteristics — is canonical in
   re-measure the deep path here rather than re-quoting them, walking the ordinary route-load → ride →
   finish/save path with `STKOF`/HardFault in view.
 - **Pairing** — passkey card on the panel typed on the phone → bond lands; power-cycle / app
-  restart / walk-away → silent reconnect, no dialog; reflash `ble` → still no dialog. A **second
+  restart / walk-away → silent reconnect, no dialog; reflash → still no dialog. A **second
   phone** is rejected while bonded (no passkey card, generic failure on the stranger). Re-pair path:
   device **Settings ▸ Bluetooth ▸ Forget phone** (hold) + app *Forget* + iOS Bluetooth forget → next
   contact pairs with a fresh passkey.
