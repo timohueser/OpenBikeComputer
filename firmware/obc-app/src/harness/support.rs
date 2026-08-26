@@ -25,7 +25,7 @@ use obc_app::navigator::{NavigatorEffect, NavigatorOutcome, PlannerWork};
 use obc_app::{App, Dirty};
 use obc_ports::{Button, ButtonEvent, Fix, InputClock, InputEvent, InputSource, LocationSource, RideClock, Sensors};
 use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, PoiCategory, Reader, SliceSource};
-use obc_route::{Waypoints, WptEntry};
+use obc_route::{RouteReader, Waypoints, WptEntry};
 
 // Recording DrawTarget.
 
@@ -356,15 +356,21 @@ pub const EVERY_CAPABILITY: PlatformSupport = PlatformSupport {
 };
 
 /// Run one DeviceCore pass at `ms` with the executor's answers — the production frame every host
-/// drives. The ports these suites do not exercise (a fix, an open route reader, keyed derived
-/// answers) stay empty; a suite that needs one drives [`App::run_pass`] itself.
-pub fn pass(app: &mut App, ms: u32, outcomes: &mut OutcomeSlots, facts: &mut ExternalFacts) -> PassPlan {
+/// drives. The ports these suites do not exercise (a fix, keyed derived answers) stay empty; a
+/// suite that needs one drives [`App::run_pass`] itself.
+pub fn pass(
+    app: &mut App,
+    ms: u32,
+    outcomes: &mut OutcomeSlots,
+    facts: &mut ExternalFacts,
+    route: Option<&RouteReader<'_>>,
+) -> PassPlan {
     let mut loc = NoFix;
     app.run_pass(PassInputs {
         now: PassClock { ride: RideClock(ms), ui: InputClock(ms) },
         gestures: &[],
         sensors: Sensors::new(&mut loc),
-        route: None,
+        route,
         support: EVERY_CAPABILITY,
         outcomes,
         facts,
@@ -376,14 +382,14 @@ pub fn pass(app: &mut App, ms: u32, outcomes: &mut OutcomeSlots, facts: &mut Ext
 /// One pass with nothing owed — the frame that only collects what the app already decided.
 pub fn quiet_pass(app: &mut App, ms: u32) -> PassPlan {
     let mut facts = ExternalFacts::NONE;
-    pass(app, ms, &mut OutcomeSlots::new(), &mut facts)
+    pass(app, ms, &mut OutcomeSlots::new(), &mut facts, None)
 }
 
 /// One pass carrying a single external fact.
 pub fn pass_with_fact(app: &mut App, ms: u32, note: impl FnOnce(&mut ExternalFacts)) -> PassPlan {
     let mut facts = ExternalFacts::NONE;
     note(&mut facts);
-    pass(app, ms, &mut OutcomeSlots::new(), &mut facts)
+    pass(app, ms, &mut OutcomeSlots::new(), &mut facts, None)
 }
 
 // The navigation executor.
@@ -395,12 +401,17 @@ pub fn pass_with_fact(app: &mut App, ms: u32, note: impl FnOnce(&mut ExternalFac
 /// pacing effects (`Step` / `CommitRoute`) belong to an executor that paces, and one arriving here
 /// is a change of who decides rather than something to serve quietly.
 ///
-/// The passes it runs are the app's frames, so it also collects what they asked to repaint: after a
-/// pass there is no dirt left for [`App::take_dirty`] to report.
-#[derive(Default)]
-pub struct Planner {
+/// The outcome slots are the planner's own, exactly like a real executor's: an answer it deposits
+/// is read by the *next* pass. The passes it runs are the app's frames, so it also collects what
+/// they asked to repaint — after a pass there is no dirt left for [`App::take_dirty`] to report.
+pub struct Planner<'r> {
     /// The clock its passes run at.
     ms: u32,
+    /// The active route's reader. A pass without it is the route line *vanishing*, which resets the
+    /// matcher — so a suite that rides a real route hands it over.
+    route: Option<&'r RouteReader<'r>>,
+    /// What it has answered, waiting for the next pass to read.
+    outcomes: OutcomeSlots,
     /// The operation the app is running, when it handed one out.
     token: Option<OperationToken<NavigatorTag>>,
     /// The last operation the app abandoned — what a late answer carries.
@@ -409,42 +420,77 @@ pub struct Planner {
     work: Option<PlannerWork>,
     /// Whether the app asked for the workspace back since the last read.
     released: bool,
+    /// Whether the app asked for the planned detour to be spliced since the last read.
+    commit_asked: bool,
     /// What its passes asked to repaint since the last read.
     render: Dirty,
 }
 
-impl Planner {
+impl Default for Planner<'_> {
+    fn default() -> Self {
+        Planner::at(0)
+    }
+}
+
+impl<'r> Planner<'r> {
     /// A planner whose passes run at `ms` — for a suite that drives the animation clock itself.
     pub fn at(ms: u32) -> Self {
-        Planner { ms, ..Planner::default() }
+        Planner {
+            ms,
+            route: None,
+            outcomes: OutcomeSlots::new(),
+            token: None,
+            abandoned: None,
+            work: None,
+            released: false,
+            commit_asked: false,
+            render: Dirty::CLEAN,
+        }
+    }
+
+    /// A planner riding `route` — every pass it runs carries the reader the ride engine needs.
+    pub fn on(route: &'r RouteReader<'r>) -> Self {
+        Planner { route: Some(route), ..Planner::at(0) }
+    }
+
+    /// Run **one** pass and serve whatever navigation work it hands out, leaving the answer in the
+    /// slots for the next one. The single-pass shape is the board's own loop.
+    pub fn one_pass(&mut self, app: &mut App) -> PassPlan {
+        let ms = self.ms;
+        let mut facts = ExternalFacts::NONE;
+        let mut plan = pass(app, ms, &mut self.outcomes, &mut facts, self.route);
+        self.render.map |= plan.render.map;
+        self.render.overlay |= plan.render.overlay;
+        match plan.effects.navigator.take() {
+            Some(NavigatorEffect::Acquire { token, work }) => {
+                self.token = Some(token);
+                self.work = Some(work);
+            }
+            Some(NavigatorEffect::CommitDetour { token }) => {
+                self.token = Some(token);
+                self.commit_asked = true;
+            }
+            Some(NavigatorEffect::Release { token }) => {
+                self.released = true;
+                self.abandoned = self.token.take();
+                let _ = self.outcomes.navigator.try_put(NavigatorOutcome::Released { token });
+            }
+            Some(other) => panic!("one request runs the whole search here — {other:?}"),
+            None => {}
+        }
+        plan
     }
 
     /// Run passes until DeviceCore stops handing out navigation work, starting with `seed` in the
-    /// outcome slot. The search it asks for is kept; the workspace it asks back is returned.
+    /// slots.
     fn settle(&mut self, app: &mut App, seed: Option<NavigatorOutcome>) {
-        let mut outcomes = OutcomeSlots::new();
         if let Some(outcome) = seed {
-            let _ = outcomes.navigator.try_put(outcome);
+            let _ = self.outcomes.navigator.try_put(outcome);
         }
         for _ in 0..8 {
-            let mut facts = ExternalFacts::NONE;
-            let mut plan = pass(app, self.ms, &mut outcomes, &mut facts);
-            self.render.map |= plan.render.map;
-            self.render.overlay |= plan.render.overlay;
-            match plan.effects.navigator.take() {
-                Some(NavigatorEffect::Acquire { token, work }) => {
-                    self.token = Some(token);
-                    self.work = Some(work);
-                }
-                Some(NavigatorEffect::Release { token }) => {
-                    self.released = true;
-                    self.abandoned = self.token.take();
-                    let _ = outcomes.navigator.try_put(NavigatorOutcome::Released { token });
-                    continue;
-                }
-                Some(other) => panic!("one request runs the whole search here — {other:?}"),
-                None if outcomes.navigator.is_empty() && !plan.immediate => break,
-                None => {}
+            let plan = self.one_pass(app);
+            if self.outcomes.navigator.is_empty() && !plan.immediate && plan.effects.navigator.is_empty() {
+                break;
             }
         }
     }
@@ -474,10 +520,26 @@ impl Planner {
         self.settle(app, Some(outcome(token)));
     }
 
+    /// The operation the app abandoned, kept for a second late answer.
+    pub fn abandoned(&self) -> Option<OperationToken<NavigatorTag>> {
+        self.abandoned
+    }
+
+    /// Deposit an answer built by hand — a late one for an operation this planner still remembers.
+    pub fn deliver(&mut self, app: &mut App, outcome: NavigatorOutcome) {
+        self.settle(app, Some(outcome));
+    }
+
     /// Whether DeviceCore asked for the workspace back since the last read — one-shot.
     pub fn took_release(&mut self, app: &mut App) -> bool {
         self.settle(app, None);
         core::mem::take(&mut self.released)
+    }
+
+    /// Whether DeviceCore asked for the planned detour to be spliced since the last read — one-shot.
+    pub fn took_commit(&mut self, app: &mut App) -> bool {
+        self.settle(app, None);
+        core::mem::take(&mut self.commit_asked)
     }
 
     /// What its passes asked to repaint since the last read — one-shot, like [`App::take_dirty`].
