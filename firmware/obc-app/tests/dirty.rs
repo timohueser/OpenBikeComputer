@@ -137,6 +137,19 @@ fn statistics_inspect_has_no_automatic_snap_back_dirty_edge() {
     assert_eq!(host.idle(&mut app, 60_100), Dirty::CLEAN, "the reset adds no follow-up timer redraw");
 }
 
+/// The idle return moves the visible stack on a timer, with no gesture behind it — the shape half
+/// of the render key is what repaints it, and this pins that the pass actually reports it.
+#[test]
+fn the_idle_return_repaints_what_it_navigated_to() {
+    let mut app = App::new_idle(AppState::new(0, 0, 0.05)); // [Home]
+    let mut host = Frames::new();
+    host.frame(&mut app, 0, &tap(Button::Select), None, None); // Home press → Menu
+
+    assert_eq!(host.idle(&mut app, 20_000), Dirty::CLEAN, "inside the 30 s window nothing moves");
+    assert!(host.idle(&mut app, 31_000).map, "past it the return lands on Home and repaints");
+    assert_eq!(host.idle(&mut app, 32_000), Dirty::CLEAN, "…once, not every pass hereafter");
+}
+
 // --- the battery gauge: slow polling + redraw only on an actual change -------
 
 #[test]

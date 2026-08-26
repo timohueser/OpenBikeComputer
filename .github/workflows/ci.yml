@@ -101,6 +101,13 @@ jobs:
       - name: Host-pushed cards are built only by the card scheduler
         run: python3 tools/check_card_scheduler.py
 
+  render-key-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deleted repaint mirrors stay deleted
+        run: python3 tools/check_render_keys.py
+
   screen-vocabulary-guard:
     runs-on: ubuntu-latest
     steps:
@@ -932,7 +939,7 @@ jobs:
   # publishes no plan, which fails this gate rather than silently passing.
   ci:
     if: always()
-    needs: [selection, retired-map-stack, card-scheduler-guard, screen-vocabulary-guard, fixture-registry, fmt, clippy, test, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, web, desktop-frontend, desktop]
+    needs: [selection, retired-map-stack, card-scheduler-guard, render-key-guard, screen-vocabulary-guard, fixture-registry, fmt, clippy, test, embedded, boot, device, deny, wasm, wasm-bridges, docs, ios-unit, ios-app, web, desktop-frontend, desktop]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
