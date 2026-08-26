@@ -318,12 +318,26 @@ impl CoreHarness {
             }
         }
         let mut persisted = None;
+        let mut marks_answer = None;
         if let Some(effect) = effects.settings.take() {
             self.served.insert("settings");
-            let SettingsEffect::PersistRevision { token, revision } = effect;
-            self.state.settings_token = Some(token);
-            self.settings_writes.push(revision);
-            persisted = Some(revision);
+            match effect {
+                SettingsEffect::PersistRevision { token, revision } => {
+                    self.state.settings_token = Some(token);
+                    self.settings_writes.push(revision);
+                    persisted = Some(revision);
+                }
+                // The alert-mark record shares this slot. No corpus scenario fires a storm, so
+                // there is no script for it — acknowledge it at once rather than let a future one
+                // park the handshake.
+                SettingsEffect::PersistAlertMarks { token, revision } => {
+                    marks_answer = Some(SettingsOutcome::MarksPersisted { token, revision });
+                }
+            }
+        }
+        if let Some(outcome) = marks_answer {
+            done.push(Done::Settings(outcome));
+            return;
         }
         if let Some(effect) = effects.dfu.take() {
             self.served.insert("dfu");

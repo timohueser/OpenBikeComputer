@@ -37,9 +37,15 @@ use trouble_host::prelude::{
 
 /// Bytes the settings slot holds — one encoded blob. Kept here so the RRAM carve sizes from the
 /// shared codec rather than a magic number. The RRAMC writes 16-byte lines, so the blob must be a
-/// 16-byte multiple — the shared codec rounds `ENCODED_LEN` up to one (currently 32 B: the v2
-/// field-selection tail pushed it past 16); the assert below pins that for a future bump.
+/// 16-byte multiple — the shared codec rounds `ENCODED_LEN` up to one; the assert below pins that
+/// for a future bump.
 pub const SLOT_LEN: usize = obc_app::settings::ENCODED_LEN;
+
+/// Bytes the linker reserves for the whole settings page (`LENGTH(SETTINGS)` in the generated
+/// memory map). Hand-written here so the ceiling asserts below have something to hold the carve's
+/// last resident against — the linker script is the authority, and this is the mirror that fails
+/// loud if a record is ever placed past the page.
+const SETTINGS_PAGE_LEN: u32 = 4096;
 
 /// RRAM write granularity (one 128-bit line). The slot length must be a whole number of these, or
 /// [`Rramc::write`] rejects it as unaligned — guard it at compile time so a codec growth fails loud.
@@ -153,6 +159,30 @@ const _: () = assert!(ID_MARKS_OFFSET + obc_app::store_meta::ID_MARKS_LEN as u32
 /// was `OBCB` before this change: any bond written by an older firmware fails the magic check
 /// once and reads as "no bond", so the first connection after this update is a one-time re-pair.
 const BOND_MAGIC: [u8; 4] = *b"OBCP";
+
+/// Byte offset of the **weather alert-mark record** (#1542) within the reserved settings page: the
+/// per-class dedup/cooldown anchors, 64 B (four RRAM write lines) on the line right after the bond
+/// slot. Placed above every other resident rather than inside the low 2 KB the settings slot
+/// reserves for its hypothetical two-slot upgrade — narrowing that reservation would buy nothing
+/// here, and the page has ~900 B free above the bond.
+///
+/// The carve layout is now: **settings slot @0** (low 2 KB reserved) · **boot counter @2048** ·
+/// **arm marker @2064** (48 B) · **@2112/@2128 RETIRED** · **id high-water @2560** · **@2576
+/// RETIRED** · **BLE bond @3072** (64 B) · **alert marks @3136** (64 B). Codec (magic/version/CRC,
+/// torn line → "no anchors") lives host-tested in [`obc_app::weather_alerts`].
+const ALERT_MARKS_OFFSET: u32 = 3136;
+/// The record is whole RRAM write lines by construction.
+const _: () = assert!(obc_app::weather_alerts::ALERT_MARKS_LEN.is_multiple_of(RRAM_WRITE_LINE));
+/// The two ceilings this record sits between. Below it: the bond slot must not walk into the
+/// record. Above it: the record must not run off the page the linker reserved. The settings slot's
+/// own ceiling — it may never reach the boot counter — is pinned here too, because a codec growth
+/// is the thing that would move it and nothing else in the carve was watching.
+const _: () = assert!(SLOT_LEN as u32 <= BOOT_COUNT_OFFSET, "the settings slot reaches the boot counter");
+const _: () = assert!(BOND_OFFSET + BOND_SLOT_LEN as u32 <= ALERT_MARKS_OFFSET, "the bond slot reaches the marks");
+const _: () = assert!(
+    ALERT_MARKS_OFFSET + obc_app::weather_alerts::ALERT_MARKS_LEN as u32 <= SETTINGS_PAGE_LEN,
+    "the alert-mark record runs off the reserved settings page",
+);
 /// Bond blob layout version (bump on any field change — an old version reads as no bond).
 const BOND_VERSION: u8 = 1;
 /// The bond slot's fixed length: 4 RRAM lines (a whole number of the 16-byte write granularity).
@@ -346,6 +376,47 @@ impl RramSettingsStore {
         let bytes = obc_app::store_meta::encode_id_marks(m);
         if let Err(e) = self.rram.write(off, &bytes) {
             defmt::warn!("settings: id-marks RRAM write failed: {}", e);
+        }
+    }
+
+    /// Load the weather alert-mark anchors (#1542) and say **where they came from**.
+    ///
+    /// The record first. When it is blank / torn / a foreign layout, fall back once to the frozen
+    /// v16 span of whatever the settings slot holds: v16 stored the marks in the preferences blob,
+    /// and an update must not cost the rider their dedup anchors. A legacy seed is reported as
+    /// [`MarksProvenance::LegacyBlob`], which arms the app's write and rehomes it into the record —
+    /// after which this fallback can never fire again.
+    pub fn load_alert_marks(&mut self) -> (obc_app::weather_alerts::AlertMarks, obc_app::MarksProvenance) {
+        let off = region_offset() + ALERT_MARKS_OFFSET;
+        let mut buf = [0u8; obc_app::weather_alerts::ALERT_MARKS_LEN];
+        if self.rram.read(off, &mut buf).is_ok() {
+            if let Some(marks) = obc_app::weather_alerts::decode_alert_marks(&buf) {
+                return (marks, obc_app::MarksProvenance::Record);
+            }
+        }
+        let mut blob = [0u8; SLOT_LEN];
+        if self.rram.read(region_offset(), &mut blob).is_ok() {
+            if let Some(marks) = obc_app::settings::legacy_alert_marks(&blob) {
+                defmt::info!("settings: carried the v16 alert anchors across into the marks record");
+                return (marks, obc_app::MarksProvenance::LegacyBlob);
+            }
+        }
+        (Default::default(), obc_app::MarksProvenance::Record)
+    }
+
+    /// Persist the alert-mark record — one aligned 64-byte write, no erase; called at alert-fire
+    /// rate (rare), never from a screen.
+    pub fn save_alert_marks(
+        &mut self,
+        marks: &obc_app::weather_alerts::AlertMarks,
+    ) -> Result<(), obc_ports::SettingsSaveError> {
+        let off = region_offset() + ALERT_MARKS_OFFSET;
+        match self.rram.write(off, &obc_app::weather_alerts::encode_alert_marks(marks)) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                defmt::warn!("settings: alert-marks RRAM write failed: {}", e);
+                Err(obc_ports::SettingsSaveError::Backend)
+            }
         }
     }
 

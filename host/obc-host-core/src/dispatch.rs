@@ -48,6 +48,7 @@ use obc_app::dfu::{DfuEffect, DfuInstallError, DfuOutcome, DfuScanError, DfuScan
 use obc_app::navigator::{NavigatorEffect, NavigatorError, NavigatorOutcome, PlannerWork};
 use obc_app::retention::{RetentionEffect, RetentionOutcome};
 use obc_app::settings::{Settings, SettingsEffect, SettingsOutcome};
+use obc_app::weather_alerts::AlertMarks;
 use obc_app::{App, DrainStatus, Gesture, HostCommand, HostMailbox, TrackAction};
 use obc_ports::{Sensors, SettingsSaveError};
 
@@ -137,6 +138,15 @@ pub trait HostPlatform {
     /// durable store has nothing that can fail — leaving it unanswered would park the handshake.
     fn persist_settings(&mut self, settings: &Settings, revision: u16) -> Result<(), SettingsSaveError> {
         let _ = (settings, revision);
+        Ok(())
+    }
+
+    /// Persist the weather alert-mark record as `revision` — the second durable record (#1542), on
+    /// the same terms as [`persist_settings`](HostPlatform::persist_settings) and defaulted for the
+    /// same reason: a host with no durable store has nothing that can fail, and an unanswered write
+    /// would park the handshake.
+    fn persist_alert_marks(&mut self, marks: &AlertMarks, revision: u16) -> Result<(), SettingsSaveError> {
+        let _ = (marks, revision);
         Ok(())
     }
 
@@ -355,10 +365,20 @@ impl HostLoop {
                 deliver(&mut self.inbox.outcomes.navigator, outcome, "navigator");
             }
         }
-        if let Some(SettingsEffect::PersistRevision { token, revision }) = plan.effects.settings.take() {
-            let outcome = match platform.persist_settings(app.settings(), revision) {
-                Ok(()) => SettingsOutcome::Persisted { token, revision },
-                Err(error) => SettingsOutcome::PersistFailed { token, revision, error },
+        if let Some(effect) = plan.effects.settings.take() {
+            let outcome = match effect {
+                SettingsEffect::PersistRevision { token, revision } => {
+                    match platform.persist_settings(app.settings(), revision) {
+                        Ok(()) => SettingsOutcome::Persisted { token, revision },
+                        Err(error) => SettingsOutcome::PersistFailed { token, revision, error },
+                    }
+                }
+                SettingsEffect::PersistAlertMarks { token, revision } => {
+                    match platform.persist_alert_marks(app.alert_marks(), revision) {
+                        Ok(()) => SettingsOutcome::MarksPersisted { token, revision },
+                        Err(error) => SettingsOutcome::MarksPersistFailed { token, revision, error },
+                    }
+                }
             };
             deliver(&mut self.inbox.outcomes.settings, outcome, "settings");
         }
