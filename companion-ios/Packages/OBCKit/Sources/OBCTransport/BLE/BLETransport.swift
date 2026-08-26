@@ -1179,8 +1179,8 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     /// One object's head revision, in one request. STATUS reports the current head
     /// unconditionally (spec §3.4) — the revision in the *request* only chooses between the
     /// `committed` and `superseded` verdicts — so any legal probe answers it, and zero is the
-    /// one value the request cannot carry. Walking the paged catalog for this instead cost a
-    /// round trip per two entries: ~7 s in front of every update on a full card (#1528).
+    /// one value the request cannot carry. A catalog LIST is the wrong instrument here: it
+    /// pages at about two entries per round trip to answer one revision.
     private func headRevision(of id: DeviceObjectID) async throws -> Revision {
         do {
             let result = try await transferClient.status(
