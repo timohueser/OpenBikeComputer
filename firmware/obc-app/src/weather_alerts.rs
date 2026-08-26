@@ -17,8 +17,9 @@
 //!   firmware and simulator alike (no randomness, no host clocks other than `now`).
 //! - **Deduplicated + cooldown-persisted**: one weather event fires at most one alert per
 //!   [`COOLDOWN_S`] unless its severity *materially* escalates. The fired event's identity
-//!   (class + onset instant + position) is an [`AlertMark`] persisted in the settings blob, so
-//!   the same storm does not pop back up on the next frame — or the next boot.
+//!   (class + onset instant + position) is an [`AlertMark`], persisted in this module's own
+//!   CRC-framed record, so the same storm does not pop back up on the next frame — or the next
+//!   boot.
 //! - **Advisory, not official**: thresholds are bike-touring heuristics, not CAP warnings. The
 //!   existing barometric-trend issue (#529) stays independent; no pressure trend is read here.
 //!
@@ -125,7 +126,7 @@ pub struct AlertCandidate {
 }
 
 /// The persisted identity of the last **fired** alert of a class: the dedup/cooldown anchor.
-/// Lives in the settings blob (v16) so it survives reboot — dedup compares *event* times, not
+/// Persisted in the alert-marks record so it survives reboot — dedup compares *event* times, not
 /// elapsed device time, so it needs no trusted clock at boot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AlertMark {
