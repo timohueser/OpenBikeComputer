@@ -1888,7 +1888,7 @@ pub(crate) fn load_rides(store: &'static FlatStore<FlatCard>, app: &mut obc_app:
 /// elevation profile, filled in place into the app's resident buffer, and the decimated track
 /// shape, decimated into the caller's stack buffer.
 ///
-/// The polyline goes to the caller rather than through `App::set_ride_preview` because it reaches
+/// The polyline goes to the caller rather than into the app directly because it reaches
 /// DeviceCore as `DerivedTargets::ride_preview` beside the key that guards it — and because at
 /// `NAV_PREVIEW_MAX` it is 512 B that must not become resident (the board has 72 B of resident
 /// headroom). Returns whether the profile is showable; the preview is handed over either way.

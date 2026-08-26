@@ -116,7 +116,7 @@ impl RouteOverviewScreen {
     }
 
     /// Preview a **computed** route (the router's output): length only — no elevation band, no
-    /// climb/descent rows. Opened by [`App::apply_event`](crate::App::apply_event).
+    /// climb/descent rows. Opened by the pass's fact stage.
     pub fn computed(route: usize, prev_active: Option<usize>) -> Self {
         RouteOverviewScreen { route, prev_active, computed: true, pager: ContentPager::default(), selected: START }
     }

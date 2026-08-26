@@ -1,25 +1,14 @@
-//! Typed, in-memory behavior traces for the DeviceCore ownership move (#1434).
+//! Typed, in-memory behaviour traces for the DeviceCore conformance matrix (#1434).
 //!
 //! This module deliberately knows nothing about the executor's dispatch policy. A trace harness
 //! supplies input application, one bounded pass, outcome delivery, and a normalized visible-state
 //! snapshot through [`TraceHarness`]. [`run_scenario`] only controls *when* completed outcomes are
-//! delivered. That makes the same scenario usable against the legacy app/host protocol today and
-//! DeviceCore later without copying either implementation's ordering rules into the runner.
-//!
-//! The small [`reconcile_fixture_pass`] and [`reconcile_fixture_to_completion`] helpers at the end
-//! are shared setup for fixture-backed board-parity tests. They are adapters around `LegacyLoop`, not
-//! part of the trace schema or runner.
+//! delivered. That is what lets one scenario run against DeviceCore at two answer cadences without
+//! copying the executor's ordering rules into the runner.
 
 use std::collections::BTreeMap;
 
-use obc_app::{
-    App, CatalogObjectId, DetourRequest, DfuAction, DfuFailure, DfuInstallError, DfuScanError, DfuScanReport,
-    HostCommand, HostEvent, NavRequest, TrackAction, WarningFlags,
-};
-use obc_ports::SettingsSaveError;
-use obc_route::NavError;
-
-use crate::{LegacyLoop, MemRideStore, MemRouteStore, MemTrackStore, PlanHold};
+use obc_app::CatalogObjectId;
 
 /// Stable identity assigned by first observation, scoped by [`ObjectKind`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -144,376 +133,6 @@ impl Normalizer {
             .find(|candidate| !self.times.values().any(|key| key == candidate))
             .expect("trace time-key space exhausted")
     }
-
-    pub fn command(&mut self, command: &HostCommand) -> NormalizedCommand {
-        match command {
-            HostCommand::RescanStore { commits } => NormalizedCommand::RescanStore { commits: *commits },
-            HostCommand::CancelRoutePlan => NormalizedCommand::CancelRoutePlan,
-            HostCommand::CancelDetour => NormalizedCommand::CancelDetour,
-            HostCommand::DeleteRoute { id } => {
-                NormalizedCommand::DeleteRoute { id: self.object(ObjectKind::Route, *id) }
-            }
-            HostCommand::DeleteTrip { id } => NormalizedCommand::DeleteTrip { id: self.object(ObjectKind::Trip, *id) },
-            HostCommand::DeleteRide { id } => NormalizedCommand::DeleteRide { id: self.object(ObjectKind::Ride, *id) },
-            HostCommand::StampRouteUsed { id, utc } => {
-                NormalizedCommand::StampRouteUsed { id: self.object(ObjectKind::Route, *id), utc: self.time(*utc) }
-            }
-            HostCommand::StampRideSynced { id, utc } => {
-                NormalizedCommand::StampRideSynced { id: self.object(ObjectKind::Ride, *id), utc: self.time(*utc) }
-            }
-            HostCommand::FinishTrack(action) => NormalizedCommand::FinishTrack(*action),
-            HostCommand::PlanRoute(request) => NormalizedCommand::PlanRoute(NormalizedNavRequest::from(request)),
-            HostCommand::PlanDetour(request) => NormalizedCommand::PlanDetour(NormalizedDetourRequest::from(request)),
-            HostCommand::CommitDetour => NormalizedCommand::CommitDetour,
-            HostCommand::Dfu(action) => NormalizedCommand::Dfu(*action),
-            HostCommand::ForgetBond => NormalizedCommand::ForgetBond,
-            HostCommand::PersistSettings { revision } => {
-                NormalizedCommand::PersistSettings { revision: self.revision(*revision) }
-            }
-            HostCommand::ScanCardFree => NormalizedCommand::ScanCardFree,
-            HostCommand::LoadRideTrack { id } => {
-                NormalizedCommand::LoadRideTrack { id: self.object(ObjectKind::Ride, *id) }
-            }
-            HostCommand::RefreshNavPreview => NormalizedCommand::RefreshNavPreview,
-        }
-    }
-
-    pub fn event(&mut self, event: &HostEvent) -> NormalizedEvent {
-        match event {
-            HostEvent::StoreChanged => NormalizedEvent::StoreChanged,
-            HostEvent::RouteUploaded { id, replaced, elevation } => NormalizedEvent::RouteUploaded {
-                id: self.object(ObjectKind::Route, *id),
-                replaced: *replaced,
-                elevation: elevation.map(|sparkline| sparkline.to_vec()),
-            },
-            HostEvent::TripUploaded { id, replaced } => {
-                NormalizedEvent::TripUploaded { id: self.object(ObjectKind::Trip, *id), replaced: *replaced }
-            }
-            HostEvent::Warning(flags) => NormalizedEvent::Warning(*flags),
-            HostEvent::NavPlanned(result) => NormalizedEvent::NavPlanned(
-                result
-                    .as_ref()
-                    .map(|id| self.object(ObjectKind::Route, *id))
-                    .map_err(|error| NormalizedError::from(*error)),
-            ),
-            HostEvent::DetourPlanned(result) => {
-                NormalizedEvent::DetourPlanned(result.as_ref().copied().map_err(|error| NormalizedError::from(*error)))
-            }
-            HostEvent::DetourCommitted(result) => NormalizedEvent::DetourCommitted(
-                result
-                    .as_ref()
-                    .map(|id| self.object(ObjectKind::Route, *id))
-                    .map_err(|error| NormalizedError::from(*error)),
-            ),
-            HostEvent::CardScanned { free_bytes } => NormalizedEvent::CardScanned { free_bytes: *free_bytes },
-            HostEvent::DfuScanned(result) => NormalizedEvent::DfuScanned(
-                result.as_ref().map(NormalizedDfuScanReport::from).map_err(|error| NormalizedError::from(*error)),
-            ),
-            HostEvent::DfuInstallFailed(error) => NormalizedEvent::DfuInstallFailed((*error).into()),
-            HostEvent::DfuInstallBegan => NormalizedEvent::DfuInstallBegan,
-            HostEvent::UpdateConfirmed(version) => NormalizedEvent::UpdateConfirmed(version.as_str().to_owned()),
-            HostEvent::UpdateFailed { why, staged } => NormalizedEvent::UpdateFailed {
-                why: *why,
-                staged: staged.as_ref().map(|version| version.as_str().to_owned()),
-            },
-            HostEvent::SettingsPersisted { revision } => {
-                NormalizedEvent::SettingsPersisted { revision: self.revision(*revision) }
-            }
-            HostEvent::SettingsPersistFailed { revision, error } => {
-                NormalizedEvent::SettingsPersistFailed { revision: self.revision(*revision), error: (*error).into() }
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NormalizedNavRequest {
-    pub from: (i32, i32),
-    pub to: (i32, i32),
-    pub name: String,
-}
-
-impl From<&NavRequest> for NormalizedNavRequest {
-    fn from(value: &NavRequest) -> Self {
-        Self { from: value.from, to: value.to, name: value.name().to_owned() }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NormalizedDetourRequest {
-    pub route_index: u16,
-    pub from: (i32, i32),
-    pub progress_m: u32,
-    pub target_m: u32,
-}
-
-impl From<&DetourRequest> for NormalizedDetourRequest {
-    fn from(value: &DetourRequest) -> Self {
-        Self {
-            route_index: value.route.try_into().expect("trace route index does not fit u16"),
-            from: value.from,
-            progress_m: value.progress_m,
-            target_m: value.target_m,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NormalizedDfuScanReport {
-    pub installed: String,
-    pub staged: String,
-    pub first_install: bool,
-}
-
-impl From<&DfuScanReport> for NormalizedDfuScanReport {
-    fn from(value: &DfuScanReport) -> Self {
-        Self {
-            installed: value.installed.as_str().to_owned(),
-            staged: value.staged.as_str().to_owned(),
-            first_install: value.first_install,
-        }
-    }
-}
-
-/// Stable, path-free error vocabulary used by trace records.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NormalizedError {
-    NavNoPath,
-    NavExhausted,
-    DfuScanNotFound,
-    DfuScanUnreadable,
-    DfuScanDamaged,
-    DfuScanTooLarge,
-    DfuScanTooFragmented,
-    DfuScanUntrusted,
-    DfuInstallRecording,
-    DfuInstallNoCard,
-    DfuInstallScanNotFound,
-    DfuInstallScanUnreadable,
-    DfuInstallScanDamaged,
-    DfuInstallScanTooLarge,
-    DfuInstallScanTooFragmented,
-    DfuInstallScanUntrusted,
-    DfuInstallSnapshotFailed,
-    DfuInstallStateWriteFailed,
-    SettingsBackend,
-}
-
-impl From<NavError> for NormalizedError {
-    fn from(value: NavError) -> Self {
-        match value {
-            NavError::NoPath => Self::NavNoPath,
-            NavError::Exhausted => Self::NavExhausted,
-        }
-    }
-}
-
-impl From<DfuScanError> for NormalizedError {
-    fn from(value: DfuScanError) -> Self {
-        match value {
-            DfuScanError::NotFound => Self::DfuScanNotFound,
-            DfuScanError::Unreadable => Self::DfuScanUnreadable,
-            DfuScanError::Damaged => Self::DfuScanDamaged,
-            DfuScanError::TooLarge => Self::DfuScanTooLarge,
-            DfuScanError::TooFragmented => Self::DfuScanTooFragmented,
-            DfuScanError::Untrusted => Self::DfuScanUntrusted,
-        }
-    }
-}
-
-impl From<DfuInstallError> for NormalizedError {
-    fn from(value: DfuInstallError) -> Self {
-        match value {
-            DfuInstallError::Recording => Self::DfuInstallRecording,
-            DfuInstallError::NoCard => Self::DfuInstallNoCard,
-            DfuInstallError::Scan(DfuScanError::NotFound) => Self::DfuInstallScanNotFound,
-            DfuInstallError::Scan(DfuScanError::Unreadable) => Self::DfuInstallScanUnreadable,
-            DfuInstallError::Scan(DfuScanError::Damaged) => Self::DfuInstallScanDamaged,
-            DfuInstallError::Scan(DfuScanError::TooLarge) => Self::DfuInstallScanTooLarge,
-            DfuInstallError::Scan(DfuScanError::TooFragmented) => Self::DfuInstallScanTooFragmented,
-            DfuInstallError::Scan(DfuScanError::Untrusted) => Self::DfuInstallScanUntrusted,
-            DfuInstallError::SnapshotFailed => Self::DfuInstallSnapshotFailed,
-            DfuInstallError::StateWriteFailed => Self::DfuInstallStateWriteFailed,
-        }
-    }
-}
-
-impl From<SettingsSaveError> for NormalizedError {
-    fn from(value: SettingsSaveError) -> Self {
-        match value {
-            SettingsSaveError::Backend => Self::SettingsBackend,
-        }
-    }
-}
-
-/// Exhaustive stable tags for the legacy command vocabulary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum CommandTag {
-    RescanStore,
-    CancelRoutePlan,
-    CancelDetour,
-    DeleteRoute,
-    DeleteTrip,
-    DeleteRide,
-    StampRouteUsed,
-    StampRideSynced,
-    FinishTrack,
-    PlanRoute,
-    PlanDetour,
-    CommitDetour,
-    Dfu,
-    ForgetBond,
-    PersistSettings,
-    ScanCardFree,
-    LoadRideTrack,
-    RefreshNavPreview,
-}
-
-pub const ALL_COMMAND_TAGS: [CommandTag; 18] = [
-    CommandTag::RescanStore,
-    CommandTag::CancelRoutePlan,
-    CommandTag::CancelDetour,
-    CommandTag::DeleteRoute,
-    CommandTag::DeleteTrip,
-    CommandTag::DeleteRide,
-    CommandTag::StampRouteUsed,
-    CommandTag::StampRideSynced,
-    CommandTag::FinishTrack,
-    CommandTag::PlanRoute,
-    CommandTag::PlanDetour,
-    CommandTag::CommitDetour,
-    CommandTag::Dfu,
-    CommandTag::ForgetBond,
-    CommandTag::PersistSettings,
-    CommandTag::ScanCardFree,
-    CommandTag::LoadRideTrack,
-    CommandTag::RefreshNavPreview,
-];
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NormalizedCommand {
-    RescanStore { commits: u32 },
-    CancelRoutePlan,
-    CancelDetour,
-    DeleteRoute { id: ObjectKey },
-    DeleteTrip { id: ObjectKey },
-    DeleteRide { id: ObjectKey },
-    StampRouteUsed { id: ObjectKey, utc: TimeKey },
-    StampRideSynced { id: ObjectKey, utc: TimeKey },
-    FinishTrack(TrackAction),
-    PlanRoute(NormalizedNavRequest),
-    PlanDetour(NormalizedDetourRequest),
-    CommitDetour,
-    Dfu(DfuAction),
-    ForgetBond,
-    PersistSettings { revision: RevisionKey },
-    ScanCardFree,
-    LoadRideTrack { id: ObjectKey },
-    RefreshNavPreview,
-}
-
-impl NormalizedCommand {
-    pub const fn tag(&self) -> CommandTag {
-        match self {
-            Self::RescanStore { .. } => CommandTag::RescanStore,
-            Self::CancelRoutePlan => CommandTag::CancelRoutePlan,
-            Self::CancelDetour => CommandTag::CancelDetour,
-            Self::DeleteRoute { .. } => CommandTag::DeleteRoute,
-            Self::DeleteTrip { .. } => CommandTag::DeleteTrip,
-            Self::DeleteRide { .. } => CommandTag::DeleteRide,
-            Self::StampRouteUsed { .. } => CommandTag::StampRouteUsed,
-            Self::StampRideSynced { .. } => CommandTag::StampRideSynced,
-            Self::FinishTrack(_) => CommandTag::FinishTrack,
-            Self::PlanRoute(_) => CommandTag::PlanRoute,
-            Self::PlanDetour(_) => CommandTag::PlanDetour,
-            Self::CommitDetour => CommandTag::CommitDetour,
-            Self::Dfu(_) => CommandTag::Dfu,
-            Self::ForgetBond => CommandTag::ForgetBond,
-            Self::PersistSettings { .. } => CommandTag::PersistSettings,
-            Self::ScanCardFree => CommandTag::ScanCardFree,
-            Self::LoadRideTrack { .. } => CommandTag::LoadRideTrack,
-            Self::RefreshNavPreview => CommandTag::RefreshNavPreview,
-        }
-    }
-}
-
-/// Exhaustive stable tags for the legacy event vocabulary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum EventTag {
-    StoreChanged,
-    RouteUploaded,
-    TripUploaded,
-    Warning,
-    NavPlanned,
-    DetourPlanned,
-    DetourCommitted,
-    CardScanned,
-    DfuScanned,
-    DfuInstallFailed,
-    DfuInstallBegan,
-    UpdateConfirmed,
-    UpdateFailed,
-    SettingsPersisted,
-    SettingsPersistFailed,
-}
-
-pub const ALL_EVENT_TAGS: [EventTag; 15] = [
-    EventTag::StoreChanged,
-    EventTag::RouteUploaded,
-    EventTag::TripUploaded,
-    EventTag::Warning,
-    EventTag::NavPlanned,
-    EventTag::DetourPlanned,
-    EventTag::DetourCommitted,
-    EventTag::CardScanned,
-    EventTag::DfuScanned,
-    EventTag::DfuInstallFailed,
-    EventTag::DfuInstallBegan,
-    EventTag::UpdateConfirmed,
-    EventTag::UpdateFailed,
-    EventTag::SettingsPersisted,
-    EventTag::SettingsPersistFailed,
-];
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NormalizedEvent {
-    StoreChanged,
-    RouteUploaded { id: ObjectKey, replaced: bool, elevation: Option<Vec<u8>> },
-    TripUploaded { id: ObjectKey, replaced: bool },
-    Warning(WarningFlags),
-    NavPlanned(Result<ObjectKey, NormalizedError>),
-    DetourPlanned(Result<obc_app::DetourPreview, NormalizedError>),
-    DetourCommitted(Result<ObjectKey, NormalizedError>),
-    CardScanned { free_bytes: Option<u64> },
-    DfuScanned(Result<NormalizedDfuScanReport, NormalizedError>),
-    DfuInstallFailed(NormalizedError),
-    DfuInstallBegan,
-    UpdateConfirmed(String),
-    UpdateFailed { why: DfuFailure, staged: Option<String> },
-    SettingsPersisted { revision: RevisionKey },
-    SettingsPersistFailed { revision: RevisionKey, error: NormalizedError },
-}
-
-impl NormalizedEvent {
-    pub const fn tag(&self) -> EventTag {
-        match self {
-            Self::StoreChanged => EventTag::StoreChanged,
-            Self::RouteUploaded { .. } => EventTag::RouteUploaded,
-            Self::TripUploaded { .. } => EventTag::TripUploaded,
-            Self::Warning(_) => EventTag::Warning,
-            Self::NavPlanned(_) => EventTag::NavPlanned,
-            Self::DetourPlanned(_) => EventTag::DetourPlanned,
-            Self::DetourCommitted(_) => EventTag::DetourCommitted,
-            Self::CardScanned { .. } => EventTag::CardScanned,
-            Self::DfuScanned(_) => EventTag::DfuScanned,
-            Self::DfuInstallFailed(_) => EventTag::DfuInstallFailed,
-            Self::DfuInstallBegan => EventTag::DfuInstallBegan,
-            Self::UpdateConfirmed(_) => EventTag::UpdateConfirmed,
-            Self::UpdateFailed { .. } => EventTag::UpdateFailed,
-            Self::SettingsPersisted { .. } => EventTag::SettingsPersisted,
-            Self::SettingsPersistFailed { .. } => EventTag::SettingsPersistFailed,
-        }
-    }
 }
 
 /// Delivery cadence for outcomes completed by a trace harness.
@@ -546,8 +165,6 @@ pub enum TraceInput {
         kind: &'static str,
         data: DataKey,
     },
-    Command(NormalizedCommand),
-    Event(NormalizedEvent),
     /// A runner-added pass used only to deliver delayed outcomes after the scripted inputs end.
     RunnerPass,
 }
@@ -580,7 +197,7 @@ impl From<&'static str> for DataKey {
     }
 }
 
-/// Typed feeder names for bulk app data that intentionally does not ride in `HostEvent`.
+/// Typed feeder names for the bulk app data that deliberately never rides in the protocol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FeederKind {
     RouteCatalog,
@@ -642,28 +259,13 @@ pub struct Trace<S> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TraceStep<S> {
     pub input: TraceInput,
-    /// The authoritative cross-category ordering of every output in this step.
-    pub timeline: Vec<TraceOutput>,
-    /// Category views kept for concise coverage assertions.
-    pub commands: Vec<NormalizedCommand>,
-    pub events: Vec<NormalizedEvent>,
+    /// The bulk feeder calls this step made, in order.
     pub feeder_calls: Vec<FeederCall>,
     pub visible_state: S,
 }
 
-/// One item in a step's unified ordered output timeline.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TraceOutput {
-    Command(NormalizedCommand),
-    Event(NormalizedEvent),
-    Feeder(FeederCall),
-}
-
 struct OpenStep {
     input: TraceInput,
-    timeline: Vec<TraceOutput>,
-    commands: Vec<NormalizedCommand>,
-    events: Vec<NormalizedEvent>,
     feeder_calls: Vec<FeederCall>,
 }
 
@@ -677,11 +279,9 @@ pub struct TraceRecorder<S> {
     normalizer: Normalizer,
 }
 
-/// Observation seam for a legacy dispatcher adapter. Dispatch policy remains in the dispatcher;
-/// this sink only records values at the real command/event/feeder call sites.
+/// Observation seam for an executor. Policy remains in the executor; this sink only records values
+/// at the real bulk feeder call sites.
 pub trait TraceSink {
-    fn command(&mut self, command: &HostCommand);
-    fn event(&mut self, event: &HostEvent);
     fn feeder(&mut self, call: FeederCall);
 
     /// Record feeder data keyed to a raw catalog identity. The recording sink normalizes it;
@@ -704,8 +304,6 @@ pub trait TraceSink {
 pub struct NoTrace;
 
 impl TraceSink for NoTrace {
-    fn command(&mut self, _command: &HostCommand) {}
-    fn event(&mut self, _event: &HostEvent) {}
     fn feeder(&mut self, _call: FeederCall) {}
     fn feeder_object(
         &mut self,
@@ -720,14 +318,6 @@ impl TraceSink for NoTrace {
 }
 
 impl<S> TraceSink for TraceRecorder<S> {
-    fn command(&mut self, command: &HostCommand) {
-        self.record_command(command);
-    }
-
-    fn event(&mut self, event: &HostEvent) {
-        self.record_event(event);
-    }
-
     fn feeder(&mut self, call: FeederCall) {
         self.record_feeder(call);
     }
@@ -761,53 +351,16 @@ impl<S> TraceRecorder<S> {
 
     pub fn begin_step(&mut self, input: TraceInput) {
         assert!(self.open.is_none(), "finish the open trace step before beginning another");
-        self.open = Some(OpenStep {
-            input,
-            timeline: Vec::new(),
-            commands: Vec::new(),
-            events: Vec::new(),
-            feeder_calls: Vec::new(),
-        });
-    }
-
-    pub fn record_command(&mut self, command: &HostCommand) {
-        let normalized = self.normalizer.command(command);
-        self.record_normalized_command(normalized);
-    }
-
-    pub fn record_normalized_command(&mut self, command: NormalizedCommand) {
-        let open = self.open_mut();
-        open.timeline.push(TraceOutput::Command(command.clone()));
-        open.commands.push(command);
-    }
-
-    pub fn record_event(&mut self, event: &HostEvent) {
-        let normalized = self.normalizer.event(event);
-        self.record_normalized_event(normalized);
-    }
-
-    pub fn record_normalized_event(&mut self, event: NormalizedEvent) {
-        let open = self.open_mut();
-        open.timeline.push(TraceOutput::Event(event.clone()));
-        open.events.push(event);
+        self.open = Some(OpenStep { input, feeder_calls: Vec::new() });
     }
 
     pub fn record_feeder(&mut self, call: FeederCall) {
-        let open = self.open_mut();
-        open.timeline.push(TraceOutput::Feeder(call.clone()));
-        open.feeder_calls.push(call);
+        self.open_mut().feeder_calls.push(call);
     }
 
     pub fn finish_step(&mut self, visible_state: S) {
         let open = self.open.take().expect("begin a trace step before finishing it");
-        self.steps.push(TraceStep {
-            input: open.input,
-            timeline: open.timeline,
-            commands: open.commands,
-            events: open.events,
-            feeder_calls: open.feeder_calls,
-            visible_state,
-        });
+        self.steps.push(TraceStep { input: open.input, feeder_calls: open.feeder_calls, visible_state });
     }
 
     pub fn finish(self, final_state: S) -> Trace<S> {
@@ -995,57 +548,6 @@ where
     delayed.finish_pass();
 }
 
-/// Run one `LegacyLoop` pass with the lightweight store setup used by board-parity fixtures.
-pub fn reconcile_fixture_pass(
-    host: &mut LegacyLoop,
-    app: &mut App,
-    routes: &mut MemRouteStore,
-    map: &[u8],
-) -> Result<(), obc_reader::Error> {
-    with_map_reader(map, |reader| {
-        let mut rides = MemRideStore::new(Vec::new());
-        let mut tracks = MemTrackStore::new();
-        let mut no_trips = ();
-        let mut elev = obc_route::NullElevation;
-        host.reconcile(app, routes, &mut rides, &mut tracks, &mut no_trips, reader, &mut elev, |_app, _cmd| {});
-    })
-}
-
-/// Run the fixture-backed scripted-host shape without yielding between planner steps.
-pub fn reconcile_fixture_to_completion(
-    host: &mut LegacyLoop,
-    app: &mut App,
-    routes: &mut MemRouteStore,
-    map: &[u8],
-) -> Result<(), obc_reader::Error> {
-    with_map_reader(map, |reader| {
-        let mut rides = MemRideStore::new(Vec::new());
-        let mut no_trips = ();
-        let mut elev = obc_route::NullElevation;
-        host.reconcile_to_completion(
-            app,
-            routes,
-            &mut rides,
-            &mut no_trips,
-            reader,
-            &mut elev,
-            PlanHold::NONE,
-            |_app, _cmd| {},
-        );
-    })
-}
-
-fn with_map_reader<R>(
-    map: &[u8],
-    use_reader: impl FnOnce(&obc_reader::Reader<'_>) -> R,
-) -> Result<R, obc_reader::Error> {
-    let source = obc_reader::SliceSource(map);
-    let tables = obc_reader::MapTables::parse(&source)?;
-    let cache = obc_reader::MapCache::new();
-    let reader = obc_reader::Reader::new(&source, &tables, &cache);
-    Ok(use_reader(&reader))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1111,7 +613,7 @@ mod tests {
         fn run_pass(&mut self, trace: &mut TraceRecorder<Self::State>) -> Vec<Self::Outcome> {
             if self.requested {
                 self.requested = false;
-                trace.record_command(&HostCommand::ScanCardFree);
+                trace.record_feeder(FeederCall::new(FeederKind::Settings, "tiny.request", 1));
                 vec![7]
             } else {
                 Vec::new()
@@ -1120,7 +622,7 @@ mod tests {
 
         fn deliver(&mut self, outcome: Self::Outcome, trace: &mut TraceRecorder<Self::State>) {
             self.visible = outcome;
-            trace.record_event(&HostEvent::CardScanned { free_bytes: Some(u64::from(outcome)) });
+            trace.record_feeder(FeederCall::new(FeederKind::Settings, "tiny.answer", 1));
         }
     }
 
@@ -1204,8 +706,8 @@ mod tests {
         assert_eq!(delayed.final_state, immediate.final_state);
         assert_eq!(immediate.steps.len(), 1);
         assert_eq!(delayed.steps.len(), 2);
-        assert!(matches!(immediate.steps[0].timeline[0], TraceOutput::Command(_)));
-        assert!(matches!(immediate.steps[0].timeline[1], TraceOutput::Event(_)));
+        assert_eq!(immediate.steps[0].feeder_calls.len(), 2, "the request and its answer land in one step");
+        assert_eq!(delayed.steps[0].feeder_calls.len(), 1, "delayed, the answer lands in the runner's own pass");
         assert!(matches!(delayed.steps[1].input, TraceInput::RunnerPass));
     }
 
@@ -1225,10 +727,10 @@ mod tests {
         }
     }
 
+    /// The feeder vocabulary is the trace's last exhaustiveness tripwire: a new bulk feeder must get
+    /// a kind, or a scenario that exercises it records nothing and no coverage assertion notices.
     #[test]
-    fn tag_tables_are_exhaustive_and_ordered() {
-        assert_eq!(ALL_COMMAND_TAGS.len(), obc_app::HOST_COMMAND_CLASSES);
-        assert_eq!(ALL_EVENT_TAGS.len(), 15);
+    fn the_feeder_table_is_exhaustive() {
         assert_eq!(ALL_FEEDER_KINDS.len(), 13);
     }
 }

@@ -373,7 +373,7 @@ impl SimGui {
                         inject = Some(true);
                     }
                 });
-                ui.weak("rescan + upload event → idle / mid-ride / active-replace popup");
+                ui.weak("rescan + upload fact → idle / mid-ride / active-replace popup");
             }
         }
         if let Some(replace) = inject {
@@ -414,12 +414,12 @@ impl SimGui {
                 ui.weak("upload → the TRIP RECEIVED popup (replaces any route popup) · delete is non-cascading");
             }
         }
-        // The trip-commit event, exactly the board's order: the trip catalog is already fed (the
-        // scan above / the store-changed re-feed), then the event resolves the durable id — on the
+        // The trip-commit fact, exactly the board's order: the trip catalog is already fed (the
+        // scan above / the store-changed re-feed), then the fact resolves the durable id — on the
         // device the trip object always lands after its member routes, so this popup replaces the
         // burst's last per-route popup (single most-recent-wins slot).
         if let Some(id) = inject_trip {
-            self.app.apply_event(obc_app::HostEvent::TripUploaded { id, replaced: false });
+            self.host.facts().note_trip_upload(obc_app::device_core::TripUpload { id, replaced: false });
         }
         if let Some(id) = delete_trip {
             // A trip delete doesn't move the *route* store, so no store-changed edge — the trip
@@ -549,7 +549,7 @@ impl SimGui {
     /// Drive the exact device route-upload sequence from the control panel (epic #447, P4):
     /// mutate the routes folder (a fresh copy for "new"; an in-place bytes rewrite for
     /// "replace-by-id"), then the store-changed edge → rescan + identity remap, **then** the
-    /// upload event carrying the durable id — the same ordering the board's ride loop sees (the
+    /// upload fact carrying the durable id — the same ordering the board's ride loop sees (the
     /// rescan first, so the id resolves in the fresh catalog). A replace also drops the cached
     /// active-route bytes so the next frame reopens them, mirroring the board's
     /// close-and-reopen of the geometry handle.
@@ -557,7 +557,7 @@ impl SimGui {
         let id = if replace { self.store.touch_route(sel) } else { self.store.duplicate_route(sel) };
         let Some(id) = id else { return };
         // The store-changed edge is the rescan + id-carrying re-feed (see the "Store changed"
-        // button); then the `RouteUploaded` event carries the durable id — the rescan-then-resolve
+        // button); then the route-upload fact carries the durable id — the rescan-then-resolve
         // ordering the board's ride loop and the app both rely on.
         self.store.rescan();
         self.app.set_routes_with_ids(self.store.catalog(), self.store.ids());
@@ -565,7 +565,7 @@ impl SimGui {
             self.store.sync_active(None); // force the geometry reopen off the fresh bytes
         }
         let elevation = self.store.elevation_sparkline(id);
-        self.app.apply_event(obc_app::HostEvent::RouteUploaded { id, replaced: replace, elevation });
+        self.host.facts().note_route_upload(obc_app::device_core::RouteUpload { id, replaced: replace, elevation });
     }
 
     /// The synthetic BLE-sensor controls (epic #707 SE8): the sim's face of the HR / power /

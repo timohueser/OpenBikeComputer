@@ -10,12 +10,11 @@ use obc_route::{Profile, RouteReader};
 use crate::activity::{Activity, Mode};
 use crate::card_scheduler::{BootUpdate, DfuLanding, PendingUpload, UploadEvent};
 use crate::catalog_state::CatalogState;
-use crate::device_core::compat::{dfu_row, navigator_row, settings_row, storage_info_row};
 use crate::device_core::core_mode::{CoreMode, ModeState};
 use crate::device_core::storage_info::StorageInfo;
 use crate::dfu::DfuState;
 use crate::dirty::Dirty;
-use crate::host::{DrainStatus, HostCommand, HostCommandClass, HostEvent, HostMailbox, HOST_COMMAND_CLASSES};
+use crate::host::{DrainStatus, HostCommand, HostCommandClass, HostMailbox};
 use crate::input::Gesture;
 use crate::navigator::PlanFamily;
 use crate::navigator::{NavigatorIntent, NavigatorMachine, PlanPhase};
@@ -148,7 +147,7 @@ pub struct AppState {
     /// Small, current platform-fed facts rendered by ordinary app chrome.
     pub device: DeviceStatus,
     /// The Bluetooth screen's **"Forget phone"** request (epic #447, P8): set by the screen's
-    /// guarded hold, drained by the host via [`App::drain_host_commands`] — which clears the RRAM bond
+    /// guarded hold, drained by the host via the pass — which clears the RRAM bond
     /// slot and drops the bonded connection on the board, or clears the injected `paired` flag in
     /// the sim. A pending app→host command, carried here because `AppState` is the one mutable
     /// app-wide state a screen's `handle` reaches (the `TrackAction` pattern, one plane over).
@@ -559,10 +558,6 @@ pub struct App {
     /// decision. The bundle itself stays in the platform's store — this owns what the rider is
     /// *told*, never the frames.
     pub(crate) weather: crate::weather::WeatherDomain,
-    /// Count of [`HostEvent::StoreChanged`] facts not yet acted on (#450). The host drains it once
-    /// per pass as the counted [`HostCommand::RescanStore`]. A counter, not a bool, so a burst of
-    /// commits between drains is never coalesced into a single missed rescan.
-    store_changed: u32,
     /// The **Navigator** domain (#1397 S2): the rider's undelivered plan requests, the per-family
     /// phase, and the operation token every planner answer must carry back. The only writer of any
     /// of them, and of [`mode`](App::mode)'s two search levels.
@@ -649,7 +644,6 @@ impl App {
             clock_trust: ClockTrust::Untrusted,
             retention: crate::retention::RetentionMachine::new(),
             weather: crate::weather::WeatherDomain::new(),
-            store_changed: 0,
             navigator: NavigatorMachine::new(),
             mode: CoreMode::new(),
             settings_ops: crate::settings::SettingsMachine::new(),
@@ -696,7 +690,6 @@ impl App {
             clock_trust,
             retention,
             weather,
-            store_changed,
             navigator,
             mode,
             settings_ops,
@@ -729,7 +722,6 @@ impl App {
             weather.installed().is_none() && !weather.refreshing() && weather.last_refresh().is_none(),
             "no weather installed, none requested, nothing completed this boot"
         );
-        assert_eq!(*store_changed, 0, "no store commit pending");
         assert!(settings_ops.is_empty(), "settings Clean at revision 0");
         navigator.assert_boot_state();
         assert_eq!(*mode, CoreMode::new(), "nothing searching, nothing streaming, no banner shown");
@@ -739,11 +731,6 @@ impl App {
         assert!(fw_version.is_empty() && map_name.is_empty(), "the host has identified nothing yet");
         assert_eq!(*map_obcm_version, 0, "no map format known yet");
         assert!(!*recovered_ride_offered, "no recovered ride offered this boot");
-    }
-
-    /// Record one [`HostEvent::StoreChanged`] fact (saturating — a burst rides as a count).
-    pub(crate) fn note_store_changed(&mut self) {
-        self.store_changed = self.store_changed.saturating_add(1);
     }
 
     /// Advance one tick from the sensors.
@@ -1070,38 +1057,6 @@ impl App {
         f(retention, &view)
     }
 
-    /// Take one retention metadata effect and answer it, translating it into the legacy stamp
-    /// command — the #1437 compatibility seam.
-    ///
-    /// The legacy protocol has no acknowledgement for a stamp: the host writes the sidecar and says
-    /// nothing. So the adapter *is* the executor, and it answers on dispatch — the honest
-    /// translation of "dispatch means done" for a protocol with no other terminal event. DC6
-    /// replaces this synthetic answer with the real outcome the executor reports.
-    fn retention_stamp_command(&mut self, kind: crate::retention::SweepKind) -> Option<HostCommand> {
-        let effect = self.with_retention(|retention, view| retention.next_metadata_effect(kind, view))?;
-        let token = effect.token();
-        let command = match effect {
-            crate::retention::RetentionEffect::WriteRouteMetadata { id, meta, .. } => {
-                let utc = meta.last_used_utc;
-                // Mirror the stamp into the resident meta so a re-derivation before the host's
-                // rescan lands doesn't re-enqueue it (the sidecar write itself is the host's).
-                self.catalogs.stamp_route_last_used(id, utc);
-                self.retention.apply_outcome(crate::retention::RetentionOutcome::RouteMetadataWritten { token, id });
-                HostCommand::StampRouteUsed { id, utc }
-            }
-            crate::retention::RetentionEffect::WriteRideMetadata { id, synced_at, .. } => {
-                // Mirror into both the resident summary (UI repaint) and the full retention
-                // inventory (finding #876-2), so a ride outside the newest-32 display catalog also
-                // stops re-enqueuing its stamp.
-                self.catalogs.stamp_ride_synced_at(id, synced_at);
-                self.catalogs.stamp_inventory_synced_at(id, synced_at);
-                self.retention.apply_outcome(crate::retention::RetentionOutcome::RideMetadataWritten { token, id });
-                HostCommand::StampRideSynced { id, utc: synced_at }
-            }
-        };
-        Some(command)
-    }
-
     /// Force the auto-expiry sweep to run on the next eligible tick, ignoring the hourly gate (epic
     /// #638, S3) — the seam the simulator's "+1 day" control uses so a fast-forwarded clock sweeps
     /// immediately instead of waiting for the wall-clock hour to roll. No production path calls it.
@@ -1306,14 +1261,6 @@ impl App {
         &self.nav_profiles
     }
 
-    pub fn set_routes(&mut self, summaries: &[RouteSummary]) {
-        let mut ids: heapless::Vec<crate::CatalogObjectId, { crate::route::MAX_ROUTES }> = heapless::Vec::new();
-        for i in 0..summaries.len().min(crate::route::MAX_ROUTES) {
-            let _ = ids.push(i as crate::CatalogObjectId);
-        }
-        self.set_routes_with_ids(summaries, &ids);
-    }
-
     /// Replace the resident route catalog from the host's store, carrying each route's **durable
     /// object id** (`ids` parallel to `summaries`), then remap every held catalog index by id
     /// (#450). Clones up to [`MAX_ROUTES`](crate::MAX_ROUTES) entries; any beyond that are ignored.
@@ -1504,61 +1451,14 @@ impl App {
         self.catalogs.ride_ids()
     }
 
-    /// Park the host's answer to [`ride_track_request`](App::ride_track_request) in the app's single
-    /// resident ride-profile buffer (`None` = the stream failed; the band keeps its loading note and
-    /// the level does not re-fire).
-    ///
-    /// **Temporary wrapper — deleted by DC6 #1439** with the compatibility executor, together with
-    /// the rest of the legacy `set_*` façade. It builds the matching keyed
-    /// [`DerivedInput`](crate::device_core::derived::DerivedInput) from the live need, which is why
-    /// it cannot itself carry a key the way the real path does: the legacy command the host answered
-    /// does not carry one back.
-    pub fn set_ride_profile(&mut self, profile: Option<Profile>) {
-        use crate::device_core::derived::DerivedInput;
-        let Some(key) = self.catalogs.ride_track_key(self.activity.viewed_ride) else { return };
-        let input = if profile.is_some() { DerivedInput::filled(key) } else { DerivedInput::failed(key) };
-        if self.catalogs.accept_ride_profile(Some(key), input, profile) {
-            self.ui.map_dirty = true;
-        }
-    }
-
     /// Borrow the app's one resident ride-profile buffer for an in-place host fill. **Invalidates**
-    /// the ride-track view: until [`finish_ride_profile_fill`](App::finish_ride_profile_fill)
-    /// accepts the answer the level re-fires, so an abandoned fill leaves a need up rather than a
-    /// half-written buffer marked answered.
+    /// the ride-track view: until a keyed answer for the *post-fill* key lands
+    /// ([`apply_derived`](App::apply_derived)) the level re-fires, so an abandoned fill leaves a
+    /// need up rather than a half-written buffer marked answered.
     ///
     /// **Temporary wrapper — deleted by DC6 #1439.**
     pub fn begin_ride_profile_fill(&mut self) -> &mut Profile {
         self.catalogs.begin_ride_profile_fill()
-    }
-
-    /// Publish or reject an in-place ride-profile fill. A rejected fill is still an *answer*: the
-    /// need clears for that key, so malformed media is read once rather than every pass.
-    ///
-    /// **Temporary wrapper — deleted by DC6 #1439.**
-    pub fn finish_ride_profile_fill(&mut self, valid: bool) {
-        use crate::device_core::derived::DerivedInput;
-        let Some(key) = self.catalogs.ride_track_key(self.activity.viewed_ride) else { return };
-        let input = if valid { DerivedInput::filled(key) } else { DerivedInput::failed(key) };
-        if self.catalogs.accept_ride_profile(Some(key), input, None) {
-            self.ui.map_dirty = true;
-        }
-    }
-
-    /// Hand in the viewed ride's decimated recorded-track shape polyline (#678 rework 3 — the
-    /// Ride detail's track pager page): ≤ [`NAV_PREVIEW_MAX`] `(lon, lat)` µdeg points (more are
-    /// truncated), built by obc-route's `ride_preview_polyline` in the **same host drain** as
-    /// [`set_ride_profile`](App::set_ride_profile) (one answer fills both residents, so the file
-    /// streams at most twice per entry, never per pass).
-    ///
-    /// **Temporary wrapper — deleted by DC6 #1439.**
-    pub fn set_ride_preview(&mut self, pts: &[(i32, i32)]) {
-        use crate::device_core::derived::DerivedInput;
-        let Some(key) = self.catalogs.ride_track_key(self.activity.viewed_ride) else { return };
-        let input = DerivedInput::filled(key);
-        if self.catalogs.accept_ride_preview(Some(key), input, pts) {
-            self.ui.map_dirty = true;
-        }
     }
 
     /// Open the on-glass DFU check flow from a **remote** request — the BLE `installFw` command
@@ -1844,27 +1744,6 @@ impl App {
         }
     }
 
-    /// Hand `family`'s undelivered cancellation to the executor, and repaint the map the freeze
-    /// held still. `false` when there was nothing to deliver.
-    ///
-    /// This and `NavigatorMachine::next_release` are the **two consumers of one flag**, and stage 8
-    /// runs before `drain_host_commands` — so on a composition that runs the pass, the cancellation
-    /// leaves as a typed `Release` and this arm finds nothing. That is the intended handover, with
-    /// one known gap the pass cannot close on its own: under the pass *plus* `LegacyAdapter` the
-    /// `Release` is `LegacyOwned::PlannerRelease` and is dropped untranslated, so that composition
-    /// never tells the executor to drop the planner. No shipped host runs both — the production
-    /// hosts reach this arm and nothing else — and #1397 S6 closes it by giving Navigator an
-    /// executor that answers a `Release`. See `next_release` for the whole reasoning.
-    fn deliver_plan_cancel(&mut self, family: PlanFamily) -> bool {
-        if !self.navigator.take_cancel(family) {
-            return false;
-        }
-        if self.navigator.note_cancel_delivered(family, &mut self.mode) {
-            self.ui.map_dirty = true;
-        }
-        true
-    }
-
     /// Consume a typed [`NavigatorOutcome`](crate::navigator::NavigatorOutcome). The token is the
     /// whole admission test: a cancelled or superseded operation refuses its own late answer, and
     /// nothing downstream runs.
@@ -1902,7 +1781,7 @@ impl App {
                 let family = self.navigator.live_family().unwrap_or(PlanFamily::Route);
                 self.end_plan(family, PlanPhase::Idle);
             }
-            // Pacing is `LegacyOwned::PlannerPacing` — one legacy `PlanRoute` acquires, steps and
+            // Pacing is #1400's — one request here acquires, steps and
             // commits inside the executor, so no protocol in this slice produces these. They are
             // accepted and change nothing until #1397 S6 gives Navigator the stepping loop.
             NavigatorOutcome::Acquired { .. } | NavigatorOutcome::Stepped { .. } => {}
@@ -1980,7 +1859,7 @@ impl App {
         self.ui.map_dirty = true;
     }
 
-    /// [`HostEvent::DetourPlanned`] (#882): land the plan answer in the detour planning screen —
+    /// The detour plan's answer (#882): land it in the detour planning screen —
     /// success replaces it with the preview (cost line + the polyline handed in via
     /// [`set_detour_preview`](App::set_detour_preview)), failure with the fail card carrying the
     /// "try a farther rejoin" hint. A late answer whose planning screen is gone (the rider
@@ -2015,7 +1894,7 @@ impl App {
         self.ui.map_dirty = true;
     }
 
-    /// [`HostEvent::DetourCommitted`] (#882): re-adopt the spliced route and land back on the
+    /// The splice's answer (#882): re-adopt the spliced route and land back on the
     /// riding view — or surface the failure on the preview with the old route fully intact.
     ///
     /// Success order matters: drop every cache derived from the old geometry, point
@@ -2147,15 +2026,15 @@ impl App {
         self.ui.run_card_sweep(&self.catalogs, self.activity.is_tracking());
     }
 
-    /// [`HostEvent::DfuScanned`] / [`DfuInstallBegan`](HostEvent::DfuInstallBegan) /
-    /// [`DfuInstallFailed`](HostEvent::DfuInstallFailed): post the terminal answer for the DFU wait
+    /// The update domain's terminal answer — a scan result, the install beginning, or its failure:
+    /// post it for the DFU wait
     /// on the stack. The scheduler drops it when that wait is gone (the rider pressed Back).
-    fn post_dfu_landing(&mut self, landing: DfuLanding) {
+    pub(crate) fn post_dfu_landing(&mut self, landing: DfuLanding) {
         self.ui.cards.post_dfu(landing);
         self.sweep_cards();
     }
 
-    /// [`HostEvent::UpdateConfirmed`] / [`UpdateFailed`](HostEvent::UpdateFailed): post this boot's
+    /// This boot's update verdict: post this boot's
     /// one-time update verdict for the toast (or its failure twin).
     pub(crate) fn post_boot_update(&mut self, result: BootUpdate) {
         self.ui.cards.post_update(result);
@@ -2237,17 +2116,7 @@ impl App {
         self.activity.sensor_scan_active()
     }
 
-    /// How many `StoreChanged` events ([`apply_event`](App::apply_event)) are pending (not yet
-    /// acted on). Non-zero once the store has moved since the last drain. The **retained** read-only,
-    /// non-consuming observer of the burst count (FAR-19, #812): the acting consumer drains the count
-    /// as the `RescanStore` command through [`drain_host_commands`](App::drain_host_commands), which
-    /// resets it — there is no other way to *observe* the accumulated burst without consuming it, so
-    /// the `ble`/screen seam tests read it here. Kept deliberately; not part of the host protocol.
-    pub fn store_changed_pending(&self) -> u32 {
-        self.store_changed
-    }
-
-    /// [`HostEvent::RouteUploaded`]: forced adoption on an active replace + the advisory prompt.
+    /// A committed route upload: forced adoption on an active replace + the advisory prompt.
     pub(crate) fn on_route_uploaded(
         &mut self,
         id: crate::CatalogObjectId,
@@ -2282,7 +2151,7 @@ impl App {
         }
     }
 
-    /// [`HostEvent::TripUploaded`]: the "TRIP RECEIVED" advisory prompt — for a **fresh** trip
+    /// A committed trip upload: the "TRIP RECEIVED" advisory prompt — for a **fresh** trip
     /// only. Nothing to adopt or invalidate — a trip is a folder of already-committed routes (each
     /// of which raised its own event when it landed); this popup replaces the burst's last
     /// per-route popup, so one card announces the whole delivery. A **replace** is a trip *edit*
@@ -2297,7 +2166,7 @@ impl App {
         self.sweep_cards();
     }
 
-    /// [`HostEvent::Warning`]: accumulate the flags and deliver (or defer) the advisory card.
+    /// A raised warning: accumulate the flags and deliver (or defer) the advisory card.
     pub(crate) fn on_warning(&mut self, flags: WarningFlags) {
         if flags.is_empty() {
             return;
@@ -2648,13 +2517,6 @@ impl App {
             avg_power: self.activity.avg_power(),
             max_power: self.activity.max_power(),
         }
-    }
-
-    /// Whether a settings persist is owed **and** may be emitted this pass: the live value is dirty,
-    /// the rider has left the settings subtree, and we are neither already Awaiting an ack nor inside
-    /// a failed-write backoff window. The shared predicate behind the `PersistSettings` peek/drain.
-    fn settings_persist_ready(&self) -> bool {
-        self.settings_ops.wants_write(self.ui.top_is_settings(), self.ui.now_ms)
     }
 
     /// Test hook: arm a pending settings save without driving a real edit (bumps the revision and
@@ -3150,8 +3012,8 @@ impl App {
         self.ride.refresh_route_profile(self.activity.active_route, route);
         // Invalidate the resident **ride** profile + track preview the moment they stop matching
         // the viewed ride (#680; the preview joined in #678 rework 3): the detail exited
-        // (`viewed_ride` cleared) or moved subjects. Filling is the host's (`set_ride_profile` /
-        // `set_ride_preview`); only the drop lives here, so a stale band/shape is never drawn.
+        // (`viewed_ride` cleared) or moved subjects. Filling is the executor's keyed answer; only
+        // the drop lives here, so a stale band/shape is never drawn.
         let key = self.catalogs.ride_track_key(self.activity.viewed_ride);
         self.catalogs.drop_stale_ride_views(key);
 
@@ -3345,7 +3207,8 @@ impl App {
         self.ui.take_dirty()
     }
 
-    /// The most recently recognized gesture (host input readout), if any.
+    /// The most recently recognized gesture. No production host reads it; the two-plane input tests
+    /// do, to prove the map plane's own recogniser stays dormant when the input plane owns it.
     pub fn last_gesture(&self) -> Option<Gesture> {
         self.ui.input.last_gesture()
     }
@@ -3382,47 +3245,14 @@ impl App {
 // ==================== The typed app↔host protocol (FAR-07, #800) ====================
 //
 // One vocabulary, one pending state. Every host-directed one-shot/counter is drained here as a
-// typed [`HostCommand`] through `drain_host_commands`, and every host fact/answer lands here as a
-// typed [`HostEvent`] through `apply_event` — the only two doors, with the per-class pending state
+// typed [`HostCommand`] through the residual drain — three classes, one door, with the pending state
 // living once inside `App` (a typed slot, a counter, or a derived predicate).
 
 impl App {
-    /// Drain every pending host-directed command into the caller-owned mailbox, in the canonical
-    /// [`HostCommand::DRAIN_ORDER`] — the host's once-per-pass read of "what does the app want".
-    ///
-    /// Draining is **loss-free by construction**: a command class is consumed only when the
-    /// mailbox has room for it, so a full mailbox leaves the remaining classes latched (reported
-    /// as [`DrainStatus::MailboxFull`]) and they come out of the next drain. A mailbox with
-    /// `N >= HOST_COMMAND_CLASSES` — compile-time asserted here — always drains to
-    /// [`DrainStatus::Complete`] in one call. The derived fill cues
-    /// ([`LoadRideTrack`](HostCommand::LoadRideTrack) /
-    /// [`RefreshNavPreview`](HostCommand::RefreshNavPreview)) re-emit on every drain until their
-    /// `set_*` answer lands; [`HostMailbox`] coalesces them (and sums
-    /// [`RescanStore`](HostCommand::RescanStore) counts) so re-drains never duplicate work.
-    pub fn drain_host_commands<const N: usize>(&mut self, out: &mut HostMailbox<N>) -> DrainStatus {
-        const {
-            assert!(N >= HOST_COMMAND_CLASSES, "a HostMailbox must hold one command per class to drain completely");
-        }
-        for class in HostCommand::DRAIN_ORDER {
-            if out.is_full() {
-                // Consume nothing we can't hand over: everything still pending stays latched for
-                // the next drain — backpressure, never a silent drop.
-                let remaining =
-                    HostCommand::DRAIN_ORDER.iter().skip_while(|&&c| c != class).any(|&c| self.peek_host_command(c));
-                return if remaining { DrainStatus::MailboxFull } else { DrainStatus::Complete };
-            }
-            if let Some(cmd) = self.drain_host_command(class) {
-                let pushed = out.push_coalesced(cmd);
-                debug_assert!(pushed, "room was checked before the class was drained");
-            }
-        }
-        DrainStatus::Complete
-    }
-
     /// Drain **only** the residual classes — the three a typed executor still performs
     /// ([`device_core::residual`](crate::device_core::residual)).
     ///
-    /// **This is not `drain_host_commands` with a filter afterwards, and the difference is the whole
+    /// **This is not a whole-order walk with a filter afterwards, and the difference is the whole
     /// point.** For every class DeviceCore owns, that walk is not a read: it *pulls* from the domain
     /// — `next_plan_effect`, `SettingsMachine::next_effect`, `DfuState::next_effect`,
     /// `StorageInfo::next_effect`, `next_expiry`, `deliver_plan_cancel` — taking the rider's request
@@ -3447,18 +3277,11 @@ impl App {
                 return if remaining { DrainStatus::MailboxFull } else { DrainStatus::Complete };
             }
             if let Some(cmd) = self.drain_host_command(class) {
-                let pushed = out.push_coalesced(cmd);
+                let pushed = out.push(cmd);
                 debug_assert!(pushed, "room was checked before the class was drained");
             }
         }
         DrainStatus::Complete
-    }
-
-    /// Whether any host-directed command is currently pending — what a
-    /// [`drain_host_commands`](App::drain_host_commands) call would emit at least one command for.
-    /// This consumes nothing.
-    pub fn has_pending_host_command(&self) -> bool {
-        HostCommand::DRAIN_ORDER.iter().any(|&c| self.peek_host_command(c))
     }
 
     /// Whether a **residual** legacy command is pending — one of the three classes a typed executor
@@ -3489,191 +3312,26 @@ impl App {
         self.ui.stack.iter().any(|s| matches!(s, Screen::DfuInstalling(_)))
     }
 
-    /// Apply one host answer or fact. Events are owned, so a host can hold one across asynchronous
-    /// work and apply it later; a late answer whose screen is gone is dropped, while advisory
-    /// prompts defer behind the passkey card or a charging hold.
-    ///
-    /// **Refused while a DeviceCore pass runs** (#1438): a platform callback must not change
-    /// DeviceCore mid-pass, or a later stage would decide from a picture the earlier ones never
-    /// saw. The next pass consumes whatever the executor completed.
-    pub fn apply_event(&mut self, event: HostEvent) {
-        if self.pass.in_pass() {
-            // Loud in debug, and refused either way: `run_pass` holds `&mut self` for the whole
-            // pass, so reaching here at all means a caller found a way around that borrow.
-            debug_assert!(false, "a platform callback cannot change DeviceCore during a pass");
-            return;
-        }
-        match event {
-            HostEvent::StoreChanged => self.note_store_changed(),
-            HostEvent::RouteUploaded { id, replaced, elevation } => self.on_route_uploaded(id, replaced, elevation),
-            HostEvent::TripUploaded { id, replaced } => self.on_trip_uploaded(id, replaced),
-            HostEvent::Warning(flags) => self.on_warning(flags),
-            HostEvent::NavPlanned(result) => self.land_route_plan(result),
-            HostEvent::DetourPlanned(result) => self.land_detour_plan(result),
-            HostEvent::DetourCommitted(result) => self.land_detour_commit(result),
-            HostEvent::CardScanned { free_bytes } => {
-                // The legacy `None` says only "no figure" — the board's producer yields it for no
-                // mounted medium *and* for no free count — so it goes to the domain as it stands,
-                // and blanks the System screen back to `--`.
-                self.land_card_scan(free_bytes);
-            }
-            HostEvent::DfuScanned(result) => {
-                self.dfu.note_answer();
-                self.post_dfu_landing(DfuLanding::Scanned(result));
-            }
-            HostEvent::DfuInstallFailed(reason) => {
-                self.dfu.note_answer();
-                self.post_dfu_landing(DfuLanding::InstallFailed(reason));
-            }
-            HostEvent::DfuInstallBegan => {
-                self.dfu.note_answer();
-                self.post_dfu_landing(DfuLanding::InstallBegan);
-            }
-            HostEvent::UpdateConfirmed(version) => self.post_boot_update(BootUpdate::Confirmed(version)),
-            HostEvent::UpdateFailed { why, staged } => self.post_boot_update(BootUpdate::Failed(why, staged)),
-            HostEvent::SettingsPersisted { revision } => self.settings_ops.note_persisted(revision),
-            HostEvent::SettingsPersistFailed { revision, error: _ } => self.land_settings_failure(revision),
-        }
-    }
-
-    /// The product half of a settings write's failure, whichever protocol carried it:
-    /// [`SettingsMachine`](crate::settings::SettingsMachine) decides what the answer means, and
-    /// what is left here is the one thing it cannot do — telling the rider a save failed, on the
-    /// shared advisory warning card (#810).
-    fn land_settings_failure(&mut self, revision: u16) {
-        if self.settings_ops.note_persist_failed(revision, self.ui.now_ms) {
-            self.on_warning(WarningFlags::SETTINGS_ERROR);
-        }
-    }
-
-    /// The product half of a free-space measurement's answer. The figure is StorageInfo's; the
-    /// repaint is the System screen's.
-    fn land_card_scan(&mut self, free_bytes: Option<u64>) {
-        self.storage.note_measured(free_bytes);
-        self.ui.map_dirty = true;
-    }
-
-    /// Non-consuming per-class pendency for the drain's backpressure check. For delete classes this
+    /// Non-consuming per-class pendency for the drain's backpressure check. For the trip delete this
     /// reports the request slot itself: a request whose subject vanished in a racing rescan still
     /// peeks `true` and then drains to nothing.
     fn peek_host_command(&self, class: HostCommandClass) -> bool {
         match class {
-            HostCommandClass::RescanStore => self.store_changed > 0,
-            HostCommandClass::CancelRoutePlan => self.navigator.cancel_pending(PlanFamily::Route),
-            HostCommandClass::CancelDetour => self.navigator.cancel_pending(PlanFamily::Detour),
-            // The delete classes are pended by either the UI hold-to-delete (an Activity slot) or the
-            // auto-expiry sweep (a queued action) — the host handles both identically (#638 S3).
-            HostCommandClass::DeleteRoute => {
-                self.activity.has_route_delete() || self.retention.has(crate::retention::SweepKind::DeleteRoute)
-            }
             HostCommandClass::DeleteTrip => self.activity.has_trip_delete(),
-            HostCommandClass::DeleteRide => {
-                self.activity.has_ride_delete() || self.retention.has(crate::retention::SweepKind::DeleteRide)
-            }
-            HostCommandClass::StampRouteUsed => self.retention.has(crate::retention::SweepKind::StampRoute),
-            HostCommandClass::StampRideSynced => self.retention.has(crate::retention::SweepKind::StampRide),
             HostCommandClass::FinishTrack => self.activity.has_track_action(),
-            HostCommandClass::PlanRoute => self.navigator.request_pending(PlanFamily::Route),
-            HostCommandClass::PlanDetour => self.navigator.request_pending(PlanFamily::Detour),
-            HostCommandClass::CommitDetour => self.navigator.commit_pending(),
-            HostCommandClass::Dfu => self.dfu.request_pending(),
             HostCommandClass::ForgetBond => self.state.ble_forget_pending,
-            HostCommandClass::PersistSettings => self.settings_persist_ready(),
-            HostCommandClass::ScanCardFree => self.storage.refresh_pending(),
-            HostCommandClass::LoadRideTrack => self.ride_track_request().is_some(),
-            HostCommandClass::RefreshNavPreview => self.nav_preview_missing(),
         }
     }
 
-    /// Drain one command class from its single pending slot. One-shots drain exactly once, the store
-    /// counter drains whole,
-    /// `PersistSettings` fires only once an edited value has left the settings subtree, the
-    /// delete indices resolve to durable ids at drain (a vanished subject consumes the slot and
-    /// yields nothing), and the derived fill cues consume nothing (they clear when answered).
+    /// Drain one command class from its single pending slot. All three are one-shots: they drain
+    /// exactly once, and a vanished subject consumes the slot and yields nothing.
     fn drain_host_command(&mut self, class: HostCommandClass) -> Option<HostCommand> {
         match class {
-            HostCommandClass::RescanStore => {
-                let commits = core::mem::take(&mut self.store_changed);
-                (commits > 0).then_some(HostCommand::RescanStore { commits })
-            }
-            // Navigator decided the cancellation when the rider asked for it — the request
-            // annihilated, the token invalidated, the preview dropped. All that is left here is the
-            // command the legacy protocol spells it with, which `LegacyOwned::PlannerRelease`
-            // refuses to derive from the domain's `Release` effect (that one is also issued on
-            // success).
-            HostCommandClass::CancelRoutePlan => {
-                self.deliver_plan_cancel(PlanFamily::Route).then_some(HostCommand::CancelRoutePlan)
-            }
-            HostCommandClass::CancelDetour => {
-                self.deliver_plan_cancel(PlanFamily::Detour).then_some(HostCommand::CancelDetour)
-            }
-            HostCommandClass::DeleteRoute => {
-                // The UI hold-to-delete (index-resolved to a durable id) takes priority; a retention
-                // delete drains after it, re-validated against live state and one in flight at a time
-                // (finding #876-1/3).
-                if let Some(idx) = self.activity.take_route_delete() {
-                    Some(HostCommand::DeleteRoute { id: self.catalogs.route_entry(idx)?.id })
-                } else {
-                    self.retention_expiry_command(crate::retention::SweepKind::DeleteRoute)
-                }
-            }
             HostCommandClass::DeleteTrip => self.activity.take_trip_delete().map(|id| HostCommand::DeleteTrip { id }),
-            HostCommandClass::DeleteRide => {
-                if let Some(idx) = self.activity.take_ride_delete() {
-                    Some(HostCommand::DeleteRide { id: self.catalogs.ride_entry(idx)?.id })
-                } else {
-                    self.retention_expiry_command(crate::retention::SweepKind::DeleteRide)
-                }
-            }
-            HostCommandClass::StampRouteUsed => self.retention_stamp_command(crate::retention::SweepKind::StampRoute),
-            HostCommandClass::StampRideSynced => self.retention_stamp_command(crate::retention::SweepKind::StampRide),
             HostCommandClass::FinishTrack => self.activity.take_track_action().map(HostCommand::FinishTrack),
-            // The three planner commands are Navigator's own effects, spelled in the old
-            // vocabulary: the domain decides that work is owed and engages the freeze as it hands
-            // the operation over, and `navigator_row` names the command each effect becomes.
-            HostCommandClass::PlanRoute => self
-                .navigator
-                .next_plan_effect(PlanFamily::Route, &mut self.mode)
-                .and_then(|e| navigator_row(e).command()),
-            HostCommandClass::PlanDetour => self
-                .navigator
-                .next_plan_effect(PlanFamily::Detour, &mut self.mode)
-                .and_then(|e| navigator_row(e).command()),
-            HostCommandClass::CommitDetour => {
-                self.navigator.next_commit_effect().and_then(|e| navigator_row(e).command())
-            }
-            HostCommandClass::Dfu => self.dfu.next_effect().and_then(|e| dfu_row(e).command()),
             HostCommandClass::ForgetBond => {
                 core::mem::take(&mut self.state.ble_forget_pending).then_some(HostCommand::ForgetBond)
             }
-            HostCommandClass::PersistSettings => {
-                let (in_subtree, now_ms) = (self.ui.top_is_settings(), self.ui.now_ms);
-                self.settings_ops.next_effect(in_subtree, now_ms).and_then(|e| settings_row(e).command())
-            }
-            HostCommandClass::ScanCardFree => self.storage.next_effect().and_then(|e| storage_info_row(e).command()),
-            HostCommandClass::LoadRideTrack => self.ride_track_request().map(|id| HostCommand::LoadRideTrack { id }),
-            HostCommandClass::RefreshNavPreview => self.nav_preview_missing().then_some(HostCommand::RefreshNavPreview),
-        }
-    }
-
-    /// Turn the retention domain's next **expiry intent** into the legacy delete command — the
-    /// #1437 compatibility seam for the deletion half.
-    ///
-    /// The decision is entirely the domain's: `RetentionMachine::next_expiry` applies the trust and
-    /// recording gates, re-derives the whole rule from live state at this instant, converts an
-    /// active or unstamped route into a re-stamp, cancels a candidate that stopped qualifying, and
-    /// paces the retry. All that is left here is naming the command a
-    /// [`CatalogIntent`](crate::catalog_state::CatalogIntent) becomes while `CatalogMachine` still
-    /// speaks the legacy protocol — an auto-expired object and a rider-deleted one leave by exactly
-    /// the same path.
-    fn retention_expiry_command(&mut self, kind: crate::retention::SweepKind) -> Option<HostCommand> {
-        use crate::catalog_state::CatalogIntent;
-        match self.with_retention(|retention, view| retention.next_expiry(kind, view))? {
-            CatalogIntent::DeleteRoute { id } => Some(HostCommand::DeleteRoute { id }),
-            CatalogIntent::DeleteRide { id } => Some(HostCommand::DeleteRide { id }),
-            // Retention only ever expires a single route or ride: it never files a trip cascade and
-            // never orders a refresh.
-            CatalogIntent::DeleteTrip { .. } | CatalogIntent::Refresh => None,
         }
     }
 
@@ -3712,8 +3370,9 @@ impl App {
     /// legacy wrappers reach the same state in two calls only because every host makes both in one
     /// drain.
     ///
-    /// Refused while a DeviceCore pass runs, like [`apply_event`](App::apply_event); the pass reaches
-    /// the same acceptance through [`accept_derived`](App::accept_derived) at its own stage.
+    /// Refused while a DeviceCore pass runs: a platform callback must not change DeviceCore
+    /// mid-pass, or a later stage would decide from a picture the earlier ones never saw. The pass
+    /// reaches the same acceptance through [`accept_derived`](App::accept_derived) at its own stage.
     pub fn apply_derived(
         &mut self,
         inputs: crate::device_core::derived::DerivedInputs,
@@ -3754,19 +3413,6 @@ impl App {
             }
         }
     }
-
-    /// The Ride detail's derived track-fill cue (#680): the viewed ride's durable id while its
-    /// track is unanswered — [`derived_needs`](App::derived_needs)`.ride_track` in the shape the
-    /// legacy [`LoadRideTrack`](crate::HostCommand::LoadRideTrack) command carries.
-    ///
-    /// `pub` (with [`nav_preview_missing`](App::nav_preview_missing)) so a fully-typed host answers
-    /// the two derived levels at their fill sites off the pure predicate — the mailbox pops
-    /// `LoadRideTrack` / [`RefreshNavPreview`](crate::HostCommand::RefreshNavPreview) and ignores
-    /// them, because a level re-derived *after* the drain (a same-pass `nav_finish` creating a fresh
-    /// preview need) must still be seen this pass (#812).
-    pub fn ride_track_request(&self) -> Option<crate::CatalogObjectId> {
-        self.derived_needs().ride_track.map(|key| key.ride)
-    }
 }
 
 #[cfg(test)]
@@ -3784,36 +3430,81 @@ mod tests {
         }
     }
 
-    // Per-class drain helpers keep tests focused on one command without consuming the whole mailbox.
-    use crate::host::HostCommandClass;
+    // Per-domain effect helpers keep a test focused on one domain without running a whole frame.
+    // Each asks the domain exactly what the pass's own stage asks it.
 
-    /// The drained [`DfuAction`], if a `Dfu` command was pending (the `take_dfu_request` successor).
+    /// The ride whose track the open detail still needs — the plan's keyed
+    /// [`DerivedNeeds::ride_track`](crate::device_core::DerivedNeeds), read as the durable id.
+    fn ride_track_request(app: &App) -> Option<crate::CatalogObjectId> {
+        app.derived_needs().ride_track.map(|key| key.ride)
+    }
+
+    /// The update domain's next request, if one is owed.
     fn drain_dfu(app: &mut App) -> Option<crate::activity::DfuAction> {
-        match app.drain_host_command(HostCommandClass::Dfu) {
-            Some(HostCommand::Dfu(a)) => Some(a),
-            _ => None,
+        match app.dfu.next_effect()? {
+            crate::dfu::DfuEffect::Scan { .. } => Some(crate::activity::DfuAction::Scan),
+            crate::dfu::DfuEffect::ArmInstall { .. } => Some(crate::activity::DfuAction::Install),
         }
     }
 
-    /// The drained plan request, if a `PlanRoute` was pending (the `take_nav_request` successor).
+    /// Navigator's next route search, if one is owed.
     fn drain_nav(app: &mut App) -> Option<crate::activity::NavRequest> {
-        match app.drain_host_command(HostCommandClass::PlanRoute) {
-            Some(HostCommand::PlanRoute(req)) => Some(req),
+        match app.navigator.next_plan_effect(PlanFamily::Route, &mut app.mode)? {
+            crate::navigator::NavigatorEffect::Acquire { work: crate::navigator::PlannerWork::Route(req), .. } => {
+                Some(req)
+            }
             _ => None,
         }
     }
 
-    /// Whether a `CancelRoutePlan` was pending (the `take_nav_cancel` successor).
+    /// Whether the rider's cancellation of the route search reaches the executor.
     fn drain_cancel(app: &mut App) -> bool {
-        app.drain_host_command(HostCommandClass::CancelRoutePlan).is_some()
+        app.navigator.next_release(PlanFamily::Route, &mut app.mode).is_some()
     }
 
-    /// The drained persist revision, if a `PersistSettings` was owed (the `take_settings_persist`
-    /// successor). `settings_dirty` is the emit-only bool successor of `take_settings_dirty`.
+    /// The revision a settings write is owed for, if one is. The operation token goes with it, so a
+    /// test that only asks (rather than answers) uses this and drops it.
     fn drain_persist(app: &mut App) -> Option<u16> {
-        match app.drain_host_command(HostCommandClass::PersistSettings) {
-            Some(HostCommand::PersistSettings { revision }) => Some(revision),
-            _ => None,
+        SettingsHost::default().drain(app)
+    }
+
+    /// The executor's half of one settings write: it takes the write the app owes and remembers the
+    /// operation, so its answer carries the token `SettingsMachine` validates.
+    #[derive(Default)]
+    struct SettingsHost {
+        token: Option<crate::device_core::OperationToken<crate::device_core::SettingsTag>>,
+    }
+
+    impl SettingsHost {
+        fn drain(&mut self, app: &mut App) -> Option<u16> {
+            let (in_subtree, now_ms) = (app.ui.top_is_settings(), app.ui.now_ms);
+            let crate::settings::SettingsEffect::PersistRevision { token, revision } =
+                app.settings_ops.next_effect(in_subtree, now_ms)?;
+            self.token = Some(token);
+            Some(revision)
+        }
+
+        /// The write landed.
+        fn ack(&mut self, app: &mut App, revision: u16) {
+            let token = self.token.take().expect("a write is in flight to answer");
+            let now_ms = app.ui.now_ms;
+            let _ =
+                app.settings_ops.apply_outcome(crate::settings::SettingsOutcome::Persisted { token, revision }, now_ms);
+        }
+
+        /// The write failed — the app keeps the revision dirty, re-arms the backoff, and tells the
+        /// rider on the shared advisory card.
+        fn fail(&mut self, app: &mut App, revision: u16) {
+            let token = self.token.take().expect("a write is in flight to answer");
+            let now_ms = app.ui.now_ms;
+            let outcome = crate::settings::SettingsOutcome::PersistFailed {
+                token,
+                revision,
+                error: obc_ports::SettingsSaveError::Backend,
+            };
+            if app.settings_ops.apply_outcome(outcome, now_ms) {
+                app.on_warning(WarningFlags::SETTINGS_ERROR);
+            }
         }
     }
 
@@ -4743,7 +4434,7 @@ mod tests {
         assert_eq!(app.ui.stack.len(), 8, "the full mid-ride settings path occupies eight slots");
         assert_eq!(crate::screen::MAX_DEPTH - app.ui.stack.len(), 2, "two host-card slots stay reserved");
 
-        app.apply_event(crate::HostEvent::Warning(WarningFlags::REC_ERROR));
+        app.on_warning(WarningFlags::REC_ERROR);
         assert_eq!(app.ui.stack.len(), 9, "the host warning pushes over the deepest normal path");
         match app.top_screen() {
             Screen::Warning(w) => assert!(w.flags().contains(WarningFlags::REC_ERROR)),
@@ -5080,7 +4771,7 @@ mod tests {
         assert_eq!(app.ui.next_ahead.request(), None, "settled on the old geometry's answer");
 
         // The phone re-uploads route 10 over itself: same id, same index, new bytes.
-        app.apply_event(crate::HostEvent::RouteUploaded { id: 10, replaced: true, elevation: None });
+        app.on_route_uploaded(10, true, None);
         assert_eq!(app.ui.next_ahead.poi(PoiCategory::Water), None, "the old geometry's answer is dropped");
 
         // Dismiss the advisory "route updated" card back to the grid (the tiles only refresh while
@@ -5439,10 +5130,10 @@ mod tests {
     #[test]
     fn a_card_scan_with_no_figure_blanks_the_free_space_row() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        app.apply_event(HostEvent::CardScanned { free_bytes: Some(8 * 1024 * 1024) });
+        app.storage.note_measured(Some(8 * 1024 * 1024));
         assert_eq!(app.storage.free_bytes(), Some(8 * 1024 * 1024), "the scan answered");
 
-        app.apply_event(HostEvent::CardScanned { free_bytes: None });
+        app.storage.note_measured(None);
         assert_eq!(app.storage.free_bytes(), None, "and a scan with no figure leaves the rider a `--`");
     }
 
@@ -5942,25 +5633,27 @@ mod tests {
         };
         app.set_rides(&[ride("A"), ride("B")], &[7, 9]);
 
-        assert_eq!(app.ride_track_request(), None, "no detail open — no request");
+        assert_eq!(ride_track_request(&app), None, "no detail open — no request");
 
         app.activity.viewed_ride = Some(1); // the Rides press's entry side-effect
-        assert_eq!(app.ride_track_request(), Some(9), "the viewed ride's durable id");
-        assert_eq!(app.ride_track_request(), Some(9), "re-polls until the host answers");
+        assert_eq!(ride_track_request(&app), Some(9), "the viewed ride's durable id");
+        assert_eq!(ride_track_request(&app), Some(9), "re-polls until the host answers");
 
-        app.set_ride_profile(None); // a failed stream still answers — no per-pass grind
-        assert_eq!(app.ride_track_request(), None, "answered for this ride");
+        // A failed stream still answers — no per-pass grind.
+        let key = app.derived_needs().ride_track.expect("the open detail wants its track");
+        app.apply_derived(DerivedInputs::ride_track(DerivedInput::failed(key)), DerivedTargets::NONE);
+        assert_eq!(ride_track_request(&app), None, "answered for this ride");
 
         // A rescan drops ride A: id 9 moves to index 0. The viewed key and the answer key both
         // follow by identity, so nothing re-fires.
         app.set_rides(&[ride("B")], &[9]);
         assert_eq!(app.activity.viewed_ride, Some(0), "the viewed index follows the id");
-        assert_eq!(app.ride_track_request(), None, "the answer moved with it");
+        assert_eq!(ride_track_request(&app), None, "the answer moved with it");
 
         // The viewed ride itself vanishing clears the keys — nothing left to request.
         app.set_rides(&[ride("A")], &[7]);
         assert_eq!(app.activity.viewed_ride, None);
-        assert_eq!(app.ride_track_request(), None);
+        assert_eq!(ride_track_request(&app), None);
     }
 
     // ==================== The typed host protocol (FAR-07, #800) ====================
@@ -5990,59 +5683,37 @@ mod tests {
         }
     }
 
-    /// Post one command of **every** class, then drain: the mailbox holds exactly one command per
-    /// class in the canonical order, the one-shots are gone on a re-drain, and the derived fill
-    /// cues re-emit until their `set_*` answers land — after which the drain is empty and
-    /// `Complete`.
+    /// The residual drains in its class order, exactly once each, and reaches nothing else.
+    ///
+    /// Every other class the mailbox once carried is a domain's now: they are posted here too, and
+    /// the drain must walk straight past them. That is the property PR #1505's regression turned on
+    /// — a walk that *pulled* from each domain would mint a planner operation nobody answers.
     #[test]
-    fn host_commands_drain_in_canonical_order_and_exactly_once() {
-        use crate::activity::{DfuAction, NavRequest, TrackAction};
-        use crate::host::{DrainStatus, HostCommand, HostMailbox, HOST_COMMAND_CLASSES};
+    fn the_residual_drains_in_class_order_and_reaches_nothing_else() {
+        use crate::activity::{NavRequest, TrackAction};
+        use crate::host::{DrainStatus, HostCommand, HostMailbox};
 
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        // The two stamp classes are metadata writes carrying a UTC instant, so the domain refuses
-        // to emit either without a clock established this boot (invariant 1).
         app.stamp_clock(DateTime { year: 2026, month: 7, day: 1, hour: 12, minute: 0 }, 0, None, ClockTrust::Gps);
         app.set_routes_with_ids(&[summary("Alpha"), summary("Beta")], &[10, 11]);
         app.set_rides(&[ride_summary("R")], &[7]);
 
-        // Every class, posted through the same doors the UI / hosts use (arrival order shuffled
-        // on purpose — the drain order is the class order, not arrival).
-        app.state.ble_forget_pending = true;
-        app.storage.admit_intent(crate::device_core::storage_info::StorageInfoIntent::RefreshRequested);
+        // The three residual classes…
         app.activity.request_track(TrackAction::Save);
-        app.apply_event(crate::HostEvent::StoreChanged);
-        app.apply_event(crate::HostEvent::StoreChanged);
-        app.admit_navigator_intent(NavigatorIntent::CancelPlan); // posted before the plan — a later cancel annihilates it
+        app.state.ble_forget_pending = true;
+        app.activity.request_trip_delete(42);
+        // …and a request from every domain that owns its own lifecycle now.
+        app.storage.admit_intent(crate::device_core::storage_info::StorageInfoIntent::RefreshRequested);
         app.admit_navigator_intent(NavigatorIntent::PlanRoute(NavRequest::new((0, 0), (500, 500), "To the col")));
-        app.admit_navigator_intent(NavigatorIntent::CancelDetour); // same annihilation rule as the nav pair (#882)
-        app.admit_navigator_intent(NavigatorIntent::PlanDetour(crate::activity::DetourRequest {
-            route: 0,
-            from: (0, 0),
-            progress_m: 100,
-            target_m: 800,
-        }));
-        app.admit_navigator_intent(NavigatorIntent::CommitDetour);
         app.dfu.admit_intent(crate::dfu::DfuIntent::ScanRequested);
         app.activity.request_route_delete(1);
-        app.activity.request_trip_delete(42);
         app.activity.request_ride_delete(0);
-        app.arm_settings_save(); // Home is on top — the settings subtree was left
-        app.activity.viewed_ride = Some(0); // derives LoadRideTrack { id: 7 }
-        app.activity.active_route = Some(0); // + an overview with no preview derives RefreshNavPreview
-                                             // The auto-expiry sweep's two stamp classes (epic #638 S3), enqueued directly for this
-                                             // ordering probe (their sweep semantics are exercised in the retention_* tests).
+        app.arm_settings_save();
         app.retention.test_push(crate::retention::SweepAction::StampRoute(10));
-        app.retention.test_push(crate::retention::SweepAction::StampRide(7));
-        let _ = app.ui.stack.push(Screen::RouteOverview(crate::screen::RouteOverviewScreen::new(0, None)));
 
         let mut mailbox: HostMailbox = HostMailbox::new();
-        assert_eq!(app.drain_host_commands(&mut mailbox), DrainStatus::Complete);
-        // Sixteen, not eighteen: Navigator hands out **one operation at a time**, so the detour
-        // plan and its commit wait behind the route plan rather than minting tokens that would
-        // supersede it (see `NavigatorMachine::ops`). Every other class drains together.
-        assert_eq!(mailbox.len(), HOST_COMMAND_CLASSES - 2, "one command per class, less Navigator's backpressure");
-        let mut drained: heapless::Vec<HostCommand, HOST_COMMAND_CLASSES> = heapless::Vec::new();
+        assert_eq!(app.drain_residual_commands(&mut mailbox), DrainStatus::Complete);
+        let mut drained: heapless::Vec<HostCommand, 4> = heapless::Vec::new();
         while let Some(cmd) = mailbox.pop() {
             let _ = drained.push(cmd);
         }
@@ -6050,73 +5721,24 @@ mod tests {
             matches!(
                 drained.as_slice(),
                 [
-                    HostCommand::RescanStore { commits: 2 },
-                    HostCommand::CancelRoutePlan,
-                    HostCommand::CancelDetour,
-                    HostCommand::DeleteRoute { id: 11 },
-                    HostCommand::DeleteTrip { id: 42 },
-                    HostCommand::DeleteRide { id: 7 },
-                    HostCommand::StampRouteUsed { id: 10, .. },
-                    HostCommand::StampRideSynced { id: 7, .. },
                     HostCommand::FinishTrack(TrackAction::Save),
-                    HostCommand::PlanRoute(_),
-                    HostCommand::Dfu(DfuAction::Scan),
                     HostCommand::ForgetBond,
-                    HostCommand::PersistSettings { .. },
-                    HostCommand::ScanCardFree,
-                    HostCommand::LoadRideTrack { id: 7 },
-                    HostCommand::RefreshNavPreview,
+                    HostCommand::DeleteTrip { id: 42 },
                 ]
             ),
-            "canonical order, ids resolved at drain: {drained:?}"
+            "three classes, in the order the drain asks for them: {drained:?}"
         );
 
-        // Backpressure, never a loss: the route plan's answer frees Navigator and the retained
-        // detour work goes out on the next drain, still in canonical order.
-        app.apply_event(crate::HostEvent::NavPlanned(Ok(10)));
-        assert_eq!(app.drain_host_commands(&mut mailbox), DrainStatus::Complete);
-        let mut retained: heapless::Vec<HostCommand, HOST_COMMAND_CLASSES> = heapless::Vec::new();
-        while let Some(cmd) = mailbox.pop() {
-            let _ = retained.push(cmd);
-        }
-        assert!(
-            matches!(
-                retained.as_slice(),
-                [HostCommand::PlanDetour(_), HostCommand::LoadRideTrack { id: 7 }, HostCommand::RefreshNavPreview]
-            ),
-            "the detour plan survived the busy drain: {retained:?}"
-        );
+        // The domains it walked past still hold their work, untouched.
+        assert!(drain_nav(&mut app).is_some(), "the planner request is still Navigator's to hand out");
+        assert_eq!(drain_dfu(&mut app), Some(crate::activity::DfuAction::Scan));
+        assert!(drain_persist(&mut app).is_some());
+        assert!(app.retention.has(crate::retention::SweepKind::StampRoute), "and the sweep's stamp is retention's");
+        assert!(app.activity.take_route_delete().is_some(), "and the rider's route delete is the catalog's to take");
 
-        // One-shots drained exactly once; only the derived cues re-emit (still unanswered). The
-        // commit waits one more turn behind the detour plan it was queued with.
-        app.apply_event(crate::HostEvent::DetourPlanned(Err(obc_route::nav::NavError::NoPath)));
-        assert_eq!(app.drain_host_commands(&mut mailbox), DrainStatus::Complete);
-        let mut redrained: heapless::Vec<HostCommand, HOST_COMMAND_CLASSES> = heapless::Vec::new();
-        while let Some(cmd) = mailbox.pop() {
-            let _ = redrained.push(cmd);
-        }
-        assert!(
-            matches!(
-                redrained.as_slice(),
-                [HostCommand::CommitDetour, HostCommand::LoadRideTrack { id: 7 }, HostCommand::RefreshNavPreview]
-            ),
-            "and nothing was lost on the way: {redrained:?}"
-        );
-        assert_eq!(app.drain_host_commands(&mut mailbox), DrainStatus::Complete);
-        let mut settled: heapless::Vec<HostCommand, HOST_COMMAND_CLASSES> = heapless::Vec::new();
-        while let Some(cmd) = mailbox.pop() {
-            let _ = settled.push(cmd);
-        }
-        assert!(
-            matches!(settled.as_slice(), [HostCommand::LoadRideTrack { id: 7 }, HostCommand::RefreshNavPreview]),
-            "only the level-derived cues re-emit: {settled:?}"
-        );
-
-        // Their `set_*` answers clear them — the protocol goes quiet.
-        app.set_ride_profile(None);
-        app.set_nav_preview(&[(0, 0), (500, 500)]);
-        assert!(!app.has_pending_host_command());
-        assert_eq!(app.drain_host_commands(&mut mailbox), DrainStatus::Complete);
+        // And the three are one-shots the drain clears.
+        assert!(!app.has_pending_residual_command());
+        assert_eq!(app.drain_residual_commands(&mut mailbox), DrainStatus::Complete);
         assert!(mailbox.is_empty(), "nothing pending, nothing drained");
     }
 
@@ -6125,51 +5747,24 @@ mod tests {
     /// `MailboxFull`, and come out once the host makes room.
     #[test]
     fn full_mailbox_backpressures_without_losing_commands() {
+        use crate::activity::TrackAction;
         use crate::host::{DrainStatus, HostCommand, HostMailbox};
 
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        let mut mailbox: HostMailbox = HostMailbox::new();
-
-        // Fill the mailbox artificially by draining a command per pass without popping…
-        app.admit_navigator_intent(NavigatorIntent::CancelPlan);
-        assert_eq!(app.drain_host_commands(&mut mailbox), DrainStatus::Complete);
-        while !mailbox.is_full() {
-            app.storage.admit_intent(crate::device_core::storage_info::StorageInfoIntent::RefreshRequested);
-            let _ = app.drain_host_commands(&mut mailbox);
-        }
-        // …then post a destructive command with no room left.
+        // One slot, two residual commands owed: the second cannot be handed over.
+        let mut mailbox: HostMailbox<1> = HostMailbox::new();
+        app.activity.request_track(TrackAction::Save);
         app.state.ble_forget_pending = true;
-        assert_eq!(app.drain_host_commands(&mut mailbox), DrainStatus::MailboxFull);
+
+        assert_eq!(app.drain_residual_commands(&mut mailbox), DrainStatus::MailboxFull);
+        assert_eq!(mailbox.pop(), Some(HostCommand::FinishTrack(TrackAction::Save)));
         assert!(app.state.ble_forget_pending, "the command stays latched — never silently dropped");
-        assert!(app.has_pending_host_command());
+        assert!(app.has_pending_residual_command());
 
         // The host makes room → the latched command drains intact.
-        while mailbox.pop().is_some() {}
-        assert_eq!(app.drain_host_commands(&mut mailbox), DrainStatus::Complete);
+        assert_eq!(app.drain_residual_commands(&mut mailbox), DrainStatus::Complete);
         assert_eq!(mailbox.pop(), Some(HostCommand::ForgetBond));
-        assert!(!app.has_pending_host_command());
-    }
-
-    /// Mailbox coalescing: a counted `RescanStore` folds into a queued one by summing, and an
-    /// unanswered derived cue never queues twice — while distinct one-shots queue as distinct
-    /// commands.
-    #[test]
-    fn mailbox_coalesces_counts_and_derived_cues() {
-        use crate::host::{HostCommand, HostMailbox};
-
-        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        app.set_rides(&[ride_summary("R")], &[7]);
-        app.activity.viewed_ride = Some(0);
-
-        let mut mailbox: HostMailbox = HostMailbox::new();
-        app.apply_event(crate::HostEvent::StoreChanged);
-        let _ = app.drain_host_commands(&mut mailbox);
-        app.apply_event(crate::HostEvent::StoreChanged);
-        app.apply_event(crate::HostEvent::StoreChanged);
-        let _ = app.drain_host_commands(&mut mailbox); // re-drain without popping
-        assert_eq!(mailbox.len(), 2, "RescanStore folded, LoadRideTrack deduped");
-        assert_eq!(mailbox.pop(), Some(HostCommand::RescanStore { commits: 3 }), "the burst count sums — never lost");
-        assert_eq!(mailbox.pop(), Some(HostCommand::LoadRideTrack { id: 7 }));
+        assert!(!app.has_pending_residual_command());
     }
 
     /// The DFU slot is most-recent-wins **by design** (one phase in flight; a later rider post
@@ -6184,29 +5779,24 @@ mod tests {
         assert_eq!(drain_dfu(&mut app), None);
     }
 
-    /// `PersistSettings` stays gated on leaving the settings subtree — a dirty value under an open
-    /// settings screen is not yet a command.
+    /// The settings write stays gated on leaving the settings subtree — a dirty value under an open
+    /// settings screen is not yet work for the executor.
     #[test]
     fn persist_settings_waits_for_subtree_exit_and_is_single_sourced() {
-        use crate::host::{HostCommand, HostMailbox};
-
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         let _ = app.ui.stack.push(Screen::Settings(crate::screen::SettingsScreen::new()));
         app.arm_settings_save(); // rev → 1
-        assert!(!app.has_pending_host_command(), "still editing — no command yet");
-        assert!(!settings_dirty(&mut app), "the per-class drain agrees");
+        assert!(!settings_dirty(&mut app), "still editing — nothing owed yet");
 
         app.ui.stack.pop(); // leave the subtree
-        let mut mailbox: HostMailbox = HostMailbox::new();
-        let _ = app.drain_host_commands(&mut mailbox);
-        assert_eq!(mailbox.pop(), Some(HostCommand::PersistSettings { revision: 1 }));
+        assert_eq!(drain_persist(&mut app), Some(1));
         assert!(!settings_dirty(&mut app), "one emit, then Awaiting — no second pending state");
     }
 
     // ==================== #810: acknowledged, retryable settings persistence ====================
     //
-    // These drive the revision handshake through the App's typed protocol (`take_settings_persist`
-    // emits, `apply_event` acks) — the board and sim wire the same two calls to their stores.
+    // These drive the revision handshake through the domain's own seam: `SettingsMachine` hands out
+    // one write and validates the answer's operation token and revision independently.
 
     /// A settings save on a settings-screen edit stays held until the rider leaves the subtree, then
     /// emits exactly once per sweep regardless of how many steps changed the value — no per-step
@@ -6230,11 +5820,11 @@ mod tests {
     #[test]
     fn persist_success_clears_the_dirty_state() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let mut host = SettingsHost::default();
         app.arm_settings_save();
-        assert_eq!(drain_persist(&mut app), Some(1));
-        app.apply_event(HostEvent::SettingsPersisted { revision: 1 });
-        assert_eq!(drain_persist(&mut app), None, "acked → Clean, nothing owed");
-        assert!(!app.has_pending_host_command());
+        assert_eq!(host.drain(&mut app), Some(1));
+        host.ack(&mut app, 1);
+        assert_eq!(host.drain(&mut app), None, "acked → Clean, nothing owed");
     }
 
     /// A failed write does **not** lose the dirty state (the exact #810 bug): it re-arms a bounded
@@ -6243,10 +5833,11 @@ mod tests {
     fn transient_failure_then_retry_keeps_the_revision() {
         use crate::screen::WarningFlags;
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let mut host = SettingsHost::default();
         app.ui.now_ms = 10_000;
         app.arm_settings_save();
-        assert_eq!(drain_persist(&mut app), Some(1));
-        app.apply_event(HostEvent::SettingsPersistFailed { revision: 1, error: obc_ports::SettingsSaveError::Backend });
+        assert_eq!(host.drain(&mut app), Some(1));
+        host.fail(&mut app, 1);
         // Failure is observable on the advisory card, not just logged.
         assert!(
             app.ui
@@ -6255,11 +5846,11 @@ mod tests {
                 .any(|s| matches!(s, Screen::Warning(w) if w.flags().contains(WarningFlags::SETTINGS_ERROR))),
             "a failed persist raises the settings advisory",
         );
-        assert_eq!(drain_persist(&mut app), None, "inside the backoff window — no retry yet");
+        assert_eq!(host.drain(&mut app), None, "inside the backoff window — no retry yet");
         app.ui.now_ms += SETTINGS_RETRY_BACKOFF_MS; // window elapsed
-        assert_eq!(drain_persist(&mut app), Some(1), "the same revision is retried, not lost");
-        app.apply_event(HostEvent::SettingsPersisted { revision: 1 });
-        assert_eq!(drain_persist(&mut app), None, "the retry's ack finally clears it");
+        assert_eq!(host.drain(&mut app), Some(1), "the same revision is retried, not lost");
+        host.ack(&mut app, 1);
+        assert_eq!(host.drain(&mut app), None, "the retry's ack finally clears it");
     }
 
     /// Repeated failure paces retries: exactly one emit per backoff window, never a per-pass storm of
@@ -6267,18 +5858,16 @@ mod tests {
     #[test]
     fn repeated_failure_is_paced_by_the_backoff_window() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let mut host = SettingsHost::default();
         app.ui.now_ms = 1_000;
         app.arm_settings_save();
         for round in 0..3 {
-            assert_eq!(drain_persist(&mut app), Some(1), "one emit at the start of round {round}");
-            app.apply_event(HostEvent::SettingsPersistFailed {
-                revision: 1,
-                error: obc_ports::SettingsSaveError::Backend,
-            });
+            assert_eq!(host.drain(&mut app), Some(1), "one emit at the start of round {round}");
+            host.fail(&mut app, 1);
             // Several passes inside the window yield nothing — the pacing guard.
             for _ in 0..4 {
                 app.ui.now_ms += 100;
-                assert_eq!(drain_persist(&mut app), None, "no re-emit inside the backoff window");
+                assert_eq!(host.drain(&mut app), None, "no re-emit inside the backoff window");
             }
             app.ui.now_ms += SETTINGS_RETRY_BACKOFF_MS; // cross into the next window
         }
@@ -6289,14 +5878,15 @@ mod tests {
     #[test]
     fn newer_edit_supersedes_and_a_stale_ack_is_ignored() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let mut host = SettingsHost::default();
         app.arm_settings_save(); // rev 1
-        assert_eq!(drain_persist(&mut app), Some(1)); // Awaiting(1)
+        assert_eq!(host.drain(&mut app), Some(1)); // Awaiting(1)
         app.arm_settings_save(); // a fresh edit while pending → rev 2, Dirty
                                  // The old save's ack lands late — it is for a superseded revision and must be ignored.
-        app.apply_event(HostEvent::SettingsPersisted { revision: 1 });
-        assert_eq!(drain_persist(&mut app), Some(2), "the newer revision still needs persisting");
-        app.apply_event(HostEvent::SettingsPersisted { revision: 2 });
-        assert_eq!(drain_persist(&mut app), None, "only the latest ack clears it");
+        host.ack(&mut app, 1);
+        assert_eq!(host.drain(&mut app), Some(2), "the newer revision still needs persisting");
+        host.ack(&mut app, 2);
+        assert_eq!(host.drain(&mut app), None, "only the latest ack clears it");
     }
 
     /// BLE merge under a pending device edit: `merge_ble_settings` adopts the phone's owned fields
@@ -6305,6 +5895,7 @@ mod tests {
     fn ble_merge_under_a_pending_save_loses_neither_side() {
         use crate::settings::Units;
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let mut host = SettingsHost::default();
         app.set_settings(Settings::default()); // seeded Clean
 
         // A device-only edit is pending (a fix-interval change), not yet persisted.
@@ -6318,12 +5909,12 @@ mod tests {
         assert_eq!(app.settings().units, Units::Imperial, "the phone's units are adopted");
         assert_eq!(app.settings().fix_interval_s, 9, "the pending device edit is untouched");
         // The save still fires and writes the merged blob — neither side lost.
-        assert_eq!(drain_persist(&mut app), Some(1), "the pending save survives the BLE merge");
+        assert_eq!(host.drain(&mut app), Some(1), "the pending save survives the BLE merge");
 
         // The clean-case twin: a BLE merge with nothing pending adds no redundant write.
-        app.apply_event(HostEvent::SettingsPersisted { revision: 1 });
+        host.ack(&mut app, 1);
         app.merge_ble_settings(&Settings { units: Units::Metric, ..Settings::default() });
-        assert_eq!(drain_persist(&mut app), None, "BLE fields are already persisted — no re-write owed");
+        assert_eq!(host.drain(&mut app), None, "BLE fields are already persisted — no re-write owed");
     }
 
     /// Reboot-load fallback: seeding the boot value from the store (or the default when the store is
@@ -6342,18 +5933,8 @@ mod tests {
     #[test]
     fn a_cancel_annihilates_an_undrained_plan_request() {
         use crate::activity::NavRequest;
-        use crate::host::{HostCommand, HostMailbox};
 
-        // Confirm + Back in one batch → drain yields exactly [CancelRoutePlan].
-        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        app.admit_navigator_intent(NavigatorIntent::PlanRoute(NavRequest::new((0, 0), (1, 1), "A")));
-        app.admit_navigator_intent(NavigatorIntent::CancelPlan);
-        let mut mailbox: HostMailbox = HostMailbox::new();
-        let _ = app.drain_host_commands(&mut mailbox);
-        assert_eq!(mailbox.pop(), Some(HostCommand::CancelRoutePlan));
-        assert!(mailbox.is_empty(), "the cancelled plan never reaches the mailbox");
-
-        // Per-class drains observe the same pending state.
+        // Confirm + Back in one batch → the search never leaves, and the release still goes out.
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         app.admit_navigator_intent(NavigatorIntent::PlanRoute(NavRequest::new((0, 0), (1, 1), "A")));
         app.admit_navigator_intent(NavigatorIntent::CancelPlan);
@@ -6367,10 +5948,8 @@ mod tests {
         app.admit_navigator_intent(NavigatorIntent::CancelPlan); // Back on A's spinner — nothing undrained to annihilate
         app.admit_navigator_intent(NavigatorIntent::PlanRoute(NavRequest::new((0, 0), (2, 2), "B"))); // confirm B
         app.admit_navigator_intent(NavigatorIntent::CancelPlan); // Back on B's spinner — annihilates the undrained B
-        let mut mailbox: HostMailbox = HostMailbox::new();
-        let _ = app.drain_host_commands(&mut mailbox);
-        assert_eq!(mailbox.pop(), Some(HostCommand::CancelRoutePlan), "one cancel: aborts the in-flight A");
-        assert!(mailbox.is_empty(), "B never runs");
+        assert!(drain_cancel(&mut app), "one cancel: aborts the in-flight A");
+        assert_eq!(drain_nav(&mut app), None, "B never runs");
     }
 
     // ==================== Auto-expiry sweep (epic #638, S3) — the safety invariants ====================
@@ -6413,25 +5992,126 @@ mod tests {
         }
     }
 
-    /// Drive several retention-tick + drain rounds (mimicking the host's per-pass loop) and collect
-    /// every command produced. Multiple rounds are needed because the once-per-activation stamp and
-    /// the batch sweep land on consecutive ticks (the stamp's queued action defers the sweep one
-    /// tick); a round that produces nothing new ends the drive.
-    fn sweep_and_drain(app: &mut App) -> heapless::Vec<HostCommand, 128> {
-        let mut out: heapless::Vec<HostCommand, 128> = heapless::Vec::new();
-        for _ in 0..8 {
+    /// What one pass asked the platform to do about retention.
+    ///
+    /// The old drain spelled these `DeleteRoute` / `DeleteRide` / `StampRouteUsed` /
+    /// `StampRideSynced`. The pass emits `CatalogEffect::RemoveObject`, which names the *object* and
+    /// not its namespace because the store removes by identity, and `RetentionEffect::Write*Metadata`
+    /// for the sidecar writes.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum SweepOp {
+        Remove(crate::CatalogObjectId),
+        StampRoute(crate::CatalogObjectId),
+        StampRide(crate::CatalogObjectId),
+    }
+
+    /// The retention executor these tests run: one pass at a time, serving whatever it asks for and
+    /// reporting the ops it asked for. Its outcome slots are its own, exactly like a host's — an
+    /// answer it deposits is read by the *next* pass, which is what makes "one operation in flight"
+    /// observable.
+    /// Every capability the test platform implements.
+    const EVERY_CAPABILITY: crate::device_core::PlatformSupport = crate::device_core::PlatformSupport {
+        detour: true,
+        settings_persistence: true,
+        dfu: true,
+        weather: true,
+        bonding: true,
+        storage_space_report: true,
+        retention_metadata: true,
+    };
+
+    /// A location source with nothing to say.
+    struct NoFix;
+    impl LocationSource for NoFix {
+        fn poll(&mut self) -> Option<obc_ports::Fix> {
+            None
+        }
+    }
+
+    struct Sweeper {
+        outcomes: crate::device_core::OutcomeSlots,
+        ms: u32,
+        /// What the store reports for a removal. `false` is a transient failure the domain retries.
+        store_ok: bool,
+    }
+
+    impl Sweeper {
+        fn new() -> Self {
+            Sweeper { outcomes: crate::device_core::OutcomeSlots::new(), ms: 0, store_ok: true }
+        }
+
+        /// One pass: run it, record what it asked for, and answer it for the next one.
+        fn pass(&mut self, app: &mut App) -> heapless::Vec<SweepOp, 8> {
+            use crate::catalog_state::{CatalogEffect, CatalogError, CatalogOutcome};
+            use crate::retention::{RetentionEffect, RetentionOutcome};
+            let mut out: heapless::Vec<SweepOp, 8> = heapless::Vec::new();
+            self.ms += 1;
+            let ms = self.ms.max(app.ui.now_ms);
+            let mut loc = NoFix;
+            let mut facts = crate::device_core::ExternalFacts::NONE;
+            let mut plan = app.run_pass(crate::device_core::PassInputs {
+                now: crate::device_core::PassClock { ride: RideClock(ms), ui: obc_ports::InputClock(ms) },
+                gestures: &[],
+                sensors: Sensors::new(&mut loc),
+                route: None,
+                support: EVERY_CAPABILITY,
+                outcomes: &mut self.outcomes,
+                facts: &mut facts,
+                derived: crate::device_core::DerivedInputs::NONE,
+                targets: crate::device_core::DerivedTargets::NONE,
+            });
+            if let Some(effect) = plan.effects.retention.take() {
+                let token = effect.token();
+                let outcome = match effect {
+                    RetentionEffect::WriteRouteMetadata { id, .. } => {
+                        let _ = out.push(SweepOp::StampRoute(id));
+                        RetentionOutcome::RouteMetadataWritten { token, id }
+                    }
+                    RetentionEffect::WriteRideMetadata { id, .. } => {
+                        let _ = out.push(SweepOp::StampRide(id));
+                        RetentionOutcome::RideMetadataWritten { token, id }
+                    }
+                };
+                let _ = self.outcomes.retention.try_put(outcome);
+            }
+            if let Some(effect) = plan.effects.catalog.take() {
+                let token = effect.token();
+                if let CatalogEffect::RemoveObject { object, .. } = effect {
+                    let _ = out.push(SweepOp::Remove(object));
+                    let _ = self.outcomes.catalog.try_put(if self.store_ok {
+                        CatalogOutcome::ObjectRemoved { token, object, existed: true }
+                    } else {
+                        CatalogOutcome::Failed { token, error: CatalogError::RemoveFailed }
+                    });
+                }
+            }
+            out
+        }
+
+        /// `n` passes, with everything they ask for served.
+        fn rounds(&mut self, app: &mut App, n: usize) -> heapless::Vec<SweepOp, 8> {
+            let mut out: heapless::Vec<SweepOp, 8> = heapless::Vec::new();
+            for _ in 0..n {
+                for op in self.pass(app) {
+                    let _ = out.push(op);
+                }
+            }
+            out
+        }
+    }
+
+    /// Drive several retention-tick + pass rounds and collect every op produced. Multiple rounds are
+    /// needed because a domain performs one bounded operation at a time and the once-per-activation
+    /// stamp defers the batch sweep a tick; a round that produces nothing new ends the drive.
+    fn sweep_and_drain(app: &mut App) -> heapless::Vec<SweepOp, 128> {
+        let mut host = Sweeper::new();
+        let mut out: heapless::Vec<SweepOp, 128> = heapless::Vec::new();
+        for _ in 0..24 {
             let before = out.len();
             app.retention_tick();
-            loop {
-                let mut mb: HostMailbox = HostMailbox::new();
-                let _ = app.drain_host_commands(&mut mb);
-                let mut any = false;
-                while let Some(c) = mb.pop() {
-                    let _ = out.push(c);
-                    any = true;
-                }
-                if !any {
-                    break;
+            for _ in 0..4 {
+                for op in host.pass(app) {
+                    let _ = out.push(op);
                 }
             }
             if out.len() == before {
@@ -6441,8 +6121,8 @@ mod tests {
         out
     }
 
-    fn n_deletes(cmds: &[HostCommand]) -> usize {
-        cmds.iter().filter(|c| matches!(c, HostCommand::DeleteRoute { .. } | HostCommand::DeleteRide { .. })).count()
+    fn n_deletes(ops: &[SweepOp]) -> usize {
+        ops.iter().filter(|op| matches!(op, SweepOp::Remove(_))).count()
     }
 
     /// Invariant 1: no trusted clock this boot → the sweep does nothing and stamps nothing, even
@@ -6475,8 +6155,8 @@ mod tests {
             ],
         );
         let cmds = sweep_and_drain(&mut app);
-        assert!(cmds.contains(&HostCommand::DeleteRoute { id: 10 }), "expired route deleted");
-        assert!(!cmds.iter().any(|c| matches!(c, HostCommand::DeleteRoute { id: 11 | 12 })), "fresh + Never kept");
+        assert!(cmds.contains(&SweepOp::Remove(10)), "expired route deleted");
+        assert!(!cmds.iter().any(|c| matches!(c, SweepOp::Remove(11 | 12))), "fresh + Never kept");
     }
 
     /// Invariant 2: a retention-set route with an **unknown** `last_used` is stamped (the clock
@@ -6486,7 +6166,7 @@ mod tests {
         let (mut app, _now) = trusted_app();
         app.set_routes_with_meta(&[summary("New")], &[10], &[RouteRetentionMeta::new(Retention::Day1, 0)]);
         let cmds = sweep_and_drain(&mut app);
-        assert!(cmds.iter().any(|c| matches!(c, HostCommand::StampRouteUsed { id: 10, .. })), "clock started");
+        assert!(cmds.iter().any(|c| matches!(c, SweepOp::StampRoute(10))), "clock started");
         assert_eq!(n_deletes(&cmds), 0, "unknown last_used is never deleted on sight");
         // The stamp's optimistic mirror set last_used = now; a forced re-sweep at the same instant
         // finds it freshly stamped and well within the 1-day window — nothing deletes.
@@ -6494,7 +6174,7 @@ mod tests {
         assert_eq!(n_deletes(&sweep_and_drain(&mut app)), 0, "freshly stamped — not expired");
         // Days past the 1-day window it deletes.
         advance_days(&mut app, 5);
-        assert!(sweep_and_drain(&mut app).contains(&HostCommand::DeleteRoute { id: 10 }), "deletes after the period");
+        assert!(sweep_and_drain(&mut app).contains(&SweepOp::Remove(10)), "deletes after the period");
     }
 
     /// Invariant 3: the active navigation route is never deleted — it re-stamps when it would expire.
@@ -6511,9 +6191,9 @@ mod tests {
         );
         app.activate_route(0); // route 10 is the active nav route
         let cmds = sweep_and_drain(&mut app);
-        assert!(cmds.iter().any(|c| matches!(c, HostCommand::StampRouteUsed { id: 10, .. })), "active re-stamped");
-        assert!(!cmds.contains(&HostCommand::DeleteRoute { id: 10 }), "the active route is never deleted");
-        assert!(cmds.contains(&HostCommand::DeleteRoute { id: 11 }), "the idle expired route is deleted");
+        assert!(cmds.iter().any(|c| matches!(c, SweepOp::StampRoute(10))), "active re-stamped");
+        assert!(!cmds.contains(&SweepOp::Remove(10)), "the active route is never deleted");
+        assert!(cmds.contains(&SweepOp::Remove(11)), "the idle expired route is deleted");
     }
 
     /// The route-upload `last_used` stamp (epic #638 S4): a committed upload under a **trusted** clock
@@ -6524,15 +6204,9 @@ mod tests {
     /// from upload time.
     #[test]
     fn route_upload_stamps_last_used_only_when_trusted() {
-        fn upload_and_drain(app: &mut App) -> heapless::Vec<HostCommand, 16> {
-            app.apply_event(crate::HostEvent::RouteUploaded { id: 10, replaced: false, elevation: None });
-            let mut mb: HostMailbox = HostMailbox::new();
-            let _ = app.drain_host_commands(&mut mb);
-            let mut out = heapless::Vec::new();
-            while let Some(c) = mb.pop() {
-                let _ = out.push(c);
-            }
-            out
+        fn upload_and_drain(app: &mut App) -> heapless::Vec<SweepOp, 128> {
+            app.on_route_uploaded(10, false, None);
+            sweep_and_drain(app)
         }
 
         // Trusted: an upload commit stamps the route used (anchoring the expiry clock at upload time).
@@ -6540,7 +6214,7 @@ mod tests {
         app.set_routes_with_meta(&[summary("Fresh")], &[10], &[RouteRetentionMeta::new(Retention::Never, 0)]);
         let cmds = upload_and_drain(&mut app);
         assert!(
-            cmds.iter().any(|c| matches!(c, HostCommand::StampRouteUsed { id: 10, .. })),
+            cmds.iter().any(|c| matches!(c, SweepOp::StampRoute(10))),
             "a trusted upload stamps last_used: {cmds:?}"
         );
 
@@ -6549,7 +6223,7 @@ mod tests {
         app.set_routes_with_meta(&[summary("Fresh")], &[10], &[RouteRetentionMeta::new(Retention::Never, 0)]);
         let cmds = upload_and_drain(&mut app);
         assert!(
-            !cmds.iter().any(|c| matches!(c, HostCommand::StampRouteUsed { .. })),
+            !cmds.iter().any(|c| matches!(c, SweepOp::StampRoute(_))),
             "an untrusted upload stamps nothing: {cmds:?}"
         );
     }
@@ -6580,7 +6254,7 @@ mod tests {
         app.set_rides(&[synced_ride("Acked", true, 0)], &[7]);
         let cmds = sweep_and_drain(&mut app);
         assert!(
-            cmds.iter().any(|c| matches!(c, HostCommand::StampRideSynced { id: 7, .. })),
+            cmds.iter().any(|c| matches!(c, SweepOp::StampRide(7))),
             "the countdown starts at ack-time, not deferred to recording-end: {cmds:?}"
         );
         assert_eq!(n_deletes(&cmds), 0, "but nothing is deleted while recording");
@@ -6588,7 +6262,7 @@ mod tests {
         app.force_retention_sweep();
         let again = sweep_and_drain(&mut app);
         assert!(
-            !again.iter().any(|c| matches!(c, HostCommand::StampRideSynced { id: 7, .. })),
+            !again.iter().any(|c| matches!(c, SweepOp::StampRide(7))),
             "a stamped ride is not re-stamped: {again:?}"
         );
     }
@@ -6613,17 +6287,12 @@ mod tests {
             &[1, 2, 3, 4],
         );
         let cmds = sweep_and_drain(&mut app);
-        assert!(cmds.contains(&HostCommand::DeleteRide { id: 1 }), "aged synced ride deleted");
-        assert!(!cmds.contains(&HostCommand::DeleteRide { id: 2 }), "recent synced ride kept");
-        assert!(cmds.iter().any(|c| matches!(c, HostCommand::StampRideSynced { id: 3, .. })), "legacy ride stamped");
+        assert!(cmds.contains(&SweepOp::Remove(1)), "aged synced ride deleted");
+        assert!(!cmds.contains(&SweepOp::Remove(2)), "recent synced ride kept");
+        assert!(cmds.iter().any(|c| matches!(c, SweepOp::StampRide(3))), "legacy ride stamped");
+        assert!(!cmds.iter().any(|c| matches!(c, SweepOp::Remove(3))), "legacy ride not deleted on sight");
         assert!(
-            !cmds.iter().any(|c| matches!(c, HostCommand::DeleteRide { id: 3 })),
-            "legacy ride not deleted on sight"
-        );
-        assert!(
-            !cmds
-                .iter()
-                .any(|c| matches!(c, HostCommand::DeleteRide { id: 4 } | HostCommand::StampRideSynced { id: 4, .. })),
+            !cmds.iter().any(|c| matches!(c, SweepOp::Remove(4) | SweepOp::StampRide(4))),
             "the unsynced ride is never touched"
         );
     }
@@ -6648,7 +6317,7 @@ mod tests {
             &[10],
             &[RouteRetentionMeta::new(Retention::Day1, now - DAY_SECS)],
         );
-        assert!(sweep_and_drain(&mut app).contains(&HostCommand::DeleteRoute { id: 10 }), "now == expires_at deletes");
+        assert!(sweep_and_drain(&mut app).contains(&SweepOp::Remove(10)), "now == expires_at deletes");
     }
 
     /// Remap coherence: a route delete mid-session keeps each surviving route's retention meta
@@ -6681,15 +6350,11 @@ mod tests {
 
     use crate::retention::{RideRetentionRecord, SweepKind, RETENTION_DELETE_BACKOFF_MS};
 
-    /// One drain pass (a single host loop iteration), collecting the commands it produced.
-    fn drain_once(app: &mut App) -> heapless::Vec<HostCommand, 32> {
-        let mut mb: HostMailbox = HostMailbox::new();
-        let _ = app.drain_host_commands(&mut mb);
-        let mut out = heapless::Vec::new();
-        while let Some(c) = mb.pop() {
-            let _ = out.push(c);
-        }
-        out
+    /// One executor round, collecting the ops it produced. Two passes rather than one, because a
+    /// domain performs one bounded operation at a time: a route delete and a ride delete are two
+    /// catalog operations and leave on consecutive passes.
+    fn drain_once(app: &mut App) -> heapless::Vec<SweepOp, 8> {
+        Sweeper::new().rounds(app, 2)
     }
 
     fn expired(now: u32) -> RouteRetentionMeta {
@@ -6708,12 +6373,12 @@ mod tests {
         // The rider opens route 10 and starts navigating it before that item drains.
         app.activate_route(0);
         let cmds = drain_once(&mut app);
-        assert!(!cmds.contains(&HostCommand::DeleteRoute { id: 10 }), "the activated route is never deleted");
+        assert!(!cmds.contains(&SweepOp::Remove(10)), "the activated route is never deleted");
         assert!(
-            cmds.iter().any(|c| matches!(c, HostCommand::StampRouteUsed { id: 10, .. })),
+            cmds.iter().any(|c| matches!(c, SweepOp::StampRoute(10))),
             "the activated route is re-stamped instead: {cmds:?}"
         );
-        assert!(cmds.contains(&HostCommand::DeleteRoute { id: 11 }), "the still-idle expired route deletes");
+        assert!(cmds.contains(&SweepOp::Remove(11)), "the still-idle expired route deletes");
     }
 
     /// Finding #876-1 (invariant 4): deletes discovered while idle and **then** interrupted by a
@@ -6740,8 +6405,8 @@ mod tests {
         // Recording ends → the same candidates dispatch (route + ride are separate classes → one pass).
         app.activity.end_session();
         let after = drain_once(&mut app);
-        assert!(after.contains(&HostCommand::DeleteRoute { id: 10 }), "the route delete dispatches after recording");
-        assert!(after.contains(&HostCommand::DeleteRide { id: 7 }), "the ride delete dispatches after recording");
+        assert!(after.contains(&SweepOp::Remove(10)), "the route delete dispatches after recording");
+        assert!(after.contains(&SweepOp::Remove(7)), "the ride delete dispatches after recording");
     }
 
     /// Finding #876-1: retention/metadata changed **between discovery and dispatch** — the live state
@@ -6778,7 +6443,7 @@ mod tests {
         let mut deleted: heapless::Vec<crate::CatalogObjectId, 8> = heapless::Vec::new();
         for _ in 0..12 {
             for c in &drain_once(&mut app) {
-                if let HostCommand::DeleteRoute { id } = c {
+                if let SweepOp::Remove(id) = c {
                     let _ = deleted.push(*id);
                     // Storage succeeds: the id leaves the catalog on the next rescan.
                     if let Some(p) = live.iter().position(|x| x == id) {
@@ -6805,16 +6470,16 @@ mod tests {
         let (mut app, now) = trusted_app();
         app.set_routes_with_meta(&[summary("A")], &[10], &[expired(now)]);
         app.retention_tick();
-        assert!(drain_once(&mut app).contains(&HostCommand::DeleteRoute { id: 10 }), "first dispatch");
+        assert!(drain_once(&mut app).contains(&SweepOp::Remove(10)), "first dispatch");
         // Storage FAILED: route 10 is still present. Within the backoff window it does not re-fire.
         assert!(
-            !drain_once(&mut app).contains(&HostCommand::DeleteRoute { id: 10 }),
+            !drain_once(&mut app).contains(&SweepOp::Remove(10)),
             "the backoff paces the retry — no per-frame hammering"
         );
         // Past the backoff, the *same* candidate re-dispatches — no new sweep ran in between.
         app.ui.now_ms += RETENTION_DELETE_BACKOFF_MS + 1;
         assert!(
-            drain_once(&mut app).contains(&HostCommand::DeleteRoute { id: 10 }),
+            drain_once(&mut app).contains(&SweepOp::Remove(10)),
             "the retained candidate retries itself, without another hourly discovery"
         );
     }
@@ -6831,8 +6496,8 @@ mod tests {
         app.set_routes_with_meta(&[summary("X"), summary("A")], &[10, 11], &[expired(now), expired(now)]);
         app.retention_tick(); // queues DeleteRoute(10) + DeleteRoute(11)
         let first = drain_once(&mut app);
-        assert!(first.contains(&HostCommand::DeleteRoute { id: 10 }), "10 dispatches first and is in flight");
-        assert!(!first.contains(&HostCommand::DeleteRoute { id: 11 }), "one route delete in flight at a time");
+        assert!(first.contains(&SweepOp::Remove(10)), "10 dispatches first and is in flight");
+        assert!(!first.contains(&SweepOp::Remove(11)), "one route delete in flight at a time");
 
         // The rider activates route 11 (catalog index 1) — the next tick's `note_active_route`
         // cancels 11's queued (never-dispatched) delete candidate.
@@ -6841,7 +6506,7 @@ mod tests {
         assert!(!app.retention.has(SweepKind::StampRide), "sanity: only route work is queued");
         let cmds = drain_once(&mut app);
         assert!(
-            !cmds.iter().any(|c| matches!(c, HostCommand::DeleteRoute { .. })),
+            !cmds.iter().any(|c| matches!(c, SweepOp::Remove(_))),
             "cancelling 11 must not re-emit the in-flight 10 mid-backoff: {cmds:?}"
         );
         assert_eq!(app.retention.peek(SweepKind::DeleteRoute), Some(10), "10 stays retained for its own retry");
@@ -6849,8 +6514,8 @@ mod tests {
         // 10's own backoff still governs its retry: past the window, 10 (and only 10) re-dispatches.
         app.ui.now_ms += RETENTION_DELETE_BACKOFF_MS + 1;
         let retry = drain_once(&mut app);
-        assert!(retry.contains(&HostCommand::DeleteRoute { id: 10 }), "10 retries after its backoff");
-        assert!(!retry.contains(&HostCommand::DeleteRoute { id: 11 }), "the activated 11 is never deleted");
+        assert!(retry.contains(&SweepOp::Remove(10)), "10 retries after its backoff");
+        assert!(!retry.contains(&SweepOp::Remove(11)), "the activated 11 is never deleted");
     }
 
     /// Review fix (#886): the drain-time trust guard. Delete candidates that are already queued
@@ -6878,8 +6543,8 @@ mod tests {
         // Trust arrives → the same candidates dispatch (their live recheck still holds them due).
         app.stamp_clock(sweep_dt(), 0, None, ClockTrust::Gps);
         let after = drain_once(&mut app);
-        assert!(after.contains(&HostCommand::DeleteRoute { id: 10 }), "route delete dispatches once trusted");
-        assert!(after.contains(&HostCommand::DeleteRide { id: 7 }), "ride delete dispatches once trusted");
+        assert!(after.contains(&SweepOp::Remove(10)), "route delete dispatches once trusted");
+        assert!(after.contains(&SweepOp::Remove(7)), "ride delete dispatches once trusted");
     }
 
     // ==================== WX12 (#1197): travel direction, ride projection, alert engine ====================
@@ -7266,11 +6931,11 @@ mod tests {
         let first = app.derived_needs().ride_track.expect("an open detail wants its track");
         assert_eq!(first.ride, 7, "the need names the durable identity, not the catalog index");
         assert_eq!(app.derived_needs().ride_track, Some(first), "re-derived identically next pass");
-        assert_eq!(app.ride_track_request(), Some(7));
+        assert_eq!(ride_track_request(&app), Some(7));
 
-        app.set_ride_profile(Some(obc_route::Profile::EMPTY));
+        app.apply_derived(DerivedInputs::ride_track(DerivedInput::filled(first)), DerivedTargets::NONE);
         assert!(app.derived_needs().ride_track.is_none(), "answered — the level drops");
-        assert_eq!(app.ride_track_request(), None);
+        assert_eq!(ride_track_request(&app), None);
     }
 
     /// A failure is a matching answer: a dead ride file costs one read, not one per pass.
@@ -7281,7 +6946,7 @@ mod tests {
 
         app.apply_derived(DerivedInputs::ride_track(DerivedInput::failed(key)), DerivedTargets::NONE);
         assert!(app.derived_needs().ride_track.is_none(), "a failure answers the key like a fill");
-        assert_eq!(app.ride_track_request(), None, "and the level does not grind on the dead file");
+        assert_eq!(ride_track_request(&app), None, "and the level does not grind on the dead file");
     }
 
     /// One ride-track answer publishes both of the need's targets, from the one key — the typed path
@@ -7312,7 +6977,7 @@ mod tests {
 
         app.apply_derived(DerivedInputs::ride_track(DerivedInput::filled(first)), DerivedTargets::NONE);
         assert_eq!(app.derived_needs().ride_track, Some(second), "the late answer left the live need up");
-        assert_eq!(app.ride_track_request(), Some(8));
+        assert_eq!(ride_track_request(&app), Some(8));
     }
 
     /// Changing the subject creates a new key — including *back*: returning to a ride whose answer
@@ -7320,17 +6985,18 @@ mod tests {
     #[test]
     fn changing_the_viewed_ride_creates_a_new_ride_track_key() {
         let mut app = viewing_ride(&[7, 8]);
-        app.set_ride_profile(Some(obc_route::Profile::EMPTY));
+        let key = app.derived_needs().ride_track.expect("the open detail wants its track");
+        app.apply_derived(DerivedInputs::ride_track(DerivedInput::filled(key)), DerivedTargets::NONE);
         assert!(app.derived_needs().ride_track.is_none());
 
         app.activity.viewed_ride = Some(1);
-        assert_eq!(app.ride_track_request(), Some(8), "the second ride is unanswered");
+        assert_eq!(ride_track_request(&app), Some(8), "the second ride is unanswered");
         // The render pass releases the views that stopped matching the live key, every frame.
         let live = app.catalogs.ride_track_key(app.activity.viewed_ride);
         app.catalogs.drop_stale_ride_views(live);
 
         app.activity.viewed_ride = Some(0);
-        assert_eq!(app.ride_track_request(), Some(7), "coming back asks again rather than showing stale data");
+        assert_eq!(ride_track_request(&app), Some(7), "coming back asks again rather than showing stale data");
     }
 
     /// An abandoned in-place fill leaves the need up: `begin` invalidates the view, and only the
@@ -7345,7 +7011,8 @@ mod tests {
         assert_ne!(before, after, "starting a fill invalidates the view generation");
         assert_eq!(after.ride, before.ride, "…without pretending the subject changed");
 
-        app.finish_ride_profile_fill(true);
+        // The executor answers the key the need has *after* the fill — exactly what `HostLoop` does.
+        app.apply_derived(DerivedInputs::ride_track(DerivedInput::filled(after)), DerivedTargets::NONE);
         assert!(app.derived_needs().ride_track.is_none(), "the completed fill answers the new key");
     }
 
@@ -7385,7 +7052,7 @@ mod tests {
         assert!(!app.nav_preview_missing(), "fed once — the level retires");
 
         // New bytes under the same id: the identity is exactly what did not change.
-        app.apply_event(HostEvent::RouteUploaded { id: 10, replaced: true, elevation: None });
+        app.on_route_uploaded(10, true, None);
         let fresh = app.derived_needs().nav_preview.expect("fresh geometry wants a fresh shape");
         assert_eq!(fresh.route, key.route);
         assert_ne!(fresh.source, key.source, "the source revision moved with the bytes");

@@ -5,7 +5,7 @@
 //! Six static screens (no map plane), each a small typed state through the normal screen stack:
 //!
 //! - [`DfuCheckScreen`] — the brief "Checking card..." wait (spinner) after the scan is posted; the
-//!   board's answer ([`App::apply_event`](crate::App::apply_event)) replaces
+//!   board's answer (the pass's fact stage) replaces
 //!   it with the confirm screen or the error card. **Back** cancels the wait.
 //! - [`DfuConfirmScreen`] — the *installed → update* version table and the no-undo / same-version
 //!   warnings. Select **Install** arms (posts
@@ -15,7 +15,7 @@
 //! - [`DfuProgressScreen`] — "Preparing update..." (spinner) while the drain runs the CRC pass +
 //!   rollback snapshot + arm. Ignores input; the arm is irreversible.
 //! - [`DfuInstallingScreen`] — the static, terminal "Installing update" card the board swaps in
-//!   ([`App::apply_event`](crate::App::apply_event)) and paints as its **last
+//!   (the pass's fact stage) and paints as its **last
 //!   frame** before the arm's warm reset: the bootloader never draws (LED codes only), but it
 //!   parks the panel pins and keeps the COM wave alive, so the Memory-in-Pixel glass *holds this
 //!   frame* through the whole flash.
@@ -24,10 +24,10 @@
 //!   install-drain refusal / arm failure, #755); **Back** dismisses (like
 //!   [`NavFailScreen`](super::NavFailScreen)).
 //! - [`DfuUpdatedScreen`] — the one-time "Updated to vX" toast the first healthy boot after an
-//!   update shows (host-pushed via [`App::apply_event`](crate::App::apply_event));
+//!   update shows (host-pushed via the pass's fact stage);
 //!   any press/Back dismisses.
 //! - [`DfuFailedScreen`] — the one-time "UPDATE FAILED" card the first boot after a failed update
-//!   shows (host-pushed via [`App::apply_event`](crate::App::apply_event) from
+//!   shows (host-pushed via the pass's fact stage from
 //!   the board's boot-outcome reconcile): a typed [`DfuFailure`](crate::dfu::DfuFailure) verdict —
 //!   never started vs reverted — plus the staged version; any press/Back dismisses.
 
@@ -69,7 +69,7 @@ fn wrapped(cv: &mut impl Surface, text: &str, cx: i32, top_y: i32, width_px: i32
 
 /// The scan wait: up from the System menu's press until the board answers. Shows the spinner over
 /// "Checking card...". **Back** cancels (the drained scan's answer, if it later arrives, is dropped
-/// by [`notify_dfu_scan_result`](crate::App::apply_event) — a scan costs nothing).
+/// by the update domain's answer — a scan costs nothing).
 #[derive(Debug, Default)]
 pub struct DfuCheckScreen {
     spin: Spinner,
@@ -271,7 +271,7 @@ impl DfuProgressScreen {
 /// reset into the bootloader. The bootloader never draws (its LED codes are the liveness signal);
 /// it parks the panel pins and keeps the COM wave alternating (`obc-boot/src/com.rs`), so the
 /// Memory-in-Pixel panel *holds this exact frame* for the whole multi-ten-second flash.
-/// Board-pushed ([`App::apply_event`](crate::App::apply_event)) right before the
+/// Board-pushed (the pass's fact stage) right before the
 /// rollback snapshot + arm — deliberately **everything on it is static**: a spinner would freeze
 /// mid-sweep the moment the reset lands and read as a wedge, so the copy names the LED as the
 /// "still working" signal instead. Input is ignored; the arm is already irreversible.
@@ -380,7 +380,7 @@ impl DfuErrorScreen {
 // ── DfuUpdated: the one-time post-update toast ──
 
 /// The one-time "Updated to vX" toast the first healthy boot after an update shows (host-pushed via
-/// [`App::apply_event`](crate::App::apply_event)). Info-only; any press/Back
+/// the pass's fact stage). Info-only; any press/Back
 /// dismisses, like the "ROUTE UPDATED" card.
 #[derive(Debug)]
 pub struct DfuUpdatedScreen {
@@ -420,7 +420,7 @@ impl DfuUpdatedScreen {
 // ── DfuFailed: the one-time boot-outcome failure card ──
 
 /// The one-time "UPDATE FAILED" card the first boot after a failed update shows (host-pushed via
-/// [`App::apply_event`](crate::App::apply_event) from the board's boot-outcome
+/// the pass's fact stage from the board's boot-outcome
 /// reconcile — the failure twin of [`DfuUpdatedScreen`]). Carries the typed [`DfuFailure`] verdict
 /// and, when the arm marker survived, the staged version that failed. Info-only; any press/Back
 /// dismisses.

@@ -217,15 +217,15 @@ Each host processes sensor data, input, dirty regions, and host messages.
   <text class="d-tag" x="20" y="24">One frame — then redraw only what changed</text>
 
   <rect class="d-panel" x="28" y="74" width="128" height="52" rx="10" />
-  <text class="d-label" x="92" y="98" text-anchor="middle">tick</text>
-  <text class="d-sub" x="92" y="113" text-anchor="middle">sensors → camera</text>
+  <text class="d-label" x="92" y="98" text-anchor="middle">stage_input</text>
+  <text class="d-sub" x="92" y="113" text-anchor="middle">sensors · gestures</text>
 
   <rect class="d-panel" x="186" y="74" width="150" height="52" rx="10" />
-  <text class="d-label" x="261" y="98" text-anchor="middle">handle_input</text>
-  <text class="d-sub" x="261" y="113" text-anchor="middle">controls → gestures</text>
+  <text class="d-label" x="261" y="98" text-anchor="middle">the domains</text>
+  <text class="d-sub" x="261" y="113" text-anchor="middle">one bounded effect each</text>
 
   <rect class="d-panel" x="366" y="74" width="126" height="52" rx="10" />
-  <text class="d-label" x="429" y="98" text-anchor="middle">take_dirty</text>
+  <text class="d-label" x="429" y="98" text-anchor="middle">stage_plan</text>
   <text class="d-sub" x="429" y="113" text-anchor="middle">what changed?</text>
 
   <rect class="d-hot" x="544" y="48" width="150" height="40" rx="9" style="fill:#f8efe4" />
@@ -284,7 +284,7 @@ The device also wakes for input, sensor data, and the watchdog guard.
   <rect class="d-hot" x="480" y="92" width="252" height="98" rx="14" style="fill:#f8efe4" />
   <text class="d-title" x="606" y="116" text-anchor="middle" style="fill:#a9501c">run one iteration</text>
   <text class="d-sub" x="606" y="138" text-anchor="middle" style="font-size:9.5px">apply gestures · advance animations</text>
-  <text class="d-sub" x="606" y="153" text-anchor="middle" style="font-size:9.5px">tick → take_dirty</text>
+  <text class="d-sub" x="606" y="153" text-anchor="middle" style="font-size:9.5px">run_pass → render + effects</text>
   <text class="d-sub" x="606" y="168" text-anchor="middle" style="font-size:9.5px">→ render only what changed</text>
   <path class="d-flow" d="M540 190 C 500 224, 420 224, 360 200" marker-end="url(#lpF)" stroke-dasharray="4 4" />
   <text class="d-sub" x="452" y="234" text-anchor="middle" style="font-size:9.5px">arm the next wake, sleep again</text>
@@ -294,15 +294,27 @@ The device also wakes for input, sensor data, and the watchdog guard.
 <figcaption>The device sleeps between events. A hardware timer generates the display COM signal without CPU work.</figcaption>
 </figure>
 
-The application sends bounded [`HostCommand`](src:firmware/obc-app/src/host.rs) values.
-The host returns bounded `HostEvent` values.
+The application runs one pass per iteration.
+[`App::run_pass`](src:firmware/obc-app/src/device_core/pass.rs) takes what the platform finished, what changed underneath it, and what the rider did.
+It runs every domain in a fixed order.
+It returns a plan: what to repaint, when to run again, and one bounded effect for each domain.
+Each effect carries an operation token.
+The answer must return that token.
+A domain refuses an answer for an operation it cancelled or replaced.
+Effects and answers carry bounded identifiers and small results.
 Bulk data stays in caller-owned buffers.
-[`obc-host-core`](src:host/obc-host-core/src/dispatch.rs) defines the shared host dispatch order.
+[`obc-host-core`](src:host/obc-host-core/src/dispatch.rs) performs the effects for every frame-stepped host.
+The board performs the same effects with its own asynchronous execution.
+
+Three requests still use the older mailbox: close the ride log, forget the paired phone, and delete a trip.
+No domain can yet validate their completion.
+[`device_core/residual.rs`](src:firmware/obc-app/src/device_core/residual.rs) lists the three and the issue that removes each one.
 
 ## On-device routing: the router seam
 
-The application sends a route request to the host.
+The application hands the host one bounded planning operation.
 The host runs [`NavPlanner`](src:firmware/obc-route/src/nav.rs) in bounded steps.
+It answers with the operation's own token.
 The planner reads the navigation graph from the selected map.
 It writes a normal OBCR object to the reserved navigation slot.
 
@@ -325,12 +337,12 @@ It writes a normal OBCR object to the reserved navigation slot.
   <text class="d-sub" x="40" y="102" style="font-size:9px">"Create a route?" confirm</text>
 
   <rect class="d-hot" x="24" y="124" width="252" height="44" rx="10" style="fill:#f8efe4" />
-  <text class="d-label" x="40" y="143" style="fill:#a9501c;font-size:10.5px">NavRequest (one-shot)</text>
+  <text class="d-label" x="40" y="143" style="fill:#a9501c;font-size:10.5px">NavRequest (one operation)</text>
   <text class="d-sub" x="40" y="158" style="font-size:9px">from = rider fix · to = POI coord · name</text>
 
   <!-- request arrow to host -->
   <line class="d-flow" x1="276" y1="146" x2="404" y2="146" marker-end="url(#aR1)" />
-  <text class="d-sub" x="340" y="138" text-anchor="middle" style="font-size:8.5px">PlanRoute command</text>
+  <text class="d-sub" x="340" y="138" text-anchor="middle" style="font-size:8.5px">Acquire (carries the token)</text>
 
   <!-- host side -->
   <rect class="d-panel" x="404" y="70" width="292" height="120" rx="10" />
@@ -343,7 +355,7 @@ It writes a normal OBCR object to the reserved navigation slot.
 
   <!-- answer arrow back -->
   <line class="d-flow" x1="404" y1="210" x2="276" y2="210" marker-end="url(#aR2)" stroke="#cf6a2a" stroke-width="2" />
-  <text class="d-sub" x="340" y="202" text-anchor="middle" style="font-size:8.5px;fill:#a9501c">NavPlanned(Result) event</text>
+  <text class="d-sub" x="340" y="202" text-anchor="middle" style="font-size:8.5px;fill:#a9501c">PlanFinished / Failed (same token)</text>
 
   <!-- ok / err -->
   <rect class="d-panel-2" x="24" y="224" width="252" height="40" rx="9" />

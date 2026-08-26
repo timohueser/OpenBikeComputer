@@ -6,8 +6,8 @@
 //! measuring free space is a real, slow, failable scan: on the board a FAT free-cluster walk, on the
 //! simulator a filesystem query.
 //!
-//! The legacy shape is [`HostCommand::ScanCardFree`](crate::HostCommand) answered by
-//! [`HostEvent::CardScanned`](crate::HostEvent), whose `Option<u64>` folded "unavailable" and
+//! The legacy shape was a `ScanCardFree` command answered by
+//! the legacy card-scan answer, whose `Option<u64>` folded "unavailable" and
 //! "the scan failed" into one `None`. Here they are separate, because they are different sentences
 //! to put in front of a rider.
 
@@ -148,16 +148,11 @@ impl StorageInfo {
     /// token-free half, for the legacy protocol that carries no token.
     ///
     /// The assignment is unconditional, which is what makes a `None` blank the screen back to `--`.
-    /// The legacy [`CardScanned`](crate::HostEvent::CardScanned) event's `Option<u64>` is exactly
+    /// The legacy card-scan answer's `Option<u64>` is exactly
     /// this shape and always has been: its `None` is the board reporting no mounted medium *or* no
     /// free count, and the System screen has always answered both with `--`.
     pub(crate) fn note_measured(&mut self, free_bytes: Option<u64>) {
         self.free_bytes = free_bytes;
-    }
-
-    /// Whether a refresh is posted but undelivered — the `ScanCardFree` peek.
-    pub(crate) fn refresh_pending(&self) -> bool {
-        self.requested
     }
 
     /// Free space on the mounted medium, or `None` until a measurement has answered.
@@ -212,7 +207,7 @@ mod storage_info_tests {
             let token = storage.next_effect().expect("the refresh goes out").token();
             assert!(storage.apply_outcome(StorageInfoOutcome::Failed { token, error }));
             assert_eq!(storage.free_bytes(), None, "{error:?} leaves the rider a `--`, never a stale count");
-            assert!(!storage.refresh_pending(), "and nothing re-armed itself");
+            assert!(storage.next_effect().is_none(), "and nothing re-armed itself");
             assert!(storage.next_effect().is_none());
         }
     }

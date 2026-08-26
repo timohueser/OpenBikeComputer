@@ -43,22 +43,18 @@
 //! - [`derived`] — [`DerivedNeeds`] / [`DerivedInputs`]: level-triggered reads guarded by a *key*
 //!   (identity + source revision + view revision) instead of an operation token, because nobody
 //!   asks for them once. See [`derived`] for why a key survives what a token cannot.
-//! - [`feeders`] — the inventory of every public bulk feeder on `App` and its new home, the feeder
-//!   twin of [`migration`].
+//! - [`feeders`] — the inventory of every public bulk feeder on `App`, with the ownership cutover
+//!   that deletes each one.
 //!
-//! …and the one temporary thing here (#1439):
+//! …and what is left of the old protocol (#1397 S6):
 //!
-//! - [`compat`] — [`LegacyAdapter`]: effects out as [`HostCommand`](crate::HostCommand)s, and
-//!   [`HostEvent`](crate::HostEvent)s back in as typed outcomes and named facts. Translation only,
-//!   and written to be deleted. The legacy protocol itself is untouched: no variant is added, and
-//!   the production hosts keep their own paths until #1397 S6 moves them onto the pass.
+//! - [`residual`] — the three commands a typed executor still drains, each with the issue that
+//!   retires it. Nothing else of the legacy vocabulary survives.
 
-pub mod compat;
 pub(crate) mod connections;
 pub(crate) mod core_mode;
 pub mod derived;
 pub mod feeders;
-pub mod migration;
 pub mod pass;
 pub mod residual;
 mod shared;
@@ -69,10 +65,9 @@ pub use derived::{
     DerivedInput, DerivedInputs, DerivedNeeds, DerivedResult, DerivedTargets, NavPreviewKey, RideTrackKey,
 };
 
-pub use compat::{LegacyAdapter, LegacyInputs, LegacyOwned, LegacyPending, LegacyReply, LegacyReport};
 pub use core_mode::ModeState;
 pub use pass::{PassClock, PassInputs, PassPlan};
-pub use residual::{assert_residual, declined_level, residual, RESIDUAL};
+pub use residual::{assert_residual, residual, RESIDUAL, RESIDUAL_CLASS_COUNT};
 pub use slots::{EffectSlots, OutcomeSlots, Slot, SlotFull};
 pub use storage_info::{StorageInfoEffect, StorageInfoError, StorageInfoIntent, StorageInfoOutcome};
 

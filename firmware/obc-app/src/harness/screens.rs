@@ -3,49 +3,38 @@
 //! map view for the full-screen Paused page.
 
 use crate::activity::Activity;
+use crate::catalog_state::CatalogEffect;
 use crate::screen::{
     apply, test_ctx, ClimbScreen, Ctx, HomeScreen, MapScreen, MenuScreen, RideControl, RouteMenuScreen,
     RouteOverviewScreen, RouteSwapScreen, Screen, ScreenTick, Stack, StatisticsScreen, Transition,
 };
 use crate::{
-    App, AppState, CameraMode, Gesture, HostCommand, HostMailbox, Mode, PanBasis, PanTool, RouteSummary, Settings,
-    TrackAction, MAX_ROUTES,
+    App, AppState, CameraMode, Gesture, Mode, PanBasis, PanTool, RouteSummary, Settings, TrackAction, MAX_ROUTES,
 };
 use embedded_graphics::prelude::RgbColor; // for `Rgb888::r()` in the compositing snapshot
 use obc_map_scene::BBox;
 use obc_ports::{Button, ButtonEvent, Fix, InputClock, InputEvent};
 use obc_reader::{MapTables, SliceSource};
 
-use super::support::{build_min_obcm, build_min_obcm_profiles, keys, render_120, ReplayFix};
+use super::support::{build_min_obcm, build_min_obcm_profiles, keys, quiet_pass, render_120, ReplayFix};
 
-/// The drained `DeleteRoute` id, if pending.
+/// Positional durable ids, `0..n` — what a catalog fed without an id column carried.
+fn positional_ids(n: usize) -> Vec<crate::CatalogObjectId> {
+    (0..n as crate::CatalogObjectId).collect()
+}
+
+/// The object one pass asks the store to remove, if the rider's guarded hold requested a delete.
+/// The durable id is the pass's own resolve of the menu index.
 fn took_route_delete(app: &mut App) -> Option<crate::CatalogObjectId> {
-    let mut mb: HostMailbox = HostMailbox::new();
-    let _ = app.drain_host_commands(&mut mb);
-    core::iter::from_fn(|| mb.pop()).find_map(|c| match c {
-        HostCommand::DeleteRoute { id } => Some(id),
+    match quiet_pass(app, 0).effects.catalog.take() {
+        Some(CatalogEffect::RemoveObject { object, .. }) => Some(object),
         _ => None,
-    })
+    }
 }
 
-/// The drained `RescanStore` commit count (0 if none) — the `take_store_changed` successor. #812.
-fn rescan_commits(app: &mut App) -> u32 {
-    let mut mb: HostMailbox = HostMailbox::new();
-    let _ = app.drain_host_commands(&mut mb);
-    core::iter::from_fn(|| mb.pop())
-        .find_map(|c| match c {
-            HostCommand::RescanStore { commits } => Some(commits),
-            _ => None,
-        })
-        .unwrap_or(0)
-}
-
-/// Whether leaving the settings subtree emitted a `PersistSettings` this pass — the emit-only
-/// `take_settings_dirty` successor. FAR-19, #812.
+/// Whether one pass owes the platform a settings write — the debounced save leaving the subtree.
 fn settings_dirty(app: &mut App) -> bool {
-    let mut mb: HostMailbox = HostMailbox::new();
-    let _ = app.drain_host_commands(&mut mb);
-    core::iter::from_fn(|| mb.pop()).any(|c| matches!(c, HostCommand::PersistSettings { .. }))
+    quiet_pass(app, 0).effects.settings.take().is_some()
 }
 
 /// A throwaway default [`Settings`] satisfying [`Ctx`]'s `&mut` borrow. The non-settings screens
@@ -516,7 +505,7 @@ fn boot_flow_walks_home_to_route_menu_to_riding_map() {
     // End to end through `App`: Idle Home → press → Menu → press (Routes) → Route menu → press →
     // overview → press → Map.
     let mut app = App::new_idle(AppState::new(0, 0, 0.05));
-    app.set_routes(&test_routes());
+    app.set_routes_with_ids(&test_routes(), &IDS3);
     assert_eq!(app.mode(), Mode::Idle);
     press(&mut app); // Home → Menu (Routes selected)
     assert_eq!(app.mode(), Mode::Idle, "opening the menu doesn't start riding yet");
@@ -530,7 +519,7 @@ fn boot_flow_walks_home_to_route_menu_to_riding_map() {
     assert_eq!(app.active_route_index(), Some(0));
 }
 
-// Route catalog capacity: `set_routes` truncates a host store larger than the resident catalog
+// Route catalog capacity: the catalog feed truncates a host store larger than the resident catalog
 // (`MAX_ROUTES = 64`). A full SD card hits this; an off-by-one or missing `.take` would overflow the
 // fixed `heapless::Vec`.
 
@@ -554,9 +543,10 @@ fn many_routes(n: usize) -> Vec<RouteSummary> {
 
 /// A store larger than `MAX_ROUTES` is truncated to the first `MAX_ROUTES` in order, not overflowed.
 #[test]
-fn set_routes_truncates_at_max_routes() {
+fn the_catalog_feed_truncates_at_max_routes() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-    app.set_routes(&many_routes(MAX_ROUTES + 50)); // 114 routes — well over the cap
+    let routes = many_routes(MAX_ROUTES + 50);
+    app.set_routes_with_ids(&routes, &positional_ids(routes.len())); // 114 routes — well over the cap
     assert_eq!(app.routes().len(), MAX_ROUTES, "the catalog is capped at MAX_ROUTES, not overflowed");
     assert_eq!(app.routes()[0].name.as_str(), "R0", "the first scanned route is kept");
     assert_eq!(
@@ -569,20 +559,22 @@ fn set_routes_truncates_at_max_routes() {
 /// Exactly `MAX_ROUTES` routes fit with none dropped — the cap is inclusive, guarding a `>=`/`>`
 /// off-by-one.
 #[test]
-fn set_routes_keeps_exactly_max_routes() {
+fn the_catalog_feed_keeps_exactly_max_routes() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-    app.set_routes(&many_routes(MAX_ROUTES));
+    let routes = many_routes(MAX_ROUTES);
+    app.set_routes_with_ids(&routes, &positional_ids(routes.len()));
     assert_eq!(app.routes().len(), MAX_ROUTES, "a card with exactly 64 routes loses none");
 }
 
-/// `set_routes` replaces, not appends: a rescan of a now-emptied card leaves an empty catalog, not
+/// The catalog feed replaces, not appends: a rescan of a now-emptied card leaves an empty catalog, not
 /// the stale entries.
 #[test]
-fn set_routes_replaces_the_previous_catalog() {
+fn the_catalog_feed_replaces_the_previous_catalog() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-    app.set_routes(&many_routes(10));
+    let routes = many_routes(10);
+    app.set_routes_with_ids(&routes, &positional_ids(routes.len()));
     assert_eq!(app.routes().len(), 10);
-    app.set_routes(&[]); // card removed / emptied
+    app.set_routes_with_ids(&[], &[]); // card removed / emptied
     assert!(app.routes().is_empty(), "a rescan replaces the catalog rather than appending");
 }
 
@@ -682,7 +674,7 @@ fn hold_delete_requests_the_highlighted_route_id() {
     app.apply_gesture(Gesture::Step(1)); // cursor → the Delete row
     app.apply_gesture(Gesture::Hold); // guarded hold on the selected Delete row = delete Beta
     assert_eq!(took_route_delete(&mut app), Some(20), "the hold recorded Beta's durable id, not its index");
-    assert_eq!(took_route_delete(&mut app), None, "the one-shot drains");
+    assert_eq!(took_route_delete(&mut app), None, "the request is consumed once");
     assert!(matches!(app.top_screen(), Screen::RouteMenu(_)), "the delete popped back to the Routes list");
 }
 
@@ -773,20 +765,6 @@ fn rescan_cancels_a_swap_whose_pick_vanished() {
     assert!(matches!(app.top_screen(), Screen::RouteMenu(_)), "the prompt popped back to the menu");
     let active = app.active_route_index().expect("the original navigation is untouched");
     assert_eq!(app.routes()[active].name.as_str(), "Alpha", "still navigating the original route");
-}
-
-/// The store-changed drain: the `RescanStore` command carries the pending count once and resets it
-/// — the edge the board's live rescan keys on. The `store_changed_pending` read-only observer sees
-/// the count without consuming it.
-#[test]
-fn take_store_changed_drains_the_pending_count() {
-    let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-    assert_eq!(rescan_commits(&mut app), 0);
-    app.apply_event(crate::HostEvent::StoreChanged);
-    app.apply_event(crate::HostEvent::StoreChanged);
-    assert_eq!(app.store_changed_pending(), 2, "the read-only observer still sees the count");
-    assert_eq!(rescan_commits(&mut app), 2);
-    assert_eq!(app.store_changed_pending(), 0, "drained");
 }
 
 /// Feed a single Select press (down+up within the threshold) to the app.
