@@ -354,12 +354,12 @@ impl NavigatorMachine {
     /// Consumes the **same one-shot** [`take_cancel`](Self::take_cancel) does — the door
     /// `App::deliver_plan_cancel` uses for the legacy `CancelRoutePlan` / `CancelDetour` arms — so a
     /// cancellation reaches an executor exactly once however the two protocols are composed. Stage 8
-    /// runs before `drain_host_commands`, so a composition that runs both consumes it *here*.
+    /// runs before any residual drain, so the pass is what consumes it.
     ///
     /// **The known gap that leaves, stated rather than discovered:** under the pass *plus*
-    /// [`LegacyAdapter`](crate::device_core::LegacyAdapter),
+    /// the executor,
     /// [`navigator_row`](crate::device_core::compat::navigator_row) maps this `Release` to
-    /// [`LegacyOwned::PlannerRelease`](crate::device_core::compat::LegacyOwned::PlannerRelease) —
+    /// the release rule —
     /// untranslatable by design, because a `Release` is issued on success too — so that composition
     /// never tells the executor to drop the planner. No shipped host runs both (nothing calls
     /// `App::run_pass` until #1397 S6, which is also what gives Navigator an executor that answers a
@@ -370,7 +370,7 @@ impl NavigatorMachine {
     /// with nothing running is a host-side no-op — and minting a token for it while *another*
     /// family's search is live would supersede that search's answer, which is the failure
     /// [`ops`](Self::ops) describes.
-    fn next_release(&mut self, family: PlanFamily, mode: &mut CoreMode) -> Option<NavigatorEffect> {
+    pub(crate) fn next_release(&mut self, family: PlanFamily, mode: &mut CoreMode) -> Option<NavigatorEffect> {
         if !self.take_cancel(family) {
             return None;
         }
@@ -430,7 +430,7 @@ impl NavigatorMachine {
     /// current and the search level releases. Returns whether that ended the last live search.
     ///
     /// Reached from both answer paths — a typed [`NavigatorOutcome`] at the pass's first stage, and
-    /// a legacy `HostEvent` at [`App::apply_event`](crate::App::apply_event) — so there is one
+    /// a typed outcome at the pass's stage 1 — so there is one
     /// definition of "the run ended" whatever spoke.
     pub(crate) fn note_answer(&mut self, family: PlanFamily, phase: PlanPhase, mode: &mut CoreMode) -> bool {
         self.ops.invalidate();
@@ -465,6 +465,7 @@ impl NavigatorMachine {
     // ---- the legacy protocol's per-class doors (deleted at #1397 S6) ----
 
     /// Whether `family` has an undelivered plan request — the `PlanRoute` / `PlanDetour` peek.
+    #[cfg(test)]
     pub(crate) fn request_pending(&self, family: PlanFamily) -> bool {
         match family {
             PlanFamily::Route => self.route_request.is_some(),
@@ -474,6 +475,7 @@ impl NavigatorMachine {
 
     /// Whether `family` has an undelivered cancellation — the `CancelRoutePlan` / `CancelDetour`
     /// peek.
+    #[cfg(test)]
     pub(crate) fn cancel_pending(&self, family: PlanFamily) -> bool {
         match family {
             PlanFamily::Route => self.route_cancel,
@@ -482,6 +484,7 @@ impl NavigatorMachine {
     }
 
     /// Whether the previewed detour's commit is undelivered — the `CommitDetour` peek.
+    #[cfg(test)]
     pub(crate) fn commit_pending(&self) -> bool {
         self.detour_commit
     }
@@ -490,7 +493,7 @@ impl NavigatorMachine {
     ///
     /// The legacy protocol expresses a cancellation as its own command, while the new one expresses
     /// it as a [`Release`](NavigatorEffect::Release) that is *also* issued on success — which is
-    /// why [`LegacyOwned::PlannerRelease`](crate::device_core::compat::LegacyOwned::PlannerRelease)
+    /// why the release rule
     /// refuses to translate one into the other, and why the drain asks for the cancel by name.
     pub(crate) fn take_cancel(&mut self, family: PlanFamily) -> bool {
         match family {

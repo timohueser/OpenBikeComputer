@@ -174,17 +174,13 @@ const EVERYTHING: PlatformSupport = PlatformSupport {
     retention_metadata: true,
 };
 
-/// The rider-visible projection two runners must agree on.
+/// The rider-visible projection every runner must agree on.
 ///
-/// Two fields are dropped, and both for the same reason: they count *legacy* events rather than
-/// anything the rider can see. `pending_host_command` asks the old protocol whether it has a command
-/// queued, which a domain that no longer speaks it answers `false` to by construction.
-/// `retention_delete_attempts` counts calls into `BorrowedRoutes::delete_by_id`, which counts every
-/// call including one for an id already gone; the typed executor reaches the store by identity and
-/// counts only the calls whose object is still catalogued, so the two count different events for the
-/// same behaviour. Requiring either would be requiring the legacy command sequence.
+/// `retention_delete_attempts` is dropped: it counts calls into `BorrowedRoutes::delete_by_id`,
+/// including one for an id already gone, and an executor that reaches the store by identity counts
+/// only the calls whose object is still catalogued — two counts of different events for the same
+/// behaviour, and not something a rider can see.
 fn rider_visible(mut state: VisibleState) -> VisibleState {
-    state.pending_host_command = false;
     state.retention_delete_attempts = 0;
     state
 }
@@ -455,7 +451,6 @@ impl CoreHarness {
         let mut mail: HostMailbox = HostMailbox::new();
         let _ = self.state.app.drain_residual_commands(&mut mail);
         while let Some(command) = mail.pop() {
-            trace.record_command(&command);
             self.serve_legacy(command, done, trace);
         }
     }
@@ -541,7 +536,6 @@ impl CoreHarness {
             // The bond removal is confirmed by a link fact rather than by a reply, so there is
             // nothing to answer here.
             HostCommand::ForgetBond => {}
-            other => panic!("{other:?} is pass-owned and must not reach the residual executor"),
         }
     }
 
@@ -953,7 +947,6 @@ fn a_store_change_during_a_catalog_operation_is_not_lost() {
     harness.state.facts.note_store_revision(StoreRevision { store: StoreIdentity::new(1), revision: Revision::new(4) });
     let plan = harness.pass();
     assert!(plan.effects.catalog.is_empty(), "one catalog operation at a time");
-    assert_eq!(harness.state.app.store_changed_pending(), 0, "and no legacy rescan cue behind it");
 
     // The same revision again is the same edge, not a second one: the refresh is owed once.
     harness.state.facts.note_store_revision(StoreRevision { store: StoreIdentity::new(1), revision: Revision::new(4) });
@@ -1410,10 +1403,9 @@ fn a_failed_retention_write_is_retried() {
 ///
 /// The eager ride stamp runs on every trusted tick and re-enqueues any resident ride that is
 /// `synced` with a `synced_at` of 0; only the mirror clears that 0, so an unmirrored stamp comes
-/// back on every pass after the executor answers it. Both the legacy drain
-/// (`App::retention_stamp_command`) and the pass mirror into the full ride inventory as well as
-/// the display catalog, because a ride outside the newest-32 menu re-enqueues just the same
-/// (finding #876-2).
+/// back on every pass after the executor answers it. The pass mirrors a decided stamp into the full
+/// ride inventory as well as the display catalog, because a ride outside the newest-32 menu
+/// re-enqueues just the same (finding #876-2).
 ///
 /// Without the mirror this fails on the first pass after the answer.
 #[test]

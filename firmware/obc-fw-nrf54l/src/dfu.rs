@@ -213,7 +213,7 @@ macro_rules! statusf {
 ///
 /// Returns only on failure (the state page is then untouched; the device keeps riding): the typed
 /// [`DfuInstallError`](obc_app::DfuInstallError) the caller hands to
-/// [`App::apply_event`](obc_app::App::apply_event) so the "Preparing
+/// the pass's fact stage so the "Preparing
 /// update..." spinner is replaced by the error card instead of hanging (issue #755). On success the
 /// call diverges into the reset, so the `Ok` arm has no return value.
 pub(crate) async fn run_install(
@@ -281,7 +281,7 @@ pub(crate) async fn run_install(
 /// nothing, and reads the boot-state page for the pre-arm no-rollback fact, returning the
 /// app-native [`DfuScanReport`](obc_app::DfuScanReport) the confirm screen shows — or a mapped
 /// [`DfuScanError`](obc_app::DfuScanError) for the error card. The board answers the app through
-/// [`App::apply_event`](obc_app::App::apply_event); a failed scan, like the
+/// the pass's fact stage; a failed scan, like the
 /// arm's, costs nothing.
 ///
 /// Returns the [`StagedRef`] alongside the report so the caller can park it next to its pending-DFU

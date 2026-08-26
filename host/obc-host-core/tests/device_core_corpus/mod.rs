@@ -25,8 +25,8 @@ use obc_app::{
 };
 use obc_formats::io::{ByteSink, SliceSource};
 use obc_host_core::trace::{
-    CommandTag, EventTag, FeederCall, FeederKind, NormalizationSeed, ObjectKey, ObjectKind, RevisionKey, ScenarioStep,
-    TimeKey, Trace, TraceInput, TraceOutput, TraceRecorder, TraceScenario, TraceSink,
+    FeederCall, FeederKind, NormalizationSeed, ObjectKey, ObjectKind, RevisionKey, ScenarioStep, TimeKey, Trace,
+    TraceInput, TraceRecorder, TraceScenario, TraceSink,
 };
 use obc_host_core::{RideRepository, RouteRepository, TripCatalog};
 use obc_map_scene::BBox;
@@ -229,7 +229,6 @@ pub struct VisibleState {
     pub rain_steps_ahead: u8,
     pub settings_revision: Option<RevisionKey>,
     pub settings_utc_offset_min: i16,
-    pub pending_host_command: bool,
     pub nav_preview_missing: bool,
     pub warning: Option<WarningFlags>,
     pub retention_delete_attempts: u16,
@@ -717,7 +716,7 @@ pub fn visible_state(app: &App, settings_revision: u16, retention_delete_attempt
             .active_route_index()
             .and_then(|index| app.route_ids().get(index))
             .map(|&id| fixture_object_key(ObjectKind::Route, id)),
-        requested_ride_id: app.ride_track_request().map(|id| fixture_object_key(ObjectKind::Ride, id)),
+        requested_ride_id: app.derived_needs().ride_track.map(|key| fixture_object_key(ObjectKind::Ride, key.ride)),
         recording: app.activity.is_tracking(),
         clock_trusted: app.clock_trusted(),
         rain_steps_ahead: app.state.rain_steps_ahead,
@@ -728,7 +727,6 @@ pub fn visible_state(app: &App, settings_revision: u16, retention_delete_attempt
             other => panic!("unseeded fixture settings revision {other}"),
         },
         settings_utc_offset_min: app.settings().utc_offset_min,
-        pending_host_command: app.has_pending_host_command(),
         nav_preview_missing: app.nav_preview_missing(),
         warning: match app.top_screen() {
             Screen::Warning(card) => Some(card.flags()),
@@ -1222,38 +1220,6 @@ pub fn step<'a>(
         .unwrap_or_else(|| panic!("{} has no {name} step", trace.scenario))
 }
 
-pub fn command_count(trace: &Trace<VisibleState>, tag: CommandTag) -> usize {
-    trace.steps.iter().flat_map(|step| &step.commands).filter(|command| command.tag() == tag).count()
-}
-
-pub fn event_count(trace: &Trace<VisibleState>, tag: EventTag) -> usize {
-    trace.steps.iter().flat_map(|step| &step.events).filter(|event| event.tag() == tag).count()
-}
-
 pub fn feeder_count(trace: &Trace<VisibleState>, kind: FeederKind) -> usize {
     trace.steps.iter().flat_map(|step| &step.feeder_calls).filter(|call| call.feeder == kind).count()
-}
-
-pub fn output_position(
-    trace: &Trace<VisibleState>,
-    predicate: impl Fn(&TraceOutput) -> bool,
-) -> Option<(usize, usize)> {
-    trace.steps.iter().enumerate().find_map(|(step_index, step)| {
-        step.timeline.iter().position(&predicate).map(|output_index| (step_index, output_index))
-    })
-}
-
-pub fn command_precedes_event(trace: &Trace<VisibleState>, command: CommandTag, event: EventTag) -> bool {
-    let command =
-        output_position(trace, |output| matches!(output, TraceOutput::Command(value) if value.tag() == command));
-    let event = output_position(trace, |output| matches!(output, TraceOutput::Event(value) if value.tag() == event));
-    matches!((command, event), (Some(command), Some(event)) if command < event)
-}
-
-pub fn output_precedes(
-    trace: &Trace<VisibleState>,
-    before: impl Fn(&TraceOutput) -> bool,
-    after: impl Fn(&TraceOutput) -> bool,
-) -> bool {
-    matches!((output_position(trace, before), output_position(trace, after)), (Some(before), Some(after)) if before < after)
 }

@@ -1,13 +1,13 @@
 //! The **bulk feeder inventory** (#1437): every public way a host pushes data into `App`, and where
 //! that data goes once DeviceCore owns it.
 //!
-//! The legacy protocol is two enums and one table ([`migration`](super::migration)). The feeders are
-//! not: they are 27 free-standing `pub fn` methods on `App` that grew one at a time, each with its
+//! The feeders are free-standing `pub fn` methods on `App` that grew one at a time, each with its
 //! own shape, and *that* is why they need an inventory at all. Every one of them has exactly one new
 //! home here, and nothing is left unclassified.
 //!
-//! **This is documentation and test data, not a dispatcher.** Nothing in a runtime path calls it.
-//! It dies with the pass cutover (#1397 S6), together with the wrappers it describes.
+//! **This is documentation and test data, not a dispatcher.** Nothing in a runtime path calls it —
+//! `git grep 'feeders::'` finds no importer — so the compiler will not catch a label that has gone
+//! stale. Each row dies with the ownership cutover it names.
 //!
 //! ## Reading a row
 //!
@@ -18,9 +18,9 @@
 //! | [`home`](FeederMigration::home) | Where it lands, as prose — not a compiler-checked symbol. |
 //! | [`deletes_in`](FeederMigration::deletes_in) | The slice that removes the method. |
 //!
-//! `home` is prose for the same reason [`LegacyMigration::home`](super::migration::LegacyMigration)
-//! is: a third of the destinations name fields that do not exist yet, and inventing placeholder
-//! types for them is the speculative structure this repository bans.
+//! `home` is prose rather than a symbol: a third of the destinations name fields that do not exist
+//! yet, and inventing placeholder types for them is the speculative structure this repository
+//! bans.
 //!
 //! ## What is actually guarded, and what is not
 //!
@@ -32,14 +32,36 @@
 //! - **A variant cannot be missing a row.** [`feeder_migration`] is an exhaustive match.
 //!
 //! The third is **not** guarded and is stated here rather than implied: nothing ties this enum to
-//! `App`'s actual method surface, so a twenty-eighth public feeder *method* could land with no
-//! variant. [`migration`](super::migration) has an anchor for its half — `HostCommand::DRAIN_ORDER`
-//! — and the feeders, being free-standing methods, have no such registry to anchor on. The list was
-//! enumerated by hand against `App` when this slice landed: 24 `pub fn set_*` plus
-//! `begin_ride_profile_fill`, `finish_ride_profile_fill` and `weather_feed_changed`. Anyone adding a
-//! feeder before DC6 #1439 deletes this file adds its row here too.
+//! `App`'s actual method surface, so a further public feeder *method* could land with no variant.
+//! Being free-standing methods, the feeders have no registry to anchor on; the list was enumerated
+//! by hand against `App`. Anyone adding a feeder adds its row here too.
 
-use super::migration::LegacyOwner;
+/// Which DeviceCore component owns a feeder's data after the migration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegacyOwner {
+    /// `CatalogMachine` — revisions, identities, refresh, deletion, the trip cascade.
+    Catalog,
+    /// `RetentionMachine` — usage stamps, expiry deadlines, sidecar metadata.
+    Retention,
+    /// `Recorder` — the ride session and its persistence lifecycle.
+    Recorder,
+    /// `Navigator` — route and detour planning, preview, and commit.
+    Navigator,
+    /// `SettingsMachine` — the dirty revision and the persist handshake.
+    Settings,
+    /// `WeatherDomain` — visible freshness, alerts, and installed-data identity.
+    Weather,
+    /// `DfuState` — update scan, install admission, and terminal state.
+    Dfu,
+    /// The bond domain in `ble.rs` — bond removal.
+    Bond,
+    /// The storage-information domain — free-space reporting.
+    StorageInfo,
+    /// `FaultState` and the card scheduler.
+    Fault,
+    /// The derived-data path, owned by the requesting screen's domain but delivered without a token.
+    Derived,
+}
 
 /// Declare the feeder vocabulary once: the enum, [`Feeder::ALL`] and [`Feeder::COUNT`] all come out
 /// of this single list, so a variant cannot exist outside `ALL` and `COUNT` cannot drift from
