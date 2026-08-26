@@ -864,14 +864,19 @@ mod tests {
     }
 
     /// Take the whole cascade, answering each step as the executor would.
+    ///
+    /// Bounded, and that is the point: the walk terminates because the ordinal only ever grows, so a
+    /// cursor that stopped advancing is exactly the bug this helper must **report**. An unbounded
+    /// loop would hang the suite on it instead of failing.
     fn drain_cascade(catalogs: &mut CatalogState) -> heapless::Vec<CatalogObjectId, 8> {
         let mut removed = heapless::Vec::new();
-        while let Some(effect) = catalogs.next_effect() {
+        for _ in 0..=removed.capacity() {
+            let Some(effect) = catalogs.next_effect() else { return removed };
             let CatalogEffect::RemoveObject { token, object } = effect else { panic!("a removal") };
             let _ = removed.push(object);
             catalogs.apply_outcome(CatalogOutcome::ObjectRemoved { token, object, existed: true });
         }
-        removed
+        panic!("the cascade did not reach the folder in {} steps — the cursor is not advancing", removed.capacity())
     }
 
     /// The cascade is the domain's ordering, made of the same bounded removal every other delete
@@ -922,6 +927,30 @@ mod tests {
         catalogs.apply_outcome(CatalogOutcome::Failed { token: effect.token(), error: CatalogError::RemoveFailed });
 
         assert_eq!(drain_cascade(&mut catalogs).as_slice(), &[20, 50], "the walk moved on and finished");
+    }
+
+    /// **Ordinal stability.** The walk holds a cursor, not a copy of the member list, so the only
+    /// thing that keeps ordinal `n` naming the same member is that nothing rewrites the list under
+    /// it. Nothing does: a host re-feed reads the trip's own stage refs verbatim, and the cascade
+    /// leaves the folder alone until its last step — so a member already removed is still named,
+    /// as a dangling id, and the list is the one the walk started on.
+    #[test]
+    fn a_catalog_re_feed_mid_cascade_does_not_move_the_cursor() {
+        let mut catalogs = with_trip(50, &[10, 20, 30], &[10, 20, 30]);
+        catalogs.admit_intent(CatalogIntent::DeleteTrip { id: 50 }).unwrap();
+
+        let effect = catalogs.next_effect().expect("the first member");
+        let CatalogEffect::RemoveObject { token, object } = effect else { panic!("a removal") };
+        assert_eq!(object, 10);
+        catalogs.apply_outcome(CatalogOutcome::ObjectRemoved { token, object, existed: true });
+
+        // The host re-reads the store between two steps: route 10 is gone from the route catalog,
+        // and the trip is re-fed from the untouched `.obt` — dangling stage ref and all.
+        let summaries: heapless::Vec<RouteSummary, MAX_ROUTES> = (0..2).map(|_| summary()).collect();
+        catalogs.replace_routes(&summaries, &[20, 30]);
+        catalogs.set_trips(&[TripInput { id: 50, name: "Alps", stage_ids: &[10, 20, 30] }]);
+
+        assert_eq!(drain_cascade(&mut catalogs).as_slice(), &[20, 30, 50], "the walk resumes where it was");
     }
 
     /// A trip that vanished from the resident catalog mid-walk ends the walk at the folder rather
