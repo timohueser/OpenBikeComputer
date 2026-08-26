@@ -3,23 +3,17 @@
 //! This module deliberately knows nothing about the executor's dispatch policy. A trace harness
 //! supplies input application, one bounded pass, outcome delivery, and a normalized visible-state
 //! snapshot through [`TraceHarness`]. [`run_scenario`] only controls *when* completed outcomes are
-//! delivered. That makes the same scenario usable against the legacy app/host protocol today and
-//! DeviceCore later without copying either implementation's ordering rules into the runner.
-//!
-//! The small [`reconcile_fixture_pass`] and [`reconcile_fixture_to_completion`] helpers at the end
-//! are shared setup for fixture-backed board-parity tests. They are adapters around `LegacyLoop`, not
-//! part of the trace schema or runner.
+//! delivered. That is what lets one scenario run against DeviceCore at two answer cadences without
+//! copying the executor's ordering rules into the runner.
 
 use std::collections::BTreeMap;
 
 use obc_app::{
-    App, CatalogObjectId, DetourRequest, DfuAction, DfuFailure, DfuInstallError, DfuScanError, DfuScanReport,
-    HostCommand, HostEvent, NavRequest, TrackAction, WarningFlags,
+    CatalogObjectId, DetourRequest, DfuAction, DfuFailure, DfuInstallError, DfuScanError, DfuScanReport, HostCommand,
+    HostEvent, NavRequest, TrackAction, WarningFlags,
 };
 use obc_ports::SettingsSaveError;
 use obc_route::NavError;
-
-use crate::{LegacyLoop, MemRideStore, MemRouteStore, MemTrackStore, PlanHold};
 
 /// Stable identity assigned by first observation, scoped by [`ObjectKind`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -993,57 +987,6 @@ where
         }
     }
     delayed.finish_pass();
-}
-
-/// Run one `LegacyLoop` pass with the lightweight store setup used by board-parity fixtures.
-pub fn reconcile_fixture_pass(
-    host: &mut LegacyLoop,
-    app: &mut App,
-    routes: &mut MemRouteStore,
-    map: &[u8],
-) -> Result<(), obc_reader::Error> {
-    with_map_reader(map, |reader| {
-        let mut rides = MemRideStore::new(Vec::new());
-        let mut tracks = MemTrackStore::new();
-        let mut no_trips = ();
-        let mut elev = obc_route::NullElevation;
-        host.reconcile(app, routes, &mut rides, &mut tracks, &mut no_trips, reader, &mut elev, |_app, _cmd| {});
-    })
-}
-
-/// Run the fixture-backed scripted-host shape without yielding between planner steps.
-pub fn reconcile_fixture_to_completion(
-    host: &mut LegacyLoop,
-    app: &mut App,
-    routes: &mut MemRouteStore,
-    map: &[u8],
-) -> Result<(), obc_reader::Error> {
-    with_map_reader(map, |reader| {
-        let mut rides = MemRideStore::new(Vec::new());
-        let mut no_trips = ();
-        let mut elev = obc_route::NullElevation;
-        host.reconcile_to_completion(
-            app,
-            routes,
-            &mut rides,
-            &mut no_trips,
-            reader,
-            &mut elev,
-            PlanHold::NONE,
-            |_app, _cmd| {},
-        );
-    })
-}
-
-fn with_map_reader<R>(
-    map: &[u8],
-    use_reader: impl FnOnce(&obc_reader::Reader<'_>) -> R,
-) -> Result<R, obc_reader::Error> {
-    let source = obc_reader::SliceSource(map);
-    let tables = obc_reader::MapTables::parse(&source)?;
-    let cache = obc_reader::MapCache::new();
-    let reader = obc_reader::Reader::new(&source, &tables, &cache);
-    Ok(use_reader(&reader))
 }
 
 #[cfg(test)]

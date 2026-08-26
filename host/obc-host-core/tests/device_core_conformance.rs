@@ -1,26 +1,22 @@
 //! DC7 — the DeviceCore Phase 1 conformance gate (#1440, epic #1433 §13).
 //!
-//! Every DC1 scenario, run through five runners, compared on what the rider can see:
+//! Every DC1 scenario, run through every runner, compared on what the rider can see:
 //!
 //! | Runner | Frame | Executor |
 //! |---|---|---|
-//! | `legacy-immediate` | `HostLoop::reconcile_commands_traced` | the shipping host, answers in the same call |
-//! | `legacy-delayed` | the same | the same, answers a pass later |
 //! | `core-immediate` | [`App::run_pass`] | typed effects in, typed outcomes back, same call |
 //! | `core-delayed` | the same | the same, on a scripted delay |
 //! | `compatibility` | the same | [`LegacyAdapter`] — effects out as `HostCommand`s, `HostEvent`s back |
 //!
-//! The comparison is **rider-visible state**, not command sequences: a domain whose lifecycle moved
-//! into DeviceCore no longer speaks the legacy vocabulary, and requiring it to would pin the
-//! migration in place. What must not change is what the device shows and holds.
+//! The comparison is **rider-visible state**, not command sequences. `core-immediate` is the
+//! baseline and `core-delayed` is what proves behaviour is independent of answer cadence — the
+//! property most likely to regress, and the one the delayed runner exists for.
 //!
-//! ## The three dispositions
+//! ## Dispositions
 //!
-//! Every difference this file finds is either [`Disposition::Corrected`] — DeviceCore is right and
-//! the old behaviour was a defect — or [`Disposition::Accepted`], with the reason and the slice that
-//! removes it. The third disposition the epic names, a *blocking* conformance failure, is not a row:
-//! it is this file failing, because a difference with no approved row is one nothing may ship over.
-//! At the time of writing there is none.
+//! Every difference this file finds carries a [`Disposition::Accepted`] row with the reason and the
+//! slice that removes it. A *blocking* conformance failure is not a row: it is this file failing,
+//! because a difference with no approved row is one nothing may ship over.
 //!
 //! ## Two production defects came out of this gate
 //!
@@ -47,9 +43,9 @@
 //! **Two** domains still speak the legacy protocol: Recorder and Bond. Both are named in
 //! [`LegacyOwned`] with the reason — a ride close is answered by a catalog re-feed rather than by a
 //! ride identity, and a bond removal by a link-status fact rather than by a reply — and a domain
-//! that cannot validate a token cannot own an outcome (epic §4.3). [`pass_owned`] and
-//! [`derived_level`] are the line between the two halves, and every class still on the old protocol
-//! has a row naming the slice that moves it.
+//! that cannot validate a token cannot own an outcome (epic §4.3). The residual drain asks for
+//! exactly those classes by name, and every class still on the old protocol has a row naming the
+//! slice that moves it.
 
 mod device_core_corpus;
 
@@ -83,35 +79,25 @@ use obc_ports::{Fix, InputClock, LocationSource, RideClock, Sensors, SettingsSav
 use obc_route::NavError;
 
 use device_core_corpus::{
-    clock_watermark, definition, normalization_seed, visible_state, Action, LegacyHarness, PendingSettingsResult,
+    clock_watermark, definition, normalization_seed, visible_state, Action, CorpusState, PendingSettingsResult,
     Scenario, VisibleState, SCENARIOS, SETTINGS_FAILURE_RETRY_MS,
 };
 
-// ==================== the five runners ====================
+// ==================== the runners ====================
 
 /// One column of the conformance matrix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Runner {
-    LegacyImmediate,
-    LegacyDelayed,
     CoreImmediate,
     CoreDelayed,
     Compatibility,
 }
 
 impl Runner {
-    const ALL: [Runner; 5] = [
-        Runner::LegacyImmediate,
-        Runner::LegacyDelayed,
-        Runner::CoreImmediate,
-        Runner::CoreDelayed,
-        Runner::Compatibility,
-    ];
+    const ALL: [Runner; 3] = [Runner::CoreImmediate, Runner::CoreDelayed, Runner::Compatibility];
 
     const fn name(self) -> &'static str {
         match self {
-            Runner::LegacyImmediate => "legacy-immediate",
-            Runner::LegacyDelayed => "legacy-delayed",
             Runner::CoreImmediate => "core-immediate",
             Runner::CoreDelayed => "core-delayed",
             Runner::Compatibility => "compatibility",
@@ -122,8 +108,7 @@ impl Runner {
     /// that only ever sees one cadence cannot pass by accident.
     const fn mode(self) -> RunnerMode {
         match self {
-            Runner::LegacyImmediate | Runner::CoreImmediate | Runner::Compatibility => RunnerMode::Immediate,
-            Runner::LegacyDelayed => RunnerMode::OnePassDelayed,
+            Runner::CoreImmediate | Runner::Compatibility => RunnerMode::Immediate,
             Runner::CoreDelayed => RunnerMode::ScriptedDelay(&[2, 0, 1]),
         }
     }
@@ -131,19 +116,10 @@ impl Runner {
     /// Run one scenario, then let the runner settle, and report both.
     fn run(self, scenario: &Scenario) -> Run {
         let definition = definition(scenario);
-        match self {
-            Runner::LegacyImmediate | Runner::LegacyDelayed => {
-                let mut harness = LegacyHarness::new();
-                let trace = run_scenario_seeded(&definition, self.mode(), &normalization_seed(), &mut harness);
-                Run::finish(self, scenario, trace, &mut harness)
-            }
-            Runner::CoreImmediate | Runner::CoreDelayed | Runner::Compatibility => {
-                let executor = if self == Runner::Compatibility { Executor::Compatibility } else { Executor::Typed };
-                let mut harness = CoreHarness::new(executor);
-                let trace = run_scenario_seeded(&definition, self.mode(), &normalization_seed(), &mut harness);
-                Run::finish(self, scenario, trace, &mut harness)
-            }
-        }
+        let executor = if self == Runner::Compatibility { Executor::Compatibility } else { Executor::Typed };
+        let mut harness = CoreHarness::new(executor);
+        let trace = run_scenario_seeded(&definition, self.mode(), &normalization_seed(), &mut harness);
+        Run::finish(self, scenario, trace, &mut harness)
     }
 }
 
@@ -286,10 +262,10 @@ enum Done {
 /// The pass, one executor, and the shared scenario fixture.
 ///
 /// The fixture — the app, the catalogs and the scripted planner/DFU/settings answers — is
-/// [`LegacyHarness`], unchanged: the two harnesses apply the *same* rider inputs and differ only in
+/// [`CorpusState`], unchanged: the two harnesses apply the *same* rider inputs and differ only in
 /// what runs the frame. That is what makes a difference in the trace a difference in the runner.
 struct CoreHarness {
-    state: LegacyHarness,
+    state: CorpusState,
     executor: Executor,
     adapter: LegacyAdapter,
     /// What the executor has handed back since the last pass.
@@ -319,7 +295,7 @@ struct CoreHarness {
 impl CoreHarness {
     fn new(executor: Executor) -> Self {
         CoreHarness {
-            state: LegacyHarness::new(),
+            state: CorpusState::new(),
             executor,
             adapter: LegacyAdapter::new(),
             inbox: LegacyInputs::new(),
@@ -579,7 +555,7 @@ impl CoreHarness {
     }
 
     /// The corpus's answers that are scripted at the **action** rather than at the request,
-    /// delivered once per pass exactly as `LegacyHarness::run_pass` delivers them — so all three
+    /// delivered once per pass exactly as `CorpusState::run_pass` delivers them — so all three
     /// frames answer the same script.
     ///
     /// Two are not request-keyed and cannot be: the detour splice's answer is armed by the Press
@@ -762,7 +738,7 @@ impl TraceHarness<Action> for CoreHarness {
         // An action that moves the app's animation clock moves the pass's with it, so a bounded
         // retry window cannot reopen behind the action that just closed it.
         self.clock_ms = self.clock_ms.max(clock_watermark(*action));
-        TraceHarness::apply_input(&mut self.state, action, trace);
+        self.state.apply_input(action, trace);
     }
 
     fn run_pass(&mut self, trace: &mut TraceRecorder<Self::State>) -> Vec<Self::Outcome> {
@@ -837,20 +813,17 @@ impl TraceHarness<Action> for CoreHarness {
 
 /// What a difference between two runners means.
 ///
-/// The epic names three dispositions. Only two of them are ever *written down*: a blocking
-/// conformance failure is not a row someone writes, it is
-/// [`every_scenario_agrees_or_has_an_approved_disposition`] failing on a difference with no row.
-/// That is why there is no `Blocking` variant here — an unexplained difference cannot be recorded
-/// and shrugged at, it fails the gate.
+/// Only one disposition is ever *written down*: a blocking conformance failure is not a row someone
+/// writes, it is [`every_scenario_agrees_or_has_an_approved_disposition`] failing on a difference
+/// with no row. That is why there is no `Blocking` variant here — an unexplained difference cannot
+/// be recorded and shrugged at, it fails the gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Disposition {
-    /// DeviceCore is right and the legacy behaviour was a defect. `why` states the expected target.
-    Corrected,
-    /// A real difference Phase 1 accepts, with the reason and the slice that removes it.
+    /// A real difference this phase accepts, with the reason and the slice that removes it.
     Accepted,
 }
 
-/// One approved difference between the legacy baseline and one or more DeviceCore runners.
+/// One approved difference between the matrix's baseline runner and another.
 ///
 /// `runners` is what makes the table exact at the level the result is reported at: a difference that
 /// *moved* from one runner to another — the typed executor regressing into the compatibility
@@ -868,7 +841,7 @@ struct Difference {
     owner: Option<LegacyOwned>,
     /// What differs.
     what: &'static str,
-    /// The expected target (`Corrected`) or the reason and later owner (`Accepted`).
+    /// The reason and the later owner.
     why: &'static str,
 }
 
@@ -881,19 +854,6 @@ impl Difference {
 
 /// Every difference this gate found, with its disposition and the cells it appears in.
 const DIFFERENCES: &[Difference] = &[
-    Difference {
-        scenario: "derived-data.repeats-until-matching-fill",
-        runners: &[Runner::CoreImmediate, Runner::CoreDelayed, Runner::Compatibility],
-        disposition: Disposition::Corrected,
-        owner: None,
-        what: "every DeviceCore runner settles one screen shallower than the legacy baseline",
-        why: "no legacy row owns a corrected defect. The legacy bulk feeders carry no subject, so a \
-              fill for the route the rider *was* previewing satisfies the need for the one they are \
-              previewing now and leaves an extra overview on the stack — DC1 records that stack \
-              depth moving with delivery cadence as a known defect. DeviceCore keys every derived \
-              read (#1437), drops an answer about something else, and reaches the same state \
-              immediate or delayed. The shallower stack is the expected target.",
-    },
     Difference {
         scenario: "catalog.route-delete",
         runners: &[Runner::Compatibility],
@@ -933,10 +893,11 @@ const DIFFERENCES: &[Difference] = &[
 
 // ==================== the matrix ====================
 
-/// Every applicable DC1 scenario, through all five runners.
+/// Every applicable DC1 scenario, through every runner.
 ///
-/// The gate: every runner reaches a rider-visible terminal state that either matches the legacy
-/// baseline or is named in [`DIFFERENCES`] with a disposition. Nothing may differ silently.
+/// The gate: every runner reaches a rider-visible terminal state that either matches the baseline —
+/// the pass answered immediately — or is named in [`DIFFERENCES`] with a disposition. Nothing may
+/// differ silently.
 #[test]
 fn every_scenario_agrees_or_has_an_approved_disposition() {
     let mut compared = 0usize;
@@ -955,17 +916,12 @@ fn every_scenario_agrees_or_has_an_approved_disposition() {
             }
         }
 
-        // Immediate and delayed reach the same place *within* a family — the executor conformance
-        // rule of #1433 §13. A difference here would be timing sensitivity, never policy.
+        // Immediate and delayed reach the same place — the executor conformance rule of #1433 §13,
+        // and the property the delayed runner exists for. A difference here would be timing
+        // sensitivity, never policy.
         assert_eq!(
             rider_visible(runs[1].1.settled.clone()),
             baseline,
-            "{}: the legacy runner changed terminal state when delayed",
-            scenario.name
-        );
-        assert_eq!(
-            rider_visible(runs[3].1.settled.clone()),
-            rider_visible(runs[2].1.settled.clone()),
             "{}: DeviceCore changed terminal state under a scripted delay",
             scenario.name
         );
@@ -1001,11 +957,6 @@ fn every_difference_carries_a_verified_disposition() {
         assert!(row.why.contains('#'), "every disposition names the slice that owns its target: {row:?}");
 
         match (row.disposition, row.owner) {
-            // A corrected defect is DeviceCore being right; no legacy row owns it.
-            (Disposition::Corrected, owner) => {
-                assert!(owner.is_none(), "a corrected defect is not owned by a legacy row: {row:?}");
-                assert!(row.why.contains("no legacy row owns"), "and it has to say so: {row:?}");
-            }
             (Disposition::Accepted, Some(owner)) => {
                 assert!(owner.deletes_in().starts_with('#'), "{owner:?} must name its deletion slice");
                 if row.runners.contains(&Runner::Compatibility) {
@@ -1326,7 +1277,7 @@ impl CoreHarness {
     fn apply(&mut self, action: Action) {
         let mut trace = recorder();
         self.clock_ms = self.clock_ms.max(clock_watermark(action));
-        TraceHarness::apply_input(&mut self.state, &action, &mut trace);
+        self.state.apply_input(&action, &mut trace);
     }
 
     /// Serve one catalog effect and hand the answer straight back.
@@ -1572,12 +1523,12 @@ fn a_settings_result_with_an_old_revision_is_refused() {
     assert_eq!(outcome, SettingsOutcome::Persisted { token, revision: 4 });
     assert!(!settings.is_current(outcome.token()), "the superseded write does not clear the dirty state");
 
-    // …and the legacy half is real behaviour rather than only a token: the stale ack leaves the
-    // newer content pending, identically under both frames.
+    // …and it is real behaviour rather than only a token: the stale ack leaves the newer content
+    // pending at both answer cadences.
     let scenario = named("settings.revision-success-and-stale-result");
-    let legacy = Runner::LegacyImmediate.run(scenario);
-    let core = Runner::CoreImmediate.run(scenario);
-    assert_eq!(rider_visible(core.settled.clone()), rider_visible(legacy.settled.clone()));
+    let immediate = Runner::CoreImmediate.run(scenario);
+    let delayed = Runner::CoreDelayed.run(scenario);
+    assert_eq!(rider_visible(delayed.settled.clone()), rider_visible(immediate.settled.clone()));
 }
 
 /// **A ride finalize failure after the last checkpoint.** The ride close survives the pass, the
@@ -1839,12 +1790,6 @@ fn a_stale_derived_fill_is_dropped_and_the_level_asks_again() {
         rider_visible(delayed.settled.clone()),
         rider_visible(immediate.settled.clone()),
         "DeviceCore's terminal state no longer depends on delivery cadence"
-    );
-    assert!(
-        DIFFERENCES
-            .iter()
-            .any(|row| row.scenario == scenario.name && matches!(row.disposition, Disposition::Corrected)),
-        "and the difference from the legacy runner is recorded as corrected"
     );
 }
 

@@ -4,20 +4,20 @@
 //! copy-pasting:
 //!
 //! - [`HostLoop`] / the [`RouteRepository`] · [`RideRepository`] · [`TrackRepository`] ·
-//!   [`TripCatalog`] traits — the shared command/event dispatcher the frame-stepped hosts (sim GUI,
-//!   sim headless, web demo) drive their `drain_host_commands`/`apply_event` protocol through, so
-//!   the delete/rescan/nav/track sequencing lives once here instead of once per shell.
+//!   [`TripCatalog`] traits — the shared typed executor the frame-stepped hosts (sim GUI, sim
+//!   headless, web demo) run `App::run_pass` behind, so the delete/rescan/nav/track sequencing
+//!   lives once here instead of once per shell.
 //! - [`ActiveRouteSession`] / [`fill_nav_preview`] — the resident parsed active route (no per-frame
 //!   `RouteIndex` reparse) and the shared overview-preview fill.
 //! - [`replay_step`] — advance a GPX replay and tick the app on the **playback** clock.
-//! - [`NavPlan`] / [`finish_nav_plan`] — the resumable route planner held across frames (one
-//!   bounded step per frame, the board's one-step-per-pass shape) and the shared commit/answer
-//!   tail, generic over a host's route store via [`RouteRepository`].
+//! - [`NavPlan`] / [`commit_nav_plan`] — the resumable route planner held across frames (one
+//!   bounded step per frame, the board's one-step-per-pass shape) and the shared commit tail,
+//!   generic over a host's route store via [`RouteRepository`].
 //! - [`terrain`] — the one place a host resolves "the elevation source for this map" (EL7): the
 //!   `.obcd` sidecar mounted into an [`ElevationSource`](obc_route::ElevationSource), or the null
 //!   source when there is none.
 //! - [`trace`] — typed, normalized in-memory behavior traces and policy-free immediate/delayed
-//!   outcome scheduling used to pin the legacy DeviceCore boundary before ownership moves.
+//!   outcome scheduling, which the DeviceCore conformance matrix is built on.
 //! - [`VecSink`] — the in-memory [`ByteSink`](obc_formats::io::ByteSink) OBCR/GPX output collects into.
 //! - [`RgbaFrame`] — the in-memory RGBA8888 `DrawTarget` the browser hosts blit to a `<canvas>`
 //!   (the app demo and the builder's preset previews both draw into it).
@@ -32,7 +32,6 @@
 pub mod conformance;
 mod dispatch;
 mod frame;
-mod legacy;
 mod nav;
 mod replay;
 mod repo;
@@ -44,8 +43,7 @@ pub mod trace;
 
 pub use dispatch::{HostLoop, HostPlatform, InflightPlan, PlanHold};
 pub use frame::RgbaFrame;
-pub use legacy::LegacyLoop;
-pub use nav::{finish_detour_commit, finish_detour_plan, finish_nav_plan, DetourPlan, DetourReady, NavPlan};
+pub use nav::{commit_detour, commit_nav_plan, plan_detour_preview, DetourPlan, DetourReady, NavPlan};
 pub use replay::{initial_camera, replay_advance, ReplaySensors};
 pub use repo::{RideRepository, RouteRepository, TrackRepository, TripCatalog};
 pub use session::{fill_nav_preview, ActiveRouteSession};

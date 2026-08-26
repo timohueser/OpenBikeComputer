@@ -1,13 +1,12 @@
 //! The shared DeviceCore behaviour corpus (#1434 DC1, #1440 DC7).
 //!
-//! One scenario table, one set of fixtures and one legacy harness, used by two test binaries:
-//! `device_core_legacy_traces` pins what the legacy protocol does with them, and
-//! `device_core_conformance` runs the same definitions through five runners. Keeping the corpus
-//! here is what makes "the same scenario, a different runner" a fact about the code rather than
-//! about two hand-kept copies of a table.
+//! One scenario table, one set of fixtures and one [`CorpusState`], shared by every runner in
+//! `device_core_conformance`. Keeping the corpus here is what makes "the same scenario, a different
+//! runner" a fact about the code rather than about hand-kept copies of a table.
 //!
-//! Nothing here decides policy: the harness applies real `App` operations and real gestures, and the
-//! runner in `obc_host_core::trace` only controls *when* completed outcomes are delivered.
+//! Nothing here decides policy: [`CorpusState::apply_input`] applies real `App` operations and real
+//! gestures, and the runner in `obc_host_core::trace` only controls *when* completed outcomes are
+//! delivered.
 
 // A shared test corpus is compiled into every binary that includes it, and each uses a subset.
 #![allow(dead_code)]
@@ -15,18 +14,17 @@
 use obc_app::dfu::{clamp, DfuFailure, DfuInstallError, DfuScanError, DfuScanReport};
 use obc_app::screen::Screen;
 use obc_app::{
-    App, AppState, DetourPreview, Gesture, HostCommand, HostEvent, Mode, RideRetentionRecord, RideSummary,
-    RouteSummary, TrackAction, TripInput, WarningFlags,
+    App, AppState, DetourPreview, Gesture, HostEvent, Mode, RideRetentionRecord, RideSummary, RouteSummary,
+    TrackAction, TripInput, WarningFlags,
 };
 use obc_formats::io::{ByteSink, SliceSource};
 use obc_host_core::trace::{
-    run_scenario_seeded, CommandTag, EventTag, FeederCall, FeederKind, NormalizationSeed, ObjectKey, ObjectKind,
-    RevisionKey, RunnerMode, ScenarioStep, TimeKey, Trace, TraceHarness, TraceInput, TraceOutput, TraceRecorder,
-    TraceScenario, TraceSink,
+    CommandTag, EventTag, FeederCall, FeederKind, NormalizationSeed, ObjectKey, ObjectKind, RevisionKey, ScenarioStep,
+    TimeKey, Trace, TraceInput, TraceOutput, TraceRecorder, TraceScenario, TraceSink,
 };
-use obc_host_core::{LegacyLoop, PlanHold, RideRepository, RouteRepository, TripCatalog};
+use obc_host_core::{RideRepository, RouteRepository, TripCatalog};
 use obc_map_scene::BBox;
-use obc_ports::{Fix, InputClock, LocationSource, RideClock, Sensors, SettingsSaveError};
+use obc_ports::{Fix, InputClock, LocationSource, RideClock, Sensors};
 use obc_route::{gpx_to_obcr, NavError, RouteIndex, RouteReader};
 
 /// Every behavior row locked by DC1.  Keeping the inventory typed makes adding a scenario without
@@ -249,13 +247,14 @@ pub enum PendingSettingsResult {
     PersistRevision(u16),
 }
 
-/// The legacy adapter uses the real `App` protocol doors and `LegacyLoop`'s passive trace observer.
-/// Inputs are real public app operations or UI gestures; each pass runs the real command dispatcher;
-/// deliveries call the real `set_*` feeders and `apply_event`. Planner, detour-commit, recorder-finalize,
-/// and derived-fill completions are scripted at that protocol boundary because the legacy interfaces
-/// do not expose a deterministic completion seam. The fixture-backed `board_parity` suite separately
-/// exercises the real planner/repository path; this fast corpus must not be read as a second planner.
-pub struct LegacyHarness {
+/// The corpus's shared state: the `App` every runner drives, the repositories behind it, and the
+/// scripted completions a runner answers with.
+///
+/// Inputs are real public app operations or UI gestures. Planner, detour-commit,
+/// recorder-finalize and derived-fill completions are *scripted* here rather than computed, because
+/// this is a fast behaviour corpus and not a second planner: the real planner/repository path is
+/// exercised by the fixture-backed suites and by the simulator.
+pub struct CorpusState {
     pub app: App,
     pub routes: Vec<RouteSummary>,
     pub route_ids: Vec<u64>,
@@ -264,7 +263,6 @@ pub struct LegacyHarness {
     pub trip_stage_ids: Vec<u64>,
     pub trip_present: bool,
     pub nav_generation: u16,
-    pub host: LegacyLoop,
     pub fail_next_finalize: bool,
     pub commit_success_pending: bool,
     pub pending_nav_plan: Option<Result<u64, NavError>>,
@@ -277,7 +275,7 @@ pub struct LegacyHarness {
     pub settings_retry_requested: bool,
 }
 
-impl LegacyHarness {
+impl CorpusState {
     pub fn new() -> Self {
         let routes = vec![route("Alpha"), route("Beta"), route("Gamma")];
         let route_ids = vec![10, 20, 30];
@@ -297,7 +295,6 @@ impl LegacyHarness {
             trip_stage_ids,
             trip_present: true,
             nav_generation: 0,
-            host: LegacyLoop::new(),
             fail_next_finalize: false,
             commit_success_pending: false,
             pending_nav_plan: None,
@@ -311,6 +308,7 @@ impl LegacyHarness {
         }
     }
 
+    /// Record a host answer and apply it.
     pub fn event(&mut self, event: HostEvent, trace: &mut TraceRecorder<VisibleState>) {
         trace.record_event(&event);
         self.app.apply_event(event);
@@ -382,81 +380,10 @@ impl LegacyHarness {
         self.app.apply_gesture(Gesture::Press);
     }
 
-    pub fn snapshot_state(&self) -> VisibleState {
-        visible_state(&self.app, self.settings_revision, self.retention_delete_attempts)
-    }
-}
-
-/// The normalized rider-visible state every runner is compared on.
-pub fn visible_state(app: &App, settings_revision: u16, retention_delete_attempts: u16) -> VisibleState {
-    let screen = match app.top_screen() {
-        Screen::Home(_) => ScreenState::Home,
-        Screen::Menu(_) => ScreenState::Menu,
-        Screen::RouteMenu(_) => ScreenState::Routes,
-        Screen::RouteOverview(_) => ScreenState::RouteOverview,
-        Screen::Rides(_) => ScreenState::Rides,
-        Screen::RideDetail(_) => ScreenState::RideDetail,
-        Screen::Map(_) => ScreenState::Map,
-        Screen::Detour(_) => ScreenState::Detour,
-        Screen::NavPlanning(_) => ScreenState::Planning,
-        Screen::DetourPreview(_) => ScreenState::DetourPreview,
-        Screen::DfuCheck(_) => ScreenState::DfuCheck,
-        Screen::DfuConfirm(_) => ScreenState::DfuConfirm,
-        Screen::DfuProgress(_) => ScreenState::DfuProgress,
-        Screen::DfuInstalling(_) => ScreenState::DfuInstalling,
-        Screen::DfuError(_) => ScreenState::DfuError,
-        Screen::Warning(_) => ScreenState::Warning,
-        Screen::WeatherAlert(_) => ScreenState::WeatherAlert,
-        other => ScreenState::Other(other.name()),
-    };
-    VisibleState {
-        screen,
-        stack_depth: app.debug_stack_len(),
-        mode: app.mode(),
-        route_names: app.routes().iter().map(|item| item.name.as_str().to_owned()).collect(),
-        route_ids: app.route_ids().iter().map(|&id| fixture_object_key(ObjectKind::Route, id)).collect(),
-        ride_names: app.rides().iter().map(|item| item.name.as_str().to_owned()).collect(),
-        ride_ids: app.ride_ids().iter().map(|&id| fixture_object_key(ObjectKind::Ride, id)).collect(),
-        trip_names: app.trips().iter().map(|item| item.name.as_str().to_owned()).collect(),
-        trip_ids: app.trips().iter().map(|trip| fixture_object_key(ObjectKind::Trip, trip.id)).collect(),
-        active_route_name: app
-            .active_route_index()
-            .and_then(|index| app.routes().get(index))
-            .map(|item| item.name.as_str().to_owned()),
-        active_route_id: app
-            .active_route_index()
-            .and_then(|index| app.route_ids().get(index))
-            .map(|&id| fixture_object_key(ObjectKind::Route, id)),
-        requested_ride_id: app.ride_track_request().map(|id| fixture_object_key(ObjectKind::Ride, id)),
-        recording: app.activity.is_tracking(),
-        clock_trusted: app.clock_trusted(),
-        rain_steps_ahead: app.state.rain_steps_ahead,
-        settings_revision: match settings_revision {
-            0 => None,
-            1 => Some(RevisionKey(0)),
-            2 => Some(RevisionKey(1)),
-            other => panic!("unseeded fixture settings revision {other}"),
-        },
-        settings_utc_offset_min: app.settings().utc_offset_min,
-        pending_host_command: app.has_pending_host_command(),
-        nav_preview_missing: app.nav_preview_missing(),
-        warning: match app.top_screen() {
-            Screen::Warning(card) => Some(card.flags()),
-            _ => None,
-        },
-        retention_delete_attempts,
-    }
-}
-
-impl TraceHarness<Action> for LegacyHarness {
-    type State = VisibleState;
-    type Outcome = Outcome;
-
-    fn snapshot(&self) -> Self::State {
-        self.snapshot_state()
-    }
-
-    fn apply_input(&mut self, action: &Action, trace: &mut TraceRecorder<Self::State>) {
+    /// Apply one rider input. Shared by every runner: the corpus's inputs are real public app
+    /// operations and UI gestures, so what a runner *is* differs only in how the work they produce
+    /// is served.
+    pub fn apply_input(&mut self, action: &Action, trace: &mut TraceRecorder<VisibleState>) {
         match action {
             Action::Settle => {}
             Action::StoreChanged => self.event(HostEvent::StoreChanged, trace),
@@ -703,130 +630,69 @@ impl TraceHarness<Action> for LegacyHarness {
         }
     }
 
-    fn run_pass(&mut self, trace: &mut TraceRecorder<Self::State>) -> Vec<Self::Outcome> {
-        let ride_track_need = self.app.ride_track_request();
-        let mut route_repo = BorrowedRoutes {
-            catalog: &mut self.routes,
-            ids: &mut self.route_ids,
-            fail_delete_once: &mut self.route_delete_fail_once,
-            delete_attempts: &mut self.retention_delete_attempts,
-        };
-        let mut ride_repo = BorrowedRides { catalog: &mut self.rides, ids: &mut self.ride_ids };
-        let mut trip_repo = BorrowedTrips { present: &mut self.trip_present, stage_ids: &self.trip_stage_ids };
-        let mut platform = Vec::new();
-        let finish = self.host.reconcile_commands_traced(
-            &mut self.app,
-            &mut route_repo,
-            &mut ride_repo,
-            &mut trip_repo,
-            PlanHold::new(true, true),
-            true,
-            true,
-            |_app, command| platform.push(command),
-            trace,
-        );
-        let mut outcomes = Vec::new();
-        if let Some(result) = self.pending_nav_plan.take() {
-            outcomes.push(Outcome::Event(HostEvent::NavPlanned(result)));
-        }
-        if matches!(finish, Some(TrackAction::Save)) {
-            if std::mem::take(&mut self.fail_next_finalize) {
-                outcomes.push(Outcome::FinalizeFailed);
-            } else {
-                outcomes.push(Outcome::FinishSave);
-            }
-        }
-        if platform.iter().any(|command| matches!(command, HostCommand::ScanCardFree)) {
-            outcomes.push(Outcome::CardScanned);
-        }
-        let persisted_revision = platform.iter().find_map(|command| match command {
-            HostCommand::PersistSettings { revision } => Some(*revision),
-            _ => None,
-        });
-        let ready_settings_result = !matches!(self.pending_settings_result, Some(PendingSettingsResult::PersistLatest))
-            || persisted_revision.is_some();
-        if ready_settings_result {
-            if let Some(result) = self.pending_settings_result.take() {
-                let revision = match result {
-                    PendingSettingsResult::PersistRevision(revision) => revision,
-                    PendingSettingsResult::PersistLatest | PendingSettingsResult::FailLatest => {
-                        persisted_revision.unwrap_or(self.settings_revision)
-                    }
-                };
-                outcomes.push(Outcome::Event(match result {
-                    PendingSettingsResult::FailLatest => {
-                        HostEvent::SettingsPersistFailed { revision, error: SettingsSaveError::Backend }
-                    }
-                    PendingSettingsResult::PersistLatest | PendingSettingsResult::PersistRevision(_) => {
-                        HostEvent::SettingsPersisted { revision }
-                    }
-                }));
-            }
-        }
-        for command in platform {
-            match command {
-                HostCommand::Dfu(obc_app::DfuAction::Scan) => {
-                    if let Some(result) = self.pending_dfu_scan.take() {
-                        outcomes.push(Outcome::Event(HostEvent::DfuScanned(result)));
-                    }
-                }
-                HostCommand::Dfu(obc_app::DfuAction::Install) => {
-                    if let Some(result) = self.pending_dfu_install.take() {
-                        outcomes.push(Outcome::Event(match result {
-                            Ok(()) => HostEvent::DfuInstallBegan,
-                            Err(error) => HostEvent::DfuInstallFailed(error),
-                        }));
-                    }
-                }
-                _ => {}
-            }
-        }
-        if let Some(id) = ride_track_need {
-            outcomes.push(Outcome::RideTrack { id });
-        }
-        if self.app.nav_preview_missing() {
-            outcomes.push(Outcome::NavPreview { generation: self.nav_generation });
-        }
-        if std::mem::take(&mut self.commit_success_pending) {
-            outcomes.push(Outcome::DetourCommitted);
-        }
-        outcomes
+    pub fn snapshot_state(&self) -> VisibleState {
+        visible_state(&self.app, self.settings_revision, self.retention_delete_attempts)
     }
+}
 
-    fn deliver(&mut self, outcome: Self::Outcome, trace: &mut TraceRecorder<Self::State>) {
-        match outcome {
-            Outcome::Event(event) => {
-                let settings_failed = matches!(event, HostEvent::SettingsPersistFailed { .. });
-                self.event(event, trace);
-                if settings_failed && self.settings_retry_requested {
-                    self.app.advance_animations(InputClock(SETTINGS_FAILURE_RETRY_MS));
-                }
-            }
-            Outcome::FinishSave => self.feed_rides("recorder.saved", trace),
-            Outcome::FinalizeFailed => self.event(HostEvent::Warning(WarningFlags::REC_ERROR), trace),
-            Outcome::CardScanned => self.event(HostEvent::CardScanned { free_bytes: Some(8 * 1024 * 1024) }, trace),
-            Outcome::RideTrack { id } => {
-                let current = self.app.ride_track_request();
-                let data = ride_delivery_key(id, current);
-                // Legacy bulk feeders are not request-keyed. Record and apply even stale attempts;
-                // accepting this fill for a replacement view is a characterized compatibility defect.
-                self.app.set_ride_profile(None);
-                self.app.set_ride_preview(&[(0, 0), (1, 1)]);
-                trace.record_feeder(FeederCall::new(FeederKind::RideProfile, data, 0));
-                trace.record_feeder(FeederCall::new(FeederKind::RidePreview, data, 2));
-            }
-            Outcome::NavPreview { generation } => {
-                let data = nav_delivery_key(generation, self.nav_generation);
-                // The legacy preview feeder has no generation argument, so delayed old data is
-                // attempted against the current request and may satisfy it incorrectly.
-                self.app.set_nav_preview(&[(0, 0), (1, 1)]);
-                trace.record_feeder(FeederCall::new(FeederKind::NavPreview, data, 2));
-            }
-            Outcome::DetourCommitted => {
-                self.feed_routes("detour.commit", trace);
-                self.event(HostEvent::DetourCommitted(Ok(10)), trace);
-            }
-        }
+/// The normalized rider-visible state every runner is compared on.
+pub fn visible_state(app: &App, settings_revision: u16, retention_delete_attempts: u16) -> VisibleState {
+    let screen = match app.top_screen() {
+        Screen::Home(_) => ScreenState::Home,
+        Screen::Menu(_) => ScreenState::Menu,
+        Screen::RouteMenu(_) => ScreenState::Routes,
+        Screen::RouteOverview(_) => ScreenState::RouteOverview,
+        Screen::Rides(_) => ScreenState::Rides,
+        Screen::RideDetail(_) => ScreenState::RideDetail,
+        Screen::Map(_) => ScreenState::Map,
+        Screen::Detour(_) => ScreenState::Detour,
+        Screen::NavPlanning(_) => ScreenState::Planning,
+        Screen::DetourPreview(_) => ScreenState::DetourPreview,
+        Screen::DfuCheck(_) => ScreenState::DfuCheck,
+        Screen::DfuConfirm(_) => ScreenState::DfuConfirm,
+        Screen::DfuProgress(_) => ScreenState::DfuProgress,
+        Screen::DfuInstalling(_) => ScreenState::DfuInstalling,
+        Screen::DfuError(_) => ScreenState::DfuError,
+        Screen::Warning(_) => ScreenState::Warning,
+        Screen::WeatherAlert(_) => ScreenState::WeatherAlert,
+        other => ScreenState::Other(other.name()),
+    };
+    VisibleState {
+        screen,
+        stack_depth: app.debug_stack_len(),
+        mode: app.mode(),
+        route_names: app.routes().iter().map(|item| item.name.as_str().to_owned()).collect(),
+        route_ids: app.route_ids().iter().map(|&id| fixture_object_key(ObjectKind::Route, id)).collect(),
+        ride_names: app.rides().iter().map(|item| item.name.as_str().to_owned()).collect(),
+        ride_ids: app.ride_ids().iter().map(|&id| fixture_object_key(ObjectKind::Ride, id)).collect(),
+        trip_names: app.trips().iter().map(|item| item.name.as_str().to_owned()).collect(),
+        trip_ids: app.trips().iter().map(|trip| fixture_object_key(ObjectKind::Trip, trip.id)).collect(),
+        active_route_name: app
+            .active_route_index()
+            .and_then(|index| app.routes().get(index))
+            .map(|item| item.name.as_str().to_owned()),
+        active_route_id: app
+            .active_route_index()
+            .and_then(|index| app.route_ids().get(index))
+            .map(|&id| fixture_object_key(ObjectKind::Route, id)),
+        requested_ride_id: app.ride_track_request().map(|id| fixture_object_key(ObjectKind::Ride, id)),
+        recording: app.activity.is_tracking(),
+        clock_trusted: app.clock_trusted(),
+        rain_steps_ahead: app.state.rain_steps_ahead,
+        settings_revision: match settings_revision {
+            0 => None,
+            1 => Some(RevisionKey(0)),
+            2 => Some(RevisionKey(1)),
+            other => panic!("unseeded fixture settings revision {other}"),
+        },
+        settings_utc_offset_min: app.settings().utc_offset_min,
+        pending_host_command: app.has_pending_host_command(),
+        nav_preview_missing: app.nav_preview_missing(),
+        warning: match app.top_screen() {
+            Screen::Warning(card) => Some(card.flags()),
+            _ => None,
+        },
+        retention_delete_attempts,
     }
 }
 
@@ -1202,7 +1068,7 @@ pub const SCENARIOS: &[Scenario] = &[
 ];
 
 /// The animation clock a delivered settings failure moves the app to, so the bounded retry window
-/// has elapsed by the time the retry action runs. Used by [`LegacyHarness::deliver`] and by any
+/// has elapsed by the time the retry action runs. Used by [`CorpusState::deliver`] and by any
 /// runner that owns a pass clock of its own.
 pub const SETTINGS_FAILURE_RETRY_MS: u32 = 6_003;
 
@@ -1301,25 +1167,6 @@ pub fn normalization_seed() -> NormalizationSeed {
         revisions: vec![(1, RevisionKey(0)), (2, RevisionKey(1))],
         times: vec![(1_720_000_000, TimeKey(0)), (1_720_000_060, TimeKey(1)), (1_720_000_120, TimeKey(2))],
     }
-}
-
-pub fn run_legacy(
-    scenario: &TraceScenario<Action>,
-    mode: RunnerMode,
-    harness: &mut LegacyHarness,
-) -> Trace<VisibleState> {
-    run_scenario_seeded(scenario, mode, &normalization_seed(), harness)
-        .unwrap_or_else(|error| panic!("{} failed in {mode:?}: {error:?}", scenario.name))
-}
-
-pub fn run_matrix(mode: RunnerMode) -> Vec<Trace<VisibleState>> {
-    SCENARIOS
-        .iter()
-        .map(|scenario| {
-            let mut harness = LegacyHarness::new();
-            run_legacy(&definition(scenario), mode, &mut harness)
-        })
-        .collect()
 }
 
 pub fn step<'a>(
