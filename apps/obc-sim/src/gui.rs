@@ -1042,8 +1042,9 @@ impl eframe::App for SimGui {
             // tap that also releases inside one long frame still produces an edge. ←/→ then have
             // their press events eaten, so a focused slider or text field does not act on them as
             // well: the device keys belong to the device. Consuming does not touch `key_down`, and
-            // a key-repeat can queue more than one press per frame, so drain them.
-            let held = |i: &egui::InputState, k| i.key_down(k) || i.key_pressed(k);
+            // a key-repeat can queue more than one press per frame, so drain them. A modified
+            // arrow (Cmd/Ctrl-←) is an editing shortcut, not a device key: it is left alone.
+            let held = |i: &egui::InputState, k| i.modifiers.is_none() && (i.key_down(k) || i.key_pressed(k));
             let (left, right) = (held(i, egui::Key::ArrowLeft), held(i, egui::Key::ArrowRight));
             let (enter, back) = (held(i, egui::Key::Enter), held(i, egui::Key::Backspace));
             for key in [egui::Key::ArrowLeft, egui::Key::ArrowRight] {
