@@ -3217,21 +3217,29 @@ impl App {
         // possible Map — writes `rx.stats`; the overlays above it leave the stats untouched).
         // A drained region clip makes it reject whole out-of-region primitives — the half of a
         // region-scoped repaint the target's pixel clip can't save (#500 follow-up).
-        // A drawer **recesses** the base rather than replacing it: the base is drawn through the
-        // dim LUT composed with the host's own colour policy, the sheet through the untouched one.
-        // Two `Canvas`es over the same target — no capture buffer, no second framebuffer, no alpha
-        // for a 64-colour panel to approximate.
-        let recessed = ui.stack.iter().skip(base + 1).any(|s| s.is_overlay());
-        if recessed {
-            let dim = |c| color_fn(screen::dim_color(c));
-            let mut cv = Canvas::new(target, &dim);
-            cv.set_clip(render_clip);
-            ui.stack[base].draw(&mut cv, &mut rx);
-        }
-        let mut cv = Canvas::new(target, &color_fn);
+        // A drawer **recesses** the base rather than replacing it: the base draws through the dim
+        // LUT composed with the host's own colour policy, the sheet through the untouched one. No
+        // capture buffer, no second framebuffer, no alpha for a 64-colour panel to approximate.
+        //
+        // The switch is a `Cell` inside **one** colour closure rather than a second `Canvas` with a
+        // second closure type, and that is not a style choice: `Screen::draw` is generic over the
+        // colour function, so a second closure type monomorphises the *entire* screen catalogue and
+        // the map renderer a second time — measured at +147 KB of flash on the board. One closure
+        // type, one branch per colour lookup.
+        let recess = core::cell::Cell::new(ui.stack.iter().skip(base + 1).any(|s| s.is_overlay()));
+        let policy = |c: u16| color_fn(if recess.get() { screen::dim_color(c) } else { c });
+        // The one Canvas of the frame: every screen draws through it (the base screen — the only
+        // possible Map — writes `rx.stats`; the overlays above it leave the stats untouched).
+        // A drained region clip makes it reject whole out-of-region primitives — the half of a
+        // region-scoped repaint the target's pixel clip can't save (#500 follow-up).
+        let mut cv = Canvas::new(target, &policy);
         cv.set_clip(render_clip);
-        for scr in ui.stack.iter().skip(if recessed { base + 1 } else { base }) {
+        for (i, scr) in ui.stack.iter().enumerate().skip(base) {
             scr.draw(&mut cv, &mut rx);
+            // Everything above the base is the sheet itself, at full colour.
+            if i == base {
+                recess.set(false);
+            }
         }
         rx.stats
     }
