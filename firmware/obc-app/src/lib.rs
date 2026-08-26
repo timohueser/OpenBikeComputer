@@ -52,6 +52,7 @@ pub mod navigator;
 pub mod next_ahead;
 pub(crate) mod placement;
 pub mod recorder;
+pub(crate) mod render_key;
 pub mod retention;
 pub mod ride;
 pub(crate) mod ride_engine;
