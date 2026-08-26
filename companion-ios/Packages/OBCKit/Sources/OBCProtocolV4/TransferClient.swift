@@ -1,14 +1,16 @@
 import Foundation
 
 /// The physical facts protocol v4 needs from BLE or USB. Implementations preserve record
-/// boundaries, order a control write before stream records for that request, and restore a broken
-/// link. They do not interpret frames or retain operation state.
+/// boundaries, order a control write before stream records for that request, release a parked
+/// receive on request, and restore a broken link. They do not interpret frames or retain
+/// operation state.
 public protocol TransferLink: Sendable {
     var maximumStreamPayload: Int { get }
     func sendControlRecord(_ record: Data) async throws
     func receiveControlRecord() async throws -> Data
     func sendStreamRecord(_ record: Data) async throws
     func receiveStreamRecord() async throws -> Data
+    func cancelControlReceive() async
     func cancelStreamReceive() async
     func restore() async throws
 }
@@ -236,7 +238,7 @@ public actor TransferClient {
         do {
             try await withThrowingTaskGroup(of: Part.self) { group in
                 group.addTask { [link] in
-                    let record = try await link.receiveControlRecord()
+                    let record = try await awaitControlRecord(on: link)
                     let response = try ControlResponse(
                         decoding: record, expectedOpcode: .get, expectedRequestID: requestID)
                     guard case .get(let result) = response else { throw TransferClientError.unexpectedResponse }
@@ -298,7 +300,7 @@ public actor TransferClient {
         var result: PutResult?
         try await withThrowingTaskGroup(of: Part.self) { group in
             group.addTask { [link] in
-                let record = try await link.receiveControlRecord()
+                let record = try await awaitControlRecord(on: link)
                 let response = try ControlResponse(
                     decoding: record, expectedOpcode: .put, expectedRequestID: requestID)
                 guard case .put(let result) = response else { throw TransferClientError.unexpectedResponse }
@@ -353,7 +355,7 @@ public actor TransferClient {
         let requestID = try makeRequestID()
         try await link.sendControlRecord(try request.frame(requestID: requestID).encode())
         return try ControlResponse(
-            decoding: try await link.receiveControlRecord(),
+            decoding: try await awaitControlRecord(on: link),
             expectedOpcode: opcode, expectedRequestID: requestID)
     }
 
@@ -439,6 +441,21 @@ public actor TransferClient {
 
     private func release() {
         if operationWaiters.isEmpty { busy = false } else { operationWaiters.removeFirst().resume() }
+    }
+}
+
+/// Wait for a control answer, and tell the link when this operation stops waiting.
+///
+/// A task group returns only once every child has finished, so an announce-and-stream pair never
+/// unwinds while its answer is still parked on the link: a stream lane that dies before the first
+/// record leaves the peer holding the announced transfer and the phone sending nothing more. The
+/// receive that outlives its operation has to be released from the outside — cancellation is the
+/// only signal that reaches it.
+private func awaitControlRecord(on link: any TransferLink) async throws -> Data {
+    try await withTaskCancellationHandler {
+        try await link.receiveControlRecord()
+    } onCancel: {
+        Task { await link.cancelControlReceive() }
     }
 }
 

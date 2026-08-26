@@ -48,6 +48,122 @@ struct TransferClientTests {
         #expect(result.objectID == ObjectID(rawValue: 42))
         #expect(opcodes == [.list, .put])
     }
+
+    @Test(
+        "A stream lane that dies before the first record unwinds the announced PUT",
+        .timeLimit(.minutes(1)))
+    func streamDropWithNoAnswerReconciles() async throws {
+        let payload = Data("protocol v4 replacement".utf8)
+        let link = AbandonedAnswerLink(payload: payload)
+        let client = TransferClient(link: link, firstRequestID: 0x5300)
+
+        let result = try await client.put(
+            payload, objectID: ObjectID(rawValue: 9), expectedRevision: Revision(rawValue: 3),
+            kind: .route, displayName: "Alpine Loop")
+
+        #expect(result.objectID == ObjectID(rawValue: 9))
+        #expect(result.revision == Revision(rawValue: 4))
+        let trace = await link.trace
+        #expect(trace.opcodes == [.list, .put, .list, .status, .put])
+        #expect(trace.streamOffsets == [0, 8, 16])
+        #expect(trace.controlCancels == 1)
+        #expect(trace.restores == 1)
+    }
+}
+
+/// The wedge shape of a lost CoC: the announce reaches the peer, not one stream byte follows, and
+/// the peer answers nothing. Only the client asking for it releases the parked PUT answer — a real
+/// link has no other way out, which is what turned this into a hang.
+private actor AbandonedAnswerLink: TransferLink {
+    nonisolated let maximumStreamPayload = 8
+
+    struct Trace: Sendable {
+        var opcodes: [Opcode] = []
+        var streamOffsets: [UInt64] = []
+        var controlCancels = 0
+        var restores = 0
+    }
+
+    private let payload: Data
+    private let storeID = Data([0x14, 0x7b, 0xc0, 0x39, 0x8a, 0x62, 0x4d, 0x11,
+                                0x9e, 0x05, 0x33, 0xf7, 0x2a, 0xb8, 0x61, 0x4c])
+    private var pending: ControlFrame?
+    private var answerWaiter: CheckedContinuation<Data, Error>?
+    private var readyAnswer: Data?
+    private var putAttempts = 0
+    private var state = Trace()
+
+    init(payload: Data) { self.payload = payload }
+    var trace: Trace { state }
+
+    func sendControlRecord(_ record: Data) async throws {
+        let frame = try ControlFrame(decoding: record, direction: .request)
+        pending = frame
+        state.opcodes.append(frame.opcode)
+        if frame.opcode == .put { putAttempts += 1 }
+    }
+
+    func receiveControlRecord() async throws -> Data {
+        guard let frame = pending else { throw TransferClientError.unexpectedResponse }
+        pending = nil
+        switch frame.opcode {
+        case .list:
+            var body = storeID
+            body.appendLE(UInt64(7))
+            return response(opcode: .list, requestID: frame.requestID, payload: body)
+        case .status:
+            var body = Data([StatusState.superseded.rawValue, 0, 0, 0])
+            body.appendLE(UInt64(3))
+            body.appendLE(UInt64(12))
+            body.appendLE(UInt32(0x1234_5678))
+            return response(opcode: .status, requestID: frame.requestID, payload: body)
+        case .put:
+            if let readyAnswer {
+                self.readyAnswer = nil
+                return readyAnswer
+            }
+            return try await withCheckedThrowingContinuation { answerWaiter = $0 }
+        default:
+            throw TransferClientError.unexpectedResponse
+        }
+    }
+
+    func sendStreamRecord(_ record: Data) async throws {
+        let stream = try StreamRecord(decoding: record)
+        guard putAttempts > 1 else { throw TransferLinkLost() }
+        state.streamOffsets.append(stream.offset)
+        guard stream.offset + UInt64(stream.payload.count) == UInt64(payload.count) else { return }
+        var body = Data()
+        body.appendLE(UInt64(9))
+        body.appendLE(UInt64(4))
+        body.appendLE(UInt64(payload.count))
+        body.appendLE(CRC32.checksum(payload))
+        body.appendLE(UInt32(0))
+        let answer = response(opcode: .put, requestID: stream.requestID, payload: body)
+        if let answerWaiter {
+            self.answerWaiter = nil
+            answerWaiter.resume(returning: answer)
+        } else {
+            readyAnswer = answer
+        }
+    }
+
+    func receiveStreamRecord() async throws -> Data { throw TransferClientError.unexpectedStream }
+
+    func cancelControlReceive() async {
+        state.controlCancels += 1
+        answerWaiter?.resume(throwing: CancellationError())
+        answerWaiter = nil
+    }
+
+    func cancelStreamReceive() async {}
+    func restore() async throws { state.restores += 1 }
+
+    private func response(opcode: Opcode, requestID: RequestID, payload: Data) -> Data {
+        ControlFrame(
+            opcode: opcode, flags: ControlFrame.responseFlag,
+            requestID: requestID, payload: payload).encode()
+    }
 }
 
 private actor PagedIdentityLink: TransferLink {
@@ -90,6 +206,7 @@ private actor PagedIdentityLink: TransferLink {
 
     func sendStreamRecord(_ record: Data) async throws { throw TransferClientError.unexpectedStream }
     func receiveStreamRecord() async throws -> Data { throw TransferClientError.unexpectedStream }
+    func cancelControlReceive() async {}
     func cancelStreamReceive() async {}
     func restore() async throws {}
 }
@@ -168,6 +285,7 @@ private actor FreshCreateLink: TransferLink {
     }
 
     func receiveStreamRecord() async throws -> Data { throw TransferClientError.unexpectedStream }
+    func cancelControlReceive() async {}
     func cancelStreamReceive() async {}
     func restore() async throws {}
 }
@@ -237,8 +355,6 @@ private actor DisconnectingLink: TransferLink {
         putRecords += 1
         if putAttempts == 1, putRecords == 2 {
             firstPutBroke = true
-            responseWaiter?.resume(throwing: TransferLinkLost())
-            responseWaiter = nil
             throw TransferLinkLost()
         }
         if putAttempts == 2, stream.offset + UInt64(stream.payload.count) == UInt64(payload.count) {
@@ -259,6 +375,12 @@ private actor DisconnectingLink: TransferLink {
     }
 
     func receiveStreamRecord() async throws -> Data { throw TransferLinkLost() }
+
+    func cancelControlReceive() async {
+        responseWaiter?.resume(throwing: CancellationError())
+        responseWaiter = nil
+    }
+
     func cancelStreamReceive() async {}
     func restore() async throws { state.restores += 1 }
 
