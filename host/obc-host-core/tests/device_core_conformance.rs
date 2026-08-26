@@ -335,10 +335,7 @@ impl CoreHarness {
                 }
             }
         }
-        if let Some(outcome) = marks_answer {
-            done.push(Done::Settings(outcome));
-            return;
-        }
+
         if let Some(effect) = effects.dfu.take() {
             self.served.insert("dfu");
             if let Some(outcome) = self.serve_dfu(effect) {
@@ -351,7 +348,13 @@ impl CoreHarness {
             done.push(Done::Storage(StorageInfoOutcome::Measured { token, free_bytes: 8 * 1024 * 1024 }));
         }
         assert!(!effects.has_pending(), "recorder, weather and bond are the domains a host cannot reach in Phase 1");
-        self.serve_scripted(persisted, done);
+        // The marks record shares the settings slot but has no script of its own, so it answers
+        // here and `serve_scripted` — whose settings answer is the corpus's, keyed to the
+        // preferences write — is skipped for that pass only.
+        match marks_answer {
+            Some(outcome) => done.push(Done::Settings(outcome)),
+            None => self.serve_scripted(persisted, done),
+        }
     }
 
     /// Serve one navigation operation from the corpus's scripted planner answers.
