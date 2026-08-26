@@ -66,8 +66,7 @@ pub(crate) static INPUT_WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new(
 /// alternating `VCOM`/`VB`/`VA` so the panel never DC-biases, whatever the map plane is doing)
 /// **and** the gesture-input plane (so button latency stays exact during a ~44 ms full-frame scan —
 /// the M33 now *awaits* that scan (#347), but a deep map render still occupies thread mode). Pended
-/// from the SWI01 vector @ P3 (SWI00 is MPSL's low-prio lane on `ble` builds, so every build pends
-/// from SWI01). Lives with the input plane because [`input_task`] is spawned onto it here; `main`
+/// from the SWI01 vector @ P3 (SWI00 is MPSL's low-prio lane). Lives with the input plane because [`input_task`] is spawned onto it here; `main`
 /// starts it and spawns the COM task onto the same executor.
 pub(crate) static EXECUTOR_HP: InterruptExecutor = InterruptExecutor::new();
 

@@ -19,8 +19,8 @@
 //! ## RAM
 //!
 //! Everything resident is a named static below (the `MaybeUninit`-in-`.bss` pattern — see
-//! [`crate::init_static`]). [`RESIDENT_BYTES`] sums them for the budget assert in `main.rs`, so the BLE
-//! build's fit on the 256 KB DK is enforced at compile time like the map build's.
+//! [`crate::init_static`]). [`RESIDENT_BYTES`] sums them for the budget assert in `main.rs`, so the
+//! radio's fit on the 256 KB DK is enforced at compile time like the map plane's.
 //!
 //! ## Clocking
 //!
@@ -147,8 +147,8 @@ pub(crate) type Resources = HostResources<
     BONDS_MAX,
 >;
 
-/// The BLE build's resident statics, summed for the budget assert in `main.rs` (the `ble` analogue of
-/// the map build's App/cache terms): the MPSL handle, the SDC memory block, TrouBLE's
+/// The radio's resident statics, summed for the budget assert in `main.rs` (the analogue of the map
+/// plane's App/cache terms): the MPSL handle, the SDC memory block, TrouBLE's
 /// [`Resources`] arena, TrouBLE's **global `DEFAULT_POOL`** packet pool (`DefaultPacketPool` is a
 /// type alias for the concrete pool struct, so its `size_of` *is* the pool's ~4 KB — sized by the
 /// `default-packet-pool-mtu-251` feature), the CRACEN RNG the LL's crypto pulls from, and the

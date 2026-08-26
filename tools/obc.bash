@@ -94,9 +94,9 @@ _obc() {
       (( idx == 0 )) && { compopt -o filenames 2>/dev/null; _obc_reply < <(compgen -W "$(_obc_gpx)" -- "$cur"; compgen -f -X '!*.gpx' -- "$cur"); } ;;
     debug)
       compopt -o filenames 2>/dev/null
-      _obc_reply < <(compgen -W "ble $(_obc_gpx)" -- "$cur"; compgen -f -X '!*.gpx' -- "$cur") ;;
+      _obc_reply < <(compgen -W "$(_obc_gpx)" -- "$cur"; compgen -f -X '!*.gpx' -- "$cur") ;;
     flash)
-      _obc_reply < <(compgen -W "ble debug-uart synth build" -- "$cur") ;;
+      _obc_reply < <(compgen -W "debug-uart synth build" -- "$cur") ;;
     pack)
       case "$idx" in
         0) compopt -o filenames 2>/dev/null; _obc_reply < <(compgen -f -X '!*.pbf' -- "$cur"; compgen -d -- "$cur") ;;

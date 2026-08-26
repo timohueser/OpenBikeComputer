@@ -66,11 +66,9 @@ discovered from `.cargo/config.toml` by the working directory, not by
 silently targets the host and fails):
 
 ```sh
+# One image: the map/ride app, the nrf-sdc + TrouBLE radio stack and the USB device plane.
+# The board crate README has the pins, flashing, and on-glass verify.
 cd firmware/obc-fw-nrf54l && cargo build --release    # see that crate's README to flash
-
-# The BLE build (companion-app link): the same firmware with the nrf-sdc + TrouBLE stack
-# folded in. The board crate README has the pins, flashing, and on-glass verify.
-cd firmware/obc-fw-nrf54l && cargo build --release --no-default-features --features ble
 ```
 
 The host-tested, radio-free BLE core (`obc-ble`) is a normal workspace member, so the
