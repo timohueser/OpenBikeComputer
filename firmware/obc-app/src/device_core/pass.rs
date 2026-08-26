@@ -209,6 +209,38 @@ pub struct PassPlan {
     pub immediate: bool,
 }
 
+/// The **overlay plane's** two levels, as one value (#1447).
+///
+/// The overlay is the cheap transient layer: the hold bulge and the Recalculating banner. Its
+/// repaint rule is not the map's — it is two rules over two levels, which used to be three separate
+/// level-to-edge converters (`InputPlane::overlay_was_active`, `UiRuntime::overlay_edge` and
+/// `CoreMode::engaged_shown`) producing one boolean per frame between them.
+///
+/// - The **bulge** repaints while it is live, plus exactly one trailing frame after it goes quiet,
+///   so the last bulge is cleared off the layer rather than left painted over an unchanged map.
+/// - The **banner** repaints when the freeze's *engaged* level flips, either way. It is a level and
+///   not the search's own start edge: a plan begun under the opaque planning spinner engages
+///   nothing, and the pass that puts a map base back under a still-running search raises no search
+///   edge at all. Keyed on the start edge, the banner would be spent on a chrome frame and the
+///   rider would then look at a frozen screen with no explanation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OverlayKey {
+    /// The hold bulge is charging, popping or retracting.
+    pub(crate) hold: bool,
+    /// A search holds the nav arm *and* the base screen would draw a map.
+    pub(crate) freeze: bool,
+}
+
+impl OverlayKey {
+    /// The boot level: nothing charging, nothing frozen.
+    const QUIET: OverlayKey = OverlayKey { hold: false, freeze: false };
+
+    /// Whether the overlay plane must be repainted, given the level at the previous drain.
+    fn dirty_against(self, previous: OverlayKey) -> bool {
+        (self.hold || previous.hold) || (self.freeze != previous.freeze)
+    }
+}
+
 /// The coordinator's own resident state: the connections, the levels a stage compares against to
 /// find an edge, the current capabilities, and the re-entrancy guard.
 ///
@@ -234,6 +266,9 @@ pub(crate) struct PassState {
     active_route: Option<crate::CatalogObjectId>,
     /// What the device can currently do, recalculated at stage 12.
     capabilities: Capabilities,
+    /// The overlay plane's levels at the last drain — the one converter behind
+    /// [`Dirty::overlay`](crate::Dirty::overlay). See [`OverlayKey`].
+    overlay: OverlayKey,
     /// Whether a pass is running. The push doors refuse while it is set.
     in_pass: bool,
     /// The stages this pass ran, in order.
@@ -252,6 +287,7 @@ impl PassState {
             link: None,
             active_route: None,
             capabilities: Capabilities::NONE,
+            overlay: OverlayKey::QUIET,
             in_pass: false,
             #[cfg(test)]
             trace: heapless::Vec::new(),
@@ -275,6 +311,13 @@ impl PassState {
     /// Close the pass.
     fn leave(&mut self) {
         self.in_pass = false;
+    }
+
+    /// Fold this frame's overlay levels against the last drain's, then remember them. Call exactly
+    /// once per frame: the bulge's trailing clear is tracked across calls, so a second drain in one
+    /// frame swallows it.
+    pub(crate) fn take_overlay_dirty(&mut self, now: OverlayKey) -> bool {
+        now.dirty_against(core::mem::replace(&mut self.overlay, now))
     }
 
     /// Note that a stage ran. Free outside tests: the recorder exists so the *order* can be
@@ -305,6 +348,10 @@ impl App {
     pub fn run_pass(&mut self, inputs: PassInputs<'_>) -> PassPlan {
         let PassInputs { now, gestures, sensors, route, support, outcomes, facts, derived, targets } = inputs;
         self.pass.enter();
+        // The visible screens' exact facts, as they are *before* any stage runs (#1447). Held on
+        // this frame's stack and nowhere else: a resident copy would be one more mirror of the state
+        // it is describing. The twin below closes the comparison — see `crate::render_key`.
+        let key_before = self.render_key();
         // The previous pass's later-to-earlier deposits become visible here — before any new
         // outcome, fact or gesture, so an earlier component acts on them ahead of new user input.
         self.pass.connections.promote_deferred();
@@ -324,6 +371,13 @@ impl App {
         self.stage_platform(&mut effects);
         self.stage_admission(support);
         self.stage_faults();
+        // Every stage has run: whatever the visible screens draw is now final for this frame. A
+        // moved key is a repaint, folded in *before* stage 14 drains the demand, so the explicit
+        // requests the stages made and the region-scoped tick demand fold together exactly as they
+        // always have (a full-frame demand still overrides a region — over-redraw stays safe).
+        if self.render_key() != key_before {
+            self.ui.map_dirty = true;
+        }
         let plan = self.stage_plan(now, effects);
 
         self.pass.leave();
@@ -1674,6 +1728,37 @@ mod tests {
 
         // The keyed answer cleared the need it answered.
         assert!(plan.derived_needs.ride_track.is_none(), "the ride track is answered");
+    }
+
+    /// The overlay converter's two rules, on the levels themselves (#1447).
+    ///
+    /// The **freeze** half is the named regression the engaged level exists for: the search's own
+    /// start edge fires under the planning spinner, where nothing freezes — and the pass that puts a
+    /// map base back under the still-live search raises no search edge at all. A host keyed on the
+    /// start edge would never be told to paint the banner for the whole of that search.
+    #[test]
+    fn the_overlay_key_repaints_on_the_engaged_level_and_the_bulge_trailing_edge() {
+        let mut pass = PassState::new();
+        let quiet = OverlayKey { hold: false, freeze: false };
+        assert!(!pass.take_overlay_dirty(quiet), "at rest there is nothing to repaint");
+
+        // A search under the opaque spinner: a chrome base, so nothing is engaged.
+        assert!(!pass.take_overlay_dirty(OverlayKey { hold: false, freeze: false }));
+        // The spinner goes and a map base is back — no search edge, but *this* is the freeze.
+        assert!(pass.take_overlay_dirty(OverlayKey { hold: false, freeze: true }), "the banner appears");
+        assert!(
+            !pass.take_overlay_dirty(OverlayKey { hold: false, freeze: true }),
+            "a level, so one repaint — not one per ride-loop pass"
+        );
+        assert!(pass.take_overlay_dirty(quiet), "and one more to take the banner off");
+        assert!(!pass.take_overlay_dirty(quiet));
+
+        // The bulge: live while it animates, plus exactly one trailing frame to clear it.
+        let bulge = OverlayKey { hold: true, freeze: false };
+        assert!(pass.take_overlay_dirty(bulge), "a charging bulge paints");
+        assert!(pass.take_overlay_dirty(bulge), "…every frame it is live");
+        assert!(pass.take_overlay_dirty(quiet), "the trailing clear frame");
+        assert!(!pass.take_overlay_dirty(quiet), "and then quiet");
     }
 
     // ---- helpers that need a trusted clock ----

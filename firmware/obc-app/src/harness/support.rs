@@ -392,6 +392,80 @@ pub fn pass_with_fact(app: &mut App, ms: u32, note: impl FnOnce(&mut ExternalFac
     pass(app, ms, &mut OutcomeSlots::new(), &mut facts, None)
 }
 
+/// **A runtime host in miniature.** Each [`frame`](Frames::frame) recognises raw button events
+/// through the app's own shared recogniser and then runs one DeviceCore pass with the gestures that
+/// came out — the single-loop composition the simulator and the web demo use since #1397 S6, and
+/// therefore the only one in which the render keys are compared (#1447). A suite that drives
+/// `handle_input` + `tick` + `take_dirty` by hand is exercising a composition no host has.
+///
+/// The sensor ports are built inside the frame from plain values, so a caller never has to keep a
+/// port alive across the pass's borrows. [`fuel_polls`](Frames::fuel_polls) counts what the gauge
+/// was actually asked for, which is how the battery cadence is pinned.
+pub struct Frames {
+    outcomes: OutcomeSlots,
+    /// How many times the fuel gauge has been polled across every frame so far.
+    pub fuel_polls: u32,
+}
+
+impl Default for Frames {
+    fn default() -> Self {
+        Frames::new()
+    }
+}
+
+impl Frames {
+    pub fn new() -> Self {
+        Frames { outcomes: OutcomeSlots::new(), fuel_polls: 0 }
+    }
+
+    /// One frame at `ms`: recognise `evs`, then run the pass with `fix` on the location port and
+    /// `battery` on the fuel gauge (`None` = no gauge wired at all).
+    pub fn frame(
+        &mut self,
+        app: &mut App,
+        ms: u32,
+        evs: &[InputEvent],
+        fix: Option<Fix>,
+        battery: Option<u8>,
+    ) -> Dirty {
+        let batch = app.recognize(InputClock(ms), &mut keys(evs));
+        let mut loc = OnceFix(fix);
+        let mut gauge = CountingGauge { value: battery, polls: 0 };
+        let mut facts = ExternalFacts::NONE;
+        let plan = app.run_pass(PassInputs {
+            now: PassClock { ride: RideClock(ms), ui: InputClock(ms) },
+            gestures: &batch,
+            sensors: Sensors { fuel: Some(&mut gauge), ..Sensors::new(&mut loc) },
+            route: None,
+            support: EVERY_CAPABILITY,
+            outcomes: &mut self.outcomes,
+            facts: &mut facts,
+            derived: DerivedInputs::NONE,
+            targets: DerivedTargets::NONE,
+        });
+        self.fuel_polls += gauge.polls;
+        plan.render
+    }
+
+    /// A quiet frame: no input, no fix, no gauge.
+    pub fn idle(&mut self, app: &mut App, ms: u32) -> Dirty {
+        self.frame(app, ms, &[], None, None)
+    }
+}
+
+/// The fuel gauge behind [`Frames`]: reports a settable level and counts what it was asked for.
+struct CountingGauge {
+    value: Option<u8>,
+    polls: u32,
+}
+
+impl obc_ports::FuelGauge for CountingGauge {
+    fn poll(&mut self) -> Option<u8> {
+        self.polls += 1;
+        self.value
+    }
+}
+
 // The navigation executor.
 
 /// The suites' navigation executor: one pass at a time, it takes the search DeviceCore hands out,

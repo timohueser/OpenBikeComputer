@@ -58,8 +58,9 @@ impl HomeScreen {
         self.seed = seed;
     }
 
-    #[cfg(test)]
-    pub(crate) fn seed(&self) -> u32 {
+    /// The backdrop's current jitter seed — Home's whole animation state besides its minute
+    /// ticker, and therefore what its [`RenderKeyKind::Home`](super::RenderKeyKind) key records.
+    pub(crate) fn backdrop_seed(&self) -> u32 {
         self.seed
     }
 
