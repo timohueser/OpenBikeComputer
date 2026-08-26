@@ -69,9 +69,11 @@ def main() -> int:
         print("A repaint mirror deleted by #1447 has grown back:")
         print("\n".join(failures))
         print(
-            "\nDeclare the fact in the screen's `RenderKeyKind` instead. If the writer runs between\n"
-            "two passes, ask for the repaint at that seam and say so — see the two explicit classes\n"
-            "documented on `Dirty` (firmware/obc-app/src/dirty.rs)."
+            "\nDeclare the fact in the screen's `RenderKeyKind` instead. If no key can see the\n"
+            "mutation — a host seam between two passes, a screen's own state, the card sweep, a\n"
+            "planner landing, or resident data no row declares — ask for the repaint there and say\n"
+            "so: those are the five explicit classes documented on `Dirty`\n"
+            "(firmware/obc-app/src/dirty.rs)."
         )
         return 1
     print("no hand-written repaint mirrors — the screens declare what they draw")

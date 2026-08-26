@@ -335,8 +335,8 @@ impl Instance {
         }
     }
 
-    /// Run one pass with this step's input, then paint per `render`: `None` = always (the
-    /// reference), `Some(plan)` = only what the plan asked for (the candidate).
+    /// Run one pass with this step's input, then paint: `on_demand` false renders every pass (the
+    /// reference), true renders only what the plan asked for (the candidate).
     fn advance(&mut self, s: &Step, route: Option<&RouteReader<'_>>, reader: &Reader, on_demand: bool) -> Dirty {
         if let Some(feed) = s.feed {
             feed(&mut self.app);
@@ -600,9 +600,12 @@ fn replay() -> Vec<Step> {
     steps.push(step("leave the ride menu", 78_600).keys(&tap(Button::Back)).expect("Map"));
 
     // --- the freeze banner ----------------------------------------------------------------------
-    steps.push(step("a planner run starts (freeze on)", 79_000).feed(|app| app.debug_set_plan_live(true)));
-    steps.push(step("frozen, with fixes still arriving", 79_500).fix(22));
-    steps.push(step("the planner answers (freeze off)", 80_000).feed(|app| app.debug_set_plan_live(false)));
+    // Between leaving the ride menu (78_600) and the first card (79_000): the clock is monotonic
+    // across the whole replay, which is what lets its timers — the no-fix window, the sensor
+    // staleness gate, the gauge cadence, the popup auto-close — fire from the clock itself.
+    steps.push(step("a planner run starts (freeze on)", 78_700).feed(|app| app.debug_set_plan_live(true)));
+    steps.push(step("frozen, with fixes still arriving", 78_800).fix(22));
+    steps.push(step("the planner answers (freeze off)", 78_900).feed(|app| app.debug_set_plan_live(false)));
 
     // --- the cards: arrival, replacement, removal ------------------------------------------------
     steps.push(
