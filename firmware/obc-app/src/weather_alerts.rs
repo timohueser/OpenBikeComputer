@@ -17,8 +17,9 @@
 //!   firmware and simulator alike (no randomness, no host clocks other than `now`).
 //! - **Deduplicated + cooldown-persisted**: one weather event fires at most one alert per
 //!   [`COOLDOWN_S`] unless its severity *materially* escalates. The fired event's identity
-//!   (class + onset instant + position) is an [`AlertMark`] persisted in the settings blob, so
-//!   the same storm does not pop back up on the next frame — or the next boot.
+//!   (class + onset instant + position) is an [`AlertMark`], persisted in this module's own
+//!   CRC-framed record, so the same storm does not pop back up on the next frame — or the next
+//!   boot.
 //! - **Advisory, not official**: thresholds are bike-touring heuristics, not CAP warnings. The
 //!   existing barometric-trend issue (#529) stays independent; no pressure trend is read here.
 //!
@@ -125,7 +126,7 @@ pub struct AlertCandidate {
 }
 
 /// The persisted identity of the last **fired** alert of a class: the dedup/cooldown anchor.
-/// Lives in the settings blob (v16) so it survives reboot — dedup compares *event* times, not
+/// Persisted in the alert-marks record so it survives reboot — dedup compares *event* times, not
 /// elapsed device time, so it needs no trusted clock at boot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AlertMark {
@@ -319,6 +320,116 @@ pub fn govern(
 /// The mark a fired candidate persists — the candidate's own position *including its absence*.
 pub fn mark_of(candidate: &AlertCandidate) -> AlertMark {
     AlertMark { onset: candidate.onset, pos: candidate.pos, severity: candidate.severity }
+}
+
+// ==================== the persisted marks record (#1542) ====================
+//
+// The marks are device **state**, not a preference, so they carry their own CRC-framed record with
+// their own lifecycle rather than riding the settings blob: one firing alert writes 64 bytes of
+// anchors instead of rewriting 176 bytes of the rider's preferences, and losing preferences and
+// losing anchors stop being one event. The 18-byte per-mark packing below is the v16 packing
+// verbatim — only its frame changed.
+
+/// Bytes per persisted alert mark: `flags(1) · onset i64 LE(8) · lat i32 LE(4) · lon i32 LE(4)
+/// · severity(1)`. The leading byte is a flag *pair*, not a bool: bit 0 = the slot holds a mark,
+/// bit 1 = that mark has a position. Position presence has to survive the write — a mark fired
+/// before the first GPS fix has no coordinate, and dedup must compare it by time alone rather
+/// than by ground distance to a fabricated `(0, 0)` (see [`same_event`]).
+pub(crate) const ALERT_MARK_LEN: usize = 18;
+/// `flags` bit 0: this slot holds a mark at all.
+pub(crate) const ALERT_MARK_PRESENT: u8 = 1 << 0;
+/// `flags` bit 1: the stored `lat`/`lon` are a real position (else the mark has none).
+pub(crate) const ALERT_MARK_HAS_POS: u8 = 1 << 1;
+
+/// The marks record's fixed length. Layout: `magic(4) OBCL · version(1) · pad(1) · marks(3 × 18) ·
+/// crc16 LE(2) · pad(2)` — CRC-16 over bytes `[0..60]`. 64 B = four RRAM write lines, like the
+/// bond slot.
+pub const ALERT_MARKS_LEN: usize = 64;
+/// The marks record's tag; anything else there (blank page, torn write, an older layout) decodes
+/// to `None` — "no anchors", which is the safe direction: a storm re-alerts once, and no garbage
+/// can suppress one.
+///
+/// `OBCL` is this record's own tag: `OBCA` is the DFU arm marker, `OBCW` the weather bundle
+/// format, and the carve's other residents are `OBCD`, `OBCI`, `OBCP` and `OBCB`.
+const ALERT_MARKS_MAGIC: [u8; 4] = *b"OBCL";
+/// Marks-record layout version — bump on any field change (an old version reads as no anchors).
+const ALERT_MARKS_VERSION: u8 = 1;
+/// CRC-covered prefix of the marks record: the header plus the three packed marks.
+const ALERT_MARKS_PAYLOAD: usize = 6 + ALERT_CLASSES * ALERT_MARK_LEN;
+
+/// Pack the per-class marks into `dst` (`ALERT_CLASSES * ALERT_MARK_LEN` bytes) — the frame-free
+/// half of the codec, shared with the one-time v16 blob reader
+/// ([`legacy_alert_marks`](crate::settings::legacy_alert_marks)).
+pub(crate) fn pack_marks(marks: &AlertMarks, dst: &mut [u8]) {
+    for (slot, mark) in marks.iter().enumerate() {
+        let off = slot * ALERT_MARK_LEN;
+        if let Some(mark) = mark {
+            dst[off] = ALERT_MARK_PRESENT;
+            dst[off + 1..off + 9].copy_from_slice(&mark.onset.to_le_bytes());
+            if let Some((lat, lon)) = mark.pos {
+                dst[off] |= ALERT_MARK_HAS_POS;
+                dst[off + 9..off + 13].copy_from_slice(&lat.to_le_bytes());
+                dst[off + 13..off + 17].copy_from_slice(&lon.to_le_bytes());
+            }
+            dst[off + 17] = mark.severity;
+        }
+    }
+}
+
+/// Unpack the per-class marks from `src`. An absent slot ([`ALERT_MARK_PRESENT`] clear) reads as
+/// `None` regardless of the stored payload; a present slot without [`ALERT_MARK_HAS_POS`] keeps
+/// its position *absent* rather than reading the zeroed coordinate bytes as null island. Every
+/// stored value is a legal mark (any onset/position/severity is comparable), so there is no range
+/// clamp to apply.
+pub(crate) fn unpack_marks(src: &[u8]) -> AlertMarks {
+    let mut marks: AlertMarks = [None; ALERT_CLASSES];
+    for (slot, mark) in marks.iter_mut().enumerate() {
+        let off = slot * ALERT_MARK_LEN;
+        if src[off] & ALERT_MARK_PRESENT != 0 {
+            let pos = (src[off] & ALERT_MARK_HAS_POS != 0).then(|| {
+                (
+                    i32::from_le_bytes(src[off + 9..off + 13].try_into().unwrap()),
+                    i32::from_le_bytes(src[off + 13..off + 17].try_into().unwrap()),
+                )
+            });
+            *mark = Some(AlertMark {
+                onset: i64::from_le_bytes(src[off + 1..off + 9].try_into().unwrap()),
+                pos,
+                severity: src[off + 17],
+            });
+        }
+    }
+    marks
+}
+
+/// Pack the per-class marks into their fixed 64-byte record. Inverse of [`decode_alert_marks`].
+pub fn encode_alert_marks(marks: &AlertMarks) -> [u8; ALERT_MARKS_LEN] {
+    let mut b = [0u8; ALERT_MARKS_LEN];
+    b[0..4].copy_from_slice(&ALERT_MARKS_MAGIC);
+    b[4] = ALERT_MARKS_VERSION;
+    pack_marks(marks, &mut b[6..ALERT_MARKS_PAYLOAD]);
+    let crc = crate::store_meta::crc16(&b[0..ALERT_MARKS_PAYLOAD]);
+    b[ALERT_MARKS_PAYLOAD..ALERT_MARKS_PAYLOAD + 2].copy_from_slice(&crc.to_le_bytes());
+    b
+}
+
+/// Decode a marks record, or `None` for anything but a clean read of this format — a blank line,
+/// an erased (all-ones) line, a short slice, a foreign magic, a foreign version, or a torn write.
+/// `None` means **no anchors**, never "no marks persisted": the storm the rider last saw re-alerts
+/// once, which is the safe direction — garbage can never suppress an alert.
+pub fn decode_alert_marks(bytes: &[u8]) -> Option<AlertMarks> {
+    if bytes.len() < ALERT_MARKS_LEN {
+        return None;
+    }
+    let b = &bytes[..ALERT_MARKS_LEN];
+    if b[0..4] != ALERT_MARKS_MAGIC || b[4] != ALERT_MARKS_VERSION {
+        return None;
+    }
+    let crc = u16::from_le_bytes([b[ALERT_MARKS_PAYLOAD], b[ALERT_MARKS_PAYLOAD + 1]]);
+    if crc != crate::store_meta::crc16(&b[0..ALERT_MARKS_PAYLOAD]) {
+        return None;
+    }
+    Some(unpack_marks(&b[6..ALERT_MARKS_PAYLOAD]))
 }
 
 #[cfg(test)]
@@ -544,6 +655,51 @@ mod tests {
         assert_eq!(core::mem::size_of::<AlertMark>(), 24);
         assert_eq!(core::mem::size_of::<Option<AlertMark>>(), 24, "the position's discriminant is the niche");
         assert_eq!(core::mem::size_of::<AlertMarks>(), 72);
+    }
+
+    /// The 64-byte marks record round-trips every shape the device can hold, and every
+    /// torn/blank/foreign shape decodes to `None` — "no anchors", the safe direction (a storm
+    /// re-alerts once; garbage can never suppress one).
+    #[test]
+    fn alert_marks_record_round_trips_and_rejects_torn_lines() {
+        let a = AlertMark { onset: 1_800_000_900, pos: Some((47_123_456, 8_654_321)), severity: 11 };
+        let b = AlertMark { onset: -1, pos: Some((-47_000_000, -8_000_000)), severity: 0 };
+        let c = AlertMark { onset: i64::MAX, pos: None, severity: u8::MAX };
+        for marks in [[Some(a), Some(b), Some(c)], [Some(a), None, Some(c)], [None, None, None]] {
+            let encoded = encode_alert_marks(&marks);
+            assert_eq!(encoded.len(), ALERT_MARKS_LEN, "the record is a fixed 64 B — four RRAM lines");
+            assert_eq!(decode_alert_marks(&encoded), Some(marks), "{marks:?} round-trips");
+        }
+
+        // A blank line is **no record**, not "no anchors persisted": nothing was ever written
+        // there, so the reader must fall through to the v16 blob rather than adopting zeros.
+        assert_eq!(decode_alert_marks(&[0u8; ALERT_MARKS_LEN]), None, "a blank line is no record");
+        assert_eq!(decode_alert_marks(&[0xFF; ALERT_MARKS_LEN]), None, "an erased line is no record");
+        let good = encode_alert_marks(&[Some(a), None, None]);
+        assert_eq!(decode_alert_marks(&good[..ALERT_MARKS_LEN - 1]), None, "a short slice is rejected");
+        let mut foreign = good;
+        foreign[0] = b'X';
+        assert_eq!(decode_alert_marks(&foreign), None, "a foreign magic is no record");
+        let mut old = good;
+        old[4] = ALERT_MARKS_VERSION + 1;
+        let crc = crate::store_meta::crc16(&old[0..ALERT_MARKS_PAYLOAD]);
+        old[ALERT_MARKS_PAYLOAD..ALERT_MARKS_PAYLOAD + 2].copy_from_slice(&crc.to_le_bytes());
+        assert_eq!(decode_alert_marks(&old), None, "a foreign layout version is no record");
+        let mut torn = good;
+        torn[10] ^= 0xFF; // flip an onset byte without fixing the CRC — the torn-write shape
+        assert_eq!(decode_alert_marks(&torn), None, "a CRC mismatch (torn write) is no record");
+    }
+
+    /// A mark fired before the first GPS fix is present but **positionless**, and the record must
+    /// carry that absence: decoding the zeroed coordinate bytes as `(0, 0)` would measure ground
+    /// distance to null island and re-fire the same storm the instant the receiver locks.
+    #[test]
+    fn a_positionless_mark_survives_the_record() {
+        let blind = AlertMark { onset: 1_800_123_456, pos: None, severity: 7 };
+        let encoded = encode_alert_marks(&[Some(blind), None, None]);
+        assert_eq!(encoded[6], ALERT_MARK_PRESENT, "present, and the position bit stays clear");
+        assert_eq!(&encoded[6 + 9..6 + 17], &[0; 8], "no coordinate is written");
+        assert_eq!(decode_alert_marks(&encoded).unwrap()[0], Some(blind), "and it decodes back positionless");
     }
 
     #[test]

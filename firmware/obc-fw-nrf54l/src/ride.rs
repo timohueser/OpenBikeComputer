@@ -915,6 +915,13 @@ pub(crate) async fn run_app(
         let mut store = shared.lock().await;
         store.settings.load().unwrap_or_default()
     });
+    // The weather alert-mark record (#1542), seeded the same way. A seed that came out of a stored
+    // v16 blob's frozen span arms the record's write, so the next pass rehomes the rider's anchors.
+    {
+        let mut store = shared.lock().await;
+        let (marks, provenance) = store.settings.load_alert_marks();
+        app.set_alert_marks(marks, provenance);
+    }
 
     // The DFU boot-outcome reconcile: boot-state page + the armer's breadcrumb → the one-time
     // post-update verdict card ("UPDATE FAILED" / the accepted-trial toast). A `Trial` boot is
@@ -1858,22 +1865,32 @@ pub(crate) async fn run_app(
             // (the app re-arms a bounded backoff) and surfaces the advisory warning card.
             if let Some(effect) = exec.effects.settings.take() {
                 use obc_app::settings::{SettingsEffect, SettingsOutcome};
-                let SettingsEffect::PersistRevision { token, revision } = effect;
-                let outcome = match settings_store.save(app.settings()) {
-                    Ok(()) => {
-                        // Settings coherence, device → phone (#456): the RRAM blob just moved, so the BLE
-                        // config-read cache is stale — flag it so the BLE plane refreshes from RRAM before
-                        // its next Config read / advertised-name read. One relaxed store.
-                        crate::object_store::mark_device_settings_changed();
-                        // Push a changed GPS fix interval to the sensor task → it re-VALSETs the M10's rate.
-                        #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
-                        if app.settings().fix_interval_s != prev_interval {
-                            prev_interval = app.settings().fix_interval_s;
-                            control.set_rate(prev_interval);
+                let outcome = match effect {
+                    SettingsEffect::PersistRevision { token, revision } => match settings_store.save(app.settings()) {
+                        Ok(()) => {
+                            // Settings coherence, device → phone (#456): the RRAM blob just moved, so the BLE
+                            // config-read cache is stale — flag it so the BLE plane refreshes from RRAM before
+                            // its next Config read / advertised-name read. One relaxed store.
+                            crate::object_store::mark_device_settings_changed();
+                            // Push a changed GPS fix interval to the sensor task → it re-VALSETs the M10's rate.
+                            #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
+                            if app.settings().fix_interval_s != prev_interval {
+                                prev_interval = app.settings().fix_interval_s;
+                                control.set_rate(prev_interval);
+                            }
+                            SettingsOutcome::Persisted { token, revision }
                         }
-                        SettingsOutcome::Persisted { token, revision }
+                        Err(error) => SettingsOutcome::PersistFailed { token, revision, error },
+                    },
+                    // The alert-mark record (#1542): its own 64-byte line, at alert-fire rate. No
+                    // BLE cache to invalidate and no GPS rate to re-push — the phone never reads
+                    // these bytes and no screen edits them.
+                    SettingsEffect::PersistAlertMarks { token, revision } => {
+                        match settings_store.save_alert_marks(app.alert_marks()) {
+                            Ok(()) => SettingsOutcome::MarksPersisted { token, revision },
+                            Err(error) => SettingsOutcome::MarksPersistFailed { token, revision, error },
+                        }
                     }
-                    Err(error) => SettingsOutcome::PersistFailed { token, revision, error },
                 };
                 RideExec::deliver(&mut exec.outcomes.settings, outcome, "settings");
             }

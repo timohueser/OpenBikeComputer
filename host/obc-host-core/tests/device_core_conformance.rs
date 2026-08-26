@@ -318,13 +318,24 @@ impl CoreHarness {
             }
         }
         let mut persisted = None;
+        let mut marks_answer = None;
         if let Some(effect) = effects.settings.take() {
             self.served.insert("settings");
-            let SettingsEffect::PersistRevision { token, revision } = effect;
-            self.state.settings_token = Some(token);
-            self.settings_writes.push(revision);
-            persisted = Some(revision);
+            match effect {
+                SettingsEffect::PersistRevision { token, revision } => {
+                    self.state.settings_token = Some(token);
+                    self.settings_writes.push(revision);
+                    persisted = Some(revision);
+                }
+                // The alert-mark record shares this slot. No corpus scenario fires a storm, so
+                // there is no script for it — acknowledge it at once rather than let a future one
+                // park the handshake.
+                SettingsEffect::PersistAlertMarks { token, revision } => {
+                    marks_answer = Some(SettingsOutcome::MarksPersisted { token, revision });
+                }
+            }
         }
+
         if let Some(effect) = effects.dfu.take() {
             self.served.insert("dfu");
             if let Some(outcome) = self.serve_dfu(effect) {
@@ -337,7 +348,13 @@ impl CoreHarness {
             done.push(Done::Storage(StorageInfoOutcome::Measured { token, free_bytes: 8 * 1024 * 1024 }));
         }
         assert!(!effects.has_pending(), "recorder, weather and bond are the domains a host cannot reach in Phase 1");
-        self.serve_scripted(persisted, done);
+        // The marks record shares the settings slot but has no script of its own, so it answers
+        // here and `serve_scripted` — whose settings answer is the corpus's, keyed to the
+        // preferences write — is skipped for that pass only.
+        match marks_answer {
+            Some(outcome) => done.push(Done::Settings(outcome)),
+            None => self.serve_scripted(persisted, done),
+        }
     }
 
     /// Serve one navigation operation from the corpus's scripted planner answers.
