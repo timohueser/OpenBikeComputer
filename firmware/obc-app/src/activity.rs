@@ -121,7 +121,7 @@ pub struct DetourRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DfuAction {
     /// Validate the staged `UPDATE.BIN` (header, full CRC-32, extents) without touching anything;
-    /// the board answers through [`App::apply_event`](crate::App::apply_event).
+    /// the board answers through the pass's fact stage.
     Scan,
     /// Arm the update: snapshot the running image to `ROLLBACK.BIN`, write the `Armed` boot-state
     /// record, and reboot into the bootloader. On success the board never returns (it resets).
@@ -199,7 +199,7 @@ pub struct Activity {
     /// #678 T2 / #680) — the ride namespace's `active_route`: set on detail entry, cleared on
     /// exit, and the key the host's one-shot track-profile fill hangs off
     /// ([`App::ride_track_request`](crate::App::ride_track_request) → the host streams the Ride
-    /// object once → [`App::set_ride_profile`](crate::App::set_ride_profile)).
+    /// object once → the keyed ride-track answer).
     pub(crate) viewed_ride: Option<usize>,
 
     // tracking session (distinct from the navigated route)
@@ -219,7 +219,7 @@ pub struct Activity {
     track_action: Option<TrackAction>,
     /// A one-shot **route-delete request** (epic #447, P6): the catalog *index* of a route the Route
     /// menu's hold-to-delete footer asked to remove, drained by the host via
-    /// [`App::drain_host_commands`](crate::App::drain_host_commands) which translates it to the route's
+    /// the pass which translates it to the route's
     /// durable object id. An index (not the id) because the screen holds indices; the id lookup is
     /// `App`'s, which owns the parallel [`route_ids`](crate::App::route_ids) table. Recorded by
     /// [`request_route_delete`](Activity::request_route_delete); the actual file delete + rescan is
@@ -227,7 +227,7 @@ pub struct Activity {
     delete_route: Option<usize>,
     /// A one-shot **ride-delete request** (epic #447, P7): the catalog *index* of a ride the Rides
     /// screen's hold-to-delete footer asked to remove, drained by
-    /// [`App::drain_host_commands`](crate::App::drain_host_commands) which translates it to the ride's
+    /// the pass which translates it to the ride's
     /// durable object id (the parallel [`ride_ids`](crate::App::ride_ids) table). The ride namespace's
     /// twin of [`delete_route`](Activity::delete_route); the host deletes the ride object + rescans,
     /// and the resulting store-changed edge re-feeds the ride catalog with it gone.
@@ -235,7 +235,7 @@ pub struct Activity {
     /// A one-shot **trip-delete request** (epic #526, TR3): the trip's durable **object id** the
     /// Route menu's long-press → confirm dialog asked to cascade-delete (the trip **and** all its
     /// member routes — locked). Drained by the host via
-    /// [`App::drain_host_commands`](crate::App::drain_host_commands). Unlike
+    /// the pass. Unlike
     /// [`delete_route`](Activity::delete_route) this is the id, not an index: a trip id is already
     /// durable (its own device counter), the confirm screen carries it verbatim, and a trip that
     /// vanished in a racing rescan simply drains to a no-op at the host. The host deletes the
@@ -591,7 +591,7 @@ impl Activity {
 
     /// Take (and clear) the pending [`TrackAction`], if any — the one-shot slot behind
     /// [`HostCommand::FinishTrack`](crate::host::HostCommand::FinishTrack) (#800). Retained: it is
-    /// the slot [`App::drain_host_commands`](crate::App::drain_host_commands) drains internally, and
+    /// the slot the pass drains internally, and
     /// the simulator's separate `reconcile_tracks` fidelity pass re-drains it after re-posting the
     /// command (so the scripted single-frame flow still performs the file I/O).
     pub fn take_track_action(&mut self) -> Option<TrackAction> {
@@ -605,7 +605,7 @@ impl Activity {
     }
 
     /// Record a one-shot request to delete the catalog route at `index` (epic #447, P6) — set by the
-    /// Route menu's hold-to-delete footer, drained by [`App::drain_host_commands`](crate::App::drain_host_commands).
+    /// Route menu's hold-to-delete footer, drained by the pass.
     /// The index is resolved to the route's durable object id at drain, so a rescan racing between the
     /// hold and the drain can't delete the wrong route (a vanished route resolves to nothing).
     pub(crate) fn request_route_delete(&mut self, index: usize) {
@@ -618,15 +618,9 @@ impl Activity {
         self.delete_route.take()
     }
 
-    /// Non-consuming peek at whether a route-delete request is pending — the board gates its per-pass
-    /// store work on this without draining the one-shot.
-    pub(crate) fn has_route_delete(&self) -> bool {
-        self.delete_route.is_some()
-    }
-
     /// Record a one-shot request to delete the ride-catalog entry at `index` (epic #447, P7) — set by
     /// the Rides screen's hold-to-delete footer, drained by
-    /// [`App::drain_host_commands`](crate::App::drain_host_commands), which resolves it to the ride's durable
+    /// the pass, which resolves it to the ride's durable
     /// object id at drain (so a rescan racing the hold can't delete the wrong ride).
     pub(crate) fn request_ride_delete(&mut self, index: usize) {
         self.delete_ride = Some(index);
@@ -638,15 +632,9 @@ impl Activity {
         self.delete_ride.take()
     }
 
-    /// Non-consuming peek at whether a ride-delete request is pending — the board gates its per-pass
-    /// store work on this without draining the one-shot.
-    pub(crate) fn has_ride_delete(&self) -> bool {
-        self.delete_ride.is_some()
-    }
-
     /// Record a one-shot request to cascade-delete the trip with durable object `id` (epic #526, TR3)
     /// — set by the Route menu's long-press → confirm dialog, drained by
-    /// [`App::drain_host_commands`](crate::App::drain_host_commands). The id (not an index) because a trip
+    /// the pass. The id (not an index) because a trip
     /// id is durable; the host deletes the `TP{id}.OBT` **and** every member route file.
     pub(crate) fn request_trip_delete(&mut self, id: crate::CatalogObjectId) {
         self.delete_trip = Some(id);

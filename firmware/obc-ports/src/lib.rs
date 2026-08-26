@@ -171,7 +171,7 @@ impl DateTime {
 }
 
 /// Why a [`SettingsStore::save`] failed — a bounded, `Copy` reason a host can carry back to the app
-/// in a [`HostEvent::SettingsPersistFailed`](../obc_app/enum.HostEvent.html) without borrowing a
+/// in a settings-persistence failure outcome without borrowing a
 /// backend error. The variants are intentionally coarse: the app retries the same revision on any of
 /// them, so a rider-visible advisory is all the detail the protocol needs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

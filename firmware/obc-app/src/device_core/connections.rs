@@ -23,7 +23,7 @@
 //! and for the opposite reason: those domains exist, so a screen names its request straight to the
 //! owner as the gesture happens (`Ctx::navigator`, `Ctx::dfu`, `Ctx::storage`). That is stronger
 //! than a same-pass slot — the request is with its owner before stage 1 rather than at stage 4 —
-//! and it is the only shape that also works for the hosts still driving `drain_host_commands`,
+//! and it is the only shape that also works for a seam running between two passes,
 //! which run no pass at all until #1397 S6. A slot beside it would be a second place a rider's plan
 //! lives, which is the defect #1397 S2 exists to remove.
 //!

@@ -7,9 +7,9 @@
 //!
 //! | Command | Why it is still here | Retires in |
 //! |---|---|---|
-//! | `FinishTrack` | Recorder has no machine — the close is answered by a catalog re-feed, not a ride identity (`LegacyOwned::RideCloseAck`) | #1398 |
-//! | `ForgetBond` | The removal is confirmed by a link-status fact, not by a reply (`LegacyOwned::BondAck`) | #1398/#1400 |
-//! | `DeleteTrip` | `CatalogState::admit_intent` **refuses** a trip cascade: the bounded member read does not exist yet (`LegacyOwned::TripCascade`) | #1491 |
+//! | `FinishTrack` | Recorder has no machine — the close is answered by a catalog re-feed, not a ride identity (#1398) | #1398 |
+//! | `ForgetBond` | The removal is confirmed by a link-status fact, not by a reply (#1400) | #1398/#1400 |
+//! | `DeleteTrip` | `CatalogState::admit_intent` **refuses** a trip cascade: the bounded member read does not exist yet (#1491) | #1491 |
 //!
 //! This module is the list as data. It lives in `obc-app` rather than beside one executor because
 //! there are two of them — `obc-host-core`'s [`HostLoop`] and the board's ride loop — and a residual
@@ -33,8 +33,12 @@ use crate::HostCommand;
 /// so an executor that walked it would consume the rider's request and then decline to perform it.
 /// [`RESIDUAL`] is the same three classes as prose and [`residual`] as a predicate;
 /// `the_residual_table_names_exactly_what_the_predicate_admits` pins all three together.
-pub(crate) const RESIDUAL_CLASSES: [HostCommandClass; 3] =
+pub(crate) const RESIDUAL_CLASSES: [HostCommandClass; RESIDUAL_CLASS_COUNT] =
     [HostCommandClass::FinishTrack, HostCommandClass::ForgetBond, HostCommandClass::DeleteTrip];
+
+/// How many residual classes there are — the [`HostMailbox`](crate::HostMailbox) capacity at which
+/// one [`drain_residual_commands`](crate::App::drain_residual_commands) call always completes.
+pub const RESIDUAL_CLASS_COUNT: usize = 3;
 
 /// The legacy classes a typed executor still drains, and nothing else.
 ///
@@ -48,16 +52,6 @@ pub const RESIDUAL: [&str; 3] = ["FinishTrack", "ForgetBond", "DeleteTrip"];
 /// that carries it would perform the same work twice.
 pub fn residual(command: &HostCommand) -> bool {
     matches!(command, HostCommand::FinishTrack(_) | HostCommand::ForgetBond | HostCommand::DeleteTrip { .. })
-}
-
-/// Whether `command` is a **level** a typed executor declines every drain rather than performing.
-///
-/// The two derived cues are re-derived on every drain, so they keep coming back; the plan's keyed
-/// [`DerivedNeeds`](crate::device_core::DerivedNeeds) is what an executor answers instead (#1437).
-/// Declining them is not a residual — nothing is left owed — so they are checked *before*
-/// [`assert_residual`] and never reach it.
-pub fn declined_level(command: &HostCommand) -> bool {
-    matches!(command, HostCommand::LoadRideTrack { .. } | HostCommand::RefreshNavPreview)
 }
 
 /// The production assertion behind [`RESIDUAL`]: a class DeviceCore owns must never come back on the
@@ -77,7 +71,7 @@ pub fn assert_residual(command: &HostCommand) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DfuAction, TrackAction};
+    use crate::TrackAction;
 
     /// [`RESIDUAL`] is the prose an [`assert_residual`] failure prints and [`residual`] is what
     /// actually decides — so they have to name the same three classes. A class added to one and not
@@ -115,31 +109,6 @@ mod tests {
                 RESIDUAL_CLASSES.contains(&command.class()),
                 "{command:?} is admitted by the predicate but the drain never asks for its class"
             );
-        }
-
-        // Everything DeviceCore took over is refused, including the declined classes — those are
-        // filtered earlier and must never reach the assertion at all.
-        for command in [
-            HostCommand::RescanStore { commits: 1 },
-            HostCommand::DeleteRoute { id: 1 },
-            HostCommand::DeleteRide { id: 1 },
-            // The stamps are the domain's own on **every** platform: the pass decides, mirrors and
-            // consumes them whether or not there is a durable store to write to, so a typed
-            // executor never sees one here.
-            HostCommand::StampRouteUsed { id: 1, utc: 2 },
-            HostCommand::StampRideSynced { id: 1, utc: 2 },
-            HostCommand::CancelRoutePlan,
-            HostCommand::CancelDetour,
-            HostCommand::CommitDetour,
-            HostCommand::Dfu(DfuAction::Scan),
-            HostCommand::PersistSettings { revision: 1 },
-            HostCommand::ScanCardFree,
-        ] {
-            assert!(!residual(&command), "{command:?} is DeviceCore's — the executor must refuse it");
-        }
-        for command in [HostCommand::LoadRideTrack { id: 1 }, HostCommand::RefreshNavPreview] {
-            assert!(declined_level(&command), "{command:?} is a level the plan's keys answer");
-            assert!(!residual(&command), "and it is not a residual either");
         }
     }
 }

@@ -1,35 +1,16 @@
-//! The typed app↔host protocol (FAR-07, #800), exercised host-side through the public API:
-//! [`App::drain_host_commands`] / [`HostMailbox`] on the command side and [`App::apply_event`] on
-//! the answer side. The class-order / coalescing / saturation / single-pending-state mechanics are
-//! pinned by the crate-internal unit tests; this file pins what a *host* observes — deferred owned
-//! answers, cancel-before-plan ordering, drop-if-gone answers, and one-pending-instance-per-class
-//! (counted store bursts, one-shot forget).
+//! What a **host** observes of the app's remaining protocol surface: the three-class residual a
+//! typed executor still drains, the update door's single typed request, and the two pure
+//! navigation-publication decisions the board's store task makes.
+//!
+//! The residual's own table (which three classes, and why each is still here) is
+//! `device_core::residual`'s; the pass's guarantee that a drain between two passes cannot destroy an
+//! admitted intent is `device_core::pass`'s. This file pins the host-side view of both.
 
-use obc_app::screen::Screen;
-use obc_app::{App, AppState, DrainStatus, Gesture, HostCommand, HostEvent, HostMailbox, RouteSummary};
-use obc_map_scene::BBox;
+use obc_app::dfu::DfuEffect;
+use obc_app::{App, AppState, DrainStatus, HostCommand, HostMailbox};
 
-/// A one-route catalog under durable id 7 — the rescan the host performs before answering a plan.
-fn nav_catalog(app: &mut App) {
-    let mut name = heapless::String::<48>::new();
-    let _ = name.push_str("Fountain North");
-    let sum = RouteSummary {
-        name,
-        distance_km: 1,
-        climb_m: 0,
-        bbox: BBox { min_lon: 0, min_lat: 0, max_lon: 1000, max_lat: 1000 },
-        start_lon: 0,
-        start_lat: 0,
-    };
-    app.set_routes_with_ids(&[sum], &[7]);
-}
-
-/// Drain into a fresh canonical-capacity mailbox, asserting completeness.
-fn drain(app: &mut App) -> HostMailbox {
-    let mut mailbox: HostMailbox = HostMailbox::new();
-    assert_eq!(app.drain_host_commands(&mut mailbox), DrainStatus::Complete);
-    mailbox
-}
+mod common;
+use common::quiet_pass;
 
 /// A cancel queued while the store's synchronous publish is running must not turn the eventual
 /// `Published` reply into a visible route. The host compensates that exact id before it considers
@@ -57,104 +38,45 @@ fn publish_compensation_results_have_explicit_liveness() {
     assert_eq!(nav_compensation_disposition(Status::Terminal), Disposition::CancelledAfterTerminalFailure);
 }
 
-/// A drained [`HostCommand::PlanRoute`] is an **owned** value: the host can park it, keep driving
-/// the app, and answer many passes later with an owned [`HostEvent`] — no borrow into `App` at any
-/// point, and the late answer still lands on the active planning screen.
+/// The residual drain asks for its three classes **by name**, and that is what makes it safe to run
+/// between two passes: a class DeviceCore owns is not filtered out of a whole-order walk, it is
+/// never reached at all. Here the rider has a planner request admitted and a bond removal pending —
+/// the drain yields the bond removal, leaves Navigator's request where it was, and the next pass
+/// hands the search out as the effect that carries it.
+///
+/// This is PR #1505's regression seen from the host: the whole-order walk *pulled* from Navigator on
+/// the way past, minted the operation, and left the domain holding work nobody would ever answer.
 #[test]
-fn a_host_defers_the_answer_without_borrowing_the_app() {
+fn the_residual_drain_yields_the_bond_removal_and_never_reaches_a_pass_owned_class() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
     app.debug_start_nav((0, 0), (1000, 1000), "Fountain North");
+    app.state.ble_forget_pending = true; // the Bluetooth screen's guarded hold
 
-    let mut mailbox = drain(&mut app);
-    let Some(HostCommand::PlanRoute(req)) = mailbox.pop() else { panic!("the plan request drains typed") };
-    assert!(mailbox.pop().is_none(), "…and nothing else is pending");
-    assert_eq!(req.name(), "Fountain North");
+    let mut mailbox: HostMailbox = HostMailbox::new();
+    assert_eq!(app.drain_residual_commands(&mut mailbox), DrainStatus::Complete);
+    assert_eq!(mailbox.pop(), Some(HostCommand::ForgetBond));
+    assert!(mailbox.pop().is_none(), "the planner request is Navigator's — the drain never reaches it");
 
-    // The "async plan" runs across further app activity (input keeps flowing).
-    app.apply_gesture(Gesture::Step(1));
-    assert!(drain(&mut app).is_empty(), "no re-emission while the host holds the request");
+    let mut mailbox: HostMailbox = HostMailbox::new();
+    let _ = app.drain_residual_commands(&mut mailbox);
+    assert!(mailbox.is_empty(), "the bond removal is a one-shot the drain clears");
 
-    // Answer whole passes later: rescan first, then the owned event — the same ordering contract.
-    nav_catalog(&mut app);
-    app.apply_event(HostEvent::NavPlanned(Ok(7)));
-    assert!(matches!(app.top_screen(), Screen::RouteOverview(_)), "the late answer lands in the planning screen");
-    assert_eq!(app.active_route_index(), Some(0), "…and activates the committed route");
+    // And the request the drain ran past is still there, for the pass to hand out.
+    let mut plan = quiet_pass(&mut app, 10);
+    assert!(plan.effects.navigator.take().is_some(), "the admitted plan reached the executor as an effect");
 }
 
-/// A confirm and its Back applied in one batch **before any drain** (reachable during a long
-/// render pass) net "no plan": the cancel annihilates the undrained request through the real
-/// screen path, so the host never executes a dismissed plan and no ghost route can commit.
+/// The remote-DFU door asks the update domain for exactly one scan; the open flow blocks a second
+/// remote request, so the pass cannot hand out two.
 #[test]
-fn same_batch_confirm_and_back_net_no_plan() {
-    let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-    app.debug_start_nav((0, 0), (1000, 1000), "Dismissed before drained");
-    app.apply_gesture(Gesture::Back); // Back on the spinner, same batch — no drain in between
-
-    let mut mailbox = drain(&mut app);
-    assert_eq!(mailbox.pop(), Some(HostCommand::CancelRoutePlan), "only the (no-op) cancel drains");
-    assert!(mailbox.pop().is_none(), "the dismissed plan never reaches the host");
-    assert!(drain(&mut app).is_empty(), "…and nothing is left behind");
-}
-
-/// Back mid-plan pops the spinner and posts the cancel; a plan posted **after** the cancel
-/// survives it (annihilation only kills a request the cancel's Back was aimed at), the typed
-/// drain yields `CancelRoutePlan` before that `PlanRoute` (the canonical order), and a defensive
-/// post-cancel answer is dropped.
-#[test]
-fn cancel_drains_before_a_new_plan_and_a_late_answer_is_dropped() {
-    let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-    app.debug_start_nav((0, 0), (1000, 1000), "First try");
-    let _ = drain(&mut app); // the host holds the first plan
-
-    app.apply_gesture(Gesture::Back); // rider cancels the spinner
-    app.debug_start_nav((0, 0), (2000, 2000), "Second try"); // …and immediately asks again
-
-    let mut mailbox = drain(&mut app);
-    assert_eq!(mailbox.pop(), Some(HostCommand::CancelRoutePlan), "cancellation precedes new work");
-    assert!(matches!(mailbox.pop(), Some(HostCommand::PlanRoute(_))), "the fresh plan follows");
-
-    // The host aborts plan one but had already finished a step: its late answer finds the *new*
-    // planning screen — the answer targets whatever plan is live, exactly as before. Cancel that
-    // one too and the answer is dropped outright.
-    app.apply_gesture(Gesture::Back);
-    assert_eq!(drain(&mut app).pop(), Some(HostCommand::CancelRoutePlan));
-    nav_catalog(&mut app);
-    app.apply_event(HostEvent::NavPlanned(Ok(7)));
-    assert!(!matches!(app.top_screen(), Screen::RouteOverview(_)), "a post-cancel answer is dropped");
-    assert_eq!(app.active_route_index(), None, "nothing activates after a cancel");
-}
-
-/// The remote-DFU door posts a typed `Dfu(Scan)` exactly once; the open flow blocks a second
-/// remote request, so the command cannot double-emit.
-#[test]
-fn remote_dfu_check_drains_as_one_typed_scan() {
-    use obc_app::DfuAction;
+fn remote_dfu_check_reaches_the_executor_as_one_scan() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
     assert!(app.open_remote_dfu_check());
     assert!(!app.open_remote_dfu_check(), "the open flow defers a second request");
 
-    let mut mailbox = drain(&mut app);
-    assert_eq!(mailbox.pop(), Some(HostCommand::Dfu(DfuAction::Scan)));
-    assert!(mailbox.pop().is_none());
-    assert!(drain(&mut app).is_empty(), "exactly once");
-}
+    let mut plan = quiet_pass(&mut app, 10);
+    assert!(matches!(plan.effects.dfu.take(), Some(DfuEffect::Scan { .. })), "one typed scan");
 
-/// One pending instance per class: a store-changed burst drains as a single counted
-/// `RescanStore { commits: 2 }` (never coalesced to a lost edge) and empties the counter; a
-/// Forget-phone hold drains as one `ForgetBond` and leaves the protocol empty.
-#[test]
-fn a_store_burst_counts_and_a_forget_hold_drains_once() {
-    let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-
-    app.apply_event(HostEvent::StoreChanged);
-    app.apply_event(HostEvent::StoreChanged); // a burst of two commits between drains
-    let mut mailbox = drain(&mut app);
-    assert_eq!(mailbox.pop(), Some(HostCommand::RescanStore { commits: 2 }), "the burst rides as one counted command");
-    assert!(drain(&mut app).is_empty(), "the drain emptied the counter");
-
-    app.state.ble_forget_pending = true; // the Bluetooth screen's guarded hold
-    let mut mailbox = drain(&mut app);
-    assert_eq!(mailbox.pop(), Some(HostCommand::ForgetBond));
-    assert!(drain(&mut app).is_empty(), "drained exactly once");
-    assert!(!app.has_pending_host_command());
+    let mut plan = quiet_pass(&mut app, 20);
+    assert!(plan.effects.dfu.take().is_none(), "exactly once");
 }

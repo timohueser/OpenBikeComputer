@@ -1503,7 +1503,7 @@ pub(crate) async fn run_app(
             // `not(has_nav)` (the `ble` build, whose image ships without the router — see build.rs):
             // the request is still drained and answered with the generic failure tier ("Couldn't find
             // a route."), so the POI confirm never hangs. The LM20 deletes that arm.
-            // `NavigatorEffect` — the board paces its own search (`LegacyOwned::PlannerPacing`,
+            // `NavigatorEffect` — the board paces its own search (#1400,
             // Gate 4/#1400): one `Acquire` arms the run, the block below runs **one** bounded step
             // per pass, and the answer is terminal. `Step` and `CommitRoute` are never produced.
             #[allow(unused_mut, unused_assignments)]
@@ -2009,7 +2009,7 @@ pub(crate) async fn run_app(
             // `obc_app::device_core::residual`.
             //
             // **Asked for by name**, and that is load-bearing rather than tidy: the whole-order
-            // `drain_host_commands` *pulls* from every domain it walks past — it mints the operation
+            // A whole-order walk *pulls* from every domain it passes — it mints the operation
             // as it goes — so it would take an intent admitted since this frame's pass and hand back
             // a command this loop then declines to perform, leaving the domain holding an operation
             // nobody answers. Everything running between here and `run_pass` is exposed to that: the
@@ -2024,17 +2024,11 @@ pub(crate) async fn run_app(
             // block and dropped at its close, before the reconcile's `.await`, so it never enters
             // the ride-loop task future (it would re-inflate the #808 poll frame).
             let finish = {
-                use obc_app::device_core::residual::{declined_level, residual};
+                use obc_app::device_core::residual::residual;
                 let mut finish: Option<obc_app::TrackAction> = None;
                 let mut mailbox: obc_app::HostMailbox = obc_app::HostMailbox::new();
                 let _ = app.drain_residual_commands(&mut mailbox);
                 while let Some(cmd) = mailbox.pop() {
-                    // The two derived cues are levels the plan's keys answer — re-derived on every
-                    // drain, so they keep coming back and are declined every time rather than
-                    // performed. Not a residual: nothing is left owed.
-                    if declined_level(&cmd) {
-                        continue;
-                    }
                     if !residual(&cmd) {
                         defmt::error!(
                             "exec: {} came back on the legacy protocol — DeviceCore owns it now, so it is skipped",
@@ -2046,7 +2040,7 @@ pub(crate) async fn run_app(
                     match cmd {
                         obc_app::HostCommand::FinishTrack(action) => finish = Some(action),
                         // The bond removal is confirmed by a link-status fact, never by a reply
-                        // (`LegacyOwned::BondAck`, #1398/#1400).
+                        // (#1398/#1400).
                         #[cfg(feature = "ble")]
                         obc_app::HostCommand::ForgetBond => crate::ble::request_forget_bond(),
                         // The cascade: `CatalogState::admit_intent` refuses one, so it never becomes
@@ -2070,7 +2064,12 @@ pub(crate) async fn run_app(
                                 );
                             }
                         }
-                        _ => {}
+                        // No radio in this image, so there is no bond to forget and the screen that
+                        // asks for one cannot be reached. Spelled out rather than caught by a
+                        // wildcard: the match is exhaustive in both feature configs, which is what
+                        // makes the compiler the thing that says the residual is exactly three.
+                        #[cfg(not(feature = "ble"))]
+                        obc_app::HostCommand::ForgetBond => {}
                     }
                 }
                 finish

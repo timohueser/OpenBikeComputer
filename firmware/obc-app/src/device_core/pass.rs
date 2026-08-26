@@ -48,7 +48,7 @@
 //!
 //! **Callbacks.** Nothing in [`PassInputs`] can call back into DeviceCore: the sensor ports are
 //! *pull* ports that return values and hold no path to the `App`, and the two push doors an
-//! executor answers through ([`App::apply_event`], [`App::apply_derived`]) refuse while a pass is in
+//! executor answers through (the pass's fact stage, [`App::apply_derived`]) refuse while a pass is in
 //! flight. The next pass consumes what an executor completed; nothing mutates mid-pass.
 //!
 //! ## What this pass does not yet own
@@ -65,7 +65,7 @@
 //! that owns it as the gesture happens (`Ctx::navigator`, `Ctx::dfu`, `Ctx::storage`), so a plan, an
 //! update phase or a free-space refresh is already with its owner before stage 1 — earlier than a
 //! same-pass slot could deliver it, in exactly one place, and by the one path that also serves the
-//! hosts still driving `drain_host_commands` (no host runs this pass until #1397 S6). A connection
+//! seams that run between two passes. A connection
 //! into those domains would be a second copy of the pending state this slice exists to remove.
 
 use obc_ports::{InputClock, RideClock, Sensors};
@@ -564,7 +564,7 @@ impl App {
     /// The value written is the one the effect carries, not a guess: the durable write is still the
     /// executor's, and a failure re-queues the stamp through
     /// [`apply_outcome`](crate::retention::RetentionMachine::apply_outcome) as before. The legacy
-    /// drain has always done this at `App::retention_stamp_command`; this is the same mirror on the
+    /// mirror belongs to whoever decides the stamp; this is that mirror on the
     /// path that replaces it.
     fn mirror_stamp(&mut self, effect: crate::retention::RetentionEffect) {
         match effect {
@@ -634,7 +634,7 @@ impl App {
     ///
     /// Nothing yet: Recorder's machine arrives with #1397 S6, and until it does the ride lifecycle
     /// stays entirely on the legacy path — the rider's finish one-shot is left in
-    /// [`Activity`](crate::Activity) for `drain_host_commands` to turn into a
+    /// [`Activity`](crate::Activity) for the residual drain to turn into a
     /// [`FinishTrack`](crate::HostCommand::FinishTrack), exactly as it always was.
     ///
     /// The stage is a *position*, held so the order is fixed before the machines land. It is
@@ -1232,7 +1232,7 @@ mod tests {
         assert!(plan.effects.recorder.is_empty(), "and emitted no recorder effect it cannot answer");
 
         let mut mail: crate::HostMailbox = crate::HostMailbox::new();
-        let _ = app.drain_host_commands(&mut mail);
+        let _ = app.drain_residual_commands(&mut mail);
         let mut drained = Vec::new();
         while let Some(command) = mail.pop() {
             drained.push(command);
@@ -1244,13 +1244,13 @@ mod tests {
     }
 
     /// **The regression #1494's on-glass soak found.** An intent admitted *between* one pass and the
-    /// next must survive the residual drain that runs in between, and with
-    /// [`App::drain_host_commands`](crate::App::drain_host_commands) it does not: that walk **pulls**
-    /// from every domain — `next_plan_effect` here — so it takes the rider's request, mints the
-    /// operation, hands back a `PlanRoute` command the executor then declines to perform, and leaves
-    /// Navigator holding an operation nobody will ever answer. On the board that was a planning
-    /// spinner that redrew at ~15 Hz forever, and every later plan silently refused, because
-    /// `next_plan_effect` returns `None` while an operation is live.
+    /// next must survive the residual drain that runs in between. A whole-order walk **pulls** from
+    /// every domain — `next_plan_effect` here — so it would take the rider's request, mint the
+    /// operation, hand back a command the executor then declines to perform, and leave Navigator
+    /// holding an operation nobody will ever answer. On the board that was a planning spinner that
+    /// redrew at ~15 Hz forever, and every later plan silently refused, because `next_plan_effect`
+    /// returns `None` while an operation is live. The drain asks for three classes by name, so it
+    /// cannot reach Navigator at all.
     ///
     /// Every board seam that runs between the drain and the pass is exposed to it: the debug link's
     /// route plan, the phone's remote update check (`open_remote_dfu_check`), a BLE clock stamp
@@ -1283,30 +1283,6 @@ mod tests {
             matches!(effects.navigator.take(), Some(crate::navigator::NavigatorEffect::Acquire { .. })),
             "the plan admitted between the passes reached the executor"
         );
-
-        // And the whole-order drain is what would have eaten it — pinned so the two cannot be
-        // confused again. A second request, a full drain, and the effect never comes.
-        let mut app = navigating();
-        quiet(&mut app, 10);
-        app.admit_navigator_intent(crate::navigator::NavigatorIntent::PlanRoute(crate::activity::NavRequest::new(
-            (0, 0),
-            (1, 1),
-            "Bench",
-        )));
-        let mut mail: crate::HostMailbox = crate::HostMailbox::new();
-        let _ = app.drain_host_commands(&mut mail);
-        let mut drained = Vec::new();
-        while let Some(command) = mail.pop() {
-            drained.push(command);
-        }
-        assert!(
-            drained.iter().any(|c| matches!(c, crate::HostCommand::PlanRoute(_))),
-            "the full walk mints the operation on the way past: {drained:?}"
-        );
-        assert!(
-            quiet(&mut app, 20).effects.navigator.is_empty(),
-            "…and Navigator is then holding an operation the pass can never hand out"
-        );
     }
 
     /// A typed executor's wake is blind to the legacy mailbox, and the rider's **ride save** lives
@@ -1333,16 +1309,17 @@ mod tests {
         let _ = app.drain_residual_commands(&mut mail);
         assert!(!app.has_pending_residual_command(), "and the drain clears it — one pass, not a spin");
 
-        // The distinction that makes the narrow predicate necessary: a viewed ride keeps
-        // `LoadRideTrack` pending across every drain, because a derived need is a level. Folding
-        // `has_pending_host_command` into a wake would therefore never let the runtime sleep.
+        // The distinction that makes the narrow predicate necessary: a viewed ride keeps its
+        // derived need up across every drain, because a need is a *level*. Folding that into a wake
+        // would never let the runtime sleep — the residual is one-shots only, which is what makes it
+        // safe to fold.
         let mut viewing = App::new(AppState::new(0, 0, 1.0));
         viewing.set_rides(&[ride_summary()], &[7]);
         viewing.activity.viewed_ride = Some(0);
-        quiet(&mut viewing, 10);
+        assert!(quiet(&mut viewing, 10).derived_needs.ride_track.is_some(), "the level is up");
         let mut mail: crate::HostMailbox = crate::HostMailbox::new();
-        let _ = viewing.drain_host_commands(&mut mail);
-        assert!(viewing.has_pending_host_command(), "the derived level is still pending after a drain");
+        let _ = viewing.drain_residual_commands(&mut mail);
+        assert!(quiet(&mut viewing, 20).derived_needs.ride_track.is_some(), "and a drain does not clear it");
         assert!(!viewing.has_pending_residual_command(), "…but it is not a residual, so the wake is not held");
     }
 
@@ -1411,7 +1388,6 @@ mod tests {
         let mut effects = plan.effects;
         let effect = effects.catalog.take().expect("the commit ordered a re-read");
         assert!(matches!(effect, CatalogEffect::ReadCatalog { .. }));
-        assert_eq!(app.store_changed_pending(), 0, "and the legacy rescan cue was never latched");
 
         // The same revision again is the same edge, and the answered read starts nothing new.
         let mut outcomes = OutcomeSlots::new();
@@ -1572,24 +1548,38 @@ mod tests {
     /// A platform callback cannot change DeviceCore in the middle of a pass. `run_pass` holds
     /// `&mut self` for its whole length, so no safe caller can reach a push door mid-pass at all —
     /// the flag has to be set by hand here. Reaching one anyway is a caller bug, so it is loud in
-    /// debug and refused in release rather than quietly losing the event.
+    /// debug and refused in release rather than quietly losing the answer.
+    ///
+    /// One door is left to check it on: with the legacy event door gone, `apply_derived` is the only
+    /// remaining way into DeviceCore that is not `run_pass` itself.
     #[test]
     #[should_panic(expected = "cannot change DeviceCore during a pass")]
     fn a_callback_cannot_mutate_core_state_during_a_pass() {
         let mut app = navigating();
-        quiet(&mut app, 10);
+        app.set_rides(&[ride_summary()], &[7]);
+        app.activity.viewed_ride = Some(0);
+        let plan = quiet(&mut app, 10);
+        let key = plan.derived_needs.ride_track.expect("the open ride detail needs its track");
         app.pass.in_pass = true;
-        app.apply_event(crate::HostEvent::StoreChanged);
+        app.apply_derived(
+            DerivedInputs::ride_track(crate::device_core::DerivedInput::filled(key)),
+            DerivedTargets::NONE,
+        );
     }
 
     /// The same door, outside a pass: it works exactly as it always did.
     #[test]
     fn a_push_outside_a_pass_is_applied_normally() {
         let mut app = navigating();
-        quiet(&mut app, 10);
-        let before = app.store_changed_pending();
-        app.apply_event(crate::HostEvent::StoreChanged);
-        assert_ne!(app.store_changed_pending(), before);
+        app.set_rides(&[ride_summary()], &[7]);
+        app.activity.viewed_ride = Some(0);
+        let plan = quiet(&mut app, 10);
+        let key = plan.derived_needs.ride_track.expect("the open ride detail needs its track");
+        app.apply_derived(
+            DerivedInputs::ride_track(crate::device_core::DerivedInput::filled(key)),
+            DerivedTargets::NONE,
+        );
+        assert!(quiet(&mut app, 20).derived_needs.ride_track.is_none(), "the answer landed");
     }
 
     /// Hold cancellation stays off the pass entirely: a pass neither reports it nor drains it, so
@@ -1674,7 +1664,6 @@ mod tests {
         // Levels reached their owners.
         assert_eq!(app.weather.installed(), Some(installed), "the installed data reached WeatherDomain");
         assert_eq!(app.state.device.ble_link, crate::ble::BleLink::Connected, "the link state reached the UI");
-        assert_eq!(app.store_changed_pending(), 0, "the commit is an intent, never the legacy rescan cue");
 
         // One-shots were consumed rather than left for a second delivery.
         assert!(facts.take_route_upload().is_none() && facts.take_trip_upload().is_none());

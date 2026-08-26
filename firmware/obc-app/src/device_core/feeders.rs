@@ -1,13 +1,13 @@
 //! The **bulk feeder inventory** (#1437): every public way a host pushes data into `App`, and where
 //! that data goes once DeviceCore owns it.
 //!
-//! The legacy protocol is two enums and one table ([`migration`](super::migration)). The feeders are
-//! not: they are 27 free-standing `pub fn` methods on `App` that grew one at a time, each with its
+//! The feeders are free-standing `pub fn` methods on `App` that grew one at a time, each with its
 //! own shape, and *that* is why they need an inventory at all. Every one of them has exactly one new
 //! home here, and nothing is left unclassified.
 //!
-//! **This is documentation and test data, not a dispatcher.** Nothing in a runtime path calls it.
-//! It dies with the pass cutover (#1397 S6), together with the wrappers it describes.
+//! **This is documentation and test data, not a dispatcher.** Nothing in a runtime path calls it —
+//! `git grep 'feeders::'` finds no importer — so the compiler will not catch a label that has gone
+//! stale. Each row dies with the ownership cutover it names.
 //!
 //! ## Reading a row
 //!
@@ -18,9 +18,9 @@
 //! | [`home`](FeederMigration::home) | Where it lands, as prose — not a compiler-checked symbol. |
 //! | [`deletes_in`](FeederMigration::deletes_in) | The slice that removes the method. |
 //!
-//! `home` is prose for the same reason [`LegacyMigration::home`](super::migration::LegacyMigration)
-//! is: a third of the destinations name fields that do not exist yet, and inventing placeholder
-//! types for them is the speculative structure this repository bans.
+//! `home` is prose rather than a symbol: a third of the destinations name fields that do not exist
+//! yet, and inventing placeholder types for them is the speculative structure this repository
+//! bans.
 //!
 //! ## What is actually guarded, and what is not
 //!
@@ -32,14 +32,36 @@
 //! - **A variant cannot be missing a row.** [`feeder_migration`] is an exhaustive match.
 //!
 //! The third is **not** guarded and is stated here rather than implied: nothing ties this enum to
-//! `App`'s actual method surface, so a twenty-eighth public feeder *method* could land with no
-//! variant. [`migration`](super::migration) has an anchor for its half — `HostCommand::DRAIN_ORDER`
-//! — and the feeders, being free-standing methods, have no such registry to anchor on. The list was
-//! enumerated by hand against `App` when this slice landed: 24 `pub fn set_*` plus
-//! `begin_ride_profile_fill`, `finish_ride_profile_fill` and `weather_feed_changed`. Anyone adding a
-//! feeder before DC6 #1439 deletes this file adds its row here too.
+//! `App`'s actual method surface, so a further public feeder *method* could land with no variant.
+//! Being free-standing methods, the feeders have no registry to anchor on; the list was enumerated
+//! by hand against `App`. Anyone adding a feeder adds its row here too.
 
-use super::migration::LegacyOwner;
+/// Which DeviceCore component owns a feeder's data after the migration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegacyOwner {
+    /// `CatalogMachine` — revisions, identities, refresh, deletion, the trip cascade.
+    Catalog,
+    /// `RetentionMachine` — usage stamps, expiry deadlines, sidecar metadata.
+    Retention,
+    /// `Recorder` — the ride session and its persistence lifecycle.
+    Recorder,
+    /// `Navigator` — route and detour planning, preview, and commit.
+    Navigator,
+    /// `SettingsMachine` — the dirty revision and the persist handshake.
+    Settings,
+    /// `WeatherDomain` — visible freshness, alerts, and installed-data identity.
+    Weather,
+    /// `DfuState` — update scan, install admission, and terminal state.
+    Dfu,
+    /// The bond domain in `ble.rs` — bond removal.
+    Bond,
+    /// The storage-information domain — free-space reporting.
+    StorageInfo,
+    /// `FaultState` and the card scheduler.
+    Fault,
+    /// The derived-data path, owned by the requesting screen's domain but delivered without a token.
+    Derived,
+}
 
 /// Declare the feeder vocabulary once: the enum, [`Feeder::ALL`] and [`Feeder::COUNT`] all come out
 /// of this single list, so a variant cannot exist outside `ALL` and `COUNT` cannot drift from
@@ -80,8 +102,6 @@ feeders! {
     MapMpp,
     /// `App::set_map_nav_graph`
     MapNavGraph,
-    /// `App::set_routes`
-    Routes,
     /// `App::set_routes_with_ids`
     RoutesWithIds,
     /// `App::set_routes_with_meta`
@@ -94,14 +114,8 @@ feeders! {
     Rides,
     /// `App::set_ride_retention_inventory`
     RideRetentionInventory,
-    /// `App::set_ride_profile`
-    RideProfile,
     /// `App::begin_ride_profile_fill`
     RideProfileFillBegin,
-    /// `App::finish_ride_profile_fill`
-    RideProfileFillFinish,
-    /// `App::set_ride_preview`
-    RidePreview,
     /// `App::set_nav_preview`
     NavPreview,
     /// `App::set_detour_preview`
@@ -144,18 +158,29 @@ pub enum FeederKind {
     PlatformState,
 }
 
-/// Which slice removes the method.
+/// Which cutover removes the method.
+///
+/// **Not the pass cutover.** #1397 S6 moved every host onto `App::run_pass` and deleted the legacy
+/// protocol, and these feeders survived it deliberately: a bulk re-feed is how a *typed executor*
+/// fills a resident catalog, and it stops being a shim only when the domain owns the catalog itself.
+/// Each row therefore names the ownership cutover that really deletes it (#1448 Gate 3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeletingSlice {
-    /// #1397 **S6c** — the sweep after the *last* host runs `App::run_pass`. S6a moved the
-    /// simulator and the web demo onto the pass; S6b moves the board. Until then the board still
-    /// calls most of these, so the whole shared surface — the façade wrappers, these feeders and
-    /// the legacy protocol behind them — stays compiling. DC6 #1439 built the replacement path
-    /// ([`compat`](super::compat)) and deliberately left the call sites alone for that reason.
-    PassCutover,
+    /// Gate 3 item 1 — catalog refresh and deletion move into `CatalogMachine`, which then owns the
+    /// resident catalogs and reads them itself.
+    CatalogOwnership,
+    /// Gate 3 item 2 — retention policy moves into `RetentionMachine`, which then owns the metadata
+    /// columns rather than being fed them.
+    RetentionOwnership,
+    /// #1400 — Navigator owns the preview it asked for, and the board's typed effect staging fills
+    /// its bounded targets.
+    NavigatorOwnership,
+    /// Gate 4 — boot state and unrequested facts reach DeviceCore as `PassInputs`, so the boot
+    /// feeders and the fact-shaped setters retire together.
+    BootAndFacts,
     /// #1401 — the weather storage and request cutover, after FS7.
     WeatherCutover,
-    /// The method survives the migration: it is not a legacy shim but a real runtime seam.
+    /// The method survives the migration: it is not a shim but a real runtime seam.
     Kept,
 }
 
@@ -186,46 +211,52 @@ pub fn feeder_migration(feeder: Feeder) -> FeederMigration {
         // ---- catalog refresh outcomes: the executor fills the resident catalogs, the outcome
         // reports only the revision it read at. Three route feeders exist because the id column and
         // the retention column were added one at a time; they collapse into one refresh.
-        Feeder::Routes | Feeder::RoutesWithIds => {
-            row(Kind::RefreshOutcome, Own::Catalog, "CatalogOutcome::CatalogRead", When::PassCutover)
+        Feeder::RoutesWithIds => {
+            row(Kind::RefreshOutcome, Own::Catalog, "CatalogOutcome::CatalogRead", When::CatalogOwnership)
         }
         Feeder::RoutesWithMeta => row(
             Kind::RefreshOutcome,
             Own::Catalog,
             "CatalogOutcome::CatalogRead + RetentionMachine metadata",
-            When::PassCutover,
+            When::CatalogOwnership,
         ),
         Feeder::Trips | Feeder::Rides => {
-            row(Kind::RefreshOutcome, Own::Catalog, "CatalogOutcome::CatalogRead", When::PassCutover)
+            row(Kind::RefreshOutcome, Own::Catalog, "CatalogOutcome::CatalogRead", When::CatalogOwnership)
         }
-        Feeder::RouteMeta => {
-            row(Kind::RefreshOutcome, Own::Retention, "RetentionMachine route metadata column", When::PassCutover)
-        }
+        Feeder::RouteMeta => row(
+            Kind::RefreshOutcome,
+            Own::Retention,
+            "RetentionMachine route metadata column",
+            When::RetentionOwnership,
+        ),
         Feeder::RideRetentionInventory => row(
             Kind::RefreshOutcome,
             Own::Retention,
             "CatalogMachine inventory + RetentionMachine input",
-            When::PassCutover,
+            When::RetentionOwnership,
         ),
 
-        // ---- keyed derived data: one need, one key, one answer (this slice).
-        Feeder::RideProfile | Feeder::RideProfileFillBegin | Feeder::RideProfileFillFinish | Feeder::RidePreview => {
-            row(Kind::DerivedInput, Own::Derived, "DerivedInputs::ride_track", When::PassCutover)
+        // ---- keyed derived data: one need, one key, one answer. What is left is the in-place fill
+        // the executor borrows: the answer itself is a `DerivedInput` already.
+        Feeder::RideProfileFillBegin => {
+            row(Kind::DerivedInput, Own::Derived, "DerivedInputs::ride_track", When::CatalogOwnership)
         }
-        Feeder::NavPreview => row(Kind::DerivedInput, Own::Derived, "DerivedInputs::nav_preview", When::PassCutover),
+        Feeder::NavPreview => {
+            row(Kind::DerivedInput, Own::Derived, "DerivedInputs::nav_preview", When::NavigatorOwnership)
+        }
 
         // ---- bounded targets a domain owns. The detour preview is *not* a derived level: it is the
         // result of a planning operation the Navigator asked for, and it carries that operation's
         // token rather than a key.
         Feeder::DetourPreview => {
-            row(Kind::BoundedTarget, Own::Navigator, "Navigator detour preview target", When::PassCutover)
+            row(Kind::BoundedTarget, Own::Navigator, "Navigator detour preview target", When::NavigatorOwnership)
         }
 
         // ---- external facts: nobody asked for these.
-        Feeder::BleStatus => row(Kind::ExternalFact, Own::Fault, "ExternalFacts::link", When::PassCutover),
-        Feeder::MapTransfer => row(Kind::ExternalFact, Own::Fault, "ExternalFacts::transfer", When::PassCutover),
+        Feeder::BleStatus => row(Kind::ExternalFact, Own::Fault, "ExternalFacts::link", When::BootAndFacts),
+        Feeder::MapTransfer => row(Kind::ExternalFact, Own::Fault, "ExternalFacts::transfer", When::BootAndFacts),
         Feeder::SensorStatus | Feeder::SensorScanHits => {
-            row(Kind::ExternalFact, Own::Fault, "PassInputs::sensors", When::PassCutover)
+            row(Kind::ExternalFact, Own::Fault, "PassInputs::sensors", When::BootAndFacts)
         }
         Feeder::WeatherFeed => {
             row(Kind::ExternalFact, Own::Weather, "ExternalFacts::weather_data", When::WeatherCutover)
@@ -241,11 +272,11 @@ pub fn feeder_migration(feeder: Feeder) -> FeederMigration {
         ),
 
         // ---- boot inputs: supplied once, before any pass.
-        Feeder::Settings => row(Kind::BootInput, Own::Settings, "SettingsMachine boot input", When::PassCutover),
+        Feeder::Settings => row(Kind::BootInput, Own::Settings, "SettingsMachine boot input", When::BootAndFacts),
         Feeder::NavProfiles | Feeder::MapInfo | Feeder::MapNavGraph => {
-            row(Kind::BootInput, Own::Catalog, "mounted-map facts at map open", When::PassCutover)
+            row(Kind::BootInput, Own::Catalog, "mounted-map facts at map open", When::BootAndFacts)
         }
-        Feeder::FwVersion => row(Kind::BootInput, Own::Dfu, "DfuState running version", When::PassCutover),
+        Feeder::FwVersion => row(Kind::BootInput, Own::Dfu, "DfuState running version", When::BootAndFacts),
 
         // ---- platform state around a pass. These are not legacy shims: the runtime owns the
         // display and the input plane on every platform, and says so through these.
@@ -280,21 +311,17 @@ mod tests {
     /// The classifications worth stating out loud, because getting them wrong is expensive.
     #[test]
     fn the_locked_classifications_hold() {
-        // The four ride-track feeders are one need, not four: they are fed together and answer the
-        // same key, which is why merging them costs nothing.
-        for feeder in
-            [Feeder::RideProfile, Feeder::RideProfileFillBegin, Feeder::RideProfileFillFinish, Feeder::RidePreview]
-        {
-            let row = feeder_migration(feeder);
-            assert_eq!(row.kind, FeederKind::DerivedInput);
-            assert_eq!(row.home, "DerivedInputs::ride_track");
-        }
+        // The ride-track fill is one need: the executor borrows the buffer and answers the key the
+        // need has after the fill.
+        let row = feeder_migration(Feeder::RideProfileFillBegin);
+        assert_eq!(row.kind, FeederKind::DerivedInput);
+        assert_eq!(row.home, "DerivedInputs::ride_track");
 
         // The detour preview looks like the nav preview and is not: it answers an operation.
         assert_eq!(feeder_migration(Feeder::DetourPreview).kind, FeederKind::BoundedTarget);
         assert_eq!(feeder_migration(Feeder::NavPreview).kind, FeederKind::DerivedInput);
 
-        // Weather feeders wait for #1401, not DC6.
+        // Weather feeders wait for #1401.
         assert_eq!(feeder_migration(Feeder::WeatherFeed).deletes_in, DeletingSlice::WeatherCutover);
         assert_eq!(feeder_migration(Feeder::RainView).deletes_in, DeletingSlice::WeatherCutover);
 

@@ -63,12 +63,12 @@ fn script() -> Vec<(u32, Vec<InputEvent>)> {
 fn split_path_matches_handle_input_state_and_map_dirty() {
     // Reference app: the simulator's single-call path.
     let mut single = App::new_idle(AppState::new(0, 0, 0.05));
-    single.set_routes(&[one_route()]);
+    single.set_routes_with_ids(&[one_route()], &[0]);
     let _ = single.take_dirty(); // drain the construction frame
 
     // Decomposed app: the firmware's map plane + a standalone input plane.
     let mut split = App::new_idle(AppState::new(0, 0, 0.05));
-    split.set_routes(&[one_route()]);
+    split.set_routes_with_ids(&[one_route()], &[0]);
     let _ = split.take_dirty();
     let mut plane = InputPlane::new();
 

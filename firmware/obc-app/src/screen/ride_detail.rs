@@ -13,8 +13,7 @@
 //! [`Activity::viewed_ride`](crate::Activity::viewed_ride) (the Rides screen's press does), the
 //! host drains [`App::ride_track_request`](crate::App::ride_track_request), streams
 //! the Ride object into the app's resident ride-profile + ride-preview buffers
-//! ([`App::set_ride_profile`](crate::App::set_ride_profile) /
-//! [`App::set_ride_preview`](crate::App::set_ride_preview)), and Back/delete clears `viewed_ride`
+//! (the keyed ride-track answer), and Back/delete clears `viewed_ride`
 //! so both invalidate on exit — filled on entry, one buffer each, never rebuilt per frame.
 //!
 //! **Delete** is the ride_control-pattern guarded row: the completed hold *is* the confirmation

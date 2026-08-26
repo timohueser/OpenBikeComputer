@@ -46,7 +46,7 @@ impl SystemScreen {
                 LANGUAGE => Transition::Push(Screen::Language(LanguageScreen::new())),
                 FIRMWARE => {
                     // The Firmware page shows `Card free`, so run the one-shot FAT scan on entry (the
-                    // host answers via `App::apply_event`) — the same trigger the old top-level
+                    // host answers via the pass's fact stage) — the same trigger the old top-level
                     // System row carried.
                     cx.storage.admit_intent(crate::device_core::storage_info::StorageInfoIntent::RefreshRequested);
                     Transition::Push(Screen::Firmware(FirmwareScreen::new()))

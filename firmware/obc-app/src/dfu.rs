@@ -2,7 +2,7 @@
 //!
 //! The scan/arm machinery runs **board-side** (`obc_dfu::armer` + `obc-fw-nrf54l`'s `dfu.rs`); the
 //! app only posts the [`DfuAction`](crate::activity::DfuAction) one-shots and receives the scan's
-//! answer through [`App::apply_event`](crate::App::apply_event). These two
+//! answer through the pass's fact stage. These two
 //! types are that answer, kept **host-agnostic** (no `obc-dfu` dependency reaches `obc-app`): the
 //! board maps `obc_dfu::ScanError` into a [`DfuScanError`] and fills a [`DfuScanReport`] with the
 //! version strings it read off the card + the running image.
@@ -15,8 +15,8 @@
 pub type Version = heapless::String<32>;
 
 /// Copy `s` into a [`Version`], truncating to the buffer's cap on a char boundary. `pub` so a
-/// fully-typed host constructing [`HostEvent::UpdateConfirmed`](crate::HostEvent::UpdateConfirmed) /
-/// [`UpdateFailed`](crate::HostEvent::UpdateFailed) from its `&str` boot-outcome versions applies
+/// fully-typed host reporting this boot's update verdict from its `&str` boot-outcome versions
+/// applies
 /// the same bound.
 pub fn clamp(s: &str) -> Version {
     let mut v = Version::new();
@@ -29,7 +29,7 @@ pub fn clamp(s: &str) -> Version {
 }
 
 /// A successful staging scan's result, handed to
-/// [`App::apply_event`](crate::App::apply_event) so the confirm screen can
+/// the pass's fact stage so the confirm screen can
 /// show *installed → update* and warn on the no-undo / same-version cases (issue #620 §2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DfuScanReport {
@@ -81,7 +81,7 @@ pub enum DfuFailure {
 
 /// Why the **install drain refused or failed to arm** an update (issue #755) — the failure twin of
 /// [`DfuScanError`], carried to the app by
-/// [`App::apply_event`](crate::App::apply_event) so a live
+/// the pass's fact stage so a live
 /// [`DfuProgress`](crate::screen::DfuProgressScreen) spinner is replaced by the error card instead
 /// of hanging forever. Every non-reboot outcome of the board's `DfuAction::Install` drain maps to
 /// one of these. Kept **host-agnostic** like [`DfuScanError`]: the board maps its refusal guards and
