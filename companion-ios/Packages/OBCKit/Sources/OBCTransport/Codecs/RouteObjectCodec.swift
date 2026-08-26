@@ -82,6 +82,22 @@ public enum RouteObjectCodec {
         CRC32.checksum(encode(points: record.route.points, waypoints: record.route.waypoints, name: record.summary.name))
     }
 
+    /// `payload` with only its header name field replaced — the bytes a device
+    /// holds for a route the rider has since renamed on the phone. The name is a
+    /// fixed-width field (§1), so geometry, offsets and the payload's length are
+    /// untouched: this is a header splice, never a re-encode. A payload too short
+    /// to carry a header comes back unchanged.
+    public static func renamed(_ payload: Data, to name: String) -> Data {
+        guard payload.count >= headerLength else { return payload }
+        let nameBytes = truncatedUTF8(name, maxBytes: nameCap)
+        var out = payload
+        let base = out.startIndex
+        out.resetBytes(in: (base + 64)..<(base + 64 + nameCap))
+        out[base + 6] = UInt8(nameBytes.count)
+        out.replaceSubrange((base + 64)..<(base + 64 + nameBytes.count), with: nameBytes)
+        return out
+    }
+
     /// Encode geometry + waypoints into an OBCR v3 file. `waypoints` are stored
     /// verbatim (already placed along the route by `WaypointPlacement`); `points`
     /// carry the geometry and drive the exact header stats.
