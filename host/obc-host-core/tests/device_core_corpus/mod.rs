@@ -42,6 +42,12 @@ pub enum Requirement {
     CatalogRouteDelete,
     CatalogRideDelete,
     CatalogTripCascade,
+    /// A completed removal is followed by the re-read the **domain** orders (#1541). The executor
+    /// re-feeds nothing, so the rider's menu loses the row only when that read lands.
+    CatalogDeleteOrdersRefresh,
+    /// A read the store could not answer is re-offered until it lands (#1541) — the retry the board
+    /// used to keep privately, now every host's.
+    CatalogRefreshRetry,
     CatalogUploadOrder,
     CatalogIdentityRemap,
     NavigationPlan,
@@ -93,6 +99,8 @@ pub const ALL_REQUIREMENTS: &[Requirement] = &[
     Requirement::CatalogRouteDelete,
     Requirement::CatalogRideDelete,
     Requirement::CatalogTripCascade,
+    Requirement::CatalogDeleteOrdersRefresh,
+    Requirement::CatalogRefreshRetry,
     Requirement::CatalogUploadOrder,
     Requirement::CatalogIdentityRemap,
     Requirement::NavigationPlan,
@@ -146,6 +154,7 @@ pub enum Action {
     DeleteRoute,
     DeleteRide,
     CascadeDeleteTrip,
+    RenameRouteBehindAFailingRead,
     StartRoutePlan,
     CancelRoutePlan,
     DeliverLateRouteResult,
@@ -271,6 +280,9 @@ pub struct CorpusState {
     pub pending_settings_result: Option<PendingSettingsResult>,
     pub settings_revision: u16,
     pub route_delete_fail_once: bool,
+    /// The next catalog read does not answer. One shot, so the retry that follows it succeeds and
+    /// the scenario has a rider-visible difference between "re-offered" and "lost".
+    pub catalog_read_fail_once: bool,
     pub retention_delete_attempts: u16,
     pub settings_retry_requested: bool,
     /// What the executor has handed back, waiting for the next pass to read it.
@@ -317,6 +329,7 @@ impl CorpusState {
             pending_settings_result: None,
             settings_revision: 0,
             route_delete_fail_once: false,
+            catalog_read_fail_once: false,
             retention_delete_attempts: 0,
             settings_retry_requested: false,
             facts: ExternalFacts::NONE,
@@ -460,6 +473,14 @@ impl CorpusState {
                 self.app.apply_gesture(Gesture::Press);
                 self.app.apply_gesture(Gesture::Press);
                 self.app.apply_gesture(Gesture::Hold);
+            }
+            // The store moved and the *first* read of it will not answer. The rename is what makes
+            // the retry rider-visible: until a read lands, the menu still shows the old name, so a
+            // re-offer that never happened is a scenario that settles on stale rows.
+            Action::RenameRouteBehindAFailingRead => {
+                self.routes[2] = route("Delta");
+                self.catalog_read_fail_once = true;
+                self.note_store_commit();
             }
             Action::CascadeDeleteTrip => {
                 self.app.apply_gesture(Gesture::Press);
@@ -970,7 +991,7 @@ pub const SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: "catalog.route-delete",
-        requirements: &[Requirement::CatalogRouteDelete],
+        requirements: &[Requirement::CatalogRouteDelete, Requirement::CatalogDeleteOrdersRefresh],
         actions: &[Action::DeleteRoute],
     },
     Scenario {
@@ -980,8 +1001,13 @@ pub const SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: "catalog.trip-cascade",
-        requirements: &[Requirement::CatalogTripCascade],
+        requirements: &[Requirement::CatalogTripCascade, Requirement::CatalogDeleteOrdersRefresh],
         actions: &[Action::CascadeDeleteTrip],
+    },
+    Scenario {
+        name: "catalog.refresh-retry",
+        requirements: &[Requirement::CatalogRefreshRetry],
+        actions: &[Action::RenameRouteBehindAFailingRead, Action::Settle],
     },
     Scenario {
         name: "navigation.plan-cancel-late-replacement",
@@ -1144,6 +1170,7 @@ pub fn action_name(action: Action) -> &'static str {
         Action::DeleteRoute => "delete-route",
         Action::DeleteRide => "delete-ride",
         Action::CascadeDeleteTrip => "cascade-delete-trip",
+        Action::RenameRouteBehindAFailingRead => "rename-route-behind-a-failing-read",
         Action::StartRoutePlan => "start-route-plan",
         Action::CancelRoutePlan => "cancel-route-plan",
         Action::DeliverLateRouteResult => "deliver-old-route-result",

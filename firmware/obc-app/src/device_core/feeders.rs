@@ -166,9 +166,6 @@ pub enum FeederKind {
 /// Each row therefore names the ownership cutover that really deletes it (#1448 Gate 3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeletingSlice {
-    /// Gate 3 item 1 — catalog refresh and deletion move into `CatalogMachine`, which then owns the
-    /// resident catalogs and reads them itself.
-    CatalogOwnership,
     /// Gate 3 item 2 — retention policy moves into `RetentionMachine`, which then owns the metadata
     /// columns rather than being fed them.
     RetentionOwnership,
@@ -209,19 +206,25 @@ pub fn feeder_migration(feeder: Feeder) -> FeederMigration {
     use LegacyOwner as Own;
     match feeder {
         // ---- catalog refresh outcomes: the executor fills the resident catalogs, the outcome
-        // reports only the revision it read at. Three route feeders exist because the id column and
+        // reports only that the read is over. Three route feeders exist because the id column and
         // the retention column were added one at a time; they collapse into one refresh.
+        //
+        // These four are **not** waiting on refresh ownership (#1541): fill *order* is not policy.
+        // `CatalogState::replace_routes` re-resolves every trip's stage ids on either ordering —
+        // pinned by `a_catalog_re_feed_mid_cascade_does_not_move_the_cursor` — which is why the
+        // board and the host already read in different orders and both are correct. What retires
+        // them is the day a bulk fill arrives as `PassInputs` rather than as a `set_*` call.
         Feeder::RoutesWithIds => {
-            row(Kind::RefreshOutcome, Own::Catalog, "CatalogOutcome::CatalogRead", When::CatalogOwnership)
+            row(Kind::RefreshOutcome, Own::Catalog, "CatalogOutcome::CatalogRead", When::BootAndFacts)
         }
         Feeder::RoutesWithMeta => row(
             Kind::RefreshOutcome,
             Own::Catalog,
             "CatalogOutcome::CatalogRead + RetentionMachine metadata",
-            When::CatalogOwnership,
+            When::BootAndFacts,
         ),
         Feeder::Trips | Feeder::Rides => {
-            row(Kind::RefreshOutcome, Own::Catalog, "CatalogOutcome::CatalogRead", When::CatalogOwnership)
+            row(Kind::RefreshOutcome, Own::Catalog, "CatalogOutcome::CatalogRead", When::BootAndFacts)
         }
         Feeder::RouteMeta => row(
             Kind::RefreshOutcome,
@@ -238,8 +241,10 @@ pub fn feeder_migration(feeder: Feeder) -> FeederMigration {
 
         // ---- keyed derived data: one need, one key, one answer. What is left is the in-place fill
         // the executor borrows: the answer itself is a `DerivedInput` already.
+        // The in-place fill retires with its twin below, and for the same reason: what deletes both
+        // is a typed executor staging a domain's bounded target, not who owns the catalog.
         Feeder::RideProfileFillBegin => {
-            row(Kind::DerivedInput, Own::Derived, "DerivedInputs::ride_track", When::CatalogOwnership)
+            row(Kind::DerivedInput, Own::Derived, "DerivedInputs::ride_track", When::NavigatorOwnership)
         }
         Feeder::NavPreview => {
             row(Kind::DerivedInput, Own::Derived, "DerivedInputs::nav_preview", When::NavigatorOwnership)
