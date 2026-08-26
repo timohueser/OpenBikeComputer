@@ -525,6 +525,8 @@ The application marks settings dirty when the user leaves the Settings subtree. 
 
 The settings blob is independent of the SD card. The current UI languages are English, German, French, and Spanish.
 
+A firmware update does not erase the stored settings. The blob format is append-only: a new setting is added at the end, and it carries the version that first wrote it. Stored fields never move. The device reads a stored blob at the blob's own version, and the fields added after that version take their defaults. Two cases reset the settings, and both are deliberate: a blob older than the oldest version whose exact bytes are committed as a reference, and a downgrade, where the stored blob is newer than the firmware and its layout is unknown.
+
 The build generates a complete translation table from four TOML catalogs. The build fails if a catalog has missing or extra keys.
 
 ## Retention
