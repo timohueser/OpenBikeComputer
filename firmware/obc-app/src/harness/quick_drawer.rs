@@ -219,6 +219,10 @@ fn the_base_is_recessed_only_while_the_sheet_is_up() {
     // level down — what `dim_color` turns it into.
     let plain_blue = Rgb888::new(0, 0, 255);
     let dim_blue = Rgb888::new(0, 0, 173);
+    // The sheet's own parchment, which must stay at full colour: the base recedes, the drawer does
+    // not. On the bare frame this colour is the map's chrome; under the sheet it can only be the
+    // sheet, because the chrome below has receded with everything else.
+    let parchment = Rgb888::new(247, 243, 239);
 
     let before = render_120(&mut app, &bytes);
     assert!(before.count(plain_blue) > 0 && before.count(dim_blue) == 0, "the bare map is drawn at full colour");
@@ -227,6 +231,7 @@ fn the_base_is_recessed_only_while_the_sheet_is_up() {
     let covered = render_120(&mut app, &bytes);
     assert_eq!(covered.count(plain_blue), 0, "no pixel of the base is drawn at full colour under a sheet");
     assert!(covered.count(dim_blue) > 0, "the map that is still visible around the sheet has receded");
+    assert!(covered.count(parchment) > before.count(parchment), "…and the sheet on top of it has not");
 
     chord(&mut app, &mut f, Button::Up, Button::Select, ms);
     let after = render_120(&mut app, &bytes);

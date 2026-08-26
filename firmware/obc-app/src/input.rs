@@ -358,11 +358,9 @@ impl Gestures {
     /// At most one gesture per call; anything else due fires on the next call.
     pub fn tick(&mut self, now: u32) -> Option<Gesture> {
         let hold_ms = self.hold_ms;
-        let latch = self.edges.latch;
+        // No latch check for the two timed buttons: latching already marked them `fired_long`,
+        // which is the same bit that keeps the confirm ring at zero. One authority, not two.
         for (b, long) in [(Button::Select, Gesture::Hold), (Button::Back, Gesture::BackHold)] {
-            if latch.is_some_and(|p| p.holds(b)) {
-                continue;
-            }
             let Some((h, _)) = self.timed(b) else { continue };
             if let Some(t0) = h.since {
                 if !h.fired_long && now.wrapping_sub(t0) >= hold_ms {
@@ -842,7 +840,15 @@ mod tests {
         assert_eq!(g.on_event(up(Button::Up), 100), None);
         assert_eq!(g.tick(700), None, "the still-held Select is still the chord's");
         assert_eq!(g.select_progress(700), 0.0);
-        assert_eq!(g.on_event(up(Button::Select), 900), None, "the last release is not a tap");
+
+        // The rider's thumb rolls back onto Up while Select is still down. The latch has not
+        // cleared, so that re-press is the chord's too — release the latch on the *first* button up
+        // and this leaks a step onto the screen the sheet is covering.
+        assert_eq!(g.on_event(down(Button::Up), 720), None);
+        assert_eq!(g.tick(900), None, "a re-press inside a held chord steps nothing");
+        assert_eq!(g.on_event(up(Button::Up), 920), None);
+
+        assert_eq!(g.on_event(up(Button::Select), 940), None, "the last release is not a tap");
 
         g.on_event(down(Button::Select), 1_000);
         assert_eq!(g.on_event(up(Button::Select), 1_060), Some(Gesture::Press), "and now Select taps again");
