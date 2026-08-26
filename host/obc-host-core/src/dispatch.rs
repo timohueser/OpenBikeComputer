@@ -252,8 +252,9 @@ impl HostLoop {
     /// boot, imported a file, or committed an upload into it.
     ///
     /// The fact does not order a re-read; the domain's owed refresh does — the pass arms it via
-    /// `CatalogState::note_store_moved` (`catalog_state.rs`'s own rule). Never called for a change the executor made itself: it has
-    /// already re-fed the catalogs, and announcing its own work would order a rescan of it.
+    /// `CatalogState::note_store_moved` (`catalog_state.rs`'s own rule). Never called for a change
+    /// the executor made itself: it has already re-fed the catalogs, and announcing its own work
+    /// would order a rescan of it.
     pub fn note_store_commit(&mut self) {
         self.revision = self.revision.wrapping_add(1);
         self.inbox
