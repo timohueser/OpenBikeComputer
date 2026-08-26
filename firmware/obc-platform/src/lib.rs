@@ -93,12 +93,16 @@ mod deleted_knobs {
     /// and the step cadence lives in `obc_app::input`. This reads `button_input.rs` as text so a
     /// second timing model cannot quietly grow back beside the shared one — the needle is assembled
     /// here rather than written literally so this guard does not match its own source.
+    ///
+    /// The haystack is lower-cased first: the two constants this deletes were `DEFAULT_REPEAT_
+    /// DELAY_MS` and `DEFAULT_REPEAT_INTERVAL_MS`, so a case-sensitive match would miss the very
+    /// names it guards against.
     #[test]
     fn button_input_grows_no_second_repeat_timing() {
-        const SOURCE: &str = include_str!("button_input.rs");
+        let source = include_str!("button_input.rs").to_ascii_lowercase();
         for needle in [concat!("auto_", "repeat"), concat!("repeat_", "delay"), concat!("repeat_", "interval")] {
             assert!(
-                !SOURCE.contains(needle),
+                !source.contains(needle),
                 "`{needle}` is back in obc-platform's button_input.rs; repeat timing belongs to the \
                  shared recogniser in obc-app's `input.rs`, not to a board adapter"
             );

@@ -1033,6 +1033,13 @@ impl eframe::App for SimGui {
             {
                 steps -= 1;
             }
+            // ←/→ are read as *held state*, but their press events are still eaten so a focused
+            // slider or text field does not also act on them: the device keys belong to the
+            // device. Consuming does not touch `key_down`, and a key-repeat can queue more than
+            // one press per frame, so drain them.
+            for key in [egui::Key::ArrowLeft, egui::Key::ArrowRight] {
+                while i.consume_key(egui::Modifiers::NONE, key) {}
+            }
             (
                 steps,
                 i.key_down(egui::Key::ArrowLeft),
