@@ -1,29 +1,26 @@
 ---
 title: The display protocol
-description: How the firmware drives the LS021B7DD02 reflective memory-in-pixel LCD — the two independent signal paths, RGB222 area-gradation pixels, the one-gate-line/two-area-block write, the frame algorithm, and the signal/timing reference.
+description: The LS021B7DD02 pixel format, scan sequence, polarity waveform, and timing limits.
 ---
 
-# Driving the display
+# Display protocol
 
-The device's screen is a Sharp **LS021B7DD02** — a 2.13″, **240 × 320** reflective **memory-in-pixel (MIP)** LCD. "Memory-in-pixel" is the whole story: **every subpixel has a 1-bit latch on the glass.** Write a bit and the panel holds that image with *zero* bus traffic — you only spend power when the picture actually changes, which is exactly what an always-on, battery-bound device wants.
+The device uses a Sharp **LS021B7DD02** reflective memory-in-pixel LCD. The panel has 240 × 320 pixels.
 
-Colour is **RGB222** — 2 bits per channel → **64 colours** — and the panel is **normally black** (an unwritten, all-zero panel is dark). Two facts about *how you talk to it* shape everything below:
+Each subpixel has a one-bit latch. The panel retains the image without scan traffic.
 
-1. **The interface is parallel, not SPI.** Pixel data goes out on a **6-bit parallel source bus** plus a handful of control lines.
-2. **The stored bits don't drive the liquid crystal directly.** A separate, *continuously running* AC waveform does; the stored bit only chooses which way each subpixel leans.
+The framebuffer uses **RGB222**. Each channel has four levels, and each pixel has 64 possible colors.
 
-This page is the protocol — conceptual model first, then the mechanical detail and the signal reference. The firmware that implements it is split three ways: the M33 [COM-waveform driver](src:firmware/obc-fw-nrf54l/src/com.rs), the [FLPR scan blob](src:firmware/obc-fw-nrf54l/src/flpr/flpr_scan.c) that clocks the gate and source buses, and the host-tested [wire-format packer](src:firmware/obc-display/src/ls021/wire.rs).
+The FLPR writes pixels through a six-bit parallel bus. The M33 generates the continuous polarity waveform.
 
-## Two signal paths that never meet
-
-The single most useful way to think about this panel is that **two unrelated jobs run on two different sets of pins, and they don't talk to each other.**
+## Signal paths
 
 <figure class="fig">
 <svg viewBox="0 0 720 300" role="img" aria-label="Two independent paths. On the left, the intermittent image-write path — gate scan and source shift — pushes one bit into a subpixel latch on the glass. On the right, the continuous polarity path — VCOM, VB in phase, VA inverse, free-running at about 60 Hz — drives the liquid crystal. The stored bit only selects which rail (VA for white, VB for black) the subpixel follows.">
   <defs>
     <marker id="a1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
-  <text class="d-tag" x="20" y="22">Two signal paths — they don't talk to each other</text>
+  <text class="d-tag" x="20" y="22">Two independent signal paths</text>
 
   <!-- Path A: write -->
   <text class="d-tag" x="30" y="58">Path A · image write — intermittent</text>
@@ -41,7 +38,7 @@ The single most useful way to think about this panel is that **two unrelated job
   <rect class="d-hot" x="290" y="102" width="120" height="74" rx="12" style="fill:#f8efe4" />
   <text class="d-title" x="350" y="130" text-anchor="middle" style="fill:#a9501c">subpixel latch</text>
   <text class="d-sub" x="350" y="148" text-anchor="middle">one bit, on glass</text>
-  <text class="d-sub" x="350" y="162" text-anchor="middle">held with no power</text>
+  <text class="d-sub" x="350" y="162" text-anchor="middle">held without a scan</text>
   <line class="d-flow" x1="410" y1="139" x2="494" y2="139" marker-end="url(#a1)" />
   <text class="d-sub" x="452" y="131" text-anchor="middle">selects</text>
   <text class="d-sub" x="452" y="154" text-anchor="middle">a rail</text>
@@ -57,14 +54,16 @@ The single most useful way to think about this panel is that **two unrelated job
   <text class="d-sub" x="500" y="200" style="font-size:10px">VB in phase with VCOM · VA inverse</text>
   <text class="d-sub" x="500" y="216" style="font-size:10px">→ drives the LC (never DC)</text>
 </svg>
-<figcaption><b>Path A</b> (the gate scan + source shift) pushes one bit per subpixel into the on-glass latches — it runs only while you update the image, then goes quiet and the picture is retained. <b>Path B</b> (<code>VCOM</code>/<code>VA</code>/<code>VB</code>) is a free-running ~60 Hz square wave that physically drives the liquid crystal; the stored bit just routes each subpixel to follow the <code>VA</code> rail (→ white) or the <code>VB</code> rail (→ black).</figcaption>
+<figcaption>Path A writes the pixel latches. Path B continuously drives the liquid crystal at approximately 60 Hz. A stored bit selects the <code>VA</code> or <code>VB</code> rail.</figcaption>
 </figure>
 
-The consequence for firmware is that **COM is its own concern.** The liquid crystal must **never see a DC bias** — a steady field degrades the cells — so `VCOM`/`VA`/`VB` have to keep alternating the *entire* time the panel is powered, even on a perfectly static image. Generate them on a hardware timer or dedicated task that runs autonomously and never stalls behind the image write. The write path may be slow and bursty; the polarity path cannot pause.
+Do not stop `VCOM`, `VA`, or `VB` while the panel has power. A DC bias can damage the liquid crystal.
 
-## Pixels: RGB222 by area gradation
+The hardware timer generates this waveform independently of the scan operation.
 
-Each channel carries **2 bits**, but the panel has no analog grey — it fakes four levels per channel with **area gradation.** Every subpixel is physically split into two 1-bit on/off blocks of different size:
+## Pixel encoding
+
+The panel makes four levels with area gradation. Each subpixel contains a large block and a small block.
 
 <figure class="fig">
 <svg viewBox="0 0 720 280" role="img" aria-label="One pixel cell drawn as a three by three grid: R, G, B columns by three stacked bands — top MSB, middle LSB, bottom MSB. The top and bottom MSB bands are wired together and form two thirds of the area; the middle LSB band is one third.">
@@ -103,10 +102,10 @@ Each channel carries **2 bits**, but the panel has no analog grey — it fakes f
   <text class="d-label" x="506" y="174" style="fill:#a9501c">LSB plane</text>
   <text class="d-sub" x="506" y="190">1/3 area · middle</text>
 </svg>
-<figcaption>Physically a pixel cell is three stacked bands — <b>MSB (top) · LSB (middle) · MSB (bottom)</b>. The two MSB bands are wired together into one block covering <b>2/3</b> of the area; the middle band is the <b>1/3</b> LSB block. Turning a channel's MSB and LSB bits on/off lights 0, 1/3, 2/3, or the full area — four perceived levels per channel.</figcaption>
+<figcaption>The connected MSB bands cover two-thirds of the subpixel. The LSB band covers one-third. The two bits give four visible levels.</figcaption>
 </figure>
 
-A channel's 2-bit level therefore maps to a (MSB, LSB) pair and a lit area:
+Each two-bit channel has this mapping:
 
 | Level `l` | (MSB, LSB) | Lit area | Appears as |
 |-----------|------------|----------|--------------------|
@@ -115,33 +114,29 @@ A channel's 2-bit level therefore maps to a (MSB, LSB) pair and a lit area:
 | 2 | (1, 0) | 2/3 | MSB / top + bottom |
 | 3 | (1, 1) | 3/3 | full (channel on) |
 
-Bit extraction from a level is just `msb = (l >> 1) & 1`, `lsb = l & 1` — so an RGB222 framebuffer maps onto the wire with no lookup.
+Use `msb = (l >> 1) & 1` and `lsb = l & 1`. The packer does not need a lookup table.
 
-### The source bus is odd/even interleaved
+### Source-bus interleave
 
-The 6 data lines carry **two adjacent pixels at once** — one bit each for the odd and the even column:
+The six data lines carry one bit for each channel of two adjacent pixels.
 
 | Lines | Pixel | Channel |
 |---------------------|----------------|-----------|
-| `R[0]` `G[0]` `B[0]` | **odd** column  | R / G / B |
-| `R[1]` `G[1]` `B[1]` | **even** column | R / G / B |
+| `R[0]` `G[0]` `B[0]` | **even** column | R / G / B |
+| `R[1]` `G[1]` `B[1]` | **odd** column | R / G / B |
 
-So each `BCK` *edge* clocks **one pixel pair** (two columns) — the panel latches the source bus on **both** edges of `BCK` (DDR). Drive a *distinct* pair on the rising edge and the next pair on the falling edge, and the 240 columns ship in **60 `BCK` cycles** of data per sub-line.
+Each `BCK` edge clocks one pixel pair. Thus, 120 pairs require 60 `BCK` cycles.
 
-> **Both edges, learned the hard way.** It's natural to assume one pair per `BCK` *cycle* (120 cycles for 240 columns) and hold the data steady across the whole period. Do that and the panel captures each pair *twice* — every pair lands in four columns, so the left half of the frame stretches to fill the screen, the right half drops, and the 64-colour gamut collapses to 32. It's invisible on solid fills (uniform either way), which is why it can hide for a long time; fine vertical detail (1-px lines, text) is what exposes it. The fix is to feed a new pair on each edge (DDR), which also clocks the line out ~2× faster — and is why the panel's ~53 ms full-frame spec is actually achievable at the rated `BCK`.
+Present a new pair before each rising and falling edge. Do not hold one pair for a complete cycle.
 
-## One gate line, two area blocks
+## Gate scan
 
-Here is the key to the whole protocol — easy to miss in the datasheet's timing charts:
+The display has one gate line for each of its 320 rows. Write both area planes to the same gate line.
 
-> **A pixel row is ONE gate line.** The display has exactly **320 gate lines (`L1…L320`), one per pixel row.** The "three bands" above are the area layout *inside a single cell* — **not** three separate gate lines.
+- `GCK` HIGH selects the two-thirds MSB block.
+- `GCK` LOW selects the one-third LSB block.
 
-To write a row you transfer the MSB data **and** the LSB data into that **same** gate line. The only thing that routes a latch to the 2/3 (MSB) block versus the 1/3 (LSB) block is the **level of `GCK`**:
-
-- **`GCK` HIGH → MSB phase** → the latch writes the **2/3-area** cells.
-- **`GCK` LOW → LSB phase** → the latch writes the **1/3-area** cells.
-
-There is **no separate MSB/LSB select pin** — `GCK` level *is* the area-block selector. So one pixel row is **one `GCK` period**: a rising edge that both advances the gate and opens the MSB phase, then a falling edge that holds the same row for the LSB phase.
+One `GCK` period writes one row. The rising edge advances the gate. The falling edge keeps the same gate selected.
 
 <figure class="fig">
 <svg viewBox="0 0 720 270" role="img" aria-label="A timeline for one pixel row as one GCK period. GCK rises to advance to the row and open the MSB phase; while high, the MSB bit-plane is shifted in and a GEN pulse latches the two-thirds block. GCK then falls for the LSB phase on the same row; while low, the LSB bit-plane is shifted in and a second GEN pulse latches the one-third block. The next rising edge advances to the next row.">
@@ -169,53 +164,47 @@ There is **no separate MSB/LSB select pin** — `GCK` level *is* the area-block 
   <text class="d-sub" x="570" y="38" text-anchor="middle">next row</text>
   <text class="d-sub" x="360" y="250" text-anchor="middle" style="font-size:11px">one gate advance per pixel row · two GEN pulses per row</text>
 </svg>
-<figcaption>A row's data is two <b>bit-planes on the same 6 wires</b>: the MSB plane goes out while <code>GCK</code> is high (latched into the 2/3 block by a <code>GEN</code> pulse), then the LSB plane while <code>GCK</code> is low (latched into the 1/3 block). The gate advances on the <code>GCK</code> rising edge, so a single gate line stays selected across both phases of its period.</figcaption>
+<figcaption>Send the MSB plane while <code>GCK</code> is high. Send the LSB plane while <code>GCK</code> is low. Pulse <code>GEN</code> after each plane.</figcaption>
 </figure>
 
 ## Writing a frame
 
-A frame is bracketed by `INTB` and is a gate scan over the 320 rows. Two non-obvious rules are called out in the pseudocode:
+A frame scans the 320 rows. Keep `INTB` high for the complete scan.
 
-```
-# RULE 1: INTB must be HIGH for the whole frame, or nothing latches.
+```text
 INTB = HIGH
-GSP  = pulse                          # frame start; loads the first gate
-leading dummy gate advances           # pipeline fill (a few GCK periods, no GEN/BCK);
-                                      # release GSP on the very first GCK edge
-for each of 320 pixel rows:           # one GCK PERIOD per row — RULE 2
-    GCK = HIGH                        #   rising edge advances the gate to this row
-    shift MSB plane  (BSP + 60 DDR BCK) #  2/3-area data, a pair per BCK edge
-    GEN = pulse                       #   latch the 2/3 (MSB) block  [GCK still HIGH]
-    GCK = LOW                         #   same gate line, NOT an advance
-    shift LSB plane  (BSP + 60 DDR BCK) #  1/3-area data
-    GEN = pulse                       #   latch the 1/3 (LSB) block  [GCK LOW]
-trailing dummy gate advances          # flush / "necessary signal" blank
-INTB = LOW                            # end of frame; panel now holds the image
+GSP = pulse
+send two leading dummy gate periods
+for each row:
+    set GCK HIGH
+    shift the MSB plane
+    pulse GEN
+    set GCK LOW
+    shift the LSB plane
+    pulse GEN
+send six trailing dummy gate periods
+INTB = LOW
 ```
 
-What the counts mean:
+- `INTB` LOW holds the current image.
+- One `GCK` period advances one row.
+- Each row uses two `GEN` pulses.
+- Each plane uses 120 data words and four dummy words.
+- Pulse `GSP` at the start. Release it on the first `GCK` edge.
 
-- **`INTB` HIGH = "write enabled" for the whole frame.** `INTB` LOW is the inter-frame **Hold** state: the panel ignores the gate/source scan and keeps its current memory.
-- **One `GCK` *period* per pixel row → 320 gate advances**, not 640. The vertical-timing chart shows ~640 `GCK` marks because those are **edges** (320 periods × 2 phases); with the bracketing dummies it totals ~648 edges.
-- **Two `GEN` pulses per row** — one in the MSB (high) phase, one in the LSB (low) phase.
-- **120 pixel-pair columns per sub-line** + a few dummy/flush columns that push the last columns through the source shift register. Because the panel is **DDR** (a pair per `BCK` *edge*, see above), those 120 columns are clocked in **~60 `BCK` cycles**, not 120.
-- **`GSP`** is pulsed once at frame start and released on the first `GCK` edge so its high overlaps `GCK(1)`.
+### Partial update
 
-### Partial update — a span-masked gate scan
+The presenter compares row hashes and sends changed row spans to the FLPR. The FLPR advances past unchanged rows without `GEN` pulses.
 
-Because pixel memory is retained you do **not** have to rewrite the whole frame, and the firmware doesn't. The FLPR backend drives a **span-masked scan**: given the row-spans that changed, it fast-forwards `GCK` over every clean row — `GEN` inactive, so nothing latches — does the shift-and-latch work only on the dirty rows, and **stops early** after the last one (drop `INTB`; the panel holds everything below). A skipped row costs one fast `GCK` advance instead of two full sub-line writes, so a frame scales with the number of *changed rows*, not a flat 320.
+The FLPR writes all 240 columns of each changed row. It stops after the last changed row.
 
-The grain is a **whole row**, though: touching any row re-latches all 240 of its columns — the source shift register feeds the entire line — so there is no cheap "just these few columns." A partial update is a set of full-width row-spans; a 16-px-wide right-edge overlay still rewrites its rows full-width, and is cheap only because it touches *few rows*, not few columns.
-
-The hold-progress bulge rides exactly this: as it animates, only its rows re-push — a fraction of a full-frame scan — while the rest of the map stays untouched and asleep. And the **map present** rides it too: it keeps a per-row hash of the last-pushed frame and feeds the masked scan only the rows that actually changed, so an idle Home clock ticking a minute repaints its clock band and nothing else — no per-screen code, the change detected automatically in the present layer. It's the renderer's [redraw-only-what-changed](../../software/rendering/) design carried onto the glass, and for a UI that changes a few fields per second, a large power win.
+Thus, the scan time depends mainly on the number and position of changed rows.
 
 ## Power-on, power-off, and retention
 
-The never-DC rule (Path B) dictates a strict order:
-
-- **Power-on:** write an **all-black frame first** (Path A), *then* start the `VCOM`/`VA`/`VB` waveform (Path B), with a small settle (datasheet ≥ 30 µs) before COM begins. The panel is now in a known, bias-free state before any AC drive.
-- **Power-off:** **reverse it** — bring the content to the safe state before stopping COM. Never cut COM while a biased image is held.
-- **Retention:** the image holds indefinitely for practical purposes, but refresh it at least every **~2 days** rather than holding a single static frame longer than that.
+- During power-on, write a black frame. Wait at least 30 µs, and then start the COM waveform.
+- During power-off, write the safe state before you stop the COM waveform.
+- Refresh a static image at least once every two days.
 
 ## Signal & timing reference
 
@@ -228,31 +217,35 @@ The never-DC rule (Path B) dictates a strict order:
 | `GEN`  | Gate | VDD2 | Gate output enable — pulsed once per phase to latch the selected block |
 | `INTB` | Gate | VDD2 | Frame envelope — HIGH for the whole frame; LOW = Hold (no write) |
 | `BSP`  | Source | VDD1 (~3.2 V) | Sub-line (start-of-line) pulse |
-| `BCK`  | Source | VDD1 | Source shift clock — 124 per sub-line (120 data + 4 dummy) |
-| `R[0]` `G[0]` `B[0]` | Source data | VDD1 | Odd-column R/G/B bit |
-| `R[1]` `G[1]` `B[1]` | Source data | VDD1 | Even-column R/G/B bit |
+| `BCK`  | Source | VDD1 | Source shift clock; 124 edge words per plane |
+| `R[0]` `G[0]` `B[0]` | Source data | VDD1 | Even-column R/G/B bit |
+| `R[1]` `G[1]` `B[1]` | Source data | VDD1 | Odd-column R/G/B bit |
 | `VCOM` | COM | — | Common AC reference (free-running ~60 Hz) |
 | `VB`   | COM | — | **In phase** with `VCOM` — the "black" rail |
 | `VA`   | COM | — | **Inverse** of `VCOM` — the "white" rail |
 
-### Timing (datasheet values are the envelope, not a target)
+### Timing
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
 | `BCK` max frequency | 0.758 MHz | Source/shift clock ceiling |
-| `BCK` min high / low | 660 ns each | Honour as minimum widths |
+| `BCK` minimum high / low | 660 ns each | Datasheet limit |
 | COM frequency | 54–66 Hz (60 typ) | 48–52 % duty |
 | COM edge (rise/fall) | ≤ 100 µs | Into ~56–77 nF per line; high-drive GPIO / buffer as needed |
 | `GCK` ↔ `GEN` setup & hold | ≥ 16.37 µs | Keep `GEN` clear of `GCK` edges |
 | `GEN` high width | ≥ 24.56 µs | Valid-output / latch window |
 | Power-on settle (black → COM) | ≥ 30 µs | See power-on order above |
-| Full-frame update | ~18 Hz (~55.6 ms) | At datasheet-nominal clocking |
+| Current full-frame scan | 44.1 ms | Measured on one development panel |
 
-A bring-up driver may deliberately clock far *slower* than these maxima (e.g. `BCK` in the low-hundreds-of-kHz) so a logic analyzer resolves every edge — that's fine; the table is the envelope. The minimum widths and the `GCK`↔`GEN` setup/hold are the relationships that actually matter for correct latching.
+The current FLPR uses approximately 210 ns for each `BCK` half-period.
+This gives a 420 ns period and approximately 2.38 MHz.
+It exceeds the 0.758 MHz maximum and violates the 660 ns minimum high and low times.
 
-## Power — the figures
+This timing passed a visual test on one panel at room temperature. It is not production validation. See the [timing record](src:firmware/docs/flpr-timing.md).
 
-This is why the panel suits an always-on device. Typical module power (datasheet, **excludes** the COM capacitive-load current):
+## Power
+
+The datasheet gives these typical module values. The values exclude COM capacitive-load current.
 
 | State | Power |
 |-------|------:|
@@ -260,14 +253,11 @@ This is why the panel suits an always-on device. Typical module power (datasheet
 | 1 Hz update | ≈ 45 µW |
 | 30 Hz update | ≈ 290 µW |
 
-The panel itself is nearly free at rest; cost scales with how often you rewrite — which is exactly why the partial-update strategy above matters.
+Power increases with the update rate. Partial updates reduce the number of rows that the FLPR writes.
 
----
+## Implementation
 
-## Where this lives
-
-- The COM polarity waveform on the M33 — and its zero-CPU [`TIMER→DPPI→GPIOTE`](src:firmware/obc-fw-nrf54l/src/com_hw.rs) variant: [`obc-fw-nrf54l/src/com.rs`](src:firmware/obc-fw-nrf54l/src/com.rs)
-- The gate/source scan that writes a frame — the [`FLPR`](src:firmware/obc-fw-nrf54l/src/ls021_flpr.rs) coprocessor blob: [`flpr/flpr_scan.c`](src:firmware/obc-fw-nrf54l/src/flpr/flpr_scan.c)
-- The host-tested wire-format pack (the area-gradation bit packing this page describes): [`obc-display/src/ls021/wire.rs`](src:firmware/obc-display/src/ls021/wire.rs)
-- How a rendered frame reaches the panel — the banded push and the RGB222 framebuffer: [rendering pipeline](../../software/rendering/)
-- The hardware overview: [Hardware](../)
+- COM driver: [`com.rs`](src:firmware/obc-fw-nrf54l/src/com.rs) and [`com_hw.rs`](src:firmware/obc-fw-nrf54l/src/com_hw.rs)
+- FLPR scan: [`flpr_scan.c`](src:firmware/obc-fw-nrf54l/src/flpr/flpr_scan.c)
+- Wire packer: [`wire.rs`](src:firmware/obc-display/src/ls021/wire.rs)
+- Presenter: [Rendering pipeline](../../software/rendering/)

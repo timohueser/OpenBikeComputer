@@ -10,7 +10,7 @@ mod flat_harness;
 use flat_harness::{blank_card, boot, boot_on, client, crc32, formatted_card, payload, Answer, Device};
 use obc_link::flat::store::Policy;
 use obc_link::flat::wire::{detail, ErrorCode};
-use obc_link::flat::{CancelCause, Ceilings, Link, ObjectId, ObjectKind, RequestId, Revision};
+use obc_link::flat::{CancelCause, Ceilings, Link, ObjectId, ObjectKind, RequestId, Revision, Stall, STALL_TIMEOUT_MS};
 use obc_storage::flat::sim::{FaultOnce, MediaOp};
 use obc_storage::flat::BlockDevice;
 
@@ -754,6 +754,73 @@ fn the_device_can_cancel_the_live_transfer_itself() {
     expect_error(&Answer::of(device.pump().answer()), ErrorCode::Cancelled, detail::cancelled::LINK_LOST);
     assert!(device.is_quiet());
     assert_eq!(device.remove_and_measure(id), 1, "the download's handle was closed");
+}
+
+/// **#1522: a transfer that stops moving is abandoned.** Nothing else bounded how long one stayed
+/// live, so a peer that wedged mid-stream held the store — and with it every consumer that withdraws
+/// heavy work while a transfer runs — until its link dropped, which for an app that is connected but
+/// no longer sending is never.
+#[test]
+fn a_transfer_that_stops_moving_is_abandoned_when_its_deadline_passes() {
+    let disk = formatted_card(126);
+    let mut device = boot(&disk);
+    let bytes = body();
+    let free = device.free_extents();
+
+    assert_eq!(device.watch_stall(0), Stall::Idle, "an idle engine has nothing to watch and no wake to schedule");
+
+    device.control(&client::put(0x80, 0, 0, &bytes, ROUTE, false, "wedged"));
+    device.stream(&client::stream(0x80, 0, &bytes[..1_008]));
+
+    // The deadline anchors on the first look and is re-anchored only by bytes. This peer sends none.
+    assert_eq!(device.watch_stall(1_000), Stall::Watching { again_in_ms: STALL_TIMEOUT_MS });
+    assert_eq!(
+        device.watch_stall(1_000 + STALL_TIMEOUT_MS - 1),
+        Stall::Watching { again_in_ms: 1 },
+        "a millisecond short of the deadline the transfer is still the peer's"
+    );
+
+    assert_eq!(device.watch_stall(1_000 + STALL_TIMEOUT_MS), Stall::Abandoned(RequestId(0x80)));
+    assert!(device.live_upload().is_none(), "the transfer level is idle again — the whole point of the deadline");
+    assert_eq!(device.watch_stall(1_000 + STALL_TIMEOUT_MS), Stall::Idle, "and there is nothing left to watch");
+
+    // Abandoned exactly as §3.8's device-side cancel abandons: the allocation released, the catalog
+    // untouched, and the answer owed to a peer that may yet be listening.
+    let answer = Answer::of(device.pump().answer());
+    assert_eq!(answer.request, 0x80, "the answer is the stalled transfer's own");
+    expect_error(&answer, ErrorCode::Cancelled, detail::cancelled::BY_DEVICE);
+    assert_eq!(device.free_extents(), free, "the allocation was released");
+    assert!(device.entries().is_empty());
+    assert!(device.is_quiet());
+}
+
+/// The other half of #1522's constraint: the deadline is chosen against the slowest legitimate link,
+/// so it may never kill a transfer that is merely slow. Here one record lands a millisecond inside
+/// every deadline — a pace of 1,008 bytes per 21 seconds, three orders of magnitude below the
+/// slowest real link — and the upload still commits.
+#[test]
+fn a_slow_but_progressing_transfer_is_never_abandoned() {
+    let disk = formatted_card(127);
+    let mut device = boot(&disk);
+    let bytes = body();
+
+    device.control(&client::put(0x81, 0, 0, &bytes, ROUTE, false, "dawdling"));
+    let mut now = 0;
+    let mut last = None;
+    for record in client::stream_all(0x81, &bytes, 1_008) {
+        assert!(matches!(device.watch_stall(now), Stall::Watching { .. }), "the deadline re-anchors on the bytes");
+        now += STALL_TIMEOUT_MS - 1;
+        assert_eq!(device.watch_stall(now), Stall::Watching { again_in_ms: 1 }, "still the peer's at {now} ms");
+        let wire = device.stream(&record);
+        if !wire.control.is_empty() {
+            last = Some(Answer::of(wire.answer()));
+        }
+    }
+
+    let answer = last.expect("the last stream record is answered");
+    assert!(!answer.is_error(), "an upload nobody would run this slowly still committed: {answer:?}");
+    assert_eq!(device.entries().len(), 1);
+    assert_eq!(device.watch_stall(now), Stall::Idle, "the transfer ended, so the watchdog has nothing to hold");
 }
 
 /// A create names no `ObjectId` until it commits, because `next_object_id` reserves nothing: a
