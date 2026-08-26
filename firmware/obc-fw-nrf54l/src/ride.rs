@@ -1337,14 +1337,15 @@ pub(crate) async fn run_app(
                         };
                         RideExec::deliver(&mut exec.outcomes.catalog, outcome, "catalog");
                     }
-                    // The rider's (or an expiry's) removal, on the **answering** writer path. The
-                    // effect is namespace-free — FS7 numbers every object out of one id space — so
-                    // the store resolves the head at that id and reports whether it was there.
+                    // The rider's removal — a route, a ride, an expiry, or one step of a trip
+                    // cascade — on the **answering** writer path. The effect is namespace-free (FS7
+                    // numbers every object out of one id space), so the store resolves the head at
+                    // that id and reports whether it was there. The cascade's member-then-folder
+                    // order is `CatalogMachine`'s, and arrives here as one removal at a time
+                    // (#1491), so this executor composes nothing.
                     //
                     // A full request queue is not an answer: the effect simply was not taken this
-                    // pass, so the domain re-offers it. That is the whole reason this left
-                    // `MENU_DELETES`, which drops on a full queue and would leave the domain's one
-                    // catalog slot occupied for the rest of the boot.
+                    // pass, so the domain re-offers it.
                     CatalogEffect::RemoveObject { token, object } => {
                         match crate::flat_store::writer().ok_or(()).and_then(|w| {
                             w.try_call(
@@ -1365,19 +1366,6 @@ pub(crate) async fn run_app(
                                 );
                             }
                         }
-                    }
-                    // Unreachable: `CatalogState::admit_intent` refuses a trip cascade, so no member
-                    // read is ever decided (#1491). Answered as a failure rather than dropped, so a
-                    // domain that starts producing one cannot wedge behind an executor that ignored
-                    // it.
-                    CatalogEffect::ReadTripMembers { token, .. } => {
-                        defmt::error!("catalog: a trip member read has no board half — the cascade is #1491's");
-                        debug_assert!(false, "the trip cascade is refused at admission");
-                        RideExec::deliver(
-                            &mut exec.outcomes.catalog,
-                            CatalogOutcome::Failed { token, error: CatalogError::Unreadable },
-                            "catalog",
-                        );
                     }
                 }
             } else if exec.rescan_owed {
@@ -1964,12 +1952,11 @@ pub(crate) async fn run_app(
                 prev_route = active;
             }
 
-            // ── The residual legacy drain: three commands, and the shared list says which ──
+            // ── The residual legacy drain: two commands, and the shared list says which ──
             //
-            // `FinishTrack`, `ForgetBond` and `DeleteTrip` are the classes whose domains cannot
-            // validate an operation token, so they cannot own an outcome (epic #1433 §4.3) — the
-            // same three every typed executor still drains, pinned by
-            // `obc_app::device_core::residual`.
+            // `FinishTrack` and `ForgetBond` are the classes whose domains cannot validate an
+            // operation token, so they cannot own an outcome (epic #1433 §4.3) — the same two every
+            // typed executor still drains, pinned by `obc_app::device_core::residual`.
             //
             // **Asked for by name**, and that is load-bearing rather than tidy: the whole-order
             // A whole-order walk *pulls* from every domain it passes — it mints the operation
@@ -1997,7 +1984,7 @@ pub(crate) async fn run_app(
                             "exec: {} came back on the legacy protocol — DeviceCore owns it now, so it is skipped",
                             defmt::Debug2Format(&cmd)
                         );
-                        debug_assert!(false, "the residual is FinishTrack, ForgetBond and DeleteTrip");
+                        debug_assert!(false, "the residual is FinishTrack and ForgetBond");
                         continue;
                     }
                     match cmd {
@@ -2005,27 +1992,6 @@ pub(crate) async fn run_app(
                         // The bond removal is confirmed by a link-status fact, never by a reply
                         // (#1398/#1400).
                         obc_app::HostCommand::ForgetBond => crate::ble::request_forget_bond(),
-                        // The cascade: `CatalogState::admit_intent` refuses one, so it never becomes
-                        // an effect and nothing is owed an answer — which is exactly why it may stay
-                        // on the answerless queue (#1491).
-                        //
-                        // A full queue **drops** the id, and that is stated rather than dressed up:
-                        // the rider's one-shot was consumed by the drain above, so nothing retries
-                        // it and the folder stays until they hold again. It is the same shape the
-                        // route and ride deletes had before they moved to the answering path, and it
-                        // is the last one left — the queue is eight deep with a single consumer, so
-                        // reaching it takes a burst no menu can produce, and #1491 removes the queue
-                        // with the cascade. Answering it properly needs the bounded member read the
-                        // domain does not have.
-                        obc_app::HostCommand::DeleteTrip { id } => {
-                            let queued = crate::flat_store::request_trip_cascade(id);
-                            if !queued {
-                                defmt::warn!(
-                                    "ride: trip-delete queue full — object {=u64} dropped; hold again to retry",
-                                    id
-                                );
-                            }
-                        }
                     }
                 }
                 finish

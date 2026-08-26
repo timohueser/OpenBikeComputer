@@ -60,7 +60,7 @@
 
 use core::{cell::RefCell, mem::MaybeUninit};
 
-use embassy_futures::select::{select3, Either3};
+use embassy_futures::select::{select, Either};
 use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, Mutex};
 use embassy_sync::channel::{Channel, Receiver, Sender};
 use embassy_sync::signal::Signal;
@@ -577,24 +577,6 @@ pub(crate) struct Job {
 /// The queue itself. One producer-agnostic channel: any task may send, exactly one task receives.
 static REQUESTS: Channel<CriticalSectionRawMutex, Job, REQUEST_QUEUE> = Channel::new();
 
-/// The **answerless** removal path: the trip cascade, and nothing else since #1397 S6b.
-///
-/// Route and ride deletes moved to [`Request::RemoveObject`] on the ticketed writer path, because a
-/// `CatalogEffect::RemoveObject` has to be *answered* — a full queue here drops the id, and the
-/// domain's one in-flight slot would never clear. The cascade stays because
-/// `CatalogState::admit_intent` still refuses one (#1491): it never becomes an effect, so there is
-/// no answer owed, and the member-aware order below is the only place that knows it.
-#[derive(Clone, Copy)]
-enum MenuDelete {
-    TripCascade(ObjectId),
-}
-
-static MENU_DELETES: Channel<CriticalSectionRawMutex, MenuDelete, 8> = Channel::new();
-
-pub(crate) fn request_trip_cascade(id: u64) -> bool {
-    MENU_DELETES.try_send(MenuDelete::TripCascade(ObjectId(id))).is_ok()
-}
-
 /// **The write half's front door**, handed to every plane that mutates the store.
 ///
 /// `Copy`, so it costs a caller nothing to hold, and it carries no store reference at all — which is
@@ -1021,8 +1003,8 @@ pub(crate) async fn storage_task(
                 None => core::future::pending().await,
             }
         };
-        match select3(requests.receive(), MENU_DELETES.receive(), watch).await {
-            Either3::First(job) => {
+        match select(requests.receive(), watch).await {
+            Either::First(job) => {
                 let before = store.sequence();
                 // The FLPR is switched per card command by `flpr_mux::with_storage`, so nothing is held
                 // across this call and there is no mode session to acquire around the batch.
@@ -1034,10 +1016,9 @@ pub(crate) async fn storage_task(
                 // has to be able to tell that this value is not theirs. See `Reply`.
                 job.reply.signal((job.tag, outcome));
             }
-            Either3::Second(delete) => serve_menu_delete(store, delete),
             // The deadline came round. Nothing to do here: the watchdog runs below on every pass,
             // and this arm exists only so a wedged peer's silence still produces one.
-            Either3::Third(()) => {}
+            Either::Second(()) => {}
         }
         // **The stall watchdog, on every pass** — after a served request, so byte progress re-anchors
         // the deadline, and after the timer, so silence expires it. It runs here rather than in the
@@ -1062,38 +1043,24 @@ pub(crate) async fn storage_task(
     }
 }
 
-#[inline(never)]
-fn serve_menu_delete(store: &FlatStore<FlatCard>, delete: MenuDelete) {
-    let before = store.sequence();
-    match delete {
-        MenuDelete::TripCascade(id) => {
-            let stages = store
-                .with_source(id, None, |source| obc_route::TripMeta::read(source).ok().map(|m| m.stage_ids))
-                .ok()
-                .flatten();
-            if let Some(stages) = stages {
-                for stage in stages {
-                    let _ = remove_head(store, ObjectId(stage), Some(ObjectKind::Route));
-                }
-            }
-            let _ = remove_head(store, id, Some(ObjectKind::Trip));
-        }
-    }
-    if store.sequence() != before {
-        note_catalog_commit();
-    }
-}
-
-/// Remove the head revision of `id`, optionally constrained to one `kind`.
+/// Remove the head revision of `id`.
 ///
 /// `Ok(false)` = there was nothing at `id` — the goal state already holds, which
 /// [`Request::RemoveObject`] answers as a success. `Err` = the store refused or failed the commit.
 ///
-/// The `kind` is `None` for the namespace-free effect (FS7 gives every object one id space, so the
-/// head at an id is unambiguous) and `Some` inside the cascade, which knows exactly what each step
-/// is removing.
-fn remove_head(store: &FlatStore<FlatCard>, id: ObjectId, kind: Option<ObjectKind>) -> Result<bool, StoreError> {
-    let Some(meta) = store.entries().find(|entry| entry.id == id && kind.is_none_or(|k| entry.kind == k)) else {
+/// Namespace-free, like the effect it serves: FS7 gives every object one id space, so the head at an
+/// id is unambiguous. A trip cascade reaches this one member at a time, so there is no step here
+/// that would need to say which family it is removing.
+///
+/// A listing that stopped early is a **failure**, never an absent object. `existed: false` is read
+/// as "the goal state holds", and a cascade advances past the member on it — so a media error that
+/// truncated the walk before it reached `id` would orphan a route that is still stored.
+fn remove_head(store: &FlatStore<FlatCard>, id: ObjectId) -> Result<bool, StoreError> {
+    let found = store.entries().find(|entry| entry.id == id);
+    if !store.entries_ok() {
+        return Err(StoreError::Media);
+    }
+    let Some(meta) = found else {
         return Ok(false);
     };
     match store.commit(&[Mutation::Remove { id, revision: meta.revision }]) {
@@ -1169,7 +1136,7 @@ fn serve(
         Request::RemoveComputedRoute { id, revision } => {
             store.commit(&[Mutation::Remove { id, revision }]).map(|_| Outcome::Done)
         }
-        Request::RemoveObject { id } => remove_head(store, id, None).map(|existed| Outcome::Removed { existed }),
+        Request::RemoveObject { id } => remove_head(store, id).map(|existed| Outcome::Removed { existed }),
         Request::Commit { batch } => store.commit(&batch).map(Outcome::Committed),
         Request::Journal { checkpoint } => store.journal(checkpoint).map(|()| Outcome::Done),
         Request::Cancel { allocation } => {

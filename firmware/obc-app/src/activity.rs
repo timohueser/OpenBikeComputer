@@ -632,24 +632,18 @@ impl Activity {
         self.delete_ride.take()
     }
 
-    /// Record a one-shot request to cascade-delete the trip with durable object `id` (epic #526, TR3)
-    /// — set by the Route menu's long-press → confirm dialog, drained by
-    /// the pass. The id (not an index) because a trip
-    /// id is durable; the host deletes the `TP{id}.OBT` **and** every member route file.
+    /// Record a one-shot request to cascade-delete the trip with durable object `id` (epic #526,
+    /// TR3) — set by the Route menu's long-press → confirm dialog, drained by the pass. The id (not
+    /// an index) because a trip id is durable.
     pub(crate) fn request_trip_delete(&mut self, id: crate::CatalogObjectId) {
         self.delete_trip = Some(id);
     }
 
-    /// Take (and clear) the pending trip-delete request's durable **object id**, if any — the host
-    /// drains this and cascade-deletes the trip + its member routes.
+    /// Take (and clear) the pending trip-delete request's durable **object id**, if any — the pass
+    /// drains this into a [`CatalogIntent::DeleteTrip`](crate::catalog_state::CatalogIntent), and
+    /// `CatalogMachine` owns the member-then-folder order from there (#1491).
     pub(crate) fn take_trip_delete(&mut self) -> Option<crate::CatalogObjectId> {
         self.delete_trip.take()
-    }
-
-    /// Non-consuming peek at whether a trip-delete request is pending — the board gates its per-pass
-    /// store work on this without draining the one-shot.
-    pub(crate) fn has_trip_delete(&self) -> bool {
-        self.delete_trip.is_some()
     }
 
     /// Set the **sensor scan mode** level (BLE sensors epic #707, SE7): `true` when the scan-list
