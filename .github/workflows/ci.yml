@@ -108,6 +108,13 @@ jobs:
       - name: Deleted repaint mirrors stay deleted
         run: python3 tools/check_render_keys.py
 
+  catalog-ownership-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Only CatalogMachine orders a catalog re-read
+        run: python3 tools/check_catalog_ownership.py
+
   screen-vocabulary-guard:
     runs-on: ubuntu-latest
     steps:

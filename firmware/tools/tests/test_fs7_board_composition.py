@@ -6,7 +6,8 @@ upload fact it produces, while transient reads must keep the prior snapshot and 
 
 The board drains no `HostCommand`s: the rescan is `CatalogEffect::ReadCatalog`'s body
 (`read_catalogs`), the delivery is `note_catalog_uploads` writing `ExternalFacts` for the *next*
-pass, and the re-arm a partial read owes is the executor's own `rescan_owed`.
+pass, and a partial read is answered `Failed { Unreadable }` so that `CatalogMachine` re-offers the
+read (#1541) — the executor keeps no retry of its own.
 """
 
 from pathlib import Path
@@ -85,16 +86,15 @@ class Fs7BoardCompositionTests(unittest.TestCase):
         self.assertIn("if routes_loaded && trips_loaded", rescan)
         self.assertIn("routes_loaded && trips_loaded && rides_loaded", rescan)
 
-        # The re-arm a partial read owes. It is no longer a re-injected `HostEvent::StoreChanged`:
-        # the domain is answered `Failed { Unreadable }` (so it stays free to serve the next delete)
-        # and the *re-read* is the executor's own, because a store that did not move raises no new
-        # revision and would therefore order no second refresh. Both halves are pinned, because
-        # either one alone is the bug: the answer without the retry is a menu stuck until the next
-        # commit, and the retry without the answer is a catalog domain wedged forever.
+        # The answer a partial read owes, and the *only* thing this executor owes it (#1541). A
+        # store that did not move raises no new revision, so nothing outside the domain would ever
+        # order the read again: `Unreadable` is what arms `CatalogState::refresh_owed`, and the next
+        # pass re-offers the read. Both halves are pinned, because either alone is the bug — the
+        # answer without the arm is a menu stuck until the next commit, and a re-read composed here
+        # beside it is a second refresh policy.
         served = body(RIDE, "if let Some(effect) = exec.effects.catalog.take() {", "// The in-flight removal")
-        self.assertIn("exec.rescan_owed = !read", served)
         self.assertIn("CatalogOutcome::Failed { token, error: CatalogError::Unreadable }", served)
-        self.assertIn("} else if exec.rescan_owed {", served)
+        self.assertNotIn("read_catalogs", served.split("CatalogEffect::RemoveObject", 1)[1])
 
     def test_menu_loader_retains_only_bounded_object_open_keys(self) -> None:
         head = body(FLAT_STORE, "struct CatalogHead", "fn retain_newest")

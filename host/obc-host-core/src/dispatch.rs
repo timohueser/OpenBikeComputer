@@ -41,8 +41,8 @@ use obc_app::catalog_state::{CatalogEffect, CatalogOutcome};
 use obc_app::device_core::derived::{DerivedInput, DerivedInputs, DerivedTargets};
 use obc_app::device_core::storage_info::{StorageInfoEffect, StorageInfoError, StorageInfoOutcome};
 use obc_app::device_core::{
-    ExternalFacts, NavigatorTag, OperationToken, OutcomeSlots, PassClock, PassInputs, PassPlan, PlatformSupport,
-    Revision, StoreIdentity, StoreRevision,
+    CatalogTag, ExternalFacts, NavigatorTag, OperationToken, OutcomeSlots, PassClock, PassInputs, PassPlan,
+    PlatformSupport, Revision, StoreIdentity, StoreRevision,
 };
 use obc_app::dfu::{DfuEffect, DfuInstallError, DfuOutcome, DfuScanError, DfuScanReport};
 use obc_app::navigator::{NavigatorEffect, NavigatorError, NavigatorOutcome, PlannerWork};
@@ -60,7 +60,7 @@ use crate::{ActiveRouteSession, NavPlan, RideRepository, RouteRepository, TrackR
 /// summaries. A retention-less repository returns empty metas → every route reads `Never`.
 ///
 /// Bulk enters neither protocol: the executor fills the resident catalogs through the feeders they
-/// always used, and the *outcome* reports only the revision it read at.
+/// always used, and the *outcome* reports only that the operation is over.
 pub(crate) fn feed_routes(app: &mut App, routes: &dyn RouteRepository, trace: &mut dyn TraceSink) {
     let metas = routes.retention_metas();
     app.set_routes_with_meta(routes.catalog(), routes.ids(), &metas);
@@ -71,6 +71,27 @@ pub(crate) fn feed_routes(app: &mut App, routes: &dyn RouteRepository, trace: &m
 fn feed_rides(app: &mut App, rides: &dyn RideRepository, trace: &mut dyn TraceSink) {
     app.set_rides(rides.catalog(), rides.ids());
     trace.feeder(FeederCall::new(FeederKind::RideCatalog, DataKey::from("host.rides"), rides.catalog().len()));
+}
+
+/// Remove one object from the store, and **nothing else** (#1541).
+///
+/// The removal is namespace-free by design — routes, rides and trips are all objects to the store —
+/// so the identity is probed against the three repositories in a fixed order. An object none of
+/// them has vanished before the commit: a success for the goal state, and the one shape that must
+/// not read as a failure (#1433 §13).
+///
+/// Free-standing, and **without an `&mut App`**: the re-read a removal implies is `CatalogMachine`'s
+/// to order, and a function that cannot reach the app cannot compose one. That is the guard, and it
+/// is structural rather than a grep.
+fn remove_object(
+    token: OperationToken<CatalogTag>,
+    object: u64,
+    routes: &mut dyn RouteRepository,
+    rides: &mut dyn RideRepository,
+    trips: &mut dyn TripCatalog,
+) -> CatalogOutcome {
+    let existed = routes.delete_by_id(object) || rides.delete_by_id(object) || trips.delete_by_id(object);
+    CatalogOutcome::ObjectRemoved { token, object, existed }
 }
 
 /// The one in-flight plan a host steps — a POI route plan or a detour plan (#882). One enum slot
@@ -185,11 +206,11 @@ pub struct HostLoop {
     /// Which searches this host takes without starting (`--hold nav`); [`PlanHold::NONE`] for a
     /// normal frame loop.
     hold: PlanHold,
-    /// The store revision a catalog read reports. The old protocol had none
-    /// (the old protocol reported no revision); an in-process repository has none either, so the executor
-    /// mints a monotonic one per read. It deliberately never becomes an
-    /// [`ExternalFacts::note_store_revision`] fact: nothing changes these stores behind the
-    /// executor's back, so a commit it made itself must not order a re-read of its own work.
+    /// The store revision this host reports through [`note_store_commit`](HostLoop::note_store_commit).
+    /// An in-process repository has none of its own, so the executor mints a monotonic one per
+    /// commit it is *told* about — a boot scan, an import, an upload landing. A catalog **read**
+    /// mints nothing: the domain owes its own re-reads, and inventing a revision per read would
+    /// have reported the executor's own work back to it as a store that moved.
     revision: u64,
 }
 
@@ -388,6 +409,9 @@ impl HostLoop {
     /// A trip's *cascade* is not composed here. `CatalogMachine` owns that order and sends it as one
     /// removal per member and one for the folder (#1491), so this executor performs no ordering of
     /// its own — the rule the module header states.
+    ///
+    /// Neither is the **re-read a removal implies** (#1541). The domain owes it and orders it as its
+    /// own `ReadCatalog`, so a removal here is a removal and nothing more.
     fn serve_catalog(
         &mut self,
         app: &mut App,
@@ -404,36 +428,9 @@ impl HostLoop {
                 // After the routes, so the trips' stage ids resolve against the fresh catalog.
                 trips.refeed(app);
                 feed_rides(app, rides, &mut NoTrace);
-                self.revision = self.revision.wrapping_add(1);
-                CatalogOutcome::CatalogRead { token, revision: Revision::new(self.revision) }
+                CatalogOutcome::CatalogRead { token }
             }
-            CatalogEffect::RemoveObject { token, object } => {
-                if routes.delete_by_id(object) {
-                    // Routes only. The trip *folders* re-resolve inside this feeder —
-                    // `CatalogState::replace_routes` re-points every trip's stage ids at the new
-                    // catalog — so a removal that shifts catalog positions cannot leave a trip
-                    // naming the wrong route. `trips.refeed` re-reads the host's `.obt` files, and
-                    // nothing here changed those; only a full read or the cascade's own `.obt`
-                    // deletion does.
-                    feed_routes(app, routes, &mut NoTrace);
-                    return CatalogOutcome::ObjectRemoved { token, object, existed: true };
-                }
-                if rides.delete_by_id(object) {
-                    feed_rides(app, rides, &mut NoTrace);
-                    return CatalogOutcome::ObjectRemoved { token, object, existed: true };
-                }
-                if trips.delete_by_id(object) {
-                    // The folder's own `.obt`, the cascade's last step. Re-read the trip files and
-                    // re-feed, so the folder stops listing; the routes were re-fed by the member
-                    // steps that preceded this one.
-                    trips.rescan();
-                    trips.refeed(app);
-                    return CatalogOutcome::ObjectRemoved { token, object, existed: true };
-                }
-                // The subject vanished before the commit — a success for the goal state, and the
-                // one shape that must not read as a failure (#1433 §13).
-                CatalogOutcome::ObjectRemoved { token, object, existed: false }
-            }
+            CatalogEffect::RemoveObject { token, object } => remove_object(token, object, routes, rides, trips),
         }
     }
 

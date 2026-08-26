@@ -347,7 +347,7 @@ mod tests {
 
         let mut first = OutcomeSlots::new();
         let revision = Revision::new(4);
-        first.catalog.try_put(CatalogOutcome::CatalogRead { token: catalog_ops.issue(), revision }).unwrap();
+        first.catalog.try_put(CatalogOutcome::CatalogRead { token: catalog_ops.issue() }).unwrap();
         first
             .retention
             .try_put(RetentionOutcome::RouteMetadataWritten { token: retention_ops.issue(), id: 1 })
