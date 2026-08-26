@@ -1,7 +1,7 @@
 ---
 title: The map learns to climb
 date: 2026-08-03
-description: The first elevation design — a terrain raster carried beside the map, two new bytes in the routing graph, and the phantom-ascent bug that nearly shipped 1,412 metres of climbing that wasn't there.
+description: The first elevation design — a terrain raster beside the map, routing-graph elevation bytes, and a phantom-ascent bug.
 ---
 
 For most of this project's life the device could tell you exactly where a road went

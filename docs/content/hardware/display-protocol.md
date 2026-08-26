@@ -171,7 +171,7 @@ One `GCK` period writes one row. The rising edge advances the gate. The falling 
 
 A frame scans the 320 rows. Keep `INTB` high for the complete scan.
 
-```
+```text
 INTB = HIGH
 GSP = pulse
 send two leading dummy gate periods
@@ -237,7 +237,9 @@ Thus, the scan time depends mainly on the number and position of changed rows.
 | Power-on settle (black → COM) | ≥ 30 µs | See power-on order above |
 | Current full-frame scan | 44.1 ms | Measured on one development panel |
 
-The current FLPR uses approximately 210 ns for each `BCK` half-period. This value is below the 660 ns datasheet minimum.
+The current FLPR uses approximately 210 ns for each `BCK` half-period.
+This gives a 420 ns period and approximately 2.38 MHz.
+It exceeds the 0.758 MHz maximum and violates the 660 ns minimum high and low times.
 
 This timing passed a visual test on one panel at room temperature. It is not production validation. See the [timing record](src:firmware/docs/flpr-timing.md).
 
