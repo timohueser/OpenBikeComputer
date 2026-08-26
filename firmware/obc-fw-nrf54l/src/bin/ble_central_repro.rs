@@ -14,7 +14,7 @@
 //! Flow: active-scan until an advertiser carrying the HR service (0x180D) appears → connect →
 //! discover 0x180D/0x2A37 → subscribe → log bpm. Turn the strap on once "scanning…" shows.
 //!
-//!     cargo run --release --no-default-features --features ble --bin ble_central_repro
+//!     cargo run --release --bin ble_central_repro
 //!
 //! If this faults at the connect: the bug is in the nrf-sdc/SDC/trouble stack itself → file
 //! upstream with this file as the repro. If it does NOT fault: the trigger is something in the

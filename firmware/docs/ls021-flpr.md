@@ -94,7 +94,6 @@ brew install riscv64-elf-gcc
 
 cd firmware/obc-fw-nrf54l
 cargo build --release --locked
-cargo build --release --locked --no-default-features --features ble
 ```
 
 The standalone bring-up binaries are retired. Exercise the backend through the shipping image and

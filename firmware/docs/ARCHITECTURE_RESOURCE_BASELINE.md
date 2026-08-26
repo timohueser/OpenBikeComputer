@@ -33,13 +33,6 @@ python3 ../tools/resource_guard.py board --profile default \
 cargo build --release --locked --features resource-report
 python3 ../tools/resource_guard.py report --profile default \
   --elf target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l
-
-cargo build --release --locked --no-default-features --features ble
-python3 ../tools/resource_guard.py board --profile ble \
-  --elf target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l
-cargo build --release --locked --no-default-features --features ble,resource-report
-python3 ../tools/resource_guard.py report --profile ble \
-  --elf target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l
 ```
 
 `resource-report` adds a `.obc_resources` table and therefore changes the ELF. Never flash or

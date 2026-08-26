@@ -820,7 +820,7 @@ def check_deep_ride_high_water(profile_name: str, profile: dict[str, object], bo
     So the baseline now carries the deepest **measured on-glass** high-water for each profile, and
     the residual has to clear it with a margin. This exists because FS7.5-c1 walked straight through
     the gap: +11,848 B of resident took the residual to 37,640 B, past a recorded 37,760 B peak on
-    the `ble` profile, and every gate in this file went green.
+    the board profile, and every gate in this file went green.
 
     `deep_ride_high_water` is a **measurement, not a budget**. It moves only when someone runs the
     ride on glass and reads the stackmeter — never to make a build pass. If it is stale the honest
@@ -1054,10 +1054,10 @@ def parser() -> argparse.ArgumentParser:
     root.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE)
     commands = root.add_subparsers(dest="command", required=True)
     board = commands.add_parser("board", help="gate linked board RAM, framebuffer, and poll frame")
-    board.add_argument("--profile", choices=("default", "ble"), required=True)
+    board.add_argument("--profile", choices=("default",), required=True)
     board.add_argument("--elf", type=Path, required=True)
     report = commands.add_parser("report", help="gate report-only target-side size_of table")
-    report.add_argument("--profile", choices=("default", "ble"), required=True)
+    report.add_argument("--profile", choices=("default",), required=True)
     report.add_argument("--elf", type=Path, required=True)
     boot = commands.add_parser("boot", help="gate the bootloader flash slot")
     boot.add_argument("--elf", type=Path, required=True)

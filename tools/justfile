@@ -109,26 +109,24 @@ format-card *args:
     cd "$OBC_ROOT"
     _run cargo run --release -p obc-usb --bin obc-format-card -- "$@"
 
-# Build & flash the board. Opts (space-separated): ble  debug-uart  synth  build.
+# Build & flash the board. Opts (space-separated): debug-uart  synth  build.
+# The radio and the USB plane are in every image (#889, #1530) — there is nothing to turn on.
 # e.g.  obc flash            (real sensors)   obc flash debug-uart
-#       obc flash ble        (companion link) obc flash ble debug-uart
 #       obc flash build      (compile only, no flash)
-# Build & flash the board. Opts: ble debug-uart synth build (e.g. obc flash ble debug-uart)
+# Build & flash the board. Opts: debug-uart synth build (e.g. obc flash debug-uart)
 flash *args:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{lib}}"; obc_init; ensure_riscv || exit 1
-    ble=0 du=0 synth=0 action=run
+    du=0 synth=0 action=run
     for o in "$@"; do case "$o" in
-      ble)                ble=1 ;;
       debug-uart|du)      du=1 ;;
       synth)              synth=1 ;;
       build|build-only)   action=build ;;
-      *) _err "unknown flash option: '$o'  (want: ble debug-uart synth build)"; exit 1 ;;
+      *) _err "unknown flash option: '$o'  (want: debug-uart synth build)"; exit 1 ;;
     esac; done
     [[ "$action" == run ]] && { ensure_probe || exit 1; }
     a=(); feats=()
-    (( ble ))   && { a+=(--no-default-features); feats+=(ble); }
     (( du ))    && feats+=(debug-uart)
     (( synth )) && feats+=(synth)
     (( ${#feats[@]} )) && a+=(--features "$(IFS=,; echo "${feats[*]}")")
@@ -185,23 +183,19 @@ uart *args:
     _run "${cmd[@]}"
 
 # Bench control in one step: flash the debug-uart firmware, then open the feeder over
-# VCOM. Args: [ble] [TRACK.gpx]. Without a GPX, use its fixed-location panel. Flashes with
+# VCOM. Args: [TRACK.gpx]. Without a GPX, use its fixed-location panel. Flashes with
 # `probe-rs download` (returns cleanly,
 # no RTT), then runs the feeder TUI in the foreground. Want defmt logs too? Run
 # `obc flash debug-uart` in a second terminal instead.
-# One step: flash debug-uart firmware, then open the GPS feeder. Args: [ble] [TRACK.gpx]
+# One step: flash debug-uart firmware, then open the GPS feeder. Args: [TRACK.gpx]
 debug *args:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{lib}}"; obc_init; ensure_riscv || exit 1; ensure_probe || exit 1
-    ble=""; gpx=""
-    for a in "$@"; do case "$a" in ble) ble=ble ;; *) gpx="$a" ;; esac; done
-    feats="debug-uart"; nodef=()
-    [[ -n "$ble" ]] && { feats="ble,debug-uart"; nodef=(--no-default-features); }
+    gpx="${1:-}"
     elf="$OBC_ROOT/firmware/obc-fw-nrf54l/target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l"
     _say "building debug-uart firmware…"
-    # Same bash-3.2 empty-array trap as `flash` above: `nodef` is empty unless `ble` was passed.
-    ( cd "$OBC_ROOT/firmware/obc-fw-nrf54l" && _run cargo build --release ${nodef[@]+"${nodef[@]}"} --features "$feats" )
+    ( cd "$OBC_ROOT/firmware/obc-fw-nrf54l" && _run cargo build --release --features debug-uart )
     _say "flashing over J-Link…"
     _run probe-rs download --chip nRF54L15 --verify "$elf"
     _run probe-rs reset --chip nRF54L15
@@ -216,7 +210,7 @@ rtt:
     set -euo pipefail
     source "{{lib}}"; obc_init; ensure_probe || exit 1
     elf="$OBC_ROOT/firmware/obc-fw-nrf54l/target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l"
-    [[ -f "$elf" ]] || { _err "no board ELF yet — flash once first:  obc flash [ble] [debug-uart]"; exit 1; }
+    [[ -f "$elf" ]] || { _err "no board ELF yet — flash once first:  obc flash [debug-uart]"; exit 1; }
     _say "attaching to nRF54L15 — no rebuild, no reflash (decoding $(basename "$elf"))"
     _run probe-rs attach --chip nRF54L15 "$elf"
 
@@ -704,8 +698,6 @@ check *args:
         step "board clippy (default)"        cargo clippy --locked -- -D warnings
         step "board clippy (debug-uart)"     cargo clippy --locked --features debug-uart -- -D warnings
         step "board build (default, release)" cargo build --release --locked
-        step "board clippy (ble)"            cargo clippy --locked --no-default-features --features ble -- -D warnings
-        step "board build (ble, release)"    cargo build --release --locked --no-default-features --features ble
         popd >/dev/null
       else _warn "skip board gates — no RISC-V gcc (obc doctor --install)"; SKIPPED+=("board"); fi
     fi

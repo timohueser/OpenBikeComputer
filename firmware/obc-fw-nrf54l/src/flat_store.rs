@@ -966,7 +966,6 @@ pub(crate) fn take_catalog_upload_loss() -> bool {
 
 fn note_catalog_commit() {
     CATALOG_WAKE.signal(());
-    #[cfg(feature = "ble")]
     crate::ble::weather_catalog_changed();
 }
 
