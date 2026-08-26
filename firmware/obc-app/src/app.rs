@@ -820,8 +820,8 @@ impl App {
         // here beside the altimeter/temperature so `record_motion` (below, on a fresh fix) sees this
         // tick's samples. `Some` only on a fresh reading; a dropped strap simply stops reporting and
         // the staleness gate expires the last value. The stat tiles (SE5) read these through the
-        // `live_*_display` accessors; their repaint edge is the `prev_live_sensors` comparison at
-        // the end of this tick.
+        // `live_*_display` accessors, and the Statistics grid's render key names those same values,
+        // so a fresh sample repaints the grid — and only the grid.
         if let Some(hr) = hr {
             if let Some(bpm) = hr.poll() {
                 self.activity.record_hr(bpm, now_ms);
@@ -1950,14 +1950,15 @@ impl App {
     /// hold target out from under the rider mid-charge would break the confirm) — the sweep just
     /// skips that pass and lands on the next, since the desired level is re-fed every pass.
     pub fn set_ble_status(&mut self, status: crate::ble::BleStatus) {
-        let state_before = self.state;
+        let changed = (self.state.device.ble_link, self.state.device.ble_paired) != (status.link, status.paired);
         self.state.device.ble_link = status.link;
         self.state.device.ble_paired = status.paired;
-        // The link state lives in `AppState` but is drawn only on Home, the menu title bars, and
-        // the Bluetooth screen, so — like the Home-only battery gate — a change dirties the map
-        // only when one of those is the base screen. Counting it as live-riding data would
-        // force a full map render on the riding views, which never draw the indicator.
-        if self.state != state_before && self.ui.indicator_visible() {
+        // **An explicit request, and it stays one.** The connected indicator is title-bar chrome on
+        // every chrome-based screen, which is far more rows than the one that declares a key naming
+        // it (Home) — and this seam is a host feeder a runtime may ring between two passes, where a
+        // stack-local key comparison sees nothing anyway. Gated on the base screen actually drawing
+        // the glyph, so a link change never forces a full map render on the riding views.
+        if changed && self.ui.indicator_visible() {
             self.ui.map_dirty = true;
         }
         self.ui.cards.set_passkey(status.passkey);
@@ -3156,7 +3157,7 @@ impl App {
             hold: self.ui.input.overlay_active(),
             freeze: self.mode.frozen(self.ui.base_draws_map()),
         };
-        let overlay = self.pass.take_overlay_dirty(overlay);
+        let overlay = self.pass.overlay_repaint(overlay);
         let mut dirty = self.ui.take_dirty();
         dirty.overlay = overlay;
         dirty

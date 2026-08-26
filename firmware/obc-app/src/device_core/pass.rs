@@ -213,8 +213,8 @@ pub struct PassPlan {
 ///
 /// The overlay is the cheap transient layer: the hold bulge and the Recalculating banner. Its
 /// repaint rule is not the map's — it is two rules over two levels, which used to be three separate
-/// level-to-edge converters (`InputPlane::overlay_was_active`, `UiRuntime::overlay_edge` and
-/// `CoreMode::engaged_shown`) producing one boolean per frame between them.
+/// level-to-edge converters, one on the input plane, one on the UI runtime and one on the mode
+/// machine, producing a single boolean per frame between them.
 ///
 /// - The **bulge** repaints while it is live, plus exactly one trailing frame after it goes quiet,
 ///   so the last bulge is cleared off the layer rather than left painted over an unchanged map.
@@ -316,7 +316,7 @@ impl PassState {
     /// Fold this frame's overlay levels against the last drain's, then remember them. Call exactly
     /// once per frame: the bulge's trailing clear is tracked across calls, so a second drain in one
     /// frame swallows it.
-    pub(crate) fn take_overlay_dirty(&mut self, now: OverlayKey) -> bool {
+    pub(crate) fn overlay_repaint(&mut self, now: OverlayKey) -> bool {
         now.dirty_against(core::mem::replace(&mut self.overlay, now))
     }
 
@@ -1740,25 +1740,25 @@ mod tests {
     fn the_overlay_key_repaints_on_the_engaged_level_and_the_bulge_trailing_edge() {
         let mut pass = PassState::new();
         let quiet = OverlayKey { hold: false, freeze: false };
-        assert!(!pass.take_overlay_dirty(quiet), "at rest there is nothing to repaint");
+        assert!(!pass.overlay_repaint(quiet), "at rest there is nothing to repaint");
 
         // A search under the opaque spinner: a chrome base, so nothing is engaged.
-        assert!(!pass.take_overlay_dirty(OverlayKey { hold: false, freeze: false }));
+        assert!(!pass.overlay_repaint(OverlayKey { hold: false, freeze: false }));
         // The spinner goes and a map base is back — no search edge, but *this* is the freeze.
-        assert!(pass.take_overlay_dirty(OverlayKey { hold: false, freeze: true }), "the banner appears");
+        assert!(pass.overlay_repaint(OverlayKey { hold: false, freeze: true }), "the banner appears");
         assert!(
-            !pass.take_overlay_dirty(OverlayKey { hold: false, freeze: true }),
+            !pass.overlay_repaint(OverlayKey { hold: false, freeze: true }),
             "a level, so one repaint — not one per ride-loop pass"
         );
-        assert!(pass.take_overlay_dirty(quiet), "and one more to take the banner off");
-        assert!(!pass.take_overlay_dirty(quiet));
+        assert!(pass.overlay_repaint(quiet), "and one more to take the banner off");
+        assert!(!pass.overlay_repaint(quiet));
 
         // The bulge: live while it animates, plus exactly one trailing frame to clear it.
         let bulge = OverlayKey { hold: true, freeze: false };
-        assert!(pass.take_overlay_dirty(bulge), "a charging bulge paints");
-        assert!(pass.take_overlay_dirty(bulge), "…every frame it is live");
-        assert!(pass.take_overlay_dirty(quiet), "the trailing clear frame");
-        assert!(!pass.take_overlay_dirty(quiet), "and then quiet");
+        assert!(pass.overlay_repaint(bulge), "a charging bulge paints");
+        assert!(pass.overlay_repaint(bulge), "…every frame it is live");
+        assert!(pass.overlay_repaint(quiet), "the trailing clear frame");
+        assert!(!pass.overlay_repaint(quiet), "and then quiet");
     }
 
     // ---- helpers that need a trusted clock ----

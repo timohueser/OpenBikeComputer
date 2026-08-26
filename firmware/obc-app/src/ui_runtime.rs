@@ -614,9 +614,10 @@ impl UiRuntime {
         if self.now_ms.wrapping_sub(self.last_input_ms) < timeout {
             return;
         }
-        // Past the deadline: consume it so the return fires once, not every pass hereafter.
+        // Past the deadline: consume it so the return fires once, not every pass hereafter. The
+        // repaint needs no request: the return moves the visible stack, which is the shape half of
+        // the pass's render key, and the Home reseed below moves Home's own key.
         self.last_input_ms = self.now_ms;
-        self.map_dirty = true;
         if tracking {
             // Mid-ride, on a non-ride screen: return to the Map (the ride base).
             self.stack.truncate(1); // drop back toward the root…
