@@ -4,19 +4,18 @@
 //! short list of things a typed executor still performs on the old protocol, because their domains
 //! cannot validate an operation token and so cannot own an outcome:
 //!
-//! - [`HostCommand`] — three commands, drained through
+//! - [`HostCommand`] — two commands, drained through
 //!   [`App::drain_residual_commands`](crate::App::drain_residual_commands) into a caller-owned
 //!   [`HostMailbox`]. [`device_core::residual`](crate::device_core::residual) is the list as data,
 //!   with the issue that retires each one.
 //!
 //! Each command has **exactly one** pending instance inside `App` — a typed slot or a flag, no
-//! internal queue and no allocation — and all three are one-shots the drain clears. Draining is
+//! internal queue and no allocation — and both are one-shots the drain clears. Draining is
 //! loss-free: a command moves into the mailbox only if room exists, so a full mailbox leaves the
 //! rest latched ([`DrainStatus::MailboxFull`]) rather than dropping one.
 //!
-//! Answers do not come back here. A ride close is answered by a catalog re-feed, a bond removal by
-//! a link-status fact and a trip delete by the store's next revision — every one of them a fact the
-//! pass already consumes.
+//! Answers do not come back here. A ride close is answered by a catalog re-feed and a bond removal
+//! by a link-status fact — both of them facts the pass already consumes.
 
 use crate::activity::TrackAction;
 use crate::device_core::residual::RESIDUAL_CLASS_COUNT;
@@ -68,17 +67,12 @@ pub const fn nav_compensation_disposition(status: NavCompensationStatus) -> NavC
     }
 }
 
-/// The three things a typed executor still performs on the old protocol.
+/// The two things a typed executor still performs on the old protocol.
 ///
-/// Payloads are bounded by construction: a durable `u16` object id and small `Copy` enums. No
-/// catalog, profile, or geometry ever rides in a command.
+/// Payloads are bounded by construction: small `Copy` enums. No catalog, profile, or geometry ever
+/// rides in a command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostCommand {
-    /// Cascade-delete the trip with durable object id `id` **and every member route** (epic #526,
-    /// TR3). Still here because `CatalogState::admit_intent` refuses the cascade: the bounded
-    /// member read does not exist yet (#1491). A vanished trip is a host-side no-op. One-shot,
-    /// modal-flow-guarded.
-    DeleteTrip { id: crate::CatalogObjectId },
     /// Close the open ride log: finalise it to the host's saved-ride artifact
     /// ([`TrackAction::Save`]) or throw it away ([`TrackAction::Discard`]). Still here because the
     /// close is answered by a catalog re-feed rather than by a ride identity, so Recorder has no
@@ -98,7 +92,6 @@ pub enum HostCommand {
 /// [`RESIDUAL_CLASSES`]: crate::device_core::residual::RESIDUAL_CLASSES
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HostCommandClass {
-    DeleteTrip,
     FinishTrack,
     ForgetBond,
 }
@@ -109,7 +102,6 @@ impl HostCommand {
     #[cfg(test)]
     pub(crate) fn class(&self) -> HostCommandClass {
         match self {
-            HostCommand::DeleteTrip { .. } => HostCommandClass::DeleteTrip,
             HostCommand::FinishTrack(_) => HostCommandClass::FinishTrack,
             HostCommand::ForgetBond => HostCommandClass::ForgetBond,
         }
@@ -156,7 +148,7 @@ pub enum DrainStatus {
 /// (stack or its own static — `App` never grows by it), fills it once per pass via
 /// [`App::drain_residual_commands`](crate::App::drain_residual_commands), and pops it.
 ///
-/// Nothing is coalesced: all three classes are one-shots, and each drained instance is a distinct
+/// Nothing is coalesced: both classes are one-shots, and each drained instance is a distinct
 /// request.
 #[derive(Debug)]
 pub struct HostMailbox<const N: usize = RESIDUAL_CLASS_COUNT> {

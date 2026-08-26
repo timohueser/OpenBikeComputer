@@ -96,18 +96,13 @@ pub trait TrackRepository {
     fn sink(&mut self) -> Option<&mut dyn TrackSink>;
 }
 
-/// The `.obt` trip folders that group routes (sim-only; the web demo has none, the board wires its
-/// own `ObjectStore` cascade). Every method defaults to "no trips" so a host without them plugs in
-/// the unit type `()`.
+/// The `.obt` trip folders that group routes (sim-only; the web demo has none, the board reads its
+/// own `ObjectStore`). Every method defaults to "no trips" so a host without them plugs in the unit
+/// type `()`.
 pub trait TripCatalog {
-    /// The member route ids of the trip with id `id`, for the cascade delete (delete the trip *and*
-    /// its member routes). Empty for an unknown id / a trip-less host.
-    fn member_route_ids(&self, id: CatalogObjectId) -> Vec<CatalogObjectId> {
-        let _ = id;
-        Vec::new()
-    }
-    /// Delete the trip with id `id` (its backing `.obt` only — the cascade over member routes is the
-    /// dispatcher's composition). `true` = removed.
+    /// Delete the trip with id `id` — its backing `.obt` and nothing else. The cascade over member
+    /// routes is `CatalogMachine`'s ordering (#1491) and reaches this executor as its own removals,
+    /// so there is no member lookup here. `true` = removed.
     fn delete_by_id(&mut self, id: CatalogObjectId) -> bool {
         let _ = id;
         false

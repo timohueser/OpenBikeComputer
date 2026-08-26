@@ -18,13 +18,12 @@
 //!
 //! ## What is still on the legacy protocol here, and why
 //!
-//! Exactly three commands reach [`drain_residual`](HostLoop::execute)'s mailbox:
+//! Exactly two commands reach [`drain_residual`](HostLoop::execute)'s mailbox:
 //!
 //! | Command | Why | Retires in |
 //! |---|---|---|
 //! | `FinishTrack` | Recorder has no machine — the close is answered by a catalog re-feed, not a ride identity (#1398) | #1398 |
 //! | `ForgetBond` | The removal is confirmed by a link-status fact, not by a reply (#1400) | #1398/#1400 |
-//! | `DeleteTrip` | `CatalogState::admit_intent` **refuses** a trip cascade: the bounded member read does not exist, and the sim's folder stores number routes and trips from separate counters, so a namespace-free `RemoveObject` could not tell them apart | #1491 |
 //!
 //! `obc_app::device_core::residual` is that list as data, and its `assert_residual` is the
 //! production assertion that nothing else comes back — one list, checked by this executor and by the
@@ -38,7 +37,7 @@
 //! render, which a `&mut self` executor call cannot straddle. The host opens it once per frame with
 //! [`ActiveRouteSession::sync`] and lends it to both.
 
-use obc_app::catalog_state::{CatalogEffect, CatalogError, CatalogOutcome};
+use obc_app::catalog_state::{CatalogEffect, CatalogOutcome};
 use obc_app::device_core::derived::{DerivedInput, DerivedInputs, DerivedTargets};
 use obc_app::device_core::storage_info::{StorageInfoEffect, StorageInfoError, StorageInfoOutcome};
 use obc_app::device_core::{
@@ -152,7 +151,7 @@ const HOST_STORE: StoreIdentity = StoreIdentity::new(1);
 
 // The residual list, the predicate and the assertion live in `obc_app::device_core::residual` since
 // #1397 S6b: the board's ride loop is a second typed executor and both have to check the *same*
-// three commands, or S6c's deletion becomes a per-host argument instead of a compiler-verified
+// two commands, or S6c's deletion becomes a per-host argument instead of a compiler-verified
 // sweep. Re-exported here so this module reads as the reference executor it is.
 use obc_app::device_core::residual::assert_residual;
 
@@ -300,7 +299,7 @@ impl HostLoop {
         self.inbox.nav_preview.clear();
         self.serve_effects(app, plan, session, routes, rides, trips, platform);
         self.step_plan(app, session, routes, reader, elev);
-        let finish = self.drain_residual(app, trips, routes, platform);
+        let finish = self.drain_residual(app, platform);
         reconcile_track(app, rides, tracks, finish, &mut NoTrace);
         self.serve_derived(app, plan, session, routes, rides);
     }
@@ -378,13 +377,17 @@ impl HostLoop {
         );
     }
 
-    /// The three store operations: read the catalogs, remove one object, read a trip's members.
+    /// The two store operations: read the catalogs, remove one object.
     ///
-    /// The removal is **namespace-free** by design — routes and rides are all objects to the store —
-    /// so the executor resolves the identity against the repositories in a fixed order. That is only
-    /// unambiguous while the two families number their objects out of one space; the flat store does
-    /// (FS7 #1389), and the simulator's folder stores do since this slice (see
-    /// [`crate::RIDE_ID_BASE`]).
+    /// The removal is **namespace-free** by design — routes, rides and trips are all objects to the
+    /// store — so the executor resolves the identity against the repositories in a fixed order.
+    /// That is only unambiguous while the three families number their objects out of one space; the
+    /// flat store does (FS7 #1389), and the simulator's folder stores do through
+    /// [`RIDE_ID_BASE`](crate::RIDE_ID_BASE) and [`TRIP_ID_BASE`](crate::TRIP_ID_BASE).
+    ///
+    /// A trip's *cascade* is not composed here. `CatalogMachine` owns that order and sends it as one
+    /// removal per member and one for the folder (#1491), so this executor performs no ordering of
+    /// its own — the rule the module header states.
     fn serve_catalog(
         &mut self,
         app: &mut App,
@@ -419,16 +422,17 @@ impl HostLoop {
                     feed_rides(app, rides, &mut NoTrace);
                     return CatalogOutcome::ObjectRemoved { token, object, existed: true };
                 }
+                if trips.delete_by_id(object) {
+                    // The folder's own `.obt`, the cascade's last step. Re-read the trip files and
+                    // re-feed, so the folder stops listing; the routes were re-fed by the member
+                    // steps that preceded this one.
+                    trips.rescan();
+                    trips.refeed(app);
+                    return CatalogOutcome::ObjectRemoved { token, object, existed: true };
+                }
                 // The subject vanished before the commit — a success for the goal state, and the
                 // one shape that must not read as a failure (#1433 §13).
                 CatalogOutcome::ObjectRemoved { token, object, existed: false }
-            }
-            // Unreachable: `CatalogState::admit_intent` refuses a trip cascade, so no member read is
-            // ever decided. Answered as a failure rather than dropped, so a domain that starts
-            // producing one cannot wedge behind an executor that ignored it.
-            CatalogEffect::ReadTripMembers { token, .. } => {
-                debug_assert!(false, "the trip cascade is refused at admission — no member read exists yet");
-                CatalogOutcome::Failed { token, error: CatalogError::Unreadable }
             }
         }
     }
@@ -564,13 +568,7 @@ impl HostLoop {
 
     /// Drain the residual mailbox: [`RESIDUAL`] and nothing else. Returns the drained ride-close
     /// action, which phase 3 reconciles against the live session.
-    fn drain_residual(
-        &mut self,
-        app: &mut App,
-        trips: &mut dyn TripCatalog,
-        routes: &mut dyn RouteRepository,
-        platform: &mut dyn HostPlatform,
-    ) -> Option<TrackAction> {
+    fn drain_residual(&mut self, app: &mut App, platform: &mut dyn HostPlatform) -> Option<TrackAction> {
         // Asked for **by name**, not filtered out of a whole-order walk: such a walk pulls from
         // every domain it passes — minting the operation — so it would consume an intent admitted
         // between this executor's passes and leave its domain waiting on an answer that is never
@@ -584,17 +582,6 @@ impl HostLoop {
             match command {
                 HostCommand::FinishTrack(action) => finish = Some(action),
                 HostCommand::ForgetBond => platform.forget_bond(),
-                HostCommand::DeleteTrip { id } => {
-                    // The cascade: the trip's member routes, then its `.obt`. Re-feed routes first
-                    // so the regrouped trip list resolves against the surviving catalog.
-                    for rid in trips.member_route_ids(id) {
-                        routes.delete_by_id(rid);
-                    }
-                    if trips.delete_by_id(id) {
-                        feed_routes(app, routes, &mut NoTrace);
-                        trips.refeed(app);
-                    }
-                }
             }
         }
         finish
