@@ -1073,8 +1073,8 @@ impl eframe::App for SimGui {
                     Err(e) => self.gpx_error = Some(e),
                 }
                 // A GPX drop is the one thing that moves this store **behind** the executor, so it
-                // is reported as the store revision it is: the next pass raises
-                // `CatalogIntent::Refresh` and the executor re-reads the whole catalog — routes,
+                // is reported as the store revision it is: the next pass arms the domain's owed
+                // refresh and the executor re-reads the whole catalog — routes,
                 // their retention metas, the trips that group them and the rides beside them.
                 self.host.note_store_commit();
             }

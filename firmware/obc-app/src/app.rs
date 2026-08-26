@@ -6344,9 +6344,9 @@ mod tests {
 
     use crate::retention::{RideRetentionRecord, SweepKind, RETENTION_DELETE_BACKOFF_MS};
 
-    /// One executor round, collecting the ops it produced. Two passes rather than one, because a
-    /// domain performs one bounded operation at a time: a route delete and a ride delete are two
-    /// catalog operations and leave on consecutive passes.
+    /// One executor round, collecting the ops it produced. A domain performs one bounded
+    /// operation at a time, so a route delete and a ride delete are two catalog operations and
+    /// leave on consecutive passes.
     /// Three passes, because that is one whole catalog operation from this executor's side: the
     /// effect goes out, its answer comes back, and the re-read the answer orders (#1541) is served
     /// too. Each call builds a fresh [`Sweeper`], so an answer left unconsumed at the last pass

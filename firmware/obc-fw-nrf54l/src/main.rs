@@ -1385,8 +1385,8 @@ async fn main(_spawner: Spawner) {
             // first so a fresh upload remains visible on a card with more than the UI cap.
             // A transient media read here needs no re-arm of its own: the ride loop reports the
             // store's live `sequence()` as `ExternalFacts::note_store_revision`,
-            // and the very first pass sees that level move from "no store" to a revision — which is
-            // one `CatalogIntent::Refresh`, i.e. exactly one `CatalogEffect::ReadCatalog`, on the
+            // and the very first pass sees that level move from "no store" to a revision — which
+            // arms the domain's owed refresh, i.e. exactly one `CatalogEffect::ReadCatalog`, on the
             // first frame. The boot snapshot below is what the menu shows until that read lands.
             let _ = flat_store::load_routes(flat, app);
             let _ = flat_store::load_trips(flat, app);
