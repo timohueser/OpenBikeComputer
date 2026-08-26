@@ -27,9 +27,11 @@ use obc_ports::{InputClock, InputSource};
 ///
 /// Feed it raw input each frame with [`recognize`](InputPlane::recognize) (it emits
 /// [`Gesture`]s and advances the bulge), repaint the bulge with
-/// [`render_overlay`](InputPlane::render_overlay) whenever
-/// [`take_overlay_dirty`](InputPlane::take_overlay_dirty) reports a change, and read the
-/// confirm-ring progress / last gesture for a host readout. It touches **nothing** the map
+/// [`render_overlay`](InputPlane::render_overlay) whenever the bulge has (or just had) live
+/// content, and read the confirm-ring progress / last gesture for a host readout. The plane holds
+/// **no** repaint mirror of its own: the trailing-clear rule is one half of the pass's
+/// `OverlayKey`, and a host that drives its own plane derives the same edge from the row span it
+/// already tracks. It touches **nothing** the map
 /// plane owns, so it is safe to run preemptively against a long map render.
 pub struct InputPlane {
     /// The shared gesture recognizer (raw events + clock → the five gestures).
@@ -45,10 +47,6 @@ pub struct InputPlane {
     /// Millis at the last [`recognize`](InputPlane::recognize) — the overlay's own clock
     /// (the input/wall clock), distinct from the map plane's [`App`](crate::App) clock.
     now_ms: u32,
-    /// The overlay's live state at the previous [`take_overlay_dirty`](InputPlane::take_overlay_dirty),
-    /// so a bulge going quiet yields exactly one trailing repaint (clearing the last frame off
-    /// the overlay layer).
-    overlay_was_active: bool,
 }
 
 impl InputPlane {
@@ -61,7 +59,6 @@ impl InputPlane {
             back_progress: 0.0,
             last_gesture: None,
             now_ms: 0,
-            overlay_was_active: false,
         }
     }
 
@@ -124,16 +121,6 @@ impl InputPlane {
     /// the bulge is anchored in.
     pub fn overlay_rows(&self, w: i32, h: i32) -> Option<(u16, u16)> {
         self.hold_hints.active_rows(self.now_ms, w, h)
-    }
-
-    /// Whether the overlay layer must be repainted this frame: while the bulge is live, plus
-    /// exactly one trailing frame after it goes quiet so the last bulge can be cleared off the
-    /// layer. The trailing edge is tracked across calls, so call this **once per frame**.
-    pub fn take_overlay_dirty(&mut self) -> bool {
-        let now = self.overlay_active();
-        let dirty = now || self.overlay_was_active;
-        self.overlay_was_active = now;
-        dirty
     }
 
     /// Cancel any in-flight hold (see [`Gestures::cancel_holds`]). The map plane rings this after

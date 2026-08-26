@@ -68,7 +68,7 @@ pub enum ModeState {
     Transferring,
 }
 
-/// The four levels: two searches, one transfer, and the banner's level→edge bit.
+/// The three levels: two searches and one transfer.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct CoreMode {
     /// A live [`Route`](PlanFamily::Route) planner run.
@@ -77,16 +77,12 @@ pub(crate) struct CoreMode {
     detour_search: bool,
     /// A bulk transfer is streaming into the store — the latest level reported, never a count.
     transferring: bool,
-    /// Whether the *engaged* freeze — a search **and** a map base — was already reported to the
-    /// host by a [`take_engaged_edge`](CoreMode::take_engaged_edge) drain. See that method: this is
-    /// the difference between a banner that appears and one that is silently swallowed.
-    engaged_shown: bool,
 }
 
 impl CoreMode {
-    /// The boot state: nothing searching, nothing streaming, no banner shown.
+    /// The boot state: nothing searching, nothing streaming.
     pub(crate) const fn new() -> CoreMode {
-        CoreMode { route_search: false, detour_search: false, transferring: false, engaged_shown: false }
+        CoreMode { route_search: false, detour_search: false, transferring: false }
     }
 
     /// The level `family` owns.
@@ -158,24 +154,6 @@ impl CoreMode {
     /// Whether the freeze is **engaged**: a live search *and* a base screen that would draw a map.
     pub(crate) fn frozen(&self, base_draws_map: bool) -> bool {
         self.searching() && base_draws_map
-    }
-
-    /// The level→edge converter the host's once-per-frame dirty drain runs: `true` on the pass the
-    /// *engaged* state flips, either way.
-    ///
-    /// **This is a level, and the search's own start edge is not it.** The two facts the freeze is
-    /// made of move independently: a search started under the opaque planning spinner engages
-    /// nothing (chrome base), and the pass that puts a map base back under that still-running
-    /// search raises no search edge at all — it is a screen change. A host that keyed its overlay
-    /// repaint on the start edge would spend it on a chrome frame and then draw *nothing* for the
-    /// rest of the search: the map plane is frozen, the overlay plane was never asked, and the last
-    /// frame on glass belongs to a screen that is gone. Deriving the edge from the engaged level
-    /// here means the banner lands whenever a frozen map is what the rider is actually looking at,
-    /// however it got that way — and lands exactly **once**, so a freeze that spans hundreds of
-    /// ride-loop passes costs one overlay repaint, not one per pass.
-    pub(crate) fn take_engaged_edge(&mut self, base_draws_map: bool) -> bool {
-        let now = self.frozen(base_draws_map);
-        now != core::mem::replace(&mut self.engaged_shown, now)
     }
 
     /// Mint the proof that the **map plane will not draw this pass**, or `None` when it still
@@ -267,28 +245,6 @@ mod tests {
         assert!(m.searching());
         assert!(m.search_ended(PlanFamily::Detour), "the last one out releases the freeze");
         assert!(!m.searching());
-    }
-
-    /// **The regression** the engaged edge exists for: the search's own start edge fires under the
-    /// planning spinner, where nothing freezes — and the pass that puts a map base back under the
-    /// still-live search raises no search edge at all. A host keyed on the start edge would never
-    /// be told to paint the banner for the whole of that search.
-    #[test]
-    fn the_repaint_edge_follows_the_engaged_level_not_the_search() {
-        let mut m = CoreMode::new();
-        assert!(!m.take_engaged_edge(true), "at rest there is nothing to repaint");
-
-        m.search_started(PlanFamily::Route); // …under the opaque spinner: a chrome base
-        assert!(!m.take_engaged_edge(false), "a search with no map under it engages nothing");
-        assert!(!m.take_engaged_edge(false), "…and keeps engaging nothing");
-
-        // The spinner goes and a map base is back — no search edge, but *this* is the freeze.
-        assert!(m.take_engaged_edge(true), "THE edge: a frozen map the rider is actually looking at");
-        assert!(!m.take_engaged_edge(true), "a level, so one repaint — not one per ride-loop pass");
-
-        m.search_ended(PlanFamily::Route);
-        assert!(m.take_engaged_edge(true), "and one more to take the banner off");
-        assert!(!m.take_engaged_edge(true));
     }
 
     /// The axis stage 12 did not have before S5: a live search withdraws heavy work exactly as a

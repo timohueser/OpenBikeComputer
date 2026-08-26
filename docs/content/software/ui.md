@@ -13,7 +13,7 @@ Each screen is one `Screen` enum variant. The variant owns its state by value.
 
 A `screens!` table defines each variant and its `Caps`. The table generates input, drawing, and preparation dispatch.
 
-`Caps` declares cross-cutting behavior. It covers base content, overlays, timers, holds, reader access, idle return, rain, and catalog remapping.
+`Caps` declares cross-cutting behavior. It covers base content, overlays, timers, holds, reader access, idle return, rain, catalog remapping, and the render key.
 
 <figure class="fig">
 <svg viewBox="0 0 720 322" role="img" aria-label="On the left, the Screen enum lists representative variants: Home, Map, Statistics, RideControl, Menu, RideMenu, RouteMenu, RouteOverview, and RouteSwap. The Map variant points to its module on the right, which holds typed state, a handle method returning a Transition, and a draw method emitting pixels. A tag notes static match dispatch, no dyn and no allocation.">
@@ -635,6 +635,29 @@ The application renders on demand. `Dirty` separates base-frame changes from tra
 
 A static screen with no new input, data, or timer event does not render.
 
+### The render key
+
+Each screen row **declares a render-key kind** — the name of the facts its drawing reads. The frame
+**builds the key** from that declaration: it reads the named facts out of the current state and
+returns their exact values.
+
+Each kind names what its screen draws. The Map names the camera, the fix, the pan mode, the
+route-relative chrome, the low-battery cue, and, on the rain map alone, the selected rain frame. The
+riding grid names the ride readouts and the live sensor values of the fields the rider pinned. The
+Climb view names the climb and the cursor on it. The Up-ahead timeline names the progress its rows
+measure from. Home names the battery level, the connected indicator, and the screensaver backdrop. A
+screen whose content moves only on input declares no facts of its own.
+
+One frame builds the visible screens' key before its work and again after it. A changed key requests
+a base-frame render. The rule this keeps is per screen, not per screen class: a heart-rate reading
+repaints the grid that shows it and not the map beside it.
+
+Five kinds of change cannot move a key, and each asks for its render directly. A host feeds some
+data between two frames, so the change is already in both keys. A screen keeps its own selection and
+scroll position, so each recognized gesture requests a render. The card scheduler answers for the
+cards it owns. A planner landing rewrites the screen stack. Some resident data — the catalogs, the
+derived route data — no row names. Over-redraw is safe. Under-redraw is a defect.
+
 <figure class="fig">
 <svg viewBox="0 0 720 250" role="img" aria-label="On the left, the stack: Home at the bottom, Map above it marked opaque, and a notification on top marked overlay. An arrow shows render_map starts from the topmost opaque screen, Map, and draws upward. On the right, a device screen mock: the map fills it, with a small route-received toast floating over the lower half, and a note that the map still updates underneath.">
   <text class="d-tag" x="20" y="24">An overlay draws over the screen below it</text>
@@ -1031,7 +1054,7 @@ Palette constants use RGB565. The framebuffer converts them to the device's 64-c
 - Screen table, capabilities, contexts, and transitions: [`screen/mod.rs`](src:firmware/obc-app/src/screen/mod.rs)
 - Gesture recognition: [`input.rs`](src:firmware/obc-app/src/input.rs)
 - Input and overlay plane: [`input_plane.rs`](src:firmware/obc-app/src/input_plane.rs)
-- Repaint state and UI runtime: [`dirty.rs`](src:firmware/obc-app/src/dirty.rs), [`ui_runtime.rs`](src:firmware/obc-app/src/ui_runtime.rs)
+- Repaint state and UI runtime: [`dirty.rs`](src:firmware/obc-app/src/dirty.rs), [`render_key.rs`](src:firmware/obc-app/src/render_key.rs), [`ui_runtime.rs`](src:firmware/obc-app/src/ui_runtime.rs)
 - Shared screen primitives: [`screen/vocab/`](src:firmware/obc-app/src/screen/vocab)
 - Settings and translations: [`settings.rs`](src:firmware/obc-app/src/settings.rs), [`i18n/`](src:firmware/obc-app/i18n), [`i18n.rs`](src:firmware/obc-app/src/i18n.rs)
 - POI and Up-ahead views: [`poi_list.rs`](src:firmware/obc-app/src/screen/poi_list.rs), [`poi_detail.rs`](src:firmware/obc-app/src/screen/poi_detail.rs), [`up_ahead.rs`](src:firmware/obc-app/src/screen/up_ahead.rs)

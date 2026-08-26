@@ -70,6 +70,7 @@ pub use dfu::{
     DfuProgressScreen, DfuUpdatedScreen,
 };
 pub use home::HomeScreen;
+pub(crate) use map::low_battery_cue;
 pub use map::{MapScreen, ROUTE_WEIGHT};
 pub use map_transfer::{MapTransfer, MapTransferError, MapTransferScreen};
 pub use menu::MenuScreen;
@@ -585,6 +586,38 @@ pub enum ReaderNeed {
     PoiHours,
 }
 
+/// The **render key** a screen's content is made of — the exact facts its draw reads, declared in
+/// its `screens!` table row so the repaint decision is a property of the screen rather than of the
+/// call sites that happen to mutate those facts.
+///
+/// The pass builds the visible stack's key before and after its stages and dirties the map when the
+/// two differ (see [`render_key`](crate::render_key)). A screen whose content moves only on input,
+/// on its own [`tick_timers`](Screen::tick_timers), or on a mutation that already carries an
+/// explicit dirty request declares [`Static`](RenderKeyKind::Static) and contributes only its
+/// identity — which is enough for a navigation to repaint, because the identity is part of the key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RenderKeyKind {
+    /// No fact of its own: the screen's identity in the visible stack is its whole key.
+    Static,
+    /// Battery, the connected indicator, and the screensaver backdrop's per-open jitter.
+    Home,
+    /// The camera, the fix that drives it, the pan HUD, the route-relative map chrome, and the
+    /// top-left low-battery cue.
+    Map,
+    /// The riding grid: progress, off-route, no-fix, the active climb, the next waypoint, and the
+    /// live sensor values of the fields actually pinned to the grid.
+    Statistics,
+    /// The active climb's identity, the cursor's position along it, and the fix behind both.
+    Climb,
+    /// The saved sensors' per-slot status and the live scan list's revision.
+    SensorSettings,
+    /// The installed weather data's identity.
+    Weather,
+    /// The Up-ahead timeline: live route progress, the route's length, and the corridor snapshot
+    /// the rows are merged from.
+    UpAhead,
+}
+
 /// Which durable catalog a screen's held **indices** are remapped against after a store rescan
 /// (#450). The rescan renumbers the route/ride catalogs; a screen that caches an index into one
 /// must be re-pointed (or dropped) through the App's remap closure. Declared per screen so the
@@ -644,6 +677,9 @@ pub struct Caps {
     pub rain_overlay: bool,
     /// Which catalog the screen's held indices remap against after a rescan (#450).
     pub remap: RemapKind,
+    /// The exact facts this screen's draw reads — the pass compares them before and after its
+    /// stages and dirties the map when they move (see [`RenderKeyKind`]).
+    pub render_key: RenderKeyKind,
 }
 
 impl Caps {
@@ -661,6 +697,7 @@ impl Caps {
             hold_fill: false,
             rain_overlay: false,
             remap: RemapKind::None,
+            render_key: RenderKeyKind::Static,
         }
     }
 
@@ -673,6 +710,7 @@ impl Caps {
             ride_view: true,
             browse_exempt: true,
             reader: ReaderNeed::Always,
+            render_key: RenderKeyKind::Map,
             ..Caps::nav()
         }
     }
@@ -680,7 +718,13 @@ impl Caps {
     /// A live **riding** view fed by the fix but not the map (Statistics, Climb): a tracking ride
     /// view, redrawn on a fresh fix, no map I/O.
     pub const fn riding() -> Self {
-        Caps { kind: ScreenKind::Riding, base: BaseContent::LiveRiding, ride_view: true, ..Caps::nav() }
+        Caps {
+            kind: ScreenKind::Riding,
+            base: BaseContent::LiveRiding,
+            ride_view: true,
+            render_key: RenderKeyKind::Statistics,
+            ..Caps::nav()
+        }
     }
 
     /// A **settings** subtree screen — a pending save is held un-persisted while one is on top.
@@ -738,6 +782,14 @@ impl Caps {
         self.remap = remap;
         self
     }
+
+    /// Set the screen's [`RenderKeyKind`] — for the rows whose content is not the one their
+    /// archetype names (the Climb view among the riding screens, the weather pages among the
+    /// chrome, the Sensors pages among the settings).
+    pub const fn key(mut self, render_key: RenderKeyKind) -> Self {
+        self.render_key = render_key;
+        self
+    }
 }
 
 /// The one screen table. Each row is `Variant(StateType) => Caps`; the macro expands it into the
@@ -755,6 +807,15 @@ macro_rules! screens {
         /// per-screen [`Caps`] all come from the one table.
         pub enum Screen {
             $( $(#[$doc])* $variant($state), )+
+        }
+
+        /// A screen's **identity**, without its state — one byte per visible row in a
+        /// [`RenderKey`](crate::render_key). Generated from the same table as [`Screen`], so a row
+        /// added there is comparable here with nothing to keep in sync.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        #[repr(u8)]
+        pub enum ScreenRow {
+            $( $variant, )+
         }
 
         impl Screen {
@@ -795,6 +856,14 @@ macro_rules! screens {
                 self.caps().kind
             }
 
+            /// This screen's identity as a [`ScreenRow`] — what a render key records for each
+            /// visible row, so a navigation moves the key without any screen saying so.
+            pub fn row(&self) -> ScreenRow {
+                match self {
+                    $( Screen::$variant(_) => ScreenRow::$variant, )+
+                }
+            }
+
             /// This screen's variant name (e.g. `"Map"`, `"PoiList"`, `"NavPlanning"`), generated
             /// from the one table so it can't drift. The web demo host (`obc-web-demo`) publishes it
             /// (`obc_demo_state`) so the landing page can advance a guided demo only once the app
@@ -820,14 +889,14 @@ macro_rules! screens {
 }
 
 screens! {
-    Home(HomeScreen) => Caps::nav().timed(),
+    Home(HomeScreen) => Caps::nav().timed().key(RenderKeyKind::Home),
     Map(MapScreen) => Caps::map().timed(),
     Statistics(StatisticsScreen) => Caps::riding().timed(),
     /// The Climb view (epic #506, C4): the current climb's grade-striped elevation profile + cursor
     /// + four climb-scoped tiles. A full-screen riding view like the Map/Statistics siblings; C5
     /// wires it into the Back-cycle and the auto-switch, so nothing reaches it yet except the
     /// debug-open bench path.
-    Climb(ClimbScreen) => Caps::riding(),
+    Climb(ClimbScreen) => Caps::riding().key(RenderKeyKind::Climb),
     /// The pause page: ride-so-far ledger + the guarded Resume / Finish / Discard rows.
     RideControl(RideControl) => Caps::nav().ride_view().hold_fill(),
     /// The route-less start card (Menu → Map → press): "Start ride" / "Back". *Start ride* begins a
@@ -842,7 +911,7 @@ screens! {
     /// The "Up ahead" timeline (epic #946, U3): the route-ordered merge of the resident waypoint
     /// table and the App-owned corridor-POI snapshot, with the Hold category picker as an in-screen
     /// mode. Reads the snapshot the App arms from its `corridor_key`; holds no rows itself.
-    UpAhead(UpAheadScreen) => Caps::nav(),
+    UpAhead(UpAheadScreen) => Caps::nav().key(RenderKeyKind::UpAhead),
     /// Detour chooser (#882): a map base with streamed skipped-stretch ink and an auto-fit camera.
     Detour(DetourScreen) => Caps::map().remap(RemapKind::Route),
     /// Detour preview (#882): the planned detour + cost line over the map; Press commits the splice.
@@ -904,10 +973,10 @@ screens! {
     Warning(WarningScreen) => Caps::modal(),
     /// The Weather dashboard (WX11, epic #1185): the concept-C decision card, the two-hour strip,
     /// and the HOURLY / RAIN MAP actions. Timed: the countdown/freshness copy moves once a minute.
-    Weather(WeatherScreen) => Caps::nav().timed(),
+    Weather(WeatherScreen) => Caps::nav().timed().key(RenderKeyKind::Weather),
     /// The hourly forecast list (WX11): 24 evenly-spaced rows, no separators — time, WX17 icon,
     /// temperature, precipitation, wind.
-    WeatherHourly(WeatherHourlyScreen) => Caps::nav(),
+    WeatherHourly(WeatherHourlyScreen) => Caps::nav().key(RenderKeyKind::Weather),
     /// The rain map (WX11): the normal map scene with the WX10 precipitation raster below the
     /// road band, 15-minute time-step navigation, and the honest out-of-regime/stale banners. The
     /// **one** screen that declares [`rain_overlay`](Caps::rain_overlay) — the raster is its
@@ -936,9 +1005,9 @@ screens! {
     Bluetooth(BluetoothScreen) => Caps::settings().hold_fill(),
     /// The Sensors screen (BLE sensors epic #707, SE7): the HR / power / cadence rows with their live
     /// status; press → scan list, hold a saved row → forget.
-    Sensors(SensorsScreen) => Caps::settings().hold_fill(),
+    Sensors(SensorsScreen) => Caps::settings().hold_fill().key(RenderKeyKind::SensorSettings),
     /// One quantity's live scan list (SE7): the discovered sensors of that kind; press saves + connects.
-    SensorScan(SensorScanScreen) => Caps::settings(),
+    SensorScan(SensorScanScreen) => Caps::settings().key(RenderKeyKind::SensorSettings),
     /// The Language screen (epic #602): cycles the UI language by endonym. Persists the choice today;
     /// the translation catalog that reads it lands later in the epic.
     Language(LanguageScreen) => Caps::settings(),

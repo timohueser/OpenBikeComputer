@@ -128,15 +128,21 @@ pub(crate) struct MapDisplay {
 
 impl MapDisplay {
     /// Sample the shared `InputPlane` once per frame (the map plane is the sole owner of the FLPR
-    /// overlay bookkeeping): the dirty edge (live while the bulge animates, plus one trailing clear)
-    /// and the live bulge's **row span** (`None` when quiet), so the map present can go *around* it and
-    /// `present_bulge` can re-present it.
+    /// overlay bookkeeping): the live bulge's **row span** (`None` when quiet), so the map present
+    /// can go *around* it and `present_bulge` can re-present it.
     #[inline(always)]
-    pub(crate) fn poll_overlay(&mut self) -> (bool, Option<(u16, u16)>) {
-        self.input_plane.lock(|c| {
-            let p = &mut *c.borrow_mut();
-            (p.take_overlay_dirty(), p.overlay_rows(FRAME_W as i32, FRAME_H as i32))
-        })
+    pub(crate) fn poll_overlay(&self) -> Option<(u16, u16)> {
+        self.input_plane.lock(|c| c.borrow().overlay_rows(FRAME_W as i32, FRAME_H as i32))
+    }
+
+    /// Whether the overlay plane still owes glass a push — a live bulge, or a trailing clear that
+    /// has not landed yet. The board's own level, read off the span it already tracks rather than a
+    /// second repaint mirror inside `InputPlane`: `last_overlay_span` is `Some` from the first
+    /// bulge push until the clear succeeds, which is exactly "the layer is not clean". It is what
+    /// keeps the ride loop on the short animation cadence while a bulge is on screen.
+    #[inline(always)]
+    pub(crate) fn overlay_owed(&self) -> bool {
+        self.last_overlay_span.is_some()
     }
 
     /// The live Select hold-progress from the shared input plane (0.0–1.0). Fed to the map render
@@ -230,12 +236,11 @@ impl MapDisplay {
     /// glass content the row-hash diff can't see (the store tracks the clean `fb`), so if the map
     /// content there is unchanged the diff skips it and the stale bulge would strand without this clear.
     /// The clear re-pushes the clean `fb` rows, which the store already agrees with, so the next present
-    /// stays quiet there. It is driven off [`last_overlay_span`](Self#) (cleared only on a **successful**
-    /// push), not the one-shot `overlay_dirty` edge — so a one-frame FLPR stall during the clear is
-    /// retried on the next frame rather than stranding the bulge with no edge left to re-fire it.
+    /// stays quiet there. It is driven off [`last_overlay_span`](Self#), cleared only on a
+    /// **successful** push — so a one-frame FLPR stall during the clear is retried on the next frame
+    /// rather than stranding the bulge with no edge left to re-fire it.
     #[inline(always)]
-    pub(crate) async fn present_bulge(&mut self, overlay_span: Option<(u16, u16)>, overlay_dirty: bool) {
-        let _ = overlay_dirty; // `last_overlay_span` drives the clear so a stalled clear retries — see the doc.
+    pub(crate) async fn present_bulge(&mut self, overlay_span: Option<(u16, u16)>) {
         if self.degraded {
             return; // FLPR down for good (#349) — no push to retry against.
         }

@@ -792,26 +792,16 @@ impl App {
         }
 
         let Sensors { loc, altimeter, temperature, clock, compass, track, fuel, hr, power, cadence } = sensors;
-        // Battery charge from the PMIC gauge, on the slow ~30 s cadence. A reading only repaints
-        // Home — the one screen that draws the gauge — when the level **actually changes** (the
-        // `shows_live_data` gate below is for the riding views, not Home, so dirty it here).
+        // Battery charge from the PMIC gauge, on the slow ~30 s cadence. Nothing here says
+        // "repaint": the gauge is drawn by Home alone, Home's row declares
+        // [`RenderKeyKind::Home`](crate::screen::RenderKeyKind) and that key carries the level — so
+        // a change repaints exactly when Home is visible, and the riding views that never draw it
+        // are not woken for a full ~97 ms map render every 30 s.
         if self.ride.battery_poll_due(now_ms) {
             if let Some(soc) = fuel.and_then(|f| f.poll()) {
-                if soc != self.state.device.battery_pct {
-                    self.state.device.battery_pct = soc;
-                    let base = self.ui.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
-                    if matches!(self.ui.stack.get(base), Some(Screen::Home(_))) {
-                        self.ui.map_dirty = true;
-                    }
-                }
+                self.state.device.battery_pct = soc;
             }
         }
-        // The state before this tick's *fix*, snapshotted **after** the battery poll so a pure
-        // battery delta is never mistaken for a fix that moved the camera / marker / heading (which
-        // one `AppState` comparison below detects). `device.battery_pct` is drawn
-        // only on Home, so it has the Home-only gate above; counting it toward `shows_live_data`
-        // would force a full ~97 ms map render every 30 s on the riding views that don't draw it.
-        let state_before = self.state;
         // Barometric altitude → climb + the elevation stamped on the log. Polled before the fix so a
         // point logged this tick carries the freshest altitude.
         if let Some(altimeter) = altimeter {
@@ -830,8 +820,8 @@ impl App {
         // here beside the altimeter/temperature so `record_motion` (below, on a fresh fix) sees this
         // tick's samples. `Some` only on a fresh reading; a dropped strap simply stops reporting and
         // the staleness gate expires the last value. The stat tiles (SE5) read these through the
-        // `live_*_display` accessors; their repaint edge is the `prev_live_sensors` comparison at
-        // the end of this tick.
+        // `live_*_display` accessors, and the Statistics grid's render key names those same values,
+        // so a fresh sample repaints the grid — and only the grid.
         if let Some(hr) = hr {
             if let Some(bpm) = hr.poll() {
                 self.activity.record_hr(bpm, now_ms);
@@ -945,51 +935,14 @@ impl App {
                 }
             }
         }
-        // A fresh fix that moved the camera, marker or heading dirties the map — but only on a
-        // screen that *draws* live data (Map / Statistics). On Home and the menus the camera still
-        // follows the fix, but nothing they draw uses it, so a fix there must not redraw them. The
-        // `AppState` comparison also makes a stationary fix a no-op. (The breadcrumb only grows on a
-        // moving logged fix, which moved `user_fix` too, so it's covered by the same comparison.)
-        if self.state != state_before && self.ui.shows_live_data() {
-            self.ui.map_dirty = true;
-        }
-        // The "No GPS Fix" banner flips on a *timer* — a fix going stale (lost), or the
-        // first/returning fix (acquired) — which the `state` comparison can miss (a fix lost to
-        // silence is no state change at all). Surface that edge at the **end** of `tick` (after
-        // `last_fix_ms` is stamped, every frame) so it reads the exact `no_fix` the render will,
-        // dirtying only the live-data views, once per flip.
-        let no_fix = !self.has_live_fix(self.ui.now_ms);
-        if no_fix != self.ride.prev_no_fix {
-            self.ride.prev_no_fix = no_fix;
-            if self.ui.shows_live_data() {
-                self.ui.map_dirty = true;
-            }
-        }
-        // A live sensor tile's displayed value changed — a fresh BLE sample, or the 5 s staleness
-        // gate expiring one into `--`. Like the no-fix banner, this is an edge off data the
-        // `AppState` comparison never sees (the samples live in `Activity`), surfaced at the end of
-        // `tick` so it compares the exact values the render will draw (epic #744, SR3). Gated per
-        // quantity on the field actually being pinned to the grid, so an unconfigured sensor never
-        // forces a full map render at its notification rate (the same economy as the battery /
-        // `temp_c` gates above).
-        {
-            use crate::stat_fields::StatField;
-            let live = (
-                self.activity.live_hr_display(),
-                self.activity.live_power_display(),
-                self.activity.live_cadence_display(),
-            );
-            if live != self.ride.prev_live_sensors {
-                let fields = &self.settings.stat_fields;
-                let shown = (live.0 != self.ride.prev_live_sensors.0 && fields.contains(StatField::HeartRate))
-                    || (live.1 != self.ride.prev_live_sensors.1 && fields.contains(StatField::Power))
-                    || (live.2 != self.ride.prev_live_sensors.2 && fields.contains(StatField::Cadence));
-                if shown && self.ui.shows_live_data() {
-                    self.ui.map_dirty = true;
-                }
-                self.ride.prev_live_sensors = live;
-            }
-        }
+        // **Nothing below this line asks for a repaint, and that is the point (#1447).** Three
+        // edges used to be surfaced here by hand, each against a private mirror of the value it was
+        // watching: the camera / marker / heading a fresh fix moved, the "No GPS Fix" banner
+        // flipping on a *timer* rather than on a state change, and a live sensor tile's displayed
+        // value going fresh or stale. All three are facts the riding views *declare* they draw, so
+        // the pass compares them for every visible screen at its own boundary — and only for the
+        // screens that draw them, which is the economy the hand-written base-screen gate and the
+        // per-quantity guards existed to buy.
     }
 
     /// Give the **map-referenced altimeter** (EL8, epic #1068) its one terrain read for the latest
@@ -1070,9 +1023,8 @@ impl App {
     /// transition: one repaint, and the C5 host auto-switch off the same edge.
     fn update_active_climb(&mut self, route: &RouteReader) {
         if let Some((prev, next)) = self.ride.update_active_climb(&mut self.activity, route) {
-            // The active climb changed: the riding views' climb-scoped readouts (and the Climb
-            // screen) must repaint.
-            self.ui.map_dirty = true;
+            // No repaint request: the active climb is in the Statistics and Climb render keys, so
+            // the riding views' climb-scoped readouts repaint from the declaration.
             // Host-driven auto-switch / auto-return (C5), off the same entry/exit edge.
             self.apply_climb_auto_switch(prev, next);
         }
@@ -1082,9 +1034,9 @@ impl App {
     /// engine's linger hysteresis + truncated-table re-window
     /// ([`RideEngine::update_next_waypoint`]) — repainting once when the next waypoint moved.
     fn update_next_waypoint(&mut self, route: &RouteReader) {
-        if self.ride.update_next_waypoint(&mut self.activity, route) {
-            self.ui.map_dirty = true; // the next waypoint changed — the chip / fields must repaint
-        }
+        // No repaint request: the next waypoint is in the Map and Statistics render keys, so the
+        // chip and the fields repaint from the declaration.
+        self.ride.update_next_waypoint(&mut self.activity, route);
     }
 
     /// The Auto-mode screen follow (epic #506, C5), driven off the climb entry/exit edge in
@@ -1998,14 +1950,15 @@ impl App {
     /// hold target out from under the rider mid-charge would break the confirm) — the sweep just
     /// skips that pass and lands on the next, since the desired level is re-fed every pass.
     pub fn set_ble_status(&mut self, status: crate::ble::BleStatus) {
-        let state_before = self.state;
+        let changed = (self.state.device.ble_link, self.state.device.ble_paired) != (status.link, status.paired);
         self.state.device.ble_link = status.link;
         self.state.device.ble_paired = status.paired;
-        // The link state lives in `AppState` but is drawn only on Home, the menu title bars, and
-        // the Bluetooth screen, so — like the Home-only battery gate — a change dirties the map
-        // only when one of those is the base screen. Counting it toward `shows_live_data` would
-        // force a full map render on the riding views, which never draw the indicator.
-        if self.state != state_before && self.ui.indicator_visible() {
+        // **An explicit request, and it stays one.** The connected indicator is title-bar chrome on
+        // every chrome-based screen, which is far more rows than the one that declares a key naming
+        // it (Home) — and this seam is a host feeder a runtime may ring between two passes, where a
+        // stack-local key comparison sees nothing anyway. Gated on the base screen actually drawing
+        // the glyph, so a link change never forces a full map render on the riding views.
+        if changed && self.ui.indicator_visible() {
             self.ui.map_dirty = true;
         }
         self.ui.cards.set_passkey(status.passkey);
@@ -3195,16 +3148,19 @@ impl App {
     /// no full-frame demand joined it since the last drain: a set `map_dirty` covers any region, so
     /// the region folds away and the host full-repaints (over-redraw is safe; under-redraw is a bug).
     ///
-    /// The **Recalculating banner** joins [`overlay`](Dirty::overlay) here, and here rather than at
-    /// the plan seams on purpose: the freeze is a *level* (a live plan **and** a map base), and
-    /// either half can move without the other. Deriving its repaint edge at the drain is what makes
-    /// the banner appear on the pass a map base lands back under a search that is still running —
-    /// see [`CoreMode::take_engaged_edge`](crate::device_core::core_mode::CoreMode::take_engaged_edge).
+    /// The overlay plane is **derived here, from levels** — the hold bulge's and the Recalculating
+    /// freeze's, read as one [`OverlayKey`](crate::device_core::pass::OverlayKey) and folded against
+    /// the level this same call last saw. Both rules live in that one converter: see its doc for why
+    /// the banner keys on the engaged level rather than on the plan's own start edge.
     pub fn take_dirty(&mut self) -> Dirty {
-        if self.mode.take_engaged_edge(self.ui.base_draws_map()) {
-            self.ui.overlay_edge = true;
-        }
-        self.ui.take_dirty()
+        let overlay = crate::device_core::pass::OverlayKey {
+            hold: self.ui.input.overlay_active(),
+            freeze: self.mode.frozen(self.ui.base_draws_map()),
+        };
+        let overlay = self.pass.overlay_repaint(overlay);
+        let mut dirty = self.ui.take_dirty();
+        dirty.overlay = overlay;
+        dirty
     }
 
     /// The most recently recognized gesture. No production host reads it; the two-plane input tests
@@ -3512,7 +3468,7 @@ mod tests {
     /// The Home root's current backdrop seed.
     fn home_seed(app: &App) -> u32 {
         match app.ui.stack.first() {
-            Some(Screen::Home(h)) => h.seed(),
+            Some(Screen::Home(h)) => h.backdrop_seed(),
             _ => panic!("Home is always the stack root"),
         }
     }
@@ -3702,11 +3658,38 @@ mod tests {
         app.tick(RideClock(now_ms), Sensors::new(&mut loc), None);
     }
 
-    /// Tick once with no fix at all (the quiet per-frame tick), at the map-plane clock `now_ms`.
-    fn tick_idle(app: &mut App, now_ms: u32) {
-        app.ui.now_ms = now_ms;
-        let mut loc = OneFix(None);
-        app.tick(RideClock(now_ms), Sensors::new(&mut loc), None);
+    /// One **DeviceCore pass** at `now_ms` with a fix and/or a heart-rate reading on the ports,
+    /// returning what it planned to repaint. The production frame, and the only composition where
+    /// the render keys are compared — a bare `tick` moves the state without ever reaching the
+    /// boundary that reads it.
+    fn pass_ports(app: &mut App, now_ms: u32, fix: Option<Fix>, bpm: Option<u16>) -> Dirty {
+        use crate::device_core::{DerivedInputs, DerivedTargets, ExternalFacts, OutcomeSlots, PassClock, PassInputs};
+        let mut outcomes = OutcomeSlots::new();
+        let mut facts = ExternalFacts::NONE;
+        let mut loc = OneFix(fix);
+        let mut hr = OneHr(bpm);
+        let plan = app.run_pass(PassInputs {
+            now: PassClock { ride: RideClock(now_ms), ui: InputClock(now_ms) },
+            gestures: &[],
+            sensors: Sensors { hr: Some(&mut hr), ..Sensors::new(&mut loc) },
+            route: None,
+            support: crate::harness::support::EVERY_CAPABILITY,
+            outcomes: &mut outcomes,
+            facts: &mut facts,
+            derived: DerivedInputs::NONE,
+            targets: DerivedTargets::NONE,
+        });
+        plan.render
+    }
+
+    /// One pass carrying a single fix.
+    fn pass_fix(app: &mut App, fix: Fix, now_ms: u32) -> Dirty {
+        pass_ports(app, now_ms, Some(fix), None)
+    }
+
+    /// One pass with nothing on any port — the quiet frame.
+    fn pass_idle(app: &mut App, now_ms: u32) -> Dirty {
+        pass_ports(app, now_ms, None, None)
     }
 
     /// `has_live_fix` is `false` before the first fix (acquiring) and once the last fix ages past the
@@ -3734,39 +3717,33 @@ mod tests {
         assert!(!app.has_live_fix(1_000 + 90_001), "but past 90 s the fix is lost");
     }
 
-    /// The banner edge is surfaced from the end of `tick` (which runs every frame): a fix aging into
-    /// silence dirties the live-data view so the banner appears, and the first/returning fix dirties
-    /// it so the banner clears — each exactly once. A stationary returning fix moves the camera
-    /// nowhere, so its banner-clear *must* come from this edge, not the fresh-fix redraw path.
+    /// The banner's repaint comes from `no_fix` in the map/riding render keys, compared across the
+    /// pass: a fix aging into silence repaints the live-data view so the banner appears, and the
+    /// first/returning fix repaints it so the banner clears — each exactly once. A stationary
+    /// returning fix moves the camera nowhere, so its banner-clear *must* come from the `no_fix`
+    /// field, not from the fix that carried it.
     #[test]
     fn no_fix_flip_dirties_the_live_view() {
         let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map] → base Map (live data)
-        tick_fix(&mut app, Fix::at(0, 0), 1_000); // first fix: banner clears (flip true→false)
-        let _ = app.take_dirty();
+        pass_fix(&mut app, Fix::at(0, 0), 1_000); // first fix: banner clears (flip true→false)
 
-        tick_idle(&mut app, 3_000);
-        assert!(!app.take_dirty().map, "still inside the window → no flip");
-
-        tick_idle(&mut app, 6_001);
-        assert!(app.take_dirty().map, "fix went stale → banner appears (map dirtied)");
-        tick_idle(&mut app, 7_000);
-        assert!(!app.take_dirty().map, "an unchanged no-fix state doesn't re-dirty");
+        assert!(!pass_idle(&mut app, 3_000).map, "still inside the window → no flip");
+        assert!(pass_idle(&mut app, 6_001).map, "fix went stale → banner appears (map dirtied)");
+        assert!(!pass_idle(&mut app, 7_000).map, "an unchanged no-fix state doesn't re-dirty");
 
         // A stationary returning fix recenters the camera onto the spot it already sits, so the only
-        // thing that changed is the banner — the clear comes from the flip, not a camera move.
-        tick_fix(&mut app, Fix::at(0, 0), 20_000);
-        assert!(app.take_dirty().map, "fix returned → banner clears (map dirtied)");
+        // thing that changed is the banner — the clear comes from `no_fix`, not a camera move.
+        assert!(pass_fix(&mut app, Fix::at(0, 0), 20_000).map, "fix returned → banner clears");
     }
 
-    /// The flip never dirties a static Home (it doesn't draw the banner), so a parked idle device
-    /// stays clean as a fix ages out — the "static Home does zero renders" criterion still holds.
+    /// The flip never dirties a static Home — Home's row declares a key of battery, link and
+    /// backdrop, and nothing in it is the banner — so a parked idle device stays clean as a fix ages
+    /// out and the "static Home does zero renders" criterion still holds.
     #[test]
     fn no_fix_flip_does_not_dirty_idle_home() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0)); // [Home], Idle — not a live-data view
-        tick_fix(&mut app, Fix::at(0, 0), 1_000); // flip true→false, but Home isn't a live view
-        let _ = app.take_dirty();
-        tick_idle(&mut app, 1_000 + 6_001); // the fix ages out → flip false→true, still not live
-        assert!(!app.take_dirty().map, "the no-fix flip never dirties a static Home");
+        pass_fix(&mut app, Fix::at(0, 0), 1_000); // flip true→false, but Home draws no banner
+        assert!(!pass_idle(&mut app, 1_000 + 6_001).map, "the no-fix flip never dirties a static Home");
     }
 
     /// A track sink that counts recorded points.
@@ -4201,64 +4178,83 @@ mod tests {
         assert_eq!(app.activity.live_hr_display(), None, "a >5 s-old sample still blanks — no frozen value");
     }
 
-    /// One tick with only an HR sample (no fix, nothing else moving): `loc` yields `None` so the
-    /// `AppState` comparison is a no-op — any repaint demand is the sensor-tile edge alone.
-    fn tick_hr_only(app: &mut App, bpm: Option<u16>, at_ms: u32) {
-        app.ui.now_ms = at_ms;
-        let mut loc = OneFix(None);
-        let mut hr = OneHr(bpm);
-        app.tick(RideClock(at_ms), Sensors { hr: Some(&mut hr), ..Sensors::new(&mut loc) }, None);
+    /// One **pass** with only an HR sample (no fix, nothing else moving): `loc` yields `None`, so
+    /// the camera and the fix compare equal across it and any repaint is the grid's own.
+    fn pass_hr_only(app: &mut App, bpm: Option<u16>, at_ms: u32) -> Dirty {
+        pass_ports(app, at_ms, None, bpm)
     }
 
-    /// Epic #744 SR3: a fresh BLE sample lands in `Activity`, which the `state != state_before`
-    /// redraw gate never compares — so with an HR tile pinned, the tile froze until something
-    /// *else* (a moving fix, reopening the screen) happened to repaint. Pins the
-    /// `prev_live_sensors` edge: a changed displayed value dirties the riding view exactly once,
-    /// an unchanged one doesn't, and the 5 s staleness expiry (the blank to `--`) is an edge too.
+    /// An app parked on the Statistics grid — the one screen that draws the live sensor tiles — with
+    /// the idle return off so a multi-second replay is not swept back to Home mid-assertion.
+    fn on_statistics(fields: crate::stat_fields::StatFieldList) -> App {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        // One page of fields, so the grid's own auto-cycle timer never fires and every repaint in
+        // these tests is the one under test. The idle return is off for the same reason.
+        app.set_settings(Settings {
+            idle_return: crate::settings::IdleReturn::Never,
+            stat_fields: fields,
+            ..Settings::default()
+        });
+        app.ui.stack.clear();
+        let _ = app.ui.stack.push(Screen::Home(crate::screen::HomeScreen::new()));
+        let _ = app.ui.stack.push(Screen::Statistics(crate::screen::StatisticsScreen::new()));
+        pass_idle(&mut app, 0); // the host's mandatory first frame — drained so each assertion is its own
+        app
+    }
+
+    /// Epic #744 SR3: a fresh BLE sample lands in `Activity`, which the old `AppState` comparison
+    /// never saw — so with an HR tile pinned, the tile froze until something *else* (a moving fix,
+    /// reopening the screen) happened to repaint. Now the grid's row declares those values in its
+    /// render key: a changed displayed value repaints the grid exactly once, an unchanged one
+    /// doesn't, and the 5 s staleness expiry (the blank to `--`) moves the key too.
     #[test]
     fn fresh_sensor_sample_repaints_the_riding_view() {
-        let mut app = App::new(AppState::new(0, 0, 1.0)); // stack [Home, Map] — a riding view
-        assert!(app.settings.stat_fields.push(crate::stat_fields::StatField::HeartRate));
-        let _ = app.take_dirty(); // drain the boot repaint
+        let mut app = on_statistics(crate::stat_fields::StatFieldList::decode(
+            1,
+            &[crate::stat_fields::StatField::HeartRate as u8],
+        ));
 
-        tick_hr_only(&mut app, Some(155), 1_000);
-        assert!(app.take_dirty().map, "a fresh HR sample must repaint the riding view");
-
-        // A new sample with the same displayed value is not an edge.
-        tick_hr_only(&mut app, Some(155), 2_000);
-        assert!(!app.take_dirty().map, "an unchanged displayed value must not re-dirty");
-
-        tick_hr_only(&mut app, Some(156), 3_000);
-        assert!(app.take_dirty().map, "a changed bpm repaints again");
+        assert!(pass_hr_only(&mut app, Some(155), 1_000).map, "a fresh HR sample must repaint the grid");
+        // A new sample with the same displayed value is not a change.
+        assert!(!pass_hr_only(&mut app, Some(155), 2_000).map, "an unchanged displayed value must not re-dirty");
+        assert!(pass_hr_only(&mut app, Some(156), 3_000).map, "a changed bpm repaints again");
 
         // The strap drops: >5 s later the staleness gate blanks the tile — that flip must paint
         // (once), or the rider stares at a frozen last value.
-        tick_hr_only(&mut app, None, 9_001);
-        assert!(app.take_dirty().map, "the staleness expiry (value → `--`) must repaint");
-        tick_hr_only(&mut app, None, 20_000);
-        assert!(!app.take_dirty().map, "still blank → no re-dirty");
+        assert!(pass_hr_only(&mut app, None, 9_001).map, "the staleness expiry (value → `--`) must repaint");
+        assert!(!pass_hr_only(&mut app, None, 20_000).map, "still blank → no re-dirty");
     }
 
     /// The economy half of the SR3 edge: with **no sensor tile pinned** (the default six fields), a
-    /// notification stream must never force map renders — the same render-on-demand economy the
-    /// battery / `temp_c` gates keep.
+    /// notification stream must never force map renders — the key omits the quantity entirely, which
+    /// is the same economy the per-quantity guards used to spell out by hand.
     #[test]
     fn sensor_sample_without_a_pinned_tile_never_repaints() {
-        let mut app = App::new(AppState::new(0, 0, 1.0));
-        let _ = app.take_dirty();
-        tick_hr_only(&mut app, Some(155), 1_000);
-        assert!(!app.take_dirty().map, "no HR tile pinned → an HR sample must not force a render");
+        let mut app =
+            on_statistics(crate::stat_fields::StatFieldList::decode(1, &[crate::stat_fields::StatField::Speed as u8]));
+        assert!(!pass_hr_only(&mut app, Some(155), 1_000).map, "no HR tile pinned → no forced render");
     }
 
-    /// And off the riding views entirely (Home is the base), a pinned tile still doesn't repaint —
-    /// nothing on Home draws it; entering Statistics repaints on the screen change anyway.
+    /// And off the grid entirely (Home is the base), a pinned tile still doesn't repaint — Home's
+    /// key names battery, link and backdrop, and no sensor value; entering Statistics repaints on
+    /// the screen change anyway.
     #[test]
     fn sensor_sample_on_home_never_repaints() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0)); // base = Home
         assert!(app.settings.stat_fields.push(crate::stat_fields::StatField::HeartRate));
-        let _ = app.take_dirty();
-        tick_hr_only(&mut app, Some(155), 1_000);
-        assert!(!app.take_dirty().map, "Home draws no tiles → no repaint for a sample");
+        pass_idle(&mut app, 0); // drain the boot frame
+        assert!(!pass_hr_only(&mut app, Some(155), 1_000).map, "Home draws no tiles → no repaint");
+    }
+
+    /// The Map draws the chips, the route line and the marker — never a sensor tile. A pinned HR
+    /// field must therefore not wake a ~97 ms map render at the strap's notification rate, which is
+    /// the one repaint the old base-screen gate could not tell apart from the grid's.
+    #[test]
+    fn sensor_sample_on_the_map_never_repaints() {
+        let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map] — a map base
+        assert!(app.settings.stat_fields.push(crate::stat_fields::StatField::HeartRate));
+        pass_idle(&mut app, 0); // drain the boot frame
+        assert!(!pass_hr_only(&mut app, Some(155), 1_000).map, "the Map draws no tiles → no repaint");
     }
 
     // --- settings persistence signal (the host's save trigger) ---
@@ -5373,7 +5369,7 @@ mod tests {
         app.ui.last_input_ms = 0;
         idle_tick(&mut app, 20_000);
         let Some(Screen::Home(home)) = app.ui.stack.first() else { panic!("back on Home") };
-        assert_eq!(home.seed(), 20_000, "the backdrop reseeds to the return's clock");
+        assert_eq!(home.backdrop_seed(), 20_000, "the backdrop reseeds to the return's clock");
     }
 
     /// Tracking: a menu screen returns to the Map; the deliberate ride views do not time out.

@@ -1,33 +1,20 @@
-//! Render-on-demand dirty tracking ([`App::take_dirty`], issue #47): the map plane re-renders only
-//! when map-affecting state changed, and a static screen with no input and no motion drains
+//! Render-on-demand dirty tracking (issue #47): the map plane re-renders only when what a visible
+//! screen draws actually changed, and a static screen with no input and no motion plans
 //! [`Dirty::CLEAN`]. The guiding rule is *over-redraw is safe, under-redraw is a bug*.
 //!
-//! `take_dirty` resets the accumulator, so every test drains the construction-time frame first and
-//! then asserts about the next frame.
+//! Every test here drives the **DeviceCore pass** ([`common::Frames`]) rather than the frame
+//! methods, because the pass is where the render keys are compared (#1447) — and it is the frame
+//! every runtime host runs. The pass drains the demand, so the construction-time frame is drained
+//! by the first frame and each assertion is about its own.
 
 use obc_app::{App, AppState, Dirty, RouteSummary};
 use obc_map_scene::BBox;
-use obc_ports::{Button, Fix, FuelGauge, InputClock, InputEvent, LocationSource, RideClock, Sensors};
+use obc_ports::{Button, Fix};
 
 mod common;
-use common::{down, keys, step, tap, NoFix, OnceFix};
+use common::{down, step, tap, Frames};
 
 const BERLIN: (i32, i32) = (52_520_000, 13_405_000); // (lat, lon) µdeg
-
-/// Tick with one (or no) fix at `t`, no route, no other sensors.
-fn tick(app: &mut App, loc: &mut dyn LocationSource, t: u32) {
-    app.tick(RideClock(t), Sensors::new(loc), None);
-}
-/// Drive a full frame (input + tick) and drain it. `evs` is this frame's input.
-fn frame(app: &mut App, loc: &mut dyn LocationSource, t: u32, evs: &[InputEvent]) -> Dirty {
-    app.handle_input(InputClock(t), &mut keys(evs));
-    tick(app, loc, t);
-    app.take_dirty()
-}
-/// An idle frame: no input, no fix — the quiet tick the host runs between events.
-fn idle_frame(app: &mut App, t: u32) -> Dirty {
-    frame(app, &mut NoFix, t, &[])
-}
 
 // --- the first-frame contract ------------------------------------------------
 
@@ -35,11 +22,12 @@ fn idle_frame(app: &mut App, t: u32) -> Dirty {
 fn first_drain_is_map_dirty_then_idle_is_clean() {
     // A fresh app must paint once (nothing is on the panel yet)…
     let mut app = App::new(AppState::new(BERLIN.1, BERLIN.0, 0.05)); // [Home, Map]
-    assert!(app.take_dirty().map, "the construction frame paints the first map");
+    let mut host = Frames::new();
+    assert!(host.idle(&mut app, 0).map, "the construction frame paints the first map");
 
     // …and then, with no input and no fix, fall completely quiet.
-    assert_eq!(idle_frame(&mut app, 1), Dirty::CLEAN, "a static map with no input is clean");
-    assert_eq!(idle_frame(&mut app, 9), Dirty::CLEAN, "and stays clean across idle frames");
+    assert_eq!(host.idle(&mut app, 1), Dirty::CLEAN, "a static map with no input is clean");
+    assert_eq!(host.idle(&mut app, 9), Dirty::CLEAN, "and stays clean across idle frames");
 }
 
 // --- input dirties the map ---------------------------------------------------
@@ -47,31 +35,33 @@ fn first_drain_is_map_dirty_then_idle_is_clean() {
 #[test]
 fn a_recognized_gesture_dirties_the_map() {
     let mut app = App::new(AppState::new(BERLIN.1, BERLIN.0, 0.05));
-    let _ = app.take_dirty(); // drain the first frame
+    let mut host = Frames::new();
+    host.idle(&mut app, 0); // drain the first frame
 
     // An Up/Down step is recognized immediately as a Step gesture (Map zoom) → map dirty.
-    assert!(frame(&mut app, &mut NoFix, 0, &[step(1)]).map, "a step (zoom) dirties the map");
+    assert!(host.frame(&mut app, 1, &[step(1)], None, None).map, "a step (zoom) dirties the map");
 
     // The very next idle frame is clean again — the flag is one-shot, not sticky.
-    assert_eq!(idle_frame(&mut app, 8), Dirty::CLEAN, "dirty is drained, not latched");
+    assert_eq!(host.idle(&mut app, 8), Dirty::CLEAN, "dirty is drained, not latched");
 }
 
 #[test]
 fn charging_a_hold_dirties_only_the_overlay_then_fires_the_map() {
     let mut app = App::new(AppState::new(BERLIN.1, BERLIN.0, 0.05));
-    let _ = app.take_dirty();
+    let mut host = Frames::new();
+    host.idle(&mut app, 0);
 
     // The press down alone recognizes no gesture, so the map stays clean.
-    let d = frame(&mut app, &mut NoFix, 0, &[down(Button::Select)]);
+    let d = host.frame(&mut app, 1, &[down(Button::Select)], None, None);
     assert!(!d.map, "a bare button-down changes no screen — the map stays clean");
 
     // Past the dead zone the hold ring is live — overlay only, the map underneath unchanged.
-    let d = idle_frame(&mut app, 300);
+    let d = host.idle(&mut app, 300);
     assert!(d.overlay, "the charging ring lives on the overlay plane");
     assert!(!d.map, "…and never touches the map while charging");
 
     // Crossing the threshold fires the Hold gesture (Map → enter Pan) → the map changes.
-    assert!(idle_frame(&mut app, 600).map, "the hold firing (enter pan) dirties the map");
+    assert!(host.idle(&mut app, 600).map, "the hold firing (enter pan) dirties the map");
 }
 
 // --- fixes: only a camera-moving fix on a live view dirties the map ----------
@@ -79,16 +69,16 @@ fn charging_a_hold_dirties_only_the_overlay_then_fires_the_map() {
 #[test]
 fn a_camera_moving_fix_on_the_map_dirties_it_but_a_stationary_one_does_not() {
     let mut app = App::new(AppState::new(0, 0, 0.05)); // [Home, Map], Follow
-    let _ = app.take_dirty();
+    let mut host = Frames::new();
+    host.idle(&mut app, 0);
 
     // A fresh fix recenters the Follow camera → the map moved → dirty. No input this frame.
-    let mut loc = OnceFix(Some(Fix::at(BERLIN.0, BERLIN.1)));
-    assert!(frame(&mut app, &mut loc, 0, &[]).map, "a fix that moves the camera dirties the map");
+    let fix = Some(Fix::at(BERLIN.0, BERLIN.1));
+    assert!(host.frame(&mut app, 1, &[], fix, None).map, "a fix that moves the camera dirties the map");
 
     // A second, *identical* fix moves nothing → the map stays clean, honouring "re-render only
     // on fixes that actually move the camera".
-    let mut same = OnceFix(Some(Fix::at(BERLIN.0, BERLIN.1)));
-    assert!(!frame(&mut app, &mut same, 1000, &[]).map, "a stationary fix does not redraw");
+    assert!(!host.frame(&mut app, 1_000, &[], fix, None).map, "a stationary fix does not redraw");
 }
 
 #[test]
@@ -96,12 +86,13 @@ fn fixes_do_not_redraw_the_home_screensaver() {
     // The headline criterion: on Home the camera still follows fixes, but nothing Home draws
     // depends on them — so a moving fix must NOT redraw it. `new_idle` boots to [Home], Follow.
     let mut app = App::new_idle(AppState::new(0, 0, 0.05));
-    let _ = app.take_dirty();
+    let mut host = Frames::new();
+    host.idle(&mut app, 0);
 
     for (i, lat) in [BERLIN.0, BERLIN.0 + 5_000, BERLIN.0 + 10_000].into_iter().enumerate() {
-        let t = i as u32 * 1000;
-        let mut loc = OnceFix(Some(Fix::at(lat, BERLIN.1))); // a genuinely moving fix
-        assert!(!frame(&mut app, &mut loc, t, &[]).map, "a fix must not redraw static Home");
+        let t = 1 + i as u32 * 1000;
+        let fix = Some(Fix::at(lat, BERLIN.1)); // a genuinely moving fix
+        assert!(!host.frame(&mut app, t, &[], fix, None).map, "a fix must not redraw static Home");
     }
 }
 
@@ -120,102 +111,93 @@ fn statistics_inspect_has_no_automatic_snap_back_dirty_edge() {
     // Navigate to Statistics, enter profile Inspect with a step, then prove it remains quiet and
     // persistent until an explicit Back resets it.
     let mut app = App::new_idle(AppState::new(0, 0, 0.05)); // [Home]
+                                                            // The idle return is off: this test asserts quiet across a full minute, and a 30 s timeout
+                                                            // would sweep the screen out from under it — a repaint that is correct and not the one at issue.
+    app.set_settings(obc_app::Settings { idle_return: obc_app::IdleReturn::Never, ..*app.settings() });
     app.set_routes_with_ids(&[one_route()], &[0]);
+    let mut host = Frames::new();
 
-    let _ = frame(&mut app, &mut NoFix, 0, &tap(Button::Select)); // Home press → Menu (Routes selected)
-    let _ = frame(&mut app, &mut NoFix, 5, &tap(Button::Select)); // press Routes → Route menu
-    let _ = frame(&mut app, &mut NoFix, 10, &tap(Button::Select)); // pick route → Route overview
-    let _ = frame(&mut app, &mut NoFix, 15, &tap(Button::Select)); // START RIDE → Map
-    let _ = frame(&mut app, &mut NoFix, 20, &tap(Button::Back)); // Map `back` → Statistics
+    host.frame(&mut app, 0, &tap(Button::Select), None, None); // Home press → Menu (Routes selected)
+    host.frame(&mut app, 5, &tap(Button::Select), None, None); // press Routes → Route menu
+    host.frame(&mut app, 10, &tap(Button::Select), None, None); // pick route → Route overview
+    host.frame(&mut app, 15, &tap(Button::Select), None, None); // START RIDE → Map
+    host.frame(&mut app, 20, &tap(Button::Back), None, None); // Map `back` → Statistics
 
     // Scrub the cursor (a Step on Statistics) → that frame is dirty (the scrub moved it and entered
     // Inspect/Pan)…
-    assert!(frame(&mut app, &mut NoFix, 30, &[step(1)]).map, "the scrub itself dirties the map");
+    assert!(host.frame(&mut app, 30, &[step(1)], None, None).map, "the scrub itself dirties the map");
     // …then idle frames remain quiet indefinitely — no old four-second spring-back may redraw or
     // throw away the chosen point.
-    assert_eq!(idle_frame(&mut app, 100), Dirty::CLEAN, "frozen cursor → no idle redraw");
-    assert_eq!(idle_frame(&mut app, 30 + 4_000), Dirty::CLEAN, "the old spring-back deadline is gone");
-    assert_eq!(idle_frame(&mut app, 60_000), Dirty::CLEAN, "Inspect remains explicit even much later");
+    assert_eq!(host.idle(&mut app, 100), Dirty::CLEAN, "frozen cursor → no idle redraw");
+    assert_eq!(host.idle(&mut app, 30 + 4_000), Dirty::CLEAN, "the old spring-back deadline is gone");
+    assert_eq!(host.idle(&mut app, 60_000), Dirty::CLEAN, "Inspect remains explicit even much later");
 
     // Back is the one reset edge; its gesture dirties the Statistics frame, then Follow is quiet.
-    assert!(frame(&mut app, &mut NoFix, 60_010, &tap(Button::Back)).map, "Back resets Inspect visibly");
-    assert_eq!(idle_frame(&mut app, 60_100), Dirty::CLEAN, "the reset adds no follow-up timer redraw");
+    assert!(host.frame(&mut app, 60_010, &tap(Button::Back), None, None).map, "Back resets Inspect visibly");
+    assert_eq!(host.idle(&mut app, 60_100), Dirty::CLEAN, "the reset adds no follow-up timer redraw");
+}
+
+/// The idle return moves the visible stack on a timer, with no gesture behind it — the shape half
+/// of the render key is what repaints it, and this pins that the pass actually reports it.
+#[test]
+fn the_idle_return_repaints_what_it_navigated_to() {
+    let mut app = App::new_idle(AppState::new(0, 0, 0.05)); // [Home]
+    let mut host = Frames::new();
+    host.frame(&mut app, 0, &tap(Button::Select), None, None); // Home press → Menu
+
+    assert_eq!(host.idle(&mut app, 20_000), Dirty::CLEAN, "inside the 30 s window nothing moves");
+    assert!(host.idle(&mut app, 31_000).map, "past it the return lands on Home and repaints");
+    assert_eq!(host.idle(&mut app, 32_000), Dirty::CLEAN, "…once, not every pass hereafter");
 }
 
 // --- the battery gauge: slow polling + redraw only on an actual change -------
-
-/// A [`FuelGauge`] that counts its polls and reports a settable level.
-struct CountingGauge {
-    value: u8,
-    polls: u32,
-}
-impl FuelGauge for CountingGauge {
-    fn poll(&mut self) -> Option<u8> {
-        self.polls += 1;
-        Some(self.value)
-    }
-}
 
 #[test]
 fn battery_is_polled_on_a_slow_cadence_and_redraws_home_only_on_change() {
     // Two guarantees: the gauge is read a few times a minute (not every ~8 ms frame, so a real I²C
     // read never spins), and an unchanged level repaints nothing.
     let mut app = App::new_idle(AppState::new(0, 0, 0.05)); // [Home]; battery_pct defaults to 75
-    let _ = app.take_dirty(); // drain the mandatory first frame
-
-    let mut gauge = CountingGauge { value: 75, polls: 0 };
-    // Tick on Home with the gauge, returning whether Home (the map plane) was dirtied.
-    let beat = |app: &mut App, gauge: &mut CountingGauge, t: u32| {
-        let mut nofix = NoFix;
-        let s = Sensors { fuel: Some(gauge), ..Sensors::new(&mut nofix) };
-        app.tick(RideClock(t), s, None);
-        app.take_dirty().map
-    };
-
-    // The first tick forces a read; 75 % matches the boot default, so nothing redraws.
-    assert!(!beat(&mut app, &mut gauge, 0), "an unchanged level redraws nothing");
-    assert_eq!(gauge.polls, 1, "polled once on the first tick");
+    let mut host = Frames::new();
+    host.frame(&mut app, 0, &[], None, Some(75)); // drain the mandatory first frame
+    assert_eq!(host.fuel_polls, 1, "polled once on the first frame");
 
     // A burst of frames inside the 30 s window: the gauge is NOT re-read, nothing redraws.
     for t in [10, 250, 5_000, 29_999] {
-        assert!(!beat(&mut app, &mut gauge, t), "no redraw between cadence reads");
+        assert!(!host.frame(&mut app, t, &[], None, Some(75)).map, "no redraw between cadence reads");
     }
-    assert_eq!(gauge.polls, 1, "not re-read every frame — no per-frame I²C traffic");
+    assert_eq!(host.fuel_polls, 1, "not re-read every frame — no per-frame I²C traffic");
 
     // At the cadence it is read again, but the value is unchanged ⇒ Home still does not redraw.
-    assert!(!beat(&mut app, &mut gauge, 30_000), "an unchanged reading at the cadence still redraws nothing");
-    assert_eq!(gauge.polls, 2, "read once the 30 s cadence elapsed");
+    assert!(!host.frame(&mut app, 30_500, &[], None, Some(75)).map, "an unchanged reading still redraws nothing");
+    assert_eq!(host.fuel_polls, 2, "read once the 30 s cadence elapsed");
+
+    // Home's clock rolls into a new minute at 60 s and repaints itself for it. Drained on its own
+    // frame, so the gauge assertion below is about the gauge: land it there and this test passes
+    // with the level struck out of Home's key entirely.
+    assert!(host.frame(&mut app, 61_000, &[], None, Some(75)).map, "the minute rollover is Home's own repaint");
+    assert!(!host.frame(&mut app, 61_500, &[], None, Some(75)).map, "…and it settles straight back to quiet");
 
     // A changed level is only seen at the next cadence — and then it repaints Home and is stored.
-    gauge.value = 60;
-    assert!(!beat(&mut app, &mut gauge, 45_000), "still inside the window since the last read");
-    assert!(beat(&mut app, &mut gauge, 60_000), "a changed level repaints Home");
+    assert!(!host.frame(&mut app, 75_000, &[], None, Some(60)).map, "still inside the window since the last read");
+    assert!(host.frame(&mut app, 91_500, &[], None, Some(60)).map, "a changed level repaints Home");
     assert_eq!(app.state.device.battery_pct, 60, "and the new level is stored");
 }
 
 /// The #209 flip side: the riding views don't draw the gauge, so a battery-level change must not
 /// dirty the map there — otherwise a stationary rider eats a wasted ~97 ms full render every 30 s
-/// battery tick. (The bug snapshotted the live-data baseline *before* the battery poll, so a pure
-/// `battery_pct` delta tripped the `state != state_before` check.)
+/// battery tick. The level is now named by Home's render key alone, which is what makes this hold
+/// by construction rather than by a hand-placed snapshot order.
 #[test]
 fn a_battery_change_does_not_redraw_the_riding_views() {
-    let mut app = App::new(AppState::new(0, 0, 0.05)); // [Home, Map] → base is Map, which shows live data
-    let _ = app.take_dirty(); // drain the mandatory first frame
-
-    let mut gauge = CountingGauge { value: 75, polls: 0 }; // 75 % = the boot default
-    let beat = |app: &mut App, gauge: &mut CountingGauge, t: u32| {
-        let mut nofix = NoFix;
-        let s = Sensors { fuel: Some(gauge), ..Sensors::new(&mut nofix) };
-        app.tick(RideClock(t), s, None);
-        app.take_dirty().map
-    };
-
-    // First poll matches the default, so nothing changes regardless of the screen.
-    assert!(!beat(&mut app, &mut gauge, 0), "an unchanged level redraws nothing");
+    let mut app = App::new(AppState::new(0, 0, 0.05)); // [Home, Map] → base is Map, a riding view
+    let mut host = Frames::new();
+    host.frame(&mut app, 0, &[], None, Some(75)); // 75 % = the boot default; drains the first frame
+                                                  // The browse map's "Press to start a ride" hint auto-hides after 4 s — a timed change of the
+                                                  // screen's own, drained here so the assertion below is about the battery and nothing else.
+    host.frame(&mut app, 5_000, &[], None, Some(75));
 
     // A genuinely changed level at the next cadence: it is stored, but the Map view must stay put —
     // the gauge isn't on it, so the riding render-on-demand budget isn't spent on a battery tick.
-    gauge.value = 60;
-    assert!(!beat(&mut app, &mut gauge, 30_000), "a battery delta must not dirty the riding map (#209)");
-    assert_eq!(app.state.device.battery_pct, 60, "the new level is still stored, just not drawn on the riding view");
+    assert!(!host.frame(&mut app, 30_000, &[], None, Some(60)).map, "a battery delta must not dirty the map (#209)");
+    assert_eq!(app.state.device.battery_pct, 60, "the new level is still stored, just not drawn here");
 }

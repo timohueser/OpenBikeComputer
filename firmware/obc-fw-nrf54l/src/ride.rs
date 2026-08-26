@@ -1187,8 +1187,8 @@ pub(crate) async fn run_app(
             app.set_sensor_status(&sensor_status);
         }
 
-        // This frame's hold-bulge state, sampled once: the live row span (the present goes around it)
-        // and the dirty edge the map plane owns the bulge re-push off of.
+        // This frame's hold-bulge state, sampled once: the live row span the present goes around and
+        // the bulge re-push is driven from.
         //
         // The bulge pushes **first in the pass**, before the store lock, the SD reconcile, and any
         // screen redraw (#348 follow-up, widened here): a fired hold usually navigates — and a
@@ -1197,8 +1197,8 @@ pub(crate) async fn run_app(
         // and the 220 ms pop expired unseen ("sometimes it just snaps"). Bulge-first, the pop's
         // attack lands on glass within ~10 ms of the fire — composited over the *old* fb for that
         // one frame, which is correct: that is what is on glass until the present below.
-        let (overlay_dirty, overlay_span) = display.poll_overlay();
-        display.present_bulge(overlay_span, overlay_dirty).await;
+        let overlay_span = display.poll_overlay();
+        display.present_bulge(overlay_span).await;
 
         // ── The staged DFU effect (epic #615 S4/S5), served BEFORE the store phase ──
         //
@@ -2758,7 +2758,7 @@ pub(crate) async fn run_app(
         // frame under the bulge. Re-composite them over the fresh fb now (a ~12 ms partial push, only
         // on the rare pass where a redraw and a live bulge coincide) so the band never lags the screen.
         if dirty_map && overlay_span.is_some() {
-            display.present_bulge(overlay_span, false).await;
+            display.present_bulge(overlay_span).await;
         }
 
         // ═══ Store tail (#809): a second short guard for the store work that must FOLLOW the
@@ -2902,7 +2902,7 @@ pub(crate) async fn run_app(
         // It costs a hot loop rather than an exclusion if it is wrong, and it is the last place the
         // board derived this a second way.
         let planning = app.core_mode() == obc_app::device_core::ModeState::Searching;
-        let animating = charging || planning || pending_map_redraw || overlay_dirty || overlay_span.is_some();
+        let animating = charging || planning || pending_map_redraw || display.overlay_owed() || overlay_span.is_some();
         // The pass's own deadline (`plan.next_wake_ms`), plus the reasons to come straight back: the
         // plan's `immediate` — a later-to-earlier connection is in flight, so work already decided
         // would otherwise sit until the next rider input — and the executor's own `owed`: an answer
