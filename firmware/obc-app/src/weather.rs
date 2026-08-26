@@ -1228,11 +1228,13 @@ pub struct WeatherVisible {
 ///
 /// ## Where the cooldown lives
 ///
-/// Alert dedup marks ([`AlertMarks`](crate::weather_alerts::AlertMarks)) must survive a reboot, so
-/// their bytes sit in the persisted settings blob. This type is their only interpreter: nothing
-/// else reads them, and [`mark_fired`](WeatherDomain::mark_fired) is the only thing that writes one.
-/// Ownership of the *policy* and ownership of the *bytes* are deliberately separate — duplicating
-/// the table here would be one more copy to keep in step for no gain.
+/// Alert dedup marks ([`AlertMarks`](crate::weather_alerts::AlertMarks)) live **here**, with the
+/// only thing that interprets them: nothing else reads them, and
+/// [`mark_fired`](WeatherDomain::mark_fired) is the only thing that writes one. They must survive a
+/// reboot, so they are persisted — but as their own CRC-framed record (#1542), not as a row of the
+/// rider's settings blob. A firing alert is device state changing, not a preference being edited:
+/// it must not rewrite the whole preferences blob, and it must not wait behind an open settings
+/// screen.
 #[derive(Debug)]
 pub struct WeatherDomain {
     ops: TokenSource<WeatherTag>,
@@ -1240,10 +1242,12 @@ pub struct WeatherDomain {
     refresh_requested: bool,
     in_flight: Option<OperationToken<WeatherTag>>,
     last_result: Option<RefreshResult>,
+    /// The per-class dedup/cooldown anchors — the persisted record's live value.
+    marks: crate::weather_alerts::AlertMarks,
 }
 
 impl WeatherDomain {
-    /// The boot state: nothing installed, nothing requested, nothing in flight.
+    /// The boot state: nothing installed, nothing requested, nothing in flight, no anchors.
     pub const fn new() -> Self {
         WeatherDomain {
             ops: TokenSource::new(),
@@ -1251,7 +1255,20 @@ impl WeatherDomain {
             refresh_requested: false,
             in_flight: None,
             last_result: None,
+            marks: [None; crate::weather_alerts::ALERT_CLASSES],
         }
+    }
+
+    /// The live dedup/cooldown anchors — what the marks record persists.
+    pub fn alert_marks(&self) -> &crate::weather_alerts::AlertMarks {
+        &self.marks
+    }
+
+    /// Seed the anchors from durable storage at boot. Whether that seed is already persisted (the
+    /// record) or still owes a write (a v16 blob's frozen span) is the *caller's* question — see
+    /// [`App::set_alert_marks`](crate::App::set_alert_marks).
+    pub fn set_alert_marks(&mut self, marks: crate::weather_alerts::AlertMarks) {
+        self.marks = marks;
     }
 
     /// The installed data set and its revision, or `None` when none is installed.
@@ -1364,14 +1381,13 @@ impl WeatherDomain {
         &self,
         snapshot: Option<&WeatherSnapshot>,
         now: i64,
-        marks: &crate::weather_alerts::AlertMarks,
         open_card: Option<crate::screen::WeatherAlertKind>,
     ) -> crate::weather_alerts::AlertAction {
         let Some(snapshot) = snapshot else {
             return crate::weather_alerts::AlertAction::None;
         };
         let candidates = crate::weather_alerts::evaluate(snapshot, now);
-        crate::weather_alerts::govern(&candidates, marks, open_card)
+        crate::weather_alerts::govern(&candidates, &self.marks, open_card)
     }
 
     /// Record that `candidate`'s card actually reached the rider, starting its persisted cooldown.
@@ -1379,12 +1395,8 @@ impl WeatherDomain {
     /// Deliberately separate from [`alert_action`](WeatherDomain::alert_action): the presentation
     /// seam can refuse (a passkey prompt outranks the card, and so does a full screen stack), and
     /// marking a card nobody saw would sit on that storm for a whole persisted cooldown in silence.
-    pub fn mark_fired(
-        &self,
-        candidate: &crate::weather_alerts::AlertCandidate,
-        marks: &mut crate::weather_alerts::AlertMarks,
-    ) {
-        marks[candidate.class.slot()] = Some(crate::weather_alerts::mark_of(candidate));
+    pub fn mark_fired(&mut self, candidate: &crate::weather_alerts::AlertCandidate) {
+        self.marks[candidate.class.slot()] = Some(crate::weather_alerts::mark_of(candidate));
     }
 }
 
@@ -1394,9 +1406,9 @@ impl Default for WeatherDomain {
     }
 }
 
-// Layout tripwire: identities, a token and three flags. The snapshot is an order of magnitude
-// bigger and stays out.
-const _: () = assert!(core::mem::size_of::<WeatherDomain>() <= 48, "identities and flags, never a bundle");
+// Layout tripwire: identities, a token, three flags and the 72-byte mark table the domain
+// interprets. The snapshot is an order of magnitude bigger and stays out.
+const _: () = assert!(core::mem::size_of::<WeatherDomain>() <= 120, "identities, flags and anchors, never a bundle");
 
 #[cfg(test)]
 mod domain_tests {
