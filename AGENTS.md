@@ -63,6 +63,7 @@ Use the nearest README for surface-specific setup. `companion-ios/CLAUDE.md` is 
 
 ## Documentation
 
+- Use ASD-STE100 Simplified Technical English for documentation, issues, and pull requests.
 - Put conceptual architecture and behavior in `docs/content/`; put exact byte and wire contracts
   in `specs/`; keep build, run, and flash instructions in the relevant README.
 - On a PR, check whether code changes make public docs stale. If they do, update the docs in a
