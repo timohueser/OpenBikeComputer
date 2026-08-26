@@ -166,6 +166,11 @@ impl App {
     ///
     /// Reads DeviceCore state and mutates nothing — [`run_pass`](App::run_pass) calls it twice per
     /// pass, so a side effect here would be applied twice and once out of order.
+    ///
+    /// `#[inline(never)]`: the two calls are the same walk over the same stack, and letting the
+    /// optimiser paste it into the ride loop's own frame twice buys nothing and costs both flash and
+    /// the deepest stack frame on the board.
+    #[inline(never)]
     pub(crate) fn render_key(&self) -> RenderKey {
         let mut key = RenderKey {
             shape: ShapeKey::new(),
@@ -262,5 +267,89 @@ impl App {
             rain_step: self.state.rain_step,
             rain_steps_ahead: self.state.rain_steps_ahead,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::AppState;
+    use crate::screen::{MenuScreen, RenderKeyKind};
+
+    /// Every row states what it draws. The four the archetypes cannot answer for — the Climb view
+    /// among the riding screens, the weather pages and the Sensors pages among the chrome — say so
+    /// on the row, and this is where a new dynamic screen that forgot to is caught.
+    #[test]
+    fn every_screen_row_declares_a_render_key_kind() {
+        let declared: std::vec::Vec<(&str, RenderKeyKind)> = Screen::NAMES
+            .iter()
+            .zip(Screen::CAPS)
+            .filter(|(_, caps)| caps.render_key != RenderKeyKind::Static)
+            .map(|(name, caps)| (*name, caps.render_key))
+            .collect();
+        assert_eq!(
+            declared,
+            [
+                ("Home", RenderKeyKind::Home),
+                ("Map", RenderKeyKind::Map),
+                ("Statistics", RenderKeyKind::Statistics),
+                ("Climb", RenderKeyKind::Climb),
+                ("Detour", RenderKeyKind::Map),
+                ("DetourPreview", RenderKeyKind::Map),
+                ("Weather", RenderKeyKind::Weather),
+                ("WeatherHourly", RenderKeyKind::Weather),
+                ("WeatherRainMap", RenderKeyKind::Map),
+                ("Sensors", RenderKeyKind::SensorSettings),
+                ("SensorScan", RenderKeyKind::SensorSettings),
+            ],
+            "the dynamic rows, in table order — add a row here when a screen starts drawing a live fact"
+        );
+    }
+
+    /// The quiet case, and the whole economy: a device nothing happened to answers the same key
+    /// twice, so the pass asks for no repaint.
+    #[test]
+    fn an_unchanged_device_answers_the_same_key() {
+        let app = App::new(AppState::new(0, 0, 1.0));
+        assert_eq!(app.render_key(), app.render_key(), "reading the key must not change it");
+    }
+
+    /// A navigation moves the shape, so no screen has to remember to dirty the map on the way in or
+    /// out — including a move between two screens that declare the *same* kind.
+    #[test]
+    fn a_screen_transition_moves_the_key() {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        let before = app.render_key();
+        let _ = app.ui.stack.push(Screen::Menu(MenuScreen::new()));
+        assert_ne!(app.render_key(), before, "the visible stack's shape is part of the key");
+    }
+
+    /// **Exact, never hashed, and never IEEE.** A float goes into the key as its bit pattern, so a
+    /// zoom that changed to a value comparing `==` under IEEE rules still repaints.
+    #[test]
+    fn floats_are_compared_by_their_exact_bits() {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        let before = app.render_key();
+        app.state.zoom = -0.0;
+        let negative_zero = app.render_key();
+        app.state.zoom = 0.0;
+        assert_eq!(app.state.zoom, -0.0, "IEEE says these two zooms are the same number");
+        assert_ne!(app.render_key(), negative_zero, "…and the key says they are two different frames");
+        assert_ne!(negative_zero, before);
+    }
+
+    /// Home draws the gauge; the Map does not. The economy the per-screen declaration buys over the
+    /// old base-screen class gate, in one comparison.
+    #[test]
+    fn the_battery_is_in_homes_key_and_in_no_other() {
+        let mut home = App::new_idle(AppState::new(0, 0, 1.0));
+        let before = home.render_key();
+        home.state.device.battery_pct = 42;
+        assert_ne!(home.render_key(), before, "Home draws the gauge");
+
+        let mut map = App::new(AppState::new(0, 0, 1.0));
+        let before = map.render_key();
+        map.state.device.battery_pct = 42;
+        assert_eq!(map.render_key(), before, "the map view does not, so a 30 s gauge tick costs it nothing");
     }
 }
