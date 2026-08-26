@@ -77,7 +77,8 @@ pub enum Reaction {
 /// Why the device is dropping a transfer of its own accord (§3.9's `cancelled` details).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CancelCause {
-    /// A device-local decision: a ride starting, a battery too low to install, a shutdown.
+    /// A device-local decision: a ride starting, a battery too low to install, a shutdown, or a
+    /// transfer that stopped moving ([`Engine::watch_stall`]).
     Device,
     /// The transfer's own channel died under a link that can still carry the answer — a CoC that
     /// closed while ATT stayed up. A link that went away entirely is [`Engine::on_link_lost`],
@@ -92,6 +93,49 @@ impl CancelCause {
             CancelCause::LinkLost => detail::cancelled::LINK_LOST,
         }
     }
+}
+
+/// **How long the live transfer may move no bytes before the engine gives up on it**, in ms.
+///
+/// It bounds the *gap between two byte-moving records*, never a transfer's duration: a 300 MB map is
+/// not on a clock, a wedged peer is. The value is a budget of the three waits that can legitimately
+/// sit between two records, not a round number:
+///
+/// - **15 000** — the client's own round-trip patience (`DEFAULT_TIMEOUT_MS`,
+///   `builder/app/src/lib/usb/client.ts`, itself the iOS app's bounded status-wait). A peer quiet for
+///   longer than *it* is willing to wait has, by its own contract, already stopped.
+/// - **4 000** — one BLE link recovery: the supervision timeout the board requests (`conn_params`).
+///   Radio silence past it drops the link and [`on_link_lost`](Engine::on_link_lost) releases the
+///   transfer already, so nothing shorter may pre-empt that path.
+/// - **2 000** — one device-side service window: the longest a board lane holds the write path
+///   (`flat_store::RECLAIM_TIMEOUT`).
+///
+/// The floor it imposes is the check that matters. One BLE stream record (245 B, §5.1) per 21 s is
+/// 11.7 B/s, against 5.4 kB/s for a radio delivering one record per 45 ms connection interval; one
+/// USB record (8,192 B, §5.2) per 21 s is 390 B/s, against a measured ~3 MB/s cable. A healthy link
+/// — throttled, dawdling, or on the worst connection parameters the board asks for — is two to four
+/// orders of magnitude clear of it.
+pub const STALL_TIMEOUT_MS: u32 = 15_000 + 4_000 + 2_000;
+
+/// What one turn of the stall watchdog found. See [`Engine::watch_stall`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stall {
+    /// Nothing is live: nothing to watch, and no wake worth scheduling.
+    Idle,
+    /// The transfer is inside its deadline. Look again in this many milliseconds.
+    Watching { again_in_ms: u32 },
+    /// The transfer was abandoned for want of progress. The engine is idle and the transfer's
+    /// `cancelled` answer is owed on the next [`poll`](Engine::poll).
+    Abandoned(RequestId),
+}
+
+/// Where the live transfer stood the last time it moved, and when that was.
+#[derive(Debug, Clone, Copy)]
+struct Anchor {
+    request: RequestId,
+    bytes: u64,
+    /// The caller's clock. Compared with `wrapping_sub`, so its ~49-day wrap is a non-event.
+    at_ms: u32,
 }
 
 /// The record ceilings the binding imposes (§5.1, §5.2).
@@ -409,6 +453,8 @@ pub struct Engine<S: Store, const STAGE: usize = DEFAULT_STAGE> {
     /// honest state of a wire nobody is on.
     ceilings: [Option<Ceilings>; 2],
     live: Live<S>,
+    /// The stall deadline's anchor, `None` while nothing is live. See [`Engine::watch_stall`].
+    stall: Option<Anchor>,
     owed: Option<Owed>,
     /// The verdict on the last upload, for a device with a screen. See [`UploadEnd`].
     upload_end: Option<(ObjectKind, UploadEnd)>,
@@ -428,7 +474,14 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
         const {
             assert!(STAGE >= 512 && STAGE.is_multiple_of(512), "the stage is whole 512-byte blocks");
         }
-        Engine { ceilings: [None, None], live: Live::Idle, owed: None, upload_end: None, staging: [0; STAGE] }
+        Engine {
+            ceilings: [None, None],
+            live: Live::Idle,
+            stall: None,
+            owed: None,
+            upload_end: None,
+            staging: [0; STAGE],
+        }
     }
 
     /// What `link` negotiated, or `None` while it is down.
@@ -451,6 +504,44 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
             Live::Idle => None,
             Live::Upload(upload) => Some(upload.request),
             Live::Download(download) => Some(download.request),
+        }
+    }
+
+    /// Payload bytes the live transfer has moved in either direction, `0` when nothing is live.
+    fn live_bytes(&self) -> u64 {
+        match &self.live {
+            Live::Idle => 0,
+            Live::Upload(upload) => upload.received,
+            Live::Download(download) => download.sent,
+        }
+    }
+
+    /// **One turn of the transfer stall watchdog.**
+    ///
+    /// Nothing else bounds how long a transfer stays live. A peer that wedges mid-stream holds the
+    /// store — and with it every consumer that withdraws heavy work while a transfer is running —
+    /// until its link drops, which for an app that is connected but no longer sending is never.
+    ///
+    /// `now_ms` is the caller's monotonic millisecond clock; the engine has none of its own, and a
+    /// deadline is the one thing here that cannot be derived from records. Call this after every
+    /// engine call and again when [`Stall::Watching`]'s deadline arrives: it re-anchors whenever the
+    /// transfer has moved a byte, so a slow-but-moving transfer is never abandoned, and it abandons
+    /// one that has been still for [`STALL_TIMEOUT_MS`] exactly as
+    /// [`cancel_live`](Engine::cancel_live) does — the allocation released or the handle closed, and
+    /// a `cancelled` answer owed to the peer that may yet be listening.
+    pub fn watch_stall(&mut self, store: &S, now_ms: u32) -> Stall {
+        let Some(request) = self.live_transfer() else { return Stall::Idle };
+        let bytes = self.live_bytes();
+        let anchor = match self.stall {
+            Some(anchor) if anchor.request == request && anchor.bytes == bytes => anchor,
+            _ => *self.stall.insert(Anchor { request, bytes, at_ms: now_ms }),
+        };
+        match STALL_TIMEOUT_MS.checked_sub(now_ms.wrapping_sub(anchor.at_ms)) {
+            Some(0) | None => {
+                self.cancel_live(store, CancelCause::Device);
+                Stall::Abandoned(request)
+            }
+            Some(again_in_ms) => Stall::Watching { again_in_ms },
         }
     }
 
@@ -1420,6 +1511,10 @@ impl<S: Store, const STAGE: usize> Engine<S, STAGE> {
 
     /// Drops the live transfer and releases what it holds. The one path every abandonment takes.
     fn abandon(&mut self, store: &S) {
+        // Every way a transfer ends passes through here, so the stall anchor dies with it: the next
+        // transfer starts its deadline from its own first look, even when a client reuses a
+        // `RequestId` that a stalled one had.
+        self.stall = None;
         match core::mem::replace(&mut self.live, Live::Idle) {
             Live::Idle => {}
             Live::Upload(upload) => store.cancel(upload.allocation),
