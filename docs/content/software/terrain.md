@@ -1,24 +1,20 @@
 ---
-title: Terrain & elevation
-description: How ground height reaches the device — the Copernicus GLO-30 bake, the OBCT raster the map carries inside it, and the three consumers (routing cost, route profiles, altimeter reference) that all read one surface.
+title: Terrain and elevation
+description: How OpenBikeComputer bakes, assembles, samples, and uses terrain data.
 ---
 
-# Terrain & elevation
+# Terrain and elevation
 
-For most of this project's life the map knew where a road went and not how much it
-climbed. That is a strange gap on a device built for bikepacking: routing picked the
-cheapest line under your bike profile without noticing it crossed a 400 m col;
-a route the device planned itself exported with `<ele>0</ele>` on every point, so its
-Climb screen was dead and its profile a flat line; and the barometer, having no
-absolute reference anywhere in the system, could only ever be trusted for
-*differences*.
+OpenBikeComputer uses one terrain raster for all elevation functions.
+The source is [Copernicus DEM GLO-30](https://dataspace.copernicus.eu/explore-data/data-collections/copernicus-contributing-missions/collections-description/COP-DEM).
+The `obc-dem` tool converts this source to the OBCT format.
 
-Closing that gap needed one new thing and exactly one: **a raster of ground heights,
-carried by the map**. This page is the argument for its shape — why it is baked and
-published as an artifact of its own rather than as part of the map, why every consumer
-samples the same bytes, and what still works when a map carries no terrain at all.
+Terrain cells have a separate catalog revision from map cells.
+The assembler copies selected terrain cells into the terrain region of the `.obcm` file.
+The packer and device use the same `no_std` sampler.
+Thus, all consumers use the same elevation values.
 
-## The pipeline, end to end
+## Data flow
 
 <figure class="fig">
 <svg viewBox="0 0 720 420" role="img" aria-label="The terrain pipeline in three bands. Top band, left to right: Copernicus GLO-30 float32 GeoTIFF tiles are resampled by the host tool obc-dem into terrain cells of 2 to the 19 microdegrees, published as .obcd objects on their own revision track; a selection's cells are then placed by the assembler into one terrain region, spliced into the map file's own tail. Middle band, spanning the full width: obc-elevation, the single implementation of the OBCT section 5 sampling rules — integer bilinear over a four-slot 512-byte tile cache. Bottom band, three consumers fed from that one sampler: the packer integrating per-edge ascent into the OBCM section 8.3 nav graph at bake time; the device's route emit filling each OBCR point's height when it plans a route; and the live altimeter fusion that turns the barometer's relative reading into an absolute elevation. A footer states that in a map with no terrain every one of those three answers no height here, and nothing else changes.">
@@ -94,225 +90,144 @@ samples the same bytes, and what still works when a map carries no terrain at al
   <rect class="d-panel-2" x="24" y="374" width="672" height="32" rx="8" />
   <text class="d-sub" x="360" y="394" text-anchor="middle" style="font-size:9.5px">a map with no terrain → all three answer <tspan style="font-weight:700">&#8220;no height here&#8221;</tspan>, and nothing else in the system changes</text>
 </svg>
-<figcaption>Four stages and one hinge. <b>obc-dem</b> turns the public DEM into cells on the map grid; the bakery publishes them under their <b>own revision</b>; the assembler <b>places</b> the selected squares — copying blocks, grafting nothing — into one raster, spliced into the map file it is writing. Everything below that hinge — the packer's baked ascent, the device's emitted route heights, the live altimeter reference — goes through <b>one</b> sampler over <b>one</b> artifact. The arrows never run the other way: nothing about the map is an input to a terrain bake.</figcaption>
+<figcaption>The bakery publishes OBCT cells. The assembler puts the selected cells in the map. One sampler supplies all elevation consumers.</figcaption>
 </figure>
 
 ## One sampling truth
 
-The property worth designing for is not "elevation exists" but **that every number
-derived from it agrees**. A rider plans a route, reads `▲394 m` on the overview,
-watches the profile band draw a pass, and — without ever being told — assumes the
-router priced that climb with the same metres. If the router had integrated a DEM at
-one resolution while the profile drew from another, those numbers would differ by
-tens of metres and nobody could say which was wrong.
+The packer samples OBCT tiles to calculate navigation-edge ascent.
+It also uses them to [trace contour lines](../packer-routing/#contours-traced-from-the-terrain).
+The device samples the embedded raster for route heights and altimeter fusion.
+Route profiles, climb detection, and elevation statistics use these route heights.
 
-So the rule is stated once and obeyed everywhere: **the terrain cells are baked
-first, and everything downstream reads them.**
+The shared [`obc-elevation`](src:firmware/obc-elevation) crate implements all sampling.
+The packer does not decode GeoTIFF data.
+Only `obc-dem` decodes the source DEM.
 
-- `obc-pack` samples **baked OBCT tiles** when it integrates per-edge ascent, and
-  again when it [traces contour lines](../packer-routing/#contours-traced-from-the-terrain)
-  out of them. It does *not* read a GeoTIFF; it has no DEM decoder at all and gains
-  no native dependency (libGEOS stays the last one).
-- The device samples the same tiles at route emit and at every GPS fix.
-- The host tools, the browser and the firmware run the *same* `no_std` crate —
-  [`obc-elevation`](src:firmware/obc-elevation) — over the *same* bytes.
+[OBCT section 5](src:specs/OBCT_Spec.md) specifies integer bilinear interpolation.
+The calculation uses 64-bit integers and half-away-from-zero rounding.
+Independent implementations must return the same whole-meter height.
 
-That reduces agreement from a testing problem to an arithmetic one, which is why
-[`OBCT_Spec.md` §5](src:specs/OBCT_Spec.md) is written as integer arithmetic with no
-floating point anywhere: the interpolation is a 64-bit weighted sum divided by `P²`
-with half-away-from-zero rounding, so two independent implementations must produce
-**bit-identical** heights or one of them is wrong. It is the raster analogue of the
-seam rule that makes two neighbouring map cells agree about a road.
+The sampler uses half-open cell ownership at seams.
+It reads a sample from the cell that owns that sample.
+It clamps the last sample at the outer coverage edge.
 
-The one seam that could still have drifted is a *cut* edge: the packer slices a way
-at a cell border, and each stub books its own climb. Because the lattice is global —
-not per-cell — both stubs sample the same surface at the same points, and their
-booked climbs sum to the uncut way's within the dead-band's re-anchoring cost. That
-is a test, not a hope.
+## Terrain artifacts and map assembly
 
-## Why terrain is baked as its own artifact
+Published terrain cells use this identity tuple:
 
-A map file carries the raster, but nothing else about it is the map's. The obvious
-design — bake the heights the way every other layer is baked, out of the same run,
-into the same store — was rejected on three counts, and all three are properties of
-the *data* rather than preferences.
+- `dataset_version`
+- `posting_log2`
+- `cell_log2`
+- `terrain_revision`
 
-**Terrain is static; OpenStreetMap churns.** The cell store re-bakes on every OBCM
-version or schema-revision bump — that lockstep is what makes
-[assembly a byte copy](../formats/#the-alignment-trick). The DEM underneath terrain
-is re-released every few *years*. Fold the raster into that lockstep and a routine
-schema tweak republishes hundreds of megabytes of byte-identical height data, and
-every rider re-downloads it. Outside it, each store moves when its own inputs move
-and never otherwise.
+The tuple does not contain an OBCM schema revision.
+Thus, a map schema change does not require a new terrain bake.
+See [OBCC section 13](src:specs/OBCC_Spec.md) for the catalog contract.
 
-**Blast radius.** As a separate artifact class, `obc-reader`, `obcm_diff`,
-`obcm-testkit` and the assembler's graft path never learn a raster exists. Riding in
-the map's own tail costs them nothing either: a reader hands that region over as a
-window onto its bytes and parses nothing inside it, so the format surface every
-existing consumer parses is unchanged.
+The assembler verifies each selected cell against the catalog.
+It copies the cells into one OBCT container.
+The assembler puts this container in the map terrain region.
+The device reads terrain only from this region.
 
-**Independence.** A terrain re-bake at a new posting does not touch the cell store, and
-a map re-bake does not touch the terrain store. What that deliberately does *not* buy is a partial update on the card: the raster is
-part of the map file, so a rider taking a new surface takes a new map, and there is no
-terrain-only path, no separable object, and nothing for a client to reconcile. That is
-a statement about the *download* rather than about the bakes, and it costs little to
-make — a new Copernicus posting is a yearly event at most, and a full re-send lands
-inside the transfer worst case the link's [no-resume
-rule](../companion-link/#a-map-is-the-one-object-that-does-not-fit-the-pattern) already
-accepts.
+`obc-pack --terrain` has a different function.
+It samples OBCT input for contours and navigation-edge ascent.
+It does not put that input in its output map.
 
-The catalog carries that independence as an explicit contract: a terrain block naming
-`(dataset_version, posting_log2, cell_log2, terrain_revision)`, and **that tuple is
-the terrain store's entire lockstep**. The pinned terrain index deliberately carries
-no `schema_revision` at all — a terrain cell does not know which map schema it will be
-used beside, and a field naming one would make an OBCM bump rewrite the document. The
-normative rules are [`OBCC_Spec.md` §13](src:specs/OBCC_Spec.md); the shape of the
-published objects is on the [data formats](../formats/#the-catalog-the-map-builders-source-of-truth)
-page.
+### Navigation coupling
 
-### The one coupling, and its guard
+Navigation-edge ascent depends on a terrain revision.
+The catalog records this revision as `network_terrain_revision`.
+The bake guard rejects a network that uses a different terrain revision.
+This check keeps routing costs and route profiles on the same terrain surface.
 
-Independence runs in one direction only, and the place it does not is worth naming.
-The routing band's cells are baked **sampling** the raster: each edge's `Ascent M` is
-an integral over that surface. Those bytes are therefore a function of a particular
-terrain revision, so the catalog root records which one (`network_terrain_revision`),
-and the bake guard **fails a publish** whose cells name an older revision than the
-terrain beside them.
+## Raster layout and resource use
 
-Without that check, a terrain re-bake would leave the router costing climbs from one
-surface while the device drew its profile from another — with every file still
-parsing perfectly, every digest still verifying, and no symptom a rider could
-describe. It is exactly the class of bug a lockstep exists to make impossible.
+The current published raster uses these values:
 
-## What it costs
-
-| | |
-| :-- | --: |
-| Terrain at the shipped posting | ≈ 0.90 MiB per 1000 km² |
-| …as a share of a whole map | **+4.4–6.7 %** |
-| Per-edge ascent in the nav graph | 24–130 KB per 1000 km² (alpine → dense) |
-| …as a share of the navigation graph | ≤ +1.9 % (≤ +0.65 % of a whole map) |
-| **Total** | **≈ +5–7 %** against an agreed 20 % ceiling |
-| DACH (~482 000 km²) | ≈ 430 MiB of terrain objects, baked once per dataset version |
-| Device RAM | < 4 KB resident — a 32-byte header, a 4 × 512 B tile cache, one memoized directory entry |
-| Emit I/O | ~120–150 tile reads per 100 km of route, with strong locality |
-
-A finer `2^8` posting (≈ 28 m) was measured and rejected: it costs +17–26 % of a whole
-map for gradient detail below the ~100 m scale a cyclist can act on. The remaining
-headroom under the ceiling is deliberately reserved rather than spent.
-
-What none of those bytes eat into is a *hard* limit, which is the one thing worth
-checking when a format grows a field. The two bytes per adjacency entry are the largest
-claim ascent makes on the file, and they are spent inside an interior of
-[64 GiB](../formats/#one-map-one-file) that geometry, the POIs and the graph all share,
-with no sub-region ceiling underneath it. At DACH scale the whole map is under
-9 GiB, so the ascent field costs what the table says and nothing else.
-
-## What the router does with it
-
-The nav graph learned exactly two fields, and the interesting one is a design
-constraint disguised as a data type. `Ascent M` is **directional** — the entry
-`a→b` carries the climb of riding toward `b`, and `b→a` carries what is the first
-direction's descent — and it is an **integral along the polyline, never an endpoint
-difference**: a pass road between two junctions at the same height has hundreds of
-metres of climbing in it and no net change at all.
-
-It lives in the adjacency entry rather than in the edge pool because relaxation reads
-exactly that record and nothing else, so climb-awareness costs the router **zero
-extra reads**. The full argument — the cost formula, why a descent may never buy a
-discount, and what ε now bounds — is on the
-[packer & routing](../packer-routing/#weighting-the-climb) page; the byte layout is on
-the [data formats](../formats/#the-navigation-graph-a-routable-network) page.
-
-## The degrade ladder
-
-Terrain is an enhancement, and "removable" is a property that has to be *stated per
-feature* or it is just a hope. The sampler sits behind a one-method seam whose null
-implementation answers `None` for everything, and that implementation is pinned to
-reproduce the pre-terrain behaviour byte for byte — a device-planned route emitted
-with it has the same OBCR digest it had before any of this existed.
-
-| In a map with no terrain | What happens |
+| Item | Value |
 | :-- | :-- |
-| Map rendering | Unchanged. Nothing in the render path reads the raster. |
-| Routing | Works. The map's baked ascents are `0`, so the climb term vanishes and the router costs exactly as it did before — the same result a climb weight of `0` gives. |
-| Imported GPX routes | Unchanged: they carry their own heights, so profile, climbs, stats and export were never affected. |
-| Device-planned routes | Plan and ride normally, with a **flat** profile: heights store as `0`, the Climb screen finds no climb, the ascent stat is `0`. |
-| [Detours](../ui/#detouring-around-a-blocked-stretch) | Plan and splice normally. The spliced detour's heights fall back to a straight interpolation between the two seam elevations — byte-identically to what the splice wrote before terrain existed — and the preview's climb figure reads `--` instead of inventing one. |
-| Ride recording | Unchanged. The recorded track's elevations are the *barometer's* own measurement and are deliberately never fused. |
-| Current Elevation tile | Reads exactly what it read before — the raw barometric estimate. The fusion never settles, and the tile never claims a precision it does not have. |
-| Estimated time / time-to-go | Still shown. The ascent-to-go is zero, so the model collapses to distance ÷ speed rather than special-casing anything. |
+| Posting | `2^9` microdegrees |
+| Terrain cell side | `2^19` microdegrees |
+| Samples per cell | 1024 × 1024 |
+| Tile size | 16 × 16 samples, 512 bytes |
+| Sample type | Little-endian signed 16-bit meters |
+| `NODATA` value | `-32768` |
+| Default tile cache | Four tiles, approximately 2.1 KiB |
 
-There is no "is there elevation?" branch anywhere downstream. Every one of those rows
-is what falls out of the sampler answering `None`, which is what makes the claim
-checkable instead of aspirational.
+The posting and cell size are OBCT header fields.
+A change to either value requires a terrain bake, not an OBCT version change.
+See the [OBCT specification](src:specs/OBCT_Spec.md) for all limits and byte layouts.
 
-## Coverage edges, honestly
+## Routing ascent
 
-Two boundaries deserve stating rather than glossing.
+Each navigation adjacency stores directional `ascent_m`.
+The value is the accumulated ascent along the edge polyline.
+It is not the elevation difference between the endpoints.
 
-**A hole is silence, never a guess.** If any of the four corners a query interpolates
-between is `NODATA`, the whole sample is `None` — no partial interpolation over the
-survivors, no nearest-neighbour substitution. A `NODATA` region is typically water or
-radar shadow, exactly where a fabricated height would be most confidently wrong.
-Consumers must treat `None` as "no height here" and must never substitute `0`; zero
-metres is a real elevation. The one place a neighbouring sample *is* used is the outer
-edge of coverage, where the surface flattens over the last half posting instead of
-dropping to nothing — the same thing every texture sampler does, and what stops a
-route grazing the boundary from developing a one-posting notch.
+The packer samples each edge at intervals of at most 50 m.
+It applies the shared 3 m elevation dead band.
+The reverse adjacency stores the ascent for the reverse direction.
 
-**Route parity holds inside coverage.** A device-planned route's climb totals are
-computed with the same dead-band integrator, at the same ±3 m threshold, that the GPX
-converter runs over an imported track — so planning a route, exporting it and
-re-importing it agrees. The exception is real and worth naming: OBCR has no per-point
-"unknown", so a route whose *opening* points fall outside coverage stores `0` for
-them. The route's own stats are right (the integrator does not run until coverage
-begins — pushing that placeholder would anchor the band at sea level and book the
-entire first real height as ascent, a bug that shipped +1 412 m of phantom climb in
-testing before it was caught). But an export of such a route re-imports with a
-`0 → first-real-height` step that the converter's dead-band *will* book. Parity
-therefore holds for a route lying **wholly inside coverage**, which is every route on
-a map whose terrain was baked for it. The honest fix for the exception is a raster
-that covers the map's graph — never a fabricated height.
+The router uses this cost:
+
+```text
+cost = weighted_distance + ascent_m × climb_weight
+```
+
+A descent does not reduce the cost.
+See [Weighting the climb](../packer-routing/#weighting-the-climb) for profile behavior.
+
+## Missing terrain
+
+The sampler returns `None` when terrain is unavailable.
+It also returns `None` if a required sample is `NODATA`.
+Consumers must not replace `None` with zero elevation.
+Zero meters is a valid height.
+
+| Function | Behavior without terrain |
+| :-- | :-- |
+| Map rendering | Rendering continues. Baked contour geometry does not require the raster. |
+| Routing | Routing continues with the graph's baked ascent values. |
+| Imported GPX route | The route keeps its supplied heights. |
+| Device-planned route | The route uses zero heights and a flat profile. |
+| Detour | The splice interpolates between the seam elevations. |
+| Ride recording | The recorder stores the barometer measurement. |
+| Current elevation | The UI uses the raw barometric estimate. |
+| Time estimate | The model uses zero remaining ascent. |
+
+## Coverage and `NODATA`
+
+A bilinear query needs four sample corners.
+If one corner is `NODATA`, the query returns `None`.
+The sampler does not estimate a missing corner.
+
+Route elevation parity requires terrain coverage for the complete route.
+OBCR has no per-point unknown-height value.
+Points before coverage starts use zero height.
+The route integrator does not use these placeholder points as an ascent anchor.
 
 ## Attribution
 
-The elevation data is Copernicus DEM GLO-30, and its licence requires a credit
-wherever the data have been adapted — which a resample to a different lattice
-certainly is:
+The data requires this attribution:
 
-> produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and
-> Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all
-> rights reserved
+> produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved
 
-That string has exactly one home in the code
-([`obc_dem::COPERNICUS_ATTRIBUTION`](src:host/obc-dem/src/lib.rs)), from which the
-bakery stamps it into the catalog's terrain block. Every consumer that shows it —
-the map builder's download summary, beside the raster's own size — reads it **from
-the catalog** rather than hard-coding it, so a change of dataset carries its own
-notice with it instead of leaving a stale credit behind. The bake tool also prints it
-at the end of every run, so nobody producing cells can fail to have seen it.
-
-The obligation follows the *derivation*, not the file type. A map with
-[traced contours](../packer-routing/#contours-traced-from-the-terrain) carries
-GLO-30-derived geometry in its own bytes, so the packer states the same credit, from
-the same `const`, whenever a run packs any.
+The source code stores this text in [`COPERNICUS_ATTRIBUTION`](src:host/obc-dem/src/lib.rs).
+The bakery copies it to the catalog terrain block.
+Consumers read the text from the catalog.
+A map with derived contour geometry also requires this attribution.
 
 Map data remains © OpenStreetMap contributors.
 
----
+## Implementation
 
-## Where this lives
-
-- The normative byte contract and the exhaustive sampling rules: [`OBCT_Spec.md`](src:specs/OBCT_Spec.md); its code authority for magic, offsets and sentinels: [`obc-formats/src/obct.rs`](src:firmware/obc-formats/src/obct.rs)
-- The reader, the sampler, the tile cache, the shared dead-band and the `ElevationSource` seam: [`obc-elevation`](src:firmware/obc-elevation)
-- The rasteriser — GeoTIFF decode, the mosaic, the deterministic bake, and the one OBCT container writer: [`obc-dem`](src:host/obc-dem)
-- The bakery stage that publishes terrain cells: [`obc-bake/src/terrain.rs`](src:host/obc-bake/src/terrain.rs); the catalog contract it fills: [`OBCC_Spec.md`](src:specs/OBCC_Spec.md) §13
-- The assembler's placement pass and its verify-before-write gate: [`obcm-assemble/src/terrain.rs`](src:host/obcm-assemble/src/terrain.rs)
-- Per-edge ascent at pack time: [`obc-pack/src/nav.rs`](src:host/obc-pack/src/nav.rs); the climb-aware relaxation: [`obc-route/src/nav.rs`](src:firmware/obc-route/src/nav.rs)
-- The altimeter fusion filter: [`obc-app/src/altitude.rs`](src:firmware/obc-app/src/altitude.rs); the gradient-aware time model: [`obc-route/src/eta.rs`](src:firmware/obc-route/src/eta.rs)
-
-For the raster's bytes in the same guided-tour form the map and route get, see
-[data formats](../formats/#obct-the-terrain-raster). For what the climb weight does to
-a plan, see [packer & routing](../packer-routing/#weighting-the-climb). For the screens
-this lit up, see [the UI system](../ui/#climbs-get-their-own-panel).
+- OBCT contract: [`OBCT_Spec.md`](src:specs/OBCT_Spec.md)
+- OBCT constants: [`obct.rs`](src:firmware/obc-formats/src/obct.rs)
+- Reader and sampler: [`obc-elevation`](src:firmware/obc-elevation)
+- DEM converter: [`obc-dem`](src:host/obc-dem)
+- Terrain publisher: [`terrain.rs`](src:host/obc-bake/src/terrain.rs)
+- Map assembly: [`terrain.rs`](src:host/obcm-assemble/src/terrain.rs)
+- Edge ascent: [`nav.rs`](src:host/obc-pack/src/nav.rs)
+- Route planning: [`nav.rs`](src:firmware/obc-route/src/nav.rs)
+- Altimeter fusion: [`altitude.rs`](src:firmware/obc-app/src/altitude.rs)

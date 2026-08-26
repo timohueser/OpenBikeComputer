@@ -1,13 +1,13 @@
 ---
 title: Overview
-description: How the OpenBikeComputer project fits together, and where to find its hardware and software internals.
+description: The OpenBikeComputer system, its main data paths, and its technical references.
 ---
 
 # OpenBikeComputer documentation
 
-A from-scratch bikepacking computer: offline vector maps in a custom binary format, GPX route navigation with live map-matching, and ride recording — with the **firmware and a desktop simulator sharing one rendering path**. These docs explain how it all fits together.
+OpenBikeComputer is an open-source bikepacking computer. It provides offline maps, route navigation, and ride recording.
 
-These pages are a **conceptual companion to the code**, not an API reference. The source is already documented in depth; what's hard to reconstruct by reading files one at a time is the *shape* of the thing — the pipelines, the boundaries, the why. That's what lives here.
+The device, simulator, and web demo use the same application and rendering code. These pages describe the system boundaries and data paths.
 
 <figure class="fig">
 <svg viewBox="0 0 840 430" role="img" aria-label="System map: OSM data and GPX routes are packed into the OBCM and OBCR binary formats, which feed one shared app and render path that runs on both the desktop simulator and the device firmware. On the device, live sensors — GPS, barometer and compass — also feed the app.">
@@ -90,10 +90,10 @@ These pages are a **conceptual companion to the code**, not an API reference. Th
   <line class="d-flow" x1="759" y1="335" x2="759" y2="309" marker-end="url(#ah)" />
   <text class="d-sub" x="767" y="326" style="font-size:8px;fill:#6b7758">to the app</text>
 </svg>
-<figcaption>Two ingest lanes — <b>maps</b> and <b>routes</b> — are baked into compact binary formats, then fed to <b>one</b> shared application and render path. The same code runs on the desktop simulator, on this site's landing page (the <code>obc-web-demo</code> wasm host), and on the device — where live sensors feed the app the data the other hosts get from a GPX replay.</figcaption>
+<figcaption>The tools convert maps and routes to compact binary files. The device, simulator, and web demo use the same application and rendering code. Device sensors supply live data.</figcaption>
 </figure>
 
-The whole project is built around two ideas: **compact binary formats a microcontroller can read directly off flash** (no JSON, no reparsing, no heap churn), and **a single rendering path** the simulator and the firmware both run, so the desktop and the device can never drift apart.
+The device reads compact binary formats directly from storage. It does not convert JSON or XML while it operates.
 
 ## Where to find what
 
@@ -101,27 +101,27 @@ The whole project is built around two ideas: **compact binary formats a microcon
   <a class="doc-card" href="software/rendering/">
     <span class="dc-tag">Software</span>
     <h3>Rendering pipeline</h3>
-    <p>How one map frame is drawn — projection, level-of-detail, the quadtree cull, the stub-select collector, and the polygon/line rasterisers.</p>
+    <p>Projection, level of detail, quadtree culling, rasterization, and display output.</p>
   </a>
   <a class="doc-card" href="software/architecture/">
     <span class="dc-tag">Software</span>
     <h3>System architecture</h3>
-    <p>The crate graph, the per-frame loop, the "two hosts, one render path" model, and the seams that keep the device-specific bits at the edges.</p>
+    <p>Runtime layers, host boundaries, the frame loop, and the routing seam.</p>
   </a>
   <a class="doc-card" href="software/formats/">
     <span class="dc-tag">Software</span>
     <h3>Data formats</h3>
-    <p>OBCM (maps) and OBCR (routes): why they're binary, the LOD pyramid, the quadtree index, and delta-encoded geometry.</p>
+    <p>The OBCM, OBCR, ride, terrain, weather, catalog, and cell formats.</p>
   </a>
   <a class="doc-card" href="software/ui/">
     <span class="dc-tag">Software</span>
     <h3>The UI system</h3>
-    <p>The screen stack, five gestures, render-on-demand, and the "adding a screen is a local edit" philosophy behind the on-device interface.</p>
+    <p>Screens, input gestures, settings, overlays, and render-on-demand behavior.</p>
   </a>
   <a class="doc-card" href="hardware/">
     <span class="dc-tag">Hardware</span>
     <h3>Hardware</h3>
-    <p>The current nRF54LM20 development platform, reflective memory-LCD, sensors, storage, and links to the live wiring and display references.</p>
+    <p>The nRF54LM20 development platform and the reflective memory LCD.</p>
   </a>
 </div>
 
@@ -129,22 +129,22 @@ The whole project is built around two ideas: **compact binary formats a microcon
 
 | Layer | Crate / file | What it does |
 | :-- | :-- | :-- |
-| Map packer | [`obc-pack`](src:host/obc-pack) | OSM `.osm.pbf` → `.obcm` (ingest, multipolygon assembly, quadtree build, per-edge ascent) |
-| DEM rasteriser | [`obc-dem`](src:host/obc-dem) | Copernicus GLO-30 → `.obcd` terrain cells — the elevation raster a map carries |
-| Cell assembler | [`obcm-assemble`](src:host/obcm-assemble) | Downloaded OBCA cells → one `.obcm`: geometry grafted, the nav graph rewritten, terrain spliced in, verified against the spec |
-| Elevation | [`obc-elevation`](src:firmware/obc-elevation) | The OBCT reader, the sampling rules and the shared climb dead-band — one implementation, host and device |
-| Map reader | [`obc-reader`](src:firmware/obc-reader) | Parses OBCM directly off bytes — header, styles, LOD table, quadtree, chunk decode |
-| Weather reader | [`obc-weather`](src:firmware/obc-weather) | Validates OBCW and decodes one independently addressed rain tile at a time, with no provider or storage policy |
-| Route reader | [`obc-route`](src:firmware/obc-route) | OBCR reading, GPX → OBCR conversion, map-matching, elevation profile |
-| Renderer | [`obc-render`](src:firmware/obc-render) | The shared draw path — projection, culling, rasterising. `no_std`, zero-alloc |
-| Application | [`obc-app`](src:firmware/obc-app) | Camera, screen stack, input model, ride tracking — one per-frame entry point |
-| Simulator host | [`obc-sim`](src:apps/obc-sim) | Desktop shell: window, control panel, colour policy, GPX replay, headless capture |
-| Web demo host | [`obc-web-demo`](src:apps/obc-web-demo) | The landing page's thin wasm host — same crates, a JS-driven frame loop, no GUI framework (shared host glue: [`obc-host-core`](src:host/obc-host-core)) |
-| Conversion bridge | [`obc-web-convert`](src:apps/obc-web-convert) | The web builder's wasm shim over the same GPX ↔ OBCR routines — route conversion runs in the tab, no server |
-| Assembly bridge | [`obc-web-assemble`](src:apps/obc-web-assemble) | The web builder's wasm shim over the same cell assembler — downloaded map cells become one map in the tab, verified before anything leaves it |
+| Map packer | [`obc-pack`](src:host/obc-pack) | Converts OSM PBF data to OBCM cells. |
+| DEM baker | [`obc-dem`](src:host/obc-dem) | Converts Copernicus GLO-30 data to OBCD terrain cells. |
+| Cell assembler | [`obcm-assemble`](src:host/obcm-assemble) | Combines OBCM and OBCD cells into one verified OBCM map. |
+| Elevation | [`obc-elevation`](src:firmware/obc-elevation) | Reads OBCT data and supplies shared elevation calculations. |
+| Map reader | [`obc-reader`](src:firmware/obc-reader) | Reads OBCM indexes, styles, features, POIs, and navigation data. |
+| Weather reader | [`obc-weather`](src:firmware/obc-weather) | Validates OBCW data and reads rain tiles. |
+| Route reader | [`obc-route`](src:firmware/obc-route) | Reads OBCR routes and provides conversion, matching, and profiles. |
+| Renderer | [`obc-render`](src:firmware/obc-render) | Draws maps without allocation. |
+| Application | [`obc-app`](src:firmware/obc-app) | Controls screens, input, navigation, and ride recording. |
+| Simulator | [`obc-sim`](src:apps/obc-sim) | Hosts the application on a desktop. |
+| Web demo | [`obc-web-demo`](src:apps/obc-web-demo) | Hosts the application in WebAssembly. |
+| Conversion bridge | [`obc-web-convert`](src:apps/obc-web-convert) | Converts GPX and OBCR data in the browser. |
+| Assembly bridge | [`obc-web-assemble`](src:apps/obc-web-assemble) | Assembles and verifies map cells in the browser. |
 
-> **New here?** Start with **[System architecture](software/architecture/)** for the lay of the land, then the **[Rendering pipeline](software/rendering/)**. The **[data formats](software/formats/)** page is the reference the other two lean on.
+Start with [System architecture](software/architecture/). Then read [Rendering pipeline](software/rendering/) and [Data formats](software/formats/).
 
-## A note on these docs
+## Scope
 
-This documentation is open-source and lives [in the repo](src:docs/content). It's written by hand in Markdown with bespoke diagrams; if you spot something out of date with the code, the code is the source of truth — and a correction is always welcome.
+These pages explain architecture and behavior. The [`specs/`](src:specs) directory defines exact binary and wire contracts.
