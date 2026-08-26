@@ -571,6 +571,11 @@ pub struct App {
     /// The **settings-persistence** machine (#810, #1397 S2): the dirty revision, the subtree
     /// debounce, the retry backoff and the stale-answer rule.
     pub(crate) settings_ops: crate::settings::SettingsMachine,
+    /// The same machine again (#1542), for the **alert-marks record**. A second record needs a
+    /// second *instance*, not a second policy: it inherits the revision guard, the backoff and the
+    /// stale-ack rule verbatim, and differs only in what stage 9 hands it — a storm is not a rider
+    /// edit, so its write is never subtree-gated.
+    pub(crate) alert_marks_ops: crate::settings::SettingsMachine,
     /// The **DFU** domain (#1397 S2): the single most-recent-wins update phase and its token.
     pub(crate) dfu: DfuState,
     /// The **StorageInfo** domain (#1397 S2): the free-space refresh, its token, and the figure the
@@ -594,6 +599,18 @@ pub struct App {
     /// Whether a recovered-ride offer has already reached the screen this boot. A recorder may
     /// report the same resumable object on every host pass; the rider sees one decision card.
     recovered_ride_offered: bool,
+}
+
+/// Where a boot seed of the weather alert-mark anchors came from — the one thing
+/// [`App::set_alert_marks`] cannot work out for itself, and the whole of what decides whether the
+/// seed still owes a write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarksProvenance {
+    /// The marks record answered (or held nothing) — already persisted.
+    Record,
+    /// The one-time fallback read the anchors out of a stored v16 preferences blob's frozen span.
+    /// The update must not cost the rider their anchors, so they are rehomed into the record.
+    LegacyBlob,
 }
 
 /// Cap on the computed route's shape-preview polyline (#685 §4): the host decimates the planned
@@ -647,6 +664,7 @@ impl App {
             navigator: NavigatorMachine::new(),
             mode: CoreMode::new(),
             settings_ops: crate::settings::SettingsMachine::new(),
+            alert_marks_ops: crate::settings::SettingsMachine::new(),
             dfu: DfuState::new(),
             storage: StorageInfo::new(),
             pass: crate::device_core::pass::PassState::new(),
@@ -693,6 +711,7 @@ impl App {
             navigator,
             mode,
             settings_ops,
+            alert_marks_ops,
             dfu,
             storage,
             pass,
@@ -722,7 +741,9 @@ impl App {
             weather.installed().is_none() && !weather.refreshing() && weather.last_refresh().is_none(),
             "no weather installed, none requested, nothing completed this boot"
         );
+        assert_eq!(weather.alert_marks(), &[None; crate::weather_alerts::ALERT_CLASSES], "no alert anchors at boot");
         assert!(settings_ops.is_empty(), "settings Clean at revision 0");
+        assert!(alert_marks_ops.is_empty(), "the marks record Clean at revision 0");
         navigator.assert_boot_state();
         assert_eq!(*mode, CoreMode::new(), "nothing searching, nothing streaming, no banner shown");
         dfu.assert_boot_state();
@@ -1639,13 +1660,14 @@ impl App {
         });
         // The decision is [`WeatherDomain`]'s (#1437): thresholds, dedup and cooldown all live
         // there. What is left here is the presentation seam and the persistence handshake.
-        match self.weather.alert_action(snap, now, &self.settings.weather_alert_marks, open_card) {
+        match self.weather.alert_action(snap, now, open_card) {
             AlertAction::Fire(c) => {
                 if self.show_weather_alert(c.class.kind(), c.minutes) {
-                    self.weather.mark_fired(&c, &mut self.settings.weather_alert_marks);
-                    // The mark must survive the next boot: arm the #810 persistence handshake
-                    // exactly like a rider edit (alert-fire rate, so the write cost is negligible).
-                    self.settings_ops.note_edited();
+                    self.weather.mark_fired(&c);
+                    // The mark must survive the next boot: arm the marks record's own handshake.
+                    // Not the preferences one — a storm is not a rider edit, so it neither rewrites
+                    // the preferences blob nor waits for the rider to leave a settings screen.
+                    self.alert_marks_ops.note_edited();
                 }
             }
             AlertAction::Update(c) => {
@@ -2271,6 +2293,31 @@ impl App {
         // operation, not a rider edit (the BLE-merge path uses `merge_ble_settings`, which preserves
         // a pending device-edit save).
         self.settings_ops.note_seeded();
+    }
+
+    /// Seed the weather **alert-mark record** from the host's durable storage at boot — the twin of
+    /// [`set_settings`](App::set_settings) for the anchors, called once after construction.
+    ///
+    /// `provenance` is what decides whether the seed owes a write:
+    ///
+    /// - [`Record`](MarksProvenance::Record) — the marks came from the marks record (or there were
+    ///   none). Already persisted, so the handshake resets to Clean.
+    /// - [`LegacyBlob`](MarksProvenance::LegacyBlob) — the marks came out of the frozen v16 span of
+    ///   a stored preferences blob. They are the rider's real anchors and nothing has written them
+    ///   to the record yet, so this arms the handshake and the next pass rehomes them. Once a
+    ///   record exists, the fallback can never fire again.
+    pub fn set_alert_marks(&mut self, marks: crate::weather_alerts::AlertMarks, provenance: MarksProvenance) {
+        self.weather.set_alert_marks(marks);
+        match provenance {
+            MarksProvenance::Record => self.alert_marks_ops.note_seeded(),
+            MarksProvenance::LegacyBlob => self.alert_marks_ops.note_edited(),
+        }
+    }
+
+    /// The live weather alert-mark anchors — what an executor writes when it serves
+    /// [`SettingsEffect::PersistAlertMarks`](crate::settings::SettingsEffect).
+    pub fn alert_marks(&self) -> &crate::weather_alerts::AlertMarks {
+        self.weather.alert_marks()
     }
 
     /// Merge the BLE-owned fields (units + device name) of a phone Config write into the live
@@ -3430,8 +3477,11 @@ mod tests {
     impl SettingsHost {
         fn drain(&mut self, app: &mut App) -> Option<u16> {
             let (in_subtree, now_ms) = (app.ui.top_is_settings(), app.ui.now_ms);
-            let crate::settings::SettingsEffect::PersistRevision { token, revision } =
-                app.settings_ops.next_effect(in_subtree, now_ms)?;
+            let effect =
+                app.settings_ops.next_effect(crate::settings::SettingsRecord::Preferences, in_subtree, now_ms)?;
+            let crate::settings::SettingsEffect::PersistRevision { token, revision } = effect else {
+                panic!("the preferences instance emits its own record, not {effect:?}");
+            };
             self.token = Some(token);
             Some(revision)
         }
@@ -3463,6 +3513,25 @@ mod tests {
     /// Whether leaving the settings subtree emitted a persist this pass (`take_settings_dirty`).
     fn settings_dirty(app: &mut App) -> bool {
         drain_persist(app).is_some()
+    }
+
+    /// Stage 9's offer this pass, whichever record wins the one slot — through the stage's own
+    /// seam, since "which record is written, and when" is exactly the question.
+    fn drain_settings_effect(app: &mut App) -> Option<crate::settings::SettingsEffect> {
+        app.next_settings_effect()
+    }
+
+    /// Serve one marks write end to end: take stage 9's offer, "persist" it, and answer it. Returns
+    /// the bytes the executor would have written, so a test can round-trip the record.
+    fn serve_marks_write(app: &mut App) -> Option<[u8; crate::weather_alerts::ALERT_MARKS_LEN]> {
+        let effect = drain_settings_effect(app)?;
+        let crate::settings::SettingsEffect::PersistAlertMarks { token, revision } = effect else {
+            return None;
+        };
+        let bytes = crate::weather_alerts::encode_alert_marks(app.alert_marks());
+        let outcome = crate::settings::SettingsOutcome::MarksPersisted { token, revision };
+        assert!(!app.apply_settings_outcome(outcome), "a durable marks write raises no warning");
+        Some(bytes)
     }
 
     /// The Home root's current backdrop seed.
@@ -6754,11 +6823,11 @@ mod tests {
     }
 
     /// The alert engine end to end through `weather_alert_tick`: a heavy-rain snapshot fires the
-    /// RAIN AHEAD card once (update-in-place on re-ticks, never a second card), arms the #810
-    /// settings persist for the mark, stays suppressed after DISMISS, re-fires on a material
-    /// escalation — and the persisted mark suppresses the same storm **across a reboot**.
+    /// RAIN AHEAD card once (update-in-place on re-ticks, never a second card), persists the mark
+    /// as **its own record**, stays suppressed after DISMISS, re-fires on a material escalation —
+    /// and that record, round-tripped through its codec, suppresses the same storm across a boot.
     #[test]
-    fn weather_alert_tick_fires_dedups_persists_and_survives_reboot() {
+    fn the_persisted_mark_suppresses_the_same_storm_across_a_boot() {
         let mut app = App::new(AppState::new(0, 0, 1.0));
         let snap = alert_snap(&app, &[0, 10, 0, 0, 0, 0, 0, 0, 0]); // band 10 at +15 min
 
@@ -6769,7 +6838,7 @@ mod tests {
         app.weather_alert_tick(Some(&snap));
         let Screen::WeatherAlert(card) = app.top_screen() else { panic!("heavy rain fires the card") };
         assert_eq!(card.kind(), crate::screen::WeatherAlertKind::Rain, "≥10 mm/h = the RAIN AHEAD face");
-        assert!(drain_persist(&mut app).is_some(), "the fired mark arms the settings persist");
+        assert!(serve_marks_write(&mut app).is_some(), "the fired mark is written as its own record");
         let depth = app.ui.stack.len();
 
         // Re-ticks with the same event: the one card updates in place, no stack growth, no
@@ -6777,7 +6846,7 @@ mod tests {
         app.weather_alert_tick(Some(&snap));
         app.weather_alert_tick(Some(&snap));
         assert_eq!(app.ui.stack.len(), depth, "update-in-place, never a second card");
-        assert!(drain_persist(&mut app).is_none(), "a suppressed duplicate rewrites no mark");
+        assert!(drain_settings_effect(&mut app).is_none(), "a suppressed duplicate rewrites no mark");
 
         // DISMISS (Back pops the card): the cooldown mark keeps the same storm down.
         app.apply_gesture(Gesture::Back);
@@ -6789,13 +6858,14 @@ mod tests {
         let escalated = alert_snap(&app, &[0, 12, 0, 0, 0, 0, 0, 0, 0]);
         app.weather_alert_tick(Some(&escalated));
         assert!(matches!(app.top_screen(), Screen::WeatherAlert(_)), "a materially stronger storm re-fires");
+        let record = serve_marks_write(&mut app).expect("the escalated mark is written too");
         app.apply_gesture(Gesture::Back);
 
-        // Reboot: the mark rides the settings blob, so the same storm stays down on a new App.
-        let blob = crate::settings::encode(app.settings());
-        let restored = crate::settings::decode(&blob).expect("v16 round-trip");
+        // Reboot: the anchors ride their own record, so the same storm stays down on a new App.
+        let restored = crate::weather_alerts::decode_alert_marks(&record).expect("the record round-trips");
         let mut rebooted = App::new(AppState::new(0, 0, 1.0));
-        rebooted.set_settings(restored);
+        rebooted.set_alert_marks(restored, MarksProvenance::Record);
+        assert!(drain_settings_effect(&mut rebooted).is_none(), "a seed out of the record owes no write");
         rebooted.weather_alert_tick(Some(&escalated));
         assert!(
             !matches!(rebooted.top_screen(), Screen::WeatherAlert(_)),
@@ -6805,14 +6875,138 @@ mod tests {
         // A genuinely new event fires on the rebooted device: age the persisted mark past the
         // cooldown (the equivalent of the storm having been hours ago) and the same-shaped
         // candidate is a new encounter.
-        rebooted.settings.weather_alert_marks[crate::weather_alerts::AlertClass::HeavyRain.slot()] =
-            Some(crate::weather_alerts::AlertMark {
-                onset: rebooted.wall_unix_now() as i64 - crate::weather_alerts::COOLDOWN_S - 4_000,
-                pos: Some((47_000_000, 8_000_000)),
-                severity: 12,
-            });
+        let mut aged = *rebooted.weather.alert_marks();
+        aged[crate::weather_alerts::AlertClass::HeavyRain.slot()] = Some(crate::weather_alerts::AlertMark {
+            onset: rebooted.wall_unix_now() as i64 - crate::weather_alerts::COOLDOWN_S - 4_000,
+            pos: Some((47_000_000, 8_000_000)),
+            severity: 12,
+        });
+        rebooted.weather.set_alert_marks(aged);
         rebooted.weather_alert_tick(Some(&escalated));
         assert!(matches!(rebooted.top_screen(), Screen::WeatherAlert(_)), "an event past the cooldown is a new alert");
+    }
+
+    /// A stored **v16** preferences blob carrying `marks` in its frozen span — what a device holds
+    /// at the moment of this update. Built by doctoring the committed v16 golden, because `encode`
+    /// writes v17 now and those bytes may never be re-captured.
+    fn v16_blob_with(marks: crate::weather_alerts::AlertMarks) -> [u8; crate::settings::ENCODED_LEN] {
+        let mut b = crate::settings::V16_FULL_BLOB;
+        b[114..168].fill(0);
+        crate::weather_alerts::pack_marks(&marks, &mut b[114..168]);
+        let crc = crate::store_meta::crc16(&b[0..168]);
+        b[168..170].copy_from_slice(&crc.to_le_bytes());
+        b
+    }
+
+    /// The update does not cost the rider their anchors. A device holding a v16 blob and **no**
+    /// marks record carries the blob's anchors across, rehomes them into the record once, and the
+    /// storm it was already suppressing stays suppressed.
+    #[test]
+    fn an_upgrade_from_v16_keeps_the_anchors() {
+        let mut old = App::new(AppState::new(0, 0, 1.0));
+        let snap = alert_snap(&old, &[0, 10, 0, 0, 0, 0, 0, 0, 0]);
+        // The last ride on the old firmware: the storm fires, and its anchor lands in the blob.
+        old.weather_alert_tick(Some(&snap));
+        let anchors = *old.alert_marks();
+        assert!(anchors.iter().any(Option::is_some), "the old firmware really did anchor something");
+        let blob = v16_blob_with(anchors);
+
+        // The update boots: a v16 blob, and nothing in the marks record.
+        let mut updated = App::new(AppState::new(0, 0, 1.0));
+        updated.set_settings(crate::settings::decode(&blob).expect("the v16 blob still reads"));
+        let carried = crate::settings::legacy_alert_marks(&blob).expect("the frozen span answers");
+        updated.set_alert_marks(carried, MarksProvenance::LegacyBlob);
+        assert_eq!(updated.alert_marks(), &anchors, "the rider's anchors came across");
+
+        // They are rehomed into the record — once.
+        let record = serve_marks_write(&mut updated).expect("the carried anchors are written to the record");
+        assert_eq!(crate::weather_alerts::decode_alert_marks(&record), Some(anchors));
+        assert!(drain_settings_effect(&mut updated).is_none(), "…and nothing more is owed");
+
+        // And the same storm stays down: no duplicate card bought by the update.
+        updated.weather_alert_tick(Some(&snap));
+        assert!(!matches!(updated.top_screen(), Screen::WeatherAlert(_)), "the same storm stays down");
+    }
+
+    /// A storm costs 64 bytes of anchors, not 176 bytes of the rider's preferences. One firing
+    /// alert offers `PersistAlertMarks` and **nothing else**: the preferences handshake is not
+    /// armed, so a week of weather no longer rewrites the settings blob once per alert.
+    #[test]
+    fn a_firing_alert_persists_the_marks_record_and_not_the_settings_blob() {
+        use crate::settings::SettingsEffect;
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        let snap = alert_snap(&app, &[0, 10, 0, 0, 0, 0, 0, 0, 0]);
+        let before = *app.settings();
+
+        app.weather_alert_tick(Some(&snap));
+        assert!(matches!(app.top_screen(), Screen::WeatherAlert(_)), "the card fires");
+        assert_eq!(app.settings(), &before, "the preferences value is untouched");
+
+        let effect = drain_settings_effect(&mut app).expect("the mark is owed a write");
+        assert!(
+            matches!(effect, SettingsEffect::PersistAlertMarks { .. }),
+            "the marks record, not the blob: {effect:?}"
+        );
+        assert!(drain_settings_effect(&mut app).is_none(), "and no preferences write behind it");
+    }
+
+    /// An anchor never waits behind an open settings screen. The preferences debounce exists
+    /// because the rider is mid-edit; a storm is not an edit, and holding its mark while a settings
+    /// screen happens to be up is the behaviour this record exists to end.
+    #[test]
+    fn a_mark_persists_while_the_rider_is_in_the_settings_subtree() {
+        use crate::settings::SettingsEffect;
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        let snap = alert_snap(&app, &[0, 10, 0, 0, 0, 0, 0, 0, 0]);
+        // The rider is standing in a settings screen with an edit still owed.
+        let _ = app.ui.stack.push(Screen::Settings(crate::screen::SettingsScreen::new()));
+        app.settings_ops.arm_save();
+
+        // A storm fires its card over the settings screen; dismissing it lands the rider back
+        // inside the subtree they never left.
+        app.weather_alert_tick(Some(&snap));
+        assert!(matches!(app.top_screen(), Screen::WeatherAlert(_)), "the card fires over the settings screen");
+        app.apply_gesture(Gesture::Back);
+        assert!(app.ui.top_is_settings(), "…and the rider is back in the subtree");
+
+        let effect = drain_settings_effect(&mut app).expect("the mark leaves anyway");
+        assert!(matches!(effect, SettingsEffect::PersistAlertMarks { .. }), "not debounced: {effect:?}");
+        // The rider's own edit is still held, which is the debounce doing exactly its job.
+        assert!(app.settings_ops.wants_write(false, app.ui.now_ms), "the preferences edit is owed");
+        assert!(!app.settings_ops.wants_write(true, app.ui.now_ms), "…and still debounced inside the subtree");
+    }
+
+    /// The two instances mint from independent token sources, so their generations collide by
+    /// construction. An answer is routed by the **record** it names, not by its token: a
+    /// preferences ack carrying the marks record's own token must not clear a mark that is owed.
+    #[test]
+    fn a_stale_marks_outcome_cannot_clear_a_newer_mark() {
+        use crate::settings::{SettingsEffect, SettingsOutcome};
+        use obc_ports::SettingsSaveError;
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        let snap = alert_snap(&app, &[0, 10, 0, 0, 0, 0, 0, 0, 0]);
+
+        // A preferences write goes out first, so that source is at generation 1…
+        app.settings_ops.arm_save();
+        let pref = drain_settings_effect(&mut app).expect("the preferences write is owed");
+        assert!(matches!(pref, SettingsEffect::PersistRevision { .. }), "preferences first: {pref:?}");
+        // …and so is the marks source when the storm's write follows it. Same token by value.
+        app.weather_alert_tick(Some(&snap));
+        let marks = drain_settings_effect(&mut app).expect("the mark is owed a write");
+        let SettingsEffect::PersistAlertMarks { token, revision } = marks else { panic!("the marks write: {marks:?}") };
+        assert_eq!(token, pref.token(), "the two sources really do collide — that is the trap");
+
+        // A *preferences*-named ack carrying that token clears the preferences write and nothing
+        // else. Routed by token alone it would land on the marks record instead.
+        assert!(!app.apply_settings_outcome(SettingsOutcome::Persisted { token, revision }));
+        assert!(!app.settings_ops.wants_write(false, app.ui.now_ms), "the preferences write is answered");
+
+        // The mark is still in flight: its own machine still holds the operation, so its own
+        // failure is accepted and told to the rider — which a cleared machine could not do.
+        let failed = SettingsOutcome::MarksPersistFailed { token, revision, error: SettingsSaveError::Backend };
+        assert!(app.apply_settings_outcome(failed), "the marks write was still live and its failure is shown");
+        let due = app.ui.now_ms + crate::settings::SETTINGS_RETRY_BACKOFF_MS;
+        assert!(app.alert_marks_ops.wants_write(false, due), "and the anchor is still owed after the backoff");
     }
 
     /// A card the rider never saw is never marked as fired (review F4). `show_weather_alert`
@@ -6830,8 +7024,8 @@ mod tests {
         let _ = app.ui.stack.push(Screen::Passkey(crate::screen::PasskeyScreen::new(123_456)));
         app.weather_alert_tick(Some(&snap));
         assert!(matches!(app.top_screen(), Screen::Passkey(_)), "the passkey prompt is never covered");
-        assert!(drain_persist(&mut app).is_none());
-        assert_eq!(app.settings().weather_alert_marks[AlertClass::HeavyRain.slot()], None, "unseen ⇒ unmarked");
+        assert!(drain_settings_effect(&mut app).is_none());
+        assert_eq!(app.alert_marks()[AlertClass::HeavyRain.slot()], None, "unseen ⇒ unmarked");
         app.ui.stack.pop();
 
         // Seam 2 — a full screen stack. The push has nowhere to go, so the card silently doesn't
@@ -6841,15 +7035,15 @@ mod tests {
         }
         app.weather_alert_tick(Some(&snap));
         assert!(!matches!(app.top_screen(), Screen::WeatherAlert(_)), "no room on the stack: no card");
-        assert!(drain_persist(&mut app).is_none(), "and no persist for it");
-        assert_eq!(app.settings().weather_alert_marks[AlertClass::HeavyRain.slot()], None);
+        assert!(drain_settings_effect(&mut app).is_none(), "and no persist for it");
+        assert_eq!(app.alert_marks()[AlertClass::HeavyRain.slot()], None);
 
         // Room again: the very same storm still fires — it was never recorded as delivered.
         app.ui.stack.pop();
         app.weather_alert_tick(Some(&snap));
         assert!(matches!(app.top_screen(), Screen::WeatherAlert(_)), "the storm re-fires once there is room");
-        assert!(drain_persist(&mut app).is_some(), "…and only now does it cost a mark");
-        assert!(app.settings().weather_alert_marks[AlertClass::HeavyRain.slot()].is_some());
+        assert!(serve_marks_write(&mut app).is_some(), "…and only now does it cost a mark");
+        assert!(app.alert_marks()[AlertClass::HeavyRain.slot()].is_some());
     }
 
     /// The travel direction reaches the hourly rows' ink: with a tailwind-making `travel_deg`
