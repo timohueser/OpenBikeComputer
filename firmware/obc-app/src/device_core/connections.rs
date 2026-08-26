@@ -340,7 +340,7 @@ mod tests {
     #[test]
     fn only_deferred_connections_ask_for_another_pass() {
         let mut wires = Connections::new();
-        wires.ui_catalog.try_put(CatalogIntent::Refresh).unwrap();
+        wires.ui_catalog.try_put(CatalogIntent::DeleteRoute { id: 1 }).unwrap();
         wires.active_route_removed.try_put(ActiveRouteRemoved { route: 1 }).unwrap();
         wires.faults.raise(WarningFlags::NO_GPS);
         assert!(!wires.has_deferred(), "a same-pass slot is drained by the pass that filled it");
