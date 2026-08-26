@@ -238,7 +238,7 @@ public actor TransferClient {
         do {
             try await withThrowingTaskGroup(of: Part.self) { group in
                 group.addTask { [link] in
-                    let record = try await awaitControlRecord(on: link)
+                    let record = try await awaitControlRecord(on: link, for: requestID)
                     let response = try ControlResponse(
                         decoding: record, expectedOpcode: .get, expectedRequestID: requestID)
                     guard case .get(let result) = response else { throw TransferClientError.unexpectedResponse }
@@ -300,7 +300,7 @@ public actor TransferClient {
         var result: PutResult?
         try await withThrowingTaskGroup(of: Part.self) { group in
             group.addTask { [link] in
-                let record = try await awaitControlRecord(on: link)
+                let record = try await awaitControlRecord(on: link, for: requestID)
                 let response = try ControlResponse(
                     decoding: record, expectedOpcode: .put, expectedRequestID: requestID)
                 guard case .put(let result) = response else { throw TransferClientError.unexpectedResponse }
@@ -355,7 +355,7 @@ public actor TransferClient {
         let requestID = try makeRequestID()
         try await link.sendControlRecord(try request.frame(requestID: requestID).encode())
         return try ControlResponse(
-            decoding: try await awaitControlRecord(on: link),
+            decoding: try await awaitControlRecord(on: link, for: requestID),
             expectedOpcode: opcode, expectedRequestID: requestID)
     }
 
@@ -444,18 +444,26 @@ public actor TransferClient {
     }
 }
 
-/// Wait for a control answer, and tell the link when this operation stops waiting.
+/// Wait for this request's control answer, and tell the link when the operation stops waiting.
 ///
-/// A task group returns only once every child has finished, so an announce-and-stream pair never
-/// unwinds while its answer is still parked on the link: a stream lane that dies before the first
-/// record leaves the peer holding the announced transfer and the phone sending nothing more. The
-/// receive that outlives its operation has to be released from the outside — cancellation is the
-/// only signal that reaches it.
-private func awaitControlRecord(on link: any TransferLink) async throws -> Data {
-    try await withTaskCancellationHandler {
-        try await link.receiveControlRecord()
-    } onCancel: {
-        Task { await link.cancelControlReceive() }
+/// Two rules meet here. A task group returns only once every child has finished, so an
+/// announce-and-stream pair never unwinds while its answer is still parked on the link — the
+/// receive that outlives its operation has to be released from the outside, and cancellation is
+/// the only signal that reaches it. And the peer answers every request exactly once, when it
+/// terminates (§3.1, §3.8), so the answer to a request nobody waits for any more still arrives.
+/// It echoes its own `RequestId`, belongs to no live operation, and is skipped. A record that
+/// does echo this request stays the caller's to judge, malformed ones included.
+private func awaitControlRecord(on link: any TransferLink, for requestID: RequestID) async throws -> Data {
+    while true {
+        let record = try await withTaskCancellationHandler {
+            try await link.receiveControlRecord()
+        } onCancel: {
+            Task { await link.cancelControlReceive() }
+        }
+        if let frame = try? ControlFrame(decoding: record, direction: .response),
+            frame.requestID != requestID
+        { continue }
+        return record
     }
 }
 

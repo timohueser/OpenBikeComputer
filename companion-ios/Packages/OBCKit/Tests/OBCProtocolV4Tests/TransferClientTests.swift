@@ -69,6 +69,25 @@ struct TransferClientTests {
         #expect(trace.controlCancels == 1)
         #expect(trace.restores == 1)
     }
+
+    @Test(
+        "The peer's answer to the abandoned request does not fail the next one",
+        .timeLimit(.minutes(1)))
+    func lateAnswerToAnAbandonedRequestIsSkipped() async throws {
+        let payload = Data("protocol v4 replacement".utf8)
+        let link = AbandonedAnswerLink(payload: payload, answersTheAbandonedRequest: true)
+        let client = TransferClient(link: link, firstRequestID: 0x6100)
+
+        let result = try await client.put(
+            payload, objectID: ObjectID(rawValue: 9), expectedRevision: Revision(rawValue: 3),
+            kind: .route, displayName: "Alpine Loop")
+
+        #expect(result.objectID == ObjectID(rawValue: 9))
+        #expect(result.revision == Revision(rawValue: 4))
+        let trace = await link.trace
+        #expect(trace.opcodes == [.list, .put, .list, .status, .put])
+        #expect(trace.lateAnswers == 1)
+    }
 }
 
 /// The wedge shape of a lost CoC: the announce reaches the peer, not one stream byte follows, and
@@ -81,9 +100,13 @@ private actor AbandonedAnswerLink: TransferLink {
         var opcodes: [Opcode] = []
         var streamOffsets: [UInt64] = []
         var controlCancels = 0
+        var lateAnswers = 0
         var restores = 0
     }
 
+    private let answersTheAbandonedRequest: Bool
+    private var livePut: RequestID?
+    private var abandoned: RequestID?
     private let payload: Data
     private let storeID = Data([0x14, 0x7b, 0xc0, 0x39, 0x8a, 0x62, 0x4d, 0x11,
                                 0x9e, 0x05, 0x33, 0xf7, 0x2a, 0xb8, 0x61, 0x4c])
@@ -93,17 +116,37 @@ private actor AbandonedAnswerLink: TransferLink {
     private var putAttempts = 0
     private var state = Trace()
 
-    init(payload: Data) { self.payload = payload }
+    init(payload: Data, answersTheAbandonedRequest: Bool = false) {
+        self.payload = payload
+        self.answersTheAbandonedRequest = answersTheAbandonedRequest
+    }
     var trace: Trace { state }
 
     func sendControlRecord(_ record: Data) async throws {
         let frame = try ControlFrame(decoding: record, direction: .request)
         pending = frame
         state.opcodes.append(frame.opcode)
-        if frame.opcode == .put { putAttempts += 1 }
+        if frame.opcode == .put {
+            putAttempts += 1
+            livePut = frame.requestID
+        }
     }
 
     func receiveControlRecord() async throws -> Data {
+        // The peer answers every request exactly once, whenever it terminates — including the one
+        // the client walked away from. That answer reaches the lane ahead of the live request's.
+        if let abandoned {
+            self.abandoned = nil
+            state.lateAnswers += 1
+            var body = Data()
+            body.appendLE(RemoteErrorCode.cancelled.rawValue)
+            body.appendLE(UInt16(0))
+            body.appendLE(UInt64(0))
+            body.appendLE(UInt32(0))
+            return ControlFrame(
+                opcode: .put, flags: ControlFrame.responseFlag | ControlFrame.errorFlag,
+                requestID: abandoned, payload: body).encode()
+        }
         guard let frame = pending else { throw TransferClientError.unexpectedResponse }
         pending = nil
         switch frame.opcode {
@@ -152,6 +195,7 @@ private actor AbandonedAnswerLink: TransferLink {
 
     func cancelControlReceive() async {
         state.controlCancels += 1
+        if answersTheAbandonedRequest { abandoned = livePut }
         answerWaiter?.resume(throwing: CancellationError())
         answerWaiter = nil
     }
@@ -355,6 +399,11 @@ private actor DisconnectingLink: TransferLink {
         putRecords += 1
         if putAttempts == 1, putRecords == 2 {
             firstPutBroke = true
+            // A GATT drop fails every parked control waiter from the link side, the way
+            // `BLETransport.failAllPending` does. The CoC dying under a live GATT link is the
+            // other shape, and `AbandonedAnswerLink` carries it.
+            responseWaiter?.resume(throwing: TransferLinkLost())
+            responseWaiter = nil
             throw TransferLinkLost()
         }
         if putAttempts == 2, stream.offset + UInt64(stream.payload.count) == UInt64(payload.count) {
