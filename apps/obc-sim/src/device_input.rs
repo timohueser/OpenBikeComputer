@@ -3,9 +3,11 @@
 //!
 //! [`crate::gui`] pushes raw events here each frame. [`DeviceInput`] implements
 //! [`InputSource`], so it drops straight into [`obc_app::App::handle_input`] and its
-//! *shared* gesture recognizer — the exact path the firmware uses with real GPIO. It also
-//! owns the millis clock, and it fills in the one thing a host has that the device doesn't: a
-//! mouse wheel, folded into the same signed [`InputEvent::Step`]s the Up/Down buttons emit.
+//! *shared* gesture recognizer — the exact path the firmware uses with real GPIO. All four
+//! controls arrive here as held state and leave as edges, so a held arrow key auto-repeats through
+//! the recognizer's own cadence rather than the host's. It also owns the millis clock, and it fills
+//! in the one thing a host has that the device doesn't: a mouse wheel, folded into a directly
+//! injected [`InputEvent::Step`].
 
 use std::collections::VecDeque;
 
@@ -25,7 +27,9 @@ pub struct DeviceInput {
     pending: VecDeque<InputEvent>,
     /// Sub-step scroll accumulator, in fractional steps.
     accum: f32,
-    /// Debounced button-held state, so we only emit edges on transitions.
+    /// Held state of each of the four controls, so we only emit edges on transitions.
+    up_down: bool,
+    down_down: bool,
     select_down: bool,
     back_down: bool,
 }
@@ -36,6 +40,8 @@ impl DeviceInput {
             start: Instant::now(),
             pending: VecDeque::new(),
             accum: 0.0,
+            up_down: false,
+            down_down: false,
             select_down: false,
             back_down: false,
         }
@@ -46,8 +52,9 @@ impl DeviceInput {
         self.start.elapsed().as_millis() as u32
     }
 
-    /// Queue `steps` of selection movement as a [`InputEvent::Step`] event
-    /// (negative = Up / "previous", positive = Down / "next").
+    /// Queue `steps` of selection movement as a directly injected [`InputEvent::Step`] event
+    /// (negative = Up / "previous", positive = Down / "next") — the wheel and the one-shot
+    /// keyboard aliases, which model no button.
     pub fn step(&mut self, steps: i32) {
         if steps != 0 {
             self.pending.push_back(InputEvent::Step(steps));
@@ -66,6 +73,8 @@ impl DeviceInput {
     /// only on a transition, so holding produces exactly one Down.
     pub fn set_button(&mut self, b: Button, down: bool) {
         let cur = match b {
+            Button::Up => &mut self.up_down,
+            Button::Down => &mut self.down_down,
             Button::Select => &mut self.select_down,
             Button::Back => &mut self.back_down,
         };
@@ -130,15 +139,20 @@ mod tests {
         assert_eq!(drain_steps(&mut d), -2, "scroll down ⇒ negative steps");
     }
 
+    /// Each of the four controls carries its own held flag: a repeated `true` emits no second
+    /// edge, and driving one never disturbs the other three (the four-arm match is where a
+    /// swapped field would hide).
     #[test]
     fn set_button_only_emits_on_edges() {
-        let mut d = DeviceInput::new();
-        d.set_button(Button::Select, true);
-        d.set_button(Button::Select, true); // no transition → no second edge
-        d.set_button(Button::Select, false);
-        assert_eq!(d.poll(), Some(InputEvent::Button(ButtonEvent::Down(Button::Select))));
-        assert_eq!(d.poll(), Some(InputEvent::Button(ButtonEvent::Up(Button::Select))));
-        assert_eq!(d.poll(), None);
+        for b in [Button::Up, Button::Down, Button::Select, Button::Back] {
+            let mut d = DeviceInput::new();
+            d.set_button(b, true);
+            d.set_button(b, true); // no transition → no second edge
+            d.set_button(b, false);
+            assert_eq!(d.poll(), Some(InputEvent::Button(ButtonEvent::Down(b))));
+            assert_eq!(d.poll(), Some(InputEvent::Button(ButtonEvent::Up(b))));
+            assert_eq!(d.poll(), None, "{b:?} emitted an edge for another button");
+        }
     }
 
     /// A zero-count step must queue nothing — a frame with no Up/Down activity mustn't emit a
