@@ -21,10 +21,8 @@
 //! (advertising/bonding vs. enumeration/VBUS). The object surface is not here at all any more: both
 //! links speak protocol v4 into the one engine in `crate::flat_store`.
 //!
-//! Compiled whenever the companion link exists at all. The USB plane is unconditional and the
-//! radio is in every build that compiles, so gating on `ble` and gating on "either link" are the
-//! same set today; the module is named for the concept rather than the radio so a future
-//! radio-less build is a cfg rename, not a redesign.
+//! Compiled in every build: the USB plane and the radio both are. The module is named for the
+//! concept rather than the radio so a future radio-less build is a cfg addition, not a redesign.
 
 pub(crate) mod command;
 pub(crate) mod identity;

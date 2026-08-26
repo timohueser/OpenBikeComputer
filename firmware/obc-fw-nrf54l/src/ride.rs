@@ -8,7 +8,7 @@
 use core::sync::atomic::Ordering;
 
 // The event-driven loop's wake select: `select5` over gesture / hold-wake / sensor / BLE link-edge /
-// deadline (the BLE arm is `pending()` on a map build — see `wait_ble_edge`).
+// deadline.
 use embassy_futures::select::select5;
 use embassy_nrf::gpio::Output;
 use embassy_nrf::wdt;
@@ -108,31 +108,6 @@ async fn wait_sensor_event() {
 #[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
 async fn wait_sensor_event() {
     Timer::after_millis(SYNTH_TICK_MS).await
-}
-
-/// The BLE link-edge wake the event-driven map loop selects on (epic #447, P2): a link change — a
-/// connect/disconnect, or the pairing `PassKeyDisplay` — must pull the loop out of warm sleep so it
-/// feeds the fresh status into `set_ble_status` and renders the passkey card on glass. Reuses the
-/// BLE side's existing `publish` edge (`STATUS_EDGE`) via [`ble::wait_status_change`]; it invents no
-/// new wake path. On a **map build** (no radio) there's no link, so this never fires — a bare
-/// `pending()` — keeping the loop's select shape identical across builds.
-#[cfg(feature = "ble")]
-async fn wait_ble_edge() {
-    crate::ble::wait_status_change().await
-}
-#[cfg(not(feature = "ble"))]
-async fn wait_ble_edge() {
-    core::future::pending::<()>().await
-}
-
-#[cfg(feature = "ble")]
-fn weather_refresh_in_flight() -> bool {
-    crate::ble::weather_refresh_in_flight()
-}
-
-#[cfg(not(feature = "ble"))]
-const fn weather_refresh_in_flight() -> bool {
-    false
 }
 
 /// The loop's third select arm: a sensor/host datapoint, or a flat-store movement on either link —
@@ -434,7 +409,6 @@ fn nav_take_arena(app: &App, guard: &mut Option<crate::arena::NavGuard>) -> Resu
 
 /// The fixed slot index (0 HR · 1 Power · 2 Cadence) a scanned sensor's kind maps to (SE7, #714) —
 /// used to tag a board scan hit for the app seam, which speaks slot indices, not `obc_ble` kinds.
-#[cfg(feature = "ble")]
 fn sensor_kind_slot(kind: obc_ble::SensorKind) -> u8 {
     match kind {
         obc_ble::SensorKind::HeartRate => 0,
@@ -447,7 +421,6 @@ fn sensor_kind_slot(kind: obc_ble::SensorKind) -> u8 {
 /// the app-vocabulary [`SensorStatus`](obc_app::SensorStatus) the Sensors screen renders (SE7, #714):
 /// `NotSet` when nothing is saved, else the connection phase, carrying battery + the freshest-value
 /// tick.
-#[cfg(feature = "ble")]
 fn sensor_status_of(q: usize) -> obc_app::SensorStatus {
     use crate::ble::SensorSlotState;
     let s = crate::ble::sensor_slot_status(q);
@@ -615,7 +588,7 @@ const BOARD_SUPPORT: obc_app::device_core::PlatformSupport = obc_app::device_cor
     settings_persistence: true,
     dfu: true,
     weather: true,
-    bonding: cfg!(feature = "ble"),
+    bonding: true,
     storage_space_report: true,
     retention_metadata: false,
 };
@@ -893,7 +866,6 @@ pub(crate) async fn run_app(
     let mut nav_guard: Option<crate::arena::NavGuard> = None;
     // A map upload's 64 KiB write-combining arm. Only this loop switches arena owners; the USB
     // task asks through a level+edge handshake and borrows the bytes synchronously in storage.
-    #[cfg(feature = "ble")]
     let mut usb_stage_guard: Option<crate::arena::UsbGuard> = None;
     // The active route's resident chunk-index slot. A bare `RouteIndex` + validity flag, NOT an
     // `Option<RouteIndex>` built by value: the slot is ~12.3 KB and permanently part of this frame
@@ -937,12 +909,10 @@ pub(crate) async fn run_app(
     // reconcile below drives a save/forget only on an actual change (the `set_radio_enabled` shape,
     // fired once per change — never re-signalled, so a steady state never interrupts a live link).
     // Starts empty → the first pass seeds the manager from the persisted `Settings.saved_sensors`.
-    #[cfg(feature = "ble")]
     let mut pushed_sensors: [Option<([u8; 6], bool)>; obc_app::SENSOR_SLOTS] = [None; obc_app::SENSOR_SLOTS];
     // SE7 (#714): the next-re-arm deadline (loop-millis) for the discovery scan while the scan list is
     // up — `0` = not scanning (rings `request_scan` on the rising edge, then re-arms just under the
     // board's ~10 s window), so the scan stays live without pulsing the manager's work edge every pass.
-    #[cfg(feature = "ble")]
     let mut sensor_scan_rearm_ms: u32 = 0;
 
     // Settings: seed the app from the persistent RRAM store at boot (a blank/corrupt page decodes to
@@ -979,7 +949,6 @@ pub(crate) async fn run_app(
 
     // Whether the map-transfer card (issue #927) was **observed** on the stack last pass — the latch
     // that turns "the card is gone" into "the rider dismissed it". See the reconcile below.
-    #[cfg(feature = "ble")]
     let mut map_card_shown = false;
     // Map-upload pacing (#889, the WDT-reset episode): while bytes are landing, the card is the
     // only thing on glass and every repaint is ~85 ms of render+push stolen from the SD write
@@ -1001,8 +970,7 @@ pub(crate) async fn run_app(
         if hw > stack_hw {
             stack_hw = hw;
             // Surface the peak in the diagnostics blob for the A9 soak rig (#277) — the ride loop owns the
-            // stackmeter, so on a `ble` build it publishes the mark into the BLE state the blob reads.
-            #[cfg(feature = "ble")]
+            // stackmeter, so it publishes the mark into the BLE state the blob reads.
             crate::link::publish_stack_high_water(hw);
             defmt::info!("stack high-water {=usize} / {=usize} B (new peak)", hw, stackmeter::total());
         }
@@ -1098,7 +1066,6 @@ pub(crate) async fn run_app(
         // ── BLE → app seam (epic #447), FEEDING half: everything that hands the app a value the
         // pass below reads. The half that *acts on* what the pass decided runs after it, inside the
         // store phase — that is the only reordering the typed cutover forced here. ──
-        #[cfg(feature = "ble")]
         {
             // The link snapshot (connected + passkey) as a **level**: the pass compares it against
             // what it last saw and calls `set_ble_status` only on a change, so a steady state
@@ -1155,7 +1122,6 @@ pub(crate) async fn run_app(
         // means the press that pops the card is observed on the frame *after* it happens. Benign,
         // and it is the shape the latch was built for: it observes rather than being told, and a
         // terminal state is never re-fed once cleared.
-        #[cfg(feature = "ble")]
         {
             if map_card_shown && !app.map_transfer_card_up() {
                 crate::link::clear_map_transfer();
@@ -1195,7 +1161,6 @@ pub(crate) async fn run_app(
         // The *requests* that keep discovery alive and reconcile the saved slots are the acting
         // half, and they moved after the pass with #1397 S6b: both key on screen and settings state
         // this frame's gestures produce, and gestures are applied inside the pass now.
-        #[cfg(feature = "ble")]
         {
             // The scan list's hits, as a feed: the manager's snapshot into the app, so a wake for
             // any reason renders what discovery has found so far.
@@ -1914,7 +1879,6 @@ pub(crate) async fn run_app(
             // `==`-diff save can't clobber the phone's write with its own stale copy. Only units + name
             // are BLE-writable, so the merge is narrow (`adopt_ble_fields`) — a device-only edit pending
             // this frame is untouched. Board-crate flag, drained once per BLE write; a no-op otherwise.
-            #[cfg(feature = "ble")]
             if crate::object_store::take_ble_config_written() {
                 // Merge only the BLE-owned fields; `merge_ble_settings` preserves any pending device-edit
                 // save (its revision is untouched) so neither the phone's write nor the rider's edit is
@@ -1934,7 +1898,6 @@ pub(crate) async fn run_app(
                         // Settings coherence, device → phone (#456): the RRAM blob just moved, so the BLE
                         // config-read cache is stale — flag it so the BLE plane refreshes from RRAM before
                         // its next Config read / advertised-name read. One relaxed store.
-                        #[cfg(feature = "ble")]
                         crate::object_store::mark_device_settings_changed();
                         // Push a changed GPS fix interval to the sensor task → it re-VALSETs the M10's rate.
                         #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
@@ -2041,7 +2004,6 @@ pub(crate) async fn run_app(
                         obc_app::HostCommand::FinishTrack(action) => finish = Some(action),
                         // The bond removal is confirmed by a link-status fact, never by a reply
                         // (#1398/#1400).
-                        #[cfg(feature = "ble")]
                         obc_app::HostCommand::ForgetBond => crate::ble::request_forget_bond(),
                         // The cascade: `CatalogState::admit_intent` refuses one, so it never becomes
                         // an effect and nothing is owed an answer — which is exactly why it may stay
@@ -2064,12 +2026,6 @@ pub(crate) async fn run_app(
                                 );
                             }
                         }
-                        // No radio in this image, so there is no bond to forget and the screen that
-                        // asks for one cannot be reached. Spelled out rather than caught by a
-                        // wildcard: the match is exhaustive in both feature configs, which is what
-                        // makes the compiler the thing that says the residual is exactly three.
-                        #[cfg(not(feature = "ble"))]
-                        obc_app::HostCommand::ForgetBond => {}
                     }
                 }
                 finish
@@ -2150,7 +2106,6 @@ pub(crate) async fn run_app(
             // does not manufacture another urgent request. **Batch-scoped**, where it used to be
             // per gesture: a Weather → Back → Weather round trip inside one 40 ms batch is one
             // entry, not two, so it asks once. That is the intended reading of an entry edge.
-            #[cfg(feature = "ble")]
             let was_on_weather = matches!(
                 app.top_screen(),
                 obc_app::Screen::Weather(_) | obc_app::Screen::WeatherHourly(_) | obc_app::Screen::WeatherRainMap(_)
@@ -2300,14 +2255,9 @@ pub(crate) async fn run_app(
                         compass: Some(&mut consumer.compass()), // ICM-20948 / AK09916 heading while stopped
                         track: track_dyn,
                         fuel: Some(&mut fuel),
-                        // On a `ble` build the central manager (SE6) feeds the shared hub mailboxes;
-                        // without `ble` there is no radio, so no sensor source — `Sensors::new` leaves
-                        // those three `None`.
-                        #[cfg(feature = "ble")]
+                        // The central manager (SE6) feeds the shared hub mailboxes.
                         hr: Some(&mut consumer.hr()),
-                        #[cfg(feature = "ble")]
                         power: Some(&mut consumer.power()),
-                        #[cfg(feature = "ble")]
                         cadence: Some(&mut consumer.cadence()),
                         ..Sensors::new(&mut consumer.location())
                     },
@@ -2340,7 +2290,6 @@ pub(crate) async fn run_app(
             if app.take_hold_cancel() {
                 display.cancel_holds();
             }
-            #[cfg(feature = "ble")]
             if !was_on_weather && matches!(app.top_screen(), obc_app::Screen::Weather(_)) {
                 crate::ble::request_weather_now();
                 defmt::info!("weather: dashboard opened — urgent phone fetch requested");
@@ -2362,7 +2311,6 @@ pub(crate) async fn run_app(
             // ── BLE → app seam, ACTING half: what the pass just decided, out to the radio plane ──
             // Both of these key on screen and settings state **this** frame's gestures produced, so
             // they read the app after the pass rather than before it.
-            #[cfg(feature = "ble")]
             {
                 // Scan mode: while the Sensors screen's scan list is up, keep a discovery scan
                 // running. `request_scan` **must not** be rung every pass — it pulses the manager's
@@ -2706,7 +2654,7 @@ pub(crate) async fn run_app(
                                 obc_app::RainOverlayAdapter::at_step(reader, &mut weather_cache, wall_now, rain_step)
                             });
                             let weather_snapshot_ref = weather_snapshot.as_ref();
-                            let weather_refreshing = weather_refresh_in_flight();
+                            let weather_refreshing = crate::ble::weather_refresh_in_flight();
                             #[cfg(feature = "sd-bench")]
                             let read_before = crate::card_io::read_perf_snapshot();
                             let (stats, render_us) = display.render_frame(|f: &mut crate::ls021_flpr::Frame64| {
@@ -2970,8 +2918,9 @@ pub(crate) async fn run_app(
         // gets it), a hold starting to charge (`INPUT_WAKE` — a press emits no gesture, so without this
         // arm the loop slept through the whole charge on a quiet screen and the bulge's first frame on
         // glass was the confirm pop), a fresh sensor/host datapoint (`wait_sensor_event`), a BLE link
-        // edge (`wait_ble_edge` — connect/disconnect *and* the pairing passkey, so the passkey card
-        // wakes the loop from warm sleep), or the soonest screen animation deadline the app reports.
+        // edge (`ble::wait_status_change` — connect/disconnect *and* the pairing passkey, so the
+        // passkey card wakes the loop from warm sleep), or the soonest screen animation deadline the
+        // app reports.
         // The body's reconciles are all edge-gated,
         // so running them only on a wake is correct — a parked Home screen wakes ~once a minute (the
         // clock minute-tick) instead of 125×/s, and an idle device with the GPS asleep wakes only on a
@@ -3023,15 +2972,15 @@ pub(crate) async fn run_app(
         let _ = select5(
             GESTURES.ready_to_receive(),
             INPUT_WAKE.wait(),
-            // A sensor/host datapoint, or (`ble` builds) a store movement — an upload/delete
-            // rescans the catalog now, not at the next timer wake (#450).
+            // A sensor/host datapoint, or a store movement — an upload/delete rescans the catalog
+            // now, not at the next timer wake (#450).
             wait_host_or_sensor_event(
                 #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
                 consumer,
             ),
             // A BLE link edge — connect/disconnect *and* the pairing passkey — so the passkey card
-            // wakes the loop from warm sleep (epic #447, P2). `pending()` on a map build.
-            wait_ble_edge(),
+            // wakes the loop from warm sleep (epic #447, P2).
+            crate::ble::wait_status_change(),
             Timer::after_millis(ms as u64),
         )
         .await;

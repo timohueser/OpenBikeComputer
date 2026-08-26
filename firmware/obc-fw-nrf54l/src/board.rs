@@ -79,7 +79,6 @@ bind_interrupts!(pub(crate) struct SensorIrqs {
     SERIAL22 => twim::InterruptHandler<embassy_nrf::peripherals::SERIAL22>;
 });
 
-#[cfg(feature = "ble")]
 bind_interrupts!(pub(crate) struct BleIrqs {
     SWI00 => nrf_sdc::mpsl::LowPrioInterruptHandler;
     CLOCK_POWER => nrf_sdc::mpsl::ClockInterruptHandler;
@@ -96,11 +95,8 @@ macro_rules! init {
     () => {{
         let mut config = embassy_nrf::config::Config::default();
         config.clock_speed = embassy_nrf::config::ClockSpeed::CK128;
-        #[cfg(feature = "ble")]
-        {
-            config.hfclk_source = embassy_nrf::config::HfclkSource::ExternalXtal;
-            config.lfclk_source = embassy_nrf::config::LfclkSource::InternalRC;
-        }
+        config.hfclk_source = embassy_nrf::config::HfclkSource::ExternalXtal;
+        config.lfclk_source = embassy_nrf::config::LfclkSource::InternalRC;
         embassy_nrf::init(config)
     }};
 }
@@ -173,7 +169,6 @@ macro_rules! input_hardware {
 pub(crate) use input_hardware;
 
 // Move-only radio values expand at their original point; no call frame or reordered initialization.
-#[cfg(feature = "ble")]
 macro_rules! radio_hardware {
     ($p:ident) => {
         (
@@ -215,5 +210,4 @@ macro_rules! radio_hardware {
         )
     };
 }
-#[cfg(feature = "ble")]
 pub(crate) use radio_hardware;

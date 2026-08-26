@@ -6,9 +6,9 @@
 //! `obc-render` / `obc-app` / `obc-reader` / `obc-route` + `obc-platform` stay board-agnostic;
 //! only the nRF HAL wiring + the display presenter backend are board-specific.
 //!
-//! **The `ble` build** (`cargo run --release --no-default-features --features ble`): the same
-//! firmware with the BLE stack folded in (`ble/`: MPSL, the SoftDevice Controller, TrouBLE) —
-//! **map + BLE in one image** (#270). [`ble::run`] is spawned beside the ride loop; both drive the
+//! **The build** (`cargo run --release`) carries the BLE stack (`ble/`: MPSL, the SoftDevice
+//! Controller, TrouBLE) — **map + BLE in one image** (#270), with no feature to turn the radio off
+//! (#1530). [`ble::run`] is spawned beside the ride loop; both drive the
 //! shared SD + settings store ([`SharedStore`] — the ride loop locks it per frame across the
 //! render but never across the present (#809), the object plane per chunk). Fits the 256 KB DK
 //! on the culled `nrf-mem`
@@ -27,8 +27,8 @@
 //!
 //! Clock: the M33 application core runs at 128 MHz; embassy-time is driven by the **GRTC**
 //! (Global RTC) via the `time-driver-grtc` feature — the nRF54L has no legacy RTC time-driver.
-//! `ble` builds additionally source HFCLK from the **crystal** (an MPSL hard requirement) and
-//! leave LFCLK on the MPSL-calibrated internal RC (see `ble.rs` — the unprogrammed XO INTCAPs).
+//! HFCLK is sourced from the **crystal** (an MPSL hard requirement) and the build
+//! leaves LFCLK on the MPSL-calibrated internal RC (see `ble.rs` — the unprogrammed XO INTCAPs).
 //!
 //! ## Flash / RAM
 //!   From the `memory.x` build.rs emits (#617): the app's FLASH is 1484K @ **0x0000_8000** — the
@@ -85,8 +85,8 @@ mod ls021_flpr;
 mod input_plane;
 //   - The **map plane**: the cfg-selected `MapDisplay` handle the ride loop drives the panel through.
 mod map_plane;
-// The map/ride thread-mode plane: `run_app` + its loop-only helpers. In every build (#270); on
-// `ble` builds it runs joined with the BLE stack, both driving the shared SD + settings store.
+// The map/ride thread-mode plane: `run_app` + its loop-only helpers. It runs joined with the BLE
+// stack (#270), both driving the shared SD + settings store.
 mod ride;
 // Persistent device settings over on-chip RRAM (the SD-independent settings store); boot-load +
 // save-on-dirty are wired in `run_app`.
@@ -102,8 +102,7 @@ mod dfu;
 #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
 mod sensors;
 // The BLE stack: MPSL + SDC + TrouBLE, the advertise loop, and the link-status plumbing.
-// `ble` builds only; spawned beside the ride loop (see `spawn_ble_stack`).
-#[cfg(feature = "ble")]
+// In every build; spawned beside the ride loop (see `spawn_ble_stack`).
 mod ble;
 // The USB device plane (#889): the LM20's USBHS behind a vendor interface, carrying the *same*
 // companion protocol as the radio — a browser or the desktop app plugs in and speaks the object
@@ -115,21 +114,19 @@ mod usb;
 // which is what keeps "USB is a second transport, not a second protocol" true in the code rather than
 // only in the spec. (One transfer at a time is the flat engine's, scoped per wire by
 // `Engine::on_link_up` / `on_link_lost`.)
-#[cfg(feature = "ble")]
 mod link;
 // The device object store: object ids / revision / upload state over the SD catalog, and the Config ↔
-// RRAM-settings bridge every control plane drives. `ble` builds only.
-#[cfg(feature = "ble")]
+// RRAM-settings bridge every control plane drives. In every build.
 mod object_store;
 
-// The feature matrix, now that there is nothing to guard against. MPSL *provides* the
-// critical-section impl (its radio timing forbids global-interrupt-disable critical sections; two
-// impls = duplicate link symbols), and #931 removed the only other one — `cs-single-core`, the flag
-// for a radio-less shape that had not compiled for months and that nothing in CI built. `ble` is
-// therefore the shipping build and the only one: it carries the map ride loop, and `debug-uart`
-// (VCOM-fed ride) and `synth` (synthetic ride) compose with it — a headless ride beside a live BLE
-// link is a useful combined-build test rig. A radio-less image, if one is ever wanted, is the `link`
-// cfg rename described in Cargo.toml's `ble` note, not a feature flag to re-add.
+// The feature matrix, now that there is nothing to guard against. The radio is not optional: MPSL
+// *provides* the critical-section impl (its radio timing forbids global-interrupt-disable critical
+// sections; two impls = duplicate link symbols), #931 removed the only other one — `cs-single-core`
+// — and #1530 removed the `ble` feature that named a shape which had not compiled for months. The
+// one build carries the map ride loop, the radio and the USB plane; `debug-uart` (VCOM-fed ride)
+// and `synth` (synthetic ride) compose with it — a headless ride beside a live BLE link is a useful
+// combined-build test rig. A radio-less image, if one is ever wanted, is a new `link` cfg over the
+// transport-free core, not a feature flag to re-add.
 
 use defmt::info;
 use embassy_executor::Spawner;
@@ -262,8 +259,8 @@ const NRF_RAM_BYTES: usize = ls021_flpr::M33_RAM_BYTES;
 ///   reached on glass**. This is the one that answers the question this comment used to claim, and it
 ///   is the one FS7.5-c1 added after finding there was no such gate.
 ///
-/// On the combined `ble` build the SDC/host futures and MPSL's ISRs also ride the main stack on top
-/// of the deep-render path, which is why its recorded peak is the higher of the two.
+/// The SDC/host futures and MPSL's ISRs also ride the main stack on top of the deep-render path,
+/// which is why the recorded peak is the higher of the two.
 const STACK_RESERVE: usize = 64 * 1024;
 /// The single RGB222 framebuffer: one byte per pixel over the 240×320 frame = 75 KB.
 const FB_BYTES: usize = FRAME_W * FRAME_H;
@@ -300,13 +297,10 @@ const TERRAIN_RESIDENT: usize = 0;
 /// sum, and `STAGE_LEN` in [`usb::RESIDENT_BYTES`].
 const ARENA_RESIDENT: usize = arena::ARENA_BYTES;
 /// The BLE stack's residents (`ble::RESIDENT_BYTES`: the MPSL handle + SDC memory block + TrouBLE's
-/// host arena + its global packet pool + the CRACEN RNG); zero without the feature. Keeping both terms
-/// in one sum is what makes "`ble` + map don't fit on 256 KB" a *compile-time* fact: the map plane is
-/// unconditional, so on the `ble` build both planes land here and this assert arbitrates.
-#[cfg(feature = "ble")]
+/// host arena + its global packet pool + the CRACEN RNG). Keeping both terms in one sum is what
+/// makes "the radio + map don't fit on 256 KB" a *compile-time* fact: both planes are unconditional,
+/// so they land here together and this assert arbitrates.
 const BLE_RESIDENT: usize = ble::RESIDENT_BYTES;
-#[cfg(not(feature = "ble"))]
-const BLE_RESIDENT: usize = 0;
 
 /// The USB device plane's residents (`usb::RESIDENT_BYTES`: the driver's EP-OUT staging buffer, the
 /// descriptor + control buffers, and the two planes' frame/chunk scratch). Unconditional — the plane
@@ -392,7 +386,6 @@ mod resource_report {
         Entry { name: dst, bytes: bytes as u32 }
     }
 
-    #[cfg(feature = "ble")]
     const BLE_ENTRIES: [Entry; 11] = [
         entry("ble_total", ble::RESIDENT_BYTES),
         entry("ble_mpsl", ble::MPSL_BYTES),
@@ -408,21 +401,6 @@ mod resource_report {
         // control record and one held stream record. Named because the middle one is what §5's
         // cross-channel hold is made of, and a change in it is a change in that guarantee.
         entry("ble_v4_adapter", ble::V4_ADAPTER_BYTES),
-    ];
-
-    #[cfg(not(feature = "ble"))]
-    const BLE_ENTRIES: [Entry; 11] = [
-        entry("ble_total", 0),
-        entry("ble_mpsl", 0),
-        entry("ble_sdc_memory", 0),
-        entry("ble_host_resources", 0),
-        entry("ble_packet_pool", 0),
-        entry("ble_cracen", 0),
-        entry("ble_object_store", 0),
-        entry("ble_server", 0),
-        entry("ble_gap_name", 0),
-        entry("ble_sensor_manager", 0),
-        entry("ble_v4_adapter", 0),
     ];
 
     /// The terrain seam's entries (EL7). Unconditional, like the `nav_*` ones: these are the
@@ -751,7 +729,6 @@ impl core::ops::DerefMut for StoreGuard<'_> {
 /// but the trampoline stays: it keeps `main`'s frame independent of whatever `ble::run`'s future
 /// grows to. This tiny task is polled directly by the executor at ~2 KB depth; its own pool
 /// static holds just the arguments until the inner spawn moves them into `ble::run`'s.
-#[cfg(feature = "ble")]
 #[embassy_executor::task]
 async fn spawn_ble_stack(
     spawner: Spawner,
@@ -991,10 +968,9 @@ async fn vcom_tx_task(mut tx: BufferedUarteTx<'static, peripherals::SERIAL20>) {
 /// producer/consumer/control handles wired to the sensor task, the ride loop, the BLE central
 /// manager, and the debug-uart injection path at composition (below) — the successor to the former
 /// process-global `sensor_link`/`sensor_values` mailboxes. `const`-constructed, so its `.bss`
-/// footprint is exactly the scattered statics it replaces. Absent only on a radio-less pure
-/// `synth` build: a `synth + ble` build still needs the injector for BLE sensor connections even
-/// though the ride loop itself drives `SynthLocation` and consumes no hub stream.
-#[cfg(any(feature = "ble", not(all(not(feature = "debug-uart"), feature = "synth"))))]
+/// footprint is exactly the scattered statics it replaces. In every build: a `synth` build still
+/// needs the injector for BLE sensor connections even though the ride loop itself drives
+/// `SynthLocation` and consumes no hub stream.
 static SENSOR_HUB: obc_platform::SensorHub = obc_platform::SensorHub::new();
 
 #[embassy_executor::main]
@@ -1506,9 +1482,9 @@ async fn main(_spawner: Spawner) {
         // carries its own era name — a swap transplants the store identity), while the id-marks floor
         // stays in RRAM. Runs **unconditionally, in every build flavor** — the era invariant ("any
         // boot that could allocate ids under a lost floor declares a new era") must hold across
-        // mixed-flavor bench flashing: if only ble builds minted, a non-ble build could boot on a
-        // torn/absent id-marks line, rewrite it valid over a ride, and a later ble flash would see a
-        // valid card epoch + valid floor and never mint — permanent undetected aliasing. Placed right
+        // mixed-flavor bench flashing: a build that did not mint could boot on a torn/absent
+        // id-marks line, rewrite it valid over a ride, and a later flash would see a valid card
+        // epoch + valid floor and never mint — permanent undetected aliasing. Placed right
         // after the shared store is built (the earliest point the card *and* the RRAM lines are
         // readable — the card was mounted at boot and moved into the guard as `Some`) and before
         // anything can allocate an object id: the ride loop (`run_app`, below) and the ble build's
@@ -1520,14 +1496,11 @@ async fn main(_spawner: Spawner) {
         // fault/idle path above), so `storage` is `Some`; the `None` arm keeps the future card-less
         // seam honest (no store ⇒ no epoch ⇒ the version read degrades to version-only). The TRNG word
         // comes from a throwaway CRACEN reborrow: `Cracen` construction is side-effect-free, each op
-        // self-enables/-disables the RNG, and `Drop` is a no-op — so on ble builds the peripheral is
-        // pristine when it then moves into the LL (whose crypto RNG it becomes). `cracen_p`
-        // partial-moves `p.CRACEN` out so the reborrow has a `&mut`; non-ble builds drop it afterwards.
+        // self-enables/-disables the RNG, and `Drop` is a no-op — so the peripheral is pristine when it
+        // then moves into the LL (whose crypto RNG it becomes). `cracen_p` partial-moves `p.CRACEN`
+        // out so the reborrow has a `&mut`.
         let mut cracen_p = p.CRACEN;
-        // `_store_epoch` (underscore like `_spawner`): read only by the `ble` spawn below, so non-ble
-        // builds bind it without a use. The mint pass's *writes* (card epoch + RRAM marks) run in
-        // every flavor regardless — only the served value is ble-specific.
-        let _store_epoch: Option<u32> = {
+        let store_epoch: Option<u32> = {
             let mut guard = shared_store.lock().await;
             if guard.storage.is_none() {
                 defmt::info!("store-epoch: no mounted store — no epoch to mint or serve");
@@ -1592,16 +1565,14 @@ async fn main(_spawner: Spawner) {
         // `link::init_store` is `#[inline(never)]`, so its ~13.5 KB construction temporary lives in
         // *that* transient frame (a measured ~27.6 KB prologue, popped immediately) and `main`'s
         // frame pays only the reference — the #677 rule, unchanged. ---
-        #[cfg(feature = "ble")]
         let link_stores = {
             let objects = {
                 let mut guard = shared_store.lock().await;
                 link::init_store(&mut guard)
             };
-            link::LinkStores { shared: shared_store, objects, epoch: _store_epoch }
+            link::LinkStores { shared: shared_store, objects, epoch: store_epoch }
         };
 
-        #[cfg(feature = "ble")]
         {
             let (mpsl_p, sdc_p) = board::radio_hardware!(p);
             // CRACEN goes to the LL's crypto RNG — already partial-moved out of `p` by the
@@ -1664,8 +1635,8 @@ async fn main(_spawner: Spawner) {
             wdt_handle,
             (cam_lon, cam_lat),
         );
-        // The ride loop is `main`'s tail future in every build. On `ble` builds the BLE stack runs
-        // beside it as the task spawned above — both on the one thread-mode executor, both driving
+        // The ride loop is `main`'s tail future in every build, and the BLE stack runs beside it as
+        // the task spawned above — both on the one thread-mode executor, both driving
         // the shared SD + settings store (the ride loop locks it per frame across the render; the
         // object plane per chunk between frames).
         app_fut.await;

@@ -197,7 +197,6 @@ impl ObjectStore {
             // has no `COUNT` to pin) fails because the wire enum would then *know* a byte obc-app
             // does not — the byte `from_byte` would silently clamp back to the default, which is
             // exactly the substitution §11.8 forbids on a phone→device write.
-            #[cfg(feature = "ble")]
             const _: () = {
                 use obc_app::WeatherRefresh as Stored;
                 use obc_ble::WeatherRefresh as Wire;
@@ -218,7 +217,6 @@ impl ObjectStore {
         BLE_CONFIG_WRITTEN.store(true, Ordering::Relaxed);
         // The due scheduler keys its cadence off this setting — wake it so an interval change
         // lands now rather than at the next unrelated edge (WX8).
-        #[cfg(feature = "ble")]
         crate::ble::weather_settings_changed();
     }
 
