@@ -20,7 +20,6 @@
 use crate::retention::RideRetention;
 use crate::settings::{DeviceName, SavedSensor, DEVICE_NAME_MAX, SENSOR_SLOTS};
 use crate::stat_fields::{StatFieldList, MAX_STAT_FIELDS};
-use crate::weather_alerts::{AlertMarks, ALERT_CLASSES};
 use obc_ports::DateTime;
 
 /// How one settings field packs into its own slice of the blob.
@@ -186,23 +185,6 @@ impl SettingCodec for [SavedSensor; SENSOR_SLOTS] {
             }
         }
         slots
-    }
-}
-
-/// The v16 alert-mark row's codec. The packing itself lives with the type it serialises
-/// ([`crate::weather_alerts`]), because the marks now carry their own record and the blob is only
-/// one of two frames those same 54 bytes appear in.
-impl SettingCodec for AlertMarks {
-    const LEN: usize = ALERT_CLASSES * crate::weather_alerts::ALERT_MARK_LEN;
-
-    #[inline]
-    fn write(&self, dst: &mut [u8]) {
-        crate::weather_alerts::pack_marks(self, dst);
-    }
-
-    #[inline]
-    fn read(src: &[u8]) -> Self {
-        crate::weather_alerts::unpack_marks(src)
     }
 }
 
