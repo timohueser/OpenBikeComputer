@@ -1053,7 +1053,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
     }
 
     public func deleteRoute(_ id: DeviceObjectID) async throws {
-        try await remove(kind: .route, id: id)
+        try await remove(id)
     }
 
     public func ackRides(_ ids: [RideID]) async throws {
@@ -1116,7 +1116,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         // Pinned by S0 as "download the route object" (spec §7.1): the stored OBCR
         // v2 blob, decoded app-side for the waypoints + elevation profile — one
         // layout, one truth.
-        let decoded = try RouteObjectCodec.decode(try await download(kind: .route, id: id))
+        let decoded = try RouteObjectCodec.decode(try await download(id))
         // Header totals are exact (from the producer's raw-point pass); the profile
         // + max grade come from the stored geometry, as E2 renders them.
         let geometry = RouteStats.compute(from: decoded.points)
@@ -1161,11 +1161,11 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         // "Download the trip object" (spec §7.7) — the stored trip blob, decoded
         // app-side for its name + stage ids. Reconcile falls back to it only when
         // the trip catalog's CRC can't confirm the fingerprint.
-        try TripObjectCodec.decode(try await download(kind: .trip, id: id))
+        try TripObjectCodec.decode(try await download(id))
     }
 
     public func deleteTrip(_ id: DeviceObjectID) async throws {
-        try await remove(kind: .trip, id: id)
+        try await remove(id)
     }
 
     private func headEntries(kind: ObjectKind) async throws -> [CatalogEntry] {
@@ -1176,10 +1176,18 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         } catch { throw deviceError(for: error) }
     }
 
-    private func headEntry(kind: ObjectKind, id: DeviceObjectID) async throws -> CatalogEntry {
-        guard let entry = try await headEntries(kind: kind).first(where: { $0.objectID.rawValue == id.raw })
-        else { throw DeviceError.readFailed }
-        return entry
+    /// One object's head revision, in one request. STATUS reports the current head
+    /// unconditionally (spec §3.4) — the revision in the *request* only chooses between the
+    /// `committed` and `superseded` verdicts — so any legal probe answers it, and zero is the
+    /// one value the request cannot carry. Walking the paged catalog for this instead cost a
+    /// round trip per two entries: ~7 s in front of every update on a full card (#1528).
+    private func headRevision(of id: DeviceObjectID) async throws -> Revision {
+        do {
+            let result = try await transferClient.status(
+                objectID: ObjectID(rawValue: id.raw), revision: Revision(rawValue: 1))
+            guard result.state != .absent else { throw DeviceError.readFailed }
+            return result.headRevision
+        } catch { throw deviceError(for: error) }
     }
 
     private func download(_ entry: CatalogEntry) async throws -> Data {
@@ -1189,13 +1197,17 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         } catch { throw deviceError(for: error) }
     }
 
-    fileprivate func download(kind: ObjectKind, id: DeviceObjectID) async throws -> Data {
-        try await download(headEntry(kind: kind, id: id))
+    /// GET with no revision is the head (spec §3.5), so reading one object by id needs no
+    /// revision lookup at all.
+    fileprivate func download(_ id: DeviceObjectID) async throws -> Data {
+        do {
+            return try await transferClient.get(objectID: ObjectID(rawValue: id.raw)).payload
+        } catch { throw deviceError(for: error) }
     }
 
-    private func remove(kind: ObjectKind, id: DeviceObjectID) async throws {
-        let entry = try await headEntry(kind: kind, id: id)
-        do { _ = try await transferClient.remove(objectID: entry.objectID, expectedRevision: entry.revision) }
+    private func remove(_ id: DeviceObjectID) async throws {
+        let revision = try await headRevision(of: id)
+        do { _ = try await transferClient.remove(objectID: ObjectID(rawValue: id.raw), expectedRevision: revision) }
         catch { throw deviceError(for: error) }
     }
 
@@ -1312,7 +1324,7 @@ public final class BLETransport: NSObject, DeviceTransport, @unchecked Sendable 
         }
         let expected: Revision?
         if let target {
-            expected = try await headEntry(kind: kind, id: target).revision
+            expected = try await headRevision(of: target)
         } else {
             expected = nil
         }
@@ -2012,7 +2024,7 @@ private actor RideDownloadRunner {
         do {
             for (index, request) in requests.enumerated() {
                 try Task.checkCancellation()
-                let payload = try await transport.download(kind: .ride, id: request.objectID)
+                let payload = try await transport.download(request.objectID)
                 rides.yield(DownloadedRide(id: request.id, payload: payload))
                 progress.yield(TransferProgress(bytesDone: index + 1, total: requests.count))
             }
