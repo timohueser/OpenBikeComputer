@@ -246,11 +246,11 @@ struct TripReconcileModelTests {
         #expect(plan.tripObject == .replace(deviceTripID))
     }
 
-    /// The rename twin of the case above (#1527, the trip sibling of #1521): the
-    /// trip name lives inside the trip object, so a trip renamed while unlinked no
-    /// longer matches its device copy by content. The catalog reports the name that
-    /// copy was stored under, which is what makes the stored bytes reconstructible —
-    /// without it the app reads the trip as absent and the next send mints a twin.
+    /// The rename twin of the case above: the trip name lives inside the trip
+    /// object, so a trip renamed while unlinked no longer matches its device copy
+    /// by content. The catalog reports the name that copy was stored under, which
+    /// is what makes the stored bytes reconstructible — without it the app reads
+    /// the trip as absent and the next send mints a twin.
     @Test
     func aRenamedTripAdoptsItsDeviceCopyAndReplacesIt() async {
         let (model, control, library) = await makeMainWithLibrary()
@@ -277,7 +277,7 @@ struct TripReconcileModelTests {
 
         let upload = model.makeTripUploadModel(tripID, timing: Self.fastTiming)!
         upload.start()
-        upload.beginUpload()  // clear the epic #638 Auto-delete confirm (capable device)
+        upload.beginUpload()  // clear the Auto-delete confirm (capable device)
         await poll("the renamed send landed") { upload.phase == .done }
         #expect(control.deviceTripCount == 1, "a renamed send replaces by id — never a duplicate")
         #expect(
