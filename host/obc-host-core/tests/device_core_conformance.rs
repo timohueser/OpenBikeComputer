@@ -195,13 +195,14 @@ impl LocationSource for NoFix {
     }
 }
 
-/// Which resident catalog a completed store operation changed.
+/// Whether a completed store operation re-fills the resident catalogs.
+///
+/// Only a **read** does. A removal re-feeds nothing: the re-read it implies is `CatalogMachine`'s
+/// to order (#1541), and an executor that re-fed here would be deciding when a refresh happens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Refeed {
     None,
-    Routes,
-    Rides,
-    Trips,
+    All,
 }
 
 /// One thing the executor finished, on its way back into the next pass.
@@ -381,21 +382,26 @@ impl CoreHarness {
     fn serve_catalog(&mut self, effect: CatalogEffect) -> Done {
         match effect {
             CatalogEffect::ReadCatalog { token } => {
-                // The re-read the store commit ordered (#1397 S6a). The fixture's catalogs are the
-                // resident ones, so a refresh re-feeds exactly what it already holds and the outcome
-                // reports only the revision it read at — bulk never enters the protocol.
-                self.state.store_revision += 1;
-                Done::Catalog {
-                    outcome: CatalogOutcome::CatalogRead { token, revision: Revision::new(self.state.store_revision) },
-                    refeed: Refeed::Routes,
+                // The re-read the domain ordered. The fixture's catalogs are the resident ones, so
+                // a refresh re-feeds exactly what the store now holds, and the outcome reports only
+                // that the operation is over — bulk never enters the protocol.
+                if std::mem::take(&mut self.state.catalog_read_fail_once) {
+                    return Done::Catalog {
+                        outcome: CatalogOutcome::Failed { token, error: CatalogError::Unreadable },
+                        refeed: Refeed::None,
+                    };
                 }
+                Done::Catalog { outcome: CatalogOutcome::CatalogRead { token }, refeed: Refeed::All }
             }
+            // One object out of the store, and nothing else. The namespace probe order is the real
+            // executor's; the re-read a completed removal implies is the domain's.
             CatalogEffect::RemoveObject { token, object } => {
                 if let Some(index) = self.state.route_ids.iter().position(|&id| id == object) {
                     self.state.retention_delete_attempts = self.state.retention_delete_attempts.saturating_add(1);
                     if std::mem::take(&mut self.state.route_delete_fail_once) {
                         // The store refused the removal. Not `existed: false` — the object is still
-                        // there, which is what makes retention re-queue its candidate.
+                        // there, which is what makes retention re-queue its candidate, and what
+                        // makes this the one removal that orders no re-read.
                         return Done::Catalog {
                             outcome: CatalogOutcome::Failed { token, error: CatalogError::RemoveFailed },
                             refeed: Refeed::None,
@@ -403,32 +409,23 @@ impl CoreHarness {
                     }
                     self.state.routes.remove(index);
                     self.state.route_ids.remove(index);
-                    return Done::Catalog {
-                        outcome: CatalogOutcome::ObjectRemoved { token, object, existed: true },
-                        refeed: Refeed::Routes,
-                    };
-                }
-                if let Some(index) = self.state.ride_ids.iter().position(|&id| id == object) {
+                } else if let Some(index) = self.state.ride_ids.iter().position(|&id| id == object) {
                     self.state.rides.remove(index);
                     self.state.ride_ids.remove(index);
-                    return Done::Catalog {
-                        outcome: CatalogOutcome::ObjectRemoved { token, object, existed: true },
-                        refeed: Refeed::Rides,
-                    };
-                }
-                // The folder's own object — the cascade's last step, decided by the domain and not
-                // composed here.
-                if self.state.trip_present && object == TRIP {
+                } else if self.state.trip_present && object == TRIP {
+                    // The folder's own object — the cascade's last step, decided by the domain and
+                    // not composed here.
                     self.state.trip_present = false;
+                } else {
+                    // The subject vanished before the commit — a success for the goal state, and
+                    // the one shape that must not read as a failure (epic §13).
                     return Done::Catalog {
-                        outcome: CatalogOutcome::ObjectRemoved { token, object, existed: true },
-                        refeed: Refeed::Trips,
+                        outcome: CatalogOutcome::ObjectRemoved { token, object, existed: false },
+                        refeed: Refeed::None,
                     };
                 }
-                // The subject vanished before the commit — a success for the goal state, and the
-                // one shape that must not read as a failure (epic §13).
                 Done::Catalog {
-                    outcome: CatalogOutcome::ObjectRemoved { token, object, existed: false },
+                    outcome: CatalogOutcome::ObjectRemoved { token, object, existed: true },
                     refeed: Refeed::None,
                 }
             }
@@ -565,13 +562,15 @@ impl CoreHarness {
         }
     }
 
+    /// Fill the resident catalogs from the store, in the order a read has to use: the routes
+    /// first, so the trips' stage ids resolve against the fresh catalog.
     fn refeed(&mut self, refeed: Refeed, trace: &mut TraceRecorder<VisibleState>) {
-        match refeed {
-            Refeed::None => {}
-            Refeed::Routes => self.state.feed_routes("core.routes", trace),
-            Refeed::Rides => self.state.feed_rides("core.rides", trace),
-            Refeed::Trips => self.state.feed_trips("core.trips", trace),
+        if refeed == Refeed::None {
+            return;
         }
+        self.state.feed_routes("core.routes", trace);
+        self.state.feed_trips("core.trips", trace);
+        self.state.feed_rides("core.rides", trace);
     }
 }
 
@@ -935,6 +934,22 @@ impl CoreHarness {
         }
         panic!("no catalog effect within eight passes")
     }
+
+    /// The next catalog **removal**, answering the re-reads the domain orders on the way. A delete
+    /// costs one read now (#1541), and it is that read which retires retention's candidate — so a
+    /// trace about *removals* has to serve them rather than step over them.
+    fn next_removal(&mut self) -> CatalogEffect {
+        for _ in 0..4 {
+            let effect = self.next_catalog_effect();
+            match effect {
+                CatalogEffect::RemoveObject { .. } => return effect,
+                CatalogEffect::ReadCatalog { .. } => {
+                    self.answer_catalog(effect);
+                }
+            }
+        }
+        panic!("no catalog removal within four operations")
+    }
 }
 
 /// **Outcome after cancellation.** A terminal answer invalidates the domain's token, so a repeat of
@@ -945,6 +960,10 @@ fn an_outcome_after_cancellation_changes_nothing() {
     let mut harness = expiring(1);
     let effect = harness.next_catalog_effect();
     let outcome = harness.answer_catalog(effect);
+    // The completed removal orders a re-read; answering it leaves the domain free again.
+    let refresh = harness.next_catalog_effect();
+    assert!(matches!(refresh, CatalogEffect::ReadCatalog { .. }), "a completed removal orders a re-read");
+    harness.answer_catalog(refresh);
     harness.pass();
     assert_eq!(harness.state.route_ids.len(), 2, "the expiry removed one route");
 
@@ -980,9 +999,9 @@ fn an_outcome_after_cancellation_changes_nothing() {
 #[test]
 fn an_outcome_after_a_replacement_request_changes_nothing() {
     let mut harness = expiring(2);
-    let first = harness.next_catalog_effect();
+    let first = harness.next_removal();
     harness.answer_catalog(first);
-    let second = harness.next_catalog_effect();
+    let second = harness.next_removal();
     assert_ne!(first.token(), second.token(), "a new operation, a new token");
 
     // The finished operation's answer, arriving again against the live one.
@@ -1250,7 +1269,14 @@ fn a_trip_member_that_vanished_before_the_commit_is_a_success() {
     }
     assert_eq!(removed.last(), Some(&TRIP), "the folder is removed last, after every member had its turn");
     assert!(!harness.state.trip_present, "and the folder is gone from the store");
-    assert!(harness.state.app.trips().is_empty(), "and from the rider's Route menu");
+
+    // One re-read for the whole cascade, and it follows the folder. The executor re-fed nothing, so
+    // that read is what takes the folder off the rider's Route menu.
+    assert!(!harness.state.app.trips().is_empty(), "the executor re-feeds nothing of its own");
+    let refresh = harness.next_catalog_effect();
+    assert!(matches!(refresh, CatalogEffect::ReadCatalog { .. }), "the cascade ordered one re-read, after the folder");
+    harness.answer_catalog(refresh);
+    assert!(harness.state.app.trips().is_empty(), "and the read is what clears it from the Route menu");
 
     let plan = harness.pass();
     assert!(plan.effects.catalog.is_empty(), "the cascade is over — nothing retried, nothing failed");
@@ -1271,10 +1297,61 @@ fn an_object_that_vanished_before_the_commit_is_a_success() {
 
     let Done::Catalog { outcome, refeed } = harness.serve_catalog(effect) else { panic!() };
     assert_eq!(outcome, CatalogOutcome::ObjectRemoved { token: effect.token(), object, existed: false });
-    assert_eq!(refeed, Refeed::None, "nothing changed, so nothing is re-fed");
+    assert_eq!(refeed, Refeed::None, "an executor performing a removal re-feeds nothing");
     harness.deliver(Done::Catalog { outcome, refeed }, &mut recorder());
-    let plan = harness.pass();
-    assert!(plan.effects.catalog.is_empty(), "the operation is over — nothing retried, nothing failed");
+    let mut plan = harness.pass();
+    assert!(
+        matches!(plan.effects.catalog.take(), Some(CatalogEffect::ReadCatalog { .. })),
+        "the removal is over — what follows is the re-read it ordered, never a retry of it"
+    );
+}
+
+/// **A completed removal is followed by the re-read the domain orders** (#1541,
+/// `Requirement::CatalogDeleteOrdersRefresh`). No executor composes a refresh any more, so a deleted
+/// row leaves the rider's menu only because `CatalogMachine` ordered the read that re-fills it — and
+/// both answer cadences settle in the same place.
+#[test]
+fn a_completed_removal_is_followed_by_the_re_read_the_domain_orders() {
+    for runner in Runner::ALL {
+        let settled = runner.run(named("catalog.route-delete")).settled;
+        assert!(
+            !settled.route_names.iter().any(|name| name == "Alpha"),
+            "{}: the deleted route is still listed — nothing ordered the re-read: {:?}",
+            runner.name(),
+            settled.route_names
+        );
+
+        let settled = runner.run(named("catalog.trip-cascade")).settled;
+        assert!(
+            settled.trip_names.is_empty(),
+            "{}: the cascaded folder is still listed: {:?}",
+            runner.name(),
+            settled.trip_names
+        );
+        assert_eq!(
+            settled.route_names,
+            ["Gamma"],
+            "{}: the cascade's two member routes must be gone, and the unfiled third must not be",
+            runner.name()
+        );
+    }
+}
+
+/// **A read the store could not answer is re-offered until it lands** (#1541,
+/// `Requirement::CatalogRefreshRetry`). The store did not move, so no revision edge would ever order
+/// it again: without the domain's own retry the rescan is simply lost, and the rider is left looking
+/// at rows the store no longer has.
+#[test]
+fn a_read_the_store_could_not_answer_is_re_offered_until_it_lands() {
+    for runner in Runner::ALL {
+        let settled = runner.run(named("catalog.refresh-retry")).settled;
+        assert!(
+            settled.route_names.iter().any(|name| name == "Delta"),
+            "{}: the failed read was never re-offered, so the menu is still stale: {:?}",
+            runner.name(),
+            settled.route_names
+        );
+    }
 }
 
 /// **A capability changes after a new map mounts**, and **a device without the detour capability**.
@@ -1644,9 +1721,20 @@ fn the_conformance_replay_wake_profile_and_pass_cost() {
 /// `(passes, immediate, timed, sleep-until-event)` for the replay above. A ratchet, not a budget:
 /// the numbers move when the pass's wake decisions do.
 ///
-/// The two gating figures — 185 passes and 3 immediate wakes — are the claim that matters: nothing
-/// here polls. Both are exactly the typed executor's own contribution to the pre-S6c figures; what
-/// halved is the runner count, not the work per pass.
+/// The two gating figures — 193 passes and 4 immediate wakes — are the claim that matters: nothing
+/// here polls.
+///
+/// #1541 moved the whole of the last delta and **no existing cell with it**: the replay runs
+/// `actions.len() + SETTLE_PASSES` per scenario, and the one new scenario (`catalog.refresh-retry`,
+/// two actions) is exactly +8 passes — 1 immediate and 7 timed. Measured by running the replay with
+/// that row removed, which reproduces the previous `(185, 3, 122, 60)` byte for byte. The immediate
+/// one is the mechanism `catalog.refresh-upload-remap` already had: the action reports a store
+/// commit as a revision fact, and the identity announcement it raises is consumed the next pass. The
+/// re-read every delete now orders costs **no** pass of its own here — it lands inside the settle
+/// passes those scenarios already ran.
+///
+/// Before #1541 the figures were exactly the typed executor's own contribution to the pre-S6c ones;
+/// what halved then was the runner count, not the work per pass.
 ///
 /// The upload burst is three actions rather than one — the upload slot is single and
 /// most-recent-wins, so reporting two uploads before a pass consumes it left the first unobserved.
@@ -1661,7 +1749,7 @@ fn the_conformance_replay_wake_profile_and_pass_cost() {
 /// `recorder.failure-and-session-replacement` turned one sleep into a timed wake because the
 /// finalize failure arrives as a warning fact the next pass consumes, so the card's 30 s timeout
 /// arms one pass later.
-const WAKE_PROFILE: (u32, u32, u32, u32) = (185, 3, 122, 60);
+const WAKE_PROFILE: (u32, u32, u32, u32) = (193, 4, 129, 60);
 
 // ==================== the resource gate ====================
 

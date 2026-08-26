@@ -646,14 +646,6 @@ struct RideExec {
     /// The operation the planner run is running under — the token every planner answer carries back.
     #[cfg(has_nav)]
     nav_token: Option<obc_app::device_core::OperationToken<obc_app::device_core::NavigatorTag>>,
-    /// A catalog read came back partial (a transient listing or object I/O failure kept the previous
-    /// snapshot). The domain was answered `Failed`, so it is free; the *re-read* is the executor's
-    /// own to retry, because a store that did not move raises no new revision and would therefore
-    /// order no second refresh. Retried once per **wake** until it succeeds — deliberately not an
-    /// immediate re-pass: a card that has genuinely stopped answering would spin this loop at full
-    /// speed against a store that is not going to recover in one frame, which is the one thing worse
-    /// than a stale menu.
-    rescan_owed: bool,
     /// A `DfuEffect::ArmInstall` passed its go/no-go and is waiting for the "Installing update" card
     /// to reach glass — the count is how many frames it has waited. The arm runs in the store
     /// **tail**, after the present, and never returns on success, so the frame the MIP holds through
@@ -682,10 +674,11 @@ impl RideExec {
     /// on a static post-Finish screen, the watchdog feed cap. `App::has_pending_residual_command`
     /// is narrow on purpose; see its docs for why the wider query would spin.
     ///
-    /// `rescan_owed` is deliberately **not** here — see its field docs. Neither is the in-flight
-    /// catalog removal, which keeps the short animation cadence instead of an immediate re-pass: it
-    /// is a round trip to another task, and spinning at full speed against a commit that takes
-    /// hundreds of milliseconds would starve the executor that has to answer it.
+    /// The in-flight catalog removal is deliberately **not** here: it keeps the short animation
+    /// cadence instead of an immediate re-pass, because it is a round trip to another task, and
+    /// spinning at full speed against a commit that takes hundreds of milliseconds would starve the
+    /// executor that has to answer it. The re-read a failed read owes is not here either — the
+    /// domain holds it (#1541) and offers it once per pass, which is once per wake.
     ///
     /// Folds into the wake exactly as [`PassPlan::immediate`] does for a deferred connection: the
     /// work is already decided, and parking on it would leave it sitting until the next rider input.
@@ -1324,14 +1317,12 @@ pub(crate) async fn run_app(
                     CatalogEffect::ReadCatalog { token } => {
                         let read =
                             read_catalogs(flat, app, &mut exec.facts, &mut weather_bundle, &mut weather_sample_key);
-                        exec.rescan_owed = !read;
                         prev_active = None; // force reconcile_route/track to re-run against the new indexing
                         index_route = None; // and the chunk index to rebuild off the freshly-opened file
+                                            // A partial read is answered `Unreadable`, and the **domain** re-offers the
+                                            // read from there (#1541) — one per pass, which is one per wake.
                         let outcome = if read {
-                            CatalogOutcome::CatalogRead {
-                                token,
-                                revision: obc_app::device_core::Revision::new(flat.sequence()),
-                            }
+                            CatalogOutcome::CatalogRead { token }
                         } else {
                             CatalogOutcome::Failed { token, error: CatalogError::Unreadable }
                         };
@@ -1367,20 +1358,6 @@ pub(crate) async fn run_app(
                             }
                         }
                     }
-                }
-            } else if exec.rescan_owed {
-                // A partial read kept the previous whole snapshot. The **domain** was answered
-                // (`Failed`), so it is free to serve the next delete; the *re-read* is this
-                // executor's own to retry, because a store that did not move raises no new revision
-                // and would therefore order no second refresh. One bounded retry per **wake** —
-                // this arm runs once per frame and nothing asks for an extra frame on its account,
-                // so a card that has genuinely stopped answering costs one read per wake rather
-                // than a loop spinning against it. That is the cadence the re-armed `StoreChanged`
-                // cue used to give it.
-                if read_catalogs(flat, app, &mut exec.facts, &mut weather_bundle, &mut weather_sample_key) {
-                    exec.rescan_owed = false;
-                    prev_active = None;
-                    index_route = None;
                 }
             }
 

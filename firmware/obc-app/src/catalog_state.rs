@@ -156,6 +156,14 @@ pub(crate) struct CatalogState {
     /// Whether an effect is out with the executor. Its outcome clears this, which is what lets the
     /// next intent go out.
     in_flight: bool,
+    /// The resident catalogs are behind the store, and a re-read has not gone out yet. Armed by
+    /// [`note_store_moved`](CatalogState::note_store_moved) (the store-revision fact), by a
+    /// completed removal, and by a read the store could not answer; spent by
+    /// [`next_effect`](CatalogState::next_effect) once nothing is pending.
+    ///
+    /// A **bit, not a counter**, and that is the whole coalescing rule: a delete that also moves
+    /// the store arms the same bit twice and costs one read, not two.
+    refresh_owed: bool,
 }
 
 impl CatalogState {
@@ -190,6 +198,7 @@ impl CatalogState {
             pending: None,
             cascade: None,
             in_flight: false,
+            refresh_owed: false,
         }
     );
 
@@ -618,8 +627,12 @@ impl CatalogState {
 // is left with two operations — read the catalog, remove an object — and no say in what either of
 // them means.
 //
+// **Every re-read is ordered here.** Three events say the resident catalogs are behind the store —
+// the store moved underneath us, a removal completed, a read failed — and all three arm one bit
+// (#1541). No executor decides whether, when, or how many times a refresh happens.
+//
 // Bulk stays out. A catalog read fills the resident catalogs through their existing feeders and the
-// outcome reports only the store revision it was read at.
+// outcome reports only that the operation is over.
 
 use crate::device_core::{CatalogTag, OperationToken};
 
@@ -627,11 +640,12 @@ use crate::device_core::{CatalogTag, OperationToken};
 ///
 /// Expiry arrives here too: `RetentionMachine` advances first and sends its deletions as these same
 /// intents, so an auto-expired ride leaves through exactly the path a rider-deleted one does.
+///
+/// Every variant is a **deletion**. A re-read is not asked for from outside: it is owed by the
+/// domain itself ([`note_store_moved`](CatalogState::note_store_moved) and the two arms of
+/// [`apply_outcome`](CatalogState::apply_outcome)), and lives in one bit rather than in this slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogIntent {
-    /// Re-read the catalogs. Raised by the domain itself after a commit, and by a store-revision
-    /// external fact — the fact never orders a refresh, this intent does.
-    Refresh,
     /// Delete one route.
     DeleteRoute { id: CatalogObjectId },
     /// Delete one ride.
@@ -672,8 +686,11 @@ pub enum CatalogError {
 /// The result of one [`CatalogEffect`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogOutcome {
-    /// The catalogs were re-read at store revision `revision`; the resident catalogs now hold it.
-    CatalogRead { token: OperationToken<CatalogTag>, revision: Revision },
+    /// The catalogs were re-read; the resident catalogs now hold what the store had.
+    ///
+    /// It carries no revision: the store's revision reaches the domain as an external *fact*, and
+    /// what a read owes back is only that the operation is over.
+    CatalogRead { token: OperationToken<CatalogTag> },
     /// `object` is gone from the store. `existed` is `false` when it was already absent — the
     /// epic's "a trip member disappears before the delete commit" race, which is a *success* for
     /// the cascade (the goal state holds) and must not read as a failure.
@@ -688,7 +705,7 @@ impl CatalogOutcome {
     /// The operation this outcome answers.
     pub fn token(&self) -> OperationToken<CatalogTag> {
         match self {
-            CatalogOutcome::CatalogRead { token, .. }
+            CatalogOutcome::CatalogRead { token }
             | CatalogOutcome::ObjectRemoved { token, .. }
             | CatalogOutcome::Failed { token, .. }
             | CatalogOutcome::Cancelled { token } => *token,
@@ -719,8 +736,14 @@ impl CatalogState {
         Ok(())
     }
 
-    /// The next bounded catalog operation, or `None` while one is already in flight or nothing is
-    /// admitted.
+    /// The next bounded catalog operation, or `None` while one is already in flight and nothing is
+    /// admitted or owed.
+    ///
+    /// **Deletions first, the owed re-read last**, and by construction rather than by a priority
+    /// list: an admitted intent is a rider's delete or an expiry, and the re-read is only reached
+    /// when there is none. It is also why the re-read never occupies the one intent slot — a second
+    /// copy of it there is a second read (a store commit and the delete it caused would each get
+    /// one), which is exactly what the single owed bit exists to prevent.
     ///
     /// The admitted intent is taken **before** the match, so no arm can leave the domain holding an
     /// intent it has already decided about. A cascade is the one arm that puts it back, and it
@@ -730,9 +753,14 @@ impl CatalogState {
         if self.in_flight {
             return None;
         }
-        let intent = self.pending.take()?;
+        let Some(intent) = self.pending.take() else {
+            if !self.take_refresh_owed() {
+                return None;
+            }
+            self.in_flight = true;
+            return Some(CatalogEffect::ReadCatalog { token: self.ops.issue() });
+        };
         let effect = match intent {
-            CatalogIntent::Refresh => CatalogEffect::ReadCatalog { token: self.ops.issue() },
             CatalogIntent::DeleteRoute { id } | CatalogIntent::DeleteRide { id } => {
                 CatalogEffect::RemoveObject { token: self.ops.issue(), object: id }
             }
@@ -783,6 +811,36 @@ impl CatalogState {
         }
         self.ops.invalidate(); // terminal: a duplicate of this answer is no longer current
         self.in_flight = false;
+        // A completed removal moved the store, so the resident catalogs are behind it; a read the
+        // store could not answer is still owed, and nothing else would ever order it again. Both
+        // `existed` verdicts arm: an object the store did not have may still be a resident row.
+        //
+        // A removal the store **refused** arms nothing — it changed nothing, retention re-queues
+        // its own candidate, and a read per retry would walk the store for a store that did not
+        // move. Neither does a cancellation.
+        //
+        // **A cascade needs no arm of its own.** Every member step arms this bit and none of them
+        // can spend it: the walk keeps the `DeleteTrip` intent in `pending` until the folder, and
+        // `next_effect` only reaches the owed read when nothing is pending. One bit, spent once,
+        // after the folder.
+        match outcome {
+            CatalogOutcome::ObjectRemoved { .. } | CatalogOutcome::Failed { error: CatalogError::Unreadable, .. } => {
+                self.refresh_owed = true
+            }
+            CatalogOutcome::Failed { .. } | CatalogOutcome::CatalogRead { .. } | CatalogOutcome::Cancelled { .. } => {}
+        }
+    }
+
+    /// Note that the object store moved underneath us — the store-revision fact, read at stage 2.
+    /// The fact is a level; the owed bit is what turns it into a read.
+    pub(crate) fn note_store_moved(&mut self) {
+        self.refresh_owed = true;
+    }
+
+    /// Take the owed re-read, if one is owed — [`next_effect`](CatalogState::next_effect)'s last
+    /// arm.
+    fn take_refresh_owed(&mut self) -> bool {
+        core::mem::take(&mut self.refresh_owed)
     }
 }
 
@@ -821,6 +879,7 @@ impl CatalogState {
             pending,
             cascade,
             in_flight,
+            refresh_owed,
         } = self;
         assert!(routes.is_empty() && route_ids.is_empty() && route_meta.is_empty(), "no routes catalogued");
         assert!(trips.is_empty(), "no trips catalogued");
@@ -835,6 +894,7 @@ impl CatalogState {
         );
         assert!(detour_preview.is_empty() && detour_preview_route.is_none(), "no detour preview cached");
         assert!(pending.is_none() && cascade.is_none() && !*in_flight, "no catalog operation admitted or in flight");
+        assert!(!*refresh_owed, "nothing has moved the store yet, so no re-read is owed");
         assert_eq!(format!("{ops:?}"), "TokenSource(0)", "no catalog operation has been issued");
     }
 }
@@ -863,7 +923,8 @@ mod tests {
         catalogs
     }
 
-    /// Take the whole cascade, answering each step as the executor would.
+    /// Take the whole cascade, answering each step as the executor would, and stop at the re-read
+    /// the finished walk orders (#1541) — which is the walk's own end marker.
     ///
     /// Bounded, and that is the point: the walk terminates because the ordinal only ever grows, so a
     /// cursor that stopped advancing is exactly the bug this helper must **report**. An unbounded
@@ -872,7 +933,7 @@ mod tests {
         let mut removed = heapless::Vec::new();
         for _ in 0..=removed.capacity() {
             let Some(effect) = catalogs.next_effect() else { return removed };
-            let CatalogEffect::RemoveObject { token, object } = effect else { panic!("a removal") };
+            let CatalogEffect::RemoveObject { token, object } = effect else { return removed };
             let _ = removed.push(object);
             catalogs.apply_outcome(CatalogOutcome::ObjectRemoved { token, object, existed: true });
         }
@@ -960,6 +1021,74 @@ mod tests {
         let mut catalogs = CatalogState::new();
         catalogs.admit_intent(CatalogIntent::DeleteTrip { id: 50 }).unwrap();
         assert_eq!(drain_cascade(&mut catalogs).as_slice(), &[50], "no members to walk, the folder still goes");
+    }
+
+    // ==================== the owed re-read (#1541) ====================
+
+    /// A completed removal orders a re-read: the store moved, so the resident catalogs are behind
+    /// it. **Exactly one** — the owed bit is a bit, and taking it is what spends it.
+    ///
+    /// Both `existed` verdicts arm it. An object the store did not have may still be a resident
+    /// row, and the only way to find out is to read.
+    #[test]
+    fn a_completed_removal_orders_exactly_one_re_read() {
+        for existed in [true, false] {
+            let mut catalogs = CatalogState::new();
+            catalogs.admit_intent(CatalogIntent::DeleteRoute { id: 10 }).unwrap();
+            let removal = catalogs.next_effect().expect("the removal");
+            assert!(catalogs.next_effect().is_none(), "nothing else while the removal is out");
+
+            catalogs.apply_outcome(CatalogOutcome::ObjectRemoved { token: removal.token(), object: 10, existed });
+            let read = catalogs.next_effect().expect("the completed removal orders a re-read");
+            assert!(
+                matches!(read, CatalogEffect::ReadCatalog { .. }),
+                "and it is a read: {read:?} (existed {existed})"
+            );
+
+            catalogs.apply_outcome(CatalogOutcome::CatalogRead { token: read.token() });
+            assert!(catalogs.next_effect().is_none(), "and one — a second would walk the whole store again");
+        }
+    }
+
+    /// The cascade orders **one** re-read, after the folder — never one per member. The cursor is
+    /// `Some` for every member step and `None` by the time the folder's answer arrives, which is
+    /// the whole of the rule.
+    #[test]
+    fn a_cascade_orders_one_re_read_after_the_folder() {
+        let mut catalogs = with_trip(50, &[10, 20, 30], &[10, 20, 30]);
+        catalogs.admit_intent(CatalogIntent::DeleteTrip { id: 50 }).unwrap();
+
+        // `None` is the re-read; every other step names the object it removed.
+        let mut steps: heapless::Vec<Option<CatalogObjectId>, 8> = heapless::Vec::new();
+        for _ in 0..=steps.capacity() {
+            let Some(effect) = catalogs.next_effect() else { break };
+            match effect {
+                CatalogEffect::RemoveObject { token, object } => {
+                    let _ = steps.push(Some(object));
+                    catalogs.apply_outcome(CatalogOutcome::ObjectRemoved { token, object, existed: true });
+                }
+                CatalogEffect::ReadCatalog { token } => {
+                    let _ = steps.push(None);
+                    catalogs.apply_outcome(CatalogOutcome::CatalogRead { token });
+                }
+            }
+        }
+        assert_eq!(
+            steps.as_slice(),
+            &[Some(10), Some(20), Some(30), Some(50), None],
+            "every member, then the folder, then exactly one re-read"
+        );
+    }
+
+    /// A removal the store **refused** changed nothing, so it orders nothing. Retention re-queues
+    /// its own candidate; a read per retry would walk the store for a store that did not move.
+    #[test]
+    fn a_removal_the_store_refused_orders_no_re_read() {
+        let mut catalogs = CatalogState::new();
+        catalogs.admit_intent(CatalogIntent::DeleteRoute { id: 10 }).unwrap();
+        let effect = catalogs.next_effect().expect("the removal");
+        catalogs.apply_outcome(CatalogOutcome::Failed { token: effect.token(), error: CatalogError::RemoveFailed });
+        assert!(catalogs.next_effect().is_none(), "a refused removal moved nothing, so it orders nothing");
     }
 
     /// The placement path must land exactly the state the by-value path builds.
