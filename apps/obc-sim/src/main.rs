@@ -747,9 +747,9 @@ struct Stores<'a> {
 }
 
 /// What only the headless driver can do: a fixed card-free figure (the sim has no FAT to scan) and
-/// the update answers `--dfu` stages. Settings persistence is deliberately absent — a `--png` run
-/// must not write the developer's settings file — and the default acknowledges the write so the
-/// domain settles instead of parking.
+/// the update answers `--dfu` stages. Persistence is deliberately absent for **both** durable
+/// records — a `--png` run must not write the developer's settings file, nor their alert anchors —
+/// and the defaults acknowledge the writes so the domains settle instead of parking.
 #[derive(Default)]
 struct HeadlessPlatform {
     /// The `--dfu` scan answer, taken by the first scan the flow asks for.
