@@ -1,14 +1,15 @@
 //! The POI create-route flow (epic #116, R4): the detail's press → "Create a route?" confirm, the
-//! one-shot [`NavRequest`] seam the host drains (the `PlanRoute` command), and the host's answer
-//! (the `NavPlanned` event) — success swaps the confirm for the computed-route overview
+//! search the pass hands the executor (Navigator's `Acquire`), and the executor's terminal answer
+//! (`PlanFinished` / `Failed`) — success swaps the confirm for the computed-route overview
 //! (activated, length only), the locked two failure tiers swap it for the failure card, and the
 //! overview's accept honours the ride state (idle → start; tracking → the existing save/swap
 //! prompt). Screens are driven through the real gesture path with the POI harness's fixture map,
 //! exactly like `poi.rs`.
 
 use embedded_graphics::pixelcolor::Rgb888;
+use obc_app::navigator::{NavigatorError, NavigatorOutcome, PlannerWork};
 use obc_app::screen::{needle_region, Screen};
-use obc_app::{App, AppState, Gesture, HostCommand, HostMailbox, IdleReturn, Mode, NavRequest, RouteSummary, Settings};
+use obc_app::{App, AppState, CatalogObjectId, Gesture, IdleReturn, Mode, NavRequest, RouteSummary, Settings};
 use obc_map_scene::BBox;
 use obc_ports::{Fix, InputClock};
 use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource};
@@ -16,7 +17,7 @@ use obc_route::NavError;
 use obcm_testkit::{build_poi_map, PoiSpec};
 
 mod common;
-use common::Buf;
+use common::{Buf, Planner};
 
 /// The fixture map bbox `(min_lon, min_lat, max_lon, max_lat)` and query point — `poi.rs`'s.
 const BBOX: (i32, i32, i32, i32) = (7_000_000, 43_000_000, 8_000_000, 44_000_000);
@@ -66,32 +67,38 @@ fn open_detail(app: &mut App, bytes: &[u8]) {
     assert!(matches!(app.top_screen(), Screen::PoiDetail(_)));
 }
 
-/// Drive the detail into the confirm and press *Create route*, returning the drained request.
-/// The confirm swaps itself for the **planning** screen (#499) — the spinner the host answers into.
-fn request_route(app: &mut App) -> NavRequest {
+/// Drive the detail into the confirm and press *Create route*, returning the search the pass hands
+/// the executor. The confirm swaps itself for the **planning** screen (#499) — the spinner the
+/// answer lands in.
+fn request_route(app: &mut App, host: &mut Planner) -> NavRequest {
     app.apply_gesture(Gesture::Press); // detail → confirm
     assert!(matches!(app.top_screen(), Screen::NavConfirm(_)), "detail press opens the confirm");
     app.apply_gesture(Gesture::Press); // Create route (row 0)
     assert!(matches!(app.top_screen(), Screen::NavPlanning(_)), "accepting swaps to the planning screen");
-    plan_req(app).expect("Create route records the one-shot request")
+    plan_req(app, host).expect("Create route records the one-shot request")
 }
 
-/// The drained `PlanRoute` request, if one is pending (the `PlanRoute` drain): drain the
-/// typed protocol and pick the plan out of the mailbox. FAR-19, #812.
-fn plan_req(app: &mut App) -> Option<NavRequest> {
-    let mut mb: HostMailbox = HostMailbox::new();
-    let _ = app.drain_host_commands(&mut mb);
-    core::iter::from_fn(|| mb.pop()).find_map(|c| match c {
-        HostCommand::PlanRoute(req) => Some(req),
-        _ => None,
-    })
+/// The route search the pass handed the executor, if it handed one out.
+fn plan_req(app: &mut App, host: &mut Planner) -> Option<NavRequest> {
+    match host.take_work(app) {
+        Some(PlannerWork::Route(req)) => Some(req),
+        Some(other) => panic!("this flow plans routes — {other:?}"),
+        None => None,
+    }
 }
 
-/// Whether a `CancelRoutePlan` is pending (the `CancelRoutePlan` peek). FAR-19, #812.
-fn took_cancel(app: &mut App) -> bool {
-    let mut mb: HostMailbox = HostMailbox::new();
-    let _ = app.drain_host_commands(&mut mb);
-    core::iter::from_fn(|| mb.pop()).any(|c| matches!(c, HostCommand::CancelRoutePlan))
+/// The executor's terminal answer to the running search.
+fn answer(app: &mut App, host: &mut Planner, result: Result<CatalogObjectId, obc_route::NavError>) {
+    host.answer(app, |token| match result {
+        Ok(route) => NavigatorOutcome::PlanFinished { token, route },
+        Err(error) => NavigatorOutcome::Failed { token, error: NavigatorError::Plan(error) },
+    });
+}
+
+/// Whether DeviceCore asked for the planner workspace back — the rider's cancel, which is what
+/// makes the executor abort the search and discard the partial file.
+fn took_cancel(app: &mut App, host: &mut Planner) -> bool {
+    host.took_release(app)
 }
 
 /// A one-route catalog standing in for the rescan after the host wrote `_nav.obcr` — the summary
@@ -114,18 +121,20 @@ fn nav_catalog(app: &mut App) {
 fn detail_press_confirm_create_records_the_request() {
     let bytes = fixture();
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    let mut host = Planner::default();
     open_detail(&mut app, &bytes);
-    let req = request_route(&mut app);
+    let req = request_route(&mut app, &mut host);
     assert_eq!(req.from, POS, "the route starts at the rider's fix");
     assert_eq!(req.to, POI, "…and ends at the POI");
     assert_eq!(req.name(), "Fountain North", "named POIs title the route with their stored name");
-    assert!(plan_req(&mut app).is_none(), "the request is a one-shot");
+    assert!(plan_req(&mut app, &mut host).is_none(), "the request is a one-shot");
 }
 
 #[test]
 fn unnamed_poi_falls_back_to_the_subtype_label() {
     let bytes = fixture();
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    let mut host = Planner::default();
     app.state.user_fix = Some(Fix::at(POS.1, POS.0));
     app.apply_gesture(Gesture::BackHold);
     app.apply_gesture(Gesture::Step(2));
@@ -134,7 +143,7 @@ fn unnamed_poi_falls_back_to_the_subtype_label() {
     app.apply_gesture(Gesture::Press);
     render(&mut app, &bytes);
     app.apply_gesture(Gesture::Press); // → detail (the unnamed campsite)
-    let req = request_route(&mut app);
+    let req = request_route(&mut app, &mut host);
     assert_eq!(req.name(), "Campsite", "an unnamed POI titles the route with its subtype label");
 }
 
@@ -142,12 +151,13 @@ fn unnamed_poi_falls_back_to_the_subtype_label() {
 fn confirm_cancel_and_back_return_to_the_detail() {
     let bytes = fixture();
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    let mut host = Planner::default();
     open_detail(&mut app, &bytes);
     app.apply_gesture(Gesture::Press); // → confirm
     app.apply_gesture(Gesture::Step(1)); // → Cancel
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::PoiDetail(_)), "Cancel returns to the detail");
-    assert!(plan_req(&mut app).is_none(), "cancel records nothing");
+    assert!(plan_req(&mut app, &mut host).is_none(), "cancel records nothing");
 
     app.apply_gesture(Gesture::Press); // → confirm again
     app.apply_gesture(Gesture::Back);
@@ -158,17 +168,19 @@ fn confirm_cancel_and_back_return_to_the_detail() {
 fn success_activates_and_opens_the_computed_overview() {
     let bytes = fixture();
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    let mut host = Planner::default();
     open_detail(&mut app, &bytes);
-    let _req = request_route(&mut app);
+    let _req = request_route(&mut app, &mut host);
 
     // The host's success path: catalog rescanned (the committed nav route under id 7), then the
     // answer — resolved by durable id, exactly like an upload notification.
     nav_catalog(&mut app);
     let _ = app.take_dirty();
-    app.apply_event(obc_app::HostEvent::NavPlanned(Ok(7)));
+    let _ = host.take_render();
+    answer(&mut app, &mut host, Ok(7));
     assert!(matches!(app.top_screen(), Screen::RouteOverview(_)), "success swaps the confirm for the overview");
     assert_eq!(app.active_route_index(), Some(0), "the computed route activates for the preview");
-    assert!(app.take_dirty().map, "the swap repaints");
+    assert!(host.take_render().map, "the swap repaints");
 
     // Accept from Idle = the normal route start.
     app.apply_gesture(Gesture::Press);
@@ -181,10 +193,11 @@ fn success_activates_and_opens_the_computed_overview() {
 fn overview_back_restores_the_previous_route_and_returns_to_the_detail() {
     let bytes = fixture();
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    let mut host = Planner::default();
     open_detail(&mut app, &bytes);
-    let _req = request_route(&mut app);
+    let _req = request_route(&mut app, &mut host);
     nav_catalog(&mut app);
-    app.apply_event(obc_app::HostEvent::NavPlanned(Ok(7)));
+    answer(&mut app, &mut host, Ok(7));
     assert_eq!(app.active_route_index(), Some(0));
 
     app.apply_gesture(Gesture::Back); // cancel the overview
@@ -199,6 +212,7 @@ fn overview_back_restores_the_previous_route_and_returns_to_the_detail() {
 fn mid_ride_accept_opens_the_save_swap_prompt() {
     let bytes = fixture();
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    let mut host = Planner::default();
     // Ride first: a tracking session over the (single-entry) catalog.
     nav_catalog(&mut app);
     app.state.user_fix = Some(Fix::at(POS.1, POS.0));
@@ -216,8 +230,8 @@ fn mid_ride_accept_opens_the_save_swap_prompt() {
     app.apply_gesture(Gesture::Press);
     render(&mut app, &bytes);
     app.apply_gesture(Gesture::Press); // → detail
-    let _req = request_route(&mut app);
-    app.apply_event(obc_app::HostEvent::NavPlanned(Ok(7)));
+    let _req = request_route(&mut app, &mut host);
+    answer(&mut app, &mut host, Ok(7));
     assert!(matches!(app.top_screen(), Screen::RouteOverview(_)));
 
     // Accept while tracking → the existing save/swap prompt, session untouched.
@@ -241,9 +255,10 @@ fn failure_tiers_swap_the_confirm_for_the_right_card() {
         [(NavError::Exhausted, "range (exhausted)", true), (NavError::NoPath, "generic", false)]
     {
         let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+        let mut host = Planner::default();
         open_detail(&mut app, &bytes);
-        let _req = request_route(&mut app);
-        app.apply_event(obc_app::HostEvent::NavPlanned(Err(err)));
+        let _req = request_route(&mut app, &mut host);
+        answer(&mut app, &mut host, Err(err));
         match app.top_screen() {
             Screen::NavFail(card) => assert_eq!(
                 card.shows_too_far(),
@@ -263,55 +278,48 @@ fn failure_tiers_swap_the_confirm_for_the_right_card() {
 fn create_without_any_position_degrades_to_the_generic_tier() {
     let bytes = fixture();
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    let mut host = Planner::default();
     open_detail(&mut app, &bytes);
     app.apply_gesture(Gesture::Press); // → confirm
     app.state.user_fix = None; // genuinely no position (can't happen after a snapshot, but locked to degrade)
     app.apply_gesture(Gesture::Press); // Create route
     assert!(matches!(app.top_screen(), Screen::NavFail(_)), "no position ⇒ the generic failure tier, no request");
-    assert!(plan_req(&mut app).is_none(), "nothing was asked of the host");
+    assert!(plan_req(&mut app, &mut host).is_none(), "nothing was asked of the host");
 }
 
 #[test]
 fn unresolvable_id_degrades_to_the_generic_tier() {
     let bytes = fixture();
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    let mut host = Planner::default();
     open_detail(&mut app, &bytes);
-    let _req = request_route(&mut app);
+    let _req = request_route(&mut app, &mut host);
     // The host claims success under an id the (empty) catalog doesn't hold — a failed rescan.
-    app.apply_event(obc_app::HostEvent::NavPlanned(Ok(42)));
+    answer(&mut app, &mut host, Ok(42));
     assert!(matches!(app.top_screen(), Screen::NavFail(_)), "an unresolvable id is a failure, not a wrong route");
-}
-
-#[test]
-fn result_without_a_planning_screen_on_stack_is_dropped() {
-    let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
-    nav_catalog(&mut app);
-    let _ = app.take_dirty();
-    app.apply_event(obc_app::HostEvent::NavPlanned(Ok(7)));
-    assert!(matches!(app.top_screen(), Screen::Home(_)), "no planning screen up ⇒ the answer is dropped");
-    assert_eq!(app.active_route_index(), None, "…and nothing activates behind the rider's back");
-    assert!(!app.take_dirty().map, "…and nothing repaints");
 }
 
 #[test]
 fn back_on_planning_cancels_cleanly() {
     let bytes = fixture();
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    let mut host = Planner::default();
     open_detail(&mut app, &bytes);
-    let _req = request_route(&mut app);
-    assert!(!took_cancel(&mut app), "no cancel recorded yet");
+    let _req = request_route(&mut app, &mut host);
+    assert!(!took_cancel(&mut app, &mut host), "no cancel recorded yet");
 
     // Back mid-plan: straight back to the POI detail — no failure card — and the host's
     // cancel one-shot rings so it aborts the plan + discards the partial file.
     app.apply_gesture(Gesture::Back);
     assert!(matches!(app.top_screen(), Screen::PoiDetail(_)), "cancel returns to the detail");
-    assert!(took_cancel(&mut app), "the cancel one-shot rings for the host");
-    assert!(!took_cancel(&mut app), "…exactly once");
+    assert!(took_cancel(&mut app, &mut host), "the cancel one-shot rings for the host");
+    assert!(!took_cancel(&mut app, &mut host), "…exactly once");
 
-    // A late answer (the host may have finished the step before draining the cancel — it
-    // shouldn't notify after an abort, but stay defensive) finds no planning screen: dropped.
+    // A late answer (the executor may have finished its search before it saw the release — it
+    // shouldn't answer after an abort, but stay defensive) carries the abandoned operation's
+    // token, which Navigator no longer holds: dropped.
     nav_catalog(&mut app);
-    app.apply_event(obc_app::HostEvent::NavPlanned(Ok(7)));
+    host.answer_late(&mut app, |token| NavigatorOutcome::PlanFinished { token, route: 7 });
     assert!(matches!(app.top_screen(), Screen::PoiDetail(_)), "a post-cancel answer is dropped");
     assert_eq!(app.active_route_index(), None, "nothing activates after a cancel");
 }
@@ -344,8 +352,9 @@ fn needle_region_covers_the_spin() {
     use embedded_graphics::prelude::Point;
     let bytes = fixture();
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    let mut host = Planner::default();
     open_detail(&mut app, &bytes);
-    let _ = request_route(&mut app);
+    let _ = request_route(&mut app, &mut host);
     let region = needle_region(240, 320);
 
     let mut prev = Buf::new(240, 320);
@@ -385,8 +394,9 @@ fn clipped_replay_matches_the_full_render_inside_the_region() {
     use embedded_graphics::prelude::Point;
     let bytes = fixture();
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    let mut host = Planner::default();
     open_detail(&mut app, &bytes);
-    let _ = request_route(&mut app);
+    let _ = request_route(&mut app, &mut host);
     let region = needle_region(240, 320);
 
     app.advance_animations(InputClock(40)); // anchor the spinner clocks
@@ -424,10 +434,13 @@ fn planning_region_scopes_take_dirty() {
     // the region away; and before a first frame states the panel size, the spinner abstains.
     let bytes = fixture();
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    // The passes that hand the search out run on this suite's own clock, so the spinner's anchor
+    // and the ticks below share one timeline.
+    let mut host = Planner::at(1_000);
     open_detail(&mut app, &bytes);
-    let _ = request_route(&mut app);
+    let _ = request_route(&mut app, &mut host);
     let _ = app.take_dirty(); // drain the navigation's own dirt
-    app.advance_animations(InputClock(1_000)); // anchors the spinner clocks — nothing fired yet
+    app.advance_animations(InputClock(1_000)); // the spinner's clocks are anchored — nothing fired yet
     assert_eq!(app.take_dirty(), obc_app::Dirty::CLEAN, "the anchoring tick claims nothing");
 
     app.advance_animations(InputClock(1_066)); // one spinner cadence later: the repaint claim
@@ -459,15 +472,16 @@ fn overview_after_debug_plan_goes_quiet() {
     // The #500 bench flow: planning pushed over Home (debug_start_nav), answered with a
     // resolvable id → overview. The app must then go quiet: no repaint claims, no short wake.
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    let mut host = Planner::default();
     // Isolate the "spinner leaves no repaint / wake behind" claim from the idle-return wake (which
     // the non-ride overview would otherwise legitimately arm).
     app.set_settings(Settings { idle_return: IdleReturn::Never, ..Settings::default() });
     nav_catalog(&mut app);
     app.debug_start_nav(POS, POI, "Bench");
     assert!(matches!(app.top_screen(), Screen::NavPlanning(_)));
-    let _ = plan_req(&mut app);
+    let _ = plan_req(&mut app, &mut host);
     let _ = app.take_dirty();
-    app.apply_event(obc_app::HostEvent::NavPlanned(Ok(7)));
+    answer(&mut app, &mut host, Ok(7));
     assert!(matches!(app.top_screen(), Screen::RouteOverview(_)), "answer swaps to the overview");
     let _ = app.take_dirty();
     for i in 1..=20u32 {
@@ -485,10 +499,11 @@ fn repeated_debug_requests_stack_one_planning_screen() {
     // The bench host repeats the `N` line against the flaky VCOM; only one planning screen may
     // result, or the host's answer strands the extras spinning forever (the #500 bench artifact).
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    let mut host = Planner::default();
     app.set_settings(Settings { idle_return: IdleReturn::Never, ..Settings::default() });
     nav_catalog(&mut app);
     assert!(app.debug_start_nav(POS, POI, "First"));
-    let request = plan_req(&mut app).expect("the first debug request drains into the active host plan");
+    let request = plan_req(&mut app, &mut host).expect("the first debug request drains into the active host plan");
     assert_eq!(request.name(), "First");
     assert_eq!(request.from, POS);
     assert_eq!(request.to, POI);
@@ -498,8 +513,8 @@ fn repeated_debug_requests_stack_one_planning_screen() {
         matches!(app.top_screen(), Screen::NavPlanning(_))
     };
     assert!(planning(&app));
-    assert!(plan_req(&mut app).is_none(), "the rejected repeat queues no second plan");
-    app.apply_event(obc_app::HostEvent::NavPlanned(Ok(7)));
+    assert!(plan_req(&mut app, &mut host).is_none(), "the rejected repeat queues no second plan");
+    answer(&mut app, &mut host, Ok(7));
     assert!(matches!(app.top_screen(), Screen::RouteOverview(_)), "the answer lands on the one screen");
     let _ = app.take_dirty();
     app.advance_animations(InputClock(2_000));
@@ -515,11 +530,12 @@ fn repeated_debug_requests_stack_one_planning_screen() {
 fn nav_preview_seam_fires_once_per_plan() {
     let bytes = fixture();
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    let mut host = Planner::default();
     assert!(!app.nav_preview_missing(), "no computed overview, no cue");
     open_detail(&mut app, &bytes);
-    let _req = request_route(&mut app);
+    let _req = request_route(&mut app, &mut host);
     nav_catalog(&mut app);
-    app.apply_event(obc_app::HostEvent::NavPlanned(Ok(7)));
+    answer(&mut app, &mut host, Ok(7));
     assert!(app.nav_preview_missing(), "the fresh overview wants its preview");
 
     let _ = app.take_dirty();
@@ -538,16 +554,17 @@ fn nav_preview_seam_fires_once_per_plan() {
 fn a_new_plan_starts_preview_less() {
     let bytes = fixture();
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    let mut host = Planner::default();
     open_detail(&mut app, &bytes);
-    let _req = request_route(&mut app);
+    let _req = request_route(&mut app, &mut host);
     nav_catalog(&mut app);
-    app.apply_event(obc_app::HostEvent::NavPlanned(Ok(7)));
+    answer(&mut app, &mut host, Ok(7));
     app.set_nav_preview(&[(0, 0), (1, 1)]);
     assert!(!app.nav_preview_missing());
 
     // Back to the detail, plan again (the reserved file is rewritten under the same id).
     app.apply_gesture(Gesture::Back);
-    let _req = request_route(&mut app);
-    app.apply_event(obc_app::HostEvent::NavPlanned(Ok(7)));
+    let _req = request_route(&mut app, &mut host);
+    answer(&mut app, &mut host, Ok(7));
     assert!(app.nav_preview_missing(), "the re-plan's overview wants a fresh preview");
 }

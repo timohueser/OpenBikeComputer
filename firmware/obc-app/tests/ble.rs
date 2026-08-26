@@ -1,5 +1,5 @@
-//! The host→app BLE event/state seam (epic #447, P1 + the P8 extension): [`App::set_ble_status`]
-//! and the `StoreChanged` event, the three-state link + paired flag the Bluetooth screen
+//! The host→app BLE state seam (epic #447, P1 + the P8 extension): [`App::set_ble_status`], the
+//! three-state link + paired flag the Bluetooth screen
 //! reads, and the connected indicator's dirty-tracking contract — a link change repaints only
 //! where the state is drawn (Home / the menu title bar / the Bluetooth screen), never on a riding
 //! view or a static screen whose status is unchanged.
@@ -12,10 +12,11 @@ fn connected() -> BleStatus {
     BleStatus { link: BleLink::Connected, passkey: None, paired: true }
 }
 
-/// Whether a `ForgetBond` is pending (the `take_ble_forget` successor). FAR-19, #812.
+/// Whether a `ForgetBond` is pending. The bond removal is one of the three residual commands: it is
+/// confirmed by a link-status fact rather than a reply, so it stays on the old protocol until #1400.
 fn took_forget(app: &mut App) -> bool {
     let mut mb: HostMailbox = HostMailbox::new();
-    let _ = app.drain_host_commands(&mut mb);
+    let _ = app.drain_residual_commands(&mut mb);
     core::iter::from_fn(|| mb.pop()).any(|c| matches!(c, HostCommand::ForgetBond))
 }
 
@@ -57,15 +58,6 @@ fn take_ble_forget_is_a_one_shot() {
     app.state.ble_forget_pending = true; // as the Bluetooth screen's guarded hold sets it
     assert!(took_forget(&mut app), "the pending request drains…");
     assert!(!took_forget(&mut app), "…exactly once");
-}
-
-#[test]
-fn notify_store_changed_counts_pending_signals() {
-    let mut app = App::new_idle(AppState::new(0, 0, 0.05));
-    assert_eq!(app.store_changed_pending(), 0, "nothing pending at boot");
-    app.apply_event(obc_app::HostEvent::StoreChanged);
-    app.apply_event(obc_app::HostEvent::StoreChanged);
-    assert_eq!(app.store_changed_pending(), 2, "a burst of commits accumulates — never coalesced away");
 }
 
 // --- the indicator's dirty contract (on the connected-glyph screens) --------

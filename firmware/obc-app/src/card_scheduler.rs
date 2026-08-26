@@ -20,7 +20,7 @@ use crate::catalog_state::CatalogState;
 use crate::dfu::{DfuFailure, DfuInstallError, DfuScanError, DfuScanReport};
 use crate::screen::{self, MapTransfer, Screen, Stack, WarningFlags};
 
-/// One committed route upload, as [`App::apply_event`](crate::App::apply_event) posts it.
+/// One committed route upload, as the pass's fact stage posts it.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct UploadEvent {
     /// The committed route's durable object id — resolved to a catalog index at *delivery* time.
@@ -625,6 +625,7 @@ impl CardScheduler {
 
 #[cfg(test)]
 mod tests {
+    use super::{BootUpdate, DfuLanding};
     use crate::screen::{MapTransfer, WarningFlags, MAX_DEPTH};
     use crate::{App, AppState, BleLink, BleStatus, Gesture, Screen};
     use obc_ports::InputClock;
@@ -636,7 +637,7 @@ mod tests {
 
     // --- ported behaviour: the families' own contracts -------------------------------------------
 
-    /// The [`HostEvent::Warning`](crate::HostEvent::Warning) contract: a raised flag opens the card, further flags coalesce onto the
+    /// The warning-fact contract: a raised flag opens the card, further flags coalesce onto the
     /// open one (never a second card), any press dismisses it, and each flag is shown **once** — an
     /// already-shown flag stays quiet, but a genuinely new one re-opens the card with only itself.
     #[test]
@@ -645,18 +646,18 @@ mod tests {
         assert!(matches!(app.top_screen(), Screen::Home(_)));
 
         // An empty warning opens nothing.
-        app.apply_event(crate::HostEvent::Warning(WarningFlags::NONE));
+        app.on_warning(WarningFlags::NONE);
         assert!(matches!(app.top_screen(), Screen::Home(_)), "an empty warning is a no-op");
 
         // The first flag opens the card.
-        app.apply_event(crate::HostEvent::Warning(WarningFlags::NO_GPS));
+        app.on_warning(WarningFlags::NO_GPS);
         match app.top_screen() {
             Screen::Warning(w) => assert!(w.flags().contains(WarningFlags::NO_GPS)),
             _ => panic!("a raised warning opens the card"),
         }
 
         // A second flag while the card is up joins it — one card, both flags.
-        app.apply_event(crate::HostEvent::Warning(WarningFlags::MAP_SLOW));
+        app.on_warning(WarningFlags::MAP_SLOW);
         assert_eq!(app.ui.stack.len(), 2, "the new flag joins the open card, not a second one");
         match app.top_screen() {
             Screen::Warning(w) => {
@@ -671,11 +672,11 @@ mod tests {
         assert!(matches!(app.top_screen(), Screen::Home(_)), "dismiss pops the card");
 
         // A flag already shown doesn't nag again.
-        app.apply_event(crate::HostEvent::Warning(WarningFlags::NO_GPS));
+        app.on_warning(WarningFlags::NO_GPS);
         assert!(matches!(app.top_screen(), Screen::Home(_)), "an already-shown flag stays quiet");
 
         // A brand-new flag re-opens the card — showing only the fresh flag, not the acknowledged ones.
-        app.apply_event(crate::HostEvent::Warning(WarningFlags::NO_COMPASS));
+        app.on_warning(WarningFlags::NO_COMPASS);
         match app.top_screen() {
             Screen::Warning(w) => {
                 assert!(w.flags().contains(WarningFlags::NO_COMPASS));
@@ -701,18 +702,18 @@ mod tests {
 
         // No wait up → dropped.
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        app.apply_event(crate::HostEvent::DfuScanned(Ok(report.clone())));
+        app.post_dfu_landing(DfuLanding::Scanned(Ok(report.clone())));
         assert!(!app.ui.stack.iter().any(|s| matches!(s, Screen::DfuConfirm(_))), "no wait ⇒ answer dropped");
 
         // Wait up → Ok swaps in the confirm.
         let _ = app.ui.stack.push(Screen::DfuCheck(crate::screen::DfuCheckScreen::new()));
-        app.apply_event(crate::HostEvent::DfuScanned(Ok(report)));
+        app.post_dfu_landing(DfuLanding::Scanned(Ok(report)));
         assert!(matches!(app.top_screen(), Screen::DfuConfirm(_)), "Ok swaps the wait for the confirm");
 
         // Wait up → Err swaps in the error card, carrying the variant.
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         let _ = app.ui.stack.push(Screen::DfuCheck(crate::screen::DfuCheckScreen::new()));
-        app.apply_event(crate::HostEvent::DfuScanned(Err(DfuScanError::TooFragmented)));
+        app.post_dfu_landing(DfuLanding::Scanned(Err(DfuScanError::TooFragmented)));
         match app.top_screen() {
             Screen::DfuError(e) => {
                 assert_eq!(e.reason(), crate::screen::DfuErrorReason::Scan(DfuScanError::TooFragmented))
@@ -733,13 +734,13 @@ mod tests {
 
         // No progress spinner up → dropped.
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        app.apply_event(crate::HostEvent::DfuInstallFailed(DfuInstallError::NoCard));
+        app.post_dfu_landing(DfuLanding::InstallFailed(DfuInstallError::NoCard));
         assert!(!app.ui.stack.iter().any(|s| matches!(s, Screen::DfuError(_))), "no spinner ⇒ answer dropped");
 
         // A refusal replaces the spinner with the error card, carrying the reason.
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         let _ = app.ui.stack.push(Screen::DfuProgress(crate::screen::DfuProgressScreen::new()));
-        app.apply_event(crate::HostEvent::DfuInstallFailed(DfuInstallError::Recording));
+        app.post_dfu_landing(DfuLanding::InstallFailed(DfuInstallError::Recording));
         match app.top_screen() {
             Screen::DfuError(e) => assert_eq!(e.reason(), DfuErrorReason::Install(DfuInstallError::Recording)),
             _ => panic!("a refusal swaps the spinner for the error card"),
@@ -749,7 +750,7 @@ mod tests {
         // An arm-time re-scan failure folds to a plain scan reason (shared copy).
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         let _ = app.ui.stack.push(Screen::DfuProgress(crate::screen::DfuProgressScreen::new()));
-        app.apply_event(crate::HostEvent::DfuInstallFailed(DfuInstallError::Scan(crate::dfu::DfuScanError::Damaged)));
+        app.post_dfu_landing(DfuLanding::InstallFailed(DfuInstallError::Scan(crate::dfu::DfuScanError::Damaged)));
         match app.top_screen() {
             Screen::DfuError(e) => assert_eq!(e.reason(), DfuErrorReason::Scan(crate::dfu::DfuScanError::Damaged)),
             _ => panic!("the re-scan bucket lands the error card"),
@@ -759,7 +760,7 @@ mod tests {
         // spinner) lands the error card on the installing card the same way.
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         let _ = app.ui.stack.push(Screen::DfuInstalling(crate::screen::DfuInstallingScreen::new()));
-        app.apply_event(crate::HostEvent::DfuInstallFailed(DfuInstallError::SnapshotFailed));
+        app.post_dfu_landing(DfuLanding::InstallFailed(DfuInstallError::SnapshotFailed));
         match app.top_screen() {
             Screen::DfuError(e) => assert_eq!(e.reason(), DfuErrorReason::Install(DfuInstallError::SnapshotFailed)),
             _ => panic!("a post-swap failure swaps the installing card for the error card"),
@@ -775,13 +776,13 @@ mod tests {
         // The confirm flow: the spinner is up → swapped in place, never stacked.
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         let _ = app.ui.stack.push(Screen::DfuProgress(crate::screen::DfuProgressScreen::new()));
-        app.apply_event(crate::HostEvent::DfuInstallBegan);
+        app.post_dfu_landing(DfuLanding::InstallBegan);
         assert!(matches!(app.top_screen(), Screen::DfuInstalling(_)), "the spinner became the installing card");
         assert!(!app.ui.stack.iter().any(|s| matches!(s, Screen::DfuProgress(_))), "the spinner is gone");
 
         // The debug direct-arm door: no spinner → the card is pushed on top.
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        app.apply_event(crate::HostEvent::DfuInstallBegan);
+        app.post_dfu_landing(DfuLanding::InstallBegan);
         assert!(matches!(app.top_screen(), Screen::DfuInstalling(_)), "pushed with no spinner up");
     }
 
@@ -867,7 +868,7 @@ mod tests {
         app.advance_animations(InputClock(1000));
         assert!(!app.ui.stack.iter().any(|s| matches!(s, Screen::DfuUpdated(_))), "a normal boot shows no toast");
 
-        app.apply_event(crate::HostEvent::UpdateConfirmed(crate::dfu::clamp("v2.0.0-0-gccc")));
+        app.post_boot_update(BootUpdate::Confirmed(crate::dfu::clamp("v2.0.0-0-gccc")));
         app.advance_animations(InputClock(2000));
         assert!(matches!(app.top_screen(), Screen::DfuUpdated(_)), "the confirmed update surfaces the toast");
         app.ui.stack.pop(); // dismiss
@@ -883,10 +884,10 @@ mod tests {
         app.advance_animations(InputClock(1000));
         assert!(!app.ui.stack.iter().any(|s| matches!(s, Screen::DfuFailed(_))), "a normal boot shows no failure card");
 
-        app.apply_event(crate::HostEvent::UpdateFailed {
-            why: crate::dfu::DfuFailure::Reverted,
-            staged: Some(crate::dfu::clamp("v2.0.0-0-gccc")),
-        });
+        app.post_boot_update(BootUpdate::Failed(
+            crate::dfu::DfuFailure::Reverted,
+            Some(crate::dfu::clamp("v2.0.0-0-gccc")),
+        ));
         app.advance_animations(InputClock(2000));
         match app.top_screen() {
             Screen::DfuFailed(card) => assert_eq!(card.why(), crate::dfu::DfuFailure::Reverted),
@@ -909,8 +910,8 @@ mod tests {
 
         pair(&mut app, Some(4242));
         app.set_map_transfer(Some(MapTransfer::Receiving { received_kib: 1, total_kib: 10 }));
-        app.apply_event(crate::HostEvent::Warning(WarningFlags::NO_GPS));
-        app.apply_event(crate::HostEvent::UpdateConfirmed(crate::dfu::clamp("v2.0.0-0-gccc")));
+        app.on_warning(WarningFlags::NO_GPS);
+        app.post_boot_update(BootUpdate::Confirmed(crate::dfu::clamp("v2.0.0-0-gccc")));
         assert!(matches!(app.top_screen(), Screen::Home(_)), "nothing lands mid-hold");
         assert_eq!(app.debug_stack_len(), 1);
 
@@ -942,7 +943,7 @@ mod tests {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         let _ = app.ui.stack.push(Screen::DfuProgress(crate::screen::DfuProgressScreen::new()));
         app.set_hold_progress(0.5);
-        app.apply_event(crate::HostEvent::DfuInstallBegan);
+        app.post_dfu_landing(DfuLanding::InstallBegan);
         assert!(matches!(app.top_screen(), Screen::DfuInstalling(_)), "the terminal frame lands under the hold");
         assert!(!app.ui.stack.iter().any(|s| matches!(s, Screen::DfuProgress(_))), "the spinner is gone");
 
@@ -951,13 +952,13 @@ mod tests {
         let _ = app.ui.stack.push(Screen::DfuCheck(crate::screen::DfuCheckScreen::new()));
         app.set_hold_progress(0.9);
         let report = DfuScanReport { installed: mk("v1"), staged: mk("v2"), first_install: false };
-        app.apply_event(crate::HostEvent::DfuScanned(Ok(report)));
+        app.post_dfu_landing(DfuLanding::Scanned(Ok(report)));
         assert!(matches!(app.top_screen(), Screen::DfuConfirm(_)), "the scan answer lands under the hold");
 
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         let _ = app.ui.stack.push(Screen::DfuProgress(crate::screen::DfuProgressScreen::new()));
         app.set_hold_progress(0.3);
-        app.apply_event(crate::HostEvent::DfuInstallFailed(DfuInstallError::NoCard));
+        app.post_dfu_landing(DfuLanding::InstallFailed(DfuInstallError::NoCard));
         assert!(matches!(app.top_screen(), Screen::DfuError(_)), "the failure lands under the hold");
     }
 
@@ -971,16 +972,13 @@ mod tests {
         let cards = |app: &App| {
             app.ui.stack.iter().filter(|s| matches!(s, Screen::DfuUpdated(_) | Screen::DfuFailed(_))).count()
         };
-        let fail = || crate::HostEvent::UpdateFailed {
-            why: crate::dfu::DfuFailure::Reverted,
-            staged: Some(crate::dfu::clamp("v2.0.0-0-gccc")),
-        };
+        let fail = || BootUpdate::Failed(crate::dfu::DfuFailure::Reverted, Some(crate::dfu::clamp("v2.0.0-0-gccc")));
 
         // A hold keeps the first verdict unconsumed while the others arrive.
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         app.set_hold_progress(0.5);
-        app.apply_event(crate::HostEvent::UpdateConfirmed(crate::dfu::clamp("v1.0.0-0-gaaa")));
-        app.apply_event(fail());
+        app.post_boot_update(BootUpdate::Confirmed(crate::dfu::clamp("v1.0.0-0-gaaa")));
+        app.post_boot_update(fail());
         app.set_hold_progress(0.0);
         app.advance_animations(InputClock(100));
         assert_eq!(cards(&app), 1, "one card, never two");
@@ -989,8 +987,8 @@ mod tests {
         // Symmetric the other way round: a confirm arriving behind a failure is rejected too.
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
         app.set_hold_progress(0.5);
-        app.apply_event(fail());
-        app.apply_event(crate::HostEvent::UpdateConfirmed(crate::dfu::clamp("v1.0.0-0-gaaa")));
+        app.post_boot_update(fail());
+        app.post_boot_update(BootUpdate::Confirmed(crate::dfu::clamp("v1.0.0-0-gaaa")));
         app.set_hold_progress(0.0);
         app.advance_animations(InputClock(100));
         assert_eq!(cards(&app), 1);
@@ -1001,7 +999,7 @@ mod tests {
 
         // Consumed, the slot is free again — a later boot verdict is not locked out for good.
         app.ui.stack.pop();
-        app.apply_event(crate::HostEvent::UpdateConfirmed(crate::dfu::clamp("v3.0.0-0-gddd")));
+        app.post_boot_update(BootUpdate::Confirmed(crate::dfu::clamp("v3.0.0-0-gddd")));
         assert!(matches!(app.top_screen(), Screen::DfuUpdated(_)), "the taken slot accepts the next fact");
     }
 
@@ -1016,8 +1014,8 @@ mod tests {
         pair(&mut app, Some(123_456));
         assert!(matches!(app.top_screen(), Screen::Passkey(_)));
 
-        app.apply_event(crate::HostEvent::Warning(WarningFlags::NO_GPS));
-        app.apply_event(crate::HostEvent::UpdateConfirmed(crate::dfu::clamp("v2.0.0-0-gccc")));
+        app.on_warning(WarningFlags::NO_GPS);
+        app.post_boot_update(BootUpdate::Confirmed(crate::dfu::clamp("v2.0.0-0-gccc")));
         assert!(matches!(app.top_screen(), Screen::Passkey(_)), "the card is never covered");
         assert_eq!(app.debug_stack_len(), 2);
 
@@ -1042,7 +1040,7 @@ mod tests {
         }
 
         let overflow = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            app.apply_event(crate::HostEvent::Warning(WarningFlags::NO_GPS));
+            app.on_warning(WarningFlags::NO_GPS);
         }));
         assert!(overflow.is_err(), "a full stack fails loudly in debug builds");
         assert_eq!(app.debug_stack_len(), MAX_DEPTH, "and nothing landed");
