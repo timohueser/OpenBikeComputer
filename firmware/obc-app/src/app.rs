@@ -3515,14 +3515,10 @@ mod tests {
         drain_persist(app).is_some()
     }
 
-    /// Stage 9's offer this pass, whichever record wins the one slot — the seam the marks tests
-    /// assert through, since "which record is written" is exactly the question.
+    /// Stage 9's offer this pass, whichever record wins the one slot — through the stage's own
+    /// seam, since "which record is written, and when" is exactly the question.
     fn drain_settings_effect(app: &mut App) -> Option<crate::settings::SettingsEffect> {
-        use crate::settings::SettingsRecord;
-        let (in_subtree, now_ms) = (app.ui.top_is_settings(), app.ui.now_ms);
-        app.settings_ops
-            .next_effect(SettingsRecord::Preferences, in_subtree, now_ms)
-            .or_else(|| app.alert_marks_ops.next_effect(SettingsRecord::AlertMarks, false, now_ms))
+        app.next_settings_effect()
     }
 
     /// Serve one marks write end to end: take stage 9's offer, "persist" it, and answer it. Returns

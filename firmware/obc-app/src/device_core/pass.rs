@@ -740,18 +740,23 @@ impl App {
     /// exists to end. Both records share the one slot — one operation per pass per domain is the
     /// slot's contract — so the loser simply re-offers next pass.
     fn stage_settings(&mut self, effects: &mut EffectSlots) {
-        use crate::settings::SettingsRecord;
         self.pass.record(PassStage::Settings);
         if effects.settings.is_empty() {
-            let (in_subtree, now_ms) = (self.ui.top_is_settings(), self.ui.now_ms);
-            let effect = self
-                .settings_ops
-                .next_effect(SettingsRecord::Preferences, in_subtree, now_ms)
-                .or_else(|| self.alert_marks_ops.next_effect(SettingsRecord::AlertMarks, false, now_ms));
-            if let Some(effect) = effect {
+            if let Some(effect) = self.next_settings_effect() {
                 let _ = effects.settings.try_put(effect);
             }
         }
+    }
+
+    /// Stage 9's offer, as a named seam so the tests assert through the real order rather than a
+    /// copy of it: preferences first, debounced on where the rider is standing; then the marks
+    /// record, which is not debounced at all.
+    pub(crate) fn next_settings_effect(&mut self) -> Option<crate::settings::SettingsEffect> {
+        use crate::settings::SettingsRecord;
+        let (in_subtree, now_ms) = (self.ui.top_is_settings(), self.ui.now_ms);
+        self.settings_ops
+            .next_effect(SettingsRecord::Preferences, in_subtree, now_ms)
+            .or_else(|| self.alert_marks_ops.next_effect(SettingsRecord::AlertMarks, false, now_ms))
     }
 
     /// Route one settings answer to the instance that owns its record, and report whether the rider
