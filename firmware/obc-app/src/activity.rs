@@ -559,6 +559,14 @@ impl Activity {
         self.progress_m
     }
 
+    /// Whether the matcher currently places the rider **off** the route corridor — the fact behind
+    /// the Map's "off route" chip and the frozen progress above. Read by the hosts' flow tests
+    /// (`dirty_parity` pins that its off-route excursion is genuinely off the corridor rather than a
+    /// pair of identical nothings); in-crate readers use the field.
+    pub fn off_route(&self) -> bool {
+        self.off_route
+    }
+
     /// Queue a seam re-anchor at `anchor_m` on `route` (#882): the route-aware tick atomically
     /// installs matcher progress + the forward-only floor at the splice seam before processing
     /// its next fresh fix. Stored verbatim — the tick's `locate_progress` clamps against the

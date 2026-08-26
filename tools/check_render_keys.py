@@ -10,8 +10,16 @@ and `CoreMode::engaged_shown`.
 
 Each one was added for a real missed redraw, and each is easy to re-add for the next one. That is
 what this guard is for: a fact a screen draws belongs in its declared key, and a repaint edge that a
-key cannot see belongs in the two documented explicit classes on `Dirty` — never in a new private
-copy of the value.
+key cannot see belongs in one of the five documented explicit classes on `Dirty` — never in a new
+private copy of the value.
+
+**This is a blocklist of names, and that is all it is.** It catches the six mirrors coming back
+under their own spellings, which is the likely shape of the mistake, because a reader who reaches
+for one reaches for it by name. It does **not** catch the same mirror renamed: a fresh
+`prev_battery` field beside a fresh `map_dirty = true` passes this guard. What catches *that* is the
+differential replay in `apps/obc-sim/tests/dirty_parity.rs`, which compares frames rather than
+identifiers, and the review question this file exists to prompt: why is a value being remembered
+next to the state that already holds it?
 """
 
 from __future__ import annotations
