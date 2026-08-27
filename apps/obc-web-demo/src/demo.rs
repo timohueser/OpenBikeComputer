@@ -377,6 +377,7 @@ impl Demo {
                 gestures,
                 sensors,
                 route.as_ref(),
+                None, // the landing demo mounts no weather store
                 SUPPORT,
             )
         };

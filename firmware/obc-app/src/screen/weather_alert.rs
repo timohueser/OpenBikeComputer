@@ -80,7 +80,7 @@ impl WeatherAlertScreen {
                     // stack two identical rain maps). Either way the view lands on the current
                     // frame, inside the rain grid's zoom regime.
                     cx.state.rain_step = 0;
-                    cx.state.clamp_rain_zoom();
+                    cx.state.clamp_rain_zoom(cx.weather.zoom_floor());
                     if self.over_rain_map {
                         Transition::Pop
                     } else {

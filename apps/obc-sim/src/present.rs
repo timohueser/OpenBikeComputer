@@ -863,6 +863,10 @@ mod tests {
                 &[],
                 sensors,
                 route.as_ref(),
+                // The present tour mounts no weather store, so the domain has nothing to derive
+                // from and stage 10 collapses its view state — which is what a host with no bundle
+                // looks like.
+                None,
                 crate::gui::SIM_SUPPORT,
             )
         };

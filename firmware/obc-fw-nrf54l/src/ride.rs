@@ -195,6 +195,15 @@ fn read_catalogs(
             *weather_sample_key = None;
         }
     }
+    // The installed-data fact (#1437, #1549): the selected head's object id and revision, reported
+    // as a level. This is what makes `WeatherDomain::installed()` non-`None` on a real device, and
+    // a *move* of it is what records `RefreshResult::Installed`.
+    if let Some(weather) = *weather_bundle {
+        facts.note_weather_data(obc_app::device_core::WeatherData {
+            data: obc_app::device_core::DataIdentity::new(weather.id.0),
+            revision: obc_app::device_core::Revision::new(weather.revision.0),
+        });
+    }
     crate::flat_store::reconcile_weather(flat, *weather_bundle);
     let rides_loaded = crate::flat_store::load_rides(flat, app);
     if routes_loaded && trips_loaded {
@@ -820,6 +829,10 @@ pub(crate) async fn run_app(
     let mut weather_cache = obc_weather::WeatherCache::new();
     let mut weather_snapshot: Option<obc_app::WeatherSnapshot> = None;
     let mut weather_sample_key: Option<WeatherSampleKey> = None;
+    // The resample counter reported as `ExternalFacts::note_weather_sample` — the weather screens'
+    // repaint edge, which no stack-local render key can see (a resample changes the card under an
+    // unchanged installed revision).
+    let mut weather_sample = obc_app::device_core::Revision::ZERO;
     let mut weather_bundle = crate::flat_store::active_weather(flat).ok().flatten();
     crate::flat_store::reconcile_weather(flat, weather_bundle);
     // **The board's typed effect executor** (#1397 S6b) — the outcomes, facts and staged effects
@@ -1088,6 +1101,11 @@ pub(crate) async fn run_app(
             // what it last saw and calls `set_ble_status` only on a change, so a steady state
             // dirties nothing.
             exec.facts.note_link(crate::ble::app_ble_status());
+            // The weather due plane's IN_FLIGHT level (#1549). A level and not an operation's
+            // answer: the `weather_refresh` cadence raises fetches nobody ordered, and the rider is
+            // owed the UPDATING cue for those too. Read once per pass, so both edges reach the
+            // domain — the plane sets it on a raise and clears it on a commit or a lapse.
+            exec.facts.note_weather_refreshing(crate::ble::weather_refreshing());
             // Mirror the ride-recording state to the BLE plane's `installFw` busy-gate (S6, #621), and
             // drain a BLE-initiated install request into the on-glass flow: `open_remote_dfu_check`
             // pushes the "Checking card..." wait and posts `DfuAction::Scan` — the System menu's press
@@ -1911,11 +1929,26 @@ pub(crate) async fn run_app(
                 };
                 RideExec::deliver(&mut exec.outcomes.settings, outcome, "settings");
             }
+            // The weather refresh (#1549): **raise** a request with the due plane, and answer that
+            // and nothing more. What comes back is reported as the installed-data fact when
+            // `read_catalogs` next sees a new head; whether a fetch is running is the plane's own
+            // level. Without a companion there is nothing to raise it with — but the capability
+            // gate means this arm is only reached while one is connected, so a raise here always
+            // lands and `Failed { LinkLost }` stays the shape a host with no radio answers with.
+            if let Some(obc_app::weather::WeatherEffect::RequestRefresh { token }) = exec.effects.weather.take() {
+                crate::ble::request_weather_now();
+                defmt::info!("weather: the dashboard was opened — urgent phone fetch raised");
+                RideExec::deliver(
+                    &mut exec.outcomes.weather,
+                    obc_app::weather::WeatherOutcome::Raised { token },
+                    "weather",
+                );
+            }
             // Every effect this frame carried has now been offered a home. Anything left is a domain
-            // with no board executor at all — Recorder's machine is #1398's and Weather's storage
-            // cutover is #1401's — and saying so loudly is what stops it becoming a silent wedge.
+            // with no board executor at all — Recorder's machine is #1398's — and saying so loudly
+            // is what stops it becoming a silent wedge.
             if exec.effects.has_pending() {
-                defmt::error!("exec: an effect this board cannot serve was decided (recorder #1398 / weather #1401)");
+                defmt::error!("exec: an effect this board cannot serve was decided (recorder #1398)");
             }
 
             // Reconcile the GPS power state to the ride: Sleep when not tracking, Active (or LowPower with
@@ -2077,18 +2110,6 @@ pub(crate) async fn run_app(
                 (Some(idx), Some(src)) => Some(RouteReader::new_cached(idx, src, route_cache)),
                 _ => None,
             };
-            // Weather's manual refresh is an **entry edge**, not a periodic poll and not a draw side
-            // effect. WX8 owns the request scheduler; what was missing was the one board seam that
-            // says the rider actually opened the WX11 dashboard. Sampled here, before the pass
-            // applies this frame's gestures, and compared after it — so Back from Hourly/Rain map
-            // does not manufacture another urgent request. **Batch-scoped**, where it used to be
-            // per gesture: a Weather → Back → Weather round trip inside one 40 ms batch is one
-            // entry, not two, so it asks once. That is the intended reading of an entry edge.
-            let was_on_weather = matches!(
-                app.top_screen(),
-                obc_app::Screen::Weather(_) | obc_app::Screen::WeatherHourly(_) | obc_app::Screen::WeatherRainMap(_)
-            );
-
             // ═══ The pass, and everything that only exists for it ═══
             //
             // **One tight scope that ends before the next `.await`.** The 512 B polyline buffer, the
@@ -2230,6 +2251,7 @@ pub(crate) async fn run_app(
                         ..Sensors::new(&mut debug_loc)
                     },
                     route: route.as_ref(),
+                    weather: weather_snapshot.as_ref(),
                     support: BOARD_SUPPORT,
                     outcomes: &mut exec.outcomes,
                     facts: &mut exec.facts,
@@ -2254,6 +2276,7 @@ pub(crate) async fn run_app(
                         ..Sensors::new(&mut consumer.location())
                     },
                     route: route.as_ref(),
+                    weather: weather_snapshot.as_ref(),
                     support: BOARD_SUPPORT,
                     outcomes: &mut exec.outcomes,
                     facts: &mut exec.facts,
@@ -2267,6 +2290,7 @@ pub(crate) async fn run_app(
                     // The synthetic loop has no sensors at all — not even a clock source.
                     sensors: Sensors { track: track_dyn, fuel: Some(&mut fuel), ..Sensors::new(&mut synth) },
                     route: route.as_ref(),
+                    weather: weather_snapshot.as_ref(),
                     support: BOARD_SUPPORT,
                     outcomes: &mut exec.outcomes,
                     facts: &mut exec.facts,
@@ -2282,11 +2306,6 @@ pub(crate) async fn run_app(
             if app.take_hold_cancel() {
                 display.cancel_holds();
             }
-            if !was_on_weather && matches!(app.top_screen(), obc_app::Screen::Weather(_)) {
-                crate::ble::request_weather_now();
-                defmt::info!("weather: dashboard opened — urgent phone fetch requested");
-            }
-
             // **`PassPlan` never crosses an `.await`** (FAR-19, restated for the typed protocol): the
             // three fields the tail needs are copied out here and the plan is dropped inside the
             // store phase. Only the staged `EffectSlots` and the small executor state survive to the
@@ -2416,15 +2435,12 @@ pub(crate) async fn run_app(
                     if next_weather_key.is_none() || next_snapshot.is_some() { next_weather_key } else { None };
                 if next_snapshot != weather_snapshot {
                     weather_snapshot = next_snapshot;
-                    if let Some(snapshot) = weather_snapshot.as_ref() {
-                        let wall_now = app.wall_unix_now() as i64;
-                        let floor = snapshot.rain_zoom_floor(app.state.cam_lat).unwrap_or(0.0);
-                        app.set_rain_view(snapshot.steps_ahead(wall_now), floor);
-                        app.weather_alert_tick(Some(snapshot));
-                    } else {
-                        app.set_rain_view(0, 0.0);
-                    }
-                    app.weather_feed_changed();
+                    // The resample is a *fact* — a monotone level the domain holds, and the repaint
+                    // edge a stack-local render key can otherwise never see. What the new sample
+                    // means (the rain map's step range and zoom floor, and whether an alert is
+                    // owed) is decided at stage 10 of the next pass, from this very borrow.
+                    weather_sample = weather_sample.next();
+                    exec.facts.note_weather_sample(weather_sample);
                 }
             }
 
@@ -2646,7 +2662,6 @@ pub(crate) async fn run_app(
                                 obc_app::RainOverlayAdapter::at_step(reader, &mut weather_cache, wall_now, rain_step)
                             });
                             let weather_snapshot_ref = weather_snapshot.as_ref();
-                            let weather_refreshing = crate::ble::weather_refresh_in_flight();
                             #[cfg(feature = "sd-bench")]
                             let read_before = crate::card_io::read_perf_snapshot();
                             let (stats, render_us) = display.render_frame(|f: &mut crate::ls021_flpr::Frame64| {
@@ -2667,10 +2682,7 @@ pub(crate) async fn run_app(
                                     rain_adapter
                                         .as_mut()
                                         .map(|adapter| adapter as &mut dyn obc_render::RainOverlaySource),
-                                    obc_app::WeatherFeed {
-                                        snapshot: weather_snapshot_ref,
-                                        refreshing: weather_refreshing,
-                                    },
+                                    weather_snapshot_ref,
                                     FRAME_W as f32,
                                     FRAME_H as f32,
                                     color_fn,

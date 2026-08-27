@@ -56,7 +56,7 @@ pub use state::{request_forget_bond, set_radio_enabled};
 // The weather due plane's seams (WX8, #1193): the ride loop pushes the app-side context snapshot
 // each pass and raises the urgent request when WX11's dashboard opens; the store's commit/config
 // paths poke the two crate-internal edges.
-pub use weather::refresh_in_flight as weather_refresh_in_flight;
+pub use weather::refreshing as weather_refreshing;
 pub use weather::request_weather_now;
 pub use weather::set_weather_inputs;
 pub(crate) use weather::{

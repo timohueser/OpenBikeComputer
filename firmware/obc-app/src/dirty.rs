@@ -30,8 +30,7 @@ use embedded_graphics::primitives::Rectangle;
 /// 2. **An explicit request**, for a mutation no key can see. There are **five** classes, and a
 ///    site that is in none of them is a site that should be a key:
 ///    - **A host seam that runs between two passes** — `set_routes_with_ids`, `set_ble_status`,
-///      `set_sensor_status`, `weather_feed_changed`, `set_rain_view`, `set_map_transfer` and their
-///      siblings. The fact has already moved by the time the next pass builds its *before* key, so
+///      `set_sensor_status`, `set_map_transfer` and their siblings. The fact has already moved by the time the next pass builds its *before* key, so
 ///      both keys agree. They become key-covered as each seam moves into
 ///      [`ExternalFacts`](crate::device_core::ExternalFacts) and is consumed at stage 2.
 ///    - **State inside a screen** — a menu's highlighted row, a list's scroll position, a chooser's

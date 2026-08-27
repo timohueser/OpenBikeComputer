@@ -103,7 +103,10 @@ pub fn request_weather_now() {
     WAKE.signal(());
 }
 
-pub fn refresh_in_flight() -> bool {
+/// Whether a fetch is running — the level the ride loop reports as
+/// `ExternalFacts::note_weather_refreshing` once per pass, so both this plane's edges (a raise
+/// here, a commit or lapse in the loop below) reach `WeatherDomain`, which owns the cue.
+pub fn refreshing() -> bool {
     IN_FLIGHT.load(Ordering::Relaxed)
 }
 
