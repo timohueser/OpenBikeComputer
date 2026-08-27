@@ -30,3 +30,6 @@ embedded-graphics = "0.8"
 
 [dev-dependencies]
 obc-fixtures = { path = "../obc-fixtures" }
+# The behaviour corpus builds sampled weather snapshots by hand, whose frame table is the
+# `heapless::Vec` the device's own snapshot carries.
+heapless = "0.8"

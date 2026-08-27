@@ -117,6 +117,6 @@ pub use trip::{TripInput, TripSummary, Trips, MAX_TRIPS};
 /// the primitive alias so `obc-app` does not depend on a storage implementation.
 pub type CatalogObjectId = u64;
 pub use wall_clock::{MinuteTicker, WallClock};
-pub use weather::{rain_outlook, RainOutlook, RideProjection, WeatherFeed, WeatherSnapshot};
+pub use weather::{rain_outlook, RainOutlook, RideProjection, WeatherSnapshot};
 pub use weather_alerts::{AlertCandidate, AlertClass, AlertMark};
 pub use weather_rain::RainOverlayAdapter;

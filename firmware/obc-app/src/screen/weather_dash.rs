@@ -74,7 +74,7 @@ impl WeatherScreen {
                     // time-step must never leak into a fresh look at the sky — and inside the
                     // rain grid's zoom regime (the zoom-out clamp, owner tuning round 2).
                     cx.state.rain_step = 0;
-                    cx.state.clamp_rain_zoom();
+                    cx.state.clamp_rain_zoom(cx.weather.zoom_floor());
                     Transition::Push(Screen::WeatherRainMap(WeatherRainMapScreen::new()))
                 }
             },

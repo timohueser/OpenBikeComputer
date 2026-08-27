@@ -516,6 +516,8 @@ pub enum FactMergeError {
 /// | [`trip_upload`](Self::take_trip_upload) | bounded latest slot | most recent commit wins |
 /// | [`update_result`](Self::take_update_result) | one-shot slot | a second unconsumed one is rejected |
 /// | [`weather_data`](Self::weather_data) | latest level | newest identity and revision wins |
+/// | [`weather_sample`](Self::weather_sample) | latest level | newest revision wins |
+/// | [`weather_refreshing`](Self::weather_refreshing) | latest level | newest state replaces |
 ///
 /// Levels are *read* (they describe the world and stay true); the bit set and the slots are
 /// *taken* (they describe something that happened once). Consuming one never touches another.
@@ -525,6 +527,8 @@ pub struct ExternalFacts {
     transfer: Option<TransferState>,
     link: Option<BleStatus>,
     weather_data: Option<WeatherData>,
+    weather_sample: Option<Revision>,
+    weather_refreshing: Option<bool>,
     warnings: WarningFlags,
     route_upload: Option<RouteUpload>,
     trip_upload: Option<TripUpload>,
@@ -539,6 +543,8 @@ impl ExternalFacts {
         transfer: None,
         link: None,
         weather_data: None,
+        weather_sample: None,
+        weather_refreshing: None,
         warnings: WarningFlags::NONE,
         route_upload: None,
         trip_upload: None,
@@ -560,6 +566,12 @@ impl ExternalFacts {
         }
         if let Some(fact) = incoming.weather_data {
             self.note_weather_data(fact);
+        }
+        if let Some(sample) = incoming.weather_sample {
+            self.note_weather_sample(sample);
+        }
+        if let Some(fetching) = incoming.weather_refreshing {
+            self.note_weather_refreshing(fetching);
         }
         self.raise_warnings(incoming.warnings);
         if let Some(upload) = incoming.route_upload {
@@ -599,6 +611,25 @@ impl ExternalFacts {
         if !keep {
             self.weather_data = Some(fact);
         }
+    }
+
+    /// The host resampled the weather snapshot at this revision — the repaint edge for the screens
+    /// that draw it. A monotone level, so a reordered report cannot walk it backwards.
+    ///
+    /// **Why it is not folded into [`weather_data`](Self::weather_data).** A resample at a new rider
+    /// position, or a new minute of the route projection, changes what the card says under an
+    /// entirely unchanged installed revision. One counter cannot carry both.
+    pub fn note_weather_sample(&mut self, sample: Revision) {
+        if self.weather_sample.is_none_or(|have| sample > have) {
+            self.weather_sample = Some(sample);
+        }
+    }
+
+    /// The provider plane started or stopped fetching; the newest report is the truth. Reported as
+    /// a level and not as an operation's answer, because its own cadence raises fetches nobody
+    /// ordered — and the rider is owed the UPDATING cue for those too.
+    pub fn note_weather_refreshing(&mut self, fetching: bool) {
+        self.weather_refreshing = Some(fetching);
     }
 
     /// The transfer state changed; the newest report is the truth.
@@ -658,6 +689,16 @@ impl ExternalFacts {
         self.weather_data
     }
 
+    /// The newest weather-sample revision, or `None` when the host has not resampled yet.
+    pub fn weather_sample(&self) -> Option<Revision> {
+        self.weather_sample
+    }
+
+    /// Whether the provider plane is fetching, or `None` when it has not reported yet.
+    pub fn weather_refreshing(&self) -> Option<bool> {
+        self.weather_refreshing
+    }
+
     /// Take the accumulated warning flags, clearing them.
     pub fn take_warnings(&mut self) -> WarningFlags {
         core::mem::replace(&mut self.warnings, WarningFlags::NONE)
@@ -705,7 +746,7 @@ const _: () = assert!(core::mem::size_of::<TransferState>() <= 1, "a two-state l
 const _: () = assert!(core::mem::size_of::<RouteUpload>() <= 80, "id + flag + the fixed sparkline");
 const _: () = assert!(core::mem::size_of::<TripUpload>() <= 16, "id + flag");
 const _: () = assert!(core::mem::size_of::<UpdateResult>() <= 56, "two fixed version strings at most");
-const _: () = assert!(core::mem::size_of::<ExternalFacts>() <= 224, "the fact slots stay pocket-sized");
+const _: () = assert!(core::mem::size_of::<ExternalFacts>() <= 240, "the fact slots stay pocket-sized");
 
 #[cfg(test)]
 mod tests {
