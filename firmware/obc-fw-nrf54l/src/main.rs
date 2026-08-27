@@ -88,7 +88,7 @@ mod map_plane;
 // The map/ride thread-mode plane: `run_app` + its loop-only helpers. It runs joined with the BLE
 // stack (#270), both driving the shared SD + settings store.
 mod ride;
-// The two panel-power ports (#1515 D2): the backlight this panel does not have, and system OFF.
+// The two panel-power ports (#1515 D2, #1558): the panel's PWM backlight, and system OFF.
 mod panel_power;
 // Persistent device settings over on-chip RRAM (the SD-independent settings store); boot-load +
 // save-on-dirty are wired in `run_app`.
@@ -1005,6 +1005,12 @@ async fn main(_spawner: Spawner) {
     // (LED0's pin P1.22 carries VCOM — its buffered LED shimmers at 60 Hz, a free COM-alive light.)
     let mut led = Output::new(p.P1_25, Level::Low, OutputDrive::Standard);
 
+    // The panel's brightness port (#1558): PWM20 channel 0 on **P1.27**, the provisional backlight
+    // net (README pin map — a MOSFET gate on the shipping board, the DK's buffered LED2 today).
+    // Armed here, where the peripherals live, and driven by the ride loop; the persisted level lands
+    // on it as soon as that loop has read the settings page.
+    let backlight = panel_power::PanelBacklight::new(p.PWM20, p.P1_27);
+
     // load → ride → save: stream the SD `.obcm` into the resident RGB222 framebuffer through the
     // shared `obc-app`, pick a route from the card catalog, ride it (VCOM-streamed GPS or the
     // `SynthLocation` square loop), map-match + record the final ride sample bytes, and append the
@@ -1615,6 +1621,7 @@ async fn main(_spawner: Spawner) {
             route_cache,
             nav,
             &mut led,
+            backlight,
             wdt_handle,
             // The hub's consumer (every non-`synth` build) + control (real-sensor only) handles —
             // ownership visible right here at composition (#808), not reached through a global.
@@ -1634,6 +1641,7 @@ async fn main(_spawner: Spawner) {
             route_cache,
             nav,
             &mut led,
+            backlight,
             wdt_handle,
             (cam_lon, cam_lat),
         );
