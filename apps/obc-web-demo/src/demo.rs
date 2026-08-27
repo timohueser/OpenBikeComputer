@@ -303,7 +303,7 @@ impl Demo {
         // dragging a trail across the map). Suspended while a guided demo owns playback.
         if !self.tour_active && !self.player.is_playing() {
             self.player.play();
-            self.app.activity.start_session();
+            self.app.recorder.request(obc_app::RecorderIntent::Start);
         }
 
         // `plan.next_wake_ms` and `plan.immediate` are deliberately **ignored**: the page is
@@ -475,7 +475,7 @@ impl Demo {
         // (through the invariant-preserving `activate_route`, never a direct field poke).
         if baseline != Baseline::Upload && !self.routes.catalog().is_empty() {
             app.activate_route(0);
-            app.activity.start_session();
+            app.recorder.request(obc_app::RecorderIntent::Start);
         }
         // Overwrite in the existing heap slot (no fresh allocation, no lingering old app). The
         // executor is rebuilt with it: its inbox holds outcomes and operation tokens minted by the
@@ -649,12 +649,12 @@ mod tests {
 
         assert_eq!(d.state(), "RouteReceived");
         assert!(d.tour_active, "the idle upload card must not be restarted as an ambient ride");
-        assert!(!d.app.activity.is_tracking(), "a phone upload lands before the ride starts");
+        assert!(!d.app.recording(), "a phone upload lands before the ride starts");
 
         let mut now = 16.0;
         drive(&mut d, &mut now, "press", "RouteOverview");
         drive(&mut d, &mut now, "press", "Map");
-        assert!(d.app.activity.is_tracking(), "Start ride begins the session before the next chapter");
+        assert!(d.app.recording(), "Start ride begins the session before the next chapter");
     }
 
     #[test]
@@ -671,7 +671,7 @@ mod tests {
         drive(&mut d, &mut now, "press", "RideControl");
         drive(&mut d, &mut now, "step:1", "RideControl");
         drive(&mut d, &mut now, "hold", "Home");
-        assert!(!d.app.activity.is_tracking());
+        assert!(!d.app.recording());
     }
 
     /// `Screen::NAMES` (the drift-guard export) contains every state this host can report — a

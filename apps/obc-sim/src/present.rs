@@ -889,7 +889,7 @@ mod tests {
         // `!tour_active` gate).
         if !tour_active && !player.is_playing() {
             player.play();
-            app.activity.start_session();
+            app.recorder.request(obc_app::RecorderIntent::Start);
         }
 
         // Re-open the route for the render: the executor may have committed new geometry under it.
@@ -985,7 +985,7 @@ mod tests {
             app.set_settings(settings);
             if !store.catalog().is_empty() {
                 app.activate_route(0);
-                app.activity.start_session();
+                app.recorder.request(obc_app::RecorderIntent::Start);
             }
             app
         };
@@ -1182,7 +1182,7 @@ mod tests {
             app.set_settings(settings);
             if !store.catalog().is_empty() {
                 app.activate_route(0);
-                app.activity.start_session();
+                app.recorder.request(obc_app::RecorderIntent::Start);
             }
             app
         };

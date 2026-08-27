@@ -1,17 +1,15 @@
 //! Host-side recorded-track storage — the simulator's stand-in for the SD card.
 //!
-//! Mirrors [`RouteStore`](crate::routes::RouteStore): the shared app expresses *intent* (an
-//! active [`session`](obc_app::Activity::session) id + a one-shot
-//! [`TrackAction`](obc_app::TrackAction)) and the host reconciles it to files each frame.
+//! Mirrors [`RouteStore`](crate::routes::RouteStore): the shared app decides the ride lifecycle
+//! ([`RecorderMachine`](obc_app::RecorderMachine)) and the host performs the operation it names.
 //! While riding, each accepted fix appends its final 20-byte representation to an in-progress ride
-//! object; on Finish the fixed v3 footer is appended and the same object is renamed into place. A
+//! object; a finalize appends the fixed v3 footer and renames the same object into place. A
 //! simulator-only GPX convenience export streams the same samples and skips that footer. The save
 //! filename is the route that *started* the session, so a later "Swap route only" can't
 //! rename a finished file.
 
 use std::path::PathBuf;
 
-use obc_app::TrackAction;
 use obc_ports::{TrackPoint, TrackSink};
 use {
     obc_formats::{io::SliceSource, track::encode_record},
@@ -22,10 +20,9 @@ use {
     std::io::Write,
 };
 
-/// An open ride object: the session it belongs to, the save name (frozen at begin), its private
-/// `.obcr.part` path, and the append handle. Implements [`TrackSink`], so `App::tick` records to it.
+/// An open ride object: the save name (frozen at begin), its private `.obcr.part` path, and the
+/// append handle. Implements [`TrackSink`], so a recorded fix lands in it.
 struct OpenRide {
-    id: u32,
     name: String,
     temp: PathBuf,
     file: File,
@@ -59,30 +56,6 @@ impl TrackStore {
         TrackStore { dir, open: None }
     }
 
-    /// Reconcile the open ride to the app's tracking intent — call once per frame *before*
-    /// ticking. Drains the action first (finalising / abandoning the current ride), then opens
-    /// a fresh object when the session id changes. `name` is the save filename; `stats` are the app's
-    /// ride totals at Finish (from [`App::ride_stats`](obc_app::App::ride_stats)) — needed to append
-    /// the same v3 footer the device records. The surrounding filename is simulator-only.
-    pub fn reconcile(
-        &mut self,
-        action: Option<TrackAction>,
-        session: Option<u32>,
-        name: Option<&str>,
-        stats: Option<RideStats>,
-    ) {
-        match action {
-            Some(TrackAction::Save) => self.finalize(stats),
-            Some(TrackAction::Discard) => self.abandon(),
-            None => {}
-        }
-        match session {
-            Some(id) if self.open.as_ref().map(|o| o.id) != Some(id) => self.begin(id, name.unwrap_or("ride")),
-            None => self.abandon(), // no session → ensure nothing is left open
-            _ => {}                 // same session → keep appending
-        }
-    }
-
     /// The [`TrackSink`] for the open ride, or `None` when nothing is recording.
     pub fn sink(&mut self) -> Option<&mut dyn TrackSink> {
         self.open.as_mut().map(|o| o as &mut dyn TrackSink)
@@ -94,20 +67,20 @@ impl TrackStore {
         let temp = self.dir.join(format!(".ride-{id}.obcr.part"));
         match OpenOptions::new().create(true).write(true).truncate(true).open(&temp) {
             Ok(file) => {
-                self.open = Some(OpenRide { id, name: name.to_string(), temp, file, point_count: 0, first_t_ms: None })
+                self.open = Some(OpenRide { name: name.to_string(), temp, file, point_count: 0, first_t_ms: None })
             }
             Err(e) => eprintln!("track: cannot open ride {}: {e}", temp.display()),
         }
     }
 
-    /// Finalise the open object. With stats, append the fixed footer and rename the same bytes into
-    /// the simulator-only `ride-{id}.obcr` namespace; with no stats, keep only the GPX export.
-    fn finalize(&mut self, stats: Option<RideStats>) {
-        let Some(mut log) = self.open.take() else { return };
-        let footer_written = stats.is_some_and(|stats| {
-            let footer = encode_summary_footer(&log.name, &stats, log.point_count, log.first_t_ms);
-            log.file.write_all(&footer).and_then(|()| log.file.flush()).is_ok()
-        });
+    /// Finalise the open object: append the fixed footer and rename the same bytes into the
+    /// simulator-only `ride-{id}.obcr` namespace. Answers with the identity it committed, or `None`
+    /// when the footer or the rename failed — the ride is then still there and Recorder retries.
+    fn finalize(&mut self, stats: RideStats) -> Option<u64> {
+        let mut log = self.open.take()?;
+        let mut committed = None;
+        let footer = encode_summary_footer(&log.name, &stats, log.point_count, log.first_t_ms);
+        let footer_written = log.file.write_all(&footer).and_then(|()| log.file.flush()).is_ok();
         let _ = log.file.flush();
         drop(log.file);
 
@@ -120,6 +93,7 @@ impl TrackStore {
                         Ok(()) => {
                             eprintln!("track: saved ride {}", final_path.display());
                             object_path = final_path;
+                            committed = Some(id);
                         }
                         Err(e) => eprintln!("track: cannot rename {}: {e}", log.temp.display()),
                     }
@@ -135,7 +109,7 @@ impl TrackStore {
                 if object_path == log.temp {
                     let _ = fs::remove_file(&log.temp);
                 }
-                return;
+                return committed;
             }
         };
         // The convenience `.gpx` (sim-only).
@@ -150,6 +124,7 @@ impl TrackStore {
         if object_path == log.temp {
             let _ = fs::remove_file(&log.temp);
         }
+        committed
     }
 
     /// Allocate a non-clobbering full-width key for the desktop fixture namespace. This scan is only
@@ -193,18 +168,21 @@ impl TrackStore {
     }
 }
 
-/// The shared dispatcher ([`obc_host_core::HostLoop`]) reconciles the ride recorder through this trait,
-/// so the finalise/abandon/begin lifecycle order lives in one place for every host.
+/// The shared dispatcher ([`obc_host_core::HostLoop`]) performs each recording operation through
+/// this trait, so what a ride *is* stays Recorder's and what it costs stays the store's.
 impl obc_host_core::TrackRepository for TrackStore {
-    fn reconcile(
-        &mut self,
-        action: Option<TrackAction>,
-        session: Option<u32>,
-        name: Option<&str>,
-        stats: Option<RideStats>,
-    ) {
-        self.reconcile(action, session, name, stats)
+    fn open(&mut self, session: u32, name: Option<&str>) {
+        self.begin(session, name.unwrap_or("ride"));
     }
+
+    fn finalize(&mut self, stats: RideStats) -> Option<obc_app::CatalogObjectId> {
+        self.finalize(stats)
+    }
+
+    fn discard(&mut self) {
+        self.abandon();
+    }
+
     fn sink(&mut self) -> Option<&mut dyn TrackSink> {
         self.sink()
     }
