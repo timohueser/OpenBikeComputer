@@ -1459,5 +1459,62 @@ fn the_open_pays_no_base_render_and_a_page_slide_pays_for_what_it_uncovers() {
     assert!(rendered_base(1_600, 1_900) > 0, "a page slide travels outside the sheet, so the base is under it");
     assert!(rendered_base(1_900, 2_300) > 0, "and the slide back puts the rows the sheet gave up back");
     assert_eq!(rendered_base(2_200, 2_300), 0, "…but the settled root page is a frozen base again");
-    assert!(rendered_base(2_300, 2_500) > 0, "the close renders the base once");
+    assert_eq!(rendered_base(2_300, 2_500), 1, "the close renders the base once, and once only");
+}
+
+/// The quick drawer opened over **Home** — a chrome base, which is the class that keeps the recess.
+fn drawer_over_chrome_replay() -> Vec<Step> {
+    let mut steps = vec![
+        step("boot on Home", 0).expect("Home"),
+        step("quiet", 500).expect("Home"),
+        step("a pass just before the squeeze", 960).expect("Home"),
+        step("squeeze the quick drawer open", 1_000).keys(&squeeze(Button::Up, Button::Select)),
+        step("release the squeeze", 1_100).keys(&[release(Button::Select), release(Button::Up)]),
+    ];
+    for i in 1..=14 {
+        steps.push(step("the sheet arrives", 1_100 + i * 36).expect("QuickDrawer"));
+    }
+    steps.push(step("quiet under the settled sheet", 1_700).expect("QuickDrawer"));
+    steps.push(step("close it", 1_800).keys(&tap(Button::Back)).expect("Home"));
+    steps.push(step("quiet on the uncovered page", 1_900).expect("Home"));
+    steps
+}
+
+/// **A sheet over a chrome base still recesses it** (#1559, ruling 1's second half).
+///
+/// A chrome base recesses only *through its second draw*, and that draw is the one the frozen
+/// base's pixels remove — so a base that declares [`recess`] has to keep taking it. Without this
+/// the dim would survive in the snapshot sweep, the one host that composes every frame, and be
+/// absent on every host a rider touches.
+///
+/// The parity comparison is the assertion: the reference draws Home dimmed under the sheet on every
+/// pass, and a candidate that left the previous frame's undimmed pixels standing loses most of the
+/// panel. The mutant — drop `!recessed` from the render's `sheet_only` — fails here at the first
+/// step of the open, 71,506 of 76,800 pixels.
+#[test]
+fn a_sheet_over_a_chrome_base_keeps_the_recess() {
+    let map = map_bytes();
+    let map_src = SliceSource(&map);
+    let tables = MapTables::parse(&map_src).expect("the replay map parses");
+    let cache = MapCache::new();
+    let reader = Reader::new(&map_src, &tables, &cache);
+
+    let camera = AppState::new((LON0 * 1e6) as i32, (LAT * 1e6) as i32, 0.05);
+    let steps = drawer_over_chrome_replay();
+    let device = || {
+        let mut app = App::new_idle(camera); // [Home] — chrome, and recessed under a sheet
+        app.set_backlight_available(true);
+        app
+    };
+    let (candidate, _) = drive_replay("sheet over Home", device, &steps, None, &reader);
+
+    // Home draws no map at any point, so the render-work probe says nothing here; what the recess
+    // costs is a chrome redraw per step, which ruling 1 priced at about 12 ms and accepted. The
+    // steps themselves are still the sheet's own: the dim does not move once it is on.
+    let open: Vec<&Repaint> = candidate.damage.iter().filter(|r| (1_100..=1_700).contains(&r.at_ms)).collect();
+    assert!(open.len() >= 6, "the open over chrome is still many small steps: {} repaint(s)", open.len());
+    for r in open.iter().skip(1) {
+        let (_, hi, _) = r.pixels.expect("a step that changed no pixel is a whole render spent on nothing");
+        assert!(hi < 110, "after the first frame dims the page, a step at {} ms moves only the sheet", r.at_ms);
+    }
 }

@@ -354,9 +354,7 @@ pub struct ContextDrawerScreen {
     /// It is what makes the open **motion** rather than a cut (#1559). A step that would redraw the
     /// sheet where it already stands is not reported at all — the bench measured whole renders
     /// pushing zero rows — and the frame the sheet lands on is reported exactly when it moves the
-    /// sheet, which is what the old `landed` edge was approximating. It is also how a frame knows
-    /// whether the sheet has **given rows back**, which is half of what
-    /// [`needs_base`](Self::needs_base) answers.
+    /// sheet, which is what the old `landed` edge was approximating.
     shown_h: i16,
     /// Whether this frame needs the screen below drawn under it — see
     /// [`needs_base`](Self::needs_base).
@@ -502,16 +500,19 @@ impl ContextDrawerScreen {
         };
         let sliding = self.slide_ms.map_or(0, |s| SLIDE_MS.saturating_sub(now_ms.wrapping_sub(s)));
         let moved = visible != self.shown_h as i32;
-        // Whether the frozen base has to be drawn under this frame: the sheet gave rows back, or a
-        // page slide is travelling through the margin either side of it (see
+        // Whether the frozen base has to be drawn under this frame — a page slide is running (see
         // [`needs_base`](Self::needs_base)).
-        self.needs_base = visible < self.shown_h as i32 || sliding > 0 || settled;
+        self.needs_base = sliding > 0 || settled;
         self.shown_h = visible as i16;
+        // The wake is the time to the **next step boundary**, not a whole step from wherever this
+        // poll happened to land: the sheet advances on those boundaries, so asking for a full step
+        // off one carries the offset to the end and finishes the open a step late.
+        let to_step = STEP_MS - now_ms.wrapping_sub(self.opened_ms) % STEP_MS;
         match [opening, sliding].into_iter().filter(|r| *r > 0).min() {
             // A page slide moves its two pages across a sheet that may not change height at all, so
             // it is a change whether or not the sheet grew.
             Some(remaining) => {
-                ScreenTick { changed: sliding > 0 || moved, next_wake_ms: Some(STEP_MS.min(remaining)), region: None }
+                ScreenTick { changed: sliding > 0 || moved, next_wake_ms: Some(to_step.min(remaining)), region: None }
             }
             // The frame a slide ends on still differs from the one before it; the frame the open
             // ends on differs only if it moved the sheet, and reporting one that did not is a whole
@@ -523,10 +524,12 @@ impl ContextDrawerScreen {
 
     /// Whether this frame needs the base drawn under the sheet (#1559).
     ///
-    /// Two reasons, and they are the two ways a sheet stops being a thing that purely *covers*:
-    /// it **shrank**, so the rows it gave back still hold sheet pixels; or a **page slide** is in
-    /// flight, whose two pages travel through the inset margin either side of the sheet, where the
-    /// base shows. Everywhere else the frozen base's rows stand and the sheet is all that is drawn.
+    /// A **page slide**, and only that: its two pages travel through the inset margin either side
+    /// of the sheet, where the base shows, so every frame of one — including the frame it settles
+    /// on, which is the last that can leave ink there — needs the base under it. A slide between
+    /// pages of different heights also *shrinks* the sheet, and the rows it gives back are put
+    /// back by the same draw. Everywhere else the frozen base's rows stand and the sheet is all
+    /// that is drawn.
     pub(crate) fn needs_base(&self) -> bool {
         self.needs_base
     }
@@ -1075,6 +1078,16 @@ mod tests {
             assert_eq!(d.tick_timers(ms), ScreenTick::idle(), "a landed sheet is quiet at {ms} ms");
         }
         assert!(!d.needs_base(), "…and asks for nothing under it either");
+    }
+
+    /// The wake asks for the **next step boundary**, not a whole step from wherever the poll landed
+    /// — otherwise a device that wakes off-boundary carries the offset to the end and finishes the
+    /// open a step late. The mutant is `STEP_MS.min(remaining)`.
+    #[test]
+    fn the_wake_lands_on_the_next_step_boundary() {
+        let mut d = drawer();
+        assert_eq!(d.tick_timers(STEP_MS + 5).next_wake_ms, Some(STEP_MS - 5), "five into a step, ask for the rest");
+        assert_eq!(d.tick_timers(STEP_MS * 2).next_wake_ms, Some(STEP_MS), "on a boundary, ask for a whole step");
     }
 
     /// A page transition owns the input while it runs: a gesture landing mid-slide changes nothing.
