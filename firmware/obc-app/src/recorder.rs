@@ -402,7 +402,7 @@ impl RecorderMachine {
             checkpoint_owed: false,
             recovery_offered: false,
             recovered_held: false,
-            breadcrumb: Breadcrumb::new(),
+            breadcrumb: Breadcrumb::new() => Breadcrumb::init_in_place,
             speed_win: SpeedWindow::new(),
             samples: heapless::Vec::new(),
             clock: FooterClock { unix_at_anchor: 0, anchor_ms: 0, trusted: false },
