@@ -175,6 +175,17 @@ pub struct AppState {
     /// [`RainOverlayAdapter`](crate::RainOverlayAdapter) (`at_step`), so the leased raster and the
     /// on-screen frame timestamp are one decision.
     pub rain_step: u8,
+    /// The **Up-ahead timeline's category filter** — "Everything" ([`PoiCategorySet::ALL`]) or one
+    /// of the six §7.4 categories. Rider *selection* state, like [`rain_step`](AppState::rain_step)
+    /// beside it, and reset to Everything on every entry to the list (epic #946, U3: predictable
+    /// beats sticky).
+    ///
+    /// It lives in the app plane rather than on
+    /// [`UpAheadScreen`](crate::screen::UpAheadScreen) because the sheet that edits it (#1515 D4a)
+    /// sits *above* that screen on the stack: a copy inside the screen would be a copy the rider's
+    /// edit could not reach. Read with [`Settings::up_ahead_source`](crate::Settings) as one
+    /// [`UpAheadScope`](crate::corridor::UpAheadScope).
+    pub up_ahead_filter: obc_reader::PoiCategorySet,
 }
 
 impl AppState {
@@ -200,6 +211,7 @@ impl AppState {
             ble_forget_pending: false,
             has_nav_graph: false,
             rain_step: 0,
+            up_ahead_filter: obc_reader::PoiCategorySet::ALL,
         }
     }
 
@@ -2262,6 +2274,13 @@ impl App {
         }
     }
 
+    /// What the Up-ahead timeline is scoped to right now: the rider's live category filter (app
+    /// state, reset on entry) and their persisted source preference. One value, so the two halves
+    /// of the scope can never reach [`corridor_request`](crate::screen::Screen) apart.
+    pub(crate) fn up_ahead_scope(&self) -> crate::corridor::UpAheadScope {
+        crate::corridor::UpAheadScope { filter: self.state.up_ahead_filter, source: self.settings.up_ahead_source }
+    }
+
     /// The [`ContextMenu`](crate::screen::ContextMenu) the **base** screen declares — the lowest
     /// non-overlay row, so a sheet already up does not hide the content the chord is asking about
     /// (which is what makes the same chord close the context drawer again).
@@ -2858,7 +2877,7 @@ impl App {
         }
         // The corridor snapshot follows the stack: escaping off the Up-ahead timeline disarms its
         // query exactly as a Back would.
-        self.ui.reconcile_corridor(false);
+        self.ui.reconcile_corridor(self.up_ahead_scope(), false);
         if changed {
             self.ui.input.cancel_holds();
             self.ui.hold_cancel_pending = true;
@@ -2953,7 +2972,8 @@ impl App {
         // (epic #946, U2/U3). Nothing on the stack wants one ⇒ the request is dropped and the
         // reader-build seam goes quiet.
         let fresh = self.ui.stack.len() > depth_before;
-        self.ui.reconcile_corridor(fresh);
+        let scope = self.up_ahead_scope();
+        self.ui.reconcile_corridor(scope, fresh);
         // Returning to the bare Home root re-opens the screensaver — re-roll its contour seed so the
         // topo peaks drift for this visit. Gated on the *edge* (was deeper, now 1) so it fires once
         // per return; being in `apply_gesture` means a clock/battery re-render (which never touches
@@ -3027,7 +3047,8 @@ impl App {
         // This also re-runs the `Next: <category>` tiles' refresh policy (U5) — the per-pass
         // decision of whether the cache wants one more single-category snapshot — and ends in the
         // same `reconcile_corridor`, so the stack still has the last word on the shared scratch.
-        self.ui.reconcile_next_ahead(&self.settings, self.activity.active_route, self.activity.progress_m);
+        let scope = self.up_ahead_scope();
+        self.ui.reconcile_next_ahead(&self.settings, scope, self.activity.active_route, self.activity.progress_m);
     }
 
     /// The single "next wake deadline" the event-driven host arms one timer to: the soonest, in

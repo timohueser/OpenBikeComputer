@@ -29,7 +29,8 @@
 #      regression; look at the changed frames first, then record them with `update`.
 #
 # Coverage against the `screens!` table: 60 of the 61 screens have at least one frame here.
-# (#1515 D3 removed `RideMenu` and added `ContextDrawer`, so the count is unchanged.)
+# (#1515 D3 removed `RideMenu` and added `ContextDrawer`, so the count is unchanged; D4a moved the
+# Up-ahead filter off the list and onto that same `ContextDrawer`, adding frames rather than rows.)
 # The exception is **RideRecovery**, the boot card that offers a ride recovered from a durable
 # recording after a reset. Its only entry is `App::offer_recovered_ride(RideContinuation)` — a
 # host call carrying thirteen reconstructed accumulator fields, which the simulator has no
@@ -281,18 +282,14 @@ DETOUR_PRE="B d d w p d d d p f d d d d d d p p p f p T"
 # The Waypoints mode row (epic #523): the group's 5th row, under Climb. Four steps park the amber
 # cursor on it, showing the default `Approach` mode.
 "$SIM" "$MAP" --boot --script "B u p p d d d d" --expect-screen Ride --png "$OUT/settings-ride-waypoints.png"
-# The "Up ahead shows" source row (epic #946, U4): the 6th row, right under the Waypoints chip. Five
-# steps park the amber cursor on it (default `Both`), and each extra press cycles it one further
-# round the ring. The unselected face comes free in the frames above/below, which scroll it into
-# view without the cursor.
-"$SIM" "$MAP" --boot --script "B u p p d d d d d"     --expect-screen Ride --png "$OUT/settings-ride-up-ahead.png"
-"$SIM" "$MAP" --boot --script "B u p p d d d d d p"   --expect-screen Ride --png "$OUT/settings-ride-up-ahead-waypoints.png"
-"$SIM" "$MAP" --boot --script "B u p p d d d d d p p" --expect-screen Ride --png "$OUT/settings-ride-up-ahead-pois.png"
+# The "Up ahead shows" source row is **gone** from this group (#1515 D4a): it is a row of the
+# timeline's own context sheet now — see `up-ahead-context.png` below, which is its only home. Its
+# three frames left with it, and the group's remaining rows shift up one slot.
 # The Auto-delete row (epic #638 S5, folded into this group from its old standalone page): the
-# synced-ride retention ring on the last row, defaulting to 1 week. Six steps park the cursor on it;
+# synced-ride retention ring on the last row, defaulting to 1 week. Five steps park the cursor on it;
 # one press cycles to the next value (1 month) for the stepped shot.
-"$SIM" "$MAP" --boot --script "B u p p d d d d d d"   --expect-screen Ride --png "$OUT/settings-ride-autodelete.png"
-"$SIM" "$MAP" --boot --script "B u p p d d d d d d p" --expect-screen Ride --png "$OUT/settings-ride-autodelete-month.png"
+"$SIM" "$MAP" --boot --script "B u p p d d d d d"   --expect-screen Ride --png "$OUT/settings-ride-autodelete.png"
+"$SIM" "$MAP" --boot --script "B u p p d d d d d p" --expect-screen Ride --png "$OUT/settings-ride-autodelete-month.png"
 
 # Display (group 1): the two Map-overlay toggles + the idle-return picker moved from Power. The
 # picker in its open (editing) state is two rows down, press to open.
@@ -604,12 +601,27 @@ UPBASE="p p p p T C p f"
 # (a) The merged list: map-POI rows (muted icons) and custom-waypoint rows (AMBER icon + diamond pip)
 # on one along-route axis, each with distance-to-go, climb-to-go and — past 50 m — the side arrow.
 "$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 --script "$UPBASE" --expect-screen UpAhead --png "$OUT/up-ahead.png"
+# The timeline's own **context sheet** (#1515 D4a) and the two controls it is the only home for.
+# `UPFILTER n` opens the sheet, presses its Filter row into the nested editor, stages `n` steps and
+# commits, then closes the sheet — so the list comes back filtered. Every `p` that starts a page
+# slide is followed by `w`, because the sheet owns its input while a slide runs.
+UPFILTER() { local n=$1 s="C p w"; for _ in $(seq 1 "$n"); do s="$s d"; done; echo "$s p w b f"; }
 # (b) The same list filtered to Water, scrolled onto the custom "Fontaine du port" waypoint sitting
 # between two map fountains — the source-colour + pip check the epic wanted eyeballed.
 "$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 \
-    --script "$UPBASE h d p w f d d d d d d d d d" --expect-screen UpAhead --png "$OUT/up-ahead-water.png"
-# (c) The Hold category picker: Everything over the six categories, all seven rows on one page.
-"$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 --script "$UPBASE h w" --expect-screen UpAhead --png "$OUT/up-ahead-picker.png"
+    --script "$UPBASE $(UPFILTER 1) d d d d d d d d d" --expect-screen UpAhead --png "$OUT/up-ahead-water.png"
+# (c1) The context sheet itself: two value rows, Filter and Sources, each a door into its editor.
+# This frame replaces the Hold picker's — the filter is a sheet row now, not a mode on the list.
+"$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 --script "$UPBASE C" \
+    --expect-screen ContextDrawer --png "$OUT/up-ahead-context.png"
+# (c2) The nested value editor, on the row the rider is browsing (Campsite) with the committed
+# choice (Everything) still ticked under the first notch — the mark the grammar promises.
+"$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 --script "$UPBASE C p w d d" \
+    --expect-screen ContextDrawer --png "$OUT/up-ahead-filter-editor.png"
+# (c3) The Sources editor, where the choices carry no icon of their own — the other shape the one
+# generic editor draws.
+"$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 --script "$UPBASE C d p w d" \
+    --expect-screen ContextDrawer --png "$OUT/up-ahead-sources-editor.png"
 # (d) A POI row's detail, now carrying the signed off-route offset with the side spelled out.
 "$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 \
     --script "$UPBASE d d d d d d d d d d p" --expect-screen PoiDetail --png "$OUT/up-ahead-poi-detail.png"
@@ -617,23 +629,23 @@ UPBASE="p p p p T C p f"
 # ahead (the specs/vectors plain route is far from the Monaco map, so its corridor is genuinely empty).
 "$SIM" "$UPMAP" --boot --script "B d d d w p p p C p" --expect-screen UpAhead --png "$OUT/up-ahead-noroute.png"
 "$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$UPBASE" --expect-screen UpAhead --png "$OUT/up-ahead-nothing.png"
-"$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$UPBASE h d p w f" --expect-screen UpAhead --png "$OUT/up-ahead-nocategory.png"
-# (f) The Ride-settings **source scope** (U4). `UPSCOPE n` walks Home → Settings → Ride → the Up
-# ahead row, presses it `n` times round the Both → Waypoints → Map POIs ring, and climbs back to
-# Home before the ride flow starts — so the whole thing is one scripted device session, no seam.
-# Waypoints-only must show no map-POI row (every row keeps its amber icon + diamond pip) and
+"$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$UPBASE $(UPFILTER 1)" --expect-screen UpAhead --png "$OUT/up-ahead-nocategory.png"
+# (f) The **source scope** (U4). Since #1515 D4a it is edited from the timeline's own sheet, not from
+# Ride settings: `UPSCOPE n` opens the sheet on an already-running list, steps to the Sources row,
+# presses into its editor, stages `n` steps round the Both → Waypoints → Map POIs ring, commits and
+# closes. Waypoints-only must show no map-POI row (every row keeps its amber icon + diamond pip) and
 # Map-POIs-only no waypoint row; each also pins the scope-named empty sub-line on the plain route,
 # where "No stops on route" would be a lie.
-UPSCOPE() { local n=$1 s="p u p p d d d d d"; for _ in $(seq 1 "$n"); do s="$s p"; done; echo "$s b b b"; }
+UPSCOPE() { local n=$1 s="C d p w"; for _ in $(seq 1 "$n"); do s="$s d"; done; echo "$s p w b f"; }
 "$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 \
-    --script "$(UPSCOPE 1) $UPBASE" --expect-screen UpAhead --png "$OUT/up-ahead-waypoints-only.png"
+    --script "$UPBASE $(UPSCOPE 1)" --expect-screen UpAhead --png "$OUT/up-ahead-waypoints-only.png"
 "$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 \
-    --script "$(UPSCOPE 2) $UPBASE" --expect-screen UpAhead --png "$OUT/up-ahead-pois-only.png"
+    --script "$UPBASE $(UPSCOPE 2)" --expect-screen UpAhead --png "$OUT/up-ahead-pois-only.png"
 # The two controls composing: waypoints-only + the Water filter = just the rider's own water stops.
 "$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 \
-    --script "$(UPSCOPE 1) $UPBASE h d p w f" --expect-screen UpAhead --png "$OUT/up-ahead-waypoints-only-water.png"
-"$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$(UPSCOPE 1) $UPBASE" --expect-screen UpAhead --png "$OUT/up-ahead-nothing-waypoints.png"
-"$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$(UPSCOPE 2) $UPBASE" --expect-screen UpAhead --png "$OUT/up-ahead-nothing-pois.png"
+    --script "$UPBASE $(UPSCOPE 1) $(UPFILTER 1)" --expect-screen UpAhead --png "$OUT/up-ahead-waypoints-only-water.png"
+"$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$UPBASE $(UPSCOPE 1)" --expect-screen UpAhead --png "$OUT/up-ahead-nothing-waypoints.png"
+"$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$UPBASE $(UPSCOPE 2)" --expect-screen UpAhead --png "$OUT/up-ahead-nothing-pois.png"
 # The `Next: <category>` stat tiles live (epic #946, U5), on the same POI-dense Monaco ride. The
 # Auto climb panel would take the base screen on this line, so the script turns it Off first
 # (`B u p p d d d p`), climbs back to Home, starts the ride and steps Back once to the Statistics
@@ -842,6 +854,10 @@ for lang in de fr es; do
   # each of which has to fit the sheet's width in the longer translations.
   # The ride context's four row labels at 240 px — the sheet is all copy, so this is its overflow check.
   "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p C"           --expect-screen ContextDrawer --png "$OUT/ride-context-$lang.png"
+  # The Up-ahead sheet (#1515 D4a): its two row labels, then the nested editor's title + the choice
+  # it stages. `Campingplatz` / `Alojamiento` are the width constraint on the editor line.
+  "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p C p C"       --expect-screen ContextDrawer --png "$OUT/up-ahead-context-$lang.png"
+  "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p C p C p w d d" --expect-screen ContextDrawer --png "$OUT/up-ahead-filter-editor-$lang.png"
   "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p Q"           --expect-screen QuickDrawer --png "$OUT/quick-root-$lang.png"
   "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p Q d p w"     --expect-screen QuickDrawer --png "$OUT/quick-ble-off-$lang.png"
   "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p Q p w"       --expect-screen QuickDrawer --png "$OUT/quick-brightness-$lang.png"

@@ -150,7 +150,8 @@ fn render_smoke() {
 
 /// The Up-ahead timeline's own copy (epic #946, U3) is translated — not four English placeholders
 /// — and every one of its states renders through each catalog column without a font/buffer failure:
-/// the route-less empty state, the merged list's title, and the Hold category picker.
+/// the route-less empty state, the merged list's title, and the timeline's own context sheet with
+/// its nested filter editor (#1515 D4a).
 #[test]
 fn up_ahead_copy_is_localized_and_every_state_renders() {
     // The context row label the timeline reuses as its title, and the empty-state sentence under it.
@@ -170,7 +171,10 @@ fn up_ahead_copy_is_localized_and_every_state_renders() {
         ("up_ahead.none_sub", Msg::UpAheadNoneSub),
         ("up_ahead.none_category_sub", Msg::UpAheadNoneCategorySub),
         ("up_ahead.no_route_sub", Msg::UpAheadNoRouteSub),
-        ("up_ahead.filter_title", Msg::UpAheadFilterTitle),
+        // The two D4a row labels are **deliberately absent**: "Filter" is the German word and
+        // "Sources" the French one, so both would fail this net for being right. They are covered
+        // instead by the four-language render sweep below and by `context_drawer`'s width test,
+        // which reads every label and every choice out of all four columns.
         ("poi_detail.side_left", Msg::PoiDetailSideLeft),
         ("poi_detail.side_right", Msg::PoiDetailSideRight),
     ] {
@@ -189,9 +193,16 @@ fn up_ahead_copy_is_localized_and_every_state_renders() {
         let buf = render_120(&mut app, &bytes);
         assert!(buf.px.iter().any(|&p| p != Rgb888::BLACK), "route-less Up-ahead state rendered blank in {lang:?}");
 
-        app.apply_gesture(Gesture::Hold); // -> the category picker
-        assert!(matches!(app.top_screen(), Screen::UpAhead(_)), "the picker is a mode, not a screen");
+        // The timeline declares its own context (#1515 D4a): the sheet's two value rows, then the
+        // nested filter editor a press opens.
+        assert!(app.apply_chord(obc_app::Chord::Context));
+        assert!(matches!(app.top_screen(), Screen::ContextDrawer(_)));
         let buf = render_120(&mut app, &bytes);
-        assert!(buf.px.iter().any(|&p| p != Rgb888::BLACK), "the category picker rendered blank in {lang:?}");
+        assert!(buf.px.iter().any(|&p| p != Rgb888::BLACK), "the Up-ahead context sheet rendered blank in {lang:?}");
+
+        app.apply_gesture(Gesture::Press); // -> the Filter editor
+        app.advance_animations(InputClock(400)); // let the page slide land
+        let buf = render_120(&mut app, &bytes);
+        assert!(buf.px.iter().any(|&p| p != Rgb888::BLACK), "the filter editor rendered blank in {lang:?}");
     }
 }

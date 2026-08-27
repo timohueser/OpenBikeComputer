@@ -65,7 +65,8 @@ pub mod weather_icons;
 mod weather_map;
 
 pub use climb::ClimbScreen;
-pub use context_drawer::{ContextDrawerScreen, ContextMenu};
+pub(crate) use context_drawer::ContextFacts;
+pub use context_drawer::{ContextDrawerScreen, ContextMenu, ContextValue};
 pub use detour::{DetourPreviewScreen, DetourScreen};
 pub use dfu::{
     DfuCheckScreen, DfuConfirmScreen, DfuErrorReason, DfuErrorScreen, DfuFailedScreen, DfuInstallingScreen,
@@ -265,6 +266,25 @@ pub struct Ctx<'a> {
     /// the rain-map screens clamp against the zoom floor it derived.
     pub weather: &'a mut crate::weather::WeatherDomain,
     pub now_ms: u32,
+}
+
+impl Ctx<'_> {
+    /// The base facts a context row's availability and value read, from an input context — the
+    /// same answer [`Render::context_facts`] gives the frame that drew the row (#1515).
+    pub(crate) fn context_facts(&self) -> context_drawer::ContextFacts<'_> {
+        context_drawer::ContextFacts {
+            state: self.state,
+            activity: self.activity,
+            settings: self.settings,
+            recording: self.recorder.recording(),
+        }
+    }
+
+    /// What the Up-ahead timeline is scoped to right now — the twin of [`Render::up_ahead_scope`],
+    /// so `handle` walks exactly the rows `draw` drew.
+    pub(crate) fn up_ahead_scope(&self) -> crate::corridor::UpAheadScope {
+        crate::corridor::UpAheadScope { filter: self.state.up_ahead_filter, source: self.settings.up_ahead_source }
+    }
 }
 
 /// A [`Ctx`] over borrowed state/activity/settings with every catalog empty and the clock at zero —
@@ -507,6 +527,22 @@ pub struct Render<'a> {
 }
 
 impl Render<'_> {
+    /// The base facts a context row's availability and value read, from a draw context (#1515).
+    pub(crate) fn context_facts(&self) -> context_drawer::ContextFacts<'_> {
+        context_drawer::ContextFacts {
+            state: self.state,
+            activity: self.activity,
+            settings: self.settings,
+            recording: self.recording,
+        }
+    }
+
+    /// What the Up-ahead timeline is scoped to this frame — the rider's live filter and their
+    /// persisted source preference, read as one value (epic #946 U4 / #1515 D4a).
+    pub(crate) fn up_ahead_scope(&self) -> crate::corridor::UpAheadScope {
+        crate::corridor::UpAheadScope { filter: self.state.up_ahead_filter, source: self.settings.up_ahead_source }
+    }
+
     /// The narrow live-data view the stat-field catalogue formats from — the one constructor of
     /// [`Readout`](crate::stat_fields::Readout), so `stat_fields` stays decoupled from the full
     /// draw context (and its `RenderScratch`).
@@ -1199,9 +1235,12 @@ impl Screen {
     /// screen asks for one, so the App-owned scratch stays disarmed (and the query free) everywhere
     /// else — as does an Up-ahead list the rider scoped to **waypoints only** (U4), which declares
     /// no key at all.
-    pub(crate) fn corridor_request(&self) -> Option<crate::corridor::CorridorKey> {
+    pub(crate) fn corridor_request(
+        &self,
+        scope: crate::corridor::UpAheadScope,
+    ) -> Option<crate::corridor::CorridorKey> {
         match self {
-            Screen::UpAhead(s) => s.corridor_key(),
+            Screen::UpAhead(s) => s.corridor_key(scope),
             _ => None,
         }
     }
@@ -1220,6 +1259,8 @@ impl Screen {
             Screen::Map(_) | Screen::Statistics(_) | Screen::Climb(_) | Screen::RideControl(_) => {
                 Some(&context_drawer::RIDE)
             }
+            // The timeline's two scope controls (#1515 D4a) — the only home either of them has.
+            Screen::UpAhead(_) => Some(&context_drawer::UP_AHEAD),
             _ => None,
         }
     }
