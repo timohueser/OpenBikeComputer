@@ -1397,7 +1397,26 @@ fn nothing_cancels_a_shutdown_already_in_progress() {
     app.on_warning(WarningFlags::REC_ERROR);
     assert!(app.power_off_requested(), "a host card must not cancel a shutdown in progress");
     assert!(matches!(app.top_screen(), Screen::QuickDrawer(_)), "the panel keeps the powering-off frame");
+    // The fourth door: the remote DFU card is the one arrival that comes from neither the card
+    // scheduler nor a screen transition, so it has to say this itself. Deferring is already its
+    // answer to an inconvenient moment.
+    let mut app = powering_off();
+    assert!(!app.open_remote_dfu_check(), "a phone's install request must not open over a shutdown");
+    assert!(app.power_off_requested(), "…and must not cancel it");
+    assert!(matches!(app.top_screen(), Screen::QuickDrawer(_)), "the panel keeps the powering-off frame");
+}
 
+/// The same remote card is also the one arrival that used to push **raw**, stepping around the rule
+/// every other one obeys: it landed on top of an open sheet instead of taking it.
+#[test]
+fn the_remote_dfu_card_takes_an_open_sheet_with_it() {
+    for chord in [crate::input::Chord::Quick, crate::input::Chord::Context] {
+        let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
+        assert!(app.apply_chord(chord));
+        assert!(app.open_remote_dfu_check(), "the phone's request opens the scan wait");
+        assert!(matches!(app.top_screen(), Screen::DfuCheck(_)));
+        assert!(!app.debug_stack_has_overlay(), "{chord:?}: the sheet went with it");
+    }
 }
 
 /// **A drawer is transient chrome: nothing lands on top of one.** A host card arriving over an open
