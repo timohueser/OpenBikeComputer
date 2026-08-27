@@ -16,6 +16,26 @@ target/release/obc-sim freiburg.obcm --png frame.png
 Run `target/release/obc-sim --help` for the compact reference. The sections below document every
 remaining option.
 
+## Device controls in the window
+
+The four housing buttons are clickable, and the keyboard drives the same raw edges the firmware
+gets from GPIO:
+
+| Key | Button |
+| --- | --- |
+| Left arrow | Up |
+| Right arrow | Down |
+| Enter | Select |
+| Backspace | Back |
+
+Because these are held-state edges, the device-wide **chords** work as they do on the device. Press
+Left and Enter (Up + Select) **within 100 ms of each other** to open the universal quick drawer; a
+larger gap is two ordinary gestures. Down + Back (Right and Backspace) is the contextual drawer's
+chord, on the same window; it is recognised, but it has no content yet.
+
+The mouse wheel over the screen injects selection steps directly, so it does not model a button and
+makes no chord.
+
 ## Map and output
 
 - `--size WxH` changes the frame geometry from the device default (240×320).
@@ -53,7 +73,8 @@ remaining option.
 ## Scripted snapshots
 
 - `--script TOKENS` applies device input before a headless render. `d`/`u` step, `p` selects, `h`
-  holds Select, `b` goes back, `B` holds Back, `H`/`M` leave a partial hold, `w` settles animation,
+  holds Select, `b` goes back, `B` holds Back, `H`/`M` leave a partial hold, `Q` squeezes the
+  Up+Select chord that opens the universal quick drawer, `w` settles animation,
   `f` draws one preparation frame, `T` performs one route-aware tick, and `I` triggers idle return.
 - `--expect-screen NAME` refuses the render if the script lands on another screen.
 - `--hold nav|detour` consumes exactly one planner request without starting it, preserving its

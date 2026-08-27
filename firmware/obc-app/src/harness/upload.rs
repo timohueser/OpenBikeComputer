@@ -428,9 +428,11 @@ fn a_hold_charging_when_back_dismisses_the_popup_cannot_delete_a_route() {
 
     // Select down (the hold starts charging on the popup)…
     app.handle_input(InputClock(1_000), &mut keys(&[down(Button::Select)]));
-    // …then a Back tap while Select is still held: the popup pops, the overview is top.
-    app.handle_input(InputClock(1_100), &mut keys(&[down(Button::Back)]));
-    app.handle_input(InputClock(1_180), &mut keys(&[up(Button::Back)]));
+    // …then a Back tap while Select is still held: the popup pops, the overview is top. The Back
+    // press is deliberately past the chord window — inside it, Select+Back is the reserved chord
+    // (#1515 D2), which swallows both and dismisses nothing.
+    app.handle_input(InputClock(1_200), &mut keys(&[down(Button::Back)]));
+    app.handle_input(InputClock(1_280), &mut keys(&[up(Button::Back)]));
     assert!(matches!(app.top_screen(), Screen::RouteOverview(_)), "Back dismissed the popup");
 
     // The Select hold crosses its 500 ms threshold — over the Route overview now. It was aimed at

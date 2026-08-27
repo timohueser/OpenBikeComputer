@@ -26,6 +26,10 @@ use obc_route::RouteReader;
 
 use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 
+/// How long the "POWERING OFF" frame stays on the glass before the process ends — long enough to
+/// read, short enough that it is plainly an ending and not a hang.
+const POWERING_OFF_HOLD: std::time::Duration = std::time::Duration::from_millis(700);
+
 use crate::device_input::DeviceInput;
 use crate::map_file::LoadedMap;
 use crate::present::Present;
@@ -285,6 +289,14 @@ struct SimGui {
     gpx_error: Option<String>,
     /// Set when the Controls window is closed; quits the whole app next frame.
     quit: bool,
+    /// The panel's brightness, driven from [`App::backlight_level`] every frame — the simulator's
+    /// [`Backlight`](obc_ports::Backlight) implementation (#1515 D2).
+    backlight: crate::panel_power::SimBacklight,
+    /// The simulator's [`PowerOff`](obc_ports::PowerOff) port.
+    power: crate::panel_power::SimPowerOff,
+    /// Millis the rider completed the power-off hold, so the "POWERING OFF" frame is actually
+    /// **looked at** before the process ends. `None` until then.
+    powering_off_at: Option<std::time::Instant>,
     texture: Option<egui::TextureHandle>,
     last_stats: obc_render::RenderStats,
     /// The render-on-demand signal the last pass planned (`PassPlan::render`), kept for the stats
@@ -422,6 +434,12 @@ impl SimGui {
         // Device-info built-ins for the System settings screen (T8 item 6): firmware version (the
         // sim's crate version) + the loaded map's name (filename stem) & OBCM version. The card-free
         // scan is answered per-frame in `update` when the screen posts its on-entry request.
+        // The panel-light capability, straight from the port the window will actually drive — the
+        // drawer's root row is built from this (#1515 D2). `--no-backlight` builds the board's
+        // lightless platform instead, so the window shows the three-control sheet and never scales
+        // the blit.
+        let backlight = crate::panel_power::SimBacklight::new(!args.no_backlight);
+        app.set_backlight_available(obc_ports::Backlight::available(&backlight));
         app.set_fw_version(env!("CARGO_PKG_VERSION"));
         let map_name = map.source.display_name();
         app.set_map_info(&map_name, map_tables.version);
@@ -466,6 +484,9 @@ impl SimGui {
             gpx_label: None,
             gpx_error: None,
             quit: false,
+            backlight,
+            power: crate::panel_power::SimPowerOff,
+            powering_off_at: None,
             texture: None,
             elevation: map.elevation(),
             map,
@@ -778,7 +799,19 @@ impl SimGui {
         // assert. `present_now` is the same engine the display-contract impls delegate to (the
         // contracts type geometry at compile time; the GUI's device size is the `--size` knob).
         self.present.present_now(&self.fb, None);
-        let image = egui::ColorImage::from_rgb([dev_w as usize, dev_h as usize], self.present.texture());
+        // The backlight, applied where a panel's brightness is actually visible: the pixels the
+        // window blits. Driven every frame from the app's own answer, which is the drawer's staged
+        // preview while its editor is open and the committed setting otherwise — so previewing,
+        // committing and cancelling all fall out of one idempotent call.
+        let _ = obc_ports::Backlight::apply(&mut self.backlight, self.app.backlight_level());
+        let size = [dev_w as usize, dev_h as usize];
+        let image = match self.backlight.gain() {
+            None => egui::ColorImage::from_rgb(size, self.present.texture()),
+            Some(gain) => {
+                let dim: Vec<u8> = self.present.texture().iter().map(|c| (*c as u16 * gain / 255) as u8).collect();
+                egui::ColorImage::from_rgb(size, &dim)
+            }
+        };
         let opts = egui::TextureOptions::NEAREST;
         match &mut self.texture {
             Some(t) => t.set(image, opts),
@@ -1113,6 +1146,17 @@ impl eframe::App for SimGui {
         // way to drive the fix).
         if self.quit {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+
+        // The power-off port, once the frame the rider is looking at has been on the glass long
+        // enough to read. `power_off` does not return.
+        if self.app.power_off_requested() {
+            let since = *self.powering_off_at.get_or_insert_with(std::time::Instant::now);
+            if since.elapsed() >= POWERING_OFF_HOLD {
+                obc_ports::PowerOff::power_off(&mut self.power);
+            }
+        } else {
+            self.powering_off_at = None;
         }
 
         // Repaint continuously so control-panel / GPX changes show without a mouse event.

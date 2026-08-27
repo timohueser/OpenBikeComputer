@@ -88,6 +88,8 @@ mod map_plane;
 // The map/ride thread-mode plane: `run_app` + its loop-only helpers. It runs joined with the BLE
 // stack (#270), both driving the shared SD + settings store.
 mod ride;
+// The two panel-power ports (#1515 D2): the backlight this panel does not have, and system OFF.
+mod panel_power;
 // Persistent device settings over on-chip RRAM (the SD-independent settings store); boot-load +
 // save-on-dirty are wired in `run_app`.
 mod settings;
@@ -169,7 +171,7 @@ use ls021_flpr::{launch_flpr, relaunch_flpr, FlprError, Frame64, Ls021Flpr};
 // and the map plane's display handle + boot-fault screen. (Unqualified so the input-plane items don't
 // read against the `input_plane` value binding constructed below — they're different namespaces, but
 // this keeps the call sites clean.)
-use input_plane::{input_task, EXECUTOR_HP, GESTURES};
+use input_plane::{input_task, CHORDS, EXECUTOR_HP, GESTURES};
 use map_plane::{show_boot_fault, MapDisplay};
 
 // VCOM debug-sensor / telemetry stream, behind `debug-uart`: the interrupt-buffered UARTE on the DK's
@@ -1188,7 +1190,7 @@ async fn main(_spawner: Spawner) {
                 info!("FLPR LS021: COM on hardware TIMER21+DPPI+GPIOTE20 (zero-CPU); M33 can WFI between events");
                 c
             };
-            hp.spawn(defmt::unwrap!(input_task(buttons, input_plane, GESTURES.sender())));
+            hp.spawn(defmt::unwrap!(input_task(buttons, input_plane, GESTURES.sender(), CHORDS.sender())));
             info!("FLPR LS021: gesture/bulge plane on SWI01 @ P3; map plane: thread mode (event-driven, #219)");
             MapDisplay {
                 frame,

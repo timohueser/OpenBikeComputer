@@ -636,3 +636,14 @@ s = "S"
 sw = "SW"
 w = "W"
 nw = "NW"
+
+# --- The universal quick drawer (Up + Select) ---
+[quick]
+brightness = "BRIGHTNESS"
+bluetooth_on = "BLUETOOTH ON"
+bluetooth_off = "BLUETOOTH OFF"
+settings = "SETTINGS"
+power = "POWER OFF"
+power_confirm = "POWER OFF?"
+power_hold = "HOLD SELECT"
+powering_off = "POWERING OFF..."
