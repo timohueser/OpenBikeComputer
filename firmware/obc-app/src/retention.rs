@@ -1638,14 +1638,3 @@ const _: () = assert!(core::mem::size_of::<RetentionIntent>() <= 24, "an identit
 const _: () = assert!(core::mem::size_of::<RetentionEffect>() <= 24, "a token, an identity and a stamp");
 const _: () = assert!(core::mem::size_of::<RetentionOutcome>() <= 16, "a token and an identity");
 const _: () = assert!(core::mem::size_of::<RetentionError>() <= 1, "a verdict, not a report");
-
-#[cfg(test)]
-mod ret1548_tmp_sizes {
-    #[test]
-    fn print_sizes() {
-        println!("RET1548 RetentionMachine={}", core::mem::size_of::<super::RetentionMachine>());
-        println!("RET1548 PassState={}", core::mem::size_of::<crate::device_core::pass::PassState>());
-        println!("RET1548 Connections={}", core::mem::size_of::<crate::device_core::connections::Connections>());
-        println!("RET1548 App={}", core::mem::size_of::<crate::App>());
-    }
-}
