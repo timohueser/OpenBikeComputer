@@ -72,10 +72,9 @@ use obc_ports::{InputClock, RideClock, Sensors};
 use obc_route::RouteReader;
 
 use crate::catalog_state::CatalogIntent;
-use crate::device_core::connections::{ActiveRouteRemoved, CatalogIdentityChanged, RouteActivated};
+use crate::device_core::connections::{ActiveRouteRemoved, CatalogIdentityChanged, CatalogRemoval, RouteActivated};
 use crate::dirty::Dirty;
 use crate::input::Gesture;
-use crate::retention::SweepKind;
 use crate::App;
 
 use super::connections::Connections;
@@ -387,7 +386,12 @@ impl App {
     fn stage_outcomes(&mut self, outcomes: &mut OutcomeSlots) {
         self.pass.record(PassStage::Outcomes);
         if let Some(outcome) = outcomes.catalog.take() {
-            self.catalogs.apply_outcome(outcome);
+            // The catalog's verdict on a removal is retention's: the expiry candidate for an object
+            // the store no longer holds is retired at stage 5 of this pass, rather than surviving
+            // until the re-read the removal ordered lands (#1548).
+            if let Some(object) = self.catalogs.apply_outcome(outcome) {
+                let _ = self.pass.connections.catalog_removal.try_put(CatalogRemoval { object });
+            }
         }
         if let Some(outcome) = outcomes.retention.take() {
             self.retention.apply_outcome(outcome);
@@ -525,9 +529,15 @@ impl App {
 
     /// Stage 5 — advance `RetentionMachine`.
     ///
-    /// Its deferred inbox first: what Navigator and the catalog decided *after* it ran last pass. Then the domain's own advance, then the one expiry intent and the one sidecar
-    /// write it may have this pass. The expiry goes into a same-pass slot because the catalog runs
-    /// next — an auto-expired object leaves by exactly the path a rider-deleted one does.
+    /// Its inbox first: the removal this pass's stage 1 accepted, then what Navigator and the
+    /// catalog decided *after* it ran last pass. Then the domain's own advance, then the one expiry
+    /// intent and the one sidecar write it may have this pass. The expiry goes into a same-pass slot
+    /// because the catalog runs next — an auto-expired object leaves by exactly the path a
+    /// rider-deleted one does.
+    ///
+    /// The removal is read **before** anything else: an expiry candidate for an object the store no
+    /// longer holds is not a candidate, whoever ordered the removal, and it is retired here rather
+    /// than by waiting for the object to disappear from a later re-read.
     ///
     /// Each inbox value goes to a domain **entry point that re-derives its own rule**: a delivered
     /// id is a pass old, and only the domain can say whether it still qualifies. An activation in
@@ -542,33 +552,42 @@ impl App {
     /// device ever ran. See [`consume_unstored_stamp`](App::consume_unstored_stamp).
     fn stage_retention(&mut self, effects: &mut EffectSlots, support: PlatformSupport) {
         self.pass.record(PassStage::Retention);
+        if let Some(removal) = self.pass.connections.catalog_removal.take() {
+            self.retention.note_object_removed(removal.object);
+            // The expiry slot can still hold an intent the catalog had no room for last pass. It is
+            // a copy of a candidate the verdict has just retired, so admitting it would be a second
+            // removal for an object already gone — the rider deleting a route the sweep had queued
+            // is exactly that race. Anything about another object still waits its turn.
+            if let Some(parked) = self.pass.connections.expiry.take() {
+                let stale = matches!(
+                    parked,
+                    CatalogIntent::DeleteRoute { id } | CatalogIntent::DeleteRide { id } if id == removal.object
+                );
+                if !stale {
+                    let _ = self.pass.connections.expiry.try_put(parked);
+                }
+            }
+        }
         if let Some(activated) = self.pass.connections.route_activated.take() {
             self.with_retention(|retention, view| retention.note_route_activated(activated.route, view));
         }
         if self.pass.connections.catalog_identity.take().is_some() {
-            self.retention.force_next_sweep();
+            self.retention.note_catalog_changed();
         }
         self.retention_tick();
 
         if self.pass.connections.expiry.is_empty() {
-            for kind in [SweepKind::DeleteRoute, SweepKind::DeleteRide] {
-                if let Some(intent) = self.with_retention(|retention, view| retention.next_expiry(kind, view)) {
-                    let _ = self.pass.connections.expiry.try_put(intent);
-                    break;
-                }
+            if let Some(intent) = self.with_retention(|retention, view| retention.next_expiry(view)) {
+                let _ = self.pass.connections.expiry.try_put(intent);
             }
         }
         if effects.retention.is_empty() {
-            for kind in [SweepKind::StampRoute, SweepKind::StampRide] {
-                if let Some(effect) = self.with_retention(|retention, view| retention.next_metadata_effect(kind, view))
-                {
-                    self.mirror_stamp(effect);
-                    if support.retention_metadata {
-                        let _ = effects.retention.try_put(effect);
-                    } else {
-                        self.consume_unstored_stamp(effect);
-                    }
-                    break;
+            if let Some(effect) = self.with_retention(|retention, view| retention.next_metadata_effect(view)) {
+                self.mirror_stamp(effect);
+                if support.retention_metadata {
+                    let _ = effects.retention.try_put(effect);
+                } else {
+                    self.consume_unstored_stamp(effect);
                 }
             }
         }
@@ -875,6 +894,7 @@ mod tests {
     use crate::app::AppState;
     use crate::catalog_state::{CatalogEffect, CatalogError, CatalogOutcome};
     use crate::device_core::{DataIdentity, StoreIdentity, TokenSource, WeatherData};
+    use crate::retention::SweepKind;
     use crate::retention::{Retention, RouteRetentionMeta};
     use crate::route::RouteSummary;
     use crate::screen::WarningFlags;

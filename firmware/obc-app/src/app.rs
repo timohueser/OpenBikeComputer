@@ -1032,10 +1032,15 @@ impl App {
     }
 
     /// Force the auto-expiry sweep to run on the next eligible tick, ignoring the hourly gate (epic
-    /// #638, S3) — the seam the simulator's "+1 day" control uses so a fast-forwarded clock sweeps
-    /// immediately instead of waiting for the wall-clock hour to roll. No production path calls it.
+    /// #638, S3) — a **test and simulator seam** with no production caller. The simulator's "+1 day"
+    /// control uses it so a fast-forwarded clock sweeps immediately instead of waiting for the
+    /// wall-clock hour to roll.
+    ///
+    /// The production path to the same fact is
+    /// [`note_catalog_changed`](crate::retention::RetentionMachine::note_catalog_changed), which
+    /// stage 5 calls when the catalog's identity set moves.
     pub fn force_retention_sweep(&mut self) {
-        self.retention.force_next_sweep();
+        self.retention.note_catalog_changed();
     }
 
     /// Recompute [`Activity::active_climb`] from the freshly-matched `progress_m` — the ride
@@ -2116,14 +2121,10 @@ impl App {
         self.ui.cards.post_upload(PendingUpload::Route(UploadEvent { id, active_replace, elevation }));
         self.sweep_cards();
         // Anchor the route's retention clock at upload time (auto-expiry epic #638 S4): a fresh or
-        // replace upload is a "use", so stamp `last_used = now` when the clock is trusted — the precise
-        // expiry anchor the app's `setRouteRetention` (which never touches `last_used`) then reads. An
-        // *untrusted* upload leaves `last_used == 0`, which the sweep starts later (invariant 2) — the
-        // safe fallback. Reuses the `StampRouteUsed` host path (drained into the S3 sidecar), no new
-        // channel; the drain mirrors the stamp into the resident meta so it fires once per upload.
-        if self.clock_trusted() {
-            self.retention.note_route_uploaded(id);
-        }
+        // replace upload is a "use", so its expiry clock anchors here rather than at the next hourly
+        // sweep. Whether the clock may be trusted is the domain's rule, applied inside
+        // `note_route_uploaded` — the same place its sibling `note_route_activated` applies it.
+        self.with_retention(|retention, view| retention.note_route_uploaded(id, view));
     }
 
     /// A committed trip upload: the "TRIP RECEIVED" advisory prompt — for a **fresh** trip
@@ -6291,6 +6292,24 @@ mod tests {
         );
     }
 
+    /// #1548: the upload stamp does **not** take its sibling's expiring-route filter. Every fresh
+    /// route is `Never` at upload — the app sets the level in a separate command that never touches
+    /// `last_used` — so filtering `Never` here would slip the anchor to the next hourly sweep, which
+    /// is the imprecision this stamp exists to remove.
+    #[test]
+    fn a_never_route_uploaded_and_levelled_later_anchors_at_upload() {
+        let (mut app, now) = trusted_app();
+        app.set_routes_with_meta(&[summary("Fresh")], &[10], &[RouteRetentionMeta::new(Retention::Never, 0)]);
+        app.on_route_uploaded(10, false, None);
+        sweep_and_drain(&mut app);
+        let anchored = app.route_metas()[0].last_used_utc;
+        assert_eq!(anchored, now, "the upload anchored `last_used`, not the next sweep");
+
+        // The phone's `setRouteRetention` sets the level and leaves `last_used` alone.
+        app.set_route_meta(&[RouteRetentionMeta::new(Retention::Day1, anchored)]);
+        assert_eq!(app.route_metas()[0].expires_at(), Some(now + DAY_SECS), "the countdown runs from the upload");
+    }
+
     /// Invariant 4: no sweep (no deletions) while a ride is recording — even with an expired route.
     #[test]
     fn sweep_suppressed_while_recording() {
@@ -6424,6 +6443,12 @@ mod tests {
         Sweeper::new().rounds(app, 3)
     }
 
+    /// The same round against a store that **refuses** every removal — the one case the backstop
+    /// still covers, now that a completed removal is retired by the catalog's verdict.
+    fn drain_once_refusing(app: &mut App) -> heapless::Vec<SweepOp, 8> {
+        Sweeper { store_ok: false, ..Sweeper::new() }.rounds(app, 3)
+    }
+
     fn expired(now: u32) -> RouteRetentionMeta {
         RouteRetentionMeta::new(Retention::Day1, now - 3 * DAY_SECS)
     }
@@ -6529,26 +6554,104 @@ mod tests {
         }
     }
 
-    /// Finding #876-3: a transient delete failure is **retried by the same candidate** — no second
-    /// hourly sweep is needed. The retry is paced by the bounded backoff (so a dead card doesn't
-    /// re-fire every frame), then re-dispatches the identical id once the window elapses.
+    /// Finding #876-3, now the backstop's own case (#1548): a **refused** removal keeps its
+    /// candidate and retries it — no second hourly sweep is needed — paced by the bounded window so
+    /// a dead card is not hammered every frame.
     #[test]
-    fn failed_delete_retries_without_a_new_sweep() {
+    fn a_refused_removal_keeps_its_candidate_and_retries_after_the_backoff() {
         let (mut app, now) = trusted_app();
         app.set_routes_with_meta(&[summary("A")], &[10], &[expired(now)]);
         app.retention_tick();
-        assert!(drain_once(&mut app).contains(&SweepOp::Remove(10)), "first dispatch");
-        // Storage FAILED: route 10 is still present. Within the backoff window it does not re-fire.
+        assert!(drain_once_refusing(&mut app).contains(&SweepOp::Remove(10)), "first dispatch");
+        // The store refused: route 10 is still there, and nothing retired the candidate.
         assert!(
-            !drain_once(&mut app).contains(&SweepOp::Remove(10)),
-            "the backoff paces the retry — no per-frame hammering"
+            !drain_once_refusing(&mut app).contains(&SweepOp::Remove(10)),
+            "the backstop paces the retry — no per-frame hammering"
         );
-        // Past the backoff, the *same* candidate re-dispatches — no new sweep ran in between.
+        // Past the window, the *same* candidate re-dispatches — no new sweep ran in between.
         app.ui.now_ms += RETENTION_DELETE_BACKOFF_MS + 1;
         assert!(
-            drain_once(&mut app).contains(&SweepOp::Remove(10)),
+            drain_once_refusing(&mut app).contains(&SweepOp::Remove(10)),
             "the retained candidate retries itself, without another hourly discovery"
         );
+    }
+
+    /// One in-flight slot, not one per class (#1548): the backstop belongs to the **store**, so a
+    /// ride removal does not walk into a card that refused a route removal a frame ago. It follows
+    /// once the window has passed, or — on the ordinary path — in the pass the route's verdict lands.
+    #[test]
+    fn a_refused_removal_paces_the_next_delete_of_either_kind() {
+        let (mut app, now) = trusted_app();
+        app.set_routes_with_meta(&[summary("R")], &[10], &[expired(now)]);
+        app.set_ride_retention_inventory(&[RideRetentionRecord {
+            id: 7,
+            synced: true,
+            synced_at_utc: now - 8 * DAY_SECS,
+        }]);
+        app.retention_tick();
+        let first = drain_once_refusing(&mut app);
+        assert!(first.contains(&SweepOp::Remove(10)), "the route removal goes out first: {first:?}");
+        assert_eq!(n_deletes(&first), 1, "the card just refused — the ride does not walk into it: {first:?}");
+
+        let blocked = drain_once_refusing(&mut app);
+        assert_eq!(n_deletes(&blocked), 0, "and it still waits inside the window: {blocked:?}");
+        app.ui.now_ms += RETENTION_DELETE_BACKOFF_MS + 1;
+        assert!(drain_once_refusing(&mut app).contains(&SweepOp::Remove(10)), "past the window the head retries");
+    }
+
+    /// The class order is the domain's, not the stage's (#1548): a route expiry is offered before a
+    /// ride expiry, which is the order the sweep discovers them in.
+    #[test]
+    fn an_expiry_offers_a_route_before_a_ride() {
+        let (mut app, now) = trusted_app();
+        app.set_routes_with_meta(&[summary("R")], &[10], &[expired(now)]);
+        app.set_ride_retention_inventory(&[RideRetentionRecord {
+            id: 7,
+            synced: true,
+            synced_at_utc: now - 8 * DAY_SECS,
+        }]);
+        app.retention_tick();
+        let mut host = Sweeper::new();
+        assert_eq!(host.pass(&mut app).first(), Some(&SweepOp::Remove(10)), "the route class goes first");
+        assert!(host.rounds(&mut app, 2).contains(&SweepOp::Remove(7)), "and the ride follows it");
+    }
+
+    /// #1548: a **completed** removal retires the expiry candidate in the pass its answer lands —
+    /// while the resident catalogs are still the pre-removal picture, because the re-read the
+    /// removal ordered has not run yet.
+    #[test]
+    fn a_completed_removal_retires_its_expiry_candidate_in_the_same_pass() {
+        let (mut app, now) = trusted_app();
+        app.set_routes_with_meta(&[summary("A")], &[10], &[expired(now)]);
+        app.retention_tick();
+        let mut host = Sweeper::new();
+        assert!(host.pass(&mut app).contains(&SweepOp::Remove(10)), "the expiry dispatches");
+
+        host.pass(&mut app); // the answer lands at stage 1 of this pass
+        assert_eq!(app.route_ids(), &[10], "the catalogs are still behind the store");
+        assert!(!app.retention.has(SweepKind::DeleteRoute), "and the candidate is already retired");
+    }
+
+    /// #1548: every producer of a deletion converges on the same verdict. A route the **rider**
+    /// deletes retires the expiry candidate the sweep had for it, so the object is removed once.
+    #[test]
+    fn a_riders_delete_retires_the_expiry_candidate_for_the_same_object() {
+        let (mut app, now) = trusted_app();
+        app.set_routes_with_meta(&[summary("A"), summary("B")], &[10, 11], &[expired(now), expired(now)]);
+        app.retention_tick(); // both routes are expiry candidates, and 10 is the head
+        app.activity.request_route_delete(1); // the rider deletes 11 by hand, so the sweep never did
+
+        let mut ops: heapless::Vec<SweepOp, 32> = heapless::Vec::new();
+        for _ in 0..4 {
+            for op in drain_once(&mut app) {
+                let _ = ops.push(op);
+            }
+        }
+        for id in [10u64, 11] {
+            let n = ops.iter().filter(|op| **op == SweepOp::Remove(id)).count();
+            assert_eq!(n, 1, "{id} removed once, whoever ordered it: {ops:?}");
+        }
+        assert!(!app.retention.has(SweepKind::DeleteRoute), "both candidates were retired by their verdicts");
     }
 
     /// #1548 finding 2: the store **answered `ObjectRemoved`**, and the re-read that answer ordered
@@ -6576,26 +6679,26 @@ mod tests {
     }
 
     /// Review fix (#886): cancelling a queued-but-never-dispatched candidate must NOT re-open the
-    /// per-kind dispatch window while a *different* id's delete is outstanding. Interleaving:
-    /// `DeleteRoute(10)` is dispatched and in flight, `DeleteRoute(11)` is queued behind it; the
+    /// dispatch window while a *different* id's removal is outstanding. Interleaving:
+    /// `DeleteRoute(10)` is dispatched and refused, `DeleteRoute(11)` is queued behind it; the
     /// rider activates route 11 → `note_active_route` cancels 11's candidate. The same-pass drain
-    /// must not re-emit `DeleteRoute(10)` mid-flight (one delete in flight per kind), and 10 must
-    /// stay retained for its own backoff-paced retry.
+    /// must not re-emit `DeleteRoute(10)` mid-flight, and 10 must stay retained for its own retry.
     #[test]
     fn cancel_of_a_queued_candidate_does_not_reopen_the_inflight_window() {
         let (mut app, now) = trusted_app();
         app.set_routes_with_meta(&[summary("X"), summary("A")], &[10, 11], &[expired(now), expired(now)]);
         app.retention_tick(); // queues DeleteRoute(10) + DeleteRoute(11)
-        let first = drain_once(&mut app);
+                              // The store refuses, so 10 stays in flight instead of being retired by its own verdict.
+        let first = drain_once_refusing(&mut app);
         assert!(first.contains(&SweepOp::Remove(10)), "10 dispatches first and is in flight");
-        assert!(!first.contains(&SweepOp::Remove(11)), "one route delete in flight at a time");
+        assert!(!first.contains(&SweepOp::Remove(11)), "one delete in flight at a time");
 
         // The rider activates route 11 (catalog index 1) — the next tick's `note_active_route`
         // cancels 11's queued (never-dispatched) delete candidate.
         app.activate_route(1);
         app.retention_tick();
         assert!(!app.retention.has(SweepKind::StampRide), "sanity: only route work is queued");
-        let cmds = drain_once(&mut app);
+        let cmds = drain_once_refusing(&mut app);
         assert!(
             !cmds.iter().any(|c| matches!(c, SweepOp::Remove(_))),
             "cancelling 11 must not re-emit the in-flight 10 mid-backoff: {cmds:?}"
