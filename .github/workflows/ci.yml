@@ -228,8 +228,8 @@ jobs:
   # `test` and `test-weather`'s three legs are one test run spread over four runners. Every one of
   # them compiles `--workspace --all-features`, so feature unification, and therefore the code under
   # test, is what the single job this replaced compiled. Each then runs one part of the whole, and
-  # the parts are disjoint and complete: 3,901 tests here and 5 + 34 + 166 in the bakery, against
-  # the 4,106 the workspace has.
+  # the parts are disjoint and complete: 3,901 tests here and 5 + 17 + 17 + 166 in the bakery,
+  # against the 4,106 the workspace has.
   #
   # Why nextest at all: `cargo test` runs one test *binary* at a time, so 191 binaries are 191
   # serial slots and a runner's other cores idle through each one. nextest schedules every test
@@ -252,10 +252,15 @@ jobs:
       # `shared-key` (not `key`) so this job and `test-weather` restore *one* cache instead of two:
       # they run the same build, so a second copy of it would only spend the repository's cache
       # budget twice. This job is the one that writes it; see `save-if` in `test-weather`.
+      # `save-if` on pushes only. A cache written during a pull-request run is scoped to that pull
+      # request and can never warm anyone else's, so saving one costs every pull request the write
+      # and buys only its own re-runs. The cache that matters is the one develop's push writes, and
+      # every pull request restores that.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: .
           shared-key: host-tests
+          save-if: ${{ github.event_name == 'push' }}
       # Native host build: system libGEOS (built from source — apt's is too old) + serialport/
       # eframe system libs. See .github/actions/setup-host-deps.
       - uses: ./.github/actions/setup-host-deps
@@ -336,25 +341,32 @@ jobs:
   # captured upstream radar and model products, and it is 758 s of the run's ~900 s of test CPU on
   # a runner. The two legs are the two halves of that number:
   #
-  # The bakery, on three runners, split around what cannot be divided.
+  # The bakery, on four runners, split around what cannot be divided.
   #
   # `obc-wx-bake` re-bakes captured upstream radar and model products and is 758 s of the run's
-  # ~900 s of test CPU on a runner. Two of its binaries carry almost all of that, and the first one
-  # sets the floor for the whole pull-request gate:
+  # ~900 s of test CPU on a runner. Two of its binaries carry almost all of that:
   #
   #   event_pack_airmass  168.3 s over 5 tests — of which `the_pack_rebakes_byte_identically` is a
-  #                       single 146.8 s service cycle that no scheduler divides
-  #   canonical_mosaic    481.9 s over 34 tests, four of them near 100 s
-  #   the rest            ~108 s over 166 tests
+  #                       single 146.8 s service cycle that nothing divides. It is the floor under
+  #                       the whole pull-request gate, and it gets a runner to itself.
+  #   canonical_mosaic    481.9 s over 34 tests, four of them near 100 s. Two runners, split by
+  #                       `--partition`, which needs no test names and stays balanced as tests are
+  #                       added.
+  #   the rest            ~108 s over 166 tests, one catch-all leg.
   #
-  # So the two heavy binaries get a runner each and the rest is one catch-all leg. The catch-all is
-  # deliberately the *complement* rather than a list of binary names: a new test file in this
-  # package then joins a leg by itself instead of silently running nowhere.
+  # The catch-all is deliberately the *complement* of the two named binaries rather than a list of
+  # names: a new test file in this package then joins a leg by itself instead of running nowhere.
   #
-  # The two named legs also pass `--test NAME`, so each builds the target it runs instead of all 191
-  # test binaries. `--workspace --all-features` still selects every package, so feature resolution
-  # is unchanged — cargo unifies features over the selected *packages*, and target flags choose only
-  # which of those packages' targets get compiled. A renamed target fails the flag loudly.
+  # Each named leg also passes `--test NAME`, so it compiles the target it runs instead of all 191
+  # test binaries — about 20 s against 60 s. `--workspace --all-features` still selects every
+  # package, so feature resolution does not move: cargo unifies features over the selected
+  # *packages*, and a target flag only chooses which of those packages' targets are compiled. A
+  # renamed target fails the flag loudly.
+  #
+  # Those same legs skip `setup-host-deps`, because the target they compile does not reach the
+  # crates that need it — GEOS belongs to obc-pack, libudev to obc-usb-host, X11 to obc-sim, and
+  # none of the three is under `obc-wx-bake`. If that stops being true it is a build failure on the
+  # first run, not a silent one. The catch-all leg builds the workspace and keeps the action.
   test-weather:
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'test-weather')
@@ -366,10 +378,13 @@ jobs:
         include:
           - name: the airmass pack
             args: --test event_pack_airmass
-          - name: the canonical mosaic
-            args: --test canonical_mosaic
+          - name: the canonical mosaic, first half
+            args: --test canonical_mosaic --partition count:1/2
+          - name: the canonical mosaic, second half
+            args: --test canonical_mosaic --partition count:2/2
           - name: the rest of the bakery
             args: -E 'package(obc-wx-bake) - binary(event_pack_airmass) - binary(canonical_mosaic)'
+            host-deps: true
     steps:
       - uses: actions/checkout@v4
         with:
@@ -377,14 +392,14 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: false
-      # Restore-only: `test` writes this cache. Two jobs saving one key is a race whose winner
-      # decides what the other restores next time, and `test` is the leg that builds all of it.
+      # Restore-only, always: `test` owns this cache and writes it on develop's push.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: .
           shared-key: host-tests
           save-if: false
       - uses: ./.github/actions/setup-host-deps
+        if: matrix.host-deps
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest@0.9.143
