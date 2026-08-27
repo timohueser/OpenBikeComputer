@@ -29,7 +29,8 @@ use embedded_graphics::{
     primitives::Rectangle,
 };
 use obc_app::device_core::{
-    DerivedInputs, DerivedTargets, ExternalFacts, OutcomeSlots, PassClock, PassInputs, PlatformSupport, RouteUpload,
+    DerivedInputs, DerivedTargets, ExternalFacts, OutcomeSlots, PassClock, PassInputs, PlatformSupport, Revision,
+    RouteUpload, StoreIdentity, StoreRevision,
 };
 use obc_app::screen::MapTransfer;
 use obc_app::{App, AppState, BleLink, BleStatus, Dirty, SensorPhase, SensorStatus};
@@ -399,6 +400,10 @@ impl Instance {
         let mut fuel = One(s.ports.battery.map(|p| (p,)));
         let mut compass = One(s.ports.compass);
         let mut facts = ExternalFacts::NONE;
+        // The card this device has, reported every pass exactly as the board reports its flat
+        // store's live sequence. `store_writable` is what admits a ride recording, and these
+        // replays ride. A step's own (higher) revision still wins — the fact keeps the newest.
+        facts.note_store_revision(StoreRevision { store: StoreIdentity::new(1), revision: Revision::new(1) });
         if let Some(note) = s.fact {
             note(&mut facts);
         }

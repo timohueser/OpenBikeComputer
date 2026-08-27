@@ -197,6 +197,10 @@ pub struct Demo {
     /// the device for as long as the pre-roll took — about eight minutes of wall clock after every
     /// `enter`, which is the whole guided tour.
     ui_offset_ms: u32,
+    /// This baseline opens with a ride running. A ride needs a mounted card, and the device only
+    /// learns it has one on the pass *after* the executor reports it — so the request is repeated
+    /// each frame until Recorder takes it, rather than fired once at construction and lost.
+    wants_ride: bool,
     /// Guided-demo mode: the page's tour engine owns playback + baseline resets, so the ambient
     /// summit auto-restart is suspended (a `start_session` mid-demo would reset progress under
     /// the script).
@@ -238,6 +242,7 @@ impl Demo {
             queue: Vec::new(),
             last_now_ms: None,
             ui_offset_ms: 0,
+            wants_ride: false,
             tour_active: false,
             ready: false,
         });
@@ -292,6 +297,7 @@ impl Demo {
             self.apply(cmd, &mut gestures);
         }
 
+        self.arm_baseline_ride();
         let plan = self.device_frame(self.ui_now(), dt, &gestures);
         // A single-loop host has no second recognizer to cancel, so it consumes the hold-cancel
         // latch the pass may have armed rather than leaving it set for a plane that does not exist
@@ -473,9 +479,9 @@ impl Demo {
         });
         // Select the embedded demo route and open a session so its line + ride stats show
         // (through the invariant-preserving `activate_route`, never a direct field poke).
-        if baseline != Baseline::Upload && !self.routes.catalog().is_empty() {
+        self.wants_ride = baseline != Baseline::Upload && !self.routes.catalog().is_empty();
+        if self.wants_ride {
             app.activate_route(0);
-            app.recorder.request(obc_app::RecorderIntent::Start);
         }
         // Overwrite in the existing heap slot (no fresh allocation, no lingering old app). The
         // executor is rebuilt with it: its inbox holds outcomes and operation tokens minted by the
@@ -510,8 +516,22 @@ impl Demo {
                 // The pre-roll's own time joins the offset, so the clock the page resumes on
                 // carries it and keeps ticking from there.
                 self.ui_offset_ms = self.ui_offset_ms.wrapping_add((wall_dt * 1000.0) as u32);
+                self.arm_baseline_ride();
                 let _ = self.device_frame(self.ui_now(), wall_dt, &[]);
             }
+        }
+    }
+}
+
+impl Demo {
+    /// Ask Recorder for the baseline's ride, until it takes.
+    ///
+    /// A ride needs a mounted card, and a freshly built device learns it has one on its first pass
+    /// — `Capabilities::recorder` is the pass *before*'s level. A single request at construction
+    /// would be refused and gone, so the page asks each frame while it wants a ride and has none.
+    fn arm_baseline_ride(&mut self) {
+        if self.wants_ride && !self.app.recording() {
+            self.app.recorder.request(obc_app::RecorderIntent::Start);
         }
     }
 }
@@ -671,7 +691,10 @@ mod tests {
         drive(&mut d, &mut now, "press", "RideControl");
         drive(&mut d, &mut now, "step:1", "RideControl");
         drive(&mut d, &mut now, "hold", "Home");
-        assert!(!d.app.recording());
+        assert!(d.app.recording(), "the ride is open until the store answers for the close");
+        now += 16.0;
+        d.tick(now);
+        assert!(!d.app.recording(), "and the finalize's verdict is what closes it");
     }
 
     /// `Screen::NAMES` (the drift-guard export) contains every state this host can report — a

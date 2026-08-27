@@ -102,7 +102,7 @@ pub(crate) struct LinkStores {
 // ============================ Cross-plane mirrors ============================
 
 /// Whether a ride is recording, mirrored across the plane boundary: the ride loop owns the `App`
-/// and pushes `app.activity.is_tracking()` here each pass ([`set_recording`]); the `installFw`
+/// and pushes `app.recording()` here each pass ([`set_recording`]); the `installFw`
 /// command handler reads it as the `busy` gate's "a ride is recording" input (spec §4.4) — the arm
 /// ends in a reboot, so an install must never be requested mid-ride. Defaults **false**; the ride
 /// loop seeds the real value on its first pass. `Relaxed`: every plane is a cooperative future on
