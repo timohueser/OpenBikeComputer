@@ -249,13 +249,12 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: false
-      # `shared-key` (not `key`) so this job and `test-weather` restore *one* cache instead of two:
-      # they run the same build, so a second copy of it would only spend the repository's cache
-      # budget twice. This job is the one that writes it; see `save-if` in `test-weather`.
-      # `save-if` on pushes only. A cache written during a pull-request run is scoped to that pull
-      # request and can never warm anyone else's, so saving one costs every pull request the write
-      # and buys only its own re-runs. The cache that matters is the one develop's push writes, and
-      # every pull request restores that.
+      # `shared-key` (not `key`) so all four test jobs restore *one* cache instead of four: they run
+      # the same build, so further copies would only spend the repository's cache budget again. This
+      # job is the one that writes it, and only on a push — a cache saved during a pull-request run
+      # is scoped to that pull request, so it can never warm anyone else's, and saving one costs
+      # every pull request the write while buying only its own re-runs. The cache that matters is
+      # the one develop's push writes, and every pull request restores that.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: .
