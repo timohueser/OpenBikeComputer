@@ -327,20 +327,34 @@ jobs:
           cargo build -p obc-pack --release --locked
           PYTHONPATH=. python3 -m pytest builder/tests/ -v
 
-  # The other half of the workspace test run: the weather bakery on its own runner.
+  # The other side of the workspace test run: the weather bakery, on two more runners.
   #
-  # It is its own job because of what it costs, not because of what it is. `obc-wx-bake` re-bakes
-  # captured upstream radar and model products, and one of its tests — the airmass pack's
-  # byte-identical re-bake — is a single 104 s service cycle that no amount of scheduling can
-  # divide. Left in with everything else it *is* the critical path; beside everything else it is
-  # simply the longer of two runners, and the run costs what the bakery costs.
+  # It is split out because of what it costs, not because of what it is. `obc-wx-bake` re-bakes
+  # captured upstream radar and model products, and it is 758 s of the run's ~900 s of test CPU on
+  # a runner. The two legs are the two halves of that number:
   #
-  # The build is identical to `test`'s, deliberately: same `--workspace --all-features`, so the
-  # binaries this runs are the ones that job would have run, and the shared cache is valid for both.
+  #   canonical_mosaic   481.9 s over 34 tests, the published-cycle assertions
+  #   the rest           276.0 s over 171 tests, of which the airmass pack's byte-identical
+  #                      re-bake is a single 146.8 s test that no scheduler can divide
+  #
+  # So neither leg can go below about 150 s and both land near it, which is what a split is for.
+  # The two filters are complements, so the legs together are `package(obc-wx-bake)` exactly.
+  #
+  # Each leg's build is identical to `test`'s, deliberately: same `--workspace --all-features`, so
+  # the binaries these run are the ones that job would have run, and one cache serves all three.
   test-weather:
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'test-weather')
     runs-on: ubuntu-latest
+    strategy:
+      # One leg's failure must not hide the other's.
+      fail-fast: false
+      matrix:
+        include:
+          - name: canonical mosaic
+            filter: binary(canonical_mosaic)
+          - name: the rest of the bakery
+            filter: package(obc-wx-bake) - binary(canonical_mosaic)
     steps:
       - uses: actions/checkout@v4
         with:
@@ -364,13 +378,13 @@ jobs:
         with:
           path: ~/.cache/openbikecomputer/fixtures
           key: obc-fixtures-${{ hashFiles('fixtures/catalog.toml') }}
-      - name: cargo nextest (the weather bakery, all features)
+      - name: "cargo nextest (weather bakery: ${{ matrix.name }})"
         env:
           OBC_REQUIRE_FIXTURES: "1"
         run: |
           python3 tools/fixtures.py sync test
           export OBC_FIXTURE_ROOT="$(python3 tools/fixtures.py root)"
-          cargo nextest run --workspace --all-features --locked -E 'package(obc-wx-bake)'
+          cargo nextest run --workspace --all-features --locked -E '${{ matrix.filter }}'
 
   # The real device board crate (nRF54L15) on its thumbv8m target: clippy each feature config + a
   # release build of the one shipping image. Build-only (no board in CI). Each leg runs from the
