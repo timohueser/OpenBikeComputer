@@ -1226,6 +1226,62 @@ fn a_settings_result_with_an_old_revision_is_refused() {
     assert_eq!(rider_visible(delayed.settled.clone()), rider_visible(immediate.settled.clone()));
 }
 
+/// **A saved ride orders exactly one catalog read.**
+///
+/// Finalizing a ride commits an object into the store, so the rides list has to be re-read. It is
+/// one event, so it is one read — ordered by the catalog's own owed bit, whoever caused it (#1541).
+/// The executor answering the close must not re-feed the catalog beside that: a re-feed is a second
+/// copy of the same knowledge, living outside the domain that owns it.
+///
+/// The count is re-feeds **plus** reads on purpose. Either mechanism alone is one read of the
+/// store; what this refuses is the two of them for one save.
+#[test]
+fn a_saved_ride_orders_exactly_one_catalog_read() {
+    let mut harness = typed();
+    // A mounted, writable store — a ride cannot be recorded without one, and its first read is not
+    // what this counts.
+    harness.state.note_store_commit();
+    for _ in 0..SETTLE_PASSES {
+        let mut plan = harness.pass();
+        if let Some(effect) = plan.effects.catalog.take() {
+            harness.answer_catalog(effect);
+        }
+    }
+
+    harness.app().activity.start_session();
+    harness.pass();
+    // The rider holds FINISH on the Paused page (`RideControl::end_ride`).
+    harness.app().activity.request_track(TrackAction::Save);
+    harness.app().activity.end_session();
+
+    let mut reads = 0usize;
+    let mut refeeds = 0usize;
+    for _ in 0..SETTLE_PASSES {
+        let mut plan = harness.pass();
+        if let Some(effect) = plan.effects.catalog.take() {
+            if matches!(effect, CatalogEffect::ReadCatalog { .. }) {
+                reads += 1;
+            }
+            harness.answer_catalog(effect);
+        }
+        let mut done = Vec::new();
+        let mut trace = recorder();
+        harness.serve_mailbox(&mut done, &mut trace);
+        for item in done {
+            if matches!(item, Done::RideSaved) {
+                // The executor's own re-feed of the ride catalog…
+                refeeds += 1;
+                // …and the store commit that saved ride *is*. The board reports its flat store's
+                // live sequence every pass, so a ride commit moves that level whether or not
+                // anything else announces it.
+                harness.state.note_store_commit();
+            }
+            harness.deliver(item, &mut trace);
+        }
+    }
+    assert_eq!(reads + refeeds, 1, "one saved ride is one catalog read: {reads} read(s) + {refeeds} re-feed(s)");
+}
+
 /// **A ride finalize failure after the last checkpoint.** The rider closes the ride, the executor
 /// that performs the close fails it — and the ride is still there afterwards, with the rider told.
 ///
