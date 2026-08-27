@@ -74,7 +74,7 @@ The `Ctx` input context contains mutable application state. The `Render` context
 The screen stack is a `heapless::Vec<Screen, 10>`. Home is always the first item.
 
 <figure class="fig">
-<svg viewBox="0 0 720 330" role="img" aria-label="A pipeline across the top: a gesture goes into the top screen's handle method, which returns a Transition, which apply runs against the stack. Below, the screen stack with Home locked at the bottom, then Map, then Ride menu on top. To the right, the six transitions are listed as stack operations: None stays, Push grows, Pop shrinks, Replace swaps the top, Root truncates to Home then pushes, and Home truncates to the root.">
+<svg viewBox="0 0 720 330" role="img" aria-label="A pipeline across the top: a gesture goes into the top screen's handle method, which returns a Transition, which apply runs against the stack. Below, the screen stack with Home locked at the bottom, then Map, then Up ahead on top. To the right, the six transitions are listed as stack operations: None stays, Push grows, Pop shrinks, Replace swaps the top, Root truncates to Home then pushes, and Home truncates to the root.">
   <defs>
     <marker id="aU2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
@@ -94,7 +94,7 @@ The screen stack is a `heapless::Vec<Screen, 10>`. Home is always the first item
   <!-- stack -->
   <text class="d-tag" x="24" y="104">the stack</text>
   <g>
-    <rect x="40" y="200" width="150" height="34" rx="6" class="d-water" /><text class="d-label" x="115" y="222" text-anchor="middle" style="fill:#fff">Ride menu</text>
+    <rect x="40" y="200" width="150" height="34" rx="6" class="d-water" /><text class="d-label" x="115" y="222" text-anchor="middle" style="fill:#fff">Up ahead</text>
     <text class="d-sub" x="200" y="221" style="font-size:9px">← top (gets input)</text>
     <rect x="40" y="166" width="150" height="34" rx="6" class="d-forest" /><text class="d-label" x="115" y="188" text-anchor="middle" style="fill:#fff">Map</text>
     <rect x="40" y="132" width="150" height="34" rx="6" class="d-muted" /><text class="d-label" x="115" y="154" text-anchor="middle">Home</text>
@@ -237,6 +237,11 @@ The recognizer emits these gestures:
 
 A release after 200 ms and before 500 ms emits no gesture. Long holds emit at the threshold, not on release.
 
+`BackHold` is the **global escape**. The app answers it above the screen stack, so it never reaches a
+screen: it closes any open drawer and opens the main menu, from every screen. Two kinds of card
+refuse it, because the rider must answer them first: a blocking card (the pairing passkey, a map
+transfer, the terminal update card) and the recovered-ride card.
+
 ## Chords
 
 Two buttons pressed within 100 ms of each other are one **chord**, not two gestures. The recognizer
@@ -246,13 +251,12 @@ long press, and no release. The chord stays latched until both buttons are up.
 | Chord | Meaning |
 | --- | --- |
 | Up + Select | Open or close the universal quick drawer |
-| Down + Back | Recognized and swallowed. It has no action yet |
+| Down + Back | Open or close the current screen's contextual drawer |
 | Up + Down | Reserved |
 | Select + Back | Reserved |
 
 A reserved chord is recognized and swallowed. It does nothing. This keeps a squeeze of two buttons
-from becoming two unrelated actions. Down + Back is swallowed for the same reason. It will open a
-contextual drawer when each screen declares the content for one.
+from becoming two unrelated actions.
 
 Because a chord can start with a direction button, the first step of Up or Down waits for the
 100 ms window. A release inside the window steps immediately, so a tap does not feel slower.
@@ -260,13 +264,25 @@ Automatic repeat measures its delay from the press edge, so a held button keeps 
 
 ## Drawers
 
-A drawer is a sheet that the device draws over the current screen. The universal quick drawer comes
-down from the top and holds the device-wide controls: brightness, the Bluetooth radio, the central
-settings, and power. Brightness and power open a nested page. Back closes the sheet and returns the
-rider to the screen below it.
+A drawer is a sheet that the device draws over the current screen. There are two, and only one of
+them can be open: the second chord replaces the sheet instead of adding one.
+
+The **universal quick drawer** comes down from the top and holds the device-wide controls:
+brightness, the Bluetooth radio, the central settings, and power. Brightness and power open a nested
+page. Back closes the sheet and returns the rider to the screen below it.
 
 A platform whose panel has no controllable light does not show the brightness control. The sheet
 has the remaining three controls.
+
+The **contextual drawer** comes up from the bottom and holds the current screen's secondary
+actions. A screen does not build a drawer: it declares a static table of rows, and one generic
+drawer supplies the cursor, the transitions and the drawing. A screen that declares no table gets no
+sheet, and the chord does nothing on it — an empty drawer is never shown.
+
+The four riding views (Map, Statistics, Climb, and the paused page) share one table: Up ahead,
+Detour, POIs, and Routes. A row that cannot act right now is drawn recessed and does nothing — the
+Detour row without a route, without map routing data, or off the route. A row that can act replaces
+the sheet with its screen, so one Back returns the rider to the riding view they squeezed from.
 
 The screen under a drawer is **frozen**. A drawer states its own facts as its render key — the page,
 the selected control, and the staged value — and that key replaces the facts of the screens below.
@@ -995,7 +1011,7 @@ Configured `Next: category` fields use cached per-category corridor results. A v
 ## Main rider flow
 
 <figure class="fig">
-<svg viewBox="0 0 900 360" role="img" aria-label="A navigation graph. Home opens the main compass Menu. Its Routes station opens the Route menu, a route pick opens Overview, and START roots to Map. Map, Statistics, and Climb form the riding-view back ring. Back-hold from a riding view or Paused opens the ride compass without changing activity mode; its north station opens the Up ahead timeline, while the other stations are Detour, POIs, Routes, and Main menu. In Inspect, Back tap returns to Map, Back-hold changes Route or Free and lands in Move, and Select-hold changes an active Free axis but is inert in Zoom. Press from Map pauses; Resume returns and held Finish or Discard clears to Home.">
+<svg viewBox="0 0 900 360" role="img" aria-label="A navigation graph. Home opens the main compass Menu. Its Routes station opens the Route menu, a route pick opens Overview, and START roots to Map. Map, Statistics, and Climb form the riding-view back ring. A Down plus Back squeeze from a riding view or Paused raises the ride context sheet without changing activity mode; its first row opens the Up ahead timeline, and the other rows are Detour, POIs, and Routes. Back-hold from anywhere opens the main menu. In Inspect, Back tap returns to Map, a Select tap walks the mode ring of Route move, Free move and Zoom, and Select-hold changes an active Free axis but is inert in Zoom. Press from Map pauses; Resume returns and held Finish or Discard clears to Home.">
   <defs>
     <marker id="aU7" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#5f7d3d" /></marker>
     <marker id="aU7c" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#cf6a2a" /></marker>
@@ -1010,7 +1026,7 @@ Configured `Next: category` fields use cached per-category corridor results. A v
   <rect class="d-hot" x="410" y="50" width="104" height="40" rx="9" style="fill:#f8efe4" /><text class="d-label" x="462" y="74" text-anchor="middle" style="fill:#a9501c">Paused</text>
   <rect class="d-forest" x="410" y="160" width="104" height="40" rx="9" /><text class="d-label" x="462" y="184" text-anchor="middle" style="fill:#fff">Map</text>
   <rect class="d-panel-2" x="410" y="270" width="104" height="40" rx="9" /><text class="d-label" x="462" y="294" text-anchor="middle">Inspect</text>
-  <rect class="d-panel-2" x="585" y="50" width="130" height="40" rx="9" /><text class="d-label" x="650" y="70" text-anchor="middle">Ride menu</text><text class="d-sub" x="650" y="83" text-anchor="middle" style="font-size:8.5px">fixed compass · 5</text>
+  <rect class="d-panel-2" x="585" y="50" width="130" height="40" rx="9" /><text class="d-label" x="650" y="70" text-anchor="middle">Ride context</text><text class="d-sub" x="650" y="83" text-anchor="middle" style="font-size:8.5px">bottom sheet · 4</text>
   <rect class="d-panel-2" x="755" y="50" width="110" height="40" rx="9" /><text class="d-label" x="810" y="70" text-anchor="middle">Up ahead</text><text class="d-sub" x="810" y="83" text-anchor="middle" style="font-size:8.5px">merged timeline</text>
   <rect class="d-water" x="585" y="160" width="115" height="40" rx="9" /><text class="d-label" x="642" y="180" text-anchor="middle" style="fill:#fff">Statistics</text><text class="d-sub" x="642" y="193" text-anchor="middle" style="fill:#dfe6e0;font-size:8.5px">elevation</text>
   <rect class="d-water" x="755" y="160" width="110" height="40" rx="9" /><text class="d-label" x="810" y="180" text-anchor="middle" style="fill:#fff">Climb</text><text class="d-sub" x="810" y="193" text-anchor="middle" style="fill:#dfe6e0;font-size:8.5px">on a climb</text>
@@ -1036,15 +1052,15 @@ Configured `Next: category` fields use cached per-category corridor results. A v
   <!-- Map -> Pan -->
   <line x1="454" y1="200" x2="454" y2="268" stroke="#5f7d3d" stroke-width="1.6" marker-end="url(#aU7)" /><text class="d-sub" x="418" y="238" style="font-size:9px">hold</text>
   <line x1="472" y1="270" x2="472" y2="202" stroke="#5f7d3d" stroke-width="1.4" marker-end="url(#aU7)" /><text class="d-sub" x="480" y="246" style="font-size:8.5px">back exits</text>
-  <!-- Ride-menu access: same Push from riding views and Paused; no activity-mode write. -->
-  <line x1="514" y1="70" x2="583" y2="70" stroke="#5f7d3d" stroke-width="1.5" marker-end="url(#aU7)" /><text class="d-sub" x="548" y="61" text-anchor="middle" style="font-size:8.5px">back-hold</text>
-  <line x1="642" y1="160" x2="642" y2="92" stroke="#5f7d3d" stroke-width="1.5" marker-end="url(#aU7)" /><text class="d-sub" x="650" y="128" style="font-size:8.5px">back-hold</text>
+  <!-- Ride-context access: the same squeeze from every riding view and from Paused; no activity-mode write. -->
+  <line x1="514" y1="70" x2="583" y2="70" stroke="#5f7d3d" stroke-width="1.5" marker-end="url(#aU7)" /><text class="d-sub" x="548" y="61" text-anchor="middle" style="font-size:8.5px">down+back</text>
+  <line x1="642" y1="160" x2="642" y2="92" stroke="#5f7d3d" stroke-width="1.5" marker-end="url(#aU7)" /><text class="d-sub" x="650" y="128" style="font-size:8.5px">down+back</text>
   <path d="M514 164 C 538 116, 558 94, 585 82" fill="none" stroke="#5f7d3d" stroke-width="1.4" marker-end="url(#aU7)" />
   <path d="M755 164 C 738 124, 726 94, 715 82" fill="none" stroke="#5f7d3d" stroke-width="1.4" stroke-dasharray="4 4" marker-end="url(#aU7)" />
-  <!-- The north/default ride station opens the route-ordered Up-ahead timeline. -->
+  <!-- The first context row opens the route-ordered Up-ahead timeline. -->
   <line x1="717" y1="70" x2="753" y2="70" stroke="#5f7d3d" stroke-width="1.5" marker-end="url(#aU7)" /><text class="d-sub" x="735" y="61" text-anchor="middle" style="font-size:8.5px">press</text>
-  <!-- The ride ring's Main-menu station keeps the full app one step away. -->
-  <path d="M585 82 C 560 330, 398 340, 326 300" fill="none" stroke="#5f7d3d" stroke-width="1.4" marker-end="url(#aU7)" /><text class="d-sub" x="430" y="338" style="font-size:8.5px">Main menu station</text>
+  <!-- The global escape keeps the full app one Back-hold away from every screen. -->
+  <path d="M462 210 C 440 330, 398 340, 326 300" fill="none" stroke="#5f7d3d" stroke-width="1.4" marker-end="url(#aU7)" /><text class="d-sub" x="380" y="338" style="font-size:8.5px">back-hold (from anywhere)</text>
   <!-- Paused -> Home (finish/discard) -->
   <path d="M410 60 C 260 12, 82 70, 80 158" fill="none" stroke="#cf6a2a" stroke-width="1.6" stroke-dasharray="4 4" marker-end="url(#aU7c)" /><text class="d-sub" x="236" y="28" style="fill:#a9501c;font-size:9px">Finish / Discard (hold) → Home</text>
 </svg>
@@ -1053,9 +1069,11 @@ Configured `Next: category` fields use cached per-category corridor results. A v
 
 Home opens the main menu. A route selection opens its overview. Start uses `Root(Map)` to create a clean ride stack.
 
-During a ride, Back cycles through riding views. Press pauses. Back-hold opens the ride menu.
+During a ride, Back cycles through riding views. Press pauses. A Down plus Back squeeze raises the
+ride context sheet. Back-hold opens the main menu from any of them.
 
-Map Inspect uses Select-hold to enter. Back exits Inspect before it changes riding views.
+Map Inspect uses Select-hold to enter. Back exits Inspect before it changes riding views. Inside
+Inspect a Select tap walks the mode ring: route movement, free movement, then zoom.
 
 Idle return removes abandoned chrome. It returns to Home when idle and to Map during an active ride.
 
