@@ -38,14 +38,35 @@ const FRAME_MS: u32 = 16;
 const ROW_H: i32 = 44;
 const SHEET_PAD: i32 = 12;
 
-/// The widest table a context may declare.
+/// The tallest a sheet may grow before it stops being a sheet: three quarters of the 320 px panel.
+/// #1515 asks a drawer to stay attached to its edge and use only the height its content needs, and
+/// to prefer a bounded scrolling sheet over quietly becoming a page.
+const MAX_SHEET_H: i32 = 240;
+
+/// The widest table a context may declare — **four rows**, derived from [`MAX_SHEET_H`] rather than
+/// asserted beside it, so the two can never drift.
 ///
-/// Two limits meet here and the smaller one wins. The render key carries row availability as a
-/// bitmask in one `u8` ([`ContextDrawerScreen::key`]), and the sheet is a *sheet*: eight rows plus
-/// its padding is 376 px, already past the 320 px panel, so a table that needs more rows needs a
-/// scrolling design decision rather than a wider mask. `pinned_by_the_row_tables` holds every
-/// declared table to it.
-const MAX_ROWS: usize = 8;
+/// The render key's availability bitmask is one `u8` ([`ContextDrawerScreen::key`]), which would
+/// allow eight; the panel is the tighter limit and therefore the real one. A fifth row is 244 px,
+/// leaving 76 px of map.
+///
+/// **This is a live constraint for D4c, not a theoretical one.** Decision 3 gives the *map's*
+/// context the display modifiers, and D3's four riding views share one table — so D4c has to pick
+/// one of three, and none of them needs a change here:
+///
+/// 1. **Give the Map its own table** ([`Screen::context`](super::Screen::context) is already
+///    per-screen), with the display rows in place of the ones the Map does not need. That is also
+///    the answer to *where* a scale-bar toggle belongs: on the Map, not on Statistics or the paused
+///    page, where it has no referent.
+/// 2. **Fold the display modifiers into one row** that opens a nested page — the shape the D4
+///    editors need anyway.
+/// 3. **Bound and scroll the sheet**, which is what #1515 prescribes for real overflow and what
+///    raising this constant would then mean.
+const MAX_ROWS: usize = ((MAX_SHEET_H - SHEET_PAD * 2) / ROW_H) as usize;
+
+/// The bitmask in [`ContextDrawerScreen::key`] is one `u8`, so the panel had better be the tighter
+/// limit. If a geometry pass ever makes it not so, this is where that is caught.
+const _: () = assert!(MAX_ROWS <= 8, "the render key carries row availability in one byte");
 
 // ---- The declarative model ------------------------------------------------------------------
 
@@ -359,12 +380,15 @@ mod tests {
     /// D4 slices each add a table here; this is where one that outgrew the sheet is caught.
     #[test]
     fn pinned_by_the_row_tables() {
+        // The derivation itself, so a geometry change is read here rather than discovered in D4c.
+        assert_eq!(MAX_ROWS, 4, "24 px of padding plus 44 px rows inside a {MAX_SHEET_H} px sheet");
+
         // One table today; each D4 slice adds its own to this list.
         let declared: &[&ContextMenu] = &[&RIDE];
         for menu in declared {
-            assert!(menu.rows.len() <= MAX_ROWS, "{} rows outgrow the availability mask", menu.rows.len());
+            assert!(menu.rows.len() <= MAX_ROWS, "{} rows outgrow the sheet", menu.rows.len());
             let sheet_h = SHEET_PAD * 2 + ROW_H * menu.rows.len() as i32;
-            assert!(sheet_h <= 240, "a {sheet_h} px sheet is a page — bound it or scroll it first");
+            assert!(sheet_h <= MAX_SHEET_H, "a {sheet_h} px sheet is a page — bound it or scroll it first");
             assert!(!menu.rows.is_empty(), "an empty table must not be declared: the chord shows no empty sheet");
         }
     }

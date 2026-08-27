@@ -238,9 +238,13 @@ The recognizer emits these gestures:
 A release after 200 ms and before 500 ms emits no gesture. Long holds emit at the threshold, not on release.
 
 `BackHold` is the **global escape**. The app answers it above the screen stack, so it never reaches a
-screen: it closes any open drawer and opens the main menu, from every screen. Two kinds of card
-refuse it, because the rider must answer them first: a blocking card (the pairing passkey, a map
-transfer, the terminal update card) and the recovered-ride card.
+screen: it closes any open drawer and goes to the main menu, from every screen. With a main menu
+already on the stack it returns to that one instead of opening a second, so repeated holds cannot
+grow the stack.
+
+Three states refuse it, because the rider must finish them first: a blocking card (the pairing
+passkey, a map transfer, the terminal update card), the recovered-ride card, and a shutdown that the
+rider has already confirmed. A two-button squeeze is refused in the same three states.
 
 ## Chords
 
@@ -273,6 +277,9 @@ page. Back closes the sheet and returns the rider to the screen below it.
 
 A platform whose panel has no controllable light does not show the brightness control. The sheet
 has the remaining three controls.
+
+Nothing lands on top of a drawer. A card that arrives while a sheet is open takes the sheet with it,
+so dismissing the card returns the rider to the screen they were on.
 
 The **contextual drawer** comes up from the bottom and holds the current screen's secondary
 actions. A screen does not build a drawer: it declares a static table of rows, and one generic

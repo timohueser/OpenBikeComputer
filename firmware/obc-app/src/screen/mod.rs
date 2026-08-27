@@ -137,12 +137,34 @@ pub enum Transition {
     Home,
 }
 
+/// **Nothing lands on top of a drawer** (#1515 D3): take any open sheet off the top of `stack`, and
+/// report whether one was there. Called wherever an ordinary screen arrives — [`apply`]'s `Push`
+/// arm and the card scheduler's own `land`, which pushes directly.
+///
+/// A drawer is transient chrome. A host card burying one would strand it: dismissing the card would
+/// drop the rider back into a sheet they had finished with, and the global escape's "any sheet goes
+/// with it" rule would hold only for the top slot. This is that rule made total, in the one place
+/// each arrival passes through.
+pub(crate) fn close_drawers(stack: &mut Stack) -> bool {
+    let had = stack.last().is_some_and(|top| top.is_overlay());
+    while stack.last().is_some_and(|top| top.is_overlay()) {
+        stack.pop();
+    }
+    had
+}
+
 /// Apply a [`Transition`] to the stack. The root is never popped, so `back`
 /// always has a defined target and the stack can never empty.
 pub fn apply(stack: &mut Stack, t: Transition) {
     match t {
         Transition::None => {}
         Transition::Push(s) => {
+            // Pushing a **drawer over a base** is the other direction and is untouched — that is an
+            // overlay landing on a non-overlay, and the drawer owner
+            // ([`App::apply_chord`](crate::App::apply_chord)) already enforces one sheet at a time.
+            if !s.is_overlay() {
+                close_drawers(stack);
+            }
             // An overflow no-ops in release (the top screen just doesn't open); in sim/tests a
             // navigation tree grown past MAX_DEPTH fails loudly instead of silently dropping it.
             let r = stack.push(s);

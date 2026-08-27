@@ -674,8 +674,9 @@ U5CLIMBOFF="B u p p d d d p b b b"
 # route-relative tiles (KM TO GO, TO CLIMB) read "--" and the rest are live.
 "$SIM" "$MAP" --boot --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 --script "B d d d w p p p b" --expect-screen Statistics --png "$OUT/statistics-routeless.png"
 # The mid-ride "ROUTE ACTIVE" swap card: riding route 0, out to the ride context's Routes row
-# (`C d d d` — the fourth row down) and press, then pick the *other* vector route (`d p`). Choosing a route while a ride is live raises the Swap / Finish & new / Cancel card
-# instead of opening the overview.
+# (`C d d d` — the fourth row down) and press, then pick the *other* vector route (`d p`). Choosing
+# a route while a ride is live raises the Swap / Finish & new / Cancel card instead of opening the
+# overview.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p C d d d p d p" --expect-screen RouteSwap --png "$OUT/routeswap.png"
 # Inspect mode: a thin rounded amber/ink frame follows the panel corners across Route, Free, and
 # Zoom; only the active action's edge cues and the bottom-left scale bar join it. The clock and

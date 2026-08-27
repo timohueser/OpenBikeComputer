@@ -751,6 +751,28 @@ fn replay() -> Vec<Step> {
     steps.push(step("quiet with the cue up", 156_000).expect("Map"));
     steps.push(step("the battery charges back over the cue", 190_000).battery(40).expect("Map"));
     steps.push(step("quiet with the cue gone", 191_000).expect("Map"));
+
+    // --- the quick drawer: the same landing-frame edge, on the other sheet ------------------------
+    // Both drawers report the frame their open slide *lands* on, because that frame still differs
+    // from the one before it — and a render-on-demand host that skips it keeps a half-arrived sheet
+    // on the panel until something unrelated repaints. The ride-context squeeze at 76,100 ms proves
+    // it for one sheet; nothing else in the replay opens the other, so this proves it for the quick
+    // drawer too. It sits at the tail because the property needs a step **after** the 220 ms open
+    // slide has finished and the busy stretch above has no such gap.
+    //
+    // The three halves, in order: the landing frame is reported, an idle map under a settled sheet
+    // asks for nothing, and the close asks for exactly one repaint.
+    // The pass before the squeeze has to be **close** to it: a chord is applied at recognition,
+    // before the pass sets `now_ms`, so the sheet's `opened_ms` is the *previous* pass's clock. A
+    // long quiet gap in front of the squeeze would hand it a sheet already past its 220 ms slide,
+    // and there would be no landing frame left to skip.
+    steps.push(step("a pass just before the squeeze", 191_900).expect("Map"));
+    steps.push(step("squeeze the quick drawer open", 192_000).keys(&squeeze(Button::Up, Button::Select)));
+    steps.push(step("the quick sheet settles", 192_600).expect("QuickDrawer"));
+    steps.push(step("release the squeeze", 192_700).keys(&[release(Button::Select), release(Button::Up)]));
+    steps.push(step("quiet under the settled sheet", 193_000).expect("QuickDrawer"));
+    steps.push(step("close it again", 193_400).keys(&tap(Button::Back)).expect("Map"));
+    steps.push(step("quiet on the uncovered map", 194_000).expect("Map"));
     steps
 }
 

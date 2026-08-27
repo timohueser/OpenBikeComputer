@@ -205,6 +205,9 @@ fn find(stack: &Stack, kind: CardKind) -> Option<usize> {
 /// come back. A `false` leaves the fact in its slot for the next sweep.
 #[must_use]
 fn land(stack: &mut Stack, at: Option<usize>, screen: Screen) -> bool {
+    // A card never lands under a sheet (#1515 D3): an open drawer comes off first, in both arms.
+    // Overlays sit above every card slot, so `at` is unaffected by the pop.
+    crate::screen::close_drawers(stack);
     match at {
         Some(i) => {
             stack[i] = screen;

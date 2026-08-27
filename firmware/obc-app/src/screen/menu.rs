@@ -30,9 +30,9 @@ use super::{
     Transition,
 };
 
-/// The number of main-menu entries (Routes / Rides / POIs / Map / Weather / Settings). The ride
-/// menu keeps its own five-station count ([`ride_menu`](super::ride_menu)); the shared
-/// [`CompassDial`] takes the count per call, so the two rings can differ without drifting apart.
+/// The number of main-menu entries (Routes / Rides / POIs / Map / Weather / Settings). The shared
+/// [`CompassDial`] takes the count per call rather than reading this, which is what let a second
+/// ring exist beside it; since #1515 D3 deleted the ride compass there is one ring and one caller.
 const N_ITEMS: usize = 6;
 
 /// The menu's per-language copy, resolved once per frame — the bar caption plus the six entry

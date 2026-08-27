@@ -205,8 +205,9 @@ impl QuickDrawerScreen {
                 // with a light and redrawn without one would land here rather than on a wrong row.
                 None => Transition::None,
             },
-            Gesture::Back | Gesture::BackHold => Transition::Pop,
-            Gesture::Hold => Transition::None,
+            Gesture::Back => Transition::Pop,
+            // Back-hold is the global escape, resolved above screen dispatch; it never arrives.
+            Gesture::Hold | Gesture::BackHold => Transition::None,
         }
     }
 
@@ -229,8 +230,8 @@ impl QuickDrawerScreen {
                 self.slide_to(Page::Root, cx.now_ms);
                 Transition::None
             }
-            Gesture::BackHold => Transition::Pop,
-            Gesture::Hold => Transition::None,
+            // Back-hold is the global escape, resolved above screen dispatch; it never arrives.
+            Gesture::Hold | Gesture::BackHold => Transition::None,
         }
     }
 

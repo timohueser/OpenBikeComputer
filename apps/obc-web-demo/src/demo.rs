@@ -421,6 +421,13 @@ impl Demo {
     fn apply(&mut self, cmd: Cmd, gestures: &mut Vec<Gesture>) {
         match cmd {
             Cmd::Gesture(g) => gestures.push(g),
+            // A chord is applied **now**, not deferred into this frame's gesture batch, and that is
+            // the device's own order rather than a shortcut. On hardware a chord and a gesture
+            // recognised in the same frame are independent by construction — the recogniser
+            // swallows the chord's constituents whole — and both `App::handle_input` and
+            // `App::recognize` resolve the chord first, above the screen stack, before applying the
+            // frame's gestures. A page batch of `["press", "context"]` therefore lands here exactly
+            // as the same two inputs would on a device.
             Cmd::Chord(c) => {
                 self.app.apply_chord(c);
             }

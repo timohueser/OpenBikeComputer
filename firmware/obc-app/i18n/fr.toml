@@ -16,7 +16,7 @@ map = "Carte"
 weather = "Météo"
 settings = "Réglages"
 
-# --- Le menu boussole en sortie, la liste À venir et le sélecteur Avancer ---
+# --- Le contexte de sortie (le panneau du bas), la liste À venir et le sélecteur de détour ---
 [ride_context]
 up_ahead = "À venir"
 detour = "Détour"
