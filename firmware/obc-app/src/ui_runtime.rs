@@ -363,8 +363,8 @@ impl UiRuntime {
     /// `Waypoints only` scope where that screen deliberately asks for nothing), and
     /// [`NextAhead::harvest`](crate::next_ahead::NextAhead) only accepts a snapshot taken for its own
     /// key — so a foreign snapshot can no more land in a tile than a tile's can land in the list.
-    pub(crate) fn reconcile_corridor(&mut self, fresh_open: bool) {
-        match self.stack.iter().rev().find_map(|s| s.corridor_request()) {
+    pub(crate) fn reconcile_corridor(&mut self, scope: crate::corridor::UpAheadScope, fresh_open: bool) {
+        match self.stack.iter().rev().find_map(|s| s.corridor_request(scope)) {
             Some(key) => {
                 self.corridor_scratch.arm(key);
                 if fresh_open {
@@ -388,7 +388,13 @@ impl UiRuntime {
     /// The tiles only exist on the Statistics grid, so the request is scoped to that screen being
     /// the one drawn: elsewhere the cache asks for nothing, the scratch disarms, and the reader seam
     /// is as quiet as before this feature existed.
-    pub(crate) fn reconcile_next_ahead(&mut self, settings: &Settings, active_route: Option<usize>, progress_m: u32) {
+    pub(crate) fn reconcile_next_ahead(
+        &mut self,
+        settings: &Settings,
+        scope: crate::corridor::UpAheadScope,
+        active_route: Option<usize>,
+        progress_m: u32,
+    ) {
         let mut placed = obc_reader::PoiCategorySet::EMPTY;
         for f in settings.stat_fields.as_slice() {
             if let Some(cat) = f.category() {
@@ -396,7 +402,7 @@ impl UiRuntime {
             }
         }
         self.next_ahead.reconcile(placed, self.stats_grid_shown(), active_route, progress_m);
-        self.reconcile_corridor(false);
+        self.reconcile_corridor(scope, false);
     }
 
     /// Whether the **Statistics** screen — the only place a `Next: <category>` tile draws — is the

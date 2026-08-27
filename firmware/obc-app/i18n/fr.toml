@@ -25,11 +25,12 @@ no_route = "Aucun parcours chargé"
 off_route = "Rejoignez parcours"
 route_end = "Fin du parcours"
 no_nav = "Pas de données routage"
+filter = "Filtre"
+sources = "Sources"
 
 # --- The "Up ahead" timeline (epic #946): merged waypoints + route-corridor POIs ---
 [up_ahead]
 everything = "Tout"
-filter_title = "AFFICHER"
 none = "Rien devant"
 none_sub = "Aucun arrêt prévu"
 none_category_sub = "Rien de ce type"
@@ -211,8 +212,6 @@ climb = "Montée"
 climb_sub = "panneau"
 waypoints = "Points"
 waypoints_sub = "puce"
-up_ahead = "À venir"
-up_ahead_sub = "liste"
 autodelete = "Suppr. auto"
 autodelete_sub = "sorties"
 

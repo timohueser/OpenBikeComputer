@@ -6,6 +6,9 @@
 //! that the sheet lands over whatever the rider was on without popping it, that the BLE toggle
 //! reaches the persistence handshake, that the brightness the host would drive follows the editor.
 //! The drawer's own page logic is unit-tested beside it in `screen/quick_drawer.rs`.
+//!
+//! The **contextual** sheet is here for the same reason, and D4a's nested value editor with it: a
+//! commit that reaches the persistence handshake is a property of the App, not of the sheet.
 
 use super::support::{build_min_obcm, down, quiet_pass, render_120, up, Frames};
 use crate::screen::{MapTransfer, BRIGHTNESS_MAX};
@@ -126,6 +129,88 @@ fn the_context_chord_opens_the_ride_sheet_and_leaks_nothing() {
     chord(&mut app, &mut f, Button::Down, Button::Back, ms);
     assert!(matches!(app.top_screen(), Screen::Map(_)), "the same squeeze closes it, back onto the Map");
     assert_eq!(app.debug_stack_len(), depth);
+}
+
+/// The Up-ahead sheet's **Sources** commit is the migrated Ride-settings row, and it reaches the
+/// same persistence handshake that row did — the App's one before/after `==` over `Settings`, with
+/// no new path (#1515 D4a). The sheet stays up afterwards: a commit returns to the row table, it
+/// does not close the drawer.
+#[test]
+fn the_up_ahead_sources_commit_reaches_the_settings_save() {
+    use crate::settings::UpAheadSource;
+    let mut app = lit();
+    let mut f = Frames::new();
+    app.test_mount_store();
+    app.test_start_ride();
+    assert_eq!(app.settings().up_ahead_source, UpAheadSource::Both, "the factory scope");
+
+    let ms = chord(&mut app, &mut f, Button::Down, Button::Back, 1_000); // the ride sheet
+    let ms = at(&mut app, ms, Gesture::Press); // its first row -> the timeline
+    assert!(matches!(app.top_screen(), Screen::UpAhead(_)));
+
+    let ms = chord(&mut app, &mut f, Button::Down, Button::Back, ms); // the timeline's own sheet
+    let ms = at(&mut app, ms, Gesture::Step(1)); // Filter -> Sources
+    let ms = at(&mut app, ms, Gesture::Press); // -> the Sources editor
+    let ms = at(&mut app, ms, Gesture::Step(2)); // stage Map POIs only
+    assert_eq!(app.settings().up_ahead_source, UpAheadSource::Both, "staging commits nothing");
+
+    let ms = at(&mut app, ms, Gesture::Press);
+    assert_eq!(app.settings().up_ahead_source, UpAheadSource::MapPoisOnly, "Select wrote the row");
+    assert!(matches!(app.top_screen(), Screen::ContextDrawer(_)), "…and the sheet is still up");
+    assert!(!quiet_pass(&mut app, ms).effects.settings.is_empty(), "…and a persist is owed");
+
+    // The scope the commit wrote is the scope the list under the sheet now reads: Map-POIs-only
+    // still arms the corridor query, and Waypoints-only would not — the U4 rule, live.
+    let ms = at(&mut app, ms, Gesture::Back); // close the sheet, back onto the timeline
+    assert!(matches!(app.top_screen(), Screen::UpAhead(_)));
+    assert!(app.corridor_snapshot_pending(), "Map POIs only still wants a snapshot");
+
+    let ms = chord(&mut app, &mut f, Button::Down, Button::Back, ms);
+    let ms = at(&mut app, ms, Gesture::Step(1));
+    let ms = at(&mut app, ms, Gesture::Press);
+    let ms = at(&mut app, ms, Gesture::Step(-1)); // Map POIs only -> Waypoints only
+    let ms = at(&mut app, ms, Gesture::Press);
+    at(&mut app, ms, Gesture::Back);
+    assert_eq!(app.settings().up_ahead_source, UpAheadSource::WaypointsOnly);
+    assert!(!app.corridor_snapshot_pending(), "…and Waypoints only disarms it, from the sheet");
+}
+
+/// The **Filter** commit is the other half, and it is *not* a settings field: it reaches the
+/// timeline's live scope, which re-keys the corridor snapshot — the thing the Hold picker used to do
+/// from inside the list. Back out of the editor discards instead.
+#[test]
+fn the_up_ahead_filter_commit_re_keys_the_snapshot_and_back_discards() {
+    use obc_reader::{PoiCategory, PoiCategorySet};
+    let mut app = lit();
+    let mut f = Frames::new();
+    app.test_mount_store();
+    app.test_start_ride();
+
+    let ms = chord(&mut app, &mut f, Button::Down, Button::Back, 1_000);
+    let ms = at(&mut app, ms, Gesture::Press); // -> the timeline, which opens on Everything
+    assert_eq!(app.state.up_ahead_filter, PoiCategorySet::ALL);
+
+    // Staged, then discarded: the list is still unfiltered.
+    let ms = chord(&mut app, &mut f, Button::Down, Button::Back, ms);
+    let ms = at(&mut app, ms, Gesture::Press); // -> the Filter editor
+    let ms = at(&mut app, ms, Gesture::Step(1));
+    let ms = at(&mut app, ms, Gesture::Back);
+    assert_eq!(app.state.up_ahead_filter, PoiCategorySet::ALL, "Back discarded the staged choice");
+
+    // Staged, then committed: the list is filtered, and the sheet's own row reads it back.
+    let ms = at(&mut app, ms, Gesture::Press);
+    let ms = at(&mut app, ms, Gesture::Step(1));
+    let ms = at(&mut app, ms, Gesture::Press);
+    assert_eq!(app.state.up_ahead_filter, PoiCategorySet::only(PoiCategory::Water));
+    at(&mut app, ms, Gesture::Back); // close the sheet
+    assert!(matches!(app.top_screen(), Screen::UpAhead(_)));
+
+    // Leaving and re-entering the timeline resets it: the list opens on Everything, every time.
+    app.apply_gesture(Gesture::Back);
+    assert!(matches!(app.top_screen(), Screen::Map(_)));
+    let ms = chord(&mut app, &mut f, Button::Down, Button::Back, 20_000);
+    at(&mut app, ms, Gesture::Press);
+    assert_eq!(app.state.up_ahead_filter, PoiCategorySet::ALL, "predictable beats sticky (epic #946, U3)");
 }
 
 /// **Mutual exclusion**, at the one door: with the quick sheet up, the reserved squeezes do not
