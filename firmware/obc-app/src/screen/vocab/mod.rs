@@ -7,6 +7,7 @@
 //! - [`list`] — the windowed scrolling-list widget and its wrapping cursor.
 //! - [`pager`] — the two-page auto-flip the detail compositions share.
 //! - [`rows`] — the settings row, the value picker, the stat-ledger row, the guarded option rows.
+//! - [`sheet`] — the two drawers' shared arrival/page curves and the committed-value tick.
 //! - [`spinner`] — the free-spinning wait needle and the dirty disc it repaints inside.
 //! - [`tiles`] — the rounded stat panes of the riding grid and the Fields editor.
 //!
@@ -19,5 +20,6 @@ pub(crate) mod fmt;
 pub(crate) mod list;
 pub(crate) mod pager;
 pub(crate) mod rows;
+pub(crate) mod sheet;
 pub(crate) mod spinner;
 pub(crate) mod tiles;

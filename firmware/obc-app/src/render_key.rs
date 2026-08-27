@@ -327,10 +327,16 @@ impl App {
                 Some(DrawerKey { page, selected, staged, committed: self.settings().brightness, enabled: 0 })
             }
             Screen::ContextDrawer(d) => {
-                let (selected, enabled) = d.key(&self.activity, self.recorder.recording(), self.state.has_nav_graph);
-                // The contextual sheet has one page and edits no value yet — the D4 slices are what
-                // give those two fields something to say here.
-                Some(DrawerKey { page: 0, selected, staged: 0, committed: 0, enabled })
+                // The contextual sheet's five facts: its page, the cursor, the value the nested
+                // editor has staged, the value already committed underneath, and which rows are
+                // live. D4a is what gave `page`/`staged`/`committed` something to say here.
+                let (page, selected, staged, committed, enabled) = d.key(&crate::screen::ContextFacts {
+                    state: &self.state,
+                    activity: &self.activity,
+                    settings: self.settings(),
+                    recording: self.recorder.recording(),
+                });
+                Some(DrawerKey { page, selected, staged, committed, enabled })
             }
             _ => None,
         })
@@ -675,6 +681,49 @@ mod tests {
         assert_ne!(uncovered, covered, "the close is the one invalidation");
         assert!(uncovered.drawer.is_none() && uncovered.map.is_some(), "…and the base is back in the key");
         assert_eq!(app.render_key(), uncovered, "exactly one: the next frame asks for nothing");
+    }
+
+    /// **The nested editor's own three facts** (#1515 D4a): the page, the value staged on it and
+    /// the value committed underneath are three separate reasons to repaint, and the base under the
+    /// sheet is still frozen through all of them.
+    #[test]
+    fn the_nested_editor_puts_its_page_staged_and_committed_value_in_the_key() {
+        let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
+        app.apply_gesture(crate::Gesture::Press); // -> the Menu, then a route-less Up-ahead list
+        app.ui.stack.truncate(2);
+        app.ui.stack[1] = Screen::UpAhead(crate::screen::UpAheadScreen::new(0));
+        assert!(app.apply_chord(crate::input::Chord::Context), "the timeline declares a context");
+
+        let root = app.render_key();
+        // A page slide owns the sheet's input while it runs, so each gesture waits for the last
+        // one's slide to land — the same clock the host advances.
+        let mut ms = 0;
+        let mut act = |app: &mut App, g: crate::Gesture| {
+            ms += 400;
+            app.advance_animations(obc_ports::InputClock(ms));
+            app.apply_gesture(g);
+        };
+
+        act(&mut app, crate::Gesture::Press); // -> the Filter editor
+        let opened = app.render_key();
+        assert_ne!(opened, root, "the page is part of the frame");
+        assert!(opened.map.is_none() && opened.up_ahead.is_none(), "…and the base is still frozen");
+
+        act(&mut app, crate::Gesture::Step(2)); // stage two choices on
+        let staged = app.render_key();
+        assert_ne!(staged, opened, "the staged choice is what the editor draws");
+
+        // The committed value is the *other* half: change it underneath without touching the
+        // cursor, and the tick moves — so the key has to say so.
+        let with_staged = app.render_key();
+        app.state.up_ahead_filter = obc_reader::PoiCategorySet::only(obc_reader::PoiCategory::Pharmacy);
+        assert_ne!(app.render_key(), with_staged, "the committed mark is a pixel the sheet draws");
+
+        // …and nothing under the sheet is, still.
+        let quiet = app.render_key();
+        app.state.cam_lon += 5_000;
+        app.activity.progress_m += 900;
+        assert_eq!(app.render_key(), quiet, "a moving base under an open editor asks for no repaint");
     }
 
     /// The two sheets are **different frames**: the shape carries which drawer is up, so swapping

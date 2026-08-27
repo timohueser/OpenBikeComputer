@@ -142,20 +142,31 @@ fn map_turn_saturates_at_min_zoom() {
     assert_eq!(st.zoom, saturated, "already at MIN_ZOOM — further zoom-out is a no-op");
 }
 
-/// **The ride context is declared by all four riding views and by nothing else** (#1515 D3). It is
-/// the one declaration a screen makes; everything the sheet then does is the generic drawer's.
+/// **The ride context is declared by all four riding views, the Up-ahead context by the timeline,
+/// and nothing else declares anything** (#1515 D3/D4a). It is the one declaration a screen makes;
+/// everything the sheet then does is the generic drawer's.
 #[test]
-fn exactly_the_four_riding_views_declare_the_ride_context() {
+fn exactly_the_riding_views_and_the_timeline_declare_a_context() {
     let declared = |s: &Screen| s.context().is_some();
     assert!(declared(&Screen::Map(MapScreen::new())));
     assert!(declared(&Screen::Statistics(StatisticsScreen::new())));
     assert!(declared(&Screen::Climb(ClimbScreen::new())));
     assert!(declared(&Screen::RideControl(RideControl::new())));
+    // D4a's one addition, and it is a *different* table: the timeline's two scope controls, not
+    // the ride's four actions.
+    assert!(declared(&Screen::UpAhead(crate::screen::UpAheadScreen::new(0))));
+    assert_ne!(
+        Screen::UpAhead(crate::screen::UpAheadScreen::new(0)).context().map(|m| m.rows.len()),
+        Screen::Map(MapScreen::new()).context().map(|m| m.rows.len()),
+        "the timeline declares its own table, not the ride's"
+    );
     // …and a representative of every other family declares nothing, so the chord does nothing.
     assert!(!declared(&Screen::Home(HomeScreen::new())));
     assert!(!declared(&Screen::Menu(MenuScreen::new())));
     assert!(!declared(&Screen::RouteMenu(RouteMenuScreen::new())));
     assert!(!declared(&Screen::Settings(crate::screen::SettingsScreen::new())));
+    assert!(!declared(&Screen::PoiMenu(crate::screen::PoiMenuScreen::new())));
+    assert!(!declared(&Screen::Detour(crate::screen::DetourScreen::new(&Activity::new(Mode::Riding)))));
 }
 
 /// The chord opens the sheet over a riding view and does nothing anywhere else — the "unsupported
@@ -226,14 +237,16 @@ fn the_up_ahead_row_preserves_the_session_and_one_back_returns_to_the_map() {
     assert!(matches!(app.top_screen(), Screen::UpAhead(_)));
     assert!(app.corridor_snapshot_pending(), "entering arms the snapshot (and asks for the Reader)");
 
-    // Row gestures and the picker are in-screen: they never move the stack or the session.
+    // Row gestures are in-screen: they never move the stack or the session. `Hold` is among them
+    // because it is **inert** since D4a — the filter it used to open is a sheet row now, and a hold
+    // that opened a mode here would show up as a screen the loop did not expect.
     for g in [Gesture::Step(1), Gesture::Press, Gesture::Hold, Gesture::Step(1), Gesture::Press] {
         app.apply_gesture(g);
         assert!(matches!(app.top_screen(), Screen::UpAhead(_)), "{g:?} stays on the timeline");
         assert_eq!(app.activity.mode, Mode::Riding);
         assert_eq!(app.ride_session(), session);
     }
-    assert!(app.corridor_snapshot_pending(), "the applied filter re-keyed the snapshot");
+    assert!(app.corridor_snapshot_pending(), "the timeline is still armed");
 
     app.apply_gesture(Gesture::Back);
     assert!(matches!(app.top_screen(), Screen::Map(_)), "one Back: the row replaced the sheet");
@@ -265,7 +278,7 @@ fn the_up_ahead_source_setting_decides_whether_the_corridor_is_armed() {
     let mut quiet = open_timeline(UpAheadSource::WaypointsOnly);
     assert!(!quiet.corridor_snapshot_pending(), "Waypoints only never arms the query");
     assert!(!quiet.base_needs_reader(), "…so the reader-build seam stays quiet on the timeline");
-    // Not even the Hold picker turns it on: a category filter scopes rows, it doesn't add a source.
+    // Not even the sheet's Filter row turns it on: a category filter scopes rows, it doesn't add a source.
     quiet.apply_gesture(Gesture::Hold);
     quiet.apply_gesture(Gesture::Step(1));
     quiet.apply_gesture(Gesture::Press);

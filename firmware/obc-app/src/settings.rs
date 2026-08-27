@@ -304,8 +304,8 @@ setting_enum! {
     /// Scope is deliberately narrow: this is *who feeds the list*, nothing else. It never hides the
     /// map's POI markers or waypoint diamonds, never touches the nearby-POI browser (Menu → POIs, which
     /// answers the other question — "what's near me *now*?"), and never touches the stats waypoint panel
-    /// or the "Next: \<category\>" stat fields. It composes with the list's own Hold category picker:
-    /// the category filter applies *within* the configured sources.
+    /// or the "Next: \<category\>" stat fields. It composes with the category filter beside it on the
+    /// timeline's context sheet: the filter applies *within* the configured sources.
     ///
     /// The labels are short by necessity: the value shares the Ride row's sub-caption line with its
     /// `◄` cue at 240 px, so the row reads as the sentence *"Up ahead shows ◄ Waypoints"* rather than

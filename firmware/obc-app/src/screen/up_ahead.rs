@@ -28,23 +28,20 @@
 //! cursor; applying a filter changes the key, which is what re-queries. Closing the screen drops
 //! the request and the reader seam goes quiet.
 //!
-//! # The source scope (U4)
+//! # The scope, and where it is edited (U4, re-homed by #1515 D4a)
 //!
-//! *Who* feeds the list is a stable preference, not a moment-to-moment intent, so it lives in Ride
-//! settings as [`UpAheadSource`] and is read **once, at entry** — the same freeze as the anchor
-//! (the setting can only be edited from a screen this one is not under, so live-reading it would
-//! differ from freezing it only in theory). Under **Waypoints only** the screen declares *no*
-//! corridor key at all: nothing is armed, the query never runs, and
-//! [`base_needs_reader`](crate::App::base_needs_reader) never asks the board to build a map
-//! `Reader` for it — the list costs exactly what the plain waypoint list cost. Under **Map POIs
-//! only** the key is declared as usual and the resident waypoint table is simply not walked.
+//! *What kind* and *who feeds it* — the category filter and the [`UpAheadSource`] scope — are the
+//! [`UpAheadScope`] the screen is handed on every read. **Neither is stored here.** Both are edited
+//! from the contextual sheet the Down+Back squeeze raises over this list, which sits *above* it on
+//! the stack, so a copy frozen in this struct would be a copy the rider's edit could not reach. The
+//! filter is app-plane selection state, reset to Everything on entry (predictable beats sticky —
+//! epic #946, U3); the source is the persisted Ride preference, and the sheet is now its only home.
 //!
-//! # Hold opens the category picker
-//!
-//! `Hold` swaps the list body for a 7-row picker (Everything + the six categories, the POI-menu
-//! row style and icons) — the same "hold opens this screen's own config" idiom as the map's pan
-//! mode, advertised by the global hold-hint bulge. `Press` applies (and re-keys the snapshot),
-//! `Back` cancels. The list always **opens on Everything**: predictable beats sticky.
+//! Under **Waypoints only** the screen declares *no* corridor key at all: nothing is armed, the
+//! query never runs, and [`base_needs_reader`](crate::App::base_needs_reader) never asks the board
+//! to build a map `Reader` for it — the list costs exactly what the plain waypoint list cost. Under
+//! **Map POIs only** the key is declared as usual and the resident waypoint table is simply not
+//! walked.
 
 use embedded_graphics::prelude::Point;
 use obc_formats::obcm::{poi_category_of, poi_label_of};
@@ -55,7 +52,7 @@ use obc_render::{
 };
 use obc_route::{Profile, WptEntry};
 
-use crate::corridor::CorridorKey;
+use crate::corridor::{CorridorKey, UpAheadScope};
 use crate::input::Gesture;
 use crate::settings::{Units, UpAheadSource};
 use crate::Msg;
@@ -96,13 +93,6 @@ pub const OFF_ROUTE_HINT_M: i32 = 50;
 pub(super) const ARROW_W: i32 = 7;
 /// Gap (px) between the side arrow and its distance.
 pub(super) const ARROW_GAP: i32 = 4;
-
-/// Nominal row height in the picker. Tighter than the POI menu's 52 px on purpose: at that pitch
-/// only five of the seven rows fit the panel, and a *filter* the rider has to scroll to reach is a
-/// filter they won't use. 38 px fits all seven flush, still a full Body row with the same icon.
-const PICKER_ROW_H: i32 = 38;
-/// Picker rows: "Everything" plus the six categories.
-const PICKER_ROWS: usize = 1 + PoiCategory::ALL.len();
 
 /// One row of the merged timeline: a custom waypoint from the resident table, or a map POI from
 /// the corridor snapshot. Borrowed — the merge never copies (see the module docs).
@@ -283,59 +273,72 @@ fn side_hint(offset_m: i32, units: Units) -> Option<(bool, heapless::String<12>)
     Some((offset_m > 0, s))
 }
 
-/// The Up-ahead timeline. State is the cursor, the category filter, the snapshot anchor, and the
-/// picker's cursor while it is open — **no rows**: they're iterated from the two App-owned tables
-/// on every draw (#425).
+/// The Up-ahead timeline. State is the cursor and the snapshot anchor — **no rows** (they're
+/// iterated from the two App-owned tables on every draw, the #425 rule) and **no scope** (the sheet
+/// above this screen edits that, so the screen reads it rather than keeping it).
 #[derive(Debug)]
 pub struct UpAheadScreen {
-    /// The highlighted merged row, or `None` before the first frame resolves "the first unpassed
-    /// entry" (the merge — and therefore that index — isn't knowable when the context row opens
-    /// this screen: the corridor snapshot lands a frame later).
-    selected: Option<usize>,
-    /// The active category filter; [`PoiCategorySet::ALL`] is "Everything", which the list always
-    /// opens on.
-    filter: PoiCategorySet,
-    /// Live route progress (m) frozen at entry — the corridor snapshot's anchor.
+    /// The highlighted merged row **and the scope it indexes into**, or `None` before the first
+    /// frame resolves "the first unpassed entry" (the merge — and therefore that index — isn't
+    /// knowable when the context row opens this screen: the corridor snapshot lands a frame later).
+    ///
+    /// The scope travels with the index because an index is only meaningful against one list. The
+    /// rider edits the scope from the sheet *above* this screen, which cannot reach in to clear a
+    /// cursor; carrying the scope makes that unnecessary — a cursor set against a list the rider has
+    /// since re-filtered is simply not a cursor any more, and
+    /// [`cursor`](UpAheadScreen::cursor) re-homes to the first row still ahead, exactly as the
+    /// Select-hold picker's own "apply" used to do explicitly.
+    selected: Option<(usize, UpAheadScope)>,
+    /// Live route progress (m) frozen at entry — the corridor snapshot's anchor. The one thing this
+    /// screen does freeze, so riding on never re-runs the query and rows never shift under the
+    /// cursor.
     anchor_m: u32,
-    /// Which sources feed the list (epic #946, U4), read from Ride settings at entry — see the
-    /// module docs. Also decides whether a corridor snapshot is requested at all.
-    source: UpAheadSource,
-    /// The picker's highlighted row while it is open (`0` = Everything, `1..=6` = the categories).
-    picker: Option<usize>,
 }
 
 impl UpAheadScreen {
-    /// Open the timeline anchored at `anchor_m` (live progress at entry), unfiltered, showing the
-    /// sources `source` scopes it to (the rider's Ride-settings preference, frozen here).
-    pub fn new(anchor_m: u32, source: UpAheadSource) -> Self {
-        UpAheadScreen { selected: None, filter: PoiCategorySet::ALL, anchor_m, source, picker: None }
+    /// Open the timeline anchored at `anchor_m` (live progress at entry).
+    pub fn new(anchor_m: u32) -> Self {
+        UpAheadScreen { selected: None, anchor_m }
     }
 
-    /// What corridor snapshot this screen wants — read by
+    /// What corridor snapshot this screen wants under `scope` — read by
     /// [`reconcile_corridor`](crate::ui_runtime::UiRuntime::reconcile_corridor) whenever the stack
-    /// settles. Stable across frames (the anchor is frozen), so re-arming is a no-op until the
-    /// filter changes. `None` when the source scope excludes map POIs
+    /// settles. Stable across frames while the scope holds (the anchor is frozen), so re-arming is
+    /// a no-op until the rider changes the filter. `None` when the scope excludes map POIs
     /// ([`WaypointsOnly`](UpAheadSource::WaypointsOnly)): the scratch then stays **disarmed**, so
     /// neither the query nor the board's `Reader` build ever runs for this screen.
-    pub(crate) fn corridor_key(&self) -> Option<CorridorKey> {
-        self.source.shows_pois().then_some(CorridorKey { filter: self.filter, anchor_m: self.anchor_m })
+    pub(crate) fn corridor_key(&self, scope: UpAheadScope) -> Option<CorridorKey> {
+        scope.source.shows_pois().then_some(CorridorKey { filter: scope.filter, anchor_m: self.anchor_m })
     }
 
     /// The merged rows for this frame's tables, in route order, already source-scoped and filtered.
-    fn rows<'a>(&self, waypoints: &'a [WptEntry], corridor: &'a [CorridorPoi], route_loaded: bool) -> Merge<'a> {
+    fn rows<'a>(
+        &self,
+        waypoints: &'a [WptEntry],
+        corridor: &'a [CorridorPoi],
+        route_loaded: bool,
+        scope: UpAheadScope,
+    ) -> Merge<'a> {
         Merge::new(
-            scoped_waypoints(waypoints, self.source, route_loaded),
-            scoped_corridor(corridor, self.source, route_loaded),
-            self.filter,
+            scoped_waypoints(waypoints, scope.source, route_loaded),
+            scoped_corridor(corridor, scope.source, route_loaded),
+            scope.filter,
         )
     }
 
-    /// The effective cursor: the rider's, or — before they've turned — the first row still ahead
-    /// (today's `next_waypoint` behavior, generalized to the merged list).
-    fn cursor(&self, rows: Merge, progress_m: u32, total: usize) -> usize {
+    /// The effective cursor: the rider's, or — before they've turned, **and after they change what
+    /// the list shows** — the first row still ahead (today's `next_waypoint` behavior, generalized
+    /// to the merged list).
+    ///
+    /// A cursor the rider set counts only against the list they set it in. Filter a scrolled list
+    /// down to two rows and clamping the old index would land them on the *last* match; re-homing
+    /// lands them on the nearest one ahead, which is the answer the question "what is coming up?"
+    /// has. That was the Select-hold picker's `self.selected = None` on apply; it is a property of
+    /// the cursor now, so the sheet that replaced the picker has nothing to remember.
+    fn cursor(&self, rows: Merge, progress_m: u32, total: usize, scope: UpAheadScope) -> usize {
         match self.selected {
-            Some(s) => s.min(total.saturating_sub(1)),
-            None => rows
+            Some((s, under)) if under == scope => s.min(total.saturating_sub(1)),
+            _ => rows
                 .enumerate()
                 .find(|(_, e)| progress_m <= e.dist_along_m())
                 .map(|(i, _)| i)
@@ -344,45 +347,33 @@ impl UpAheadScreen {
         }
     }
 
-    /// The picker row showing the active filter, so it opens on what is already on.
-    fn picker_row(&self) -> usize {
-        PoiCategory::ALL.iter().position(|c| self.filter == PoiCategorySet::only(*c)).map_or(0, |i| i + 1)
-    }
-
-    /// The filter a picker row selects.
-    fn filter_of_row(row: usize) -> PoiCategorySet {
-        match row {
-            0 => PoiCategorySet::ALL,
-            r => PoiCategorySet::only(PoiCategory::ALL[(r - 1).min(PoiCategory::ALL.len() - 1)]),
-        }
+    /// The row the amber cursor would land on this frame, resolved exactly as
+    /// [`draw`](UpAheadScreen::draw) resolves it — the App-level harness's one window onto a cursor
+    /// that is otherwise private. `route_loaded` is the caller's, like the draw's, so a route-less
+    /// frame is answered as a route-less frame rather than as the caller wishing otherwise.
+    #[cfg(test)]
+    pub(crate) fn test_cursor(
+        &self,
+        waypoints: &[WptEntry],
+        corridor: &[CorridorPoi],
+        route_loaded: bool,
+        progress_m: u32,
+        scope: UpAheadScope,
+    ) -> usize {
+        let total = self.rows(waypoints, corridor, route_loaded, scope).count();
+        self.cursor(self.rows(waypoints, corridor, route_loaded, scope), progress_m, total, scope)
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
-        // The picker owns every gesture while it is open — it is a mode, not an overlay.
-        if let Some(row) = self.picker {
-            match g {
-                Gesture::Step(n) => {
-                    let mut r = row;
-                    list::on_step(&mut r, n, PICKER_ROWS);
-                    self.picker = Some(r);
-                }
-                Gesture::Press => {
-                    // Apply: the new filter re-keys the corridor snapshot (the App re-arms from
-                    // `corridor_key`, which drops the stale rows and re-queries), and the cursor
-                    // re-homes to the first entry still ahead in the new list.
-                    self.filter = Self::filter_of_row(row);
-                    self.selected = None;
-                    self.picker = None;
-                }
-                Gesture::Back => self.picker = None, // cancel: the filter is untouched
-                Gesture::Hold | Gesture::BackHold => {}
-            }
-            return Transition::None;
-        }
-
         let route_loaded = cx.activity.active_route.is_some();
-        let total = self.rows(cx.waypoints, cx.corridor, route_loaded).count();
-        let mut sel = self.cursor(self.rows(cx.waypoints, cx.corridor, route_loaded), cx.activity.progress_m, total);
+        let scope = cx.up_ahead_scope();
+        let total = self.rows(cx.waypoints, cx.corridor, route_loaded, scope).count();
+        let mut sel = self.cursor(
+            self.rows(cx.waypoints, cx.corridor, route_loaded, scope),
+            cx.activity.progress_m,
+            total,
+            scope,
+        );
         match g {
             // A step commits the cursor — but only over a list that actually has rows. Stepping an
             // empty one (the snapshot hasn't landed, or the route has nothing ahead) must stay a
@@ -390,38 +381,32 @@ impl UpAheadScreen {
             // would pin it at row 0 and quietly lose the open-at-the-first-unpassed-entry homing.
             Gesture::Step(n) if total > 0 => {
                 list::on_step(&mut sel, n, total);
-                self.selected = Some(sel);
+                self.selected = Some((sel, scope));
                 Transition::None
             }
             Gesture::Step(_) => Transition::None,
             // A POI row opens the existing detail screen, carrying its signed off-route offset so
             // the detail can spell the side out. A custom waypoint has no detail child yet — the
             // row stays inert rather than advertising a screen that doesn't exist (copy-tone rule).
-            Gesture::Press => match self.rows(cx.waypoints, cx.corridor, route_loaded).nth(sel) {
+            Gesture::Press => match self.rows(cx.waypoints, cx.corridor, route_loaded, scope).nth(sel) {
                 Some(Entry::Poi(p)) => Transition::Push(Screen::PoiDetail(
                     super::PoiDetailScreen::new(p.poi.clone()).off_route(p.offset_m),
                 )),
                 _ => Transition::None,
             },
-            // Hold opens this screen's own config — the stats/fields and map/pan-mode idiom, which
-            // the global hold-hint bulge advertises.
-            Gesture::Hold => {
-                self.picker = Some(self.picker_row());
-                Transition::None
-            }
+            // Select-hold stays a local action on a focused object (#1515): the category filter this
+            // used to open is a row of the contextual sheet now, where the rider can also see what
+            // it is set to.
+            Gesture::Hold => Transition::None,
             Gesture::Back => Transition::Pop,
             Gesture::BackHold => Transition::None,
         }
     }
 
     pub fn draw(&self, cv: &mut impl Surface, rx: &mut Render) {
-        if let Some(row) = self.picker {
-            let names = PoiCategory::ALL.map(|c| rx.t(super::poi_menu::category_msg(c)));
-            draw_picker(cv, rx.w, rx.h, rx.t(Msg::UpAheadFilterTitle), rx.t(Msg::UpAheadEverything), names, row);
-            return;
-        }
         let route_loaded = rx.activity.active_route.is_some();
-        let total = self.rows(rx.waypoints.as_slice(), rx.corridor, route_loaded).count();
+        let scope = rx.up_ahead_scope();
+        let total = self.rows(rx.waypoints.as_slice(), rx.corridor, route_loaded, scope).count();
         draw_list(
             cv,
             &View {
@@ -439,8 +424,7 @@ impl UpAheadScreen {
                 },
                 waypoints: rx.waypoints.as_slice(),
                 corridor: rx.corridor,
-                filter: self.filter,
-                source: self.source,
+                scope,
                 route_loaded,
                 settled: rx.corridor_settled,
                 progress_m: rx.activity.progress_m,
@@ -448,9 +432,10 @@ impl UpAheadScreen {
                 profile: rx.profile,
                 units: rx.settings.units,
                 cursor: self.cursor(
-                    self.rows(rx.waypoints.as_slice(), rx.corridor, route_loaded),
+                    self.rows(rx.waypoints.as_slice(), rx.corridor, route_loaded, scope),
                     rx.activity.progress_m,
                     total,
+                    scope,
                 ),
                 total,
             },
@@ -483,10 +468,10 @@ struct View<'a> {
     copy: EmptyCopy<'a>,
     waypoints: &'a [WptEntry],
     corridor: &'a [CorridorPoi],
-    filter: PoiCategorySet,
-    /// The rider's source scope (epic #946, U4) — which of the two slices above may feed the list,
-    /// and which empty-state sub-line tells the truth when it doesn't.
-    source: UpAheadSource,
+    /// The rider's live scope (epic #946 U4, re-homed by #1515 D4a) — the category filter, and
+    /// which of the two slices above may feed the list at all (which is also what decides which
+    /// empty-state sub-line tells the truth).
+    scope: UpAheadScope,
     route_loaded: bool,
     /// Whether the corridor snapshot has landed (or settled empty on a query error, U2) — `false`
     /// only while the query is still waiting for its inputs.
@@ -502,9 +487,9 @@ struct View<'a> {
 impl View<'_> {
     fn rows(&self) -> Merge<'_> {
         Merge::new(
-            scoped_waypoints(self.waypoints, self.source, self.route_loaded),
-            scoped_corridor(self.corridor, self.source, self.route_loaded),
-            self.filter,
+            scoped_waypoints(self.waypoints, self.scope.source, self.route_loaded),
+            scoped_corridor(self.corridor, self.scope.source, self.route_loaded),
+            self.scope.filter,
         )
     }
 }
@@ -523,7 +508,7 @@ fn draw_list(cv: &mut impl Surface, v: &View) {
         // resolves at once.
         //
         // Below that, the *category* filter outranks the *source* scope: the filter is what the
-        // rider just did (a Hold, a row, a Press), the scope is a preference they set some other
+        // rider just did (a squeeze, a row, a Press), the scope is a preference they set some other
         // day — so "None of this kind" is the more immediate truth. With no filter on, the sub-line
         // names the scope, because the plain "no stops on route" is only true when **both** sources
         // were allowed to answer (U4).
@@ -533,10 +518,10 @@ fn draw_list(cv: &mut impl Surface, v: &View) {
             // Still waiting for the map reader / route geometry — say nothing for the frame or two
             // it takes rather than flashing "nothing ahead" at a list that is about to fill.
         } else {
-            let sub = if v.filter != PoiCategorySet::ALL {
+            let sub = if v.scope.filter != PoiCategorySet::ALL {
                 v.copy.none_category_sub
             } else {
-                match v.source {
+                match v.scope.source {
                     UpAheadSource::Both => v.copy.none_sub,
                     UpAheadSource::WaypointsOnly => v.copy.none_waypoints_sub,
                     UpAheadSource::MapPoisOnly => v.copy.none_pois_sub,
@@ -658,47 +643,6 @@ pub(super) fn draw_side_arrow(cv: &mut impl Surface, at: Point, to_right: bool, 
     }
 }
 
-/// The category picker: "Everything" over the six categories, in the POI menu's row style (icon in
-/// a fixed gutter, name beside it) so the two controls read as one language.
-fn draw_picker(
-    cv: &mut impl Surface,
-    w: i32,
-    h: i32,
-    title: &str,
-    everything: &str,
-    names: [&str; 6],
-    selected: usize,
-) {
-    use palette::*;
-    let geo = ListGeometry::filling_below_title(w, h, PICKER_ROW_H, 6, 16, Separators::All);
-    list::list_frame(cv, w, h, title, selected + 1, PICKER_ROWS, geo.visible);
-    let first = list::window_start(selected, geo.visible, PICKER_ROWS) as i32;
-    list::draw_rows(cv, geo, PICKER_ROWS, selected, first, |cv, row| {
-        let a = row.area;
-        let mid = a.top_left.y + a.size.height as i32 / 2;
-        let ink = if row.selected { INK } else { SUBTEXT };
-        let bg = if row.selected { AMBER } else { PARCHMENT };
-        let label = match row.index {
-            0 => {
-                // "Everything" has no icon of its own; the row's bullet is the shared list pointer.
-                cv.triangle(
-                    Point::new(a.top_left.x + 16, mid - 8),
-                    Point::new(a.top_left.x + 16, mid + 8),
-                    Point::new(a.top_left.x + 28, mid),
-                    ink,
-                );
-                everything
-            }
-            r => {
-                let cat = PoiCategory::ALL[r - 1];
-                draw_category_icon(cv, cat, Point::new(a.top_left.x + 22, mid), ink, bg);
-                names[r - 1]
-            }
-        };
-        cv.text(label, Point::new(a.top_left.x + 44, mid - 14), Font::Body, TextAlign::Left, INK);
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -774,6 +718,16 @@ mod tests {
     <trkpt lat="48.0200" lon="7.8100"><ele>250</ele></trkpt>
   </trkseg></trk>
 </gpx>"#;
+
+    /// The scope a test reads the list under — the pair the sheet above the screen edits.
+    fn scope(filter: PoiCategorySet, source: UpAheadSource) -> UpAheadScope {
+        UpAheadScope { filter, source }
+    }
+
+    /// The default scope: everything, both sources.
+    fn all() -> UpAheadScope {
+        scope(PoiCategorySet::ALL, UpAheadSource::Both)
+    }
 
     fn fixture_bytes() -> std::vec::Vec<u8> {
         let mut sink = VecSink::default();
@@ -856,9 +810,10 @@ mod tests {
         let w = wpts_detailed(&[(400, "Brunnen", Some(PoiCategory::Water), 0), (900, "Turn left", None, 0)]);
         let p = corridor(&[(600, "Fountain", WATER, 0), (700, "Cycles", BIKE, 0)]);
         let listed = |source, filter| {
-            let mut s = UpAheadScreen::new(0, source);
-            s.filter = filter;
-            s.rows(w.as_slice(), &p, true).map(|e| e.name().to_string()).collect::<std::vec::Vec<_>>()
+            UpAheadScreen::new(0)
+                .rows(w.as_slice(), &p, true, scope(filter, source))
+                .map(|e| e.name().to_string())
+                .collect::<std::vec::Vec<_>>()
         };
 
         assert_eq!(
@@ -885,8 +840,9 @@ mod tests {
 
         // And a route-less ride still shows nothing at all, whatever the scope says.
         for source in [UpAheadSource::Both, UpAheadSource::WaypointsOnly, UpAheadSource::MapPoisOnly] {
-            let s = UpAheadScreen::new(0, source);
-            assert_eq!(s.rows(w.as_slice(), &p, false).count(), 0, "{source:?}: no route, no rows");
+            let s = UpAheadScreen::new(0);
+            let sc = scope(PoiCategorySet::ALL, source);
+            assert_eq!(s.rows(w.as_slice(), &p, false, sc).count(), 0, "{source:?}: no route, no rows");
         }
     }
 
@@ -896,18 +852,22 @@ mod tests {
     /// declare the key exactly as U3 did.
     #[test]
     fn waypoints_only_never_asks_for_a_corridor_snapshot() {
-        let mut screen = UpAheadScreen::new(1_500, UpAheadSource::WaypointsOnly);
-        assert_eq!(screen.corridor_key(), None, "no key ⇒ nothing armed ⇒ the query never runs");
-        // Even after a filter change (which is what re-keys a snapshot) it keeps asking for nothing.
-        screen.filter = PoiCategorySet::only(PoiCategory::Water);
-        assert_eq!(screen.corridor_key(), None, "a category filter doesn't turn the query back on");
+        let screen = UpAheadScreen::new(1_500);
+        let wpt_only = |filter| scope(filter, UpAheadSource::WaypointsOnly);
+        assert_eq!(screen.corridor_key(wpt_only(PoiCategorySet::ALL)), None, "no key ⇒ nothing armed ⇒ no query");
+        // Even under a category filter (which is what re-keys a snapshot) it asks for nothing.
+        assert_eq!(
+            screen.corridor_key(wpt_only(PoiCategorySet::only(PoiCategory::Water))),
+            None,
+            "a category filter doesn't turn the query back on"
+        );
         // Belt and braces: a stale/foreign snapshot in the slice is not drawn under this scope.
         let p = corridor(&[(600, "Fountain", WATER, 0)]);
-        assert_eq!(UpAheadScreen::new(0, UpAheadSource::WaypointsOnly).rows(&[], &p, true).count(), 0);
+        assert_eq!(UpAheadScreen::new(0).rows(&[], &p, true, wpt_only(PoiCategorySet::ALL)).count(), 0);
 
         for source in [UpAheadSource::Both, UpAheadSource::MapPoisOnly] {
             assert_eq!(
-                UpAheadScreen::new(1_500, source).corridor_key(),
+                UpAheadScreen::new(1_500).corridor_key(scope(PoiCategorySet::ALL, source)),
                 Some(CorridorKey { filter: PoiCategorySet::ALL, anchor_m: 1_500 }),
                 "{source:?} still declares the frozen (filter, anchor) key"
             );
@@ -970,20 +930,6 @@ mod tests {
         assert_eq!(hint(4), Some((true, "51m".into())), "one metre past the threshold shows");
     }
 
-    /// The picker maps rows to filters both ways: row 0 is Everything, rows 1..=6 the categories in
-    /// canonical id order, and the cursor opens on whatever is already active.
-    #[test]
-    fn the_picker_rows_round_trip_the_filter() {
-        assert_eq!(UpAheadScreen::filter_of_row(0), PoiCategorySet::ALL);
-        for (i, cat) in PoiCategory::ALL.iter().enumerate() {
-            assert_eq!(UpAheadScreen::filter_of_row(i + 1), PoiCategorySet::only(*cat));
-            let mut s = UpAheadScreen::new(0, UpAheadSource::Both);
-            s.filter = PoiCategorySet::only(*cat);
-            assert_eq!(s.picker_row(), i + 1, "the picker opens on the active filter");
-        }
-        assert_eq!(UpAheadScreen::new(0, UpAheadSource::Both).picker_row(), 0, "a fresh list is on Everything");
-    }
-
     // --- Render pins -------------------------------------------------------
 
     /// The English copy the draw resolves from the catalog, so the render pins read like the panel.
@@ -1000,7 +946,7 @@ mod tests {
     /// One rendered frame of the list, from plain values — the same shape [`UpAheadScreen::draw`]
     /// builds from [`Render`], minus the context plumbing.
     fn render(screen: &UpAheadScreen, waypoints: &Waypoints, pois: &[CorridorPoi], progress_m: u32) -> TextRec {
-        render_frame(screen, waypoints, pois, progress_m, true, true)
+        render_frame(screen, waypoints, pois, progress_m, true, true, all())
     }
 
     fn render_frame(
@@ -1010,16 +956,12 @@ mod tests {
         progress_m: u32,
         route_loaded: bool,
         settled: bool,
+        scope: UpAheadScope,
     ) -> TextRec {
         let (_, profile, total_m) = fixture();
         let mut cv = TextRec::default();
-        if let Some(row) = screen.picker {
-            let names = ["Water", "Campsite", "Lodging", "Resupply", "Pharmacy", "Bike shop"];
-            draw_picker(&mut cv, 240, 320, "SHOW", "Everything", names, row);
-            return cv;
-        }
-        let rows = screen.rows(waypoints.as_slice(), pois, route_loaded);
-        let total = screen.rows(waypoints.as_slice(), pois, route_loaded).count();
+        let rows = screen.rows(waypoints.as_slice(), pois, route_loaded, scope);
+        let total = screen.rows(waypoints.as_slice(), pois, route_loaded, scope).count();
         let v = View {
             w: 240,
             h: 320,
@@ -1027,15 +969,14 @@ mod tests {
             copy: COPY,
             waypoints: waypoints.as_slice(),
             corridor: pois,
-            filter: screen.filter,
-            source: screen.source,
+            scope,
             route_loaded,
             settled,
             progress_m,
             route_total_m: total_m,
             profile: Some(&profile),
             units: Units::Metric,
-            cursor: screen.cursor(rows, progress_m, total),
+            cursor: screen.cursor(rows, progress_m, total, scope),
             total,
         };
         draw_list(&mut cv, &v);
@@ -1052,7 +993,7 @@ mod tests {
     fn render_keeps_route_order_and_mutes_passed_rows() {
         let w = wpts_detailed(&[(100, "Behind", None, 0), (1_000, "Pass", None, 0)]);
         let p = corridor(&[(600, "Fountain", WATER, 0)]);
-        let rec = render(&UpAheadScreen::new(200, UpAheadSource::Both), &w, &p, 200);
+        let rec = render(&UpAheadScreen::new(200), &w, &p, 200);
         let body = &texts(&rec)[2..]; // title + the pos/total slot
         assert_eq!(&body[..9], ["Behind", "0m", "0m", "Fountain", "400m", "0m", "Pass", "800m", "0m"]);
         assert_eq!(rec.calls[2].color, palette::SUBTEXT, "the passed waypoint's name is muted");
@@ -1070,7 +1011,7 @@ mod tests {
     #[test]
     fn the_side_hint_sits_at_the_right_edge_clear_of_the_climb() {
         let w = wpts_detailed(&[(2_000, "Spring in the valley", None, -280)]);
-        let rec = render(&UpAheadScreen::new(0, UpAheadSource::Both), &w, &[], 0);
+        let rec = render(&UpAheadScreen::new(0), &w, &[], 0);
         // Line 2 is everything sharing the distance's baseline; draw order is distance, hint, climb.
         let sy = rec.calls[3].at.y;
         let line2: std::vec::Vec<&TextCall> = rec.calls[2..].iter().filter(|c| c.at.y == sy).collect();
@@ -1104,8 +1045,8 @@ mod tests {
     fn waypoint_rows_carry_the_amber_icon_and_the_diamond_pip() {
         let w = wpts_detailed(&[(1_000, "Pass", None, 0)]);
         let p = corridor(&[(600, "Fountain", WATER, 0)]);
-        let mut screen = UpAheadScreen::new(0, UpAheadSource::Both);
-        screen.selected = Some(0); // the POI row is the cursor, so the waypoint row is unselected
+        let mut screen = UpAheadScreen::new(0);
+        screen.selected = Some((0, all())); // the POI row is the cursor, so the waypoint row is unselected
         let rec = render(&screen, &w, &p, 0);
         let amber = rec.triangles.iter().filter(|(c, ..)| *c == palette::AMBER).count();
         assert!(amber >= 4, "the generic diamond (2) + the pip (2) both draw in amber, got {amber}");
@@ -1122,29 +1063,28 @@ mod tests {
         let stale = wpts_detailed(&[(10, "Stale", None, 0)]);
         let none = Waypoints::new();
 
-        let render_with = |screen: &UpAheadScreen, w: &Waypoints, route: bool, settled: bool| {
-            let rec = render_frame(screen, w, &[], 0, route, settled);
+        let render_with = |w: &Waypoints, route: bool, settled: bool, sc: UpAheadScope| {
+            let rec = render_frame(&UpAheadScreen::new(0), w, &[], 0, route, settled, sc);
             rec.calls.iter().map(|c| c.text.clone()).collect::<std::vec::Vec<_>>()
         };
 
-        let route_less = render_with(&UpAheadScreen::new(0, UpAheadSource::Both), &stale, false, true);
+        let route_less = render_with(&stale, false, true, all());
         assert!(route_less.iter().any(|s| s == "No route loaded"));
         assert!(route_less.iter().any(|s| s == "Load a route first"));
         assert!(!route_less.iter().any(|s| s == "Stale"), "a route-less frame never leaks the resident cache");
 
-        let nothing = render_with(&UpAheadScreen::new(0, UpAheadSource::Both), &none, true, true);
+        let nothing = render_with(&none, true, true, all());
         assert!(nothing.iter().any(|s| s == "Nothing up ahead"));
         assert!(nothing.iter().any(|s| s == "No stops on route"));
 
-        let mut filtered = UpAheadScreen::new(0, UpAheadSource::Both);
-        filtered.filter = PoiCategorySet::only(PoiCategory::Water);
-        let none_of_kind = render_with(&filtered, &none, true, true);
+        let water = scope(PoiCategorySet::only(PoiCategory::Water), UpAheadSource::Both);
+        let none_of_kind = render_with(&none, true, true, water);
         assert!(none_of_kind.iter().any(|s| s == "Nothing up ahead"));
         assert!(none_of_kind.iter().any(|s| s == "None of this kind"));
 
         // Not settled yet (no reader / no route geometry this frame) — say nothing at all rather
         // than flash an answer the next frame contradicts.
-        let pending = render_with(&UpAheadScreen::new(0, UpAheadSource::Both), &none, true, false);
+        let pending = render_with(&none, true, false, all());
         assert_eq!(pending.len(), 2, "only the title bar (+ its empty counter slot) draws in flight");
     }
 
@@ -1155,7 +1095,7 @@ mod tests {
         let w = wpts_detailed(&[(1_000, "Pass", None, 0), (2_000, "Col", None, 0)]);
         let p = corridor(&[(600, "Fountain", WATER, 0)]);
         let drawn = |source| {
-            let rec = render(&UpAheadScreen::new(0, source), &w, &p, 0);
+            let rec = render_frame(&UpAheadScreen::new(0), &w, &p, 0, true, true, scope(PoiCategorySet::ALL, source));
             (texts(&rec).iter().map(|s| s.to_string()).collect::<std::vec::Vec<_>>(), rec)
         };
 
@@ -1187,9 +1127,7 @@ mod tests {
     fn the_empty_state_names_the_source_scope() {
         let none = Waypoints::new();
         let sub_of = |source, filter| {
-            let mut s = UpAheadScreen::new(0, source);
-            s.filter = filter;
-            let rec = render_frame(&s, &none, &[], 0, true, true);
+            let rec = render_frame(&UpAheadScreen::new(0), &none, &[], 0, true, true, scope(filter, source));
             texts(&rec).last().expect("the empty state draws a sub-line").to_string()
         };
 
@@ -1208,21 +1146,6 @@ mod tests {
         }
     }
 
-    /// The picker draws all seven rows in canonical order, cursor on the active filter.
-    #[test]
-    fn the_picker_draws_everything_over_the_six_categories() {
-        let mut screen = UpAheadScreen::new(0, UpAheadSource::Both);
-        screen.picker = Some(screen.picker_row());
-        let rec = render(&screen, &Waypoints::new(), &[], 0);
-        let body = texts(&rec);
-        assert_eq!(body[0], "SHOW", "the picker retitles the frame");
-        assert_eq!(
-            &body[body.len() - PICKER_ROWS..],
-            ["Everything", "Water", "Campsite", "Lodging", "Resupply", "Pharmacy", "Bike shop"],
-            "all seven rows fit the panel — a filter you must scroll to is a filter you won't use"
-        );
-    }
-
     // --- Gesture pins ------------------------------------------------------
 
     fn ctx<'a>(
@@ -1234,6 +1157,11 @@ mod tests {
         let state = std::boxed::Box::leak(std::boxed::Box::new(AppState::new(0, 0, 1.0)));
         let settings = std::boxed::Box::leak(std::boxed::Box::new(Settings::default()));
         Ctx { waypoints: waypoints.as_slice(), corridor, recorder, ..test_ctx(state, activity, settings) }
+    }
+
+    /// The scope a fresh `Ctx` reads: the app-plane filter's default and the settings default.
+    fn ctx_scope() -> UpAheadScope {
+        scope(AppState::new(0, 0, 1.0).up_ahead_filter, Settings::default().up_ahead_source)
     }
 
     fn riding() -> Activity {
@@ -1252,19 +1180,19 @@ mod tests {
         let p = corridor(&[(600, "Fountain", WATER, 0)]);
         let mut act = riding();
         act.progress_m = 200;
-        let mut screen = UpAheadScreen::new(200, UpAheadSource::Both);
+        let mut screen = UpAheadScreen::new(200);
         let rows = Merge::new(w.as_slice(), &p, PoiCategorySet::ALL);
-        assert_eq!(screen.cursor(rows, 200, 3), 1, "row 0 is passed; the Fountain is the first ahead");
+        assert_eq!(screen.cursor(rows, 200, 3, ctx_scope()), 1, "row 0 is passed; the Fountain is the first ahead");
 
         screen.handle(Gesture::Step(1), &mut ctx(&mut act, &mut recorder, &w, &p));
-        assert_eq!(screen.selected, Some(2), "a turn steps on from the resolved home row");
+        assert_eq!(screen.selected.map(|(s, _)| s), Some(2), "a turn steps on from the resolved home row");
         screen.handle(Gesture::Step(1), &mut ctx(&mut act, &mut recorder, &w, &p));
-        assert_eq!(screen.selected, Some(0), "and wraps over the merged count, not either table's");
+        assert_eq!(screen.selected.map(|(s, _)| s), Some(0), "and wraps over the merged count, not either table's");
 
         // Before the first frame there is no snapshot and (on a fresh route load) no waypoint table
         // either: a turn then leaves the cursor *unresolved*, so the list still opens where it
         // should once the rows arrive.
-        let mut fresh = UpAheadScreen::new(200, UpAheadSource::Both);
+        let mut fresh = UpAheadScreen::new(200);
         fresh.handle(Gesture::Step(1), &mut ctx(&mut act, &mut recorder, &Waypoints::new(), &[]));
         assert_eq!(fresh.selected, None, "a step over an empty list keeps the homing");
     }
@@ -1279,66 +1207,118 @@ mod tests {
         let mut recorder = crate::RecorderMachine::new();
         recorder.test_open();
         let session = recorder.session();
-        let mut screen = UpAheadScreen::new(0, UpAheadSource::Both);
+        let mut screen = UpAheadScreen::new(0);
 
-        screen.selected = Some(0); // the Fountain
+        screen.selected = Some((0, ctx_scope())); // the Fountain
         match screen.handle(Gesture::Press, &mut ctx(&mut act, &mut recorder, &w, &p)) {
             Transition::Push(Screen::PoiDetail(d)) => assert_eq!(d.off_route_m(), Some(-220)),
             _ => panic!("a POI row must open the detail"),
         }
-        screen.selected = Some(1); // the waypoint
+        screen.selected = Some((1, ctx_scope())); // the waypoint
         assert!(matches!(screen.handle(Gesture::Press, &mut ctx(&mut act, &mut recorder, &w, &p)), Transition::None));
         assert!(matches!(screen.handle(Gesture::Back, &mut ctx(&mut act, &mut recorder, &w, &p)), Transition::Pop));
         assert_eq!(act.mode, Mode::Riding);
         assert_eq!(recorder.session(), session);
     }
 
-    /// Hold opens the picker on the active filter; Press applies it (re-keying the snapshot and
-    /// re-homing the cursor); Back cancels, leaving both the filter and the key untouched.
+    /// The list's Select-hold is **inert** (#1515 D4a): the category picker it used to open is a row
+    /// of the contextual sheet now, so a hold on a row no longer swaps the body for a mode.
     #[test]
-    fn the_picker_applies_on_press_and_cancels_on_back() {
-        let mut recorder = crate::RecorderMachine::new();
-        let w = wpts_detailed(&[(1_000, "Pass", None, 0)]);
-        let p = corridor(&[]);
-        let mut act = riding();
-        let mut screen = UpAheadScreen::new(4_000, UpAheadSource::Both);
-        let before = screen.corridor_key();
-        assert_eq!(before.expect("Both asks for a snapshot").anchor_m, 4_000, "the key freezes progress at entry");
-
-        screen.handle(Gesture::Hold, &mut ctx(&mut act, &mut recorder, &w, &p));
-        assert_eq!(screen.picker, Some(0), "the picker opens on Everything, the active filter");
-        screen.handle(Gesture::Step(1), &mut ctx(&mut act, &mut recorder, &w, &p)); // → Water
-        screen.handle(Gesture::Back, &mut ctx(&mut act, &mut recorder, &w, &p));
-        assert_eq!(screen.picker, None, "Back closes the picker");
-        assert_eq!(screen.corridor_key(), before, "…and cancels: the snapshot key is untouched");
-
-        screen.handle(Gesture::Hold, &mut ctx(&mut act, &mut recorder, &w, &p));
-        screen.handle(Gesture::Step(1), &mut ctx(&mut act, &mut recorder, &w, &p));
-        screen.handle(Gesture::Press, &mut ctx(&mut act, &mut recorder, &w, &p));
-        assert_eq!(screen.picker, None, "applying returns to the list");
-        assert_eq!(
-            screen.corridor_key(),
-            Some(CorridorKey { filter: PoiCategorySet::only(PoiCategory::Water), anchor_m: 4_000 }),
-            "the applied filter re-keys the snapshot (which is what re-queries it)"
-        );
-        assert_eq!(screen.selected, None, "and the cursor re-homes to the first row ahead");
-    }
-
-    /// While the picker is open it owns every gesture: Back closes it instead of leaving the
-    /// screen, and a Press never falls through to a row.
-    #[test]
-    fn the_open_picker_swallows_navigation() {
+    fn hold_no_longer_opens_a_picker_mode() {
         let mut recorder = crate::RecorderMachine::new();
         let w = wpts_detailed(&[(1_000, "Pass", None, 0)]);
         let p = corridor(&[(600, "Fountain", WATER, 0)]);
         let mut act = riding();
-        let mut screen = UpAheadScreen::new(0, UpAheadSource::Both);
-        for g in [Gesture::Step(1), Gesture::Back, Gesture::Press, Gesture::BackHold, Gesture::Hold] {
-            screen.picker = Some(3);
-            assert!(
-                matches!(screen.handle(g, &mut ctx(&mut act, &mut recorder, &w, &p)), Transition::None),
-                "{g:?} must not navigate out of the picker"
-            );
+        let mut screen = UpAheadScreen::new(4_000);
+        screen.selected = Some((0, ctx_scope()));
+
+        assert!(matches!(screen.handle(Gesture::Hold, &mut ctx(&mut act, &mut recorder, &w, &p)), Transition::None));
+        assert_eq!(screen.selected, Some((0, ctx_scope())), "the hold changed nothing at all");
+        // …and the very next Back still leaves the screen rather than closing a mode first.
+        assert!(matches!(screen.handle(Gesture::Back, &mut ctx(&mut act, &mut recorder, &w, &p)), Transition::Pop));
+    }
+
+    /// **The scope in the cursor costs nothing**, which is what the resource baseline records — so
+    /// it is measured rather than re-derived. The 2 B [`UpAheadScope`] rides in the tuple's tail
+    /// padding and [`UpAheadSource`]'s `#[repr(u8)]` niche supplies the `None`, so
+    /// `Option<(usize, UpAheadScope)>` is the same size `Option<usize>` was.
+    ///
+    /// A host figure, like `size_of::<Screen>()`'s own pin: the board's `usize` is four bytes, so
+    /// the same struct is smaller there. What travels across both widths is the *delta*, which is
+    /// zero.
+    #[test]
+    fn the_cursors_scope_is_free() {
+        use core::mem::size_of;
+        assert_eq!(size_of::<Option<(usize, UpAheadScope)>>(), size_of::<Option<usize>>(), "no wider a cursor");
+        assert_eq!(size_of::<UpAheadScreen>(), 24, "…and no wider a screen — `_compile_note_d4a_1515`");
+    }
+
+    /// **A cursor counts only against the list it was set in.** Scroll the timeline, then filter it
+    /// from the sheet above, and the rider lands on the nearest match ahead — not on whatever the
+    /// old index clamps to, which for a scrolled list is the *last* one.
+    ///
+    /// This is the Select-hold picker's `self.selected = None`-on-apply, kept as a property of the
+    /// cursor rather than as a line in a commit path: the sheet that replaced the picker sits above
+    /// this screen and cannot reach in to clear anything.
+    #[test]
+    fn filtering_a_scrolled_list_re_homes_the_cursor() {
+        let mut recorder = crate::RecorderMachine::new();
+        // Four stops ahead, two of them Water and 3.6 km apart — so clamping and re-homing give
+        // visibly different answers.
+        let w = wpts_detailed(&[
+            (400, "Brunnen", Some(PoiCategory::Water), 0),
+            (500, "Bakery", Some(PoiCategory::Resupply), 0),
+            (600, "Camp", Some(PoiCategory::Campsite), 0),
+            (4_000, "Far water", Some(PoiCategory::Water), 0),
+        ]);
+        let p = corridor(&[]);
+        let mut act = riding();
+        let mut screen = UpAheadScreen::new(0);
+
+        // The rider scrolls to the last row of the unfiltered list.
+        for _ in 0..3 {
+            screen.handle(Gesture::Step(1), &mut ctx(&mut act, &mut recorder, &w, &p));
         }
+        let unfiltered = all();
+        assert_eq!(screen.selected, Some((3, unfiltered)), "the cursor is on \"Far water\"");
+        assert_eq!(screen.cursor(screen.rows(w.as_slice(), &p, true, unfiltered), 0, 4, unfiltered), 3);
+
+        // …then filters to Water from the sheet. Two rows remain: Brunnen at 400 m, Far water at
+        // 4 km. Clamping row 3 would land on the far one; the rider gets the near one.
+        let water = scope(PoiCategorySet::only(PoiCategory::Water), UpAheadSource::Both);
+        let rows: std::vec::Vec<&str> = screen.rows(w.as_slice(), &p, true, water).map(|e| e.name()).collect();
+        assert_eq!(rows, ["Brunnen", "Far water"], "the filtered list, for the record");
+        assert_eq!(
+            screen.cursor(screen.rows(w.as_slice(), &p, true, water), 0, 2, water),
+            0,
+            "re-homed to the nearest Water stop ahead, not clamped onto the far one"
+        );
+
+        // A source change reshapes the list the same way, and re-homes for the same reason.
+        let pois_only = scope(PoiCategorySet::ALL, UpAheadSource::MapPoisOnly);
+        assert_eq!(screen.cursor(screen.rows(w.as_slice(), &p, true, pois_only), 0, 0, pois_only), 0);
+
+        // …and going back to the list the cursor was set in restores it: this re-homes, it does not
+        // forget.
+        assert_eq!(screen.cursor(screen.rows(w.as_slice(), &p, true, unfiltered), 0, 4, unfiltered), 3);
+    }
+
+    /// The snapshot key is the **live** scope against the anchor frozen at entry: changing the
+    /// filter from the sheet above re-keys the request (which is what re-queries it), and the anchor
+    /// stays where the rider was when the list opened.
+    #[test]
+    fn the_key_follows_the_live_scope_and_keeps_the_frozen_anchor() {
+        let screen = UpAheadScreen::new(4_000);
+        assert_eq!(
+            screen.corridor_key(ctx_scope()),
+            Some(CorridorKey { filter: PoiCategorySet::ALL, anchor_m: 4_000 }),
+            "a fresh list opens on Everything, anchored where the rider is"
+        );
+        let water = scope(PoiCategorySet::only(PoiCategory::Water), UpAheadSource::Both);
+        assert_eq!(
+            screen.corridor_key(water),
+            Some(CorridorKey { filter: PoiCategorySet::only(PoiCategory::Water), anchor_m: 4_000 }),
+            "the sheet's committed filter re-keys the snapshot without moving the anchor"
+        );
     }
 }

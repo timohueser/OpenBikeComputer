@@ -2,12 +2,14 @@
 //! pages (**Bike type**, the routing-profile hero picker; **Data fields**, the
 //! [`StatFields`](super::StatFieldsScreen) grid editor); the rest are simple controls edited in
 //! place: **Page cycle** (a stepper for how fast the [`Statistics`](crate::screen) grid auto-flips),
-//! **Climb** / **Waypoints** / **Up ahead** (press-to-cycle rows — the last one scoping which
-//! sources feed the [Up-ahead timeline](crate::screen::UpAheadScreen), epic #946 U4), and
-//! **Auto-delete** (the synced-ride retention ring — Never / 1 day / 1 week / 1 month, moved here
-//! from its old standalone page).
+//! **Climb** / **Waypoints** (press-to-cycle rows) and **Auto-delete** (the synced-ride retention
+//! ring — Never / 1 day / 1 week / 1 month, moved here from its old standalone page).
 //!
-//! Seven rows overrun the ~4-row panel, so this is the one settings screen that **scrolls**: the row
+//! The Up-ahead source scope used to be a seventh row here. It moved to the timeline's own
+//! contextual drawer in #1515 D4a — a screen-specific modifier has one home, and that home is the
+//! sheet on the screen it modifies, not a settings tree two levels away.
+//!
+//! Six rows still overrun the ~4-row panel, so this is the one settings screen that **scrolls**: the row
 //! cursor drives the window ([`window_start`](crate::screen::vocab::list::window_start)) exactly like the
 //! nav lists, and a scrollbar tracks the position. The two-level Select model is otherwise the
 //! shared one — a step moves the cursor (or edits an open stepper), a press opens a page / flips a
@@ -54,11 +56,8 @@ const DATA_FIELDS: usize = 1;
 const PAGE_CYCLE: usize = 2;
 const CLIMB: usize = 3;
 const WAYPOINTS: usize = 4;
-/// The **"Up ahead" source scope** (epic #946, U4) — parked right under the Waypoints chip row, the
-/// other setting about how a route's annotations reach the rider.
-const UP_AHEAD: usize = 5;
-const AUTODELETE: usize = 6;
-const ROWS: usize = 7;
+const AUTODELETE: usize = 5;
+const ROWS: usize = 6;
 
 /// Step the page-cycle period by `n` steps (1 s each), clamped to the configured bounds.
 fn step_cycle(v: u16, n: i32) -> u16 {
@@ -116,13 +115,6 @@ impl RideScreen {
                 // Press cycles Off → Approach → Always in place, the twin of the Climb row.
                 WAYPOINTS => {
                     cx.settings.waypoint_mode = cx.settings.waypoint_mode.cycled();
-                    Transition::None
-                }
-                // Press cycles Both → Waypoints → Map POIs in place — *who feeds* the Up-ahead
-                // list, the stable half of the pair whose moment-to-moment half is that screen's
-                // own Hold category picker (epic #946, U4).
-                UP_AHEAD => {
-                    cx.settings.up_ahead_source = cx.settings.up_ahead_source.cycled();
                     Transition::None
                 }
                 // Press cycles the synced-ride retention ring one forward (wraps at both ends), the
@@ -192,13 +184,6 @@ impl RideScreen {
                     row_cursor(cv, row, selected, false);
                     super::row_label(cv, row, rx.t(Msg::RideWaypoints), Some(rx.t(Msg::RideWaypointsSub)));
                     draw_subline_cycle_value(cv, &row, val_r, rx.settings.waypoint_mode.name(rx.settings.language));
-                }
-                UP_AHEAD => {
-                    // Up ahead: the same press-to-cycle face as the two rows above, reading as the
-                    // sentence "Up ahead shows ◄ Waypoints" (the value word carries the "only").
-                    row_cursor(cv, row, selected, false);
-                    super::row_label(cv, row, rx.t(Msg::RideUpAhead), Some(rx.t(Msg::RideUpAheadSub)));
-                    draw_subline_cycle_value(cv, &row, val_r, rx.settings.up_ahead_source.name(rx.settings.language));
                 }
                 AUTODELETE => {
                     // Auto-delete: the retention value rides on the sub-caption line with the same
@@ -315,30 +300,13 @@ mod tests {
         }
     }
 
-    /// The Up-ahead row cycles Both → Waypoints → Map POIs in place on each press (epic #946, U4),
-    /// writing the choice straight into `Settings` (which is what persists it) — and it sits between
-    /// the Waypoints chip row and Auto-delete, where the group's route-annotation rows live.
-    #[test]
-    fn up_ahead_row_cycles_the_source_scope() {
-        use crate::settings::UpAheadSource;
-        let mut s = Settings { up_ahead_source: UpAheadSource::MapPoisOnly, ..Settings::default() };
-        let mut scr = RideScreen::new();
-        run(&mut scr, &mut s, Gesture::Step(5)); // → Up ahead row
-        assert_eq!(scr.selected, UP_AHEAD);
-        assert_eq!(UP_AHEAD, WAYPOINTS + 1, "it reads as the second half of the Waypoints row's story");
-        for expect in [UpAheadSource::Both, UpAheadSource::WaypointsOnly, UpAheadSource::MapPoisOnly] {
-            assert!(matches!(run(&mut scr, &mut s, Gesture::Press), Transition::None));
-            assert_eq!(s.up_ahead_source, expect, "a press cycles to the next value and persists it");
-        }
-    }
-
     /// The Auto-delete row cycles the retention ring one forward per press (wrapping), writing the
     /// choice straight into `Settings` — the old standalone page's behaviour, now a row here.
     #[test]
     fn autodelete_row_cycles_retention() {
         let mut s = Settings { ride_retention: RideRetention::Never, ..Settings::default() };
         let mut scr = RideScreen::new();
-        run(&mut scr, &mut s, Gesture::Step(6)); // → Auto-delete row (last)
+        run(&mut scr, &mut s, Gesture::Step(5)); // → Auto-delete row (last)
         assert_eq!(scr.selected, AUTODELETE);
         for expect in [RideRetention::Day1, RideRetention::Week1, RideRetention::Month1, RideRetention::Never] {
             assert!(matches!(run(&mut scr, &mut s, Gesture::Press), Transition::None));
@@ -359,8 +327,8 @@ mod tests {
     }
 
     /// Every row is reachable and *drawn*: the panel shows [`VISIBLE`] of the [`ROWS`] at a time, so
-    /// the scrolling window must always contain the cursor — the seventh row (Auto-delete, pushed
-    /// down by the new Up-ahead row) included. Mirrors the draw's `window_start` call.
+    /// the scrolling window must always contain the cursor — the sixth row (Auto-delete, which the
+    /// migrated Up-ahead row used to push down) included. Mirrors the draw's `window_start` call.
     #[test]
     fn every_row_is_reachable_inside_the_scrolling_window() {
         let mut s = Settings::default();
@@ -375,7 +343,7 @@ mod tests {
             );
             run(&mut scr, &mut s, Gesture::Step(1));
         }
-        assert_eq!(scr.selected, 0, "and the cursor wraps over all seven rows");
+        assert_eq!(scr.selected, 0, "and the cursor wraps over all six rows");
     }
 
     /// Every press-to-cycle row's sub-caption line clears its ◄value group by a **measured**
@@ -383,13 +351,13 @@ mod tests {
     #[test]
     fn cycle_row_value_clears_the_sub_caption() {
         use crate::i18n::t;
-        use crate::settings::{ClimbMode, Language, UpAheadSource, WaypointMode};
+        use crate::settings::{ClimbMode, Language, WaypointMode};
         const W: i32 = 240;
         const MIN_CLEAR: i32 = 8;
         let val_r = W - ROW_X - VAL_INSET;
         let lw = |s: &str| text_width(s, Font::Label) as i32;
         for lang in [Language::En, Language::De, Language::Fr, Language::Es] {
-            let rows: [(&str, &[&str]); 4] = [
+            let rows: [(&str, &[&str]); 3] = [
                 (
                     t(Msg::RideClimbSub, lang),
                     &[ClimbMode::Off.name(lang), ClimbMode::Manual.name(lang), ClimbMode::Auto.name(lang)],
@@ -397,14 +365,6 @@ mod tests {
                 (
                     t(Msg::RideWaypointsSub, lang),
                     &[WaypointMode::Off.name(lang), WaypointMode::Approach.name(lang), WaypointMode::Always.name(lang)],
-                ),
-                (
-                    t(Msg::RideUpAheadSub, lang),
-                    &[
-                        UpAheadSource::Both.name(lang),
-                        UpAheadSource::WaypointsOnly.name(lang),
-                        UpAheadSource::MapPoisOnly.name(lang),
-                    ],
                 ),
                 (
                     t(Msg::RideAutodeleteSub, lang),
