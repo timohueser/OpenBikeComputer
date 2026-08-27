@@ -327,7 +327,7 @@ impl App {
                 Some(DrawerKey { page, selected, staged, committed: self.settings().brightness, enabled: 0 })
             }
             Screen::ContextDrawer(d) => {
-                let (selected, enabled) = d.key(&self.activity, self.state.has_nav_graph);
+                let (selected, enabled) = d.key(&self.activity, self.recorder.recording(), self.state.has_nav_graph);
                 // The contextual sheet has one page and edits no value yet — the D4 slices are what
                 // give those two fields something to say here.
                 Some(DrawerKey { page: 0, selected, staged: 0, committed: 0, enabled })
@@ -652,9 +652,11 @@ mod tests {
     /// cue, not the values behind it: the same economy the map base's low-battery glyph gets.
     #[test]
     fn a_row_going_inert_under_the_sheet_moves_the_key() {
-        let mut app = map_under_the_context_sheet();
+        let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
+        app.test_start_ride();
         app.activity.active_route = Some(0);
         app.state.has_nav_graph = true;
+        assert!(app.apply_chord(crate::input::Chord::Context));
         let live = app.render_key();
         app.activity.off_route = true;
         assert_ne!(app.render_key(), live, "the Detour row went recessed — the sheet must redraw");

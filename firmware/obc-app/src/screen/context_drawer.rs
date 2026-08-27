@@ -89,14 +89,18 @@ impl ContextAction {
     /// Whether the row can be pressed right now. An unavailable row draws recessed and does
     /// nothing — the drawer's dim means *inert*, unlike the compass dial's, which dimmed stations
     /// a press still opened.
-    fn available(self, activity: &Activity, has_nav_graph: bool) -> bool {
+    /// **The row and its destination read one predicate.** For Detour that is
+    /// [`detour::reachable`](super::detour::reachable), which the chooser's own availability check
+    /// is built from — so a row can never be an enabled door onto an inert screen.
+    fn available(self, activity: &Activity, recording: bool, has_nav_graph: bool) -> bool {
         match self {
             // The timeline opens on its own empty state without a route, which is informative
             // rather than dead, so it is always live.
             ContextAction::UpAhead | ContextAction::Pois | ContextAction::Routes => true,
-            // #882: a detour needs a route to leave, a graph to route on, and a rider on the route
-            // (the corridor anchors on live progress, which off-route freezes).
-            ContextAction::Detour => activity.active_route.is_some() && has_nav_graph && !activity.off_route,
+            // #882: a detour needs a recorded ride to re-route, a route to leave, a graph to route
+            // on, and a rider on the route (the corridor anchors on live progress, which off-route
+            // freezes).
+            ContextAction::Detour => super::detour::reachable(activity, recording, has_nav_graph),
         }
     }
 
@@ -165,14 +169,15 @@ impl ContextDrawerScreen {
     /// rows are live. The identity of the sheet itself is the stack shape, which the key already
     /// carries.
     ///
-    /// Availability is derived from the *base* — the route, the graph, the off-route flag — and is
-    /// therefore the one thing under an open sheet that may still move a pixel, exactly as the
-    /// quick drawer's committed brightness is. It is the cue, not the values behind it, so a rider
-    /// drifting off route re-draws the sheet once and a moving map still costs nothing.
-    pub(crate) fn key(&self, activity: &Activity, has_nav_graph: bool) -> (u8, u8) {
+    /// Availability is derived from the *base* — the open ride, the route, the graph, the
+    /// off-route flag — and is therefore the one thing under an open sheet that may still move a
+    /// pixel, exactly as the quick drawer's committed brightness is. It is the cue, not the values
+    /// behind it, so a rider drifting off route re-draws the sheet once and a moving map still
+    /// costs nothing.
+    pub(crate) fn key(&self, activity: &Activity, recording: bool, has_nav_graph: bool) -> (u8, u8) {
         let mut live = 0u8;
         for (i, row) in self.menu.rows.iter().enumerate().take(MAX_ROWS) {
-            if row.action.available(activity, has_nav_graph) {
+            if row.action.available(activity, recording, has_nav_graph) {
                 live |= 1 << i;
             }
         }
@@ -187,7 +192,9 @@ impl ContextDrawerScreen {
                 Transition::None
             }
             Gesture::Press => match rows.get(self.selected as usize) {
-                Some(row) if row.action.available(cx.activity, cx.state.has_nav_graph) => row.action.open(cx),
+                Some(row) if row.action.available(cx.activity, cx.recorder.recording(), cx.state.has_nav_graph) => {
+                    row.action.open(cx)
+                }
                 // An inert row, or an empty table (which the chord refuses to open a sheet for).
                 _ => Transition::None,
             },
@@ -226,10 +233,10 @@ impl ContextDrawerScreen {
         // The grab lip, so the sheet reads as pulled up from the bottom rather than as a card.
         cv.round(rect(rx.w / 2 - 18, top + 7, 36, 4), 2, palette::WOOD_LIGHT);
 
-        let has_nav_graph = rx.state.has_nav_graph;
+        let (recording, has_nav_graph) = (rx.recording, rx.state.has_nav_graph);
         for (i, row) in rows.iter().enumerate() {
             let area = rect(14, top + SHEET_PAD + i as i32 * ROW_H, rx.w - 36, ROW_H - 4);
-            let live = row.action.available(rx.activity, has_nav_graph);
+            let live = row.action.available(rx.activity, recording, has_nav_graph);
             super::vocab::rows::row_cursor(cv, area, i as u8 == self.selected, false);
             let ink = if live { palette::INK } else { palette::CONTOUR };
             cv.text_vcentered(
@@ -274,13 +281,18 @@ mod tests {
     }
 
     impl World {
-        /// A routed, nav-graph, on-route ride — every row of the ride context live.
+        /// A routed, nav-graph, on-route **recorded** ride — every row of the ride context live.
+        /// All four conditions matter: the Detour row reads the same predicate its chooser does
+        /// ([`detour::reachable`](super::super::detour::reachable)), and that one names the open
+        /// ride too.
         fn riding() -> Self {
             let mut state = AppState::new(0, 0, 1.0);
             state.has_nav_graph = true;
             let mut activity = Activity::new(Mode::Riding);
             activity.active_route = Some(0);
-            World { state, activity, settings: Settings::default(), recorder: RecorderMachine::new() }
+            let mut recorder = RecorderMachine::new();
+            recorder.test_open();
+            World { state, activity, settings: Settings::default(), recorder }
         }
 
         fn press(&mut self, d: &mut ContextDrawerScreen, g: Gesture) -> Transition {
@@ -346,20 +358,64 @@ mod tests {
         let mut w = World::riding();
         let mut d = drawer();
         w.press(&mut d, Gesture::Step(1));
-        assert_eq!(d.key(&w.activity, w.state.has_nav_graph).1 & live_bit, live_bit, "on route, with a graph: live");
+        assert_eq!(
+            d.key(&w.activity, w.recorder.recording(), w.state.has_nav_graph).1 & live_bit,
+            live_bit,
+            "on route, with a graph: live"
+        );
 
         for break_it in [
             (|w: &mut World| w.activity.active_route = None) as fn(&mut World),
             |w: &mut World| w.state.has_nav_graph = false,
             |w: &mut World| w.activity.off_route = true,
+            // The fourth condition, and the one the row used to be missing: a *browse* map with a
+            // route loaded and a graph under it still has nothing to re-route, because there is no
+            // ride. Without this the row was an enabled door onto a chooser that opens inert.
+            |w: &mut World| w.recorder.test_close(),
         ] {
             let mut w = World::riding();
             break_it(&mut w);
             let mut d = drawer();
             w.press(&mut d, Gesture::Step(1));
-            assert_eq!(d.key(&w.activity, w.state.has_nav_graph).1 & live_bit, 0, "the row went inert");
+            assert_eq!(
+                d.key(&w.activity, w.recorder.recording(), w.state.has_nav_graph).1 & live_bit,
+                0,
+                "the row went inert"
+            );
             assert!(matches!(w.press(&mut d, Gesture::Press), Transition::None), "and a press does nothing");
         }
+    }
+
+    /// **A row is never an enabled door onto an inert screen.** The browse Map is the case that
+    /// makes it checkable: a route is loaded and the map has a nav graph, so three of the Detour
+    /// row's four conditions hold — but nothing is being recorded, and a detour re-routes *a ride*.
+    ///
+    /// The row and the chooser read the **same** predicate, so this is proved by identity rather
+    /// than by two assertions that happen to agree: `detour::reachable` is what
+    /// `DetourScreen::available` is built from.
+    #[test]
+    fn a_route_without_a_ride_leaves_the_detour_row_inert() {
+        let mut w = World::riding();
+        w.recorder.test_close(); // …a browse map: the route and the graph stay
+        assert!(w.activity.active_route.is_some() && w.state.has_nav_graph && !w.activity.off_route);
+
+        let mut d = drawer();
+        w.press(&mut d, Gesture::Step(1)); // → the Detour row
+        assert_eq!(
+            d.key(&w.activity, w.recorder.recording(), w.state.has_nav_graph).1 & (1 << 1),
+            0,
+            "the row draws recessed"
+        );
+        assert!(matches!(w.press(&mut d, Gesture::Press), Transition::None), "…and a press does nothing");
+
+        // The predicate the row read is the one the chooser reads: identical inputs, identical
+        // answer, so the row cannot become an enabled door onto a screen that opens inert.
+        assert!(!super::super::detour::reachable(&w.activity, w.recorder.recording(), w.state.has_nav_graph));
+        assert!(
+            ContextAction::Detour.available(&w.activity, w.recorder.recording(), w.state.has_nav_graph)
+                == super::super::detour::reachable(&w.activity, w.recorder.recording(), w.state.has_nav_graph),
+            "the row's availability *is* the chooser's entry condition"
+        );
     }
 
     /// The timeline anchors its corridor snapshot on **live progress at entry** (epic #946 U3) and
