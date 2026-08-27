@@ -964,8 +964,8 @@ The Up-ahead view merges route waypoints with map POIs near the route.
 The corridor query sorts results by distance along the route. It excludes POIs behind the snapshot anchor.
 
 <figure class="fig">
-<svg viewBox="0 0 720 292" role="img" aria-label="One timeline row dissected, plus the source cue legend and the Hold picker. The row is amber because it is under the cursor: line one carries a category icon with a small diamond pip beside it and the ellipsized name Fontaine du port; line two carries the distance to go, a climb to go prefixed by an up triangle, and at the right edge a left-pointing triangle followed by 271 metres, the off-route side hint. To the right, four icon states: a map POI unselected in muted olive, a map POI under the cursor in ink, a custom waypoint in amber with a pip, and a custom waypoint under the cursor in ink with a pip. Below, the seven-row category picker titled SHOW: Everything, then Water, Campsite, Lodging, Resupply, Pharmacy and Bike shop, with the cursor on Everything.">
-  <text class="d-tag" x="20" y="24">The row · the source cue · the Hold picker</text>
+<svg viewBox="0 0 720 192" role="img" aria-label="One timeline row dissected, plus the source cue legend. The row is amber because it is under the cursor: line one carries a category icon with a small diamond pip beside it and the ellipsized name Fontaine du port; line two carries the distance to go, a climb to go prefixed by an up triangle, and at the right edge a left-pointing triangle followed by 271 metres, the off-route side hint. To the right, four icon states: a map POI unselected in muted olive, a map POI under the cursor in ink, a custom waypoint in amber with a pip, and a custom waypoint under the cursor in ink with a pip.">
+  <text class="d-tag" x="20" y="24">The row · the source cue</text>
 
   <!-- the row (selected: amber) -->
   <rect x="24" y="44" width="392" height="66" rx="6" class="d-amber" />
@@ -996,26 +996,6 @@ The corridor query sorts results by distance along the route. It excludes POIs b
     <text class="d-sub" x="484" y="150" style="font-size:9.5px">waypoint · cursor</text>
   </g>
   <text class="d-sub" x="444" y="172" style="font-size:8.5px;fill:#6b7758">the pip is the colourblind-safe half of the pair</text>
-
-  <!-- the picker -->
-  <rect class="d-panel" x="24" y="164" width="196" height="116" rx="9" />
-  <rect x="30" y="170" width="184" height="14" rx="3" style="fill:#aa5500" />
-  <text class="d-sub" x="38" y="181" style="fill:#fff;font-size:8px">SHOW</text>
-  <rect x="30" y="188" width="184" height="11" rx="2" class="d-amber" />
-  <path d="M36 190 L36 197 L41 193.5 z" fill="#000" />
-  <text class="d-sub" x="48" y="197" style="fill:#000;font-size:8px">Everything</text>
-  <g>
-    <circle cx="38" cy="205" r="3" fill="#24331c" /><text class="d-sub" x="48" y="208" style="font-size:8px">Water</text>
-    <circle cx="38" cy="216" r="3" fill="#24331c" /><text class="d-sub" x="48" y="219" style="font-size:8px">Campsite</text>
-    <circle cx="38" cy="227" r="3" fill="#24331c" /><text class="d-sub" x="48" y="230" style="font-size:8px">Lodging</text>
-    <circle cx="38" cy="238" r="3" fill="#24331c" /><text class="d-sub" x="48" y="241" style="font-size:8px">Resupply</text>
-    <circle cx="38" cy="249" r="3" fill="#24331c" /><text class="d-sub" x="48" y="252" style="font-size:8px">Pharmacy</text>
-    <circle cx="38" cy="260" r="3" fill="#24331c" /><text class="d-sub" x="48" y="263" style="font-size:8px">Bike shop</text>
-  </g>
-  <text class="d-sub" x="232" y="202" style="font-size:9.5px">Hold opens it · seven rows on one page</text>
-  <text class="d-sub" x="232" y="220" style="font-size:9.5px">press applies + re-homes the cursor</text>
-  <text class="d-sub" x="232" y="238" style="font-size:9.5px">back cancels — the list's cursor survives</text>
-  <text class="d-sub" x="232" y="262" style="font-size:9px;fill:#a9501c">a mode inside the screen, not a screen</text>
 </svg>
 <figcaption>The Up-ahead view merges two sorted sources without copying rows.</figcaption>
 </figure>
@@ -1023,8 +1003,13 @@ The corridor query sorts results by distance along the route. It excludes POIs b
 The merge walks both sorted inputs. It does not allocate or copy list rows.
 
 A category filter changes the corridor snapshot key. A source scope selects waypoints, map POIs, or
-both. The rider sets both from the view's own contextual drawer. The filter is a selection that
-starts again at "Everything" each time the view opens; the source scope is stored.
+both. The rider sets both from the view's own contextual drawer, which replaced an in-view mode the
+`Select` hold used to open. The filter is a selection that starts again at "Everything" each time the
+view opens; the source scope is stored.
+
+A cursor the rider set counts only against the list they set it in. When either control changes the
+list, the cursor goes back to the first row still ahead. Without this a rider who scrolls and then
+filters lands on the last match instead of the nearest one.
 
 Configured `Next: category` fields use cached per-category corridor results. A visible Up-ahead screen has priority over these background requests.
 
