@@ -529,15 +529,12 @@ impl App {
 
     /// Stage 5 — advance `RetentionMachine`.
     ///
-    /// Its inbox first: the removal this pass's stage 1 accepted, then what Navigator and the
-    /// catalog decided *after* it ran last pass. Then the domain's own advance, then the one expiry
-    /// intent and the one sidecar write it may have this pass. The expiry goes into a same-pass slot
-    /// because the catalog runs next — an auto-expired object leaves by exactly the path a
-    /// rider-deleted one does.
-    ///
-    /// The removal is read **before** anything else: an expiry candidate for an object the store no
-    /// longer holds is not a candidate, whoever ordered the removal, and it is retired here rather
-    /// than by waiting for the object to disappear from a later re-read.
+    /// Its inbox first, and in that order: the removal stage 1 accepted, then what Navigator and the
+    /// catalog decided *after* it ran last pass. The removal leads because an expiry candidate for
+    /// an object the store no longer holds is not a candidate, whoever ordered the removal. Then the
+    /// domain's own advance, then the one expiry intent and the one sidecar write it may have this
+    /// pass. The expiry goes into a same-pass slot because the catalog runs next — an auto-expired
+    /// object leaves by exactly the path a rider-deleted one does.
     ///
     /// Each inbox value goes to a domain **entry point that re-derives its own rule**: a delivered
     /// id is a pass old, and only the domain can say whether it still qualifies. An activation in
