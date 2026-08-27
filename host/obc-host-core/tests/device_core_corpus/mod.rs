@@ -13,14 +13,15 @@
 
 use obc_app::device_core::ModeState;
 use obc_app::device_core::{
-    DataIdentity, DerivedInputs, ExternalFacts, NavigatorTag, OperationToken, OutcomeSlots, Revision, RouteUpload,
-    SettingsTag, StoreIdentity, StoreRevision, TripUpload, UpdateResult, WeatherData,
+    DataIdentity, DerivedInputs, DerivedTargets, ExternalFacts, NavigatorTag, OperationToken, OutcomeSlots, PassClock,
+    PassInputs, PlatformSupport, Revision, RouteUpload, SettingsTag, StoreIdentity, StoreRevision, TripUpload,
+    UpdateResult, WeatherData,
 };
 use obc_app::dfu::{clamp, DfuFailure, DfuInstallError, DfuScanError, DfuScanReport};
 use obc_app::navigator::NavigatorOutcome;
 use obc_app::screen::Screen;
 use obc_app::{
-    App, AppState, DetourPreview, Gesture, Mode, RideRetentionRecord, RideSummary, RouteSummary, TrackAction,
+    App, AppState, DetourPreview, Gesture, Mode, RecorderIntent, RideRetentionRecord, RideSummary, RouteSummary,
     TripInput, WarningFlags,
 };
 use obc_formats::io::{ByteSink, SliceSource};
@@ -63,6 +64,7 @@ pub enum Requirement {
     RecorderDiscard,
     RecorderFinalizeFailure,
     RecorderSessionReplacement,
+    RecorderCheckpointCadence,
     SettingsDirtyRevision,
     SettingsSuccess,
     SettingsStaleResult,
@@ -164,6 +166,7 @@ pub const ALL_REQUIREMENTS: &[Requirement] = &[
     Requirement::RecorderDiscard,
     Requirement::RecorderFinalizeFailure,
     Requirement::RecorderSessionReplacement,
+    Requirement::RecorderCheckpointCadence,
     Requirement::SettingsDirtyRevision,
     Requirement::SettingsSuccess,
     Requirement::SettingsStaleResult,
@@ -457,6 +460,7 @@ impl CorpusState {
         self.app.set_rides(&self.rides, &self.ride_ids);
         self.app.set_map_nav_graph(true);
         self.app.state.user_fix = Some(road_fix(0.0));
+        self.mount_store(); // the ride these gestures start needs somewhere to go
         self.app.apply_gesture(Gesture::BackHold);
         self.app.apply_gesture(Gesture::Press);
         // The first row is the trip folder; enter it, open the first stage, then start the ride.
@@ -475,6 +479,34 @@ impl CorpusState {
         }
         let mut location = OneFix(Some(road_fix(0.31)));
         self.app.tick(RideClock(0), Sensors::new(&mut location), Some(&reader));
+    }
+
+    /// Report the card this fixture's repositories are, through one real pass — the level that
+    /// admits a catalog mutation, a route plan and a ride recording. A fresh `App` has never been
+    /// told it has a store, and `Capabilities` is the pass *before*'s level, so this has to run
+    /// before any gesture that depends on one.
+    fn mount_store(&mut self) {
+        struct NoFix;
+        impl LocationSource for NoFix {
+            fn poll(&mut self) -> Option<obc_ports::Fix> {
+                None
+            }
+        }
+        let mut location = NoFix;
+        let mut facts = ExternalFacts::NONE;
+        facts.note_store_revision(StoreRevision { store: StoreIdentity::new(1), revision: Revision::new(1) });
+        self.app.run_pass(PassInputs {
+            now: PassClock { ride: RideClock(0), ui: InputClock(0) },
+            gestures: &[],
+            sensors: Sensors::new(&mut location),
+            route: None,
+            weather: None,
+            support: EVERY_CAPABILITY,
+            outcomes: &mut OutcomeSlots::new(),
+            facts: &mut facts,
+            derived: DerivedInputs::NONE,
+            targets: DerivedTargets::NONE,
+        });
     }
 
     fn tick_without_fix(&mut self) {
@@ -591,25 +623,17 @@ impl CorpusState {
                 assert!(self.app.debug_start_nav((0, 0), (1_000, 1_000), "No path"));
                 self.pending_nav_plan = Some(Err(NavError::NoPath));
             }
-            Action::StartRecorder => self.app.activity.start_session(),
-            Action::SaveRecorder => {
-                self.app.activity.end_session();
-                self.app.activity.request_track(TrackAction::Save);
-            }
-            Action::DiscardRecorder => {
-                self.app.activity.end_session();
-                self.app.activity.request_track(TrackAction::Discard);
-            }
+            // Every recorder action is the rider naming an intent to Recorder, exactly as a screen
+            // does. Nothing here ends a session: the store's verdict is what closes a ride.
+            Action::StartRecorder => self.app.recorder.request(RecorderIntent::Start),
+            Action::SaveRecorder => self.app.recorder.request(RecorderIntent::Save),
+            Action::DiscardRecorder => self.app.recorder.request(RecorderIntent::Discard),
             Action::FailRecorderFinalize => {
-                self.app.activity.request_track(TrackAction::Save);
-                // Compatibility limitation: the legacy vocabulary has no recorder-finalize outcome;
-                // hosts report the failure through the generic warning event.
+                self.app.recorder.request(RecorderIntent::Save);
                 self.fail_next_finalize = true;
             }
-            Action::ReplaceRecorderSession => {
-                self.app.activity.end_session();
-                self.app.activity.start_session();
-            }
+            // "Save & start new": the fresh ride opens behind the old one's verdict.
+            Action::ReplaceRecorderSession => self.app.recorder.save_and_restart(),
             Action::DirtySettings => {
                 let settings = *self.app.settings();
                 self.app.set_settings(settings);
@@ -856,7 +880,7 @@ pub fn visible_state(
             .and_then(|index| app.route_ids().get(index))
             .map(|&id| fixture_object_key(ObjectKind::Route, id)),
         requested_ride_id: app.derived_needs().ride_track.map(|key| fixture_object_key(ObjectKind::Ride, key.ride)),
-        recording: app.activity.is_tracking(),
+        recording: app.recording(),
         clock_trusted: app.clock_trusted(),
         rain_steps_ahead: app.weather().steps_ahead(),
         weather_installed: app.weather().installed(),
@@ -1000,6 +1024,22 @@ fn nav_delivery_key(requested: u16, current: u16) -> &'static str {
         _ => "nav.preview.requested-other.current-replacement",
     }
 }
+
+/// Every platform capability — the fixture device implements all of them.
+pub const EVERY_CAPABILITY: PlatformSupport = PlatformSupport {
+    detour: true,
+    settings_persistence: true,
+    dfu: true,
+    weather: true,
+    bonding: true,
+    storage_space_report: true,
+    retention_metadata: true,
+};
+
+/// The identity the fixture store commits a finalized ride under. It never joins the resident
+/// catalog — the corpus's repositories are a fixed set — so it is only ever the `ride` a
+/// `RecorderOutcome::Finalized` names.
+pub const SAVED_RIDE: u64 = 200;
 
 pub fn fixture_object_key(kind: ObjectKind, id: u64) -> ObjectKey {
     match (kind, id) {
@@ -1147,13 +1187,32 @@ pub const SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: "recorder.start-save-discard",
-        requirements: &[Requirement::RecorderStart, Requirement::RecorderSave, Requirement::RecorderDiscard],
-        actions: &[Action::StartRecorder, Action::SaveRecorder, Action::StartRecorder, Action::DiscardRecorder],
+        requirements: &[
+            Requirement::RecorderStart,
+            Requirement::RecorderSave,
+            Requirement::RecorderDiscard,
+            Requirement::RecorderCheckpointCadence,
+        ],
+        // `StoreChanged` first, and it is not scenery: a ride needs somewhere to put it, and
+        // `Capabilities::recorder` is the pass *before*'s level — so the card has to be reported one
+        // action ahead of the rider asking to record.
+        actions: &[
+            Action::StoreChanged,
+            Action::StartRecorder,
+            Action::SaveRecorder,
+            Action::StartRecorder,
+            Action::DiscardRecorder,
+        ],
     },
     Scenario {
         name: "recorder.failure-and-session-replacement",
         requirements: &[Requirement::RecorderFinalizeFailure, Requirement::RecorderSessionReplacement],
-        actions: &[Action::StartRecorder, Action::FailRecorderFinalize, Action::ReplaceRecorderSession],
+        actions: &[
+            Action::StoreChanged,
+            Action::StartRecorder,
+            Action::FailRecorderFinalize,
+            Action::ReplaceRecorderSession,
+        ],
     },
     Scenario {
         name: "settings.revision-success-and-stale-result",
@@ -1265,6 +1324,10 @@ pub const SETTINGS_FAILURE_RETRY_MS: u32 = 6_003;
 /// these marks, so the window it just stepped past cannot reopen behind it.
 pub fn clock_watermark(action: Action) -> u32 {
     match action {
+        // The recorder cadence is a ten-second deadline the domain owns (#1552), and the corpus
+        // clock otherwise advances one millisecond per pass. The mark puts the ride's first pass
+        // past it, so the scenario exercises one real checkpoint rather than none.
+        Action::StartRecorder => 10_001,
         Action::RetrySettingsPersist => 4_002,
         Action::RetryExpiredDelete => 5_002,
         Action::SleepPastDeleteBackoff => 9_002,
