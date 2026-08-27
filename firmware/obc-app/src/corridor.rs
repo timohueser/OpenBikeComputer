@@ -46,6 +46,24 @@ pub struct CorridorKey {
     pub anchor_m: u32,
 }
 
+/// What the Up-ahead timeline is currently **scoped to**: the rider's live category filter (app
+/// state, reset on entry) and their persisted source preference (a settings row). Together they
+/// decide which tables the list may walk and whether a corridor snapshot is wanted at all, so they
+/// travel as one value — the pair cannot be passed apart and cannot drift.
+///
+/// Neither half lives on [`UpAheadScreen`](crate::screen::UpAheadScreen) any more (#1515 D4a): both
+/// are edited from the context sheet *above* that screen, so a copy frozen inside it would be a
+/// copy the rider's edit could not reach.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpAheadScope {
+    /// The categories the list shows ("Everything" is [`PoiCategorySet::ALL`]).
+    pub filter: PoiCategorySet,
+    /// Which of the two source tables may feed the list — and, under
+    /// [`WaypointsOnly`](crate::settings::UpAheadSource::WaypointsOnly), whether any snapshot is
+    /// armed at all.
+    pub source: crate::settings::UpAheadSource,
+}
+
 /// The [`App`](crate::App)-owned corridor snapshot. **One** buffer, shared by whatever screen is
 /// showing the Up-ahead list — never owned by a [`Screen`](crate::screen::Screen) variant (see the
 /// module docs).

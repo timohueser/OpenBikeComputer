@@ -29,9 +29,10 @@ map = "Map"
 weather = "Weather"
 settings = "Settings"
 
-# --- The ride context (the Down+Back sheet on a riding view), the Up-ahead timeline, and the
-# --- Detour chooser. The mid-ride compass that used to own this section is gone (#1515 D3); what
-# --- survives is what its two chooser screens still read, plus the two context row labels.
+# --- The context sheets' row labels (the Down+Back sheet on a riding view and on the Up-ahead
+# --- timeline), plus the Detour chooser's copy. The mid-ride compass that used to own this section
+# --- is gone (#1515 D3); `filter`/`sources` are the Up-ahead sheet's two value rows (D4a), which
+# --- are the only home either control has.
 [ride_context]
 up_ahead = "Up ahead"
 detour = "Detour"
@@ -40,11 +41,12 @@ no_route = "No route loaded"
 off_route = "Return to route"
 route_end = "Route ends here"
 no_nav = "No routing data"
+filter = "Filter"
+sources = "Sources"
 
 # --- The "Up ahead" timeline (epic #946): merged waypoints + route-corridor POIs ---
 [up_ahead]
 everything = "Everything"
-filter_title = "SHOW"
 none = "Nothing up ahead"
 none_sub = "No stops on route"
 none_category_sub = "None of this kind"
@@ -54,9 +56,9 @@ none_waypoints_sub = "Waypoints only"
 none_pois_sub = "Map POIs only"
 no_route_sub = "Load a route first"
 
-# --- UpAheadSource enum labels (Ride settings row, epic #946 U4). Short by necessity: the value
-# --- shares the row's sub-caption line with its cue at 240 px, so the ring's three words carry
-# --- the "only" the epic spells out.
+# --- UpAheadSource enum labels (epic #946 U4; the Up-ahead sheet's Sources row since #1515 D4a).
+# --- Short by necessity: the value shares its row with the label at 240 px, so the ring's three
+# --- words carry the "only" the epic spells out.
 [up_ahead_source]
 both = "Both"
 waypoints = "Waypoints"
@@ -240,8 +242,6 @@ climb = "Climb"
 climb_sub = "panel"
 waypoints = "Waypoints"
 waypoints_sub = "chip"
-up_ahead = "Up ahead"
-up_ahead_sub = "shows"
 autodelete = "Auto-delete"
 autodelete_sub = "rides"
 

@@ -20,9 +20,10 @@ def digest(payload: bytes) -> str:
 
 
 class UiSnapshotManifestTests(unittest.TestCase):
-    """The four rejections the manifest exists for — a changed frame, a frame the sweep stopped
-    producing, one it started producing, and a manifest that names a frame twice — plus the round
-    trip that makes `update` a usable answer to any of them."""
+    """The five rejections the manifest exists for — a changed frame, a frame the sweep stopped
+    producing, one it started producing, a manifest that names a frame twice, and two frames with
+    different names over identical pixels — plus the round trip that makes `update` a usable answer
+    to any of them."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -62,6 +63,22 @@ class UiSnapshotManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(manifest_tool.ManifestError, "duplicate entry for home.png"):
             manifest_tool.read_manifest(self.manifest)
         self.assertEqual(self.check(), 2)  # …and the command reports it rather than crashing
+
+    def test_two_frames_with_one_image_are_rejected(self):
+        """The pixels are the only witness: a wrong-state frame under the right name passes
+        `--expect-screen` and every digest check."""
+        (self.out / "map-panning.png").write_bytes(self.frames["map.png"])
+        manifest_tool.main(["update", str(self.manifest), str(self.out)])
+        self.assertEqual(self.check(), 1)
+
+    def test_a_declared_identical_pair_passes(self):
+        """Declaring the pair turns the identity from an accident into the claim."""
+        (self.out / "map-panning.png").write_bytes(self.frames["map.png"])
+        manifest_tool.main(["update", str(self.manifest), str(self.out)])
+        original = list(manifest_tool.IDENTICAL_BY_DESIGN)
+        manifest_tool.IDENTICAL_BY_DESIGN.append({"map.png", "map-panning.png"})
+        self.addCleanup(lambda: manifest_tool.IDENTICAL_BY_DESIGN.__setitem__(slice(None), original))
+        self.assertEqual(self.check(), 0)
 
     def test_a_malformed_manifest_is_rejected(self):
         for bad in ("not-a-digest  home.png\n", "abc\n", f"{digest(b'x')}  sub/home.png\n"):
