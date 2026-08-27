@@ -291,8 +291,19 @@ Detour, POIs, and Routes. A row that cannot act right now is drawn recessed and 
 Detour row without a route, without map routing data, or off the route. A row that can act replaces
 the sheet with its screen, so one Back returns the rider to the riding view they squeezed from.
 
+A row can also hold a **value** in place of a screen. Such a row slides the sheet to a nested
+editor: `Up` and `Down` change the staged choice, `Select` writes it and returns to the row table,
+and `Back` discards it. The editor keeps a mark on the choice that is already in effect. The sheet
+becomes as high as the editor needs and goes back to its table height. The Up-ahead view declares
+two such rows, Filter and Sources, and they are the only place these two controls are set.
+
+The drawer is the only home for a setting that belongs to one screen. A control that moves into a
+drawer is removed from the central settings tree in the same change. A check in the build fails if
+a drawer and a settings screen write the same stored setting.
+
 The screen under a drawer is **frozen**. A drawer states its own facts as its render key — the page,
-the selected control, and the staged value — and that key replaces the facts of the screens below.
+the selected control, the staged value and the value in effect — and that key replaces the facts of
+the screens below.
 So a moving map under a drawer causes no repaint, and one repaint occurs when the drawer closes. The
 device draws the frozen screen through a dim colour table, and the sheet through the normal colours.
 No extra frame buffer is necessary.
@@ -1011,7 +1022,9 @@ The corridor query sorts results by distance along the route. It excludes POIs b
 
 The merge walks both sorted inputs. It does not allocate or copy list rows.
 
-A category filter changes the corridor snapshot key. A source-scope setting selects waypoints, map POIs, or both.
+A category filter changes the corridor snapshot key. A source scope selects waypoints, map POIs, or
+both. The rider sets both from the view's own contextual drawer. The filter is a selection that
+starts again at "Everything" each time the view opens; the source scope is stored.
 
 Configured `Next: category` fields use cached per-category corridor results. A visible Up-ahead screen has priority over these background requests.
 
