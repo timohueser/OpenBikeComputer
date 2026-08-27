@@ -16,7 +16,7 @@ map = "Mapa"
 weather = "Tiempo"
 settings = "Ajustes"
 
-# --- El menú brújula en ruta, la lista Próximo y el selector Saltar tramo ---
+# --- El contexto de ruta (la hoja inferior), la lista Próximo y el selector de desvío ---
 [ride_context]
 up_ahead = "Próximo"
 detour = "Desvío"

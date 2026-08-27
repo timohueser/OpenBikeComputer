@@ -2155,6 +2155,12 @@ impl App {
         self.ui.stack.len()
     }
 
+    /// Whether any drawer is on the stack — test/diagnostic observability for the "nothing lands on
+    /// top of a drawer" rule ([`close_drawers`](crate::screen::close_drawers)).
+    pub fn debug_stack_has_overlay(&self) -> bool {
+        self.ui.stack.iter().any(|s| s.is_overlay())
+    }
+
     /// Offer one journaled ride recovered at boot to the rider.
     ///
     /// The host calls this after it has reconstructed `continuation` from the durable sample
@@ -2216,6 +2222,16 @@ impl App {
     /// closes the one that is up).
     pub fn apply_chord(&mut self, chord: Chord) -> bool {
         if self.ui.stack.last().is_some_and(|s| s.caps().blocks_chords) {
+            return false;
+        }
+        // The **powering-off frame** refuses a squeeze, exactly as
+        // [`escape_to_menu`](App::escape_to_menu) does — and it has to be said here rather than in
+        // `Caps`, because the frame is a *page* of the quick drawer and a drawer must never declare
+        // `blocks_chords` (that is the declaration the chord which closes it would trip over). The
+        // rider has completed the guarded hold; a sheet opening over that frame would take
+        // [`power_off_requested`](App::power_off_requested) back to `false` and cancel a shutdown
+        // already in progress.
+        if self.power_off_requested() {
             return false;
         }
         match chord {
@@ -2759,17 +2775,28 @@ impl App {
     ///
     /// Three rules, and they are the whole of it:
     ///
-    /// * **Any sheet goes with it.** A drawer is not a place to come back to, so an open quick or
-    ///   contextual drawer is popped first — which is what makes the escape work from a drawer
-    ///   subpage, including the power confirmation D2 could not leave.
+    /// * **Any sheet goes with it.** A drawer is not a place to come back to — which is what makes
+    ///   the escape work from a drawer subpage, including the power confirmation D2 could not
+    ///   leave. It needs no step of its own: the general
+    ///   [`close_drawers`](crate::screen::close_drawers) rule takes the sheet as the Menu lands.
     /// * **A decision the rider must answer keeps its answer.** The declared
-    ///   [`Caps::blocks_escape`](crate::screen::Caps) set refuses it, as does the terminal
-    ///   powering-off frame, whose own contract is that nothing dismisses it.
-    /// * **It never stacks a second Menu.** Escaping from the Menu is already where the escape
-    ///   goes, so it does nothing rather than growing the stack on a repeated squeeze of the bar.
+    ///   [`Caps::blocks_escape`](crate::screen::Caps) set refuses the escape, as does the terminal
+    ///   powering-off frame, whose own contract is that nothing dismisses it. Every *other* modal
+    ///   — the planning spinner, the upload cards, a warning — lets the Menu open over it, which is
+    ///   safe because a card that lands while the rider is away is written into its own stack slot
+    ///   rather than pushed, so it never yanks the Menu and Back still finds it.
+    /// * **It goes to the Menu; it never adds one.** With a Menu already on the stack the escape
+    ///   *rewinds* to it instead of stacking a second, so escaping is idempotent at any depth —
+    ///   not only when the Menu happens to be on top.
     ///
-    /// It **pushes** rather than roots: Back out of the Menu returns to the riding view the rider
-    /// escaped from, which is the one thing the compass ride menu got right and is worth keeping.
+    /// That last rule is a bound, not a nicety. The escape is *the* gesture for "get me out of six
+    /// levels of settings", so escape → re-descend → escape is its most ordinary use; pushing every
+    /// time would let two laps of it reach [`MAX_DEPTH`](crate::screen::MAX_DEPTH), where the next
+    /// host-pushed card is dropped. Rewinding makes the stack shrink on every lap after the first.
+    ///
+    /// The first escape **pushes**, so Back out of the Menu returns to the view the rider escaped
+    /// from — the one thing the compass ride menu got right. Later escapes land on that same Menu,
+    /// with the station the rider last used still selected.
     fn escape_to_menu(&mut self) -> bool {
         // Asked of the **base**, not of `stack.last()`: a sheet the rider opened over a card they
         // must answer is not consent to walk away from the card. A host-pushed blocking modal is
@@ -2778,14 +2805,35 @@ impl App {
         if base.is_some_and(|s| s.caps().blocks_escape) || self.power_off_requested() {
             return false;
         }
+        // No explicit sheet-popping here: both arms below already take one. A rewind truncates to
+        // the Menu, which is under every overlay; a push goes through
+        // [`screen::apply`](crate::screen::apply), whose `Push` arm closes drawers because
+        // *nothing lands on top of one*. A loop of its own was a third statement of that rule, and
+        // a mutant proved it changed nothing.
         let mut changed = false;
-        while self.ui.stack.last().is_some_and(|s| s.is_overlay()) {
-            self.ui.stack.pop();
-            changed = true;
-        }
-        if !matches!(self.ui.stack.last(), Some(Screen::Menu(_))) {
-            screen::apply(&mut self.ui.stack, screen::Transition::Push(Screen::Menu(MenuScreen::new())));
-            changed = true;
+        match self.ui.stack.iter().rposition(|s| matches!(s, Screen::Menu(_))) {
+            // Rewind to the Menu the rider already has. Truncating to it is a no-op when it is
+            // already on top, which is how a repeated squeeze of the bar costs nothing.
+            Some(i) => {
+                if i + 1 < self.ui.stack.len() {
+                    self.ui.stack.truncate(i + 1);
+                    changed = true;
+                }
+            }
+            // No Menu anywhere: open one over what is there. `Root` is the fallback for the one
+            // case a push cannot serve — a full stack with no Menu on it, which needs host cards
+            // over a deep path to reach. Landing on `[Home, Menu]` loses the way back, and that is
+            // still better than an escape that silently does not escape.
+            None => {
+                let menu = Screen::Menu(MenuScreen::new());
+                let t = if self.ui.stack.len() < self.ui.stack.capacity() {
+                    screen::Transition::Push(menu)
+                } else {
+                    screen::Transition::Root(menu)
+                };
+                screen::apply(&mut self.ui.stack, t);
+                changed = true;
+            }
         }
         // The corridor snapshot follows the stack: escaping off the Up-ahead timeline disarms its
         // query exactly as a Back would.

@@ -10,7 +10,8 @@ use crate::screen::{
     RouteOverviewScreen, RouteSwapScreen, Screen, ScreenTick, Stack, StatisticsScreen, Transition,
 };
 use crate::{
-    App, AppState, CameraMode, Gesture, Mode, PanBasis, PanTool, RecorderIntent, RouteSummary, Settings, MAX_ROUTES,
+    App, AppState, CameraMode, Gesture, Mode, PanBasis, PanTool, RecorderIntent, RouteSummary, Settings, WarningFlags,
+    MAX_ROUTES,
 };
 use embedded_graphics::prelude::RgbColor; // for `Rgb888::r()` in the compositing snapshot
 use obc_map_scene::BBox;
@@ -1224,12 +1225,14 @@ fn the_global_escape_reaches_the_menu_from_every_family() {
             assert!(app.apply_chord(crate::input::Chord::Quick));
         }),
         ("the power confirmation", |app| {
+            app.set_backlight_available(true); // the four-control row, so Power is the last one
             assert!(app.apply_chord(crate::input::Chord::Quick));
             for _ in 0..3 {
-                app.apply_gesture(Gesture::Step(1)); // → the power control
+                app.apply_gesture(Gesture::Step(1)); // brightness → … → the power control
             }
             app.advance_animations(InputClock(1_000)); // settle the sheet's open slide
             app.apply_gesture(Gesture::Press); // → the guarded confirmation
+            assert!(app.top_wants_hold_fill(), "the confirmation is up — the page D2 could not leave");
         }),
     ];
     for (name, reach) in families {
@@ -1253,8 +1256,8 @@ fn the_escape_takes_the_context_sheet_with_it() {
     assert!(matches!(app.top_screen(), Screen::Map(_)), "Back out of the Menu lands on the base, not the sheet");
 }
 
-/// **It never stacks a second Menu.** A rider squeezing the bar repeatedly must not walk the stack
-/// toward `MAX_DEPTH`.
+/// **It goes to the Menu, it never adds one.** A rider squeezing the bar repeatedly must not walk
+/// the stack toward `MAX_DEPTH`.
 #[test]
 fn a_repeated_escape_does_not_stack_menus() {
     let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
@@ -1266,9 +1269,10 @@ fn a_repeated_escape_does_not_stack_menus() {
     assert_eq!(app.ui.stack.len(), depth, "the escape is idempotent once it has arrived");
 }
 
-/// The two suppression sets, on glass: a **blocking** modal refuses both the chord and the escape,
-/// and the recovered-ride card refuses only the escape — a sheet over it is harmless, but leaving
-/// it would strand the recovered recording that Back already cannot dismiss.
+/// The escape's refusal set, driven rather than read off the table: a **blocking** modal refuses
+/// both the chord and the escape, and the recovered-ride card refuses only the escape — a sheet
+/// over it is harmless, but leaving it would strand the recovered recording that Back already
+/// cannot dismiss.
 #[test]
 fn a_card_the_rider_must_answer_refuses_the_escape() {
     let mut app = App::new(AppState::new(0, 0, 1.0));
@@ -1277,6 +1281,8 @@ fn a_card_the_rider_must_answer_refuses_the_escape() {
     app.apply_gesture(Gesture::BackHold);
     assert!(matches!(app.top_screen(), Screen::Passkey(_)), "a blocking modal refuses the escape");
 
+    // A sheet the rider opened *over* the recovery card is not consent to walk away from it: the
+    // refusal is asked of the base, not of whatever is on top.
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
     assert!(app.offer_damaged_ride(), "the recovery card is offered");
     assert!(app.apply_chord(crate::input::Chord::Quick), "…and a quick sheet over it is harmless");
@@ -1285,8 +1291,116 @@ fn a_card_the_rider_must_answer_refuses_the_escape() {
         matches!(app.top_screen(), Screen::QuickDrawer(_)),
         "a sheet the rider opened over the card is not consent to walk away from it"
     );
+
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
     assert!(app.offer_damaged_ride());
     app.apply_gesture(Gesture::BackHold);
     assert!(matches!(app.top_screen(), Screen::RideRecovery(_)), "the recovery decision stays put");
+}
+
+/// **The escape is bounded, and the host's card still lands** — the rider-gesture-only walk that
+/// used to fill the stack.
+///
+/// Escape → re-descend → escape is the escape's *most ordinary* use ("get me out of six levels of
+/// settings"). While it pushed unconditionally, two laps of it reached `MAX_DEPTH`, where the next
+/// host-pushed card is dropped in release and panics in debug — exactly the reserve
+/// [`deepest_mid_ride_settings_path_keeps_room_for_host_warning`] exists to protect, defeated by a
+/// path that test does not walk. The rewind makes every lap after the first *shrink* the stack.
+///
+/// Driven the way a rider drives it: no `stack` surgery, only gestures.
+#[test]
+fn laps_of_escape_and_re_descent_leave_room_for_a_host_card() {
+    let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map], riding
+    app.apply_gesture(Gesture::BackHold); // the first escape pushes: [Home, Map, Menu]
+    assert!(matches!(app.top_screen(), Screen::Menu(_)));
+
+    // From the Menu down to the deepest ordinary settings page, and back out with the escape.
+    let mut deepest = 0;
+    for lap in 0..4 {
+        if lap == 0 {
+            app.apply_gesture(Gesture::Step(-1)); // Routes → the Settings station
+        }
+        // From lap 1 the dial is *still* on Settings: the escape rewinds to the same Menu, with
+        // the station the rider last used selected. That is a property of rewinding rather than
+        // pushing a fresh Menu, so it is asserted here instead of worked around.
+        app.apply_gesture(Gesture::Press); // → the Settings list (Ride first)
+        assert!(matches!(app.top_screen(), Screen::Settings(_)), "lap {lap}: the Menu kept its station");
+        app.apply_gesture(Gesture::Press); // → Ride
+        app.apply_gesture(Gesture::Step(1)); // Bike type → Data fields
+        app.apply_gesture(Gesture::Press); // → Fields
+        assert!(matches!(app.top_screen(), Screen::StatFields(_)), "lap {lap} reached the fields editor");
+        deepest = deepest.max(app.ui.stack.len());
+
+        app.apply_gesture(Gesture::BackHold);
+        assert!(matches!(app.top_screen(), Screen::Menu(_)), "lap {lap} escaped to the Menu");
+        // Idempotent once it has arrived: a second squeeze of the bar costs nothing.
+        let settled = app.ui.stack.len();
+        app.apply_gesture(Gesture::BackHold);
+        assert_eq!(app.ui.stack.len(), settled, "lap {lap}: a second escape moved the stack");
+        assert_eq!(settled, 3, "lap {lap}: the escape rewound to the Menu the rider already had");
+    }
+    assert!(deepest < crate::screen::MAX_DEPTH, "the reachable depth is {deepest}, at the ceiling of MAX_DEPTH");
+
+    // The card the reserve exists for: after all that, it must still land.
+    app.on_warning(WarningFlags::REC_ERROR);
+    assert!(matches!(app.top_screen(), Screen::Warning(_)), "the host warning must still fit over the escape");
+}
+
+/// **A shutdown in progress is not cancellable, by either device-wide input.** The rider completed
+/// the guarded hold and the host is about to call the power-off port; the terminal frame's own
+/// contract is that nothing dismisses it, and that has to hold for the escape *and* for a squeeze.
+///
+/// It cannot be expressed in `Caps`: the frame is a **page** of the quick drawer, and a drawer must
+/// never declare `blocks_chords` — that is the declaration the chord which closes it would trip
+/// over. So the refusal is a runtime check in both owners, and this is its only guard.
+#[test]
+fn nothing_cancels_a_shutdown_already_in_progress() {
+    /// A device on the terminal POWERING OFF frame, reached the way a rider reaches it.
+    fn powering_off() -> App {
+        let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
+                                                          // A panel with a light, so the root row is the issue's four and Power is the last of them.
+        app.set_backlight_available(true);
+        assert!(app.apply_chord(crate::input::Chord::Quick));
+        for _ in 0..3 {
+            app.apply_gesture(Gesture::Step(1)); // brightness → … → the power control
+        }
+        app.advance_animations(InputClock(1_000)); // settle the sheet's open slide
+        app.apply_gesture(Gesture::Press); // → the guarded confirmation
+        assert!(app.top_wants_hold_fill(), "the confirmation is up and drawing its hold bar");
+        app.advance_animations(InputClock(2_000)); // settle the page slide
+        app.apply_gesture(Gesture::Hold); // the completed hold
+        assert!(app.power_off_requested(), "the host is about to call the power-off port");
+        app
+    }
+
+    let mut app = powering_off();
+    app.apply_gesture(Gesture::BackHold);
+    assert!(app.power_off_requested(), "the global escape must not walk away from a shutdown");
+    assert!(matches!(app.top_screen(), Screen::QuickDrawer(_)));
+
+    for chord in [crate::input::Chord::Context, crate::input::Chord::Quick] {
+        let mut app = powering_off();
+        assert!(!app.apply_chord(chord), "{chord:?} moved something over the powering-off frame");
+        assert!(app.power_off_requested(), "{chord:?} cancelled a shutdown already in progress");
+    }
+}
+
+/// **A drawer is transient chrome: nothing lands on top of one.** A host card arriving over an open
+/// sheet takes the sheet with it, so dismissing the card lands the rider on the screen they were on
+/// rather than back inside a drawer they had finished with — and the escape's "any sheet goes with
+/// it" rule holds for every slot, not only the top one.
+#[test]
+fn a_card_landing_over_a_sheet_takes_the_sheet_with_it() {
+    for chord in [crate::input::Chord::Quick, crate::input::Chord::Context] {
+        let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
+        assert!(app.apply_chord(chord));
+        assert!(app.ui.stack.iter().any(|s| s.is_overlay()), "{chord:?} opened a sheet");
+
+        app.on_warning(WarningFlags::REC_ERROR);
+        assert!(matches!(app.top_screen(), Screen::Warning(_)), "the card landed");
+        assert!(!app.ui.stack.iter().any(|s| s.is_overlay()), "{chord:?}: the sheet went with it");
+
+        app.apply_gesture(Gesture::Press); // dismiss the card
+        assert!(matches!(app.top_screen(), Screen::Map(_)), "{chord:?}: dismissing lands on the base");
+    }
 }
