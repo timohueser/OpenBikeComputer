@@ -100,8 +100,15 @@ pub struct Pan {
     /// The inspection cursor on the route's cumulative-distance axis. Kept when moving freely so
     /// returning to Route resumes at the same inspected point rather than at the live rider.
     pub route_progress_m: u32,
-    /// Free is a stable mode family, not two adjacent stops in a three-state ring. Remember its
-    /// last axis while Route is active so Select-hold can return without changing direction.
+    /// The Free axis to come back to. Free is a stable mode family, not two adjacent stops in the
+    /// mode ring, so leaving it for Route (or for Zoom, which keeps the axis) must not silently
+    /// change direction.
+    ///
+    /// **Invariant: whenever [`basis`](Pan::basis) is a Free axis this equals it.** Only
+    /// [`toggle_pan_free_axis`](crate::AppState::toggle_pan_free_axis) and
+    /// [`enter_pan`](crate::AppState::enter_pan) choose a Free axis, and both write the pair
+    /// together; the ring only ever reads it back. So the field carries a real value exactly while
+    /// the basis is `Route` — and the ring needs no save of its own on the way out of Free.
     last_free_basis: PanBasis,
     /// A route step or basis change owes one cold `position_at` lookup at the pre-draw boundary.
     /// Private to the app: screens may inspect the mode, never acknowledge route I/O.
@@ -323,11 +330,9 @@ impl AppState {
         match (pan.tool, pan.basis) {
             // Route Move → Free Move, on the axis last used.
             (PanTool::Move, PanBasis::Route) => pan.basis = pan.last_free_basis,
-            // Free Move → Zoom, keeping the axis for the lap back.
-            (PanTool::Move, _) => {
-                pan.last_free_basis = pan.basis;
-                pan.tool = PanTool::Zoom;
-            }
+            // Free Move → Zoom. The axis rides along in `basis`, and `last_free_basis` already
+            // equals it (see the field's invariant), so there is nothing to save here.
+            (PanTool::Move, _) => pan.tool = PanTool::Zoom,
             // Zoom → Route Move; with no route the ring closes straight back onto Free Move.
             (PanTool::Zoom, _) => {
                 pan.tool = PanTool::Move;
