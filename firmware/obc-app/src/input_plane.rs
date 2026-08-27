@@ -4,7 +4,8 @@
 //! render. This **input plane** owns everything that must stay responsive *while a map frame is
 //! rendering*: the shared [`Gestures`] recogniser, the long-press [`HoldHints`] overlay, the live
 //! hold-progress, and the Layer-2 overlay render. The two couple only by a one-way flow of
-//! recognised [`Gesture`]s — no shared lock the long map render can hold against input.
+//! recognised [`Gesture`]s and [`Chord`]s — no shared lock the long map render can hold against
+//! input.
 //!
 //! On the firmware this plane runs on a **high-priority interrupt executor** that preempts the
 //! CPU-bound map render every few milliseconds: it samples the buttons, recognises gestures (into a
@@ -19,7 +20,7 @@
 use embedded_graphics::draw_target::DrawTarget;
 
 use crate::hold_hint::HoldHints;
-use crate::input::{Gesture, Gestures, DEFAULT_HOLD_MS};
+use crate::input::{Chord, Gesture, Gestures, DEFAULT_HOLD_MS};
 use obc_ports::{InputClock, InputSource};
 
 /// The high-priority input + overlay plane: gesture recognition, the long-press hint
@@ -34,7 +35,7 @@ use obc_ports::{InputClock, InputSource};
 /// already tracks. It touches **nothing** the map
 /// plane owns, so it is safe to run preemptively against a long map render.
 pub struct InputPlane {
-    /// The shared gesture recognizer (raw events + clock → the five gestures).
+    /// The shared recognizer (raw events + clock → the five gestures and the device-wide chords).
     gestures: Gestures,
     /// The global long-press hint overlay (the charge-in-place bulge at the Select / Back
     /// edges), drawn above every screen on the dedicated overlay layer.
@@ -69,8 +70,19 @@ impl InputPlane {
     /// may apply each gesture inline or buffer them into a channel; both are identical.
     ///
     /// Call once per frame even with no pending events: that is how a held button's long-press
-    /// fires at its threshold and how the bulge animates while charging.
-    pub fn recognize(&mut self, clock: InputClock, input: &mut dyn InputSource, mut on_gesture: impl FnMut(Gesture)) {
+    /// fires at its threshold, how a deferred first step arrives at the end of the chord window,
+    /// and how the bulge animates while charging.
+    ///
+    /// Returns any device-wide [`Chord`] this frame's events completed. A chord is **not** a
+    /// gesture: it never reaches a screen, and neither do the presses it swallowed — so it comes
+    /// back beside the callback rather than through it, and the caller resolves it above the
+    /// screen stack.
+    pub fn recognize(
+        &mut self,
+        clock: InputClock,
+        input: &mut dyn InputSource,
+        mut on_gesture: impl FnMut(Gesture),
+    ) -> Option<Chord> {
         let now_ms = clock.0;
         self.now_ms = now_ms;
         while let Some(ev) = input.poll() {
@@ -94,6 +106,7 @@ impl InputPlane {
         self.enc_progress = self.gestures.select_progress(now_ms);
         self.back_progress = self.gestures.back_progress(now_ms);
         self.hold_hints.update(now_ms, self.enc_progress, self.back_progress, enc_fired, back_fired);
+        self.gestures.take_chord()
     }
 
     /// Render **only the overlay plane** — the transient hold bulge / confirm ring — over whatever

@@ -199,6 +199,57 @@ pub trait SettingsStore {
     fn save(&mut self, value: &Self::Value) -> Result<(), SettingsSaveError>;
 }
 
+/// How many discrete brightness steps a [`Backlight`] accepts: levels `0..BACKLIGHT_LEVELS`, from
+/// the dimmest lit step to full. **There is no level that turns the light off** — a rider who
+/// cannot read the panel cannot find the control that turns it back on.
+pub const BACKLIGHT_LEVELS: u8 = 5;
+
+/// A board that has no controllable panel light. Returned by every call of a [`Backlight`] the
+/// hardware cannot honour, so a refusal is a value the caller can log rather than a silent no-op
+/// that pretends the panel dimmed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BacklightUnsupported;
+
+/// The panel's brightness control.
+///
+/// **One call, three meanings**, sequenced by the caller — which is why there is no separate
+/// `preview` / `commit` / `revert`. Each of the three is "drive the panel at this level now", and
+/// the *only* difference is what the caller does with the value afterwards:
+///
+/// * **preview** — the rider stepped the editor: apply the staged level, persist nothing;
+/// * **commit** — the rider confirmed: apply the same level, and the caller stores it;
+/// * **revert** — the rider cancelled: apply the level that is still stored.
+///
+/// So a host that applies the app's answer every frame gets all three for free, and the port keeps
+/// no state a cancel would have to unwind.
+pub trait Backlight {
+    /// Whether this panel has a light at all. `false` is a standing property of the hardware, not
+    /// a transient state, and it means every [`apply`](Backlight::apply) refuses.
+    ///
+    /// It exists because a *refusal the rider cannot see* is not honesty. A host states this
+    /// answer to the app once at composition, and the app removes the brightness control rather
+    /// than drawing a slider that moves while nothing changes.
+    fn available(&self) -> bool;
+
+    /// Drive the panel at `level` (`0..`[`BACKLIGHT_LEVELS`], saturating above), or refuse when
+    /// this hardware has no light to drive. Idempotent: applying the level already showing is a
+    /// no-op, so a caller may apply every frame.
+    ///
+    /// Refusal and [`available`](Backlight::available) must agree: an implementation that answers
+    /// `false` refuses every level, and one that answers `true` accepts every level in range.
+    fn apply(&mut self, level: u8) -> Result<(), BacklightUnsupported>;
+}
+
+/// Turning the device off, for good — the port the quick drawer's guarded confirmation ends in.
+///
+/// It **does not return**: on hardware the part enters system-off and only a wake source restarts
+/// it, and a host stands in with whatever ending is honest for it. The caller must therefore have
+/// presented its last frame before calling, because nothing after the call runs.
+pub trait PowerOff {
+    /// Enter the deepest off state this device has.
+    fn power_off(&mut self) -> !;
+}
+
 /// A resolved GPS UTC timestamp. Seconds remain separate because [`DateTime`] is minute-resolution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GpsTime {
