@@ -431,11 +431,13 @@ impl CoreHarness {
             }
             RecorderEffect::Discard { token } => RecorderOutcome::Discarded { token },
             // The medium takes the whole batch, unless a scenario scripted a short write: Recorder
-            // then keeps the remainder staged and offers it again.
-            RecorderEffect::Append { token, samples } => match std::mem::take(&mut self.state.partial_append_once) {
-                true => RecorderOutcome::Appended { token, samples: samples.saturating_sub(1) },
-                false => RecorderOutcome::Appended { token, samples },
-            },
+            // then keeps the remainder staged and offers it again. The injection stays armed until
+            // a batch is worth shortening — a one-sample batch answered with zero would be a
+            // *rejection*, which every real executor reports as `Failed`, not as a short write.
+            RecorderEffect::Append { token, samples } => {
+                let short = samples > 1 && std::mem::take(&mut self.state.partial_append_once);
+                RecorderOutcome::Appended { token, samples: if short { samples - 1 } else { samples } }
+            }
         }
     }
 
