@@ -6551,6 +6551,30 @@ mod tests {
         );
     }
 
+    /// #1548 finding 2: the store **answered `ObjectRemoved`**, and the re-read that answer ordered
+    /// has not re-fed the catalogs yet — the object is still a resident row. That is the ordinary
+    /// board cadence, not a fault: the pass clock is real monotonic millis and the device sleeps
+    /// between wakes, so more than [`RETENTION_DELETE_BACKOFF_MS`] routinely elapses between the
+    /// answer and the read landing. A second removal for an object the store has already removed is
+    /// a second `ObjectRemoved`, a second armed re-read and a second wake, and it breaks #1541's
+    /// "one read per delete".
+    #[test]
+    fn an_expiry_answered_removed_is_not_dispatched_twice_when_the_re_read_is_slow() {
+        let (mut app, now) = trusted_app();
+        app.set_routes_with_meta(&[summary("A")], &[10], &[expired(now)]);
+        app.retention_tick();
+        assert!(drain_once(&mut app).contains(&SweepOp::Remove(10)), "the expiry dispatches once");
+
+        // The removal was answered `ObjectRemoved`. The catalogs are still the pre-removal picture
+        // until the owed read lands, and the device slept past the backoff in the meantime.
+        app.ui.now_ms += RETENTION_DELETE_BACKOFF_MS + 1;
+        let later = drain_once(&mut app);
+        assert!(
+            !later.contains(&SweepOp::Remove(10)),
+            "the verdict retired the candidate — a slow re-read must not order a second removal: {later:?}"
+        );
+    }
+
     /// Review fix (#886): cancelling a queued-but-never-dispatched candidate must NOT re-open the
     /// per-kind dispatch window while a *different* id's delete is outstanding. Interleaving:
     /// `DeleteRoute(10)` is dispatched and in flight, `DeleteRoute(11)` is queued behind it; the
