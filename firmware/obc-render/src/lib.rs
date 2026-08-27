@@ -1055,3 +1055,5 @@ mod width_ramp_tests {
         }
     }
 }
+
+// ci-speed probe: measuring the gate on a representative Rust change.
