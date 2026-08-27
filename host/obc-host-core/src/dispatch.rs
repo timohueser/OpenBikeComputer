@@ -191,8 +191,7 @@ const HOST_STORE: StoreIdentity = StoreIdentity::new(1);
 
 // The residual list, the predicate and the assertion live in `obc_app::device_core::residual` since
 // #1397 S6b: the board's ride loop is a second typed executor and both have to check the *same*
-// two commands, or S6c's deletion becomes a per-host argument instead of a compiler-verified
-// sweep. Re-exported here so this module reads as the reference executor it is.
+// command, or S6c's deletion becomes a per-host argument instead of a compiler-verified sweep. Re-exported here so this module reads as the reference executor it is.
 use obc_app::device_core::residual::assert_residual;
 
 /// Everything the executor leaves for the next pass: the domain outcome slots, the external facts,

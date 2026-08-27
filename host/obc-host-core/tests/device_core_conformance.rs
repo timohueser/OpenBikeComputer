@@ -22,12 +22,10 @@
 //! ## Two production defects came out of this gate
 //!
 //! **The rider's ride close was destroyed.** The pass took the finish one-shot at stage 4 and
-//! dropped it at stage 7, where Recorder has no machine to act on it — so the ride was never
-//! finalized and no executor was told. The fix was to delete the `UiRuntime` → `Recorder`
-//! connection rather than document the loss: it provisioned for a lifecycle nobody owns, and its
-//! only effect was destroying a rider request. The close is back on the legacy drain, where it is
-//! performed, and [`a_ride_finalize_failure_after_the_last_checkpoint_reaches_the_rider`] runs the
-//! mandated trace for real instead of pinning a gap.
+//! dropped it at stage 7, where Recorder had no machine to act on it — so the ride was never
+//! finalized and no executor was told. The connection was deleted rather than the loss documented:
+//! it provisioned for a lifecycle nobody owned. #1398 brought it back with the domain that needs
+//! it, and the rider now names the close to `Ctx::recorder`.
 //!
 //! **A decided sidecar stamp must be mirrored into the resident view.** Retention re-derives its
 //! candidates from that view — the eager ride stamp on every trusted tick — so an unmirrored stamp
@@ -36,16 +34,15 @@
 //!
 //! ## What DeviceCore owns here, and what it does not
 //!
-//! Seven domains have a state machine: the catalog, retention and weather from #1438, and the four
-//! #1397 S2 added — Navigator, `SettingsMachine`, `DfuState` and `StorageInfo`. Six of them can be
-//! reached from outside `obc-app` (weather's refresh intent has no public door until #1401 lands the
-//! request cutover), so this executor serves those six and asserts the rest stays empty.
+//! Eight domains have a state machine: the catalog, retention and weather from #1438, the four
+//! #1397 S2 added — Navigator, `SettingsMachine`, `DfuState` and `StorageInfo` — and Recorder from
+//! #1398. All eight can be reached from outside `obc-app`, so this executor serves all eight and
+//! asserts the rest stays empty.
 //!
-//! **Two** domains still speak the legacy protocol: Recorder and Bond. A ride close is answered by
-//! a catalog re-feed rather than by a ride identity, and a bond removal by a link-status fact rather
-//! than by a reply — and a domain that cannot validate a token cannot own an outcome (epic §4.3).
-//! The residual drain asks for exactly those classes by name (`device_core::residual`), which is
-//! what makes running it between two passes safe.
+//! **One** domain still speaks the legacy protocol: Bond. Its removal is confirmed by a link-status
+//! fact rather than by a reply, and a domain that cannot validate a token cannot own an outcome
+//! (epic §4.3). The residual drain asks for exactly that class by name (`device_core::residual`),
+//! which is what makes running it between two passes safe.
 
 mod device_core_corpus;
 
@@ -498,7 +495,7 @@ impl CoreHarness {
     // than by a ride identity (#1398) and the bond removal by a link-status fact rather than by a
     // reply (#1400). A domain that cannot validate a token cannot own an outcome (epic §4.3).
 
-    /// Asked for **by name**: the two residual classes, and nothing else. A class DeviceCore owns
+    /// Asked for **by name**: the residual class, and nothing else. A class DeviceCore owns
     /// is not filtered out of a full walk here — it is never drained, because the full walk *pulls*
     /// from each domain as it passes and would mint the operation the pass's own effect already
     /// carries. The harness is therefore unable to reach past its classes rather than asserting
