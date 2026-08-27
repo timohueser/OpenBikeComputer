@@ -187,7 +187,7 @@ fn fixture_object_id_in(p: &Path) -> Option<CatalogObjectId> {
 mod tests {
     use super::*;
     use crate::track::TrackStore;
-    use obc_app::TrackAction;
+    use obc_host_core::TrackRepository;
     use obc_ports::TrackPoint;
     use obc_route::RideStats;
 
@@ -196,7 +196,7 @@ mod tests {
     /// same public `TrackStore` path the app drives.
     fn record_ride(dir: &Path, session: u32, name: &str) {
         let mut ts = TrackStore::open(dir);
-        ts.reconcile(None, Some(session), Some(name), None);
+        ts.open(session, Some(name));
         if let Some(sink) = ts.sink() {
             for k in 0..6u32 {
                 sink.record(TrackPoint {
@@ -226,7 +226,10 @@ mod tests {
             avg_power: None,
             max_power: None,
         };
-        ts.reconcile(Some(TrackAction::Save), None, Some(name), Some(stats));
+        assert!(
+            matches!(ts.finalize(stats), obc_app::recorder::RideClose::Committed(_)),
+            "the fixture ride is committed"
+        );
     }
 
     /// The **folder-backed** ride store passes the shared `obc-host-core` conformance suite: unknown

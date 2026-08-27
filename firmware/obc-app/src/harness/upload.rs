@@ -59,6 +59,7 @@ fn routes() -> [RouteSummary; 3] {
 /// 30 s popup deadline — the same span as the default idle return) isolate the popup auto-close.
 fn idle_app() -> App {
     let mut app = App::new_idle(AppState::new(0, 0, 0.05));
+    app.test_mount_store(); // a device with a card — a ride cannot start without one
     app.set_settings(Settings { idle_return: IdleReturn::Never, ..Settings::default() });
     app.set_routes_with_ids(&routes(), &ids());
     let _ = app.take_dirty();
@@ -74,7 +75,7 @@ fn start_riding(app: &mut App) {
     app.apply_gesture(Gesture::Press); // → Route overview
     app.apply_gesture(Gesture::Press); // → START RIDE → Map
     assert!(matches!(app.top_screen(), Screen::Map(_)), "the ride opens on the Map");
-    assert!(app.activity.is_tracking(), "START RIDE begins a tracking session");
+    assert!(app.recording(), "START RIDE begins a tracking session");
     assert_eq!(app.active_route_index(), Some(0));
     let _ = app.take_dirty();
 }
@@ -94,13 +95,13 @@ fn idle_upload_opens_the_prompt_and_view_route_opens_the_overview() {
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::RouteOverview(_)), "View route lands on the Route overview");
     assert_eq!(app.active_route_index(), Some(1), "the overview previews the *uploaded* route, resolved by id");
-    assert!(!app.activity.is_tracking(), "View route does not start a ride — the overview's START does");
+    assert!(!app.recording(), "View route does not start a ride — the overview's START does");
 
     // The overview's START then rides it, exactly the Routes-list flow.
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::Map(_)), "START RIDE on the overview lands on the riding Map");
     assert_eq!(app.mode(), Mode::Riding);
-    assert!(app.activity.is_tracking(), "starting from the overview begins a session");
+    assert!(app.recording(), "starting from the overview begins a session");
 }
 
 #[test]
@@ -127,7 +128,7 @@ fn idle_prompt_dismisses_on_back_and_on_the_dismiss_row() {
 fn tracking_upload_opens_the_swap_prompt_and_swap_keeps_the_session() {
     let mut app = idle_app();
     start_riding(&mut app);
-    let session = app.activity.session();
+    let session = app.ride_session();
 
     route_upload(&mut app, 12, false); // id 12 = index 2 ("Gamma") arrives mid-ride
     assert!(matches!(app.top_screen(), Screen::RouteSwap(_)), "tracking upload → the swap prompt");
@@ -136,7 +137,7 @@ fn tracking_upload_opens_the_swap_prompt_and_swap_keeps_the_session() {
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::Map(_)));
     assert_eq!(app.active_route_index(), Some(2), "navigation swapped onto the uploaded route");
-    assert_eq!(app.activity.session(), session, "the recording session survives a swap");
+    assert_eq!(app.ride_session(), session, "the recording session survives a swap");
 }
 
 #[test]
@@ -155,7 +156,7 @@ fn tracking_swap_prompt_cancel_keeps_the_current_route() {
 fn active_replace_shows_the_info_card_and_drops_stale_match_state() {
     let mut app = idle_app();
     start_riding(&mut app); // riding index 0 = id 10
-    let session = app.activity.session();
+    let session = app.ride_session();
     // Simulate an established match on the *old* geometry.
     app.activity.progress_m = 4_321;
     app.activity.off_route = true;
@@ -169,7 +170,7 @@ fn active_replace_shows_the_info_card_and_drops_stale_match_state() {
     assert!(!app.activity.off_route, "the stale off-route verdict is dropped");
     assert_eq!(app.activity.dist_to_route_m, 0);
     assert_eq!(app.active_route_index(), Some(0), "still navigating the same route (same id)");
-    assert_eq!(app.activity.session(), session, "the recording session is untouched");
+    assert_eq!(app.ride_session(), session, "the recording session is untouched");
     assert!(app.take_dirty().map, "the route line changed under the rider — repaint");
 
     // Info-only: press dismisses, nothing else moves.
@@ -535,7 +536,7 @@ fn the_trip_card_view_trip_opens_the_folder() {
     // durable id. The advisory popup gives way to it (Replace, like the route card's View route).
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::RouteMenu(_)), "View trip lands in the trip's folder");
-    assert!(!app.activity.is_tracking(), "viewing navigates nothing");
+    assert!(!app.recording(), "viewing navigates nothing");
 }
 
 #[test]

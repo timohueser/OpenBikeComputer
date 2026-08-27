@@ -150,7 +150,7 @@ pub struct AppState {
     /// guarded hold, drained by the host via the pass — which clears the RRAM bond
     /// slot and drops the bonded connection on the board, or clears the injected `paired` flag in
     /// the sim. A pending app→host command, carried here because `AppState` is the one mutable
-    /// app-wide state a screen's `handle` reaches (the `TrackAction` pattern, one plane over).
+    /// app-wide state a screen's `handle` reaches — the last request that still works this way.
     pub ble_forget_pending: bool,
     /// Whether the loaded map carries a non-empty §8 nav graph (#882) — fed once at map open by
     /// [`App::set_map_nav_graph`]; the Detour station/chooser gate on it (a graph-less map dims
@@ -515,9 +515,9 @@ pub struct App {
     nav_profiles: crate::NavProfiles,
     /// The ride-domain component: the live route-matcher, the once-per-load route caches
     /// (elevation profile, climbs, waypoints) with their build keys, the resident climb detail
-    /// buffer, the per-session breadcrumb, and the tick-edge state (fix freshness, sensor-tile
+    /// buffer, and the tick-edge state (fix freshness, sensor-tile
     /// edges, battery-poll cadence, ambient temperature). `App::tick` orchestrates it each frame.
-    ride: RideEngine,
+    pub(crate) ride: RideEngine,
     /// The UI-plane component: the screen stack, the fused input plane, the map-plane clock,
     /// repaint accumulation (full-frame + region) and wake scheduling, hold cancellation, the
     /// idle-return policy, and the [`CardScheduler`](crate::card_scheduler::CardScheduler) that
@@ -544,6 +544,11 @@ pub struct App {
     /// catalog expiry intents, which the compatibility seam below still translates into the legacy
     /// [`HostCommand`] protocol.
     pub(crate) retention: crate::retention::RetentionMachine,
+    /// The **Recorder** domain (#1398 R1/R2): the ride session identity, whether a ride is open,
+    /// the rider's undelivered close, the checkpoint deadline, the boot-recovery decision, and the
+    /// two per-session buffers a new ride restarts. The only thing in the app that decides a ride
+    /// is open or closed.
+    pub recorder: crate::recorder::RecorderMachine,
     /// The weather domain (#1437): the installed data's identity and revision, visible freshness,
     /// the refresh request and its in-flight operation, the last terminal result, and the alert
     /// decision. The bundle itself stays in the platform's store — this owns what the rider is
@@ -587,9 +592,6 @@ pub struct App {
     map_name: heapless::String<24>,
     /// The loaded map's OBCM format version, the right half of the `Map` row. `0` until a map loads.
     map_obcm_version: u8,
-    /// Whether a recovered-ride offer has already reached the screen this boot. A recorder may
-    /// report the same resumable object on every host pass; the rider sees one decision card.
-    recovered_ride_offered: bool,
     /// Whether this platform's panel has a **controllable light** —
     /// [`Backlight::available`](obc_ports::Backlight)'s answer, declared once by the host at
     /// composition through [`set_backlight_available`](App::set_backlight_available). A constant
@@ -659,6 +661,7 @@ impl App {
             // A persisted set-point is display-only until GPS or BLE establishes trust this boot.
             clock_trust: ClockTrust::Untrusted,
             retention: crate::retention::RetentionMachine::new(),
+            recorder: crate::recorder::RecorderMachine::new() => crate::recorder::RecorderMachine::init_in_place,
             weather: crate::weather::WeatherDomain::new(),
             navigator: NavigatorMachine::new(),
             mode: CoreMode::new(),
@@ -670,7 +673,6 @@ impl App {
             fw_version: heapless::String::new(),
             map_name: heapless::String::new(),
             map_obcm_version: 0,
-            recovered_ride_offered: false,
             backlight_available: false,
         }
     );
@@ -707,6 +709,7 @@ impl App {
             wall_clock,
             clock_trust,
             retention,
+            recorder,
             weather,
             navigator,
             mode,
@@ -718,7 +721,6 @@ impl App {
             fw_version,
             map_name,
             map_obcm_version,
-            recovered_ride_offered,
             backlight_available,
         } = self;
         assert_eq!(*camera, state, "the camera state is preserved verbatim");
@@ -746,13 +748,13 @@ impl App {
         assert!(settings_ops.is_empty(), "settings Clean at revision 0");
         assert!(alert_marks_ops.is_empty(), "the marks record Clean at revision 0");
         navigator.assert_boot_state();
+        recorder.assert_boot_state();
         assert_eq!(*mode, CoreMode::new(), "nothing searching, nothing streaming, no banner shown");
         dfu.assert_boot_state();
         storage.assert_boot_state();
         assert_eq!(*pass, crate::device_core::pass::PassState::new(), "no connection wired, no pass in flight");
         assert!(fw_version.is_empty() && map_name.is_empty(), "the host has identified nothing yet");
         assert_eq!(*map_obcm_version, 0, "no map format known yet");
-        assert!(!*recovered_ride_offered, "no recovered ride offered this boot");
         assert!(!*backlight_available, "no host has claimed a panel light yet");
     }
 
@@ -800,7 +802,7 @@ impl App {
         // breadcrumb), the route-length mirror, and the climbs/waypoints cache builds — is the
         // ride engine's; a change there (route line appeared/vanished, breadcrumb cleared)
         // repaints the map even on a frame with no fresh fix.
-        if self.ride.sync_route_state(&mut self.activity, &mut self.navigator, route) {
+        if self.ride.sync_route_state(&mut self.activity, route) {
             self.ui.map_dirty = true;
         }
         // A detour commit queues a seam re-anchor because the commit handler owns no host
@@ -912,14 +914,14 @@ impl App {
             // holds the previous direction like it holds the matcher: the progress on glass hasn't
             // moved, so neither has the heading derived from it.
             if let Some(speed) = fix.speed_mps {
-                self.ride.speed_win.push_mps(speed);
+                self.recorder.speed_win.push_mps(speed);
             }
             if !frozen {
                 self.ride.update_travel(&self.activity, route);
             }
             let motion = self.activity.record_motion(fix, now_ms);
             if motion.log {
-                self.ride.breadcrumb.push(fix.lon, fix.lat);
+                self.recorder.breadcrumb.push(fix.lon, fix.lat);
                 if let Some(track) = track {
                     let logged = track.record(TrackPoint {
                         lon: fix.lon,
@@ -1018,7 +1020,7 @@ impl App {
         // domain stamps nothing, deletes nothing and sweeps nothing.
         let now_utc = self.clock_trusted().then(|| self.wall_unix_now());
         let now_ms = self.ui.now_ms;
-        let recording = self.activity.is_tracking();
+        let recording = self.recorder.recording();
         let App { retention, catalogs, activity, settings, .. } = self;
         let view = crate::retention::RetentionView {
             now_utc,
@@ -1488,7 +1490,7 @@ impl App {
             || self.ui.hold_charging()
             || dfu_screen_up
             || self.dfu.request_pending()
-            || self.activity.is_tracking()
+            || self.recorder.recording()
         {
             return false;
         }
@@ -1615,7 +1617,7 @@ impl App {
             return None;
         }
         let speed_cms = self
-            .ride
+            .recorder
             .speed_win
             .median_cms()
             .unwrap_or(crate::weather::TOURING_FALLBACK_CMS)
@@ -1991,7 +1993,7 @@ impl App {
     /// pass, and again right after any host fact is posted so an arriving card lands in the same
     /// frame unless a policy rule defers it.
     fn sweep_cards(&mut self) {
-        self.ui.run_card_sweep(&self.catalogs, self.activity.is_tracking());
+        self.ui.run_card_sweep(&self.catalogs, self.recorder.recording());
     }
 
     /// The update domain's terminal answer — a scan result, the install beginning, or its failure:
@@ -2157,18 +2159,16 @@ impl App {
     /// Returns `true` exactly when the card was raised. An already-tracking app refuses the offer;
     /// recovery is a boot decision, never something that can replace a live session.
     pub fn offer_recovered_ride(&mut self, continuation: crate::RideContinuation) -> bool {
-        if self.recovered_ride_offered || self.activity.is_tracking() {
+        if !self.recorder.offer_recovery() {
             return false;
         }
         self.activity.restore_ride_continuation(continuation);
-        self.activity.end_session();
         self.activity.mode = Mode::Idle;
         self.activity.active_route = None;
         screen::apply(
             &mut self.ui.stack,
             screen::Transition::Root(Screen::RideRecovery(crate::screen::RideRecoveryScreen::new())),
         );
-        self.recovered_ride_offered = true;
         self.ui.map_dirty = true;
         self.ui.input.cancel_holds();
         self.ui.hold_cancel_pending = true;
@@ -2179,18 +2179,16 @@ impl App {
     /// validation. The fail-closed card has no Continue action; the rider may only hold-to-Discard,
     /// and Back cannot silently strand the object behind Home.
     pub fn offer_damaged_ride(&mut self) -> bool {
-        if self.recovered_ride_offered || self.activity.is_tracking() {
+        if !self.recorder.offer_recovery() {
             return false;
         }
         self.activity.restore_ride_continuation(crate::RideContinuation::default());
-        self.activity.end_session();
         self.activity.mode = Mode::Idle;
         self.activity.active_route = None;
         screen::apply(
             &mut self.ui.stack,
             screen::Transition::Root(Screen::RideRecovery(crate::screen::RideRecoveryScreen::damaged())),
         );
-        self.recovered_ride_offered = true;
         self.ui.map_dirty = true;
         self.ui.input.cancel_holds();
         self.ui.hold_cancel_pending = true;
@@ -2555,7 +2553,7 @@ impl App {
         };
         let speed_deci_ms = speed_mps.map(|s| (s.max(0.0) * 10.0).min(u16::MAX as f32) as u16);
         crate::ble::WeatherSnapshot {
-            ride_active: self.activity.is_tracking(),
+            ride_active: self.recorder.recording(),
             position,
             bearing_deg,
             speed_deci_ms,
@@ -2570,9 +2568,9 @@ impl App {
         }
     }
 
-    /// The ride totals + wall-clock anchor for the Finish-time ride-object save, read in the same
-    /// frame the host drains [`TrackAction::Save`](crate::TrackAction) so the anchor pairs with the
-    /// log's last points.
+    /// The ride totals + wall-clock anchor for the ride object's footer, read by the executor as it
+    /// performs [`RecorderEffect::Finalize`](crate::recorder::RecorderEffect) so the anchor pairs
+    /// with the log's last points.
     pub fn ride_stats(&self) -> obc_route::RideStats {
         obc_route::RideStats {
             distance_m: self.activity.ridden_m as u32, // float→int casts saturate
@@ -2590,6 +2588,29 @@ impl App {
             avg_power: self.activity.avg_power(),
             max_power: self.activity.max_power(),
         }
+    }
+
+    /// Whether this device can record a ride at all — [`Capabilities::recorder`], the level stage 12
+    /// calculated last pass.
+    ///
+    /// A **host** reads it for the same reason a screen does: to not ask for something the device
+    /// cannot do. A host that asks anyway is told, through the recording warning, and the request is
+    /// kept — but a page or a tour that opens a ride *for* the rider should wait for the device to
+    /// report its card rather than put a card on glass at boot.
+    pub fn can_record(&self) -> bool {
+        self.pass.capabilities.recorder.record
+    }
+
+    /// Whether a ride is open — recording, paused, or closing. The one read of Recorder's session
+    /// state a host or a suite needs; nothing else keeps a copy of it.
+    pub fn recording(&self) -> bool {
+        self.recorder.recording()
+    }
+
+    /// The open ride's session id, or `None` — the level an executor keys its ride log on. A change
+    /// means "open a new log".
+    pub fn ride_session(&self) -> Option<u32> {
+        self.recorder.session()
     }
 
     /// Test hook: arm a pending settings save without driving a real edit (bumps the revision and
@@ -2610,6 +2631,7 @@ impl App {
                 &self.settings,
                 &self.state,
                 &self.activity,
+                self.recorder.recording(),
                 self.catalogs.routes(),
                 self.catalogs.rides(),
             )
@@ -2735,13 +2757,26 @@ impl App {
         let detour_planned_before = self.navigator.detour_planned();
         let backlight_available = self.backlight_available;
         let App {
-            state, activity, settings, catalogs, nav_profiles, ride, ui, navigator, dfu, storage, weather, ..
+            state,
+            activity,
+            settings,
+            catalogs,
+            nav_profiles,
+            ride,
+            recorder,
+            ui,
+            navigator,
+            dfu,
+            storage,
+            weather,
+            ..
         } = self;
         let mut cx = Ctx {
             state,
             activity,
             settings,
             navigator,
+            recorder,
             dfu,
             storage,
             weather,
@@ -2767,6 +2802,9 @@ impl App {
             screen::Transition::Pop | screen::Transition::Home => depth_before > 1,
             screen::Transition::Push(_) | screen::Transition::Replace(_) | screen::Transition::Root(_) => true,
         };
+        // The rider's Start becomes a session here rather than at stage 7, so the rest of this
+        // gesture batch sees the ride the first of them opened. Same entry point either way.
+        self.advance_recorder_session();
         self.sync_detour_preview(detour_planned_before);
         screen::apply(&mut self.ui.stack, t);
         // Opening a POI list drops any previous snapshot so its first draw re-queries at the current
@@ -2829,7 +2867,7 @@ impl App {
         let now = self.wall_clock.now(clock.0);
         let ms_to_next_minute = self.wall_clock.ms_to_next_minute(clock.0);
         let pan_active = self.state.pan.is_some();
-        let tracking = self.activity.is_tracking();
+        let tracking = self.recorder.recording();
         // The timer poll itself — and every stack/dirty/wake mutation it makes — is the UI
         // runtime's; this method sequences the per-pass sweeps around it with the cross-component
         // facts they need.
@@ -3141,6 +3179,7 @@ impl App {
             settings,
             catalogs,
             ride,
+            recorder,
             ui,
             nav_profiles,
             fw_version,
@@ -3181,7 +3220,8 @@ impl App {
             ride_profile: catalogs.ride_profile_for(ride_key),
             climb,
             waypoints: &ride.waypoints,
-            breadcrumb: &ride.breadcrumb,
+            breadcrumb: &recorder.breadcrumb,
+            recording: recorder.recording(),
             nav_preview,
             ride_preview,
             detour_preview,
@@ -3351,11 +3391,11 @@ impl App {
 // ==================== The typed app↔host protocol (FAR-07, #800) ====================
 //
 // One vocabulary, one pending state. Every host-directed one-shot/counter is drained here as a
-// typed [`HostCommand`] through the residual drain — two classes, one door, with the pending state
+// typed [`HostCommand`] through the residual drain — one class, one door, with the pending state
 // living once inside `App` (a typed slot, a counter, or a derived predicate).
 
 impl App {
-    /// Drain **only** the residual classes — the two a typed executor still performs
+    /// Drain **only** the residual classes — the one a typed executor still performs
     /// ([`device_core::residual`](crate::device_core::residual)).
     ///
     /// **This is not a whole-order walk with a filter afterwards, and the difference is the whole
@@ -3369,8 +3409,8 @@ impl App {
     ///
     /// That is not hypothetical: it is what a board seam running between the drain and
     /// [`run_pass`](App::run_pass) does on every frame — the debug link's route plan, the phone's
-    /// remote update check, a BLE clock stamp arming a settings write. Asking for the two classes
-    /// by name is what makes those seams safe, and it leaves
+    /// remote update check, a BLE clock stamp arming a settings write. Asking for the class by
+    /// name is what makes those seams safe, and it leaves
     /// [`assert_residual`](crate::device_core::residual::assert_residual) as the belt-and-braces
     /// check it was meant to be rather than the thing that notices.
     pub fn drain_residual_commands<const N: usize>(&mut self, out: &mut HostMailbox<N>) -> DrainStatus {
@@ -3390,18 +3430,22 @@ impl App {
         DrainStatus::Complete
     }
 
-    /// Whether a **residual** legacy command is pending — one of the two classes a typed executor
-    /// still drains ([`device_core::residual`](crate::device_core::residual)). Consumes nothing.
+    /// Whether the **residual** [`ForgetBond`](crate::HostCommand::ForgetBond) is pending — the one
+    /// class a typed executor still drains
+    /// ([`device_core::residual`](crate::device_core::residual)). Consumes nothing.
     ///
-    /// A typed executor's wake is otherwise blind to the legacy mailbox: it folds in its own
-    /// undelivered outcomes and effects, but the rider's ride **save** is a `FinishTrack` sitting
-    /// here, and nothing else can see it. On a device that sleeps until the next event, that turns
-    /// "the close costs one immediate frame" into "the close costs one wake", which on a static
-    /// post-Finish screen is the watchdog feed cap.
+    /// A typed executor's wake is blind to the legacy mailbox, and this class is not an effect, so
+    /// `EffectSlots::has_pending` cannot see it either. The removal is posted by one pass and
+    /// performed by the **next** pass's drain, so without folding this in that "next pass" is the
+    /// next *wake* — and the guarded hold that posts it leaves a static screen, so the next wake is
+    /// whenever the rider presses something else.
+    ///
+    /// The ride save used to be the other half of this. It is a `RecorderEffect` in the pass's own
+    /// plan since #1398, so it is covered by the effects and needs no term here.
     ///
     /// Deliberately **not** [`has_pending_host_command`](App::has_pending_host_command): that one
-    /// includes the two derived cues, which are levels re-derived on every drain, so folding it into
-    /// a wake would spin the loop forever. Both classes here are one-shots the drain clears,
+    /// includes the two derived cues, which are levels re-derived on every drain, so folding it
+    /// into a wake would spin the loop forever. The residual class is a one-shot the drain clears,
     /// which is what makes this safe to ask for an immediate pass on.
     pub fn has_pending_residual_command(&self) -> bool {
         crate::device_core::residual::RESIDUAL_CLASSES.iter().any(|&c| self.peek_host_command(c))
@@ -3421,7 +3465,6 @@ impl App {
     /// Non-consuming per-class pendency for the drain's backpressure check.
     fn peek_host_command(&self, class: HostCommandClass) -> bool {
         match class {
-            HostCommandClass::FinishTrack => self.activity.has_track_action(),
             HostCommandClass::ForgetBond => self.state.ble_forget_pending,
         }
     }
@@ -3430,7 +3473,6 @@ impl App {
     /// exactly once, and a vanished subject consumes the slot and yields nothing.
     fn drain_host_command(&mut self, class: HostCommandClass) -> Option<HostCommand> {
         match class {
-            HostCommandClass::FinishTrack => self.activity.take_track_action().map(HostCommand::FinishTrack),
             HostCommandClass::ForgetBond => {
                 core::mem::take(&mut self.state.ble_forget_pending).then_some(HostCommand::ForgetBond)
             }
@@ -3959,14 +4001,14 @@ mod tests {
     #[test]
     fn tracking_arms_without_a_fix_and_records_on_first_fix() {
         let mut app = App::new(AppState::new(0, 0, 1.0));
-        app.activity.start_session(); // a route load arms a tracking session
+        app.test_start_ride(); // a route load arms a tracking session
 
         // A tick with no fix: armed, but nothing recorded and no moving time accrued.
         let mut sink = CountSink::default();
         let mut loc = OneFix(None);
         app.ui.now_ms = 1_000;
         app.tick(RideClock(1_000), Sensors { track: Some(&mut sink), ..Sensors::new(&mut loc) }, None);
-        assert!(app.activity.is_tracking(), "the session is armed immediately, fix or not");
+        assert!(app.recording(), "the session is armed immediately, fix or not");
         assert!(!app.has_live_fix(1_000), "no fix yet → the banner is up");
         assert_eq!(sink.0, 0, "nothing recorded while searching");
         assert_eq!(app.activity.moving_s, 0.0, "moving time idles until the first fix");
@@ -3985,7 +4027,7 @@ mod tests {
     #[test]
     fn record_failure_raises_recording_error_warning() {
         let mut app = App::new(AppState::new(0, 0, 1.0));
-        app.activity.start_session();
+        app.test_start_ride();
 
         // No warning while nothing has failed.
         assert!(!app.ui.stack.iter().any(|s| matches!(s, Screen::Warning(_))), "a healthy ride shows no warning card",);
@@ -4704,7 +4746,7 @@ mod tests {
         use obc_reader::{PoiCategory, PoiCategorySet};
 
         let mut app = App::new(AppState::new(0, 0, 1.0)); // base = the riding Map
-        app.activity.start_session();
+        app.test_start_ride();
         app.activity.active_route = Some(0);
         app.activity.progress_m = 1_500;
 
@@ -4750,7 +4792,7 @@ mod tests {
         use obc_reader::{PoiCategory, PoiCategorySet};
 
         let mut app = App::new(AppState::new(0, 0, 1.0));
-        app.activity.start_session();
+        app.test_start_ride();
         app.activity.active_route = Some(0);
         app.activity.progress_m = 2_000;
         let mut fields = StatFieldList::decode(0, &[]);
@@ -4865,7 +4907,7 @@ mod tests {
         };
 
         let mut app = App::new(AppState::new(7_800_000, 48_000_000, 0.05));
-        app.activity.start_session();
+        app.test_start_ride();
         app.activity.active_route = Some(0);
         let mut fields = StatFieldList::decode(0, &[]);
         assert!(fields.push(StatField::NextWater));
@@ -4925,7 +4967,7 @@ mod tests {
         use obc_reader::{CorridorPoi, Poi, PoiCategory, PoiCategorySet};
 
         let mut app = App::new(AppState::new(0, 0, 1.0));
-        app.activity.start_session();
+        app.test_start_ride();
         app.set_routes_with_ids(&[summary("East")], &[10]);
         app.activate_route(0);
         let mut fields = StatFieldList::decode(0, &[]);
@@ -5077,11 +5119,11 @@ mod tests {
         let src = SliceSource(GRIMSEL);
         let route = RouteReader::new(&idx, &src);
         app.activity.active_route = Some(0);
-        app.activity.start_session();
+        app.test_start_ride();
         tick_without_fix(&mut app, Some(&route)); // establish route/session caches
 
         app.activity.progress_m = 1_000;
-        let session = app.activity.session();
+        let session = app.ride_session();
         let mode = app.activity.mode;
         app.activity.request_seam(0, 12_000); // lands on the fixture's second climb
         tick_without_fix(&mut app, Some(&route));
@@ -5089,7 +5131,7 @@ mod tests {
         assert!(!app.activity.off_route);
         assert_eq!(app.activity.active_climb, Some(1), "climb guidance re-derived at the new anchor");
         assert!(app.activity.pending_seam().is_none());
-        assert_eq!(app.activity.session(), session);
+        assert_eq!(app.ride_session(), session);
         assert_eq!(app.activity.mode, mode);
 
         // A fix in the skipped stretch cannot pull matching behind the durable floor.
@@ -5114,8 +5156,8 @@ mod tests {
         app.activity.request_seam(0, 8_000);
         tick_without_fix(&mut app, Some(&route));
         assert_eq!(app.activity.progress_m, 8_000);
-        app.activity.end_session();
-        app.activity.start_session();
+        app.test_end_ride();
+        app.test_start_ride();
         tick_without_fix(&mut app, Some(&route));
         assert_eq!(app.activity.progress_m, 0);
         assert!(!app.activity.off_route);
@@ -5128,7 +5170,7 @@ mod tests {
         let src = SliceSource(GRIMSEL);
         let route = RouteReader::new(&idx, &src);
         app.activity.active_route = Some(0);
-        app.activity.start_session();
+        app.test_start_ride();
         tick_without_fix(&mut app, Some(&route));
         app.activity.progress_m = 1_000;
         app.activity.request_seam(0, 4_000);
@@ -5152,7 +5194,7 @@ mod tests {
         app.activity.active_route = Some(1);
         app.activity.progress_m = 1_000;
         app.activity.route_total_m = 5_000;
-        app.activity.start_session();
+        app.test_start_ride();
         let chooser = crate::screen::DetourScreen::new(&app.activity);
         *app.ui.stack.last_mut().unwrap() = Screen::Detour(chooser);
         app
@@ -5332,7 +5374,7 @@ mod tests {
         app.activity.active_route = Some(0);
         app.activity.progress_m = 1_000;
         app.activity.route_total_m = 20_000;
-        app.activity.start_session();
+        app.test_start_ride();
 
         // Plan a detour and land its preview, exactly as the flow does.
         let chooser = DetourScreen::new(&app.activity);
@@ -5369,7 +5411,7 @@ mod tests {
         app.activity.active_route = Some(0);
         app.activity.progress_m = 1_000;
         app.activity.route_total_m = 20_000;
-        app.activity.start_session();
+        app.test_start_ride();
         let chooser = DetourScreen::new(&app.activity);
         *app.ui.stack.last_mut().unwrap() = Screen::Detour(chooser);
         app.apply_gesture(Gesture::Step(2)); // selected distance = the 600 m minimum + 200 m
@@ -5419,10 +5461,12 @@ mod tests {
         use crate::settings::ClimbMode;
         let (mut app, idx) = climb_app(ClimbMode::Auto);
         app.state.has_nav_graph = true;
+        // The ride opens first: a session start zeroes the ride, and this trace is about what the
+        // *crest* does to a hidden caller.
+        app.test_start_ride();
         enter_first_climb(&mut app, &idx); // top = Climb
         app.activity.active_route = Some(0);
         app.activity.route_total_m = 50_000;
-        app.activity.start_session();
 
         app.apply_gesture(Gesture::BackHold); // [Home, Climb, RideMenu]
         app.apply_gesture(Gesture::Step(1));
@@ -5565,7 +5609,7 @@ mod tests {
     #[test]
     fn idle_returns_to_map_when_tracking_from_a_menu() {
         let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map], Riding
-        app.activity.start_session(); // arm a tracking session
+        app.test_start_ride(); // arm a tracking session
         app.settings.idle_return = IdleReturn::S30;
         let _ = app.ui.stack.push(Screen::Menu(MenuScreen::new()));
         app.ui.last_input_ms = 0;
@@ -5584,7 +5628,7 @@ mod tests {
             Screen::RideControl(crate::screen::RideControl::new()),
         ] {
             let mut app = App::new(AppState::new(0, 0, 1.0));
-            app.activity.start_session();
+            app.test_start_ride();
             app.settings.idle_return = IdleReturn::S15;
             *app.ui.stack.last_mut().unwrap() = view; // replace the base Map with the view under test
             let kind_before = core::mem::discriminant(app.top_screen());
@@ -5791,7 +5835,7 @@ mod tests {
 
         // Recording defers (the arm ends in a reboot — a live ride would be lost).
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        app.activity.start_session();
+        app.test_start_ride();
         assert!(!app.open_remote_dfu_check(), "deferred while recording");
         assert_eq!(drain_dfu(&mut app), None);
     }
@@ -5871,7 +5915,7 @@ mod tests {
     /// — a walk that *pulled* from each domain would mint a planner operation nobody answers.
     #[test]
     fn the_residual_drains_in_class_order_and_reaches_nothing_else() {
-        use crate::activity::{NavRequest, TrackAction};
+        use crate::activity::NavRequest;
         use crate::host::{DrainStatus, HostCommand, HostMailbox};
 
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
@@ -5879,8 +5923,7 @@ mod tests {
         app.set_routes_with_ids(&[summary("Alpha"), summary("Beta")], &[10, 11]);
         app.set_rides(&[ride_summary("R")], &[7]);
 
-        // The two residual classes…
-        app.activity.request_track(TrackAction::Save);
+        // The one residual class…
         app.state.ble_forget_pending = true;
         // …and a request from every domain that owns its own lifecycle now.
         app.activity.request_trip_delete(42);
@@ -5898,10 +5941,7 @@ mod tests {
         while let Some(cmd) = mailbox.pop() {
             let _ = drained.push(cmd);
         }
-        assert!(
-            matches!(drained.as_slice(), [HostCommand::FinishTrack(TrackAction::Save), HostCommand::ForgetBond]),
-            "two classes, in the order the drain asks for them: {drained:?}"
-        );
+        assert!(matches!(drained.as_slice(), [HostCommand::ForgetBond]), "one class, and nothing else: {drained:?}");
 
         // The domains it walked past still hold their work, untouched.
         assert!(drain_nav(&mut app).is_some(), "the planner request is still Navigator's to hand out");
@@ -5911,35 +5951,32 @@ mod tests {
         assert!(app.activity.take_route_delete().is_some(), "and the rider's route delete is the catalog's to take");
         assert_eq!(app.activity.take_trip_delete(), Some(42), "and the trip cascade is the catalog's too");
 
-        // And the two are one-shots the drain clears.
-        assert!(!app.has_pending_residual_command());
+        // And it is a one-shot the drain clears.
         assert_eq!(app.drain_residual_commands(&mut mailbox), DrainStatus::Complete);
         assert!(mailbox.is_empty(), "nothing pending, nothing drained");
     }
 
     /// The saturation policy is backpressure, never loss: a drain into a mailbox without room
-    /// consumes nothing for the classes it can't hand over — they stay latched, are reported by
-    /// `MailboxFull`, and come out once the host makes room.
+    /// consumes nothing for the class it can't hand over — it stays latched, is reported by
+    /// `MailboxFull`, and comes out once the host makes room.
     #[test]
     fn full_mailbox_backpressures_without_losing_commands() {
-        use crate::activity::TrackAction;
         use crate::host::{DrainStatus, HostCommand, HostMailbox};
 
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
-        // One slot, two residual commands owed: the second cannot be handed over.
+        // The one slot is already taken, so the residual command cannot be handed over.
         let mut mailbox: HostMailbox<1> = HostMailbox::new();
-        app.activity.request_track(TrackAction::Save);
+        assert!(mailbox.push(HostCommand::ForgetBond));
         app.state.ble_forget_pending = true;
 
         assert_eq!(app.drain_residual_commands(&mut mailbox), DrainStatus::MailboxFull);
-        assert_eq!(mailbox.pop(), Some(HostCommand::FinishTrack(TrackAction::Save)));
         assert!(app.state.ble_forget_pending, "the command stays latched — never silently dropped");
-        assert!(app.has_pending_residual_command());
 
         // The host makes room → the latched command drains intact.
+        assert_eq!(mailbox.pop(), Some(HostCommand::ForgetBond));
         assert_eq!(app.drain_residual_commands(&mut mailbox), DrainStatus::Complete);
         assert_eq!(mailbox.pop(), Some(HostCommand::ForgetBond));
-        assert!(!app.has_pending_residual_command());
+        assert!(!app.state.ble_forget_pending);
     }
 
     /// The DFU slot is most-recent-wins **by design** (one phase in flight; a later rider post
@@ -6439,7 +6476,7 @@ mod tests {
             &[10],
             &[RouteRetentionMeta::new(Retention::Day1, now - 3 * DAY_SECS)],
         );
-        app.activity.start_session(); // recording in progress
+        app.test_start_ride(); // recording in progress
         let cmds = sweep_and_drain(&mut app);
         assert_eq!(n_deletes(&cmds), 0, "recording suppresses the sweep — nothing deleted");
     }
@@ -6451,8 +6488,8 @@ mod tests {
     #[test]
     fn ride_synced_at_stamped_eagerly_even_while_recording() {
         let (mut app, _now) = trusted_app();
-        app.activity.start_session(); // recording a multi-day tour
-                                      // The phone acks a ride synced (synced_at not yet set) mid-recording.
+        app.test_start_ride(); // recording a multi-day tour
+                               // The phone acks a ride synced (synced_at not yet set) mid-recording.
         app.set_rides(&[synced_ride("Acked", true, 0)], &[7]);
         let cmds = sweep_and_drain(&mut app);
         assert!(
@@ -6607,7 +6644,7 @@ mod tests {
         app.retention_tick(); // discovers DeleteRoute(10) + DeleteRide(7) while idle
         assert!(app.retention.has(SweepKind::DeleteRoute) && app.retention.has(SweepKind::DeleteRide));
         // Recording begins *after* discovery, on a later frame.
-        app.activity.start_session();
+        app.test_start_ride();
         let while_recording = drain_once(&mut app);
         assert_eq!(n_deletes(&while_recording), 0, "no auto-delete dispatches while recording");
         assert!(
@@ -6615,7 +6652,7 @@ mod tests {
             "the candidates are retained, not dropped"
         );
         // Recording ends → the same candidates dispatch (route + ride are separate classes → one pass).
-        app.activity.end_session();
+        app.test_end_ride();
         let after = drain_once(&mut app);
         assert!(after.contains(&SweepOp::Remove(10)), "the route delete dispatches after recording");
         assert!(after.contains(&SweepOp::Remove(7)), "the ride delete dispatches after recording");

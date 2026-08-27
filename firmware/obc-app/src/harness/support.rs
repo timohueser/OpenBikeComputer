@@ -19,7 +19,7 @@ use std::collections::VecDeque;
 use embedded_graphics::{pixelcolor::Rgb888, prelude::*, primitives::Rectangle};
 use obc_app::device_core::{
     DerivedInputs, DerivedTargets, ExternalFacts, NavigatorTag, OperationToken, OutcomeSlots, PassClock, PassInputs,
-    PassPlan, PlatformSupport,
+    PassPlan, PlatformSupport, Revision, StoreIdentity, StoreRevision,
 };
 use obc_app::navigator::{NavigatorEffect, NavigatorOutcome, PlannerWork};
 use obc_app::{App, Dirty};
@@ -391,6 +391,17 @@ pub fn pass_with_fact(app: &mut App, ms: u32, note: impl FnOnce(&mut ExternalFac
     let mut facts = ExternalFacts::NONE;
     note(&mut facts);
     pass(app, ms, &mut OutcomeSlots::new(), &mut facts, None)
+}
+
+/// Report the store a device with a card has, through one real pass.
+///
+/// `store_writable` is what admits a catalog mutation, a route plan and — since #1552 — a ride
+/// recording, and it rises only from a `StoreRevision` fact. A suite that starts a ride needs this
+/// first: a device with nowhere to put a ride does not start one.
+pub fn mount_store(app: &mut App) {
+    pass_with_fact(app, 0, |facts| {
+        facts.note_store_revision(StoreRevision { store: StoreIdentity::new(1), revision: Revision::new(1) })
+    });
 }
 
 /// A synthetic weather snapshot: one frame per entry of `intensities`, 15 minutes apart from `now`,

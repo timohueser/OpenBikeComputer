@@ -11,9 +11,10 @@ use core::fmt::Write;
 use obc_render::Surface;
 
 use super::vocab::fmt::{distance_figure, duration_hms};
-use crate::activity::{Mode, TrackAction};
+use crate::activity::Mode;
 use crate::input::Gesture;
 use crate::Msg;
+use crate::RecorderIntent;
 
 use super::vocab::chrome::title_frame;
 use super::vocab::list;
@@ -70,8 +71,8 @@ impl RideControl {
                 // Confirm guarded options. The recognizer emits `Hold` only when the hold completes,
                 // so reaching here *is* the confirmation; releasing early never produces it.
                 match self.selected {
-                    FINISH => self.end_ride(cx, TrackAction::Save),
-                    DISCARD => self.end_ride(cx, TrackAction::Discard),
+                    FINISH => self.end_ride(cx, RecorderIntent::Save),
+                    DISCARD => self.end_ride(cx, RecorderIntent::Discard),
                     _ => Transition::None,
                 }
             }
@@ -83,11 +84,14 @@ impl RideControl {
         }
     }
 
-    /// End the tracking session: record the log's disposition (Save → the saved ride / Discard → drop,
-    /// performed by the host), end the session, go Idle, clear the route, and return Home.
-    fn end_ride(&self, cx: &mut Ctx, action: TrackAction) -> Transition {
-        cx.activity.request_track(action);
-        cx.activity.end_session();
+    /// Close the ride: name the disposition to Recorder (Save → the durable ride object / Discard →
+    /// drop), go Idle, clear the route, and return Home.
+    ///
+    /// The session is **not** ended here. Recorder closes it when the store confirms the close, so a
+    /// finalize that fails leaves a ride that can still be finished rather than one the app has
+    /// already forgotten.
+    fn end_ride(&self, cx: &mut Ctx, intent: RecorderIntent) -> Transition {
+        cx.recorder.request(intent);
         cx.activity.mode = Mode::Idle;
         cx.activity.active_route = None;
         Transition::Home

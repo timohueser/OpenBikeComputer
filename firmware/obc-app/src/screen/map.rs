@@ -201,13 +201,13 @@ impl MapScreen {
             // `back`: while tracking, swap to the sibling Statistics view (its `back` swaps straight
             // back here — the Map↔Statistics ring only exists mid-ride). On the route-less *browse*
             // map (not tracking), there's no sibling to swap to, so `back` pops back to the Menu.
-            Gesture::Back if cx.activity.is_tracking() => {
+            Gesture::Back if cx.recorder.recording() => {
                 Transition::Replace(Screen::Statistics(StatisticsScreen::new()))
             }
             Gesture::Back => Transition::Pop,
             // `press`: while tracking, pause → Ride control (the shared riding binding). On the
             // browse map, open the small start card instead of the Paused page.
-            Gesture::Press if !cx.activity.is_tracking() => {
+            Gesture::Press if !cx.recorder.recording() => {
                 Transition::Push(Screen::RideStart(super::RideStartScreen::new()))
             }
             Gesture::Press | Gesture::BackHold => super::riding_common(g, cx),
@@ -284,8 +284,7 @@ impl MapScreen {
         // on the route-less browse map, shown on entry and auto-hidden after 4 s (the `hint` timer).
         // Never while tracking or panning, and dropped whenever a warning / waypoint chip wants the
         // slot (so it never collides). Its own timer drives the auto-hide; this only reads its state.
-        let hint_up =
-            !rx.activity.is_tracking() && !panning && !warning_up && wpt_chip.is_none() && self.hint.chip_up();
+        let hint_up = !rx.recording && !panning && !warning_up && wpt_chip.is_none() && self.hint.chip_up();
         if hint_up {
             draw_hint_chip(cv, rx.w, rx.h, rx.t(Msg::MapPressToStart));
         }
@@ -1111,10 +1110,10 @@ mod tests {
     use crate::screen::{Screen, Transition};
     use crate::Settings;
 
-    fn run(act: &mut Activity, g: Gesture) -> Transition {
+    fn run(act: &mut Activity, rec: &mut crate::RecorderMachine, g: Gesture) -> Transition {
         let mut st = crate::AppState::new(0, 0, 1.0);
         let mut settings = Settings::default();
-        let mut cx = test_ctx(&mut st, act, &mut settings);
+        let mut cx = Ctx { recorder: rec, ..test_ctx(&mut st, act, &mut settings) };
         MapScreen::new().handle(g, &mut cx)
     }
 
@@ -1122,15 +1121,17 @@ mod tests {
     /// sibling without a ride.
     #[test]
     fn browse_map_back_pops() {
+        let mut rec = crate::RecorderMachine::new();
         let mut act = Activity::new(Mode::Idle); // no session → browse map
-        assert!(matches!(run(&mut act, Gesture::Back), Transition::Pop));
+        assert!(matches!(run(&mut act, &mut rec, Gesture::Back), Transition::Pop));
     }
 
     /// The browse map's `press` opens the small start card instead of the Paused page.
     #[test]
     fn browse_map_press_opens_the_start_card() {
+        let mut rec = crate::RecorderMachine::new();
         let mut act = Activity::new(Mode::Idle);
-        assert!(matches!(run(&mut act, Gesture::Press), Transition::Push(Screen::RideStart(_))));
+        assert!(matches!(run(&mut act, &mut rec, Gesture::Press), Transition::Push(Screen::RideStart(_))));
         assert_eq!(act.mode, Mode::Idle, "opening the card doesn't touch the mode");
     }
 
@@ -1138,12 +1139,13 @@ mod tests {
     /// Ride control — the mid-ride bindings, unchanged.
     #[test]
     fn riding_map_keeps_the_sibling_and_pause_bindings() {
+        let mut rec = crate::RecorderMachine::new();
         let mut act = Activity::new(Mode::Riding);
-        act.start_session();
-        assert!(matches!(run(&mut act, Gesture::Back), Transition::Replace(Screen::Statistics(_))));
+        rec.test_open();
+        assert!(matches!(run(&mut act, &mut rec, Gesture::Back), Transition::Replace(Screen::Statistics(_))));
         let mut act = Activity::new(Mode::Riding);
-        act.start_session();
-        assert!(matches!(run(&mut act, Gesture::Press), Transition::Push(Screen::RideControl(_))));
+        rec.test_open();
+        assert!(matches!(run(&mut act, &mut rec, Gesture::Press), Transition::Push(Screen::RideControl(_))));
     }
 
     /// The chosen bar is always the largest 1/2/5×10ⁿ that fits the target width, so across the whole

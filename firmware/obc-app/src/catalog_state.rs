@@ -842,6 +842,16 @@ impl CatalogState {
     pub(crate) fn note_store_moved(&mut self) {
         self.refresh_owed = true;
     }
+
+    /// Note that Recorder committed a ride — the `RideFinalized` connection, taken at stage 6.
+    ///
+    /// The same owed bit, and that is the point: a saved ride, a completed removal and a store
+    /// commit all order **one** re-read between them, whichever of them a pass sees. The separate
+    /// entry point is so the producer is named at the call site rather than inferred from a level
+    /// that happens to have moved.
+    pub(crate) fn note_ride_finalized(&mut self) {
+        self.refresh_owed = true;
+    }
 }
 
 // Layout tripwires: an identity, a revision, a count — never a catalog.

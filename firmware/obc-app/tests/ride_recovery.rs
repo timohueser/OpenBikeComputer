@@ -3,7 +3,8 @@
 mod common;
 
 use common::NoFix;
-use obc_app::{App, AppState, Gesture, Mode, RideContinuation, Screen, TrackAction};
+use obc_app::recorder::RecorderEffect;
+use obc_app::{App, AppState, Gesture, Mode, RideContinuation, Screen};
 use obc_ports::{RideClock, Sensors};
 
 fn continuation() -> RideContinuation {
@@ -28,6 +29,7 @@ fn continuation() -> RideContinuation {
 fn continue_preserves_restored_totals_through_the_first_tick() {
     let expected = continuation();
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+    common::mount_store(&mut app);
     assert!(app.offer_recovered_ride(expected));
     assert!(matches!(app.top_screen(), Screen::RideRecovery(_)));
     assert!(!app.offer_recovered_ride(RideContinuation::default()), "the boot offer is one-shot");
@@ -35,7 +37,7 @@ fn continue_preserves_restored_totals_through_the_first_tick() {
     app.apply_gesture(Gesture::Press); // entry selection = Continue ride
     assert!(matches!(app.top_screen(), Screen::Map(_)));
     assert_eq!(app.mode(), Mode::Riding);
-    assert!(app.activity.is_tracking());
+    assert!(app.recording());
     assert_eq!(app.activity.ride_continuation(), expected, "the choice itself preserves every accumulator");
 
     app.tick(RideClock(0), Sensors::new(&mut NoFix), None);
@@ -47,26 +49,30 @@ fn continue_preserves_restored_totals_through_the_first_tick() {
 }
 
 #[test]
-fn discard_is_guarded_posts_the_existing_action_and_returns_home() {
+fn discard_is_guarded_becomes_a_discard_effect_and_returns_home() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+    common::mount_store(&mut app);
     assert!(app.offer_recovered_ride(continuation()));
     app.apply_gesture(Gesture::Step(1)); // Continue ride → Discard
 
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::RideRecovery(_)), "a tap cannot discard recovered bytes");
-    assert_eq!(app.activity.take_track_action(), None);
+    assert!(common::quiet_pass(&mut app, 1).effects.recorder.is_empty(), "and orders nothing");
 
     app.apply_gesture(Gesture::Hold);
     assert!(matches!(app.top_screen(), Screen::Home(_)));
     assert_eq!(app.mode(), Mode::Idle);
-    assert!(!app.activity.is_tracking());
-    assert_eq!(app.activity.take_track_action(), Some(TrackAction::Discard));
+    assert!(!app.recording());
+    // The recovered object belongs to no session, and it still has to leave the store.
+    let mut plan = common::quiet_pass(&mut app, 2);
+    assert!(matches!(plan.effects.recorder.take(), Some(RecorderEffect::Discard { .. })));
     assert!(!app.offer_recovered_ride(continuation()), "the decided offer never reopens this boot");
 }
 
 #[test]
 fn back_cannot_dismiss_the_recovery_decision() {
     let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+    common::mount_store(&mut app);
     assert!(app.offer_recovered_ride(continuation()));
     app.apply_gesture(Gesture::Back);
     assert!(matches!(app.top_screen(), Screen::RideRecovery(_)));

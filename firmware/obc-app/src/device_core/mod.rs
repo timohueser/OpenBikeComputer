@@ -48,8 +48,8 @@
 //!
 //! …and what is left of the old protocol (#1397 S6):
 //!
-//! - [`residual`] — the two commands a typed executor still drains, each with the issue that
-//!   retires it. Nothing else of the legacy vocabulary survives.
+//! - [`residual`] — the one command a typed executor still drains, with the issue that retires it.
+//!   Nothing else of the legacy vocabulary survives.
 
 pub(crate) mod connections;
 pub(crate) mod core_mode;

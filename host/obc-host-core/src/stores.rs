@@ -3,7 +3,8 @@
 //! shape identically; nothing above the store (`obc-app`, `obc-render`) knows the difference.
 
 use crate::{RideRepository, RouteRepository, TrackRepository};
-use obc_app::{CatalogObjectId, RideSummary, TrackAction};
+use obc_app::recorder::RideClose;
+use obc_app::{CatalogObjectId, RideSummary};
 use obc_formats::io::SliceSource;
 use obc_ports::TrackSink;
 use obc_route::{Profile, RideStats, RouteSummary};
@@ -193,12 +194,15 @@ impl RideRepository for MemRideStore {
 }
 
 /// An in-memory track store: no filesystem, so no on-disk ride object — the breadcrumb + ride stats
-/// come from the shared app state, not a sink. It only mirrors whether a ride is active so
-/// `is_recording()` stays honest, while `reconcile` still **drains** the app's one-shot
-/// [`TrackAction`] each frame (the host contract; an undrained action would linger).
+/// come from the shared app state, not a sink. It mirrors whether a ride is active so
+/// `is_recording()` stays honest, and numbers the rides it closes so a finalize can answer with an
+/// identity like every other store.
 #[derive(Default)]
 pub struct MemTrackStore {
     recording: bool,
+    /// The next ride identity. The store keeps no bytes, but a finalize still has to name what it
+    /// closed — an answer of "no identity" is how a *failure* is reported, and this one succeeded.
+    next_id: CatalogObjectId,
 }
 
 impl MemTrackStore {
@@ -212,20 +216,25 @@ impl MemTrackStore {
 }
 
 impl TrackRepository for MemTrackStore {
-    /// Mirror the folder-backed reconcile's recording flag without touching a filesystem: a
-    /// drained Save/Discard ends the ride, then a live session id (re)starts it. `name`/`stats`
-    /// are irrelevant with no on-disk log.
-    fn reconcile(
-        &mut self,
-        action: Option<TrackAction>,
-        session: Option<u32>,
-        _name: Option<&str>,
-        _stats: Option<RideStats>,
-    ) {
-        if matches!(action, Some(TrackAction::Save) | Some(TrackAction::Discard)) {
-            self.recording = false;
+    /// Mirror the folder-backed store's recording flag without touching a filesystem. `name` is
+    /// irrelevant with no on-disk log.
+    fn open(&mut self, _session: u32, _name: Option<&str>) {
+        self.recording = true;
+    }
+
+    fn finalize(&mut self, _stats: RideStats) -> RideClose {
+        if !self.recording {
+            return RideClose::Nothing;
         }
-        self.recording = session.is_some();
+        self.recording = false;
+        let id = self.next_id;
+        self.next_id = self.next_id.saturating_add(1);
+        RideClose::Committed(id)
+    }
+
+    fn discard(&mut self) -> bool {
+        self.recording = false;
+        true
     }
 
     /// No persistent sink in memory — the app still draws the live breadcrumb itself.
@@ -237,7 +246,6 @@ impl TrackRepository for MemTrackStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::TrackRepository;
 
     /// A junk seed is skipped (not a crash, not a phantom row), and the store stays usable.
     #[test]
@@ -274,18 +282,13 @@ mod tests {
         assert_eq!(s.active, None, "deleting the active route drops the binding");
     }
 
-    /// The reconcile contract: a session starts recording, Save/Discard plus a cleared session
-    /// stops it, and a Save with a *new* session in the same frame keeps recording (the device's
-    /// finish-then-restart shape).
+    /// The lifecycle the shared suite pins, on the memory store: opening records, and either close
+    /// stops. The memory store keeps no bytes, so its finalize still has to *name* what it closed —
+    /// "no identity" is how a failure is reported.
     #[test]
-    fn track_reconcile_mirrors_the_session() {
+    fn the_memory_store_mirrors_the_ride_and_names_what_it_closes() {
         let mut t = MemTrackStore::new();
+        crate::conformance::track_lifecycle(&mut t, false);
         assert!(!t.is_recording());
-        t.reconcile(None, Some(1), None, None);
-        assert!(t.is_recording());
-        t.reconcile(Some(TrackAction::Save), None, None, None);
-        assert!(!t.is_recording());
-        t.reconcile(Some(TrackAction::Discard), Some(2), None, None);
-        assert!(t.is_recording(), "a live session id wins over the drained action");
     }
 }

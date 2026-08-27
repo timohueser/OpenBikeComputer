@@ -197,6 +197,11 @@ pub struct Demo {
     /// the device for as long as the pre-roll took — about eight minutes of wall clock after every
     /// `enter`, which is the whole guided tour.
     ui_offset_ms: u32,
+    /// The baseline's ride, still to be asked for. A ride needs a mounted card, and a device
+    /// learns it has one on its **first pass** — so the page asks on the first frame that can grant
+    /// one, and then stops asking. Asking at construction would be refused, and the refusal is a
+    /// recording-error card the visitor would see on a page that is about to record perfectly well.
+    pending_ride: bool,
     /// Guided-demo mode: the page's tour engine owns playback + baseline resets, so the ambient
     /// summit auto-restart is suspended (a `start_session` mid-demo would reset progress under
     /// the script).
@@ -238,6 +243,7 @@ impl Demo {
             queue: Vec::new(),
             last_now_ms: None,
             ui_offset_ms: 0,
+            pending_ride: false,
             tour_active: false,
             ready: false,
         });
@@ -292,6 +298,7 @@ impl Demo {
             self.apply(cmd, &mut gestures);
         }
 
+        self.arm_baseline_ride();
         let plan = self.device_frame(self.ui_now(), dt, &gestures);
         // A single-loop host has no second recognizer to cancel, so it consumes the hold-cancel
         // latch the pass may have armed rather than leaving it set for a plane that does not exist
@@ -303,7 +310,7 @@ impl Demo {
         // dragging a trail across the map). Suspended while a guided demo owns playback.
         if !self.tour_active && !self.player.is_playing() {
             self.player.play();
-            self.app.activity.start_session();
+            self.app.recorder.request(obc_app::RecorderIntent::Start);
         }
 
         // `plan.next_wake_ms` and `plan.immediate` are deliberately **ignored**: the page is
@@ -471,11 +478,11 @@ impl Demo {
             idle_return: obc_app::settings::IdleReturn::Never,
             ..Settings::default()
         });
-        // Select the embedded demo route and open a session so its line + ride stats show
-        // (through the invariant-preserving `activate_route`, never a direct field poke).
-        if baseline != Baseline::Upload && !self.routes.catalog().is_empty() {
+        // Select the embedded demo route; the ride itself is asked for by `arm_baseline_ride` on
+        // the first frame that can grant one.
+        self.pending_ride = baseline != Baseline::Upload && !self.routes.catalog().is_empty();
+        if self.pending_ride {
             app.activate_route(0);
-            app.activity.start_session();
         }
         // Overwrite in the existing heap slot (no fresh allocation, no lingering old app). The
         // executor is rebuilt with it: its inbox holds outcomes and operation tokens minted by the
@@ -510,8 +517,23 @@ impl Demo {
                 // The pre-roll's own time joins the offset, so the clock the page resumes on
                 // carries it and keeps ticking from there.
                 self.ui_offset_ms = self.ui_offset_ms.wrapping_add((wall_dt * 1000.0) as u32);
+                self.arm_baseline_ride();
                 let _ = self.device_frame(self.ui_now(), wall_dt, &[]);
             }
+        }
+    }
+}
+
+impl Demo {
+    /// Ask Recorder for the baseline's ride, once, on the first frame the device can grant one.
+    ///
+    /// A **one-shot**, and that is the whole of it: the request is spent here, so the ride the
+    /// visitor finishes stays finished. A page that re-asked every frame would reopen it two
+    /// frames later.
+    fn arm_baseline_ride(&mut self) {
+        if self.pending_ride && self.app.can_record() {
+            self.pending_ride = false;
+            self.app.recorder.request(obc_app::RecorderIntent::Start);
         }
     }
 }
@@ -649,12 +671,12 @@ mod tests {
 
         assert_eq!(d.state(), "RouteReceived");
         assert!(d.tour_active, "the idle upload card must not be restarted as an ambient ride");
-        assert!(!d.app.activity.is_tracking(), "a phone upload lands before the ride starts");
+        assert!(!d.app.recording(), "a phone upload lands before the ride starts");
 
         let mut now = 16.0;
         drive(&mut d, &mut now, "press", "RouteOverview");
         drive(&mut d, &mut now, "press", "Map");
-        assert!(d.app.activity.is_tracking(), "Start ride begins the session before the next chapter");
+        assert!(d.app.recording(), "Start ride begins the session before the next chapter");
     }
 
     #[test]
@@ -671,7 +693,17 @@ mod tests {
         drive(&mut d, &mut now, "press", "RideControl");
         drive(&mut d, &mut now, "step:1", "RideControl");
         drive(&mut d, &mut now, "hold", "Home");
-        assert!(!d.app.activity.is_tracking());
+        assert!(d.app.recording(), "the ride is open until the store answers for the close");
+        now += 16.0;
+        d.tick(now);
+        assert!(!d.app.recording(), "and the finalize's verdict is what closes it");
+        // …and it stays ended. The baseline's Start is a one-shot; a page that re-asked for it
+        // every frame would reopen a ride the rider just finished, about two frames later.
+        for _ in 0..8 {
+            now += 16.0;
+            d.tick(now);
+            assert!(!d.app.recording(), "the finished ride must not reopen itself");
+        }
     }
 
     /// `Screen::NAMES` (the drift-guard export) contains every state this host can report — a

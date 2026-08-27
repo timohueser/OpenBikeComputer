@@ -1,7 +1,7 @@
 //! [`RideEngine`] — the ride-domain component behind the [`App`](crate::App) façade.
 //!
 //! Owns everything derived from the sensors and the active route while riding: the live
-//! route-matcher and its lock key, the per-session breadcrumb and its session key, the
+//! route-matcher and its lock key, the
 //! once-per-load route caches (elevation profile, detected climbs, named waypoints) with their
 //! build keys, the single resident climb detail buffer, and the tick-edge state the repaint
 //! economy hangs off (fix freshness, the no-fix banner edge, the sensor-tile edge, the battery
@@ -18,7 +18,6 @@
 use obc_route::{ClimbProfile, Climbs, Profile, RouteMatch, RouteReader, Waypoints};
 
 use crate::activity::Activity;
-use crate::breadcrumb::Breadcrumb;
 use crate::placement::define_placement_constructors;
 use crate::settings::Settings;
 
@@ -168,13 +167,6 @@ pub(crate) struct RideEngine {
     /// The `active_route` the **matcher** was last reset for, so changing the navigated route — a
     /// load *or* a "Swap route only" — re-locks it once.
     pub(crate) matched_route: Option<usize>,
-    /// The [`session`](Activity::session) the **ride accumulators + breadcrumb** were last reset
-    /// for, so a new tracking session (load from Idle / "Save & start new") restarts them once,
-    /// while a swap (same session) leaves them running.
-    pub(crate) ride_session: Option<u32>,
-    /// The travelled-path breadcrumb (RAM, bounded), fed each logged fix and drawn on the Map;
-    /// cleared when [`ride_session`](RideEngine::ride_session) changes.
-    pub(crate) breadcrumb: Breadcrumb,
     /// Millis of the last battery [`FuelGauge`](obc_ports::FuelGauge) poll, or `None` before the
     /// first. Read on a slow cadence ([`BATTERY_POLL_MS`]) — *not* every tick — so a real PMIC
     /// read never spins the I²C bus at the frame rate.
@@ -216,9 +208,6 @@ pub(crate) struct RideEngine {
     /// the recompute hysteresis key, so the two `position_at` chunk decodes run only when the
     /// rider has actually moved along the route (≥ [`HEADING_MOVE_M`]), not per fix.
     pub(crate) travel_at_m: Option<u32>,
-    /// The bounded recent moving-speed window feeding the weather ride projection (WX12) — see
-    /// [`SpeedWindow`](crate::weather::SpeedWindow). Cleared with the session.
-    pub(crate) speed_win: crate::weather::SpeedWindow,
 }
 
 /// Progress the rider must cover before the route heading is re-derived (two chunk decodes).
@@ -229,11 +218,11 @@ pub(crate) const HEADING_MOVE_M: u32 = 50;
 
 impl RideEngine {
     define_placement_constructors!(
-        /// The boot state: no route caches, no session, nothing sensed yet.
+        /// The boot state: no route caches, no matcher lock, nothing sensed yet.
         pub(crate) fn new();
         /// Initialize `slot` **in place** to the [`new`](RideEngine::new) state — the placement
-        /// path the firmware boots through (the waypoint table, climb caches, and breadcrumb are
-        /// KB-scale; nothing here may form a by-value `RideEngine` on the stack).
+        /// path the firmware boots through (the waypoint table and climb caches are KB-scale;
+        /// nothing here may form a by-value `RideEngine` on the stack).
         pub(crate) unsafe fn init_in_place;
         fields {
             profile: None,
@@ -250,24 +239,30 @@ impl RideEngine {
             climb_fill_count: 0,
             route_match: RouteMatch::new(),
             matched_route: None,
-            ride_session: None,
-            breadcrumb: Breadcrumb::new(),
             last_battery_poll_ms: None,
             temp_c: None,
             last_fix_ms: None,
             pending_terrain: None,
             travel_deg: None,
             travel_at_m: None,
-            speed_win: crate::weather::SpeedWindow::new(),
         }
     );
 
-    /// The once-per-load route/session sync, run at the top of every tick. Returns whether the map
-    /// must repaint (a route line appeared/vanished, the breadcrumb cleared, the matcher re-locked).
+    /// A new ride session is a new navigation pass: discard the previous ride's forward-only floor
+    /// before the first match. Called by the pass on Recorder's session edge, never keyed here.
+    pub(crate) fn relock_matcher(&mut self) {
+        self.route_match.reset();
+    }
+
+    /// The once-per-load route sync, run at the top of every tick. Returns whether the map must
+    /// repaint (a route line appeared/vanished, the matcher re-locked).
+    ///
+    /// A new **ride session** re-locks the matcher too, and that is Recorder's edge rather than a
+    /// key held here — see [`relock_matcher`](RideEngine::relock_matcher).
     ///
     /// - The **matcher** follows the *navigated route*: a load or a "Swap route only" re-locks it.
-    /// - The **accumulators + breadcrumb** follow the *tracking session*: a new session restarts
-    ///   them, while a swap (which keeps the session) leaves them running.
+    /// - The **accumulators, trail and pace window** follow the *ride session*, which is Recorder's:
+    ///   the pass applies them on its session edge. A swap keeps the session, so it keeps them.
     /// - `route_total_m` mirrors the active route's length for the riding views (0 when none
     ///   loaded). A change here means the *drawable* route appeared or vanished — a load, or a
     ///   transient SD glitch recovering where the geometry becomes streamable a frame or two later.
@@ -276,12 +271,7 @@ impl RideEngine {
     ///   list before the fix is matched. Only advance a build key when the geometry is actually
     ///   streamable: a `None` route (idle, or a transient SD glitch) leaves the old state in place
     ///   and retries next tick, rather than latching an empty result for the route.
-    pub(crate) fn sync_route_state(
-        &mut self,
-        activity: &mut Activity,
-        navigator: &mut crate::navigator::NavigatorMachine,
-        route: Option<&RouteReader>,
-    ) -> bool {
+    pub(crate) fn sync_route_state(&mut self, activity: &mut Activity, route: Option<&RouteReader>) -> bool {
         let mut dirty = false;
         if activity.active_route != self.matched_route {
             // Deliberately do NOT clear a pending seam re-anchor here: a detour commit queues it
@@ -294,20 +284,6 @@ impl RideEngine {
             self.travel_deg = None;
             self.travel_at_m = None;
             dirty = true; // route load / swap repaints the route line + recenters
-        }
-        if activity.session != self.ride_session {
-            // A new tracking session on the same route is a new navigation pass too: discard a
-            // previous session's floor before the first match.
-            self.route_match.reset();
-            if !activity.take_resume_session() {
-                activity.reset_ride();
-                navigator.reset_detour(); // a fresh session starts with no detour in flight
-            }
-            self.breadcrumb.clear();
-            // A new session is a new pace too (WX12's projection window restarts with the ride).
-            self.speed_win.clear();
-            self.ride_session = activity.session;
-            dirty = true; // the breadcrumb cleared — the map's travelled trail changed
         }
         let route_total_before = activity.route_total_m;
         activity.route_total_m = route.map_or(0, |r| r.total_distance_m);
@@ -653,15 +629,12 @@ impl RideEngine {
             climb_fill_count,
             route_match,
             matched_route,
-            ride_session,
-            breadcrumb,
             last_battery_poll_ms,
             temp_c,
             last_fix_ms,
             pending_terrain,
             travel_deg,
             travel_at_m,
-            speed_win,
         } = self;
         assert!(profile.is_none() && profile_route.is_none(), "no elevation profile cached");
         assert!(climbs.is_empty() && climbs_route.is_none(), "no climbs before a route loads");
@@ -669,11 +642,9 @@ impl RideEngine {
         assert!(climb_profile.cols().iter().all(|&c| c == 0), "the climb detail buffer is a flat zero line");
         assert_eq!(*climb_fill_count, 0, "the climb detail buffer has never been filled");
         assert!(!route_match.started() && matched_route.is_none(), "the matcher is unlocked");
-        assert!(ride_session.is_none() && breadcrumb.is_empty(), "no session, no breadcrumb");
         assert!(last_battery_poll_ms.is_none() && temp_c.is_none(), "nothing sensed off the ride path");
         assert!(last_fix_ms.is_none() && pending_terrain.is_none(), "no fix, so no terrain sample armed");
         assert!(travel_deg.is_none() && travel_at_m.is_none(), "no travel direction without a route");
-        assert!(speed_win.median_cms().is_none(), "no moving speeds recorded");
     }
 }
 

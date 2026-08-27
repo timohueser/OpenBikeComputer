@@ -18,12 +18,11 @@
 //!
 //! ## What is still on the legacy protocol here, and why
 //!
-//! Exactly two commands reach [`drain_residual`](HostLoop::execute)'s mailbox:
+//! Exactly one command reaches [`drain_residual`](HostLoop::execute)'s mailbox:
 //!
 //! | Command | Why | Retires in |
 //! |---|---|---|
-//! | `FinishTrack` | Recorder has no machine — the close is answered by a catalog re-feed, not a ride identity (#1398) | #1398 |
-//! | `ForgetBond` | The removal is confirmed by a link-status fact, not by a reply (#1400) | #1398/#1400 |
+//! | `ForgetBond` | The removal is confirmed by a link-status fact, not by a reply (#1400) | #1400 |
 //!
 //! `obc_app::device_core::residual` is that list as data, and its `assert_residual` is the
 //! production assertion that nothing else comes back — one list, checked by this executor and by the
@@ -46,11 +45,12 @@ use obc_app::device_core::{
 };
 use obc_app::dfu::{DfuEffect, DfuInstallError, DfuOutcome, DfuScanError, DfuScanReport};
 use obc_app::navigator::{NavigatorEffect, NavigatorError, NavigatorOutcome, PlannerWork};
+use obc_app::recorder::{RecorderEffect, RecorderError, RecorderOutcome, RideClose};
 use obc_app::retention::{RetentionEffect, RetentionOutcome};
 use obc_app::settings::{Settings, SettingsEffect, SettingsOutcome};
 use obc_app::weather::{WeatherEffect, WeatherError, WeatherOutcome};
 use obc_app::weather_alerts::AlertMarks;
-use obc_app::{App, DrainStatus, Gesture, HostCommand, HostMailbox, TrackAction};
+use obc_app::{App, DrainStatus, Gesture, HostCommand, HostMailbox};
 use obc_ports::{Sensors, SettingsSaveError};
 
 use crate::nav::{commit_detour, commit_nav_plan, plan_detour_preview, DetourPlan, DetourReady};
@@ -191,8 +191,7 @@ const HOST_STORE: StoreIdentity = StoreIdentity::new(1);
 
 // The residual list, the predicate and the assertion live in `obc_app::device_core::residual` since
 // #1397 S6b: the board's ride loop is a second typed executor and both have to check the *same*
-// two commands, or S6c's deletion becomes a per-host argument instead of a compiler-verified
-// sweep. Re-exported here so this module reads as the reference executor it is.
+// command, or S6c's deletion becomes a per-host argument instead of a compiler-verified sweep. Re-exported here so this module reads as the reference executor it is.
 use obc_app::device_core::residual::assert_residual;
 
 /// Everything the executor leaves for the next pass: the domain outcome slots, the external facts,
@@ -209,7 +208,6 @@ struct Inbox {
 /// The shared host loop: the next pass's inbox, the in-flight plan (stepped once per pass), a
 /// planned-but-uncommitted detour, the residual legacy mailbox, and the resident active-route
 /// parse. A host owns one for its lifetime.
-#[derive(Default)]
 pub struct HostLoop {
     inbox: Inbox,
     plan: Option<InflightPlan>,
@@ -225,12 +223,41 @@ pub struct HostLoop {
     /// Which searches this host takes without starting (`--hold nav`); [`PlanHold::NONE`] for a
     /// normal frame loop.
     hold: PlanHold,
+    /// The ride session this executor has opened an object for. Never cleared by a close: a session
+    /// that has been served is served, whatever became of its object. See
+    /// [`RecorderMachine::object_owed`](obc_app::RecorderMachine::object_owed) for why this is an id
+    /// rather than "is anything recording".
+    opened_session: Option<u32>,
     /// The store revision this host reports through [`note_store_commit`](HostLoop::note_store_commit).
     /// An in-process repository has none of its own, so the executor mints a monotonic one per
     /// commit it is *told* about — a boot scan, an import, an upload landing. A catalog **read**
     /// mints nothing: the domain owes its own re-reads, and inventing a revision per read would
     /// have reported the executor's own work back to it as a store that moved.
     revision: u64,
+}
+
+impl Default for HostLoop {
+    /// A host loop starts by reporting the store it is built over.
+    ///
+    /// A `HostLoop` is constructed around the caller's repositories, so a store exists from the
+    /// first pass — and `store_writable` is what admits a catalog mutation, a route plan and a ride
+    /// recording. Without this the level never rose on a host that imports nothing, and every one of
+    /// those capabilities read absent for the whole run. The board has no such gap: it reports its
+    /// flat store's live sequence on every pass.
+    fn default() -> Self {
+        let mut host = HostLoop {
+            inbox: Inbox::default(),
+            plan: None,
+            plan_token: None,
+            detour_ready: None,
+            mailbox: HostMailbox::new(),
+            hold: PlanHold::NONE,
+            opened_session: None,
+            revision: 0,
+        };
+        host.inbox.facts.note_store_revision(StoreRevision { store: HOST_STORE, revision: Revision::new(0) });
+        host
+    }
 }
 
 impl HostLoop {
@@ -342,10 +369,10 @@ impl HostLoop {
         self.inbox.derived = DerivedInputs::NONE;
         self.inbox.ride_preview.clear();
         self.inbox.nav_preview.clear();
-        self.serve_effects(app, plan, session, routes, rides, trips, platform);
+        self.sync_recorder(app, tracks);
+        self.serve_effects(app, plan, session, routes, rides, trips, tracks, platform);
         self.step_plan(app, session, routes, reader, elev);
-        let finish = self.drain_residual(app, platform);
-        reconcile_track(app, rides, tracks, finish, &mut NoTrace);
+        self.drain_residual(app, platform);
         self.serve_derived(app, plan, session, routes, rides);
     }
 
@@ -363,6 +390,7 @@ impl HostLoop {
         routes: &mut dyn RouteRepository,
         rides: &mut dyn RideRepository,
         trips: &mut dyn TripCatalog,
+        tracks: &mut dyn TrackRepository,
         platform: &mut dyn HostPlatform,
     ) {
         if let Some(effect) = plan.effects.catalog.take() {
@@ -372,6 +400,10 @@ impl HostLoop {
         if let Some(effect) = plan.effects.retention.take() {
             let outcome = serve_retention(effect, routes, rides);
             deliver(&mut self.inbox.outcomes.retention, outcome, "retention");
+        }
+        if let Some(effect) = plan.effects.recorder.take() {
+            let outcome = serve_recorder(app, effect, tracks);
+            deliver(&mut self.inbox.outcomes.recorder, outcome, "recorder");
         }
         if let Some(effect) = plan.effects.navigator.take() {
             if let Some(outcome) = self.serve_navigator(app, effect, session, routes) {
@@ -433,10 +465,7 @@ impl HostLoop {
             // removal off the residual command in the same change.
             debug_assert!(false, "BondEffect has no producer: the bond removal is the residual ForgetBond command");
         }
-        debug_assert!(
-            !plan.effects.has_pending(),
-            "recorder is the one domain a host outside obc-app cannot reach yet"
-        );
+        debug_assert!(!plan.effects.has_pending(), "every effect a host can be handed has an arm above");
     }
 
     /// The two store operations: read the catalogs, remove one object.
@@ -604,9 +633,8 @@ impl HostLoop {
 
     // ---- the residual legacy half, for the classes with no domain executor ----
 
-    /// Drain the residual mailbox: [`RESIDUAL`] and nothing else. Returns the drained ride-close
-    /// action, which phase 3 reconciles against the live session.
-    fn drain_residual(&mut self, app: &mut App, platform: &mut dyn HostPlatform) -> Option<TrackAction> {
+    /// Drain the residual mailbox: [`RESIDUAL`] and nothing else.
+    fn drain_residual(&mut self, app: &mut App, platform: &mut dyn HostPlatform) {
         // Asked for **by name**, not filtered out of a whole-order walk: such a walk pulls from
         // every domain it passes — minting the operation — so it would consume an intent admitted
         // between this executor's passes and leave its domain waiting on an answer that is never
@@ -614,15 +642,34 @@ impl HostLoop {
         // and the shape is the same on both.
         let status = app.drain_residual_commands(&mut self.mailbox);
         debug_assert_eq!(status, DrainStatus::Complete, "a canonical-capacity mailbox always drains completely");
-        let mut finish = None;
         while let Some(command) = self.mailbox.pop() {
             assert_residual(&command);
             match command {
-                HostCommand::FinishTrack(action) => finish = Some(action),
                 HostCommand::ForgetBond => platform.forget_bond(),
             }
         }
-        finish
+    }
+
+    /// Open a ride object when Recorder owes one.
+    ///
+    /// The **only** thing this executor does about the ride lifecycle outside an effect, and it
+    /// decides nothing: it opens the identity Recorder named. Closing is an effect, so a session
+    /// that ended leaves nothing to do here — the operation that ended it already finalized or
+    /// discarded the object.
+    ///
+    /// Asking by **id** rather than by "the session changed" is what makes this safe on an executor
+    /// whose pass and effects run in either order: a close served before its verdict is applied
+    /// still shows an open session, and only the id says the object for it is already served. This
+    /// host runs its pass first, so it never sees that window — the board does, and both ask the
+    /// same question of the same domain rather than each keeping a rule.
+    ///
+    /// The save name is read on this edge rather than every pass, which makes it one ≤48-byte clone
+    /// per ride instead of one per frame: the name is frozen when the ride opens, so a mid-ride
+    /// route swap cannot rename a ride that is already recording.
+    fn sync_recorder(&mut self, app: &mut App, tracks: &mut dyn TrackRepository) {
+        let Some(id) = app.recorder.object_owed(self.opened_session) else { return };
+        self.opened_session = Some(id);
+        tracks.open(id, active_route_name(app).as_deref());
     }
 
     // ---- the two derived levels ----
@@ -715,27 +762,38 @@ fn serve_retention(
     }
 }
 
-/// Phase 3 — reconcile the ride recorder: the drained finish action + the live session, with the
-/// save name (the active route) and totals (for a `Save`). Refresh + re-feed the catalog so a saved
-/// ride appears without a relaunch — the legacy ride close is answered by exactly that re-feed
-/// rather than by a ride identity (#1398).
-pub(crate) fn reconcile_track(
-    app: &mut App,
-    rides: &mut dyn RideRepository,
-    tracks: &mut dyn TrackRepository,
-    finish: Option<TrackAction>,
-    trace: &mut dyn TraceSink,
-) {
-    // The save name is only consumed when a ride is opened or finalised, both of which need a
-    // session or a drained action — skip the small String copy on the idle no-ride path. During an
-    // active ride it's one ≤48-byte name clone per pass, deliberately not cached: the active route
-    // (and thus the save name a mid-ride swap would freeze) can change between passes.
-    let name = (app.activity.session().is_some() || finish.is_some()).then(|| active_route_name(app)).flatten();
-    let stats = matches!(finish, Some(TrackAction::Save)).then(|| app.ride_stats());
-    tracks.reconcile(finish, app.activity.session(), name.as_deref(), stats);
-    if matches!(finish, Some(TrackAction::Save)) {
-        rides.refresh();
-        feed_rides(app, rides, trace);
+/// One recording operation, beside [`serve_retention`].
+///
+/// **Nothing is re-fed here.** A committed ride is a store change, and the re-read it implies is
+/// `CatalogMachine`'s to order — Recorder tells it through the `RideFinalized` connection, so one
+/// saved ride is one catalog read (#1541's rule, applied to the last producer that kept its own copy
+/// of it).
+fn serve_recorder(app: &App, effect: RecorderEffect, tracks: &mut dyn TrackRepository) -> RecorderOutcome {
+    match effect {
+        RecorderEffect::Checkpoint { token } => match tracks.checkpoint() {
+            true => RecorderOutcome::Checkpointed { token },
+            false => RecorderOutcome::Failed { token, error: RecorderError::Write },
+        },
+        // The totals are read here, as the footer is written, so the wall-clock anchor pairs with
+        // the log's last points.
+        RecorderEffect::Finalize { token } => match tracks.finalize(app.ride_stats()) {
+            RideClose::Committed(ride) => RecorderOutcome::Finalized { token, ride },
+            // The object was never created — a start this store refused, which already warned the
+            // rider. There is nothing to save, and saying so is **terminal**: answering `Failed`
+            // would retry a close against an object that does not exist, for ever.
+            RideClose::Nothing => RecorderOutcome::Discarded { token },
+            RideClose::Failed => RecorderOutcome::Failed { token, error: RecorderError::Write },
+        },
+        RecorderEffect::Discard { token } => match tracks.discard() {
+            true => RecorderOutcome::Discarded { token },
+            false => RecorderOutcome::Failed { token, error: RecorderError::Write },
+        },
+        // Sample assembly is #1553's; nothing produces an `Append` yet, so one arriving would be a
+        // change of who stages the samples with no executor behind it.
+        RecorderEffect::Append { token, .. } => {
+            debug_assert!(false, "sample assembly is part 2 of the recorder cutover");
+            RecorderOutcome::Failed { token, error: RecorderError::Write }
+        }
     }
 }
 

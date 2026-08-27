@@ -346,7 +346,7 @@ impl App {
             dist_to_route_m: self.activity.dist_to_route_m,
             next_waypoint: self.activity.next_waypoint.map(|i| i as u32),
             no_fix,
-            tracking: self.activity.is_tracking(),
+            tracking: self.recorder.recording(),
             low_battery: crate::screen::low_battery_cue(self.state.device.battery_pct),
             rain: rain_overlay.then_some((self.state.rain_step, self.weather.steps_ahead())),
         }
