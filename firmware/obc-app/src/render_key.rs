@@ -191,6 +191,23 @@ pub(crate) struct UpAheadKey {
     corridor: (usize, bool),
 }
 
+/// A drawer's content: which page it shows, which row is selected on it, the value it has staged
+/// but not committed, and the value already committed underneath.
+///
+/// This key **shadows** the rest. While a drawer is visible [`App::render_key`] fills this slot and
+/// no other, so the base's camera, fix, weather and sensors are simply not part of the frame's
+/// identity any more — which is the whole of the frozen base. Closing the drawer changes the
+/// shape, so the base repaints exactly once, when it must.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DrawerKey {
+    page: u8,
+    selected: u8,
+    staged: u8,
+    /// The committed brightness the editor marks while the rider browses alternatives — the one
+    /// device fact a drawer draws that is not its own.
+    committed: u8,
+}
+
 /// One pass's answer: the visible stack's shape, plus the exact facts each declared kind names.
 ///
 /// A kind's slot is `Some` exactly when some visible row declares it. Kinds are facts about the
@@ -206,6 +223,7 @@ pub(crate) struct RenderKey {
     sensors: Option<SensorsKey>,
     weather: Option<WeatherKey>,
     up_ahead: Option<UpAheadKey>,
+    drawer: Option<DrawerKey>,
 }
 
 // The pass keeps two of these on its own (non-`async`) frame, so growth here is residual stack, not
@@ -234,6 +252,7 @@ impl App {
             sensors: None,
             weather: None,
             up_ahead: None,
+            drawer: None,
         };
         // Drawing starts at the lowest opaque screen: anything below it is covered and draws
         // nothing, so it is not part of the frame and not part of the key.
@@ -242,6 +261,17 @@ impl App {
         for screen in self.ui.stack.iter().skip(base) {
             // Cannot overflow: the stack itself is `MAX_DEPTH` long.
             let _ = key.shape.push(screen.row());
+        }
+        // **The frozen base.** A drawer's key shadows every other kind: with one on the stack the
+        // answer is the shape plus the drawer's own facts, and the loop below — which is where the
+        // camera, the fix, the weather and the sensors would be read — does not run at all. So a
+        // moving map under an open drawer asks for no repaint, and the close, which changes the
+        // shape, asks for exactly one.
+        if let Some(drawer) = self.drawer_key() {
+            key.drawer = Some(drawer);
+            return key;
+        }
+        for screen in self.ui.stack.iter().skip(base) {
             let caps = screen.caps();
             match caps.render_key {
                 RenderKeyKind::Static => {}
@@ -252,9 +282,23 @@ impl App {
                 RenderKeyKind::SensorSettings => key.sensors = Some(self.sensors_key()),
                 RenderKeyKind::Weather => key.weather = Some(self.weather_key()),
                 RenderKeyKind::UpAhead => key.up_ahead = Some(self.up_ahead_key()),
+                // Unreachable: a `Drawer` row returned above. Named rather than wildcarded so a
+                // second drawer kind has to state where it belongs.
+                RenderKeyKind::Drawer => {}
             }
         }
         key
+    }
+
+    /// The visible drawer's facts, or `None` when no row declares [`RenderKeyKind::Drawer`].
+    fn drawer_key(&self) -> Option<DrawerKey> {
+        self.ui.stack.iter().find_map(|screen| match screen {
+            Screen::QuickDrawer(d) => {
+                let (page, selected, staged) = d.key();
+                Some(DrawerKey { page, selected, staged, committed: self.settings().brightness })
+            }
+            _ => None,
+        })
     }
 
     fn home_key(&self, screen: &Screen) -> HomeKey {
@@ -366,6 +410,7 @@ mod tests {
                 ("WeatherRainMap", RenderKeyKind::Map),
                 ("Sensors", RenderKeyKind::SensorSettings),
                 ("SensorScan", RenderKeyKind::SensorSettings),
+                ("QuickDrawer", RenderKeyKind::Drawer),
             ],
             "the dynamic rows, in table order — add a row here when a screen starts drawing a live fact"
         );
@@ -461,6 +506,62 @@ mod tests {
         let before = map.render_key();
         map.state.device.battery_pct = 42;
         assert_eq!(map.render_key(), before, "a level a map base never draws costs it no render");
+    }
+
+    // ---- The frozen base: a drawer's key shadows every other kind --------------------------
+
+    /// A helper: `[Home, Map]` with the quick drawer squeezed open on top.
+    fn map_under_a_drawer() -> App {
+        let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
+        assert!(app.apply_chord(crate::input::Chord::Quick), "the chord opened a drawer");
+        app
+    }
+
+    /// **The key names drawer facts and nothing else.** Every base slot is empty while a drawer is
+    /// visible — that is what "the base is frozen" *is*, expressed once, in the only place the
+    /// repaint decision is made.
+    #[test]
+    fn a_drawer_on_top_leaves_every_base_fact_out_of_the_key() {
+        let app = map_under_a_drawer();
+        let key = app.render_key();
+        assert!(key.drawer.is_some(), "the drawer names its own facts");
+        assert!(
+            key.map.is_none() && key.home.is_none() && key.stats.is_none() && key.climb.is_none(),
+            "no base fact survives under a drawer"
+        );
+        assert!(key.sensors.is_none() && key.weather.is_none() && key.up_ahead.is_none());
+        // The shape still carries the covered rows, which is what makes the *close* visible.
+        assert_eq!(key.shape.len(), 2, "Map + the sheet above it");
+    }
+
+    /// **Nothing under the drawer can dirty the frame.** The camera, the fix behind it, and the
+    /// battery all move; the key does not.
+    #[test]
+    fn moving_the_camera_under_a_drawer_does_not_move_the_key() {
+        let mut app = map_under_a_drawer();
+        let quiet = app.render_key();
+        app.state.cam_lon += 5_000;
+        app.state.cam_lat -= 4_000;
+        app.state.zoom = 3.0;
+        app.state.user_fix = Some(obc_ports::Fix::at(1_000, 2_000));
+        app.state.device.battery_pct = 9;
+        assert_eq!(app.render_key(), quiet, "a moving map under a sheet asks for no repaint");
+    }
+
+    /// **Closing costs exactly one invalidation.** The key moves once — the shape lost a row and
+    /// the base facts came back — and then settles, so the base is not re-rendered frame after
+    /// frame afterwards.
+    #[test]
+    fn closing_a_drawer_invalidates_the_base_exactly_once() {
+        let mut app = map_under_a_drawer();
+        app.state.cam_lon += 5_000; // moved invisibly while the sheet was up
+        let covered = app.render_key();
+
+        assert!(app.apply_chord(crate::input::Chord::Quick), "the same chord closes it");
+        let uncovered = app.render_key();
+        assert_ne!(uncovered, covered, "the close is the one invalidation");
+        assert!(uncovered.drawer.is_none() && uncovered.map.is_some(), "…and the base is back in the key");
+        assert_eq!(app.render_key(), uncovered, "exactly one: the next frame asks for nothing");
     }
 
     /// …but the map base *does* draw the low-battery glyph, so the pass must see the threshold

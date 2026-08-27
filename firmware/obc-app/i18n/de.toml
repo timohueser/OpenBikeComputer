@@ -606,3 +606,14 @@ s = "S"
 sw = "SW"
 w = "W"
 nw = "NW"
+
+# --- Die allgemeine Schnellleiste (Hoch + Auswahl) ---
+[quick]
+brightness = "HELLIGKEIT"
+bluetooth_on = "BLUETOOTH AN"
+bluetooth_off = "BLUETOOTH AUS"
+settings = "EINSTELLUNGEN"
+power = "AUSSCHALTEN"
+power_confirm = "AUSSCHALTEN?"
+power_hold = "AUSWAHL HALTEN"
+powering_off = "SCHALTET AUS..."

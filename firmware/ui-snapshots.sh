@@ -28,7 +28,7 @@
 #      firmware/ui-snapshots.sha256 "$OUT"`. A change of pixels is intentional or it is a
 #      regression; look at the changed frames first, then record them with `update`.
 #
-# Coverage against the `screens!` table: 59 of the 60 screens have at least one frame here.
+# Coverage against the `screens!` table: 60 of the 61 screens have at least one frame here.
 # The exception is **RideRecovery**, the boot card that offers a ride recovered from a durable
 # recording after a reset. Its only entry is `App::offer_recovered_ride(RideContinuation)` — a
 # host call carrying thirteen reconstructed accumulator fields, which the simulator has no
@@ -714,6 +714,24 @@ U5CLIMBOFF="B u p p d d d p b b b"
 # picker that configures it is shot with the rest of the Display page, up in the Settings block.)
 "$SIM" "$MAP" --boot --script "B u p I"               --expect-screen Home --png "$OUT/idle-return-home.png"
 
+# The universal quick drawer (#1515 D2): the Up+Select squeeze (`Q`) over the **riding Map**, which
+# is the base worth judging — the sheet's contrast, the four unlabelled icons, and the device-64 dim
+# LUT recessing a real map rather than a flat menu. Five states: the icon row, the row with the BLE
+# radio switched off, the nested brightness editor, the guarded power confirmation, and that
+# confirmation with the hold part-way through (`H`).
+QUICK=(--routes-dir "$ROUTES" --clock "2025-06-29T14:40" --gpx "$GPX" --at 30)
+"$SIM" "$MAP" --boot "${QUICK[@]}" --script "p p p p Q"           --expect-screen QuickDrawer --png "$OUT/quick-root.png"
+"$SIM" "$MAP" --boot "${QUICK[@]}" --script "p p p p Q d p w"     --expect-screen QuickDrawer --png "$OUT/quick-ble-off.png"
+"$SIM" "$MAP" --boot "${QUICK[@]}" --script "p p p p Q p w"       --expect-screen QuickDrawer --png "$OUT/quick-brightness.png"
+"$SIM" "$MAP" --boot "${QUICK[@]}" --script "p p p p Q d d d p w" --expect-screen QuickDrawer --png "$OUT/quick-power-confirm.png"
+"$SIM" "$MAP" --boot "${QUICK[@]}" --script "p p p p Q d d d p w H" --expect-screen QuickDrawer --png "$OUT/quick-power-hold.png"
+# The **other** root row: a platform whose panel has no controllable light offers three controls,
+# not four, and opens on the radio instead of on brightness. That is the shipping board today (no
+# light line exists on it — see `PanelBacklight`), so this frame is the arrangement a rider actually
+# gets on hardware. English only: it is an arrangement, and the copy is already swept in four
+# languages above.
+"$SIM" "$MAP" --boot "${QUICK[@]}" --no-backlight --script "p p p p Q" --expect-screen QuickDrawer --png "$OUT/quick-root-no-backlight.png"
+
 # Per-language sweep (epic #602, L5). The i18n catalog (obc-app/i18n/*.toml -> Msg/TABLE) renders
 # every screen in the runtime Language setting; `--lang de|fr|es` seeds it into the headless
 # Settings (English is the default the sweep above already captures, so it isn't re-shot). Re-render
@@ -798,6 +816,14 @@ for lang in de fr es; do
   # WX12: the new STRONG WIND card copy, per language.
   "$SIM" "$MAP" --boot --weather demo:gusty --lang "$lang" --weather-alert gust:0 --expect-screen WeatherAlert --png "$OUT/weather-alert-gust-$lang.png"
   "$SIM" "$MAP" --boot --lang "$lang" --script "p d d d d d w p d d p" --expect-screen WeatherSettings --png "$OUT/weather-settings-$lang.png"
+  # The quick drawer's five states per language (#1515 D2) — the copy to eyeball is the caption
+  # under the icon row, the brightness editor's title, and the two lines of the power confirmation,
+  # each of which has to fit the sheet's width in the longer translations.
+  "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p Q"           --expect-screen QuickDrawer --png "$OUT/quick-root-$lang.png"
+  "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p Q d p w"     --expect-screen QuickDrawer --png "$OUT/quick-ble-off-$lang.png"
+  "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p Q p w"       --expect-screen QuickDrawer --png "$OUT/quick-brightness-$lang.png"
+  "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p Q d d d p w" --expect-screen QuickDrawer --png "$OUT/quick-power-confirm-$lang.png"
+  "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p Q d d d p w H" --expect-screen QuickDrawer --png "$OUT/quick-power-hold-$lang.png"
 
 done
 
