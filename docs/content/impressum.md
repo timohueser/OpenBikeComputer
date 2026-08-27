@@ -1,6 +1,7 @@
 ---
 title: Impressum
 description: Anbieterkennzeichnung für openbikecomputer.com.
+copy: ai
 ---
 
 # Impressum
