@@ -16,6 +16,12 @@
 
 </div>
 
+> [!NOTE]
+> This project is developed with extensive use of AI coding tools. Don't get out your "AI Slop"
+> pitchforks just yet though. Any text you read in the software or documentation that sounds AI
+> generated will be replaced once we get closer to releasing this project. The goal is that all
+> user-facing text is 100% human-generated!
+
 OpenBikeComputer is built for long rides away from mobile service and power sockets. It combines
 offline vector maps, route navigation, ride recording, and weather updates with a sunlight-readable
 reflective display.
