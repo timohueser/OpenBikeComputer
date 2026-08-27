@@ -119,6 +119,10 @@ pub struct QuickDrawerScreen {
     slide: Option<Slide>,
     page: Page,
     selected: u8,
+    /// Whether the open slide's **landing frame** has been reported — the same edge [`settle`]
+    /// reports for a page slide. Without it a render-on-demand host that skips the exact frame the
+    /// sheet lands on keeps a mid-slide sheet on the panel until something else asks for a repaint.
+    landed: bool,
     /// The brightness level the editor is previewing. Meaningful only on [`Page::Brightness`] —
     /// off that page every reader falls back to the committed settings row, which is why Back
     /// reverts the live preview without storing anything to undo.
@@ -128,7 +132,7 @@ pub struct QuickDrawerScreen {
 impl QuickDrawerScreen {
     /// A freshly opened drawer, sliding down from `now_ms` with the first control selected.
     pub fn new(now_ms: u32) -> Self {
-        QuickDrawerScreen { opened_ms: now_ms, slide: None, page: Page::Root, selected: 0, staged: 0 }
+        QuickDrawerScreen { opened_ms: now_ms, slide: None, page: Page::Root, selected: 0, staged: 0, landed: false }
     }
 
     /// The brightness the panel should show **right now**: the editor's staged preview while it is
@@ -201,8 +205,9 @@ impl QuickDrawerScreen {
                 // with a light and redrawn without one would land here rather than on a wrong row.
                 None => Transition::None,
             },
-            Gesture::Back | Gesture::BackHold => Transition::Pop,
-            Gesture::Hold => Transition::None,
+            Gesture::Back => Transition::Pop,
+            // Back-hold is the global escape, resolved above screen dispatch; it never arrives.
+            Gesture::Hold | Gesture::BackHold => Transition::None,
         }
     }
 
@@ -225,8 +230,8 @@ impl QuickDrawerScreen {
                 self.slide_to(Page::Root, cx.now_ms);
                 Transition::None
             }
-            Gesture::BackHold => Transition::Pop,
-            Gesture::Hold => Transition::None,
+            // Back-hold is the global escape, resolved above screen dispatch; it never arrives.
+            Gesture::Hold | Gesture::BackHold => Transition::None,
         }
     }
 
@@ -251,10 +256,12 @@ impl QuickDrawerScreen {
         let settled = self.settle(now_ms);
         let opening = OPEN_MS.saturating_sub(now_ms.wrapping_sub(self.opened_ms));
         let sliding = self.slide.map_or(0, |s| SLIDE_MS.saturating_sub(now_ms.wrapping_sub(s.started_ms)));
+        let landing = !self.landed && opening == 0;
+        self.landed |= opening == 0;
         match [opening, sliding].into_iter().filter(|r| *r > 0).min() {
             Some(remaining) => ScreenTick { changed: true, next_wake_ms: Some(FRAME_MS.min(remaining)), region: None },
-            // The frame a slide ends on still differs from the one before it.
-            None if settled => ScreenTick { changed: true, next_wake_ms: None, region: None },
+            // The frame a slide (or the open) ends on still differs from the one before it.
+            None if settled || landing => ScreenTick { changed: true, next_wake_ms: None, region: None },
             None => ScreenTick::idle(),
         }
     }

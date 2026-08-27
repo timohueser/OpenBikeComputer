@@ -112,16 +112,20 @@ fn a_blocking_modal_refuses_the_chord() {
     assert!(matches!(app.top_screen(), Screen::DfuInstalling(_)), "nothing opens over the install card");
 }
 
-/// The **contextual** chord is recognised — so a Down+Back squeeze can never leak a step and a
-/// Back onto the screen under it — and, until D3 declares content for it, does nothing at all.
+/// The **contextual** chord reaches the app as one chord: over the riding Map it opens the ride
+/// sheet and leaks neither a step nor a Back-tap onto the map under it (a leaked Back mid-ride
+/// would have swapped the view to Statistics, which is what makes this checkable at all).
 #[test]
-fn the_context_chord_is_swallowed_and_does_nothing() {
+fn the_context_chord_opens_the_ride_sheet_and_leaks_nothing() {
     let mut app = lit();
     let mut f = Frames::new();
     let depth = app.debug_stack_len();
-    chord(&mut app, &mut f, Button::Down, Button::Back, 1_000);
-    assert_eq!(app.debug_stack_len(), depth, "no sheet, and no Back-tap either");
-    assert!(matches!(app.top_screen(), Screen::Map(_)), "the squeeze changed nothing");
+    let ms = chord(&mut app, &mut f, Button::Down, Button::Back, 1_000);
+    assert_eq!(app.debug_stack_len(), depth + 1, "the sheet, and only the sheet");
+    assert!(matches!(app.top_screen(), Screen::ContextDrawer(_)));
+    chord(&mut app, &mut f, Button::Down, Button::Back, ms);
+    assert!(matches!(app.top_screen(), Screen::Map(_)), "the same squeeze closes it, back onto the Map");
+    assert_eq!(app.debug_stack_len(), depth);
 }
 
 /// **Mutual exclusion**, at the one door: with the quick sheet up, the reserved squeezes do not
@@ -220,14 +224,19 @@ fn a_platform_without_a_panel_light_drops_the_brightness_control() {
     assert!(matches!(app.top_screen(), Screen::Settings(_)), "the middle control is the gear");
 }
 
-/// A host-pushed modal lands **above** the drawer, so the sheet is no longer what the rider is
-/// looking at — and the panel must stop showing an uncommitted preview it can no longer reach.
+/// A host-pushed modal **takes the sheet with it**, so the panel stops showing an uncommitted
+/// preview the rider can no longer reach — and, since #1515 D3, cannot be walked back into either.
 ///
 /// The map-transfer card is the worst case on purpose: it also refuses the chord, so a preview held
 /// behind it would stand for the length of a multi-minute upload with no way for the rider to end
 /// it.
+///
+/// **The second half changed in D3.** D2 buried the sheet under the card and gave it back when the
+/// card cleared. That left the sheet reachable by dismissing a card — the rider ends a map transfer
+/// and lands inside a brightness editor they opened minutes ago. A drawer is transient chrome now:
+/// the card closes it, and the transfer ends on the map.
 #[test]
-fn a_modal_over_the_editor_reverts_the_preview() {
+fn a_modal_over_the_editor_closes_the_sheet_and_reverts_the_preview() {
     let mut app = lit();
     let mut f = Frames::new();
     let ms = chord(&mut app, &mut f, Button::Up, Button::Select, 1_000);
@@ -237,15 +246,16 @@ fn a_modal_over_the_editor_reverts_the_preview() {
 
     app.set_map_transfer(Some(MapTransfer::Receiving { received_kib: 10, total_kib: 4_000 }));
     quiet_pass(&mut app, ms);
-    assert!(matches!(app.top_screen(), Screen::MapTransfer(_)), "the card covered the sheet");
-    assert_eq!(app.backlight_level(), BRIGHTNESS_MAX, "…and the panel is back on the committed level");
+    assert!(matches!(app.top_screen(), Screen::MapTransfer(_)), "the card landed");
+    assert!(!app.debug_stack_has_overlay(), "…and the sheet went with it");
+    assert_eq!(app.backlight_level(), BRIGHTNESS_MAX, "…so the panel is back on the committed level");
     assert_eq!(app.settings().brightness, BRIGHTNESS_MAX, "nothing was committed on the way");
 
-    // The card clears, the sheet is on top again, and the rider's staged value is where they left it.
+    // The card clears and the rider is on the map they started from, not inside a stale editor.
     app.set_map_transfer(None);
     quiet_pass(&mut app, ms + 100);
-    assert!(matches!(app.top_screen(), Screen::QuickDrawer(_)));
-    assert_eq!(app.backlight_level(), BRIGHTNESS_MAX - 2, "the preview comes back with the sheet");
+    assert!(matches!(app.top_screen(), Screen::Map(_)));
+    assert_eq!(app.backlight_level(), BRIGHTNESS_MAX, "the preview does not come back");
 }
 
 /// Power needs the completed hold: nothing the rider can *tap* asks the host to switch off.

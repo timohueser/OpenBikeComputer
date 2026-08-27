@@ -77,9 +77,22 @@ enum Pair {
 }
 
 impl Pair {
-    /// The four pairs with their buttons, in the order [`Gestures::latch_chord`] tries them: a
-    /// press that could complete two pairs at once (three buttons inside one window) resolves to
-    /// the first meaningful one, deterministically.
+    /// The four pairs with their buttons, in the order [`Gestures::latch_chord`] tries them.
+    ///
+    /// The order decides only the case where **one press completes two pairs at the same instant**
+    /// — three buttons down inside one window — which then resolves to the first meaningful pair,
+    /// deterministically. It does **not** re-open an already-latched pair: Up at 0 ms and Down at
+    /// 10 ms latch the reserved `UpDown` there and then, and a Select at 20 ms is a separate press
+    /// on a latch that will not look again. The rider gets an ordinary Select hold instead of the
+    /// quick drawer.
+    ///
+    /// **#1515 D3 raised the stakes without changing the shape.** Now that `Context` has content,
+    /// the mirrored slip — Down, then Up brushing the cluster, then Back — costs a real action: the
+    /// Back lands as an ordinary Back tap, which mid-ride swaps the riding view. Nothing *leaks*
+    /// (one squeeze still produces at most one outcome); the squeeze is simply read as what it
+    /// literally was. Whether that is common enough to pay for a takeover rule is a question for
+    /// the chord window's on-glass tuning pass, which owns the same measurement, so it is measured
+    /// there rather than guessed at here.
     const ALL: [(Pair, Button, Button); 4] = [
         (Pair::Quick, Button::Up, Button::Select),
         (Pair::Context, Button::Down, Button::Back),

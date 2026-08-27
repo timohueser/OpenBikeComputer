@@ -80,6 +80,18 @@ pub struct DetourScreen {
     prepared: Option<PreparedDetour>,
 }
 
+/// Whether the rejoin chooser can be **entered at all** (#882): a ride is being recorded, the map
+/// carries a nav graph, a route is active, and the rider is on it. The chooser's own
+/// [`available`](DetourScreen::available) is this plus the two facts only an open chooser has, so
+/// the two agree by construction rather than by review.
+///
+/// It exists because the [ride context](super::context_drawer) draws a Detour row that *opens* the
+/// chooser, and a row whose availability disagreed with its destination's would be an enabled door
+/// onto an inert screen. This is the half they share, in one place.
+pub(crate) fn reachable(activity: &Activity, recording: bool, has_nav_graph: bool) -> bool {
+    recording && has_nav_graph && activity.active_route.is_some() && !activity.off_route
+}
+
 impl DetourScreen {
     pub fn new(activity: &Activity) -> Self {
         DetourScreen {
@@ -127,12 +139,12 @@ impl DetourScreen {
         zoom
     }
 
+    /// Whether *this* chooser can act: the shared entry conditions ([`reachable`]) plus the two
+    /// facts only an open chooser has — that its own route slot is still the active one, and that a
+    /// span has resolved.
     fn available(&self, activity: &Activity, recording: bool, has_nav_graph: bool) -> bool {
-        recording
-            && has_nav_graph
-            && self.route.is_some()
+        reachable(activity, recording, has_nav_graph)
             && activity.active_route == self.route
-            && !activity.off_route
             && self.actual_detour_m().is_some()
     }
 
@@ -268,19 +280,19 @@ impl DetourScreen {
         let w = rx.w - 2 * HUD_MARGIN;
         cv.round(rect(x, y, w, HUD_H), 11, PARCHMENT);
         cv.round_outline(rect(x, y, w, HUD_H), 11, INK);
-        let title = if self.inspecting() { rx.t(Msg::RideMenuInspectRejoin) } else { rx.t(Msg::RideMenuDetour) };
+        let title = if self.inspecting() { rx.t(Msg::RideContextInspectRejoin) } else { rx.t(Msg::RideContextDetour) };
         cv.text(title, Point::new(rx.w / 2, y + 7), Font::Label, TextAlign::Center, INK);
 
         let status = if self.route.is_none() || rx.activity.active_route != self.route {
-            Err(rx.t(Msg::RideMenuNoRoute))
+            Err(rx.t(Msg::RideContextNoRoute))
         } else if !rx.state.has_nav_graph {
-            Err(rx.t(Msg::RideMenuNoNav))
+            Err(rx.t(Msg::RideContextNoNav))
         } else if rx.activity.off_route {
-            Err(rx.t(Msg::RideMenuOffRoute))
+            Err(rx.t(Msg::RideContextOffRoute))
         } else if let Some(m) = self.actual_detour_m() {
             Ok(distance_short(m, rx.settings.units))
         } else {
-            Err(rx.t(Msg::RideMenuRouteEnd))
+            Err(rx.t(Msg::RideContextRouteEnd))
         };
         match status {
             Ok(dist) => {

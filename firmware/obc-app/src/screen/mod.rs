@@ -30,6 +30,7 @@ use crate::route::RouteSummary;
 use crate::settings::{DateTime, Settings};
 
 mod climb;
+pub(crate) mod context_drawer;
 mod detour;
 mod dfu;
 mod home;
@@ -44,7 +45,6 @@ pub(crate) mod poi_menu;
 mod quick_drawer;
 mod ride_control;
 mod ride_detail;
-mod ride_menu;
 mod ride_recovery;
 mod ride_start;
 mod rides;
@@ -65,6 +65,7 @@ pub mod weather_icons;
 mod weather_map;
 
 pub use climb::ClimbScreen;
+pub use context_drawer::{ContextDrawerScreen, ContextMenu};
 pub use detour::{DetourPreviewScreen, DetourScreen};
 pub use dfu::{
     DfuCheckScreen, DfuConfirmScreen, DfuErrorReason, DfuErrorScreen, DfuFailedScreen, DfuInstallingScreen,
@@ -83,7 +84,6 @@ pub use poi_menu::PoiMenuScreen;
 pub use quick_drawer::{QuickDrawerScreen, BRIGHTNESS_LEVELS, BRIGHTNESS_MAX};
 pub use ride_control::RideControl;
 pub use ride_detail::RideDetailScreen;
-pub use ride_menu::RideMenuScreen;
 pub use ride_recovery::RideRecoveryScreen;
 pub use ride_start::RideStartScreen;
 pub use rides::RidesScreen;
@@ -110,8 +110,8 @@ pub use weather_dash::WeatherScreen;
 pub use weather_hourly::WeatherHourlyScreen;
 pub use weather_map::WeatherRainMapScreen;
 
-/// Maximum overlay depth. The deepest normal path is eight screens
-/// (`Home → Map → Ride menu → Menu → Settings → Ride → Fields → Add field`); keep two more slots
+/// Maximum overlay depth. The deepest normal path is seven screens
+/// (`Home → Map → Menu → Settings → Ride → Fields → Add field`); keep the rest of the slots
 /// for host-pushed cards such as a warning arriving while that path is open.
 pub const MAX_DEPTH: usize = 10;
 
@@ -137,12 +137,52 @@ pub enum Transition {
     Home,
 }
 
+/// Whether the device is on the terminal **powering-off** frame: the rider completed the guarded
+/// hold and the host is about to call the power-off port, so this is the last thing the panel will
+/// hold. Nothing dismisses it.
+///
+/// A *stack* fact rather than an `App` one, because the operations that must respect it are stack
+/// operations — [`close_drawers`] and the card scheduler's own `land`, neither of which has an
+/// `App`. [`App::power_off_requested`](crate::App::power_off_requested) reads it too, so there is
+/// one definition of "already switching off".
+pub(crate) fn powering_off(stack: &Stack) -> bool {
+    matches!(stack.last(), Some(Screen::QuickDrawer(d)) if d.powering_off())
+}
+
+/// **Nothing lands on top of a drawer** (#1515 D3): take any open sheet off the top of `stack`, and
+/// report whether one was there. Called wherever an ordinary screen arrives — [`apply`]'s `Push`
+/// arm and the card scheduler's own `land`, which pushes directly.
+///
+/// A drawer is transient chrome. A host card burying one would strand it: dismissing the card would
+/// drop the rider back into a sheet they had finished with, and the global escape's "any sheet goes
+/// with it" rule would hold only for the top slot. This is that rule made total, in the one place
+/// each arrival passes through.
+pub(crate) fn close_drawers(stack: &mut Stack) -> bool {
+    // The one thing that must never be closed this way is the terminal powering-off frame, and the
+    // guard for it belongs in the caller, not here: refusing to pop would only leave the sheet
+    // *under* whatever is landing, and `power_off_requested` reads the top of the stack — so the
+    // shutdown would be cancelled either way. `land` therefore refuses the card outright, and this
+    // states the invariant it upholds.
+    debug_assert!(!powering_off(stack), "a card must not land on a device that is switching off");
+    let had = stack.last().is_some_and(|top| top.is_overlay());
+    while stack.last().is_some_and(|top| top.is_overlay()) {
+        stack.pop();
+    }
+    had
+}
+
 /// Apply a [`Transition`] to the stack. The root is never popped, so `back`
 /// always has a defined target and the stack can never empty.
 pub fn apply(stack: &mut Stack, t: Transition) {
     match t {
         Transition::None => {}
         Transition::Push(s) => {
+            // Pushing a **drawer over a base** is the other direction and is untouched — that is an
+            // overlay landing on a non-overlay, and the drawer owner
+            // ([`App::apply_chord`](crate::App::apply_chord)) already enforces one sheet at a time.
+            if !s.is_overlay() {
+                close_drawers(stack);
+            }
             // An overflow no-ops in release (the top screen just doesn't open); in sim/tests a
             // navigation tree grown past MAX_DEPTH fails loudly instead of silently dropping it.
             let r = stack.push(s);
@@ -706,6 +746,12 @@ pub struct Caps {
     /// drawer over a pairing passkey, a running map transfer, or the terminal install card. Every
     /// *other* screen is eligible — the quick drawer is global by design.
     pub blocks_chords: bool,
+    /// Declares the screen a **decision the rider must answer**: while it is on top the global
+    /// Back-hold escape ([`App::apply_gesture`](crate::App::apply_gesture)) does not leave it. A
+    /// superset of [`blocks_chords`](Caps::blocks_chords) — anything that refuses a drawer chord
+    /// refuses the escape too, so [`blocking`](Caps::blocking) sets both — plus the recovered-ride
+    /// card, over which a sheet is harmless but an exit would strand the recovered object.
+    pub blocks_escape: bool,
     /// Declares the screen **wants the rain overlay** (WX10/WX11): the frame's rain lease is
     /// handed to it and the precipitation raster draws inside its map scene. Off for every other
     /// screen — including the ordinary Map and the Detour pair, which draw the same scene through
@@ -735,6 +781,7 @@ impl Caps {
             timed: false,
             hold_fill: false,
             blocks_chords: false,
+            blocks_escape: false,
             rain_overlay: false,
             remap: RemapKind::None,
             render_key: RenderKeyKind::Static,
@@ -813,8 +860,18 @@ impl Caps {
     }
 
     /// Declare the screen a genuinely blocking modal — see [`blocks_chords`](Caps::blocks_chords).
+    /// A screen that refuses the drawer chords refuses the global escape as well, so this sets
+    /// both.
     pub const fn blocking(mut self) -> Self {
         self.blocks_chords = true;
+        self.blocks_escape = true;
+        self
+    }
+
+    /// Declare the screen a decision the global Back-hold escape must not leave — see
+    /// [`blocks_escape`](Caps::blocks_escape). For the card that is not otherwise blocking.
+    pub const fn blocks_escape(mut self) -> Self {
+        self.blocks_escape = true;
         self
     }
 
@@ -874,7 +931,14 @@ macro_rules! screens {
 
         impl Screen {
             /// Handle one gesture, returning the navigation [`Transition`] it triggers.
+            ///
+            /// [`Gesture::BackHold`] never arrives here: it is the **global escape** to the main
+            /// menu, resolved in [`App::apply_gesture`](crate::App::apply_gesture) above this
+            /// dispatch (#1515 D3). Every screen's `BackHold` arm is therefore inert by
+            /// construction — Rust wants the match exhaustive, not the arm reachable — and this
+            /// assert is what says so loudly if a host ever routes one past the escape.
             pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
+                debug_assert!(!matches!(g, Gesture::BackHold), "Back-hold is the global escape, not a screen gesture");
                 match self {
                     $( Screen::$variant(s) => s.handle(g, cx), )+
                 }
@@ -958,10 +1022,8 @@ screens! {
     RideStart(RideStartScreen) => Caps::nav(),
     /// The one-shot boot decision for a durable recording recovered after reset. Back cannot
     /// dismiss it; Continue preserves restored totals, while Discard is hold-guarded.
-    RideRecovery(RideRecoveryScreen) => Caps::modal().hold_fill(),
+    RideRecovery(RideRecoveryScreen) => Caps::modal().hold_fill().blocks_escape(),
     Menu(MenuScreen) => Caps::nav().timed(),
-    /// The five-station mid-ride compass: Up ahead / Detour / POIs / Routes / Main menu.
-    RideMenu(RideMenuScreen) => Caps::nav().timed(),
     /// The "Up ahead" timeline (epic #946, U3): the route-ordered merge of the resident waypoint
     /// table and the App-owned corridor-POI snapshot, with the Hold category picker as an in-screen
     /// mode. Reads the snapshot the App arms from its `corridor_key`; holds no rows itself.
@@ -1106,6 +1168,11 @@ screens! {
     /// confirmation. The first `Overlay` row: it composites over the base, which the frame then
     /// draws through the dim LUT, and its `Drawer` key freezes that base while it is up.
     QuickDrawer(QuickDrawerScreen) => Caps::overlay().hold_fill(),
+    /// The **contextual drawer** (#1515 D3): the bottom sheet Down+Back opens on a screen that
+    /// declares a [`ContextMenu`]. It holds no content of its own — the rows come from the base
+    /// screen's [`context`](Screen::context) declaration — so one row here serves every context the
+    /// D4 slices add.
+    ContextDrawer(ContextDrawerScreen) => Caps::overlay(),
 }
 
 impl Screen {
@@ -1135,6 +1202,24 @@ impl Screen {
     pub(crate) fn corridor_request(&self) -> Option<crate::corridor::CorridorKey> {
         match self {
             Screen::UpAhead(s) => s.corridor_key(),
+            _ => None,
+        }
+    }
+
+    /// The **contextual content** this screen declares (#1515 D3) — the rows the Down+Back sheet
+    /// offers over it, or `None` when it has no secondary actions and the chord therefore does
+    /// nothing. Data, never behaviour: [`ContextDrawerScreen`] owns the cursor, the dimming, the
+    /// transitions and the drawing, so a screen joins the grammar by naming a table.
+    ///
+    /// Intentionally partial like [`corridor_request`](Screen::corridor_request): most screens
+    /// declare nothing, and an empty sheet is exactly what the issue forbids.
+    pub(crate) fn context(&self) -> Option<&'static ContextMenu> {
+        match self {
+            // The four riding views share one context — the ride's secondary actions do not change
+            // because the rider switched which readout they are looking at.
+            Screen::Map(_) | Screen::Statistics(_) | Screen::Climb(_) | Screen::RideControl(_) => {
+                Some(&context_drawer::RIDE)
+            }
             _ => None,
         }
     }
@@ -1213,6 +1298,8 @@ impl Screen {
             // The drawer's sheet animation: the slide-down on open, the horizontal page slide, and
             // the height the sheet adapts to the page it lands on.
             Screen::QuickDrawer(s) => s.tick_timers(now_ms),
+            // The context sheet's slide up from the bottom edge.
+            Screen::ContextDrawer(s) => s.tick_timers(now_ms),
             Screen::Statistics(s) => s.tick_timers(now_ms, settings),
             Screen::Home(s) => s.tick_timers(now, ms_to_next_minute),
             // The Map's clock overlay ticks over each minute (region-clipped to the pill), armed only
@@ -1223,7 +1310,6 @@ impl Screen {
                 s.tick_timers(now_ms, now, ms_to_next_minute, w, pan_active, settings.map_clock, tracking)
             }
             Screen::Menu(s) => s.tick_timers(now_ms),
-            Screen::RideMenu(s) => s.tick_timers(now_ms),
             // The route-upload popups' 30 s auto-close deadline (epic #447, P4): the residual
             // wake keeps the event-driven host armed so the timeout-dismiss fires from warm
             // sleep; the removal itself runs in `App::advance_animations`' popup sweep.
@@ -1328,16 +1414,18 @@ fn begin_riding_session(cx: &mut Ctx, lon: i32, lat: i32) -> Transition {
     Transition::Root(Screen::Map(MapScreen::new()))
 }
 
-/// The gestures the riding views bind identically: `press` pauses tracking and opens the
-/// Ride-control page, `back-hold` opens the ride-scoped compass Menu. Each riding screen
-/// calls this from its `Press | BackHold` arm.
+/// The one gesture the riding views bind identically: `press` pauses tracking and opens the
+/// Ride-control page. Each riding screen calls this from its `Press` arm.
+///
+/// Its Back-hold arm is gone with the compass ride menu (#1515 D3): Back-hold is the global escape
+/// now, resolved in [`App`](crate::App) above screen dispatch, and the ride's secondary actions
+/// live in the [contextual drawer](context_drawer) the four riding views declare.
 pub(crate) fn riding_common(g: Gesture, cx: &mut Ctx) -> Transition {
     match g {
         Gesture::Press => {
             cx.activity.mode = Mode::Paused;
             Transition::Push(Screen::RideControl(RideControl::new()))
         }
-        Gesture::BackHold => Transition::Push(Screen::RideMenu(RideMenuScreen::new())),
         _ => Transition::None,
     }
 }
@@ -1557,9 +1645,14 @@ mod tests {
                 assert!(!c.idle_exempt, "{name}: a drawer is not a modal the idle return must respect");
                 assert!(!c.blocks_chords, "{name}: a drawer must not suppress the chord that closes it");
             }
-            // Only a genuinely blocking modal may refuse the device-wide chords.
+            // Only a genuinely blocking modal may refuse the device-wide chords, and anything
+            // that refuses a chord refuses the global escape too — the escape's set is the wider.
             if c.blocks_chords {
                 assert!(c.idle_exempt, "{name}: only an idle-exempt modal is blocking enough to refuse a chord");
+                assert!(c.blocks_escape, "{name}: a screen that refuses a chord must refuse the escape too");
+            }
+            if c.blocks_escape {
+                assert!(c.idle_exempt, "{name}: only a modal the rider must answer may refuse the escape");
             }
         }
     }
@@ -1594,8 +1687,18 @@ mod tests {
         let blocking: std::vec::Vec<&str> =
             Screen::NAMES.iter().zip(caps).filter(|(_, c)| c.blocks_chords).map(|(n, _)| *n).collect();
         assert_eq!(blocking, ["Passkey", "MapTransfer", "DfuInstalling"], "the chord suppression set, in table order");
-        assert_eq!(caps.iter().filter(|c| c.kind.is_overlay()).count(), 1, "one drawer today: the quick drawer");
+        // The escape's set is the chord's plus the recovered-ride card: a sheet over it is
+        // harmless, but leaving it would strand the recovered recording.
+        let no_escape: std::vec::Vec<&str> =
+            Screen::NAMES.iter().zip(caps).filter(|(_, c)| c.blocks_escape).map(|(n, _)| *n).collect();
+        assert_eq!(
+            no_escape,
+            ["RideRecovery", "Passkey", "MapTransfer", "DfuInstalling"],
+            "the escape suppression set, in table order"
+        );
+        assert_eq!(caps.iter().filter(|c| c.kind.is_overlay()).count(), 2, "the two drawers");
         assert!(named("QuickDrawer").kind.is_overlay() && named("QuickDrawer").hold_fill);
+        assert!(named("ContextDrawer").kind.is_overlay());
         assert!(named("WeatherRainMap").rain_overlay, "the rain map is the screen rain belongs to");
         assert!(!named("Map").rain_overlay, "the ordinary Map never draws rain");
         assert_eq!(caps.iter().filter(|c| c.rain_overlay).count(), 1, "exactly one screen wants rain");

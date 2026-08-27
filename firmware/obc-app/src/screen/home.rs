@@ -66,9 +66,11 @@ impl HomeScreen {
 
     pub fn handle(&mut self, g: Gesture, _cx: &mut Ctx) -> Transition {
         match g {
-            // Both the press and the back-hold open the Menu — the single door into the app. The
-            // Route menu is one step further in (Menu → Routes), never opened straight from Home.
-            Gesture::Press | Gesture::BackHold => Transition::Push(Screen::Menu(MenuScreen::new())),
+            // The Menu is the single door into the app. The Route menu is one step further in
+            // (Menu → Routes), never opened straight from Home.
+            Gesture::Press => Transition::Push(Screen::Menu(MenuScreen::new())),
+            // Back-hold reaches the Menu from everywhere, including here, through the global escape.
+            Gesture::BackHold => Transition::None,
             _ => Transition::None,
         }
     }

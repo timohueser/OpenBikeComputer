@@ -1009,6 +1009,15 @@ fn apply_script(app: &mut App, script: &str, start_ms: u32, hook: &mut dyn FnMut
                     feed(app, now, vec![]);
                 }
             }
+            // The contextual drawer's Down+Back squeeze, then its slide-up settled — the bottom
+            // sheet's counterpart to `Q`.
+            'C' => {
+                chord(app, &mut now, Button::Down, Button::Back);
+                for _ in 0..8 {
+                    now += 40;
+                    feed(app, now, vec![]);
+                }
+            }
             'I' => {
                 now += 5 * 60_000 + 1_000;
                 feed(app, now, vec![]);
@@ -1055,7 +1064,8 @@ Device state:
 Scripted snapshots:
   --script TOKENS         Apply device-button script tokens before rendering
                           (d/u step, p press, b back, h/B hold, H/M partial hold,
-                           Q quick-drawer squeeze, w wait, f frame, T tick, I idle)
+                           Q quick-drawer squeeze, C context-drawer squeeze,
+                           w wait, f frame, T tick, I idle)
   --no-backlight          Model a panel with no controllable light (three quick-drawer controls)
   --expect-screen NAME    Refuse unless the script lands on this screen
   --hold PLAN             Consume without starting one request: nav|detour

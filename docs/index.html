@@ -1075,9 +1075,8 @@
           staged: true,
           steps: [
             { cmds: ['enter'], until: ["Map"], label: 'Riding the Grimsel climb' },
-            { cmds: ['backhold'], until: ["RideMenu"], label: 'Hold Back for mid-ride tools' },
+            { cmds: ['context'], until: ["ContextDrawer"], label: 'Squeeze Down + Back for mid-ride tools' },
             { cmds: ['press'], until: ["UpAhead"], label: 'Waypoints and map POIs, in ride order' },
-            { cmds: ['back'], until: ["RideMenu"], label: 'Back to the ride menu' },
             { cmds: ['back'], until: ["Map"], label: 'Back on the route' }
           ]
         },
@@ -1092,8 +1091,8 @@
           staged: true,
           steps: [
             { cmds: ['enter'], until: ["Map"], label: 'Riding the Grimsel climb' },
-            { cmds: ['backhold'], until: ["RideMenu"], label: 'Hold Back for mid-ride tools' },
-            { cmds: ['step:2', 'press'], until: ["PoiMenu"], label: 'POIs — directly from the ride menu' },
+            { cmds: ['context'], until: ["ContextDrawer"], label: 'Squeeze Down + Back for mid-ride tools' },
+            { cmds: ['step:2', 'press'], until: ["PoiMenu"], label: 'POIs — directly from the ride context' },
             { cmds: ['step:2', 'press'], until: ["PoiList"], label: 'Browse to a category' },
             { cmds: ['press'], until: ["PoiDetail"], label: 'Open the nearest place' },
             { cmds: ['press'], until: ["NavConfirm"], label: 'Create a route to it' },
@@ -1298,7 +1297,7 @@
             var n = parseInt(m[1], 10);
             for (var j = 0; j < Math.abs(n); j++) out.push({ cmd: 'step:' + (n < 0 ? -1 : 1), paced: true });
           } else {
-            out.push({ cmd: c, paced: c === 'press' || c === 'back' || c === 'hold' || c === 'backhold' });
+            out.push({ cmd: c, paced: c === 'press' || c === 'back' || c === 'hold' || c === 'backhold' || c === 'context' });
           }
         });
         return out;

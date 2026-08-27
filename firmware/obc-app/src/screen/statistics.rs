@@ -9,8 +9,8 @@
 //! - **Inspect / Pan:** up/down scrubs the cursor through the current window; `press` selects Zoom.
 //! - **Inspect / Zoom:** up/down zooms about the frozen cursor; `press` returns to Pan without
 //!   discarding the magnification, so the rider can move around the zoomed profile.
-//! - Inspect `back` exits, returning to the live cursor and whole route. `back-hold` keeps its shared
-//!   riding-view job: open the Ride menu. Select-hold is inert once Inspect is active.
+//! - Inspect `back` exits, returning to the live cursor and whole route. Select-hold is inert once
+//!   Inspect is active.
 //!
 //! Zoom is cheap: the profile is a load-time [`Profile`] pyramid, so a step is just
 //! [`Profile::window`] picking a level + sub-range — no route re-read. Going off-route freezes the
@@ -151,7 +151,8 @@ impl StatisticsScreen {
                     Transition::None
                 }
             },
-            Gesture::BackHold => super::riding_common(g, cx),
+            // Back-hold is the global escape, resolved above screen dispatch.
+            Gesture::BackHold => Transition::None,
         }
     }
 
