@@ -16,7 +16,7 @@ use obc_render::{
     Surface,
 };
 
-use crate::activity::{Mode, TrackAction};
+use crate::activity::Mode;
 use crate::input::Gesture;
 use crate::Msg;
 
@@ -98,7 +98,7 @@ impl RouteSwapScreen {
         match g {
             Gesture::Step(n) => list::on_step(&mut self.selected, n, GUARDS.len()),
             Gesture::Press => match self.selected {
-                // Swap only: keep the session (no `start_session`), just re-navigate.
+                // Swap only: keep the session (nothing named to Recorder), just re-navigate.
                 SWAP => self.swap_route(cx),
                 CANCEL => Transition::Pop,
                 _ => Transition::None, // Finish & new is guarded — press does nothing
@@ -109,10 +109,9 @@ impl RouteSwapScreen {
                 if self.pending.is_none() {
                     return Transition::Pop;
                 }
-                // Save the current ride, then begin a fresh session on the picked route. The
-                // host drains the Save (finalising the old log) before it opens the new one.
-                cx.activity.request_track(TrackAction::Save);
-                cx.activity.start_session();
+                // Save the current ride, then begin a fresh session on the picked route. Recorder
+                // opens the new one only once the store has answered for the old one.
+                cx.recorder.save_and_restart();
                 self.swap_route(cx)
             }
             Gesture::Back => Transition::Pop, // back = Cancel (keep riding the current route)

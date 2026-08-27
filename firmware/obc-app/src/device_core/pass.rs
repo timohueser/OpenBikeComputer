@@ -53,26 +53,28 @@
 //!
 //! ## What this pass does not yet own
 //!
-//! Seven domains own an operation token — the catalog, retention and weather, and the four #1397 S2
-//! added (Navigator, `SettingsMachine`, `DfuState`, `StorageInfo`) — and those are exactly the
-//! seven whose outcomes a pass may consume: **a domain that cannot validate a token cannot be the
-//! owner of an outcome** (epic §4.3). Recorder and Bond cannot: the legacy protocol answers a ride
-//! close with a catalog re-feed and a bond removal with a link-status fact, so an outcome for
-//! either is *left in its slot*, not dropped and not guessed at. The stages where their machines
-//! will advance already exist and already run, because the order is what #1438 pinned.
+//! Eight domains own an operation token — the catalog, retention, weather and Recorder, and the
+//! four #1397 S2 added (Navigator, `SettingsMachine`, `DfuState`, `StorageInfo`) — and those are
+//! exactly the eight whose outcomes a pass may consume: **a domain that cannot validate a token
+//! cannot be the owner of an outcome** (epic §4.3). Bond cannot: the legacy protocol answers a bond
+//! removal with a link-status fact, so its outcome is *left in its slot*, not dropped and not
+//! guessed at. The stage where its machine will advance already exists and already runs, because
+//! the order is what #1438 pinned.
 //!
 //! **The rider's own requests do not wait for a stage.** A screen names what it wants to the domain
-//! that owns it as the gesture happens (`Ctx::navigator`, `Ctx::dfu`, `Ctx::storage`), so a plan, an
-//! update phase or a free-space refresh is already with its owner before stage 1 — earlier than a
-//! same-pass slot could deliver it, in exactly one place, and by the one path that also serves the
-//! seams that run between two passes. A connection
+//! that owns it as the gesture happens (`Ctx::recorder`, `Ctx::navigator`, `Ctx::dfu`,
+//! `Ctx::storage`), so a ride close, a plan, an update phase or a free-space refresh is already with
+//! its owner before stage 1 — earlier than a same-pass slot could deliver it, in exactly one place,
+//! and by the one path that also serves the seams that run between two passes. A connection
 //! into those domains would be a second copy of the pending state this slice exists to remove.
 
 use obc_ports::{InputClock, RideClock, Sensors};
 use obc_route::RouteReader;
 
 use crate::catalog_state::CatalogIntent;
-use crate::device_core::connections::{ActiveRouteRemoved, CatalogIdentityChanged, CatalogRemoval, RouteActivated};
+use crate::device_core::connections::{
+    ActiveRouteRemoved, CatalogIdentityChanged, CatalogRemoval, RideFinalized, RouteActivated,
+};
 use crate::dirty::Dirty;
 use crate::input::Gesture;
 use crate::App;
@@ -362,7 +364,7 @@ impl App {
         let mut effects = EffectSlots::new();
         self.stage_retention(&mut effects, support);
         self.stage_catalog(&mut effects);
-        self.stage_recorder();
+        self.stage_recorder(&mut effects, now);
         self.stage_navigator(&mut effects);
         self.stage_settings(&mut effects);
         self.stage_weather(&mut effects, weather);
@@ -385,9 +387,9 @@ impl App {
     /// Stage 1 — validate and consume each domain's outcome slot.
     ///
     /// A domain accepts an outcome only while its own [`OperationToken`](super::OperationToken) is
-    /// current, which is why only a domain that *owns a token source* may consume one. Recorder's
-    /// and Bond's stay in their slots: an outcome nobody can validate is not something to guess at,
-    /// and the slot's capacity of one is the executor's backpressure until the owner lands.
+    /// current, which is why only a domain that *owns a token source* may consume one. Bond's stays
+    /// in its slot: an outcome nobody can validate is not something to guess at, and the slot's
+    /// capacity of one is the executor's backpressure until the owner lands.
     fn stage_outcomes(&mut self, outcomes: &mut OutcomeSlots) {
         self.pass.record(PassStage::Outcomes);
         if let Some(outcome) = outcomes.catalog.take() {
@@ -400,6 +402,24 @@ impl App {
         }
         if let Some(outcome) = outcomes.retention.take() {
             self.retention.apply_outcome(outcome);
+        }
+        if let Some(outcome) = outcomes.recorder.take() {
+            // Recorder's verdict on the close. A committed ride tells the catalog at stage 6 of this
+            // pass — the same owed bit a removal and a store commit arm, so one saved ride is one
+            // re-read. A failure raises the recording warning through the fault connection and
+            // changes nothing else: the ride is still on the store, so the close stays pending and
+            // re-offers.
+            match self.recorder.apply_outcome(outcome) {
+                crate::recorder::RecorderVerdict::Saved(ride) => {
+                    let _ = self.pass.connections.ride_finalized.try_put(RideFinalized { ride });
+                    self.end_ride_session();
+                }
+                crate::recorder::RecorderVerdict::Dropped => self.end_ride_session(),
+                crate::recorder::RecorderVerdict::Failed => {
+                    self.pass.connections.faults.raise(crate::screen::WarningFlags::REC_ERROR);
+                }
+                crate::recorder::RecorderVerdict::Nothing => {}
+            }
         }
         if let Some(outcome) = outcomes.weather.take() {
             self.weather.apply_outcome(outcome);
@@ -510,13 +530,9 @@ impl App {
     /// **checked first** — an intent that cannot be delivered leaves the rider's one-shot exactly
     /// where it was, so nothing is lost by a busy pass.
     ///
-    /// The rider's ride *close* is deliberately not taken here. Recorder has no machine yet, so
-    /// there is no domain to name it to; taking the one-shot anyway would only remove it from the
-    /// legacy drain that still performs it, and the rider's save would be destroyed on the way.
-    ///
-    /// Navigation, update and free-space requests are not taken here either, for the opposite
-    /// reason: their domains **do** exist, so the screens name them directly and there is nothing
-    /// left in `Activity` to collect (see the module docs).
+    /// The ride close, navigation, update and free-space requests are not taken here: their domains
+    /// exist, so the screens name them directly through `Ctx` and there is nothing left in
+    /// `Activity` to collect (see the module docs).
     fn stage_ui(&mut self, now: PassClock) {
         self.pass.record(PassStage::Ui);
         self.advance_animations(now.ui);
@@ -669,8 +685,15 @@ impl App {
     /// An admitted deletion of the **followed** route reaches Navigator in this pass — the rider is
     /// not left being guided along a route the device has decided to remove — and a store commit is
     /// announced to retention for the next one.
+    ///
+    /// Recorder's committed ride arrives first, and it orders nothing of its own: it arms the same
+    /// owed bit a removal and a store commit arm, so a save that also moved the store revision costs
+    /// one read rather than two.
     fn stage_catalog(&mut self, effects: &mut EffectSlots) {
         self.pass.record(PassStage::Catalog);
+        if self.pass.connections.ride_finalized.take().is_some() {
+            self.catalogs.note_ride_finalized();
+        }
         // A refused intent goes back into the slot it came from: that slot is its producer's pending
         // state until the catalog has room, and putting it back is what makes a busy pass cost a
         // delay rather than a delete.
@@ -707,19 +730,64 @@ impl App {
         Ok(())
     }
 
-    /// Stage 7 — advance `Recorder`.
+    /// Stage 7 — advance `RecorderMachine`.
     ///
-    /// Nothing yet: Recorder's machine arrives with #1397 S6, and until it does the ride lifecycle
-    /// stays entirely on the legacy path — the rider's finish one-shot is left in
-    /// [`Activity`](crate::Activity) for the residual drain to turn into a
-    /// [`FinishTrack`](crate::HostCommand::FinishTrack), exactly as it always was.
+    /// Two things, in this order. The rider's [`Start`](crate::RecorderIntent::Start) becomes a
+    /// session — a state change, so it is not an effect — and a session that opens restarts what a
+    /// new ride restarts. Then the domain's one bounded operation, if it has one.
     ///
-    /// The stage is a *position*, held so the order is fixed before the machines land. It is
-    /// deliberately not a connection into a domain that cannot act: such a connection destroys what
-    /// it carries — the pass would take the rider's Save at stage 4 and have nowhere to put it here,
-    /// so the ride would never be finalized and no executor would be told.
-    fn stage_recorder(&mut self) {
+    /// Both are gated on [`Capabilities::recorder`](super::Capabilities) — the last pass's level,
+    /// the same pattern stage 10 uses — and this is that capability's only reader. A ride with
+    /// nowhere to put it is not started at all, rather than started and failed on its first write.
+    fn stage_recorder(&mut self, effects: &mut EffectSlots, now: PassClock) {
         self.pass.record(PassStage::Recorder);
+        let caps = self.pass.capabilities.recorder;
+        self.advance_recorder_session();
+        if effects.recorder.is_empty() {
+            if let Some(effect) = self.recorder.next_effect(caps, now.ui.0) {
+                let _ = effects.recorder.try_put(effect);
+            }
+        }
+    }
+
+    /// Recorder's session edge, reached from both compositions: here, and from
+    /// [`apply_gesture`](App::apply_gesture) the moment the screen has named the rider's Start.
+    ///
+    /// The gesture seam matters because a pass applies a **batch**: without it the second gesture of
+    /// a batch would still read "not recording" after the first one started the ride, and the ride
+    /// chrome a rider sees mid-batch would disagree with the ride they just started. One
+    /// implementation, two call sites — the shape `advance_inputs` and `retention_tick` already use.
+    pub(crate) fn advance_recorder_session(&mut self) {
+        if let Some(start) = self.recorder.advance(self.pass.capabilities.recorder) {
+            self.begin_ride_session(start);
+        }
+    }
+
+    /// A ride session opened: re-lock the matcher, restart the trail and the pace window, and — for
+    /// a fresh ride, never a recovered continuation — zero the accumulators and drop any detour in
+    /// flight.
+    ///
+    /// The rule is re-derived here rather than keyed off a mirrored session id, which is what
+    /// `RideEngine` used to hold. Recorder is the only thing that knows a session opened, and it is
+    /// the only thing that knows whether it continues a recovered one.
+    fn begin_ride_session(&mut self, start: crate::recorder::SessionStart) {
+        self.ride.relock_matcher();
+        if start == crate::recorder::SessionStart::Fresh {
+            self.activity.reset_ride();
+            self.navigator.reset_detour();
+        }
+        self.recorder.restart_trail();
+        self.ui.map_dirty = true;
+    }
+
+    /// The ride session closed, saved or discarded: the matcher, the totals and the trail all go
+    /// back to their between-rides state, so the Home screen is not left showing the ride that just
+    /// ended.
+    fn end_ride_session(&mut self) {
+        self.ride.relock_matcher();
+        self.activity.reset_ride();
+        self.recorder.restart_trail();
+        self.ui.map_dirty = true;
     }
 
     /// Stage 8 — advance `Navigator`.
@@ -882,7 +950,7 @@ impl App {
             nav_graph: self.state.has_nav_graph,
             weather_data: self.weather.installed().is_some(),
             link_connected: matches!(self.state.device.ble_link, crate::ble::BleLink::Connected),
-            ride_recording: self.activity.is_tracking(),
+            ride_recording: self.recorder.recording(),
             heavy_operations: self.mode.admits_heavy(),
         };
         self.pass.capabilities = Capabilities::calculate(support, facts);
@@ -916,6 +984,37 @@ impl App {
             effects,
             immediate,
         }
+    }
+
+    /// Stage a mounted card, as stage 2 and stage 12 would: the level that admits catalog mutation
+    /// and ride recording, without driving a whole frame for it.
+    #[cfg(test)]
+    pub(crate) fn test_mount_store(&mut self) {
+        self.pass.store = Some(StoreRevision { store: super::StoreIdentity::new(1), revision: Revision::new(1) });
+        self.pass.capabilities.recorder = crate::device_core::RecorderCapabilities { record: true };
+    }
+
+    /// Stage a mounted card and an open ride, as stage 12 and stage 7 would.
+    #[cfg(test)]
+    pub(crate) fn test_start_ride(&mut self) {
+        self.test_mount_store();
+        self.recorder.request(crate::RecorderIntent::Start);
+        self.advance_recorder_session();
+        assert!(self.recorder.recording(), "a mounted store admits the ride");
+    }
+
+    /// Close the staged ride the way a store's `Discarded` verdict does, without an executor.
+    #[cfg(test)]
+    pub(crate) fn test_end_ride(&mut self) {
+        self.recorder.request(crate::RecorderIntent::Discard);
+        let effect = self
+            .recorder
+            .next_effect(self.pass.capabilities.recorder, self.ui.now_ms)
+            .expect("an open ride offers its close");
+        let verdict =
+            self.recorder.apply_outcome(crate::recorder::RecorderOutcome::Discarded { token: effect.token() });
+        assert_eq!(verdict, crate::recorder::RecorderVerdict::Dropped);
+        self.end_ride_session();
     }
 
     /// The stages the last pass ran, in order.
@@ -1354,35 +1453,99 @@ mod tests {
         assert!(app.pass.connections.route_activated.is_pending() && plan.immediate);
     }
 
-    /// The rider's ride close stays on the legacy path, untouched by the pass.
+    /// The rider's Save becomes a `Finalize` effect in the **same** pass that applied the gesture.
     ///
-    /// A stage-4 take with nowhere to put it at stage 7 leaves the ride unfinalized and no executor
-    /// told, so there is no connection to take it — and this is what "the close reaches the platform
-    /// on the legacy path" has to mean to be true.
+    /// Routed through a stage-4 slot instead, the close would wait a pass — reinstating the wake gap
+    /// the board's `residual_pending` fold existed to paper over.
     #[test]
-    fn a_ride_close_survives_the_pass_for_the_legacy_drain() {
+    fn the_riders_save_becomes_a_finalize_effect_in_the_same_pass() {
         let mut app = App::new(AppState::new(0, 0, 1.0));
         app.activity.mode = Mode::Riding;
+        app.test_start_ride();
         quiet(&mut app, 10);
 
-        app.activity.request_track(crate::TrackAction::Save);
+        app.recorder.request(crate::RecorderIntent::Save);
         let plan = quiet(&mut app, 20);
-        assert!(app.activity.has_track_action(), "the pass left the rider's finish where it was");
-        assert!(plan.effects.recorder.is_empty(), "and emitted no recorder effect it cannot answer");
+        let mut effects = plan.effects;
+        let effect = effects.recorder.take().expect("the close left as a bounded operation");
+        assert!(matches!(effect, crate::recorder::RecorderEffect::Finalize { .. }), "{effect:?}");
+        assert!(app.recording(), "and the ride stays open until the store answers");
 
-        let mut mail: crate::HostMailbox = crate::HostMailbox::new();
-        let _ = app.drain_residual_commands(&mut mail);
-        let mut drained = Vec::new();
-        while let Some(command) = mail.pop() {
-            drained.push(command);
-        }
+        // The verdict closes it, and orders exactly one catalog read for the committed ride.
+        let mut outcomes = OutcomeSlots::new();
+        outcomes
+            .recorder
+            .try_put(crate::recorder::RecorderOutcome::Finalized { token: effect.token(), ride: 77 })
+            .unwrap();
+        let mut facts = ExternalFacts::NONE;
+        let plan = pass_with(&mut app, 30, &[], &mut outcomes, &mut facts);
+        assert!(!app.recording(), "the store's verdict is what closes the ride");
+        let mut effects = plan.effects;
         assert!(
-            drained.contains(&crate::HostCommand::FinishTrack(crate::TrackAction::Save)),
-            "so the executor that performs it still gets it: {drained:?}"
+            matches!(effects.catalog.take(), Some(CatalogEffect::ReadCatalog { .. })),
+            "the committed ride ordered the catalog's own re-read"
         );
     }
 
-    /// **The regression #1494's on-glass soak found.** An intent admitted *between* one pass and the
+    /// A ride is refused without a writable store: `Capabilities::recorder.record` is the gate, and
+    /// stage 7 is its reader. Dropping it starts a ride with nowhere to put it.
+    #[test]
+    fn recording_is_refused_without_a_writable_store() {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.activity.mode = Mode::Riding;
+        quiet(&mut app, 10); // no store fact has ever been reported
+
+        app.recorder.request(crate::RecorderIntent::Start);
+        let plan = quiet(&mut app, 20);
+        assert!(!app.recording(), "no store, no ride");
+        assert!(plan.effects.recorder.is_empty(), "and nothing physical is offered for it");
+
+        // The card mounts, the rider asks again, and now it opens.
+        let mut facts = ExternalFacts::NONE;
+        facts.note_store_revision(StoreRevision { store: StoreIdentity::new(1), revision: Revision::new(1) });
+        pass_with(&mut app, 30, &[], &mut OutcomeSlots::new(), &mut facts);
+        app.recorder.request(crate::RecorderIntent::Start);
+        quiet(&mut app, 40);
+        assert!(app.recording());
+    }
+
+    /// A new session clears the trail and the pace window, and a fresh one zeroes the totals.
+    ///
+    /// The reset is re-derived by Recorder's own session edge; leaving it in `sync_route_state`
+    /// against a mirrored session id is what let the previous ride's trail survive.
+    #[test]
+    fn a_new_session_clears_the_breadcrumb_and_the_speed_window() {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.activity.mode = Mode::Riding;
+        app.test_start_ride();
+        app.recorder.breadcrumb.push(1_000, 2_000);
+        app.recorder.speed_win.push_mps(5.0);
+        app.activity.ridden_m = 4_200.0;
+        assert!(!app.recorder.breadcrumb.is_empty() && app.recorder.speed_win.median_cms().is_some());
+
+        app.test_end_ride();
+        app.test_start_ride();
+        assert!(app.recorder.breadcrumb.is_empty(), "the previous ride's trail is gone");
+        assert!(app.recorder.speed_win.median_cms().is_none(), "and so is its pace");
+        assert_eq!(app.activity.ridden_m, 0.0, "a fresh ride starts at zero");
+    }
+
+    /// A recovered ride continues without resetting the totals the journal restored.
+    #[test]
+    fn a_recovered_ride_continues_without_resetting_its_totals() {
+        let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+        let restored = crate::RideContinuation { ridden_m: 12_345.0, moving_s: 2_700.0, ..Default::default() };
+        assert!(app.offer_recovered_ride(restored));
+        // The card's Continue: a session that keeps what the journal restored.
+        app.pass.store = Some(StoreRevision { store: StoreIdentity::new(1), revision: Revision::new(1) });
+        app.pass.capabilities.recorder = crate::device_core::RecorderCapabilities { record: true };
+        app.recorder.continue_recovered();
+        app.advance_recorder_session();
+        assert!(app.recording());
+        assert_eq!(app.activity.ride_continuation(), restored, "recovery must not zero the ride it just restored");
+    }
+
+    /// **The regression #1494's on-glass soak found.**    /// **The regression #1494's on-glass soak found.** An intent admitted *between* one pass and the
     /// next must survive the residual drain that runs in between. A whole-order walk **pulls** from
     /// every domain — `next_plan_effect` here — so it would take the rider's request, mint the
     /// operation, hand back a command the executor then declines to perform, and leave Navigator
@@ -1422,44 +1585,6 @@ mod tests {
             matches!(effects.navigator.take(), Some(crate::navigator::NavigatorEffect::Acquire { .. })),
             "the plan admitted between the passes reached the executor"
         );
-    }
-
-    /// A typed executor's wake is blind to the legacy mailbox, and the rider's **ride save** lives
-    /// there. `has_pending_residual_command` is what a runtime that sleeps until the next event
-    /// folds in so the close costs one immediate pass rather than one wake — which on a static
-    /// post-Finish screen is the board's watchdog feed cap.
-    ///
-    /// The other half is why it may be folded at all: both classes are **one-shots the drain
-    /// clears**, so the answer goes false again and the loop settles. The two derived cues are
-    /// levels that re-derive on every drain, so `has_pending_host_command` — which includes them —
-    /// would spin forever; this test pins the difference.
-    #[test]
-    fn a_pending_residual_command_is_a_one_shot_a_runtime_can_fold_into_its_wake() {
-        let mut app = App::new(AppState::new(0, 0, 1.0));
-        app.activity.mode = Mode::Riding;
-        quiet(&mut app, 10);
-        assert!(!app.has_pending_residual_command(), "nothing owed on a quiet pass");
-
-        app.activity.request_track(crate::TrackAction::Save);
-        quiet(&mut app, 20);
-        assert!(app.has_pending_residual_command(), "the rider's save is owed to the residual drain");
-
-        let mut mail: crate::HostMailbox = crate::HostMailbox::new();
-        let _ = app.drain_residual_commands(&mut mail);
-        assert!(!app.has_pending_residual_command(), "and the drain clears it — one pass, not a spin");
-
-        // The distinction that makes the narrow predicate necessary: a viewed ride keeps its
-        // derived need up across every drain, because a need is a *level*. Folding that into a wake
-        // would never let the runtime sleep — the residual is one-shots only, which is what makes it
-        // safe to fold.
-        let mut viewing = App::new(AppState::new(0, 0, 1.0));
-        viewing.set_rides(&[ride_summary()], &[7]);
-        viewing.activity.viewed_ride = Some(0);
-        assert!(quiet(&mut viewing, 10).derived_needs.ride_track.is_some(), "the level is up");
-        let mut mail: crate::HostMailbox = crate::HostMailbox::new();
-        let _ = viewing.drain_residual_commands(&mut mail);
-        assert!(quiet(&mut viewing, 20).derived_needs.ride_track.is_some(), "and a drain does not clear it");
-        assert!(!viewing.has_pending_residual_command(), "…but it is not a residual, so the wake is not held");
     }
 
     /// The backpressure rule, end to end: two intents reach the catalog in one pass, it can admit
@@ -1662,15 +1787,23 @@ mod tests {
             .weather
             .try_put(WeatherOutcome::Failed { token: stale.issue(), error: crate::weather::WeatherError::NoData })
             .unwrap();
-        // No machine owns these two, so nothing may act on them.
+        // Recorder owns a token source too, so its answer is consumed — and refused, because the
+        // token is one it never issued.
         let mut recorder_ops: TokenSource<crate::device_core::RecorderTag> = TokenSource::new();
-        let recorder = crate::recorder::RecorderOutcome::Discarded { token: recorder_ops.issue() };
-        outcomes.recorder.try_put(recorder).unwrap();
+        app.test_start_ride();
+        outcomes.recorder.try_put(crate::recorder::RecorderOutcome::Discarded { token: recorder_ops.issue() }).unwrap();
+
+        // Bond has no machine, so nothing may act on its answer.
+        let mut bond_ops: TokenSource<crate::device_core::BondTag> = TokenSource::new();
+        let bond = crate::ble::BondOutcome::Forgotten { token: bond_ops.issue() };
+        outcomes.bond.try_put(bond).unwrap();
 
         let mut none = ExternalFacts::NONE;
         pass_with(&mut app, 20, &[], &mut outcomes, &mut none);
         assert!(app.weather.installed().is_none(), "a token the domain never issued is not an answer");
-        assert_eq!(outcomes.recorder.take(), Some(recorder), "an outcome with no owner is left, never dropped");
+        assert!(app.recording(), "and neither is a recorder token Recorder never issued");
+        assert!(outcomes.recorder.is_empty(), "the owner consumed it, which is what refusing it means");
+        assert_eq!(outcomes.bond.take(), Some(bond), "an outcome with no owner is left, never dropped");
     }
 
     /// The catalog's own outcome frees its operation, so the next intent can go out — the loop that

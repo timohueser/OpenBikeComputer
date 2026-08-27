@@ -239,7 +239,7 @@ impl CompassIcons {
 /// enter the riding view (GPS-follow, zoomed in) and push the Map over the Menu, so `back` returns
 /// here and `press` opens the start card.
 fn open_map(cx: &mut Ctx) -> Transition {
-    if cx.activity.is_tracking() {
+    if cx.recorder.recording() {
         return Transition::Root(Screen::Map(MapScreen::new()));
     }
     // Seed the browse camera on the rider (last fix) if there is one; Follow recenters on each fix.
@@ -580,10 +580,10 @@ mod tests {
     use crate::screen::test_ctx;
     use crate::{AppState, Settings};
 
-    fn run(scr: &mut MenuScreen, act: &mut Activity, g: Gesture) -> Transition {
+    fn run(scr: &mut MenuScreen, act: &mut Activity, rec: &mut crate::RecorderMachine, g: Gesture) -> Transition {
         let mut st = AppState::new(0, 0, 1.0);
         let mut settings = Settings::default();
-        let mut cx = test_ctx(&mut st, act, &mut settings);
+        let mut cx = Ctx { recorder: rec, ..test_ctx(&mut st, act, &mut settings) };
         scr.handle(g, &mut cx)
     }
 
@@ -591,10 +591,11 @@ mod tests {
     /// route-less browse map, reached without a route or session.
     #[test]
     fn map_station_idle_pushes_the_browse_map() {
+        let mut rec = crate::RecorderMachine::new();
         let mut act = Activity::new(Mode::Idle);
         let mut scr = MenuScreen::new();
         scr.dial.selected = 3; // the Map station
-        let t = run(&mut scr, &mut act, Gesture::Press);
+        let t = run(&mut scr, &mut act, &mut rec, Gesture::Press);
         assert!(matches!(t, Transition::Push(Screen::Map(_))), "idle → push the browse Map over the Menu");
     }
 
@@ -602,11 +603,12 @@ mod tests {
     /// the stack to a clean `[Home, Map]` — never a second stacked Map.
     #[test]
     fn map_station_while_tracking_roots_to_the_ride_base() {
+        let mut rec = crate::RecorderMachine::new();
         let mut act = Activity::new(Mode::Riding);
-        act.start_session(); // now tracking
+        rec.test_open(); // now tracking
         let mut scr = MenuScreen::new();
         scr.dial.selected = 3;
-        let t = run(&mut scr, &mut act, Gesture::Press);
+        let t = run(&mut scr, &mut act, &mut rec, Gesture::Press);
         assert!(
             matches!(t, Transition::Root(Screen::Map(_))),
             "tracking → root to [Home, Map] (the idle-return ride-base normalization), not a stacked Map"

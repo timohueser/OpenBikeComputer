@@ -1225,10 +1225,15 @@ mod tests {
 
     // --- Gesture pins ------------------------------------------------------
 
-    fn ctx<'a>(activity: &'a mut Activity, waypoints: &'a Waypoints, corridor: &'a [CorridorPoi]) -> Ctx<'a> {
+    fn ctx<'a>(
+        activity: &'a mut Activity,
+        recorder: &'a mut crate::RecorderMachine,
+        waypoints: &'a Waypoints,
+        corridor: &'a [CorridorPoi],
+    ) -> Ctx<'a> {
         let state = std::boxed::Box::leak(std::boxed::Box::new(AppState::new(0, 0, 1.0)));
         let settings = std::boxed::Box::leak(std::boxed::Box::new(Settings::default()));
-        Ctx { waypoints: waypoints.as_slice(), corridor, ..test_ctx(state, activity, settings) }
+        Ctx { waypoints: waypoints.as_slice(), corridor, recorder, ..test_ctx(state, activity, settings) }
     }
 
     fn riding() -> Activity {
@@ -1242,6 +1247,7 @@ mod tests {
     /// table's index — and a turn takes over from there.
     #[test]
     fn the_list_opens_at_the_first_unpassed_row() {
+        let mut recorder = crate::RecorderMachine::new();
         let w = wpts_detailed(&[(100, "Behind", None, 0), (1_000, "Pass", None, 0)]);
         let p = corridor(&[(600, "Fountain", WATER, 0)]);
         let mut act = riding();
@@ -1250,16 +1256,16 @@ mod tests {
         let rows = Merge::new(w.as_slice(), &p, PoiCategorySet::ALL);
         assert_eq!(screen.cursor(rows, 200, 3), 1, "row 0 is passed; the Fountain is the first ahead");
 
-        screen.handle(Gesture::Step(1), &mut ctx(&mut act, &w, &p));
+        screen.handle(Gesture::Step(1), &mut ctx(&mut act, &mut recorder, &w, &p));
         assert_eq!(screen.selected, Some(2), "a turn steps on from the resolved home row");
-        screen.handle(Gesture::Step(1), &mut ctx(&mut act, &w, &p));
+        screen.handle(Gesture::Step(1), &mut ctx(&mut act, &mut recorder, &w, &p));
         assert_eq!(screen.selected, Some(0), "and wraps over the merged count, not either table's");
 
         // Before the first frame there is no snapshot and (on a fresh route load) no waypoint table
         // either: a turn then leaves the cursor *unresolved*, so the list still opens where it
         // should once the rows arrive.
         let mut fresh = UpAheadScreen::new(200, UpAheadSource::Both);
-        fresh.handle(Gesture::Step(1), &mut ctx(&mut act, &Waypoints::new(), &[]));
+        fresh.handle(Gesture::Step(1), &mut ctx(&mut act, &mut recorder, &Waypoints::new(), &[]));
         assert_eq!(fresh.selected, None, "a step over an empty list keeps the homing");
     }
 
@@ -1270,26 +1276,28 @@ mod tests {
         let w = wpts_detailed(&[(1_000, "Pass", None, 0)]);
         let p = corridor(&[(600, "Fountain", WATER, -220)]);
         let mut act = riding();
-        act.start_session();
-        let session = act.session;
+        let mut recorder = crate::RecorderMachine::new();
+        recorder.test_open();
+        let session = recorder.session();
         let mut screen = UpAheadScreen::new(0, UpAheadSource::Both);
 
         screen.selected = Some(0); // the Fountain
-        match screen.handle(Gesture::Press, &mut ctx(&mut act, &w, &p)) {
+        match screen.handle(Gesture::Press, &mut ctx(&mut act, &mut recorder, &w, &p)) {
             Transition::Push(Screen::PoiDetail(d)) => assert_eq!(d.off_route_m(), Some(-220)),
             _ => panic!("a POI row must open the detail"),
         }
         screen.selected = Some(1); // the waypoint
-        assert!(matches!(screen.handle(Gesture::Press, &mut ctx(&mut act, &w, &p)), Transition::None));
-        assert!(matches!(screen.handle(Gesture::Back, &mut ctx(&mut act, &w, &p)), Transition::Pop));
+        assert!(matches!(screen.handle(Gesture::Press, &mut ctx(&mut act, &mut recorder, &w, &p)), Transition::None));
+        assert!(matches!(screen.handle(Gesture::Back, &mut ctx(&mut act, &mut recorder, &w, &p)), Transition::Pop));
         assert_eq!(act.mode, Mode::Riding);
-        assert_eq!(act.session, session);
+        assert_eq!(recorder.session(), session);
     }
 
     /// Hold opens the picker on the active filter; Press applies it (re-keying the snapshot and
     /// re-homing the cursor); Back cancels, leaving both the filter and the key untouched.
     #[test]
     fn the_picker_applies_on_press_and_cancels_on_back() {
+        let mut recorder = crate::RecorderMachine::new();
         let w = wpts_detailed(&[(1_000, "Pass", None, 0)]);
         let p = corridor(&[]);
         let mut act = riding();
@@ -1297,16 +1305,16 @@ mod tests {
         let before = screen.corridor_key();
         assert_eq!(before.expect("Both asks for a snapshot").anchor_m, 4_000, "the key freezes progress at entry");
 
-        screen.handle(Gesture::Hold, &mut ctx(&mut act, &w, &p));
+        screen.handle(Gesture::Hold, &mut ctx(&mut act, &mut recorder, &w, &p));
         assert_eq!(screen.picker, Some(0), "the picker opens on Everything, the active filter");
-        screen.handle(Gesture::Step(1), &mut ctx(&mut act, &w, &p)); // → Water
-        screen.handle(Gesture::Back, &mut ctx(&mut act, &w, &p));
+        screen.handle(Gesture::Step(1), &mut ctx(&mut act, &mut recorder, &w, &p)); // → Water
+        screen.handle(Gesture::Back, &mut ctx(&mut act, &mut recorder, &w, &p));
         assert_eq!(screen.picker, None, "Back closes the picker");
         assert_eq!(screen.corridor_key(), before, "…and cancels: the snapshot key is untouched");
 
-        screen.handle(Gesture::Hold, &mut ctx(&mut act, &w, &p));
-        screen.handle(Gesture::Step(1), &mut ctx(&mut act, &w, &p));
-        screen.handle(Gesture::Press, &mut ctx(&mut act, &w, &p));
+        screen.handle(Gesture::Hold, &mut ctx(&mut act, &mut recorder, &w, &p));
+        screen.handle(Gesture::Step(1), &mut ctx(&mut act, &mut recorder, &w, &p));
+        screen.handle(Gesture::Press, &mut ctx(&mut act, &mut recorder, &w, &p));
         assert_eq!(screen.picker, None, "applying returns to the list");
         assert_eq!(
             screen.corridor_key(),
@@ -1320,6 +1328,7 @@ mod tests {
     /// screen, and a Press never falls through to a row.
     #[test]
     fn the_open_picker_swallows_navigation() {
+        let mut recorder = crate::RecorderMachine::new();
         let w = wpts_detailed(&[(1_000, "Pass", None, 0)]);
         let p = corridor(&[(600, "Fountain", WATER, 0)]);
         let mut act = riding();
@@ -1327,7 +1336,7 @@ mod tests {
         for g in [Gesture::Step(1), Gesture::Back, Gesture::Press, Gesture::BackHold, Gesture::Hold] {
             screen.picker = Some(3);
             assert!(
-                matches!(screen.handle(g, &mut ctx(&mut act, &w, &p)), Transition::None),
+                matches!(screen.handle(g, &mut ctx(&mut act, &mut recorder, &w, &p)), Transition::None),
                 "{g:?} must not navigate out of the picker"
             );
         }

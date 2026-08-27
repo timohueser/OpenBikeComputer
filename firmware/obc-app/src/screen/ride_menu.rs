@@ -106,10 +106,10 @@ mod tests {
     use crate::screen::{apply, Stack};
     use crate::{AppState, Settings};
 
-    fn station_ctx(activity: &mut Activity) -> Ctx<'_> {
+    fn station_ctx<'a>(activity: &'a mut Activity, rec: &'a mut crate::RecorderMachine) -> Ctx<'a> {
         let state = Box::leak(Box::new(AppState::new(0, 0, 1.0)));
         let settings = Box::leak(Box::new(Settings::default()));
-        test_ctx(state, activity, settings)
+        Ctx { recorder: rec, ..test_ctx(state, activity, settings) }
     }
 
     fn run(scr: &mut RideMenuScreen, g: Gesture) -> Transition {
@@ -119,7 +119,8 @@ mod tests {
         let mut activity = Activity::new(Mode::Riding);
         activity.active_route = Some(0);
         let mut settings = Settings::default();
-        let mut cx = test_ctx(&mut state, &mut activity, &mut settings);
+        let mut rec = crate::RecorderMachine::new();
+        let mut cx = Ctx { recorder: &mut rec, ..test_ctx(&mut state, &mut activity, &mut settings) };
         scr.handle(g, &mut cx)
     }
 
@@ -174,13 +175,14 @@ mod tests {
     /// snapshot's anchor, epic #946 U3) and leaves the recording session exactly as it found it.
     #[test]
     fn up_ahead_station_anchors_on_live_progress_and_preserves_activity() {
+        let mut rec = crate::RecorderMachine::new();
         let mut activity = Activity::new(Mode::Paused);
-        activity.start_session();
+        rec.test_open();
         activity.mode = Mode::Paused;
         activity.progress_m = 4_200;
-        let session = activity.session;
+        let session = rec.session();
         let mut menu = RideMenuScreen::new();
-        match menu.handle(Gesture::Press, &mut station_ctx(&mut activity)) {
+        match menu.handle(Gesture::Press, &mut station_ctx(&mut activity, &mut rec)) {
             Transition::Push(Screen::UpAhead(screen)) => {
                 let key = screen.corridor_key().expect("the default source scope wants a snapshot");
                 assert_eq!(key.anchor_m, 4_200, "the snapshot anchors where the rider is");
@@ -189,18 +191,19 @@ mod tests {
             _ => panic!("the Up ahead station did not push its timeline"),
         }
         assert_eq!(activity.mode, Mode::Paused, "opening ride chrome never resumes/pauses the session");
-        assert_eq!(activity.session, session, "opening the list never starts a new session");
+        assert_eq!(rec.session(), session, "opening the list never starts a new session");
     }
 
     #[test]
     fn skip_replace_then_pop_preserves_each_caller_and_activity() {
         fn round_trip(caller: Screen, paused: bool, caller_matches: impl Fn(&Screen) -> bool) {
+            let mut rec = crate::RecorderMachine::new();
             let mut activity = Activity::new(if paused { Mode::Paused } else { Mode::Riding });
             activity.active_route = Some(0);
             activity.route_total_m = 2_000;
-            activity.start_session();
+            rec.test_open();
             let mode = activity.mode;
-            let session = activity.session();
+            let session = rec.session();
             let mut stack = Stack::new();
             assert!(stack.push(caller).is_ok());
             assert!(stack.push(Screen::RideMenu(RideMenuScreen::new())).is_ok());
@@ -209,7 +212,7 @@ mod tests {
             apply(&mut stack, Transition::Pop);
             assert!(caller_matches(stack.last().unwrap()));
             assert_eq!(activity.mode, mode);
-            assert_eq!(activity.session(), session);
+            assert_eq!(rec.session(), session);
         }
 
         round_trip(Screen::Map(super::super::MapScreen::new()), false, |s| matches!(s, Screen::Map(_)));
