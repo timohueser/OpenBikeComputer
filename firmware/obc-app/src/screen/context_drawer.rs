@@ -38,6 +38,15 @@ const FRAME_MS: u32 = 16;
 const ROW_H: i32 = 44;
 const SHEET_PAD: i32 = 12;
 
+/// The widest table a context may declare.
+///
+/// Two limits meet here and the smaller one wins. The render key carries row availability as a
+/// bitmask in one `u8` ([`ContextDrawerScreen::key`]), and the sheet is a *sheet*: eight rows plus
+/// its padding is 376 px, already past the 320 px panel, so a table that needs more rows needs a
+/// scrolling design decision rather than a wider mask. `pinned_by_the_row_tables` holds every
+/// declared table to it.
+const MAX_ROWS: usize = 8;
+
 // ---- The declarative model ------------------------------------------------------------------
 
 /// What pressing a context row does — a **destination**, not a closure. The drawer resolves it
@@ -127,6 +136,7 @@ pub struct ContextDrawerScreen {
 impl ContextDrawerScreen {
     /// A freshly opened drawer over `menu`, sliding up from `now_ms` with the first row selected.
     pub fn new(now_ms: u32, menu: &'static ContextMenu) -> Self {
+        debug_assert!(menu.rows.len() <= MAX_ROWS, "a context table is a sheet, not a page — see MAX_ROWS");
         ContextDrawerScreen { opened_ms: now_ms, menu, selected: 0, landed: false }
     }
 
@@ -140,7 +150,7 @@ impl ContextDrawerScreen {
     /// drifting off route re-draws the sheet once and a moving map still costs nothing.
     pub(crate) fn key(&self, activity: &Activity, has_nav_graph: bool) -> (u8, u8) {
         let mut live = 0u8;
-        for (i, row) in self.menu.rows.iter().enumerate().take(8) {
+        for (i, row) in self.menu.rows.iter().enumerate().take(MAX_ROWS) {
             if row.action.available(activity, has_nav_graph) {
                 live |= 1 << i;
             }
@@ -345,6 +355,20 @@ mod tests {
         assert_eq!(w.activity.session, session, "…and never starts a new one");
     }
 
+    /// **Every declared table is a sheet, not a page**, and fits the key's availability mask. The
+    /// D4 slices each add a table here; this is where one that outgrew the sheet is caught.
+    #[test]
+    fn pinned_by_the_row_tables() {
+        // One table today; each D4 slice adds its own to this list.
+        let declared: &[&ContextMenu] = &[&RIDE];
+        for menu in declared {
+            assert!(menu.rows.len() <= MAX_ROWS, "{} rows outgrow the availability mask", menu.rows.len());
+            let sheet_h = SHEET_PAD * 2 + ROW_H * menu.rows.len() as i32;
+            assert!(sheet_h <= 240, "a {sheet_h} px sheet is a page — bound it or scroll it first");
+            assert!(!menu.rows.is_empty(), "an empty table must not be declared: the chord shows no empty sheet");
+        }
+    }
+
     /// The sheet arrives monotonically from the bottom and lands exactly on its content height.
     #[test]
     fn the_sheet_slides_up_monotonically_and_lands_exactly() {
@@ -355,6 +379,5 @@ mod tests {
         assert_eq!(frames[0], 0, "nothing is visible on the opening frame");
         assert_eq!(frames[4], target, "and the sheet lands exactly on its height");
         assert!(frames.windows(2).all(|p| p[0] < p[1]), "monotonic: {frames:?}");
-        assert!(target < 240, "the ride sheet stays a sheet, not a page: {target} px");
     }
 }
