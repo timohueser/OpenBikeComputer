@@ -29,13 +29,13 @@ map = "Map"
 weather = "Weather"
 settings = "Settings"
 
-# --- The mid-ride compass, the Up-ahead timeline, and the Detour chooser ---
-[ride_menu]
-title = "RIDE MENU"
+# --- The ride context (the Down+Back sheet on a riding view), the Up-ahead timeline, and the
+# --- Detour chooser. The mid-ride compass that used to own this section is gone (#1515 D3); what
+# --- survives is what its two chooser screens still read, plus the two context row labels.
+[ride_context]
 up_ahead = "Up ahead"
 detour = "Detour"
 inspect_rejoin = "Inspect rejoin"
-main_menu = "Main menu"
 no_route = "No route loaded"
 off_route = "Return to route"
 route_end = "Route ends here"

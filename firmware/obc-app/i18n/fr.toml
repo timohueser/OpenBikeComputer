@@ -17,12 +17,10 @@ weather = "Météo"
 settings = "Réglages"
 
 # --- Le menu boussole en sortie, la liste À venir et le sélecteur Avancer ---
-[ride_menu]
-title = "MENU SORTIE"
+[ride_context]
 up_ahead = "À venir"
 detour = "Détour"
 inspect_rejoin = "Voir reprise"
-main_menu = "Menu principal"
 no_route = "Aucun parcours chargé"
 off_route = "Rejoignez parcours"
 route_end = "Fin du parcours"

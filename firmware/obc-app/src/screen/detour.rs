@@ -268,19 +268,19 @@ impl DetourScreen {
         let w = rx.w - 2 * HUD_MARGIN;
         cv.round(rect(x, y, w, HUD_H), 11, PARCHMENT);
         cv.round_outline(rect(x, y, w, HUD_H), 11, INK);
-        let title = if self.inspecting() { rx.t(Msg::RideMenuInspectRejoin) } else { rx.t(Msg::RideMenuDetour) };
+        let title = if self.inspecting() { rx.t(Msg::RideContextInspectRejoin) } else { rx.t(Msg::RideContextDetour) };
         cv.text(title, Point::new(rx.w / 2, y + 7), Font::Label, TextAlign::Center, INK);
 
         let status = if self.route.is_none() || rx.activity.active_route != self.route {
-            Err(rx.t(Msg::RideMenuNoRoute))
+            Err(rx.t(Msg::RideContextNoRoute))
         } else if !rx.state.has_nav_graph {
-            Err(rx.t(Msg::RideMenuNoNav))
+            Err(rx.t(Msg::RideContextNoNav))
         } else if rx.activity.off_route {
-            Err(rx.t(Msg::RideMenuOffRoute))
+            Err(rx.t(Msg::RideContextOffRoute))
         } else if let Some(m) = self.actual_detour_m() {
             Ok(distance_short(m, rx.settings.units))
         } else {
-            Err(rx.t(Msg::RideMenuRouteEnd))
+            Err(rx.t(Msg::RideContextRouteEnd))
         };
         match status {
             Ok(dist) => {

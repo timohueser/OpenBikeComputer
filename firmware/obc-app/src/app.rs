@@ -22,7 +22,9 @@ use crate::placement::define_placement_constructors;
 use crate::ride::RideSummary;
 use crate::ride_engine::RideEngine;
 use crate::route::RouteSummary;
-use crate::screen::{self, Ctx, MapScreen, QuickDrawerScreen, Render, RenderFrame, Screen, WarningFlags};
+use crate::screen::{
+    self, ContextDrawerScreen, Ctx, MapScreen, MenuScreen, QuickDrawerScreen, Render, RenderFrame, Screen, WarningFlags,
+};
 use crate::settings::{DateTime, Settings};
 use crate::ui_runtime::UiRuntime;
 use crate::wall_clock::WallClock;
@@ -307,34 +309,33 @@ impl AppState {
         }
     }
 
-    /// Toggle Move ↔ Zoom (Select tap). No-op when not panning.
-    pub fn toggle_pan_tool(&mut self) {
-        if let Some(pan) = self.pan.as_mut() {
-            pan.tool = match pan.tool {
-                PanTool::Move => PanTool::Zoom,
-                PanTool::Zoom => PanTool::Move,
-            };
-        }
-    }
-
-    /// Toggle the movement **family** Route ↔ Free (Back hold). The last Free axis is restored, so
-    /// changing families never also changes axis. Back hold is authoritative even from Zoom: the
-    /// destination always opens in Move, avoiding a dead-feeling hold and a second gesture. With no
-    /// active route it can only leave Zoom for Free Move; in Free Move it remains a no-op.
-    pub fn toggle_pan_family(&mut self, has_route: bool) {
-        if let Some(pan) = self.pan.as_mut() {
-            if !has_route {
-                pan.tool = PanTool::Move;
-                return;
-            }
-            if pan.basis == PanBasis::Route {
-                pan.basis = pan.last_free_basis;
-            } else {
+    /// Advance the pan **mode ring** (Select tap): Route Move → Free Move → Zoom → Route Move.
+    /// No-op when not panning.
+    ///
+    /// One ring replaced two gestures in #1515 D3. The movement family used to be a Back-hold, and
+    /// Back-hold is the global escape now — so the family joined the tool on the tap that already
+    /// switched modes, rather than moving onto a hold pan mode does not have spare. Without a route
+    /// the ring is its two remaining stations, Free Move ↔ Zoom, which is exactly the toggle a
+    /// route-less pan had before. Leaving Free remembers the axis, so a lap of the ring comes back
+    /// to the axis the rider was using instead of silently changing it.
+    pub fn cycle_pan_mode(&mut self, has_route: bool) {
+        let Some(pan) = self.pan.as_mut() else { return };
+        match (pan.tool, pan.basis) {
+            // Route Move → Free Move, on the axis last used.
+            (PanTool::Move, PanBasis::Route) => pan.basis = pan.last_free_basis,
+            // Free Move → Zoom, keeping the axis for the lap back.
+            (PanTool::Move, _) => {
                 pan.last_free_basis = pan.basis;
-                pan.basis = PanBasis::Route;
-                pan.route_camera_dirty = true;
+                pan.tool = PanTool::Zoom;
             }
-            pan.tool = PanTool::Move;
+            // Zoom → Route Move; with no route the ring closes straight back onto Free Move.
+            (PanTool::Zoom, _) => {
+                pan.tool = PanTool::Move;
+                if has_route {
+                    pan.basis = PanBasis::Route;
+                    pan.route_camera_dirty = true;
+                }
+            }
         }
     }
 
@@ -1080,7 +1081,7 @@ impl App {
     ///   chooser such as Skip ahead is never yanked out.
     /// - **Exit** (`Some → None`): replace a Climb screen anywhere in the stack with Map, without
     ///   dismissing chrome or an interactive chooser above it. Usually Climb is the top; the wider
-    ///   repair matters when Ride menu or Skip ahead was opened from Climb before the crest. Either
+    ///   repair matters when the ride context or Skip ahead was opened from Climb before the crest. Either
     ///   way, returning later cannot reveal a stale "No climb" panel. This runs regardless of mode:
     ///   once the climb ends there's nothing for that screen to show.
     ///
@@ -2214,11 +2215,22 @@ impl App {
         }
         match chord {
             Chord::Quick => self.toggle_drawer(Screen::QuickDrawer(QuickDrawerScreen::new(self.ui.now_ms))),
-            // D3 gives the contextual drawer its declarative per-screen content. Until then the
-            // chord is recognised — so a Down+Back squeeze can never leak a step and a Back — and
-            // deliberately does nothing on every screen.
-            Chord::Context => false,
+            // The contextual sheet exists only where content is declared (#1515 D3): a base screen
+            // that names no [`ContextMenu`](crate::screen::ContextMenu) gets nothing, not an empty
+            // drawer. The squeeze is still swallowed by the recogniser, so it can never leak a step
+            // and a Back on the way to doing nothing.
+            Chord::Context => match self.base_context() {
+                Some(menu) => self.toggle_drawer(Screen::ContextDrawer(ContextDrawerScreen::new(self.ui.now_ms, menu))),
+                None => false,
+            },
         }
+    }
+
+    /// The [`ContextMenu`](crate::screen::ContextMenu) the **base** screen declares — the lowest
+    /// non-overlay row, so a sheet already up does not hide the content the chord is asking about
+    /// (which is what makes the same chord close the context drawer again).
+    fn base_context(&self) -> Option<&'static crate::screen::ContextMenu> {
+        self.ui.stack.iter().rev().find(|s| !s.is_overlay()).and_then(|s| s.context())
     }
 
     /// Put `drawer` on the stack, taking off whatever drawer was already there. A repeat of the
@@ -2737,6 +2749,49 @@ impl App {
         let _ = self.apply_gesture_reporting_stack_change(g);
     }
 
+    /// **The global escape** (#1515 D3): a completed Back-hold leaves whatever the rider is on and
+    /// lands on the main [`Menu`](crate::screen::MenuScreen). Reports whether the stack moved.
+    ///
+    /// Three rules, and they are the whole of it:
+    ///
+    /// * **Any sheet goes with it.** A drawer is not a place to come back to, so an open quick or
+    ///   contextual drawer is popped first — which is what makes the escape work from a drawer
+    ///   subpage, including the power confirmation D2 could not leave.
+    /// * **A decision the rider must answer keeps its answer.** The declared
+    ///   [`Caps::blocks_escape`](crate::screen::Caps) set refuses it, as does the terminal
+    ///   powering-off frame, whose own contract is that nothing dismisses it.
+    /// * **It never stacks a second Menu.** Escaping from the Menu is already where the escape
+    ///   goes, so it does nothing rather than growing the stack on a repeated squeeze of the bar.
+    ///
+    /// It **pushes** rather than roots: Back out of the Menu returns to the riding view the rider
+    /// escaped from, which is the one thing the compass ride menu got right and is worth keeping.
+    fn escape_to_menu(&mut self) -> bool {
+        // Asked of the **base**, not of `stack.last()`: a sheet the rider opened over a card they
+        // must answer is not consent to walk away from the card. A host-pushed blocking modal is
+        // itself the base (it is no overlay), so it still answers for itself.
+        let base = self.ui.stack.iter().rev().find(|s| !s.is_overlay());
+        if base.is_some_and(|s| s.caps().blocks_escape) || self.power_off_requested() {
+            return false;
+        }
+        let mut changed = false;
+        while self.ui.stack.last().is_some_and(|s| s.is_overlay()) {
+            self.ui.stack.pop();
+            changed = true;
+        }
+        if !matches!(self.ui.stack.last(), Some(Screen::Menu(_))) {
+            screen::apply(&mut self.ui.stack, screen::Transition::Push(Screen::Menu(MenuScreen::new())));
+            changed = true;
+        }
+        // The corridor snapshot follows the stack: escaping off the Up-ahead timeline disarms its
+        // query exactly as a Back would.
+        self.ui.reconcile_corridor(false);
+        if changed {
+            self.ui.input.cancel_holds();
+            self.ui.hold_cancel_pending = true;
+        }
+        changed
+    }
+
     /// [`apply_gesture`](App::apply_gesture), reporting whether the transition **changed the screen
     /// stack** — the fact [`apply_gesture_batch`](App::apply_gesture_batch) needs to apply #480's
     /// drop rule without consuming the hold-cancel latch a second input plane still owns.
@@ -2749,6 +2804,11 @@ impl App {
         // `apply_idle_return`). A gesture the screen ignores still counts — a step on Home, say.
         self.ui.last_input_ms = self.ui.now_ms;
         self.ui.idle_return_timing = true;
+        // **The global escape** (#1515 D3): Back-hold reaches the main menu from anywhere, so it is
+        // resolved here, above screen dispatch, and no screen binds it any more.
+        if g == Gesture::BackHold {
+            return self.escape_to_menu();
+        }
         // Snapshot the settings so a settings-screen edit is detected by one `==` (Settings is
         // `Copy + Eq`). A change flags a save for the host to pick up via `take_settings_dirty`.
         let settings_before = self.settings;
@@ -4627,9 +4687,10 @@ mod tests {
 
     // --- device warning card (issue #504) ---
 
-    /// The deepest ordinary mid-ride settings path leaves the same two-slot reserve the stack had
-    /// before the ride-scoped and main-menu ancestors were added. Walk the real navigation with
-    /// gestures, then prove a host-pushed warning can still land instead of being silently dropped.
+    /// The deepest ordinary mid-ride settings path leaves room for the host's cards. Walk the real
+    /// navigation with gestures, then prove a host-pushed warning can still land instead of being
+    /// silently dropped. The path lost a slot with the compass ride menu (#1515 D3): the global
+    /// escape lands the Menu directly on the riding view instead of on a screen in between.
     #[test]
     fn deepest_mid_ride_settings_path_keeps_room_for_host_warning() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
@@ -4641,9 +4702,7 @@ mod tests {
         app.apply_gesture(Gesture::Press); // START → [Home, Map]
         assert!(matches!(app.top_screen(), Screen::Map(_)));
 
-        app.apply_gesture(Gesture::BackHold); // Map → Ride menu
-        app.apply_gesture(Gesture::Step(-1)); // Waypoints → Main menu
-        app.apply_gesture(Gesture::Press); // Ride menu → Menu (Push, preserving ride caller)
+        app.apply_gesture(Gesture::BackHold); // the global escape: Map → Menu (Push, ride caller kept)
         app.apply_gesture(Gesture::Step(-1)); // Routes → Settings
         app.apply_gesture(Gesture::Press); // Menu → Settings
         app.apply_gesture(Gesture::Press); // Settings → Ride
@@ -4654,11 +4713,11 @@ mod tests {
         app.apply_gesture(Gesture::Press); // Fields → Add field
 
         assert!(matches!(app.top_screen(), Screen::AddField(_)), "the deepest normal path is open");
-        assert_eq!(app.ui.stack.len(), 8, "the full mid-ride settings path occupies eight slots");
-        assert_eq!(crate::screen::MAX_DEPTH - app.ui.stack.len(), 2, "two host-card slots stay reserved");
+        assert_eq!(app.ui.stack.len(), 7, "the full mid-ride settings path occupies seven slots");
+        assert_eq!(crate::screen::MAX_DEPTH - app.ui.stack.len(), 3, "three host-card slots stay reserved");
 
         app.on_warning(WarningFlags::REC_ERROR);
-        assert_eq!(app.ui.stack.len(), 9, "the host warning pushes over the deepest normal path");
+        assert_eq!(app.ui.stack.len(), 8, "the host warning pushes over the deepest normal path");
         match app.top_screen() {
             Screen::Warning(w) => assert!(w.flags().contains(WarningFlags::REC_ERROR)),
             _ => panic!("the recording-error warning must not be dropped at maximum normal depth"),
@@ -4807,8 +4866,8 @@ mod tests {
             "the cache holds the scratch while nothing else wants it"
         );
 
-        app.apply_gesture(Gesture::BackHold); // → the ride menu
-        app.apply_gesture(Gesture::Press); // → Up ahead (the north station)
+        assert!(app.apply_chord(crate::input::Chord::Context)); // → the ride context sheet
+        app.apply_gesture(Gesture::Press); // → Up ahead (its first row)
         assert!(matches!(app.top_screen(), Screen::UpAhead(_)));
         app.advance_animations(InputClock(2_000));
         assert_eq!(
@@ -5468,9 +5527,9 @@ mod tests {
         app.activity.active_route = Some(0);
         app.activity.route_total_m = 50_000;
 
-        app.apply_gesture(Gesture::BackHold); // [Home, Climb, RideMenu]
-        app.apply_gesture(Gesture::Step(1));
-        app.apply_gesture(Gesture::Press); // RideMenu Replace → [Home, Climb, Detour]
+        assert!(app.apply_chord(crate::input::Chord::Context)); // [Home, Climb, ContextDrawer]
+        app.apply_gesture(Gesture::Step(1)); // → the Detour row
+        app.apply_gesture(Gesture::Press); // the row replaces the sheet → [Home, Climb, Detour]
         assert!(matches!(app.top_screen(), Screen::Detour(_)));
 
         let src = SliceSource(GRIMSEL);

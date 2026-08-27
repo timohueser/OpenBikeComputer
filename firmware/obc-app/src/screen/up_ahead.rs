@@ -289,7 +289,7 @@ fn side_hint(offset_m: i32, units: Units) -> Option<(bool, heapless::String<12>)
 #[derive(Debug)]
 pub struct UpAheadScreen {
     /// The highlighted merged row, or `None` before the first frame resolves "the first unpassed
-    /// entry" (the merge — and therefore that index — isn't knowable when the ride menu pushes
+    /// entry" (the merge — and therefore that index — isn't knowable when the context row opens
     /// this screen: the corridor snapshot lands a frame later).
     selected: Option<usize>,
     /// The active category filter; [`PoiCategorySet::ALL`] is "Everything", which the list always
@@ -427,9 +427,9 @@ impl UpAheadScreen {
             &View {
                 w: rx.w,
                 h: rx.h,
-                title: rx.t(Msg::RideMenuUpAhead),
+                title: rx.t(Msg::RideContextUpAhead),
                 copy: EmptyCopy {
-                    no_route: rx.t(Msg::RideMenuNoRoute),
+                    no_route: rx.t(Msg::RideContextNoRoute),
                     no_route_sub: rx.t(Msg::UpAheadNoRouteSub),
                     none: rx.t(Msg::UpAheadNone),
                     none_sub: rx.t(Msg::UpAheadNoneSub),
@@ -1173,7 +1173,7 @@ mod tests {
 
         let (poi_only, rec) = drawn(UpAheadSource::MapPoisOnly);
         assert!(poi_only.iter().any(|s| s == "Fountain"));
-        assert!(!poi_only.iter().any(|s| s == "Pass"), "the waypoint plan leaves the ride menu entirely");
+        assert!(!poi_only.iter().any(|s| s == "Pass"), "the waypoint plan leaves the timeline entirely");
         assert!(
             !rec.triangles.iter().any(|(c, ..)| *c == palette::AMBER),
             "…taking the amber custom-source cue with it (the cursor's own fill is a round, not a triangle)"

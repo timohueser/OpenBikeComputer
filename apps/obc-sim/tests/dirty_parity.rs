@@ -336,13 +336,14 @@ fn tap(b: Button) -> [InputEvent; 2] {
     [InputEvent::Button(ButtonEvent::Down(b)), InputEvent::Button(ButtonEvent::Up(b))]
 }
 
-/// A long press takes three frames: the button goes down, an empty frame past the threshold fires
-/// the `Hold`/`BackHold`, and the release lands after it.
-fn hold_down(b: Button) -> InputEvent {
-    InputEvent::Button(ButtonEvent::Down(b))
-}
 fn release(b: Button) -> InputEvent {
     InputEvent::Button(ButtonEvent::Up(b))
+}
+
+/// A **chord**: the two buttons pressed together, inside the recognizer's window. Their releases
+/// land in the following step, which is what clears the latch.
+fn squeeze(a: Button, b: Button) -> [InputEvent; 2] {
+    [InputEvent::Button(ButtonEvent::Down(a)), InputEvent::Button(ButtonEvent::Down(b))]
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -660,20 +661,20 @@ fn replay() -> Vec<Step> {
     // advances — so nothing about the *stack* moves and no fix-driven map key is even built. Before
     // this row declared its own key, the only thing that refreshed the figures was the next-waypoint
     // dirty site, which fired on a waypoint crossing rather than on the distances actually moving.
-    steps.push(step("open the ride menu", 76_100).keys(&[hold_down(Button::Back)]));
-    steps.push(step("the back-hold fires", 76_700).expect("RideMenu"));
-    steps.push(step("release", 76_800).keys(&[release(Button::Back)]));
-    steps.push(step("press the Up ahead station", 77_000).keys(&tap(Button::Select)).expect("UpAhead"));
+    steps.push(step("squeeze the ride context open", 76_100).keys(&squeeze(Button::Down, Button::Back)));
+    steps.push(step("the sheet settles", 76_700).expect("ContextDrawer"));
+    steps.push(step("release the squeeze", 76_800).keys(&[release(Button::Back), release(Button::Down)]));
+    steps.push(step("press the Up ahead row", 77_000).keys(&tap(Button::Select)).expect("UpAhead"));
     steps.push(step("the corridor snapshot settles", 77_100).expect("UpAhead"));
     steps.push(step("quiet on the timeline", 77_200).expect("UpAhead"));
     steps.push(step("the rider advances under the timeline", 77_500).fix(20).expect("UpAhead"));
     steps.push(step("and again", 78_000).fix(21).expect("UpAhead"));
     steps.push(step("quiet again", 78_200).expect("UpAhead"));
-    steps.push(step("leave the timeline", 78_400).keys(&tap(Button::Back)).expect("RideMenu"));
-    steps.push(step("leave the ride menu", 78_600).keys(&tap(Button::Back)).expect("Map"));
+    // One Back, not two: the row replaced the sheet rather than stacking over it.
+    steps.push(step("leave the timeline", 78_400).keys(&tap(Button::Back)).expect("Map"));
 
     // --- the freeze banner ----------------------------------------------------------------------
-    // Between leaving the ride menu (78_600) and the first card (79_000): the clock is monotonic
+    // Between leaving the timeline (78_400) and the first card (79_000): the clock is monotonic
     // across the whole replay, which is what lets its timers — the no-fix window, the sensor
     // staleness gate, the gauge cadence, the popup auto-close — fire from the clock itself.
     steps.push(step("a planner run starts (freeze on)", 78_700).feed(|app| app.debug_set_plan_live(true)));

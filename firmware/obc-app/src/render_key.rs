@@ -215,8 +215,14 @@ pub(crate) struct DrawerKey {
     selected: u8,
     staged: u8,
     /// The committed brightness the editor marks while the rider browses alternatives — the one
-    /// device fact a drawer draws that is not its own.
+    /// device fact the quick drawer draws that is not its own.
     committed: u8,
+    /// Which of the sheet's rows are live, as a bitmask — the contextual drawer's equivalent of
+    /// `committed`, and the only other base-derived fact a drawer draws. It is the *cue*, not the
+    /// route/graph/off-route values behind it, so a rider drifting off the route redraws the sheet
+    /// once and a moving map under it still costs nothing. `0` for the quick drawer, whose controls
+    /// are always available.
+    enabled: u8,
 }
 
 /// One pass's answer: the visible stack's shape, plus the exact facts each declared kind names.
@@ -248,6 +254,10 @@ pub(crate) struct RenderKey {
 // what they draw instead of a host asking for the repaint by hand. `Option<DrawerKey>` (#1547) is
 // 8 B, and it cost nothing while the struct still had a spare word of padding; `WeatherKey` takes
 // that word, so on the merged tree the drawer pays for itself. Neither slice alone measures 304.
+//
+// **#1515 D3 added `DrawerKey::enabled` and the figure did not move**: `Option<DrawerKey>` was five
+// `u8` inside an eight-byte slot, so the sixth is padding that was already paid for. Measured, not
+// reasoned: 304 on the same 64-bit host.
 const _: () =
     assert!(core::mem::size_of::<RenderKey>() <= 304, "a render key is the visible facts, not a copy of the app state");
 
@@ -314,7 +324,13 @@ impl App {
         self.ui.stack.iter().find_map(|screen| match screen {
             Screen::QuickDrawer(d) => {
                 let (page, selected, staged) = d.key();
-                Some(DrawerKey { page, selected, staged, committed: self.settings().brightness })
+                Some(DrawerKey { page, selected, staged, committed: self.settings().brightness, enabled: 0 })
+            }
+            Screen::ContextDrawer(d) => {
+                let (selected, enabled) = d.key(&self.activity, self.state.has_nav_graph);
+                // The contextual sheet has one page and edits no value yet — the D4 slices are what
+                // give those two fields something to say here.
+                Some(DrawerKey { page: 0, selected, staged: 0, committed: 0, enabled })
             }
             _ => None,
         })
@@ -434,6 +450,7 @@ mod tests {
                 ("Sensors", RenderKeyKind::SensorSettings),
                 ("SensorScan", RenderKeyKind::SensorSettings),
                 ("QuickDrawer", RenderKeyKind::Drawer),
+                ("ContextDrawer", RenderKeyKind::Drawer),
             ],
             "the dynamic rows, in table order — add a row here when a screen starts drawing a live fact"
         );
@@ -593,6 +610,79 @@ mod tests {
         assert_ne!(uncovered, covered, "the close is the one invalidation");
         assert!(uncovered.drawer.is_none() && uncovered.map.is_some(), "…and the base is back in the key");
         assert_eq!(app.render_key(), uncovered, "exactly one: the next frame asks for nothing");
+    }
+
+    // ---- The same three properties for the **contextual** drawer ---------------------------
+
+    /// `[Home, Map]` with the ride context sheet squeezed open on top.
+    fn map_under_the_context_sheet() -> App {
+        let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
+        assert!(app.apply_chord(crate::input::Chord::Context), "the riding Map declares a context");
+        app
+    }
+
+    /// **The context sheet shadows the base too.** The kind is declared on the row, not on the
+    /// drawer's identity, so the frozen base is one rule and not two.
+    #[test]
+    fn a_context_sheet_leaves_every_base_fact_out_of_the_key() {
+        let app = map_under_the_context_sheet();
+        let key = app.render_key();
+        assert!(key.drawer.is_some(), "the sheet names its own facts");
+        assert!(key.map.is_none() && key.home.is_none() && key.stats.is_none() && key.climb.is_none());
+        assert!(key.sensors.is_none() && key.weather.is_none() && key.up_ahead.is_none());
+        assert_eq!(key.shape.len(), 2, "Map + the sheet above it");
+    }
+
+    /// **Nothing under the context sheet dirties the frame** — and, unlike the quick drawer, this
+    /// one draws a fact derived from the base, so the case is worth its own assertion: the camera,
+    /// the fix and the battery all move while the rows' availability does not.
+    #[test]
+    fn moving_the_camera_under_the_context_sheet_does_not_move_the_key() {
+        let mut app = map_under_the_context_sheet();
+        let quiet = app.render_key();
+        app.state.cam_lon += 5_000;
+        app.state.zoom = 3.0;
+        app.state.user_fix = Some(obc_ports::Fix::at(1_000, 2_000));
+        app.state.device.battery_pct = 9;
+        app.activity.progress_m += 900;
+        assert_eq!(app.render_key(), quiet, "a moving map under a sheet asks for no repaint");
+    }
+
+    /// …but a row **going inert** is a pixel the sheet draws, so that one does move the key. The
+    /// cue, not the values behind it: the same economy the map base's low-battery glyph gets.
+    #[test]
+    fn a_row_going_inert_under_the_sheet_moves_the_key() {
+        let mut app = map_under_the_context_sheet();
+        app.activity.active_route = Some(0);
+        app.state.has_nav_graph = true;
+        let live = app.render_key();
+        app.activity.off_route = true;
+        assert_ne!(app.render_key(), live, "the Detour row went recessed — the sheet must redraw");
+        app.activity.off_route = false;
+        assert_eq!(app.render_key(), live, "…and back on route is the same sheet again");
+    }
+
+    /// **Closing the context sheet costs exactly one invalidation**, like closing the quick one.
+    #[test]
+    fn closing_the_context_sheet_invalidates_the_base_exactly_once() {
+        let mut app = map_under_the_context_sheet();
+        app.state.cam_lon += 5_000; // moved invisibly while the sheet was up
+        let covered = app.render_key();
+        assert!(app.apply_chord(crate::input::Chord::Context), "the same chord closes it");
+        let uncovered = app.render_key();
+        assert_ne!(uncovered, covered, "the close is the one invalidation");
+        assert!(uncovered.drawer.is_none() && uncovered.map.is_some(), "…and the base is back in the key");
+        assert_eq!(app.render_key(), uncovered, "exactly one: the next frame asks for nothing");
+    }
+
+    /// The two sheets are **different frames**: the shape carries which drawer is up, so swapping
+    /// one for the other repaints even though both fill the same key slot.
+    #[test]
+    fn the_two_sheets_are_told_apart_by_the_shape() {
+        let mut app = map_under_the_context_sheet();
+        let context = app.render_key();
+        assert!(app.apply_chord(crate::input::Chord::Quick), "the other chord swaps the sheet");
+        assert_ne!(app.render_key(), context, "a different sheet is a different frame");
     }
 
     /// …but the map base *does* draw the low-battery glyph, so the pass must see the threshold

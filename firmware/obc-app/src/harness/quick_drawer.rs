@@ -112,16 +112,20 @@ fn a_blocking_modal_refuses_the_chord() {
     assert!(matches!(app.top_screen(), Screen::DfuInstalling(_)), "nothing opens over the install card");
 }
 
-/// The **contextual** chord is recognised — so a Down+Back squeeze can never leak a step and a
-/// Back onto the screen under it — and, until D3 declares content for it, does nothing at all.
+/// The **contextual** chord reaches the app as one chord: over the riding Map it opens the ride
+/// sheet and leaks neither a step nor a Back-tap onto the map under it (a leaked Back mid-ride
+/// would have swapped the view to Statistics, which is what makes this checkable at all).
 #[test]
-fn the_context_chord_is_swallowed_and_does_nothing() {
+fn the_context_chord_opens_the_ride_sheet_and_leaks_nothing() {
     let mut app = lit();
     let mut f = Frames::new();
     let depth = app.debug_stack_len();
-    chord(&mut app, &mut f, Button::Down, Button::Back, 1_000);
-    assert_eq!(app.debug_stack_len(), depth, "no sheet, and no Back-tap either");
-    assert!(matches!(app.top_screen(), Screen::Map(_)), "the squeeze changed nothing");
+    let ms = chord(&mut app, &mut f, Button::Down, Button::Back, 1_000);
+    assert_eq!(app.debug_stack_len(), depth + 1, "the sheet, and only the sheet");
+    assert!(matches!(app.top_screen(), Screen::ContextDrawer(_)));
+    chord(&mut app, &mut f, Button::Down, Button::Back, ms);
+    assert!(matches!(app.top_screen(), Screen::Map(_)), "the same squeeze closes it, back onto the Map");
+    assert_eq!(app.debug_stack_len(), depth);
 }
 
 /// **Mutual exclusion**, at the one door: with the quick sheet up, the reserved squeezes do not

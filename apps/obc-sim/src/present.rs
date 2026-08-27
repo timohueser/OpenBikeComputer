@@ -1087,8 +1087,8 @@ mod tests {
         player.seek(1500.0);
         player.play();
         until_then_dwell!(&mut app, "reroute: Map", Screen::Map(_), 60);
-        app.apply_gesture(Gesture::BackHold);
-        until_then_dwell!(&mut app, "reroute: RideMenu", Screen::RideMenu(_), 300);
+        app.apply_chord(obc_app::Chord::Context);
+        until_then_dwell!(&mut app, "reroute: ContextDrawer", Screen::ContextDrawer(_), 300);
         app.apply_gesture(Gesture::Step(2));
         app.apply_gesture(Gesture::Press);
         until_then_dwell!(&mut app, "reroute: PoiMenu", Screen::PoiMenu(_), 45);
