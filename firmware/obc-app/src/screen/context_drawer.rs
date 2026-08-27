@@ -260,6 +260,7 @@ impl ContextDrawerScreen {
 mod tests {
     use super::*;
     use crate::activity::Mode;
+    use crate::recorder::RecorderMachine;
     use crate::screen::test_ctx;
     use crate::{Activity, AppState, Settings};
 
@@ -267,6 +268,9 @@ mod tests {
         state: AppState,
         activity: Activity,
         settings: Settings,
+        /// The ride the rider is on, so a row press can be held to leaving it alone (#1554 moved
+        /// the session out of `Activity` and into this machine).
+        recorder: RecorderMachine,
     }
 
     impl World {
@@ -276,11 +280,17 @@ mod tests {
             state.has_nav_graph = true;
             let mut activity = Activity::new(Mode::Riding);
             activity.active_route = Some(0);
-            World { state, activity, settings: Settings::default() }
+            World { state, activity, settings: Settings::default(), recorder: RecorderMachine::new() }
         }
 
         fn press(&mut self, d: &mut ContextDrawerScreen, g: Gesture) -> Transition {
-            d.handle(g, &mut test_ctx(&mut self.state, &mut self.activity, &mut self.settings))
+            d.handle(
+                g,
+                &mut Ctx {
+                    recorder: &mut self.recorder,
+                    ..test_ctx(&mut self.state, &mut self.activity, &mut self.settings)
+                },
+            )
         }
     }
 
@@ -358,11 +368,10 @@ mod tests {
     #[test]
     fn up_ahead_anchors_on_live_progress_and_preserves_the_session() {
         let mut w = World::riding();
-        w.activity.mode = Mode::Paused;
-        w.activity.start_session();
+        w.recorder.test_open();
         w.activity.mode = Mode::Paused;
         w.activity.progress_m = 4_200;
-        let session = w.activity.session;
+        let session = w.recorder.session();
         let mut d = drawer();
         match w.press(&mut d, Gesture::Press) {
             Transition::Replace(Screen::UpAhead(screen)) => {
@@ -373,7 +382,9 @@ mod tests {
             _ => panic!("the Up ahead row did not open its timeline"),
         }
         assert_eq!(w.activity.mode, Mode::Paused, "opening ride chrome never resumes/pauses the session");
-        assert_eq!(w.activity.session, session, "…and never starts a new one");
+        assert!(w.recorder.recording(), "…and never closes the open ride");
+        assert_eq!(w.recorder.session(), session, "…nor starts a new one");
+        assert_eq!(w.recorder.test_take_intent(), None, "a row press names no recorder intent at all");
     }
 
     /// **Every declared table is a sheet, not a page**, and fits the key's availability mask. The

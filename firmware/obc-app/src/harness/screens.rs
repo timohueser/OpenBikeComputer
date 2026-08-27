@@ -194,14 +194,15 @@ fn the_two_drawers_swap_rather_than_stack() {
 #[test]
 fn the_ride_context_opens_over_a_paused_ride_without_touching_the_session() {
     let mut app = App::new(AppState::new(0, 0, 1.0));
-    app.activity.start_session();
+    app.test_start_ride();
     apply(&mut app.ui.stack, Transition::Push(Screen::RideControl(RideControl::new())));
     app.activity.mode = Mode::Paused;
-    let session = app.activity.session;
+    let session = app.ride_session();
     assert!(app.apply_chord(crate::input::Chord::Context));
     assert!(matches!(app.top_screen(), Screen::ContextDrawer(_)));
     assert_eq!(app.activity.mode, Mode::Paused);
-    assert_eq!(app.activity.session, session);
+    assert!(app.recording(), "the sheet opened over an open ride and left it open");
+    assert_eq!(app.ride_session(), session, "…on the same session");
 }
 
 /// Whole-App ride-chrome path: Map -> the context sheet -> press **Up ahead** (epic #946, U3); row
@@ -368,6 +369,7 @@ fn menu_needle_sweep_arms_then_settles() {
 
 #[test]
 fn home_press_opens_the_menu_and_a_step_is_ignored() {
+    let mut rec = RecorderMachine::new();
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Idle));
     let p = HomeScreen::new().handle(Gesture::Press, &mut ctx(&mut st, &mut act, &mut rec));
     assert!(matches!(p, Transition::Push(Screen::Menu(_))), "press opens the Menu");
@@ -1000,6 +1002,7 @@ fn pan_press_toggles_move_and_zoom() {
 /// the Route/Free switch joined the tool on the tap that already changed mode.
 #[test]
 fn the_pan_ring_walks_route_move_free_move_and_zoom() {
+    let mut rec = RecorderMachine::new();
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Riding));
     act.active_route = Some(0);
     act.progress_m = 500;
@@ -1036,6 +1039,7 @@ fn the_pan_ring_walks_route_move_free_move_and_zoom() {
 /// route-less pan had before the family joined the tap. Select-hold alternates the Free axes.
 #[test]
 fn the_route_less_pan_ring_is_free_move_and_zoom() {
+    let mut rec = RecorderMachine::new();
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Riding));
     st.enter_pan(false, 0);
     let mode = |st: &AppState| (st.pan.unwrap().basis, st.pan.unwrap().tool);
@@ -1072,6 +1076,7 @@ fn pan_route_steps_move_and_clamp_progress() {
 /// Back tap is the reserved, one-gesture exit to Follow and implicitly recenters.
 #[test]
 fn pan_back_exits_and_recenters() {
+    let mut rec = RecorderMachine::new();
     let (mut st, mut act) = (AppState::new(0, 0, 4.0), Activity::new(Mode::Riding));
     st.user_fix = Some(Fix::at(5000, 7000));
     st.enter_pan(false, 0);
@@ -1392,6 +1397,7 @@ fn nothing_cancels_a_shutdown_already_in_progress() {
     app.on_warning(WarningFlags::REC_ERROR);
     assert!(app.power_off_requested(), "a host card must not cancel a shutdown in progress");
     assert!(matches!(app.top_screen(), Screen::QuickDrawer(_)), "the panel keeps the powering-off frame");
+
 }
 
 /// **A drawer is transient chrome: nothing lands on top of one.** A host card arriving over an open
