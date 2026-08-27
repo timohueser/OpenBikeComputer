@@ -1370,8 +1370,15 @@ fn main() {
         if let Some((level, age)) = args.route_retention {
             let now = app.wall_unix_now();
             let last_used = age.map_or(0, |secs| now.saturating_sub(secs));
-            let meta = obc_app::RouteRetentionMeta::new(obc_app::Retention::from_u8(level), last_used);
-            let metas = vec![meta; app.route_metas().len()];
+            // Into the **sidecar**, not straight onto the app: that is where the board reads it
+            // from, and it is what makes the injection survive the catalog re-read the device's
+            // first pass orders. Overlaying the app's copy alone reverted on that read.
+            let ids: Vec<_> = store.ids().to_vec();
+            for id in ids {
+                store.set_retention(id, obc_app::Retention::from_u8(level));
+                store.stamp_route_used(id, last_used);
+            }
+            let metas = store.retention_metas();
             app.set_route_meta(&metas);
         }
         // Scan the `.obt` trips beside the routes (epic #526, TR2) — grouped-route folders. Fed
@@ -1492,12 +1499,12 @@ fn main() {
                     );
                 }
             };
-            // One settle before the first token, so the domain holds the step range and the zoom
-            // floor the script's gestures clamp against. Only for a scenario that mounted weather —
-            // every other script's frames stay exactly as they were.
-            if wx_script.is_some() {
-                hook(&mut app, ScriptHook::Tick, script_now);
-            }
+            // One settle before the first token. A scripted host runs a pass only at an `f`/`T`
+            // token, so without this the device would take its first gestures never having been told
+            // anything about itself: no store level (and so no ride can start — a ride needs
+            // somewhere to go), and no weather step range for the gestures to clamp against. A real
+            // device mounts its card long before a rider touches a button; this is that.
+            hook(&mut app, ScriptHook::Tick, script_now);
             script_now = apply_script(&mut app, script, script_now, &mut hook);
         }
         // Everything the script's last press asked for, with no trailing `f`: settle it now so the
