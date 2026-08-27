@@ -787,8 +787,12 @@ impl App {
     }
 
     /// The ride session closed, saved or discarded: the matcher, the totals and the trail all go
-    /// back to their between-rides state, so the Home screen is not left showing the ride that just
-    /// ended.
+    /// back to their between-rides state, so nothing is left showing the ride that just ended.
+    ///
+    /// The trail restarts on **both** edges, and neither is the other's spare. This one is "the
+    /// ride the trail belonged to is over"; [`begin_ride_session`](App::begin_ride_session)'s is "a
+    /// new ride starts with an empty trail", which is also what a recovered continuation needs —
+    /// it keeps the totals the journal restored and still opens on a clean trail.
     fn end_ride_session(&mut self) {
         self.ride.relock_matcher();
         self.activity.reset_ride();
@@ -1530,9 +1534,16 @@ mod tests {
         assert!(!app.recorder.breadcrumb.is_empty() && app.recorder.speed_win.median_cms().is_some());
 
         app.test_end_ride();
+        assert!(app.recorder.breadcrumb.is_empty(), "the ride the trail belonged to is over");
+        assert!(app.recorder.speed_win.median_cms().is_none());
+
+        // …and the open edge restarts them too, which is what a recovered continuation needs: it
+        // keeps the totals the journal restored and still opens on a clean trail.
+        app.recorder.breadcrumb.push(1_000, 2_000);
+        app.recorder.speed_win.push_mps(5.0);
         app.test_start_ride();
-        assert!(app.recorder.breadcrumb.is_empty(), "the previous ride's trail is gone");
-        assert!(app.recorder.speed_win.median_cms().is_none(), "and so is its pace");
+        assert!(app.recorder.breadcrumb.is_empty(), "a new ride starts with an empty trail");
+        assert!(app.recorder.speed_win.median_cms().is_none(), "and a new pace");
         assert_eq!(app.activity.ridden_m, 0.0, "a fresh ride starts at zero");
     }
 
