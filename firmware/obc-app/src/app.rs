@@ -3413,6 +3413,8 @@ impl App {
         // A drawer **recesses** the base rather than replacing it: the base draws through the dim
         // LUT composed with the host's own colour policy, the sheet through the untouched one. No
         // capture buffer, no second framebuffer, no alpha for a 64-colour panel to approximate.
+        // Whether it recesses at all is the *base's* declaration — `Caps::recess`, false for a map
+        // base, whose second draw is a map render (#1559).
         //
         // The switch is a `Cell` inside **one** colour closure rather than a second `Canvas` with a
         // second closure type, and that is not a style choice: `Screen::draw` is generic over the
@@ -3421,8 +3423,26 @@ impl App {
         // type, and one load-and-branch per **colour resolution** — `Canvas` resolves `color_fn`
         // once per primitive (a span, an outline, a string), so this is O(primitives), not
         // O(pixels).
-        let recess = core::cell::Cell::new(ui.stack.iter().skip(base + 1).any(|s| s.is_overlay()));
+        let covered = ui.base_frozen();
+        let recessed = covered && ui.stack.get(base).is_none_or(|s| s.caps().recess);
+        let recess = core::cell::Cell::new(recessed);
         let policy = |c: u16| color_fn(if recess.get() { screen::dim_color(c) } else { c });
+        // **The frozen base's pixels** (#1559) — the frozen base, finished. A drawer's render key
+        // already shadows the base's, so no fact the base draws can move while a sheet is up: its
+        // rows on the panel are right, and drawing them again only puts back what is already there.
+        // On a **resident** target the base's draw is therefore skipped altogether, and an open
+        // step costs the sheet and nothing else — the map render the open used to pay for at each
+        // step (199 ms at the riding default, 1.45 s at 5 m/px, measured) is not paid at all.
+        //
+        // Three things are excluded, and each says so itself. A host that composes every frame from
+        // nothing (the snapshot sweep) never claims a resident frame, and draws the base as always.
+        // A base that **recesses** takes its second draw, because the recess *is* that draw: the
+        // rows standing on the panel are the undimmed ones, and skipping the draw would leave them
+        // there for the life of the sheet. And a sheet that is not purely *covering* this frame
+        // asks for the base itself ([`Screen::needs_base`]) — a page slide is travelling through the
+        // margin either side of it.
+        let sheet_only =
+            ui.resident_frame && covered && !recessed && !ui.stack.iter().skip(base + 1).any(|s| s.needs_base());
         // The one Canvas of the frame: every screen draws through it (the base screen — the only
         // possible Map — writes `rx.stats`; the overlays above it leave the stats untouched).
         // A drained region clip makes it reject whole out-of-region primitives — the half of a
@@ -3430,7 +3450,9 @@ impl App {
         let mut cv = Canvas::new(target, &policy);
         cv.set_clip(render_clip);
         for (i, scr) in ui.stack.iter().enumerate().skip(base) {
-            scr.draw(&mut cv, &mut rx);
+            if !(i == base && sheet_only) {
+                scr.draw(&mut cv, &mut rx);
+            }
             // Everything above the base is the sheet itself, at full colour.
             if i == base {
                 recess.set(false);
@@ -3532,9 +3554,29 @@ impl App {
     /// bounds miss it. Pair it with a matching pixel clip on the framebuffer (the two-plane
     /// firmware's `FbDevice64::set_clip`): rejection alone leaves straddling primitives painting
     /// outside the region. Cleared by the render itself; hosts that always repaint fully (the
-    /// sim) never call this.
+    /// sim's snapshot path) never call this.
     pub fn set_render_clip(&mut self, clip: Option<Rectangle>) {
         self.ui.render_clip = clip;
+    }
+
+    /// Declare that this host's render target **keeps the last frame** between renders — the
+    /// resident panel plane a board or a windowed host draws into, as against a buffer composed
+    /// from nothing every time (the snapshot sweep, a one-shot capture).
+    ///
+    /// A resident target is what makes a repaint able to be *partial*, and it is the precondition
+    /// for the frozen base's pixels (#1559): with a drawer over the base, the base's draw is
+    /// skipped and its rows simply stand, so an open step costs the sheet and no map render. A host
+    /// that says nothing gets every screen drawn every time, which is always correct.
+    ///
+    /// Declared once at composition, like [`set_backlight_available`](App::set_backlight_available)
+    /// — it is a property of the host's plumbing, not of any frame.
+    ///
+    /// **A host that claims this untruthfully is not caught by anything.** The differential replay's
+    /// power comes from its reference *not* declaring it, so a host asserting a residency it does
+    /// not have simply silences the oracle. Read the host's frame path before adding a fourth
+    /// caller: the target must be one buffer that survives between renders and is never cleared.
+    pub fn set_resident_frame(&mut self, resident: bool) {
+        self.ui.resident_frame = resident;
     }
 
     /// The current operating mode.

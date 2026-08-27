@@ -303,10 +303,30 @@ a drawer and a settings screen write the same stored setting.
 
 The screen under a drawer is **frozen**. A drawer states its own facts as its render key — the page,
 the selected control, the staged value and the value in effect — and that key replaces the facts of
-the screens below.
-So a moving map under a drawer causes no repaint, and one repaint occurs when the drawer closes. The
-device draws the frozen screen through a dim colour table, and the sheet through the normal colours.
-No extra frame buffer is necessary.
+the screens below. So a moving map under a drawer causes no repaint, and the timed content of the
+screen below stops with it.
+
+Whether the screen below is **dimmed** is a property of that screen. A map view is not dimmed: its
+second drawing is a map render, hundreds of milliseconds on the device, and the map reads well under
+the sheet at full colour. Menus, lists and settings pages are dimmed through a colour table, because
+drawing them again costs almost nothing and the recess helps the sheet read as being in front.
+
+A screen that is not dimmed is also frozen **on the panel**. While a sheet grows over such a screen,
+the device draws the sheet alone and leaves the rows below it exactly as they are, so the open costs
+the sheet and no more. This needs no extra frame buffer: the panel keeps the last frame, and the
+sheet writes over it. A screen that *is* dimmed is drawn again on every one of those frames, because
+the dim is that drawing — but it is a menu, so the drawing is cheap.
+
+Two cases draw the screen below again whatever it is, and both are cases where the sheet stops
+purely covering. Every frame of a **page slide** does, because the two pages travel through the
+narrow margin either side of the sheet, where the screen below shows; when the two pages differ in
+height, the same drawing puts back the rows the shrinking sheet gives up. And the frame that
+**closes** the drawer does, once.
+
+The sheet **slides** in from its edge over about 440 milliseconds, in steps timed to what the panel
+can complete. A step that does not move the sheet is not drawn. Closing is immediate, on every
+screen: the sheet goes, the screen below is drawn once, and the device sends only the rows that
+changed.
 
 A drawer is refused while a blocking card is on the screen: the pairing passkey, a map transfer, and
 the terminal update card.

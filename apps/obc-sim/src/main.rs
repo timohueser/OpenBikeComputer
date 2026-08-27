@@ -1365,6 +1365,9 @@ fn main() {
         // arrangement a rider gets on a device with a light — the board included, since #1558 —
         // while `--no-backlight` renders the three-control one a lightless host would show.
         app.set_backlight_available(!args.no_backlight);
+        // No `set_resident_frame` here, and deliberately: the headless host composes **one** frame
+        // into a buffer that holds nothing, so every screen has to be drawn, including a base a
+        // resident host would leave standing under a sheet (#1559).
         app.set_fw_version(env!("CARGO_PKG_VERSION"));
         let map_name = map.source.display_name();
         app.set_map_info(&map_name, tables.version);

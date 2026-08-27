@@ -925,6 +925,10 @@ pub(crate) async fn run_app(
     // the board drives a real PWM (#1558), which is what puts the brightness control on the
     // drawer's root row.
     app.set_backlight_available(obc_ports::Backlight::available(&backlight));
+    // The map plane is one resident RGB222 framebuffer that the present scans out of, so every
+    // repaint here is a repaint *over the last frame*. That is what lets the app leave the frozen
+    // base's rows alone while a drawer's sheet grows over them (#1559).
+    app.set_resident_frame(true);
     #[cfg(feature = "debug-uart")]
     let mut last_telem_ms: u32 = 0;
     #[cfg(feature = "debug-uart")]

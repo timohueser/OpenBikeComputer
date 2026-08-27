@@ -27,10 +27,11 @@ fn chord(app: &mut App, frames: &mut Frames, a: Button, b: Button, ms: u32) -> u
     for (dt, ev) in squeeze(a, b) {
         frames.frame(app, ms + dt, &[ev], None, None);
     }
-    // The sheet slides down over ~220 ms; settle it so a following gesture is not eaten by the
-    // animation.
-    frames.idle(app, ms + 500);
-    ms + 600
+    // Settle the sheet's own open so a following gesture is not eaten by the animation — read off
+    // the drawer's constant, so retuning it cannot leave this helper acting mid-slide.
+    let settled = crate::screen::QUICK_OPEN_MS + 60;
+    frames.idle(app, ms + settled);
+    ms + settled + 100
 }
 
 /// One gesture on the sheet at `ms`, straight to the map plane — the clock first (so the sheet's
@@ -435,35 +436,53 @@ fn central_settings_replaces_the_sheet_and_back_lands_on_the_base() {
     assert_eq!(app.debug_stack_len(), depth);
 }
 
-/// The frame draws the base through the dim LUT while a sheet is up, and stops the instant it
-/// closes — the two-`Canvas` split, seen as pixels rather than as a colour function.
+/// **The per-screen dim, in pixels** (#1559). A sheet over a *map* base leaves it exactly as it
+/// was — the map reads fine at full colour, and dimming it would mean re-rendering it. A sheet over
+/// a *menu* base still recesses it through the dim LUT, because that second draw is a handful of
+/// rules and glyphs.
+///
+/// The mutant: flip `Caps::map()`'s `recess` back to `true` and the first half fails; drop the
+/// `caps().recess` read in `render_map` and the second half does.
 #[test]
-fn the_base_is_recessed_only_while_the_sheet_is_up() {
+fn a_sheet_recesses_a_menu_base_and_leaves_a_map_base_alone() {
     use embedded_graphics::pixelcolor::Rgb888;
 
     let bytes = build_min_obcm(0x0000);
-    let mut app = lit(); // [Home, Map] over the flat blue backdrop
-    let mut f = Frames::new();
     // The backdrop as the host's own colour policy renders it, and the same colour one device-64
     // level down — what `dim_color` turns it into.
     let plain_blue = Rgb888::new(0, 0, 255);
     let dim_blue = Rgb888::new(0, 0, 173);
-    // The sheet's own parchment, which must stay at full colour: the base recedes, the drawer does
-    // not. On the bare frame this colour is the map's chrome; under the sheet it can only be the
-    // sheet, because the chrome below has receded with everything else.
+    // The sheet's own parchment, which is never recessed: it is the thing in front.
     let parchment = Rgb888::new(247, 243, 239);
 
+    // --- a map base: untouched ---------------------------------------------------------------
+    let mut app = lit(); // [Home, Map] over the flat blue backdrop
+    let mut f = Frames::new();
     let before = render_120(&mut app, &bytes);
     assert!(before.count(plain_blue) > 0 && before.count(dim_blue) == 0, "the bare map is drawn at full colour");
 
     let ms = chord(&mut app, &mut f, Button::Up, Button::Select, 1_000);
     let covered = render_120(&mut app, &bytes);
-    assert_eq!(covered.count(plain_blue), 0, "no pixel of the base is drawn at full colour under a sheet");
-    assert!(covered.count(dim_blue) > 0, "the map that is still visible around the sheet has receded");
-    assert!(covered.count(parchment) > before.count(parchment), "…and the sheet on top of it has not");
+    assert_eq!(covered.count(dim_blue), 0, "no pixel of a map base is dimmed under a sheet");
+    assert!(covered.count(plain_blue) > 0, "the map around the sheet is still the map, at full colour");
+    assert!(covered.count(parchment) > before.count(parchment), "…and the sheet is on top of it");
 
     chord(&mut app, &mut f, Button::Up, Button::Select, ms);
     let after = render_120(&mut app, &bytes);
     assert_eq!(after.count(plain_blue), before.count(plain_blue), "closing restores the base exactly");
-    assert_eq!(after.count(dim_blue), 0, "…and nothing stays recessed");
+
+    // --- a menu base: recessed ---------------------------------------------------------------
+    let mut app = lit();
+    let mut f = Frames::new();
+    let _ = app.ui.stack.push(Screen::Menu(crate::screen::MenuScreen::new())); // a chrome base
+    assert!(matches!(app.top_screen(), Screen::Menu(_)));
+    let bare = render_120(&mut app, &bytes);
+    let bare_parchment = bare.count(parchment);
+    assert!(bare_parchment > 0, "the menu is drawn on parchment");
+
+    chord(&mut app, &mut f, Button::Up, Button::Select, 1_000);
+    let recessed = render_120(&mut app, &bytes);
+    // The sheet is parchment too, so an undimmed menu could only have *more* of it under one. It
+    // has less: the page behind the sheet went through the dim LUT.
+    assert!(recessed.count(parchment) < bare_parchment, "the menu page under the sheet has receded");
 }

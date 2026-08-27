@@ -460,6 +460,9 @@ impl SimGui {
         // the blit.
         let backlight = crate::panel_power::SimBacklight::new(!args.no_backlight);
         app.set_backlight_available(obc_ports::Backlight::available(&backlight));
+        // The window draws into one resident device-64 plane and presents it by self-diff, exactly
+        // as the board does — so the frozen base's rows survive between frames (#1559).
+        app.set_resident_frame(true);
         app.set_fw_version(env!("CARGO_PKG_VERSION"));
         let map_name = map.source.display_name();
         app.set_map_info(&map_name, map_tables.version);
