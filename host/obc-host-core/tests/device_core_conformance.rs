@@ -298,11 +298,11 @@ impl CoreHarness {
 
     /// Serve what a host outside `obc-app` can actually cause.
     ///
-    /// Six domains reach this executor: the catalog and retention from #1438, and the four #1397 S2
-    /// gave a machine. Weather has a machine too, but its refresh intent has no public door yet
-    /// (#1401 owns the request cutover), and Recorder and Bond have no machine at all — so nothing
-    /// else may appear. Asserted rather than assumed: an effect this executor cannot serve turning
-    /// up would be a silent change of who decides, and the run must stop rather than skip it.
+    /// Seven domains reach this executor: the catalog and retention from #1438, the four #1397 S2
+    /// gave a machine, and Weather, whose refresh intent gained its one producer in #1549 — the
+    /// Menu row that opens the dashboard. Recorder and Bond have no machine at all, so nothing else
+    /// may appear. Asserted rather than assumed: an effect this executor cannot serve turning up
+    /// would be a silent change of who decides, and the run must stop rather than skip it.
     fn serve_typed(&mut self, effects: &mut EffectSlots, done: &mut Vec<Done>) {
         if let Some(effect) = effects.catalog.take() {
             self.served.insert("catalog");
