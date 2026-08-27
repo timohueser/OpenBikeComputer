@@ -1487,7 +1487,12 @@ impl App {
     ///   double-open, and never yank a flow the rider opened from the menu themself,
     /// - a [`DfuAction`] is already posted but undrained (don't overwrite a phase in flight),
     /// - a ride is recording (defensive: the BLE edge already answered `busy`, but recording can
-    ///   start between that reply and this drain).
+    ///   start between that reply and this drain),
+    /// - the rider has confirmed a **shutdown** — the terminal powering-off frame is the last thing
+    ///   the panel will hold, and a card over it would take
+    ///   [`power_off_requested`](App::power_off_requested) back to `false` (#1515 D3). Deferring is
+    ///   the honest answer: there is no next pass, and the request dies with the device rather than
+    ///   cancelling a switch-off the rider asked for.
     pub fn open_remote_dfu_check(&mut self) -> bool {
         let dfu_screen_up = self.ui.stack.iter().any(|s| {
             matches!(s, Screen::DfuCheck(_) | Screen::DfuConfirm(_) | Screen::DfuProgress(_) | Screen::DfuError(_))
@@ -1497,12 +1502,18 @@ impl App {
             || dfu_screen_up
             || self.dfu.request_pending()
             || self.recorder.recording()
+            || self.power_off_requested()
         {
             return false;
         }
         self.dfu.admit_intent(crate::dfu::DfuIntent::ScanRequested);
-        let r = self.ui.stack.push(Screen::DfuCheck(crate::screen::DfuCheckScreen::new()));
-        debug_assert!(r.is_ok(), "screen stack overflow — raise MAX_DEPTH");
+        // Through `apply`, not `stack.push`: this is the one card that does not come from the card
+        // scheduler, and pushing raw would step around the rule every other arrival obeys —
+        // *nothing lands on top of a drawer* (#1515 D3).
+        screen::apply(
+            &mut self.ui.stack,
+            screen::Transition::Push(Screen::DfuCheck(crate::screen::DfuCheckScreen::new())),
+        );
         self.ui.map_dirty = true;
         true
     }
@@ -1522,6 +1533,10 @@ impl App {
             return false;
         }
         self.admit_navigator_intent(NavigatorIntent::PlanRoute(crate::activity::NavRequest::new(from, to, name)));
+        // Raw, and deliberately: this is a bench line on the debug VCOM, not an arrival a rider can
+        // produce, so it is not one of the sites the "nothing lands on top of a drawer" rule
+        // (`screen::close_drawers`) exists for. Every rider-reachable push goes through
+        // `screen::apply` or the card scheduler's `land`.
         let _ = self.ui.stack.push(Screen::NavPlanning(crate::screen::NavPlanningScreen::new(name)));
         self.ui.map_dirty = true;
         true
