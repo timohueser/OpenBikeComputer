@@ -793,8 +793,12 @@ impl CatalogState {
         trip.stage_ids.get(usize::from(ordinal)).copied()
     }
 
-    /// Consume the answer to a [`CatalogEffect`]. A stale token — a superseded operation, or a
-    /// repeat of one already accounted for — changes nothing.
+    /// Consume the answer to a [`CatalogEffect`], returning the object it took out of the store.
+    /// That verdict is the whole of the
+    /// [`CatalogRemoval`](crate::device_core::connections::CatalogRemoval) connection: retention
+    /// retires its expiry candidate on it rather than waiting for the object to disappear from a
+    /// re-read (#1548). A stale token — a superseded operation, or a repeat of one already
+    /// accounted for — changes nothing and names nothing.
     ///
     /// The resident catalogs are not touched here: what is *in* the store reaches them through the
     /// refresh feed, and inventing a removal locally would make the two disagree until it did.
@@ -803,9 +807,9 @@ impl CatalogState {
     /// when the step went out, so a member the store refused is **left behind** rather than retried:
     /// the folder still goes, and the leftover route comes back as an unfiled row the rider can
     /// delete. Retrying instead would spin a cascade against a card that has stopped answering.
-    pub(crate) fn apply_outcome(&mut self, outcome: CatalogOutcome) {
+    pub(crate) fn apply_outcome(&mut self, outcome: CatalogOutcome) -> Option<CatalogObjectId> {
         if !self.ops.is_current(outcome.token()) {
-            return;
+            return None;
         }
         self.ops.invalidate(); // terminal: a duplicate of this answer is no longer current
         self.in_flight = false;
@@ -819,10 +823,17 @@ impl CatalogState {
         // it: the walk keeps its `DeleteTrip` in `pending` until the folder, and `next_effect` only
         // reaches the owed read when nothing is pending. One bit, spent once, after the folder.
         match outcome {
-            CatalogOutcome::ObjectRemoved { .. } | CatalogOutcome::Failed { error: CatalogError::Unreadable, .. } => {
-                self.refresh_owed = true
+            CatalogOutcome::ObjectRemoved { object, .. } => {
+                self.refresh_owed = true;
+                Some(object)
             }
-            CatalogOutcome::Failed { .. } | CatalogOutcome::CatalogRead { .. } | CatalogOutcome::Cancelled { .. } => {}
+            CatalogOutcome::Failed { error: CatalogError::Unreadable, .. } => {
+                self.refresh_owed = true;
+                None
+            }
+            CatalogOutcome::Failed { .. } | CatalogOutcome::CatalogRead { .. } | CatalogOutcome::Cancelled { .. } => {
+                None
+            }
         }
     }
 

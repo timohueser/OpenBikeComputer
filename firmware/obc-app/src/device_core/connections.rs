@@ -10,6 +10,7 @@
 //! | `UiRuntime` | `CatalogMachine` | [`CatalogIntent`] | same pass |
 //! | `RetentionMachine` | `CatalogMachine` | [`CatalogIntent`] (an expiry) | same pass |
 //! | `CatalogMachine` | `Navigator` | [`ActiveRouteRemoved`] | same pass |
+//! | `CatalogMachine` | `RetentionMachine` | [`CatalogRemoval`] | same pass |
 //! | `CatalogMachine` | `RetentionMachine` | [`CatalogIdentityChanged`] | next pass |
 //! | `Navigator` | `RetentionMachine` | [`RouteActivated`] | next pass |
 //! | any domain | `FaultState` | [`FaultNotices`] | same pass, producer is earlier |
@@ -46,7 +47,9 @@
 //! - **Intents and one-shots** ([`Slot`]): the first value stands and the second is handed back. The
 //!   producer keeps it and offers it again next pass — backpressure, never a silent drop. This is
 //!   why a producer checks [`Slot::is_empty`] *before* consuming its own one-shot: an intent it
-//!   cannot deliver must stay where the rider left it.
+//!   cannot deliver must stay where the rider left it. A handed-back value is a *copy* of a decision
+//!   its producer still holds, so it can go stale while it waits: the expiry slot is emptied when
+//!   [`CatalogRemoval`] names the object the parked intent is about.
 //! - **Later-to-earlier deposits** ([`Deferred`]): the newest value replaces the older one. Both of
 //!   them are levels — which identity the catalog holds, which route is active — and acting on a
 //!   superseded level is worse than acting late. A deposit that must *queue* rather than replace
@@ -79,6 +82,19 @@ use super::Revision;
 pub struct ActiveRouteRemoved {
     /// The durable identity of the route leaving the catalog.
     pub route: CatalogObjectId,
+}
+
+/// `CatalogMachine` → `RetentionMachine`, **same pass**: the store no longer holds this object.
+///
+/// The catalog's verdict on a removal, produced at stage 1 and consumed at stage 5. Both `existed`
+/// verdicts produce it — the object is not in the store either way — and every producer of a
+/// deletion converges here, so an expiry candidate a rider's delete satisfied is retired by exactly
+/// the path one the sweep ordered is. Retention would otherwise have to wait for the object to
+/// disappear from a re-read, which is a second, time-based copy of a fact the catalog already knows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CatalogRemoval {
+    /// The durable identity the store no longer holds.
+    pub object: CatalogObjectId,
 }
 
 /// `CatalogMachine` → `RetentionMachine`, **next pass**: the catalog's identity set moved.
@@ -200,6 +216,9 @@ pub struct Connections {
     pub expiry: Slot<CatalogIntent>,
     /// `CatalogMachine` → `Navigator`: the followed route is being removed.
     pub active_route_removed: Slot<ActiveRouteRemoved>,
+    /// `CatalogMachine` → `RetentionMachine`: the store no longer holds this object. One removal is
+    /// answered per pass, because one catalog operation is ever in flight.
+    pub catalog_removal: Slot<CatalogRemoval>,
     /// Any domain → `FaultState`.
     pub faults: FaultNotices,
     /// `CatalogMachine` → `RetentionMachine`, next pass.
@@ -215,6 +234,7 @@ impl Connections {
             ui_catalog: Slot::new(),
             expiry: Slot::new(),
             active_route_removed: Slot::new(),
+            catalog_removal: Slot::new(),
             faults: FaultNotices::NONE,
             catalog_identity: Deferred::new(),
             route_activated: Deferred::new(),
@@ -244,10 +264,11 @@ impl Default for Connections {
 // Layout tripwires. Connections are resident state on the device, and every payload here is an
 // identity, a revision or a flag — a growth means bulk crept into a message.
 const _: () = assert!(core::mem::size_of::<ActiveRouteRemoved>() <= 8, "one durable identity");
+const _: () = assert!(core::mem::size_of::<CatalogRemoval>() <= 8, "one durable identity");
 const _: () = assert!(core::mem::size_of::<CatalogIdentityChanged>() <= 8, "one revision");
 const _: () = assert!(core::mem::size_of::<RouteActivated>() <= 8, "one durable identity");
 const _: () = assert!(core::mem::size_of::<FaultNotices>() <= 4, "a bit set");
-const _: () = assert!(core::mem::size_of::<Connections>() <= 160, "six bounded slots");
+const _: () = assert!(core::mem::size_of::<Connections>() <= 176, "seven bounded slots");
 
 #[cfg(test)]
 mod tests {
