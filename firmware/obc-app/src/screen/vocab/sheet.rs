@@ -2,8 +2,9 @@
 //!
 //! Both drawers are the same object seen from opposite edges: a sheet that arrives from its edge,
 //! grows and shrinks with the page it shows, and marks the value already committed while the rider
-//! browses alternatives. The curves and the tick live here so the two cannot drift, while each
-//! drawer keeps its own durations — they are what a later animation pass tunes per sheet.
+//! browses alternatives. The curves, the tick and the notch spacing live here so the two cannot
+//! drift, while each drawer keeps its own durations — those are what a later animation pass tunes
+//! per sheet, and tuning one sheet must not silently move the other.
 
 use embedded_graphics::prelude::Point;
 use obc_render::Surface;
