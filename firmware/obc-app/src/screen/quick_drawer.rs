@@ -31,11 +31,23 @@ use super::vocab::sheet;
 use super::{palette, Ctx, Render, Screen, ScreenTick, SettingsScreen, Transition};
 
 /// How long the sheet takes to slide down from the top edge on open (ms).
-const OPEN_MS: u32 = 220;
+///
+/// **The one knob this sheet's open feel hangs on** (#1559). 220 ms landed in about four visible
+/// steps on the panel and read as lag rather than as motion; this is the owner's "start at about
+/// twice that" and it is a default to iterate on glass, not a measurement.
+const OPEN_MS: u32 = 440;
 /// How long a nested page takes to slide in, and the sheet to grow into its height (ms).
 const SLIDE_MS: u32 = 180;
-/// Repaint cadence while the sheet animates (ms) — the wake the event-driven host arms.
-const FRAME_MS: u32 = 16;
+/// How long one step of the open costs the panel, and therefore the cadence the sheet asks to be
+/// woken at (ms).
+///
+/// Measured on the LS021B7DD02, release build (#1559 bench rounds 1 and 2): a present costs
+/// **8.4 ms** of whole-frame row hash plus **0.137 ms per pushed row**, and drawing the sheet
+/// itself costs about **12 ms**. With the base frozen, this sheet's deepest step pushes its 104 px
+/// root and lip — 8.4 + 15.3 + 12 ≈ 36 ms. So that is the step: one the panel can actually finish.
+/// The 16 ms token it replaces asked for two steps in the time one takes, and the host missed every
+/// other one. [`OPEN_MS`] divided by this is the step count: 440 / 36 ≈ 12.
+const STEP_MS: u32 = 36;
 
 /// Sheet height per page, in device pixels. Adaptive: the sheet uses only what its page needs.
 const ROOT_H: i32 = 104;
@@ -125,10 +137,19 @@ pub struct QuickDrawerScreen {
     slide: Option<Slide>,
     page: Page,
     selected: u8,
-    /// Whether the open slide's **landing frame** has been reported — the same edge [`settle`]
-    /// reports for a page slide. Without it a render-on-demand host that skips the exact frame the
-    /// sheet lands on keeps a mid-slide sheet on the panel until something else asks for a repaint.
-    landed: bool,
+    /// How much of the sheet the last reported tick put on the panel, in device pixels; `-1` before
+    /// the first one.
+    ///
+    /// It is what makes the open **motion** rather than a cut (#1559). A step that would redraw the
+    /// sheet where it already stands is not reported at all — the bench measured whole renders
+    /// pushing zero rows — and the frame the sheet lands on is reported exactly when it moves the
+    /// sheet, which is what the old `landed` edge was approximating. It is also how a frame knows
+    /// whether the sheet has **given rows back**, which is half of what
+    /// [`needs_base`](Self::needs_base) answers.
+    shown_h: i16,
+    /// Whether this frame needs the screen below drawn under it — see
+    /// [`needs_base`](Self::needs_base).
+    needs_base: bool,
     /// The brightness level the editor is previewing. Meaningful only on [`Page::Brightness`] —
     /// off that page every reader falls back to the committed settings row, which is why Back
     /// reverts the live preview without storing anything to undo.
@@ -138,7 +159,15 @@ pub struct QuickDrawerScreen {
 impl QuickDrawerScreen {
     /// A freshly opened drawer, sliding down from `now_ms` with the first control selected.
     pub fn new(now_ms: u32) -> Self {
-        QuickDrawerScreen { opened_ms: now_ms, slide: None, page: Page::Root, selected: 0, staged: 0, landed: false }
+        QuickDrawerScreen {
+            opened_ms: now_ms,
+            slide: None,
+            page: Page::Root,
+            selected: 0,
+            staged: 0,
+            shown_h: -1,
+            needs_base: false,
+        }
     }
 
     /// The brightness the panel should show **right now**: the editor's staged preview while it is
@@ -257,19 +286,48 @@ impl QuickDrawerScreen {
         }
     }
 
-    /// The sheet's animation: the open slide, then any page slide, at frame cadence.
+    /// The sheet's animation: the open slide, then any page slide, at the panel's step cadence.
     pub fn tick_timers(&mut self, now_ms: u32) -> ScreenTick {
         let settled = self.settle(now_ms);
-        let opening = OPEN_MS.saturating_sub(now_ms.wrapping_sub(self.opened_ms));
+        let sheet_h = self.sheet_height(now_ms);
+        let visible = self.visible_height(now_ms, sheet_h);
+        // The open is over when the sheet has **arrived**, not when its clock runs out: the
+        // ease-out's last few per cent move no pixel, and the steps they would ask for are whole
+        // renders that push nothing.
+        let opening = if sheet_h > 0 && visible >= sheet_h {
+            0
+        } else {
+            OPEN_MS.saturating_sub(now_ms.wrapping_sub(self.opened_ms))
+        };
         let sliding = self.slide.map_or(0, |s| SLIDE_MS.saturating_sub(now_ms.wrapping_sub(s.started_ms)));
-        let landing = !self.landed && opening == 0;
-        self.landed |= opening == 0;
+        let moved = visible != self.shown_h as i32;
+        // Whether the frozen base has to be drawn under this frame: the sheet gave rows back, or a
+        // page slide is travelling through the margin either side of it (see
+        // [`needs_base`](Self::needs_base)).
+        self.needs_base = visible < self.shown_h as i32 || sliding > 0 || settled;
+        self.shown_h = visible as i16;
         match [opening, sliding].into_iter().filter(|r| *r > 0).min() {
-            Some(remaining) => ScreenTick { changed: true, next_wake_ms: Some(FRAME_MS.min(remaining)), region: None },
-            // The frame a slide (or the open) ends on still differs from the one before it.
-            None if settled || landing => ScreenTick { changed: true, next_wake_ms: None, region: None },
+            // A page slide moves its two pages across a sheet that may not change height at all, so
+            // it is a change whether or not the sheet grew.
+            Some(remaining) => {
+                ScreenTick { changed: sliding > 0 || moved, next_wake_ms: Some(STEP_MS.min(remaining)), region: None }
+            }
+            // The frame a slide ends on still differs from the one before it; the frame the open
+            // ends on differs only if it moved the sheet, and reporting one that did not is a whole
+            // render spent on nothing.
+            None if settled || moved => ScreenTick { changed: true, next_wake_ms: None, region: None },
             None => ScreenTick::idle(),
         }
+    }
+
+    /// Whether this frame needs the base drawn under the sheet (#1559).
+    ///
+    /// Two reasons, and they are the two ways a sheet stops being a thing that purely *covers*:
+    /// it **shrank**, so the rows it gave back still hold sheet pixels; or a **page slide** is in
+    /// flight, whose two pages travel through the inset margin either side of the sheet, where the
+    /// base shows. Everywhere else the frozen base's rows stand and the sheet is all that is drawn.
+    pub(crate) fn needs_base(&self) -> bool {
+        self.needs_base
     }
 
     /// Begin a horizontal transition to `to`, which becomes the live page at once (so `handle`
@@ -277,6 +335,10 @@ impl QuickDrawerScreen {
     fn slide_to(&mut self, to: Page, now_ms: u32) {
         self.slide = Some(Slide { from: self.page, started_ms: now_ms });
         self.page = to;
+        // From this frame on the two pages travel outside the sheet's own footprint, so the base
+        // has to be under them — set here rather than waiting for the next tick, which would be one
+        // frame late.
+        self.needs_base = true;
     }
 
     /// Retire a finished slide. Returns whether this call is the one that retired it.
@@ -328,9 +390,18 @@ impl QuickDrawerScreen {
         (from + (to - from) * t + 0.5) as i32
     }
 
-    /// How much of the sheet has arrived from the top edge, on the open animation's ease-out.
+    /// How much of the sheet has arrived from the top edge, on the open animation's ease-out —
+    /// advanced in whole [`STEP_MS`] steps.
+    ///
+    /// The quantising is the pacing (#1559). A device wakes on more than its own timers, and a
+    /// sheet that answered the raw clock would give a busy host a hundred one-pixel steps of a
+    /// 104 px sheet, each one a whole frame the panel cannot finish. Reading the step boundary
+    /// instead means the sheet moves exactly as often as it asked to be woken, and a wake between
+    /// two steps draws the frame that is already there — which the tick then does not ask for.
     fn visible_height(&self, now_ms: u32, sheet_h: i32) -> i32 {
-        (sheet_h as f32 * sheet::arrived(now_ms, self.opened_ms, OPEN_MS) + 0.5) as i32
+        let elapsed = now_ms.wrapping_sub(self.opened_ms);
+        let stepped = elapsed - elapsed % STEP_MS;
+        (sheet_h as f32 * sheet::arrived(stepped, 0, OPEN_MS) + 0.5) as i32
     }
 
     fn draw_page(&self, cv: &mut impl Surface, rx: &Render, page: Page, top: i32, x: i32) {
@@ -660,10 +731,86 @@ mod tests {
     fn the_sheet_slides_in_monotonically_and_lands_exactly() {
         let d = QuickDrawerScreen::new(1_000);
         let target = ROOT_H;
-        let frames: heapless::Vec<i32, 8> =
-            [0, 55, 110, 165, OPEN_MS].iter().map(|dt| d.visible_height(1_000 + dt, target)).collect();
+        let quarter = OPEN_MS / 4;
+        let frames: heapless::Vec<i32, 8> = [0, quarter, quarter * 2, quarter * 3, OPEN_MS]
+            .iter()
+            .map(|dt| d.visible_height(1_000 + dt, target))
+            .collect();
         assert_eq!(frames[0], 0, "nothing is visible on the opening frame");
         assert_eq!(frames[4], target, "and the sheet lands exactly on its height");
         assert!(frames.windows(2).all(|p| p[0] < p[1]), "monotonic: {frames:?}");
+    }
+
+    /// **The open is paced by the two constants and nothing else** (#1559): the sheet asks to be
+    /// woken every [`STEP_MS`], it asks for as many steps as [`OPEN_MS`] pays for, and each one
+    /// moves the sheet. Changing either constant changes the motion — which is the whole point of
+    /// their being the tunables an on-glass round turns.
+    #[test]
+    fn the_open_takes_open_ms_in_steps_of_step_ms_and_every_step_moves_the_sheet() {
+        let mut d = QuickDrawerScreen::new(0);
+        let (mut ms, mut heights) = (0u32, heapless::Vec::<i32, 32>::new());
+        // Poll at 1 ms, the finest any host could: what the sheet asks for is what it gets, and a
+        // poll between two steps must cost nothing.
+        while ms < OPEN_MS * 2 {
+            let tick = d.tick_timers(ms);
+            if tick.changed {
+                let _ = heights.push(d.visible_height(ms, ROOT_H));
+            }
+            ms += 1;
+        }
+        assert!(heights.windows(2).all(|p| p[0] < p[1]), "no step redraws the sheet where it stands: {heights:?}");
+        assert_eq!(heights.last(), Some(&ROOT_H), "the last step is the sheet landed");
+        // Real motion, and inside the panel's budget: about `OPEN_MS / STEP_MS` steps, allowing for
+        // the ease-out finishing a shade early (the last few per cent move no pixel).
+        let steps = heights.len() as u32;
+        assert!(
+            (OPEN_MS / STEP_MS / 2..=OPEN_MS / STEP_MS + 1).contains(&steps),
+            "{steps} steps for a {OPEN_MS} ms open at a {STEP_MS} ms cadence"
+        );
+        assert!(steps >= 8, "an open that reads as motion is many steps, not the four the panel used to show");
+    }
+
+    /// A settled sheet is **silent**: it asks for no wake and no repaint, however often it is
+    /// polled. The frozen base under it depends on that.
+    #[test]
+    fn a_settled_sheet_asks_for_nothing() {
+        let mut d = QuickDrawerScreen::new(0);
+        for ms in 0..OPEN_MS * 2 {
+            d.tick_timers(ms);
+        }
+        for ms in OPEN_MS * 2..OPEN_MS * 2 + 500 {
+            assert_eq!(d.tick_timers(ms), ScreenTick::idle(), "a landed sheet is quiet at {ms} ms");
+        }
+        assert!(!d.needs_base(), "…and asks for nothing under it either");
+    }
+
+    /// A page slide **asks for the base under it**, both ways: its two pages travel through the
+    /// margin either side of the sheet, and coming back out of a taller page gives rows back.
+    #[test]
+    fn a_page_slide_asks_for_the_base_and_a_settled_page_stops_asking() {
+        let mut w = World::new();
+        let mut d = settled(w.now_ms);
+        for ms in w.now_ms..w.now_ms + 10 {
+            d.tick_timers(ms);
+        }
+        assert!(!d.needs_base(), "the landed root page covers what it covers");
+
+        let now_ms = w.now_ms;
+        d.handle(Gesture::Press, &mut Ctx { now_ms, ..test_ctx(&mut w.state, &mut w.activity, &mut w.settings) });
+        assert!(d.needs_base(), "the slide into the taller editor is already outside the sheet");
+        for ms in now_ms..now_ms + SLIDE_MS + 1 {
+            d.tick_timers(ms);
+        }
+        assert!(d.needs_base(), "the frame the slide settles on is still the slide");
+        d.tick_timers(now_ms + SLIDE_MS + 2);
+        assert!(!d.needs_base(), "…and the settled editor covers what it covers again");
+
+        // Back out: the sheet shrinks 136 -> 104, so 32 rows come back.
+        let now_ms = now_ms + SLIDE_MS + 3;
+        d.handle(Gesture::Back, &mut Ctx { now_ms, ..test_ctx(&mut w.state, &mut w.activity, &mut w.settings) });
+        for ms in now_ms..now_ms + SLIDE_MS {
+            d.tick_timers(ms);
+            assert!(d.needs_base(), "a shrinking sheet needs the base at {ms} ms");
+        }
     }
 }

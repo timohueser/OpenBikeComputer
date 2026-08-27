@@ -62,6 +62,21 @@ impl Frame {
         Frame(vec![Rgb888::BLACK; (W * H) as usize])
     }
 
+    /// The first and last row on which the two frames differ, and how many pixels do — what a
+    /// repaint actually moved, which is what the sheet-only open is judged on.
+    fn diff_rows(&self, other: &Frame) -> Option<(u32, u32, usize)> {
+        let (mut lo, mut hi, mut count) = (u32::MAX, 0, 0);
+        for (i, (a, b)) in self.0.iter().zip(other.0.iter()).enumerate() {
+            if a != b {
+                let y = i as u32 / W;
+                lo = lo.min(y);
+                hi = hi.max(y);
+                count += 1;
+            }
+        }
+        (count > 0).then_some((lo, hi, count))
+    }
+
     /// Where the two frames first differ, and how many pixels do — the failure message's evidence.
     fn diff(&self, other: &Frame) -> Option<(usize, usize)> {
         let mut first = None;
@@ -360,6 +375,20 @@ const SUPPORT: PlatformSupport = PlatformSupport {
     retention_metadata: true,
 };
 
+/// What one map repaint cost and what it moved — the record the sheet-only open is judged on.
+#[derive(Debug)]
+struct Repaint {
+    /// The replay clock of the pass that rendered it.
+    at_ms: u32,
+    /// Map features the base's draw walked. **Zero means the base was not drawn at all** — nothing
+    /// else in the frame reads the map, so this is the direct measure of the render the frozen
+    /// base's pixels save (#1559).
+    features_tried: usize,
+    /// `(first row changed, last row changed, pixels changed)`, or `None` for a render that moved
+    /// no pixel at all — the "whole render spent on nothing" the bench measured.
+    pixels: Option<(u32, u32, usize)>,
+}
+
 /// One device plus the panel it draws onto.
 struct Instance {
     app: App,
@@ -371,10 +400,17 @@ struct Instance {
     glass: Frame,
     map_repaints: usize,
     overlay_repaints: usize,
+    /// One [`Repaint`] per map repaint, in order.
+    damage: Vec<Repaint>,
 }
 
 impl Instance {
-    fn new(app: App) -> Instance {
+    /// `resident` is the host statement the **candidate** makes and the reference does not
+    /// ([`App::set_resident_frame`], #1559): a resident host repaints over the frame it already
+    /// has, so the app may leave the frozen base's rows standing under a sheet. The reference
+    /// composes every screen every pass, which is what makes it the oracle for that.
+    fn new(mut app: App, resident: bool) -> Instance {
+        app.set_resident_frame(resident);
         Instance {
             app,
             outcomes: OutcomeSlots::new(),
@@ -383,6 +419,7 @@ impl Instance {
             glass: Frame::new(),
             map_repaints: 0,
             overlay_repaints: 0,
+            damage: Vec::new(),
         }
     }
 
@@ -433,7 +470,21 @@ impl Instance {
         let render_overlay = !on_demand || plan.render.overlay;
         if render_map {
             self.map_repaints += 1;
-            self.app.render_map(Some(&mut self.scratch), &mut self.clean, reader, route, W as f32, H as f32, color_of);
+            let before = self.clean.clone();
+            let stats = self.app.render_map(
+                Some(&mut self.scratch),
+                &mut self.clean,
+                reader,
+                route,
+                W as f32,
+                H as f32,
+                color_of,
+            );
+            self.damage.push(Repaint {
+                at_ms: s.at_ms,
+                features_tried: stats.features_tried,
+                pixels: before.diff_rows(&self.clean),
+            });
         }
         if render_map || render_overlay {
             if render_overlay {
@@ -757,15 +808,16 @@ fn replay() -> Vec<Step> {
     // from the one before it — and a render-on-demand host that skips it keeps a half-arrived sheet
     // on the panel until something unrelated repaints. The ride-context squeeze at 76,100 ms proves
     // it for one sheet; nothing else in the replay opens the other, so this proves it for the quick
-    // drawer too. It sits at the tail because the property needs a step **after** the 220 ms open
-    // slide has finished and the busy stretch above has no such gap.
+    // drawer too. It sits at the tail because the property needs a step **after** the open has
+    // finished and the busy stretch above has no such gap.
     //
     // The three halves, in order: the landing frame is reported, an idle map under a settled sheet
-    // asks for nothing, and the close asks for exactly one repaint.
+    // asks for nothing, and the close asks for exactly one repaint. The open itself, step by step,
+    // is `the_drawer_open_damages_only_the_sheet_…` below.
     // The pass before the squeeze has to be **close** to it: a chord is applied at recognition,
     // before the pass sets `now_ms` (see `App::recognize`), so the sheet's `opened_ms` is the
     // *previous* pass's clock. A long quiet gap in front of the squeeze would hand it a sheet
-    // already past its 220 ms slide, and there would be no landing frame left to skip.
+    // already landed, and there would be no landing frame left to skip.
     steps.push(step("a pass just before the squeeze", 191_900).expect("Map"));
     steps.push(step("squeeze the quick drawer open", 192_000).keys(&squeeze(Button::Up, Button::Select)));
     steps.push(step("the quick sheet settles", 192_600).expect("QuickDrawer"));
@@ -1067,8 +1119,21 @@ fn run_replay(
     route: Option<&RouteReader<'_>>,
     reader: &Reader,
 ) -> ((usize, usize), (usize, usize)) {
-    let mut reference = Instance::new(app());
-    let mut candidate = Instance::new(app());
+    let (candidate, reference) = drive_replay(label, app, steps, route, reader);
+    ((candidate.map_repaints, candidate.overlay_repaints), (reference.map_repaints, reference.overlay_repaints))
+}
+
+/// The same drive, handing both instances back — for a test that judges *what* the candidate
+/// repainted rather than only how often (the sheet-only open, #1559).
+fn drive_replay(
+    label: &str,
+    app: impl Fn() -> App,
+    steps: &[Step],
+    route: Option<&RouteReader<'_>>,
+    reader: &Reader,
+) -> (Instance, Instance) {
+    let mut reference = Instance::new(app(), false);
+    let mut candidate = Instance::new(app(), true);
 
     for (n, s) in steps.iter().enumerate() {
         reference.advance(s, route, reader, false);
@@ -1100,7 +1165,7 @@ fn run_replay(
         candidate.overlay_repaints,
         reference.overlay_repaints
     );
-    ((candidate.map_repaints, candidate.overlay_repaints), (reference.map_repaints, reference.overlay_repaints))
+    (candidate, reference)
 }
 
 /// **The ride.** Frame-for-frame parity across a route-following ride: the fix, the grid, the
@@ -1214,7 +1279,7 @@ fn a_device_with_nothing_happening_plans_no_repaint_at_all() {
     let cache = MapCache::new();
     let reader = Reader::new(&map_src, &tables, &cache);
 
-    let mut device = Instance::new(App::new_idle(AppState::new((LON0 * 1e6) as i32, (LAT * 1e6) as i32, 0.05)));
+    let mut device = Instance::new(App::new_idle(AppState::new((LON0 * 1e6) as i32, (LAT * 1e6) as i32, 0.05)), true);
     // The boot frame, plus the Home clock's first minute tick, are the device's own — drain them.
     for ms in [0, 60_000, 120_000] {
         device.advance(&step("settling", ms), None, &reader, true);
@@ -1224,4 +1289,175 @@ fn a_device_with_nothing_happening_plans_no_repaint_at_all() {
         device.advance(&step("quiet", 120_000 + i * 100), None, &reader, true);
     }
     assert_eq!(device.map_repaints, before, "an idle device with no input and no fix must render nothing");
+}
+
+// ---------------------------------------------------------------------------------------------
+// The sheet-only open (#1559).
+// ---------------------------------------------------------------------------------------------
+
+/// The **quick drawer's open, step by step**, over a riding Map — the one base whose row says it is
+/// not recessed under a sheet.
+///
+/// Sampled at the sheet's own step cadence so every intermediate position is a pass of its own.
+fn drawer_open_replay() -> Vec<Step> {
+    let mut steps = vec![
+        step("boot on the Map", 0).expect("Map"),
+        step("the first fix", 200).fix(0).expect("Map"),
+        step("quiet", 500).expect("Map"),
+        // A chord is applied at recognition, before the pass sets `now_ms`, so the sheet's
+        // `opened_ms` is the previous pass's clock — the pass in front of the squeeze has to be
+        // close to it or the sheet is already past its slide.
+        step("a pass just before the squeeze", 960).expect("Map"),
+        step("squeeze the quick drawer open", 1_000).keys(&squeeze(Button::Up, Button::Select)),
+    ];
+    for i in 1..=9 {
+        steps.push(step("an open step", 1_000 + i * 32).expect("QuickDrawer"));
+    }
+    // The tail at four times the sheet's own rate — a device wakes on more than its own timers (a
+    // fix, a notification, a card sweep), and a wake between two steps must not cost a render.
+    for i in 0..30 {
+        steps.push(step("a wake between two steps", 1_292 + i * 4).expect("QuickDrawer"));
+    }
+    steps.push(step("release the squeeze", 1_560).keys(&[release(Button::Select), release(Button::Up)]));
+    steps.push(step("quiet under the settled sheet", 1_700).expect("QuickDrawer"));
+    steps.push(step("quiet again", 1_800).expect("QuickDrawer"));
+    steps.push(step("close it", 1_900).keys(&tap(Button::Back)).expect("Map"));
+    steps.push(step("quiet on the uncovered map", 2_000).expect("Map"));
+    steps.push(step("and still quiet", 2_100).expect("Map"));
+    steps
+}
+
+/// **The sheet-only open, measured** (#1559). Three properties, all read off the candidate's own
+/// damage log, with the full-frame reference standing beside it as the oracle for every one of them
+/// (`drive_replay` compares the two after every pass, so a base row that went stale is a failure
+/// before any assertion here runs).
+///
+/// 1. **Every step of the open damages the sheet's band and nothing else.** The base is not drawn:
+///    its rows stand exactly as the frame before the sheet arrived left them.
+/// 2. **No step is spent on nothing.** The bench measured whole renders pushing zero rows; a step
+///    that would not move the sheet is not reported at all now.
+/// 3. **The close is one repaint**, and the frames after it are clean.
+///
+/// The mutants: drop `resident_frame` from the render's `sheet_only` and property 1 fails (the
+/// whole frame is damaged on the first step, because the base is drawn again); drop the
+/// `shown_h` comparison in the drawer's tick and property 2 fails.
+#[test]
+fn the_drawer_open_damages_only_the_sheet_and_the_close_is_one_repaint() {
+    let map = map_bytes();
+    let map_src = SliceSource(&map);
+    let tables = MapTables::parse(&map_src).expect("the replay map parses");
+    let cache = MapCache::new();
+    let reader = Reader::new(&map_src, &tables, &cache);
+
+    let camera = AppState::new((LON0 * 1e6) as i32, (LAT * 1e6) as i32, 0.05);
+    let steps = drawer_open_replay();
+    let (candidate, _) = drive_replay("drawer open", || riding_device(camera), &steps, None, &reader);
+
+    // The quick drawer's root sheet is 104 px tall on a 320 px panel; give the rounded lip a couple
+    // of rows and nothing below that may move.
+    const SHEET_ROWS: u32 = 110;
+    let open: Vec<&Repaint> = candidate.damage.iter().filter(|r| (1_000..=1_560).contains(&r.at_ms)).collect();
+    assert!(open.len() >= 6, "the open should be many small steps, not a cut: {} repaint(s)", open.len());
+    for r in &open {
+        assert_eq!(
+            r.features_tried, 0,
+            "the step at {} ms rendered the base map — the frozen base's rows should have stood",
+            r.at_ms
+        );
+        let (lo, hi, count) =
+            r.pixels.expect("a step of the open that changed no pixel is a whole render spent on nothing");
+        assert!(
+            hi < SHEET_ROWS,
+            "the step at {} ms damaged rows {lo}..={hi} ({count} px) — that is more than the sheet",
+            r.at_ms
+        );
+    }
+    // The sheet really grew across those steps rather than snapping to its height on the first.
+    let deepest: Vec<u32> = open.iter().filter_map(|r| r.pixels.map(|(_, hi, _)| hi)).collect();
+    assert!(deepest.first() < deepest.last(), "the sheet arrived over the steps: {deepest:?}");
+
+    // Settled: the sheet is up and nothing under it asks for a pixel.
+    assert!(
+        !candidate.damage.iter().any(|r| (1_700..1_900).contains(&r.at_ms)),
+        "a settled sheet over a frozen base repaints nothing"
+    );
+
+    // The close: exactly one repaint, it renders the base once, and then quiet. With the map never
+    // dimmed, even that repaint only has the sheet's own rows to put back.
+    let close: Vec<&Repaint> = candidate.damage.iter().filter(|r| r.at_ms >= 1_900).collect();
+    assert_eq!(close.len(), 1, "the close is one repaint and no more: {close:?}");
+    assert!(close[0].features_tried > 0, "the close is the one base re-render — its status-quo cost");
+    let (lo, hi, _) = close[0].pixels.expect("the close restores the rows the sheet covered");
+    assert!(hi < SHEET_ROWS, "the close put back rows {lo}..={hi} — only the sheet's own were wrong");
+}
+
+/// The sheet's **pages**, which is where the frozen base's pixels get their one exception: the
+/// brightness editor is taller than the icon row, so going back to the root **shrinks** the sheet
+/// and gives rows back that still hold sheet pixels.
+fn drawer_pages_replay() -> Vec<Step> {
+    let mut steps = vec![
+        step("boot on the Map", 0).expect("Map"),
+        step("the first fix", 200).fix(0).expect("Map"),
+        step("a pass just before the squeeze", 960).expect("Map"),
+        step("squeeze the quick drawer open", 1_000).keys(&squeeze(Button::Up, Button::Select)),
+        step("release the squeeze", 1_100).keys(&[release(Button::Select), release(Button::Up)]),
+    ];
+    for i in 1..=14 {
+        steps.push(step("the sheet arrives", 1_100 + i * 32).expect("QuickDrawer"));
+    }
+    // Into the brightness editor: the sheet grows 104 -> 136.
+    steps.push(step("press the brightness icon", 1_600).keys(&tap(Button::Select)).expect("QuickDrawer"));
+    for i in 1..=7 {
+        steps.push(step("the page slides in", 1_600 + i * 32).expect("QuickDrawer"));
+    }
+    // …and back out: the sheet shrinks 136 -> 104, uncovering 32 rows of map.
+    steps.push(step("back out of the editor", 1_900).keys(&tap(Button::Back)).expect("QuickDrawer"));
+    for i in 1..=7 {
+        steps.push(step("the page slides back", 1_900 + i * 32).expect("QuickDrawer"));
+    }
+    steps.push(step("quiet on the root page", 2_200).expect("QuickDrawer"));
+    steps.push(step("close the sheet", 2_300).keys(&tap(Button::Back)).expect("Map"));
+    steps.push(step("quiet on the uncovered map", 2_400).expect("Map"));
+    steps
+}
+
+/// **Covering is cheap, uncovering is not** (#1559). The open pays no base render at all. A page
+/// slide pays one per frame, and both halves of the sheet's own `needs_base` reason show up here:
+/// the pages travel through the inset margin either side of the sheet, where the base shows, and
+/// coming back out of the taller editor *shrinks* the sheet, giving back rows that still hold sheet
+/// pixels.
+///
+/// `drive_replay` compares the two panels after every pass, so anything left standing is a failure
+/// before an assertion below runs. The assertions state which frames paid for the base and which
+/// did not.
+///
+/// The mutant: make [`Screen::needs_base`] return `false` and the parity comparison fails inside
+/// the first page slide, naming the pixel the outgoing page left in the margin.
+#[test]
+fn the_open_pays_no_base_render_and_a_page_slide_pays_for_what_it_uncovers() {
+    let map = map_bytes();
+    let map_src = SliceSource(&map);
+    let tables = MapTables::parse(&map_src).expect("the replay map parses");
+    let cache = MapCache::new();
+    let reader = Reader::new(&map_src, &tables, &cache);
+
+    let camera = AppState::new((LON0 * 1e6) as i32, (LAT * 1e6) as i32, 0.05);
+    let steps = drawer_pages_replay();
+    // A platform with a panel light, so the sheet's first icon is the brightness editor — the one
+    // page taller than the icon row, and therefore the one that shrinks on the way back.
+    let device = || {
+        let mut app = riding_device(camera);
+        app.set_backlight_available(true);
+        app
+    };
+    let (candidate, _) = drive_replay("drawer pages", device, &steps, None, &reader);
+
+    let rendered_base = |from: u32, to: u32| {
+        candidate.damage.iter().filter(|r| (from..to).contains(&r.at_ms) && r.features_tried > 0).count()
+    };
+    assert_eq!(rendered_base(1_000, 1_600), 0, "the open renders the base on no step at all");
+    assert!(rendered_base(1_600, 1_900) > 0, "a page slide travels outside the sheet, so the base is under it");
+    assert!(rendered_base(1_900, 2_300) > 0, "and the slide back puts the rows the sheet gave up back");
+    assert_eq!(rendered_base(2_200, 2_300), 0, "…but the settled root page is a frozen base again");
+    assert!(rendered_base(2_300, 2_500) > 0, "the close renders the base once");
 }

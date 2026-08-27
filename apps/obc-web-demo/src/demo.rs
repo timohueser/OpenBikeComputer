@@ -476,6 +476,10 @@ impl Demo {
         state.mode = CameraMode::Follow;
         state.heading_up = true;
         let mut app = if baseline == Baseline::Upload { App::new_idle(state) } else { App::new(state) };
+        // The page keeps one RGBA frame and repaints it on demand, so every render is a render over
+        // the last one — which is what lets a drawer's sheet grow over a base the frame no longer
+        // draws (#1559).
+        app.set_resident_frame(true);
         // Mirror the map's §8.6 routing-profile names for the Bike-type screen + overview label.
         app.set_nav_profiles(self.tables.nav_profiles());
         app.set_map_nav_graph(self.tables.has_nav_graph());
