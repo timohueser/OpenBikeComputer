@@ -2306,7 +2306,7 @@ impl App {
     /// powering-off frame this reports on, presents it, and then calls the
     /// [`PowerOff`](obc_ports::PowerOff) port — which does not return.
     pub fn power_off_requested(&self) -> bool {
-        matches!(self.ui.stack.last(), Some(Screen::QuickDrawer(d)) if d.powering_off())
+        screen::powering_off(&self.ui.stack)
     }
 
     /// Number of POIs in the current [`poi_scratch`](App::poi_scratch) snapshot (0 when none has
@@ -2718,7 +2718,13 @@ impl App {
     /// [`PassInputs::gestures`](crate::device_core::PassInputs).
     ///
     /// The clock is the recognizer's alone: the map plane's own `now_ms` is the pass's to set, at
-    /// its input stage, from the same frame's clock.
+    /// its input stage, from the same frame's clock. **Adopting it here instead is not free** — it
+    /// was tried: `run_pass` brackets its before/after render-key comparison around every
+    /// clock-driven change, so moving `now_ms` ahead of the *before* key hides one (the sensor
+    /// staleness crossing, caught by `dirty_parity` at 14,000 ms). The visible cost of leaving it
+    /// is that a chord resolved here stamps its drawer with the previous pass's clock, so on a host
+    /// whose frames can gap the sheet can arrive already past its open slide. That is the same
+    /// one-frame lag the two-plane firmware has by construction, and at 16 ms it is invisible.
     pub fn recognize(&mut self, clock: InputClock, input: &mut dyn InputSource) -> heapless::Vec<Gesture, GESTURE_BUF> {
         let mut pending: heapless::Vec<Gesture, GESTURE_BUF> = heapless::Vec::new();
         let chord = self.ui.input.recognize(clock, input, |g| {

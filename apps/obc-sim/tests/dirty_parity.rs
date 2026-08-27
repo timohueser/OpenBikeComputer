@@ -763,9 +763,9 @@ fn replay() -> Vec<Step> {
     // The three halves, in order: the landing frame is reported, an idle map under a settled sheet
     // asks for nothing, and the close asks for exactly one repaint.
     // The pass before the squeeze has to be **close** to it: a chord is applied at recognition,
-    // before the pass sets `now_ms`, so the sheet's `opened_ms` is the *previous* pass's clock. A
-    // long quiet gap in front of the squeeze would hand it a sheet already past its 220 ms slide,
-    // and there would be no landing frame left to skip.
+    // before the pass sets `now_ms` (see `App::recognize`), so the sheet's `opened_ms` is the
+    // *previous* pass's clock. A long quiet gap in front of the squeeze would hand it a sheet
+    // already past its 220 ms slide, and there would be no landing frame left to skip.
     steps.push(step("a pass just before the squeeze", 191_900).expect("Map"));
     steps.push(step("squeeze the quick drawer open", 192_000).keys(&squeeze(Button::Up, Button::Select)));
     steps.push(step("the quick sheet settles", 192_600).expect("QuickDrawer"));

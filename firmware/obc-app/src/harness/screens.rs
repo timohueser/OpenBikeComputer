@@ -1383,6 +1383,15 @@ fn nothing_cancels_a_shutdown_already_in_progress() {
         assert!(!app.apply_chord(chord), "{chord:?} moved something over the powering-off frame");
         assert!(app.power_off_requested(), "{chord:?} cancelled a shutdown already in progress");
     }
+
+    // The third door, and the least obvious: the card sweep runs in the same `handle_input` that
+    // applied the completed hold, so a card landing there would take the frame away — by rewriting
+    // a slot under it, or by the "nothing lands on top of a drawer" rule popping the sheet. The
+    // card is refused instead, and refusing is already how a card keeps its one-shot fact.
+    let mut app = powering_off();
+    app.on_warning(WarningFlags::REC_ERROR);
+    assert!(app.power_off_requested(), "a host card must not cancel a shutdown in progress");
+    assert!(matches!(app.top_screen(), Screen::QuickDrawer(_)), "the panel keeps the powering-off frame");
 }
 
 /// **A drawer is transient chrome: nothing lands on top of one.** A host card arriving over an open

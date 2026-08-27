@@ -137,6 +137,18 @@ pub enum Transition {
     Home,
 }
 
+/// Whether the device is on the terminal **powering-off** frame: the rider completed the guarded
+/// hold and the host is about to call the power-off port, so this is the last thing the panel will
+/// hold. Nothing dismisses it.
+///
+/// A *stack* fact rather than an `App` one, because the operations that must respect it are stack
+/// operations — [`close_drawers`] and the card scheduler's own `land`, neither of which has an
+/// `App`. [`App::power_off_requested`](crate::App::power_off_requested) reads it too, so there is
+/// one definition of "already switching off".
+pub(crate) fn powering_off(stack: &Stack) -> bool {
+    matches!(stack.last(), Some(Screen::QuickDrawer(d)) if d.powering_off())
+}
+
 /// **Nothing lands on top of a drawer** (#1515 D3): take any open sheet off the top of `stack`, and
 /// report whether one was there. Called wherever an ordinary screen arrives — [`apply`]'s `Push`
 /// arm and the card scheduler's own `land`, which pushes directly.
@@ -146,6 +158,12 @@ pub enum Transition {
 /// with it" rule would hold only for the top slot. This is that rule made total, in the one place
 /// each arrival passes through.
 pub(crate) fn close_drawers(stack: &mut Stack) -> bool {
+    // The one thing that must never be closed this way is the terminal powering-off frame, and the
+    // guard for it belongs in the caller, not here: refusing to pop would only leave the sheet
+    // *under* whatever is landing, and `power_off_requested` reads the top of the stack — so the
+    // shutdown would be cancelled either way. `land` therefore refuses the card outright, and this
+    // states the invariant it upholds.
+    debug_assert!(!powering_off(stack), "a card must not land on a device that is switching off");
     let had = stack.last().is_some_and(|top| top.is_overlay());
     while stack.last().is_some_and(|top| top.is_overlay()) {
         stack.pop();
