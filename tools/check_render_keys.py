@@ -3,7 +3,7 @@
 
 A screen's content is declared once, in its `screens!` row, as a `RenderKeyKind`
 (firmware/obc-app/src/render_key.rs). The pass compares the visible stack's key across its own
-stages and dirties the map when it moves. What that replaced was six private copies of the values
+stages and dirties the map when it moves. What that replaced was seven private copies of the values
 being watched — `state_before`, `RideEngine::prev_no_fix`, `RideEngine::prev_live_sensors`, and the
 three overlay level-to-edge converters `InputPlane::overlay_was_active`, `UiRuntime::overlay_edge`
 and `CoreMode::engaged_shown`.
@@ -13,7 +13,7 @@ what this guard is for: a fact a screen draws belongs in its declared key, and a
 key cannot see belongs in one of the five documented explicit classes on `Dirty` — never in a new
 private copy of the value.
 
-**This is a blocklist of names, and that is all it is.** It catches the six mirrors coming back
+**This is a blocklist of names, and that is all it is.** It catches the seven mirrors coming back
 under their own spellings, which is the likely shape of the mistake, because a reader who reaches
 for one reaches for it by name. It does **not** catch the same mirror renamed: a fresh
 `prev_battery` field beside a fresh `map_dirty = true` passes this guard. What catches *that* is the
@@ -45,6 +45,10 @@ RETIRED = [
     # screen *class*: the Map and the Statistics grid draw different live data, and lumping them
     # together is what spent a ~97 ms map render on a heart-rate notification.
     re.compile(r"\bshows_live_" + r"data\b"),
+    # The seventh, and the last: a between-pass seam that sniffed the top screen and dirtied the map
+    # because a resample is invisible to a stack-local key. What replaced it is a monotone revision
+    # the weather domain holds, named by `WeatherKey` (#1549).
+    re.compile(r"\bweather_feed_" + r"changed\b"),
 ]
 
 # One file is exempt, and the reason is what the file is: `firmware/tools/resource_baseline.json` is

@@ -6,7 +6,7 @@
 //! and the resident active-route parse. A frame is two calls:
 //!
 //! ```text
-//!   let plan = host.pass(app, now, gestures, sensors, support, routes);   // one App::run_pass
+//!   let plan = host.pass(app, now, gestures, sensors, route, weather, support); // one App::run_pass
 //!   host.execute(app, &mut plan, routes, rides, tracks, trips, reader, elev, platform, trace);
 //! ```
 //!
@@ -48,6 +48,7 @@ use obc_app::dfu::{DfuEffect, DfuInstallError, DfuOutcome, DfuScanError, DfuScan
 use obc_app::navigator::{NavigatorEffect, NavigatorError, NavigatorOutcome, PlannerWork};
 use obc_app::retention::{RetentionEffect, RetentionOutcome};
 use obc_app::settings::{Settings, SettingsEffect, SettingsOutcome};
+use obc_app::weather::{WeatherEffect, WeatherError, WeatherOutcome};
 use obc_app::weather_alerts::AlertMarks;
 use obc_app::{App, DrainStatus, Gesture, HostCommand, HostMailbox, TrackAction};
 use obc_ports::{Sensors, SettingsSaveError};
@@ -170,6 +171,14 @@ pub trait HostPlatform {
     fn arm_install(&mut self) -> Option<Result<(), DfuInstallError>> {
         None
     }
+
+    /// **Raise** a weather refresh with whatever plane schedules the radio, and report whether
+    /// there was anything to raise it with. `false` — the default, because a host with no companion
+    /// has nothing to ask — is answered as [`WeatherError::LinkLost`]. What comes back, and when,
+    /// arrives as the installed-data fact; this call never waits for a bundle.
+    fn request_weather_refresh(&mut self) -> bool {
+        false
+    }
 }
 
 /// A host with no platform work of its own.
@@ -276,11 +285,13 @@ impl HostLoop {
     /// fourteen stages.
     ///
     /// `route` is the active route opened over the host's [`ActiveRouteSession`] — the same reader
-    /// the caller's render uses, so the map-matcher and the map draw agree about the geometry.
+    /// the caller's render uses, so the map-matcher and the map draw agree about the geometry;
+    /// `weather` is the frame's sampled weather snapshot on the same terms.
     /// The lifetime is one region covering the whole frame: `Sensors` is invariant, so the pass's
     /// borrows — this loop's inbox, the frame's gestures, the sensor ports and the open route —
     /// have to be the *same* region. Every host already holds them as sibling fields, which is what
     /// makes that free.
+    #[allow(clippy::too_many_arguments)]
     pub fn pass<'a>(
         &'a mut self,
         app: &mut App,
@@ -288,6 +299,7 @@ impl HostLoop {
         gestures: &'a [Gesture],
         sensors: Sensors<'a>,
         route: Option<&'a obc_route::RouteReader<'a>>,
+        weather: Option<&'a obc_app::WeatherSnapshot>,
         support: PlatformSupport,
     ) -> PassPlan {
         let Inbox { outcomes, facts, derived, ride_preview, nav_preview } = &mut self.inbox;
@@ -296,6 +308,7 @@ impl HostLoop {
             gestures,
             sensors,
             route,
+            weather,
             support,
             outcomes,
             facts,
@@ -404,6 +417,13 @@ impl HostLoop {
             };
             deliver(&mut self.inbox.outcomes.storage_info, outcome, "storage");
         }
+        if let Some(WeatherEffect::RequestRefresh { token }) = plan.effects.weather.take() {
+            let outcome = match platform.request_weather_refresh() {
+                true => WeatherOutcome::Raised { token },
+                false => WeatherOutcome::Failed { token, error: WeatherError::LinkLost },
+            };
+            deliver(&mut self.inbox.outcomes.weather, outcome, "weather");
+        }
         if plan.effects.bond.take().is_some() {
             // Bond has no machine, so nothing produces a `BondEffect` and the removal arrives as
             // the residual `ForgetBond` command instead (#1400). Performing it
@@ -415,7 +435,7 @@ impl HostLoop {
         }
         debug_assert!(
             !plan.effects.has_pending(),
-            "recorder and weather are the domains a host outside obc-app cannot reach yet"
+            "recorder is the one domain a host outside obc-app cannot reach yet"
         );
     }
 

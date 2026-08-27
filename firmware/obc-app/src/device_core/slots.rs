@@ -234,8 +234,8 @@ mod tests {
     use crate::catalog_state::CatalogError;
     use crate::device_core::storage_info::StorageInfoError;
     use crate::device_core::{
-        BondTag, CatalogTag, DataIdentity, DfuTag, NavigatorTag, OperationToken, RecorderTag, RetentionTag, Revision,
-        SettingsTag, StorageInfoTag, TokenSource, WeatherTag,
+        BondTag, CatalogTag, DfuTag, NavigatorTag, OperationToken, RecorderTag, RetentionTag, SettingsTag,
+        StorageInfoTag, TokenSource, WeatherTag,
     };
     use crate::dfu::DfuScanError;
     use crate::navigator::{NavigatorError, PlannerWork};
@@ -325,8 +325,7 @@ mod tests {
         let work = PlannerWork::Detour(DetourRequest { route: 0, from: (0, 0), progress_m: 0, target_m: 500 });
         second.navigator.try_put(NavigatorEffect::Acquire { token: navigator_ops.issue(), work }).unwrap();
         second.settings.try_put(SettingsEffect::PersistRevision { token: settings_ops.issue(), revision: 4 }).unwrap();
-        let data = DataIdentity::new(1);
-        second.weather.try_put(WeatherEffect::OpenInstalledData { token: weather_ops.issue(), data }).unwrap();
+        second.weather.try_put(WeatherEffect::RequestRefresh { token: weather_ops.issue() }).unwrap();
         second.dfu.try_put(DfuEffect::ArmInstall { token: dfu_ops.issue() }).unwrap();
         second.bond.try_put(BondEffect::Forget { token: bond_ops.issue() }).unwrap();
         second.storage_info.try_put(StorageInfoEffect::MeasureFreeSpace { token: storage_ops.issue() }).unwrap();
@@ -346,7 +345,6 @@ mod tests {
         let mut storage_ops: TokenSource<StorageInfoTag> = TokenSource::new();
 
         let mut first = OutcomeSlots::new();
-        let revision = Revision::new(4);
         first.catalog.try_put(CatalogOutcome::CatalogRead { token: catalog_ops.issue() }).unwrap();
         first
             .retention
@@ -355,8 +353,7 @@ mod tests {
         first.recorder.try_put(RecorderOutcome::Checkpointed { token: recorder_ops.issue() }).unwrap();
         first.navigator.try_put(NavigatorOutcome::Acquired { token: navigator_ops.issue() }).unwrap();
         first.settings.try_put(SettingsOutcome::Persisted { token: settings_ops.issue(), revision: 3 }).unwrap();
-        let data = DataIdentity::new(1);
-        first.weather.try_put(WeatherOutcome::Refreshed { token: weather_ops.issue(), data, revision }).unwrap();
+        first.weather.try_put(WeatherOutcome::Raised { token: weather_ops.issue() }).unwrap();
         first.dfu.try_put(DfuOutcome::InstallBegan { token: dfu_ops.issue() }).unwrap();
         first.bond.try_put(BondOutcome::Forgotten { token: bond_ops.issue() }).unwrap();
         first

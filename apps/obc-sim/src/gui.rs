@@ -30,6 +30,11 @@ use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 /// read, short enough that it is plainly an ending and not a hang.
 const POWERING_OFF_HOLD: std::time::Duration = std::time::Duration::from_millis(700);
 
+/// The one weather product the simulator mounts (#1549). The board reads an identity out of the flat
+/// store's catalog head; the sim has one bundle at a time, so the identity is a constant and the
+/// revision is what moves.
+const WEATHER_PRODUCT: u64 = 1;
+
 use crate::device_input::DeviceInput;
 use crate::map_file::LoadedMap;
 use crate::present::Present;
@@ -230,6 +235,21 @@ struct SimGui {
     /// the window because a live refresh adopts a new bundle mid-session and must be judged at the
     /// same instant the first one was.
     weather_now: Option<i64>,
+    /// The **resident sampled snapshot** — the board's shape: sampled behind one frame's pass,
+    /// lent to the next one and to the render, and compared so a resample is reported once.
+    wx_snapshot: Option<obc_app::WeatherSnapshot>,
+    /// How many times [`wx_snapshot`](Self::wx_snapshot) has moved — the repaint edge the domain
+    /// holds, reported as `ExternalFacts::note_weather_sample`.
+    wx_sample: u64,
+    /// Which revision of the mounted bundle the domain has been told about — the simulator's stand-in
+    /// for the board's catalog head (`ride.rs`'s `read_catalogs`). The sim mounts one weather product,
+    /// so the identity is fixed and only the revision moves: `0` before anything is mounted, and one
+    /// step per bundle *adopted* (the `--weather` recipe at start-up, then each live commit).
+    ///
+    /// The revision has to move for a live commit, because that move is the only thing that records
+    /// [`RefreshResult::Installed`] — the fetch landed. A first sighting is not a refresh, which
+    /// `WeatherDomain::note_installed` already knows.
+    wx_installed: u64,
     /// The routes folder (the device-SD stand-in): the menu catalog + active geometry.
     store: RouteStore,
     /// The `.obt` trips beside the routes (epic #526, TR2): the grouped-route folders. Rescanned +
@@ -457,6 +477,9 @@ impl SimGui {
             weather,
             live_weather,
             weather_now: args.weather_now,
+            wx_snapshot: None,
+            wx_sample: 0,
+            wx_installed: 0,
             // `--no-card`: §11.7's no-storage arm — the scheduler raises nothing at all.
             companion: crate::weather_companion::SimCompanion::new(!args.no_card),
             store,
@@ -535,7 +558,74 @@ impl SimGui {
 
     /// Run the shared app for one frame into the backend's device-64 frame, present it through the
     /// seam, then upload the reconstructed texture.
+    /// Resample the resident weather snapshot and report what moved — the board's own shape
+    /// ([`ride.rs`'s resample branch]), run once per frame **before** the pass that decides over it.
+    ///
+    /// WX14 live mode drives its §11 lifecycle from here too: the scheduler decides, and when it
+    /// raises, the companion fetches over HTTP (synchronously — the GUI stalls for the second or
+    /// two a real phone would spend with BLE off) and the upload is committed only if the
+    /// production classifier accepts it.
+    ///
+    /// The sample is source-agnostic: a demo bundle, a `--weather live` fetch and a
+    /// companion-committed upload all arrive here as the same `SimWeather`, so live mode gets the
+    /// projected decision and real alerts on exactly the wiring demo mode does.
+    fn sample_weather(&mut self) {
+        let now = self.app.wall_unix_now() as i64;
+        self.session.sync(&self.app, &mut self.store);
+        if let Some(live) = self.live_weather.as_mut() {
+            if let Some(bytes) = self.companion.poll(&self.app, self.weather.as_ref(), live, now) {
+                // `--weather-now` is the freshness instant in *every* mode, refreshes included:
+                // dropping it here left the first bundle evaluated at the pinned instant and every
+                // later one at the wall clock.
+                if let Some(store) = crate::weather_store::SimWeather::from_bytes(bytes, self.weather_now) {
+                    self.weather = Some(store);
+                    self.wx_installed += 1;
+                }
+            }
+        }
+        // The installed-data fact (#1549), the simulator's half of what `read_catalogs` reports on
+        // the board: a bundle is mounted, at this identity and revision. Reported once per adoption
+        // and not per frame — the level is a level, and it is a *move* of it that says a fetch
+        // landed. `--weather` mounts the first one before any pass runs, so the report catches up
+        // on the first sample rather than being missed.
+        if self.weather.is_some() && self.wx_installed == 0 {
+            self.wx_installed = 1;
+        }
+        if self.wx_installed > 0 {
+            self.host.facts().note_weather_data(obc_app::device_core::WeatherData {
+                data: obc_app::device_core::DataIdentity::new(WEATHER_PRODUCT),
+                revision: obc_app::device_core::Revision::new(self.wx_installed),
+            });
+        }
+        let next = match self.weather.as_mut() {
+            Some(w) => {
+                let st = &self.app.state;
+                let pos = st.user_fix.map(|f| (f.lat, f.lon)).unwrap_or((st.cam_lat, st.cam_lon));
+                // WX14: re-anchor a *demo* recipe onto the live GUI clock first, so the snapshot
+                // (and the projection sampled through it) reads the same bytes the lease will. A
+                // live bundle is left to age, per `sync_clock`'s own rule.
+                w.sync_clock(now, true);
+                let src = self.store.active_source();
+                let route = match (self.session.index(), src.as_ref()) {
+                    (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
+                    _ => None,
+                };
+                let projection = route.as_ref().zip(self.app.ride_projection());
+                w.snapshot(Some(pos), projection)
+            }
+            None => None,
+        };
+        if next != self.wx_snapshot {
+            self.wx_snapshot = next;
+            self.wx_sample += 1;
+            self.host.facts().note_weather_sample(obc_app::device_core::Revision::new(self.wx_sample));
+        }
+    }
+
     fn render_to_texture(&mut self, ctx: &egui::Context) {
+        // The frame's weather sample, taken before anything borrows the map: the pass below decides
+        // over it and the render draws it, so the card and the raster are one decision.
+        self.sample_weather();
         // Reuse the session-long tables and chunk cache (see the field docs): the map is parsed
         // once at startup exactly as the device parses once at boot, so a frame costs one cheap
         // `Reader` view. The map plane, nav, POI, hours and routing all read it.
@@ -615,6 +705,7 @@ impl SimGui {
                     &gestures,
                     sensors,
                     route.as_ref(),
+                    self.wx_snapshot.as_ref(),
                     SIM_SUPPORT,
                 )
             } else {
@@ -650,6 +741,7 @@ impl SimGui {
                     &gestures,
                     sensors,
                     route.as_ref(),
+                    self.wx_snapshot.as_ref(),
                     SIM_SUPPORT,
                 )
             }
@@ -715,54 +807,14 @@ impl SimGui {
         let (dev_w, dev_h) = (self.dev_w, self.dev_h);
         let mut fbdev = FbDevice64::new(&mut self.fb, dev_w, dev_h);
         let scene = crate::map_file::Scene { reader: &reader, route: route.as_ref() };
-        // WX14 live mode: one pass of the §11 lifecycle before the frame. The scheduler decides;
-        // when it raises, the companion fetches over HTTP (synchronously — the GUI stalls for the
-        // second or two a real phone would spend with BLE off) and the upload is committed only
-        // if the production classifier accepts it.
-        if let Some(live) = self.live_weather.as_mut() {
-            let now = self.app.wall_unix_now() as i64;
-            if let Some(bytes) = self.companion.poll(&self.app, self.weather.as_ref(), live, now) {
-                // `--weather-now` is the freshness instant in *every* mode, refreshes included:
-                // dropping it here left the first bundle evaluated at the pinned instant and every
-                // later one at the wall clock.
-                if let Some(store) = crate::weather_store::SimWeather::from_bytes(bytes, self.weather_now) {
-                    self.weather = Some(store);
-                }
-            }
-        }
-        // The rain-overlay lease (WX10): constructed per frame from the loaded weather store so
-        // the GUI exercises exactly the device's adapter → hook path; no store ⇒ `None`.
-        let (app, scratch, weather) = (&mut self.app, &mut *self.scratch, self.weather.as_mut());
-        // WX11: the production resident snapshot, re-sampled each GUI frame at the rider/camera
-        // position (host-side, in-memory — trivial), so the weather screens are live in the GUI.
-        // WX12: with an active matched route the rider is *on*, the samples are **route-projected**
-        // through the app's own `ride_projection` (recent pace + matched progress), and the real
-        // alert engine runs against the same snapshot — the exact device behaviour, live. Both are
-        // source-agnostic: a demo bundle, a `--weather live` fetch and a companion-committed
-        // upload all arrive here as the same `SimWeather`, so live mode gets the projected
-        // decision and real alerts on exactly the wiring demo mode does.
-        let (wx_snapshot, rain_step) = match weather {
-            Some(w) => {
-                let pos = app.state.user_fix.map(|f| (f.lat, f.lon)).unwrap_or((app.state.cam_lat, app.state.cam_lon));
-                // WX14: re-anchor a *demo* recipe onto the live GUI clock first, so the snapshot
-                // below (and the projection sampled through it) reads the same bytes the lease
-                // will. A live bundle is left to age, per `sync_clock`'s own rule.
-                w.sync_clock(app.wall_unix_now() as i64, true);
-                let projection = route.as_ref().zip(app.ride_projection());
-                let snap = w.snapshot(Some(pos), projection);
-                if let Some(snap) = &snap {
-                    let now = app.wall_unix_now() as i64;
-                    let floor = snap.rain_zoom_floor(app.state.cam_lat).unwrap_or(0.0);
-                    app.set_rain_view(snap.steps_ahead(now), floor);
-                }
-                app.weather_alert_tick(snap.as_ref());
-                (snap, app.state.rain_step)
-            }
-            None => (None, 0),
-        };
+        // The frame renders the very snapshot this pass decided over — sampled before it, not after
+        // — so the card, the step count and the raster are one decision.
+        let (app, scratch) = (&mut self.app, &mut *self.scratch);
+        let rain_step = app.state.rain_step;
+        let wx_snapshot = self.wx_snapshot.as_ref();
         let weather = self.weather.as_mut();
         let render = |rain: Option<&mut dyn obc_render::RainOverlaySource>,
-                      feed: obc_app::WeatherFeed,
+                      feed: Option<&obc_app::WeatherSnapshot>,
                       app: &mut App,
                       scratch: &mut obc_render::RenderScratch,
                       fbdev: &mut FbDevice64<'_>| {
@@ -772,17 +824,10 @@ impl SimGui {
         };
         let wx_wall_now = app.wall_unix_now() as i64;
         let mut stats = match weather {
-            Some(weather) => weather.lease(wx_wall_now, rain_step, |rain| {
-                let feed = obc_app::WeatherFeed { snapshot: wx_snapshot.as_ref(), refreshing: false };
-                render(rain, feed, app, scratch, &mut fbdev)
-            }),
-            None => render(
-                None,
-                obc_app::WeatherFeed { snapshot: wx_snapshot.as_ref(), refreshing: false },
-                app,
-                scratch,
-                &mut fbdev,
-            ),
+            Some(weather) => {
+                weather.lease(wx_wall_now, rain_step, |rain| render(rain, wx_snapshot, app, scratch, &mut fbdev))
+            }
+            None => render(None, wx_snapshot, app, scratch, &mut fbdev),
         };
         stats.render_us = t0.elapsed().as_micros() as u32;
         self.last_stats = stats;

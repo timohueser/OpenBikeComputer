@@ -158,24 +158,14 @@ pub struct AppState {
     /// `draw` (the dimming) need it without a `Reader`.
     pub has_nav_graph: bool,
     /// The rain map's selected **time step** (WX11): `0` = the current frame, `n` = the n-th
-    /// future frame of the active bundle. Written by the rain-map screen's Step arm (clamped to
-    /// [`rain_steps_ahead`](AppState::rain_steps_ahead)) and reset to `0` on every entry/exit, so
-    /// it can never leak a stale offset; read by the host when it leases the frame's
+    /// future frame of the active bundle. Rider *selection* state, which is why it stays in the UI
+    /// plane while the range it clamps against
+    /// ([`WeatherDomain::steps_ahead`](crate::weather::WeatherDomain::steps_ahead)) does not.
+    /// Written by the rain-map screen's Step arm and reset to `0` on every entry/exit, so it can
+    /// never leak a stale offset; read by the host when it leases the frame's
     /// [`RainOverlayAdapter`](crate::RainOverlayAdapter) (`at_step`), so the leased raster and the
     /// on-screen frame timestamp are one decision.
     pub rain_step: u8,
-    /// How many future frames exist past the current one (WX11) — the clamp for
-    /// [`rain_step`](AppState::rain_step), host-refreshed from the snapshot
-    /// (`WeatherSnapshot::steps_ahead`) whenever it feeds weather. `0` when nothing is current.
-    pub rain_steps_ahead: u8,
-    /// The rain map's **zoom-out floor** (WX11, owner tuning round 2): the smallest zoom at
-    /// which the active product's raster still renders — the regime edge, derived per product
-    /// from its cell density (`WeatherSnapshot::rain_zoom_floor` /
-    /// [`obc_render::rain_min_zoom`]) and host-refreshed alongside the snapshot. The weather
-    /// screens clamp against it on rain-map entry and on every Inspect zoom step, so a rider
-    /// never *sees* the out-of-regime state; `0.0` (no rain product) disengages the clamp. Only
-    /// the rain map reads it — the normal Map's zoom range is untouched.
-    pub rain_zoom_min: f32,
 }
 
 impl AppState {
@@ -201,17 +191,18 @@ impl AppState {
             ble_forget_pending: false,
             has_nav_graph: false,
             rain_step: 0,
-            rain_steps_ahead: 0,
-            rain_zoom_min: 0.0,
         }
     }
 
-    /// Clamp the camera to the rain map's zoom-out floor ([`rain_zoom_min`](AppState::rain_zoom_min)).
-    /// Called by the weather screens on rain-map entry and after each Inspect zoom step; a
-    /// disengaged floor (`0.0`) is a no-op, and zooming *in* is never touched.
-    pub fn clamp_rain_zoom(&mut self) {
-        if self.rain_zoom_min > 0.0 && self.zoom < self.rain_zoom_min {
-            self.zoom = self.rain_zoom_min;
+    /// Clamp the camera to the rain map's zoom-out `floor` — the smallest zoom at which the active
+    /// product's raster still renders, derived by
+    /// [`WeatherDomain`](crate::weather::WeatherDomain) and passed in by the caller that has it.
+    /// Called by the weather screens on rain-map entry and after each Inspect zoom step, and by the
+    /// pass's own tail while the rain map is up; a disengaged floor (`0.0`) is a no-op, and zooming
+    /// *in* is never touched.
+    pub fn clamp_rain_zoom(&mut self, floor: f32) {
+        if floor > 0.0 && self.zoom < floor {
+            self.zoom = floor;
         }
     }
 
@@ -1556,45 +1547,6 @@ impl App {
         }
     }
 
-    /// Feed the frame's **weather view state** (WX11): the rain map's time-step range and the
-    /// product's zoom floor, refreshed by the host alongside the snapshot (the sim per frame /
-    /// per render; WX8's board mount the same way). Beyond storing the fields this **re-clamps
-    /// live** when the rain map is the current base screen: a denser product committing
-    /// mid-session, or a pan-move that raised the floor (the host recomputes it at the camera's
-    /// new latitude), must not leave the screen out of regime until the next gesture (review
-    /// F2). A zoom change dirties the map so the re-clamped frame actually paints.
-    pub fn set_rain_view(&mut self, steps_ahead: u8, zoom_floor: f32) {
-        self.state.rain_steps_ahead = steps_ahead;
-        self.state.rain_step = self.state.rain_step.min(steps_ahead);
-        self.state.rain_zoom_min = zoom_floor;
-        // Asked as the declared capability, not as a `matches!` on the variant: the screen whose
-        // zoom must stay in the product's regime is exactly the screen that draws the raster.
-        if self.ui.base_wants_rain() {
-            let before = self.state.zoom;
-            self.state.clamp_rain_zoom();
-            if self.state.zoom != before {
-                self.ui.map_dirty = true;
-            }
-        }
-    }
-
-    /// Tell the retained UI that the host-owned weather snapshot changed. The snapshot itself is
-    /// deliberately not stored in `App` (the board and simulator own different backing stores),
-    /// but a newly committed/sample-shifted bundle must repaint an already-open dashboard even
-    /// when its number of rain steps and zoom floor happen to match the previous generation.
-    pub fn weather_feed_changed(&mut self) {
-        // Snapshot resampling follows GPS cadence. Only the three screens that consume the feed
-        // need that edge; dirtying Home/settings here would turn a background weather sample into
-        // a pointless 1 Hz full-chrome redraw. Returning to a buried weather screen is already a
-        // navigation repaint, and alert pushes dirty themselves.
-        if matches!(
-            self.ui.stack.last(),
-            Some(Screen::Weather(_) | Screen::WeatherHourly(_) | Screen::WeatherRainMap(_))
-        ) {
-            self.ui.map_dirty = true;
-        }
-    }
-
     /// Host-push the **weather alert card** (WX11, epic #1185): RAIN AHEAD / STORM AHEAD with the
     /// locked VIEW RAIN MAP + DISMISS actions. An alert already on the stack is *updated* in
     /// place (re-fires never stack cards); the passkey card outranks it (the pairing prompt is
@@ -1675,13 +1627,17 @@ impl App {
         })
     }
 
-    /// Run the WX12 **alert engine** against the host's freshly-sampled snapshot: evaluate the
-    /// centralized threshold table, dedup against the persisted per-class marks, and drive the
-    /// WX11 card seam — a new (or materially escalated) event pushes/re-fires the card and
-    /// persists its mark through the #810 settings handshake; the same suppressed event only
-    /// refreshes an already-open card's countdown in place. Call at fix/frame cadence with the
-    /// same snapshot the screens render — cheap (a bounded scan), idempotent, deterministic.
-    /// `None` (no snapshot) never alerts, and neither does expired data (the engine's law).
+    /// Run the WX12 **alert engine** against the pass's snapshot: evaluate the centralized
+    /// threshold table, dedup against the persisted per-class marks, and drive the WX11 card seam —
+    /// a new (or materially escalated) event pushes/re-fires the card and persists its mark through
+    /// the #810 settings handshake; the same suppressed event only refreshes an already-open card's
+    /// countdown in place. Cheap (a bounded scan), idempotent, deterministic. `None` (no snapshot)
+    /// never alerts, and neither does expired data (the engine's law).
+    ///
+    /// **The production caller is stage 10** ([`stage_weather`](crate::device_core::PassStage::Weather)),
+    /// once per pass. This stays a named method so tests and the simulator's `--weather-decide`
+    /// still-frame path can drive the decision directly — an executor must not, or *when* the
+    /// honesty law runs becomes its choice again.
     ///
     /// **A mark is written only for a card the rider actually saw.** `show_weather_alert` can
     /// refuse — a passkey prompt outranks it, and so does a screen stack already at `MAX_DEPTH` —
@@ -2424,6 +2380,13 @@ impl App {
         }
     }
 
+    /// The weather domain, read-only — what the rider may be told about weather, in one place.
+    /// Executors and tests observe through it; every *change* goes in as a fact, an intent or an
+    /// outcome, which is why this hands out `&` and not `&mut`.
+    pub fn weather(&self) -> &crate::weather::WeatherDomain {
+        &self.weather
+    }
+
     /// The live weather alert-mark anchors — what an executor writes when it serves
     /// [`SettingsEffect::PersistAlertMarks`](crate::settings::SettingsEffect).
     pub fn alert_marks(&self) -> &crate::weather_alerts::AlertMarks {
@@ -2771,7 +2734,9 @@ impl App {
         // preview polyline with it (see `sync_detour_preview`).
         let detour_planned_before = self.navigator.detour_planned();
         let backlight_available = self.backlight_available;
-        let App { state, activity, settings, catalogs, nav_profiles, ride, ui, navigator, dfu, storage, .. } = self;
+        let App {
+            state, activity, settings, catalogs, nav_profiles, ride, ui, navigator, dfu, storage, weather, ..
+        } = self;
         let mut cx = Ctx {
             state,
             activity,
@@ -2779,6 +2744,7 @@ impl App {
             navigator,
             dfu,
             storage,
+            weather,
             routes: catalogs.routes(),
             rides: catalogs.rides(),
             trips: catalogs.trips(),
@@ -2954,7 +2920,7 @@ impl App {
         reader: &Reader,
         route: Option<&RouteReader>,
         rain: Option<&mut dyn obc_render::RainOverlaySource>,
-        weather: crate::weather::WeatherFeed,
+        weather: Option<&crate::weather::WeatherSnapshot>,
         w: f32,
         h: f32,
         color_fn: F,
@@ -3040,7 +3006,7 @@ impl App {
         reader: Option<&Reader>,
         route: Option<&RouteReader>,
         rain: Option<&mut dyn obc_render::RainOverlaySource>,
-        weather: crate::weather::WeatherFeed,
+        weather: Option<&crate::weather::WeatherSnapshot>,
         w: f32,
         h: f32,
         color_fn: F,
@@ -3074,19 +3040,7 @@ impl App {
         F: Fn(u16) -> D::Color,
         S: MapScene,
     {
-        self.render_scene_map_rain_timed(
-            scratch,
-            target,
-            scene,
-            core_reader,
-            route,
-            None,
-            crate::weather::WeatherFeed::NONE,
-            w,
-            h,
-            color_fn,
-            clock,
-        )
+        self.render_scene_map_rain_timed(scratch, target, scene, core_reader, route, None, None, w, h, color_fn, clock)
     }
 
     /// Generic timed scene-map rendering plus the optional **rain overlay lease** (WX10): a host
@@ -3106,7 +3060,7 @@ impl App {
         core_reader: Option<&Reader>,
         route: Option<&RouteReader>,
         rain: Option<&mut dyn obc_render::RainOverlaySource>,
-        weather: crate::weather::WeatherFeed,
+        weather: Option<&crate::weather::WeatherSnapshot>,
         w: f32,
         h: f32,
         color_fn: F,
@@ -3177,6 +3131,10 @@ impl App {
         let hold_progress = self.ui.hold_progress_override.unwrap_or_else(|| self.ui.input.select_hold_progress());
         let no_fix = !self.has_live_fix(self.ui.now_ms);
         let backlight_available = self.backlight_available;
+        // The one cue the weather screens raise over cached content, read from its owner — the same
+        // shape as `card_free_bytes: storage.free_bytes()` below. A `refreshing` bool crossing a
+        // render signature is what let the platform's copy and the domain's answer disagree.
+        let weather_refreshing = self.weather.refreshing();
         let App {
             state,
             activity,
@@ -3247,8 +3205,8 @@ impl App {
             map_name: map_name.as_str(),
             map_obcm_version: *map_obcm_version,
             card_free_bytes: storage.free_bytes(),
-            weather: weather.snapshot,
-            weather_refreshing: weather.refreshing,
+            weather,
+            weather_refreshing,
             travel_deg: ride.travel_deg,
             backlight: backlight_available,
         };
@@ -3887,6 +3845,7 @@ mod tests {
             gestures: &[],
             sensors: Sensors { hr: Some(&mut hr), ..Sensors::new(&mut loc) },
             route: None,
+            weather: None,
             support: crate::harness::support::EVERY_CAPABILITY,
             outcomes: &mut outcomes,
             facts: &mut facts,
@@ -6270,6 +6229,7 @@ mod tests {
                 gestures: &[],
                 sensors: Sensors::new(&mut loc),
                 route: None,
+                weather: None,
                 support: EVERY_CAPABILITY,
                 outcomes: &mut self.outcomes,
                 facts: &mut facts,
@@ -7069,64 +7029,17 @@ mod tests {
         let reader = Reader::new(&src, &tables, &cache);
         let mut buf = Buf::new(240, 320);
         let mut scratch = std::boxed::Box::new(obc_render::RenderScratch::new());
-        app.render_frame_with_rain(
-            Some(&mut scratch),
-            &mut buf,
-            &reader,
-            None,
-            None,
-            crate::weather::WeatherFeed { snapshot: Some(&snap), refreshing: false },
-            240.0,
-            320.0,
-            |c| {
-                let (r, g, b) = rgb565_to_rgb888(c);
-                Rgb888::new(r, g, b)
-            },
-        );
+        app.render_frame_with_rain(Some(&mut scratch), &mut buf, &reader, None, None, Some(&snap), 240.0, 320.0, |c| {
+            let (r, g, b) = rgb565_to_rgb888(c);
+            Rgb888::new(r, g, b)
+        });
         buf
     }
 
     /// A synthetic ride snapshot for the alert engine: nine 15-min frames of `intensities`
     /// anchored at the app's own wall clock, dry hourly rows.
     fn alert_snap(app: &App, intensities: &[u8]) -> crate::weather::WeatherSnapshot {
-        let now = app.wall_unix_now() as i64;
-        let mut frames = heapless::Vec::new();
-        for (i, &intensity) in intensities.iter().enumerate() {
-            frames
-                .push(crate::weather::FrameSample {
-                    valid_at: now + i as i64 * 900,
-                    intensity,
-                    lat: 47_000_000,
-                    lon: 8_000_000,
-                    past_route_end: false,
-                    spread_uncertain: false,
-                })
-                .unwrap();
-        }
-        crate::weather::WeatherSnapshot {
-            generated_at: now,
-            valid_from: now - 3_600,
-            valid_until: now + 24 * 3_600,
-            hourly: [obc_formats::obcw::HourlyRecord {
-                valid_time_offset_s: 0,
-                temperature_deci_c: 150,
-                precipitation_tenth_mm: 0,
-                precipitation_probability_pct: 0,
-                condition: obc_formats::obcw::CONDITION_RAIN,
-                wind_from_deg: 200,
-                wind_speed_deci_ms: 40,
-                wind_gust_deci_ms: 80,
-                flags: 0,
-            }; obc_formats::obcw::HOURLY_COUNT],
-            frames,
-            frame_cap_s: 900,
-            sampled_at: Some((47_000_000, 8_000_000)),
-            pos_in_grid: true,
-            current_pos_in_grid: true,
-            projected: true,
-            frames_truncated: false,
-            rain_grid: None,
-        }
+        crate::harness::support::weather_snapshot(app.wall_unix_now() as i64, intensities, None)
     }
 
     /// The alert engine end to end through `weather_alert_tick`: a heavy-rain snapshot fires the

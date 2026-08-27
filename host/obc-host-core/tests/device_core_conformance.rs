@@ -67,7 +67,7 @@ use obc_app::recorder::RecorderEffect;
 use obc_app::retention::{Retention, RetentionEffect, RetentionError, RetentionOutcome, RouteRetentionMeta};
 use obc_app::screen::Screen;
 use obc_app::settings::{SettingsEffect, SettingsOutcome};
-use obc_app::weather::WeatherEffect;
+use obc_app::weather::{WeatherEffect, WeatherOutcome};
 use obc_app::{App, AppState, Gesture, HostCommand, HostMailbox, RideRetentionRecord, TrackAction, WarningFlags};
 use obc_host_core::trace::{
     run_scenario_seeded, FeederCall, FeederKind, RunnerMode, Trace, TraceHarness, TraceInput, TraceRecorder,
@@ -219,6 +219,7 @@ enum Done {
     Settings(SettingsOutcome),
     Dfu(DfuOutcome),
     Storage(StorageInfoOutcome),
+    Weather(WeatherOutcome),
     /// A warning raised by an executor that has no domain to answer to — the recorder-finalize
     /// failure, which Recorder cannot report as an outcome until #1398.
     Warning(WarningFlags),
@@ -284,6 +285,7 @@ impl CoreHarness {
             gestures: &[],
             sensors: Sensors::new(&mut location),
             route: None,
+            weather: state.weather.as_ref(),
             support: EVERYTHING,
             outcomes: &mut state.outcomes,
             facts: &mut state.facts,
@@ -296,11 +298,11 @@ impl CoreHarness {
 
     /// Serve what a host outside `obc-app` can actually cause.
     ///
-    /// Six domains reach this executor: the catalog and retention from #1438, and the four #1397 S2
-    /// gave a machine. Weather has a machine too, but its refresh intent has no public door yet
-    /// (#1401 owns the request cutover), and Recorder and Bond have no machine at all — so nothing
-    /// else may appear. Asserted rather than assumed: an effect this executor cannot serve turning
-    /// up would be a silent change of who decides, and the run must stop rather than skip it.
+    /// Seven domains reach this executor: the catalog and retention from #1438, the four #1397 S2
+    /// gave a machine, and Weather, whose refresh intent gained its one producer in #1549 — the
+    /// Menu row that opens the dashboard. Recorder and Bond have no machine at all, so nothing else
+    /// may appear. Asserted rather than assumed: an effect this executor cannot serve turning up
+    /// would be a silent change of who decides, and the run must stop rather than skip it.
     fn serve_typed(&mut self, effects: &mut EffectSlots, done: &mut Vec<Done>) {
         if let Some(effect) = effects.catalog.take() {
             self.served.insert("catalog");
@@ -346,7 +348,14 @@ impl CoreHarness {
             let StorageInfoEffect::MeasureFreeSpace { token } = effect;
             done.push(Done::Storage(StorageInfoOutcome::Measured { token, free_bytes: 8 * 1024 * 1024 }));
         }
-        assert!(!effects.has_pending(), "recorder, weather and bond are the domains a host cannot reach in Phase 1");
+        if let Some(WeatherEffect::RequestRefresh { token }) = effects.weather.take() {
+            self.served.insert("weather");
+            // **Raise** and answer that, nothing more: what comes back is the installed-data fact,
+            // and whether a fetch is running is the provider plane's own level.
+            self.state.weather_refreshes += 1;
+            done.push(Done::Weather(WeatherOutcome::Raised { token }));
+        }
+        assert!(!effects.has_pending(), "recorder and bond are the domains a host cannot reach in Phase 1");
         // The marks record shares the settings slot but has no script of its own, so it answers
         // here and `serve_scripted` — whose settings answer is the corpus's, keyed to the
         // preferences write — is skipped for that pass only.
@@ -597,7 +606,12 @@ impl TraceHarness<Action> for CoreHarness {
     type Outcome = Done;
 
     fn snapshot(&self) -> Self::State {
-        visible_state(&self.state.app, self.state.settings_revision, self.state.retention_delete_attempts)
+        visible_state(
+            &self.state.app,
+            self.state.settings_revision,
+            self.state.retention_delete_attempts,
+            self.state.weather_refreshes,
+        )
     }
 
     fn apply_input(&mut self, action: &Action, trace: &mut TraceRecorder<Self::State>) {
@@ -639,6 +653,9 @@ impl TraceHarness<Action> for CoreHarness {
             }
             Done::Storage(outcome) => {
                 let _ = self.state.outcomes.storage_info.try_put(outcome);
+            }
+            Done::Weather(outcome) => {
+                let _ = self.state.outcomes.weather.try_put(outcome);
             }
             Done::Warning(flags) => self.state.facts.raise_warnings(flags),
             Done::RideSaved => self.state.feed_rides("core.recorder-saved", trace),
@@ -1324,6 +1341,82 @@ fn an_object_that_vanished_before_the_commit_is_a_success() {
     );
 }
 
+// ==================== the four weather requirements (#1549) ====================
+//
+// `weather.refresh-install-stale-alert` carried four requirements and four host setter calls, and
+// nothing asserted any of them. A requirement in `ALL_REQUIREMENTS` with no assertion behind it is
+// exactly as ungated as one that is missing — the S6c lesson's other half. Each of the four below
+// names what it now gates, and every one of them reads `WeatherDomain` rather than a host mirror.
+
+/// **Opening the dashboard raises exactly one refresh** (`Requirement::WeatherRefreshState`).
+///
+/// The rider walks the Menu to the Weather station; `menu.rs`'s row names
+/// `WeatherIntent::RefreshRequested`, and stage 10 turns it into one `WeatherEffect::RequestRefresh`
+/// once the companion capability is up. One radio trip, not two, and not none.
+#[test]
+fn opening_the_weather_dashboard_raises_exactly_one_refresh() {
+    for runner in Runner::ALL {
+        let settled = runner.run(named("weather.refresh-install-stale-alert")).settled;
+        assert_eq!(
+            settled.weather_refreshes,
+            1,
+            "{}: the dashboard's one entry edge must raise exactly one request",
+            runner.name()
+        );
+    }
+}
+
+/// **The installed identity reaches the domain and survives everything after it**
+/// (`Requirement::WeatherInstalledDataChange`).
+///
+/// The platform reports what it installed; `WeatherDomain` is the only thing that holds it, and
+/// neither a later resample nor an alert can walk it back.
+#[test]
+fn the_installed_weather_identity_is_the_domains_and_it_holds() {
+    let expected = obc_app::device_core::WeatherData {
+        data: obc_app::device_core::DataIdentity::new(device_core_corpus::WEATHER_PRODUCT),
+        revision: Revision::new(1),
+    };
+    for runner in Runner::ALL {
+        let settled = runner.run(named("weather.refresh-install-stale-alert")).settled;
+        assert_eq!(settled.weather_installed, Some(expected), "{}: the installed level is lost", runner.name());
+    }
+}
+
+/// **A stale resample collapses the step range and installs nothing**
+/// (`Requirement::WeatherStaleData`).
+///
+/// The bundle ages out from under the rider: the next sample finds no current frame, so the rain
+/// map has nothing ahead to step to — and the *installed* identity is untouched, because a sample
+/// that found nothing is not an uninstall. The step range is the domain's own derivation; no host
+/// computes it, which is why the two cadences agreeing on it says something.
+#[test]
+fn a_stale_resample_collapses_the_step_range_without_uninstalling() {
+    for runner in Runner::ALL {
+        let run = runner.run(named("weather.refresh-install-stale-alert"));
+        assert!(
+            run.trace.steps.iter().any(|step| step.visible_state.rain_steps_ahead == 4),
+            "{}: the five-frame bundle must first give the rain map four steps ahead",
+            runner.name()
+        );
+        assert_eq!(run.settled.rain_steps_ahead, 0, "{}: a stale sample has nothing ahead", runner.name());
+        assert!(run.settled.weather_installed.is_some(), "{}: a stale sample is not an uninstall", runner.name());
+    }
+}
+
+/// **The storm card reaches the rider** (`Requirement::WeatherAlertDelivery`).
+///
+/// The presentation seam is deliberately separate from the decision (a passkey prompt outranks the
+/// card, and a full stack refuses it), so what this pins is that a delivered card is on top and
+/// stays there through the settle.
+#[test]
+fn the_delivered_storm_card_is_what_the_rider_is_looking_at() {
+    for runner in Runner::ALL {
+        let settled = runner.run(named("weather.refresh-install-stale-alert")).settled;
+        assert_eq!(settled.screen, ScreenState::WeatherAlert, "{}: the storm card is not up", runner.name());
+    }
+}
+
 /// **A completed removal is followed by the re-read the domain orders** (#1541,
 /// `Requirement::CatalogDeleteOrdersRefresh`). No executor composes a refresh any more, so a deleted
 /// row leaves the rider's menu only because `CatalogMachine` ordered the read that re-fills it — and
@@ -1609,7 +1702,7 @@ fn recorder() -> TraceRecorder<VisibleState> {
 }
 
 fn blank_state() -> VisibleState {
-    visible_state(&App::new_idle(AppState::new(0, 0, 1.0)), 0, 0)
+    visible_state(&App::new_idle(AppState::new(0, 0, 1.0)), 0, 0, 0)
 }
 
 /// The one warning path the pass owns end to end: a fault raised by any producer reaches the rider

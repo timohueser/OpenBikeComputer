@@ -404,8 +404,8 @@ impl WeatherSnapshot {
 
     /// The rain map's zoom-out floor at the camera latitude — the smallest zoom at which the
     /// rain grid still renders ([`obc_render::rain_min_zoom`] over [`rain_grid`](Self::rain_grid)),
-    /// or `None` with no rain grid (the clamp then stays disengaged). Hosts feed it into
-    /// [`AppState::rain_zoom_min`](crate::AppState) alongside the snapshot.
+    /// or `None` with no rain grid (the clamp then stays disengaged). Derived in exactly one
+    /// place — [`WeatherDomain::note_sampled`] — and read from the domain by everything else.
     pub fn rain_zoom_floor(&self, cam_lat_udeg: i32) -> Option<f32> {
         let grid = self.rain_grid.as_ref()?;
         obc_render::rain_min_zoom(grid, obc_map_scene::cos_lat(cam_lat_udeg))
@@ -527,24 +527,6 @@ pub fn rain_outlook(snap: &WeatherSnapshot, now: i64) -> RainOutlook {
         None if !snap.current_pos_in_grid => RainOutlook::HourlyOnly,
         None => RainOutlook::UpdateNeeded,
     }
-}
-
-/// The host's per-frame weather feed into the render path — the snapshot borrow plus the
-/// refresh-in-flight flag, bundled so the render entry points take one weather argument. Like the
-/// rain lease it is host-owned per frame: the App keeps no resident weather state of its own
-/// (the board's buffer lands with WX8's store mount, where it can be carved deliberately).
-#[derive(Default)]
-pub struct WeatherFeed<'a> {
-    /// The resident snapshot, or `None` when nothing was ever fetched / no store is mounted.
-    pub snapshot: Option<&'a WeatherSnapshot>,
-    /// A refresh cycle is in flight (WX8's request/upload; the sim's flag) — the dashboard's one
-    /// non-blocking cue. Cached content stays visible regardless.
-    pub refreshing: bool,
-}
-
-impl WeatherFeed<'_> {
-    /// No weather at all — the plain render entries' default.
-    pub const NONE: WeatherFeed<'static> = WeatherFeed { snapshot: None, refreshing: false };
 }
 
 /// Route-relative wind classification for the hourly rows' arrows (locked UX: green tailwind /
@@ -1102,17 +1084,15 @@ mod tests {
 
 // ==================== the Weather domain protocol (#1436) ====================
 //
-// WeatherDomain owns what the rider may be *told*: visible freshness, the alert policy, and the
-// identity of the installed data. The platform weather task owns the radio, the provider's timing,
-// decoding and store access — it reports typed outcomes and external facts and decides none of the
-// honesty rules this module derives.
+// WeatherDomain owns what the rider may be *told*: visible freshness, the rain map's view state,
+// the alert policy, and the identity of the installed data. The platform weather task owns the
+// radio, the provider's timing, decoding and store access — it reports typed outcomes and external
+// facts and decides none of the honesty rules this module derives.
 //
-// The bundle never crosses. An `OpenInstalledData` outcome names the product it opened; the frames
-// themselves stay in the store behind [`WeatherSnapshot::sample`], exactly as they do today.
+// The bundle never crosses. The frames stay in the store behind [`WeatherSnapshot::sample`]; a
+// sampled snapshot reaches the domain as a per-pass borrow and is never held.
 
-use crate::device_core::{
-    DataIdentity, OperationToken, Revision, TokenSource, WeatherCapabilities, WeatherData, WeatherTag,
-};
+use crate::device_core::{OperationToken, Revision, TokenSource, WeatherCapabilities, WeatherData, WeatherTag};
 
 /// What the UI asks of the weather domain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1125,17 +1105,19 @@ pub enum WeatherIntent {
 /// One bounded physical weather operation, carrying the [`OperationToken`] the domain issued.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WeatherEffect {
-    /// Ask the companion for a fresh bundle and install it.
+    /// **Raise a request** for a fresh bundle with whatever plane schedules the radio. It asks; it
+    /// does not wait for a bundle to land. The landing is reported as the installed-data fact, and
+    /// whether a fetch is currently running is reported as [`ExternalFacts::note_weather_refreshing`
+    /// ](crate::device_core::ExternalFacts::note_weather_refreshing) — because the provider's own
+    /// cadence raises fetches nobody ordered, which carry no token and must still show the cue.
     RequestRefresh { token: OperationToken<WeatherTag> },
-    /// Open the installed data set so the screens can sample it.
-    OpenInstalledData { token: OperationToken<WeatherTag>, data: DataIdentity },
 }
 
 impl WeatherEffect {
     /// The operation this effect belongs to.
     pub fn token(&self) -> OperationToken<WeatherTag> {
         match self {
-            WeatherEffect::RequestRefresh { token } | WeatherEffect::OpenInstalledData { token, .. } => *token,
+            WeatherEffect::RequestRefresh { token } => *token,
         }
     }
 }
@@ -1151,13 +1133,12 @@ pub enum WeatherError {
     Unreadable,
 }
 
-/// The result of one [`WeatherEffect`].
+/// The result of one [`WeatherEffect`] — the answer to *raising* a request, and nothing more.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WeatherOutcome {
-    /// A fresh bundle was installed as `data` at `revision`.
-    Refreshed { token: OperationToken<WeatherTag>, data: DataIdentity, revision: Revision },
-    /// The installed data set is open and samplable.
-    Opened { token: OperationToken<WeatherTag>, data: DataIdentity, revision: Revision },
+    /// The request reached a plane that can serve it. What comes back, and when, is reported as the
+    /// installed-data fact — never as this answer.
+    Raised { token: OperationToken<WeatherTag> },
     /// The operation failed. Nothing is claimed about the weather on this path — a failed refresh
     /// leaves the previous snapshot standing and ages honestly.
     Failed { token: OperationToken<WeatherTag>, error: WeatherError },
@@ -1169,18 +1150,17 @@ impl WeatherOutcome {
     /// The operation this outcome answers.
     pub fn token(&self) -> OperationToken<WeatherTag> {
         match self {
-            WeatherOutcome::Refreshed { token, .. }
-            | WeatherOutcome::Opened { token, .. }
+            WeatherOutcome::Raised { token }
             | WeatherOutcome::Failed { token, .. }
             | WeatherOutcome::Cancelled { token } => *token,
         }
     }
 }
 
-// Layout tripwires: an identity and a revision — never a bundle, a frame or a grid.
+// Layout tripwires: a token and a verdict — never a bundle, a frame or a grid.
 const _: () = assert!(core::mem::size_of::<WeatherIntent>() == 0, "one fieldless request");
-const _: () = assert!(core::mem::size_of::<WeatherEffect>() <= 16, "a token and a data identity");
-const _: () = assert!(core::mem::size_of::<WeatherOutcome>() <= 24, "a token, an identity and a revision");
+const _: () = assert!(core::mem::size_of::<WeatherEffect>() <= 16, "one token");
+const _: () = assert!(core::mem::size_of::<WeatherOutcome>() <= 24, "a token and a verdict");
 const _: () = assert!(core::mem::size_of::<WeatherError>() <= 1, "a verdict, not a report");
 
 // ==================== WeatherDomain (#1437) ====================
@@ -1239,21 +1219,37 @@ pub struct WeatherVisible {
 pub struct WeatherDomain {
     ops: TokenSource<WeatherTag>,
     installed: Option<WeatherData>,
+    /// How many times the host has resampled the snapshot — the *repaint edge* a stack-local render
+    /// key cannot otherwise see. A resample changes the card's contents under an unchanged installed
+    /// revision (a new rider position, a new minute of the projection), so this cannot be folded
+    /// into `installed.revision`.
+    sample: Revision,
+    /// The rain map's time-step range and zoom-out floor at the last resample — both pure functions
+    /// of that snapshot and the camera, derived once here instead of once per host.
+    steps_ahead: u8,
+    zoom_floor: f32,
     refresh_requested: bool,
     in_flight: Option<OperationToken<WeatherTag>>,
+    /// The provider plane is fetching. Not an operation: its own cadence raises fetches nobody
+    /// ordered, so this is a level reported as an external fact, not an answer to an effect.
+    platform_fetching: bool,
     last_result: Option<RefreshResult>,
     /// The per-class dedup/cooldown anchors — the persisted record's live value.
     marks: crate::weather_alerts::AlertMarks,
 }
 
 impl WeatherDomain {
-    /// The boot state: nothing installed, nothing requested, nothing in flight, no anchors.
+    /// The boot state: nothing installed, nothing sampled, nothing requested, no anchors.
     pub const fn new() -> Self {
         WeatherDomain {
             ops: TokenSource::new(),
             installed: None,
+            sample: Revision::ZERO,
+            steps_ahead: 0,
+            zoom_floor: 0.0,
             refresh_requested: false,
             in_flight: None,
+            platform_fetching: false,
             last_result: None,
             marks: [None; crate::weather_alerts::ALERT_CLASSES],
         }
@@ -1280,30 +1276,90 @@ impl WeatherDomain {
     /// [`ExternalFacts::note_weather_data`](crate::device_core::ExternalFacts::note_weather_data):
     /// a *newer* revision of the same product wins, and a different product always replaces — two
     /// products' revisions have no order to compare.
+    ///
+    /// **A move of an already-known level is what records
+    /// [`RefreshResult::Installed`]**: a fetch landed. The *first* sighting is not — that is the
+    /// card's existing bundle being read at boot, and calling it a completed refresh would tell the
+    /// rider a fetch succeeded when none ran.
     pub fn note_installed(&mut self, fact: WeatherData) {
-        let keep = matches!(self.installed, Some(have) if have.data == fact.data && have.revision > fact.revision);
-        if !keep {
-            self.installed = Some(fact);
+        let stale = matches!(self.installed, Some(have) if have.data == fact.data && have.revision > fact.revision);
+        if stale || self.installed == Some(fact) {
+            return;
+        }
+        if self.installed.is_some() {
+            self.last_result = Some(RefreshResult::Installed);
+        }
+        self.installed = Some(fact);
+    }
+
+    /// The host resampled the snapshot (the DC2 external fact). A monotone level: a reordered
+    /// report cannot walk the repaint edge backwards.
+    pub fn note_sample(&mut self, sample: Revision) {
+        if sample > self.sample {
+            self.sample = sample;
         }
     }
 
-    /// Apply a [`WeatherIntent`]. A repeat while one is already requested **or in flight**
-    /// coalesces, which is [`WeatherIntent::RefreshRequested`]'s own contract: the companion link is
-    /// metered, and two taps of the same button are one question. The in-flight answer *is* the
-    /// answer to the second tap, so it is dropped rather than queued behind the first.
+    /// Which resample the domain has seen — [`WeatherKey`](crate::render_key)'s repaint edge.
+    pub fn sample(&self) -> Revision {
+        self.sample
+    }
+
+    /// The provider plane started or stopped fetching (the DC2 external fact).
+    pub fn note_refreshing(&mut self, fetching: bool) {
+        self.platform_fetching = fetching;
+    }
+
+    /// Derive the rain map's view state from the snapshot the host just sampled — **the one place**
+    /// [`WeatherSnapshot::steps_ahead`] and [`WeatherSnapshot::rain_zoom_floor`] are evaluated.
+    /// `None` (no bundle, or a sample that found nothing) disengages both.
+    pub fn note_sampled(&mut self, snapshot: Option<&WeatherSnapshot>, now: i64, cam_lat_udeg: i32) {
+        match snapshot {
+            Some(snap) => {
+                self.steps_ahead = snap.steps_ahead(now);
+                self.zoom_floor = snap.rain_zoom_floor(cam_lat_udeg).unwrap_or(0.0);
+            }
+            None => {
+                self.steps_ahead = 0;
+                self.zoom_floor = 0.0;
+            }
+        }
+    }
+
+    /// How many future frames exist past the current one — the rain map's step clamp.
+    pub fn steps_ahead(&self) -> u8 {
+        self.steps_ahead
+    }
+
+    /// The smallest zoom at which the active product's raster still renders; `0.0` disengages the
+    /// clamp (no rain product).
+    pub fn zoom_floor(&self) -> f32 {
+        self.zoom_floor
+    }
+
+    /// Apply a [`WeatherIntent`]. A repeat while a fetch is already running coalesces, which is
+    /// [`WeatherIntent::RefreshRequested`]'s own contract: the companion link is metered, and two
+    /// taps of the same button are one question. The answer already on its way *is* the answer to
+    /// the second tap, so it is dropped rather than queued behind the first.
+    ///
+    /// "Already running" is [`refreshing`](Self::refreshing) — the domain's own operation **and** a
+    /// fetch the provider plane raised on its own cadence. A tap that would stack a second radio
+    /// trip behind a fetch already in the air is the same waste whoever started it.
     ///
     /// The trade-off, stated because it is a real one: a rider who moves a long way and taps refresh
-    /// mid-fetch gets the fetch that was started at the old position. #1401 owns the request cutover
-    /// and can revisit it against a real position delta rather than a guess.
+    /// mid-fetch gets the fetch that was started at the old position. #1401 W2 owns the request
+    /// kernel and can revisit it against a real position delta rather than a guess.
     pub fn apply_intent(&mut self, intent: WeatherIntent) {
         match intent {
-            WeatherIntent::RefreshRequested => self.refresh_requested |= self.in_flight.is_none(),
+            WeatherIntent::RefreshRequested => self.refresh_requested |= !self.refreshing(),
         }
     }
 
-    /// Whether a refresh is in flight — the screens' non-blocking UPDATING cue.
+    /// Whether a fetch is running — the screens' non-blocking UPDATING cue. Either the domain's own
+    /// operation or the provider plane's cadence: the rider is owed the cue for both, and only the
+    /// first carries a token.
     pub fn refreshing(&self) -> bool {
-        self.in_flight.is_some()
+        self.in_flight.is_some() || self.platform_fetching
     }
 
     /// Whether a requested refresh has not gone out yet (no capability, or the slot was busy).
@@ -1339,19 +1395,10 @@ impl WeatherDomain {
         self.ops.invalidate(); // terminal: a duplicate of this outcome is no longer current
         self.in_flight = None;
         match outcome {
-            WeatherOutcome::Refreshed { data, revision, .. } => {
-                self.note_installed(WeatherData { data, revision });
-                self.last_result = Some(RefreshResult::Installed);
-            }
-            // Opening installed data is not a refresh: it fetched nothing, so it records the
-            // identity it opened and leaves the last *refresh* verdict standing. Reporting
-            // "installed" here would tell the rider a fetch succeeded when none ran.
-            //
-            // Unreachable through this domain today and therefore untested: `next_effect` only ever
-            // emits `RequestRefresh`, so the only way to observe this arm would be to fabricate an
-            // outcome no executor can legitimately send. #1401 is where `OpenInstalledData` starts
-            // being issued; the rule is stated here so that cutover does not have to rediscover it.
-            WeatherOutcome::Opened { data, revision, .. } => self.note_installed(WeatherData { data, revision }),
+            // Raising a request completes nothing. The last *refresh* verdict stays where it was;
+            // whether this request lands is answered by the installed-data fact moving, and the
+            // cue in the meantime is the provider plane's own level.
+            WeatherOutcome::Raised { .. } => {}
             WeatherOutcome::Failed { error, .. } => self.last_result = Some(RefreshResult::Failed(error)),
             WeatherOutcome::Cancelled { .. } => self.last_result = Some(RefreshResult::Cancelled),
         }
@@ -1360,9 +1407,10 @@ impl WeatherDomain {
     /// Everything the screens may say about freshness right now: the snapshot's own honest claim,
     /// plus the two device-side facts a snapshot cannot know about itself.
     ///
-    /// The one part of this domain that is a *new shape* rather than a moved value, so it has no
-    /// reader before the UI cutover. It exists as one call rather than three getters precisely so
-    /// #1401 consumes it whole instead of re-deriving freshness from
+    /// The one part of this domain that is a *new shape* rather than a moved value. The screens
+    /// still read the three facts separately through `Render`, so this stays reader-less until
+    /// #1401 W3 gives `Render` the whole value; it exists as one call rather than three getters
+    /// precisely so that cutover consumes it whole instead of re-deriving freshness from
     /// [`installed`](Self::installed) and [`refreshing`](Self::refreshing) at each screen — which is
     /// how the three states drifted apart in the first place.
     pub fn visible(&self, snapshot: Option<&WeatherSnapshot>, now: i64) -> WeatherVisible {
@@ -1406,9 +1454,11 @@ impl Default for WeatherDomain {
     }
 }
 
-// Layout tripwire: identities, a token, three flags and the 72-byte mark table the domain
-// interprets. The snapshot is an order of magnitude bigger and stays out.
-const _: () = assert!(core::mem::size_of::<WeatherDomain>() <= 120, "identities, flags and anchors, never a bundle");
+// Layout tripwire: identities, a token, the derived view state, four flags and the 72-byte mark
+// table the domain interprets — **128 B** measured. The 8 B over DC4's figure are #1549's resample
+// revision, step count, zoom floor and platform-fetching level, which packed into one word of the
+// existing padding. The snapshot is an order of magnitude bigger and stays out.
+const _: () = assert!(core::mem::size_of::<WeatherDomain>() <= 128, "identities, flags and anchors, never a bundle");
 
 #[cfg(test)]
 mod domain_tests {
@@ -1424,7 +1474,7 @@ mod domain_tests {
     }
 
     /// The request lifecycle: one effect per request, coalesced repeats, and a terminal outcome that
-    /// both frees the slot and records how it ended.
+    /// frees the slot. A raise completes nothing — the landing is the installed-data fact's.
     #[test]
     fn a_refresh_goes_out_once_and_its_outcome_is_terminal() {
         let mut wx = WeatherDomain::new();
@@ -1440,18 +1490,25 @@ mod domain_tests {
         assert!(wx.refreshing() && !wx.refresh_pending());
         assert!(wx.next_effect(can_refresh()).is_none(), "one refresh in flight at a time");
 
-        wx.apply_outcome(WeatherOutcome::Refreshed { token, data: DataIdentity::new(4), revision: Revision::new(2) });
+        wx.apply_outcome(WeatherOutcome::Raised { token });
+        assert_eq!(wx.last_refresh(), None, "raising a request completes no refresh");
+        assert!(!wx.refreshing(), "the slot is free again");
+
+        // The bundle lands as a fact, and *that* is what records the verdict.
+        wx.note_installed(data(4, 1));
+        assert_eq!(wx.last_refresh(), None, "the first sighting is the card's own bundle, not a fetch");
+        wx.note_installed(data(4, 2));
         assert_eq!(wx.last_refresh(), Some(RefreshResult::Installed));
         assert_eq!(wx.installed(), Some(data(4, 2)));
-        assert!(!wx.refreshing());
 
         // The same answer arriving twice must not re-run any of that.
         wx.apply_outcome(WeatherOutcome::Failed { token, error: WeatherError::LinkLost });
         assert_eq!(wx.last_refresh(), Some(RefreshResult::Installed), "a repeated outcome is stale");
     }
 
-    /// A request raised while one is in flight is dropped, not queued: the in-flight answer is the
-    /// answer to it. Only once that operation is terminal does a fresh tap start a second fetch.
+    /// A request raised while a fetch is already running is dropped, not queued: the answer already
+    /// on its way is the answer to it. That holds for the domain's own operation **and** for a
+    /// cadence fetch the provider plane started on its own.
     #[test]
     fn a_repeat_while_one_is_in_flight_is_coalesced_away() {
         let mut wx = WeatherDomain::new();
@@ -1461,14 +1518,16 @@ mod domain_tests {
         wx.apply_intent(WeatherIntent::RefreshRequested); // the rider taps again mid-fetch
         assert!(!wx.refresh_pending(), "the repeat coalesced into the operation already running");
 
-        wx.apply_outcome(WeatherOutcome::Refreshed {
-            token: effect.token(),
-            data: DataIdentity::new(1),
-            revision: Revision::new(1),
-        });
+        wx.apply_outcome(WeatherOutcome::Raised { token: effect.token() });
         assert!(wx.next_effect(can_refresh()).is_none(), "the coalesced tap did not queue a second fetch");
 
-        // …and a tap *after* the operation ended is a new question, which does go out.
+        // A fetch nobody ordered swallows a tap for exactly the same reason.
+        wx.note_refreshing(true);
+        wx.apply_intent(WeatherIntent::RefreshRequested);
+        assert!(!wx.refresh_pending(), "a cadence fetch already in the air answers this tap too");
+
+        // …and a tap once nothing is running is a new question, which does go out.
+        wx.note_refreshing(false);
         wx.apply_intent(WeatherIntent::RefreshRequested);
         assert!(wx.next_effect(can_refresh()).is_some());
     }
