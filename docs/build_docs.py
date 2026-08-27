@@ -28,8 +28,8 @@ authoring notes: stripped from the output. The shared topo/header shell lives in
 `templates/_sitehead.html` and is injected into every page as `{{site_head}}`.
 
 Run directly (`python3 docs/build_docs.py`) or let the Trunk hook run it. Pass
-`--check-links` to additionally verify every internal anchor link resolves to a real
-page and heading id (the cross-page `#anchor` audit CI runs) and exit non-zero if not.
+`--check-links` to additionally validate copy ownership and verify every internal anchor
+link resolves to a real page and heading id (the cross-page `#anchor` audit CI runs).
 """
 
 import datetime
@@ -711,6 +711,12 @@ def check_links(rendered):
 
 def main():
     check = "--check-links" in sys.argv[1:]
+    if check:
+        sys.path.insert(0, str(ROOT.parent / "tools"))
+        import docs_copy
+
+        if docs_copy.main(["check"]):
+            sys.exit(1)
     if not TEMPLATE.exists():
         sys.exit("missing template: %s" % TEMPLATE)
     nav = json.loads((CONTENT / "nav.json").read_text())

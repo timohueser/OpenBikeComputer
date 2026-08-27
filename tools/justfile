@@ -442,6 +442,16 @@ desktop *args:
       _run cargo run --release
     fi
 
+# Show and validate human ownership of documentation prose. Args: [status|check]
+docs *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source "{{lib}}"; obc_init
+    cd "$OBC_ROOT"
+    if (( $# )); then _run python3 "$OBC_TOOLS/docs_copy.py" "$@"
+    else _run python3 "$OBC_TOOLS/docs_copy.py" status
+    fi
+
 # Serve the static hosted tier — the no-backend site (phase C of #894), as deployed.
 # Builds and serves it on :4173. Args: [PORT]. A catalog.json is the bakery's
 # output; without one the site says so and shows no coverage — that is OBCC_Spec.md
@@ -735,7 +745,7 @@ check *args:
           cargo build -p obcm-assemble --lib --no-default-features --locked --target wasm32-unknown-unknown
       else _warn "skip wasm engine — no wasm32 target (obc doctor --install)"; SKIPPED+=("wasm-engine"); fi
     fi
-    want docs && step "docs link check" python3 "$OBC_ROOT/docs/build_docs.py" --check-links
+    want docs && step "docs copy and link check" python3 "$OBC_ROOT/docs/build_docs.py" --check-links
     printf '\n'; _say "check summary"
     (( ${#PASSED[@]} ))  && _ok   "passed:  ${PASSED[*]}"
     (( ${#SKIPPED[@]} )) && _warn "skipped: ${SKIPPED[*]}"
