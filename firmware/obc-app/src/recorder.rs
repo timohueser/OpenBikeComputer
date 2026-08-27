@@ -302,6 +302,12 @@ impl RecorderMachine {
         if intent != RecorderIntent::Save {
             self.restart_after_close = false;
         }
+        if intent != RecorderIntent::Start {
+            // A rider who asks to close is not asking to continue a recovered ride. Leaving the
+            // continuation armed would carry the discarded ride's restored totals into whatever
+            // ride they start next.
+            self.resume_next = false;
+        }
         // A fresh ask deserves a fresh answer: a rider who dismissed the recording warning and
         // pressed START again is told again, rather than met with the silence the latch exists to
         // stop between passes.
@@ -491,8 +497,9 @@ impl RecorderMachine {
         self.session = None;
         self.checkpoint_owed = false;
         self.recovered_held = false;
-        // The "save & start new" second half, if the rider asked for one. Stage 1 lands the verdict
-        // and stage 7 opens the new ride, so both halves of the gesture complete in one pass.
+        self.resume_next = false; // the recovered ride this could have continued is gone
+                                  // The "save & start new" second half, if the rider asked for one. Stage 1 lands the verdict
+                                  // and stage 7 opens the new ride, so both halves of the gesture complete in one pass.
         self.pending = core::mem::take(&mut self.restart_after_close).then_some(RecorderIntent::Start);
     }
 }
@@ -598,6 +605,30 @@ mod tests {
         rec.continue_recovered();
         assert_eq!(rec.advance(NO_STORE), RecorderAdvance::Refused);
         assert_eq!(rec.advance(CAN_RECORD), RecorderAdvance::Opened(SessionStart::Recovered), "still a continuation");
+    }
+
+    /// A recovered ride the rider discarded cannot come back as the next ride's totals.
+    ///
+    /// The continuation edge is armed by the rider's Continue and spent by the session it opens.
+    /// Anything else that ends the recovered ride — a close named instead, or the discard landing —
+    /// must clear it, or `SessionStart::Recovered` would tell the pass to keep accumulators that
+    /// belong to a ride the rider threw away.
+    #[test]
+    fn a_discarded_recovery_does_not_continue_into_the_next_ride() {
+        let mut rec = RecorderMachine::new();
+        assert!(rec.offer_recovery());
+        rec.continue_recovered(); // armed…
+        rec.request(RecorderIntent::Discard); // …and the rider changes their mind
+
+        let effect = rec.next_effect(CAN_RECORD, 1).expect("the recovered object is discardable");
+        rec.apply_outcome(RecorderOutcome::Discarded { token: effect.token() });
+
+        rec.request(RecorderIntent::Start);
+        assert_eq!(
+            rec.advance(CAN_RECORD),
+            RecorderAdvance::Opened(SessionStart::Fresh),
+            "the next ride starts from zero, not from the ride that was thrown away"
+        );
     }
 
     /// The ride object an executor owes is named by **id**, so a close served before its verdict is
