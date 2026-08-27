@@ -1,140 +1,130 @@
-# OBC — OpenBikeComputer
+<div align="center">
 
-OpenBikeComputer is a from-scratch bikepacking computer: offline vector maps, route navigation,
-ride recording, weather and field updates on an nRF54L driving a 240×320 reflective memory-LCD.
-The firmware, desktop simulator and browser demo share the same Rust application and renderer.
+# OpenBikeComputer
 
-<img width="483" height="692" alt="OpenBikeComputer prototype" src="https://github.com/user-attachments/assets/a222e908-a12b-4e26-a53c-6c227f30005a" />
+[![CI](https://img.shields.io/github/actions/workflow/status/timohueser/OpenBikeComputer/ci.yml?branch=develop&style=flat-square&label=CI)](https://github.com/timohueser/OpenBikeComputer/actions/workflows/ci.yml?query=branch%3Adevelop)
+[![Software: GPL-3.0-only](https://img.shields.io/badge/software-GPL--3.0--only-3c6e47?style=flat-square)](LICENSE)
+[![Hardware: CERN-OHL-S-2.0](https://img.shields.io/badge/hardware-CERN--OHL--S--2.0-d46a28?style=flat-square)](LICENSE.hardware)
 
-The conceptual guide and live firmware demo are at
-[openbikecomputer.com](https://openbikecomputer.com/). Normative binary and wire contracts live in
-[`specs/`](specs/).
+**An open-source GPS computer for bikepacking.**
 
-## Start here
+[Live browser demo](https://openbikecomputer.com/#demo) ·
+[Documentation](https://openbikecomputer.com/software/architecture/) ·
+[Contributing](CONTRIBUTING.md)
 
-Install stable Rust, then build the host workspace:
+[<img src="docs/assets/og-card.png" width="100%" alt="OpenBikeComputer concept render with the device showing an offline map of the Grimsel Pass">](https://openbikecomputer.com/#demo)
 
-```sh
-cargo build --release
-```
+</div>
 
-The two common outputs are:
+OpenBikeComputer is built for long rides away from mobile service and power sockets. It combines
+offline vector maps, route navigation, ride recording, and weather updates with a sunlight-readable
+reflective display.
 
-- `target/release/obc-sim` — the desktop device simulator;
-- `target/release/obc-pack` — the OSM PBF to OBCM map packer.
+The physical device, desktop simulator, and browser demo use the same Rust application and render
+path. The project is an active prototype, not a finished consumer product, but the software already
+runs both on a desktop and on the nRF54LM20 development platform.
 
-The repository-owned `obc` command wraps development tasks and checks. Run `obc doctor` to inspect
-optional host dependencies. Verification is deliberately scoped; see
-[`CONTRIBUTING.md`](CONTRIBUTING.md) before running tests.
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="docs/assets/companion/route-on-device.webp" width="280" alt="The companion app confirms that a Grimsel Pass route is on the bike computer">
+    </td>
+    <td align="center" width="50%">
+      <img src="docs/assets/companion/ride-detail.webp" width="280" alt="A recorded Grimsel Pass ride in the companion app">
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Send a route to the bike computer.</sub></td>
+    <td align="center"><sub>Bring the recorded ride back.</sub></td>
+  </tr>
+</table>
 
-```sh
-obc test -p obc-pack
-obc check docs
-```
+## Try the simulator
 
-To prove the shared application still compiles for the device target:
+The simulator is the best way to explore the project without hardware. It runs the real device
+application in a desktop window and downloads the map, route, terrain, and ride data for the Grimsel
+Pass demo on first use.
 
-```sh
-rustup target add thumbv8m.main-none-eabihf
-cargo build -p obc-app --target thumbv8m.main-none-eabihf
-```
-
-The board image and desktop app are standalone Cargo roots with their own prerequisites and
-commands:
-
-- [`firmware/obc-fw-nrf54l/README.md`](firmware/obc-fw-nrf54l/README.md)
-- [`apps/obc-desktop/README.md`](apps/obc-desktop/README.md)
-
-## Maps, routes and simulation
-
-Pack an OSM extract with the shipped schema:
+You need [Rust](https://rustup.rs/), Git, and Python 3.11 or newer. Then run:
 
 ```sh
-target/release/obc-pack region.osm.pbf builder/presets/schema.json region.obcm
+git clone https://github.com/timohueser/OpenBikeComputer.git
+cd OpenBikeComputer
+cargo install just
+./tools/obc sim
 ```
 
-Run the result in the simulator:
+The first build can take a few minutes. The fixture download is cached for later runs. Run
+`./tools/obc setup` once to install the shorter `obc` command, or see the
+[simulator guide](apps/obc-sim/README.md) for controls, other scenarios, and headless rendering.
 
-```sh
-target/release/obc-sim region.obcm
-```
+## Roadmap
 
-The [simulator guide](apps/obc-sim/README.md) covers headless PNGs, GPX replay, the interactive
-control panel, and every CLI option.
+This is the current direction, not a release schedule.
 
-The hosted and desktop builders select digest-pinned cells from the published catalog and assemble
-the same OBCM bytes in a WebAssembly worker. Maintainer baking, incremental planet updates and R2
-publication are documented in the [packer and routing guide](https://openbikecomputer.com/software/packer-routing/)
-and exposed through `obc bake help`.
+| Stage | Status |
+| --- | --- |
+| Shared application, offline maps, routing, ride recording, and weather | Available in the simulator and browser demo |
+| iOS companion and BLE/USB transfer flows | Working with the development platform |
+| nRF54LM20 development-kit prototype with the 240 × 320 reflective display | Running on hardware |
+| Custom PCB and enclosure | In development |
+| Integrated, field-tested bike computer | Next major milestone |
+| Reproducible hardware build, assembly, and flashing guide | Planned when the custom hardware is ready |
 
-Routes enter as GPX/TCX on a host and become compact OBCR files before reaching the device. The
-device reads maps, routes, terrain and weather directly from binary formats designed for bounded,
-streaming access. Readable tours live on the docs site; exact layouts live in:
+## Current development platform
 
-- [`OBCM_Spec.md`](specs/OBCM_Spec.md) — maps;
-- [`OBCR_Spec.md`](specs/OBCR_Spec.md) — routes;
-- [`OBCT_Spec.md`](specs/OBCT_Spec.md) — terrain;
-- [`OBCW_Spec.md`](specs/OBCW_Spec.md) and [`OBCG_Spec.md`](specs/OBCG_Spec.md) — weather;
-- [`OBCC_Spec.md`](specs/OBCC_Spec.md) and [`OBCA_Spec.md`](specs/OBCA_Spec.md) — catalogs and cells.
+The hardware build uses the Nordic nRF54LM20 development kit and a Sharp LS021B7DD02 240 × 320
+reflective memory LCD. It reads maps and routes from microSD and connects to the companion software
+over BLE and USB. The custom PCB and enclosure are still under development.
 
-## Companion and updates
-
-The SwiftUI iOS companion imports routes, synchronizes rides, manages firmware updates and services
-device weather requests. Its package is developed against a deterministic mock and uses the same
-wire vectors as the firmware. See [`companion-ios/CLAUDE.md`](companion-ios/CLAUDE.md) for the focused
-build/test on-ramp.
-
-BLE and USB bind the same object protocol. The canonical contract is
-[`specs/obc-ble-interface-spec.md`](specs/obc-ble-interface-spec.md) (legacy wire v2 — superseded for
-DOS v2 by the [`specs/Device_Object_System_v2.md`](specs/Device_Object_System_v2.md) suite); the
-conceptual flow is in the
-[companion-link guide](https://openbikecomputer.com/software/companion-link/).
-
-Firmware updates are signed OBCU containers named `UPDATE.BIN`. Release builds, signing, install,
-trial boot and rollback are documented in the
-[firmware-update guide](https://openbikecomputer.com/software/firmware-updates/) and
-[`firmware/README.md`](firmware/README.md#firmware-update-images-obcu).
+Board-specific wiring, build, flash, and on-device test instructions remain in the
+[`obc-fw-nrf54l` guide](firmware/obc-fw-nrf54l/README.md). They are not part of the newcomer setup
+because the current hardware is not generally available.
 
 ## Repository layout
 
 | Path | Purpose |
 | --- | --- |
-| `firmware/` | `no_std` application, readers, renderer, protocol cores, storage and board images |
-| `host/` | map/weather bakers, assemblers, fixtures, command-line tools and shared host glue |
-| `apps/` | desktop simulator, Tauri desktop app and WebAssembly hosts |
-| `builder/` | shared Svelte map/device UI, presets and maintainer server |
-| `companion-ios/` | SwiftUI companion app and the OBCKit package |
-| `specs/` | normative formats, wire contract and executable vectors |
-| `fixtures/` | scenario registry, tracked source provenance and reproducible fixture builders |
-| `docs/` | public site source, landing page, blog and authoring tools |
-| `ops/` | deployed weather-service installation, probes and runbook |
-| `tools/` | the `obc` workflow command and host setup helpers |
+| `firmware/` | Device application, rendering, protocols, storage, board image, and bootloader |
+| `host/` | Host tools, map and weather bakers, fixtures, and test support |
+| `apps/` | Desktop simulator, desktop shell, and browser/WebAssembly hosts |
+| `builder/` | Svelte map builder, presets, and maintainer server |
+| `companion-ios/` | SwiftUI companion app and shared iOS package |
+| `specs/` | Normative binary, wire, and vector contracts |
+| `fixtures/` | Scenario registry, source provenance, and fixture builders |
+| `docs/` | Public documentation, website, and project blog |
+| `hardware/` | KiCad schematics, PCB layouts, footprints, and component models |
+| `ops/` | Service configuration, probes, and runbooks |
+| `tools/` | The `obc` development command and repository tooling |
 
-One Cargo workspace spans the shared `firmware/`, `host/` and `apps/` crates. The nRF54L board
-image, bootloader and Tauri desktop shell remain standalone because their toolchains and platform
-dependencies should not burden ordinary host tests.
+The root Cargo workspace contains the shared `firmware/`, `host/`, and `apps/` crates. The nRF54L
+board image, bootloader, and Tauri desktop app use standalone Cargo roots so that their platform
+dependencies do not burden normal host builds. The
+[architecture guide](https://openbikecomputer.com/software/architecture/) explains the boundaries
+and the shared render path.
 
-The direction of dependencies is enforced: device-reachable crates live under `firmware/`; host
-policy and heavy native dependencies stay above them. The public architecture guide explains the
-boundaries and shared render path in detail:
-[openbikecomputer.com/software/architecture](https://openbikecomputer.com/software/architecture/).
+## Other open bike computers
 
-## Current development platform
+OpenBikeComputer is part of a small but inventive open-source hardware community. These projects
+take different approaches to many of the same problems:
 
-The full application runs in the desktop simulator and on the Nordic nRF54LM20 development kit. The
-device streams maps and routes from microSD, drives the LS021 panel through the FLPR coprocessor,
-uses real GPS and altimeter inputs, and exposes the companion protocol over BLE and USB.
+- [Pi Zero Bikecomputer](https://github.com/hishizuka/pizero_bikecomputer) — a Raspberry Pi GPS
+  and ANT+ computer with offline maps, navigation, and FIT ride logging.
+- [bike-computer-32](https://github.com/lspr98/bike-computer-32) — a low-cost ESP32-C3 mini-map
+  with offline OpenStreetMap data, GNSS positioning, and GPX track overlays.
+- [OpenTrailPaper](https://github.com/RaemondBW/OpenTrailPaper) — an ESP32-S3 e-paper computer
+  with offline maps, ride recording, and an iOS companion.
+- [Pedal Guru](https://github.com/juliannojungle/pedal.guru) — a work-in-progress bike computer
+  project for Raspberry Pi, RP2040, and ESP32 platforms.
 
-The production PCB and enclosure are still under development. Current wiring, board configuration,
-flashing and on-glass verification belong in the
-[`obc-fw-nrf54l` README](firmware/obc-fw-nrf54l/README.md), while panel behavior belongs in the
-[display-protocol guide](https://openbikecomputer.com/hardware/display-protocol/).
+## Contributing
 
-## Contributing and license
+Contributions are welcome. Start with [`CONTRIBUTING.md`](CONTRIBUTING.md), which explains the
+repository workflow and how to run focused checks. Large external test assets are managed through
+the fixture registry described in [`fixtures/README.md`](fixtures/README.md).
 
-Read [`CONTRIBUTING.md`](CONTRIBUTING.md) for proportional verification and safe cleanup. Large test
-fixtures are acquired through `obc fixtures`; see [`fixtures/README.md`](fixtures/README.md).
+## License
 
-Software is GPL-3.0 under [`LICENSE`](LICENSE). Hardware design sources are CERN-OHL-S-2.0 under
-[`LICENSE.hardware`](LICENSE.hardware). Third-party notices are collected in
+Software is available under [GPL-3.0-only](LICENSE). Hardware design sources are available under
+[CERN-OHL-S-2.0](LICENSE.hardware). Third-party notices are listed in
 [`THIRD-PARTY.md`](THIRD-PARTY.md).
