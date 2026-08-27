@@ -349,17 +349,19 @@ impl UpAheadScreen {
 
     /// The row the amber cursor would land on this frame, resolved exactly as
     /// [`draw`](UpAheadScreen::draw) resolves it — the App-level harness's one window onto a cursor
-    /// that is otherwise private.
+    /// that is otherwise private. `route_loaded` is the caller's, like the draw's, so a route-less
+    /// frame is answered as a route-less frame rather than as the caller wishing otherwise.
     #[cfg(test)]
     pub(crate) fn test_cursor(
         &self,
         waypoints: &[WptEntry],
         corridor: &[CorridorPoi],
+        route_loaded: bool,
         progress_m: u32,
         scope: UpAheadScope,
     ) -> usize {
-        let total = self.rows(waypoints, corridor, true, scope).count();
-        self.cursor(self.rows(waypoints, corridor, true, scope), progress_m, total, scope)
+        let total = self.rows(waypoints, corridor, route_loaded, scope).count();
+        self.cursor(self.rows(waypoints, corridor, route_loaded, scope), progress_m, total, scope)
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
@@ -1234,6 +1236,21 @@ mod tests {
         assert_eq!(screen.selected, Some((0, ctx_scope())), "the hold changed nothing at all");
         // …and the very next Back still leaves the screen rather than closing a mode first.
         assert!(matches!(screen.handle(Gesture::Back, &mut ctx(&mut act, &mut recorder, &w, &p)), Transition::Pop));
+    }
+
+    /// **The scope in the cursor costs nothing**, which is what the resource baseline records — so
+    /// it is measured rather than re-derived. The 2 B [`UpAheadScope`] rides in the tuple's tail
+    /// padding and [`UpAheadSource`]'s `#[repr(u8)]` niche supplies the `None`, so
+    /// `Option<(usize, UpAheadScope)>` is the same size `Option<usize>` was.
+    ///
+    /// A host figure, like `size_of::<Screen>()`'s own pin: the board's `usize` is four bytes, so
+    /// the same struct is smaller there. What travels across both widths is the *delta*, which is
+    /// zero.
+    #[test]
+    fn the_cursors_scope_is_free() {
+        use core::mem::size_of;
+        assert_eq!(size_of::<Option<(usize, UpAheadScope)>>(), size_of::<Option<usize>>(), "no wider a cursor");
+        assert_eq!(size_of::<UpAheadScreen>(), 24, "…and no wider a screen — `_compile_note_d4a_1515`");
     }
 
     /// **A cursor counts only against the list it was set in.** Scroll the timeline, then filter it

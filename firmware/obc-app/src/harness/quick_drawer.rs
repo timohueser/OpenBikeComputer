@@ -258,7 +258,13 @@ fn filtering_a_scrolled_timeline_from_the_sheet_re_homes_the_cursor() {
         let Some(Screen::UpAhead(s)) = app.ui.stack.iter().find(|s| matches!(s, Screen::UpAhead(_))) else {
             panic!("the timeline is not on the stack")
         };
-        s.test_cursor(app.ride.waypoints.as_slice(), &[], app.activity.progress_m, app.up_ahead_scope())
+        s.test_cursor(
+            app.ride.waypoints.as_slice(),
+            &[],
+            app.activity.active_route.is_some(),
+            app.activity.progress_m,
+            app.up_ahead_scope(),
+        )
     }
 }
 

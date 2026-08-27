@@ -14,10 +14,8 @@ row growing back, so this guard states the rule the slices are executing:
 Deliberate exceptions are listed below, each with the decision that made it one. An exception is a
 recorded deviation, not a way to keep a duplicate quiet.
 
-A text guard's real failure mode is going **blind**, not going off: a row spelled differently stops
-matching, the census quietly drops, and the guard keeps printing success over a duplicate it can no
-longer see. So the census is pinned. Every `ContextRow` in the drawers must yield a parsed label, and
-the totals must clear a floor that only ever moves up with a slice that adds rows.
+A text guard fails by going blind, not by going off, so the census is pinned: every `ContextRow`
+must yield a parsed label, and the totals must clear a floor that only ever moves up.
 """
 
 from __future__ import annotations

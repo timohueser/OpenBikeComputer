@@ -35,14 +35,8 @@ SNAPSHOT_SUFFIX = ".png"
 
 # Frames that are **supposed** to be pixel-identical to another frame, as sorted name groups.
 #
-# Two names over one image is normally a broken recipe: a script that walks one row too far, or a
-# flag that no longer reaches the screen, renders the wrong frame under the right name and every
-# other check still passes — the screen is right, only the state is wrong. That is exactly how
-# #1515 D4a shipped three per-language retention frames that were re-shots of the group's default
-# view.
-#
-# Sometimes identity *is* the assertion, and then it belongs here, where it reads as one: an
-# "absent" frame is worth shooting precisely because it must equal the frame without the thing.
+# Two names over one image is normally a recipe rendering the wrong state under the right name,
+# which every other check passes. Where identity is the assertion instead, declare it here.
 IDENTICAL_BY_DESIGN: list[set[str]] = [
     # The expiry row is absent in both cases, so both frames are the plain overview (epic #638 S3).
     {"routeoverview-expiry-far-absent.png", "routeoverview-expiry-unstarted-absent.png", "routeoverview.png"},

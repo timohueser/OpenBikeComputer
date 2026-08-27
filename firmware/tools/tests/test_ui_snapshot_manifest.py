@@ -65,16 +65,14 @@ class UiSnapshotManifestTests(unittest.TestCase):
         self.assertEqual(self.check(), 2)  # …and the command reports it rather than crashing
 
     def test_two_frames_with_one_image_are_rejected(self):
-        """A recipe that renders the wrong state under the right name looks exactly like this: the
-        screen is correct, so `--expect-screen` is happy, and only the pixels give it away — by
-        being somebody else's. #1515 D4a shipped three per-language frames this way."""
+        """The pixels are the only witness: a wrong-state frame under the right name passes
+        `--expect-screen` and every digest check."""
         (self.out / "map-panning.png").write_bytes(self.frames["map.png"])
         manifest_tool.main(["update", str(self.manifest), str(self.out)])
         self.assertEqual(self.check(), 1)
 
     def test_a_declared_identical_pair_passes(self):
-        """…unless the identity is the assertion, in which case the pair is declared and reads as
-        one. Declaring it is what makes it a claim instead of an accident."""
+        """Declaring the pair turns the identity from an accident into the claim."""
         (self.out / "map-panning.png").write_bytes(self.frames["map.png"])
         manifest_tool.main(["update", str(self.manifest), str(self.out)])
         original = list(manifest_tool.IDENTICAL_BY_DESIGN)
