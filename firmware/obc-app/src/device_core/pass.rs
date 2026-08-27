@@ -1573,7 +1573,7 @@ mod tests {
     ///
     /// Every board seam that runs between the drain and the pass is exposed to it: the debug link's
     /// route plan, the phone's remote update check (`open_remote_dfu_check`), a BLE clock stamp
-    /// arming a settings write. `drain_residual_commands` asks for the two residual classes **by
+    /// arming a settings write. `drain_residual_commands` asks for the residual class **by
     /// name** instead, which is what makes them safe — and this test is what says so.
     #[test]
     fn an_intent_admitted_between_two_passes_survives_the_residual_drain() {
