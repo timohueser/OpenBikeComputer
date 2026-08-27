@@ -6654,6 +6654,26 @@ mod tests {
         assert!(!app.retention.has(SweepKind::DeleteRoute), "both candidates were retired by their verdicts");
     }
 
+    /// #1548: the same race one pass tighter. The rider deletes the route the sweep's **head**
+    /// candidate names, so both reach the catalog in one pass: the rider's is admitted and the
+    /// expiry is refused and parked. When the verdict lands, the parked intent is a copy of a
+    /// candidate that is already retired — admitting it would remove an object that has gone.
+    #[test]
+    fn a_riders_delete_of_the_head_candidate_orders_one_removal() {
+        let (mut app, now) = trusted_app();
+        app.set_routes_with_meta(&[summary("A")], &[10], &[expired(now)]);
+        app.retention_tick();
+        app.activity.request_route_delete(0);
+
+        let mut ops: heapless::Vec<SweepOp, 32> = heapless::Vec::new();
+        for _ in 0..3 {
+            for op in drain_once(&mut app) {
+                let _ = ops.push(op);
+            }
+        }
+        assert_eq!(n_deletes(&ops), 1, "the rider's removal is the only one: {ops:?}");
+    }
+
     /// #1548 finding 2: the store **answered `ObjectRemoved`**, and the re-read that answer ordered
     /// has not re-fed the catalogs yet — the object is still a resident row. That is the ordinary
     /// board cadence, not a fault: the pass clock is real monotonic millis and the device sleeps
