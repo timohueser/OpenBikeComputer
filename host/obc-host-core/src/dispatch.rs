@@ -45,7 +45,7 @@ use obc_app::device_core::{
 };
 use obc_app::dfu::{DfuEffect, DfuInstallError, DfuOutcome, DfuScanError, DfuScanReport};
 use obc_app::navigator::{NavigatorEffect, NavigatorError, NavigatorOutcome, PlannerWork};
-use obc_app::recorder::{RecorderEffect, RecorderError, RecorderOutcome};
+use obc_app::recorder::{RecorderEffect, RecorderError, RecorderOutcome, RideClose};
 use obc_app::retention::{RetentionEffect, RetentionOutcome};
 use obc_app::settings::{Settings, SettingsEffect, SettingsOutcome};
 use obc_app::weather::{WeatherEffect, WeatherError, WeatherOutcome};
@@ -223,9 +223,11 @@ pub struct HostLoop {
     /// Which searches this host takes without starting (`--hold nav`); [`PlanHold::NONE`] for a
     /// normal frame loop.
     hold: PlanHold,
-    /// Recorder's session identity as of the last frame — the edge that opens a ride object. A
-    /// level, not a decision: Recorder decides that a ride is open, and this only notices.
-    session: Option<u32>,
+    /// The ride session this executor has opened an object for. Never cleared by a close: a session
+    /// that has been served is served, whatever became of its object. See
+    /// [`RecorderMachine::object_owed`](obc_app::RecorderMachine::object_owed) for why this is an id
+    /// rather than "is anything recording".
+    opened_session: Option<u32>,
     /// The store revision this host reports through [`note_store_commit`](HostLoop::note_store_commit).
     /// An in-process repository has none of its own, so the executor mints a monotonic one per
     /// commit it is *told* about — a boot scan, an import, an upload landing. A catalog **read**
@@ -250,7 +252,7 @@ impl Default for HostLoop {
             detour_ready: None,
             mailbox: HostMailbox::new(),
             hold: PlanHold::NONE,
-            session: None,
+            opened_session: None,
             revision: 0,
         };
         host.inbox.facts.note_store_revision(StoreRevision { store: HOST_STORE, revision: Revision::new(0) });
@@ -648,25 +650,26 @@ impl HostLoop {
         }
     }
 
-    /// Open a ride object when Recorder's session identity changes.
+    /// Open a ride object when Recorder owes one.
     ///
     /// The **only** thing this executor does about the ride lifecycle outside an effect, and it
-    /// decides nothing: it notices an identity Recorder chose. Closing is an effect, so a session
+    /// decides nothing: it opens the identity Recorder named. Closing is an effect, so a session
     /// that ended leaves nothing to do here — the operation that ended it already finalized or
     /// discarded the object.
+    ///
+    /// Asking by **id** rather than by "the session changed" is what makes this safe on an executor
+    /// whose pass and effects run in either order: a close served before its verdict is applied
+    /// still shows an open session, and only the id says the object for it is already served. This
+    /// host runs its pass first, so it never sees that window — the board does, and both ask the
+    /// same question of the same domain rather than each keeping a rule.
     ///
     /// The save name is read on this edge rather than every pass, which makes it one ≤48-byte clone
     /// per ride instead of one per frame: the name is frozen when the ride opens, so a mid-ride
     /// route swap cannot rename a ride that is already recording.
     fn sync_recorder(&mut self, app: &mut App, tracks: &mut dyn TrackRepository) {
-        let session = app.ride_session();
-        if session == self.session {
-            return;
-        }
-        self.session = session;
-        if let Some(id) = session {
-            tracks.open(id, active_route_name(app).as_deref());
-        }
+        let Some(id) = app.recorder.object_owed(self.opened_session) else { return };
+        self.opened_session = Some(id);
+        tracks.open(id, active_route_name(app).as_deref());
     }
 
     // ---- the two derived levels ----
@@ -774,13 +777,17 @@ fn serve_recorder(app: &App, effect: RecorderEffect, tracks: &mut dyn TrackRepos
         // The totals are read here, as the footer is written, so the wall-clock anchor pairs with
         // the log's last points.
         RecorderEffect::Finalize { token } => match tracks.finalize(app.ride_stats()) {
-            Some(ride) => RecorderOutcome::Finalized { token, ride },
-            None => RecorderOutcome::Failed { token, error: RecorderError::Write },
+            RideClose::Committed(ride) => RecorderOutcome::Finalized { token, ride },
+            // The object was never created — a start this store refused, which already warned the
+            // rider. There is nothing to save, and saying so is **terminal**: answering `Failed`
+            // would retry a close against an object that does not exist, for ever.
+            RideClose::Nothing => RecorderOutcome::Discarded { token },
+            RideClose::Failed => RecorderOutcome::Failed { token, error: RecorderError::Write },
         },
-        RecorderEffect::Discard { token } => {
-            tracks.discard();
-            RecorderOutcome::Discarded { token }
-        }
+        RecorderEffect::Discard { token } => match tracks.discard() {
+            true => RecorderOutcome::Discarded { token },
+            false => RecorderOutcome::Failed { token, error: RecorderError::Write },
+        },
         // Sample assembly is #1553's; nothing produces an `Append` yet, so one arriving would be a
         // change of who stages the samples with no executor behind it.
         RecorderEffect::Append { token, .. } => {

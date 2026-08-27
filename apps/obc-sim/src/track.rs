@@ -10,6 +10,7 @@
 
 use std::path::PathBuf;
 
+use obc_app::recorder::RideClose;
 use obc_ports::{TrackPoint, TrackSink};
 use {
     obc_formats::{io::SliceSource, track::encode_record},
@@ -28,6 +29,10 @@ struct OpenRide {
     file: File,
     point_count: u32,
     first_t_ms: Option<u32>,
+    /// The fixed v3 footer is already appended. A finalize that got this far and then failed to
+    /// commit must not append it twice on the retry — storage sees one footer per ride, and the
+    /// retry has to be the same close.
+    footer_written: bool,
 }
 
 impl TrackSink for OpenRide {
@@ -67,64 +72,69 @@ impl TrackStore {
         let temp = self.dir.join(format!(".ride-{id}.obcr.part"));
         match OpenOptions::new().create(true).write(true).truncate(true).open(&temp) {
             Ok(file) => {
-                self.open = Some(OpenRide { name: name.to_string(), temp, file, point_count: 0, first_t_ms: None })
+                self.open = Some(OpenRide {
+                    name: name.to_string(),
+                    temp,
+                    file,
+                    point_count: 0,
+                    first_t_ms: None,
+                    footer_written: false,
+                })
             }
             Err(e) => eprintln!("track: cannot open ride {}: {e}", temp.display()),
         }
     }
 
-    /// Finalise the open object: append the fixed footer and rename the same bytes into the
+    /// Finalise the open object: append the fixed v3 footer and rename the same bytes into the
     /// simulator-only `ride-{id}.obcr` namespace. Answers with the identity it committed, or `None`
-    /// when the footer or the rename failed — the ride is then still there and Recorder retries.
-    fn finalize(&mut self, stats: RideStats) -> Option<u64> {
-        let mut log = self.open.take()?;
-        let mut committed = None;
-        let footer = encode_summary_footer(&log.name, &stats, log.point_count, log.first_t_ms);
-        let footer_written = log.file.write_all(&footer).and_then(|()| log.file.flush()).is_ok();
-        let _ = log.file.flush();
-        drop(log.file);
+    /// when it could not commit.
+    ///
+    /// **`None` leaves the ride exactly where it was**, and that is the contract, not a nicety:
+    /// Recorder keeps the close pending and offers the same finalize again, so a store that
+    /// discarded the bytes on the way out would answer `None` for ever and the rider's ride would
+    /// be gone with a recording warning on every pass. Nothing is deleted until the rename commits;
+    /// `footer_written` is what makes the retry the same close rather than a second footer.
+    fn finalize(&mut self, stats: RideStats) -> RideClose {
+        let Some(log) = self.open.as_mut() else { return RideClose::Nothing };
+        if !log.footer_written {
+            let footer = encode_summary_footer(&log.name, &stats, log.point_count, log.first_t_ms);
+            if let Err(e) = log.file.write_all(&footer).and_then(|()| log.file.flush()) {
+                eprintln!("track: cannot write the footer for {}: {e}", log.temp.display());
+                return RideClose::Failed; // the samples are untouched; the retry writes it again
+            }
+            log.footer_written = true;
+        }
+        let Some(id) = self.allocate_fixture_object_id() else {
+            eprintln!("track: desktop ride object id namespace is exhausted");
+            return RideClose::Failed;
+        };
+        let log = self.open.as_ref().expect("still open");
+        let final_path = self.dir.join(format!("ride-{id}.obcr"));
+        if let Err(e) = fs::rename(&log.temp, &final_path) {
+            eprintln!("track: cannot rename {}: {e}", log.temp.display());
+            return RideClose::Failed; // the object is still there under its private name
+        }
+        eprintln!("track: saved ride {}", final_path.display());
 
-        let mut object_path = log.temp.clone();
-        if footer_written {
-            match self.allocate_fixture_object_id() {
-                Some(id) => {
-                    let final_path = self.dir.join(format!("ride-{id}.obcr"));
-                    match fs::rename(&log.temp, &final_path) {
-                        Ok(()) => {
-                            eprintln!("track: saved ride {}", final_path.display());
-                            object_path = final_path;
-                            committed = Some(id);
-                        }
-                        Err(e) => eprintln!("track: cannot rename {}: {e}", log.temp.display()),
+        // Committed. Only now does the open ride stop being the store's to retry.
+        let log = self.open.take().expect("still open");
+        drop(log.file);
+        // The convenience `.gpx` (sim-only). A failure here loses nothing durable: the ride object
+        // is committed either way, so the close has already succeeded.
+        match fs::read(&final_path) {
+            Ok(bytes) => {
+                let mut sink = VecSink::default();
+                if track_to_gpx(&SliceSource(&bytes), &log.name, &mut sink).is_ok() {
+                    let path = self.unique_gpx(&log.name);
+                    match fs::write(&path, sink.bytes()) {
+                        Ok(()) => eprintln!("track: saved {}", path.display()),
+                        Err(e) => eprintln!("track: cannot write {}: {e}", path.display()),
                     }
                 }
-                None => eprintln!("track: desktop ride object id namespace is exhausted"),
             }
+            Err(e) => eprintln!("track: cannot read ride {}: {e}", final_path.display()),
         }
-
-        let bytes = match fs::read(&object_path) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("track: cannot read ride {}: {e}", object_path.display());
-                if object_path == log.temp {
-                    let _ = fs::remove_file(&log.temp);
-                }
-                return committed;
-            }
-        };
-        // The convenience `.gpx` (sim-only).
-        let mut sink = VecSink::default();
-        if track_to_gpx(&SliceSource(&bytes), &log.name, &mut sink).is_ok() {
-            let path = self.unique_gpx(&log.name);
-            match fs::write(&path, sink.bytes()) {
-                Ok(()) => eprintln!("track: saved {}", path.display()),
-                Err(e) => eprintln!("track: cannot write {}: {e}", path.display()),
-            }
-        }
-        if object_path == log.temp {
-            let _ = fs::remove_file(&log.temp);
-        }
-        committed
+        RideClose::Committed(id)
     }
 
     /// Allocate a non-clobbering full-width key for the desktop fixture namespace. This scan is only
@@ -175,12 +185,13 @@ impl obc_host_core::TrackRepository for TrackStore {
         self.begin(session, name.unwrap_or("ride"));
     }
 
-    fn finalize(&mut self, stats: RideStats) -> Option<obc_app::CatalogObjectId> {
+    fn finalize(&mut self, stats: RideStats) -> RideClose {
         self.finalize(stats)
     }
 
-    fn discard(&mut self) {
+    fn discard(&mut self) -> bool {
         self.abandon();
+        true
     }
 
     fn sink(&mut self) -> Option<&mut dyn TrackSink> {
@@ -202,6 +213,65 @@ fn sanitize(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A finalize that cannot commit keeps the ride, so the retry is the same close.**
+    ///
+    /// The contract `TrackRepository::finalize` states, forced on the real folder store. Recorder
+    /// holds the rider's Save pending until a terminal verdict, so a store that removed the bytes
+    /// on the way out would answer `None` for ever: the ride gone, `REC_ERROR` on every pass, and
+    /// no way back. The failure is forced by taking the object's path away, which is what a rename
+    /// into a folder the sim no longer owns looks like.
+    #[test]
+    fn a_finalize_that_cannot_commit_keeps_the_ride() {
+        use obc_host_core::TrackRepository;
+        let dir = obcm_testkit::scratch::scratch_dir("obc-track-retry", "failed-finalize");
+        let mut store = TrackStore::open(&dir);
+        store.open(1, Some("Ride"));
+        store
+            .sink()
+            .expect("a folder store records")
+            .record(TrackPoint {
+                lon: 8_000_000,
+                lat: 46_000_000,
+                ele: 1000,
+                t_ms: 0,
+                segment_start: true,
+                hr: None,
+                cadence: None,
+                power: None,
+            })
+            .unwrap();
+
+        // The object's own path is taken away: the footer still writes through the open handle, and
+        // the rename that commits it cannot find its source.
+        let temp = dir.join(".ride-1.obcr.part");
+        std::fs::remove_file(&temp).unwrap();
+        let first = TrackRepository::finalize(&mut store, ride_stats());
+        assert_eq!(first, RideClose::Failed, "the close did not commit");
+        assert!(store.sink().is_some(), "and the ride is still the store's to retry");
+        let again = TrackRepository::finalize(&mut store, ride_stats());
+        assert_eq!(again, RideClose::Failed, "the retry is the same close, not a new failure mode");
+        assert!(store.sink().is_some(), "which leaves the ride exactly where it was");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn ride_stats() -> RideStats {
+        RideStats {
+            distance_m: 500,
+            moving_time_s: 300,
+            avg_speed_cms: 166,
+            climb_m: 50,
+            unix_at_anchor: 1_700_000_000,
+            anchor_ms: 0,
+            clock_trusted: true,
+            avg_hr: None,
+            max_hr: None,
+            avg_cadence: None,
+            avg_power: None,
+            max_power: None,
+        }
+    }
 
     /// The **folder-backed** track store passes the shared `obc-host-core` track-lifecycle
     /// conformance (a session opens a ride, Save/Discard closes it, a live session wins over a

@@ -266,7 +266,7 @@ pub(crate) struct PassState {
     /// The active route's durable identity as of the last pass — Navigator's activation edge.
     active_route: Option<crate::CatalogObjectId>,
     /// What the device can currently do, recalculated at stage 12.
-    capabilities: Capabilities,
+    pub(crate) capabilities: Capabilities,
     /// The overlay plane's levels at the last drain — the one converter behind
     /// [`Dirty::overlay`](crate::Dirty::overlay). See [`OverlayKey`].
     overlay: OverlayKey,
@@ -764,8 +764,16 @@ impl App {
     /// "not recording" after the first one started the ride. One implementation, two call sites —
     /// the shape `advance_inputs` and `retention_tick` already use.
     pub(crate) fn advance_recorder_session(&mut self) {
-        if let Some(start) = self.recorder.advance(self.pass.capabilities.recorder) {
-            self.begin_ride_session(start);
+        match self.recorder.advance(self.pass.capabilities.recorder) {
+            crate::recorder::RecorderAdvance::Opened(start) => self.begin_ride_session(start),
+            // The rider asked to record and this device cannot. The request is kept, so a card that
+            // mounts later still opens the ride they asked for — but they are told now, through the
+            // same recording warning a refused first write raises. A riding view that quietly
+            // records nothing is the failure this raise exists to prevent.
+            crate::recorder::RecorderAdvance::Refused => {
+                self.pass.connections.faults.raise(crate::screen::WarningFlags::REC_ERROR);
+            }
+            crate::recorder::RecorderAdvance::Nothing => {}
         }
     }
 
@@ -796,6 +804,7 @@ impl App {
     fn end_ride_session(&mut self) {
         self.ride.relock_matcher();
         self.activity.reset_ride();
+        self.navigator.reset_detour(); // the ride the detour was planned for is over
         self.recorder.restart_trail();
         self.ui.map_dirty = true;
     }
@@ -1562,13 +1571,13 @@ mod tests {
         assert_eq!(app.activity.ride_continuation(), restored, "recovery must not zero the ride it just restored");
     }
 
-    /// **The regression #1494's on-glass soak found.**    /// **The regression #1494's on-glass soak found.** An intent admitted *between* one pass and the
+    /// **The regression #1494's on-glass soak found.** An intent admitted *between* one pass and the
     /// next must survive the residual drain that runs in between. A whole-order walk **pulls** from
     /// every domain — `next_plan_effect` here — so it would take the rider's request, mint the
     /// operation, hand back a command the executor then declines to perform, and leave Navigator
     /// holding an operation nobody will ever answer. On the board that was a planning spinner that
     /// redrew at ~15 Hz forever, and every later plan silently refused, because `next_plan_effect`
-    /// returns `None` while an operation is live. The drain asks for two classes by name, so it
+    /// returns `None` while an operation is live. The drain asks for its one class by name, so it
     /// cannot reach Navigator at all.
     ///
     /// Every board seam that runs between the drain and the pass is exposed to it: the debug link's
@@ -1594,7 +1603,7 @@ mod tests {
         while let Some(command) = mail.pop() {
             drained.push(command);
         }
-        assert!(drained.is_empty(), "the residual drain reached past its two classes: {drained:?}");
+        assert!(drained.is_empty(), "the residual drain reached past its one class: {drained:?}");
 
         let plan = quiet(&mut app, 20);
         let mut effects = plan.effects;
@@ -1602,6 +1611,42 @@ mod tests {
             matches!(effects.navigator.take(), Some(crate::navigator::NavigatorEffect::Acquire { .. })),
             "the plan admitted between the passes reached the executor"
         );
+    }
+
+    /// A typed executor's wake is blind to the legacy mailbox, and one class still lives there.
+    /// `has_pending_residual_command` is what a runtime that sleeps until the next event folds in so
+    /// the bond removal costs one immediate pass rather than one wake — and after the guarded hold
+    /// that posts it, the next wake is whenever the rider presses something else.
+    ///
+    /// The other half is why it may be folded at all: the class is a **one-shot the drain clears**,
+    /// so the answer goes false again and the loop settles. The two derived cues are levels
+    /// re-derived on every drain, so `has_pending_host_command` — which includes them — would spin
+    /// forever; this test pins the difference.
+    #[test]
+    fn a_pending_residual_command_is_a_one_shot_a_runtime_can_fold_into_its_wake() {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        quiet(&mut app, 10);
+        assert!(!app.has_pending_residual_command(), "nothing owed on a quiet pass");
+
+        app.state.ble_forget_pending = true;
+        quiet(&mut app, 20);
+        assert!(app.has_pending_residual_command(), "the rider's forget-phone is owed to the drain");
+
+        let mut mail: crate::HostMailbox = crate::HostMailbox::new();
+        let _ = app.drain_residual_commands(&mut mail);
+        assert!(!app.has_pending_residual_command(), "and the drain clears it — one pass, not a spin");
+
+        // The distinction that makes the narrow predicate necessary: a viewed ride keeps its
+        // derived need up across every drain, because a need is a *level*. Folding that into a wake
+        // would never let the runtime sleep.
+        let mut viewing = App::new(AppState::new(0, 0, 1.0));
+        viewing.set_rides(&[ride_summary()], &[7]);
+        viewing.activity.viewed_ride = Some(0);
+        assert!(quiet(&mut viewing, 10).derived_needs.ride_track.is_some(), "the level is up");
+        let mut mail: crate::HostMailbox = crate::HostMailbox::new();
+        let _ = viewing.drain_residual_commands(&mut mail);
+        assert!(quiet(&mut viewing, 20).derived_needs.ride_track.is_some(), "and a drain does not clear it");
+        assert!(!viewing.has_pending_residual_command(), "…but it is not a residual, so the wake is not held");
     }
 
     /// The backpressure rule, end to end: two intents reach the catalog in one pass, it can admit

@@ -220,6 +220,7 @@ fn a_link_change_does_not_repaint_the_map_or_statistics() {
     common::mount_store(&mut app);
     app.recorder.request(obc_app::RecorderIntent::Start);
     common::quiet_pass(&mut app, 1);
+    assert!(app.recording(), "the ride the sibling ring depends on is actually open");
     let _ = app.take_dirty();
     app.set_ble_status(connected());
     assert_eq!(app.take_dirty(), Dirty::CLEAN, "a link change never redraws the Map");

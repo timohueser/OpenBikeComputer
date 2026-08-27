@@ -404,8 +404,14 @@ impl CoreHarness {
         }
     }
 
-    /// One recording operation. The finalize is the only scripted arm: a ride commit is a real
-    /// store change, so it moves the fixture's revision exactly as the board's flat store does.
+    /// One recording operation, and **nothing beside it**.
+    ///
+    /// The finalize deliberately does not report a store commit here, even though a real one is:
+    /// production `serve_recorder` does not either, and a fixture that announced the commit itself
+    /// would let `a_saved_ride_orders_exactly_one_catalog_read` pass on the revision fact alone with
+    /// `RideFinalized` broken. The executor that *does* report the commit — the board — reports it
+    /// on the same pass as the outcome, and
+    /// [`a_commit_reported_with_its_own_finalize_still_orders_one_read`] runs that pairing.
     fn serve_recorder(&mut self, effect: RecorderEffect) -> RecorderOutcome {
         match effect {
             RecorderEffect::Checkpoint { token } => RecorderOutcome::Checkpointed { token },
@@ -414,7 +420,6 @@ impl CoreHarness {
                     // A typed reason, not a generic warning event: the ride is still on the store.
                     return RecorderOutcome::Failed { token, error: RecorderError::Write };
                 }
-                self.state.note_store_commit();
                 RecorderOutcome::Finalized { token, ride: SAVED_RIDE }
             }
             RecorderEffect::Discard { token } => RecorderOutcome::Discarded { token },
@@ -1316,6 +1321,50 @@ fn a_ride_open_past_the_deadline_owes_a_checkpoint() {
     assert!(harness.pass().effects.recorder.is_empty(), "and nothing is owed a millisecond later");
 }
 
+/// **A commit reported with its own finalize still orders one read** — the board's cadence.
+///
+/// The board reports its flat store's live sequence immediately before `run_pass`, *after* the
+/// store phase that committed the ride, so one pass carries both arms: the `StoreRevision` the
+/// commit moved and Recorder's `RideFinalized`. They arm the same `refresh_owed` bit, and
+/// `CatalogState::next_effect` spends it when it issues the read, so the pair costs one read.
+///
+/// Sampling the level *before* the store phase is what this refuses: the two arms then land in
+/// consecutive passes, the bit is armed, spent, and armed again, and one saved ride costs two reads
+/// on the board while the host — whose pass runs before its executor — shows one.
+#[test]
+fn a_commit_reported_with_its_own_finalize_still_orders_one_read() {
+    let mut harness = recording_harness();
+    harness.app().recorder.request(RecorderIntent::Start);
+    harness.pass();
+    assert!(harness.state.app.recording());
+
+    harness.app().recorder.request(RecorderIntent::Save);
+    let mut plan = harness.pass();
+    let effect = plan.effects.recorder.take().expect("the close left as one operation");
+    let outcome = harness.serve_recorder(effect);
+    assert!(matches!(outcome, RecorderOutcome::Finalized { .. }));
+    // The board's ordering: the commit's level and the operation's verdict reach the *same* pass.
+    harness.state.note_store_commit();
+    harness.deliver(Done::Recorder(outcome), &mut recorder());
+
+    let feeds_before = harness.ride_feeds;
+    let mut reads = 0usize;
+    for _ in 0..SETTLE_PASSES {
+        let mut plan = harness.pass();
+        let mut done = Vec::new();
+        let mut trace = recorder();
+        harness.serve_typed(&mut plan.effects, &mut done);
+        for item in done {
+            if let Done::Catalog { outcome: CatalogOutcome::CatalogRead { .. }, .. } = item {
+                reads += 1;
+            }
+            harness.deliver(item, &mut trace);
+        }
+    }
+    assert_eq!(reads, 1, "two producers, one owed bit, one read");
+    assert_eq!(harness.ride_feeds - feeds_before, 1, "and one feed of the ride catalog");
+}
+
 /// **A ride finalize failure after the last checkpoint.** The rider closes the ride, the executor
 /// that performs the close fails it — and the ride is still there afterwards, with the rider told.
 ///
@@ -1965,21 +2014,20 @@ fn the_conformance_replay_wake_profile_and_pass_cost() {
 /// `(passes, immediate, timed, sleep-until-event)` for the replay above. A ratchet, not a budget:
 /// the numbers move when the pass's wake decisions do.
 ///
-/// The two gating figures — 196 passes and 8 immediate wakes — are the claim that matters: nothing
+/// The two gating figures — 196 passes and 6 immediate wakes — are the claim that matters: nothing
 /// here polls.
 ///
-/// #1552 moved `(194, 4, 130, 60)` to `(196, 8, 129, 59)`, and every cell is accounted for. The two
-/// recorder scenarios each gained one `store-changed` action, because a ride needs somewhere to put
-/// it and `Capabilities::recorder` is the pass *before*'s level: **+2 passes**. Each of those two
-/// commits, and each of the two ride commits the scenarios now really perform, reports a store
-/// revision, and the catalog announces its identity to retention as a *deferred* connection — one
-/// immediate wake apiece: **+4 immediate**. The remaining `-1 timed / -1 sleep` is the idle return
-/// going back to being suppressed while a ride is open, now that these scenarios open one.
+/// #1552 moved `(194, 4, 130, 60)` to `(196, 6, 130, 60)`, and both moved cells are the same
+/// action. The two recorder scenarios each gained one `store-changed`, because a ride needs
+/// somewhere to put it and `Capabilities::recorder` is the pass *before*'s level: **+2 passes**.
+/// Each of those commits reports a store revision, and the catalog announces its identity to
+/// retention as a *deferred* connection — one immediate wake apiece: **+2 immediate**. Timed and
+/// sleep are unchanged, because the recorder scenarios open real rides again and the idle return is
+/// suppressed while one is open, exactly as before.
 ///
-/// Measured by isolation rather than argued: the replay with the two `store-changed` actions removed
-/// reproduces `(194, 4, 136, 54)`, and with those actions kept but every recorder action made inert
-/// reproduces `(196, 6, 136, 54)` — so the `136/54` pair is what "no ride ever opens" costs, and the
-/// slice's own contribution is the step back from it.
+/// Measured by isolation rather than argued: the replay with those two actions removed reproduces
+/// `(194, 4, 119, 71)`. That `119/71` pair is what "no ride ever opens" costs, and the head's
+/// `130/60` is the step back to the figures the base already had.
 ///
 /// #1548 moved one pass and one timed wake, and nothing else: the replay runs
 /// `actions.len() + SETTLE_PASSES` per scenario, and `retention.expiry-retry-and-trusted-clock`
@@ -1990,29 +2038,12 @@ fn the_conformance_replay_wake_profile_and_pass_cost() {
 /// #1541 moved the whole of the last delta and **no existing cell with it**: the replay runs
 /// `actions.len() + SETTLE_PASSES` per scenario, and the one new scenario (`catalog.refresh-retry`,
 /// two actions) is exactly +8 passes — 1 immediate and 7 timed. Measured by running the replay with
-/// that row removed, which reproduces the previous `(185, 3, 122, 60)` byte for byte. The immediate
-/// one is the mechanism `catalog.refresh-upload-remap` already had: the action reports a store
-/// commit as a revision fact, and the identity announcement it raises is consumed the next pass. The
-/// re-read every delete now orders costs **no** pass of its own here — it lands inside the settle
-/// passes those scenarios already ran.
+/// that row removed, which reproduces the previous `(185, 3, 122, 60)` byte for byte.
 ///
 /// Before #1541 the figures were exactly the typed executor's own contribution to the pre-S6c ones;
 /// what halved then was the runner count, not the work per pass.
 ///
-/// The upload burst is three actions rather than one — the upload slot is single and
-/// most-recent-wins, so reporting two uploads before a pass consumes it left the first unobserved.
-/// The two extra passes are two extra upload-popup frames, each arming that popup's 30 s auto-close:
-/// +2 passes, +2 timed, immediate and sleep unchanged.
-///
-/// Three further cells moved with S6c's corpus port, and none of them is a pass decision:
-/// `catalog.refresh-upload-remap` gained an immediate wake because a store commit is now reported as
-/// a *revision fact*, which raises a refresh intent the next pass consumes;
-/// `navigation.plan-cancel-late-replacement` lost one because a late answer now carries the
-/// abandoned operation's token and Navigator simply refuses it, leaving nothing deferred; and
-/// `recorder.failure-and-session-replacement` turned one sleep into a timed wake because the
-/// finalize failure arrives as a warning fact the next pass consumes, so the card's 30 s timeout
-/// arms one pass later.
-const WAKE_PROFILE: (u32, u32, u32, u32) = (196, 8, 129, 59);
+const WAKE_PROFILE: (u32, u32, u32, u32) = (196, 6, 130, 60);
 
 // ==================== the resource gate ====================
 

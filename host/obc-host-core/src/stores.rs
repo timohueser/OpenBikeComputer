@@ -3,6 +3,7 @@
 //! shape identically; nothing above the store (`obc-app`, `obc-render`) knows the difference.
 
 use crate::{RideRepository, RouteRepository, TrackRepository};
+use obc_app::recorder::RideClose;
 use obc_app::{CatalogObjectId, RideSummary};
 use obc_formats::io::SliceSource;
 use obc_ports::TrackSink;
@@ -221,15 +222,19 @@ impl TrackRepository for MemTrackStore {
         self.recording = true;
     }
 
-    fn finalize(&mut self, _stats: RideStats) -> Option<CatalogObjectId> {
+    fn finalize(&mut self, _stats: RideStats) -> RideClose {
+        if !self.recording {
+            return RideClose::Nothing;
+        }
         self.recording = false;
         let id = self.next_id;
         self.next_id = self.next_id.saturating_add(1);
-        Some(id)
+        RideClose::Committed(id)
     }
 
-    fn discard(&mut self) {
+    fn discard(&mut self) -> bool {
         self.recording = false;
+        true
     }
 
     /// No persistent sink in memory — the app still draws the live breadcrumb itself.

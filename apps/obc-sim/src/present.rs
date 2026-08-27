@@ -831,10 +831,10 @@ mod tests {
         const W: u32 = FRAME_W as u32;
         const H: u32 = FRAME_H as u32;
 
-        // The tour rides. A ride needs a mounted card, and the device only learns it has one on
-        // its first pass — `Capabilities::recorder` is the pass *before*'s level — so the request is
-        // repeated until Recorder takes it rather than fired once at construction and lost.
-        if app.active_route_index().is_some() && !app.recording() {
+        // The tour rides, and it asks the way a host should: only once the device has reported the
+        // card that makes a ride possible. Asking earlier is refused — kept, but with a
+        // recording-error card the tour's own frames would then have to dwell on.
+        if app.active_route_index().is_some() && !app.recording() && app.can_record() {
             app.recorder.request(obc_app::RecorderIntent::Start);
         }
 

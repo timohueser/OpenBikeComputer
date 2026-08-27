@@ -232,7 +232,8 @@ pub struct Ctx<'a> {
 /// with struct-update syntax, so the other eleven stay out of the way:
 /// `Ctx { routes, ..test_ctx(&mut st, &mut act, &mut s) }`.
 ///
-/// The four domain seams are **leaked**, one fresh set per call: they need `&mut` for a lifetime
+/// The five domain seams — Navigator, Recorder, DFU, `StorageInfo` and weather — are **leaked**,
+/// one fresh set per call: they need `&mut` for a lifetime
 /// the helper cannot own, and a test that asserts on one passes its own instead
 /// (`Ctx { navigator: &mut nav, ..test_ctx(…) }`). A few dozen bytes per screen test, in a build
 /// that has `std`.

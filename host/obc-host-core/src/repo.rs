@@ -9,6 +9,7 @@
 //! board-specific — #801 non-goal, #809 owns the board loop); the *command/event semantics* it
 //! shares are pinned by protocol tests instead.
 
+use obc_app::recorder::RideClose;
 use obc_app::{App, CatalogObjectId, RideSummary, RouteRetentionMeta};
 use obc_formats::io::SliceSource;
 use obc_ports::TrackSink;
@@ -90,12 +91,17 @@ pub trait TrackRepository {
     /// Recorder opens exactly one ride at a time, so any previous object is already closed.
     fn open(&mut self, session: u32, name: Option<&str>);
 
-    /// Close the open ride into a durable ride object and report the identity the store committed
-    /// it under. `None` is a **failure**: the ride is still there, and Recorder retries.
-    fn finalize(&mut self, stats: RideStats) -> Option<CatalogObjectId>;
+    /// Close the open ride into a durable ride object.
+    ///
+    /// [`RideClose::Failed`] means the ride is **still there** and Recorder re-offers the same
+    /// close, so a store must not throw the bytes away on the way out; [`RideClose::Nothing`] is
+    /// how a store says there was no object to close, which is over rather than owed.
+    fn finalize(&mut self, stats: RideStats) -> RideClose;
 
-    /// Delete the open ride and its journal.
-    fn discard(&mut self);
+    /// Delete the open ride and its journal. `false` is a **failure** and Recorder re-offers the
+    /// same discard — the same rule [`finalize`](Self::finalize) follows, because a close that did
+    /// not happen must not read as one that did.
+    fn discard(&mut self) -> bool;
 
     /// Make the ride recoverable across a power loss up to this point. `false` is a failed write —
     /// Recorder owes the same checkpoint again. A store with no journal has nothing to do and says

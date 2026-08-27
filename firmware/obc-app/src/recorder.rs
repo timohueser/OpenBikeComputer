@@ -57,6 +57,26 @@ pub struct RideContinuation {
     pub cadence_ms: u32,
 }
 
+/// What a store did when an executor asked it to close the open ride.
+///
+/// Three states, because they mean three different things to Recorder and only one of them is a
+/// retry. A store that could not tell "there was nothing to close" from "the close failed" would
+/// put the domain in a retry loop against an object that does not exist — which is what happens
+/// when a start the card refused is followed by the rider's Save.
+///
+/// Shared by both executors rather than each inventing its own: the board's flat recorder and the
+/// hosts' `TrackRepository` answer this, and `serve_recorder` maps it to the outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RideClose {
+    /// The store committed the ride under this identity.
+    Committed(CatalogObjectId),
+    /// There was no open ride. The goal state holds, so the close is over — it simply saved
+    /// nothing, because there was never an object to save.
+    Nothing,
+    /// The close did not happen and **the ride is still there**. Recorder re-offers the same one.
+    Failed,
+}
+
 /// What the rider asks of the ride recorder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecorderIntent {
@@ -141,6 +161,23 @@ impl RecorderOutcome {
     }
 }
 
+/// What [`advance`](RecorderMachine::advance) did with the rider's
+/// [`Start`](RecorderIntent::Start) this pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RecorderAdvance {
+    /// No start was pending, or one is pending and nothing about it changed.
+    Nothing,
+    /// A session opened.
+    Opened(SessionStart),
+    /// The device cannot record, so no session opened — **and the request was kept**, exactly as a
+    /// close is. A rider request is never destroyed by a device that cannot serve it yet.
+    ///
+    /// Reported **once**, on the pass that first refuses it. The rider is told, because a ride they
+    /// believe is recording and is not is the failure this exists to prevent: they would ride it,
+    /// end it, and find nothing saved with nothing having said so.
+    Refused,
+}
+
 /// A ride session opened this pass, and what starts fresh with it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SessionStart {
@@ -196,6 +233,9 @@ pub struct RecorderMachine {
     /// one opens behind it. They cannot be one intent — the new ride may not open until the store
     /// has answered for the old one, or the two would share a session.
     restart_after_close: bool,
+    /// The rider has been told that this device cannot record. One card per refusal, not one per
+    /// pass: the request stays pending, so without this the warning would re-raise for ever.
+    refusal_told: bool,
     /// A failed checkpoint owes its retry now rather than at the next deadline: the storage journal
     /// keeps the failed append staged and refuses further samples until the exact same write lands.
     checkpoint_owed: bool,
@@ -239,6 +279,7 @@ impl RecorderMachine {
             inflight: None,
             pending: None,
             resume_next: false,
+            refusal_told: false,
             restart_after_close: false,
             checkpoint_owed: false,
             recovery_offered: false,
@@ -253,7 +294,13 @@ impl RecorderMachine {
     ///
     /// A second request before the first is acted on replaces it, because both are the same rider
     /// saying the same kind of thing about the same ride — and the newer one is what they meant.
+    /// Replacing the [`Save`](RecorderIntent::Save) that a "save & start new" armed disarms the
+    /// restart with it: the new ride belonged to *that* close, and a rider who then asks to discard
+    /// is not asking for a fresh ride behind it.
     pub fn request(&mut self, intent: RecorderIntent) {
+        if intent != RecorderIntent::Save {
+            self.restart_after_close = false;
+        }
         self.pending = Some(intent);
     }
 
@@ -297,24 +344,51 @@ impl RecorderMachine {
     /// Advance the domain one pass: turn the rider's [`Start`](RecorderIntent::Start) into a session.
     ///
     /// Starting is a state change and not an effect, so it happens here rather than in
-    /// [`next_effect`](Self::next_effect). It is gated on the capability because a ride with nowhere
-    /// to put it is not a ride: the request is consumed and no session opens, which is the same
-    /// answer the rider would get from a refused first write, one pass earlier and without an
-    /// object on the store.
-    pub(crate) fn advance(&mut self, caps: RecorderCapabilities) -> Option<SessionStart> {
+    /// [`next_effect`](Self::next_effect). It is gated on the capability, because a ride with
+    /// nowhere to put it is not a ride.
+    ///
+    /// A refused start is **kept**, not thrown away. That is the same rule the close follows, and
+    /// for the same reason: the domain does not destroy a rider request it cannot serve yet, and a
+    /// device whose card mounts a pass later opens the ride the rider actually asked for. What the
+    /// rider must not get is silence — see [`Refused`](RecorderAdvance::Refused).
+    pub(crate) fn advance(&mut self, caps: RecorderCapabilities) -> RecorderAdvance {
         if !matches!(self.pending, Some(RecorderIntent::Start)) {
-            return None;
+            return RecorderAdvance::Nothing;
+        }
+        if !caps.record {
+            // Kept — and `resume_next` with it, so a refused Continue does not burn the recovered
+            // ride's continuation edge on a pass that opened nothing.
+            if core::mem::replace(&mut self.refusal_told, true) {
+                return RecorderAdvance::Nothing;
+            }
+            return RecorderAdvance::Refused;
         }
         self.pending = None;
+        self.refusal_told = false;
         let resume = core::mem::take(&mut self.resume_next);
-        if !caps.record {
-            return None;
-        }
         self.seq = self.seq.wrapping_add(1);
         self.session = Some(self.seq);
         self.checkpoint_owed = false;
         self.recovered_held = false; // adopted by this session, or never there to begin with
-        Some(if resume { SessionStart::Recovered } else { SessionStart::Fresh })
+        RecorderAdvance::Opened(if resume { SessionStart::Recovered } else { SessionStart::Fresh })
+    }
+
+    /// The ride object an executor owes: the open session's id, unless `opened` already names it.
+    ///
+    /// **The id, not a boolean, and that is the whole point.** An executor that served a close at
+    /// the top of its iteration has not yet run the pass that applies the verdict, so it still sees
+    /// an open session here; a boolean "there is a session and no object" cannot tell that apart
+    /// from "the start failed, retry", and would open a second ride object under the closing ride's
+    /// identity. Naming the id makes the two distinguishable without the executor knowing anything
+    /// about the pass order.
+    ///
+    /// `opened` is what the executor has already opened an object for; it is never cleared by a
+    /// close, because a session that has been served is served whatever became of its object.
+    pub fn object_owed(&self, opened: Option<u32>) -> Option<u32> {
+        match self.session {
+            Some(id) if opened != Some(id) => Some(id),
+            _ => None,
+        }
     }
 
     /// The one bounded operation this pass may carry, or `None`.
@@ -423,7 +497,8 @@ impl RecorderMachine {
     /// Open a session directly — the screen suites' stand-in for stage 7 over a mounted store.
     pub(crate) fn test_open(&mut self) {
         self.request(RecorderIntent::Start);
-        assert!(self.advance(RecorderCapabilities { record: true }).is_some(), "a mounted store admits the ride");
+        let opened = self.advance(RecorderCapabilities { record: true });
+        assert!(matches!(opened, RecorderAdvance::Opened(_)), "a mounted store admits the ride: {opened:?}");
     }
 
     /// Close the open session directly — the stand-in for the store's own verdict.
@@ -448,6 +523,7 @@ impl RecorderMachine {
             inflight,
             pending,
             resume_next,
+            refusal_told,
             restart_after_close,
             checkpoint_owed,
             recovery_offered,
@@ -459,6 +535,7 @@ impl RecorderMachine {
         assert_eq!(*last_checkpoint_ms, 0, "no checkpoint has been issued");
         assert!(inflight.is_none() && pending.is_none(), "nothing requested, nothing in flight");
         assert!(!*resume_next && !*restart_after_close, "no continuation and no restart armed");
+        assert!(!*refusal_told, "the rider has not been refused a ride");
         assert!(!*checkpoint_owed, "no checkpoint owed");
         assert!(!*recovery_offered && !*recovered_held, "no recovered ride offered this boot");
         assert!(breadcrumb.is_empty(), "no trail");
@@ -482,24 +559,75 @@ mod tests {
     fn recording() -> RecorderMachine {
         let mut rec = RecorderMachine::new();
         rec.request(RecorderIntent::Start);
-        assert_eq!(rec.advance(CAN_RECORD), Some(SessionStart::Fresh));
+        assert_eq!(rec.advance(CAN_RECORD), RecorderAdvance::Opened(SessionStart::Fresh));
         rec
     }
 
-    /// A ride needs somewhere to put it. Without a writable store the request is consumed and no
-    /// session opens — the alternative is an object the first write cannot create.
+    /// A ride needs somewhere to put it. Without a writable store no session opens, the rider is
+    /// told **once**, and the request is **kept** — a rider request is never destroyed by a device
+    /// that cannot serve it yet, which is the rule the close already follows.
     #[test]
     fn recording_is_refused_without_a_writable_store() {
         let mut rec = RecorderMachine::new();
         rec.request(RecorderIntent::Start);
-        assert_eq!(rec.advance(NO_STORE), None, "no store, no ride");
+        assert_eq!(rec.advance(NO_STORE), RecorderAdvance::Refused, "no store, no ride — and say so");
         assert!(!rec.recording());
         assert!(rec.next_effect(NO_STORE, 60_000).is_none(), "and nothing physical is offered either");
+        assert_eq!(rec.advance(NO_STORE), RecorderAdvance::Nothing, "one card per refusal, not one per pass");
 
-        // A later pass with a store is a *new* request, not a replay of the refused one.
-        assert_eq!(rec.advance(CAN_RECORD), None, "the refused request is not queued");
+        // The card mounts. The request the rider made is still theirs, and it opens the ride.
+        assert_eq!(rec.advance(CAN_RECORD), RecorderAdvance::Opened(SessionStart::Fresh), "the kept request opens it");
+        assert!(rec.recording());
+    }
+
+    /// A refused Continue must not burn the recovered ride's continuation edge: the rider decided
+    /// once, and a pass that opened nothing cannot spend that decision.
+    #[test]
+    fn a_refused_continue_keeps_the_continuation_edge() {
+        let mut rec = RecorderMachine::new();
+        assert!(rec.offer_recovery());
+        rec.continue_recovered();
+        assert_eq!(rec.advance(NO_STORE), RecorderAdvance::Refused);
+        assert_eq!(rec.advance(CAN_RECORD), RecorderAdvance::Opened(SessionStart::Recovered), "still a continuation");
+    }
+
+    /// The ride object an executor owes is named by **id**, so a close served before its verdict is
+    /// applied cannot look like a start that failed.
+    ///
+    /// This is the board's ordering: it serves the effect at the top of an iteration and runs the
+    /// pass at the end of it, so `session()` is still `Some(N)` while the object is already gone.
+    #[test]
+    fn a_close_answered_before_its_verdict_owes_no_second_object() {
+        let mut rec = recording();
+        let first = rec.session().expect("a ride is open");
+        assert_eq!(rec.object_owed(None), Some(first), "an unopened session owes its object");
+        let opened = Some(first);
+        assert_eq!(rec.object_owed(opened), None, "and an opened one owes nothing");
+
+        // The close is served; the verdict has not been applied yet.
+        rec.request(RecorderIntent::Save);
+        let effect = rec.next_effect(CAN_RECORD, 1).expect("a finalize");
+        assert_eq!(rec.object_owed(opened), None, "the closing ride must not be opened a second time");
+        rec.apply_outcome(RecorderOutcome::Finalized { token: effect.token(), ride: 9 });
+        assert_eq!(rec.object_owed(opened), None, "and neither must the closed one");
+
+        // The next ride is a different identity, and it owes its own object.
         rec.request(RecorderIntent::Start);
-        assert_eq!(rec.advance(CAN_RECORD), Some(SessionStart::Fresh));
+        assert_eq!(rec.advance(CAN_RECORD), RecorderAdvance::Opened(SessionStart::Fresh));
+        assert_eq!(rec.object_owed(opened), rec.session(), "a new ride owes a new object");
+    }
+
+    /// A "save & start new" the rider then turns into a Discard opens no ride behind it.
+    #[test]
+    fn a_discard_after_an_armed_restart_opens_nothing_behind_it() {
+        let mut rec = recording();
+        rec.save_and_restart();
+        rec.request(RecorderIntent::Discard); // the rider changed their mind
+        let effect = rec.next_effect(CAN_RECORD, 1).expect("a discard");
+        assert!(matches!(effect, RecorderEffect::Discard { .. }));
+        rec.apply_outcome(RecorderOutcome::Discarded { token: effect.token() });
+        assert_eq!(rec.advance(CAN_RECORD), RecorderAdvance::Nothing, "no ride follows a discard");
+        assert!(!rec.recording());
     }
 
     /// The rider's close becomes the finalize in the very pass that offers it, and the session stays
@@ -555,10 +683,10 @@ mod tests {
         rec.save_and_restart();
         let effect = rec.next_effect(CAN_RECORD, 1).expect("the close goes first");
         assert!(matches!(effect, RecorderEffect::Finalize { .. }));
-        assert_eq!(rec.advance(CAN_RECORD), None, "the new ride waits for the old one's verdict");
+        assert_eq!(rec.advance(CAN_RECORD), RecorderAdvance::Nothing, "the new ride waits for the old one's verdict");
 
         rec.apply_outcome(RecorderOutcome::Finalized { token: effect.token(), ride: 5 });
-        assert_eq!(rec.advance(CAN_RECORD), Some(SessionStart::Fresh));
+        assert_eq!(rec.advance(CAN_RECORD), RecorderAdvance::Opened(SessionStart::Fresh));
         assert!(rec.recording() && rec.session() != first, "a fresh ride, with its own identity");
     }
 
@@ -573,7 +701,7 @@ mod tests {
 
         // A second ride, and the first one's answer arrives late.
         rec.request(RecorderIntent::Start);
-        assert_eq!(rec.advance(CAN_RECORD), Some(SessionStart::Fresh));
+        assert_eq!(rec.advance(CAN_RECORD), RecorderAdvance::Opened(SessionStart::Fresh));
         assert_eq!(
             rec.apply_outcome(RecorderOutcome::Finalized { token: stale.token(), ride: 7 }),
             RecorderVerdict::Nothing
@@ -621,13 +749,17 @@ mod tests {
         assert!(!rec.offer_recovery(), "once per boot");
 
         rec.continue_recovered();
-        assert_eq!(rec.advance(CAN_RECORD), Some(SessionStart::Recovered));
+        assert_eq!(rec.advance(CAN_RECORD), RecorderAdvance::Opened(SessionStart::Recovered));
 
         // The next ride after it is an ordinary one.
         rec.request(RecorderIntent::Discard);
         let effect = rec.next_effect(CAN_RECORD, 1).expect("a discard");
         rec.apply_outcome(RecorderOutcome::Discarded { token: effect.token() });
         rec.request(RecorderIntent::Start);
-        assert_eq!(rec.advance(CAN_RECORD), Some(SessionStart::Fresh), "the continuation edge was one-shot");
+        assert_eq!(
+            rec.advance(CAN_RECORD),
+            RecorderAdvance::Opened(SessionStart::Fresh),
+            "the continuation edge was one-shot"
+        );
     }
 }
