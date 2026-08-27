@@ -54,12 +54,12 @@ enum Control {
 /// The controls this device actually has, in row order.
 ///
 /// **A deviation from #1515, and a deliberate one.** The issue names *exactly four* icons. On a
-/// platform whose panel has no light (see [`Backlight::available`](obc_ports::Backlight) and the
-/// board's `PanelBacklight`), the brightness row is dropped and the rider gets three. A control the
-/// hardware cannot honour is not a smaller lie than a port that returns `Ok(())` — it is the same
-/// lie one layer up, with a slider that moves, a check-mark that relocates and a setting that
-/// persists, over zero photons. The row comes back the moment the hardware does; nothing else about
-/// the sheet changes.
+/// platform whose panel has no light (see [`Backlight::available`](obc_ports::Backlight)), the
+/// brightness row is dropped and the rider gets three. A control the hardware cannot honour is not
+/// a smaller lie than a port that returns `Ok(())` — it is the same lie one layer up, with a slider
+/// that moves, a check-mark that relocates and a setting that persists, over zero photons. The row
+/// comes back the moment the hardware does — as it did on the board, whose `PanelBacklight` drives
+/// a real PWM since #1558 — and nothing else about the sheet changes.
 fn controls(backlight: bool) -> &'static [Control] {
     const WITH_LIGHT: [Control; 4] = [Control::Brightness, Control::Ble, Control::Settings, Control::Power];
     const NO_LIGHT: [Control; 3] = [Control::Ble, Control::Settings, Control::Power];
@@ -78,7 +78,12 @@ pub const BRIGHTNESS_LEVELS: u8 = obc_ports::BACKLIGHT_LEVELS;
 /// The brightest level — the factory default, and the `range` ceiling of the settings row.
 pub const BRIGHTNESS_MAX: u8 = BRIGHTNESS_LEVELS - 1;
 
-/// The percentage a level is captioned and driven at: 20 % … 100 %.
+/// The percentage a level is **captioned** at: 20 % … 100 %.
+///
+/// It is the rider's vocabulary for "one of five steps", not a duty cycle. What a host drives is
+/// its own business — the board's PWM ladder is square-law and reaches 4 / 16 / 36 / 64 / 100 %
+/// (`obc_platform::backlight`), because evenly spaced duty is not evenly spaced *perceived*
+/// brightness. Evenly spaced captions are the honest label for evenly spaced steps.
 pub(crate) fn brightness_percent(level: u8) -> u16 {
     (level.min(BRIGHTNESS_MAX) as u16 + 1) * (100 / BRIGHTNESS_LEVELS as u16)
 }
@@ -557,7 +562,7 @@ mod tests {
         }
     }
 
-    /// The percentages the five levels are captioned and driven at — and the absence of a zero.
+    /// The percentages the five levels are captioned at — and the absence of a zero.
     #[test]
     fn the_five_levels_span_twenty_to_a_hundred_percent() {
         let percents: heapless::Vec<u16, 8> = (0..BRIGHTNESS_LEVELS).map(brightness_percent).collect();

@@ -30,6 +30,9 @@ obc-render = { path = "../../firmware/obc-render" }
 obc-app = { path = "../../firmware/obc-app" }
 # Semantic sensor/input/track/settings ports implemented by the simulator host.
 obc-ports = { path = "../../firmware/obc-ports" }
+# The backlight level → duty ladder the board drives (#1558), so the window dims its blit from the
+# same table instead of a second curve. Default features only — no embassy reaches the host build.
+obc-platform = { path = "../../firmware/obc-platform" }
 # The DFU byte formats (epic #615 S5, #620): the sim stages a synthetic OBCU `UPDATE.BIN` with
 # `obc-dfu`'s encoder and runs the *real* `armer::scan` over it, so the "Install update from card"
 # confirm/progress/error screens render off the same validation the board runs.

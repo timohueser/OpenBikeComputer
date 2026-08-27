@@ -745,6 +745,22 @@ fn desired_gps_power(app: &App) -> GpsPower {
     }
 }
 
+/// Drive the panel at `level`, remembering it in `last` so the PWM is written only on a change.
+///
+/// Two callers, one rule: the boot seed applies the persisted level before the first frame, and the
+/// loop applies the app's derived answer every pass. Both go through here so the change gate cannot
+/// drift between them. Today's PWM port never refuses; a refusal would be a port that cannot reach
+/// its hardware, which is worth one line per change and never one per frame.
+fn apply_backlight(backlight: &mut crate::panel_power::PanelBacklight, last: &mut u8, level: u8) {
+    if level == *last {
+        return;
+    }
+    *last = level;
+    if obc_ports::Backlight::apply(backlight, level).is_err() {
+        defmt::warn!("backlight: the port refused level {=u8}", level);
+    }
+}
+
 /// The shared map plane + ride loop, driving present through [`MapDisplay`] so it carries **no backend
 /// `#[cfg]`**. Each tick: drain the gestures the input plane recognised, advance the visible screens'
 /// timed content, reconcile the card to the app's intent (open the selected route's geometry; begin /
@@ -786,6 +802,10 @@ pub(crate) async fn run_app(
     #[cfg(has_nav)] nav: NavResident,
     #[cfg(not(has_nav))] nav: NavResident,
     led: &mut Output<'static>,
+    // The panel's brightness port (#1558), armed in `main` where the peripherals live and driven
+    // from the per-pass apply below. By value: this loop is its only user for the life of the
+    // device, and it never returns.
+    mut backlight: crate::panel_power::PanelBacklight,
     // The hardware watchdog's feed handle (#349), `None` only if the boot-time `try_new` found the
     // dog already running with a foreign config. Fed once per pass below, gated on the input
     // plane's heartbeat.
@@ -897,14 +917,13 @@ pub(crate) async fn run_app(
     let mut route_index_valid = false;
     let mut index_route: Option<usize> = None;
     let mut pending_map_redraw = false;
-    // The two panel-power ports (#1515 D2) and the level last handed to the backlight, so the
-    // board's standing refusal is logged on a change rather than every pass.
-    let mut backlight = crate::panel_power::PanelBacklight;
     let mut power_off = crate::panel_power::SystemOff;
-    let mut backlight_level = u8::MAX; // never a real level: the first pass always applies
-                                       // The panel-light capability, straight from the port that answers it. On this board it is
-                                       // `false`, which takes the quick drawer's brightness control off the root row — a slider with
-                                       // no photons behind it is the same lie the port refuses to tell, one layer up (#1515 D2).
+    // The level last handed to the backlight, so the PWM is touched on a change rather than every
+    // pass. `u8::MAX` is never a real level, so the boot apply below always reaches the hardware.
+    let mut backlight_level = u8::MAX;
+    // The panel-light capability, straight from the port that answers it (#1515 D2). `true` since
+    // the board drives a real PWM (#1558), which is what puts the brightness control on the
+    // drawer's root row.
     app.set_backlight_available(obc_ports::Backlight::available(&backlight));
     #[cfg(feature = "debug-uart")]
     let mut last_telem_ms: u32 = 0;
@@ -952,6 +971,11 @@ pub(crate) async fn run_app(
         let mut store = shared.lock().await;
         store.settings.load().unwrap_or_default()
     });
+    // …and the brightness in that seed reaches the panel **here**, before the first frame is drawn.
+    // The per-pass apply at the end of the loop would otherwise leave the light at the factory level
+    // `PanelBacklight::new` armed it with until the first render finished, so a rider who set a dim
+    // panel would watch it start bright and then drop.
+    apply_backlight(&mut backlight, &mut backlight_level, app.backlight_level());
     // The weather alert-mark record (#1542), seeded the same way. A seed that came out of a stored
     // v16 blob's frozen span arms the record's write, so the next pass rehomes the rider's anchors.
     {
@@ -2852,16 +2876,10 @@ pub(crate) async fn run_app(
         }
 
         // The panel's brightness follows whatever the app says it should be this frame — the quick
-        // drawer's live preview while its editor is open, the committed setting otherwise. Applied
-        // only on a change, so the refusal below is logged once rather than every pass. **This
-        // board refuses**: see `PanelBacklight` and the open hardware question on #1515.
-        let level = app.backlight_level();
-        if level != backlight_level {
-            backlight_level = level;
-            if obc_ports::Backlight::apply(&mut backlight, level).is_err() {
-                defmt::warn!("backlight: level {=u8} not applied — this panel has no light line (#1515)", level);
-            }
-        }
+        // drawer's live preview while its editor is open, the committed setting otherwise. That
+        // derived answer is why a cancelled edit needs no undo path here: the editor closes and the
+        // next frame reads the committed row again.
+        apply_backlight(&mut backlight, &mut backlight_level, app.backlight_level());
 
         // The rider completed the guarded power-off hold, and the frame that says so has just been
         // pushed. `power_off` does not return.
