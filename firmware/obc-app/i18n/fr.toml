@@ -606,3 +606,14 @@ s = "S"
 sw = "SO"
 w = "O"
 nw = "NO"
+
+# --- Le tiroir rapide universel (Haut + Selection) ---
+[quick]
+brightness = "LUMINOSITE"
+bluetooth_on = "BLUETOOTH ACTIF"
+bluetooth_off = "BLUETOOTH INACTIF"
+settings = "REGLAGES"
+power = "ETEINDRE"
+power_confirm = "ETEINDRE ?"
+power_hold = "MAINTENIR SELECT."
+powering_off = "EXTINCTION..."

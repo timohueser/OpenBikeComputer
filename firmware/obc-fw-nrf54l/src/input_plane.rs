@@ -25,7 +25,7 @@ use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::channel::{Channel, Sender};
 use embassy_sync::signal::Signal;
 use embassy_time::{Instant, Timer};
-use obc_app::{Gesture, InputPlane};
+use obc_app::{Chord, Gesture, InputPlane};
 use obc_platform::ButtonInput;
 use obc_ports::{InputClock, InputEvent, InputSource};
 
@@ -52,6 +52,14 @@ pub(crate) const GESTURE_QUEUE: usize = 16;
 /// Recognised gestures flowing from the input plane (high priority) to the map plane (thread mode) —
 /// the only lock-free shared state between the two planes.
 pub(crate) static GESTURES: Channel<CriticalSectionRawMutex, Gesture, GESTURE_QUEUE> = Channel::new();
+
+/// Device-wide **chords** (#1515 D2), on their own lane beside the gestures.
+///
+/// A chord is not a gesture: it is resolved above the screen stack and its constituents were
+/// swallowed, so putting it in [`GESTURES`] would have meant a `Gesture` variant every screen's
+/// `handle` must ignore. Two slots — a rider cannot squeeze faster than the map plane drains, and
+/// a dropped duplicate squeeze is a no-op anyway.
+pub(crate) static CHORDS: Channel<CriticalSectionRawMutex, Chord, 2> = Channel::new();
 
 /// Wakes the event-driven map loop the moment a hold starts **charging** (and keeps it awake while
 /// the bulge is live). Without it the loop has no wake source for a press: a button-*down* emits no
@@ -141,6 +149,7 @@ pub(crate) async fn input_task(
     mut buttons: ButtonInput<Input<'static>>,
     input_plane: &'static BlockingMutex<CriticalSectionRawMutex, RefCell<InputPlane>>,
     gestures: Sender<'static, CriticalSectionRawMutex, Gesture, GESTURE_QUEUE>,
+    chords: Sender<'static, CriticalSectionRawMutex, Chord, 2>,
 ) {
     loop {
         let now = Instant::now().as_millis() as u32;
@@ -151,17 +160,25 @@ pub(crate) async fn input_task(
         // Physical buttons + (with `debug-uart`) the VCOM-injected `K` events, one recogniser pass.
         // Also read whether the hold bulge is still live (charging / popping / retracting): the input
         // plane must keep animating it even after the button is released, so it gates the idle sleep.
-        let (overlay_active, hold_charging) = input_plane.lock(|cell| {
+        let (chord, overlay_active, hold_charging) = input_plane.lock(|cell| {
             let plane = &mut *cell.borrow_mut();
             let mut dbg = debug_input();
             let mut input = ChainedInput { a: &mut buttons, b: &mut dbg };
-            plane.recognize(InputClock(now), &mut input, |g| {
+            let chord = plane.recognize(InputClock(now), &mut input, |g| {
                 if gestures.try_send(g).is_err() {
                     defmt::warn!("gesture channel full — dropped a gesture (map plane stalled?)");
                 }
             });
-            (plane.overlay_active(), plane.select_hold_progress() > 0.0 || plane.back_hold_progress() > 0.0)
+            (chord, plane.overlay_active(), plane.select_hold_progress() > 0.0 || plane.back_hold_progress() > 0.0)
         });
+        // A chord opens or closes a drawer, which is a whole-frame change the map plane owns — and
+        // it emits no gesture, so nothing else would wake the sleeping loop for it.
+        if let Some(chord) = chord {
+            if chords.try_send(chord).is_err() {
+                defmt::warn!("chord channel full — dropped a squeeze (map plane stalled?)");
+            }
+            INPUT_WAKE.signal(());
+        }
         // Nudge the event-driven map loop for the whole hold lifecycle (charge → pop/retract). On
         // this backend the *map plane* owns every bulge push, and a press emits no gesture — so
         // without this wake the loop sleeps through the charge on a quiet screen and the first

@@ -237,6 +237,46 @@ The recognizer emits these gestures:
 
 A release after 200 ms and before 500 ms emits no gesture. Long holds emit at the threshold, not on release.
 
+## Chords
+
+Two buttons pressed within 100 ms of each other are one **chord**, not two gestures. The recognizer
+reports the chord above the screen stack and emits nothing for the two buttons: no step, no tap, no
+long press, and no release. The chord stays latched until both buttons are up.
+
+| Chord | Meaning |
+| --- | --- |
+| Up + Select | Open or close the universal quick drawer |
+| Down + Back | Recognized and swallowed. It has no action yet |
+| Up + Down | Reserved |
+| Select + Back | Reserved |
+
+A reserved chord is recognized and swallowed. It does nothing. This keeps a squeeze of two buttons
+from becoming two unrelated actions. Down + Back is swallowed for the same reason. It will open a
+contextual drawer when each screen declares the content for one.
+
+Because a chord can start with a direction button, the first step of Up or Down waits for the
+100 ms window. A release inside the window steps immediately, so a tap does not feel slower.
+Automatic repeat measures its delay from the press edge, so a held button keeps its usual cadence.
+
+## Drawers
+
+A drawer is a sheet that the device draws over the current screen. The universal quick drawer comes
+down from the top and holds the device-wide controls: brightness, the Bluetooth radio, the central
+settings, and power. Brightness and power open a nested page. Back closes the sheet and returns the
+rider to the screen below it.
+
+A platform whose panel has no controllable light does not show the brightness control. The sheet
+has the remaining three controls.
+
+The screen under a drawer is **frozen**. A drawer states its own facts as its render key — the page,
+the selected control, and the staged value — and that key replaces the facts of the screens below.
+So a moving map under a drawer causes no repaint, and one repaint occurs when the drawer closes. The
+device draws the frozen screen through a dim colour table, and the sheet through the normal colours.
+No extra frame buffer is necessary.
+
+A drawer is refused while a blocking card is on the screen: the pairing passkey, a map transfer, and
+the terminal update card.
+
 ## Hold to confirm
 
 A destructive or irreversible action can require `Hold`. The screen must also declare `hold_fill` in its capabilities.
