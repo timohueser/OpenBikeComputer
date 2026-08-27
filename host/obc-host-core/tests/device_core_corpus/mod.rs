@@ -523,7 +523,8 @@ impl CorpusState {
     fn open_detour_plan(&mut self) {
         if !matches!(self.app.top_screen(), Screen::Detour(_)) {
             self.reset_to_riding_map();
-            self.app.apply_gesture(Gesture::BackHold);
+            // The ride context sheet (#1515 D3), then its Detour row.
+            assert!(self.app.apply_chord(obc_app::Chord::Context), "a riding view declares the ride context");
             self.app.apply_gesture(Gesture::Step(1));
             self.app.apply_gesture(Gesture::Press);
         }
