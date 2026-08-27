@@ -13,6 +13,11 @@ row growing back, so this guard states the rule the slices are executing:
 
 Deliberate exceptions are listed below, each with the decision that made it one. An exception is a
 recorded deviation, not a way to keep a duplicate quiet.
+
+A text guard's real failure mode is going **blind**, not going off: a row spelled differently stops
+matching, the census quietly drops, and the guard keeps printing success over a duplicate it can no
+longer see. So the census is pinned. Every `ContextRow` in the drawers must yield a parsed label, and
+the totals must clear a floor that only ever moves up with a slice that adds rows.
 """
 
 from __future__ import annotations
@@ -33,10 +38,20 @@ DRAWERS = [SCREEN / "context_drawer.rs", SCREEN / "quick_drawer.rs"]
 # keeps its own switch beside the bond it manages (#1515 D2). The rule holds for every other field.
 ALLOWED_SHARED_FIELDS = {"ble_enabled"}
 
+# The census floors. A slice that adds rows or drawer-written settings raises these; a parser that
+# went blind lowers them, which is the failure this guard could not otherwise report.
+MIN_ROW_LABELS = 6
+MIN_DRAWER_FIELDS = 3
+
 # `cx.settings.<field> = …` — the one production write path a screen has into the persisted record.
-FIELD_WRITE = re.compile(r"\bcx\.settings\.([a-z_][a-z0-9_]*)\s*=")
-# `ContextRow { label: Msg::<Key>` — a context row's own catalog label.
-ROW_LABEL = re.compile(r"ContextRow\s*\{\s*label:\s*Msg::([A-Za-z0-9_]+)")
+# `=(?!=)` so an equality test is not read as a write.
+FIELD_WRITE = re.compile(r"\bcx\.settings\.([a-z_][a-z0-9_]*)\s*=(?!=)")
+# A `ContextRow { … }` literal, and the `label: Msg::<Key>` somewhere inside it — the label is not
+# required to be the first field, and a row whose body yields no label is a parse failure rather
+# than a row that quietly leaves the census. The lookbehind skips the `struct ContextRow` shape
+# declaration, which is the one brace pair that legitimately holds no key.
+CONTEXT_ROW = re.compile(r"(?<!struct )ContextRow\s*\{([^{}]*)\}")
+ROW_LABEL = re.compile(r"\blabel\s*:\s*Msg::([A-Za-z0-9_]+)")
 MSG_KEY = re.compile(r"\bMsg::([A-Za-z0-9_]+)")
 
 
@@ -78,12 +93,34 @@ def main() -> int:
     # only the *pair* is a second home, which is what the loop above checks.
 
     row_labels: dict[str, str] = {}
+    rows_seen = 0
     for path in DRAWERS:
-        for key in ROW_LABEL.findall(path.read_text()):
-            row_labels[key] = str(path.relative_to(ROOT))
+        where = str(path.relative_to(ROOT))
+        for body in CONTEXT_ROW.findall(path.read_text()):
+            rows_seen += 1
+            label = ROW_LABEL.search(body)
+            if label is None:
+                failures.append(
+                    f"a `ContextRow` in {where} has no `label: Msg::…` the guard can read "
+                    f"({' '.join(body.split())!r}). Spell the label inline, or teach the guard the "
+                    f"new shape — a row it cannot parse is a home it cannot check."
+                )
+                continue
+            row_labels[label.group(1)] = where
 
-    if not row_labels:
-        failures.append("one-home guard: no context row labels found — has `ContextRow` been renamed?")
+    # The census floors. A drop means the parser went blind, not that homes vanished.
+    if len(row_labels) < MIN_ROW_LABELS:
+        failures.append(
+            f"only {len(row_labels)} context row label(s) parsed, below the pinned floor of "
+            f"{MIN_ROW_LABELS} ({rows_seen} `ContextRow` literal(s) seen). Raise MIN_ROW_LABELS "
+            f"deliberately when a slice adds rows; never lower it to make this pass."
+        )
+    if len(drawer_fields) < MIN_DRAWER_FIELDS:
+        failures.append(
+            f"only {len(drawer_fields)} drawer-written setting(s) found, below the pinned floor of "
+            f"{MIN_DRAWER_FIELDS}. Either a write moved out of a drawer, or `FIELD_WRITE` no longer "
+            f"matches the write path."
+        )
 
     for path in settings_files:
         drawn = set(MSG_KEY.findall(path.read_text()))
@@ -100,8 +137,9 @@ def main() -> int:
         return 1
 
     print(
-        f"one-home guard: {len(drawer_fields)} drawer-written setting(s), "
-        f"{len(row_labels)} context row label(s) — no setting has two homes"
+        f"one-home guard: {len(drawer_fields)} drawer-written setting(s) (floor {MIN_DRAWER_FIELDS}), "
+        f"{len(row_labels)} context row label(s) from {rows_seen} row literal(s) "
+        f"(floor {MIN_ROW_LABELS}) — no setting has two homes"
     )
     return 0
 

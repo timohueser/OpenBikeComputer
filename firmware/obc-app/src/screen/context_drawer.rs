@@ -559,7 +559,7 @@ impl ContextDrawerScreen {
     /// somewhere. A value row's chevron leads to its editor rather than to a screen.
     ///
     /// **The row does not state its value, and that is measured rather than chosen.** A label plus
-    /// the longest choice is 260 px of `Label` glyphs on a 204 px row (`de`'s *Campingplatz*, `es`'s
+    /// the longest choice is 284 px of `Body` glyphs on a 204 px row (`de`'s *Campingplatz*, `es`'s
     /// *Alojamiento*), so a one-line row cannot carry both, and a two-line row does not fit the
     /// 44 px pitch the ride sheet already ships. The editor one press away is where the value is
     /// spelled out and where the committed one is marked — the same division the quick drawer's
@@ -1027,6 +1027,11 @@ mod tests {
     /// The sheet is all copy, so this is its overflow check: every row label clears the chevron on a
     /// 240 px panel in every language, and every editor choice fits the editor's own line.
     ///
+    /// **Both are measured in the font the code actually draws.** `draw_root` writes a row label in
+    /// [`Font::Body`] and `draw_editor` writes a choice in [`Font::Body`] too — an earlier version
+    /// of this test measured the choice in `Font::Label` and believed 36 px of clearance where the
+    /// panel has 12 (`de` "Campingplatz" is 168 px in Body, 144 in Label).
+    ///
     /// It also **pins the measurement the row design rests on** — that a label plus its longest
     /// choice does not fit one row — so a future geometry pass sees the number rather than the
     /// conclusion.
@@ -1038,9 +1043,10 @@ mod tests {
         // the label starts 14 px inside it and the chevron takes the last 18.
         let area_w = W - 36;
         let label_room = area_w - 14 - 18 - MIN_CLEAR;
-        // The editor draws its choice from x + 48 (past the widest icon gutter) to the sheet edge.
+        // `draw_editor` starts the choice at x + 48 with a category icon in the gutter, and the
+        // sheet's own right inset is 12.
         let choice_room = W - 48 - 12;
-        let mut worst_row = 0;
+        let (mut worst_row, mut worst_choice) = (0, 0);
         for lang in [Language::En, Language::De, Language::Fr, Language::Es] {
             for menu in [&RIDE, &UP_AHEAD] {
                 for row in menu.rows {
@@ -1050,19 +1056,25 @@ mod tests {
                     let ContextAction::Edit(v) = row.action else { continue };
                     for ordinal in 0..v.count() {
                         let choice = choice_text(v, ordinal, lang);
-                        let cw = text_width(choice, Font::Label) as i32;
+                        let cw = text_width(choice, Font::Body) as i32;
                         assert!(cw <= choice_room, "{lang:?}: choice {choice:?} ({cw} px) overruns {choice_room} px");
+                        worst_choice = worst_choice.max(cw);
                         worst_row = worst_row.max(14 + lw + MIN_CLEAR + cw + 10);
                     }
                 }
             }
         }
+        // The widest choice on the editor line, and how little room is left over it. This is the
+        // on-glass question the PR names, so the number is here rather than in prose.
+        assert_eq!(worst_choice, 168, "de \"Campingplatz\" / \"Fahrradladen\" in Body, pinned");
+        assert_eq!(choice_room - worst_choice, 12, "…with 12 px to spare on the 240 px panel");
+
         assert!(
             worst_row > area_w,
             "a label and its longest choice now fit one {area_w} px row ({worst_row} px) — \
              the row could state its value again; see `draw_root`"
         );
-        assert_eq!(worst_row, 260, "the measurement the row design rests on, pinned");
+        assert_eq!(worst_row, 284, "the measurement the row design rests on, pinned");
     }
 
     /// The catalog lookup [`ContextValue::choice_label`] makes, without a `Render` to hang it off.

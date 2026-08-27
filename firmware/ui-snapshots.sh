@@ -778,13 +778,15 @@ QUICK=(--routes-dir "$ROUTES" --clock "2025-06-29T14:40" --gpx "$GPX" --at 30)
 for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --script "B w"           --expect-screen Menu --png "$OUT/menu-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --script "B u p w"       --expect-screen Settings --png "$OUT/settings-$lang.png"
-    # The Ride group per-language — the longest settings screen there is: seven two-line rows, each
+    # The Ride group per-language — the longest settings screen there is: six two-line rows, each
     # with a right-aligned value on the sub-caption line. Eyeball every label/sub pair against its
     # ◄value group (the clearance `cycle_row_value_clears_the_sub_caption` pins numerically).
     "$SIM" "$MAP" --boot --lang "$lang" --script "B u p p w"     --expect-screen Ride --png "$OUT/ride-settings-$lang.png"
     # The Auto-delete row (epic #638 S5) per-language — eyeball the retention value words
-    # (Never / 1 day / 1 week / 1 month) for clipping in the longer translations.
-    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p p d d d d d d" --expect-screen Ride --png "$OUT/settings-ride-autodelete-$lang.png"
+    # (Never / 1 day / 1 week / 1 month) for clipping in the longer translations. **Five** steps: the
+    # group lost its Up-ahead row to the timeline's context sheet (#1515 D4a), and a sixth step here
+    # wrapped the cursor back to row 0 and quietly re-shot `ride-settings-$lang.png` under this name.
+    "$SIM" "$MAP" --boot --lang "$lang" --script "B u p p d d d d d" --expect-screen Ride --png "$OUT/settings-ride-autodelete-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --script "B u p d d d d d p p"   --expect-screen Units --png "$OUT/units-$lang.png"
     # The `Next: <category>` tiles + their picker rows per language (epic #946, U5): the longest
     # category words (de `Campingplatz` / `Fahrradladen`, fr `Hébergement`) are what the tile caption

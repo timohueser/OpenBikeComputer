@@ -1061,8 +1061,9 @@ screens! {
     RideRecovery(RideRecoveryScreen) => Caps::modal().hold_fill().blocks_escape(),
     Menu(MenuScreen) => Caps::nav().timed(),
     /// The "Up ahead" timeline (epic #946, U3): the route-ordered merge of the resident waypoint
-    /// table and the App-owned corridor-POI snapshot, with the Hold category picker as an in-screen
-    /// mode. Reads the snapshot the App arms from its `corridor_key`; holds no rows itself.
+    /// table and the App-owned corridor-POI snapshot. Reads the snapshot the App arms from its
+    /// `corridor_key`; holds neither rows nor the scope it is read under — the category filter and
+    /// the source scope are rows of the [context sheet](context_drawer::UP_AHEAD) above it (D4a).
     UpAhead(UpAheadScreen) => Caps::nav().key(RenderKeyKind::UpAhead),
     /// Detour chooser (#882): a map base with streamed skipped-stretch ink and an auto-fit camera.
     Detour(DetourScreen) => Caps::map().remap(RemapKind::Route),

@@ -278,10 +278,17 @@ fn side_hint(offset_m: i32, units: Units) -> Option<(bool, heapless::String<12>)
 /// above this screen edits that, so the screen reads it rather than keeping it).
 #[derive(Debug)]
 pub struct UpAheadScreen {
-    /// The highlighted merged row, or `None` before the first frame resolves "the first unpassed
-    /// entry" (the merge — and therefore that index — isn't knowable when the context row opens
-    /// this screen: the corridor snapshot lands a frame later).
-    selected: Option<usize>,
+    /// The highlighted merged row **and the scope it indexes into**, or `None` before the first
+    /// frame resolves "the first unpassed entry" (the merge — and therefore that index — isn't
+    /// knowable when the context row opens this screen: the corridor snapshot lands a frame later).
+    ///
+    /// The scope travels with the index because an index is only meaningful against one list. The
+    /// rider edits the scope from the sheet *above* this screen, which cannot reach in to clear a
+    /// cursor; carrying the scope makes that unnecessary — a cursor set against a list the rider has
+    /// since re-filtered is simply not a cursor any more, and
+    /// [`cursor`](UpAheadScreen::cursor) re-homes to the first row still ahead, exactly as the
+    /// Select-hold picker's own "apply" used to do explicitly.
+    selected: Option<(usize, UpAheadScope)>,
     /// Live route progress (m) frozen at entry — the corridor snapshot's anchor. The one thing this
     /// screen does freeze, so riding on never re-runs the query and rows never shift under the
     /// cursor.
@@ -319,12 +326,19 @@ impl UpAheadScreen {
         )
     }
 
-    /// The effective cursor: the rider's, or — before they've turned — the first row still ahead
-    /// (today's `next_waypoint` behavior, generalized to the merged list).
-    fn cursor(&self, rows: Merge, progress_m: u32, total: usize) -> usize {
+    /// The effective cursor: the rider's, or — before they've turned, **and after they change what
+    /// the list shows** — the first row still ahead (today's `next_waypoint` behavior, generalized
+    /// to the merged list).
+    ///
+    /// A cursor the rider set counts only against the list they set it in. Filter a scrolled list
+    /// down to two rows and clamping the old index would land them on the *last* match; re-homing
+    /// lands them on the nearest one ahead, which is the answer the question "what is coming up?"
+    /// has. That was the Select-hold picker's `self.selected = None` on apply; it is a property of
+    /// the cursor now, so the sheet that replaced the picker has nothing to remember.
+    fn cursor(&self, rows: Merge, progress_m: u32, total: usize, scope: UpAheadScope) -> usize {
         match self.selected {
-            Some(s) => s.min(total.saturating_sub(1)),
-            None => rows
+            Some((s, under)) if under == scope => s.min(total.saturating_sub(1)),
+            _ => rows
                 .enumerate()
                 .find(|(_, e)| progress_m <= e.dist_along_m())
                 .map(|(i, _)| i)
@@ -333,12 +347,31 @@ impl UpAheadScreen {
         }
     }
 
+    /// The row the amber cursor would land on this frame, resolved exactly as
+    /// [`draw`](UpAheadScreen::draw) resolves it — the App-level harness's one window onto a cursor
+    /// that is otherwise private.
+    #[cfg(test)]
+    pub(crate) fn test_cursor(
+        &self,
+        waypoints: &[WptEntry],
+        corridor: &[CorridorPoi],
+        progress_m: u32,
+        scope: UpAheadScope,
+    ) -> usize {
+        let total = self.rows(waypoints, corridor, true, scope).count();
+        self.cursor(self.rows(waypoints, corridor, true, scope), progress_m, total, scope)
+    }
+
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         let route_loaded = cx.activity.active_route.is_some();
         let scope = cx.up_ahead_scope();
         let total = self.rows(cx.waypoints, cx.corridor, route_loaded, scope).count();
-        let mut sel =
-            self.cursor(self.rows(cx.waypoints, cx.corridor, route_loaded, scope), cx.activity.progress_m, total);
+        let mut sel = self.cursor(
+            self.rows(cx.waypoints, cx.corridor, route_loaded, scope),
+            cx.activity.progress_m,
+            total,
+            scope,
+        );
         match g {
             // A step commits the cursor — but only over a list that actually has rows. Stepping an
             // empty one (the snapshot hasn't landed, or the route has nothing ahead) must stay a
@@ -346,7 +379,7 @@ impl UpAheadScreen {
             // would pin it at row 0 and quietly lose the open-at-the-first-unpassed-entry homing.
             Gesture::Step(n) if total > 0 => {
                 list::on_step(&mut sel, n, total);
-                self.selected = Some(sel);
+                self.selected = Some((sel, scope));
                 Transition::None
             }
             Gesture::Step(_) => Transition::None,
@@ -400,6 +433,7 @@ impl UpAheadScreen {
                     self.rows(rx.waypoints.as_slice(), rx.corridor, route_loaded, scope),
                     rx.activity.progress_m,
                     total,
+                    scope,
                 ),
                 total,
             },
@@ -940,7 +974,7 @@ mod tests {
             route_total_m: total_m,
             profile: Some(&profile),
             units: Units::Metric,
-            cursor: screen.cursor(rows, progress_m, total),
+            cursor: screen.cursor(rows, progress_m, total, scope),
             total,
         };
         draw_list(&mut cv, &v);
@@ -1010,7 +1044,7 @@ mod tests {
         let w = wpts_detailed(&[(1_000, "Pass", None, 0)]);
         let p = corridor(&[(600, "Fountain", WATER, 0)]);
         let mut screen = UpAheadScreen::new(0);
-        screen.selected = Some(0); // the POI row is the cursor, so the waypoint row is unselected
+        screen.selected = Some((0, all())); // the POI row is the cursor, so the waypoint row is unselected
         let rec = render(&screen, &w, &p, 0);
         let amber = rec.triangles.iter().filter(|(c, ..)| *c == palette::AMBER).count();
         assert!(amber >= 4, "the generic diamond (2) + the pip (2) both draw in amber, got {amber}");
@@ -1146,12 +1180,12 @@ mod tests {
         act.progress_m = 200;
         let mut screen = UpAheadScreen::new(200);
         let rows = Merge::new(w.as_slice(), &p, PoiCategorySet::ALL);
-        assert_eq!(screen.cursor(rows, 200, 3), 1, "row 0 is passed; the Fountain is the first ahead");
+        assert_eq!(screen.cursor(rows, 200, 3, ctx_scope()), 1, "row 0 is passed; the Fountain is the first ahead");
 
         screen.handle(Gesture::Step(1), &mut ctx(&mut act, &mut recorder, &w, &p));
-        assert_eq!(screen.selected, Some(2), "a turn steps on from the resolved home row");
+        assert_eq!(screen.selected.map(|(s, _)| s), Some(2), "a turn steps on from the resolved home row");
         screen.handle(Gesture::Step(1), &mut ctx(&mut act, &mut recorder, &w, &p));
-        assert_eq!(screen.selected, Some(0), "and wraps over the merged count, not either table's");
+        assert_eq!(screen.selected.map(|(s, _)| s), Some(0), "and wraps over the merged count, not either table's");
 
         // Before the first frame there is no snapshot and (on a fresh route load) no waypoint table
         // either: a turn then leaves the cursor *unresolved*, so the list still opens where it
@@ -1173,12 +1207,12 @@ mod tests {
         let session = recorder.session();
         let mut screen = UpAheadScreen::new(0);
 
-        screen.selected = Some(0); // the Fountain
+        screen.selected = Some((0, ctx_scope())); // the Fountain
         match screen.handle(Gesture::Press, &mut ctx(&mut act, &mut recorder, &w, &p)) {
             Transition::Push(Screen::PoiDetail(d)) => assert_eq!(d.off_route_m(), Some(-220)),
             _ => panic!("a POI row must open the detail"),
         }
-        screen.selected = Some(1); // the waypoint
+        screen.selected = Some((1, ctx_scope())); // the waypoint
         assert!(matches!(screen.handle(Gesture::Press, &mut ctx(&mut act, &mut recorder, &w, &p)), Transition::None));
         assert!(matches!(screen.handle(Gesture::Back, &mut ctx(&mut act, &mut recorder, &w, &p)), Transition::Pop));
         assert_eq!(act.mode, Mode::Riding);
@@ -1194,12 +1228,62 @@ mod tests {
         let p = corridor(&[(600, "Fountain", WATER, 0)]);
         let mut act = riding();
         let mut screen = UpAheadScreen::new(4_000);
-        screen.selected = Some(0);
+        screen.selected = Some((0, ctx_scope()));
 
         assert!(matches!(screen.handle(Gesture::Hold, &mut ctx(&mut act, &mut recorder, &w, &p)), Transition::None));
-        assert_eq!(screen.selected, Some(0), "the hold changed nothing at all");
+        assert_eq!(screen.selected, Some((0, ctx_scope())), "the hold changed nothing at all");
         // …and the very next Back still leaves the screen rather than closing a mode first.
         assert!(matches!(screen.handle(Gesture::Back, &mut ctx(&mut act, &mut recorder, &w, &p)), Transition::Pop));
+    }
+
+    /// **A cursor counts only against the list it was set in.** Scroll the timeline, then filter it
+    /// from the sheet above, and the rider lands on the nearest match ahead — not on whatever the
+    /// old index clamps to, which for a scrolled list is the *last* one.
+    ///
+    /// This is the Select-hold picker's `self.selected = None`-on-apply, kept as a property of the
+    /// cursor rather than as a line in a commit path: the sheet that replaced the picker sits above
+    /// this screen and cannot reach in to clear anything.
+    #[test]
+    fn filtering_a_scrolled_list_re_homes_the_cursor() {
+        let mut recorder = crate::RecorderMachine::new();
+        // Four stops ahead, two of them Water and 3.6 km apart — so clamping and re-homing give
+        // visibly different answers.
+        let w = wpts_detailed(&[
+            (400, "Brunnen", Some(PoiCategory::Water), 0),
+            (500, "Bakery", Some(PoiCategory::Resupply), 0),
+            (600, "Camp", Some(PoiCategory::Campsite), 0),
+            (4_000, "Far water", Some(PoiCategory::Water), 0),
+        ]);
+        let p = corridor(&[]);
+        let mut act = riding();
+        let mut screen = UpAheadScreen::new(0);
+
+        // The rider scrolls to the last row of the unfiltered list.
+        for _ in 0..3 {
+            screen.handle(Gesture::Step(1), &mut ctx(&mut act, &mut recorder, &w, &p));
+        }
+        let unfiltered = all();
+        assert_eq!(screen.selected, Some((3, unfiltered)), "the cursor is on \"Far water\"");
+        assert_eq!(screen.cursor(screen.rows(w.as_slice(), &p, true, unfiltered), 0, 4, unfiltered), 3);
+
+        // …then filters to Water from the sheet. Two rows remain: Brunnen at 400 m, Far water at
+        // 4 km. Clamping row 3 would land on the far one; the rider gets the near one.
+        let water = scope(PoiCategorySet::only(PoiCategory::Water), UpAheadSource::Both);
+        let rows: std::vec::Vec<&str> = screen.rows(w.as_slice(), &p, true, water).map(|e| e.name()).collect();
+        assert_eq!(rows, ["Brunnen", "Far water"], "the filtered list, for the record");
+        assert_eq!(
+            screen.cursor(screen.rows(w.as_slice(), &p, true, water), 0, 2, water),
+            0,
+            "re-homed to the nearest Water stop ahead, not clamped onto the far one"
+        );
+
+        // A source change reshapes the list the same way, and re-homes for the same reason.
+        let pois_only = scope(PoiCategorySet::ALL, UpAheadSource::MapPoisOnly);
+        assert_eq!(screen.cursor(screen.rows(w.as_slice(), &p, true, pois_only), 0, 0, pois_only), 0);
+
+        // …and going back to the list the cursor was set in restores it: this re-homes, it does not
+        // forget.
+        assert_eq!(screen.cursor(screen.rows(w.as_slice(), &p, true, unfiltered), 0, 4, unfiltered), 3);
     }
 
     /// The snapshot key is the **live** scope against the anchor frozen at entry: changing the

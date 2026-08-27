@@ -278,7 +278,7 @@ fn the_up_ahead_source_setting_decides_whether_the_corridor_is_armed() {
     let mut quiet = open_timeline(UpAheadSource::WaypointsOnly);
     assert!(!quiet.corridor_snapshot_pending(), "Waypoints only never arms the query");
     assert!(!quiet.base_needs_reader(), "…so the reader-build seam stays quiet on the timeline");
-    // Not even the Hold picker turns it on: a category filter scopes rows, it doesn't add a source.
+    // Not even the sheet's Filter row turns it on: a category filter scopes rows, it doesn't add a source.
     quiet.apply_gesture(Gesture::Hold);
     quiet.apply_gesture(Gesture::Step(1));
     quiet.apply_gesture(Gesture::Press);
