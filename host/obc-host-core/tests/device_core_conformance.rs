@@ -22,12 +22,10 @@
 //! ## Two production defects came out of this gate
 //!
 //! **The rider's ride close was destroyed.** The pass took the finish one-shot at stage 4 and
-//! dropped it at stage 7, where Recorder has no machine to act on it — so the ride was never
-//! finalized and no executor was told. The fix was to delete the `UiRuntime` → `Recorder`
-//! connection rather than document the loss: it provisioned for a lifecycle nobody owns, and its
-//! only effect was destroying a rider request. The close is back on the legacy drain, where it is
-//! performed, and [`a_ride_finalize_failure_after_the_last_checkpoint_reaches_the_rider`] runs the
-//! mandated trace for real instead of pinning a gap.
+//! dropped it at stage 7, where Recorder had no machine to act on it — so the ride was never
+//! finalized and no executor was told. The connection was deleted rather than the loss documented:
+//! it provisioned for a lifecycle nobody owned. #1398 brought it back with the domain that needs
+//! it, and the rider now names the close to `Ctx::recorder`.
 //!
 //! **A decided sidecar stamp must be mirrored into the resident view.** Retention re-derives its
 //! candidates from that view — the eager ride stamp on every trusted tick — so an unmirrored stamp
@@ -36,16 +34,15 @@
 //!
 //! ## What DeviceCore owns here, and what it does not
 //!
-//! Seven domains have a state machine: the catalog, retention and weather from #1438, and the four
-//! #1397 S2 added — Navigator, `SettingsMachine`, `DfuState` and `StorageInfo`. Six of them can be
-//! reached from outside `obc-app` (weather's refresh intent has no public door until #1401 lands the
-//! request cutover), so this executor serves those six and asserts the rest stays empty.
+//! Eight domains have a state machine: the catalog, retention and weather from #1438, the four
+//! #1397 S2 added — Navigator, `SettingsMachine`, `DfuState` and `StorageInfo` — and Recorder from
+//! #1398. All eight can be reached from outside `obc-app`, so this executor serves all eight and
+//! asserts the rest stays empty.
 //!
-//! **Two** domains still speak the legacy protocol: Recorder and Bond. A ride close is answered by
-//! a catalog re-feed rather than by a ride identity, and a bond removal by a link-status fact rather
-//! than by a reply — and a domain that cannot validate a token cannot own an outcome (epic §4.3).
-//! The residual drain asks for exactly those classes by name (`device_core::residual`), which is
-//! what makes running it between two passes safe.
+//! **One** domain still speaks the legacy protocol: Bond. Its removal is confirmed by a link-status
+//! fact rather than by a reply, and a domain that cannot validate a token cannot own an outcome
+//! (epic §4.3). The residual drain asks for exactly that class by name (`device_core::residual`),
+//! which is what makes running it between two passes safe.
 
 mod device_core_corpus;
 
@@ -63,12 +60,12 @@ use obc_app::device_core::{
 };
 use obc_app::dfu::{DfuEffect, DfuOutcome};
 use obc_app::navigator::{NavigatorEffect, NavigatorError, NavigatorOutcome, PlannerWork};
-use obc_app::recorder::RecorderEffect;
+use obc_app::recorder::{RecorderEffect, RecorderError, RecorderOutcome};
 use obc_app::retention::{Retention, RetentionEffect, RetentionError, RetentionOutcome, RouteRetentionMeta};
 use obc_app::screen::Screen;
 use obc_app::settings::{SettingsEffect, SettingsOutcome};
 use obc_app::weather::{WeatherEffect, WeatherOutcome};
-use obc_app::{App, AppState, Gesture, HostCommand, HostMailbox, RideRetentionRecord, TrackAction, WarningFlags};
+use obc_app::{App, AppState, Gesture, HostCommand, HostMailbox, RecorderIntent, RideRetentionRecord, WarningFlags};
 use obc_host_core::trace::{
     run_scenario_seeded, FeederCall, FeederKind, RunnerMode, Trace, TraceHarness, TraceInput, TraceRecorder,
     ALL_FEEDER_KINDS,
@@ -78,7 +75,7 @@ use obc_route::NavError;
 
 use device_core_corpus::{
     clock_watermark, definition, normalization_seed, visible_state, Action, CorpusState, PendingSettingsResult,
-    Scenario, ScreenState, VisibleState, ALL_REQUIREMENTS, SCENARIOS, SETTINGS_FAILURE_RETRY_MS, TRIP,
+    Scenario, ScreenState, VisibleState, ALL_REQUIREMENTS, SAVED_RIDE, SCENARIOS, SETTINGS_FAILURE_RETRY_MS, TRIP,
 };
 
 // ==================== the runners ====================
@@ -220,12 +217,7 @@ enum Done {
     Dfu(DfuOutcome),
     Storage(StorageInfoOutcome),
     Weather(WeatherOutcome),
-    /// A warning raised by an executor that has no domain to answer to — the recorder-finalize
-    /// failure, which Recorder cannot report as an outcome until #1398.
-    Warning(WarningFlags),
-    /// The ride the recorder just finalized — answered by a catalog re-feed rather than by a
-    /// terminal ride identity, because Recorder has no machine to validate one (#1398).
-    RideSaved,
+    Recorder(RecorderOutcome),
     RideTrack(DerivedInput<RideTrackKey>),
     NavPreview(DerivedInput<NavPreviewKey>),
 }
@@ -244,6 +236,9 @@ struct CoreHarness {
     nav_preview: Vec<(i32, i32)>,
     /// Effects the executor served, by domain.
     served: BTreeSet<&'static str>,
+    /// How many times this executor has fed the ride catalog. One saved ride must cost exactly one,
+    /// whichever mechanism ordered it — see `a_saved_ride_orders_exactly_one_catalog_read`.
+    ride_feeds: usize,
     /// Every settings revision the executor was asked to write, in order.
     settings_writes: Vec<u16>,
 }
@@ -256,6 +251,7 @@ impl CoreHarness {
             ride_preview: Vec::new(),
             nav_preview: Vec::new(),
             served: BTreeSet::new(),
+            ride_feeds: 0,
             settings_writes: Vec::new(),
         }
     }
@@ -312,6 +308,10 @@ impl CoreHarness {
             self.served.insert("retention");
             done.push(Done::Retention(self.serve_retention(effect)));
         }
+        if let Some(effect) = effects.recorder.take() {
+            self.served.insert("recorder");
+            done.push(Done::Recorder(self.serve_recorder(effect)));
+        }
         if let Some(effect) = effects.navigator.take() {
             self.served.insert("navigator");
             if let Some(outcome) = self.serve_navigator(effect) {
@@ -355,7 +355,7 @@ impl CoreHarness {
             self.state.weather_refreshes += 1;
             done.push(Done::Weather(WeatherOutcome::Raised { token }));
         }
-        assert!(!effects.has_pending(), "recorder and bond are the domains a host cannot reach in Phase 1");
+        assert!(!effects.has_pending(), "bond is the one domain a host cannot reach in Phase 1");
         // The marks record shares the settings slot but has no script of its own, so it answers
         // here and `serve_scripted` — whose settings answer is the corpus's, keyed to the
         // preferences write — is skipped for that pass only.
@@ -401,6 +401,29 @@ impl CoreHarness {
                 Ok(()) => DfuOutcome::InstallBegan { token },
                 Err(error) => DfuOutcome::InstallFailed { token, error },
             }),
+        }
+    }
+
+    /// One recording operation, and **nothing beside it**.
+    ///
+    /// The finalize deliberately does not report a store commit here, even though a real one is:
+    /// production `serve_recorder` does not either, and a fixture that announced the commit itself
+    /// would let `a_saved_ride_orders_exactly_one_catalog_read` pass on the revision fact alone with
+    /// `RideFinalized` broken. The executor that *does* report the commit — the board — reports it
+    /// on the same pass as the outcome, and
+    /// [`a_commit_reported_with_its_own_finalize_still_orders_one_read`] runs that pairing.
+    fn serve_recorder(&mut self, effect: RecorderEffect) -> RecorderOutcome {
+        match effect {
+            RecorderEffect::Checkpoint { token } => RecorderOutcome::Checkpointed { token },
+            RecorderEffect::Finalize { token } => {
+                if std::mem::take(&mut self.state.fail_next_finalize) {
+                    // A typed reason, not a generic warning event: the ride is still on the store.
+                    return RecorderOutcome::Failed { token, error: RecorderError::Write };
+                }
+                RecorderOutcome::Finalized { token, ride: SAVED_RIDE }
+            }
+            RecorderEffect::Discard { token } => RecorderOutcome::Discarded { token },
+            RecorderEffect::Append { token, samples } => RecorderOutcome::Appended { token, samples },
         }
     }
 
@@ -477,7 +500,7 @@ impl CoreHarness {
     // than by a ride identity (#1398) and the bond removal by a link-status fact rather than by a
     // reply (#1400). A domain that cannot validate a token cannot own an outcome (epic §4.3).
 
-    /// Asked for **by name**: the two residual classes, and nothing else. A class DeviceCore owns
+    /// Asked for **by name**: the residual class, and nothing else. A class DeviceCore owns
     /// is not filtered out of a full walk here — it is never drained, because the full walk *pulls*
     /// from each domain as it passes and would mint the operation the pass's own effect already
     /// carries. The harness is therefore unable to reach past its classes rather than asserting
@@ -541,21 +564,8 @@ impl CoreHarness {
     }
 
     fn serve_legacy(&mut self, command: HostCommand, done: &mut Vec<Done>, trace: &mut TraceRecorder<VisibleState>) {
-        let _ = trace;
+        let (_, _) = (done, trace);
         match command {
-            // The ride close: still a legacy command, because Recorder has no machine — and the
-            // pass deliberately leaves the rider's one-shot here rather than taking it somewhere it
-            // cannot be acted on.
-            HostCommand::FinishTrack(TrackAction::Save) => {
-                if std::mem::take(&mut self.state.fail_next_finalize) {
-                    // Recorder has no outcome to validate, so the failure reaches the rider as the
-                    // generic warning a host raises — the limitation #1398 clears.
-                    done.push(Done::Warning(WarningFlags::REC_ERROR));
-                } else {
-                    done.push(Done::RideSaved);
-                }
-            }
-            HostCommand::FinishTrack(TrackAction::Discard) => {}
             // The bond removal is confirmed by a link fact rather than by a reply, so there is
             // nothing to answer here.
             HostCommand::ForgetBond => {}
@@ -597,6 +607,7 @@ impl CoreHarness {
         }
         self.state.feed_routes("core.routes", trace);
         self.state.feed_trips("core.trips", trace);
+        self.ride_feeds += 1;
         self.state.feed_rides("core.rides", trace);
     }
 }
@@ -657,8 +668,9 @@ impl TraceHarness<Action> for CoreHarness {
             Done::Weather(outcome) => {
                 let _ = self.state.outcomes.weather.try_put(outcome);
             }
-            Done::Warning(flags) => self.state.facts.raise_warnings(flags),
-            Done::RideSaved => self.state.feed_rides("core.recorder-saved", trace),
+            Done::Recorder(outcome) => {
+                let _ = self.state.outcomes.recorder.try_put(outcome);
+            }
             // A keyed ride-track answer fills two resident buffers — the elevation profile and the
             // preview polyline — and a nav-preview answer fills one. They are recorded as the bulk
             // feeder calls they are: the data still crosses the seam, it just carries a key now
@@ -839,7 +851,7 @@ const MANDATORY_TRACES: [MandatoryTrace; 16] = [
     },
     MandatoryTrace {
         row: "ride finalize failure after the last checkpoint",
-        test: "a_ride_finalize_failure_after_the_last_checkpoint_reaches_the_rider",
+        test: "a_failed_finalize_leaves_the_ride_open_and_warns_the_rider",
         substitution: None,
     },
     MandatoryTrace {
@@ -919,6 +931,23 @@ fn every_mandatory_trace_has_a_test_that_runs_it() {
 
 fn typed() -> CoreHarness {
     CoreHarness::new()
+}
+
+/// A harness over a **mounted card**, with the read that report owes already served.
+///
+/// `Capabilities::recorder` reads "a store has reported a revision", and it is the pass *before*'s
+/// level — so a suite that records has to report the card and let a pass see it before the rider
+/// asks. Every real host does this at boot; the corpus fixture reports nothing by default.
+fn recording_harness() -> CoreHarness {
+    let mut harness = typed();
+    harness.state.note_store_commit();
+    for _ in 0..SETTLE_PASSES {
+        let mut plan = harness.pass();
+        if let Some(effect) = plan.effects.catalog.take() {
+            harness.answer_catalog(effect);
+        }
+    }
+    harness
 }
 
 /// Three routes under a trusted clock, `expired` of them long past their deadline, so the retention
@@ -1226,45 +1255,173 @@ fn a_settings_result_with_an_old_revision_is_refused() {
     assert_eq!(rider_visible(delayed.settled.clone()), rider_visible(immediate.settled.clone()));
 }
 
-/// **A ride finalize failure after the last checkpoint.** The ride close survives the pass, the
-/// executor that performs it fails it, and the rider is told.
+/// **A saved ride orders exactly one catalog read.**
 ///
-/// This trace is why the `ui_recorder` → `ride_closed` wiring is gone. It used to take the rider's
-/// finish one-shot at stage 4 and drop it at stage 7, so the ride was never finalized and no
-/// executor was told — a rider request destroyed to serve a lifecycle Recorder does not own yet.
-/// The pass now leaves it alone, which is what "the close reaches the platform on the legacy path"
-/// has to mean to be true.
+/// Finalizing a ride commits an object into the store, so the rides list has to be re-read. It is
+/// one event, so it is one read — ordered by the catalog's own owed bit, whoever caused it (#1541).
+/// The executor answering the close must not re-feed the catalog beside that: a re-feed is a second
+/// copy of the same knowledge, living outside the domain that owns it.
+///
+/// The count is executor re-feeds **plus** ordered reads on purpose. Either mechanism alone is one
+/// read of the store; what this refuses is the two of them for one save. The `RideFinalized`
+/// connection and the store-revision fact the same commit raises arm the **same** owed bit, so the
+/// two producers coalesce into the one read rather than adding up.
 #[test]
-fn a_ride_finalize_failure_after_the_last_checkpoint_reaches_the_rider() {
-    let mut harness = expiring(0);
-    harness.app().activity.start_session();
+fn a_saved_ride_orders_exactly_one_catalog_read() {
+    let mut harness = recording_harness();
+    harness.app().recorder.request(RecorderIntent::Start);
     harness.pass();
+    assert!(harness.state.app.recording(), "the ride is open");
+    // The rider holds FINISH on the Paused page (`RideControl::end_ride`).
+    harness.app().recorder.request(RecorderIntent::Save);
 
-    // The last checkpoint is behind us; the finalize is the one that fails.
-    harness.state.fail_next_finalize = true;
-    harness.app().activity.request_track(TrackAction::Save);
+    let feeds_before = harness.ride_feeds;
+    let mut reads = 0usize;
+    for _ in 0..SETTLE_PASSES {
+        let mut plan = harness.pass();
+        let mut done = Vec::new();
+        let mut trace = recorder();
+        harness.serve_typed(&mut plan.effects, &mut done);
+        for item in done {
+            if let Done::Catalog { outcome: CatalogOutcome::CatalogRead { .. }, .. } = item {
+                reads += 1;
+            }
+            harness.deliver(item, &mut trace);
+        }
+    }
+    assert!(!harness.state.app.recording(), "the store's verdict closed the ride");
+    let feeds = harness.ride_feeds - feeds_before;
+    assert_eq!(feeds, 1, "one saved ride is one feed of the ride catalog, and this one cost {feeds}");
+    assert_eq!(reads, 1, "…ordered by the catalog's own read, not by anything the executor did");
+}
+
+/// **The checkpoint cadence is the domain's.** A ride that has been open past the deadline owes a
+/// journal checkpoint, and it is Recorder that decides so — not an executor timing itself.
+///
+/// The corpus scenario `recorder.start-save-discard` runs this for real (its `start-recorder` action
+/// carries a clock mark past the deadline); this is the same property asserted directly, so
+/// `Requirement::RecorderCheckpointCadence` names something a test can fail on.
+#[test]
+fn a_ride_open_past_the_deadline_owes_a_checkpoint() {
+    let mut harness = recording_harness();
+    harness.app().recorder.request(RecorderIntent::Start);
     let plan = harness.pass();
-    assert!(plan.effects.recorder.is_empty(), "Recorder has no machine, so the pass emits no effect");
-    assert!(harness.state.app.activity.has_track_action(), "and it leaves the rider's finish for the drain");
+    assert!(plan.effects.recorder.is_empty(), "a ride that just opened owes nothing yet");
 
+    // Ten seconds of riding.
+    harness.clock_ms = 10_001;
+    let mut plan = harness.pass();
+    let effect = plan.effects.recorder.take().expect("the deadline came due");
+    assert!(matches!(effect, RecorderEffect::Checkpoint { .. }), "{effect:?}");
+
+    // Answered, the deadline moves with it — the cadence is a deadline, not a per-pass write.
+    let outcome = harness.serve_recorder(effect);
+    harness.deliver(Done::Recorder(outcome), &mut recorder());
+    harness.clock_ms = 10_002;
+    assert!(harness.pass().effects.recorder.is_empty(), "and nothing is owed a millisecond later");
+}
+
+/// **A commit reported with its own finalize still orders one read** — the board's cadence.
+///
+/// The board reports its flat store's live sequence immediately before `run_pass`, *after* the
+/// store phase that committed the ride, so one pass carries both arms: the `StoreRevision` the
+/// commit moved and Recorder's `RideFinalized`. They arm the same `refresh_owed` bit, and
+/// `CatalogState::next_effect` spends it when it issues the read, so the pair costs one read.
+///
+/// Sampling the level *before* the store phase is what this refuses: the two arms then land in
+/// consecutive passes, the bit is armed, spent, and armed again, and one saved ride costs two reads
+/// on the board while the host — whose pass runs before its executor — shows one.
+#[test]
+fn a_commit_reported_with_its_own_finalize_still_orders_one_read() {
+    let mut harness = recording_harness();
+    harness.app().recorder.request(RecorderIntent::Start);
+    harness.pass();
+    assert!(harness.state.app.recording());
+
+    harness.app().recorder.request(RecorderIntent::Save);
+    let mut plan = harness.pass();
+    let effect = plan.effects.recorder.take().expect("the close left as one operation");
+    let outcome = harness.serve_recorder(effect);
+    assert!(matches!(outcome, RecorderOutcome::Finalized { .. }));
+    // The board's ordering: the commit's level and the operation's verdict reach the *same* pass.
+    harness.state.note_store_commit();
+    harness.deliver(Done::Recorder(outcome), &mut recorder());
+
+    let feeds_before = harness.ride_feeds;
+    let mut reads = 0usize;
+    for _ in 0..SETTLE_PASSES {
+        let mut plan = harness.pass();
+        let mut done = Vec::new();
+        let mut trace = recorder();
+        harness.serve_typed(&mut plan.effects, &mut done);
+        for item in done {
+            if let Done::Catalog { outcome: CatalogOutcome::CatalogRead { .. }, .. } = item {
+                reads += 1;
+            }
+            harness.deliver(item, &mut trace);
+        }
+    }
+    assert_eq!(reads, 1, "two producers, one owed bit, one read");
+    assert_eq!(harness.ride_feeds - feeds_before, 1, "and one feed of the ride catalog");
+}
+
+/// **A ride finalize failure after the last checkpoint.** The rider closes the ride, the executor
+/// that performs the close fails it — and the ride is still there afterwards, with the rider told.
+///
+/// The DC1 row this binds is "ride finalize failure after the last checkpoint". Both halves are the
+/// row: a failure the rider is not told about is the obvious defect, but a failure that leaves the
+/// app believing the ride is closed is the worse one — the object is still on the store and nothing
+/// on glass says so.
+#[test]
+fn a_failed_finalize_leaves_the_ride_open_and_warns_the_rider() {
+    let mut harness = recording_harness();
+    harness.app().recorder.request(RecorderIntent::Start);
+    harness.pass();
+    assert!(harness.state.app.recording());
+
+    // The rider holds FINISH on the Paused page (`RideControl::end_ride`). The last checkpoint is
+    // behind us; the finalize is the one that fails.
+    harness.state.fail_next_finalize = true;
+    harness.app().recorder.request(RecorderIntent::Save);
+    let mut plan = harness.pass();
     let mut done = Vec::new();
     let mut trace = recorder();
-    harness.serve_mailbox(&mut done, &mut trace);
-    // The legacy vocabulary has no recorder-finalize outcome, so a host reports the failure through
-    // the generic warning — DC1's own recorded compatibility limitation, unchanged here.
+    harness.serve_typed(&mut plan.effects, &mut done);
     assert!(
-        matches!(done.as_slice(), [Done::Warning(flags)] if flags.contains(WarningFlags::REC_ERROR)),
-        "the finalize failed and said so: {done:?}"
+        matches!(done.as_slice(), [Done::Recorder(RecorderOutcome::Failed { error: RecorderError::Write, .. })]),
+        "the finalize failed and said why: {done:?}"
+    );
+    for item in done {
+        harness.deliver(item, &mut trace);
+    }
+    // The warning reaches the rider, and the same pass re-offers the close: the rider's Save was
+    // kept, not destroyed by the failure.
+    let mut plan = harness.pass();
+    assert!(
+        matches!(harness.state.app.top_screen(), Screen::Warning(card)
+            if card.flags().contains(WarningFlags::REC_ERROR)),
+        "the rider is told rather than left believing the ride was saved"
+    );
+    // …and the ride the executor still holds is still the app's open ride. A finalize that failed
+    // closed nothing: the object is on the store, unfinished, and the only honest state is one the
+    // retry can still finish.
+    assert!(
+        harness.state.app.recording(),
+        "a failed finalize must not end the session — the ride is still open on the store"
+    );
+
+    // The retry is the same close, and it lands.
+    let mut done = Vec::new();
+    harness.serve_typed(&mut plan.effects, &mut done);
+    assert!(
+        matches!(done.as_slice(), [Done::Recorder(RecorderOutcome::Finalized { .. })]),
+        "the rider's Save was kept, not destroyed by the failure: {done:?}"
     );
     for item in done {
         harness.deliver(item, &mut trace);
     }
     harness.pass();
-    assert!(
-        matches!(harness.state.app.top_screen(), Screen::Warning(card)
-            if card.flags().contains(WarningFlags::REC_ERROR)),
-        "and the rider is told rather than left believing the ride was saved"
-    );
+    assert!(!harness.state.app.recording(), "and the ride closes once the store commits it");
 }
 
 /// **A trip member disappears before the delete commit.** The rider holds to delete a folder, and
@@ -1857,8 +2014,20 @@ fn the_conformance_replay_wake_profile_and_pass_cost() {
 /// `(passes, immediate, timed, sleep-until-event)` for the replay above. A ratchet, not a budget:
 /// the numbers move when the pass's wake decisions do.
 ///
-/// The two gating figures — 194 passes and 4 immediate wakes — are the claim that matters: nothing
+/// The two gating figures — 196 passes and 6 immediate wakes — are the claim that matters: nothing
 /// here polls.
+///
+/// #1552 moved `(194, 4, 130, 60)` to `(196, 6, 130, 60)`, and both moved cells are the same
+/// action. The two recorder scenarios each gained one `store-changed`, because a ride needs
+/// somewhere to put it and `Capabilities::recorder` is the pass *before*'s level: **+2 passes**.
+/// Each of those commits reports a store revision, and the catalog announces its identity to
+/// retention as a *deferred* connection — one immediate wake apiece: **+2 immediate**. Timed and
+/// sleep are unchanged, because the recorder scenarios open real rides again and the idle return is
+/// suppressed while one is open, exactly as before.
+///
+/// Measured by isolation rather than argued: the replay with those two actions removed reproduces
+/// `(194, 4, 119, 71)`. That `119/71` pair is what "no ride ever opens" costs, and the head's
+/// `130/60` is the step back to the figures the base already had.
 ///
 /// #1548 moved one pass and one timed wake, and nothing else: the replay runs
 /// `actions.len() + SETTLE_PASSES` per scenario, and `retention.expiry-retry-and-trusted-clock`
@@ -1869,29 +2038,12 @@ fn the_conformance_replay_wake_profile_and_pass_cost() {
 /// #1541 moved the whole of the last delta and **no existing cell with it**: the replay runs
 /// `actions.len() + SETTLE_PASSES` per scenario, and the one new scenario (`catalog.refresh-retry`,
 /// two actions) is exactly +8 passes — 1 immediate and 7 timed. Measured by running the replay with
-/// that row removed, which reproduces the previous `(185, 3, 122, 60)` byte for byte. The immediate
-/// one is the mechanism `catalog.refresh-upload-remap` already had: the action reports a store
-/// commit as a revision fact, and the identity announcement it raises is consumed the next pass. The
-/// re-read every delete now orders costs **no** pass of its own here — it lands inside the settle
-/// passes those scenarios already ran.
+/// that row removed, which reproduces the previous `(185, 3, 122, 60)` byte for byte.
 ///
 /// Before #1541 the figures were exactly the typed executor's own contribution to the pre-S6c ones;
 /// what halved then was the runner count, not the work per pass.
 ///
-/// The upload burst is three actions rather than one — the upload slot is single and
-/// most-recent-wins, so reporting two uploads before a pass consumes it left the first unobserved.
-/// The two extra passes are two extra upload-popup frames, each arming that popup's 30 s auto-close:
-/// +2 passes, +2 timed, immediate and sleep unchanged.
-///
-/// Three further cells moved with S6c's corpus port, and none of them is a pass decision:
-/// `catalog.refresh-upload-remap` gained an immediate wake because a store commit is now reported as
-/// a *revision fact*, which raises a refresh intent the next pass consumes;
-/// `navigation.plan-cancel-late-replacement` lost one because a late answer now carries the
-/// abandoned operation's token and Navigator simply refuses it, leaving nothing deferred; and
-/// `recorder.failure-and-session-replacement` turned one sleep into a timed wake because the
-/// finalize failure arrives as a warning fact the next pass consumes, so the card's 30 s timeout
-/// arms one pass later.
-const WAKE_PROFILE: (u32, u32, u32, u32) = (194, 4, 130, 60);
+const WAKE_PROFILE: (u32, u32, u32, u32) = (196, 6, 130, 60);
 
 // ==================== the resource gate ====================
 

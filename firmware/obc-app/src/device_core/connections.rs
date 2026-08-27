@@ -11,22 +11,17 @@
 //! | `RetentionMachine` | `CatalogMachine` | [`CatalogIntent`] (an expiry) | same pass |
 //! | `CatalogMachine` | `Navigator` | [`ActiveRouteRemoved`] | same pass |
 //! | `CatalogMachine` | `RetentionMachine` | [`CatalogRemoval`] | same pass |
+//! | `Recorder` | `CatalogMachine` | [`RideFinalized`] | same pass |
 //! | `CatalogMachine` | `RetentionMachine` | [`CatalogIdentityChanged`] | next pass |
 //! | `Navigator` | `RetentionMachine` | [`RouteActivated`] | next pass |
 //! | any domain | `FaultState` | [`FaultNotices`] | same pass, producer is earlier |
 //!
-//! There is deliberately **no** `UiRuntime` → `Recorder` row and no ride-closed row. Recorder has no
-//! machine in Phase 1, so a connection into it could only take the rider's finish one-shot away from
-//! the legacy drain that still performs it — provisioning for a lifecycle nobody owns, at the cost of
-//! destroying a rider request. #1397 S6 brings the connection back with the domain that needs it.
-//!
-//! There is deliberately **no** `UiRuntime` → `Navigator`, `DfuState` or `StorageInfo` row either,
-//! and for the opposite reason: those domains exist, so a screen names its request straight to the
-//! owner as the gesture happens (`Ctx::navigator`, `Ctx::dfu`, `Ctx::storage`). That is stronger
-//! than a same-pass slot — the request is with its owner before stage 1 rather than at stage 4 —
-//! and it is the only shape that also works for a seam running between two passes,
-//! which run no pass at all until #1397 S6. A slot beside it would be a second place a rider's plan
-//! lives, which is the defect #1397 S2 exists to remove.
+//! There is deliberately **no** `UiRuntime` → `Recorder`, `Navigator`, `DfuState` or `StorageInfo`
+//! row: those domains exist, so a screen names its request straight to the owner as the gesture
+//! happens (`Ctx::recorder`, `Ctx::navigator`, `Ctx::dfu`, `Ctx::storage`). That is stronger than a
+//! same-pass slot — the request is with its owner before stage 1 rather than at stage 4 — and it is
+//! the only shape that also works for a seam running between two passes. A slot beside it would be
+//! a second place a rider's request lives, which is the defect #1397 S2 exists to remove.
 //!
 //! ## Which direction decides the timing
 //!
@@ -93,6 +88,21 @@ pub struct ActiveRouteRemoved {
 pub struct CatalogRemoval {
     /// The durable identity the store no longer holds.
     pub object: CatalogObjectId,
+}
+
+/// `Recorder` → `CatalogMachine`, **same pass**: a ride was committed into the store.
+///
+/// Produced at stage 1 and consumed at stage 6, the same shape [`CatalogRemoval`] uses. It exists
+/// because a saved ride is not otherwise visible to the catalog on every platform: the board reports
+/// its flat store's live sequence and so raises a `StoreRevision` fact for the commit, but a host
+/// executor's store-revision door is for changes made *behind* it and is never called for work it
+/// performed itself. One of the two producers is silent, so the domain would owe no read at all — and
+/// the alternative, an executor re-feed, is the second copy of the catalog's own knowledge that
+/// #1541 removed everywhere else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RideFinalized {
+    /// The durable identity the store now holds the ride under.
+    pub ride: CatalogObjectId,
 }
 
 /// `CatalogMachine` → `RetentionMachine`, **next pass**: the catalog's identity set moved.
@@ -217,6 +227,9 @@ pub struct Connections {
     /// `CatalogMachine` → `RetentionMachine`: the store no longer holds this object. One removal is
     /// answered per pass, because one catalog operation is ever in flight.
     pub catalog_removal: Slot<CatalogRemoval>,
+    /// `Recorder` → `CatalogMachine`: a ride was committed. One close is answered per pass, because
+    /// one recording operation is ever in flight.
+    pub ride_finalized: Slot<RideFinalized>,
     /// Any domain → `FaultState`.
     pub faults: FaultNotices,
     /// `CatalogMachine` → `RetentionMachine`, next pass.
@@ -233,6 +246,7 @@ impl Connections {
             expiry: Slot::new(),
             active_route_removed: Slot::new(),
             catalog_removal: Slot::new(),
+            ride_finalized: Slot::new(),
             faults: FaultNotices::NONE,
             catalog_identity: Deferred::new(),
             route_activated: Deferred::new(),
@@ -263,10 +277,11 @@ impl Default for Connections {
 // identity, a revision or a flag — a growth means bulk crept into a message.
 const _: () = assert!(core::mem::size_of::<ActiveRouteRemoved>() <= 8, "one durable identity");
 const _: () = assert!(core::mem::size_of::<CatalogRemoval>() <= 8, "one durable identity");
+const _: () = assert!(core::mem::size_of::<RideFinalized>() <= 8, "one durable identity");
 const _: () = assert!(core::mem::size_of::<CatalogIdentityChanged>() <= 8, "one revision");
 const _: () = assert!(core::mem::size_of::<RouteActivated>() <= 8, "one durable identity");
 const _: () = assert!(core::mem::size_of::<FaultNotices>() <= 4, "a bit set");
-const _: () = assert!(core::mem::size_of::<Connections>() <= 176, "seven bounded slots");
+const _: () = assert!(core::mem::size_of::<Connections>() <= 192, "eight bounded slots");
 
 #[cfg(test)]
 mod tests {

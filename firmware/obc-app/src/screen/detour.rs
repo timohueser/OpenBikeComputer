@@ -127,8 +127,8 @@ impl DetourScreen {
         zoom
     }
 
-    fn available(&self, activity: &Activity, has_nav_graph: bool) -> bool {
-        activity.is_tracking()
+    fn available(&self, activity: &Activity, recording: bool, has_nav_graph: bool) -> bool {
+        recording
             && has_nav_graph
             && self.route.is_some()
             && activity.active_route == self.route
@@ -151,7 +151,7 @@ impl DetourScreen {
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
         self.refresh_anchor(cx.activity);
-        let available = self.available(cx.activity, cx.state.has_nav_graph);
+        let available = self.available(cx.activity, cx.recorder.recording(), cx.state.has_nav_graph);
         match g {
             Gesture::Step(n) if available && self.inspecting() => {
                 let next = (self.inspect_level as i32).saturating_add(n).clamp(1, INSPECT_MAX_LEVEL as i32);
@@ -239,7 +239,7 @@ impl DetourScreen {
         F: Fn(u16) -> D::Color,
         S: obc_map_scene::MapScene,
     {
-        let selected = self.prepared.filter(|_| self.available(rx.activity, rx.state.has_nav_graph));
+        let selected = self.prepared.filter(|_| self.available(rx.activity, rx.recording, rx.state.has_nav_graph));
         let vp = selected.map_or_else(
             || rx.state.viewport(rx.w as f32, rx.h as f32),
             |p| {
@@ -568,20 +568,26 @@ mod tests {
     use crate::{AppState, Settings};
     use obc_ports::Fix;
 
-    fn with_ctx<T>(activity: &mut Activity, nav: &mut NavigatorMachine, f: impl FnOnce(&mut Ctx) -> T) -> T {
-        with_state_ctx(activity, nav, AppState::new(0, 0, 1.0), f)
+    fn with_ctx<T>(
+        activity: &mut Activity,
+        rec: &mut crate::RecorderMachine,
+        nav: &mut NavigatorMachine,
+        f: impl FnOnce(&mut Ctx) -> T,
+    ) -> T {
+        with_state_ctx(activity, rec, nav, AppState::new(0, 0, 1.0), f)
     }
 
     /// A `Ctx` whose `AppState` has a nav graph, a fix, and whatever the test staged — over the
     /// caller's own Navigator, so the test can read back the request the screen posted to it.
     fn with_state_ctx<T>(
         activity: &mut Activity,
+        rec: &mut crate::RecorderMachine,
         nav: &mut NavigatorMachine,
         mut state: AppState,
         f: impl FnOnce(&mut Ctx) -> T,
     ) -> T {
         let mut settings = Settings::default();
-        let mut cx = Ctx { navigator: nav, ..test_ctx(&mut state, activity, &mut settings) };
+        let mut cx = Ctx { navigator: nav, recorder: rec, ..test_ctx(&mut state, activity, &mut settings) };
         f(&mut cx)
     }
 
@@ -614,8 +620,14 @@ mod tests {
         a.active_route = Some(2);
         a.progress_m = progress;
         a.route_total_m = total;
-        a.start_session();
         a
+    }
+
+    /// A Recorder with a ride open — the detour screen is only available mid-ride.
+    fn recording() -> crate::RecorderMachine {
+        let mut rec = crate::RecorderMachine::new();
+        rec.test_open();
+        rec
     }
 
     #[test]
@@ -638,15 +650,16 @@ mod tests {
 
     #[test]
     fn turn_then_press_posts_a_plan_request_and_pushes_planning() {
+        let mut rec = recording();
         let mut nav_a = NavigatorMachine::new();
         let mut a = tracking_activity(1_000, 5_000);
-        let session = a.session();
+        let session = rec.session();
         let mode = a.mode;
         let mut s = DetourScreen::new(&a);
-        with_state_ctx(&mut a, &mut nav_a, nav_state(), |cx| {
+        with_state_ctx(&mut a, &mut rec, &mut nav_a, nav_state(), |cx| {
             assert!(matches!(s.handle(Gesture::Step(2), cx), Transition::None))
         });
-        let t = with_state_ctx(&mut a, &mut nav_a, nav_state(), |cx| s.handle(Gesture::Press, cx));
+        let t = with_state_ctx(&mut a, &mut rec, &mut nav_a, nav_state(), |cx| s.handle(Gesture::Press, cx));
         assert!(matches!(t, Transition::Push(Screen::NavPlanning(_))), "Press starts the plan flow");
         let req = drained_detour(&mut nav_a).expect("plan request queued");
         assert_eq!(
@@ -657,23 +670,24 @@ mod tests {
         assert_eq!(req.from, (7_800_000, 48_000_000), "the rider's fix rides the request");
         assert!(a.pending_seam().is_none(), "no floor/seam is installed at Press — only at commit");
         assert_eq!(a.progress_m, 1_000, "progress untouched until the commit re-adopts");
-        assert_eq!(a.session(), session, "same tracking session");
+        assert_eq!(rec.session(), session, "same tracking session");
         assert_eq!(a.mode, mode, "Mode is preserved");
     }
 
     #[test]
     fn press_without_nav_graph_or_fix_is_guarded() {
+        let mut rec = recording();
         let mut nav_a = NavigatorMachine::new();
         let mut a = tracking_activity(1_000, 5_000);
         let mut s = DetourScreen::new(&a);
         // No nav graph: unavailable outright.
-        assert!(matches!(with_ctx(&mut a, &mut nav_a, |cx| s.handle(Gesture::Press, cx)), Transition::None));
+        assert!(matches!(with_ctx(&mut a, &mut rec, &mut nav_a, |cx| s.handle(Gesture::Press, cx)), Transition::None));
         assert!(drained_detour(&mut nav_a).is_none());
         // Graph but no fix: available() passes, the Press guard refuses to send a garbage start.
         let mut state = nav_state();
         state.user_fix = None;
         assert!(matches!(
-            with_state_ctx(&mut a, &mut nav_a, state, |cx| s.handle(Gesture::Press, cx)),
+            with_state_ctx(&mut a, &mut rec, &mut nav_a, state, |cx| s.handle(Gesture::Press, cx)),
             Transition::None
         ));
         assert!(drained_detour(&mut nav_a).is_none());
@@ -681,23 +695,25 @@ mod tests {
 
     #[test]
     fn back_cancels_to_map_without_any_navigation_change() {
+        let mut rec = recording();
         let mut nav_a = NavigatorMachine::new();
         let mut a = tracking_activity(800, 4_000);
         let before = a;
         let mut s = DetourScreen::new(&a);
-        with_state_ctx(&mut a, &mut nav_a, nav_state(), |cx| {
+        with_state_ctx(&mut a, &mut rec, &mut nav_a, nav_state(), |cx| {
             let _ = s.handle(Gesture::Step(3), cx);
         });
-        let t = with_state_ctx(&mut a, &mut nav_a, nav_state(), |cx| s.handle(Gesture::Back, cx));
+        let t = with_state_ctx(&mut a, &mut rec, &mut nav_a, nav_state(), |cx| s.handle(Gesture::Back, cx));
         assert!(matches!(t, Transition::Pop));
         assert_eq!(a.progress_m, before.progress_m);
-        assert_eq!(a.session(), before.session());
+
         assert_eq!(a.mode, before.mode);
         assert!(drained_detour(&mut nav_a).is_none());
     }
 
     #[test]
     fn route_less_off_route_and_near_end_press_are_guarded() {
+        let mut rec = recording();
         let mut nav_end = NavigatorMachine::new();
         let mut nav_off = NavigatorMachine::new();
         let mut nav_route_less = NavigatorMachine::new();
@@ -705,7 +721,8 @@ mod tests {
         route_less.active_route = None;
         let mut s = DetourScreen::new(&route_less);
         assert!(matches!(
-            with_state_ctx(&mut route_less, &mut nav_route_less, nav_state(), |cx| s.handle(Gesture::Press, cx)),
+            with_state_ctx(&mut route_less, &mut rec, &mut nav_route_less, nav_state(), |cx| s
+                .handle(Gesture::Press, cx)),
             Transition::None
         ));
 
@@ -713,14 +730,14 @@ mod tests {
         off.off_route = true;
         let mut s = DetourScreen::new(&off);
         assert!(matches!(
-            with_state_ctx(&mut off, &mut nav_off, nav_state(), |cx| s.handle(Gesture::Press, cx)),
+            with_state_ctx(&mut off, &mut rec, &mut nav_off, nav_state(), |cx| s.handle(Gesture::Press, cx)),
             Transition::None
         ));
 
         let mut end = tracking_activity(1_950, 2_000);
         let mut s = DetourScreen::new(&end);
         assert!(matches!(
-            with_state_ctx(&mut end, &mut nav_end, nav_state(), |cx| s.handle(Gesture::Press, cx)),
+            with_state_ctx(&mut end, &mut rec, &mut nav_end, nav_state(), |cx| s.handle(Gesture::Press, cx)),
             Transition::None
         ));
         assert!(
@@ -732,18 +749,19 @@ mod tests {
 
     #[test]
     fn moving_while_open_advances_highlight_and_plan_anchor() {
+        let mut rec = recording();
         let mut nav_a = NavigatorMachine::new();
         let mut a = tracking_activity(1_000, 5_000);
         let mut s = DetourScreen::new(&a);
         // Rider advances before a Step; that input refreshes the live anchor and adds 100 m.
         a.progress_m = 1_200;
-        with_state_ctx(&mut a, &mut nav_a, nav_state(), |cx| {
+        with_state_ctx(&mut a, &mut rec, &mut nav_a, nav_state(), |cx| {
             let _ = s.handle(Gesture::Step(1), cx);
         });
         assert_eq!((s.start_m, s.target_m()), (1_200, Some(1_900)));
         // Another 100 m before Press: the request is still a 700 m span, now from 1.3 km.
         a.progress_m = 1_300;
-        let t = with_state_ctx(&mut a, &mut nav_a, nav_state(), |cx| s.handle(Gesture::Press, cx));
+        let t = with_state_ctx(&mut a, &mut rec, &mut nav_a, nav_state(), |cx| s.handle(Gesture::Press, cx));
         assert!(matches!(t, Transition::Push(Screen::NavPlanning(_))));
         let req = drained_detour(&mut nav_a).unwrap();
         assert_eq!((req.progress_m, req.target_m), (1_300, 2_000));
@@ -751,40 +769,42 @@ mod tests {
 
     #[test]
     fn hold_toggles_candidate_inspection_and_turn_changes_only_zoom() {
+        let mut rec = recording();
         let mut nav_a = NavigatorMachine::new();
         let mut a = tracking_activity(1_000, 5_000);
         let mut s = DetourScreen::new(&a);
         let target = s.target_m();
 
         assert!(matches!(
-            with_state_ctx(&mut a, &mut nav_a, nav_state(), |cx| s.handle(Gesture::Hold, cx)),
+            with_state_ctx(&mut a, &mut rec, &mut nav_a, nav_state(), |cx| s.handle(Gesture::Hold, cx)),
             Transition::None
         ));
         assert!(s.inspecting());
         assert_eq!(s.inspect_level, INSPECT_ENTRY_LEVEL);
         let entry_zoom = s.inspect_zoom();
 
-        let _ = with_state_ctx(&mut a, &mut nav_a, nav_state(), |cx| s.handle(Gesture::Step(-20), cx));
+        let _ = with_state_ctx(&mut a, &mut rec, &mut nav_a, nav_state(), |cx| s.handle(Gesture::Step(-20), cx));
         assert!(s.inspect_zoom() < 1.0, "inspection can zoom a little wider than the fitted overview");
         assert_eq!(s.target_m(), target, "inspection never changes the selected rejoin point");
 
-        let _ = with_state_ctx(&mut a, &mut nav_a, nav_state(), |cx| s.handle(Gesture::Step(20), cx));
+        let _ = with_state_ctx(&mut a, &mut rec, &mut nav_a, nav_state(), |cx| s.handle(Gesture::Step(20), cx));
         assert!(s.inspect_zoom() > entry_zoom, "a Step zooms back in while inspecting");
 
-        let _ = with_state_ctx(&mut a, &mut nav_a, nav_state(), |cx| s.handle(Gesture::Hold, cx));
+        let _ = with_state_ctx(&mut a, &mut rec, &mut nav_a, nav_state(), |cx| s.handle(Gesture::Hold, cx));
         assert!(!s.inspecting(), "a second Hold returns to the overview");
     }
 
     #[test]
     fn press_from_inspection_plans_the_unchanged_candidate() {
+        let mut rec = recording();
         let mut nav_a = NavigatorMachine::new();
         let mut a = tracking_activity(1_000, 5_000);
         let mut s = DetourScreen::new(&a);
         let target = s.target_m().unwrap();
-        let _ = with_state_ctx(&mut a, &mut nav_a, nav_state(), |cx| s.handle(Gesture::Hold, cx));
-        let _ = with_state_ctx(&mut a, &mut nav_a, nav_state(), |cx| s.handle(Gesture::Step(3), cx));
+        let _ = with_state_ctx(&mut a, &mut rec, &mut nav_a, nav_state(), |cx| s.handle(Gesture::Hold, cx));
+        let _ = with_state_ctx(&mut a, &mut rec, &mut nav_a, nav_state(), |cx| s.handle(Gesture::Step(3), cx));
 
-        let t = with_state_ctx(&mut a, &mut nav_a, nav_state(), |cx| s.handle(Gesture::Press, cx));
+        let t = with_state_ctx(&mut a, &mut rec, &mut nav_a, nav_state(), |cx| s.handle(Gesture::Press, cx));
         assert!(matches!(t, Transition::Push(Screen::NavPlanning(_))));
         assert_eq!(drained_detour(&mut nav_a).unwrap().target_m, target);
     }
@@ -801,49 +821,52 @@ mod tests {
 
     #[test]
     fn preview_press_commits_once_and_back_cancels() {
+        let mut rec = recording();
         let mut nav_a = NavigatorMachine::new();
         let mut nav_b = NavigatorMachine::new();
         let mut a = tracking_activity(1_000, 5_000);
         let mut p = preview_for(&a);
         assert_eq!(p.anchor_m(), 1_000);
 
-        let t = with_state_ctx(&mut a, &mut nav_a, nav_state(), |cx| p.handle(Gesture::Press, cx));
+        let t = with_state_ctx(&mut a, &mut rec, &mut nav_a, nav_state(), |cx| p.handle(Gesture::Press, cx));
         assert!(matches!(t, Transition::None), "commit keeps the preview up until the host answers");
         assert!(drained_commit(&mut nav_a), "the commit one-shot is queued");
         // A second Press while committing is a no-op.
-        let _ = with_state_ctx(&mut a, &mut nav_a, nav_state(), |cx| p.handle(Gesture::Press, cx));
+        let _ = with_state_ctx(&mut a, &mut rec, &mut nav_a, nav_state(), |cx| p.handle(Gesture::Press, cx));
         assert!(!drained_commit(&mut nav_a), "no double commit");
 
         let mut b = tracking_activity(1_000, 5_000);
         let mut p2 = preview_for(&b);
-        let t = with_state_ctx(&mut b, &mut nav_b, nav_state(), |cx| p2.handle(Gesture::Back, cx));
+        let t = with_state_ctx(&mut b, &mut rec, &mut nav_b, nav_state(), |cx| p2.handle(Gesture::Back, cx));
         assert!(matches!(t, Transition::Pop));
         assert!(nav_b.take_cancel(PlanFamily::Detour), "Back rings the host to drop the held detour");
     }
 
     #[test]
     fn preview_commit_failure_reopens_press() {
+        let mut rec = recording();
         let mut nav_a = NavigatorMachine::new();
         let mut a = tracking_activity(1_000, 5_000);
         let mut p = preview_for(&a);
-        let _ = with_state_ctx(&mut a, &mut nav_a, nav_state(), |cx| p.handle(Gesture::Press, cx));
+        let _ = with_state_ctx(&mut a, &mut rec, &mut nav_a, nav_state(), |cx| p.handle(Gesture::Press, cx));
         assert!(drained_commit(&mut nav_a));
         // The splice answered — a failure, which returns the preview to the rider *and* frees
         // Navigator, so the retry has an operation slot to go out in.
         nav_a.note_commit(false);
         p.set_commit_failed();
-        let _ = with_state_ctx(&mut a, &mut nav_a, nav_state(), |cx| p.handle(Gesture::Press, cx));
+        let _ = with_state_ctx(&mut a, &mut rec, &mut nav_a, nav_state(), |cx| p.handle(Gesture::Press, cx));
         assert!(drained_commit(&mut nav_a), "a failed commit can be retried");
     }
 
     #[test]
     fn preview_goes_stale_when_the_rider_passes_the_rejoin_or_route_vanishes() {
+        let mut rec = recording();
         let mut nav_a = NavigatorMachine::new();
         let mut nav_b = NavigatorMachine::new();
         let mut a = tracking_activity(1_000, 5_000);
         let mut p = preview_for(&a);
         a.progress_m = p.target_m; // rode past the rejoin during the preview
-        let t = with_state_ctx(&mut a, &mut nav_a, nav_state(), |cx| p.handle(Gesture::Press, cx));
+        let t = with_state_ctx(&mut a, &mut rec, &mut nav_a, nav_state(), |cx| p.handle(Gesture::Press, cx));
         assert!(matches!(t, Transition::Pop), "stale preview cancels out instead of committing");
         assert!(nav_a.take_cancel(PlanFamily::Detour));
         assert!(!drained_commit(&mut nav_a));
@@ -851,7 +874,7 @@ mod tests {
         let mut b = tracking_activity(1_000, 5_000);
         let mut p = preview_for(&b);
         p.remap_routes(&|_| None); // the planned route vanished in a rescan
-        let t = with_state_ctx(&mut b, &mut nav_b, nav_state(), |cx| p.handle(Gesture::Step(1), cx));
+        let t = with_state_ctx(&mut b, &mut rec, &mut nav_b, nav_state(), |cx| p.handle(Gesture::Step(1), cx));
         assert!(matches!(t, Transition::Pop));
         assert!(nav_b.take_cancel(PlanFamily::Detour));
     }

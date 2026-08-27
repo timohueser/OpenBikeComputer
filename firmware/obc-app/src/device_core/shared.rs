@@ -205,6 +205,18 @@ pub struct PlatformSupport {
 pub struct DeviceFacts {
     /// A writable object store is mounted — the precondition for every catalog mutation, ride
     /// recording and route commit.
+    ///
+    /// **What it actually reads is "a store has reported a revision", and the two are not the same
+    /// thing.** [`ExternalFacts`] has one store fact, [`StoreRevision`], and a revision says a store
+    /// is *there*, not that it will accept a write: a flat card that is read-only because its
+    /// revision or sequence space is exhausted still reports one, so a ride opens on it and the
+    /// first write fails. Nor can the level fall — there is no unmount fact to retract it with, so a
+    /// pulled card still admits a new ride.
+    ///
+    /// Both gaps are in the **fact vocabulary**, not in the calculation, and both are honest the
+    /// moment a store can report writability and an unmount. Until then the failure lands where it
+    /// always did: as a refused write the executor answers with a typed error, and the rider sees
+    /// the recording warning rather than a silently lost ride.
     pub store_writable: bool,
     /// The mounted map carries a routing graph.
     pub nav_graph: bool,
@@ -331,7 +343,8 @@ impl Capabilities {
     ///
     /// The rules, and why each precondition is real:
     ///
-    /// - Catalog mutation and ride recording need a writable store.
+    /// - Catalog mutation and ride recording need a writable store — see
+    ///   [`DeviceFacts::store_writable`] for the limit of what that fact can currently prove.
     /// - Route planning needs a routing graph, a store to commit into, and admission.
     /// - Detour planning needs the detour planner, a graph and admission; committing one needs the
     ///   planner and a writable store (the commit itself is not heavy).

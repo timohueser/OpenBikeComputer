@@ -138,6 +138,7 @@ fn answer_commit(app: &mut App, host: &mut Planner<'_>, result: Result<obc_app::
 /// Returns `(app, obcr_bytes)`; [`riding!`] wraps it with the reader and the executor.
 fn riding_app_on(obcr: Vec<u8>) -> (App, Vec<u8>) {
     let mut app = App::new_idle(AppState::new((LON0 * 1e6) as i32, (LAT * 1e6) as i32, 0.05));
+    common::mount_store(&mut app); // a device with a card — a ride cannot start without one
     app.set_map_nav_graph(true);
     app.set_routes_with_ids(&[summary("Road")], &[7]);
     app.state.user_fix = Some(road_at(0.0));
@@ -146,7 +147,7 @@ fn riding_app_on(obcr: Vec<u8>) -> (App, Vec<u8>) {
     app.apply_gesture(Gesture::Press);
     app.apply_gesture(Gesture::Press);
     app.apply_gesture(Gesture::Press);
-    assert!(app.activity.is_tracking(), "the ride started");
+    assert!(app.recording(), "the ride started");
     assert!(matches!(app.top_screen(), Screen::Map(_)));
 
     // Lock the matcher ~1 km along with a real route-aware tick.
@@ -188,7 +189,7 @@ fn open_chooser(app: &mut App) {
 #[test]
 fn full_flow_plans_previews_commits_and_reanchors_at_the_seam() {
     riding!(app, route, host);
-    let session = app.activity.session();
+    let session = app.ride_session();
     let progress = app.activity.progress_m();
     open_chooser(&mut app);
 
@@ -218,7 +219,7 @@ fn full_flow_plans_previews_commits_and_reanchors_at_the_seam() {
     answer_commit(&mut app, &mut host, Ok(9));
 
     assert_eq!(app.active_route_index(), Some(1), "the spliced route re-adopts by durable id");
-    assert_eq!(app.activity.session(), session, "the recording session is untouched");
+    assert_eq!(app.ride_session(), session, "the recording session is untouched");
     assert!(matches!(app.top_screen(), Screen::Map(_)), "the detour flow truncates back to the riding view");
 
     // The next route-aware tick installs the seam re-anchor: progress lands exactly at the
@@ -256,7 +257,7 @@ fn planning_back_cancels_and_failures_show_the_detour_tiers() {
 #[test]
 fn commit_failure_keeps_the_old_route_and_the_preview_retries() {
     riding!(app, _route, host);
-    let session = app.activity.session();
+    let session = app.ride_session();
     open_chooser(&mut app);
     app.apply_gesture(Gesture::Press);
     answer_plan(
@@ -269,7 +270,7 @@ fn commit_failure_keeps_the_old_route_and_the_preview_retries() {
 
     assert!(matches!(app.top_screen(), Screen::DetourPreview(_)), "a failed commit stays on the preview");
     assert_eq!(app.active_route_index(), Some(0), "the old route is untouched");
-    assert_eq!(app.activity.session(), session);
+    assert_eq!(app.ride_session(), session);
     // The commit is retryable.
     app.apply_gesture(Gesture::Press);
     assert!(host.took_commit(&mut app));

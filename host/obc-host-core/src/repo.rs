@@ -9,7 +9,8 @@
 //! board-specific — #801 non-goal, #809 owns the board loop); the *command/event semantics* it
 //! shares are pinned by protocol tests instead.
 
-use obc_app::{App, CatalogObjectId, RideSummary, RouteRetentionMeta, TrackAction};
+use obc_app::recorder::RideClose;
+use obc_app::{App, CatalogObjectId, RideSummary, RouteRetentionMeta};
 use obc_formats::io::SliceSource;
 use obc_ports::TrackSink;
 use obc_route::{Profile, RideStats, RouteSummary};
@@ -79,19 +80,36 @@ pub trait RideRepository {
     }
 }
 
-/// The open ride object the app records into while riding — reconciled to the app's tracking intent
-/// each pass, exposing its [`TrackSink`] when recording.
+/// The open ride object the app records into while riding — one method per
+/// [`RecorderEffect`](obc_app::recorder::RecorderEffect), plus the session edge that opens the
+/// object, and the [`TrackSink`] the ride appends through.
+///
+/// There is no `reconcile`: the recorder lifecycle is Recorder's (#1398), and a store that
+/// reconstructed it from an action plus a session id would be deciding it a second time.
 pub trait TrackRepository {
-    /// Reconcile the open ride to the app's tracking intent: finalise/abandon the current object for the
-    /// drained `action`, then (re)open a log to match `session`. `name`/`stats` are the save
-    /// filename + ride totals for a `Save` (a memory store ignores both).
-    fn reconcile(
-        &mut self,
-        action: Option<TrackAction>,
-        session: Option<u32>,
-        name: Option<&str>,
-        stats: Option<RideStats>,
-    );
+    /// Open a ride object for `session`, to be saved under `name`. Called on the session edge —
+    /// Recorder opens exactly one ride at a time, so any previous object is already closed.
+    fn open(&mut self, session: u32, name: Option<&str>);
+
+    /// Close the open ride into a durable ride object.
+    ///
+    /// [`RideClose::Failed`] means the ride is **still there** and Recorder re-offers the same
+    /// close, so a store must not throw the bytes away on the way out; [`RideClose::Nothing`] is
+    /// how a store says there was no object to close, which is over rather than owed.
+    fn finalize(&mut self, stats: RideStats) -> RideClose;
+
+    /// Delete the open ride and its journal. `false` is a **failure** and Recorder re-offers the
+    /// same discard — the same rule [`finalize`](Self::finalize) follows, because a close that did
+    /// not happen must not read as one that did.
+    fn discard(&mut self) -> bool;
+
+    /// Make the ride recoverable across a power loss up to this point. `false` is a failed write —
+    /// Recorder owes the same checkpoint again. A store with no journal has nothing to do and says
+    /// so by succeeding.
+    fn checkpoint(&mut self) -> bool {
+        true
+    }
+
     /// The [`TrackSink`] for the open ride, or `None` when nothing is recording.
     fn sink(&mut self) -> Option<&mut dyn TrackSink>;
 }

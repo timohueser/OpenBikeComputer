@@ -247,7 +247,7 @@ impl RouteMenuScreen {
     /// asks whether to swap or re-ride; from Idle it opens the Route overview with the route
     /// streaming open behind it.
     fn press_route(&self, i: usize, cx: &mut Ctx) -> Transition {
-        if cx.activity.is_tracking() {
+        if cx.recorder.recording() {
             if cx.activity.active_route == Some(i) {
                 return Transition::Root(Screen::Map(MapScreen::new()));
             }
@@ -435,13 +435,14 @@ mod tests {
     fn run(
         scr: &mut RouteMenuScreen,
         act: &mut Activity,
+        rec: &mut crate::RecorderMachine,
         routes: &[RouteSummary],
         trips: &[TripSummary],
         g: Gesture,
     ) -> Transition {
         let mut st = AppState::new(0, 0, 1.0);
         let mut settings = Settings::default();
-        let mut cx = Ctx { routes, trips, ..test_ctx(&mut st, act, &mut settings) };
+        let mut cx = Ctx { routes, trips, recorder: rec, ..test_ctx(&mut st, act, &mut settings) };
         scr.handle(g, &mut cx)
     }
 
@@ -449,12 +450,13 @@ mod tests {
     /// trip rework (a route row is a route row).
     #[test]
     fn picking_a_route_during_a_route_less_ride_opens_the_swap() {
+        let mut rec = crate::RecorderMachine::new();
         let routes = [summary("A"), summary("B")];
         let mut act = Activity::new(Mode::Riding);
-        act.start_session();
+        rec.test_open();
         assert_eq!(act.active_route, None);
         let mut scr = RouteMenuScreen::new();
-        let t = run(&mut scr, &mut act, &routes, &[], Gesture::Press);
+        let t = run(&mut scr, &mut act, &mut rec, &routes, &[], Gesture::Press);
         assert!(matches!(t, Transition::Push(Screen::RouteSwap(_))), "the guarded swap card opens");
         assert_eq!(act.active_route, None);
     }
@@ -464,21 +466,22 @@ mod tests {
     /// trip-scoped stage list; pressing the loose route opens its overview at the right catalog index.
     #[test]
     fn top_level_lists_folders_then_unfiled_routes() {
+        let mut rec = crate::RecorderMachine::new();
         let routes = [summary("A"), summary("B"), summary("C")];
         let trips = [trip(9, "Trip", &[0, 1], &routes)];
         // Row 0 = folder → press pushes a trip-scoped menu.
         let mut scr = RouteMenuScreen::new();
         let mut act = Activity::new(Mode::Idle);
-        let t = run(&mut scr, &mut act, &routes, &trips, Gesture::Press);
+        let t = run(&mut scr, &mut act, &mut rec, &routes, &trips, Gesture::Press);
         assert!(
             matches!(t, Transition::Push(Screen::RouteMenu(_))),
             "pressing a folder opens its stage list (a scoped Route menu)"
         );
         // Row 1 = the one unfiled route (index 2) → its overview, active_route = 2.
         let mut scr = RouteMenuScreen::new();
-        run(&mut scr, &mut Activity::new(Mode::Idle), &routes, &trips, Gesture::Step(1)); // → row 1
+        run(&mut scr, &mut Activity::new(Mode::Idle), &mut rec, &routes, &trips, Gesture::Step(1)); // → row 1
         let mut act = Activity::new(Mode::Idle);
-        let t = run(&mut scr, &mut act, &routes, &trips, Gesture::Press);
+        let t = run(&mut scr, &mut act, &mut rec, &routes, &trips, Gesture::Press);
         assert!(matches!(t, Transition::Push(Screen::RouteOverview(_))), "the loose route opens its overview");
         assert_eq!(act.active_route, Some(2), "and it's the unfiled catalog route (index 2), not a filed one");
     }
@@ -486,19 +489,21 @@ mod tests {
     /// Long-pressing a folder opens the cascade-delete confirm carrying the trip's durable id.
     #[test]
     fn long_press_folder_opens_the_delete_confirm() {
+        let mut rec = crate::RecorderMachine::new();
         let routes = [summary("A"), summary("B")];
         let trips = [trip(42, "Trip", &[0, 1], &routes)];
         let mut scr = RouteMenuScreen::new();
-        let t = run(&mut scr, &mut Activity::new(Mode::Idle), &routes, &trips, Gesture::Hold);
+        let t = run(&mut scr, &mut Activity::new(Mode::Idle), &mut rec, &routes, &trips, Gesture::Hold);
         assert!(matches!(t, Transition::Push(Screen::TripDelete(_))), "a folder long-press confirms a cascade delete");
     }
 
     /// A long-press on a **route** row does nothing (top-level routes delete from the Route overview).
     #[test]
     fn long_press_route_does_nothing() {
+        let mut rec = crate::RecorderMachine::new();
         let routes = [summary("A")];
         let mut scr = RouteMenuScreen::new();
-        let t = run(&mut scr, &mut Activity::new(Mode::Idle), &routes, &[], Gesture::Hold);
+        let t = run(&mut scr, &mut Activity::new(Mode::Idle), &mut rec, &routes, &[], Gesture::Hold);
         assert!(matches!(t, Transition::None));
     }
 
@@ -506,11 +511,12 @@ mod tests {
     /// one opens that exact route — nothing trip-aware downstream.
     #[test]
     fn a_folder_stage_list_presses_the_member_route() {
+        let mut rec = crate::RecorderMachine::new();
         let routes = [summary("A"), summary("B"), summary("C")];
         let trips = [trip(9, "Trip", &[1, 2], &routes)]; // members: catalog indices 1, 2
         let mut scr = RouteMenuScreen::trip(9);
         let mut act = Activity::new(Mode::Idle);
-        let t = run(&mut scr, &mut act, &routes, &trips, Gesture::Press); // row 0 → member 1
+        let t = run(&mut scr, &mut act, &mut rec, &routes, &trips, Gesture::Press); // row 0 → member 1
         assert!(matches!(t, Transition::Push(Screen::RouteOverview(_))));
         assert_eq!(act.active_route, Some(1), "the first stage is catalog route 1");
     }
@@ -518,14 +524,15 @@ mod tests {
     /// An empty folder (all refs dangling) shows no rows; Back pops out and a press is inert.
     #[test]
     fn empty_folder_has_no_rows_and_backs_out() {
+        let mut rec = crate::RecorderMachine::new();
         let routes = [summary("A")];
         let trips = [trip(9, "Trip", &[99], &routes)]; // the only ref dangles
         assert!(trips[0].is_empty_folder());
         let mut scr = RouteMenuScreen::trip(9);
-        let t = run(&mut scr, &mut Activity::new(Mode::Idle), &routes, &trips, Gesture::Back);
+        let t = run(&mut scr, &mut Activity::new(Mode::Idle), &mut rec, &routes, &trips, Gesture::Back);
         assert!(matches!(t, Transition::Pop), "Back leaves the empty folder");
         let mut scr = RouteMenuScreen::trip(9);
-        let t = run(&mut scr, &mut Activity::new(Mode::Idle), &routes, &trips, Gesture::Press);
+        let t = run(&mut scr, &mut Activity::new(Mode::Idle), &mut rec, &routes, &trips, Gesture::Press);
         assert!(matches!(t, Transition::None), "a press in an empty folder does nothing");
     }
 }
