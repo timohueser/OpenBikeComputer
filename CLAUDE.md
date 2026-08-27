@@ -61,6 +61,24 @@ Use the nearest README for surface-specific setup. `companion-ios/CLAUDE.md` is 
 - Report the exact checks run and deliberately omitted. Use `obc clean` for stale state; inspect
   its dry run before using `--apply`.
 
+## Verification budget
+
+Verification must cost less than implementation. These caps bind every agent — Claude,
+Codex, or other — and only the owner can raise them:
+
+- Run the UI snapshot sweep at most once per pull request, on the final head, and only when
+  the change touches rendering, screens, or i18n. Reviewers spot-check named frames; they do
+  not re-run the sweep.
+- Measure resources with one head build compared against `resource_baseline.json`. Do not
+  rebuild the base; the baseline file is the recorded base. The exact-match gates stay.
+- Do not demonstrate tests against deliberately broken code ("mutants") as a routine step.
+  A reviewer may request one targeted demonstration when they doubt a specific test; it is
+  never repeated in later rounds.
+- Run wake-profile isolations only when the change touches wake or scheduling behavior.
+- Do not mirror the full CI suite locally before a push. Run the affected suites; CI is the gate.
+- Reviews get one round by default. A re-review covers only the delta. Small pre-approved
+  errands land on green CI without a further round.
+
 ## Documentation
 
 - Use ASD-STE100 Simplified Technical English for documentation, issues, and pull requests.
