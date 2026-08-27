@@ -39,15 +39,30 @@ pub(crate) struct PanelBacklight {
 impl PanelBacklight {
     /// Arm the PWM and light the panel at the **factory level**.
     ///
-    /// The rider's persisted level lands a moment later, in the ride loop, as soon as the settings
-    /// page has been read (`ride.rs`). Starting bright rather than dark is what keeps a boot that
-    /// never gets that far — a card fault sheet, say — readable.
+    /// The rider's persisted level lands in the ride loop, once the settings page has been read
+    /// (`ride.rs`). That is **not** a few instructions later: display bring-up, the SD mount, the
+    /// flat-store open, the USB and BLE spawns and a store lock all sit between the two, so a lamp
+    /// would run at full brightness for the whole of bring-up before dropping to a rider's dim
+    /// level. The trade is deliberate — a boot that faults before the settings read still has a
+    /// readable fault sheet — but it is a visible flash, and it is on the owed-on-glass list.
     ///
     /// [`SimpleConfig::default`] is exactly the configuration wanted and is therefore not
     /// overridden: countertop 1,000 (so a duty value is a per mille) with the 16 MHz PWM clock
     /// divided by 16, which is **1 kHz** — above anything a rider can see flicker in, below
-    /// anything that would make a MOSFET's switching losses interesting. Standard drive, and the
-    /// line idles low, so a disabled PWM is a dark lamp rather than a lit one.
+    /// anything that would make a MOSFET's switching losses interesting. Standard drive, and from
+    /// here on the line idles low, so a *disabled* PWM is a dark lamp rather than a lit one.
+    ///
+    /// **The frequency is load-bearing for the loop, not only for the lamp.** `set_duty` ends in a
+    /// busy wait on `SEQEND` — about one PWM period, so ~1 ms here. The change gate in `ride.rs`
+    /// keeps that off the per-pass path, leaving one stall per level change, which is fine. Drop to
+    /// 200 Hz for a slower MOSFET and the same line becomes a 5 ms stall in the loop that feeds the
+    /// watchdog and shares its executor with the radio.
+    ///
+    /// **Before this call the pad is high-impedance**, not low: reset leaves P1.27 an input with no
+    /// pull, and nothing drives it in `obc-boot` — which covers the whole DFU install window, the
+    /// longest the device spends there. Dropping a [`SimplePwm`] returns the pin to high-Z too
+    /// (nothing drops this one today). On the DK the buffered LED2 makes that harmless; **on the
+    /// shipping board the MOSFET gate needs a pull-down**, recorded in the README pin ledger.
     pub(crate) fn new(pwm: Peri<'static, PWM20>, pin: Peri<'static, P1_27>) -> Self {
         let mut backlight = PanelBacklight { pwm: SimplePwm::new_1ch(pwm, pin, &SimpleConfig::default()) };
         let _ = backlight.apply(BACKLIGHT_LEVELS - 1);
@@ -77,6 +92,12 @@ impl Backlight for PanelBacklight {
 ///
 /// The panel keeps the last frame it was given — a memory LCD holds its pixels with no power — so
 /// the "POWERING OFF" sheet the caller presented is still what a rider sees on a dark device.
+///
+/// **The backlight pin is not driven low first**, and nothing here owns the port to do it with. The
+/// PWM stops wherever its waveform left P1.27, so a fitted lamp could hold a switched-off device
+/// lit — battery the rider thinks they are not spending. Free on the DK (watch LED2 after a
+/// power-off hold, which is on the owed-on-glass list) and a real fix when the lamp lands: drive the
+/// line low, or let the gate pull-down the README asks for do it.
 pub(crate) struct SystemOff;
 
 impl PowerOff for SystemOff {

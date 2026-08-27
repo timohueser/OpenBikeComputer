@@ -17,9 +17,14 @@
 //! | sensor SDA | SERIAL22 / P1_04 | TWIM22, 400 kHz, pull-up enabled |
 //! | sensor SCL | SERIAL22 / P1_03 | TWIM22, 400 kHz, pull-up enabled |
 //! | sensor TX-ready | P1_05 | active high, internal pull-down |
-//! | panel backlight | PWM20 ch0 / P1_27 | **provisional** — 1 kHz push-pull, idles low (#1558) |
+//! | panel backlight | PWM20 ch0 / P1_27 | **provisional** — 1 kHz push-pull, idles low *once armed* (#1558) |
 //!
 //! The DK's VCOM hardware flow control must remain disabled. RTT carries defmt independently.
+//!
+//! The backlight pad is **high-impedance until `PanelBacklight::new` runs** — reset state, and
+//! nothing in `obc-boot` drives it, so a DFU install spends its whole window there. System OFF
+//! leaves it wherever the waveform stopped. The shipping board's MOSFET gate therefore needs an
+//! external pull-down; see the README pin ledger.
 //!
 //! ## Display and native-SD sharing
 //!

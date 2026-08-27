@@ -3003,6 +3003,7 @@ dependencies = [
  "obc-fixtures",
  "obc-formats",
  "obc-host-core",
+ "obc-platform",
  "obc-ports",
  "obc-reader",
  "obc-render",
