@@ -30,7 +30,7 @@ use crate::ui_runtime::UiRuntime;
 use crate::wall_clock::WallClock;
 use crate::DeviceStatus;
 use obc_map_scene::MapScene;
-use obc_ports::{Fix, InputClock, InputSource, LocationSource, RideClock, Sensors, TrackPoint};
+use obc_ports::{Fix, InputClock, InputSource, LocationSource, RideClock, Sensors};
 
 /// How the camera relates to the user's position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -811,7 +811,11 @@ impl App {
         // off one monotonic `now`); in the simulator they differ (`RideClock` is GPX-playback time,
         // `self.ui.now_ms` is wall time), and a tile reading `self.ui.now_ms` would blank to `--` seconds
         // into a replay — see the `sensor_tiles_…` test.
-        self.activity.note_sensor_clock(now_ms);
+        self.recorder.note_sensor_clock(now_ms);
+        // Whether the ride is accumulating at all. `Mode` is the route model's — a rider who pauses
+        // stops the totals without ending the session, and a ride the card refused still shows its
+        // distance — so Recorder is told rather than asked.
+        let riding = self.activity.mode == Mode::Riding;
         // Read the freeze once, before anything below can move the stack: while a planner run holds
         // the arena over a map base, this tick must not advance route-match progress (see the fix
         // path below for why, and `device_core::core_mode` for the whole rule).
@@ -834,7 +838,7 @@ impl App {
             self.ui.map_dirty = true;
         }
 
-        let Sensors { loc, altimeter, temperature, clock, compass, track, fuel, hr, power, cadence } = sensors;
+        let Sensors { loc, altimeter, temperature, clock, compass, fuel, hr, power, cadence } = sensors;
         // Battery charge from the PMIC gauge, on the slow ~30 s cadence. Nothing here says
         // "repaint": the gauge is drawn by Home alone, Home's row declares
         // [`RenderKeyKind::Home`](crate::screen::RenderKeyKind) and that key carries the level — so
@@ -849,7 +853,7 @@ impl App {
         // point logged this tick carries the freshest altitude.
         if let Some(altimeter) = altimeter {
             if let Some(alt) = altimeter.poll() {
-                self.activity.record_altitude(alt);
+                self.recorder.record_altitude(alt, riding);
             }
         }
         // Ambient temperature: on device the BMP581 reports it free alongside the per-fix pressure
@@ -860,24 +864,24 @@ impl App {
             }
         }
         // BLE sensors → the live values Activity staleness-gates + the per-ride summaries. Drained
-        // here beside the altimeter/temperature so `record_motion` (below, on a fresh fix) sees this
+        // here beside the altimeter/temperature so `record_fix` (below, on a fresh fix) sees this
         // tick's samples. `Some` only on a fresh reading; a dropped strap simply stops reporting and
         // the staleness gate expires the last value. The stat tiles (SE5) read these through the
         // `live_*_display` accessors, and the Statistics grid's render key names those same values,
         // so a fresh sample repaints the grid — and only the grid.
         if let Some(hr) = hr {
             if let Some(bpm) = hr.poll() {
-                self.activity.record_hr(bpm, now_ms);
+                self.recorder.record_hr(bpm, now_ms);
             }
         }
         if let Some(power) = power {
             if let Some(watts) = power.poll() {
-                self.activity.record_power(watts, now_ms);
+                self.recorder.record_power(watts, now_ms);
             }
         }
         if let Some(cadence) = cadence {
             if let Some(rpm) = cadence.poll() {
-                self.activity.record_cadence(rpm, now_ms);
+                self.recorder.record_cadence(rpm, now_ms);
             }
         }
         // GPS UTC time → the wall clock. GPS **always** stamps now (manual date/time was removed in
@@ -937,32 +941,14 @@ impl App {
             if !frozen {
                 self.ride.update_travel(&self.activity, route);
             }
-            let motion = self.activity.record_motion(fix, now_ms);
-            if motion.log {
-                self.recorder.breadcrumb.push(fix.lon, fix.lat);
-                if let Some(track) = track {
-                    let logged = track.record(TrackPoint {
-                        lon: fix.lon,
-                        lat: fix.lat,
-                        ele: self.activity.track_ele(),
-                        t_ms: now_ms,
-                        segment_start: motion.segment_start,
-                        // Stamp the freshest staleness-gated sensor values (epic #707): a strap
-                        // that's dropped/stale (>5 s) records absent, never its frozen last value.
-                        // `now_ms` (the RideClock) is the same timebase the samples arrived on.
-                        hr: self.activity.live_hr(now_ms).map(|b| b.min(u8::MAX as u16) as u8),
-                        cadence: self.activity.live_cadence(now_ms),
-                        power: self.activity.live_power(now_ms),
-                    });
-                    // The host couldn't durably write the point (card pulled, write error, medium
-                    // full) — the ride log now has a gap. Raise the recording-error advisory so the
-                    // rider isn't left thinking the ride is being logged when it isn't (issue #11).
-                    // `on_warning` latches it once per boot, so a whole ride of failing writes
-                    // raises one dismissable card, not a per-fix nag.
-                    if logged.is_err() {
-                        self.on_warning(WarningFlags::REC_ERROR);
-                    }
-                }
+            // The fix into the ride: the totals, the trail and the sample the ride log owes. No
+            // write happens here — the staged sample leaves as a
+            // [`RecorderEffect::Append`](crate::recorder::RecorderEffect) at stage 7, so nothing on
+            // the fix path touches a medium. `true` means the staging buffer was full and the log
+            // lost a point, which the rider is told about exactly as a failed write is (issue #11);
+            // `on_warning` latches it, so a whole ride of them is one dismissable card.
+            if self.recorder.record_fix(fix, now_ms, riding) {
+                self.on_warning(WarningFlags::REC_ERROR);
             }
         }
         // Electronic compass → the heading when the GPS can't give a course. Polled after the fix so
@@ -1009,7 +995,7 @@ impl App {
     pub fn sample_terrain(&mut self, elev: &mut dyn ElevationSource) -> bool {
         let Some((lat, lon)) = self.ride.pending_terrain.take() else { return false };
         if let Some(map_m) = elev.sample(lat, lon) {
-            self.activity.record_map_elevation(map_m);
+            self.recorder.record_map_elevation(map_m);
         }
         true
     }
@@ -2201,7 +2187,7 @@ impl App {
         if !self.recorder.offer_recovery() {
             return false;
         }
-        self.activity.restore_ride_continuation(continuation);
+        self.recorder.restore_continuation(continuation);
         self.activity.mode = Mode::Idle;
         self.activity.active_route = None;
         screen::apply(
@@ -2221,7 +2207,7 @@ impl App {
         if !self.recorder.offer_recovery() {
             return false;
         }
-        self.activity.restore_ride_continuation(crate::RideContinuation::default());
+        self.recorder.restore_continuation(crate::RideContinuation::default());
         self.activity.mode = Mode::Idle;
         self.activity.active_route = None;
         screen::apply(
@@ -2635,25 +2621,15 @@ impl App {
         }
     }
 
-    /// The ride totals + wall-clock anchor for the ride object's footer, read by the executor as it
-    /// performs [`RecorderEffect::Finalize`](crate::recorder::RecorderEffect) so the anchor pairs
-    /// with the log's last points.
-    pub fn ride_stats(&self) -> obc_route::RideStats {
-        obc_route::RideStats {
-            distance_m: self.activity.ridden_m as u32, // float→int casts saturate
-            moving_time_s: self.activity.moving_s as u32,
-            avg_speed_cms: self.activity.avg_speed_cms(),
-            climb_m: self.activity.climb_m() as u16,
+    /// The footer's wall-clock anchor for this pass: what the *device* knows about the time of day,
+    /// which is not a ride accumulator and so is given to Recorder rather than derived by it. Stage
+    /// 7 stamps it as it offers the operation slot, so the anchor an executor writes pairs with the
+    /// samples that operation carries.
+    pub(crate) fn footer_clock(&self) -> crate::recorder::FooterClock {
+        crate::recorder::FooterClock {
             unix_at_anchor: self.wall_unix_now(),
             anchor_ms: self.ui.now_ms,
-            clock_trusted: self.clock_trusted(),
-            // The per-ride BLE-sensor summary is captured in the v3 footer (epic #707, SE3). Each is
-            // `None` (→ sentinel) when the ride saw no fresh sample of that quantity.
-            avg_hr: self.activity.avg_hr(),
-            max_hr: self.activity.max_hr(),
-            avg_cadence: self.activity.avg_cadence(),
-            avg_power: self.activity.avg_power(),
-            max_power: self.activity.max_power(),
+            trusted: self.clock_trusted(),
         }
     }
 
@@ -3364,6 +3340,7 @@ impl App {
             rain: rain.map(|r| &mut *r as &mut dyn obc_render::RainOverlaySource),
             state,
             activity,
+            recorder,
             settings,
             routes: catalogs.routes(),
             route_metas: catalogs.route_metas(),
@@ -4174,85 +4151,67 @@ mod tests {
         assert!(!pass_idle(&mut app, 1_000 + 6_001).map, "the no-fix flip never dirties a static Home");
     }
 
-    /// A track sink that counts recorded points.
-    #[derive(Default)]
-    struct CountSink(usize);
-    impl obc_ports::TrackSink for CountSink {
-        fn record(&mut self, _p: obc_ports::TrackPoint) -> Result<(), obc_ports::TrackError> {
-            self.0 += 1;
-            Ok(())
-        }
-    }
-
-    /// A track sink whose every append fails — the "card pulled / write error mid-ride" case.
-    struct FailSink;
-    impl obc_ports::TrackSink for FailSink {
-        fn record(&mut self, _p: obc_ports::TrackPoint) -> Result<(), obc_ports::TrackError> {
-            Err(obc_ports::TrackError)
-        }
-    }
-
-    /// Starting a ride with no fix yet arms the session immediately (Riding, banner up) but records
-    /// nothing and books no moving time — then the first fix logs the segment anchor and clears the
-    /// banner ("start before lock").
+    /// Starting a ride with no fix yet arms the session immediately (Riding, banner up) but stages
+    /// nothing and books no moving time — then the first fix stages the segment anchor and clears
+    /// the banner ("start before lock").
     #[test]
-    fn tracking_arms_without_a_fix_and_records_on_first_fix() {
+    fn tracking_arms_without_a_fix_and_stages_on_first_fix() {
         let mut app = App::new(AppState::new(0, 0, 1.0));
         app.test_start_ride(); // a route load arms a tracking session
 
-        // A tick with no fix: armed, but nothing recorded and no moving time accrued.
-        let mut sink = CountSink::default();
+        // A tick with no fix: armed, but nothing staged and no moving time accrued.
         let mut loc = OneFix(None);
         app.ui.now_ms = 1_000;
-        app.tick(RideClock(1_000), Sensors { track: Some(&mut sink), ..Sensors::new(&mut loc) }, None);
+        app.tick(RideClock(1_000), Sensors::new(&mut loc), None);
         assert!(app.recording(), "the session is armed immediately, fix or not");
         assert!(!app.has_live_fix(1_000), "no fix yet → the banner is up");
-        assert_eq!(sink.0, 0, "nothing recorded while searching");
-        assert_eq!(app.activity.moving_s, 0.0, "moving time idles until the first fix");
+        assert!(app.recorder.staged().is_empty(), "nothing recorded while searching");
+        assert_eq!(app.recorder.moving_s(), 0.0, "moving time idles until the first fix");
 
-        // The first fix lands → it's logged (the segment anchor) and the banner clears.
+        // The first fix lands → it is staged (the segment anchor) and the banner clears.
         let mut loc = OneFix(Some(Fix::at(0, 0)));
         app.ui.now_ms = 2_000;
-        app.tick(RideClock(2_000), Sensors { track: Some(&mut sink), ..Sensors::new(&mut loc) }, None);
+        app.tick(RideClock(2_000), Sensors::new(&mut loc), None);
         assert!(app.has_live_fix(2_000), "the fix landed → banner clears");
-        assert_eq!(sink.0, 1, "the first fix logs the segment anchor");
+        assert_eq!(app.recorder.staged().len(), 1, "the first fix stages the segment anchor");
+        assert!(app.recorder.staged()[0].segment_start, "…as a segment anchor");
     }
 
-    /// A failed ride-log append (card pulled / write error mid-ride) must not be swallowed: the app
-    /// raises the dismissable "recording error" warning so the rider learns the log dropped a point
-    /// — the core of issue #11. Latched once per boot: a whole ride of failing writes is one card.
+    /// A ride log that loses a point must not lose it silently: the staging buffer is bounded, and a
+    /// ride whose samples no executor ever writes fills it and raises the dismissable
+    /// recording-error card — the core of issue #11, now on the app's own half of the seam. Latched
+    /// once per boot, so a whole ride of lost points is one card.
     #[test]
-    fn record_failure_raises_recording_error_warning() {
+    fn a_ride_log_that_loses_a_sample_raises_the_recording_error_warning() {
         let mut app = App::new(AppState::new(0, 0, 1.0));
         app.test_start_ride();
+        assert!(!app.ui.stack.iter().any(|s| matches!(s, Screen::Warning(_))), "a healthy ride shows no warning card");
 
-        // No warning while nothing has failed.
-        assert!(!app.ui.stack.iter().any(|s| matches!(s, Screen::Warning(_))), "a healthy ride shows no warning card",);
-
-        // A logged fix whose write fails → the recording-error card opens.
-        let mut sink = FailSink;
-        let mut loc = OneFix(Some(Fix::at(0, 0)));
-        app.ui.now_ms = 1_000;
-        app.tick(RideClock(1_000), Sensors { track: Some(&mut sink), ..Sensors::new(&mut loc) }, None);
-        let card = app
-            .ui
-            .stack
-            .iter()
-            .find_map(|s| match s {
-                Screen::Warning(w) => Some(w.flags()),
-                _ => None,
-            })
-            .expect("a failed record opens the recording-error card");
+        // Nothing serves the append, so the staged samples pile up. ~11 m per second: every fix is
+        // logged and none is a teleport.
+        let mut lost = None;
+        for step in 0..40u32 {
+            let mut loc = OneFix(Some(Fix::at(0, 100 * step as i32)));
+            app.ui.now_ms = step * 1_000;
+            app.tick(RideClock(step * 1_000), Sensors::new(&mut loc), None);
+            if lost.is_none() {
+                if let Some(card) = app.ui.stack.iter().find_map(|s| match s {
+                    Screen::Warning(w) => Some(w.flags()),
+                    _ => None,
+                }) {
+                    lost = Some((step, card));
+                }
+            }
+        }
+        let (step, card) = lost.expect("a buffer nothing drains eventually loses a sample, and says so");
         assert!(card.contains(WarningFlags::REC_ERROR), "the card carries the recording-error flag");
+        assert!(step > 1, "and it is raised only once the bounded buffer is genuinely full");
 
-        // Dismiss it; a second failing fix doesn't nag again (latched once per boot). A small,
-        // plausible move (~11 m in 1 s) so the fix is actually logged — record is called and fails
-        // again, which the latch must swallow.
+        // Dismiss it; the fixes that keep failing don't nag again.
         app.apply_gesture(Gesture::Back);
-        assert!(!app.ui.stack.iter().any(|s| matches!(s, Screen::Warning(_))), "dismiss pops the card");
-        let mut loc = OneFix(Some(Fix::at(0, 100)));
-        app.ui.now_ms = 2_000;
-        app.tick(RideClock(2_000), Sensors { track: Some(&mut sink), ..Sensors::new(&mut loc) }, None);
+        let mut loc = OneFix(Some(Fix::at(0, 100 * 40)));
+        app.ui.now_ms = 40_000;
+        app.tick(RideClock(40_000), Sensors::new(&mut loc), None);
         assert!(
             !app.ui.stack.iter().any(|s| matches!(s, Screen::Warning(_))),
             "an already-acknowledged recording error stays quiet",
@@ -4383,11 +4342,11 @@ mod tests {
     fn tick_integrates_barometric_climb_dead_banded() {
         let mut app = App::new(AppState::new(0, 0, 1.0)); // boots Riding
         tick_alt(&mut app, 100.0, 1000); // anchor
-        assert_eq!(app.activity.climb_m(), 0.0, "the first sample only anchors");
+        assert_eq!(app.recorder.climb_m(), 0.0, "the first sample only anchors");
         tick_alt(&mut app, 102.0, 2000); // +2 m: inside the dead-band
-        assert_eq!(app.activity.climb_m(), 0.0, "sub-dead-band noise books nothing through tick");
+        assert_eq!(app.recorder.climb_m(), 0.0, "sub-dead-band noise books nothing through tick");
         tick_alt(&mut app, 110.0, 3000); // +10 m from the 100 m reference
-        assert_eq!(app.activity.climb_m(), 10.0, "a clean climb books through the full tick path");
+        assert_eq!(app.recorder.climb_m(), 10.0, "a clean climb books through the full tick path");
     }
 
     /// The pause rule end-to-end: with the activity paused, `tick` still records the latest altitude
@@ -4398,17 +4357,17 @@ mod tests {
         let mut app = App::new(AppState::new(0, 0, 1.0));
         tick_alt(&mut app, 100.0, 1000); // anchor while riding
         tick_alt(&mut app, 110.0, 2000); // +10 m climbed
-        assert_eq!(app.activity.climb_m(), 10.0);
+        assert_eq!(app.recorder.climb_m(), 10.0);
 
         app.activity.mode = Mode::Paused; // as a `press` → Ride control would set it
         tick_alt(&mut app, 160.0, 3000); // +50 m of drift during the stop
         tick_alt(&mut app, 160.0, 4000);
-        assert_eq!(app.activity.climb_m(), 10.0, "no climb accrues across a paused tick");
+        assert_eq!(app.recorder.climb_m(), 10.0, "no climb accrues across a paused tick");
 
         app.activity.mode = Mode::Riding; // resume
         tick_alt(&mut app, 160.0, 5000); // re-anchors at the current height
         tick_alt(&mut app, 165.0, 6000); // a real +5 m after resuming
-        assert_eq!(app.activity.climb_m(), 15.0, "only genuine post-resume climb adds through tick");
+        assert_eq!(app.recorder.climb_m(), 15.0, "only genuine post-resume climb adds through tick");
     }
 
     // --- end-to-end map-referenced altimeter through `tick` + `sample_terrain` (EL8, #1076) ---
@@ -4452,19 +4411,21 @@ mod tests {
     #[test]
     fn tick_fuses_the_altimeter_onto_the_map_frame() {
         let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.test_start_ride(); // a ride, so the staged samples show what was actually recorded
         let mut terrain = FlatTerrain { height_m: 1800, samples: 0 };
         // Before any terrain sample the tile is the plain barometric reading, as it always was.
         pass(&mut app, &mut terrain, Some(fix_at(0)), 1875.0, 1000);
-        assert_eq!(app.activity.current_elevation_m(), Some(1875.0), "unsettled → the raw reading");
+        assert_eq!(app.recorder.current_elevation_m(), Some(1875.0), "unsettled → the raw reading");
 
         for i in 1..40 {
             pass(&mut app, &mut terrain, Some(fix_at(i)), 1875.0, 1000 + i * 1000);
         }
-        let shown = app.activity.current_elevation_m().expect("a sample has arrived");
+        let shown = app.recorder.current_elevation_m().expect("a sample has arrived");
         assert!((shown - 1800.0).abs() < 1.0, "the tile now reads the map-referenced height, got {shown}");
-        assert_eq!(app.activity.baro_elevation_m(), Some(1875.0), "the raw barometric reading is untouched");
-        assert_eq!(app.activity.track_ele(), 1875, "the RECORDED elevation stays raw barometry");
-        assert!(app.activity.altitude().settled());
+        assert_eq!(app.recorder.baro_elevation_m(), Some(1875.0), "the raw barometric reading is untouched");
+        let staged = app.recorder.staged();
+        assert_eq!(staged.first().map(|p| p.ele), Some(1875), "the RECORDED elevation stays raw barometry");
+        assert!(app.recorder.altitude().settled());
     }
 
     /// The cadence contract: terrain is read once per **fresh fix**, no matter how often the host
@@ -4495,10 +4456,10 @@ mod tests {
         for i in 0..60 {
             pass(&mut app, &mut null, Some(fix_at(i)), 640.0 + i as f32, 1000 + i * 1000);
         }
-        assert!(!app.activity.altitude().settled(), "no residual ever arrived");
-        assert_eq!(app.activity.altitude().offset_m(), None);
-        assert_eq!(app.activity.current_elevation_m(), app.activity.baro_elevation_m());
-        assert_eq!(app.activity.current_elevation_m(), Some(699.0));
+        assert!(!app.recorder.altitude().settled(), "no residual ever arrived");
+        assert_eq!(app.recorder.altitude().offset_m(), None);
+        assert_eq!(app.recorder.current_elevation_m(), app.recorder.baro_elevation_m());
+        assert_eq!(app.recorder.current_elevation_m(), Some(699.0));
     }
 
     // --- end-to-end BLE sensor seam through `tick` (SE2, #709) ---
@@ -4529,7 +4490,7 @@ mod tests {
 
     /// The `tick` → `poll` → `record_*` → `accumulate` wiring for all three BLE sensor drains. The
     /// samples arrive **only on the tick that closes the moving interval**: because the drains run
-    /// *before* `record_motion`, that same tick's interval must book them — if the drain order ever
+    /// *before* `record_fix`, that same tick's interval must book them — if the drain order ever
     /// regressed to after the fix, the summary accessors would read `None` here.
     #[test]
     fn tick_drains_ble_sensors_into_live_values_and_summaries() {
@@ -4538,8 +4499,8 @@ mod tests {
 
         // t = 1 s: the motion anchor, no sensor samples yet — everything reads `--`.
         tick_fix(&mut app, Fix::at(0, 0), 1_000);
-        assert_eq!(app.activity.live_hr(1_000), None, "no sample yet → no live HR");
-        assert_eq!(app.activity.avg_hr(), None);
+        assert_eq!(app.recorder.live_hr(1_000), None, "no sample yet → no live HR");
+        assert_eq!(app.recorder.avg_hr(), None);
 
         // t = 2 s: a moving fix *and* one fresh sample per sensor, all through `Sensors`.
         app.ui.now_ms = 2_000;
@@ -4559,16 +4520,16 @@ mod tests {
         );
 
         // Live: each poll landed in Activity, timestamped at this tick.
-        assert_eq!(app.activity.live_hr(2_000), Some(150), "tick drained the HR strap");
-        assert_eq!(app.activity.live_power(2_000), Some(250), "tick drained the power meter");
-        assert_eq!(app.activity.live_cadence(2_000), Some(90), "tick drained the cadence sensor");
+        assert_eq!(app.recorder.live_hr(2_000), Some(150), "tick drained the HR strap");
+        assert_eq!(app.recorder.live_power(2_000), Some(250), "tick drained the power meter");
+        assert_eq!(app.recorder.live_cadence(2_000), Some(90), "tick drained the cadence sensor");
         // Summaries: the same-tick samples were booked into the same tick's moving interval —
-        // proving the drains run before `record_motion` (else `hr_ms` would still be 0 → `None`).
-        assert_eq!(app.activity.avg_hr(), Some(150), "the moving interval booked the fresh HR");
-        assert_eq!(app.activity.max_hr(), Some(150));
-        assert_eq!(app.activity.avg_power(), Some(250), "…and the fresh power");
-        assert_eq!(app.activity.max_power(), Some(250));
-        assert_eq!(app.activity.avg_cadence(), Some(90), "…and the fresh cadence");
+        // proving the drains run before `record_fix` (else `hr_ms` would still be 0 → `None`).
+        assert_eq!(app.recorder.avg_hr(), Some(150), "the moving interval booked the fresh HR");
+        assert_eq!(app.recorder.max_hr(), Some(150));
+        assert_eq!(app.recorder.avg_power(), Some(250), "…and the fresh power");
+        assert_eq!(app.recorder.max_power(), Some(250));
+        assert_eq!(app.recorder.avg_cadence(), Some(90), "…and the fresh cadence");
     }
 
     /// The stat tiles judge sensor freshness with the `live_*_display` accessors, which compare
@@ -4592,18 +4553,18 @@ mod tests {
             None,
         );
         // The tile path: fresh, because it compares against the recorded-on clock (30 s), not 90 s.
-        assert_eq!(app.activity.live_hr_display(), Some(142), "the tile shows the value across the divergence");
+        assert_eq!(app.recorder.live_hr_display(), Some(142), "the tile shows the value across the divergence");
         // The old, wrong path — reading against the render clock — is what blanked the tile.
         assert_eq!(
-            app.activity.live_hr(app.ui.now_ms),
+            app.recorder.live_hr(app.ui.now_ms),
             None,
             "the render-clock read is stale (90 s vs a 30 s sample) — the bug `_display` fixes"
         );
 
         // And staleness still works on the ride clock: advance the tick clock 6 s past the sample
         // with no new reading → the tile blanks, exactly as a dropped strap should.
-        app.activity.note_sensor_clock(36_001);
-        assert_eq!(app.activity.live_hr_display(), None, "a >5 s-old sample still blanks — no frozen value");
+        app.recorder.note_sensor_clock(36_001);
+        assert_eq!(app.recorder.live_hr_display(), None, "a >5 s-old sample still blanks — no frozen value");
     }
 
     /// One **pass** with only an HR sample (no fix, nothing else moving): `loc` yields `None`, so

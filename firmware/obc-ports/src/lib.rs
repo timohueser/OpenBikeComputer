@@ -296,8 +296,9 @@ pub trait FuelGauge {
 
 /// One accepted recorded fix and its sensor values.
 ///
-/// The route crate re-exports this same nominal type and encodes it directly into the fixed-size
-/// track record; there is no conversion or staging copy at the sink boundary.
+/// The app stages these itself and an executor writes them when it serves an append; the route
+/// crate re-exports this same nominal type and encodes it directly into the fixed-size track
+/// record, so there is no conversion and no second copy anywhere on the way out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TrackPoint {
     /// Longitude in microdegrees.
@@ -318,16 +319,6 @@ pub struct TrackPoint {
     pub power: Option<u16>,
 }
 
-/// A track append could not be durably logged.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TrackError;
-
-/// Sink for accepted recorded fixes.
-pub trait TrackSink {
-    /// Append one point durably; return `Err` rather than panicking when the medium fails.
-    fn record(&mut self, point: TrackPoint) -> Result<(), TrackError>;
-}
-
 /// The polled sensor capabilities handed to the app each frame.
 pub struct Sensors<'a> {
     /// User location source.
@@ -340,8 +331,6 @@ pub struct Sensors<'a> {
     pub clock: Option<&'a mut dyn ClockSource>,
     /// Optional electronic compass.
     pub compass: Option<&'a mut dyn CompassSource>,
-    /// Optional recorded-track sink.
-    pub track: Option<&'a mut dyn TrackSink>,
     /// Optional battery fuel gauge.
     pub fuel: Option<&'a mut dyn FuelGauge>,
     /// Optional heart-rate source.
@@ -363,7 +352,6 @@ impl<'a> Sensors<'a> {
             temperature: None,
             clock: None,
             compass: None,
-            track: None,
             fuel: None,
             hr: None,
             power: None,

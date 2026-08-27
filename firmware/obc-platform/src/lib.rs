@@ -17,8 +17,8 @@
 //!   framebuffer DrawTargets, the banded panel view, and the LS021/FLPR pairing.
 //! - [`obc-sensors`](https://docs.rs/obc-sensors) — the pure chip/protocol decoders (UBX, BMP581,
 //!   ICM-20948, compass) this crate's `sensor-link` handoff carries.
-//! - [`obc-storage`](https://docs.rs/obc-storage) — the FatFs/SD `ByteSource`/`Sink`/`TrackSink`
-//!   adapters and the FAT-extent map fast path.
+//! - [`obc-storage`](https://docs.rs/obc-storage) — the FatFs/SD `ByteSource`/`Sink` adapters and
+//!   the FAT-extent map fast path.
 //!
 //! ## Responsibility / dependency table
 //!

@@ -822,7 +822,7 @@ fn settle(
                 _ => None,
             };
             let mut loc = NoFix;
-            let sensors = obc_ports::Sensors { track: stores.tracks.sink(), ..obc_ports::Sensors::new(&mut loc) };
+            let sensors = obc_ports::Sensors::new(&mut loc);
             let plan = host.pass(
                 app,
                 obc_app::device_core::PassClock { ride: obc_ports::RideClock(0), ui: InputClock(now) },
@@ -1736,8 +1736,7 @@ fn main() {
                         (Some(i), Some(s)) => Some(RouteReader::new(i, s)),
                         _ => None,
                     };
-                    let (ride, sensors) =
-                        replay_advance(p, &mut baro, None, step, stores.tracks.sink(), ReplaySensors::default());
+                    let (ride, sensors) = replay_advance(p, &mut baro, None, step, ReplaySensors::default());
                     host.pass(
                         &mut app,
                         obc_app::device_core::PassClock { ride, ui: InputClock(script_now) },

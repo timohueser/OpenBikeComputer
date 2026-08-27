@@ -257,14 +257,21 @@ mod tests {
     /// An empty per-category cache (U5): the panel drawer never reads it, but `Readout` carries it.
     static EMPTY_CACHE: &crate::next_ahead::NextAhead = &crate::next_ahead::NextAhead::EMPTY;
 
+    /// A ride that has recorded nothing — leaked, so the borrowed `Readout` outlives the call.
+    fn idle_recorder() -> &'static crate::recorder::RecorderMachine {
+        Box::leak(Box::new(crate::recorder::RecorderMachine::new()))
+    }
+
     fn readout<'a>(
         activity: &'a Activity,
+        recorder: &'a crate::recorder::RecorderMachine,
         waypoints: &'a Waypoints,
         next: Option<usize>,
     ) -> crate::stat_fields::Readout<'a> {
         crate::stat_fields::Readout {
             fix: None,
             activity,
+            recorder,
             units: Units::Metric,
             route: None,
             profile: None,
@@ -291,7 +298,7 @@ mod tests {
     fn waypoint_panel_pins_the_next_four_and_blanks_the_tail() {
         let act = Activity::new(Mode::Riding); // progress 0
         let w = wpts(&[(1_000, "Brunnen"), (5_000, "Alp")]); // short names → verbatim, no truncation
-        let cx = readout(&act, &w, Some(0));
+        let cx = readout(&act, idle_recorder(), &w, Some(0));
         let mut rec = TextRec::default();
         waypoint_panel(&mut rec, panel_area(), &cx, palette::PARCHMENT_SHADE);
 
@@ -312,7 +319,7 @@ mod tests {
     fn waypoint_panel_truncates_a_long_name_before_the_distance() {
         let act = Activity::new(Mode::Riding);
         let w = wpts(&[(12_400, "Pass Summit Overlook")]); // 20 chars ≤ WAYPOINT_NAME_CAP, too wide for the row
-        let cx = readout(&act, &w, Some(0));
+        let cx = readout(&act, idle_recorder(), &w, Some(0));
         let mut rec = TextRec::default();
         waypoint_panel(&mut rec, panel_area(), &cx, palette::PARCHMENT_SHADE);
         // Row 0: distance then the truncated name.
@@ -333,7 +340,7 @@ mod tests {
         let mut act = Activity::new(Mode::Riding);
         act.progress_m = 1_050; // 50 m past Brunnen, still its index (inside the linger)
         let w = wpts(&[(1_000, "Brunnen"), (5_000, "Pass Summit")]);
-        let cx = readout(&act, &w, Some(0));
+        let cx = readout(&act, idle_recorder(), &w, Some(0));
         let mut rec = TextRec::default();
         waypoint_panel(&mut rec, panel_area(), &cx, palette::PARCHMENT_SHADE);
         assert_eq!(rec.calls[1].0.as_str(), "0m", "the passed first waypoint clamps to 0m");
@@ -348,9 +355,9 @@ mod tests {
         let w = wpts(&[(1_000, "Brunnen")]);
         let empty = Waypoints::new();
         for cx in [
-            readout(&act, &empty, None),    // no route / nothing ahead
-            readout(&act, &w, Some(9)),     // a stale index past the table's end
-            readout(&act, &empty, Some(0)), // an index against an empty table
+            readout(&act, idle_recorder(), &empty, None),    // no route / nothing ahead
+            readout(&act, idle_recorder(), &w, Some(9)),     // a stale index past the table's end
+            readout(&act, idle_recorder(), &empty, Some(0)), // an index against an empty table
         ] {
             let mut rec = TextRec::default();
             waypoint_panel(&mut rec, panel_area(), &cx, palette::PARCHMENT_SHADE);

@@ -197,20 +197,17 @@ mod tests {
     fn record_ride(dir: &Path, session: u32, name: &str) {
         let mut ts = TrackStore::open(dir);
         ts.open(session, Some(name));
-        if let Some(sink) = ts.sink() {
-            for k in 0..6u32 {
-                sink.record(TrackPoint {
-                    lon: 8_000_000 + k as i32 * 200,
-                    lat: 46_000_000 + k as i32 * 200,
-                    ele: 1000 + k as i16 * 10,
-                    t_ms: k * 1000,
-                    segment_start: k == 0,
-                    hr: None,
-                    cadence: None,
-                    power: None,
-                })
-                .unwrap();
-            }
+        for k in 0..6u32 {
+            assert!(ts.append(TrackPoint {
+                lon: 8_000_000 + k as i32 * 200,
+                lat: 46_000_000 + k as i32 * 200,
+                ele: 1000 + k as i16 * 10,
+                t_ms: k * 1000,
+                segment_start: k == 0,
+                hr: None,
+                cadence: None,
+                power: None,
+            }));
         }
         let stats = RideStats {
             distance_m: 500,

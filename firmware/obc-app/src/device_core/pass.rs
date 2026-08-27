@@ -364,7 +364,7 @@ impl App {
         let mut effects = EffectSlots::new();
         self.stage_retention(&mut effects, support);
         self.stage_catalog(&mut effects);
-        self.stage_recorder(&mut effects, now);
+        self.stage_recorder(&mut effects);
         self.stage_navigator(&mut effects);
         self.stage_settings(&mut effects);
         self.stage_weather(&mut effects, weather);
@@ -744,11 +744,14 @@ impl App {
     /// The rider's [`Start`](crate::RecorderIntent::Start) is not taken here: opening a session is a
     /// state change, not an effect, and everything from stage 3 on has to see it — see
     /// [`advance_recorder_session`](App::advance_recorder_session) for where it lands and why.
-    fn stage_recorder(&mut self, effects: &mut EffectSlots, now: PassClock) {
+    fn stage_recorder(&mut self, effects: &mut EffectSlots) {
         self.pass.record(PassStage::Recorder);
         let caps = self.pass.capabilities.recorder;
+        // The footer's wall-clock anchor goes with the offer, so the figures the executor writes
+        // belong to the operation it is about to perform rather than to whenever it gets to it.
+        let clock = self.footer_clock();
         if effects.recorder.is_empty() {
-            if let Some(effect) = self.recorder.next_effect(caps, now.ui.0) {
+            if let Some(effect) = self.recorder.next_effect(caps, clock) {
                 let _ = effects.recorder.try_put(effect);
             }
         }
@@ -788,9 +791,10 @@ impl App {
         self.ride.relock_matcher();
         if start == crate::recorder::SessionStart::Fresh {
             self.activity.reset_ride();
+            self.recorder.reset_totals();
             self.navigator.reset_detour();
         }
-        self.recorder.restart_trail();
+        self.recorder.restart_buffers();
         self.ui.map_dirty = true;
     }
 
@@ -804,8 +808,9 @@ impl App {
     fn end_ride_session(&mut self) {
         self.ride.relock_matcher();
         self.activity.reset_ride();
+        self.recorder.reset_totals();
         self.navigator.reset_detour(); // the ride the detour was planned for is over
-        self.recorder.restart_trail();
+        self.recorder.restart_buffers();
         self.ui.map_dirty = true;
     }
 
@@ -1028,7 +1033,7 @@ impl App {
         self.recorder.request(crate::RecorderIntent::Discard);
         let effect = self
             .recorder
-            .next_effect(self.pass.capabilities.recorder, self.ui.now_ms)
+            .next_effect(self.pass.capabilities.recorder, self.footer_clock())
             .expect("an open ride offers its close");
         let verdict =
             self.recorder.apply_outcome(crate::recorder::RecorderOutcome::Discarded { token: effect.token() });
@@ -1548,14 +1553,16 @@ mod tests {
     /// The reset is re-derived by Recorder's own session edge; leaving it in `sync_route_state`
     /// against a mirrored session id is what let the previous ride's trail survive.
     #[test]
-    fn a_new_session_clears_the_breadcrumb_and_the_speed_window() {
+    fn a_new_session_clears_every_accumulator() {
         let mut app = App::new(AppState::new(0, 0, 1.0));
         app.activity.mode = Mode::Riding;
         app.test_start_ride();
         app.recorder.breadcrumb.push(1_000, 2_000);
         app.recorder.speed_win.push_mps(5.0);
-        app.activity.ridden_m = 4_200.0;
+        app.recorder.record_fix(obc_ports::Fix::at(0, 0), 0, true);
+        app.recorder.record_fix(obc_ports::Fix::at(100, 0), 1_000, true);
         assert!(!app.recorder.breadcrumb.is_empty() && app.recorder.speed_win.median_cms().is_some());
+        assert!(app.recorder.ridden_m() > 0.0 && !app.recorder.staged().is_empty(), "the ride accumulated");
 
         app.test_end_ride();
         assert!(app.recorder.breadcrumb.is_empty(), "the ride the trail belonged to is over");
@@ -1568,7 +1575,8 @@ mod tests {
         app.test_start_ride();
         assert!(app.recorder.breadcrumb.is_empty(), "a new ride starts with an empty trail");
         assert!(app.recorder.speed_win.median_cms().is_none(), "and a new pace");
-        assert_eq!(app.activity.ridden_m, 0.0, "a fresh ride starts at zero");
+        app.recorder.assert_totals_are_zero(); // a fresh ride starts at zero
+        assert!(app.recorder.staged().is_empty(), "and owes no sample the previous ride never wrote");
     }
 
     /// A recovered ride continues without resetting the totals the journal restored.
@@ -1583,7 +1591,7 @@ mod tests {
         app.recorder.continue_recovered();
         app.advance_recorder_session();
         assert!(app.recording());
-        assert_eq!(app.activity.ride_continuation(), restored, "recovery must not zero the ride it just restored");
+        assert_eq!(app.recorder.continuation(), restored, "recovery must not zero the ride it just restored");
     }
 
     /// **The regression #1494's on-glass soak found.** An intent admitted *between* one pass and the

@@ -98,33 +98,46 @@ pub fn ride_repository_suite(repo: &mut dyn RideRepository, expects_track: bool)
 }
 
 /// Track-lifecycle invariants, one per [`RecorderEffect`](obc_app::recorder::RecorderEffect) the
-/// store serves: a session opens a log, a finalize closes it and names what it closed, a discard
-/// closes it and names nothing. `has_sink` says whether the store exposes a recording sink (a folder
-/// log does; a memory store never does).
-pub fn track_lifecycle(tracks: &mut dyn TrackRepository, has_sink: bool) {
-    // Nothing opened → nothing recording.
-    assert!(tracks.sink().is_none(), "no ride → no sink");
+/// store serves: a session opens a log, the log takes the samples the app stages, a finalize closes
+/// it and names what it committed, and a discard closes it and names nothing.
+///
+/// "Is a ride open?" is asked the only way the protocol asks it — by closing one. A store that
+/// answers [`RideClose::Nothing`] has nothing open, which is also why a close with nothing open is
+/// not a failure to retry.
+pub fn track_lifecycle(tracks: &mut dyn TrackRepository) {
+    assert_eq!(tracks.finalize(stats()), RideClose::Nothing, "no ride → nothing to commit");
 
-    // A session opens a log.
+    // A session opens a log, and the log takes what the app stages into it.
     tracks.open(1, Some("ride"));
-    assert_eq!(tracks.sink().is_some(), has_sink, "a recording ride exposes its sink iff the store has one");
+    assert!(tracks.append(sample(0)), "an open ride takes the sample it is handed");
 
     // The finalize closes it and answers with the identity it committed.
     let saved = tracks.finalize(stats());
     assert!(matches!(saved, RideClose::Committed(_)), "a finalize that succeeded names the ride: {saved:?}");
-    assert!(tracks.sink().is_none(), "and closes the log");
+    assert_eq!(tracks.finalize(stats()), RideClose::Nothing, "and closes the log");
 
     // The next ride is a fresh object, and a discard leaves nothing behind.
     tracks.open(2, Some("ride"));
-    assert_eq!(tracks.sink().is_some(), has_sink);
+    assert!(tracks.append(sample(1_000)));
     assert!(tracks.discard(), "a discard of an open ride succeeds");
-    assert!(tracks.sink().is_none(), "a discard leaves nothing open");
-
     // A close with nothing open is not a failure to retry. The goal state holds either way, and a
     // store that reported it as one would put Recorder in a retry loop against an object that does
     // not exist — which is exactly what a start the card refused leaves behind.
-    assert_eq!(tracks.finalize(stats()), RideClose::Nothing, "there was nothing to commit");
-    assert!(tracks.sink().is_none());
+    assert_eq!(tracks.finalize(stats()), RideClose::Nothing, "a discard leaves nothing open");
+}
+
+/// One staged sample for the appends above.
+fn sample(t_ms: u32) -> obc_ports::TrackPoint {
+    obc_ports::TrackPoint {
+        lon: 8_000_000,
+        lat: 46_000_000,
+        ele: 1_000,
+        t_ms,
+        segment_start: t_ms == 0,
+        hr: None,
+        cadence: None,
+        power: None,
+    }
 }
 
 /// Ride totals for the finalize above — the figures a v3 footer carries.
@@ -193,6 +206,6 @@ mod tests {
     #[test]
     fn mem_track_store_passes_the_conformance_suite() {
         let mut tracks = MemTrackStore::new();
-        track_lifecycle(&mut tracks, false);
+        track_lifecycle(&mut tracks);
     }
 }

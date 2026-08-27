@@ -666,8 +666,8 @@ impl SimGui {
     /// `Reference P` is the sea-level-reduced pressure — the trend a storm heuristic would read,
     /// with the ride's own climbing already subtracted out. Nothing here is drawn on the device.
     fn show_altimeter(&self, ui: &mut egui::Ui) {
-        let a = self.app.activity.altitude();
-        let baro = self.app.activity.baro_elevation_m();
+        let a = self.app.recorder.altitude();
+        let baro = self.app.recorder.baro_elevation_m();
         egui::Grid::new("altimeter_stats").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
             ui.label("Raw baro");
             ui.label(baro.map_or_else(|| "—".to_string(), |m| format!("{m:.1} m")));
