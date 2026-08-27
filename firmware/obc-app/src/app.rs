@@ -4750,6 +4750,11 @@ mod tests {
     /// navigation with gestures, then prove a host-pushed warning can still land instead of being
     /// silently dropped. The path lost a slot with the compass ride menu (#1515 D3): the global
     /// escape lands the Menu directly on the riding view instead of on a screen in between.
+    ///
+    /// **This walks the deepest *modelled* path; the reserve is only real if it is also the deepest
+    /// *reachable* one.** For a while it was not: the escape pushed a Menu unconditionally, so
+    /// laps of escape → re-descend grew past this without ever coming through here. That bound is
+    /// `laps_of_escape_and_re_descent_leave_room_for_a_host_card`, and the two are read together.
     #[test]
     fn deepest_mid_ride_settings_path_keeps_room_for_host_warning() {
         let mut app = App::new_idle(AppState::new(0, 0, 1.0));
