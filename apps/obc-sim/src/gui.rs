@@ -30,6 +30,11 @@ use obc_replay::{gpx::Track, BaroSensor, GpxPlayer};
 /// read, short enough that it is plainly an ending and not a hang.
 const POWERING_OFF_HOLD: std::time::Duration = std::time::Duration::from_millis(700);
 
+/// The one weather product the simulator mounts (#1549). The board reads an identity out of the flat
+/// store's catalog head; the sim has one bundle at a time, so the identity is a constant and the
+/// revision is what moves.
+const WEATHER_PRODUCT: u64 = 1;
+
 use crate::device_input::DeviceInput;
 use crate::map_file::LoadedMap;
 use crate::present::Present;
@@ -236,6 +241,15 @@ struct SimGui {
     /// How many times [`wx_snapshot`](Self::wx_snapshot) has moved — the repaint edge the domain
     /// holds, reported as `ExternalFacts::note_weather_sample`.
     wx_sample: u64,
+    /// Which revision of the mounted bundle the domain has been told about — the simulator's stand-in
+    /// for the board's catalog head (`ride.rs`'s `read_catalogs`). The sim mounts one weather product,
+    /// so the identity is fixed and only the revision moves: `0` before anything is mounted, and one
+    /// step per bundle *adopted* (the `--weather` recipe at start-up, then each live commit).
+    ///
+    /// The revision has to move for a live commit, because that move is the only thing that records
+    /// [`RefreshResult::Installed`] — the fetch landed. A first sighting is not a refresh, which
+    /// `WeatherDomain::note_installed` already knows.
+    wx_installed: u64,
     /// The routes folder (the device-SD stand-in): the menu catalog + active geometry.
     store: RouteStore,
     /// The `.obt` trips beside the routes (epic #526, TR2): the grouped-route folders. Rescanned +
@@ -465,6 +479,7 @@ impl SimGui {
             weather_now: args.weather_now,
             wx_snapshot: None,
             wx_sample: 0,
+            wx_installed: 0,
             // `--no-card`: §11.7's no-storage arm — the scheduler raises nothing at all.
             companion: crate::weather_companion::SimCompanion::new(!args.no_card),
             store,
@@ -564,8 +579,23 @@ impl SimGui {
                 // later one at the wall clock.
                 if let Some(store) = crate::weather_store::SimWeather::from_bytes(bytes, self.weather_now) {
                     self.weather = Some(store);
+                    self.wx_installed += 1;
                 }
             }
+        }
+        // The installed-data fact (#1549), the simulator's half of what `read_catalogs` reports on
+        // the board: a bundle is mounted, at this identity and revision. Reported once per adoption
+        // and not per frame — the level is a level, and it is a *move* of it that says a fetch
+        // landed. `--weather` mounts the first one before any pass runs, so the report catches up
+        // on the first sample rather than being missed.
+        if self.weather.is_some() && self.wx_installed == 0 {
+            self.wx_installed = 1;
+        }
+        if self.wx_installed > 0 {
+            self.host.facts().note_weather_data(obc_app::device_core::WeatherData {
+                data: obc_app::device_core::DataIdentity::new(WEATHER_PRODUCT),
+                revision: obc_app::device_core::Revision::new(self.wx_installed),
+            });
         }
         let next = match self.weather.as_mut() {
             Some(w) => {
