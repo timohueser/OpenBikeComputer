@@ -205,6 +205,15 @@ fn find(stack: &Stack, kind: CardKind) -> Option<usize> {
 /// come back. A `false` leaves the fact in its slot for the next sweep.
 #[must_use]
 fn land(stack: &mut Stack, at: Option<usize>, screen: Screen) -> bool {
+    // **A card does not land on a device that is switching off.** The rider completed the guarded
+    // hold; the sweep that would land this card runs in the very same `handle_input`, and either
+    // arm below would take `power_off_requested` back to `false` and cancel the shutdown — the
+    // rewrite arm by putting a card where the frame was, the push arm through `close_drawers`.
+    // Returning `false` is already the "not shown" answer, so the one-shot fact behind the card is
+    // preserved rather than consumed for a card nobody saw.
+    if crate::screen::powering_off(stack) {
+        return false;
+    }
     // A card never lands under a sheet (#1515 D3): an open drawer comes off first, in both arms.
     // Overlays sit above every card slot, so `at` is unaffected by the pop.
     crate::screen::close_drawers(stack);
