@@ -17,7 +17,7 @@ use {
     obc_host_core::VecSink,
     obc_route::{encode_summary_footer, track_to_gpx, RideStats},
     std::fs::{self, File, OpenOptions},
-    std::io::Write,
+    std::io::{Seek, SeekFrom, Write},
 };
 
 /// An open ride object: the save name (frozen at begin), its private `.obcr.part` path, and the
@@ -38,13 +38,29 @@ impl OpenRide {
     /// Append one staged sample. `false` on a write error, which keeps it staged and raises the
     /// recording-error indicator (issue #11) — the ride keeps going regardless.
     fn append(&mut self, p: TrackPoint) -> bool {
-        if self.file.write_all(&encode_record(&p)).is_err() {
+        if !write_whole(&mut self.file, &encode_record(&p)) {
             return false;
         }
         self.first_t_ms.get_or_insert(p.t_ms);
         self.point_count = self.point_count.saturating_add(1);
         true
     }
+}
+
+/// Write `bytes` whole, or leave the file exactly as long as it was.
+///
+/// [`Write::write_all`] can write a prefix and *then* fail, and Recorder re-offers what did not
+/// reach the medium — so a torn prefix left behind would become a second record boundary on the
+/// retry rather than a point the log simply lost. Truncating back to the pre-write offset is what
+/// makes "the retry is the same write" true of the bytes as well as of the intent.
+fn write_whole(file: &mut File, bytes: &[u8]) -> bool {
+    let Ok(at) = file.stream_position() else { return false };
+    if file.write_all(bytes).and_then(|()| file.flush()).is_ok() {
+        return true;
+    }
+    let _ = file.set_len(at);
+    let _ = file.seek(SeekFrom::Start(at));
+    false
 }
 
 /// The simulator's recorded-ride store: a folder of saved `.gpx` files plus at most one in-progress
@@ -101,8 +117,8 @@ impl TrackStore {
         let Some(log) = self.open.as_mut() else { return RideClose::Nothing };
         if !log.footer_written {
             let footer = encode_summary_footer(&log.name, &stats, log.point_count, log.first_t_ms);
-            if let Err(e) = log.file.write_all(&footer).and_then(|()| log.file.flush()) {
-                eprintln!("track: cannot write the footer for {}: {e}", log.temp.display());
+            if !write_whole(&mut log.file, &footer) {
+                eprintln!("track: cannot write the footer for {}", log.temp.display());
                 return RideClose::Failed; // the samples are untouched; the retry writes it again
             }
             log.footer_written = true;

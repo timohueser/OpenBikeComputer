@@ -1376,6 +1376,11 @@ pub fn clock_watermark(action: Action) -> u32 {
         // clock otherwise advances one millisecond per pass. The mark puts the ride's first pass
         // past it, so the scenario exercises one real checkpoint rather than none.
         Action::StartRecorder => 10_001,
+        // The same ten-second deadline, for the same reason and one more: the checkpoint it forces
+        // holds the one operation slot for a pass, so the fixes that land meanwhile pile up and the
+        // append that follows is a **batch**. A scenario whose every append carried one sample
+        // could not be shortened, and the partial-write row would never be reached.
+        Action::RideFixes => 10_001,
         Action::RetrySettingsPersist => 4_002,
         Action::RetryExpiredDelete => 5_002,
         Action::SleepPastDeleteBackoff => 9_002,
