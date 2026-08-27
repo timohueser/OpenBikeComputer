@@ -80,6 +80,18 @@ pub struct DetourScreen {
     prepared: Option<PreparedDetour>,
 }
 
+/// Whether the rejoin chooser can be **entered at all** (#882): a ride is being recorded, the map
+/// carries a nav graph, a route is active, and the rider is on it. The chooser's own
+/// [`available`](DetourScreen::available) is this plus the two facts only an open chooser has, so
+/// the two agree by construction rather than by review.
+///
+/// It exists because the [ride context](super::context_drawer) draws a Detour row that *opens* the
+/// chooser, and a row whose availability disagreed with its destination's would be an enabled door
+/// onto an inert screen. This is the half they share, in one place.
+pub(crate) fn reachable(activity: &Activity, recording: bool, has_nav_graph: bool) -> bool {
+    recording && has_nav_graph && activity.active_route.is_some() && !activity.off_route
+}
+
 impl DetourScreen {
     pub fn new(activity: &Activity) -> Self {
         DetourScreen {
@@ -127,12 +139,12 @@ impl DetourScreen {
         zoom
     }
 
+    /// Whether *this* chooser can act: the shared entry conditions ([`reachable`]) plus the two
+    /// facts only an open chooser has — that its own route slot is still the active one, and that a
+    /// span has resolved.
     fn available(&self, activity: &Activity, recording: bool, has_nav_graph: bool) -> bool {
-        recording
-            && has_nav_graph
-            && self.route.is_some()
+        reachable(activity, recording, has_nav_graph)
             && activity.active_route == self.route
-            && !activity.off_route
             && self.actual_detour_m().is_some()
     }
 
