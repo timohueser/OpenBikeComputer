@@ -1108,6 +1108,14 @@ mod tests {
         b[off::ride_retention] = 200;
         re_stamp_crc(&mut b);
         assert_eq!(decode(&b).unwrap().ride_retention, RideRetention::Week1, "unknown → the 1-week default");
+
+        // And once for the v18 `brightness` row, whose `range` marker is the only thing standing
+        // between a corrupt byte and a panel driven at a level the port never offered. It clamps
+        // **up**, not down: the safe direction for a light is bright.
+        let mut b = encode(&Settings { brightness: 0, ..Settings::default() });
+        b[off::brightness] = 200;
+        re_stamp_crc(&mut b);
+        assert_eq!(decode(&b).unwrap().brightness, BRIGHTNESS_MAX, "an out-of-range level clamps to the brightest");
     }
 
     /// The weather-refresh knob's own semantics, kept from the codec test the table replaced: it
