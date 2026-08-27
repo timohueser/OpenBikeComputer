@@ -239,6 +239,9 @@ struct CoreHarness {
     nav_preview: Vec<(i32, i32)>,
     /// Effects the executor served, by domain.
     served: BTreeSet<&'static str>,
+    /// How many times this executor has fed the ride catalog. One saved ride must cost exactly one,
+    /// whichever mechanism ordered it — see `a_saved_ride_orders_exactly_one_catalog_read`.
+    ride_feeds: usize,
     /// Every settings revision the executor was asked to write, in order.
     settings_writes: Vec<u16>,
 }
@@ -251,6 +254,7 @@ impl CoreHarness {
             ride_preview: Vec::new(),
             nav_preview: Vec::new(),
             served: BTreeSet::new(),
+            ride_feeds: 0,
             settings_writes: Vec::new(),
         }
     }
@@ -601,6 +605,7 @@ impl CoreHarness {
         }
         self.state.feed_routes("core.routes", trace);
         self.state.feed_trips("core.trips", trace);
+        self.ride_feeds += 1;
         self.state.feed_rides("core.rides", trace);
     }
 }
@@ -1268,17 +1273,14 @@ fn a_saved_ride_orders_exactly_one_catalog_read() {
     // The rider holds FINISH on the Paused page (`RideControl::end_ride`).
     harness.app().recorder.request(RecorderIntent::Save);
 
+    let feeds_before = harness.ride_feeds;
     let mut reads = 0usize;
-    let mut refeeds = 0usize;
     for _ in 0..SETTLE_PASSES {
         let mut plan = harness.pass();
         let mut done = Vec::new();
         let mut trace = recorder();
         harness.serve_typed(&mut plan.effects, &mut done);
         for item in done {
-            // Nothing may re-feed a catalog to announce a save. Counted rather than asserted absent,
-            // so the figure in the failure message is the one the pre-change tree produced.
-            refeeds += usize::from(matches!(item, Done::Catalog { refeed: Refeed::All, .. }));
             if let Done::Catalog { outcome: CatalogOutcome::CatalogRead { .. }, .. } = item {
                 reads += 1;
             }
@@ -1286,8 +1288,9 @@ fn a_saved_ride_orders_exactly_one_catalog_read() {
         }
     }
     assert!(!harness.state.app.recording(), "the store's verdict closed the ride");
-    assert_eq!(reads, 1, "one saved ride is one catalog read: {reads} read(s) + {refeeds} extra re-feed(s)");
-    assert_eq!(refeeds, reads, "and every re-feed is the one that read ordered");
+    let feeds = harness.ride_feeds - feeds_before;
+    assert_eq!(feeds, 1, "one saved ride is one feed of the ride catalog, and this one cost {feeds}");
+    assert_eq!(reads, 1, "…ordered by the catalog's own read, not by anything the executor did");
 }
 
 /// **The checkpoint cadence is the domain's.** A ride that has been open past the deadline owes a
