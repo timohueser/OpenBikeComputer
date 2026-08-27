@@ -1,10 +1,11 @@
-//! Flat-store ride recording (FS8 #1390).
+//! Flat-store ride recording (FS8 #1390) — the board's half of the Recorder protocol (#1398).
 //!
-//! The app still owns the pre-Recorder UI/session intent; this module owns only the primitive
-//! board execution boundary FS8 promises to the later Recorder cutover: start one `RECORDING`
-//! object, collect the final 20-byte sample bytes, checkpoint them through the tail journal,
-//! append one final footer, and clear `RECORDING` in one commit. There is no temporary file and no
-//! finish-time conversion.
+//! [`RecorderMachine`](obc_app::RecorderMachine) decides what a ride is and when it closes; this
+//! module performs the physical operations that decision names: start one `RECORDING` object,
+//! collect the final 20-byte sample bytes, checkpoint them through the tail journal, append one
+//! final footer, and clear `RECORDING` in one commit. There is no temporary file and no finish-time
+//! conversion, and no lifecycle rule here — one method per `RecorderEffect`, each answering whether
+//! the store did it.
 
 use core::ptr::{addr_of, addr_of_mut};
 
@@ -20,7 +21,6 @@ use obc_storage::flat::{
 
 use crate::flat_store::{FlatCard, Outcome, Reply, Request, Writer};
 
-const CHECKPOINT_MS: u32 = 10_000;
 const RIDE_RESERVE: u64 = 32 * 1024 * 1024;
 // At the minimum 1 s fix cadence, one checkpoint interval contributes at most ten records. Six
 // extra records cover a delayed pass, and the fixed footer always keeps its own reserved space.
@@ -206,6 +206,8 @@ impl Recorder {
         Recorder { state, writer, warning_pending: false }
     }
 
+    /// Whether a durable `RECORDING` object is open, closing, or faulted — the DFU arm's refusal
+    /// check, and what says an [`open`](Self::open) is still owed after a failed start.
     pub(crate) fn is_recording(&self) -> bool {
         !matches!(self.state, State::Idle)
     }
@@ -225,18 +227,6 @@ impl Recorder {
         core::mem::take(&mut self.warning_pending)
     }
 
-    /// Whether the ride loop owes this executor work even when no app identity edge moved. This is
-    /// what makes transient start, checkpoint-at-finish, final-commit, and discard failures retry
-    /// on a later pass instead of being stranded behind `prev_session`.
-    pub(crate) fn needs_reconcile(&self, session: Option<u32>) -> bool {
-        match self.state {
-            State::Idle => session.is_some(),
-            State::Live(live) => live.session.is_none() && session.is_some(),
-            State::FinaliseAfterRepair(_) | State::Finalising(_) | State::Discarding { .. } => true,
-            State::Faulted { .. } => false,
-        }
-    }
-
     pub(crate) fn track_sink(&mut self, session: Option<u32>) -> Option<&mut dyn TrackSink> {
         // While a ride session exists, absence of a writable recorder is itself a recording error.
         // Returning this failing sink makes App surface REC_ERROR instead of silently dropping GPS
@@ -244,59 +234,26 @@ impl Recorder {
         session.map(|_| self as &mut dyn TrackSink)
     }
 
-    pub(crate) fn checkpoint_is_due(&self, now_ms: u32) -> bool {
-        matches!(
-            self.state,
-            State::Live(Live { session: Some(_), last_checkpoint_ms, journal_blocked, .. })
-                if journal_blocked || now_ms.wrapping_sub(last_checkpoint_ms) >= CHECKPOINT_MS
-        )
+    /// Service a terminal state left over from a reset — a footer-bearing recovered object whose
+    /// clearing commit was cut. Run once at boot, before the first UI pass.
+    pub(crate) async fn settle(&mut self) {
+        self.service_terminal().await;
     }
 
-    pub(crate) async fn reconcile(
-        &mut self,
-        store: &'static FlatStore<FlatCard>,
-        action: Option<obc_app::TrackAction>,
-        session: Option<u32>,
-        name: &str,
-        stats: Option<&obc_route::RideStats>,
-        now_ms: u32,
-    ) {
-        match action {
-            Some(obc_app::TrackAction::Save) => {
-                if let (State::Live(live), Some(stats)) = (self.state, stats) {
-                    if live.journal_blocked {
-                        self.stage_finalise_after_repair(live, name, stats);
-                    } else {
-                        self.begin_finalise(live, name, stats);
-                    }
-                }
-            }
-            Some(obc_app::TrackAction::Discard) => match self.state {
-                State::Live(live) | State::FinaliseAfterRepair(live) => {
-                    // Deletion deliberately does not repair a blocked checkpoint. `Remove` never
-                    // enters storage's final-tail flush: the atomic catalog mutation first makes
-                    // the ride/proof unreachable, then `settle_ride` clears its pending recovery
-                    // state and invalidates the journal headers. Repair would add fallible I/O to
-                    // an object the rider explicitly asked to destroy.
-                    self.state = State::Discarding { id: live.id, revision: live.revision };
-                }
-                State::Faulted { id, revision } => {
-                    self.state = State::Discarding { id, revision };
-                }
-                _ => {}
-            },
-            None => {}
-        }
-
+    /// Open a ride object for `session`, saved as `name` — Recorder's session edge.
+    ///
+    /// A recovered object with no session attached adopts this one instead of starting a second:
+    /// that is what "continue" means, and it is the only way the restored samples keep their object.
+    pub(crate) async fn open(&mut self, store: &'static FlatStore<FlatCard>, session: u32, name: &str, now_ms: u32) {
         match self.state {
-            State::Idle if session.is_some() => {
-                if let Err(error) = self.start(store, session, name, now_ms).await {
+            State::Idle => {
+                if let Err(error) = self.start(store, Some(session), name, now_ms).await {
                     self.warning_pending = true;
                     defmt::warn!("flat ride: start failed: {}", defmt::Debug2Format(&error));
                 }
             }
-            State::Live(mut live) if live.session.is_none() && session.is_some() => {
-                live.session = session;
+            State::Live(mut live) if live.session.is_none() => {
+                live.session = Some(session);
                 if live.name.is_empty() {
                     live.name = DisplayName::new(name).unwrap_or_default();
                 }
@@ -309,20 +266,60 @@ impl Recorder {
             }
             _ => {}
         }
-
-        self.service_terminal().await;
     }
 
-    pub(crate) async fn checkpoint_due(
+    /// Close the ride into a durable ride object and report the identity it committed under.
+    ///
+    /// `None` is a failure: the object is still `RECORDING` on the card, the staged footer stays
+    /// staged, and Recorder re-offers the same finalize — which re-enters the terminal service
+    /// below at exactly the step that failed.
+    /// The save name is **not** a parameter: it was frozen when the ride opened
+    /// ([`open`](Self::open)), so a mid-ride route swap cannot rename a ride that is already
+    /// recording.
+    pub(crate) async fn finalize(&mut self, stats: &obc_route::RideStats) -> Option<obc_app::CatalogObjectId> {
+        if let State::Live(live) = self.state {
+            if live.journal_blocked {
+                self.stage_finalise_after_repair(live, stats);
+            } else {
+                self.begin_finalise(live, stats);
+            }
+        }
+        let closing = match self.state {
+            State::Finalising(f) => Some(f.id.0),
+            State::FinaliseAfterRepair(live) => Some(live.id.0),
+            _ => None,
+        };
+        self.service_terminal().await;
+        matches!(self.state, State::Idle).then_some(closing?)
+    }
+
+    /// Delete the open ride and its journal. `false` is a failure and Recorder re-offers it.
+    ///
+    /// Deletion deliberately does not repair a blocked checkpoint. `Remove` never enters storage's
+    /// final-tail flush: the atomic catalog mutation first makes the ride/proof unreachable, then
+    /// `settle_ride` clears its pending recovery state and invalidates the journal headers. Repair
+    /// would add fallible I/O to an object the rider explicitly asked to destroy.
+    pub(crate) async fn discard(&mut self) -> bool {
+        match self.state {
+            State::Live(live) | State::FinaliseAfterRepair(live) => {
+                self.state = State::Discarding { id: live.id, revision: live.revision };
+            }
+            State::Faulted { id, revision } => self.state = State::Discarding { id, revision },
+            _ => {}
+        }
+        self.service_terminal().await;
+        matches!(self.state, State::Idle)
+    }
+
+    /// Make the ride recoverable up to this point. `false` is a failed journal write; Recorder owes
+    /// the same checkpoint again, and storage's equality contract needs it to be exactly the same.
+    pub(crate) async fn checkpoint(
         &mut self,
         now_ms: u32,
         stats: &obc_route::RideStats,
         continuation: obc_app::RideContinuation,
-    ) {
-        let State::Live(live) = self.state else { return };
-        if !self.checkpoint_is_due(now_ms) {
-            return;
-        }
+    ) -> bool {
+        let State::Live(live) = self.state else { return true };
         // Once an attempt fails, storage's equality contract requires the *entire* logical
         // checkpoint to be replayed: append, CRC and opaque resume. App totals can keep moving even
         // while samples are frozen, so never rebuild resume from the current app on a retry.
@@ -344,6 +341,7 @@ impl Recorder {
                 next.continuation = attempted_continuation;
                 next.journal_blocked = false;
                 self.state = State::Live(next);
+                true
             }
             Err(error) => {
                 let mut blocked = live;
@@ -356,14 +354,12 @@ impl Recorder {
                 self.state = State::Live(blocked);
                 self.warning_pending = true;
                 defmt::warn!("flat ride: checkpoint failed: {}", defmt::Debug2Format(&error));
+                false
             }
         }
     }
 
-    fn stage_finalise_after_repair(&mut self, mut live: Live, fallback_name: &str, stats: &obc_route::RideStats) {
-        if live.name.is_empty() {
-            live.name = DisplayName::new(fallback_name).unwrap_or_default();
-        }
+    fn stage_finalise_after_repair(&mut self, live: Live, stats: &obc_route::RideStats) {
         let mut footer_stats = *stats;
         let stable_start = live
             .start_time
@@ -387,8 +383,8 @@ impl Recorder {
         self.state = State::FinaliseAfterRepair(live);
     }
 
-    fn begin_finalise(&mut self, live: Live, fallback_name: &str, stats: &obc_route::RideStats) {
-        let name = if live.name.is_empty() { DisplayName::new(fallback_name).unwrap_or_default() } else { live.name };
+    fn begin_finalise(&mut self, live: Live, stats: &obc_route::RideStats) {
+        let name = live.name;
         let mut footer_stats = *stats;
         // A trusted checkpoint wins permanently. A fresh same-boot ride may still acquire UTC at
         // Finish; a recovered ride without a trusted checkpoint cannot mix its old monotonic

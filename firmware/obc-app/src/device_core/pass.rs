@@ -519,6 +519,10 @@ impl App {
     ) {
         self.pass.record(PassStage::Input);
         self.ui.now_ms = now.ui.0;
+        // Recorder's session edge, before the world is applied: a host that asked for a ride between
+        // two passes must have it open before this pass integrates a fix into it, or the ride would
+        // start by discarding its own first frame of motion.
+        self.advance_recorder_session();
         self.apply_gesture_batch(gestures);
         self.advance_inputs(now.ride, sensors, route);
     }
@@ -730,19 +734,19 @@ impl App {
         Ok(())
     }
 
-    /// Stage 7 — advance `RecorderMachine`.
+    /// Stage 7 — `RecorderMachine`'s one bounded operation: a journal checkpoint the cadence owes,
+    /// or the close the rider named.
     ///
-    /// Two things, in this order. The rider's [`Start`](crate::RecorderIntent::Start) becomes a
-    /// session — a state change, so it is not an effect — and a session that opens restarts what a
-    /// new ride restarts. Then the domain's one bounded operation, if it has one.
+    /// Gated on [`Capabilities::recorder`](super::Capabilities) — the last pass's level, the same
+    /// pattern stage 10 uses. A device with nowhere to put a ride does no recording work at all,
+    /// rather than starting operations that fail on their first write.
     ///
-    /// Both are gated on [`Capabilities::recorder`](super::Capabilities) — the last pass's level,
-    /// the same pattern stage 10 uses — and this is that capability's only reader. A ride with
-    /// nowhere to put it is not started at all, rather than started and failed on its first write.
+    /// The rider's [`Start`](crate::RecorderIntent::Start) is not taken here: opening a session is a
+    /// state change, not an effect, and everything from stage 3 on has to see it — see
+    /// [`advance_recorder_session`](App::advance_recorder_session) for where it lands and why.
     fn stage_recorder(&mut self, effects: &mut EffectSlots, now: PassClock) {
         self.pass.record(PassStage::Recorder);
         let caps = self.pass.capabilities.recorder;
-        self.advance_recorder_session();
         if effects.recorder.is_empty() {
             if let Some(effect) = self.recorder.next_effect(caps, now.ui.0) {
                 let _ = effects.recorder.try_put(effect);
@@ -750,13 +754,15 @@ impl App {
         }
     }
 
-    /// Recorder's session edge, reached from both compositions: here, and from
-    /// [`apply_gesture`](App::apply_gesture) the moment the screen has named the rider's Start.
+    /// Recorder's session edge — run wherever the rider's Start can have arrived, and idempotent
+    /// when none has.
     ///
-    /// The gesture seam matters because a pass applies a **batch**: without it the second gesture of
-    /// a batch would still read "not recording" after the first one started the ride, and the ride
-    /// chrome a rider sees mid-batch would disagree with the ride they just started. One
-    /// implementation, two call sites — the shape `advance_inputs` and `retention_tick` already use.
+    /// Two call sites, each with its own reason. Stage 3 runs it **before** the world is applied,
+    /// because a host that asked for a ride between two passes must have it open before this pass
+    /// integrates a fix into it. [`apply_gesture`](App::apply_gesture) runs it after each gesture,
+    /// because a pass applies a **batch**: without it the second gesture of a batch would still read
+    /// "not recording" after the first one started the ride. One implementation, two call sites —
+    /// the shape `advance_inputs` and `retention_tick` already use.
     pub(crate) fn advance_recorder_session(&mut self) {
         if let Some(start) = self.recorder.advance(self.pass.capabilities.recorder) {
             self.begin_ride_session(start);

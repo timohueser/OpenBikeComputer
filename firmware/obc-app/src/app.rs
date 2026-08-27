@@ -150,7 +150,7 @@ pub struct AppState {
     /// guarded hold, drained by the host via the pass — which clears the RRAM bond
     /// slot and drops the bonded connection on the board, or clears the injected `paired` flag in
     /// the sim. A pending app→host command, carried here because `AppState` is the one mutable
-    /// app-wide state a screen's `handle` reaches (the `TrackAction` pattern, one plane over).
+    /// app-wide state a screen's `handle` reaches — the last request that still works this way.
     pub ble_forget_pending: bool,
     /// Whether the loaded map carries a non-empty §8 nav graph (#882) — fed once at map open by
     /// [`App::set_map_nav_graph`]; the Detour station/chooser gate on it (a graph-less map dims
@@ -2568,9 +2568,9 @@ impl App {
         }
     }
 
-    /// The ride totals + wall-clock anchor for the Finish-time ride-object save, read in the same
-    /// frame the host drains [`TrackAction::Save`](crate::TrackAction) so the anchor pairs with the
-    /// log's last points.
+    /// The ride totals + wall-clock anchor for the ride object's footer, read by the executor as it
+    /// performs [`RecorderEffect::Finalize`](crate::recorder::RecorderEffect) so the anchor pairs
+    /// with the log's last points.
     pub fn ride_stats(&self) -> obc_route::RideStats {
         obc_route::RideStats {
             distance_m: self.activity.ridden_m as u32, // float→int casts saturate

@@ -685,11 +685,10 @@ impl RideExec {
     /// Whether the executor is holding something the next pass must see — an answer to consume, or
     /// an effect to serve, or a derived read it has been asked for.
     ///
-    /// `residual_pending` is the **legacy mailbox's** half, which this struct cannot see and which
-    /// carries the rider's ride save: a `FinishTrack` produced by one pass is performed by the next
-    /// pass's residual drain, and without folding it in here that "next pass" is the next *wake* —
-    /// on a static post-Finish screen, the watchdog feed cap. `App::has_pending_residual_command`
-    /// is narrow on purpose; see its docs for why the wider query would spin.
+    /// The rider's ride save used to be folded in from the legacy mailbox: a `FinishTrack` produced
+    /// by one pass was performed by the *next* pass's residual drain, and on a static post-Finish
+    /// screen that "next pass" was the watchdog feed cap. The close is a `RecorderEffect` in this
+    /// pass's own plan now (#1398), so it is one of the `effects` below and the extra term is gone.
     ///
     /// The in-flight catalog removal is deliberately **not** here: it keeps the short animation
     /// cadence instead of an immediate re-pass, because it is a round trip to another task, and
@@ -699,8 +698,8 @@ impl RideExec {
     ///
     /// Folds into the wake exactly as [`PassPlan::immediate`] does for a deferred connection: the
     /// work is already decided, and parking on it would leave it sitting until the next rider input.
-    fn owed(&self, residual_pending: bool) -> bool {
-        self.outcomes.has_pending() || self.effects.has_pending() || !self.needs.is_empty() || residual_pending
+    fn owed(&self) -> bool {
+        self.outcomes.has_pending() || self.effects.has_pending() || !self.needs.is_empty()
     }
 
     /// Whether a store round trip is outstanding — the removal ticket. A committed removal wakes the
@@ -730,7 +729,7 @@ impl RideExec {
 /// Real-sensor build only — the `synth` / `debug-uart` feeds have no power-managed receiver.
 #[cfg(all(not(feature = "debug-uart"), not(feature = "synth")))]
 fn desired_gps_power(app: &App) -> GpsPower {
-    if app.activity.is_tracking() {
+    if app.recording() {
         if app.settings().power_saver {
             GpsPower::LowPower
         } else {
@@ -847,7 +846,7 @@ pub(crate) async fn run_app(
     // A reset may have landed after the footer checkpoint but before the single clearing commit.
     // Service that terminal state before the first UI pass; it must not wait for a later route or
     // session edge, and it must never expose a footer-bearing object as resumable samples.
-    ride_recorder.reconcile(flat, None, None, "", None, Instant::now().as_millis() as u32).await;
+    ride_recorder.settle().await;
     let recovery_warning = ride_recorder.take_warning();
     if let Some(continuation) = ride_recorder.recovered_continuation() {
         let _ = app.offer_recovered_ride(continuation);
@@ -1116,7 +1115,7 @@ pub(crate) async fn run_app(
             // request stays pending, retries next pass, and keeps the BLE edge's `dfu_install_pending()`
             // busy-gate accurate while it waits. The Scan posted here is drained by the DFU match below
             // in this same pass, so the wait card swaps to the confirm/error promptly.
-            crate::link::set_recording(app.activity.is_tracking());
+            crate::link::set_recording(app.recording());
             if crate::object_store::dfu_install_pending() && app.open_remote_dfu_check() {
                 let _ = crate::object_store::take_dfu_install_ble();
             }
@@ -1264,7 +1263,7 @@ pub(crate) async fn run_app(
                     let refusal = {
                         // One short store guard: just the go/no-go checks.
                         let store_guard = shared.lock().await;
-                        if app.activity.is_tracking() || ride_recorder.is_recording() {
+                        if app.recording() || ride_recorder.is_recording() {
                             crate::dfu::status("refused (is_tracking): a ride is recording -- finish it first");
                             Some(obc_app::DfuInstallError::Recording)
                         } else if store_guard.storage.is_none() {
@@ -1444,6 +1443,57 @@ pub(crate) async fn run_app(
                     None => StorageInfoOutcome::Failed { token, error: StorageInfoError::NotMounted },
                 };
                 RideExec::deliver(&mut exec.outcomes.storage_info, outcome, "storage");
+            }
+
+            // ── The staged recording operation (#1398) ──
+            //
+            // One bounded card operation, exactly like the catalog's above it, and it decides
+            // nothing: Recorder chose the checkpoint cadence and what "closed" means, and this
+            // reports whether the store did it. A failure is a **typed reason**, so the ride stays
+            // open and Recorder re-offers the same operation rather than the rider losing it.
+            if let Some(effect) = exec.effects.recorder.take() {
+                use obc_app::recorder::{RecorderEffect, RecorderError, RecorderOutcome};
+                let outcome = match effect {
+                    RecorderEffect::Checkpoint { token } => {
+                        let stats = app.ride_stats();
+                        let continuation = app.activity.ride_continuation();
+                        match ride_recorder.checkpoint(now, &stats, continuation).await {
+                            true => RecorderOutcome::Checkpointed { token },
+                            false => RecorderOutcome::Failed { token, error: RecorderError::Write },
+                        }
+                    }
+                    RecorderEffect::Finalize { token } if !ride_recorder.is_recording() => {
+                        // The object was never created — a start this card refused, which already
+                        // warned the rider. There is nothing to save, and saying so is terminal:
+                        // answering `Failed` would retry a close against an object that does not
+                        // exist for the rest of the boot.
+                        defmt::warn!("flat ride: finalize with no open object — the ride was never created");
+                        RecorderOutcome::Discarded { token }
+                    }
+                    RecorderEffect::Finalize { token } => {
+                        // The totals are read as the footer is written, so the wall-clock anchor
+                        // pairs with the log's last points. The save name is not read at all: it was
+                        // frozen when the ride opened.
+                        let stats = app.ride_stats();
+                        match ride_recorder.finalize(&stats).await {
+                            Some(ride) => RecorderOutcome::Finalized { token, ride },
+                            None => RecorderOutcome::Failed { token, error: RecorderError::Write },
+                        }
+                    }
+                    RecorderEffect::Discard { token } => match ride_recorder.discard().await {
+                        true => RecorderOutcome::Discarded { token },
+                        false => RecorderOutcome::Failed { token, error: RecorderError::Write },
+                    },
+                    // Sample assembly is #1553's; nothing produces an `Append` yet.
+                    RecorderEffect::Append { token, .. } => {
+                        defmt::error!("flat ride: an Append reached the board before #1553");
+                        RecorderOutcome::Failed { token, error: RecorderError::Write }
+                    }
+                };
+                if ride_recorder.take_warning() {
+                    exec.facts.raise_warnings(obc_app::WarningFlags::REC_ERROR);
+                }
+                RideExec::deliver(&mut exec.outcomes.recorder, outcome, "recorder");
             }
 
             // The domains with no board executor at all. Each is answered rather than dropped, so a
@@ -1944,11 +1994,11 @@ pub(crate) async fn run_app(
                     "weather",
                 );
             }
-            // Every effect this frame carried has now been offered a home. Anything left is a domain
-            // with no board executor at all — Recorder's machine is #1398's — and saying so loudly
-            // is what stops it becoming a silent wedge.
+            // Every effect this frame carried has now been offered a home. Anything left is a
+            // domain with no board executor at all, and saying so loudly is what stops it becoming a
+            // silent wedge.
             if exec.effects.has_pending() {
-                defmt::error!("exec: an effect this board cannot serve was decided (recorder #1398)");
+                defmt::error!("exec: an effect this board cannot serve was decided");
             }
 
             // Reconcile the GPS power state to the ride: Sleep when not tracking, Active (or LowPower with
@@ -1997,11 +2047,12 @@ pub(crate) async fn run_app(
                 prev_route = active;
             }
 
-            // ── The residual legacy drain: two commands, and the shared list says which ──
+            // ── The residual legacy drain: one command, and the shared list says which ──
             //
-            // `FinishTrack` and `ForgetBond` are the classes whose domains cannot validate an
-            // operation token, so they cannot own an outcome (epic #1433 §4.3) — the same two every
-            // typed executor still drains, pinned by `obc_app::device_core::residual`.
+            // `ForgetBond` is the class whose domain cannot validate an operation token, so it
+            // cannot own an outcome (epic #1433 §4.3) — the one every typed executor still drains,
+            // pinned by `obc_app::device_core::residual`. The ride close left with #1398: it is a
+            // `RecorderEffect` served in the store phase and answered with a `RecorderOutcome`.
             //
             // **Asked for by name**, and that is load-bearing rather than tidy: the whole-order
             // A whole-order walk *pulls* from every domain it passes — it mints the operation
@@ -2018,9 +2069,8 @@ pub(crate) async fn run_app(
             // The mailbox — a ~600 B `Deque<HostCommand>` — is a stack temporary scoped to this
             // block and dropped at its close, before the reconcile's `.await`, so it never enters
             // the ride-loop task future (it would re-inflate the #808 poll frame).
-            let finish = {
+            {
                 use obc_app::device_core::residual::residual;
-                let mut finish: Option<obc_app::TrackAction> = None;
                 let mut mailbox: obc_app::HostMailbox = obc_app::HostMailbox::new();
                 let _ = app.drain_residual_commands(&mut mailbox);
                 while let Some(cmd) = mailbox.pop() {
@@ -2029,45 +2079,37 @@ pub(crate) async fn run_app(
                             "exec: {} came back on the legacy protocol — DeviceCore owns it now, so it is skipped",
                             defmt::Debug2Format(&cmd)
                         );
-                        debug_assert!(false, "the residual is FinishTrack and ForgetBond");
+                        debug_assert!(false, "the residual is ForgetBond");
                         continue;
                     }
                     match cmd {
-                        obc_app::HostCommand::FinishTrack(action) => finish = Some(action),
                         // The bond removal is confirmed by a link-status fact, never by a reply
-                        // (#1398/#1400).
+                        // (#1400).
                         obc_app::HostCommand::ForgetBond => crate::ble::request_forget_bond(),
                     }
                 }
-                finish
-            };
+            }
 
-            // Reconcile the card to the app's intent: open/close the active route's geometry and the ride
-            // log (begin on load, close + stash the deferred save on Finish), reading the save name from
-            // the active route.
-            // Gated on the same edges `reconcile_*` test internally (a route swap, a session change, or a
-            // pending track action) so the dominant static frame does no per-tick `String<64>` copy or
-            // state re-walk. The `FinishTrack` one-shot was drained just above, which is one pass after
-            // the gesture that produced it: the pass applies the rider's Save and the *next* frame's
-            // drain performs it, so the reconcile still runs ahead of the tick that would otherwise
-            // append to a closing object.
-            let session = app.activity.session();
-            if active != prev_active
-                || session != prev_session
-                || finish.is_some()
-                || ride_recorder.needs_reconcile(session)
+            // Point the card at the active route's geometry, and open a ride object for the session
+            // Recorder decided on. Gated on the edges that can change either — a route swap, or a
+            // new session id — so the dominant static frame does no per-tick `String<64>` copy.
+            //
+            // The `is_recording()` term is the **retry**: a start that failed on a flaky card leaves
+            // the session open with no object, and without it that ride would record nothing for the
+            // rest of its life. Closing is not here at all: it is a `RecorderEffect`, served in the
+            // store phase below.
+            let session = app.ride_session();
+            if active != prev_active || session != prev_session || (session.is_some() && !ride_recorder.is_recording())
             {
-                let action = finish;
                 let mut name: heapless::String<64> = heapless::String::new();
                 if let Some(r) = active.and_then(|i| app.routes().get(i)) {
                     let _ = name.push_str(&r.name);
                 }
-                // A Save also writes the durable ride object: snapshot the app's ride totals + wall-clock
-                // anchor in the same frame, so the header matches the log's last points.
-                let stats = (action == Some(obc_app::TrackAction::Save)).then(|| app.ride_stats());
                 let active_id = active.and_then(|i| app.route_ids().get(i).copied());
                 crate::flat_store::reconcile_route(flat, active_id);
-                ride_recorder.reconcile(flat, action, session, &name, stats.as_ref(), now).await;
+                if let Some(id) = session {
+                    ride_recorder.open(flat, id, &name, now).await;
+                }
                 if ride_recorder.take_warning() {
                     exec.facts.raise_warnings(obc_app::WarningFlags::REC_ERROR);
                 }
@@ -2360,15 +2402,6 @@ pub(crate) async fn run_app(
                         }
                         pushed_sensors[q] = want;
                     }
-                }
-            }
-
-            if ride_recorder.checkpoint_is_due(now) {
-                let checkpoint_stats = app.ride_stats();
-                let continuation = app.activity.ride_continuation();
-                ride_recorder.checkpoint_due(now, &checkpoint_stats, continuation).await;
-                if ride_recorder.take_warning() {
-                    exec.facts.raise_warnings(obc_app::WarningFlags::REC_ERROR);
                 }
             }
 
@@ -2962,15 +2995,15 @@ pub(crate) async fn run_app(
         // The pass's own deadline (`plan.next_wake_ms`), plus the reasons to come straight back: the
         // plan's `immediate` — a later-to-earlier connection is in flight, so work already decided
         // would otherwise sit until the next rider input — and the executor's own `owed`: an answer
-        // to consume, an effect to serve, a derived read it was asked for, or a residual command in
-        // the legacy mailbox. That last one is the rider's **ride save**, which nothing else here
-        // can see; without it a `FinishTrack` produced by this pass would wait for the next *wake*,
-        // and on a static post-Finish screen that is the watchdog feed cap. An outstanding store
-        // round trip takes the short animation cadence instead, because spinning at full speed
-        // against a commit that runs for hundreds of milliseconds would starve the task answering it.
+        // to consume, an effect to serve, or a derived read it was asked for. The rider's **ride
+        // save** used to need a term of its own here, because it sat in the legacy mailbox where
+        // nothing else could see it; it is an effect in this pass's plan now (#1398), so `owed`
+        // covers it. An outstanding store round trip takes the short animation cadence instead,
+        // because spinning at full speed against a commit that runs for hundreds of milliseconds
+        // would starve the task answering it.
         let next_ms = if animating || exec.polling_store() {
             Some(LOOP_MS as u32)
-        } else if immediate || exec.owed(app.has_pending_residual_command()) {
+        } else if immediate || exec.owed() {
             Some(0)
         } else {
             next_wake_ms
