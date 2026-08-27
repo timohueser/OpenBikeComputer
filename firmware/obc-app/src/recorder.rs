@@ -233,8 +233,9 @@ pub struct RecorderMachine {
     /// one opens behind it. They cannot be one intent — the new ride may not open until the store
     /// has answered for the old one, or the two would share a session.
     restart_after_close: bool,
-    /// The rider has been told that this device cannot record. One card per refusal, not one per
-    /// pass: the request stays pending, so without this the warning would re-raise for ever.
+    /// The rider has been told that this device cannot record. One card per **ask**, not one per
+    /// pass: the request stays pending, so without this the warning would re-raise for ever — and
+    /// [`request`](Self::request) clears it, so asking again is answered again.
     refusal_told: bool,
     /// A failed checkpoint owes its retry now rather than at the next deadline: the storage journal
     /// keeps the failed append staged and refuses further samples until the exact same write lands.
@@ -301,6 +302,10 @@ impl RecorderMachine {
         if intent != RecorderIntent::Save {
             self.restart_after_close = false;
         }
+        // A fresh ask deserves a fresh answer: a rider who dismissed the recording warning and
+        // pressed START again is told again, rather than met with the silence the latch exists to
+        // stop between passes.
+        self.refusal_told = false;
         self.pending = Some(intent);
     }
 
@@ -573,7 +578,11 @@ mod tests {
         assert_eq!(rec.advance(NO_STORE), RecorderAdvance::Refused, "no store, no ride — and say so");
         assert!(!rec.recording());
         assert!(rec.next_effect(NO_STORE, 60_000).is_none(), "and nothing physical is offered either");
-        assert_eq!(rec.advance(NO_STORE), RecorderAdvance::Nothing, "one card per refusal, not one per pass");
+        assert_eq!(rec.advance(NO_STORE), RecorderAdvance::Nothing, "one card per ask, not one per pass");
+
+        // …but a rider who asks again is answered again, rather than met with silence.
+        rec.request(RecorderIntent::Start);
+        assert_eq!(rec.advance(NO_STORE), RecorderAdvance::Refused, "a fresh ask gets a fresh answer");
 
         // The card mounts. The request the rider made is still theirs, and it opens the ride.
         assert_eq!(rec.advance(CAN_RECORD), RecorderAdvance::Opened(SessionStart::Fresh), "the kept request opens it");
