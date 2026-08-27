@@ -4,20 +4,20 @@
 //! short list of things a typed executor still performs on the old protocol, because their domains
 //! cannot validate an operation token and so cannot own an outcome:
 //!
-//! - [`HostCommand`] — two commands, drained through
+//! - [`HostCommand`] — one command, drained through
 //!   [`App::drain_residual_commands`](crate::App::drain_residual_commands) into a caller-owned
 //!   [`HostMailbox`]. [`device_core::residual`](crate::device_core::residual) is the list as data,
 //!   with the issue that retires each one.
 //!
-//! Each command has **exactly one** pending instance inside `App` — a typed slot or a flag, no
-//! internal queue and no allocation — and both are one-shots the drain clears. Draining is
-//! loss-free: a command moves into the mailbox only if room exists, so a full mailbox leaves the
-//! rest latched ([`DrainStatus::MailboxFull`]) rather than dropping one.
+//! The command has **exactly one** pending instance inside `App` — a flag, no internal queue and no
+//! allocation — and it is a one-shot the drain clears. Draining is loss-free: a command moves into
+//! the mailbox only if room exists, so a full mailbox leaves the rest latched
+//! ([`DrainStatus::MailboxFull`]) rather than dropping one.
 //!
-//! Answers do not come back here. A ride close is answered by a catalog re-feed and a bond removal
-//! by a link-status fact — both of them facts the pass already consumes.
+//! Answers do not come back here. A bond removal is confirmed by a link-status fact, which the pass
+//! already consumes. The ride close left with #1398: it is a `RecorderEffect` answered by a
+//! `RecorderOutcome`, so Recorder validates its own verdict.
 
-use crate::activity::TrackAction;
 use crate::device_core::residual::RESIDUAL_CLASS_COUNT;
 
 /// What the board host must do when a computed-route publication answers. Cancellation can arrive
@@ -67,19 +67,12 @@ pub const fn nav_compensation_disposition(status: NavCompensationStatus) -> NavC
     }
 }
 
-/// The two things a typed executor still performs on the old protocol.
+/// The one thing a typed executor still performs on the old protocol.
 ///
 /// Payloads are bounded by construction: small `Copy` enums. No catalog, profile, or geometry ever
 /// rides in a command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostCommand {
-    /// Close the open ride log: finalise it to the host's saved-ride artifact
-    /// ([`TrackAction::Save`]) or throw it away ([`TrackAction::Discard`]). Still here because the
-    /// close is answered by a catalog re-feed rather than by a ride identity, so Recorder has no
-    /// outcome to validate (#1398). Persistence-critical one-shot; the host reads
-    /// [`ride_stats`](crate::App::ride_stats) in the same pass so the wall-clock anchor pairs with
-    /// the log's last points.
-    FinishTrack(TrackAction),
     /// Forget the paired phone (epic #447, P8): clear the bond store and drop the bonded
     /// connection. Still here because the removal is confirmed by a link-status fact rather than by
     /// a reply (#1400). One-shot, guarded-hold-posted.
@@ -92,7 +85,6 @@ pub enum HostCommand {
 /// [`RESIDUAL_CLASSES`]: crate::device_core::residual::RESIDUAL_CLASSES
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HostCommandClass {
-    FinishTrack,
     ForgetBond,
 }
 
@@ -102,7 +94,6 @@ impl HostCommand {
     #[cfg(test)]
     pub(crate) fn class(&self) -> HostCommandClass {
         match self {
-            HostCommand::FinishTrack(_) => HostCommandClass::FinishTrack,
             HostCommand::ForgetBond => HostCommandClass::ForgetBond,
         }
     }
@@ -148,8 +139,7 @@ pub enum DrainStatus {
 /// (stack or its own static — `App` never grows by it), fills it once per pass via
 /// [`App::drain_residual_commands`](crate::App::drain_residual_commands), and pops it.
 ///
-/// Nothing is coalesced: both classes are one-shots, and each drained instance is a distinct
-/// request.
+/// Nothing is coalesced: the class is a one-shot, and each drained instance is a distinct request.
 #[derive(Debug)]
 pub struct HostMailbox<const N: usize = RESIDUAL_CLASS_COUNT> {
     q: heapless::Deque<HostCommand, N>,

@@ -115,6 +115,7 @@ fn statistics_inspect_has_no_automatic_snap_back_dirty_edge() {
                                                             // would sweep the screen out from under it — a repaint that is correct and not the one at issue.
     app.set_settings(obc_app::Settings { idle_return: obc_app::IdleReturn::Never, ..*app.settings() });
     app.set_routes_with_ids(&[one_route()], &[0]);
+    common::mount_store(&mut app); // a device with a card — START RIDE needs somewhere to record
     let mut host = Frames::new();
 
     host.frame(&mut app, 0, &tap(Button::Select), None, None); // Home press → Menu (Routes selected)

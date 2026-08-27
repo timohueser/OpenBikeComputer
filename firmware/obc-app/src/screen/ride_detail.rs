@@ -44,7 +44,6 @@ use super::vocab::chrome::{empty_state, title_frame, LIST_TOP};
 use super::vocab::fmt::{date_iso, duration_hms};
 use super::vocab::pager::ContentPager;
 use super::vocab::rows::{draw_guarded_rows, ledger_row, GuardedRowsGeometry, MenuItem};
-use crate::activity::Activity;
 use crate::input::Gesture;
 use crate::screen::ScreenTick;
 use crate::Msg;
@@ -99,14 +98,14 @@ impl RideDetailScreen {
 
     /// Whether the Delete-ride row is **live**: the ride exists and no tracking session is
     /// running (the old footer's "no delete while recording" rule — every delete stays legal).
-    fn delete_enabled(&self, activity: &Activity, len: usize) -> bool {
-        len > 0 && self.ride < len && !activity.is_tracking()
+    fn delete_enabled(&self, recording: bool, len: usize) -> bool {
+        len > 0 && self.ride < len && !recording
     }
 
     /// True while the delete row would fill for the current state — so
     /// [`App::top_wants_hold_fill`](crate::App::top_wants_hold_fill) repaints a charging hold here.
-    pub(crate) fn selection_is_guarded(&self, activity: &Activity, rides_len: usize) -> bool {
-        self.delete_enabled(activity, rides_len)
+    pub(crate) fn selection_is_guarded(&self, recording: bool, rides_len: usize) -> bool {
+        self.delete_enabled(recording, rides_len)
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
@@ -117,7 +116,7 @@ impl RideDetailScreen {
             // catalog object, and the rescan re-feeds the catalog — while this pops back to
             // the Rides list (its remap keeps the highlight sane). A hold while recording (greyed
             // row) does nothing.
-            Gesture::Hold if self.delete_enabled(cx.activity, cx.rides.len()) => {
+            Gesture::Hold if self.delete_enabled(cx.recorder.recording(), cx.rides.len()) => {
                 cx.activity.request_ride_delete(self.ride.min(cx.rides.len() - 1));
                 cx.activity.viewed_ride = None; // leaving the page: the profile buffer invalidates
                 Transition::Pop
@@ -235,7 +234,7 @@ impl RideDetailScreen {
         // fills warning-red with the live hold. While a ride is being recorded the row is simply
         // **not drawn** — no dim trash, no `Recording` cue (owner review round 1: the state can't
         // act, so it doesn't show) — and the `delete_enabled` guard keeps a hold a no-op regardless.
-        if self.delete_enabled(rx.activity, rx.rides.len()) {
+        if self.delete_enabled(rx.recording, rx.rides.len()) {
             let row_y = h - 10 - ROW_H;
             let geo = GuardedRowsGeometry::panel(w, row_y, ROW_H, 0);
             let items = [MenuItem { label: rx.t(Msg::RideDetailDeleteRide), guard: true }];
@@ -247,6 +246,7 @@ impl RideDetailScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::activity::Activity;
     use crate::activity::Mode;
     use crate::ride::RideSummary;
     use crate::screen::test_ctx;
@@ -264,10 +264,16 @@ mod tests {
         }
     }
 
-    fn run(scr: &mut RideDetailScreen, act: &mut Activity, rides: &[RideSummary], g: Gesture) -> Transition {
+    fn run(
+        scr: &mut RideDetailScreen,
+        act: &mut Activity,
+        rec: &mut crate::RecorderMachine,
+        rides: &[RideSummary],
+        g: Gesture,
+    ) -> Transition {
         let mut st = AppState::new(0, 0, 1.0);
         let mut settings = Settings::default();
-        let mut cx = Ctx { rides, ..test_ctx(&mut st, act, &mut settings) };
+        let mut cx = Ctx { rides, recorder: rec, ..test_ctx(&mut st, act, &mut settings) };
         scr.handle(g, &mut cx)
     }
 
@@ -275,11 +281,12 @@ mod tests {
     /// and pops back to the Rides list.
     #[test]
     fn hold_deletes_and_returns_to_the_list() {
+        let mut rec = crate::RecorderMachine::new();
         let rides = [summary("A"), summary("B")];
         let mut act = Activity::new(Mode::Idle);
         act.viewed_ride = Some(1);
         let mut scr = RideDetailScreen::new(1);
-        let t = run(&mut scr, &mut act, &rides, Gesture::Hold);
+        let t = run(&mut scr, &mut act, &mut rec, &rides, Gesture::Hold);
         assert!(matches!(t, Transition::Pop), "the delete returns to the list");
         assert_eq!(act.take_ride_delete(), Some(1), "the shown ride's index is requested");
         assert_eq!(act.viewed_ride, None, "leaving the page invalidates the profile buffer");
@@ -289,29 +296,31 @@ mod tests {
     /// session re-arms it.
     #[test]
     fn hold_is_a_no_op_while_recording() {
+        let mut rec = crate::RecorderMachine::new();
         let rides = [summary("A")];
         let mut act = Activity::new(Mode::Riding);
-        act.start_session(); // now tracking
+        rec.test_open(); // now tracking
         act.viewed_ride = Some(0);
         let mut scr = RideDetailScreen::new(0);
-        assert!(!scr.selection_is_guarded(&act, rides.len()), "the row is hidden while recording");
-        let t = run(&mut scr, &mut act, &rides, Gesture::Hold);
+        assert!(!scr.selection_is_guarded(rec.recording(), rides.len()), "the row is hidden while recording");
+        let t = run(&mut scr, &mut act, &mut rec, &rides, Gesture::Hold);
         assert!(matches!(t, Transition::None), "a hold while recording stays on the page");
         assert_eq!(act.take_ride_delete(), None, "and records nothing");
         assert_eq!(act.viewed_ride, Some(0), "the profile stays keyed to the open page");
 
-        act.end_session();
-        assert!(scr.selection_is_guarded(&act, rides.len()), "ending the ride re-arms the row");
+        rec.test_close();
+        assert!(scr.selection_is_guarded(rec.recording(), rides.len()), "ending the ride re-arms the row");
     }
 
     /// Back pops and clears `viewed_ride`, so the resident ride profile invalidates on exit.
     #[test]
     fn back_pops_and_invalidates_the_profile_key() {
+        let mut rec = crate::RecorderMachine::new();
         let rides = [summary("A")];
         let mut act = Activity::new(Mode::Idle);
         act.viewed_ride = Some(0);
         let mut scr = RideDetailScreen::new(0);
-        let t = run(&mut scr, &mut act, &rides, Gesture::Back);
+        let t = run(&mut scr, &mut act, &mut rec, &rides, Gesture::Back);
         assert!(matches!(t, Transition::Pop));
         assert_eq!(act.viewed_ride, None);
     }
@@ -332,11 +341,12 @@ mod tests {
     /// A vanished subject (out-of-range after a rescan) offers no delete.
     #[test]
     fn vanished_ride_has_no_delete() {
+        let mut rec = crate::RecorderMachine::new();
         let mut act = Activity::new(Mode::Idle);
         let mut scr = RideDetailScreen::new(0);
         scr.remap_rides(&|_| None);
-        assert!(!scr.selection_is_guarded(&act, 1), "an out-of-range subject arms nothing");
-        let t = run(&mut scr, &mut act, &[summary("A")], Gesture::Hold);
+        assert!(!scr.selection_is_guarded(rec.recording(), 1), "an out-of-range subject arms nothing");
+        let t = run(&mut scr, &mut act, &mut rec, &[summary("A")], Gesture::Hold);
         assert!(matches!(t, Transition::None));
         assert_eq!(act.take_ride_delete(), None);
     }

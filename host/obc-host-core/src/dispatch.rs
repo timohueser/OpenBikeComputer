@@ -209,7 +209,6 @@ struct Inbox {
 /// The shared host loop: the next pass's inbox, the in-flight plan (stepped once per pass), a
 /// planned-but-uncommitted detour, the residual legacy mailbox, and the resident active-route
 /// parse. A host owns one for its lifetime.
-#[derive(Default)]
 pub struct HostLoop {
     inbox: Inbox,
     plan: Option<InflightPlan>,
@@ -231,6 +230,29 @@ pub struct HostLoop {
     /// mints nothing: the domain owes its own re-reads, and inventing a revision per read would
     /// have reported the executor's own work back to it as a store that moved.
     revision: u64,
+}
+
+impl Default for HostLoop {
+    /// A host loop starts by reporting the store it is built over.
+    ///
+    /// A `HostLoop` is constructed around the caller's repositories, so a store exists from the
+    /// first pass — and `store_writable` is what admits a catalog mutation, a route plan and a ride
+    /// recording. Without this the level never rose on a host that imports nothing, and every one of
+    /// those capabilities read absent for the whole run. The board has no such gap: it reports its
+    /// flat store's live sequence on every pass.
+    fn default() -> Self {
+        let mut host = HostLoop {
+            inbox: Inbox::default(),
+            plan: None,
+            plan_token: None,
+            detour_ready: None,
+            mailbox: HostMailbox::new(),
+            hold: PlanHold::NONE,
+            revision: 0,
+        };
+        host.inbox.facts.note_store_revision(StoreRevision { store: HOST_STORE, revision: Revision::new(0) });
+        host
+    }
 }
 
 impl HostLoop {

@@ -45,7 +45,7 @@ impl FirmwareScreen {
             // device. Otherwise post the scan one-shot and open the "Checking card..." wait; the
             // board answers through the pass's fact stage, which swaps the wait for the
             // confirm screen or an error card.
-            Gesture::Press if !cx.activity.is_tracking() => {
+            Gesture::Press if !cx.recorder.recording() => {
                 cx.dfu.admit_intent(crate::dfu::DfuIntent::ScanRequested);
                 Transition::Push(Screen::DfuCheck(DfuCheckScreen::new()))
             }
@@ -59,7 +59,7 @@ impl FirmwareScreen {
         let (w, h) = (rx.w, rx.h);
         title_frame(cv, w, h, rx.t(Msg::FirmwareTitle), "");
 
-        let recording = rx.activity.is_tracking();
+        let recording = rx.recording;
         let label = rx.t(Msg::FirmwareInstallUpdate);
         let inner_w = w - 2 * ROW_X - 20;
         let lines = wrap_lines(label, inner_w);
@@ -171,10 +171,16 @@ mod tests {
     use crate::settings::Settings;
     use crate::{AppState, Mode};
 
-    fn run(scr: &mut FirmwareScreen, act: &mut Activity, dfu: &mut crate::dfu::DfuState, g: Gesture) -> Transition {
+    fn run(
+        scr: &mut FirmwareScreen,
+        act: &mut Activity,
+        rec: &mut crate::RecorderMachine,
+        dfu: &mut crate::dfu::DfuState,
+        g: Gesture,
+    ) -> Transition {
         let mut st = AppState::new(0, 0, 1.0);
         let mut settings = Settings::default();
-        let mut cx = Ctx { dfu, ..test_ctx(&mut st, act, &mut settings) };
+        let mut cx = Ctx { dfu, recorder: rec, ..test_ctx(&mut st, act, &mut settings) };
         scr.handle(g, &mut cx)
     }
 
@@ -189,10 +195,11 @@ mod tests {
     /// Not recording: pressing Install posts the scan one-shot and opens the "Checking card..." wait.
     #[test]
     fn press_posts_scan_and_opens_the_check_wait() {
+        let mut rec = crate::RecorderMachine::new();
         let mut act = Activity::new(Mode::Idle);
         let mut scr = FirmwareScreen::new();
         let mut dfu = crate::dfu::DfuState::new();
-        let t = run(&mut scr, &mut act, &mut dfu, Gesture::Press);
+        let t = run(&mut scr, &mut act, &mut rec, &mut dfu, Gesture::Press);
         assert!(matches!(t, Transition::Push(Screen::DfuCheck(_))), "opens the scan wait");
         assert_eq!(drained_dfu(&mut dfu), Some(DfuAction::Scan), "and posts a Scan request");
     }
@@ -200,11 +207,12 @@ mod tests {
     /// Recording: the row is disabled — a press does nothing and posts nothing (the arm reboots).
     #[test]
     fn press_is_a_no_op_while_recording() {
+        let mut rec = crate::RecorderMachine::new();
         let mut act = Activity::new(Mode::Riding);
-        act.start_session(); // is_tracking() ⇒ true
+        rec.test_open(); // recording ⇒ true
         let mut scr = FirmwareScreen::new();
         let mut dfu = crate::dfu::DfuState::new();
-        let t = run(&mut scr, &mut act, &mut dfu, Gesture::Press);
+        let t = run(&mut scr, &mut act, &mut rec, &mut dfu, Gesture::Press);
         assert!(matches!(t, Transition::None), "disabled while recording");
         assert_eq!(drained_dfu(&mut dfu), None, "and nothing is posted");
     }
@@ -213,7 +221,11 @@ mod tests {
     #[test]
     fn back_pops_to_system() {
         let mut act = Activity::new(Mode::Idle);
+        let mut rec = crate::RecorderMachine::new();
         let mut scr = FirmwareScreen::new();
-        assert!(matches!(run(&mut scr, &mut act, &mut crate::dfu::DfuState::new(), Gesture::Back), Transition::Pop));
+        assert!(matches!(
+            run(&mut scr, &mut act, &mut rec, &mut crate::dfu::DfuState::new(), Gesture::Back),
+            Transition::Pop
+        ));
     }
 }

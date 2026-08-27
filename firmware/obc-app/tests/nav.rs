@@ -121,6 +121,7 @@ fn nav_catalog(app: &mut App) {
 fn detail_press_confirm_create_records_the_request() {
     let bytes = fixture();
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    common::mount_store(&mut app);
     let mut host = Planner::default();
     open_detail(&mut app, &bytes);
     let req = request_route(&mut app, &mut host);
@@ -134,6 +135,7 @@ fn detail_press_confirm_create_records_the_request() {
 fn unnamed_poi_falls_back_to_the_subtype_label() {
     let bytes = fixture();
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    common::mount_store(&mut app);
     let mut host = Planner::default();
     app.state.user_fix = Some(Fix::at(POS.1, POS.0));
     app.apply_gesture(Gesture::BackHold);
@@ -151,6 +153,7 @@ fn unnamed_poi_falls_back_to_the_subtype_label() {
 fn confirm_cancel_and_back_return_to_the_detail() {
     let bytes = fixture();
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    common::mount_store(&mut app);
     let mut host = Planner::default();
     open_detail(&mut app, &bytes);
     app.apply_gesture(Gesture::Press); // → confirm
@@ -168,6 +171,7 @@ fn confirm_cancel_and_back_return_to_the_detail() {
 fn success_activates_and_opens_the_computed_overview() {
     let bytes = fixture();
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    common::mount_store(&mut app);
     let mut host = Planner::default();
     open_detail(&mut app, &bytes);
     let _req = request_route(&mut app, &mut host);
@@ -186,13 +190,14 @@ fn success_activates_and_opens_the_computed_overview() {
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::Map(_)), "accept starts the ride");
     assert_eq!(app.mode(), Mode::Riding);
-    assert!(app.activity.is_tracking(), "starting from Idle begins a session");
+    assert!(app.recording(), "starting from Idle begins a session");
 }
 
 #[test]
 fn overview_back_restores_the_previous_route_and_returns_to_the_detail() {
     let bytes = fixture();
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    common::mount_store(&mut app);
     let mut host = Planner::default();
     open_detail(&mut app, &bytes);
     let _req = request_route(&mut app, &mut host);
@@ -212,6 +217,7 @@ fn overview_back_restores_the_previous_route_and_returns_to_the_detail() {
 fn mid_ride_accept_opens_the_save_swap_prompt() {
     let bytes = fixture();
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    common::mount_store(&mut app);
     let mut host = Planner::default();
     // Ride first: a tracking session over the (single-entry) catalog.
     nav_catalog(&mut app);
@@ -220,8 +226,8 @@ fn mid_ride_accept_opens_the_save_swap_prompt() {
     app.apply_gesture(Gesture::Press); // press Routes → Route menu
     app.apply_gesture(Gesture::Press); // → overview
     app.apply_gesture(Gesture::Press); // → START RIDE
-    assert!(app.activity.is_tracking());
-    let session = app.activity.session();
+    assert!(app.recording());
+    let session = app.ride_session();
 
     // Mid-ride: Ride menu → POIs → detail → confirm → create → (host answers).
     app.apply_gesture(Gesture::BackHold);
@@ -237,12 +243,12 @@ fn mid_ride_accept_opens_the_save_swap_prompt() {
     // Accept while tracking → the existing save/swap prompt, session untouched.
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::RouteSwap(_)), "mid-ride accept opens the save/swap prompt");
-    assert_eq!(app.activity.session(), session, "the recording session is untouched until the prompt decides");
+    assert_eq!(app.ride_session(), session, "the recording session is untouched until the prompt decides");
 
     // "Swap route" keeps the session and drops onto the riding Map.
     app.apply_gesture(Gesture::Press);
     assert!(matches!(app.top_screen(), Screen::Map(_)));
-    assert_eq!(app.activity.session(), session, "swap keeps the session");
+    assert_eq!(app.ride_session(), session, "swap keeps the session");
 }
 
 #[test]
@@ -255,6 +261,7 @@ fn failure_tiers_swap_the_confirm_for_the_right_card() {
         [(NavError::Exhausted, "range (exhausted)", true), (NavError::NoPath, "generic", false)]
     {
         let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+        common::mount_store(&mut app);
         let mut host = Planner::default();
         open_detail(&mut app, &bytes);
         let _req = request_route(&mut app, &mut host);
@@ -278,6 +285,7 @@ fn failure_tiers_swap_the_confirm_for_the_right_card() {
 fn create_without_any_position_degrades_to_the_generic_tier() {
     let bytes = fixture();
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    common::mount_store(&mut app);
     let mut host = Planner::default();
     open_detail(&mut app, &bytes);
     app.apply_gesture(Gesture::Press); // → confirm
@@ -291,6 +299,7 @@ fn create_without_any_position_degrades_to_the_generic_tier() {
 fn unresolvable_id_degrades_to_the_generic_tier() {
     let bytes = fixture();
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    common::mount_store(&mut app);
     let mut host = Planner::default();
     open_detail(&mut app, &bytes);
     let _req = request_route(&mut app, &mut host);
@@ -303,6 +312,7 @@ fn unresolvable_id_degrades_to_the_generic_tier() {
 fn back_on_planning_cancels_cleanly() {
     let bytes = fixture();
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    common::mount_store(&mut app);
     let mut host = Planner::default();
     open_detail(&mut app, &bytes);
     let _req = request_route(&mut app, &mut host);
@@ -352,6 +362,7 @@ fn needle_region_covers_the_spin() {
     use embedded_graphics::prelude::Point;
     let bytes = fixture();
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    common::mount_store(&mut app);
     let mut host = Planner::default();
     open_detail(&mut app, &bytes);
     let _ = request_route(&mut app, &mut host);
@@ -394,6 +405,7 @@ fn clipped_replay_matches_the_full_render_inside_the_region() {
     use embedded_graphics::prelude::Point;
     let bytes = fixture();
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    common::mount_store(&mut app);
     let mut host = Planner::default();
     open_detail(&mut app, &bytes);
     let _ = request_route(&mut app, &mut host);
@@ -434,6 +446,7 @@ fn planning_region_scopes_take_dirty() {
     // the region away; and before a first frame states the panel size, the spinner abstains.
     let bytes = fixture();
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    common::mount_store(&mut app);
     // The passes that hand the search out run on this suite's own clock, so the spinner's anchor
     // and the ticks below share one timeline.
     let mut host = Planner::at(1_000);
@@ -472,6 +485,7 @@ fn overview_after_debug_plan_goes_quiet() {
     // The #500 bench flow: planning pushed over Home (debug_start_nav), answered with a
     // resolvable id → overview. The app must then go quiet: no repaint claims, no short wake.
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    common::mount_store(&mut app);
     let mut host = Planner::default();
     // Isolate the "spinner leaves no repaint / wake behind" claim from the idle-return wake (which
     // the non-ride overview would otherwise legitimately arm).
@@ -499,6 +513,7 @@ fn repeated_debug_requests_stack_one_planning_screen() {
     // The bench host repeats the `N` line against the flaky VCOM; only one planning screen may
     // result, or the host's answer strands the extras spinning forever (the #500 bench artifact).
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    common::mount_store(&mut app);
     let mut host = Planner::default();
     app.set_settings(Settings { idle_return: IdleReturn::Never, ..Settings::default() });
     nav_catalog(&mut app);
@@ -530,6 +545,7 @@ fn repeated_debug_requests_stack_one_planning_screen() {
 fn nav_preview_seam_fires_once_per_plan() {
     let bytes = fixture();
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    common::mount_store(&mut app);
     let mut host = Planner::default();
     assert!(!app.nav_preview_missing(), "no computed overview, no cue");
     open_detail(&mut app, &bytes);
@@ -554,6 +570,7 @@ fn nav_preview_seam_fires_once_per_plan() {
 fn a_new_plan_starts_preview_less() {
     let bytes = fixture();
     let mut app = App::new_idle(AppState::new(POS.0, POS.1, 0.05));
+    common::mount_store(&mut app);
     let mut host = Planner::default();
     open_detail(&mut app, &bytes);
     let _req = request_route(&mut app, &mut host);

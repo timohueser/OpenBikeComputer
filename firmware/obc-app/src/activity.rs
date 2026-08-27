@@ -44,40 +44,6 @@ pub enum Mode {
     Paused,
 }
 
-/// A one-shot disposition for the **current** ride log, set by a screen and drained by the host
-/// (`take_track_action`) which owns the file I/O.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TrackAction {
-    /// Finalise the open log to the host's saved-ride artifact (Finish, or "Save & start new")
-    /// — a `.gpx` convenience artifact on the sim, a durable flat Ride object on the device.
-    Save,
-    /// Throw the open log away (Discard).
-    Discard,
-}
-
-/// The accumulator state that must cross a reset when a journaled ride is continued.
-///
-/// This is deliberately the raw integration state, not just the rounded footer summary: averages
-/// need their numerators and denominators in order to merge post-reset samples without drift.
-/// Position/elevation anchors are intentionally absent; a reboot is a sampling gap, so the first
-/// post-boot fix and altitude re-anchor instead of booking movement across power-off time.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct RideContinuation {
-    pub ridden_m: f32,
-    pub moving_m: f32,
-    pub moving_s: f32,
-    pub climb_m: f32,
-    pub descent_m: f32,
-    pub hr_ms_sum: u64,
-    pub hr_ms: u32,
-    pub max_hr: u16,
-    pub power_ms_sum: u64,
-    pub power_ms: u32,
-    pub max_power: u16,
-    pub cadence_ms_sum: u64,
-    pub cadence_ms: u32,
-}
-
 /// A **seam re-anchor** waiting for the next route-aware tick: after a detour commit re-adopts
 /// the spliced route (#882), the matcher's progress + forward-only floor are installed at the
 /// splice seam (`anchor_m` — the rider's frozen along-route position, which the splice
@@ -202,21 +168,6 @@ pub struct Activity {
     /// object once → the keyed ride-track answer).
     pub(crate) viewed_ride: Option<usize>,
 
-    // tracking session (distinct from the navigated route)
-    /// The active **tracking session** id, or `None` when not tracking. A session spans from a
-    /// route load to Finish/Discard, and survives a "Swap route only" — so it's keyed separately
-    /// from [`active_route`](Activity::active_route) (which the matcher follows). The host
-    /// reconciles the open ride log to this id.
-    pub(crate) session: Option<u32>,
-    /// Monotonic id source for [`session`](Activity::session); only increments, so a new session
-    /// can't collide with a just-finished one.
-    session_seq: u32,
-    /// One session edge is a recovered continuation, so [`RideEngine`](crate::ride_engine::RideEngine)
-    /// must preserve the restored accumulators instead of applying the fresh-session reset.
-    resume_session: bool,
-    /// A one-shot disposition for the open log, drained by the host via
-    /// [`take_track_action`](Activity::take_track_action).
-    track_action: Option<TrackAction>,
     /// A one-shot **route-delete request** (epic #447, P6): the catalog *index* of a route the Route
     /// menu's hold-to-delete footer asked to remove, drained by the host via
     /// the pass which translates it to the route's
@@ -512,47 +463,6 @@ impl Activity {
         self.cadence_at_ms = now_ms;
     }
 
-    /// Begin a fresh tracking session, assigning the next monotonic
-    /// [`session`](Activity::session) id. The host opens a new ride log when it sees the id change;
-    /// [`App`](crate::App) resets the accumulators + breadcrumb on the same change.
-    pub fn start_session(&mut self) {
-        self.session_seq = self.session_seq.wrapping_add(1);
-        self.session = Some(self.session_seq);
-        self.resume_session = false;
-    }
-
-    /// Begin a session that continues a restored journal checkpoint.
-    pub(crate) fn continue_session(&mut self) {
-        self.session_seq = self.session_seq.wrapping_add(1);
-        self.session = Some(self.session_seq);
-        self.resume_session = true;
-    }
-
-    /// Consume the recovered-session edge. Only the ride engine calls this while reconciling the
-    /// session id; leaving the flag set any longer could preserve stale totals for a later session.
-    pub(crate) fn take_resume_session(&mut self) -> bool {
-        core::mem::take(&mut self.resume_session)
-    }
-
-    /// End the tracking session (Finish / Discard). The disposition of the open log is set
-    /// separately with [`request_track`](Activity::request_track).
-    pub fn end_session(&mut self) {
-        self.session = None;
-    }
-
-    /// Whether a tracking session is currently active (riding or paused).
-    pub fn is_tracking(&self) -> bool {
-        self.session.is_some()
-    }
-
-    /// The active tracking-session id, or `None` when not tracking — the read a host keys its
-    /// open ride log by (a change means "open a new log"). The write side stays the
-    /// invariant-preserving [`start_session`](Activity::start_session) /
-    /// [`end_session`](Activity::end_session) pair.
-    pub fn session(&self) -> Option<u32> {
-        self.session
-    }
-
     /// The rider's matched along-route progress, meters (frozen while off-route) — the read the
     /// hosts' flow tests pin the detour seam re-anchor by; in-crate readers use the field.
     pub fn progress_m(&self) -> u32 {
@@ -590,26 +500,6 @@ impl Activity {
         self.seam_request = self
             .seam_request
             .and_then(|req| remap(req.route).map(|route| SeamRequest { route, anchor_m: req.anchor_m }));
-    }
-
-    /// Record a one-shot disposition for the open ride log, drained by the host.
-    pub fn request_track(&mut self, action: TrackAction) {
-        self.track_action = Some(action);
-    }
-
-    /// Take (and clear) the pending [`TrackAction`], if any — the one-shot slot behind
-    /// [`HostCommand::FinishTrack`](crate::host::HostCommand::FinishTrack) (#800). Retained: it is
-    /// the slot the pass drains internally, and
-    /// the simulator's separate `reconcile_tracks` fidelity pass re-drains it after re-posting the
-    /// command (so the scripted single-frame flow still performs the file I/O).
-    pub fn take_track_action(&mut self) -> Option<TrackAction> {
-        self.track_action.take()
-    }
-
-    /// Non-consuming peek at whether a [`TrackAction`] is pending — lets the host gate its per-tick
-    /// storage reconcile on actual change without draining the one-shot.
-    pub fn has_track_action(&self) -> bool {
-        self.track_action.is_some()
     }
 
     /// Record a one-shot request to delete the catalog route at `index` (epic #447, P6) — set by the
@@ -676,7 +566,7 @@ impl Activity {
         self.last_alt.map_or(0, |a| a as i16)
     }
 
-    /// Clear the ride totals + match + integration state (keeps `mode`/`active_route`/`session`).
+    /// Clear the ride totals + match + integration state (keeps `mode`/`active_route`).
     /// Called when a session starts, so tracking accumulators begin fresh.
     pub(crate) fn reset_ride(&mut self) {
         self.seam_request = None;
@@ -708,8 +598,8 @@ impl Activity {
     }
 
     /// Snapshot every accumulator needed to continue footer totals exactly after a reset.
-    pub fn ride_continuation(&self) -> RideContinuation {
-        RideContinuation {
+    pub fn ride_continuation(&self) -> crate::RideContinuation {
+        crate::RideContinuation {
             ridden_m: self.ridden_m,
             moving_m: self.moving_m,
             moving_s: self.moving_s,
@@ -727,7 +617,7 @@ impl Activity {
     }
 
     /// Restore a checkpoint before the explicit Continue action creates its session edge.
-    pub fn restore_ride_continuation(&mut self, state: RideContinuation) {
+    pub fn restore_ride_continuation(&mut self, state: crate::RideContinuation) {
         self.ridden_m = state.ridden_m;
         self.moving_m = state.moving_m;
         self.moving_s = state.moving_s;
@@ -1307,8 +1197,8 @@ mod tests {
     }
 
     #[test]
-    fn recovered_continuation_restores_raw_summary_state_and_marks_one_session_edge() {
-        let state = RideContinuation {
+    fn recovered_continuation_restores_raw_summary_state() {
+        let state = crate::RideContinuation {
             ridden_m: 12_345.5,
             moving_m: 12_000.25,
             moving_s: 2_400.0,
@@ -1330,9 +1220,6 @@ mod tests {
         assert_eq!(activity.avg_power(), Some(245));
         assert_eq!(activity.avg_cadence(), Some(87));
 
-        activity.continue_session();
-        assert!(activity.take_resume_session());
-        assert!(!activity.take_resume_session(), "the preservation edge is one-shot");
         assert_eq!(activity.ride_continuation(), state);
     }
 

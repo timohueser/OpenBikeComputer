@@ -71,12 +71,13 @@ pub mod weather;
 pub mod weather_alerts;
 pub mod weather_rain;
 
-pub use activity::{Activity, DetourRequest, DfuAction, Mode, NavRequest, RideContinuation, TrackAction};
+pub use activity::{Activity, DetourRequest, DfuAction, Mode, NavRequest};
 pub use altitude::AltitudeFusion;
 pub use app::{
     App, AppState, CameraMode, ClockTrust, MarksProvenance, Pan, PanBasis, PanTool, GESTURE_BUF, NAV_PREVIEW_MAX,
 };
 pub use arena_gate::{ArenaError, ArenaGate, ArenaInit, ArenaOwner, MapQuiesced, TransferReady};
+pub use recorder::{RecorderIntent, RecorderMachine, RideContinuation};
 // `ble::WeatherSnapshot` (WX8's request-context inputs) deliberately keeps its module-qualified
 // name: the crate-root `WeatherSnapshot` is the resident *forecast* snapshot the screens render
 // (WX11's `weather::WeatherSnapshot`) — two different objects that merged with the same name.

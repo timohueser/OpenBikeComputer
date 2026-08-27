@@ -213,6 +213,10 @@ pub struct Ctx<'a> {
     /// (`admit_intent`) rather than latching a request of their own. A rider's plan, cancel or
     /// commit therefore exists in exactly one place from the instant they press.
     pub navigator: &'a mut crate::navigator::NavigatorMachine,
+    /// The **Recorder** domain (#1398) — the ride screens name the rider's start, save or discard
+    /// to it (`request`) as the gesture happens. Nothing in [`Activity`] holds a ride one-shot, so
+    /// the close exists in exactly one place from the instant they press.
+    pub recorder: &'a mut crate::recorder::RecorderMachine,
     /// The **DFU** domain — the Firmware and update-confirm screens post their phase here.
     pub dfu: &'a mut crate::dfu::DfuState,
     /// The **StorageInfo** domain — the System screen asks for a free-space refresh on entry.
@@ -228,7 +232,7 @@ pub struct Ctx<'a> {
 /// with struct-update syntax, so the other eleven stay out of the way:
 /// `Ctx { routes, ..test_ctx(&mut st, &mut act, &mut s) }`.
 ///
-/// The three domain seams are **leaked**, one fresh set per call: they need `&mut` for a lifetime
+/// The four domain seams are **leaked**, one fresh set per call: they need `&mut` for a lifetime
 /// the helper cannot own, and a test that asserts on one passes its own instead
 /// (`Ctx { navigator: &mut nav, ..test_ctx(…) }`). A few dozen bytes per screen test, in a build
 /// that has `std`.
@@ -253,6 +257,7 @@ pub(crate) fn test_ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, 
         corridor: &[],
         sensor_scan_hits: &[],
         navigator: Box::leak(Box::new(crate::navigator::NavigatorMachine::new())),
+        recorder: Box::leak(Box::new(crate::recorder::RecorderMachine::new())),
         dfu: Box::leak(Box::new(crate::dfu::DfuState::new())),
         storage: Box::leak(Box::new(crate::device_core::storage_info::StorageInfo::new())),
         weather: Box::leak(Box::new(crate::weather::WeatherDomain::new())),
@@ -349,6 +354,10 @@ pub struct Render<'a> {
     /// The travelled-path breadcrumb (bounded RAM); the Map strokes it under the route. Empty when
     /// nothing has been recorded yet, so the Map can skip it with [`Breadcrumb::is_empty`].
     pub breadcrumb: &'a Breadcrumb,
+    /// Whether a ride is open — [`RecorderMachine::recording`](crate::RecorderMachine::recording),
+    /// threaded as the level it is. The riding views' chrome, the Firmware page's install row and
+    /// the two delete rows all read it; none of them may keep a second copy.
+    pub recording: bool,
     /// The previewed route's decimated shape polyline (#685 §4; #678 rework 3 widened it to
     /// stored routes) — ≤ 64 `(lon, lat)` µdeg points, host-decimated and keyed to the active
     /// route (the App hands an empty slice when it's missing or stale). Only the Route overview
@@ -1151,6 +1160,7 @@ impl Screen {
         settings: &Settings,
         state: &crate::AppState,
         activity: &Activity,
+        recording: bool,
         routes: &[RouteSummary],
         rides: &[RideSummary],
     ) -> bool {
@@ -1163,8 +1173,8 @@ impl Screen {
             Screen::Bluetooth(s) => s.selection_is_guarded(state.device.ble_paired),
             Screen::QuickDrawer(s) => s.selection_is_guarded(),
             Screen::Sensors(s) => s.selection_is_guarded(settings),
-            Screen::RouteOverview(s) => s.selection_is_guarded(activity, routes),
-            Screen::RideDetail(s) => s.selection_is_guarded(activity, rides.len()),
+            Screen::RouteOverview(s) => s.selection_is_guarded(activity, recording, routes),
+            Screen::RideDetail(s) => s.selection_is_guarded(recording, rides.len()),
             Screen::TripDelete(s) => s.selection_is_guarded(),
             _ => false,
         }
@@ -1313,7 +1323,7 @@ pub(crate) fn start_ride_routeless(cx: &mut Ctx) -> Transition {
 fn begin_riding_session(cx: &mut Ctx, lon: i32, lat: i32) -> Transition {
     cx.state.enter_riding_view(lon, lat);
     cx.activity.mode = Mode::Riding;
-    cx.activity.start_session();
+    cx.recorder.request(crate::RecorderIntent::Start);
     Transition::Root(Screen::Map(MapScreen::new()))
 }
 
