@@ -2277,19 +2277,20 @@ pub(crate) async fn run_app(
                 // Fourteen stages in, one bounded `PassPlan` out. Three builds: the VCOM-streamed GPS +
                 // altimeter + compass (`debug-uart`); the real SAM-M10Q + BMP581, coherent per fix
                 // (default); or the SynthLocation square loop, no other sensors (`synth`).
-                // ── The store's own level, reported *after* this frame's store phase ──
+                // ── The store's own level, reported *after* this frame's staged effects ──
                 //
                 // The store's monotonic sequence **is** the revision, so the board reports a level
                 // rather than counting commit edges. Reported here, and not with the other levels
-                // at the top of the frame, because this frame's store phase is where a commit
-                // happens: a ride finalized above moves the sequence, and a level sampled before
-                // it would carry the pre-commit value.
+                // at the top of the frame, because the staged effects above are where a commit
+                // happens: a ride finalized or a removal committed at the top of this iteration
+                // moves the sequence, and a level sampled before them carries the pre-commit value.
                 //
                 // That ordering is the whole of "one saved ride is one catalog read". Both the
                 // commit's `StoreRevision` and Recorder's `RideFinalized` then reach the **same**
-                // pass, and both arm the one `refresh_owed` bit, which `CatalogState::next_effect`
-                // spends when it issues the read. Sampling before the phase split them across two
-                // passes, and the domain issued the read twice for one save.
+                // pass, and both arm the one `refresh_owed` bit — which `CatalogState::next_effect`
+                // spends when it *issues* the read, not when the read is answered. Sampling before
+                // the effects split the two arms across consecutive passes, so the bit was armed,
+                // spent, and armed again, and the domain read the store twice for one save.
                 exec.facts.note_store_revision(obc_app::device_core::StoreRevision {
                     store: BOARD_STORE,
                     revision: obc_app::device_core::Revision::new(flat.sequence()),
