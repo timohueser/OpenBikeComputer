@@ -8,6 +8,7 @@
 //! same committed route/ride object fixtures) plus the small extra facts a shape needs, and asserts the
 //! store-family-independent invariants.
 
+use obc_app::recorder::RideClose;
 use obc_app::{App, AppState};
 
 use crate::{RideRepository, RouteRepository, TrackRepository};
@@ -110,14 +111,20 @@ pub fn track_lifecycle(tracks: &mut dyn TrackRepository, has_sink: bool) {
 
     // The finalize closes it and answers with the identity it committed.
     let saved = tracks.finalize(stats());
-    assert!(saved.is_some(), "a finalize that succeeded names the ride it committed");
+    assert!(matches!(saved, RideClose::Committed(_)), "a finalize that succeeded names the ride: {saved:?}");
     assert!(tracks.sink().is_none(), "and closes the log");
 
     // The next ride is a fresh object, and a discard leaves nothing behind.
     tracks.open(2, Some("ride"));
     assert_eq!(tracks.sink().is_some(), has_sink);
-    tracks.discard();
+    assert!(tracks.discard(), "a discard of an open ride succeeds");
     assert!(tracks.sink().is_none(), "a discard leaves nothing open");
+
+    // A close with nothing open is not a failure to retry. The goal state holds either way, and a
+    // store that reported it as one would put Recorder in a retry loop against an object that does
+    // not exist — which is exactly what a start the card refused leaves behind.
+    assert_eq!(tracks.finalize(stats()), RideClose::Nothing, "there was nothing to commit");
+    assert!(tracks.sink().is_none());
 }
 
 /// Ride totals for the finalize above — the figures a v3 footer carries.

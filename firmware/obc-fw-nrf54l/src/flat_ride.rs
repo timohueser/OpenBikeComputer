@@ -207,9 +207,18 @@ impl Recorder {
     }
 
     /// Whether a durable `RECORDING` object is open, closing, or faulted — the DFU arm's refusal
-    /// check, and what says an [`open`](Self::open) is still owed after a failed start.
+    /// check.
     pub(crate) fn is_recording(&self) -> bool {
         !matches!(self.state, State::Idle)
+    }
+
+    /// The ride session the **live** object belongs to, or `None` when no object is attached to
+    /// one. A faulted or closing object answers `None`: neither is a session's to record into.
+    pub(crate) fn open_session(&self) -> Option<u32> {
+        match self.state {
+            State::Live(live) => live.session,
+            _ => None,
+        }
     }
 
     /// The app-side state paired with a recovered logical checkpoint. The board restores this
@@ -268,15 +277,20 @@ impl Recorder {
         }
     }
 
-    /// Close the ride into a durable ride object and report the identity it committed under.
+    /// Close the ride into a durable ride object.
     ///
-    /// `None` is a failure: the object is still `RECORDING` on the card, the staged footer stays
-    /// staged, and Recorder re-offers the same finalize — which re-enters the terminal service
-    /// below at exactly the step that failed.
+    /// [`RideClose::Failed`](obc_app::recorder::RideClose) leaves the object `RECORDING` on the
+    /// card with its staged footer staged, and Recorder re-offers the same finalize — which
+    /// re-enters the terminal service below at exactly the step that failed. `Nothing` is the
+    /// honest answer when no object was ever created: a start this card refused already warned the
+    /// rider, and reporting a failure would retry a close against something that does not exist for
+    /// the rest of the boot.
+    ///
     /// The save name is **not** a parameter: it was frozen when the ride opened
     /// ([`open`](Self::open)), so a mid-ride route swap cannot rename a ride that is already
     /// recording.
-    pub(crate) async fn finalize(&mut self, stats: &obc_route::RideStats) -> Option<obc_app::CatalogObjectId> {
+    pub(crate) async fn finalize(&mut self, stats: &obc_route::RideStats) -> obc_app::recorder::RideClose {
+        use obc_app::recorder::RideClose;
         if let State::Live(live) = self.state {
             if live.journal_blocked {
                 self.stage_finalise_after_repair(live, stats);
@@ -285,12 +299,17 @@ impl Recorder {
             }
         }
         let closing = match self.state {
-            State::Finalising(f) => Some(f.id.0),
-            State::FinaliseAfterRepair(live) => Some(live.id.0),
-            _ => None,
+            State::Finalising(f) => f.id.0,
+            State::FinaliseAfterRepair(live) => live.id.0,
+            State::Idle => return RideClose::Nothing,
+            // A faulted or discarding object is not this close's to commit.
+            _ => return RideClose::Failed,
         };
         self.service_terminal().await;
-        matches!(self.state, State::Idle).then_some(closing?)
+        match self.state {
+            State::Idle => RideClose::Committed(closing),
+            _ => RideClose::Failed,
+        }
     }
 
     /// Delete the open ride and its journal. `false` is a failure and Recorder re-offers it.

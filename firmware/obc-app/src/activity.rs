@@ -1219,8 +1219,6 @@ mod tests {
         assert_eq!(activity.avg_hr(), Some(150));
         assert_eq!(activity.avg_power(), Some(245));
         assert_eq!(activity.avg_cadence(), Some(87));
-
-        assert_eq!(activity.ride_continuation(), state);
     }
 
     /// Before any sample every summary accessor is `None` (the header codec maps that to its

@@ -685,10 +685,15 @@ impl RideExec {
     /// Whether the executor is holding something the next pass must see — an answer to consume, or
     /// an effect to serve, or a derived read it has been asked for.
     ///
-    /// The rider's ride save used to be folded in from the legacy mailbox: a `FinishTrack` produced
-    /// by one pass was performed by the *next* pass's residual drain, and on a static post-Finish
-    /// screen that "next pass" was the watchdog feed cap. The close is a `RecorderEffect` in this
-    /// pass's own plan now (#1398), so it is one of the `effects` below and the extra term is gone.
+    /// `residual_pending` is the **legacy mailbox's** half, which this struct cannot see and which
+    /// now carries one thing: the rider's `ForgetBond`. It is posted by one pass and performed by
+    /// the next pass's drain, and the guarded hold that posts it leaves a static screen — so
+    /// without folding it in, that "next pass" is whenever the rider presses something else.
+    /// `App::has_pending_residual_command` is narrow on purpose; see its docs for why the wider
+    /// query would spin.
+    ///
+    /// The rider's ride **save** was the other half until #1398. It is a `RecorderEffect` in this
+    /// pass's own plan now, so `effects` covers it and it needs no term of its own.
     ///
     /// The in-flight catalog removal is deliberately **not** here: it keeps the short animation
     /// cadence instead of an immediate re-pass, because it is a round trip to another task, and
@@ -698,8 +703,8 @@ impl RideExec {
     ///
     /// Folds into the wake exactly as [`PassPlan::immediate`] does for a deferred connection: the
     /// work is already decided, and parking on it would leave it sitting until the next rider input.
-    fn owed(&self) -> bool {
-        self.outcomes.has_pending() || self.effects.has_pending() || !self.needs.is_empty()
+    fn owed(&self, residual_pending: bool) -> bool {
+        self.outcomes.has_pending() || self.effects.has_pending() || !self.needs.is_empty() || residual_pending
     }
 
     /// Whether a store round trip is outstanding — the removal ticket. A committed removal wakes the
@@ -858,14 +863,17 @@ pub(crate) async fn run_app(
 
     // Per-frame ride-loop state:
     // - `prev_route` re-centres SynthLocation onto a freshly-loaded route's start (`synth` build only);
-    // - `prev_active`/`prev_session` gate the SD reconcile on actual change;
+    // - `prev_active` gates the SD route reconcile on actual change, `opened_session` the ride object;
     // - `route_index`/`index_route` cache the active route's chunk index, rebuilt only on a route change;
     // - `pending_map_redraw` re-arms a redraw a transient SD glitch couldn't service;
     // - `last_telem*` throttle the host telemetry (debug-uart only).
     #[cfg(all(not(feature = "debug-uart"), feature = "synth"))]
     let mut prev_route: Option<usize> = None;
     let mut prev_active: Option<usize> = None;
-    let mut prev_session: Option<u32> = None;
+    // The ride session this executor has opened an object for. Never cleared by a close: a session
+    // that has been served is served, whatever became of its object. See `RecorderMachine::object_owed`
+    // for why this is an id rather than "is anything recording".
+    let mut opened_session: Option<u32> = None;
     // The in-flight route plan's bookkeeping (#499): `Some` while a plan is being stepped, one
     // bounded step per pass. Guards the planner slot's initialization.
     #[cfg(has_nav)]
@@ -1044,14 +1052,9 @@ pub(crate) async fn run_app(
 
         // ── The levels this frame reports, ahead of the pass that reads them (stage 2) ──
         //
-        // The store's own monotonic sequence **is** the revision, so the board reports a level
-        // instead of counting commit edges to synthesise one. The fact does not order a re-read;
-        // the domain's owed refresh does (#1541), and one commit produces exactly one — which is
-        // why the N-events-per-commit loop this replaced could not stay.
-        exec.facts.note_store_revision(obc_app::device_core::StoreRevision {
-            store: BOARD_STORE,
-            revision: obc_app::device_core::Revision::new(flat.sequence()),
-        });
+        // The **store revision is not one of them here.** It is reported immediately before
+        // `run_pass`, after this frame's store phase — see there for why.
+        //
         // `CoreMode`'s transfer level, from the flat engine's own live transfer (#1397 S6b, closing
         // S5 open question 2). Every kind counts: a route, trip or weather upload holds the store
         // exactly as a map does, and none of those three raises the #927 progress card this level
@@ -1452,7 +1455,7 @@ pub(crate) async fn run_app(
             // reports whether the store did it. A failure is a **typed reason**, so the ride stays
             // open and Recorder re-offers the same operation rather than the rider losing it.
             if let Some(effect) = exec.effects.recorder.take() {
-                use obc_app::recorder::{RecorderEffect, RecorderError, RecorderOutcome};
+                use obc_app::recorder::{RecorderEffect, RecorderError, RecorderOutcome, RideClose};
                 let outcome = match effect {
                     RecorderEffect::Checkpoint { token } => {
                         let stats = app.ride_stats();
@@ -1462,22 +1465,18 @@ pub(crate) async fn run_app(
                             false => RecorderOutcome::Failed { token, error: RecorderError::Write },
                         }
                     }
-                    RecorderEffect::Finalize { token } if !ride_recorder.is_recording() => {
-                        // The object was never created — a start this card refused, which already
-                        // warned the rider. There is nothing to save, and saying so is terminal:
-                        // answering `Failed` would retry a close against an object that does not
-                        // exist for the rest of the boot.
-                        defmt::warn!("flat ride: finalize with no open object — the ride was never created");
-                        RecorderOutcome::Discarded { token }
-                    }
                     RecorderEffect::Finalize { token } => {
                         // The totals are read as the footer is written, so the wall-clock anchor
                         // pairs with the log's last points. The save name is not read at all: it was
                         // frozen when the ride opened.
                         let stats = app.ride_stats();
                         match ride_recorder.finalize(&stats).await {
-                            Some(ride) => RecorderOutcome::Finalized { token, ride },
-                            None => RecorderOutcome::Failed { token, error: RecorderError::Write },
+                            RideClose::Committed(ride) => RecorderOutcome::Finalized { token, ride },
+                            RideClose::Nothing => {
+                                defmt::warn!("flat ride: finalize with no open object — the ride was never created");
+                                RecorderOutcome::Discarded { token }
+                            }
+                            RideClose::Failed => RecorderOutcome::Failed { token, error: RecorderError::Write },
                         }
                     }
                     RecorderEffect::Discard { token } => match ride_recorder.discard().await {
@@ -2092,29 +2091,39 @@ pub(crate) async fn run_app(
 
             // Point the card at the active route's geometry, and open a ride object for the session
             // Recorder decided on. Gated on the edges that can change either — a route swap, or a
-            // new session id — so the dominant static frame does no per-tick `String<64>` copy.
+            // session with no object yet — so the dominant static frame does no per-tick
+            // `String<64>` copy.
             //
-            // The `is_recording()` term is the **retry**: a start that failed on a flaky card leaves
-            // the session open with no object, and without it that ride would record nothing for the
-            // rest of its life. Closing is not here at all: it is a `RecorderEffect`, served in the
-            // store phase below.
-            let session = app.ride_session();
-            if active != prev_active || session != prev_session || (session.is_some() && !ride_recorder.is_recording())
-            {
+            // **The owed object is named by id, and on this loop that is load-bearing.** A close is
+            // served at the top of this iteration but its verdict is applied by the pass at the
+            // *end* of it, so right here `app.ride_session()` is still `Some(N)` while the object it
+            // named is already gone. A gate that asked "is a session open and nothing recording"
+            // could not tell that apart from "the start failed, retry", and would allocate a fresh
+            // 32 MiB `RECORDING` object under the closing ride's identity — never closed, refusing
+            // every later DFU install, and surfacing as a bogus recovered ride at the next boot.
+            // `object_owed` compares the id the executor has already opened one for, so a served
+            // close owes nothing and a failed start still retries. Closing is not here at all: it
+            // is a `RecorderEffect`, served in the store phase above.
+            let owed = app.recorder.object_owed(opened_session);
+            if active != prev_active || owed.is_some() {
                 let mut name: heapless::String<64> = heapless::String::new();
                 if let Some(r) = active.and_then(|i| app.routes().get(i)) {
                     let _ = name.push_str(&r.name);
                 }
                 let active_id = active.and_then(|i| app.route_ids().get(i).copied());
                 crate::flat_store::reconcile_route(flat, active_id);
-                if let Some(id) = session {
+                if let Some(id) = owed {
                     ride_recorder.open(flat, id, &name, now).await;
+                    // A start the card refused leaves no object, so the id stays unclaimed and the
+                    // next iteration retries it. A start that took claims it once and for all.
+                    if ride_recorder.open_session() == Some(id) {
+                        opened_session = Some(id);
+                    }
                 }
                 if ride_recorder.take_warning() {
                     exec.facts.raise_warnings(obc_app::WarningFlags::REC_ERROR);
                 }
                 prev_active = active;
-                prev_session = session;
             }
 
             // Cache the active route's chunk index across frames: rebuild it (the header + full chunk-meta
@@ -2259,7 +2268,7 @@ pub(crate) async fn run_app(
                 }
                 // The flat recorder appends the exact final 20-byte sample bytes to its bounded tail.
                 // Card I/O happens only at the ~10 s checkpoint below, never inside the pass.
-                let track_dyn = ride_recorder.track_sink(session);
+                let track_dyn = ride_recorder.track_sink(app.ride_session());
 
                 // ═══ **One `App::run_pass` per frame** (#1433 §6, #1397 S6b) ═══
                 //
@@ -2268,6 +2277,23 @@ pub(crate) async fn run_app(
                 // Fourteen stages in, one bounded `PassPlan` out. Three builds: the VCOM-streamed GPS +
                 // altimeter + compass (`debug-uart`); the real SAM-M10Q + BMP581, coherent per fix
                 // (default); or the SynthLocation square loop, no other sensors (`synth`).
+                // ── The store's own level, reported *after* this frame's store phase ──
+                //
+                // The store's monotonic sequence **is** the revision, so the board reports a level
+                // rather than counting commit edges. Reported here, and not with the other levels
+                // at the top of the frame, because this frame's store phase is where a commit
+                // happens: a ride finalized above moves the sequence, and a level sampled before
+                // it would carry the pre-commit value.
+                //
+                // That ordering is the whole of "one saved ride is one catalog read". Both the
+                // commit's `StoreRevision` and Recorder's `RideFinalized` then reach the **same**
+                // pass, and both arm the one `refresh_owed` bit, which `CatalogState::next_effect`
+                // spends when it issues the read. Sampling before the phase split them across two
+                // passes, and the domain issued the read twice for one save.
+                exec.facts.note_store_revision(obc_app::device_core::StoreRevision {
+                    store: BOARD_STORE,
+                    revision: obc_app::device_core::Revision::new(flat.sequence()),
+                });
                 let clock = obc_app::device_core::PassClock { ride: RideClock(now), ui: InputClock(now) };
                 // The hub sources (`consumer.location()` etc.) are constructed as **call-expression
                 // temporaries**, exactly as they were at the `app.tick` sites this replaces: they are
@@ -2995,15 +3021,16 @@ pub(crate) async fn run_app(
         // The pass's own deadline (`plan.next_wake_ms`), plus the reasons to come straight back: the
         // plan's `immediate` — a later-to-earlier connection is in flight, so work already decided
         // would otherwise sit until the next rider input — and the executor's own `owed`: an answer
-        // to consume, an effect to serve, or a derived read it was asked for. The rider's **ride
-        // save** used to need a term of its own here, because it sat in the legacy mailbox where
-        // nothing else could see it; it is an effect in this pass's plan now (#1398), so `owed`
+        // to consume, an effect to serve, a derived read it was asked for, or a residual command in
+        // the legacy mailbox. That last one is the rider's **forget-phone**, which nothing else here
+        // can see, and which the guarded hold that posts it leaves on a static screen. The ride
+        // save was the other half until #1398; it is an effect in this pass's plan now, so `owed`
         // covers it. An outstanding store round trip takes the short animation cadence instead,
         // because spinning at full speed against a commit that runs for hundreds of milliseconds
         // would starve the task answering it.
         let next_ms = if animating || exec.polling_store() {
             Some(LOOP_MS as u32)
-        } else if immediate || exec.owed() {
+        } else if immediate || exec.owed(app.has_pending_residual_command()) {
             Some(0)
         } else {
             next_wake_ms

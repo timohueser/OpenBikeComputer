@@ -218,7 +218,7 @@ pub(crate) const HEADING_MOVE_M: u32 = 50;
 
 impl RideEngine {
     define_placement_constructors!(
-        /// The boot state: no route caches, no session, nothing sensed yet.
+        /// The boot state: no route caches, no matcher lock, nothing sensed yet.
         pub(crate) fn new();
         /// Initialize `slot` **in place** to the [`new`](RideEngine::new) state — the placement
         /// path the firmware boots through (the waypoint table and climb caches are KB-scale;
@@ -261,8 +261,8 @@ impl RideEngine {
     /// key held here — see [`relock_matcher`](RideEngine::relock_matcher).
     ///
     /// - The **matcher** follows the *navigated route*: a load or a "Swap route only" re-locks it.
-    /// - The **accumulators, trail and pace window** follow the *ride session*, which is Recorder's
-    ///   — see [`App::restart_ride_state`](crate::App). A swap keeps the session, so it keeps them.
+    /// - The **accumulators, trail and pace window** follow the *ride session*, which is Recorder's:
+    ///   the pass applies them on its session edge. A swap keeps the session, so it keeps them.
     /// - `route_total_m` mirrors the active route's length for the riding views (0 when none
     ///   loaded). A change here means the *drawable* route appeared or vanished — a load, or a
     ///   transient SD glitch recovering where the geometry becomes streamable a frame or two later.

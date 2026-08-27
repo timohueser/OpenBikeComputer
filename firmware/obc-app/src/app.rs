@@ -2590,6 +2590,17 @@ impl App {
         }
     }
 
+    /// Whether this device can record a ride at all — [`Capabilities::recorder`], the level stage 12
+    /// calculated last pass.
+    ///
+    /// A **host** reads it for the same reason a screen does: to not ask for something the device
+    /// cannot do. A host that asks anyway is told, through the recording warning, and the request is
+    /// kept — but a page or a tour that opens a ride *for* the rider should wait for the device to
+    /// report its card rather than put a card on glass at boot.
+    pub fn can_record(&self) -> bool {
+        self.pass.capabilities.recorder.record
+    }
+
     /// Whether a ride is open — recording, paused, or closing. The one read of Recorder's session
     /// state a host or a suite needs; nothing else keeps a copy of it.
     pub fn recording(&self) -> bool {
@@ -3380,11 +3391,11 @@ impl App {
 // ==================== The typed app↔host protocol (FAR-07, #800) ====================
 //
 // One vocabulary, one pending state. Every host-directed one-shot/counter is drained here as a
-// typed [`HostCommand`] through the residual drain — two classes, one door, with the pending state
+// typed [`HostCommand`] through the residual drain — one class, one door, with the pending state
 // living once inside `App` (a typed slot, a counter, or a derived predicate).
 
 impl App {
-    /// Drain **only** the residual classes — the two a typed executor still performs
+    /// Drain **only** the residual classes — the one a typed executor still performs
     /// ([`device_core::residual`](crate::device_core::residual)).
     ///
     /// **This is not a whole-order walk with a filter afterwards, and the difference is the whole
@@ -3398,8 +3409,8 @@ impl App {
     ///
     /// That is not hypothetical: it is what a board seam running between the drain and
     /// [`run_pass`](App::run_pass) does on every frame — the debug link's route plan, the phone's
-    /// remote update check, a BLE clock stamp arming a settings write. Asking for the two classes
-    /// by name is what makes those seams safe, and it leaves
+    /// remote update check, a BLE clock stamp arming a settings write. Asking for the class by
+    /// name is what makes those seams safe, and it leaves
     /// [`assert_residual`](crate::device_core::residual::assert_residual) as the belt-and-braces
     /// check it was meant to be rather than the thing that notices.
     pub fn drain_residual_commands<const N: usize>(&mut self, out: &mut HostMailbox<N>) -> DrainStatus {
@@ -3417,6 +3428,27 @@ impl App {
             }
         }
         DrainStatus::Complete
+    }
+
+    /// Whether the **residual** [`ForgetBond`](crate::HostCommand::ForgetBond) is pending — the one
+    /// class a typed executor still drains
+    /// ([`device_core::residual`](crate::device_core::residual)). Consumes nothing.
+    ///
+    /// A typed executor's wake is blind to the legacy mailbox, and this class is not an effect, so
+    /// `EffectSlots::has_pending` cannot see it either. The removal is posted by one pass and
+    /// performed by the **next** pass's drain, so without folding this in that "next pass" is the
+    /// next *wake* — and the guarded hold that posts it leaves a static screen, so the next wake is
+    /// whenever the rider presses something else.
+    ///
+    /// The ride save used to be the other half of this. It is a `RecorderEffect` in the pass's own
+    /// plan since #1398, so it is covered by the effects and needs no term here.
+    ///
+    /// Deliberately **not** [`has_pending_host_command`](App::has_pending_host_command): that one
+    /// includes the two derived cues, which are levels re-derived on every drain, so folding it
+    /// into a wake would spin the loop forever. The residual class is a one-shot the drain clears,
+    /// which is what makes this safe to ask for an immediate pass on.
+    pub fn has_pending_residual_command(&self) -> bool {
+        crate::device_core::residual::RESIDUAL_CLASSES.iter().any(|&c| self.peek_host_command(c))
     }
 
     /// Whether the "Installing update" card is on the stack — the frame an arming executor freezes

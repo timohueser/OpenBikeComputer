@@ -226,7 +226,10 @@ mod tests {
             avg_power: None,
             max_power: None,
         };
-        assert!(ts.finalize(stats).is_some(), "the fixture ride is committed");
+        assert!(
+            matches!(ts.finalize(stats), obc_app::recorder::RideClose::Committed(_)),
+            "the fixture ride is committed"
+        );
     }
 
     /// The **folder-backed** ride store passes the shared `obc-host-core` conformance suite: unknown
