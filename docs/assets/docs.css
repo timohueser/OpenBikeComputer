@@ -197,6 +197,14 @@ body:not(.has-toc) .layout { grid-template-columns: var(--sidebar-w) minmax(0, 1
 .callout p:last-child { margin-bottom: 0; }
 .callout strong { color: var(--ink); }
 
+.copy-notice {
+  margin: 0 0 26px; padding: 11px 15px;
+  background: rgba(227, 173, 51, 0.12); border: 1px solid rgba(207, 106, 42, 0.25);
+  border-left: 4px solid var(--coral); border-radius: 10px;
+  color: var(--ink-soft); font-size: 14px;
+}
+.copy-notice strong { color: var(--ink); }
+
 /* tables */
 .table-wrap { overflow-x: auto; margin: 20px 0; }
 .prose table { border-collapse: collapse; width: 100%; font-size: 15px; }

@@ -396,6 +396,17 @@ def split_front_matter(text):
     return {}, text
 
 
+def copy_notice(state):
+    if state not in ("ai", "mixed"):
+        return ""
+    return (
+        '<aside class="copy-notice" role="note">'
+        "<strong>Work in progress.</strong> This page is still at least partly AI-generated "
+        "and will be reviewed and rewritten before release."
+        "</aside>"
+    )
+
+
 def page_url(path):
     """Source path (no extension) -> root-relative URL. 'index'->'', 'a/index'->'a/',
     'a/b'->'a/b/'."""
@@ -475,7 +486,7 @@ def load_posts():
             sys.exit("blog: %s has a bad date %r (want YYYY-MM-DD)" % (src, fm["date"]))
         posts.append({
             "slug": slug, "dir": src.parent, "title": fm["title"], "date": date,
-            "description": fm.get("description", ""), "body": body,
+            "description": fm.get("description", ""), "body": body, "copy": fm.get("copy", ""),
             "minutes": read_minutes(body),
         })
     posts.sort(key=lambda p: (p["date"].isoformat(), p["slug"]), reverse=True)
@@ -637,6 +648,7 @@ def build_blog(rendered):
             "date_iso": p["date"].isoformat(),
             "date_human": human_date(p["date"]),
             "minutes": str(p["minutes"]),
+            "copy_notice": copy_notice(p["copy"]),
             "content": content,
             "prevnext": prevnext_html(posts, idx),
         })
@@ -754,6 +766,7 @@ def main():
             "css": base + "assets/docs.css",
             "nav": render_nav(nav, url, base),
             "toc": render_toc(toc),
+            "copy_notice": copy_notice(fm.get("copy", "")),
             "content": content,
             "has_toc": "has-toc" if render_toc(toc) else "",
         })
