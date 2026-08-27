@@ -434,9 +434,12 @@ impl SimGui {
         // Device-info built-ins for the System settings screen (T8 item 6): firmware version (the
         // sim's crate version) + the loaded map's name (filename stem) & OBCM version. The card-free
         // scan is answered per-frame in `update` when the screen posts its on-entry request.
-        // The panel-light capability, straight from the port that answers it — the drawer's root
-        // row is built from this (#1515 D2).
-        app.set_backlight_available(obc_ports::Backlight::available(&crate::panel_power::SimBacklight::new()));
+        // The panel-light capability, straight from the port the window will actually drive — the
+        // drawer's root row is built from this (#1515 D2). `--no-backlight` builds the board's
+        // lightless platform instead, so the window shows the three-control sheet and never scales
+        // the blit.
+        let backlight = crate::panel_power::SimBacklight::new(!args.no_backlight);
+        app.set_backlight_available(obc_ports::Backlight::available(&backlight));
         app.set_fw_version(env!("CARGO_PKG_VERSION"));
         let map_name = map.source.display_name();
         app.set_map_info(&map_name, map_tables.version);
@@ -481,7 +484,7 @@ impl SimGui {
             gpx_label: None,
             gpx_error: None,
             quit: false,
-            backlight: crate::panel_power::SimBacklight::new(),
+            backlight,
             power: crate::panel_power::SimPowerOff,
             powering_off_at: None,
             texture: None,

@@ -246,12 +246,14 @@ long press, and no release. The chord stays latched until both buttons are up.
 | Chord | Meaning |
 | --- | --- |
 | Up + Select | Open or close the universal quick drawer |
-| Down + Back | Open the current screen's contextual drawer |
+| Down + Back | The current screen's contextual drawer. Recognized, but it does nothing yet |
 | Up + Down | Reserved |
 | Select + Back | Reserved |
 
 A reserved chord is recognized and swallowed. It does nothing. This keeps a squeeze of two buttons
-from becoming two unrelated actions.
+from becoming two unrelated actions. Down + Back is swallowed for the same reason: the contextual
+drawer has no content until each screen declares it, and until then the squeeze must not become a
+step and a Back.
 
 Because a chord can start with a direction button, the first step of Up or Down waits for the
 100 ms window. A release inside the window steps immediately, so a tap does not feel slower.
@@ -260,9 +262,12 @@ Automatic repeat measures its delay from the press edge, so a held button keeps 
 ## Drawers
 
 A drawer is a sheet that the device draws over the current screen. The universal quick drawer comes
-down from the top and holds four device-wide controls: brightness, the Bluetooth radio, the central
+down from the top and holds the device-wide controls: brightness, the Bluetooth radio, the central
 settings, and power. Brightness and power open a nested page. Back closes the sheet and returns the
 rider to the screen below it.
+
+A platform whose panel has no controllable light does not show the brightness control, and the sheet
+holds the remaining three. A control the hardware cannot obey is worse than no control.
 
 The screen under a drawer is **frozen**. A drawer states its own facts as its render key — the page,
 the selected control, and the staged value — and that key replaces the facts of the screens below.

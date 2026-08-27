@@ -98,17 +98,18 @@ fn a_blocking_modal_refuses_the_chord() {
     chord(&mut app, &mut f, Button::Up, Button::Select, 1_000);
     assert!(matches!(app.top_screen(), Screen::MapTransfer(_)), "bytes are landing — no sheet over that");
 
-    // The terminal "Installing update" card, the last frame before the warm reset.
+    // The terminal "Installing update" card, the last frame before the warm reset. Driven through
+    // the domain's own landing seam, which is what actually puts the card up — `dfu_request` only
+    // states the intent, and a pass alone never lands it.
     let mut app = lit();
     let mut f = Frames::new();
-    app.debug_request_dfu_install();
-    for ms in [100, 200, 300, 400] {
-        quiet_pass(&mut app, ms);
-    }
-    if matches!(app.top_screen(), Screen::DfuInstalling(_)) {
-        chord(&mut app, &mut f, Button::Up, Button::Select, 1_000);
-        assert!(matches!(app.top_screen(), Screen::DfuInstalling(_)), "nothing opens over the install card");
-    }
+    app.post_dfu_landing(crate::card_scheduler::DfuLanding::InstallBegan);
+    quiet_pass(&mut app, 100);
+    // Required, not assumed: a setup that stops reaching the card would otherwise retire this case
+    // silently, and the case is the whole point of the third `blocking()` row.
+    assert!(matches!(app.top_screen(), Screen::DfuInstalling(_)), "the install card is up");
+    chord(&mut app, &mut f, Button::Up, Button::Select, 1_000);
+    assert!(matches!(app.top_screen(), Screen::DfuInstalling(_)), "nothing opens over the install card");
 }
 
 /// The **contextual** chord is recognised — so a Down+Back squeeze can never leak a step and a
@@ -129,10 +130,12 @@ fn the_context_chord_is_swallowed_and_does_nothing() {
 fn no_squeeze_stacks_a_second_sheet() {
     let mut app = lit();
     let mut f = Frames::new();
-    let ms = chord(&mut app, &mut f, Button::Up, Button::Select, 1_000);
+    let mut ms = chord(&mut app, &mut f, Button::Up, Button::Select, 1_000);
     let depth = app.debug_stack_len();
     for (a, b) in [(Button::Up, Button::Down), (Button::Select, Button::Back), (Button::Down, Button::Back)] {
-        chord(&mut app, &mut f, a, b, ms);
+        // Each squeeze starts where the last one ended: `chord` returns the millis past its own
+        // settle for exactly this, and replaying at the earlier clock is input no device can make.
+        ms = chord(&mut app, &mut f, a, b, ms);
         assert_eq!(app.debug_stack_len(), depth, "{a:?}+{b:?} stacked something");
     }
 }
