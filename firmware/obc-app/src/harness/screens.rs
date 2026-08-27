@@ -10,7 +10,8 @@ use crate::screen::{
     RouteOverviewScreen, RouteSwapScreen, Screen, ScreenTick, Stack, StatisticsScreen, Transition,
 };
 use crate::{
-    App, AppState, CameraMode, Gesture, Mode, PanBasis, PanTool, RecorderIntent, RouteSummary, Settings, MAX_ROUTES,
+    App, AppState, CameraMode, Gesture, Mode, PanBasis, PanTool, RecorderIntent, RouteSummary, Settings, WarningFlags,
+    MAX_ROUTES,
 };
 use embedded_graphics::prelude::RgbColor; // for `Rgb888::r()` in the compositing snapshot
 use obc_map_scene::BBox;
@@ -141,43 +142,76 @@ fn map_turn_saturates_at_min_zoom() {
     assert_eq!(st.zoom, saturated, "already at MIN_ZOOM — further zoom-out is a no-op");
 }
 
+/// **The ride context is declared by all four riding views and by nothing else** (#1515 D3). It is
+/// the one declaration a screen makes; everything the sheet then does is the generic drawer's.
 #[test]
-fn map_back_hold_opens_the_ride_menu_without_changing_mode() {
-    let mut rec = RecorderMachine::new();
-    let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Riding));
-    let t = MapScreen::new().handle(Gesture::BackHold, &mut ctx(&mut st, &mut act, &mut rec));
-    assert!(matches!(t, Transition::Push(Screen::RideMenu(_))));
-    assert_eq!(act.mode, Mode::Riding, "opening ride chrome must not pause recording");
+fn exactly_the_four_riding_views_declare_the_ride_context() {
+    let declared = |s: &Screen| s.context().is_some();
+    assert!(declared(&Screen::Map(MapScreen::new())));
+    assert!(declared(&Screen::Statistics(StatisticsScreen::new())));
+    assert!(declared(&Screen::Climb(ClimbScreen::new())));
+    assert!(declared(&Screen::RideControl(RideControl::new())));
+    // …and a representative of every other family declares nothing, so the chord does nothing.
+    assert!(!declared(&Screen::Home(HomeScreen::new())));
+    assert!(!declared(&Screen::Menu(MenuScreen::new())));
+    assert!(!declared(&Screen::RouteMenu(RouteMenuScreen::new())));
+    assert!(!declared(&Screen::Settings(crate::screen::SettingsScreen::new())));
 }
 
+/// The chord opens the sheet over a riding view and does nothing anywhere else — the "unsupported
+/// screens must not show an empty drawer" rule, driven through the one drawer owner.
 #[test]
-fn statistics_and_climb_back_hold_open_the_same_ride_menu() {
-    let mut rec = RecorderMachine::new();
-    let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Riding));
-    let t = StatisticsScreen::new().handle(Gesture::BackHold, &mut ctx(&mut st, &mut act, &mut rec));
-    assert!(matches!(t, Transition::Push(Screen::RideMenu(_))));
-    assert_eq!(act.mode, Mode::Riding);
+fn the_context_chord_opens_a_sheet_only_where_content_is_declared() {
+    let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
+    assert!(app.apply_chord(crate::input::Chord::Context), "the riding Map declares a context");
+    assert!(matches!(app.top_screen(), Screen::ContextDrawer(_)));
+    assert!(app.apply_chord(crate::input::Chord::Context), "the same chord closes it");
+    assert!(matches!(app.top_screen(), Screen::Map(_)));
 
-    let t = ClimbScreen::new().handle(Gesture::BackHold, &mut ctx(&mut st, &mut act, &mut rec));
-    assert!(matches!(t, Transition::Push(Screen::RideMenu(_))));
-    assert_eq!(act.mode, Mode::Riding);
+    apply(&mut app.ui.stack, Transition::Push(Screen::Menu(MenuScreen::new())));
+    assert!(!app.apply_chord(crate::input::Chord::Context), "the Menu declares nothing");
+    assert!(matches!(app.top_screen(), Screen::Menu(_)), "and nothing was pushed over it");
 }
 
+/// **Mutual exclusion**, both ways: one sheet at a time, and the other chord swaps rather than
+/// stacks. The base underneath is untouched either way.
 #[test]
-fn paused_back_hold_opens_the_ride_menu_and_stays_paused() {
-    let mut rec = RecorderMachine::new();
-    let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Paused));
-    let t = RideControl::new().handle(Gesture::BackHold, &mut ctx(&mut st, &mut act, &mut rec));
-    assert!(matches!(t, Transition::Push(Screen::RideMenu(_))));
-    assert_eq!(act.mode, Mode::Paused, "opening the ride menu must not resume a paused session");
+fn the_two_drawers_swap_rather_than_stack() {
+    let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
+    let depth = app.ui.stack.len();
+    assert!(app.apply_chord(crate::input::Chord::Quick));
+    assert!(app.apply_chord(crate::input::Chord::Context), "the context chord takes the quick sheet off");
+    assert!(matches!(app.top_screen(), Screen::ContextDrawer(_)));
+    assert_eq!(app.ui.stack.len(), depth + 1, "one sheet, not two");
+    assert!(app.apply_chord(crate::input::Chord::Quick), "and back the other way");
+    assert!(matches!(app.top_screen(), Screen::QuickDrawer(_)));
+    assert_eq!(app.ui.stack.len(), depth + 1);
+    assert!(matches!(app.ui.stack.first(), Some(Screen::Home(_))));
 }
 
-/// Whole-App ride-chrome path: Map -> back-hold -> Ride menu -> press **Up ahead** (epic #946, U3);
-/// row gestures preserve the tracking session/mode, and Back returns one stack level at a time to
-/// the exact riding view that opened the menu. Also pins the **corridor-snapshot lifecycle** the
-/// screen drives through the App: armed while the timeline is up, disarmed the moment it isn't.
+/// Opening the sheet from a paused ride neither resumes nor re-pauses the session, exactly as the
+/// compass menu it replaced did not.
 #[test]
-fn ride_menu_up_ahead_navigation_preserves_session_and_returns_to_map() {
+fn the_ride_context_opens_over_a_paused_ride_without_touching_the_session() {
+    let mut app = App::new(AppState::new(0, 0, 1.0));
+    app.test_start_ride();
+    apply(&mut app.ui.stack, Transition::Push(Screen::RideControl(RideControl::new())));
+    app.activity.mode = Mode::Paused;
+    let session = app.ride_session();
+    assert!(app.apply_chord(crate::input::Chord::Context));
+    assert!(matches!(app.top_screen(), Screen::ContextDrawer(_)));
+    assert_eq!(app.activity.mode, Mode::Paused);
+    assert!(app.recording(), "the sheet opened over an open ride and left it open");
+    assert_eq!(app.ride_session(), session, "…on the same session");
+}
+
+/// Whole-App ride-chrome path: Map -> the context sheet -> press **Up ahead** (epic #946, U3); row
+/// gestures preserve the tracking session/mode, and Back returns to the riding view the rider
+/// squeezed from — **one** Back, because the row replaced the sheet rather than stacking over it.
+/// Also pins the **corridor-snapshot lifecycle** the screen drives through the App: armed while the
+/// timeline is up, disarmed the moment it isn't.
+#[test]
+fn the_up_ahead_row_preserves_the_session_and_one_back_returns_to_the_map() {
     let mut app = App::new(AppState::new(0, 0, 1.0));
     app.test_mount_store();
     app.test_start_ride();
@@ -186,9 +220,9 @@ fn ride_menu_up_ahead_navigation_preserves_session_and_returns_to_map() {
     assert_eq!(app.activity.mode, Mode::Riding);
     assert!(!app.corridor_snapshot_pending(), "nothing asks for a corridor query on the map");
 
-    app.apply_gesture(Gesture::BackHold);
-    assert!(matches!(app.top_screen(), Screen::RideMenu(_)));
-    app.apply_gesture(Gesture::Press); // north/default station = Up ahead
+    assert!(app.apply_chord(crate::input::Chord::Context));
+    assert!(matches!(app.top_screen(), Screen::ContextDrawer(_)));
+    app.apply_gesture(Gesture::Press); // the first row = Up ahead
     assert!(matches!(app.top_screen(), Screen::UpAhead(_)));
     assert!(app.corridor_snapshot_pending(), "entering arms the snapshot (and asks for the Reader)");
 
@@ -202,16 +236,14 @@ fn ride_menu_up_ahead_navigation_preserves_session_and_returns_to_map() {
     assert!(app.corridor_snapshot_pending(), "the applied filter re-keyed the snapshot");
 
     app.apply_gesture(Gesture::Back);
-    assert!(matches!(app.top_screen(), Screen::RideMenu(_)));
+    assert!(matches!(app.top_screen(), Screen::Map(_)), "one Back: the row replaced the sheet");
     assert!(!app.corridor_snapshot_pending(), "leaving the timeline stops asking for the Reader");
-    app.apply_gesture(Gesture::Back);
-    assert!(matches!(app.top_screen(), Screen::Map(_)));
     assert_eq!(app.activity.mode, Mode::Riding);
     assert_eq!(app.ride_session(), session);
 }
 
 /// The **source-scope arming rule** (epic #946, U4), end to end through the App: the Ride-settings
-/// value is read when the ride menu opens the timeline, and a rider who asked for *waypoints only*
+/// value is read when the context row opens the timeline, and a rider who asked for *waypoints only*
 /// never arms the corridor snapshot at all — so the board is never asked to build a map `Reader`
 /// for a query whose rows the list would refuse to draw. The other two scopes arm it as U3 did.
 #[test]
@@ -224,8 +256,8 @@ fn the_up_ahead_source_setting_decides_whether_the_corridor_is_armed() {
         app.set_settings(Settings { up_ahead_source: source, ..Settings::default() });
         app.test_start_ride();
         app.activity.progress_m = 1_500;
-        app.apply_gesture(Gesture::BackHold); // Map → Ride menu
-        app.apply_gesture(Gesture::Press); // north station = Up ahead
+        assert!(app.apply_chord(crate::input::Chord::Context)); // Map → the ride context sheet
+        app.apply_gesture(Gesture::Press); // the first row = Up ahead
         assert!(matches!(app.top_screen(), Screen::UpAhead(_)), "{source:?} still opens the timeline");
         app
     };
@@ -336,17 +368,15 @@ fn menu_needle_sweep_arms_then_settles() {
 // The Home → Menu → Route menu → Map flow.
 
 #[test]
-fn home_press_and_back_hold_both_open_the_menu() {
+fn home_press_opens_the_menu_and_a_step_is_ignored() {
     let mut rec = RecorderMachine::new();
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Idle));
-    // Both the press and the back-hold now open the compass Menu — the single door into the app.
     let p = HomeScreen::new().handle(Gesture::Press, &mut ctx(&mut st, &mut act, &mut rec));
     assert!(matches!(p, Transition::Push(Screen::Menu(_))), "press opens the Menu");
-    let b = HomeScreen::new().handle(Gesture::BackHold, &mut ctx(&mut st, &mut act, &mut rec));
-    assert!(matches!(b, Transition::Push(Screen::Menu(_))), "back-hold opens the Menu too");
-    // A step on Home is ignored.
     let t = HomeScreen::new().handle(Gesture::Step(1), &mut ctx(&mut st, &mut act, &mut rec));
     assert!(matches!(t, Transition::None), "Up/Down steps on Home are ignored");
+    // Back-hold also reaches the Menu from Home, but through the global escape rather than through
+    // this screen — see `the_global_escape_reaches_the_menu_from_every_family`.
 }
 
 #[test]
@@ -781,9 +811,9 @@ fn app_with_pending_swap_on_gamma() -> App {
     app.apply_gesture(Gesture::Press); // START RIDE → Map, session running
     assert_eq!(app.mode(), Mode::Riding);
     assert_eq!(app.active_route_index(), Some(0));
-    app.apply_gesture(Gesture::BackHold); // Map → Ride menu (Waypoints selected)
-    app.apply_gesture(Gesture::Step(3)); // → Routes station
-    app.apply_gesture(Gesture::Press); // Ride menu → Route menu
+    assert!(app.apply_chord(crate::input::Chord::Context)); // Map → the ride context sheet
+    app.apply_gesture(Gesture::Step(3)); // → the Routes row
+    app.apply_gesture(Gesture::Press); // the sheet → Route menu
     app.apply_gesture(Gesture::Step(2)); // highlight Gamma
     app.apply_gesture(Gesture::Press); // a different route mid-ride → the swap prompt
     assert!(matches!(app.top_screen(), Screen::RouteSwap(_)), "the swap prompt is up");
@@ -966,65 +996,62 @@ fn pan_press_toggles_move_and_zoom() {
 }
 
 /// With a route loaded, Back-hold changes the Route/Free family while Select-hold changes only an
-/// already-active Free axis. Select-hold is inert in Zoom; Back-hold remains the deliberate family
-/// switch and always lands in Move, avoiding a dead-feeling hold.
+/// already-active Free axis, and is inert in Zoom and Route.
+///
+/// **The ring is where the family lives since #1515 D3** — Back-hold became the global escape, so
+/// the Route/Free switch joined the tool on the tap that already changed mode.
 #[test]
-fn pan_holds_separate_route_family_from_free_axis() {
+fn the_pan_ring_walks_route_move_free_move_and_zoom() {
     let mut rec = RecorderMachine::new();
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Riding));
     act.active_route = Some(0);
     act.progress_m = 500;
     st.enter_pan(true, act.progress_m);
-    assert_eq!(st.pan.unwrap().basis, PanBasis::Route);
+    let mode = |st: &AppState| (st.pan.unwrap().basis, st.pan.unwrap().tool);
+    assert_eq!(mode(&st), (PanBasis::Route, PanTool::Move), "a routed pan opens on the route");
 
+    // One lap of the ring.
     MapScreen::new().handle(Gesture::Press, &mut ctx(&mut st, &mut act, &mut rec));
-    assert_eq!(st.pan.unwrap().tool, PanTool::Zoom);
+    assert_eq!(mode(&st), (PanBasis::Vertical, PanTool::Move), "Route Move -> Free Move");
+    MapScreen::new().handle(Gesture::Press, &mut ctx(&mut st, &mut act, &mut rec));
+    assert_eq!(mode(&st), (PanBasis::Vertical, PanTool::Zoom), "Free Move -> Zoom");
     let zoom_state = st.pan.unwrap();
     MapScreen::new().handle(Gesture::Hold, &mut ctx(&mut st, &mut act, &mut rec));
     assert_eq!(st.pan.unwrap(), zoom_state, "Select-hold is inert in Zoom");
-    MapScreen::new().handle(Gesture::BackHold, &mut ctx(&mut st, &mut act, &mut rec));
-    assert_eq!((st.pan.unwrap().basis, st.pan.unwrap().tool), (PanBasis::Vertical, PanTool::Move));
-
-    MapScreen::new().handle(Gesture::Hold, &mut ctx(&mut st, &mut act, &mut rec));
-    assert_eq!(st.pan.unwrap().basis, PanBasis::Horizontal);
-    MapScreen::new().handle(Gesture::Hold, &mut ctx(&mut st, &mut act, &mut rec));
-    assert_eq!(st.pan.unwrap().basis, PanBasis::Vertical, "Select-hold stays inside Free");
-
     MapScreen::new().handle(Gesture::Press, &mut ctx(&mut st, &mut act, &mut rec));
-    assert_eq!(st.pan.unwrap().tool, PanTool::Zoom);
-    MapScreen::new().handle(Gesture::BackHold, &mut ctx(&mut st, &mut act, &mut rec));
-    assert_eq!(
-        (st.pan.unwrap().basis, st.pan.unwrap().tool),
-        (PanBasis::Route, PanTool::Move),
-        "Free Zoom switches to ordinary Route Move"
-    );
-    MapScreen::new().handle(Gesture::BackHold, &mut ctx(&mut st, &mut act, &mut rec));
-    assert_eq!(st.pan.unwrap().basis, PanBasis::Vertical, "Back-hold restores the last-used Free axis");
+    assert_eq!(mode(&st), (PanBasis::Route, PanTool::Move), "Zoom -> Route Move closes the lap");
+
+    // The axis survives the lap: pick Horizontal in Free, go round, and come back to it.
+    MapScreen::new().handle(Gesture::Press, &mut ctx(&mut st, &mut act, &mut rec));
+    MapScreen::new().handle(Gesture::Hold, &mut ctx(&mut st, &mut act, &mut rec));
+    assert_eq!(mode(&st), (PanBasis::Horizontal, PanTool::Move), "Select-hold flips the Free axis");
+    for _ in 0..3 {
+        MapScreen::new().handle(Gesture::Press, &mut ctx(&mut st, &mut act, &mut rec));
+    }
+    assert_eq!(mode(&st), (PanBasis::Horizontal, PanTool::Move), "a lap returns to the axis in use");
+
+    // Select-hold never leaves the Free family.
+    MapScreen::new().handle(Gesture::Hold, &mut ctx(&mut st, &mut act, &mut rec));
+    assert_eq!(mode(&st), (PanBasis::Vertical, PanTool::Move));
 }
 
-/// Without a route, Back-hold has no other family to enter. In Zoom it still returns to Free Move,
-/// avoiding a dead gesture; in Move it is inert. Select-hold alternates the two usable Free axes.
+/// Without a route the ring is its two remaining stations — exactly the Move/Zoom toggle a
+/// route-less pan had before the family joined the tap. Select-hold alternates the Free axes.
 #[test]
-fn pan_without_route_stays_in_free_axes() {
+fn the_route_less_pan_ring_is_free_move_and_zoom() {
     let mut rec = RecorderMachine::new();
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Riding));
     st.enter_pan(false, 0);
-    MapScreen::new().handle(Gesture::Press, &mut ctx(&mut st, &mut act, &mut rec));
-    assert_eq!(st.pan.unwrap().tool, PanTool::Zoom);
-    MapScreen::new().handle(Gesture::BackHold, &mut ctx(&mut st, &mut act, &mut rec));
-    assert_eq!(
-        (st.pan.unwrap().basis, st.pan.unwrap().tool),
-        (PanBasis::Vertical, PanTool::Move),
-        "route-less Zoom returns to Free Move"
-    );
-    MapScreen::new().handle(Gesture::BackHold, &mut ctx(&mut st, &mut act, &mut rec));
-    assert_eq!(st.pan.unwrap().basis, PanBasis::Vertical, "Free Move has no Route family to enter");
+    let mode = |st: &AppState| (st.pan.unwrap().basis, st.pan.unwrap().tool);
+    for expected in [(PanBasis::Vertical, PanTool::Zoom), (PanBasis::Vertical, PanTool::Move)] {
+        MapScreen::new().handle(Gesture::Press, &mut ctx(&mut st, &mut act, &mut rec));
+        assert_eq!(mode(&st), expected, "no Route station to land on");
+    }
     MapScreen::new().handle(Gesture::Hold, &mut ctx(&mut st, &mut act, &mut rec));
     assert_eq!(st.pan.unwrap().basis, PanBasis::Horizontal);
-    MapScreen::new().handle(Gesture::BackHold, &mut ctx(&mut st, &mut act, &mut rec));
-    assert_eq!(st.pan.unwrap().basis, PanBasis::Horizontal, "Back-hold remains inert");
-    MapScreen::new().handle(Gesture::Hold, &mut ctx(&mut st, &mut act, &mut rec));
-    assert_eq!(st.pan.unwrap().basis, PanBasis::Vertical);
+    MapScreen::new().handle(Gesture::Press, &mut ctx(&mut st, &mut act, &mut rec));
+    MapScreen::new().handle(Gesture::Press, &mut ctx(&mut st, &mut act, &mut rec));
+    assert_eq!(mode(&st), (PanBasis::Horizontal, PanTool::Move), "the axis survives the shorter lap too");
 }
 
 /// Route movement advances and retreats the distance cursor rather than forcing north/south or
@@ -1046,20 +1073,15 @@ fn pan_route_steps_move_and_clamp_progress() {
     assert_eq!(st.pan.unwrap().route_progress_m, 1_000, "route movement clamps at the end");
 }
 
-/// Back tap is the reserved, one-gesture exit to Follow and implicitly recenters. Back-hold remains
-/// scoped to the Inspect family action and never falls through to the Ride menu.
+/// Back tap is the reserved, one-gesture exit to Follow and implicitly recenters.
 #[test]
-fn pan_back_exits_while_back_hold_stays_scoped() {
+fn pan_back_exits_and_recenters() {
     let mut rec = RecorderMachine::new();
     let (mut st, mut act) = (AppState::new(0, 0, 4.0), Activity::new(Mode::Riding));
     st.user_fix = Some(Fix::at(5000, 7000));
     st.enter_pan(false, 0);
     MapScreen::new().handle(Gesture::Step(2), &mut ctx(&mut st, &mut act, &mut rec)); // pan away
     assert_ne!((st.cam_lon, st.cam_lat), (7000, 5000));
-
-    let t = MapScreen::new().handle(Gesture::BackHold, &mut ctx(&mut st, &mut act, &mut rec));
-    assert!(matches!(t, Transition::None), "back-hold doesn't open the Ride menu while panning");
-    assert_eq!(st.pan.unwrap().basis, PanBasis::Vertical, "without a route, the family action is inert");
 
     let t = MapScreen::new().handle(Gesture::Back, &mut ctx(&mut st, &mut act, &mut rec));
     assert!(matches!(t, Transition::None));
@@ -1179,4 +1201,240 @@ fn bike_type_out_of_range_renders_fallback() {
     let mut ok: heapless::String<20> = heapless::String::new();
     app.nav_profiles().write_label(1, &mut ok);
     assert_eq!(ok.as_str(), "MTB", "an in-range index shows the map's name");
+}
+
+// ---- The global Back-hold escape (#1515 D3) ----------------------------------------------------
+
+/// **Back hold always reaches the main menu.** One representative of every screen family, plus the
+/// two places D2 explicitly could not leave — a drawer subpage and the power confirmation.
+///
+/// The mutant this kills: resolve `BackHold` after screen dispatch instead of before it, and each
+/// screen's inert arm swallows it again — the exception list the acceptance criteria forbid.
+#[test]
+fn the_global_escape_reaches_the_menu_from_every_family() {
+    /// One family: its name, and how to reach it from `[Home, Map]`.
+    type Family = (&'static str, fn(&mut App));
+    // Each case is (name, how to get there). The escape then has to land on the Menu.
+    let families: [Family; 7] = [
+        ("the Home root", |app| apply(&mut app.ui.stack, Transition::Home)),
+        ("a riding view", |app| apply(&mut app.ui.stack, Transition::Root(Screen::Map(MapScreen::new())))),
+        ("the paused page", |app| apply(&mut app.ui.stack, Transition::Push(Screen::RideControl(RideControl::new())))),
+        ("a settings page", |app| {
+            apply(&mut app.ui.stack, Transition::Push(Screen::Settings(crate::screen::SettingsScreen::new())));
+            apply(&mut app.ui.stack, Transition::Push(Screen::Display(crate::screen::DisplayScreen::new())));
+        }),
+        ("a nav list", |app| apply(&mut app.ui.stack, Transition::Push(Screen::RouteMenu(RouteMenuScreen::new())))),
+        // D2 handover 1: the quick drawer's own pages, including the power confirmation, whose
+        // `BackHold` arm was `Transition::None`.
+        ("the quick drawer", |app| {
+            assert!(app.apply_chord(crate::input::Chord::Quick));
+        }),
+        ("the power confirmation", |app| {
+            app.set_backlight_available(true); // the four-control row, so Power is the last one
+            assert!(app.apply_chord(crate::input::Chord::Quick));
+            for _ in 0..3 {
+                app.apply_gesture(Gesture::Step(1)); // brightness → … → the power control
+            }
+            app.advance_animations(InputClock(1_000)); // settle the sheet's open slide
+            app.apply_gesture(Gesture::Press); // → the guarded confirmation
+            assert!(app.top_wants_hold_fill(), "the confirmation is up — the page D2 could not leave");
+        }),
+    ];
+    for (name, reach) in families {
+        let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
+        reach(&mut app);
+        app.apply_gesture(Gesture::BackHold);
+        assert!(matches!(app.top_screen(), Screen::Menu(_)), "the escape did not leave {name}");
+        assert!(!app.ui.stack.iter().any(|s| s.is_overlay()), "a sheet survived the escape from {name}");
+    }
+}
+
+/// The context sheet is a drawer subpage too, and the escape takes it with it rather than burying
+/// it under the Menu.
+#[test]
+fn the_escape_takes_the_context_sheet_with_it() {
+    let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
+    assert!(app.apply_chord(crate::input::Chord::Context));
+    app.apply_gesture(Gesture::BackHold);
+    assert!(matches!(app.top_screen(), Screen::Menu(_)));
+    app.apply_gesture(Gesture::Back);
+    assert!(matches!(app.top_screen(), Screen::Map(_)), "Back out of the Menu lands on the base, not the sheet");
+}
+
+/// **It goes to the Menu, it never adds one.** A rider squeezing the bar repeatedly must not walk
+/// the stack toward `MAX_DEPTH`.
+#[test]
+fn a_repeated_escape_does_not_stack_menus() {
+    let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
+    app.apply_gesture(Gesture::BackHold);
+    let depth = app.ui.stack.len();
+    for _ in 0..6 {
+        app.apply_gesture(Gesture::BackHold);
+    }
+    assert_eq!(app.ui.stack.len(), depth, "the escape is idempotent once it has arrived");
+}
+
+/// The escape's refusal set, driven rather than read off the table: a **blocking** modal refuses
+/// both the chord and the escape, and the recovered-ride card refuses only the escape — a sheet
+/// over it is harmless, but leaving it would strand the recovered recording that Back already
+/// cannot dismiss.
+#[test]
+fn a_card_the_rider_must_answer_refuses_the_escape() {
+    let mut app = App::new(AppState::new(0, 0, 1.0));
+    app.set_ble_status(crate::BleStatus { link: crate::BleLink::Connected, paired: false, passkey: Some(123_456) });
+    assert!(matches!(app.top_screen(), Screen::Passkey(_)), "the passkey card is up");
+    app.apply_gesture(Gesture::BackHold);
+    assert!(matches!(app.top_screen(), Screen::Passkey(_)), "a blocking modal refuses the escape");
+
+    // A sheet the rider opened *over* the recovery card is not consent to walk away from it: the
+    // refusal is asked of the base, not of whatever is on top.
+    let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+    assert!(app.offer_damaged_ride(), "the recovery card is offered");
+    assert!(app.apply_chord(crate::input::Chord::Quick), "…and a quick sheet over it is harmless");
+    app.apply_gesture(Gesture::BackHold);
+    assert!(
+        matches!(app.top_screen(), Screen::QuickDrawer(_)),
+        "a sheet the rider opened over the card is not consent to walk away from it"
+    );
+
+    let mut app = App::new_idle(AppState::new(0, 0, 1.0));
+    assert!(app.offer_damaged_ride());
+    app.apply_gesture(Gesture::BackHold);
+    assert!(matches!(app.top_screen(), Screen::RideRecovery(_)), "the recovery decision stays put");
+}
+
+/// **The escape is bounded, and the host's card still lands** — the rider-gesture-only walk that
+/// used to fill the stack.
+///
+/// Escape → re-descend → escape is the escape's *most ordinary* use ("get me out of six levels of
+/// settings"). While it pushed unconditionally, two laps of it reached `MAX_DEPTH`, where the next
+/// host-pushed card is dropped in release and panics in debug — exactly the reserve
+/// [`deepest_mid_ride_settings_path_keeps_room_for_host_warning`] exists to protect, defeated by a
+/// path that test does not walk. The rewind makes every lap after the first *shrink* the stack.
+///
+/// Driven the way a rider drives it: no `stack` surgery, only gestures.
+#[test]
+fn laps_of_escape_and_re_descent_leave_room_for_a_host_card() {
+    let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map], riding
+    app.apply_gesture(Gesture::BackHold); // the first escape pushes: [Home, Map, Menu]
+    assert!(matches!(app.top_screen(), Screen::Menu(_)));
+
+    // From the Menu down to the deepest ordinary settings page, and back out with the escape.
+    let mut deepest = 0;
+    for lap in 0..4 {
+        if lap == 0 {
+            app.apply_gesture(Gesture::Step(-1)); // Routes → the Settings station
+        }
+        // From lap 1 the dial is *still* on Settings: the escape rewinds to the same Menu, with
+        // the station the rider last used selected. That is a property of rewinding rather than
+        // pushing a fresh Menu, so it is asserted here instead of worked around.
+        app.apply_gesture(Gesture::Press); // → the Settings list (Ride first)
+        assert!(matches!(app.top_screen(), Screen::Settings(_)), "lap {lap}: the Menu kept its station");
+        app.apply_gesture(Gesture::Press); // → Ride
+        app.apply_gesture(Gesture::Step(1)); // Bike type → Data fields
+        app.apply_gesture(Gesture::Press); // → Fields
+        assert!(matches!(app.top_screen(), Screen::StatFields(_)), "lap {lap} reached the fields editor");
+        deepest = deepest.max(app.ui.stack.len());
+
+        app.apply_gesture(Gesture::BackHold);
+        assert!(matches!(app.top_screen(), Screen::Menu(_)), "lap {lap} escaped to the Menu");
+        // Idempotent once it has arrived: a second squeeze of the bar costs nothing.
+        let settled = app.ui.stack.len();
+        app.apply_gesture(Gesture::BackHold);
+        assert_eq!(app.ui.stack.len(), settled, "lap {lap}: a second escape moved the stack");
+        assert_eq!(settled, 3, "lap {lap}: the escape rewound to the Menu the rider already had");
+    }
+    assert!(deepest < crate::screen::MAX_DEPTH, "the reachable depth is {deepest}, at the ceiling of MAX_DEPTH");
+
+    // The card the reserve exists for: after all that, it must still land.
+    app.on_warning(WarningFlags::REC_ERROR);
+    assert!(matches!(app.top_screen(), Screen::Warning(_)), "the host warning must still fit over the escape");
+}
+
+/// **A shutdown in progress is not cancellable, by either device-wide input.** The rider completed
+/// the guarded hold and the host is about to call the power-off port; the terminal frame's own
+/// contract is that nothing dismisses it, and that has to hold for the escape *and* for a squeeze.
+///
+/// It cannot be expressed in `Caps`: the frame is a **page** of the quick drawer, and a drawer must
+/// never declare `blocks_chords` — that is the declaration the chord which closes it would trip
+/// over. So the refusal is a runtime check in both owners, and this is its only guard.
+#[test]
+fn nothing_cancels_a_shutdown_already_in_progress() {
+    /// A device on the terminal POWERING OFF frame, reached the way a rider reaches it.
+    fn powering_off() -> App {
+        let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
+                                                          // A panel with a light, so the root row is the issue's four and Power is the last of them.
+        app.set_backlight_available(true);
+        assert!(app.apply_chord(crate::input::Chord::Quick));
+        for _ in 0..3 {
+            app.apply_gesture(Gesture::Step(1)); // brightness → … → the power control
+        }
+        app.advance_animations(InputClock(1_000)); // settle the sheet's open slide
+        app.apply_gesture(Gesture::Press); // → the guarded confirmation
+        assert!(app.top_wants_hold_fill(), "the confirmation is up and drawing its hold bar");
+        app.advance_animations(InputClock(2_000)); // settle the page slide
+        app.apply_gesture(Gesture::Hold); // the completed hold
+        assert!(app.power_off_requested(), "the host is about to call the power-off port");
+        app
+    }
+
+    let mut app = powering_off();
+    app.apply_gesture(Gesture::BackHold);
+    assert!(app.power_off_requested(), "the global escape must not walk away from a shutdown");
+    assert!(matches!(app.top_screen(), Screen::QuickDrawer(_)));
+
+    for chord in [crate::input::Chord::Context, crate::input::Chord::Quick] {
+        let mut app = powering_off();
+        assert!(!app.apply_chord(chord), "{chord:?} moved something over the powering-off frame");
+        assert!(app.power_off_requested(), "{chord:?} cancelled a shutdown already in progress");
+    }
+
+    // The third door, and the least obvious: the card sweep runs in the same `handle_input` that
+    // applied the completed hold, so a card landing there would take the frame away — by rewriting
+    // a slot under it, or by the "nothing lands on top of a drawer" rule popping the sheet. The
+    // card is refused instead, and refusing is already how a card keeps its one-shot fact.
+    let mut app = powering_off();
+    app.on_warning(WarningFlags::REC_ERROR);
+    assert!(app.power_off_requested(), "a host card must not cancel a shutdown in progress");
+    assert!(matches!(app.top_screen(), Screen::QuickDrawer(_)), "the panel keeps the powering-off frame");
+    // The fourth door: the remote DFU card is the one arrival that comes from neither the card
+    // scheduler nor a screen transition, so it has to say this itself. Deferring is already its
+    // answer to an inconvenient moment.
+    let mut app = powering_off();
+    assert!(!app.open_remote_dfu_check(), "a phone's install request must not open over a shutdown");
+    assert!(app.power_off_requested(), "…and must not cancel it");
+    assert!(matches!(app.top_screen(), Screen::QuickDrawer(_)), "the panel keeps the powering-off frame");
+}
+
+/// The same remote card is also the one arrival that used to push **raw**, stepping around the rule
+/// every other one obeys: it landed on top of an open sheet instead of taking it.
+#[test]
+fn the_remote_dfu_card_takes_an_open_sheet_with_it() {
+    for chord in [crate::input::Chord::Quick, crate::input::Chord::Context] {
+        let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
+        assert!(app.apply_chord(chord));
+        assert!(app.open_remote_dfu_check(), "the phone's request opens the scan wait");
+        assert!(matches!(app.top_screen(), Screen::DfuCheck(_)));
+        assert!(!app.debug_stack_has_overlay(), "{chord:?}: the sheet went with it");
+    }
+}
+
+/// **A drawer is transient chrome: nothing lands on top of one.** A host card arriving over an open
+/// sheet takes the sheet with it, so dismissing the card lands the rider on the screen they were on
+/// rather than back inside a drawer they had finished with — and the escape's "any sheet goes with
+/// it" rule holds for every slot, not only the top one.
+#[test]
+fn a_card_landing_over_a_sheet_takes_the_sheet_with_it() {
+    for chord in [crate::input::Chord::Quick, crate::input::Chord::Context] {
+        let mut app = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
+        assert!(app.apply_chord(chord));
+        assert!(app.ui.stack.iter().any(|s| s.is_overlay()), "{chord:?} opened a sheet");
+
+        app.on_warning(WarningFlags::REC_ERROR);
+        assert!(matches!(app.top_screen(), Screen::Warning(_)), "the card landed");
+        assert!(!app.ui.stack.iter().any(|s| s.is_overlay()), "{chord:?}: the sheet went with it");
+
+        app.apply_gesture(Gesture::Press); // dismiss the card
+        assert!(matches!(app.top_screen(), Screen::Map(_)), "{chord:?}: dismissing lands on the base");
+    }
 }

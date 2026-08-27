@@ -237,9 +237,9 @@ fn a_second_upload_does_not_stack_a_second_popup() {
 fn an_upload_replaces_the_manual_swap_prompt_too() {
     let mut app = idle_app();
     start_riding(&mut app);
-    // Open the *manual* swap prompt from the ride menu: Map → Ride menu (BackHold) → Routes →
+    // Open the *manual* swap prompt from the ride context: Map → the sheet (Down+Back) → Routes →
     // highlight route 1 (step down) → press (tracking + different route ⇒ the swap prompt).
-    app.apply_gesture(Gesture::BackHold);
+    assert!(app.apply_chord(crate::input::Chord::Context));
     app.apply_gesture(Gesture::Step(3));
     app.apply_gesture(Gesture::Press);
     app.apply_gesture(Gesture::Step(1));
@@ -325,7 +325,7 @@ fn a_passkey_does_not_remove_the_manual_swap_prompt() {
     // card composites over it and returns to it after pairing.
     let mut app = idle_app();
     start_riding(&mut app);
-    app.apply_gesture(Gesture::BackHold);
+    assert!(app.apply_chord(crate::input::Chord::Context));
     app.apply_gesture(Gesture::Step(3));
     app.apply_gesture(Gesture::Press);
     app.apply_gesture(Gesture::Step(1));
@@ -461,7 +461,7 @@ fn a_hold_charging_when_back_dismisses_the_popup_cannot_delete_a_route() {
 fn a_hold_queued_behind_the_dismissing_back_in_one_batch_is_dropped() {
     let mut app = idle_app();
     start_riding(&mut app);
-    app.apply_gesture(Gesture::BackHold);
+    assert!(app.apply_chord(crate::input::Chord::Context));
     app.apply_gesture(Gesture::Step(3));
     app.apply_gesture(Gesture::Press);
     app.apply_gesture(Gesture::Step(1));

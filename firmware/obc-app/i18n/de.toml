@@ -16,13 +16,11 @@ map = "Karte"
 weather = "Wetter"
 settings = "Einstellungen"
 
-# --- Das Kompassmenü während der Fahrt, die Voraus-Liste und die Vorspringen-Auswahl ---
-[ride_menu]
-title = "FAHRTMENÜ"
+# --- Der Fahrt-Kontext (das Blatt von unten), die Voraus-Liste und die Umleitungs-Auswahl ---
+[ride_context]
 up_ahead = "Voraus"
 detour = "Umleitung"
 inspect_rejoin = "Wiedereinstieg"
-main_menu = "Hauptmenü"
 no_route = "Keine Route geladen"
 off_route = "Erst zur Route"
 route_end = "Route endet hier"

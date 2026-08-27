@@ -89,15 +89,20 @@ pub enum Cmd {
     /// Reset to the ambient "just riding" state the page opens on — clean live ride from the
     /// start, visitor's controls enabled.
     Ambient,
+    /// One device-wide squeeze (#1515). Unlike a gesture it is applied straight to the app: the
+    /// recognizer that would produce it lives below the page's command vocabulary.
+    Chord(obc_app::Chord),
 }
 
 /// Parse one command string — the page-facing vocabulary (exact strings): `press`, `back`,
-/// `hold`, `backhold`, `step:<n>` (signed Up/Down steps), `play`, `pause`, `seek:<secs>`, `enter`,
-/// `exit`, `ambient`, `upload`, `receive`. `None` for unknown or malformed input — the page can't crash the demo
-/// with a typo.
+/// `hold`, `backhold`, `context` (the Down+Back squeeze that opens a screen's contextual drawer),
+/// `step:<n>` (signed Up/Down steps), `play`, `pause`, `seek:<secs>`, `enter`, `exit`, `ambient`,
+/// `upload`, `receive`. `None` for unknown or malformed input — the page can't crash the demo with
+/// a typo.
 pub fn parse_cmd(cmd: &str) -> Option<Cmd> {
     match cmd {
         "press" => Some(Cmd::Gesture(Gesture::Press)),
+        "context" => Some(Cmd::Chord(obc_app::Chord::Context)),
         "back" => Some(Cmd::Gesture(Gesture::Back)),
         "hold" => Some(Cmd::Gesture(Gesture::Hold)),
         "backhold" => Some(Cmd::Gesture(Gesture::BackHold)),
@@ -416,6 +421,16 @@ impl Demo {
     fn apply(&mut self, cmd: Cmd, gestures: &mut Vec<Gesture>) {
         match cmd {
             Cmd::Gesture(g) => gestures.push(g),
+            // A chord is applied **now**, not deferred into this frame's gesture batch, and that is
+            // the device's own order rather than a shortcut. On hardware a chord and a gesture
+            // recognised in the same frame are independent by construction — the recogniser
+            // swallows the chord's constituents whole — and both `App::handle_input` and
+            // `App::recognize` resolve the chord first, above the screen stack, before applying the
+            // frame's gestures. A page batch of `["press", "context"]` therefore lands here exactly
+            // as the same two inputs would on a device.
+            Cmd::Chord(c) => {
+                self.app.apply_chord(c);
+            }
             Cmd::Play => self.player.play(),
             Cmd::Pause => self.player.pause(),
             Cmd::Seek(t) => self.player.seek(t),
@@ -733,23 +748,23 @@ mod tests {
         d.tick(now);
 
         drive(&mut d, &mut now, "enter", "Map");
-        drive(&mut d, &mut now, "backhold", "RideMenu");
+        drive(&mut d, &mut now, "context", "ContextDrawer");
         drive(&mut d, &mut now, "press", "UpAhead");
         assert!(d.app.corridor_snapshot_len() > 0, "the demo route should showcase map POIs ahead");
-        drive(&mut d, &mut now, "back", "RideMenu");
+        // One Back: the row replaced the sheet rather than stacking over it.
         drive(&mut d, &mut now, "back", "Map");
     }
 
     #[test]
-    fn reroute_tour_reaches_pois_directly_from_the_ride_menu() {
+    fn reroute_tour_reaches_pois_directly_from_the_ride_context() {
         let mut d = Demo::new();
         let mut now = 0.0;
         d.tick(now);
 
         drive(&mut d, &mut now, "enter", "Map");
-        drive(&mut d, &mut now, "backhold", "RideMenu");
-        drive(&mut d, &mut now, "step:1", "RideMenu");
-        drive(&mut d, &mut now, "step:1", "RideMenu");
+        drive(&mut d, &mut now, "context", "ContextDrawer");
+        drive(&mut d, &mut now, "step:1", "ContextDrawer");
+        drive(&mut d, &mut now, "step:1", "ContextDrawer");
         drive(&mut d, &mut now, "press", "PoiMenu");
         drive(&mut d, &mut now, "step:1", "PoiMenu");
         drive(&mut d, &mut now, "step:1", "PoiMenu");

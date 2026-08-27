@@ -73,13 +73,11 @@ fn rgb888(c: u16) -> Rgb888 {
 }
 
 /// Walk the rider's own route from the Map to the **rain map**, through the production gestures:
-/// the Map's ride menu → Main menu → the Weather station → the dashboard's RAIN MAP row. The Map
-/// stays on the stack underneath, so [`walk_back_to_the_map`] returns to the very same screen the
-/// rider left — the sequence the state leak was reported on.
+/// the global Back-hold escape → the Weather station → the dashboard's RAIN MAP row. The Map stays
+/// on the stack underneath, so [`walk_back_to_the_map`] returns to the very same screen the rider
+/// left — the sequence the state leak was reported on.
 fn walk_to_the_rain_map(app: &mut App) {
-    app.apply_gesture(Gesture::BackHold); // Map → ride menu
-    app.apply_gesture(Gesture::Step(-1)); // → its Main menu station
-    app.apply_gesture(Gesture::Press); // → Menu
+    app.apply_gesture(Gesture::BackHold); // Map → Menu, the global escape
     for _ in 0..4 {
         app.apply_gesture(Gesture::Step(1)); // → the Weather station
     }
@@ -89,13 +87,12 @@ fn walk_to_the_rain_map(app: &mut App) {
     assert!(matches!(app.top_screen(), Screen::WeatherRainMap(_)), "the dashboard's second action is the rain map");
 }
 
-/// Back out of the rain map to the Map the walk started from (rain map → dashboard → Menu → ride
-/// menu → Map).
+/// Back out of the rain map to the Map the walk started from (rain map → dashboard → Menu → Map).
 fn walk_back_to_the_map(app: &mut App) {
-    for _ in 0..4 {
+    for _ in 0..3 {
         app.apply_gesture(Gesture::Back);
     }
-    assert!(matches!(app.top_screen(), Screen::Map(_)), "four Backs land on the Map again");
+    assert!(matches!(app.top_screen(), Screen::Map(_)), "three Backs land on the Map again");
 }
 
 /// Render one frame with an optional rain lease against the minimal sea-backdrop map.

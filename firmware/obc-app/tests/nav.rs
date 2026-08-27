@@ -229,7 +229,7 @@ fn mid_ride_accept_opens_the_save_swap_prompt() {
     assert!(app.recording());
     let session = app.ride_session();
 
-    // Mid-ride: Ride menu → POIs → detail → confirm → create → (host answers).
+    // Mid-ride: the main menu → POIs → detail → confirm → create → (host answers).
     app.apply_gesture(Gesture::BackHold);
     app.apply_gesture(Gesture::Step(2));
     app.apply_gesture(Gesture::Press);

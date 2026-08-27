@@ -30,9 +30,9 @@ use super::{
     Transition,
 };
 
-/// The number of main-menu entries (Routes / Rides / POIs / Map / Weather / Settings). The ride
-/// menu keeps its own five-station count ([`ride_menu`](super::ride_menu)); the shared
-/// [`CompassDial`] takes the count per call, so the two rings can differ without drifting apart.
+/// The number of main-menu entries (Routes / Rides / POIs / Map / Weather / Settings). The shared
+/// [`CompassDial`] takes the count per call rather than reading this, which is what let a second
+/// ring exist beside it; since #1515 D3 deleted the ride compass there is one ring and one caller.
 const N_ITEMS: usize = 6;
 
 /// The menu's per-language copy, resolved once per frame — the bar caption plus the six entry
@@ -134,9 +134,7 @@ impl CompassDial {
         ScreenTick { changed: step > 0.0, next_wake_ms: Some(SWEEP_FRAME_MS), region: None }
     }
 
-    /// Draw this dial through the one compass renderer. `icons` changes only the station glyphs
-    /// and their enabled state; all geometry and needle chrome stay shared. The station count is
-    /// `items.len()` — the main menu's six and the ride menu's five share every other line.
+    /// Draw this dial through the one compass renderer. The station count is `items.len()`.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn draw(
         &self,
@@ -147,9 +145,8 @@ impl CompassDial {
         battery: &str,
         title: &str,
         items: &[&str],
-        icons: CompassIcons,
     ) {
-        draw_compass(cv, w, h, self.selected, self.needle_deg, ble_connected, battery, title, items, icons);
+        draw_compass(cv, w, h, self.selected, self.needle_deg, ble_connected, battery, title, items);
     }
 }
 
@@ -202,31 +199,9 @@ impl MenuScreen {
         let mut batt: heapless::String<8> = heapless::String::new();
         let _ = write!(batt, "{}%", device.battery_pct);
         if COMPASS {
-            self.dial.draw(cv, rx.w, rx.h, ble, &batt, txt.title, &txt.items, CompassIcons::Main);
+            self.dial.draw(cv, rx.w, rx.h, ble, &batt, txt.title, &txt.items);
         } else {
             draw_grid(cv, rx.w, rx.h, self.dial.selected, ble, &batt, &txt);
-        }
-    }
-}
-
-/// Which menu's station glyphs the shared compass chrome draws. The main-menu arm is deliberately
-/// unchanged; the ride-menu arm may dim its route-dependent stations — Waypoints needs a route,
-/// Detour additionally needs a nav-graph map and an on-route rider (#882).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum CompassIcons {
-    Main,
-    Ride { route_loaded: bool, detour_available: bool },
-}
-
-impl CompassIcons {
-    pub(super) fn enabled(self, i: usize) -> bool {
-        match self {
-            CompassIcons::Main => true,
-            CompassIcons::Ride { route_loaded, detour_available } => match i {
-                0 => route_loaded,
-                1 => detour_available,
-                _ => true,
-            },
         }
     }
 }
@@ -267,7 +242,6 @@ fn draw_compass(
     battery: &str,
     title: &str,
     items: &[&str],
-    icons: CompassIcons,
 ) {
     use palette::*;
     title_frame_ble(cv, w, h, title, battery, ble_connected);
@@ -300,28 +274,19 @@ fn draw_compass(
         let (dx, dy) = station_dir(i, n);
         let sc = Point::new(c.x + si(1.0, dx * 72.0), c.y + si(1.0, dy * 72.0));
         let is_sel = i == selected;
-        let enabled = icons.enabled(i);
-        if is_sel && enabled {
+        if is_sel {
             cv.disc(sc, 24, AMBER);
         } else {
             cv.disc(sc, 24, RULE);
             cv.disc(sc, 21, PARCHMENT);
         }
-        let ink = if !enabled {
-            RULE
-        } else if is_sel {
-            INK
-        } else {
-            SUBTEXT
-        };
-        let bg = if is_sel && enabled { AMBER } else { PARCHMENT };
-        draw_station_icon(cv, icons, i, sc, 1.2, ink, bg);
+        let (ink, bg) = if is_sel { (INK, AMBER) } else { (SUBTEXT, PARCHMENT) };
+        draw_icon(cv, i, sc, 1.2, ink, bg);
     }
 
     // The selected entry's name, plain Display type — the A2 amber underline was tried and
     // vetoed by the owner in review round 3 ("just visual noise").
-    let label_ink = if icons.enabled(selected) { INK } else { SUBTEXT };
-    cv.text(items[selected], Point::new(w / 2, h - 38), Font::Display, TextAlign::Center, label_ink);
+    cv.text(items[selected], Point::new(w / 2, h - 38), Font::Display, TextAlign::Center, INK);
 }
 
 /// Draw the compass **needle** centred at `c`, pointing `deg` (0° = N, clockwise): amber head of
@@ -385,15 +350,8 @@ fn draw_grid(
     }
 }
 
-/// Dispatch an entry's icon, centred at `c` and scaled by `k` (`1.0` fits a station disc, the
+/// Dispatch a station's icon, centred at `c` and scaled by `k` (`1.0` fits a station disc, the
 /// grid uses `1.5`). `bg` is the surface behind the icon, for punched-out details.
-fn draw_station_icon(cv: &mut impl Surface, icons: CompassIcons, i: usize, c: Point, k: f32, color: u16, bg: u16) {
-    match icons {
-        CompassIcons::Main => draw_icon(cv, i, c, k, color, bg),
-        CompassIcons::Ride { .. } => draw_ride_icon(cv, i, c, k, color, bg),
-    }
-}
-
 fn draw_icon(cv: &mut impl Surface, i: usize, c: Point, k: f32, color: u16, bg: u16) {
     match i {
         0 => icon_route(cv, c, k, color),
@@ -422,79 +380,6 @@ fn icon_weather(cv: &mut impl Surface, c: Point, k: f32, color: u16, bg: u16) {
     cv.disc(Point::new(c.x + si(k, 2.0), base_y - si(k, 5.0)), si(k, 4.5) as u32, color);
     cv.fill(rect(c.x - si(k, 10.0), base_y - si(k, 2.0), si(k, 20.0), si(k, 5.0)), color);
     let _ = bg; // same signature family as the punched glyphs; this one needs no cutout
-}
-
-/// Ride-menu station glyphs in ring order: waypoints, skip ahead, POIs, routes, main menu.
-fn draw_ride_icon(cv: &mut impl Surface, i: usize, c: Point, k: f32, color: u16, bg: u16) {
-    match i {
-        0 => icon_waypoints(cv, c, k, color, bg),
-        1 => icon_skip(cv, c, k, color),
-        2 => icon_poi(cv, c, k, color, bg),
-        3 => icon_route(cv, c, k, color),
-        _ => icon_menu(cv, c, k, color),
-    }
-}
-
-/// A compact route bend carrying two haloed waypoint diamonds. The three-pixel path and filled
-/// stops match the visual mass of the established route/POI glyphs at the dial's small scale.
-fn icon_waypoints(cv: &mut impl Surface, c: Point, k: f32, color: u16, bg: u16) {
-    let at = |x: f32, y: f32| Point::new(c.x + si(k, x), c.y + si(k, y));
-    let path = [at(-10.0, 10.0), at(-5.0, 4.0), at(-5.0, -7.0), at(6.0, -7.0), at(10.0, -3.0)];
-    for pair in path.windows(2) {
-        icon_thick_line(cv, pair[0], pair[1], si(k, 2.0).max(3), color);
-    }
-    for p in [path[1], path[3]] {
-        let r = si(k, 5.0).max(4);
-        cv.triangle(Point::new(p.x, p.y - r), Point::new(p.x - r, p.y), Point::new(p.x + r, p.y), color);
-        cv.triangle(Point::new(p.x, p.y + r), Point::new(p.x - r, p.y), Point::new(p.x + r, p.y), color);
-        let inner = si(k, 2.0).max(2);
-        cv.triangle(Point::new(p.x, p.y - inner), Point::new(p.x - inner, p.y), Point::new(p.x + inner, p.y), bg);
-        cv.triangle(Point::new(p.x, p.y + inner), Point::new(p.x - inner, p.y), Point::new(p.x + inner, p.y), bg);
-    }
-}
-
-/// The familiar media-style forward-jump mark: two **filled** arrowheads ending at a heavy stop
-/// bar. Filled geometry survives the 240 px dial far better than the old single-pixel chevrons.
-fn icon_skip(cv: &mut impl Surface, c: Point, k: f32, color: u16) {
-    let top = c.y - si(k, 9.0);
-    let bot = c.y + si(k, 9.0);
-    for (left, tip) in [(-11.0, -1.0), (-2.0, 8.0)] {
-        cv.triangle(
-            Point::new(c.x + si(k, left), top),
-            Point::new(c.x + si(k, left), bot),
-            Point::new(c.x + si(k, tip), c.y),
-            color,
-        );
-    }
-    let bar_w = si(k, 3.0).max(3);
-    cv.fill(rect(c.x + si(k, 10.0), top, bar_w, bot - top + 1), color);
-}
-
-/// Three compact, filled rows — the door from the ride-scoped ring to the full main menu.
-fn icon_menu(cv: &mut impl Surface, c: Point, k: f32, color: u16) {
-    let hw = si(k, 11.0);
-    let dot = si(k, 2.5).max(2) as u32;
-    let stroke = si(k, 3.0).max(3);
-    for dy in [-7.0, 0.0, 7.0] {
-        let y = c.y + si(k, dy);
-        cv.disc(Point::new(c.x - hw, y), dot, color);
-        cv.fill(rect(c.x - hw + si(k, 5.0), y - stroke / 2, 2 * hw - si(k, 5.0), stroke), color);
-    }
-}
-
-/// A small arbitrary-angle stroke for glyph construction. Parallel lines are offset across the
-/// segment's minor axis, yielding a stable odd-pixel weight without allocating path geometry.
-fn icon_thick_line(cv: &mut impl Surface, a: Point, b: Point, width: i32, color: u16) {
-    let half = width.max(1) / 2;
-    if (b.x - a.x).abs() >= (b.y - a.y).abs() {
-        for off in -half..=half {
-            cv.line(Point::new(a.x, a.y + off), Point::new(b.x, b.y + off), color);
-        }
-    } else {
-        for off in -half..=half {
-            cv.line(Point::new(a.x + off, a.y), Point::new(b.x + off, b.y), color);
-        }
-    }
 }
 
 /// The Rides glyph: a stopwatch — a round face with a top stem/button and a single hand, reading as
