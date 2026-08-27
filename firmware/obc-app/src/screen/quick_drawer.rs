@@ -78,7 +78,12 @@ pub const BRIGHTNESS_LEVELS: u8 = obc_ports::BACKLIGHT_LEVELS;
 /// The brightest level — the factory default, and the `range` ceiling of the settings row.
 pub const BRIGHTNESS_MAX: u8 = BRIGHTNESS_LEVELS - 1;
 
-/// The percentage a level is captioned and driven at: 20 % … 100 %.
+/// The percentage a level is **captioned** at: 20 % … 100 %.
+///
+/// It is the rider's vocabulary for "one of five steps", not a duty cycle. What a host drives is
+/// its own business — the board's PWM ladder is square-law and reaches 4 / 16 / 36 / 64 / 100 %
+/// (`obc_platform::backlight`), because evenly spaced duty is not evenly spaced *perceived*
+/// brightness. Evenly spaced captions are the honest label for evenly spaced steps.
 pub(crate) fn brightness_percent(level: u8) -> u16 {
     (level.min(BRIGHTNESS_MAX) as u16 + 1) * (100 / BRIGHTNESS_LEVELS as u16)
 }
@@ -557,7 +562,7 @@ mod tests {
         }
     }
 
-    /// The percentages the five levels are captioned and driven at — and the absence of a zero.
+    /// The percentages the five levels are captioned at — and the absence of a zero.
     #[test]
     fn the_five_levels_span_twenty_to_a_hundred_percent() {
         let percents: heapless::Vec<u16, 8> = (0..BRIGHTNESS_LEVELS).map(brightness_percent).collect();
