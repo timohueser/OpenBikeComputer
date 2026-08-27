@@ -674,7 +674,8 @@ pull_request = "affected"
 scheduled = "none"
 extra_triggers = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "tools/fixtures.py"]
 ownership = [
-  { kind = "workflow", pattern = "cargo test --workspace --all-features --locked" },
+  { kind = "workflow", pattern = "cargo nextest run --workspace --all-features --locked -E *" },
+  { kind = "workflow", pattern = "cargo test --workspace --all-features --locked --doc" },
   { kind = "workflow", pattern = "cargo test -p obc-formats --locked" },
   { kind = "workflow", pattern = "cargo test --release --locked -- --nocapture" },
   { kind = "workflow", pattern = "python3 tools/fixtures.py sync test" },

@@ -29,7 +29,9 @@ LEVELS = {"unit", "component", "contract", "fixture", "end-to-end", "live", "har
 LEVEL_ALIASES = {"fixtures": "fixture", "e2e": "end-to-end"}
 # Cargo subcommands that compile, lint, format, or execute a named package. `deny` is
 # lockfile policy rather than package execution, so it never routes a package to a job.
-CARGO_EXECUTION_VERBS = {"build", "clippy", "fmt", "run", "test"}
+# `nextest` is the test runner the workspace test jobs use; it takes the same package-selection
+# flags as `test`, which is all this resolver reads.
+CARGO_EXECUTION_VERBS = {"build", "clippy", "fmt", "nextest", "run", "test"}
 PLATFORMS = {"linux": "linux", "darwin": "macos", "win32": "windows"}
 PR_CADENCES = {"always", "affected", "never"}
 SCHEDULED_CADENCES = {"none", "nightly", "weekly", "manual", "release"}
@@ -89,6 +91,7 @@ CODE_OR_POLICY_SUFFIXES = {
 # Dependency installation, cache setup, artifact upload, and shell bookkeeping do not.
 WORKFLOW_MARKERS = (
     "cargo test",
+    "cargo nextest run",
     "cargo clippy",
     "cargo fmt",
     "cargo deny",
