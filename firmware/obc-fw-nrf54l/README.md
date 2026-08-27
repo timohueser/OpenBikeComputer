@@ -109,6 +109,7 @@ pulls off.**
 | P1.24 | VA           | COM electrode (inverse phase)                              |
 | P1.25 | LED1         | liveness heartbeat                                         |
 | P1.26 | BTN0         | UP                                                         |
+| P1.27 | backlight    | **PROVISIONAL** — PWM20 ch0, 1 kHz (#1558); also DK LED2; needs a gate pull-down |
 
 **Port P0 — low-power domain:**
 
@@ -118,6 +119,40 @@ pulls off.**
 
 > **This table mirrors the canonical `src/board.rs` ledger and the constructors in `src/main.rs`.**
 > If they ever disagree, the constructors are the executable authority and both documents must be fixed.
+
+### The provisional backlight pin (#1558)
+
+The panel is reflective and has **no light of its own**, and no front light is fitted yet. What is
+wired is the *seam*: `obc_ports::Backlight` on a real PWM output, so the quick drawer's brightness
+control has hardware behind it and a later driver is a new impl of the same trait.
+
+**P1.27, PWM20 channel 0, 1 kHz** (`src/panel_power.rs`). On the shipping board the net is meant to
+be the gate of a low-side MOSFET switching the front light. On the DK it doubles as the buffered
+**LED2** net, which is deliberate: the five-step duty ladder is visible on the desk without a logic
+analyzer, and probe-able with one.
+
+**Schematic-time: the gate needs an external pull-down.** The pin is push-pull and idles low, but
+only *once `PanelBacklight::new` has run*. Before that it is in its GPIO reset state — input, no
+pull, **high impedance** — and that window covers all of `obc-boot`, which never touches this pin, so
+a DFU install spends its entire duration there. System OFF is the same story from the other end: the
+PWM stops wherever the waveform left the line, and nothing drives it low on the way out. Dropping the
+`SimplePwm` would also return the pad to high-Z. A floating MOSFET gate is not a defined lamp state,
+so the resistor is the fix; the firmware-side low-drive on power-off is tracked with the lamp.
+
+Why not the others: **P0.01–03** are held for the I²C sensor expansion (and no PWM instance reaches
+P0 — PWM20/21/22 are PERI-domain, P1/P3 only). **P2** is full (microSD + the panel's source bus), has
+no PWM mapping, and PWM20 measured dead there during bring-up. **P3** is an embassy-nrf 0.11 landmine: the
+pin singletons exist, but the bank lookup behind them covers ports 0–2 and ends in
+`unreachable_unchecked()`, so a P3 GPIO is undefined behaviour rather than a clean fault (see the COM
+notes). **P1.07/.18** are free but are *dedicated clock pins*, kept
+for a future SPIM SCK / TWIM SCL; **P1.18/.19** also carry the DK's UART1 flow control, **P1.20/.21**
+the 32 kHz crystal, and **P1.01/.02** are NFC-strapped through 0 Ω resistors. That leaves
+P1.00/.06/.15/.27/.28/.29–.31, of which P1.27 is the one that also lights an LED.
+
+The **level → duty ladder** is not here: it is `obc_platform::backlight`, board-agnostic and
+host-tested, so the same five brightnesses survive a change of driver. It is square-law
+(`40 · (level + 1)²` per mille, countertop 1,000) because evenly spaced duty is not evenly spaced
+*perceived* brightness, and there is no off step.
 
 The shared **I²C / Qwiic** bus on TWIM22 (the instance the SD freed when storage moved onto the FLPR)
 carries the

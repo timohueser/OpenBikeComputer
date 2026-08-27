@@ -24,6 +24,7 @@
 //!
 //! | Module | Owns | Depends on |
 //! |---|---|---|
+//! | [`backlight`] | the level → duty ladder a real [`Backlight`](obc_ports::Backlight) drives — one square-law table, shared by the board's PWM today and by any later brightness driver | `obc-ports` |
 //! | [`button_input`] | a [`ButtonInput`] debouncer over four [`InputPin`](embedded_hal::digital::InputPin)s, feeding the shared gesture recognizer through [`InputSource`](obc_ports::InputSource); the `input-wait` edge-wake | `obc-ports`, `embedded-hal`, `heapless` (+ `embedded-hal-async`/`embassy-futures` behind `input-wait`) |
 //! | [`debug_link`] | the transport-agnostic fake-sensor debug protocol (#38): the always-compiled line codec + telemetry/fix encoders, and — behind `debug-link` — the embassy-sync `Signal`/`Channel` hand-off + `LocationSource`/`AltimeterSource`/`CompassSource` impls | `obc-ports`, `heapless` (+ `embassy-sync` behind `debug-link`) |
 //! | [`sensor_hub`] | the instance-owned [`SensorHub`](sensor_hub::SensorHub) (#808): every cross-task sensor stream (GPS fix / baro / temp / GPS time / heading + BLE HR / power / cadence) owned by one composition object, split into typed producer/consumer/control handles bridging the board's I²C task ([`obc-sensors`](https://docs.rs/obc-sensors) decodes) + BLE manager / debug injection to the app poll — behind `sensor-link` | `obc-ports`, `embassy-sync` (`sensor-link`) |
@@ -62,6 +63,9 @@
 
 #![no_std]
 
+// The level → duty ladder every real `Backlight` drives. Board-agnostic on purpose: the PWM the
+// board wires today and a later constant-current driver want the same five steps.
+pub mod backlight;
 pub mod button_input;
 // Transport-agnostic fake-sensor protocol + sources + telemetry. The pure codec is always compiled;
 // only the embassy-sync `Signal`/`Channel` plumbing + HAL-trait sources are gated inside the module
