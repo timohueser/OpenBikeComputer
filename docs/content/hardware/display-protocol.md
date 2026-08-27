@@ -1,6 +1,7 @@
 ---
 title: The display protocol
 description: The LS021B7DD02 pixel format, scan sequence, polarity waveform, and timing limits.
+copy: ai
 ---
 
 # Display protocol

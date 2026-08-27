@@ -114,14 +114,16 @@ and the shared render path.
 OpenBikeComputer is part of a small but inventive open-source hardware community. These projects
 take different approaches to many of the same problems:
 
-- [Pi Zero Bikecomputer](https://github.com/hishizuka/pizero_bikecomputer) — a Raspberry Pi GPS
-  and ANT+ computer with offline maps, navigation, and FIT ride logging.
-- [bike-computer-32](https://github.com/lspr98/bike-computer-32) — a low-cost ESP32-C3 mini-map
-  with offline OpenStreetMap data, GNSS positioning, and GPX track overlays.
+- [IceNav](https://github.com/jgauchia/IceNav-v3) — an ESP32-based GPS navigator with multi-GNSS
+  support and both rendered and vector offline maps.
 - [OpenTrailPaper](https://github.com/RaemondBW/OpenTrailPaper) — an ESP32-S3 e-paper computer
   with offline maps, ride recording, and an iOS companion.
 - [Pedal Guru](https://github.com/juliannojungle/pedal.guru) — a work-in-progress bike computer
   project for Raspberry Pi, RP2040, and ESP32 platforms.
+- [Pi Zero Bikecomputer](https://github.com/hishizuka/pizero_bikecomputer) — a Raspberry Pi GPS
+  and ANT+ computer with offline maps, navigation, and FIT ride logging.
+- [bike-computer-32](https://github.com/lspr98/bike-computer-32) — a low-cost ESP32-C3 mini-map
+  with offline OpenStreetMap data, GNSS positioning, and GPX track overlays.
 
 ## Contributing
 

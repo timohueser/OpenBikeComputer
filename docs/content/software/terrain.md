@@ -1,6 +1,7 @@
 ---
 title: Terrain and elevation
 description: How OpenBikeComputer bakes, assembles, samples, and uses terrain data.
+copy: ai
 ---
 
 # Terrain and elevation

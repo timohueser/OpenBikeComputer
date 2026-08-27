@@ -2,6 +2,7 @@
 title: The map learns to climb
 date: 2026-08-03
 description: The first elevation design — a terrain raster beside the map, routing-graph elevation bytes, and a phantom-ascent bug.
+copy: ai
 ---
 
 For most of this project's life the device could tell you exactly where a road went

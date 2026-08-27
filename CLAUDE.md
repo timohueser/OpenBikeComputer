@@ -68,6 +68,11 @@ Use the nearest README for surface-specific setup. `companion-ios/CLAUDE.md` is 
   in `specs/`; keep build, run, and flash instructions in the relevant README.
 - On a PR, check whether code changes make public docs stale. If they do, update the docs in a
   separate `docs:` commit; otherwise state that no public documentation changed.
+- Respect the `copy` ownership in each `docs/content/` page. Agents can rewrite `copy: ai` prose.
+  They must not change prose in a `copy: human` page or inside a `human-copy` block on a
+  `copy: mixed` page. If protected prose is stale, add a non-rendered `copy-review` note with the
+  current facts and source, and report it in the pull request. See `docs/README.md` and run
+  `obc docs` for the current queue.
 - After editing public docs, run:
 
   ```sh

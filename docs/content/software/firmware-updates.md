@@ -1,6 +1,7 @@
 ---
 title: Firmware updates
 description: The firmware release, delivery, validation, installation, trial, and rollback process.
+copy: ai
 ---
 
 # Firmware updates
