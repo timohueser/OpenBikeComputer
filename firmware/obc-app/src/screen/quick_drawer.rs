@@ -27,6 +27,7 @@ use crate::input::Gesture;
 use crate::Msg;
 
 use super::vocab::chrome::stroke2;
+use super::vocab::sheet;
 use super::{palette, Ctx, Render, Screen, ScreenTick, SettingsScreen, Transition};
 
 /// How long the sheet takes to slide down from the top edge on open (ms).
@@ -303,7 +304,7 @@ impl QuickDrawerScreen {
 
         match self.slide {
             Some(slide) => {
-                let t = slide_progress(rx.now_ms, slide);
+                let t = sheet::slid(rx.now_ms, slide.started_ms, SLIDE_MS);
                 // Going deeper pushes the old page left; returning to the root pulls it right.
                 let back = self.page == Page::Root;
                 let (out, incoming) = if back {
@@ -322,16 +323,14 @@ impl QuickDrawerScreen {
     /// while a slide runs — which is how the sheet grows and shrinks with its content.
     fn sheet_height(&self, now_ms: u32) -> i32 {
         let Some(slide) = self.slide else { return self.page.height() };
-        let t = slide_progress(now_ms, slide);
+        let t = sheet::slid(now_ms, slide.started_ms, SLIDE_MS);
         let (from, to) = (slide.from.height() as f32, self.page.height() as f32);
         (from + (to - from) * t + 0.5) as i32
     }
 
     /// How much of the sheet has arrived from the top edge, on the open animation's ease-out.
     fn visible_height(&self, now_ms: u32, sheet_h: i32) -> i32 {
-        let t = now_ms.wrapping_sub(self.opened_ms).min(OPEN_MS) as f32 / OPEN_MS as f32;
-        let eased = 1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t);
-        (sheet_h as f32 * eased + 0.5) as i32
+        (sheet_h as f32 * sheet::arrived(now_ms, self.opened_ms, OPEN_MS) + 0.5) as i32
     }
 
     fn draw_page(&self, cv: &mut impl Surface, rx: &Render, page: Page, top: i32, x: i32) {
@@ -396,13 +395,13 @@ impl QuickDrawerScreen {
         let (x0, x1, y) = (x + 52, x + rx.w - 24, top + 82);
         cv.round(rect(x0, y - 2, x1 - x0, 5), 2, palette::PARCHMENT_SHADE);
         for level in 0..BRIGHTNESS_LEVELS {
-            let px = notch_x(x0, x1, level);
+            let px = sheet::notch_x(x0, x1, level, BRIGHTNESS_LEVELS);
             cv.vline(px, y - 6, 13, 1, palette::SUBTEXT);
             if level == rx.settings.brightness.min(BRIGHTNESS_MAX) {
-                draw_check(cv, px, y + 22, palette::WOOD);
+                sheet::committed_tick(cv, px, y + 22, palette::WOOD);
             }
         }
-        let knob = notch_x(x0, x1, self.staged);
+        let knob = sheet::notch_x(x0, x1, self.staged, BRIGHTNESS_LEVELS);
         cv.disc(Point::new(knob, y), 8, palette::AMBER);
         cv.disc(Point::new(knob, y), 3, palette::INK);
     }
@@ -451,17 +450,6 @@ fn draw_powering_off(cv: &mut impl Surface, rx: &Render, top: i32, x: i32) {
         TextAlign::Center,
         palette::INK,
     );
-}
-
-/// Smoothstep over the page slide, so the two pages ease rather than shear across.
-fn slide_progress(now_ms: u32, slide: Slide) -> f32 {
-    let t = now_ms.wrapping_sub(slide.started_ms).min(SLIDE_MS) as f32 / SLIDE_MS as f32;
-    t * t * (3.0 - 2.0 * t)
-}
-
-/// The x of a slider notch, evenly spaced across the track.
-fn notch_x(x0: i32, x1: i32, level: u8) -> i32 {
-    x0 + (x1 - x0) * level as i32 / BRIGHTNESS_MAX as i32
 }
 
 /// A compact outline bulb with a filament and a screw base, at the sheet's 22 px icon scale.
@@ -515,12 +503,6 @@ fn draw_power(cv: &mut impl Surface, c: Point, color: u16, bg: u16) {
     cv.disc(c, 7, bg);
     cv.fill(rect(c.x - 3, c.y - 12, 7, 8), bg);
     cv.vline(c.x - 1, c.y - 14, 11, 3, color);
-}
-
-/// The tick under the slider notch that is already committed.
-fn draw_check(cv: &mut impl Surface, x: i32, cy: i32, color: u16) {
-    cv.line(Point::new(x - 5, cy), Point::new(x - 1, cy + 4), color);
-    cv.line(Point::new(x - 1, cy + 4), Point::new(x + 6, cy - 4), color);
 }
 
 #[cfg(test)]
