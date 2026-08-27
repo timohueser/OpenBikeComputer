@@ -96,30 +96,46 @@ pub fn ride_repository_suite(repo: &mut dyn RideRepository, expects_track: bool)
     assert!(!repo.delete_by_id(known), "a retired ride id is a no-op");
 }
 
-/// Track-lifecycle invariants: a session opens a log, Save/Discard closes it, and a cleared session
-/// leaves nothing open. `has_sink` says whether the store exposes a recording sink (a folder log
-/// does; a memory store never does).
+/// Track-lifecycle invariants, one per [`RecorderEffect`](obc_app::recorder::RecorderEffect) the
+/// store serves: a session opens a log, a finalize closes it and names what it closed, a discard
+/// closes it and names nothing. `has_sink` says whether the store exposes a recording sink (a folder
+/// log does; a memory store never does).
 pub fn track_lifecycle(tracks: &mut dyn TrackRepository, has_sink: bool) {
-    // No session → nothing recording.
-    tracks.reconcile(None, None, None, None);
-    assert!(tracks.sink().is_none(), "no session → no sink");
+    // Nothing opened → nothing recording.
+    assert!(tracks.sink().is_none(), "no ride → no sink");
 
     // A session opens a log.
-    tracks.reconcile(None, Some(1), Some("ride"), None);
-    assert_eq!(tracks.sink().is_some(), has_sink, "a recording session exposes its sink iff the store has one");
+    tracks.open(1, Some("ride"));
+    assert_eq!(tracks.sink().is_some(), has_sink, "a recording ride exposes its sink iff the store has one");
 
-    // Save closes it.
-    tracks.reconcile(Some(obc_app::TrackAction::Save), None, Some("ride"), None);
-    assert!(tracks.sink().is_none(), "Save closes the log");
+    // The finalize closes it and answers with the identity it committed.
+    let saved = tracks.finalize(stats());
+    assert!(saved.is_some(), "a finalize that succeeded names the ride it committed");
+    assert!(tracks.sink().is_none(), "and closes the log");
 
-    // A fresh session then a Discard-with-new-session keeps recording (finish-then-restart).
-    tracks.reconcile(None, Some(2), Some("ride"), None);
-    tracks.reconcile(Some(obc_app::TrackAction::Discard), Some(3), Some("ride"), None);
-    assert_eq!(tracks.sink().is_some(), has_sink, "a live session wins over the drained Discard");
+    // The next ride is a fresh object, and a discard leaves nothing behind.
+    tracks.open(2, Some("ride"));
+    assert_eq!(tracks.sink().is_some(), has_sink);
+    tracks.discard();
+    assert!(tracks.sink().is_none(), "a discard leaves nothing open");
+}
 
-    // Clearing the session ends it.
-    tracks.reconcile(None, None, None, None);
-    assert!(tracks.sink().is_none(), "a cleared session leaves nothing open");
+/// Ride totals for the finalize above — the figures a v3 footer carries.
+fn stats() -> obc_route::RideStats {
+    obc_route::RideStats {
+        distance_m: 1_000,
+        moving_time_s: 300,
+        avg_speed_cms: 333,
+        climb_m: 20,
+        unix_at_anchor: 1_720_000_000,
+        anchor_ms: 0,
+        clock_trusted: true,
+        avg_hr: None,
+        max_hr: None,
+        avg_cadence: None,
+        avg_power: None,
+        max_power: None,
+    }
 }
 
 #[cfg(test)]
