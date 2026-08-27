@@ -1007,9 +1007,10 @@ both. The rider sets both from the view's own contextual drawer, which replaced 
 `Select` hold used to open. The filter is a selection that starts again at "Everything" each time the
 view opens; the source scope is stored.
 
-A cursor the rider set counts only against the list they set it in. When either control changes the
-list, the cursor goes back to the first row still ahead. Without this a rider who scrolls and then
-filters lands on the last match instead of the nearest one.
+A cursor the rider set counts only against the list they set it in. While the list shows something
+else, the cursor is the first row still ahead; it comes back if the rider sets the controls back.
+Without this a rider who scrolls and then filters lands on the last match instead of the nearest
+one.
 
 Configured `Next: category` fields use cached per-category corridor results. A visible Up-ahead screen has priority over these background requests.
 
