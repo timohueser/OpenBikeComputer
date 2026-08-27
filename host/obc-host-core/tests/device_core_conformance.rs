@@ -839,7 +839,7 @@ const MANDATORY_TRACES: [MandatoryTrace; 16] = [
     },
     MandatoryTrace {
         row: "ride finalize failure after the last checkpoint",
-        test: "a_ride_finalize_failure_after_the_last_checkpoint_reaches_the_rider",
+        test: "a_failed_finalize_leaves_the_ride_open_and_warns_the_rider",
         substitution: None,
     },
     MandatoryTrace {
@@ -1226,32 +1226,29 @@ fn a_settings_result_with_an_old_revision_is_refused() {
     assert_eq!(rider_visible(delayed.settled.clone()), rider_visible(immediate.settled.clone()));
 }
 
-/// **A ride finalize failure after the last checkpoint.** The ride close survives the pass, the
-/// executor that performs it fails it, and the rider is told.
+/// **A ride finalize failure after the last checkpoint.** The rider closes the ride, the executor
+/// that performs the close fails it — and the ride is still there afterwards, with the rider told.
 ///
-/// This trace is why the `ui_recorder` → `ride_closed` wiring is gone. It used to take the rider's
-/// finish one-shot at stage 4 and drop it at stage 7, so the ride was never finalized and no
-/// executor was told — a rider request destroyed to serve a lifecycle Recorder does not own yet.
-/// The pass now leaves it alone, which is what "the close reaches the platform on the legacy path"
-/// has to mean to be true.
+/// The DC1 row this binds is "ride finalize failure after the last checkpoint". Both halves are the
+/// row: a failure the rider is not told about is the obvious defect, but a failure that leaves the
+/// app believing the ride is closed is the worse one — the object is still on the store and nothing
+/// on glass says so.
 #[test]
-fn a_ride_finalize_failure_after_the_last_checkpoint_reaches_the_rider() {
+fn a_failed_finalize_leaves_the_ride_open_and_warns_the_rider() {
     let mut harness = expiring(0);
     harness.app().activity.start_session();
     harness.pass();
 
-    // The last checkpoint is behind us; the finalize is the one that fails.
+    // The rider holds FINISH on the Paused page (`RideControl::end_ride`). The last checkpoint is
+    // behind us; the finalize is the one that fails.
     harness.state.fail_next_finalize = true;
     harness.app().activity.request_track(TrackAction::Save);
-    let plan = harness.pass();
-    assert!(plan.effects.recorder.is_empty(), "Recorder has no machine, so the pass emits no effect");
-    assert!(harness.state.app.activity.has_track_action(), "and it leaves the rider's finish for the drain");
+    harness.app().activity.end_session();
+    harness.pass();
 
     let mut done = Vec::new();
     let mut trace = recorder();
     harness.serve_mailbox(&mut done, &mut trace);
-    // The legacy vocabulary has no recorder-finalize outcome, so a host reports the failure through
-    // the generic warning — DC1's own recorded compatibility limitation, unchanged here.
     assert!(
         matches!(done.as_slice(), [Done::Warning(flags)] if flags.contains(WarningFlags::REC_ERROR)),
         "the finalize failed and said so: {done:?}"
@@ -1263,7 +1260,14 @@ fn a_ride_finalize_failure_after_the_last_checkpoint_reaches_the_rider() {
     assert!(
         matches!(harness.state.app.top_screen(), Screen::Warning(card)
             if card.flags().contains(WarningFlags::REC_ERROR)),
-        "and the rider is told rather than left believing the ride was saved"
+        "the rider is told rather than left believing the ride was saved"
+    );
+    // …and the ride the executor still holds is still the app's open ride. A finalize that failed
+    // closed nothing: the object is on the store, unfinished, and the only honest state is one the
+    // retry can still finish.
+    assert!(
+        harness.state.app.activity.is_tracking(),
+        "a failed finalize must not end the session — the ride is still open on the store"
     );
 }
 
