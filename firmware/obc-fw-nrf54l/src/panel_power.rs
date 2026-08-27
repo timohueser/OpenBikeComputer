@@ -1,39 +1,70 @@
 //! The board's two panel-power ports (#1515 D2): [`PanelBacklight`] and [`SystemOff`].
 //!
-//! One of them works. The other one says so.
+//! One dims the panel. The other one ends the ride.
 
-use embassy_nrf::pac;
-use obc_ports::{Backlight, BacklightUnsupported, PowerOff};
+use embassy_nrf::peripherals::{P1_27, PWM20};
+use embassy_nrf::pwm::{DutyCycle, SimpleConfig, SimplePwm};
+use embassy_nrf::{pac, Peri};
+use obc_platform::backlight::duty_permille;
+use obc_ports::{Backlight, BacklightUnsupported, PowerOff, BACKLIGHT_LEVELS};
 
-/// The board's [`Backlight`] — and it **refuses**.
+/// The board's [`Backlight`]: **PWM20 channel 0 on P1.27**, at 1 kHz (#1558).
 ///
-/// This device drives a Sharp **LS021B7DD02**, a reflective memory-in-pixel LCD: it is lit by the
-/// light already falling on it, and the board's pin ledger (`board.rs`, mirrored in the README pin
-/// map) accounts for every P0/P1/P2 pad — the six source lines, the four gate/COM lines, the shared
-/// microSD bus, the I²C sensors, the four buttons and the heartbeat LED. **None of them is a
-/// light**, and the nPM1300 the power path is designed around is not wired yet either.
+/// The panel is a Sharp **LS021B7DD02**, a reflective memory-in-pixel LCD — it has no light of its
+/// own, so what this drives is the front light beside it. That light is **not fitted yet**: the pin
+/// is provisional (see the README pin map), and on the DK the same net also drives the buffered
+/// LED2, which is what makes the duty ladder visible on a desk. The eventual circuit is this pin
+/// into a MOSFET gate, and a constant-current driver over I²C after that — both are a new impl of
+/// this trait and nothing above it moves.
 ///
-/// So there is nothing here to dim, and a stub that returned `Ok(())` would be a lie the rider
-/// could read off the screen: the drawer's editor would move a slider that changes nothing while
-/// the firmware reported success. It returns [`BacklightUnsupported`] instead, which the caller
-/// logs once — and, because a refusal only the RTT log can see is not honesty either,
-/// [`available`](Backlight::available) answers `false`, which takes the whole brightness control
-/// off the drawer's root row. See the open hardware question on #1515.
+/// **The port is honest about the signal, not about the photons.** [`apply`](Backlight::apply)
+/// really does change the duty cycle on a real pin, which is why it answers `Ok` and
+/// [`available`](Backlight::available) answers `true`; the drawer therefore shows its brightness
+/// control. A rider on a board with no lamp soldered on sees a control that changes nothing —
+/// **that is a wiring gap, not a lie the firmware tells**, and it is the whole point of landing the
+/// PWM seam before the lamp.
 ///
-/// **When a light does exist**, this is the whole seam: give the struct its PWM channel, map the
-/// level to a duty cycle, and answer `true`. Nothing above it changes.
-pub(crate) struct PanelBacklight;
+/// ## Two details worth knowing before changing this
+///
+/// * **The duty ladder is not here.** It is `obc_platform::backlight` — board-agnostic, so it can
+///   be tested on the host, and so the later I²C driver drives the same five brightnesses.
+/// * **Polarity is inverted, on purpose.** In embassy's PWM a *normal* duty value is the count the
+///   line is held **low**; an *inverted* one is the count it is held **high**. The ladder is
+///   written as brightness, so the compare value goes in as
+///   [`DutyCycle::inverted`] and a per-mille of 1,000 is a line held high for the whole period.
+pub(crate) struct PanelBacklight {
+    pwm: SimplePwm<'static>,
+}
+
+impl PanelBacklight {
+    /// Arm the PWM and light the panel at the **factory level**.
+    ///
+    /// The rider's persisted level lands a moment later, in the ride loop, as soon as the settings
+    /// page has been read (`ride.rs`). Starting bright rather than dark is what keeps a boot that
+    /// never gets that far — a card fault sheet, say — readable.
+    ///
+    /// [`SimpleConfig::default`] is exactly the configuration wanted and is therefore not
+    /// overridden: countertop 1,000 (so a duty value is a per mille) with the 16 MHz PWM clock
+    /// divided by 16, which is **1 kHz** — above anything a rider can see flicker in, below
+    /// anything that would make a MOSFET's switching losses interesting. Standard drive, and the
+    /// line idles low, so a disabled PWM is a dark lamp rather than a lit one.
+    pub(crate) fn new(pwm: Peri<'static, PWM20>, pin: Peri<'static, P1_27>) -> Self {
+        let mut backlight = PanelBacklight { pwm: SimplePwm::new_1ch(pwm, pin, &SimpleConfig::default()) };
+        let _ = backlight.apply(BACKLIGHT_LEVELS - 1);
+        backlight
+    }
+}
 
 impl Backlight for PanelBacklight {
-    /// **No.** The app asks this once at boot and removes the quick drawer's brightness control,
-    /// so the rider is not offered a slider with nothing behind it.
+    /// **Yes** — there is a duty cycle to move. The app asks once at boot and keeps the quick
+    /// drawer's brightness control on the root row.
     fn available(&self) -> bool {
-        false
+        true
     }
 
     fn apply(&mut self, level: u8) -> Result<(), BacklightUnsupported> {
-        let _ = level;
-        Err(BacklightUnsupported)
+        self.pwm.set_duty(0, DutyCycle::inverted(duty_permille(level)));
+        Ok(())
     }
 }
 

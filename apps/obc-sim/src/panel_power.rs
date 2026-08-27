@@ -13,8 +13,8 @@ use obc_ports::{Backlight, BacklightUnsupported, PowerOff, BACKLIGHT_LEVELS};
 /// readable, and a window that ignores the setting cannot answer that.
 ///
 /// It also models the **other** platform. `--no-backlight` builds one that answers `false`, refuses
-/// every level and never scales the image, so the window shows exactly what the board shows: a
-/// three-control sheet over a panel nothing can dim.
+/// every level and never scales the image, so the three-control sheet a lightless host draws stays
+/// reviewable in the window. That is no longer the board — it drives a PWM backlight since #1558.
 #[derive(Debug)]
 pub struct SimBacklight {
     /// The level last applied, `0..BACKLIGHT_LEVELS`.

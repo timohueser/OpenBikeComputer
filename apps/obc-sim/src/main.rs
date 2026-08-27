@@ -129,8 +129,10 @@ struct Args {
     /// timeout fires.
     script: Option<String>,
     /// `--no-backlight`: model a platform whose panel has **no controllable light**
-    /// ([`Backlight::available`](obc_ports::Backlight) `== false`, which is the shipping board
-    /// today). The quick drawer then draws three controls instead of four; nothing else changes.
+    /// ([`Backlight::available`](obc_ports::Backlight) `== false`). The board is not that platform
+    /// any more — it drives a PWM backlight since #1558 — so this is the arrangement a *future*
+    /// lightless host would get. The quick drawer then draws three controls instead of four;
+    /// nothing else changes.
     no_backlight: bool,
     /// `--expect-screen NAME`: headless `--png` only — refuse to render unless the script landed
     /// on that screen ([`Screen::name`](obc_app::Screen::name), the `screens!` table's own
@@ -1360,8 +1362,8 @@ fn main() {
         // is answered after the script (below), mirroring the on-entry FAT scan seam.
         // The panel-light capability the drawer's root row is built from (#1515 D2). The headless
         // host models a lit panel, like the window does, so a snapshot shows the four-icon
-        // arrangement a rider gets on a device with a light; `--no-backlight` renders the other
-        // one, which is what the board has today.
+        // arrangement a rider gets on a device with a light — the board included, since #1558 —
+        // while `--no-backlight` renders the three-control one a lightless host would show.
         app.set_backlight_available(!args.no_backlight);
         app.set_fw_version(env!("CARGO_PKG_VERSION"));
         let map_name = map.source.display_name();
