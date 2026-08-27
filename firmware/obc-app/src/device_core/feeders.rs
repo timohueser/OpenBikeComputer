@@ -166,9 +166,6 @@ pub enum FeederKind {
 /// Each row therefore names the ownership cutover that really deletes it (#1448 Gate 3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeletingSlice {
-    /// Gate 3 item 2 — retention policy moves into `RetentionMachine`, which then owns the metadata
-    /// columns rather than being fed them.
-    RetentionOwnership,
     /// #1400 — Navigator owns the preview it asked for, and the board's typed effect staging fills
     /// its bounded targets.
     NavigatorOwnership,
@@ -226,17 +223,16 @@ pub fn feeder_migration(feeder: Feeder) -> FeederMigration {
         Feeder::Trips | Feeder::Rides => {
             row(Kind::RefreshOutcome, Own::Catalog, "CatalogOutcome::CatalogRead", When::BootAndFacts)
         }
-        Feeder::RouteMeta => row(
-            Kind::RefreshOutcome,
-            Own::Retention,
-            "RetentionMachine route metadata column",
-            When::RetentionOwnership,
-        ),
+        // Retention metadata is part of a catalog read's fill, so these two retire with the four
+        // above and for the same reason. Where the column itself lives is #1398 R4's question.
+        Feeder::RouteMeta => {
+            row(Kind::RefreshOutcome, Own::Retention, "RetentionMachine route metadata column", When::BootAndFacts)
+        }
         Feeder::RideRetentionInventory => row(
             Kind::RefreshOutcome,
             Own::Retention,
             "CatalogMachine inventory + RetentionMachine input",
-            When::RetentionOwnership,
+            When::BootAndFacts,
         ),
 
         // ---- keyed derived data: one need, one key, one answer. What is left is the in-place fill
