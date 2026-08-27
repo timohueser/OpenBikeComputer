@@ -831,6 +831,13 @@ mod tests {
         const W: u32 = FRAME_W as u32;
         const H: u32 = FRAME_H as u32;
 
+        // The tour rides. A ride needs a mounted card, and the device only learns it has one on
+        // its first pass — `Capabilities::recorder` is the pass *before*'s level — so the request is
+        // repeated until Recorder takes it rather than fired once at construction and lost.
+        if app.active_route_index().is_some() && !app.recording() {
+            app.recorder.request(obc_app::RecorderIntent::Start);
+        }
+
         // This tour uses only routes, so the ride/track/trip repositories are empty stand-ins and
         // the platform has nothing of its own to do.
         let mut rides = obc_host_core::MemRideStore::new(Vec::new());
@@ -985,7 +992,6 @@ mod tests {
             app.set_settings(settings);
             if !store.catalog().is_empty() {
                 app.activate_route(0);
-                app.recorder.request(obc_app::RecorderIntent::Start);
             }
             app
         };
@@ -1182,7 +1188,6 @@ mod tests {
             app.set_settings(settings);
             if !store.catalog().is_empty() {
                 app.activate_route(0);
-                app.recorder.request(obc_app::RecorderIntent::Start);
             }
             app
         };
