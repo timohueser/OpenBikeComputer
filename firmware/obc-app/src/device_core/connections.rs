@@ -86,11 +86,9 @@ pub struct ActiveRouteRemoved {
 
 /// `CatalogMachine` → `RetentionMachine`, **same pass**: the store no longer holds this object.
 ///
-/// The catalog's verdict on a removal, produced at stage 1 and consumed at stage 5. Both `existed`
-/// verdicts produce it — the object is not in the store either way — and every producer of a
-/// deletion converges here, so an expiry candidate a rider's delete satisfied is retired by exactly
-/// the path one the sweep ordered is. Retention would otherwise have to wait for the object to
-/// disappear from a re-read, which is a second, time-based copy of a fact the catalog already knows.
+/// Produced at stage 1 and consumed at stage 5. Both `existed` verdicts produce it — the object is
+/// not in the store either way — and every producer of a deletion converges here, so an expiry
+/// candidate a rider's delete satisfied is retired by the path one the sweep ordered is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CatalogRemoval {
     /// The durable identity the store no longer holds.

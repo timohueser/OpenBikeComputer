@@ -223,10 +223,8 @@ pub fn feeder_migration(feeder: Feeder) -> FeederMigration {
         Feeder::Trips | Feeder::Rides => {
             row(Kind::RefreshOutcome, Own::Catalog, "CatalogOutcome::CatalogRead", When::BootAndFacts)
         }
-        // These two are not waiting on retention ownership (#1548) either, for the same reason as
-        // the four above: retention metadata arrives as part of a catalog read's fill, and *where
-        // the column lives* is the record consolidation #1398 R4 owns. What retires them is the day
-        // a bulk fill arrives as `PassInputs` rather than as a `set_*` call.
+        // Retention metadata is part of a catalog read's fill, so these two retire with the four
+        // above and for the same reason. Where the column itself lives is #1398 R4's question.
         Feeder::RouteMeta => {
             row(Kind::RefreshOutcome, Own::Retention, "RetentionMachine route metadata column", When::BootAndFacts)
         }
