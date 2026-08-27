@@ -210,7 +210,8 @@ impl MapScreen {
             Gesture::Press if !cx.recorder.recording() => {
                 Transition::Push(Screen::RideStart(super::RideStartScreen::new()))
             }
-            Gesture::Press | Gesture::BackHold => super::riding_common(g, cx),
+            Gesture::Press => super::riding_common(g, cx),
+            Gesture::BackHold => Transition::None,
         }
     }
 
@@ -454,18 +455,18 @@ fn draw_waypoint_diamonds(cv: &mut impl Surface, vp: &Viewport, wpts: &[WptEntry
 }
 
 /// Pan-mode gesture bindings, active while [`AppState::pan`](crate::AppState::pan) is `Some`.
-/// Up/Down applies the active Move/Zoom tool; `press` toggles those tools; Back-hold toggles the
-/// Route/Free family and Select-hold changes only an active Free axis. Select-hold is inert in Zoom;
-/// Back-hold switches family and lands in Move. `back` exits to Follow. The holds override the
-/// riding map's normal long-press actions in Inspect.
+/// Up/Down applies the active Move/Zoom tool; `press` advances the **mode ring** — Route Move →
+/// Free Move → Zoom, see [`cycle_pan_mode`](crate::AppState::cycle_pan_mode) — and Select-hold
+/// changes only an already-active Free axis, inert in Route and Zoom. `back` exits to Follow.
+/// Back-hold is the global escape (#1515 D3) and never arrives here.
 pub(super) fn handle_pan(g: Gesture, cx: &mut Ctx) -> Transition {
     let has_route = cx.activity.active_route.is_some();
     match g {
         Gesture::Step(n) => cx.state.pan_step(n, cx.activity.route_total_m),
-        Gesture::Press => cx.state.toggle_pan_tool(),
+        Gesture::Press => cx.state.cycle_pan_mode(has_route),
         Gesture::Hold => cx.state.toggle_pan_free_axis(),
         Gesture::Back => cx.state.exit_pan(),
-        Gesture::BackHold => cx.state.toggle_pan_family(has_route),
+        Gesture::BackHold => {}
     }
     Transition::None
 }

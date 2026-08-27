@@ -323,7 +323,7 @@ setting_enum! {
         /// the map `Reader` is never built for it either — the list costs exactly what the old waypoint
         /// list cost.
         WaypointsOnly = 1, key Msg::UpAheadSourceWaypoints;
-        /// Route-corridor map POIs only. The documented trade: the waypoint plan leaves the ride menu
+        /// Route-corridor map POIs only. The documented trade: the waypoint plan leaves the timeline
         /// entirely (it stays on the map and in the stats panel) — for riders who treat a planner's
         /// exported waypoints as clutter.
         MapPoisOnly = 2, key Msg::UpAheadSourceMapPois;
@@ -595,7 +595,7 @@ settings_table! {
         ride_retention: RideRetention = RideRetention::Week1, since(16);
         /// Which sources feed the **"Up ahead" timeline** (epic #946, U4, the Ride settings screen
         /// cycles it): both, custom waypoints only, or map POIs only. **Device-only**, like
-        /// [`climb_mode`](Settings::climb_mode) — a phone must never repick what the rider's ride menu
+        /// [`climb_mode`](Settings::climb_mode) — a phone must never repick what the rider's own device
         /// shows, so [`adopt_ble_fields`](Settings::adopt_ble_fields) never pulls it across. Default
         /// **Both**; the scope is the Up-ahead list *only* (see [`UpAheadSource`]).
         up_ahead_source: UpAheadSource = UpAheadSource::Both, since(16);

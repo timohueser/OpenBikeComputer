@@ -29,6 +29,7 @@
 #      regression; look at the changed frames first, then record them with `update`.
 #
 # Coverage against the `screens!` table: 60 of the 61 screens have at least one frame here.
+# (#1515 D3 removed `RideMenu` and added `ContextDrawer`, so the count is unchanged.)
 # The exception is **RideRecovery**, the boot card that offers a ride recovered from a durable
 # recording after a reset. Its only entry is `App::offer_recovered_ride(RideContinuation)` — a
 # host call carrying thirteen reconstructed accumulator fields, which the simulator has no
@@ -144,11 +145,10 @@ cp "$repo_root/fixtures/sources/sim-grimsel/routes/TP1.OBT" "$TRIPDIR/TP1.OBT"
 # ride route 0 (`p p p p` → Map, riding) **with the GPX replay driving fixes** — the tracking
 # session only starts once positions flow, and `is_tracking` (the hiding predicate) is
 # `session.is_some()`, so without `--gpx` this frame would wrongly show the live delete row. Then
-# out to the main Menu — mid-ride a BackHold opens the RIDE menu (epic #789), whose fifth station
-# is Main menu, so that exit is `B u p` and not a bare `B` — step to the Rides station (`d w`),
-# press into the detail: the page ends at the stat ledger with NO Delete-ride row at all, and `H`
-# fills nothing.
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --tracks-dir "$TRACKS" --gpx "$GPX" --at 30 --script "p p p p B u p d w p p H" --expect-screen RideDetail --png "$OUT/ride-detail-recording.png"
+# out to the main Menu — a bare `B` reaches it from anywhere since #1515 D3 — step to the Rides
+# station (`d w`), press into the detail: the page ends at the stat ledger with NO Delete-ride row
+# at all, and `H` fills nothing.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --tracks-dir "$TRACKS" --gpx "$GPX" --at 30 --script "p p p p B d w p p H" --expect-screen RideDetail --png "$OUT/ride-detail-recording.png"
 "$SIM" "$MAP" --boot --script "B d d w"      --expect-screen Menu --png "$OUT/menu-pois.png"
 # POIs browser (#425): the category list, then a populated nearest-16 list. The list's bearing
 # arrows are live, so pin a deterministic fix (grimsel map centre) + heading so they reproduce.
@@ -207,31 +207,36 @@ MONACO="$MONACO_FIXTURES/monaco.obcm"
 # side-street alternatives. The shared prefix plans a ~1.6 km POI route (7th Resupply hit), accepts
 # it from the overview (which starts the ride), then `T` runs one route-aware tick — the GUI ticks
 # every frame, but the headless script path doesn't, and the Detour chooser reads the tick-built
-# `route_total_m`. The chooser opens off the ride menu (`B r p`); the flow then walks
+# `route_total_m`. The chooser opens off the ride context sheet (`C d p`); the flow then walks
 # plan → preview (+cost line) → commit — the commit splices INTO the reserved `_nav.obcr` the
 # prefix planned (the self-splice case) and lands back on the riding map.
 DETOUR_PRE="B d d w p d d d p f d d d d d d p p p f p T"
+# (a0) The ride context with **every row live** — the Monaco graph, a loaded route and an on-route
+# rider are exactly what the Detour row needs, so this is the arrangement `ride-context.png` cannot
+# show on the graph-less Grimsel fixture.
+"$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
+    --script "$DETOUR_PRE C" --expect-screen ContextDrawer --png "$OUT/ride-context-live.png"
 # (a) The chooser: skipped-span ink + rejoin ring over the fitted camera, the 600 m minimum span.
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
-    --script "$DETOUR_PRE B d p w" --expect-screen Detour --png "$OUT/detour-chooser.png"
+    --script "$DETOUR_PRE C d p w" --expect-screen Detour --png "$OUT/detour-chooser.png"
 # (b) The planning spinner (detour copy; Back would cancel). `--hold detour` consumes the request
 # without starting it so the screen stays up, exactly like `--hold nav`.
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
-    --script "$DETOUR_PRE B d p w p" --hold detour --expect-screen NavPlanning --png "$OUT/detour-planning.png"
+    --script "$DETOUR_PRE C d p w p" --hold detour --expect-screen NavPlanning --png "$OUT/detour-planning.png"
 # (c) The preview: a real corridor-blacklisted A* plan over the monaco graph — the detour polyline
 # in blue over the warning-colored skipped span, the signed distance-cost line on the HUD.
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
-    --script "$DETOUR_PRE B d p d d p f" --expect-screen DetourPreview --png "$OUT/detour-preview.png"
+    --script "$DETOUR_PRE C d p d d p f" --expect-screen DetourPreview --png "$OUT/detour-preview.png"
 # (d) The failure card: detour title + the one honest remedy hint ("Try a farther rejoin."),
 # injected through the real `DetourPlanned` seam with the planning screen on top (the range tier
 # is unreachable on the small fixture graphs, same as nav-toofar).
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
-    --script "$DETOUR_PRE B d p w p" --inject detour-fail=exhausted --expect-screen NavFail --png "$OUT/detour-fail.png"
+    --script "$DETOUR_PRE C d p w p" --inject detour-fail=exhausted --expect-screen NavFail --png "$OUT/detour-fail.png"
 # (e) Committed: preview Press splices `original[0..rider] + detour + original[rejoin..]` into the
 # reserved route, re-adopts it (session kept), and truncates the flow back to the riding map; the
 # trailing `T` re-syncs the route-derived state so the map draws the spliced line.
 "$SIM" "$MONACO" --boot --routes-dir "$NAVDIR" --center 7420000,43735000 --heading 0 --clock "2025-01-06T12:00" \
-    --script "$DETOUR_PRE B d p d d p f p f T" --expect-screen Map --png "$OUT/detour-committed.png"
+    --script "$DETOUR_PRE C d p d d p f p f T" --expect-screen Map --png "$OUT/detour-committed.png"
 # --- Settings ------------------------------------------------------------------------------------
 # The Settings list is six themed GROUP rows — Ride / Display / Weather / Connections / Power /
 # System — so every settings screen sits two levels down. The shape of every script below is:
@@ -338,11 +343,10 @@ DETOUR_PRE="B d d w p d d d p f d d d d d d p p p f p T"
 # card") over the read-only device-info ledger.
 "$SIM" "$MAP" --boot --script "B u p d d d d d p d d d p" --expect-screen Firmware --png "$OUT/firmware.png"
 # The row greyed (disabled) while a ride records: ride route 0 (`p p p p`, GPX-driven so the session
-# is live), out through the ride menu's Main-menu station (`B u p` — see ride-detail-recording
-# above), then Settings -> System -> Firmware. The row loses its amber box and shows the
-# "Recording" cue.
+# is live), out to the Menu with the global escape (`B`), then Settings -> System -> Firmware. The
+# row loses its amber box and shows the "Recording" cue.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --tracks-dir "$TRACKS" --gpx "$GPX" --at 30 \
-    --script "p p p p B u p u p d d d d d p d d d p" --expect-screen Firmware --png "$OUT/firmware-recording.png"
+    --script "p p p p B u p d d d d d p d d d p" --expect-screen Firmware --png "$OUT/firmware-recording.png"
 # The SD-sideload update flow (epic #615 S5, #620). The scan/arm runs board-side; the script leaves
 # the "Checking card..." wait on top (Firmware -> Install), and --dfu scan/error answer it
 # through the real notify_dfu_scan_result seam (the sim stages a synthetic UPDATE.BIN and runs the
@@ -511,8 +515,8 @@ WXNAV="p d d d d w p"
 # while `--weather-decide` samples the bundle **route-projected** (the app's own matched progress +
 # recent pace) and runs the production alert engine on the final frame — the ride crosses the ring.
 # ETAROUTE holds just the Grimsel route, so `p p p p` rides it and the replay locks the matcher;
-# WXRIDE then walks ride menu -> Main menu -> Weather station -> dashboard.
-WXRIDE="p p p p B u p d d d d w p"
+# WXRIDE then walks the global Back-hold escape -> Weather station -> dashboard.
+WXRIDE="p p p p B d d d d w p"
 "$SIM" "$MAP" --boot --weather demo:stormahead --script "$WXNAV" --expect-screen Weather --png "$OUT/weather-dash-parked-dry.png"
 "$SIM" "$MAP" --boot --routes-dir "$ETAROUTE" --gpx "$GPX" --at 1500 --weather demo:rainahead --weather-decide \
     --script "$WXRIDE" --expect-screen Weather --png "$OUT/weather-dash-ride-rain-ahead.png"
@@ -568,11 +572,17 @@ trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$ELEVDIR" "$ETAROUTE"
 "$SIM" "$MAP" --boot --routes-dir "$ELEVDIR" --script "p p p f w w w w w w w f" \
     --expect-screen RouteOverview --png "$OUT/elev-route-profile.png"
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p p" --gpx "$GPX" --at 30 --expect-screen RideControl --png "$OUT/ridecontrol.png"
-# The mid-ride compass (epic #789): a BackHold on the riding Map opens the RIDE menu — Up ahead /
-# Detour / POIs / Routes / Main menu — instead of the main Menu. Many scripts above *pass through* it
-# (`B u p` is how they climb out to the main menu mid-ride); this is the frame of the menu itself,
-# with the needle settled on its Up-ahead entry station.
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p B w" --gpx "$GPX" --at 30 --expect-screen RideMenu --png "$OUT/ride-menu.png"
+# The **ride context** (#1515 D3): a Down+Back squeeze (`C`) on the riding Map raises the bottom
+# sheet carrying the ride's secondary actions — Up ahead / Detour / POIs / Routes. It replaced the
+# compass RIDE menu, whose fifth station (Main menu) is now the global Back-hold escape. Same base
+# as the quick-drawer frames — a real map under the device-64 dim LUT — so the two sheets can be
+# judged against each other.
+#
+# Grimsel carries **no routing graph**, so this frame is also the inert-row case: Detour draws
+# recessed with no chevron and a press does nothing. The drawer's dim means inert, unlike the
+# compass dial's, which dimmed a station a press still opened. The all-live arrangement is
+# `ride-context-live.png`, shot on the Monaco graph down in the detour block.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p C" --gpx "$GPX" --at 30 --expect-screen ContextDrawer --png "$OUT/ride-context.png"
 # The Climb view (epic #506, C4/C5): the current climb's grade-striped profile + cursor + the four
 # climb-scoped tiles. Reached with **no gesture at all** — `climb_mode` defaults to Auto, so riding
 # into a climb replaces the riding view with this screen on the entry edge. `$ETAROUTE` holds the
@@ -580,7 +590,7 @@ trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$ELEVDIR" "$ETAROUTE"
 # crosses the entry the auto-switch fires on. That is also what makes this frame the C5 regression
 # surface: if the auto-switch stops firing, the sweep fails here rather than quietly saving a Map.
 "$SIM" "$MAP" --boot --routes-dir "$ETAROUTE" --script "p p p p" --gpx "$GPX" --at 1500 --expect-screen Climb --png "$OUT/climb.png"
-# The "Up ahead" timeline (epic #946, U3) — the ride compass's north station. Needs a POI-DENSE map,
+# The "Up ahead" timeline (epic #946, U3) — the ride context's first row. Needs a POI-DENSE map,
 # so these frames use `monaco.obcm` (not $MAP) with the committed `monaco-upahead.gpx`: a ~2.7 km line
 # across central Monaco whose 300 m corridor catches real Resupply / Pharmacy / Lodging POIs, and whose
 # waypoints cover five categories, two Generic ones, and offsets on both sides of the line. The route is
@@ -590,7 +600,7 @@ UPMAP="$MONACO_FIXTURES/monaco.obcm"
 UPGPX="$MONACO_FIXTURES/tracks/monaco-upahead.gpx"
 UPROUTES="$(mktemp -d)"; trap 'rm -rf "$TRACKS" "$NAVDIR" "$TRIPDIR" "$PLAINROUTE" "$ELEVDIR" "$UPROUTES"' EXIT
 "$SIM" --import "$UPGPX" --routes-dir "$UPROUTES" >/dev/null
-UPBASE="p p p p T B w p f"
+UPBASE="p p p p T C p f"
 # (a) The merged list: map-POI rows (muted icons) and custom-waypoint rows (AMBER icon + diamond pip)
 # on one along-route axis, each with distance-to-go, climb-to-go and — past 50 m — the side arrow.
 "$SIM" "$UPMAP" --boot --routes-dir "$UPROUTES" --gpx "$UPGPX" --at 60 --script "$UPBASE" --expect-screen UpAhead --png "$OUT/up-ahead.png"
@@ -605,7 +615,7 @@ UPBASE="p p p p T B w p f"
     --script "$UPBASE d d d d d d d d d d p" --expect-screen PoiDetail --png "$OUT/up-ahead-poi-detail.png"
 # (e) The empty-state trio: no route (a route-less ride), nothing ahead, and nothing of this category
 # ahead (the specs/vectors plain route is far from the Monaco map, so its corridor is genuinely empty).
-"$SIM" "$UPMAP" --boot --script "B d d d w p p p B w p" --expect-screen UpAhead --png "$OUT/up-ahead-noroute.png"
+"$SIM" "$UPMAP" --boot --script "B d d d w p p p C p" --expect-screen UpAhead --png "$OUT/up-ahead-noroute.png"
 "$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$UPBASE" --expect-screen UpAhead --png "$OUT/up-ahead-nothing.png"
 "$SIM" "$UPMAP" --boot --routes-dir "$PLAINROUTE" --script "$UPBASE h d p w f" --expect-screen UpAhead --png "$OUT/up-ahead-nocategory.png"
 # (f) The Ride-settings **source scope** (U4). `UPSCOPE n` walks Home → Settings → Ride → the Up
@@ -663,19 +673,19 @@ U5CLIMBOFF="B u p p d d d p b b b"
 # (d) The route-less Statistics page: the "No route loaded" band note over the stat grid, where the
 # route-relative tiles (KM TO GO, TO CLIMB) read "--" and the rest are live.
 "$SIM" "$MAP" --boot --clock "2025-06-29T14:40" --gpx "$GPX" --at 30 --script "B d d d w p p p b" --expect-screen Statistics --png "$OUT/statistics-routeless.png"
-# The mid-ride "ROUTE ACTIVE" swap card: riding route 0, out to the ride menu's Routes station
-# (`B d d d` — the fourth station along, epic #789) and press, then pick the *other* vector route
-# (`d p`). Choosing a route while a ride is live raises the Swap / Finish & new / Cancel card
+# The mid-ride "ROUTE ACTIVE" swap card: riding route 0, out to the ride context's Routes row
+# (`C d d d` — the fourth row down) and press, then pick the *other* vector route (`d p`). Choosing a route while a ride is live raises the Swap / Finish & new / Cancel card
 # instead of opening the overview.
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p B d d d p d p" --expect-screen RouteSwap --png "$OUT/routeswap.png"
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --script "p p p p C d d d p d p" --expect-screen RouteSwap --png "$OUT/routeswap.png"
 # Inspect mode: a thin rounded amber/ink frame follows the panel corners across Route, Free, and
 # Zoom; only the active action's edge cues and the bottom-left scale bar join it. The clock and
 # redundant labels stay out. A final `w` lets the entry hold's edge bulge retract before capture.
 "$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --script "p p p p h w" --expect-screen Map --png "$OUT/map-pan.png"
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --script "p p p p h p w" --expect-screen Map --png "$OUT/map-pan-zoom.png"
-# Back-hold changes Route/Free; Select-hold changes the axis only after Free is active.
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --script "p p p p h B w" --expect-screen Map --png "$OUT/map-pan-free-v.png"
-"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --script "p p p p h B h w" --expect-screen Map --png "$OUT/map-pan-free-h.png"
+# Select tap walks the pan **mode ring** — Route Move -> Free Move -> Zoom (#1515 D3, where the
+# family moved off Back-hold); Select-hold changes the axis only once Free is active.
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --script "p p p p h p p w" --expect-screen Map --png "$OUT/map-pan-zoom.png"
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --script "p p p p h p w" --expect-screen Map --png "$OUT/map-pan-free-v.png"
+"$SIM" "$MAP" --boot --routes-dir "$ROUTES" --clock "2025-06-29T14:40" --script "p p p p h p h w" --expect-screen Map --png "$OUT/map-pan-free-h.png"
 # BLE connected indicator (#448): the static Bluetooth rune on the Home battery row and the menu
 # title bar. `--ble connected` injects a linked phone, exactly as the sim control-panel toggle does.
 "$SIM" "$MAP" --boot --ble connected --clock "2025-07-10T09:41" --expect-screen Home --png "$OUT/home-ble.png" --battery 45
@@ -792,7 +802,7 @@ for lang in de fr es; do
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --inject upload=0 --expect-screen RouteReceived --png "$OUT/route-received-$lang.png"
     "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --script "p p p p" --inject upload=1 \
         --expect-screen RouteSwap --png "$OUT/routeswap-received-$lang.png"
-    "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --script "p p p p B d d d p d p" --expect-screen RouteSwap --png "$OUT/routeswap-$lang.png"
+    "$SIM" "$MAP" --boot --lang "$lang" --routes-dir "$ROUTES" --script "p p p p C d d d p d p" --expect-screen RouteSwap --png "$OUT/routeswap-$lang.png"
     # The Sensors screen (epic #707, SE7): the three kind rows + status lines, per-language — eyeball
     # for a clipped kind label ("Herzfrequenz" / "Fréq. cardiaque" / "Frec. cardíaca") or status line.
     "$SIM" "$MAP" --boot --lang "$lang" --sensors screen --script "B u p d d d p d p" --expect-screen Sensors --png "$OUT/sensors-$lang.png"
@@ -829,6 +839,8 @@ for lang in de fr es; do
   # The quick drawer's five states per language (#1515 D2) — the copy to eyeball is the caption
   # under the icon row, the brightness editor's title, and the two lines of the power confirmation,
   # each of which has to fit the sheet's width in the longer translations.
+  # The ride context's four row labels at 240 px — the sheet is all copy, so this is its overflow check.
+  "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p C"           --expect-screen ContextDrawer --png "$OUT/ride-context-$lang.png"
   "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p Q"           --expect-screen QuickDrawer --png "$OUT/quick-root-$lang.png"
   "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p Q d p w"     --expect-screen QuickDrawer --png "$OUT/quick-ble-off-$lang.png"
   "$SIM" "$MAP" --boot --lang "$lang" "${QUICK[@]}" --script "p p p p Q p w"       --expect-screen QuickDrawer --png "$OUT/quick-brightness-$lang.png"

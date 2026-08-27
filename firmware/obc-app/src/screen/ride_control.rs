@@ -19,7 +19,7 @@ use crate::RecorderIntent;
 use super::vocab::chrome::title_frame;
 use super::vocab::list;
 use super::vocab::rows::{draw_guarded_rows, ledger_row, GuardedRowsGeometry, MenuItem};
-use super::{palette, Ctx, Render, RideMenuScreen, Screen, Transition};
+use super::{palette, Ctx, Render, Transition};
 
 /// The ride-so-far ledger: three caption/value rows under the title bar.
 const ROWS_TOP: i32 = 50;
@@ -80,7 +80,8 @@ impl RideControl {
                 cx.activity.mode = Mode::Riding; // back = Resume (cancel the pause)
                 Transition::Pop
             }
-            Gesture::BackHold => Transition::Push(Screen::RideMenu(RideMenuScreen::new())),
+            // Back-hold is the global escape, resolved above screen dispatch.
+            Gesture::BackHold => Transition::None,
         }
     }
 

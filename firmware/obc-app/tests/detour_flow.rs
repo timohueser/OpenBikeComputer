@@ -1,5 +1,5 @@
 //! The routed-detour flow (#882), end to end through the real gesture path: ride a real route
-//! (matcher locked by ticks over genuine OBCR geometry), open the ride menu's Detour station,
+//! (matcher locked by ticks over genuine OBCR geometry), open the ride context's Detour row,
 //! step the chooser, Press into the planning spinner (the detour search the pass hands out), land
 //! the executor's `DetourFinished` answer on the preview, commit (the `CommitDetour` effect), and
 //! land `DetourCommitted` — asserting the re-adoption choreography: active route swapped by durable
@@ -180,10 +180,10 @@ macro_rules! riding {
 
 /// Open the Detour chooser from the riding view.
 fn open_chooser(app: &mut App) {
-    app.apply_gesture(Gesture::BackHold); // → ride menu
-    app.apply_gesture(Gesture::Step(1)); // Waypoints → Detour
+    assert!(app.apply_chord(obc_app::Chord::Context), "the riding view declares the ride context");
+    app.apply_gesture(Gesture::Step(1)); // Up ahead → Detour
     app.apply_gesture(Gesture::Press);
-    assert!(matches!(app.top_screen(), Screen::Detour(_)), "the Detour station opens the chooser");
+    assert!(matches!(app.top_screen(), Screen::Detour(_)), "the Detour row opens the chooser");
 }
 
 #[test]
@@ -347,7 +347,7 @@ fn the_frozen_map_wears_a_recalculating_banner_on_the_overlay_plane() {
     let _ = app.take_dirty();
     let _ = host.one_pass(&mut app); // settle the start-of-ride dirt
 
-    app.apply_gesture(Gesture::BackHold); // the ride menu: an opaque chrome base
+    app.apply_gesture(Gesture::BackHold); // the global escape to the Menu: an opaque chrome base
     app.debug_set_plan_live(true); // …under which the executor begins a planner run
     let _ = host.one_pass(&mut app);
     app.apply_gesture(Gesture::Back); // and a map base is back under the live search
@@ -448,7 +448,7 @@ impl<'r> BoardLoop<'r> {
 /// banner, so a host keyed on it renders **nothing at all** for the rest of the search: stale pixels
 /// on glass, no explanation, and input going to the screen underneath.
 ///
-/// The chrome interlude is the ride menu and the plan is the simulator's `--freeze` seam, because
+/// The chrome interlude is the main menu and the plan is the simulator's `--freeze` seam, because
 /// the detour flow's own way back to a map base (Back on the spinner) drains a cancel in the same
 /// pass and ends the run — see `the_freeze_covers_a_live_search_exactly_while_a_map_base_would_draw`
 /// for that path.
@@ -458,7 +458,7 @@ fn the_banner_lands_when_a_map_base_returns_under_a_search_that_already_started(
     let mut board = BoardLoop::new(&route);
     let _ = board.pass(&mut app); // settle the start-of-ride dirt
 
-    app.apply_gesture(Gesture::BackHold); // the ride menu: an opaque chrome base
+    app.apply_gesture(Gesture::BackHold); // the global escape to the Menu: an opaque chrome base
     assert!(!app.base_draws_map(), "no map underneath the menu");
     app.debug_set_plan_live(true); // the host begins a planner run
     assert!(searching(&app));
