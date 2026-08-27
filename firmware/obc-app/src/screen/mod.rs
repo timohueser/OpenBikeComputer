@@ -204,14 +204,14 @@ pub struct Ctx<'a> {
     /// `Gesture::Press` reads the highlighted hit's address out of it to save + connect. Empty outside
     /// a scan; every other screen leaves it untouched.
     pub sensor_scan_hits: &'a [crate::sensors::SensorScanHit],
-    /// The **Navigator** domain (#1397 S2) — the planning screens name what they want to it
-    /// (`admit_intent`) rather than latching a request of their own. A rider's plan, cancel or
-    /// commit therefore exists in exactly one place from the instant they press.
     /// Whether the panel has a controllable light
     /// ([`App::backlight_available`](crate::App::backlight_available)) — the quick drawer's root
     /// row is one control shorter without one. A constant of the platform, threaded rather than
     /// stored, because it is the *screen's* content that depends on it.
     pub backlight: bool,
+    /// The **Navigator** domain (#1397 S2) — the planning screens name what they want to it
+    /// (`admit_intent`) rather than latching a request of their own. A rider's plan, cancel or
+    /// commit therefore exists in exactly one place from the instant they press.
     pub navigator: &'a mut crate::navigator::NavigatorMachine,
     /// The **DFU** domain — the Firmware and update-confirm screens post their phase here.
     pub dfu: &'a mut crate::dfu::DfuState,

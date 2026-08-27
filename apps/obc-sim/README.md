@@ -28,9 +28,10 @@ gets from GPIO:
 | Enter | Select |
 | Backspace | Back |
 
-Because these are held-state edges, the device-wide **chords** work as they do on the device: hold
-Left and press Enter (Up + Select) to open the universal quick drawer. Down + Back (Right and
-Backspace) is the contextual drawer's chord; it is recognised, but it has no content yet.
+Because these are held-state edges, the device-wide **chords** work as they do on the device. Press
+Left and Enter (Up + Select) **within 100 ms of each other** to open the universal quick drawer; a
+larger gap is two ordinary gestures. Down + Back (Right and Backspace) is the contextual drawer's
+chord, on the same window; it is recognised, but it has no content yet.
 
 The mouse wheel over the screen injects selection steps directly, so it does not model a button and
 makes no chord.
