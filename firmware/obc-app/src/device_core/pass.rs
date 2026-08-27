@@ -1055,6 +1055,7 @@ mod tests {
     use crate::route::RouteSummary;
     use crate::screen::WarningFlags;
     use crate::weather::WeatherOutcome;
+    use crate::Screen;
     use obc_ports::{Fix, LocationSource};
 
     /// A location port that never has a fix — the pass's sensor input in every test that is not
@@ -1506,8 +1507,13 @@ mod tests {
         );
     }
 
-    /// A ride is refused without a writable store: `Capabilities::recorder.record` is the gate, and
-    /// stage 7 is its reader. Dropping it starts a ride with nowhere to put it.
+    /// A ride is refused without a writable store — `Capabilities::recorder.record` is the gate and
+    /// stage 7 its reader — and the rider is **told**, through the whole chain from the absent fact
+    /// to the card on glass.
+    ///
+    /// Both halves are the property. Dropping the gate starts a ride with nowhere to put it; keeping
+    /// the gate but swallowing the refusal gives the rider a riding view that records nothing and
+    /// never says so, which is the worse of the two.
     #[test]
     fn recording_is_refused_without_a_writable_store() {
         let mut app = App::new(AppState::new(0, 0, 1.0));
@@ -1518,14 +1524,23 @@ mod tests {
         let plan = quiet(&mut app, 20);
         assert!(!app.recording(), "no store, no ride");
         assert!(plan.effects.recorder.is_empty(), "and nothing physical is offered for it");
+        assert!(
+            matches!(app.top_screen(), Screen::Warning(card) if card.flags().contains(WarningFlags::REC_ERROR)),
+            "the rider is told, rather than left on a riding view that records nothing"
+        );
+        // One card per refusal, not one per pass: the request stays pending, so a re-raise every
+        // pass would be a warning the rider cannot get out of.
+        app.apply_gesture(Gesture::Press); // dismiss it
+        quiet(&mut app, 30);
+        assert!(!matches!(app.top_screen(), Screen::Warning(_)), "the card does not come back");
 
-        // The card mounts, the rider asks again, and now it opens.
+        // The card mounts. The request the rider already made is still theirs, and it opens the ride
+        // — nothing was destroyed by a device that could not serve it yet.
         let mut facts = ExternalFacts::NONE;
         facts.note_store_revision(StoreRevision { store: StoreIdentity::new(1), revision: Revision::new(1) });
-        pass_with(&mut app, 30, &[], &mut OutcomeSlots::new(), &mut facts);
-        app.recorder.request(crate::RecorderIntent::Start);
-        quiet(&mut app, 40);
-        assert!(app.recording());
+        pass_with(&mut app, 40, &[], &mut OutcomeSlots::new(), &mut facts);
+        quiet(&mut app, 50);
+        assert!(app.recording(), "the kept request opened the ride the rider asked for");
     }
 
     /// A new session clears the trail and the pace window, and a fresh one zeroes the totals.
