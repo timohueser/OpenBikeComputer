@@ -86,14 +86,14 @@ impl TrackStore {
     }
 
     /// Finalise the open object: append the fixed v3 footer and rename the same bytes into the
-    /// simulator-only `ride-{id}.obcr` namespace. Answers with the identity it committed, or `None`
-    /// when it could not commit.
+    /// simulator-only `ride-{id}.obcr` namespace.
     ///
-    /// **`None` leaves the ride exactly where it was**, and that is the contract, not a nicety:
-    /// Recorder keeps the close pending and offers the same finalize again, so a store that
-    /// discarded the bytes on the way out would answer `None` for ever and the rider's ride would
-    /// be gone with a recording warning on every pass. Nothing is deleted until the rename commits;
+    /// **[`RideClose::Failed`] leaves the ride exactly where it was**, and that is the contract, not
+    /// a nicety: Recorder keeps the close pending and offers the same finalize again, so a store
+    /// that discarded the bytes on the way out would fail for ever and the rider's ride would be
+    /// gone with a recording warning on every pass. Nothing is deleted until the rename commits, and
     /// `footer_written` is what makes the retry the same close rather than a second footer.
+    /// [`RideClose::Nothing`] is the answer when there was no open ride at all — over, not owed.
     fn finalize(&mut self, stats: RideStats) -> RideClose {
         let Some(log) = self.open.as_mut() else { return RideClose::Nothing };
         if !log.footer_written {
