@@ -12,7 +12,8 @@ Two commands, deliberately separate:
 
 * ``check MANIFEST DIR`` — compare a fresh sweep against the manifest. It fails on a changed digest,
   a file the manifest names that the sweep did not produce, a file the sweep produced that the
-  manifest does not name, and a duplicated basename inside the manifest. This is the CI command.
+  manifest does not name, a duplicated basename inside the manifest, and **two frames with different
+  names and identical pixels** unless the pair is declared below. This is the CI command.
 * ``update MANIFEST DIR`` — rewrite the manifest from a sweep and print what moved. This is a
   developer command and must never run in CI: a manifest that regenerates itself records nothing.
 
@@ -31,6 +32,23 @@ from pathlib import Path
 # The sweep writes PNGs and only PNGs; anything else in the directory is not this manifest's
 # business (an OUT_DIR is allowed to be somebody's scratch folder).
 SNAPSHOT_SUFFIX = ".png"
+
+# Frames that are **supposed** to be pixel-identical to another frame, as sorted name groups.
+#
+# Two names over one image is normally a broken recipe: a script that walks one row too far, or a
+# flag that no longer reaches the screen, renders the wrong frame under the right name and every
+# other check still passes — the screen is right, only the state is wrong. That is exactly how
+# #1515 D4a shipped three per-language retention frames that were re-shots of the group's default
+# view.
+#
+# Sometimes identity *is* the assertion, and then it belongs here, where it reads as one: an
+# "absent" frame is worth shooting precisely because it must equal the frame without the thing.
+IDENTICAL_BY_DESIGN: list[set[str]] = [
+    # The expiry row is absent in both cases, so both frames are the plain overview (epic #638 S3).
+    {"routeoverview-expiry-far-absent.png", "routeoverview-expiry-unstarted-absent.png", "routeoverview.png"},
+    # Pan mode owns the Map's chrome, not the Statistics grid's: entering it changes no pixel here.
+    {"statistics-pan.png", "statistics.png"},
+]
 
 
 class ManifestError(Exception):
@@ -96,10 +114,32 @@ def diff(expected: dict[str, str], actual: dict[str, str]) -> tuple[list[str], l
     return changed, missing, extra
 
 
+def undeclared_twins(rows: dict[str, str]) -> list[list[str]]:
+    """Name groups that share one digest and are not declared in [`IDENTICAL_BY_DESIGN`]."""
+    by_digest: dict[str, list[str]] = {}
+    for name, digest in rows.items():
+        by_digest.setdefault(digest, []).append(name)
+    return sorted(
+        sorted(names) for names in by_digest.values() if len(names) > 1 and set(names) not in IDENTICAL_BY_DESIGN
+    )
+
+
 def check(manifest: Path, directory: Path) -> int:
     expected = read_manifest(manifest)
     actual = scan_snapshots(directory)
     changed, missing, extra = diff(expected, actual)
+    twins = undeclared_twins(actual)
+    if twins:
+        for names in twins:
+            print(f"identical: {' == '.join(names)}", file=sys.stderr)
+        print(
+            f"\nui-snapshots: {len(twins)} group(s) of frames are pixel-identical under different names.\n"
+            "A recipe that renders the wrong state under the right name looks exactly like this.\n"
+            "Fix the recipe, or — if the identity IS the assertion — declare the group in\n"
+            f"  IDENTICAL_BY_DESIGN in {Path(__file__).name}",
+            file=sys.stderr,
+        )
+        return 1
     if not (changed or missing or extra):
         print(f"ui-snapshots: {len(actual)} frames match {manifest}")
         return 0

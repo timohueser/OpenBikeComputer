@@ -213,6 +213,55 @@ fn the_up_ahead_filter_commit_re_keys_the_snapshot_and_back_discards() {
     assert_eq!(app.state.up_ahead_filter, PoiCategorySet::ALL, "predictable beats sticky (epic #946, U3)");
 }
 
+/// The same property end to end, through the real sheet: **scroll the timeline, filter it, and the
+/// rider lands on the nearest match ahead.** The Select-hold picker used to clear the cursor itself
+/// when it applied; the sheet sits above the screen and cannot, so the cursor states which list it
+/// indexes into and re-homes when that list changes.
+#[test]
+fn filtering_a_scrolled_timeline_from_the_sheet_re_homes_the_cursor() {
+    use obc_reader::{PoiCategory, PoiCategorySet};
+
+    let mut app = lit();
+    let mut f = Frames::new();
+    app.test_mount_store();
+    app.test_start_ride();
+    app.activity.active_route = Some(0);
+    // Four stops ahead, two of them Water and 3.6 km apart, so clamping and re-homing differ.
+    app.ride.waypoints = crate::harness::support::wpts_detailed(&[
+        (400, "Brunnen", Some(PoiCategory::Water), 0),
+        (500, "Bakery", Some(PoiCategory::Resupply), 0),
+        (600, "Camp", Some(PoiCategory::Campsite), 0),
+        (4_000, "Far water", Some(PoiCategory::Water), 0),
+    ]);
+
+    let ms = chord(&mut app, &mut f, Button::Down, Button::Back, 1_000);
+    let mut ms = at(&mut app, ms, Gesture::Press); // -> the timeline
+    assert!(matches!(app.top_screen(), Screen::UpAhead(_)));
+
+    for _ in 0..3 {
+        ms = at(&mut app, ms, Gesture::Step(1)); // scroll to the last row
+    }
+    assert_eq!(cursor_row(&app), 3, "the rider is on \"Far water\"");
+
+    let ms = chord(&mut app, &mut f, Button::Down, Button::Back, ms); // the timeline's own sheet
+    let ms = at(&mut app, ms, Gesture::Press); // -> the Filter editor
+    let ms = at(&mut app, ms, Gesture::Step(1)); // stage Water
+    let ms = at(&mut app, ms, Gesture::Press); // commit
+    assert_eq!(app.state.up_ahead_filter, PoiCategorySet::only(PoiCategory::Water));
+    at(&mut app, ms, Gesture::Back); // close the sheet, back onto the timeline
+
+    assert!(matches!(app.top_screen(), Screen::UpAhead(_)));
+    assert_eq!(cursor_row(&app), 0, "re-homed onto the nearest Water stop, not clamped onto the far one");
+
+    /// The row the timeline would draw the amber cursor on, resolved the way `draw` resolves it.
+    fn cursor_row(app: &App) -> usize {
+        let Some(Screen::UpAhead(s)) = app.ui.stack.iter().find(|s| matches!(s, Screen::UpAhead(_))) else {
+            panic!("the timeline is not on the stack")
+        };
+        s.test_cursor(app.ride.waypoints.as_slice(), &[], app.activity.progress_m, app.up_ahead_scope())
+    }
+}
+
 /// **Mutual exclusion**, at the one door: with the quick sheet up, the reserved squeezes do not
 /// stack a second overlay on it.
 #[test]
