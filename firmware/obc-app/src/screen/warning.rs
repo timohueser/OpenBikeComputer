@@ -8,7 +8,7 @@
 //! **Raised as each fault is discovered**, coalesced onto one card: the host calls
 //! the pass's fact stage for the boot-time faults (sensor presence
 //! lands a moment after boot, the map-slow flag at open), and the app raises the recording-error
-//! flag itself the first time [`TrackSink::record`](obc_ports::TrackSink::record) fails. Each distinct
+//! flag itself the first time a ride-log write does not happen. Each distinct
 //! flag is shown **once per boot** — a dismissed notice doesn't nag, but a *new* flag arriving
 //! later re-opens the card (see the pass's fact stage). The absent sensors are listed by name so
 //! the rider knows which module to check.
@@ -42,9 +42,9 @@ impl WarningFlags {
     /// The map loaded but reads slowly — its extent table was refused (fragmented past the cap or
     /// failed verification), so reads fall back to the FAT-seek path (issue #504).
     pub const MAP_SLOW: WarningFlags = WarningFlags(1 << 3);
-    /// A ride-log append failed mid-ride, so at least one track point was dropped and the log is
-    /// now incomplete. Raised by the app the first time [`TrackSink::record`](obc_ports::TrackSink::record)
-    /// returns an error (a card pull, a write error, a full medium) — issue #11.
+    /// A ride-log write did not happen mid-ride, so the log is now incomplete or at risk of it.
+    /// Raised the first time an executor answers a recording operation with a failure (a card pull,
+    /// a write error, a full medium) or the app's own sample staging overflows — issue #11.
     pub const REC_ERROR: WarningFlags = WarningFlags(1 << 4);
     /// A settings write to the persistent store failed, so an edit did not reach RRAM/the file. The
     /// value stays live in RAM and the app keeps retrying (bounded backoff); this is the advisory that

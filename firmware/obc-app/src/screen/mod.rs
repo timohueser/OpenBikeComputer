@@ -372,6 +372,10 @@ pub struct Render<'a> {
     pub rain: Option<&'a mut dyn obc_render::RainOverlaySource>,
     pub state: &'a AppState,
     pub activity: &'a Activity,
+    /// The **Recorder** domain, read-only here (#1398 R1) — the ride's own numbers. Distance,
+    /// moving time, climb, the live sensor values and the per-ride summary all come from the
+    /// machine that owns the session they belong to; no screen keeps a copy of any of them.
+    pub recorder: &'a crate::recorder::RecorderMachine,
     /// The persisted device settings (read-only here) — the riding views read
     /// [`units`](Settings::units) to caption + scale their readouts.
     pub settings: &'a Settings,
@@ -554,6 +558,7 @@ impl Render<'_> {
         crate::stat_fields::Readout {
             fix: self.state.user_fix,
             activity: self.activity,
+            recorder: self.recorder,
             units: self.settings.units,
             route: self.route,
             profile: self.profile,

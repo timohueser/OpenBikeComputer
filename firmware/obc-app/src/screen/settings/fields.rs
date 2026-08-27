@@ -466,9 +466,11 @@ mod tests {
         act.active_route = Some(0);
         let cache = NextAhead::new();
         let wpts = obc_route::Waypoints::new();
+        let recorder = crate::recorder::RecorderMachine::new();
         let cx = Readout {
             fix: None,
             activity: &act,
+            recorder: &recorder,
             units: crate::Units::Metric,
             route: None,
             profile: None,

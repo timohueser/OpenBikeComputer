@@ -70,17 +70,17 @@ fn ride(drift_m_per_h: f32, at_s: &[f64], map: &[u8], terrain_bytes: &[u8], gpx:
     let mut next = 0usize;
     let mut t = 0.0;
     while next < at_s.len() {
-        let (ride, sensors) = replay_advance(&mut player, &mut baro, None, FIX_DT_S, None, ReplaySensors::default());
+        let (ride, sensors) = replay_advance(&mut player, &mut baro, None, FIX_DT_S, ReplaySensors::default());
         app.tick(ride, sensors, None);
         // The EL8 drain: one terrain read per fresh fix, never per frame.
         app.sample_terrain(&mut terrain);
         t += FIX_DT_S;
         if t >= at_s[next] {
-            let a = app.activity.altitude();
+            let a = app.recorder.altitude();
             out.push(Reading {
                 t_s: t,
-                raw_m: app.activity.baro_elevation_m().expect("the replay has fed the altimeter"),
-                shown_m: app.activity.current_elevation_m().expect("…so the tile has a number"),
+                raw_m: app.recorder.baro_elevation_m().expect("the replay has fed the altimeter"),
+                shown_m: app.recorder.current_elevation_m().expect("…so the tile has a number"),
                 offset_m: a.offset_m().expect("terrain resolved under the Grimsel replay"),
                 accepted: a.accepted(),
                 gated: a.gated(),
@@ -196,14 +196,14 @@ fn without_terrain_the_shown_elevation_is_the_raw_barometer() {
     player.seek(0.0);
     player.play();
     for _ in 0..600 {
-        let (ride, sensors) = replay_advance(&mut player, &mut baro, None, FIX_DT_S, None, ReplaySensors::default());
+        let (ride, sensors) = replay_advance(&mut player, &mut baro, None, FIX_DT_S, ReplaySensors::default());
         app.tick(ride, sensors, None);
         app.sample_terrain(&mut null);
     }
-    assert!(!app.activity.altitude().settled(), "no residual can arrive through the null source");
+    assert!(!app.recorder.altitude().settled(), "no residual can arrive through the null source");
     assert_eq!(
-        app.activity.current_elevation_m(),
-        app.activity.baro_elevation_m(),
+        app.recorder.current_elevation_m(),
+        app.recorder.baro_elevation_m(),
         "the tile shows exactly what it showed before the epic"
     );
 }

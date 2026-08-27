@@ -106,12 +106,12 @@ impl RideControl {
         // The ride so far, in the shared pane-free ledger: what you're about to Finish (or throw
         // away with Discard) is on screen while the option rows are armed below.
         let units = rx.settings.units;
-        let act = rx.activity;
-        let time = duration_hms(act.moving_s);
-        let dist = distance_figure(units.dist(act.ridden_m / 1000.0));
+        let ride = rx.recorder;
+        let time = duration_hms(ride.moving_s());
+        let dist = distance_figure(units.dist(ride.ridden_m() / 1000.0));
         let dist_unit = if units.is_imperial() { "mi" } else { "km" };
         let mut climb: heapless::String<8> = heapless::String::new();
-        let _ = write!(climb, "{}", units.elev(act.climb_m()) as u32);
+        let _ = write!(climb, "{}", units.elev(ride.climb_m()) as u32);
 
         let rows: [(&str, &str, &str, Option<bool>); 3] = [
             (rx.t(Msg::RideControlRideTime), &time, "", None),

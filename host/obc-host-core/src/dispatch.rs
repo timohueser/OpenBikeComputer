@@ -774,9 +774,9 @@ fn serve_recorder(app: &App, effect: RecorderEffect, tracks: &mut dyn TrackRepos
             true => RecorderOutcome::Checkpointed { token },
             false => RecorderOutcome::Failed { token, error: RecorderError::Write },
         },
-        // The totals are read here, as the footer is written, so the wall-clock anchor pairs with
-        // the log's last points.
-        RecorderEffect::Finalize { token } => match tracks.finalize(app.ride_stats()) {
+        // The footer facts come from Recorder, which stamped its wall-clock anchor as it minted
+        // this close — nothing assembles them a second time on the way out.
+        RecorderEffect::Finalize { token } => match tracks.finalize(app.recorder.ride_stats()) {
             RideClose::Committed(ride) => RecorderOutcome::Finalized { token, ride },
             // The object was never created — a start this store refused, which already warned the
             // rider. There is nothing to save, and saying so is **terminal**: answering `Failed`
@@ -788,11 +788,18 @@ fn serve_recorder(app: &App, effect: RecorderEffect, tracks: &mut dyn TrackRepos
             true => RecorderOutcome::Discarded { token },
             false => RecorderOutcome::Failed { token, error: RecorderError::Write },
         },
-        // Sample assembly is #1553's; nothing produces an `Append` yet, so one arriving would be a
-        // change of who stages the samples with no executor behind it.
-        RecorderEffect::Append { token, .. } => {
-            debug_assert!(false, "sample assembly is part 2 of the recorder cutover");
-            RecorderOutcome::Failed { token, error: RecorderError::Write }
+        // The staged samples, in order, for as long as the medium keeps taking them. A short write
+        // is answered honestly: Recorder keeps the tail staged and offers it again next pass, so a
+        // refusal costs a delay rather than a hole in the ride log. Nothing written at all is a
+        // failure, which is what raises the recording warning.
+        RecorderEffect::Append { token, samples } => {
+            let staged = app.recorder.staged();
+            let want = (samples as usize).min(staged.len());
+            let written = staged[..want].iter().take_while(|point| tracks.append(**point)).count() as u16;
+            match written {
+                0 if want > 0 => RecorderOutcome::Failed { token, error: RecorderError::Write },
+                _ => RecorderOutcome::Appended { token, samples: written },
+            }
         }
     }
 }

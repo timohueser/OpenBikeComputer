@@ -695,7 +695,6 @@ impl SimGui {
                     &mut self.baro,
                     Some(&mut self.compass),
                     dt,
-                    self.tracks.sink(),
                     obc_host_core::ReplaySensors {
                         hr: Some(&mut self.sim_sensors.hr),
                         power: Some(&mut self.sim_sensors.power),
@@ -730,7 +729,6 @@ impl SimGui {
                 let sensors = Sensors {
                     clock: Some(&mut sim_clock),
                     compass: Some(&mut self.compass),
-                    track: self.tracks.sink(),
                     // The panel's "Sensors" section drives these (SE8); each source honours the
                     // ~1 Hz fresh-mailbox contract, so a disabled quantity goes stale → `--`.
                     hr: Some(&mut self.sim_sensors.hr),

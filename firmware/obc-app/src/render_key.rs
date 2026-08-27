@@ -385,9 +385,9 @@ impl App {
             active_climb: self.activity.active_climb.map(|i| i as u32),
             next_waypoint: self.activity.next_waypoint.map(|i| i as u32),
             live: (
-                fields.contains(StatField::HeartRate).then(|| self.activity.live_hr_display()).flatten(),
-                fields.contains(StatField::Power).then(|| self.activity.live_power_display()).flatten(),
-                fields.contains(StatField::Cadence).then(|| self.activity.live_cadence_display()).flatten(),
+                fields.contains(StatField::HeartRate).then(|| self.recorder.live_hr_display()).flatten(),
+                fields.contains(StatField::Power).then(|| self.recorder.live_power_display()).flatten(),
+                fields.contains(StatField::Cadence).then(|| self.recorder.live_cadence_display()).flatten(),
             ),
             next_ahead: self.ui.next_ahead.pending_refresh(),
         }

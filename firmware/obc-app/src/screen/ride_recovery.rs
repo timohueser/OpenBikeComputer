@@ -94,12 +94,12 @@ impl RideRecoveryScreen {
         // Show the totals the continuation path promises to keep. At a recovery boundary where a
         // host could restore only part of the summary these safely render zero, never invented data.
         let units = rx.settings.units;
-        let activity = rx.activity;
-        let time = duration_hms(activity.moving_s);
-        let distance = distance_figure(units.dist(activity.ridden_m / 1000.0));
+        let ride = rx.recorder;
+        let time = duration_hms(ride.moving_s());
+        let distance = distance_figure(units.dist(ride.ridden_m() / 1000.0));
         let distance_unit = if units.is_imperial() { "mi" } else { "km" };
         let mut climb: heapless::String<8> = heapless::String::new();
-        let _ = write!(climb, "{}", units.elev(activity.climb_m()) as u32);
+        let _ = write!(climb, "{}", units.elev(ride.climb_m()) as u32);
         let rows: [(&str, &str, &str, Option<bool>); 3] = [
             (rx.t(Msg::RideControlRideTime), &time, "", None),
             (rx.t(Msg::RideControlDistance), &distance, distance_unit, None),
