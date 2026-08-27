@@ -807,6 +807,7 @@ fn settle(
     reader: &Reader,
     elev: &mut dyn obc_route::ElevationSource,
     platform: &mut HeadlessPlatform,
+    weather: Option<&obc_app::WeatherSnapshot>,
     now: u32,
 ) {
     let mut quiet = 0usize;
@@ -826,6 +827,7 @@ fn settle(
                 &[],
                 sensors,
                 route.as_ref(),
+                weather,
                 gui::SIM_SUPPORT,
             );
             let owed = plan.effects.has_pending() || plan.immediate || !plan.derived_needs.is_empty();
@@ -1425,6 +1427,20 @@ fn main() {
         // The script's synthesized button events reach the app through its own input plane, exactly
         // as the board's high-priority plane feeds gestures between passes; a *frame* — the `f`
         // token, the `T` token and the settle after the script — is what runs `App::run_pass`.
+        // WX11: a scripted rain-map time-step must clamp against the real frame count, and the rain
+        // map's entry must know the product's zoom floor — both derived by the domain at stage 10
+        // from the snapshot the host samples. Sampled once here (position: rider fix, else the
+        // camera centre — the demo bundles span the map bbox either way) and lent to **every**
+        // settle below: a host that stops offering its bundle is a host with no bundle, and the
+        // domain collapses the view state to match.
+        //
+        // Unprojected on purpose: the ride has not been driven yet. The final frame re-samples,
+        // projected under `--weather-decide`.
+        let wx_script = weather.as_mut().and_then(|w| {
+            let pos = app.state.user_fix.map(|f| (f.lat, f.lon)).unwrap_or((app.state.cam_lat, app.state.cam_lon));
+            w.sync_clock(app.wall_unix_now() as i64, false);
+            w.snapshot(Some(pos), None)
+        });
         let mut script_now = 100u32;
         if let Some(script) = &args.script {
             // The `f` token flushes lazy draw-time state (the POI snapshot / detail hours / the
@@ -1442,7 +1458,17 @@ fn main() {
                 // Both tokens are the same device frame; only `f` also draws. The keyed ride-track
                 // fill and the route overview's shape preview are answered inside the executor from
                 // the plan's `derived_needs`, so nothing here reaches for them by hand.
-                settle(&mut host, &mut session, app, &mut stores, &reader, &mut *elev, &mut platform, now);
+                settle(
+                    &mut host,
+                    &mut session,
+                    app,
+                    &mut stores,
+                    &reader,
+                    &mut *elev,
+                    &mut platform,
+                    wx_script.as_ref(),
+                    now,
+                );
                 if matches!(what, ScriptHook::Render) {
                     // The frame carries the **streamed route** when one is active, exactly as the
                     // GUI's per-frame render does: the Up-ahead timeline's corridor snapshot (epic
@@ -1466,20 +1492,11 @@ fn main() {
                     );
                 }
             };
-            // WX11: a scripted rain-map time-step must clamp against the real frame count, so the
-            // snapshot's steps-ahead is fed before the script runs (position: rider fix, else the
-            // camera centre — the demo bundles span the map bbox either way).
-            if let Some(w) = weather.as_mut() {
-                let pos = app.state.user_fix.map(|f| (f.lat, f.lon)).unwrap_or((app.state.cam_lat, app.state.cam_lon));
-                w.sync_clock(app.wall_unix_now() as i64, false);
-                // Unprojected here on purpose: this pre-script pass only needs the frame count for
-                // the rain-map step clamp, and the ride hasn't been driven yet. The decision pass
-                // below (`--weather-decide`) is the one that projects.
-                if let Some(snap) = w.snapshot(Some(pos), None) {
-                    let now = app.wall_unix_now() as i64;
-                    let floor = snap.rain_zoom_floor(app.state.cam_lat).unwrap_or(0.0);
-                    app.set_rain_view(snap.steps_ahead(now), floor);
-                }
+            // One settle before the first token, so the domain holds the step range and the zoom
+            // floor the script's gestures clamp against. Only for a scenario that mounted weather —
+            // every other script's frames stay exactly as they were.
+            if wx_script.is_some() {
+                hook(&mut app, ScriptHook::Tick, script_now);
             }
             script_now = apply_script(&mut app, script, script_now, &mut hook);
         }
@@ -1490,7 +1507,7 @@ fn main() {
             Stores { routes: &mut store, rides: &mut ride_store, trips: &mut trip_store, tracks: &mut tracks };
         let mut settle_now =
             |app: &mut App, stores: &mut Stores<'_>, host: &mut HostLoop, platform: &mut HeadlessPlatform| {
-                settle(host, &mut session, app, stores, &reader, &mut *elev, platform, script_now);
+                settle(host, &mut session, app, stores, &reader, &mut *elev, platform, wx_script.as_ref(), script_now);
             };
         settle_now(&mut app, &mut stores, &mut host, &mut platform);
 
@@ -1510,7 +1527,17 @@ fn main() {
             } else {
                 eprintln!("warning: --inject nav-fail= has no planning operation to answer");
             }
-            settle(&mut host, &mut session, &mut app, &mut stores, &reader, &mut *elev, &mut platform, script_now);
+            settle(
+                &mut host,
+                &mut session,
+                &mut app,
+                &mut stores,
+                &reader,
+                &mut *elev,
+                &mut platform,
+                wx_script.as_ref(),
+                script_now,
+            );
         }
 
         // The detour twin: the same failure, against the detour search the script left running.
@@ -1522,7 +1549,17 @@ fn main() {
             } else {
                 eprintln!("warning: --inject detour-fail= has no detour operation to answer");
             }
-            settle(&mut host, &mut session, &mut app, &mut stores, &reader, &mut *elev, &mut platform, script_now);
+            settle(
+                &mut host,
+                &mut session,
+                &mut app,
+                &mut stores,
+                &reader,
+                &mut *elev,
+                &mut platform,
+                wx_script.as_ref(),
+                script_now,
+            );
         }
 
         // A committed route upload (epic #447, P4): the catalog above is the "already rescanned"
@@ -1532,7 +1569,17 @@ fn main() {
         if let Some(Injection::Upload { id, replaced }) = args.inject {
             let elevation = stores.routes.elevation_sparkline(id);
             host.facts().note_route_upload(obc_app::device_core::RouteUpload { id, replaced, elevation });
-            settle(&mut host, &mut session, &mut app, &mut stores, &reader, &mut *elev, &mut platform, script_now);
+            settle(
+                &mut host,
+                &mut session,
+                &mut app,
+                &mut stores,
+                &reader,
+                &mut *elev,
+                &mut platform,
+                wx_script.as_ref(),
+                script_now,
+            );
         }
         // The **trip** twin (epic #526): a trip always lands after its member routes, so the one
         // "TRIP RECEIVED" card replaces the burst's last per-route popup.
@@ -1543,7 +1590,17 @@ fn main() {
         // holds.
         if let Some(Injection::TripUpload { id }) = args.inject {
             host.facts().note_trip_upload(obc_app::device_core::TripUpload { id, replaced: false });
-            settle(&mut host, &mut session, &mut app, &mut stores, &reader, &mut *elev, &mut platform, script_now);
+            settle(
+                &mut host,
+                &mut session,
+                &mut app,
+                &mut stores,
+                &reader,
+                &mut *elev,
+                &mut platform,
+                wx_script.as_ref(),
+                script_now,
+            );
         }
         // The board's live map-transfer state (issue #927) — a level the ride loop polls each pass,
         // and a feeder rather than a fact until the flat engine's `busy` is wired (S6b).
@@ -1554,7 +1611,17 @@ fn main() {
         // real, so they arrive as the fact the board raises.
         if let Some(Injection::Warning(w)) = args.inject {
             host.facts().raise_warnings(w);
-            settle(&mut host, &mut session, &mut app, &mut stores, &reader, &mut *elev, &mut platform, script_now);
+            settle(
+                &mut host,
+                &mut session,
+                &mut app,
+                &mut stores,
+                &reader,
+                &mut *elev,
+                &mut platform,
+                wx_script.as_ref(),
+                script_now,
+            );
         }
 
         // DFU sideload snapshots (epic #615 S5, #620). The scan ran board-side above, answered by
@@ -1573,7 +1640,17 @@ fn main() {
                 let now = script_now.max(500_000);
                 feed(&mut app, now, vec![InputEvent::Button(ButtonEvent::Down(Button::Select))]);
                 feed(&mut app, now + 80, vec![InputEvent::Button(ButtonEvent::Up(Button::Select))]);
-                settle(&mut host, &mut session, &mut app, &mut stores, &reader, &mut *elev, &mut platform, now + 80);
+                settle(
+                    &mut host,
+                    &mut session,
+                    &mut app,
+                    &mut stores,
+                    &reader,
+                    &mut *elev,
+                    &mut platform,
+                    wx_script.as_ref(),
+                    now + 80,
+                );
             }
         }
         // The one-time post-update toast and its failure twin: this boot's update result is a fact,
@@ -1591,7 +1668,17 @@ fn main() {
         if let Some(result) = boot_update {
             let _ = host.facts().note_update_result(result);
             let now = script_now.max(500_000);
-            settle(&mut host, &mut session, &mut app, &mut stores, &reader, &mut *elev, &mut platform, now);
+            settle(
+                &mut host,
+                &mut session,
+                &mut app,
+                &mut stores,
+                &reader,
+                &mut *elev,
+                &mut platform,
+                wx_script.as_ref(),
+                now,
+            );
         }
 
         // `--sensors screen` (SE7, epic #707): after the script lands on the Sensors screen (or its
@@ -1635,6 +1722,7 @@ fn main() {
                         &[],
                         sensors,
                         route.as_ref(),
+                        None,
                         gui::SIM_SUPPORT,
                     )
                 };
@@ -1704,6 +1792,7 @@ fn main() {
                         &[],
                         sensors,
                         route.as_ref(),
+                        None,
                         gui::SIM_SUPPORT,
                     )
                 };
@@ -1747,7 +1836,6 @@ fn main() {
         // Time the whole frame draw into `render_us` (the no_std renderer has no clock, so
         // the host fills it) — same field the live panel shows.
         let t0 = Instant::now();
-        let scene = map_file::Scene { reader: &reader, route: route.as_ref() };
         let mut scratch = Box::new(obc_render::RenderScratch::new());
         // `--weather` (WX10/WX11): the final frame renders through the production rain lease and
         // the production resident snapshot — the same adapter/feed pair the device and the GUI
@@ -1757,22 +1845,47 @@ fn main() {
         // from the app's own matched progress + recent-pace estimate (`ride_projection` →
         // `sample_along`), then the real alert engine (thresholds/dedup/cooldown) over the very
         // snapshot the screens render. Source-agnostic: whichever bundle is loaded (`demo:`,
-        // a fixture file, or a `--weather live` fetch) is what it decides over. Opt-in so the
-        // WX10/WX11/WX14 fixture renders stay byte-identical (their scenarios would otherwise
-        // grow alert cards).
+        // a fixture file, or a `--weather live` fetch) is what it decides over. The alert engine
+        // itself is no longer opt-in: it runs at stage 10 on every host, over whatever bundle is
+        // sampled.
         let wx_projection = if args.weather_decide { route.as_ref().zip(app.ride_projection()) } else { None };
         let wx_snapshot = weather.as_mut().and_then(|w| {
             w.sync_clock(app.wall_unix_now() as i64, false);
             w.snapshot(Some(wx_pos), wx_projection)
         });
-        if let Some(snap) = &wx_snapshot {
-            let now = app.wall_unix_now() as i64;
-            let floor = snap.rain_zoom_floor(app.state.cam_lat).unwrap_or(0.0);
-            app.set_rain_view(snap.steps_ahead(now), floor);
+        // One settle carrying that snapshot: the domain derives the rain map's step range and zoom
+        // floor from it and runs the alert decision, both at stage 10 — the same stage the board
+        // runs them at. The route opened above ends here (the settle re-opens it) and the frame's
+        // own reader is taken again below.
+        //
+        // **Only for a scenario that mounted weather.** A settle is not free — it advances the
+        // card and spinner timers every screen shares — so a still frame that named no bundle keeps
+        // exactly the passes it always ran.
+        if weather.is_some() {
+            // `--weather-refreshing`: the provider plane's level, reported as the external fact the
+            // domain reads. The cue is the domain's answer on every host now, never a render argument.
+            if args.weather_refreshing {
+                host.facts().note_weather_refreshing(true);
+            }
+            settle(
+                &mut host,
+                &mut session,
+                &mut app,
+                &mut stores,
+                &reader,
+                &mut *elev,
+                &mut platform,
+                wx_snapshot.as_ref(),
+                script_now,
+            );
         }
-        if args.weather_decide {
-            app.weather_alert_tick(wx_snapshot.as_ref());
-        }
+        session.sync(&app, stores.routes);
+        let route_src = stores.routes.active_source();
+        let route = match (session.index(), route_src.as_ref()) {
+            (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
+            _ => None,
+        };
+        let scene = map_file::Scene { reader: &reader, route: route.as_ref() };
 
         // `--expect-screen`: the recipe states where its gestures were supposed to land, and the
         // sim checks it against the `screens!` table's own name before a single pixel is written.
@@ -1787,9 +1900,8 @@ fn main() {
         }
 
         let rain_step = app.state.rain_step;
-        let refreshing = args.weather_refreshing;
         let render_final = |rain: Option<&mut dyn obc_render::RainOverlaySource>,
-                            weather_feed: obc_app::WeatherFeed,
+                            weather_feed: Option<&obc_app::WeatherSnapshot>,
                             app: &mut App,
                             fb: &mut Framebuffer,
                             scratch: &mut obc_render::RenderScratch| {
@@ -1807,16 +1919,9 @@ fn main() {
         let wx_wall_now = app.wall_unix_now() as i64;
         let mut stats = match weather.as_mut() {
             Some(weather) => weather.lease(wx_wall_now, rain_step, |rain| {
-                let feed = obc_app::WeatherFeed { snapshot: wx_snapshot.as_ref(), refreshing };
-                render_final(rain, feed, &mut app, &mut fb, &mut scratch)
+                render_final(rain, wx_snapshot.as_ref(), &mut app, &mut fb, &mut scratch)
             }),
-            None => render_final(
-                None,
-                obc_app::WeatherFeed { snapshot: wx_snapshot.as_ref(), refreshing },
-                &mut app,
-                &mut fb,
-                &mut scratch,
-            ),
+            None => render_final(None, wx_snapshot.as_ref(), &mut app, &mut fb, &mut scratch),
         };
         stats.render_us = t0.elapsed().as_micros() as u32;
         let cache_reqs = stats.map_chunk_hits + stats.map_chunk_misses;

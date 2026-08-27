@@ -7,12 +7,12 @@
 //! per-language rendering, and stale-never-looks-dry at the frame level.
 
 use embedded_graphics::pixelcolor::Rgb888;
-use obc_app::{App, AppState, Gesture, Screen, WeatherAlertKind, WeatherFeed, WeatherSnapshot};
+use obc_app::{App, AppState, Gesture, Screen, WeatherAlertKind, WeatherSnapshot};
 use obc_formats::obcw::{HourlyRecord, CONDITION_CLEAR, HOURLY_COUNT};
 use obc_reader::{rgb565_to_rgb888, MapCache, MapTables, Reader, SliceSource as MapSliceSource};
 
 mod common;
-use common::{build_min_obcm, Buf};
+use common::{build_min_obcm, weather_pass, Buf};
 
 const T0: i64 = 1_800_000_000;
 
@@ -71,8 +71,39 @@ fn rgb888(c: u16) -> Rgb888 {
     Rgb888::new(r, g, b)
 }
 
-/// Render one full 240 × 320 frame with the given weather feed.
-fn render(app: &mut App, map: &[u8], weather: WeatherFeed) -> Buf {
+/// [`snapshot`] anchored at `now` instead of [`T0`], with a rain grid dense enough that the zoom
+/// floor it implies is well above `AppState::new`'s starting zoom.
+fn snapshot_at(now: i64, intensities: &[u8]) -> WeatherSnapshot {
+    let mut snap = snapshot(intensities);
+    snap.valid_from = now - 3_600;
+    snap.valid_until = now + 24 * 3_600;
+    for (index, frame) in snap.frames.iter_mut().enumerate() {
+        frame.valid_at = now + index as i64 * 900;
+    }
+    snap.rain_grid = Some(obc_render::RainGrid {
+        west_udeg: -100_000,
+        south_udeg: -100_000,
+        east_udeg: 100_000,
+        north_udeg: 100_000,
+        width_cells: 4_096,
+        height_cells: 4_096,
+    });
+    snap
+}
+
+/// Feed the domain the host's freshly-sampled snapshot — the production path (stage 10) for the
+/// rain map's step range and the product's zoom floor. Nothing else derives either.
+fn sample(app: &mut App, snap: Option<&WeatherSnapshot>) {
+    weather_pass(app, 0, snap, |_| {});
+}
+
+/// Report that the provider plane is (or is not) fetching — the production path for the cue.
+fn set_refreshing(app: &mut App, fetching: bool) {
+    weather_pass(app, 0, None, |facts| facts.note_weather_refreshing(fetching));
+}
+
+/// Render one full 240 × 320 frame with the given snapshot.
+fn render(app: &mut App, map: &[u8], weather: Option<&WeatherSnapshot>) -> Buf {
     let cache = MapCache::new();
     let src = MapSliceSource(map);
     let tables = MapTables::parse(&src).expect("valid map");
@@ -121,8 +152,10 @@ fn menu_reaches_every_weather_surface() {
     assert!(matches!(app.top_screen(), Screen::WeatherRainMap(_)));
     assert_eq!(app.state.rain_step, 0, "the rain map opens on NOW, never a leaked step");
 
-    // Time-steps clamp to the frames that exist, and Back resets the step.
-    app.state.rain_steps_ahead = 2;
+    // Time-steps clamp to the frames that exist — three frames, so two lie ahead of NOW.
+    let three = snapshot_at(app.wall_unix_now() as i64, &[0, 0, 0]);
+    sample(&mut app, Some(&three));
+    assert_eq!(app.weather().steps_ahead(), 2, "three frames, two of them ahead");
     app.apply_gesture(Gesture::Step(1));
     app.apply_gesture(Gesture::Step(1));
     app.apply_gesture(Gesture::Step(1));
@@ -141,14 +174,17 @@ fn menu_reaches_every_weather_surface() {
 #[test]
 fn rain_map_zoom_clamps_to_the_rain_grid_regime_floor() {
     let mut app = App::new_idle(AppState::new(0, 0, 0.05));
-    // The host-fed floor (the sim/board derive it from `WeatherSnapshot::rain_zoom_floor`).
-    app.state.rain_zoom_min = 0.02;
+    // The floor the domain derives from the product's own cell density.
+    let dense = snapshot_at(app.wall_unix_now() as i64, &[0; 4]);
+    sample(&mut app, Some(&dense));
+    let floor = app.weather().zoom_floor();
+    assert!(floor > 0.05, "the fixture grid must actually engage the clamp (floor {floor})");
     app.state.zoom = 0.004; // parked far outside the regime (the browse map may be anywhere)
     open_dashboard(&mut app);
     app.apply_gesture(Gesture::Step(1));
     app.apply_gesture(Gesture::Press); // → rain map
     assert!(matches!(app.top_screen(), Screen::WeatherRainMap(_)));
-    assert_eq!(app.state.zoom, 0.02, "entry snaps to the regime floor — the rider never sees out-of-regime");
+    assert_eq!(app.state.zoom, floor, "entry snaps to the regime floor — the rider never sees out-of-regime");
 
     // Inspect zoom-out: enter pan, toggle Move → Zoom, step out repeatedly — the camera stops at
     // the floor every time.
@@ -157,10 +193,10 @@ fn rain_map_zoom_clamps_to_the_rain_grid_regime_floor() {
     for _ in 0..6 {
         app.apply_gesture(Gesture::Step(1)); // zoom out
     }
-    assert!(app.state.zoom >= 0.02, "Inspect zoom-out clamps at the floor (zoom {})", app.state.zoom);
+    assert!(app.state.zoom >= floor, "Inspect zoom-out clamps at the floor (zoom {})", app.state.zoom);
     // Zooming in is never clamped.
     app.apply_gesture(Gesture::Step(-1));
-    assert!(app.state.zoom > 0.02, "zooming back in is free");
+    assert!(app.state.zoom > floor, "zooming back in is free");
 
     // No rain grid: the floor is 0.0 and the clamp disengages (the defensive banner remains
     // the backstop for that configuration).
@@ -231,8 +267,8 @@ fn dashboard_states_and_languages_render_distinct_deterministic_frames() {
         let mut app = App::new_idle(AppState::new(0, 0, 0.05));
         pin_clock(&mut app, now);
         open_dashboard(&mut app);
-        let a = render(&mut app, &map, WeatherFeed { snapshot: feed_snapshot, refreshing: false });
-        let b = render(&mut app, &map, WeatherFeed { snapshot: feed_snapshot, refreshing: false });
+        let a = render(&mut app, &map, feed_snapshot);
+        let b = render(&mut app, &map, feed_snapshot);
         assert_eq!(a.px, b.px, "{name}: identical inputs render byte-identical frames");
         frames.push((name, a.px));
     }
@@ -256,9 +292,9 @@ fn dashboard_states_and_languages_render_distinct_deterministic_frames() {
         settings.language = lang;
         app.set_settings(settings);
         open_dashboard(&mut app);
-        let dash = render(&mut app, &map, WeatherFeed { snapshot: Some(&dry), refreshing: false });
+        let dash = render(&mut app, &map, Some(&dry));
         app.apply_gesture(Gesture::Press); // → hourly
-        let _hourly = render(&mut app, &map, WeatherFeed { snapshot: Some(&dry), refreshing: false });
+        let _hourly = render(&mut app, &map, Some(&dry));
         match &english {
             None => english = Some(dash.px),
             Some(en) => assert_ne!(en, &dash.px, "{lang:?} renders its own catalog copy"),
@@ -275,8 +311,9 @@ fn refresh_cue_keeps_cached_content_visible() {
     let mut app = App::new_idle(AppState::new(0, 0, 0.05));
     pin_clock(&mut app, T0 + 60);
     open_dashboard(&mut app);
-    let idle = render(&mut app, &map, WeatherFeed { snapshot: Some(&dry), refreshing: false });
-    let refreshing = render(&mut app, &map, WeatherFeed { snapshot: Some(&dry), refreshing: true });
+    let idle = render(&mut app, &map, Some(&dry));
+    set_refreshing(&mut app, true);
+    let refreshing = render(&mut app, &map, Some(&dry));
     assert_ne!(idle.px, refreshing.px, "the UPDATING cue is visible");
     let bar_rows = 40 * 240; // the title bar band
     assert_eq!(idle.px[bar_rows..], refreshing.px[bar_rows..], "everything below the title bar stays untouched");

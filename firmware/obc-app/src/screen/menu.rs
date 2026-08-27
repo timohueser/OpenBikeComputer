@@ -173,8 +173,16 @@ impl MenuScreen {
                 1 => Transition::Push(Screen::Rides(RidesScreen::new())),         // Rides
                 2 => Transition::Push(Screen::PoiMenu(PoiMenuScreen::new())),     // POIs
                 3 => open_map(cx),                                                // Map
-                4 => Transition::Push(Screen::Weather(super::WeatherScreen::new())), // Weather (WX11)
-                _ => Transition::Push(Screen::Settings(SettingsScreen::new())),   // Settings
+                // Weather (WX11). Opening the dashboard is worth a radio trip, so the row that
+                // opens it says so — the same way the System row names its free-space refresh.
+                // This is the **only** push site of `Screen::Weather`, which is what makes it the
+                // entry edge: Back from Hourly or the rain map does not pass through here, so it
+                // cannot manufacture a second urgent request.
+                4 => {
+                    cx.weather.apply_intent(crate::weather::WeatherIntent::RefreshRequested);
+                    Transition::Push(Screen::Weather(super::WeatherScreen::new()))
+                }
+                _ => Transition::Push(Screen::Settings(SettingsScreen::new())), // Settings
             },
             Gesture::Back => Transition::Pop, // return to caller (Home or Map)
             Gesture::Hold => Transition::None,

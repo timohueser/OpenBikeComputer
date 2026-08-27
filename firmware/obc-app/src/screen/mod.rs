@@ -217,6 +217,9 @@ pub struct Ctx<'a> {
     pub dfu: &'a mut crate::dfu::DfuState,
     /// The **StorageInfo** domain — the System screen asks for a free-space refresh on entry.
     pub storage: &'a mut crate::device_core::storage_info::StorageInfo,
+    /// The **Weather** domain — the menu row that opens the dashboard names its refresh here, and
+    /// the rain-map screens clamp against the zoom floor it derived.
+    pub weather: &'a mut crate::weather::WeatherDomain,
     pub now_ms: u32,
 }
 
@@ -252,6 +255,7 @@ pub(crate) fn test_ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, 
         navigator: Box::leak(Box::new(crate::navigator::NavigatorMachine::new())),
         dfu: Box::leak(Box::new(crate::dfu::DfuState::new())),
         storage: Box::leak(Box::new(crate::device_core::storage_info::StorageInfo::new())),
+        weather: Box::leak(Box::new(crate::weather::WeatherDomain::new())),
         now_ms: 0,
     }
 }

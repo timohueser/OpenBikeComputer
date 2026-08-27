@@ -18,7 +18,7 @@ use obc_render::{rain_style, RainOverlaySource};
 use obc_weather::{WeatherCache, WeatherReader};
 
 mod common;
-use common::{build_min_obcm, Buf, ReplayFix};
+use common::{build_min_obcm, weather_pass, weather_snapshot, Buf, ReplayFix};
 
 /// The fixture's one frame timestamp.
 const FRAME_AT: i64 = 1_800_000_900;
@@ -106,17 +106,7 @@ fn render(app: &mut App, map: &[u8], rain: Option<&mut dyn RainOverlaySource>) -
     let reader = Reader::new(&src, &tables, &cache);
     let mut buf = Buf::new(120, 120);
     let mut scratch = Box::new(obc_render::RenderScratch::new());
-    app.render_frame_with_rain(
-        Some(&mut scratch),
-        &mut buf,
-        &reader,
-        None,
-        rain,
-        obc_app::WeatherFeed::NONE,
-        120.0,
-        120.0,
-        rgb888,
-    );
+    app.render_frame_with_rain(Some(&mut scratch), &mut buf, &reader, None, rain, None, 120.0, 120.0, rgb888);
     buf
 }
 
@@ -211,19 +201,36 @@ fn rendering_with_a_lease_is_deterministic() {
     assert_eq!(block_hits, 10, "intensity 5 paints 10 of every 16 Bayer cells");
 }
 
-/// The zoom floor the host feed carries in these tests — well above `AppState::new`'s 0.05, so the
-/// rain map's entry clamp (`AppState::clamp_rain_zoom`) genuinely moves the shared camera, exactly
-/// as it does in the simulator. A floor of `0.0` would disengage the clamp and quietly turn the
-/// walk below into a no-op.
-const ZOOM_FLOOR: f32 = 0.5;
+/// The grid the sampled snapshot below carries: dense enough that the zoom floor the domain derives
+/// from it sits well above `AppState::new`'s 0.05, so the rain map's entry clamp
+/// (`AppState::clamp_rain_zoom`) genuinely moves the shared camera, exactly as it does on the
+/// device. A frameless bundle would leave the floor at `0.0` and quietly turn the walk below into a
+/// no-op.
+const DENSE_GRID: obc_render::RainGrid = obc_render::RainGrid {
+    west_udeg: -100_000,
+    south_udeg: -100_000,
+    east_udeg: 100_000,
+    north_udeg: 100_000,
+    width_cells: 4_096,
+    height_cells: 4_096,
+};
+
+/// One pass with a four-frame bundle sampled — the production path (stage 10) for the rain map's
+/// step range and zoom floor, which no host derives any more.
+fn sample_dense(app: &mut App) {
+    let snap = weather_snapshot(app.wall_unix_now() as i64, &[0; 4], Some(DENSE_GRID));
+    weather_pass(app, 0, Some(&snap), |_| {});
+    assert_eq!(app.weather().steps_ahead(), 3, "four frames, three of them ahead");
+    assert!(app.weather().zoom_floor() > 0.05, "the fixture grid must engage the clamp");
+}
 
 /// The reported state leak (on-glass, simulator): after a visit to the rain map the precipitation
 /// raster kept drawing on the ordinary Map. It cannot any more — the overlay is the base screen's
 /// declared capability (`Caps::rain_overlay`), so a host that leases weather on *every* frame (both
 /// production hosts do) still hands the Map nothing.
 ///
-/// The walk runs with the **production host feed** (`set_rain_view`, called every frame by
-/// `obc-sim`'s GUI and headless paths), so the rain map's zoom clamp really fires. That is why the
+/// The walk runs through the **production derivation** (stage 10, once per pass on every host),
+/// so the rain map's zoom clamp really fires. That is why the
 /// claim pinned here is *rain-freeness*, not frame identity: the returned-to Map legitimately sits
 /// at a different zoom, which is its own defect (#1252) and has its own case below. What must hold
 /// at any camera is that the offered lease changes **nothing** on the Map — before or after.
@@ -237,7 +244,7 @@ fn the_map_is_rain_free_before_and_after_a_visit_to_the_rain_map() {
     let mut app = App::new(AppState::new(0, 0, 0.05));
     assert!(matches!(app.top_screen(), Screen::Map(_)), "the app starts on the Map");
     // The host's per-frame weather view feed: step range + the product's zoom floor.
-    app.set_rain_view(3, ZOOM_FLOOR);
+    sample_dense(&mut app);
 
     // The Map with no weather mounted at all — the reference frame the rider expects to see.
     let pristine = render(&mut app, &map, None);
@@ -250,7 +257,7 @@ fn the_map_is_rain_free_before_and_after_a_visit_to_the_rain_map() {
 
     // The rain map is where that same lease does draw…
     walk_to_the_rain_map(&mut app);
-    app.set_rain_view(3, ZOOM_FLOOR);
+    sample_dense(&mut app);
     let mut on_rain_map = RainOverlayAdapter::current(&reader, &mut cache, FRAME_AT).unwrap();
     let rained = render(&mut app, &map, Some(&mut on_rain_map));
     assert!(rained.count(rain_color) > 0, "the rain map is the screen that draws rain");
@@ -260,7 +267,7 @@ fn the_map_is_rain_free_before_and_after_a_visit_to_the_rain_map() {
     // right reference, but "the lease adds nothing" is still exactly the property under test, and
     // it is the one that fails on the old behaviour.
     walk_back_to_the_map(&mut app);
-    app.set_rain_view(3, ZOOM_FLOOR);
+    sample_dense(&mut app);
     let mut still_offered = RainOverlayAdapter::current(&reader, &mut cache, FRAME_AT).unwrap();
     let after = render(&mut app, &map, Some(&mut still_offered));
     let after_without_lease = render(&mut app, &map, None);
@@ -282,12 +289,12 @@ fn the_map_is_rain_free_before_and_after_a_visit_to_the_rain_map() {
 fn the_map_returns_to_the_camera_the_rider_left() {
     let map = build_min_obcm(0);
     let mut app = App::new(AppState::new(0, 0, 0.05));
-    app.set_rain_view(3, ZOOM_FLOOR);
+    sample_dense(&mut app);
     let pristine = render(&mut app, &map, None);
     walk_to_the_rain_map(&mut app);
-    app.set_rain_view(3, ZOOM_FLOOR);
+    sample_dense(&mut app);
     walk_back_to_the_map(&mut app);
-    app.set_rain_view(3, ZOOM_FLOOR);
+    sample_dense(&mut app);
     let after = render(&mut app, &map, None);
     // Compared as a bool, not with `assert_eq!`: a failing frame comparison would otherwise dump
     // two 120 × 120 pixel vectors into the log.

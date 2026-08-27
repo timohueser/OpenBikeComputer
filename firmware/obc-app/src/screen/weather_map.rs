@@ -55,16 +55,16 @@ impl WeatherRainMapScreen {
         // cell density via `rain_min_zoom`).
         if cx.state.pan.is_some() {
             let t = handle_pan(g, cx);
-            cx.state.clamp_rain_zoom();
+            cx.state.clamp_rain_zoom(cx.weather.zoom_floor());
             return t;
         }
         match g {
             // Time-step through the forecast frames: clamped to the frames that actually exist
-            // (`rain_steps_ahead`, host-refreshed against the snapshot each frame). No wrap — the
+            // ([`WeatherDomain::steps_ahead`], derived from the pass's own snapshot). No wrap — the
             // timeline's ends are ends.
             Gesture::Step(n) => {
                 let step = cx.state.rain_step as i32 + n;
-                cx.state.rain_step = step.clamp(0, cx.state.rain_steps_ahead as i32) as u8;
+                cx.state.rain_step = step.clamp(0, cx.weather.steps_ahead() as i32) as u8;
                 Transition::None
             }
             Gesture::Hold => {
@@ -142,7 +142,7 @@ impl WeatherRainMapScreen {
         } else if rx.stats.rain_out_of_regime {
             // DEFENSIVE FALLBACK ONLY (owner tuning round 2): the zoom-out clamp
             // (`AppState::clamp_rain_zoom`, applied on entry, after every Inspect gesture, and
-            // live in the host feed via `App::set_rain_view`) keeps this screen inside the
+            // live at stage 10's tail while the rain map is up) keeps this screen inside the
             // rain grid's regime, so this banner should be unreachable. It stays because the
             // honesty law is absolute — if a regime miss ever slips through (a host that skipped
             // the floor source, a frame edge case), the frame must still declare itself

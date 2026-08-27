@@ -55,6 +55,9 @@ rfd = "0.14"
 
 [dev-dependencies]
 obc-fixtures = { path = "../../host/obc-fixtures" }
+# The differential replay builds sampled weather snapshots by hand, whose frame table is the
+# `heapless::Vec` the device's own snapshot carries.
+heapless = "0.8"
 # The presenter suite in `present.rs` runs obc-display's reusable contract checks; the
 # `conformance` feature exists so that scaffolding stays out of the device image, and this
 # dev-dep turns it on for the sim's test builds only.

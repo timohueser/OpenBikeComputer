@@ -166,6 +166,11 @@ pub struct PassInputs<'a> {
     pub sensors: Sensors<'a>,
     /// The active route's reader, when the platform has one open.
     pub route: Option<&'a RouteReader<'a>>,
+    /// The host's freshly-sampled weather snapshot, when it has a bundle open — the same borrow the
+    /// frame renders from. A *source*, exactly like [`route`](Self::route): stage 10 derives the
+    /// rain map's view state and the alert decision from it and keeps nothing, so the bundle never
+    /// becomes resident App state.
+    pub weather: Option<&'a crate::weather::WeatherSnapshot>,
     /// What this firmware image and its hardware implement at all — constant for a boot.
     pub support: PlatformSupport,
     /// What the platform finished since the last pass.
@@ -339,7 +344,7 @@ impl App {
     /// them; both compositions call the same per-domain entry points, so there is one implementation
     /// of each and only the order differs.
     pub fn run_pass(&mut self, inputs: PassInputs<'_>) -> PassPlan {
-        let PassInputs { now, gestures, sensors, route, support, outcomes, facts, derived, targets } = inputs;
+        let PassInputs { now, gestures, sensors, route, weather, support, outcomes, facts, derived, targets } = inputs;
         self.pass.enter();
         // The visible screens' exact facts, as they are *before* any stage runs (#1447). Held on
         // this frame's stack and nowhere else: a resident copy would be one more mirror of the state
@@ -360,7 +365,7 @@ impl App {
         self.stage_recorder();
         self.stage_navigator(&mut effects);
         self.stage_settings(&mut effects);
-        self.stage_weather(&mut effects);
+        self.stage_weather(&mut effects, weather);
         self.stage_platform(&mut effects);
         self.stage_admission(support);
         self.stage_faults();
@@ -422,7 +427,8 @@ impl App {
 
     /// Stage 2 — consume external facts and the derived inputs that answer a need.
     ///
-    /// Levels ([`store_revision`](ExternalFacts::store_revision), transfer, link, installed weather)
+    /// Levels ([`store_revision`](ExternalFacts::store_revision), transfer, link, and the three
+    /// weather levels — installed data, the resample revision, whether a fetch is running)
     /// are read and compared against what the coordinator last saw, so one commit is one intent. The
     /// one-shots (uploads, warnings, this boot's update result) are taken. A warning goes to the
     /// fault connection rather than straight to a card: every fault raised in a pass reaches the
@@ -450,6 +456,12 @@ impl App {
         }
         if let Some(installed) = facts.weather_data() {
             self.weather.note_installed(installed);
+        }
+        if let Some(sample) = facts.weather_sample() {
+            self.weather.note_sample(sample);
+        }
+        if let Some(fetching) = facts.weather_refreshing() {
+            self.weather.note_refreshing(fetching);
         }
         if let Some(upload) = facts.take_route_upload() {
             self.on_route_uploaded(upload.id, upload.replaced, upload.elevation);
@@ -790,11 +802,40 @@ impl App {
         }
     }
 
-    /// Stage 10 — advance `WeatherDomain`: one refresh at a time, and only while the device can
-    /// actually reach a companion. The capability is the level stage 12 calculated last pass — a
-    /// refresh the link cannot serve is not started at all rather than failing.
-    fn stage_weather(&mut self, effects: &mut EffectSlots) {
+    /// Stage 10 — advance `WeatherDomain`: derive what the rain map may show from this pass's
+    /// snapshot, run the alert decision, and offer one refresh.
+    ///
+    /// **Once per pass, not once per resample.** The derivation and the alert decision used to be
+    /// called by each host from inside its own resample branch, which made *when* the honesty law
+    /// runs the executor's choice — a host that resampled twice between passes evaluated twice, and
+    /// one that never resampled never evaluated at all. Here they run exactly once, in an order the
+    /// stage owns: view state first (the alert engine and the rain-map clamp read the same figures),
+    /// then the card, then the request.
+    ///
+    /// After `UiRuntime`, so the open alert card the decision governs against is this pass's, and
+    /// after stage 3, so the camera the zoom floor is derived at is this frame's.
+    ///
+    /// A refresh goes out one at a time and only while the device can actually reach a companion.
+    /// The capability is the level stage 12 calculated last pass — a refresh the link cannot serve
+    /// is not started at all rather than failing.
+    fn stage_weather(&mut self, effects: &mut EffectSlots, snapshot: Option<&crate::weather::WeatherSnapshot>) {
         self.pass.record(PassStage::Weather);
+        let now = self.wall_unix_now() as i64;
+        self.weather.note_sampled(snapshot, now, self.state.cam_lat);
+        // The rider's cursor clamps against the range the domain just derived, and the rain map's
+        // camera is re-clamped into the product's regime while it is the base screen — a denser
+        // product committing mid-session, or a pan that raised the floor, must not leave the screen
+        // out of regime until the next gesture. Both are UI-plane work over a weather figure, which
+        // is why they sit at this stage's tail rather than inside the domain.
+        self.state.rain_step = self.state.rain_step.min(self.weather.steps_ahead());
+        if self.ui.base_wants_rain() {
+            let before = self.state.zoom;
+            self.state.clamp_rain_zoom(self.weather.zoom_floor());
+            if self.state.zoom != before {
+                self.ui.map_dirty = true;
+            }
+        }
+        self.weather_alert_tick(snapshot);
         if let Some(effect) = self.weather.next_effect(self.pass.capabilities.weather) {
             let _ = effects.weather.try_put(effect);
         }
@@ -972,6 +1013,7 @@ mod tests {
             gestures,
             sensors: Sensors::new(&mut loc),
             route: None,
+            weather: None,
             support,
             outcomes,
             facts,
@@ -1614,16 +1656,11 @@ mod tests {
         let mut app = navigating();
         quiet(&mut app, 10);
 
-        let installed = WeatherData { data: DataIdentity::new(2), revision: Revision::new(1) };
         let mut outcomes = OutcomeSlots::new();
         let mut stale: TokenSource<crate::device_core::WeatherTag> = TokenSource::new();
         outcomes
             .weather
-            .try_put(WeatherOutcome::Refreshed {
-                token: stale.issue(),
-                data: installed.data,
-                revision: installed.revision,
-            })
+            .try_put(WeatherOutcome::Failed { token: stale.issue(), error: crate::weather::WeatherError::NoData })
             .unwrap();
         // No machine owns these two, so nothing may act on them.
         let mut recorder_ops: TokenSource<crate::device_core::RecorderTag> = TokenSource::new();

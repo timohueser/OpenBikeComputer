@@ -2847,6 +2847,7 @@ name = "obc-host-core"
 version = "0.1.0"
 dependencies = [
  "embedded-graphics",
+ "heapless 0.8.0",
  "obc-app",
  "obc-elevation",
  "obc-fixtures",
@@ -2993,6 +2994,7 @@ dependencies = [
  "chrono",
  "eframe",
  "embedded-graphics",
+ "heapless 0.8.0",
  "image",
  "obc-app",
  "obc-ble",

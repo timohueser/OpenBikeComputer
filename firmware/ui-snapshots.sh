@@ -477,10 +477,13 @@ WXRAIN="p d d d d w p d p"
 WXNAV="p d d d d w p"
 "$SIM" "$MAP" --boot --weather demo:dry --script "$WXNAV" --expect-screen Weather --png "$OUT/weather-dash-dry.png"
 "$SIM" "$MAP" --boot --weather demo:incoming --weather-now 1800001500 --script "$WXNAV" --expect-screen Weather --png "$OUT/weather-dash-rain.png"
-"$SIM" "$MAP" --boot --weather demo:storm --script "$WXNAV" --expect-screen Weather --png "$OUT/weather-dash-storm.png"
+# A *current* storm is a storm the alert engine fires on, on every host, from stage 10 (#1549):
+# two classes trip, the rider dismisses both, and what is left underneath is the dashboard this
+# frame has always photographed — byte-identical, with the cards the device really shows named.
+"$SIM" "$MAP" --boot --weather demo:storm --script "d p f d p f $WXNAV" --expect-screen Weather --png "$OUT/weather-dash-storm.png"
 # Honest states: frames outrun (stale -> WEATHER UPDATE NEEDED), a frameless hourly-only bundle,
 # no store at all, and the non-blocking refresh cue over cached content.
-"$SIM" "$MAP" --boot --weather demo:storm --weather-now 1800012000 --script "$WXNAV" --expect-screen Weather --png "$OUT/weather-dash-stale.png"
+"$SIM" "$MAP" --boot --weather demo:storm --weather-now 1800012000 --script "d p f $WXNAV" --expect-screen Weather --png "$OUT/weather-dash-stale.png"
 "$SIM" "$MAP" --boot --weather demo:hourly --script "$WXNAV" --expect-screen Weather --png "$OUT/weather-dash-hourly-only.png"
 "$SIM" "$MAP" --boot --script "$WXNAV" --expect-screen Weather --png "$OUT/weather-dash-nodata.png"
 "$SIM" "$MAP" --boot --weather demo:incoming --weather-refreshing --script "$WXNAV" --expect-screen Weather --png "$OUT/weather-dash-refreshing.png"
@@ -492,11 +495,15 @@ WXNAV="p d d d d w p"
 # riders never see the out-of-regime state; the banner remains a defensive fallback only).
 "$SIM" "$MAP" --boot --weather demo:scattered --script "$WXNAV d p" --expect-screen WeatherRainMap --png "$OUT/weather-rainmap.png"
 "$SIM" "$MAP" --boot --weather demo:scattered --script "$WXNAV d p d d" --expect-screen WeatherRainMap --png "$OUT/weather-rainmap-step2.png"
-"$SIM" "$MAP" --boot --weather demo:storm --weather-now 1800012000 --script "$WXNAV d p" --expect-screen WeatherRainMap --png "$OUT/weather-rainmap-stale.png"
+"$SIM" "$MAP" --boot --weather demo:storm --weather-now 1800012000 --script "d p f $WXNAV d p" --expect-screen WeatherRainMap --png "$OUT/weather-rainmap-stale.png"
 "$SIM" "$MAP" --boot --weather demo:hourly --script "$WXNAV d p" --expect-screen WeatherRainMap --png "$OUT/weather-rainmap-hourly-only.png"
 "$SIM" "$MAP" --boot --weather demo:scattered --zoom 0.02 --script "$WXNAV d p" --expect-screen WeatherRainMap --png "$OUT/weather-rainmap-zoom-clamped.png"
 # The alert card (locked VIEW RAIN MAP + DISMISS) and the settings refresh picker (open field).
-"$SIM" "$MAP" --boot --weather demo:storm --weather-alert storm:28 --expect-screen WeatherAlert --png "$OUT/weather-alert-storm.png"
+# The pushed card is the *presentation* seam, so the bundle under it must not alert on its own:
+# with the engine live on every host (#1549) a `demo:storm` bundle fires its own card and updates
+# this one's minutes in place, which is the seam working, not the seam being tested. A dry bundle
+# leaves `--weather-alert` the only writer — byte-identical, because the card is full-screen.
+"$SIM" "$MAP" --boot --weather demo:dry --weather-alert storm:28 --expect-screen WeatherAlert --png "$OUT/weather-alert-storm.png"
 "$SIM" "$MAP" --boot --weather demo:incoming --weather-now 1800001500 --weather-alert rain:34 --expect-screen WeatherAlert --png "$OUT/weather-alert-rain.png"
 "$SIM" "$MAP" --boot --script "p d d d d d w p d d p" --expect-screen WeatherSettings --png "$OUT/weather-settings.png"
 # WX12 (#1197): the two-hour *ride* decision + engine-fired alerts. `stormahead`/`rainahead` are
@@ -511,7 +518,10 @@ WXRIDE="p p p p B u p d d d d w p"
     --script "$WXRIDE" --expect-screen Weather --png "$OUT/weather-dash-ride-rain-ahead.png"
 "$SIM" "$MAP" --boot --routes-dir "$ETAROUTE" --gpx "$GPX" --at 1500 --weather demo:stormahead --weather-decide \
     --script "$WXRIDE" --expect-screen WeatherAlert --png "$OUT/weather-alert-storm-engine.png"
-"$SIM" "$MAP" --boot --weather demo:gusty --weather-decide --script "$WXNAV" --expect-screen WeatherAlert --png "$OUT/weather-alert-gust.png"
+# The gust card needs no walk to the dashboard any more: the engine runs at stage 10 on the very
+# first settle (#1549), so the card is up before a gesture is recognised. Byte-identical — the
+# card is a full-screen surface and never depended on what it covered.
+"$SIM" "$MAP" --boot --weather demo:gusty --weather-decide --expect-screen WeatherAlert --png "$OUT/weather-alert-gust.png"
 # Route-relative wind: the hourly rows' arrows pick up tail/cross/head ink from the ride's travel
 # direction (the same replay-locked tangent), where the routeless sweep above stays neutral.
 "$SIM" "$MAP" --boot --routes-dir "$ETAROUTE" --gpx "$GPX" --at 1500 --weather demo:rainahead --weather-decide \
@@ -810,9 +820,9 @@ for lang in de fr es; do
   # Weather screens (WX11): the text-heavy surfaces re-shot per language.
   WXNAV="p d d d d w p"
   "$SIM" "$MAP" --boot --weather demo:incoming --weather-now 1800001500 --lang "$lang" --script "$WXNAV" --expect-screen Weather --png "$OUT/weather-dash-rain-$lang.png"
-  "$SIM" "$MAP" --boot --weather demo:storm --weather-now 1800012000 --lang "$lang" --script "$WXNAV" --expect-screen Weather --png "$OUT/weather-dash-stale-$lang.png"
+  "$SIM" "$MAP" --boot --weather demo:storm --weather-now 1800012000 --lang "$lang" --script "d p f $WXNAV" --expect-screen Weather --png "$OUT/weather-dash-stale-$lang.png"
   "$SIM" "$MAP" --boot --weather demo:incoming --lang "$lang" --script "$WXNAV p" --expect-screen WeatherHourly --png "$OUT/weather-hourly-$lang.png"
-  "$SIM" "$MAP" --boot --weather demo:storm --lang "$lang" --weather-alert storm:28 --expect-screen WeatherAlert --png "$OUT/weather-alert-storm-$lang.png"
+  "$SIM" "$MAP" --boot --weather demo:dry --lang "$lang" --weather-alert storm:28 --expect-screen WeatherAlert --png "$OUT/weather-alert-storm-$lang.png"
   # WX12: the new STRONG WIND card copy, per language.
   "$SIM" "$MAP" --boot --weather demo:gusty --lang "$lang" --weather-alert gust:0 --expect-screen WeatherAlert --png "$OUT/weather-alert-gust-$lang.png"
   "$SIM" "$MAP" --boot --lang "$lang" --script "p d d d d d w p d d p" --expect-screen WeatherSettings --png "$OUT/weather-settings-$lang.png"

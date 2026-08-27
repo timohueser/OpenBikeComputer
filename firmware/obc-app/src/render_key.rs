@@ -18,7 +18,7 @@
 //! The comparison is stack-local and spans one pass, so it detects exactly the mutations that
 //! happen **inside** that pass: the fix and the sensors (stage 3), the card sweep and the screen
 //! ticks (stage 4), and every domain's own advance (stages 5–13). A host seam that mutates
-//! `App` *between* two passes — `set_sensor_status`, `set_sensor_scan_hits`, `weather_feed_changed`,
+//! `App` *between* two passes — `set_sensor_status`, `set_sensor_scan_hits`,
 //! `set_map_transfer`, the catalog feeds — has already moved the fact by the time the next pass
 //! builds its *before* key, so both keys agree and the difference is invisible. Those seams keep an
 //! explicit dirty request, and each says so at its call site. They become key-covered when the seam
@@ -164,14 +164,25 @@ pub(crate) struct SensorsKey {
     status: [crate::sensors::SensorStatus; crate::settings::SENSOR_SLOTS],
 }
 
-/// The weather pages: which data is installed.
+/// The weather pages: which data is installed, which resample the card is drawn from, and whether
+/// the UPDATING cue is up.
 ///
 /// The **rain map is not one of these** — it declares [`Map`](crate::screen::RenderKeyKind::Map),
 /// because what it draws is a map scene with a raster in it, and its selected step therefore lives
 /// in [`MapKey`] beside the camera it is drawn through.
+///
+/// [`sample`](Self::sample) is what deleted the last hand-written repaint mirror. A resample changes
+/// the card's contents with no other fact moving — the same product, the same revision, a new rider
+/// position — and a stack-local key cannot see a value the domain does not hold. It holds one now.
+///
+/// **`now` is deliberately absent.** The countdown and the expiry are time-driven, and the
+/// dashboard's own minute ticker already reports them as a `ScreenTick`; naming the clock here
+/// would repaint every pass.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct WeatherKey {
     installed: Option<crate::device_core::WeatherData>,
+    sample: crate::device_core::Revision,
+    refreshing: bool,
 }
 
 /// The Up-ahead timeline: the live progress every row's distance-to-go is measured from, the route
@@ -228,9 +239,17 @@ pub(crate) struct RenderKey {
 
 // The pass keeps two of these on its own (non-`async`) frame, so growth here is residual stack, not
 // resident RAM and not a poll frame. It is still the ride loop's deepest frame, so it is pinned like
-// any arena arm: 280 B on a 64-bit host, less on the board, where a `usize` is four bytes.
+// any arena arm: **304 B** on a 64-bit host, measured on the merged tree, less on the board, where
+// a `usize` is four bytes.
+//
+// The last 24 over #1447's 280 are two slices, and they have to be counted together because the
+// second one is only visible once the first has landed. `WeatherKey` grows 24 -> 40 for the
+// resample revision and the refresh cue (#1549) — the two facts that let the weather pages state
+// what they draw instead of a host asking for the repaint by hand. `Option<DrawerKey>` (#1547) is
+// 8 B, and it cost nothing while the struct still had a spare word of padding; `WeatherKey` takes
+// that word, so on the merged tree the drawer pays for itself. Neither slice alone measures 304.
 const _: () =
-    assert!(core::mem::size_of::<RenderKey>() <= 288, "a render key is the visible facts, not a copy of the app state");
+    assert!(core::mem::size_of::<RenderKey>() <= 304, "a render key is the visible facts, not a copy of the app state");
 
 impl App {
     /// The exact facts the currently visible screens draw.
@@ -329,7 +348,7 @@ impl App {
             no_fix,
             tracking: self.activity.is_tracking(),
             low_battery: crate::screen::low_battery_cue(self.state.device.battery_pct),
-            rain: rain_overlay.then_some((self.state.rain_step, self.state.rain_steps_ahead)),
+            rain: rain_overlay.then_some((self.state.rain_step, self.weather.steps_ahead())),
         }
     }
 
@@ -374,7 +393,11 @@ impl App {
     }
 
     fn weather_key(&self) -> WeatherKey {
-        WeatherKey { installed: self.weather.installed() }
+        WeatherKey {
+            installed: self.weather.installed(),
+            sample: self.weather.sample(),
+            refreshing: self.weather.refreshing(),
+        }
     }
 }
 
@@ -451,6 +474,13 @@ mod tests {
         assert_ne!(app.render_key(), on_map, "…and the shape is what tells the two frames apart");
     }
 
+    /// Sample a bundle of `frames` frames into the domain — the only producer of a step count.
+    fn sample_frames(app: &mut App, frames: usize) {
+        let now = app.wall_unix_now() as i64;
+        let snap = crate::harness::support::weather_snapshot(now, &vec![0u8; frames], None);
+        app.weather.note_sampled(Some(&snap), now, app.state.cam_lat);
+    }
+
     /// The **rain gate**, in both directions — the whole reason the selected frame sits in the Map
     /// key rather than in the weather pages'.
     ///
@@ -459,23 +489,24 @@ mod tests {
     /// bundle ageing under an ordinary map has to cost nothing.
     #[test]
     fn only_the_screen_that_draws_the_raster_has_the_rain_frame_in_its_key() {
-        // A rain bundle ages under the ordinary Map: it draws no raster, so nothing repaints.
+        // A rain bundle ages under the ordinary Map: it draws no raster, so nothing repaints. The
+        // ageing is fed through the domain, which is the only thing that derives a step count now.
         let mut map = App::new(AppState::new(0, 0, 1.0)); // [Home, Map]
         let quiet = map.render_key();
-        map.state.rain_steps_ahead = 7;
+        sample_frames(&mut map, 8);
         map.state.rain_step = 3;
         assert_eq!(map.render_key(), quiet, "an ageing bundle must never repaint the ordinary Map");
 
         // On the one row that declares `rain_overlay`, the selected frame is part of the frame.
         let mut rain = App::new(AppState::new(0, 0, 1.0));
         rain.ui.stack[1] = Screen::WeatherRainMap(crate::screen::WeatherRainMapScreen::new());
-        rain.state.rain_steps_ahead = 4;
+        sample_frames(&mut rain, 5);
         let at_zero = rain.render_key();
         rain.state.rain_step = 1;
         assert_ne!(rain.render_key(), at_zero, "the rain map repaints when the selected frame moves");
         rain.state.rain_step = 0;
         assert_eq!(rain.render_key(), at_zero, "…and back to the same frame is the same frame");
-        rain.state.rain_steps_ahead = 6;
+        sample_frames(&mut rain, 7);
         assert_ne!(rain.render_key(), at_zero, "a changed count is a changed time strip");
     }
 

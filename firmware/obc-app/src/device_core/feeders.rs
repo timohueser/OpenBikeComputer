@@ -130,10 +130,8 @@ feeders! {
     SensorStatus,
     /// `App::set_sensor_scan_hits`
     SensorScanHits,
-    /// `App::set_rain_view`
+    /// `AppState::clamp_rain_zoom` — what is left of `App::set_rain_view` (#1549).
     RainView,
-    /// `App::weather_feed_changed`
-    WeatherFeed,
     /// `App::set_hold_progress`
     HoldProgress,
     /// `App::set_render_clip`
@@ -172,8 +170,6 @@ pub enum DeletingSlice {
     /// Gate 4 — boot state and unrequested facts reach DeviceCore as `PassInputs`, so the boot
     /// feeders and the fact-shaped setters retire together.
     BootAndFacts,
-    /// #1401 — the weather storage and request cutover, after FS7.
-    WeatherCutover,
     /// The method survives the migration: it is not a shim but a real runtime seam.
     Kept,
 }
@@ -259,17 +255,15 @@ pub fn feeder_migration(feeder: Feeder) -> FeederMigration {
         Feeder::SensorStatus | Feeder::SensorScanHits => {
             row(Kind::ExternalFact, Own::Fault, "PassInputs::sensors", When::BootAndFacts)
         }
-        Feeder::WeatherFeed => {
-            row(Kind::ExternalFact, Own::Weather, "ExternalFacts::weather_data", When::WeatherCutover)
-        }
-        // Two halves with two homes: the step range and zoom floor are weather view state, but the
-        // method also re-clamps the map camera into the product's regime — UI-plane work no
-        // `WeatherVisible` field models, and the awkward half of this row to move.
+        // What #1549 left behind. The step range and the zoom floor are `WeatherDomain`'s now,
+        // derived at stage 10 from the pass's own snapshot; what survives is the camera re-clamp,
+        // a runtime UI seam over a weather figure rather than weather ownership — so this retires
+        // with the rest of the fact-shaped setters.
         Feeder::RainView => row(
             Kind::ExternalFact,
             Own::Weather,
-            "WeatherDomain visible view state + a UiRuntime rain-zoom clamp",
-            When::WeatherCutover,
+            "ExternalFacts::weather_sample + a UiRuntime rain-zoom clamp",
+            When::BootAndFacts,
         ),
 
         // ---- boot inputs: supplied once, before any pass.
@@ -322,9 +316,8 @@ mod tests {
         assert_eq!(feeder_migration(Feeder::DetourPreview).kind, FeederKind::BoundedTarget);
         assert_eq!(feeder_migration(Feeder::NavPreview).kind, FeederKind::DerivedInput);
 
-        // Weather feeders wait for #1401.
-        assert_eq!(feeder_migration(Feeder::WeatherFeed).deletes_in, DeletingSlice::WeatherCutover);
-        assert_eq!(feeder_migration(Feeder::RainView).deletes_in, DeletingSlice::WeatherCutover);
+        // #1549 moved the weather decisions; the camera re-clamp is what is left of this row.
+        assert_eq!(feeder_migration(Feeder::RainView).deletes_in, DeletingSlice::BootAndFacts);
 
         // Nothing a domain owns survives the migration.
         let kept = Feeder::ALL.iter().filter(|&&f| feeder_migration(f).deletes_in == DeletingSlice::Kept).count();
