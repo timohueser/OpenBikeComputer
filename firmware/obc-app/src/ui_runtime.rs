@@ -195,9 +195,10 @@ impl UiRuntime {
     /// so a screen surfaces its own timed-refresh rather than the host re-rendering on a blind
     /// heartbeat — and the soonest residual deadline is stored for
     /// [`App::ms_until_next_wake`](crate::App::ms_until_next_wake). Cheap: a clock comparison per
-    /// drawn screen, over the same `base..` range the render draws. The card sweep and the idle-return
-    /// sweep are sequenced by [`App::advance_animations`](crate::App::advance_animations) right
-    /// after this.
+    /// polled screen, from `first` — which is the base, except while the base is frozen under a
+    /// sheet (below). The card sweep and the idle-return sweep are sequenced by
+    /// [`App::advance_animations`](crate::App::advance_animations) right after this, and neither
+    /// is gated on any of it.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn advance_timers(
         &mut self,
@@ -216,6 +217,21 @@ impl UiRuntime {
         // close repaints it once. Without this the base's own timers (the Map's clock pill) would
         // ask for a repaint of pixels a sheet-only frame does not draw, which is exactly the
         // under-redraw the dirty contract forbids (#1559).
+        //
+        // **The line this draws, and the one place it is crossed.** What stops is *presentation*:
+        // a clock digit, a pager flip, a spinner needle, a compass sweep. Nothing that decides
+        // anything stops — recording, sensor staleness, the weather alerts, the router and the DFU
+        // task are all their own pass stages, and `advance_animations` still sweeps the cards and
+        // the idle return every pass whatever is on top.
+        //
+        // The crossing is the **upload popups** (`RouteReceived`, `RouteUpdated`, `TripReceived`,
+        // `RouteSwap`), which arm their 30 s auto-close *wake* from `tick_timers`, and over which a
+        // drawer is allowed. Under a sheet that wake is not armed, so the deadline is served by the
+        // next pass the device happens to take instead: on the board that is the watchdog feed cap,
+        // so such a popup outlives its 30 s by up to that, and by nothing at all if any input or
+        // sensor event lands first. It self-heals, it is invisible under the sheet, and it is the
+        // reason this rule is written as *presentation timers freeze, sweeps do not* — a base
+        // screen that grows a real deadline must put it in a pass stage, not in a tick.
         let first = base + usize::from(self.base_frozen());
         let (w, h) = (self.frame_size.0 as i32, self.frame_size.1 as i32);
         let mut next_wake = None;

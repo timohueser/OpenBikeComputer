@@ -3424,7 +3424,8 @@ impl App {
         // once per primitive (a span, an outline, a string), so this is O(primitives), not
         // O(pixels).
         let covered = ui.base_frozen();
-        let recess = core::cell::Cell::new(covered && ui.stack.get(base).is_none_or(|s| s.caps().recess));
+        let recessed = covered && ui.stack.get(base).is_none_or(|s| s.caps().recess);
+        let recess = core::cell::Cell::new(recessed);
         let policy = |c: u16| color_fn(if recess.get() { screen::dim_color(c) } else { c });
         // **The frozen base's pixels** (#1559) — the frozen base, finished. A drawer's render key
         // already shadows the base's, so no fact the base draws can move while a sheet is up: its
@@ -3433,12 +3434,15 @@ impl App {
         // step costs the sheet and nothing else — the map render the open used to pay for at each
         // step (199 ms at the riding default, 1.45 s at 5 m/px, measured) is not paid at all.
         //
-        // Two things are excluded, and each says so itself. A host that composes every frame from
+        // Three things are excluded, and each says so itself. A host that composes every frame from
         // nothing (the snapshot sweep) never claims a resident frame, and draws the base as always.
-        // And a sheet that is not purely *covering* this frame asks for the base itself
-        // ([`Screen::needs_base`]): it shrank, or a page slide is travelling through the margin
-        // beside it.
-        let sheet_only = ui.resident_frame && covered && !ui.stack.iter().skip(base + 1).any(|s| s.needs_base());
+        // A base that **recesses** takes its second draw, because the recess *is* that draw: the
+        // rows standing on the panel are the undimmed ones, and skipping the draw would leave them
+        // there for the life of the sheet. And a sheet that is not purely *covering* this frame
+        // asks for the base itself ([`Screen::needs_base`]) — a page slide is travelling through the
+        // margin either side of it.
+        let sheet_only =
+            ui.resident_frame && covered && !recessed && !ui.stack.iter().skip(base + 1).any(|s| s.needs_base());
         // The one Canvas of the frame: every screen draws through it (the base screen — the only
         // possible Map — writes `rx.stats`; the overlays above it leave the stats untouched).
         // A drained region clip makes it reject whole out-of-region primitives — the half of a
@@ -3566,6 +3570,11 @@ impl App {
     ///
     /// Declared once at composition, like [`set_backlight_available`](App::set_backlight_available)
     /// — it is a property of the host's plumbing, not of any frame.
+    ///
+    /// **A host that claims this untruthfully is not caught by anything.** The differential replay's
+    /// power comes from its reference *not* declaring it, so a host asserting a residency it does
+    /// not have simply silences the oracle. Read the host's frame path before adding a fourth
+    /// caller: the target must be one buffer that survives between renders and is never cleared.
     pub fn set_resident_frame(&mut self, resident: bool) {
         self.ui.resident_frame = resident;
     }

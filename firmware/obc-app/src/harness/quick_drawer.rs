@@ -27,10 +27,11 @@ fn chord(app: &mut App, frames: &mut Frames, a: Button, b: Button, ms: u32) -> u
     for (dt, ev) in squeeze(a, b) {
         frames.frame(app, ms + dt, &[ev], None, None);
     }
-    // The sheet slides down over `quick_drawer::OPEN_MS`; settle it so a following gesture is not
-    // eaten by the animation.
-    frames.idle(app, ms + 500);
-    ms + 600
+    // Settle the sheet's own open so a following gesture is not eaten by the animation — read off
+    // the drawer's constant, so retuning it cannot leave this helper acting mid-slide.
+    let settled = crate::screen::QUICK_OPEN_MS + 60;
+    frames.idle(app, ms + settled);
+    ms + settled + 100
 }
 
 /// One gesture on the sheet at `ms`, straight to the map plane — the clock first (so the sheet's

@@ -82,6 +82,10 @@ pub use passkey::PasskeyScreen;
 pub use poi_detail::PoiDetailScreen;
 pub use poi_list::{PoiListScreen, PoiScratch};
 pub use poi_menu::PoiMenuScreen;
+/// The quick drawer's open duration, for the in-crate harness that has to settle a sheet before it
+/// acts on one — so retuning the constant cannot leave that helper acting mid-slide.
+#[cfg(test)]
+pub(crate) use quick_drawer::OPEN_MS as QUICK_OPEN_MS;
 pub use quick_drawer::{QuickDrawerScreen, BRIGHTNESS_LEVELS, BRIGHTNESS_MAX};
 pub use ride_control::RideControl;
 pub use ride_detail::RideDetailScreen;
@@ -805,6 +809,10 @@ pub struct Caps {
     /// milliseconds at near zoom and far more at far zoom. On the panel the map under an open
     /// sheet reads perfectly well at full colour, so the map is left exactly as it is — 199 ms at
     /// the riding default and 1.45 s at 5 m/px that the open no longer pays, measured on the panel.
+    ///
+    /// The recess **is** that second draw, which is why this decides more than a colour: a screen
+    /// declaring `true` keeps being drawn under a sheet, and only one declaring `false` can have
+    /// its draw skipped and its rows left standing.
     pub recess: bool,
     /// Which catalog the screen's held indices remap against after a rescan (#450).
     pub remap: RemapKind,
@@ -1233,11 +1241,12 @@ impl Screen {
 
     /// Whether this overlay needs the screen below **drawn under it** on this frame (#1559).
     ///
-    /// The frozen base's pixels are not redrawn while a sheet purely covers them. Two frames stop
-    /// being that: one where the sheet **shrank**, whose given-back rows still hold sheet pixels —
-    /// covering is cheap, uncovering is not — and one where a **page slide** is in flight, whose
-    /// pages travel through the inset margin either side of the sheet, where the base shows. Only a
-    /// drawer ever answers anything but `false`.
+    /// The frozen base's pixels are not redrawn while a sheet purely covers them, and one thing
+    /// stops a sheet doing only that: a **page slide**. Its two pages travel through the inset
+    /// margin either side of the sheet, where the base shows — and when the two pages differ in
+    /// height the slide also *shrinks* the sheet, whose given-back rows still hold sheet pixels.
+    /// One draw answers both: covering is cheap, uncovering is not. Only a drawer ever answers
+    /// anything but `false`.
     pub(crate) fn needs_base(&self) -> bool {
         match self {
             Screen::QuickDrawer(s) => s.needs_base(),
