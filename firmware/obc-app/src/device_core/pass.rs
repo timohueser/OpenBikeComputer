@@ -818,7 +818,7 @@ impl App {
     /// There is no `UiRuntime` → `Navigator` connection to drain: a planning screen names its
     /// request to Navigator as it happens (`Ctx::navigator`), so the rider's plan is already with
     /// its owner before stage 1 of this pass — earlier than a slot could deliver it, and in the one
-    /// place that also works for the hosts still driving the legacy drain.
+    /// place that also serves a seam running between two passes.
     fn stage_navigator(&mut self, effects: &mut EffectSlots) {
         self.pass.record(PassStage::Navigator);
         if let Some(removed) = self.pass.connections.active_route_removed.take() {
