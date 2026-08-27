@@ -177,10 +177,9 @@ const EVERYTHING: PlatformSupport = PlatformSupport {
 
 /// The rider-visible projection every runner must agree on.
 ///
-/// `retention_delete_attempts` is dropped: it counts calls into `BorrowedRoutes::delete_by_id`,
-/// including one for an id already gone, and an executor that reaches the store by identity counts
-/// only the calls whose object is still catalogued — two counts of different events for the same
-/// behaviour, and not something a rider can see.
+/// `retention_delete_attempts` is dropped: it counts every removal the executor was handed,
+/// including one for an object that already left the store — a store-side figure, and not something
+/// a rider can see.
 fn rider_visible(mut state: VisibleState) -> VisibleState {
     state.retention_delete_attempts = 0;
     state
@@ -413,8 +412,10 @@ impl CoreHarness {
             // One object out of the store, and nothing else. The namespace probe order is the real
             // executor's; the re-read a completed removal implies is the domain's.
             CatalogEffect::RemoveObject { token, object } => {
+                // Counted before the probe, so a removal for an object that already left the store
+                // counts too — that is exactly the event #1548 removes.
+                self.state.retention_delete_attempts = self.state.retention_delete_attempts.saturating_add(1);
                 if let Some(index) = self.state.route_ids.iter().position(|&id| id == object) {
-                    self.state.retention_delete_attempts = self.state.retention_delete_attempts.saturating_add(1);
                     if std::mem::take(&mut self.state.route_delete_fail_once) {
                         // The store refused the removal. Not `existed: false` — the object is still
                         // there, which is what makes retention re-queue its candidate, and what
@@ -1371,6 +1372,31 @@ fn a_read_the_store_could_not_answer_is_re_offered_until_it_lands() {
     }
 }
 
+/// **An expiry the store already removed is never dispatched again** (#1548,
+/// `Requirement::RetentionCandidateRetiredByVerdict`). The scenario refuses the first removal, lets
+/// the candidate retry, and then sleeps past the delete backstop while the re-read that removal
+/// ordered has not re-fed the catalogs. Two removals reach the store — the refused one and the
+/// retry — and the sleep adds none: what retires the candidate is the catalog's verdict, in the pass
+/// its answer lands, and not the object disappearing from a later read.
+#[test]
+fn an_expiry_the_store_removed_is_never_dispatched_again() {
+    for runner in Runner::ALL {
+        let settled = runner.run(named("retention.expiry-retry-and-trusted-clock")).settled;
+        assert_eq!(
+            settled.retention_delete_attempts,
+            2,
+            "{}: one refused removal and one retry — a slow re-read must not add a third",
+            runner.name()
+        );
+        assert!(
+            !settled.route_names.iter().any(|name| name == "Alpha"),
+            "{}: and the expired route did leave: {:?}",
+            runner.name(),
+            settled.route_names
+        );
+    }
+}
+
 /// **A capability changes after a new map mounts**, and **a device without the detour capability**.
 ///
 /// A capability is a level recomputed from what the image implements and what is true now. A missing
@@ -1738,8 +1764,14 @@ fn the_conformance_replay_wake_profile_and_pass_cost() {
 /// `(passes, immediate, timed, sleep-until-event)` for the replay above. A ratchet, not a budget:
 /// the numbers move when the pass's wake decisions do.
 ///
-/// The two gating figures — 193 passes and 4 immediate wakes — are the claim that matters: nothing
+/// The two gating figures — 194 passes and 4 immediate wakes — are the claim that matters: nothing
 /// here polls.
+///
+/// #1548 moved one pass and one timed wake, and nothing else: the replay runs
+/// `actions.len() + SETTLE_PASSES` per scenario, and `retention.expiry-retry-and-trusted-clock`
+/// gained one action (`sleep-past-delete-backoff`). Measured by running the replay with that action
+/// removed, which reproduces `(193, 4, 129, 60)` exactly. The removal the slice retires costs no
+/// pass here either way — it lands inside the settle passes the scenario already ran.
 ///
 /// #1541 moved the whole of the last delta and **no existing cell with it**: the replay runs
 /// `actions.len() + SETTLE_PASSES` per scenario, and the one new scenario (`catalog.refresh-retry`,
@@ -1766,7 +1798,7 @@ fn the_conformance_replay_wake_profile_and_pass_cost() {
 /// `recorder.failure-and-session-replacement` turned one sleep into a timed wake because the
 /// finalize failure arrives as a warning fact the next pass consumes, so the card's 30 s timeout
 /// arms one pass later.
-const WAKE_PROFILE: (u32, u32, u32, u32) = (193, 4, 129, 60);
+const WAKE_PROFILE: (u32, u32, u32, u32) = (194, 4, 130, 60);
 
 // ==================== the resource gate ====================
 

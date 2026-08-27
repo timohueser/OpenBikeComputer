@@ -73,6 +73,10 @@ pub enum Requirement {
     RetentionExpiryDelete,
     RetentionRetry,
     RetentionTrustedClockGate,
+    /// An expiry candidate is retired by the catalog's removal verdict (#1548), in the pass that
+    /// answer lands. The re-read the removal ordered can be slower than the delete backstop, and a
+    /// second removal for an object the store has already reported gone is what that would cost.
+    RetentionCandidateRetiredByVerdict,
     DfuScanSuccess,
     DfuScanFailure,
     DfuInstallStart,
@@ -126,6 +130,7 @@ pub const ALL_REQUIREMENTS: &[Requirement] = &[
     Requirement::RetentionExpiryDelete,
     Requirement::RetentionRetry,
     Requirement::RetentionTrustedClockGate,
+    Requirement::RetentionCandidateRetiredByVerdict,
     Requirement::DfuScanSuccess,
     Requirement::DfuScanFailure,
     Requirement::DfuInstallStart,
@@ -178,6 +183,7 @@ pub enum Action {
     StampRideSync,
     DeleteExpiredObject,
     RetryExpiredDelete,
+    SleepPastDeleteBackoff,
     GateExpiryUntilClockTrusted,
     ScanDfuSuccess,
     ScanDfuFailure,
@@ -600,6 +606,13 @@ impl CorpusState {
             Action::RetryExpiredDelete => {
                 // The original failed candidate owns its retry; no new discovery sweep is needed.
                 self.app.advance_animations(InputClock(5_002));
+                self.tick_without_fix();
+            }
+            Action::SleepPastDeleteBackoff => {
+                // The removal was answered, and the device slept past the delete backstop before
+                // the re-read that answer ordered re-fed the catalogs — the board's ordinary
+                // cadence. Nothing may order a second removal for an object already gone (#1548).
+                self.app.advance_animations(InputClock(9_002));
                 self.tick_without_fix();
             }
             Action::GateExpiryUntilClockTrusted => {
@@ -1078,8 +1091,14 @@ pub const SCENARIOS: &[Scenario] = &[
             Requirement::RetentionExpiryDelete,
             Requirement::RetentionRetry,
             Requirement::RetentionTrustedClockGate,
+            Requirement::RetentionCandidateRetiredByVerdict,
         ],
-        actions: &[Action::GateExpiryUntilClockTrusted, Action::DeleteExpiredObject, Action::RetryExpiredDelete],
+        actions: &[
+            Action::GateExpiryUntilClockTrusted,
+            Action::DeleteExpiredObject,
+            Action::RetryExpiredDelete,
+            Action::SleepPastDeleteBackoff,
+        ],
     },
     Scenario {
         name: "dfu.scan-outcomes",
@@ -1154,6 +1173,7 @@ pub fn clock_watermark(action: Action) -> u32 {
     match action {
         Action::RetrySettingsPersist => 4_002,
         Action::RetryExpiredDelete => 5_002,
+        Action::SleepPastDeleteBackoff => 9_002,
         _ => 0,
     }
 }
@@ -1194,6 +1214,7 @@ pub fn action_name(action: Action) -> &'static str {
         Action::StampRideSync => "stamp-ride-sync",
         Action::DeleteExpiredObject => "delete-expired-object",
         Action::RetryExpiredDelete => "retry-expired-delete",
+        Action::SleepPastDeleteBackoff => "sleep-past-delete-backoff",
         Action::GateExpiryUntilClockTrusted => "gate-expiry-until-clock-trusted",
         Action::ScanDfuSuccess => "scan-dfu-success",
         Action::ScanDfuFailure => "scan-dfu-failure",
