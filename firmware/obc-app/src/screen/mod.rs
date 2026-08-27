@@ -82,6 +82,10 @@ pub use passkey::PasskeyScreen;
 pub use poi_detail::PoiDetailScreen;
 pub use poi_list::{PoiListScreen, PoiScratch};
 pub use poi_menu::PoiMenuScreen;
+/// The quick drawer's open duration, for the in-crate harness that has to settle a sheet before it
+/// acts on one — so retuning the constant cannot leave that helper acting mid-slide.
+#[cfg(test)]
+pub(crate) use quick_drawer::OPEN_MS as QUICK_OPEN_MS;
 pub use quick_drawer::{QuickDrawerScreen, BRIGHTNESS_LEVELS, BRIGHTNESS_MAX};
 pub use ride_control::RideControl;
 pub use ride_detail::RideDetailScreen;
@@ -796,6 +800,20 @@ pub struct Caps {
     /// construction: there is no exit hook to forget, and a future map screen is rain-free until
     /// its row says otherwise.
     pub rain_overlay: bool,
+    /// Whether a drawer **recesses** this screen: the sheet lifts off a base drawn one device-64
+    /// level down ([`dim_color`]), so the eye reads the sheet as being in front of a page.
+    ///
+    /// `true` for chrome — a menu, a list, a settings page — where the second draw is a handful of
+    /// rules and glyphs and the recess costs nothing. `false` for a **map base** (#1559): its
+    /// second draw is the streamed map, and dimming it means re-rendering it, which is tens of
+    /// milliseconds at near zoom and far more at far zoom. On the panel the map under an open
+    /// sheet reads perfectly well at full colour, so the map is left exactly as it is — 199 ms at
+    /// the riding default and 1.45 s at 5 m/px that the open no longer pays, measured on the panel.
+    ///
+    /// The recess **is** that second draw, which is why this decides more than a colour: a screen
+    /// declaring `true` keeps being drawn under a sheet, and only one declaring `false` can have
+    /// its draw skipped and its rows left standing.
+    pub recess: bool,
     /// Which catalog the screen's held indices remap against after a rescan (#450).
     pub remap: RemapKind,
     /// The exact facts this screen's draw reads — the pass compares them before and after its
@@ -819,21 +837,22 @@ impl Caps {
             blocks_chords: false,
             blocks_escape: false,
             rain_overlay: false,
+            recess: true,
             remap: RemapKind::None,
             render_key: RenderKeyKind::Static,
         }
     }
 
-    /// A **drawer**: an overlay sheet composited over the still-visible base, which the frame
-    /// draws through the dim LUT for as long as one is up (see
-    /// [`dim_color`](crate::screen::dim_color)). Its key kind shadows the base's, which is what
-    /// freezes it.
+    /// A **drawer**: an overlay sheet composited over the still-visible base. Whether that base is
+    /// drawn again through the dim LUT is the *base's* declaration ([`recess`](Caps::recess)), not
+    /// the sheet's. Its key kind shadows the base's, which is what freezes it.
     pub const fn overlay() -> Self {
         Caps { kind: ScreenKind::Overlay, timed: true, render_key: RenderKeyKind::Drawer, ..Caps::nav() }
     }
 
-    /// A map-base screen: reads the `Reader` every frame, and is both a tracking ride view and a
-    /// deliberate browse view when not tracking.
+    /// A map-base screen: reads the `Reader` every frame, is both a tracking ride view and a
+    /// deliberate browse view when not tracking, and is **not recessed** under a drawer — the one
+    /// class whose second draw is a map render (see [`recess`](Caps::recess)).
     pub const fn map() -> Self {
         Caps {
             kind: ScreenKind::Riding,
@@ -842,6 +861,7 @@ impl Caps {
             browse_exempt: true,
             reader: ReaderNeed::Always,
             render_key: RenderKeyKind::Map,
+            recess: false,
             ..Caps::nav()
         }
     }
@@ -1219,6 +1239,22 @@ impl Screen {
         self.kind().is_overlay()
     }
 
+    /// Whether this overlay needs the screen below **drawn under it** on this frame (#1559).
+    ///
+    /// The frozen base's pixels are not redrawn while a sheet purely covers them, and one thing
+    /// stops a sheet doing only that: a **page slide**. Its two pages travel through the inset
+    /// margin either side of the sheet, where the base shows — and when the two pages differ in
+    /// height the slide also *shrinks* the sheet, whose given-back rows still hold sheet pixels.
+    /// One draw answers both: covering is cheap, uncovering is not. Only a drawer ever answers
+    /// anything but `false`.
+    pub(crate) fn needs_base(&self) -> bool {
+        match self {
+            Screen::QuickDrawer(s) => s.needs_base(),
+            Screen::ContextDrawer(s) => s.needs_base(),
+            _ => false,
+        }
+    }
+
     /// **Pre-draw acquisition** (#803): resolve any reader-backed one-shot state before drawing, so
     /// [`draw`](Screen::draw) stays side-effect-free (target + render-stats only). Run on the base
     /// screen once per frame, ahead of the draw loop, whenever the host built the `Reader`
@@ -1338,9 +1374,11 @@ impl Screen {
     ) -> ScreenTick {
         match self {
             // The drawer's sheet animation: the slide-down on open, the horizontal page slide, and
-            // the height the sheet adapts to the page it lands on.
+            // the height the sheet adapts to the page it lands on. Its steps are paced by the
+            // panel's measured step budget, and a step that would not move the sheet is not
+            // reported at all (#1559).
             Screen::QuickDrawer(s) => s.tick_timers(now_ms),
-            // The context sheet's slide up from the bottom edge.
+            // The context sheet's slide up from the bottom edge, on the same rules.
             Screen::ContextDrawer(s) => s.tick_timers(now_ms),
             Screen::Statistics(s) => s.tick_timers(now_ms, settings),
             Screen::Home(s) => s.tick_timers(now, ms_to_next_minute),
@@ -1399,7 +1437,7 @@ pub struct ScreenTick {
     /// full-frame repaint every screen implies by default; no screen has to opt in). `Some(r)` is
     /// the screen's promise that the drawn output differs from the previous frame **only inside
     /// `r`**, so a host may clip the repaint to it (the region-scoped repaint, #500 follow-up —
-    /// today only the nav-planning spinner's needle disc). Read only when
+    /// today the nav-planning spinner's needle disc and the Map's clock pill). Read only when
     /// [`changed`](ScreenTick::changed) fired.
     pub region: Option<Rectangle>,
 }
@@ -1672,10 +1710,20 @@ mod tests {
             if c.remap == RemapKind::Ride {
                 assert_eq!(c.base, BaseContent::Chrome, "{name}: a ride-remap screen is chrome-based");
             }
+            // Whether a drawer recesses this screen is decided by its render cost, and the one
+            // declaration that already states that cost is the base content: a `Map` base's second
+            // draw is a map render (199 ms at the riding default, 1.45 s at 5 m/px, measured on the
+            // panel), everything else's is chrome. So the two go together, and a new map-class
+            // screen cannot arrive dimmed by accident (#1559).
+            assert_eq!(
+                c.recess,
+                c.base != BaseContent::Map,
+                "{name}: a map base is left alone under a sheet; anything cheaper recedes"
+            );
             // A drawer is an overlay sheet, and the two halves of that are one declaration: the
-            // frame dims the base under any `Overlay` row, and the pass freezes it because that
-            // row's key kind shadows the base's. Declaring one without the other would either dim
-            // a base that keeps repainting or freeze one that never recedes.
+            // frame recesses a base that asks for it under any `Overlay` row, and the pass freezes
+            // that base because the row's key kind shadows it. Declaring one without the other
+            // would either dim a base that keeps repainting or freeze one that never recedes.
             assert_eq!(
                 c.kind.is_overlay(),
                 c.render_key == RenderKeyKind::Drawer,
@@ -1697,6 +1745,21 @@ mod tests {
                 assert!(c.idle_exempt, "{name}: only a modal the rider must answer may refuse the escape");
             }
         }
+    }
+
+    /// **The screens a drawer does not dim**, by name (#1559). The invariant above ties the
+    /// property to the base content; this is the list that ties it to the rider's experience, so a
+    /// change to either shows up in review as a change to both.
+    #[test]
+    fn only_the_map_class_screens_are_left_undimmed_under_a_sheet() {
+        let undimmed: std::vec::Vec<&str> =
+            Screen::NAMES.iter().zip(Screen::CAPS).filter(|(_, c)| !c.recess).map(|(n, _)| *n).collect();
+        assert_eq!(
+            undimmed,
+            ["Map", "Detour", "DetourPreview", "WeatherRainMap"],
+            "the map-class screens, and only those — Statistics and the Climb view draw panels, \
+             which are cheap enough to keep the recess"
+        );
     }
 
     /// Every declared capability is actually exercised by at least one screen, and the headline

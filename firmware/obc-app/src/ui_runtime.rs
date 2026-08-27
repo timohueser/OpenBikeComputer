@@ -74,6 +74,16 @@ pub(crate) struct UiRuntime {
     /// pixel-level framebuffer clip can't skip. Taken (cleared) by the render, so a host that
     /// never sets it — the sim, the tests — always draws full frames.
     pub(crate) render_clip: Option<Rectangle>,
+    /// Whether the host's render target **keeps the last frame** between renders — declared once at
+    /// composition through [`set_resident_frame`](App::set_resident_frame), and living here beside
+    /// the other two facts about the host's plumbing ([`frame_size`](Self::frame_size),
+    /// [`render_clip`](Self::render_clip)).
+    ///
+    /// A resident target is the precondition for a *partial* repaint. It is what lets the frozen
+    /// base's pixels stand while a sheet grows over them (#1559). `false` until a host says
+    /// otherwise, so one that composes each frame from nothing — the snapshot sweep, a one-shot
+    /// capture — gets every screen drawn every time, which is always correct.
+    pub(crate) resident_frame: bool,
     /// The soonest timed-redraw deadline across the visible stack, in millis from the last
     /// [`advance_animations`](App::advance_animations) — the min-fold of each screen's
     /// [`ScreenTick::next_wake_ms`](screen::ScreenTick::next_wake_ms), stored there and read back by
@@ -158,6 +168,7 @@ impl UiRuntime {
             // Force the host's first frame: nothing has been drawn yet, so the map is dirty.
             map_dirty: true,
             region_dirty: None,
+            resident_frame: false,
             frame_size: (0, 0),
             render_clip: None,
             next_wake_ms: None,
@@ -184,9 +195,10 @@ impl UiRuntime {
     /// so a screen surfaces its own timed-refresh rather than the host re-rendering on a blind
     /// heartbeat — and the soonest residual deadline is stored for
     /// [`App::ms_until_next_wake`](crate::App::ms_until_next_wake). Cheap: a clock comparison per
-    /// drawn screen, over the same `base..` range the render draws. The card sweep and the idle-return
-    /// sweep are sequenced by [`App::advance_animations`](crate::App::advance_animations) right
-    /// after this.
+    /// polled screen, from `first` — which is the base, except while the base is frozen under a
+    /// sheet (below). The card sweep and the idle-return sweep are sequenced by
+    /// [`App::advance_animations`](crate::App::advance_animations) right after this, and neither
+    /// is gated on any of it.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn advance_timers(
         &mut self,
@@ -199,9 +211,31 @@ impl UiRuntime {
     ) {
         self.now_ms = now_ms;
         let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
+        // **The frozen base does not tick.** A drawer's render key shadows the base's, so no fact
+        // the base draws can move while a sheet is up; its *timed* content is frozen by the same
+        // rule and for the same reason — the panel keeps the base the sheet arrived over, and the
+        // close repaints it once. Without this the base's own timers (the Map's clock pill) would
+        // ask for a repaint of pixels a sheet-only frame does not draw, which is exactly the
+        // under-redraw the dirty contract forbids (#1559).
+        //
+        // **The line this draws, and the one place it is crossed.** What stops is *presentation*:
+        // a clock digit, a pager flip, a spinner needle, a compass sweep. Nothing that decides
+        // anything stops — recording, sensor staleness, the weather alerts, the router and the DFU
+        // task are all their own pass stages, and `advance_animations` still sweeps the cards and
+        // the idle return every pass whatever is on top.
+        //
+        // The crossing is the **upload popups** (`RouteReceived`, `RouteUpdated`, `TripReceived`,
+        // `RouteSwap`), which arm their 30 s auto-close *wake* from `tick_timers`, and over which a
+        // drawer is allowed. Under a sheet that wake is not armed, so the deadline is served by the
+        // next pass the device happens to take instead: on the board that is the watchdog feed cap,
+        // so such a popup outlives its 30 s by up to that, and by nothing at all if any input or
+        // sensor event lands first. It self-heals, it is invisible under the sheet, and it is the
+        // reason this rule is written as *presentation timers freeze, sweeps do not* — a base
+        // screen that grows a real deadline must put it in a pass stage, not in a tick.
+        let first = base + usize::from(self.base_frozen());
         let (w, h) = (self.frame_size.0 as i32, self.frame_size.1 as i32);
         let mut next_wake = None;
-        for scr in self.stack.iter_mut().skip(base) {
+        for scr in self.stack.iter_mut().skip(first) {
             let tick = scr.tick_timers(self.now_ms, now, ms_to_next_minute, settings, w, h, pan_active, tracking);
             // A change that promises a containing region accumulates apart from the full-frame
             // demand (#500 follow-up): `take_dirty` folds the two — any `map_dirty` overrides
@@ -234,6 +268,15 @@ impl UiRuntime {
     /// chrome with zero map I/O.
     pub(crate) fn base_draws_map(&self) -> bool {
         self.base_content() == BaseContent::Map
+    }
+
+    /// Whether an overlay sheet covers the base (lowest opaque) screen — **the frozen base**. One
+    /// predicate, read by the timer sweep above (a frozen base does not tick) and by the render
+    /// (a frozen base's rows stand, so its draw is skipped). Its key was already shadowed by the
+    /// drawer's own; this is the same fact seen from the two places that act on it.
+    pub(crate) fn base_frozen(&self) -> bool {
+        let base = self.stack.iter().rposition(|s| !s.is_overlay()).unwrap_or(0);
+        self.stack.iter().skip(base + 1).any(|s| s.is_overlay())
     }
 
     /// Whether the base (lowest opaque) screen **wants the rain overlay** — its declared
@@ -698,6 +741,7 @@ impl UiRuntime {
             region_dirty,
             frame_size,
             render_clip,
+            resident_frame,
             next_wake_ms,
             last_input_ms,
             idle_return_timing,
@@ -718,6 +762,7 @@ impl UiRuntime {
         assert!(region_dirty.is_none(), "no accumulated region demand");
         assert_eq!(*frame_size, (0, 0), "no frame rendered yet");
         assert!(render_clip.is_none() && next_wake_ms.is_none(), "no clip armed, nothing time-animating");
+        assert!(!*resident_frame, "no host has claimed a resident frame yet");
         assert_eq!(*last_input_ms, 0, "the idle clock runs from power-on");
         assert!(*idle_return_timing, "idle time accumulates from the first pass");
         assert!(hold_progress_override.is_none() && !*hold_cancel_pending, "no hold charging or cancelled");

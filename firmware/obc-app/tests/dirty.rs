@@ -202,3 +202,41 @@ fn a_battery_change_does_not_redraw_the_riding_views() {
     assert!(!host.frame(&mut app, 30_000, &[], None, Some(60)).map, "a battery delta must not dirty the map (#209)");
     assert_eq!(app.state.device.battery_pct, 60, "the new level is still stored, just not drawn here");
 }
+
+// --- the frozen base does not tick (#1559) -----------------------------------
+
+/// **A frozen base's timers are frozen with it.** A drawer's render key already shadows the base's,
+/// so no *fact* the base draws can move while a sheet is up; its **timed** content is frozen for the
+/// same reason and by the same rule, and this is where that is stated.
+///
+/// It is not tidiness. On a resident host the base's draw is skipped under a sheet, so a base tick
+/// asking for a repaint would get a frame that never draws the base — pixels asked for and not
+/// delivered, which the dirty contract calls a bug. Home's minute ticker is the probe: it is the
+/// one base timer that needs no rendered frame to arm.
+///
+/// The mutant: tick from `base` rather than from the first overlay in `advance_timers`, and the
+/// minute rollover under the sheet dirties the map again.
+#[test]
+fn a_minute_rollover_under_an_open_drawer_asks_for_nothing() {
+    let mut app = App::new_idle(AppState::new(0, 0, 0.05)); // [Home]
+                                                            // The idle return off: this test waits out a whole minute under the sheet, and a 30 s timeout
+                                                            // would close the drawer mid-assertion — a repaint that is correct and not the one at issue.
+    app.set_settings(obc_app::Settings { idle_return: obc_app::IdleReturn::Never, ..*app.settings() });
+    let mut host = Frames::new();
+    host.idle(&mut app, 0);
+    // The bare device: Home's own minute ticker is live, and this is what it looks like.
+    assert!(host.idle(&mut app, 60_000).map, "Home repaints on the minute");
+    assert_eq!(host.idle(&mut app, 60_100), Dirty::CLEAN, "…and then goes quiet again");
+
+    // Squeeze the quick drawer open over it and let the sheet land.
+    for (dt, ev) in [(0, down(Button::Up)), (40, down(Button::Select))] {
+        host.frame(&mut app, 61_000 + dt, &[ev], None, None);
+    }
+    host.idle(&mut app, 62_000);
+    assert_eq!(app.top_screen().name(), "QuickDrawer", "the sheet is up");
+    assert_eq!(host.idle(&mut app, 62_500), Dirty::CLEAN, "a settled sheet over a frozen base is quiet");
+
+    // The minute rolls over under the sheet. Home's ticker does not run: the base is frozen.
+    assert_eq!(host.idle(&mut app, 120_000), Dirty::CLEAN, "the base under a sheet does not tick");
+    assert_eq!(host.idle(&mut app, 120_500), Dirty::CLEAN, "and stays quiet across the boundary");
+}
