@@ -585,6 +585,11 @@ fn chord_name(c: obc_app::Chord) -> &'static str {
 /// pass, so nothing to present. `needs_map` picks the RTT log line's shape (map vs. UI frame).
 struct RenderedFrame {
     needs_map: bool,
+    /// Whether this frame drew the **sheet and nothing else** — the base's draw was skipped, so its
+    /// rows on the panel are the ones the sheet arrived over (#1559). Carried because the RTT line
+    /// below is the only instrument an open step is measured with, and such a frame is not the
+    /// "screen redraw" a menu is (#1569).
+    sheet_only: bool,
     stats: obc_render::RenderStats,
     render_us: u64,
 }
@@ -2672,7 +2677,9 @@ pub(crate) async fn run_app(
                         // its only reader and the shipping image should not carry the string.
                         #[cfg(feature = "debug-uart")]
                         defmt::info!("freeze: banner repaint rows {=u16}..{=u16}", y0, y0 + rows);
-                        Some(RenderedFrame { needs_map: false, stats, render_us })
+                        // The banner is what this frame drew, whatever a sheet above it would
+                        // otherwise have made of the base.
+                        Some(RenderedFrame { needs_map: false, sheet_only: false, stats, render_us })
                     }
                     // Mid-freeze with no edge: nothing changed on either plane, so nothing to push.
                     None => None,
@@ -2736,8 +2743,20 @@ pub(crate) async fn run_app(
                         // a pixel clip can't skip), and the framebuffer discards any straddler's out-of-region
                         // pixel writes — so a spinner frame costs the disc instead of the whole chrome, and
                         // the row-diffed push scales down with it.
+                        //
+                        // `needs_map` reads "**the `Reader` was built**", which since #1569 is narrower than
+                        // "the base draws the map": a sheet-only frame over the riding Map skips the base's
+                        // draw, so it asks for no `Reader` and arrives here `false`. The region arm is still
+                        // the right one for it. `take_dirty` keeps a region only when a region tick was the
+                        // *sole* dirt, and a sheet arriving or stepping sets the full-frame `map_dirty` — so
+                        // every frame of an open comes through with `None` and clips nothing. A region does
+                        // survive on a settled sheet whose *own* overlay ticked one, and clipping that frame
+                        // to it is exactly right: the sheet is all that is drawn, and only that part moved.
                         let clip = if needs_map { None } else { dirty.region };
                         app.set_render_clip(clip);
+                        // Sampled before the render closure borrows `app`; nothing between here and the log
+                        // below moves the screen stack.
+                        let sheet_only = app.sheet_only();
                         // Construct the rain lease only for the WX11 rain-map base. The dashboard
                         // and hourly screens still receive the resident snapshot, but pay zero SD
                         // header/frame/tile reads during draw; the ordinary Map never receives a
@@ -2810,7 +2829,7 @@ pub(crate) async fn run_app(
                             // The guard (when a map base took one) dies here, at the end of the render
                             // span — before the present's await, never across it (#677).
                             drop(render_guard);
-                            Some(RenderedFrame { needs_map, stats, render_us })
+                            Some(RenderedFrame { needs_map, sheet_only, stats, render_us })
                         }
                     }
                 }
@@ -2870,9 +2889,20 @@ pub(crate) async fn run_app(
                 pending_map_redraw = true;
             }
 
-            // A map frame carries the map render stats; a non-map (menu / Statistics / Home) frame
-            // is just a screen redraw + push, so log it as such — no meaningless lod/feat/chunks.
-            if rf.needs_map {
+            // Three lines, because there are three kinds of frame and the RTT record is what every
+            // one of them is measured with. A **sheet** frame drew the sheet over a base it left
+            // standing, so it carries neither map stats nor the claim that a whole screen was
+            // redrawn — an open step is a sheet band, and a line calling it a screen redraw with no
+            // map is how #1569's open read as a full-frame cut for a whole bench round. A **map**
+            // frame carries the map render stats. Anything else (menu / Statistics / Home) really
+            // is its own chrome, with no meaningful lod/feat/chunks.
+            if rf.sheet_only {
+                defmt::info!(
+                    "sheet frame: render {=u64} us + push {=u64} us (sheet band, base left standing)",
+                    rf.render_us,
+                    push_us
+                );
+            } else if rf.needs_map {
                 defmt::info!(
                     "map frame: render {=u64} us + push {=u64} us | lod {=usize} | feat {=usize}/{=usize} | chunks {=usize} | map-cache {=u32} hit / {=u32} miss",
                     rf.render_us,

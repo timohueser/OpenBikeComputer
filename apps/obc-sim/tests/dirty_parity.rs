@@ -1297,6 +1297,15 @@ fn a_device_with_nothing_happening_plans_no_repaint_at_all() {
 /// sheet's whole open. A sheet stamped with that pass's clock is drawn landed on its first frame —
 /// the open cuts — which is what the board did while this replay, run at dense ticks, passed 9/9.
 /// The open has to start on the frame the squeeze woke.
+///
+/// **What the gap costs the oracle, for whoever moves this next.** The reference draws the base
+/// every pass; the candidate's first sheet-only frame does not draw it at all. So any base fact
+/// that is *time-driven* and crosses the 8,000 → 8,900 window makes the two disagree on the
+/// squeeze pass — and `drive_replay` reports that as lost pixels, which reads like a drawer fault
+/// and is not one. Nothing crosses it today (the pass at 8,000 is the last wake the Map asked
+/// for, so the base is current). Widen the gap, or move the pass in front of it, and a ride-clock
+/// digit or a banner phase can land inside — the fix is another pass at the wake the base wanted,
+/// never a weaker assertion here.
 const SQUEEZE_MS: u32 = 8_900;
 
 /// The **quick drawer's open, step by step**, over a riding Map — the one base whose row says it is
@@ -1402,7 +1411,7 @@ fn drawer_pages_replay() -> Vec<Step> {
     let mut steps = vec![
         step("boot on the Map", 0).expect("Map"),
         step("the first fix", 200).fix(0).expect("Map"),
-        step("a pass just before the squeeze", 960).expect("Map"),
+        step("quiet", 960).expect("Map"),
         step("squeeze the quick drawer open", 1_000).keys(&squeeze(Button::Up, Button::Select)),
         step("release the squeeze", 1_100).keys(&[release(Button::Select), release(Button::Up)]),
     ];

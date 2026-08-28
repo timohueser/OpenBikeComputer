@@ -1190,6 +1190,17 @@ impl App {
         self.ui.base_needs_reader()
     }
 
+    /// Whether the frame this pass renders draws the **sheet and nothing else**: a drawer covers a
+    /// base that does not recess, on a host that declared a
+    /// [resident frame](App::set_resident_frame), so the base's draw is skipped (#1559).
+    ///
+    /// A host asks so it can *say so*: on the board an open step and a whole-screen redraw both
+    /// cost a render and a push, and its RTT line is the only instrument either is measured with
+    /// (#1569). A frame that skipped the base is not "a screen redraw" and must not claim to be.
+    pub fn sheet_only(&self) -> bool {
+        self.ui.sheet_only()
+    }
+
     /// Whether there's a **current** GPS fix at `now_ms`: a fix has been accepted and is no older
     /// than the ride engine's staleness window ([`RideEngine::has_live_fix`]). `false` before the
     /// first fix (acquiring) and once the signal drops (lost) — exactly when the "No GPS Fix"
