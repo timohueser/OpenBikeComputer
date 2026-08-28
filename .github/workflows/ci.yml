@@ -276,7 +276,8 @@ jobs:
           OBC_REQUIRE_FIXTURES: "1"
         run: |
           python3 tools/fixtures.py sync test
-          export OBC_FIXTURE_ROOT="$(python3 tools/fixtures.py root)"
+          OBC_FIXTURE_ROOT="$(python3 tools/fixtures.py root)"
+          export OBC_FIXTURE_ROOT
           cargo nextest run --workspace --all-features --locked --no-tests fail -E 'not package(obc-wx-bake)'
       # nextest runs no doctests, so the whole workspace's doctests run here as one cheap step
       # rather than being silently dropped from the gate.
@@ -334,7 +335,7 @@ jobs:
           cargo build -p obc-pack --release --locked
           PYTHONPATH=. python3 -m pytest builder/tests/ -v
 
-  # The other side of the workspace test run: the weather bakery, on two more runners.
+  # The other side of the workspace test run: the weather bakery, on three more runners.
   #
   # It is split out because of what it costs, not because of what it is. `obc-wx-bake` re-bakes
   # captured upstream radar and model products, and it is 758 s of the run's ~900 s of test CPU on
@@ -412,7 +413,8 @@ jobs:
           OBC_REQUIRE_FIXTURES: "1"
         run: |
           python3 tools/fixtures.py sync test
-          export OBC_FIXTURE_ROOT="$(python3 tools/fixtures.py root)"
+          OBC_FIXTURE_ROOT="$(python3 tools/fixtures.py root)"
+          export OBC_FIXTURE_ROOT
           cargo nextest run --workspace --all-features --locked --no-tests fail ${{ matrix.args }}
 
   # The real device board crate (nRF54L15) on its thumbv8m target: clippy each feature config + a
