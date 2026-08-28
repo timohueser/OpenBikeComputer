@@ -31,10 +31,8 @@ use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer};
 use obc_app::ble::WeatherSnapshot;
-use obc_ble::{
-    BundleFacts, DueScheduler, Raise, WeatherRefresh, WeatherRequestContext, VALID_BEARING, VALID_BUNDLE,
-    VALID_POSITION, VALID_ROUTE, VALID_SPEED,
-};
+use obc_ble::weather_request::{RequestContextBundle, RequestContextFacts, RequestContextFix};
+use obc_ble::{BundleFacts, DueScheduler, WeatherRefresh, WeatherRequestContext, VALID_POSITION};
 
 /// The deployed dataset advances on quarter-hour boundaries. A bundle built in one interval cannot
 /// be superseded before the next boundary; two minutes cover the timer's randomized delay plus the
@@ -224,7 +222,22 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, _shar
         if let Some(raise) = sched.poll(now_s, refresh, snapshot.ride_active, store_ready, facts) {
             IN_FLIGHT.store(true, Ordering::Relaxed);
             PENDING_REQUEST_ID.store(raise.request_id, Ordering::Relaxed);
-            let ctx = build_context(&snapshot, refresh_raw, raise, candidate);
+            let context_facts = RequestContextFacts {
+                fix: snapshot.position.map(|fix| RequestContextFix {
+                    lat_udeg: fix.lat_udeg,
+                    lon_udeg: fix.lon_udeg,
+                    fix_utc: fix.fix_utc,
+                }),
+                bearing_deg: snapshot.bearing_deg,
+                speed_deci_ms: snapshot.speed_deci_ms,
+                route_id: snapshot.route_id,
+                bundle: candidate.map(|bundle| RequestContextBundle {
+                    generation: bundle.generation,
+                    generated_at: bundle.generated_at,
+                    crc32: bundle.bundle_crc32,
+                }),
+            };
+            let ctx = WeatherRequestContext::raised(refresh_raw, raise, context_facts);
             let _ = server.set(&server.weather_request.context, &ctx.encode());
             context_live = true;
             served_refresh = Some(refresh_raw);
@@ -272,48 +285,4 @@ pub(crate) async fn run(server: &Server<'_>, store: &RefCell<ObjectStore>, _shar
             None => WAKE.wait().await,
         }
     }
-}
-
-/// Fill the §11.4 context from the raise + the current app/bundle facts. Optional groups follow
-/// the flags-not-sentinels rule: absent inputs leave their fields zero **and** their validity bit
-/// clear — a device with no fix still raises a well-formed request for diagnostics/retry, but the
-/// companion cannot fetch until the device supplies a position (there is intentionally no phone-
-/// location fallback today).
-fn build_context(
-    s: &WeatherSnapshot,
-    refresh_raw: u8,
-    raise: Raise,
-    bundle: Option<obc_weather::Candidate>,
-) -> WeatherRequestContext {
-    let mut ctx = WeatherRequestContext {
-        refresh_raw,
-        request_id: raise.request_id,
-        reason: raise.reason,
-        ..WeatherRequestContext::EMPTY
-    };
-    if let Some(p) = s.position {
-        ctx.validity |= VALID_POSITION;
-        ctx.lat_udeg = p.lat_udeg;
-        ctx.lon_udeg = p.lon_udeg;
-        ctx.fix_utc = p.fix_utc;
-    }
-    if let Some(bearing) = s.bearing_deg {
-        ctx.validity |= VALID_BEARING;
-        ctx.bearing_deg = bearing;
-    }
-    if let Some(speed) = s.speed_deci_ms {
-        ctx.validity |= VALID_SPEED;
-        ctx.speed_deci_ms = speed;
-    }
-    if let Some(route_id) = s.route_id {
-        ctx.validity |= VALID_ROUTE;
-        ctx.route_id = route_id;
-    }
-    if let Some(b) = bundle {
-        ctx.validity |= VALID_BUNDLE;
-        ctx.bundle_generation = b.generation;
-        ctx.bundle_generated_at = b.generated_at;
-        ctx.bundle_crc32 = b.bundle_crc32;
-    }
-    ctx
 }

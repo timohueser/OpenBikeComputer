@@ -12,10 +12,10 @@
 //! visible by passing OBCW validation and winning the generation comparison, so a simulator
 //! run exercises the same accept/reject decisions the device makes on the glass.
 
+use obc_ble::weather_request::{RequestContextBundle, RequestContextFacts, RequestContextFix};
 use obc_ble::{
-    classify_upload, BundleFacts, BundleIdentity, DueScheduler, Raise, UploadDisposition, WeatherRefresh,
-    WeatherRequestContext, REASON_NO_BUNDLE, REASON_RETRY, REASON_SCHEDULED, REASON_URGENT, VALID_BEARING,
-    VALID_BUNDLE, VALID_POSITION, VALID_ROUTE, VALID_SPEED,
+    classify_upload, BundleFacts, BundleIdentity, DueScheduler, UploadDisposition, WeatherRefresh,
+    WeatherRequestContext, REASON_NO_BUNDLE, REASON_RETRY, REASON_SCHEDULED, REASON_URGENT, VALID_POSITION,
 };
 
 use crate::weather_live::LiveWeather;
@@ -53,16 +53,6 @@ impl CompanionState {
             parts.join("+")
         }
     }
-}
-
-/// The active bundle as the §11.4 context describes it: the identity the classifier compares
-/// **plus** the bundle CRC the context's last field carries. The board reads all three off its
-/// `obc_weather::Candidate`; the simulator reads them off the held bundle's own header, so the
-/// context it builds is the one the phone would actually receive.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Held {
-    pub identity: BundleIdentity,
-    pub crc32: u32,
 }
 
 /// The host half of the lifecycle.
@@ -124,7 +114,7 @@ impl SimCompanion {
         &mut self,
         snapshot: &obc_app::ble::WeatherSnapshot,
         refresh_raw: u8,
-        held: Option<Held>,
+        held: Option<RequestContextBundle>,
         fallback_position: (i32, i32),
         live: &mut LiveWeather,
         now: i64,
@@ -134,8 +124,8 @@ impl SimCompanion {
             Some(bundle) => {
                 BundleFacts {
                     held: true,
-                    age_s: u64::try_from((now - bundle.identity.generated_at).max(0)).ok(),
-                    // The simulator's compact `Held` seam carries only the §11.4 identity, not
+                    age_s: u64::try_from((now - bundle.generated_at).max(0)).ok(),
+                    // The simulator's compact bundle seam carries only the §11.4 identity, not
                     // validated window/frame metadata. Fail conservative and exercise the normal
                     // request path rather than inventing a local-reuse proof.
                     manual_reusable: false,
@@ -155,7 +145,7 @@ impl SimCompanion {
 
         // 1-2. The phone reads the request context and disconnects. Building it for real is the
         //      point: the context is what tells the companion *where* and *what for*.
-        let context = build_context(snapshot, refresh_raw, &raise, held);
+        let context = WeatherRequestContext::raised(refresh_raw, raise, request_context_facts(snapshot, held));
         let position = if context.has(VALID_POSITION) {
             (context.lat_udeg, context.lon_udeg)
         } else {
@@ -174,7 +164,7 @@ impl SimCompanion {
 
         // 4. Reconnect and upload. The disposition is the *firmware's* verdict, not ours.
         let incoming = held_from_bytes(&bytes)?;
-        let disposition = classify_upload(incoming.identity, held.map(|bundle| bundle.identity));
+        let disposition = classify_upload(bundle_identity(incoming), held.map(bundle_identity));
         self.state.last_disposition = Some(match disposition {
             UploadDisposition::Commit => "commit",
             UploadDisposition::DuplicateIgnored => "duplicate ignored",
@@ -198,64 +188,37 @@ impl SimCompanion {
     }
 }
 
-fn held_of(store: &SimWeather) -> Option<Held> {
+fn held_of(store: &SimWeather) -> Option<RequestContextBundle> {
     let (generation, generated_at, crc32) = store.validated_identity();
-    Some(Held { identity: BundleIdentity { generation, generated_at }, crc32 })
+    Some(RequestContextBundle { generation, generated_at, crc32 })
 }
 
-fn held_from_bytes(bytes: &[u8]) -> Option<Held> {
+fn held_from_bytes(bytes: &[u8]) -> Option<RequestContextBundle> {
     let source = obc_formats::io::SliceSource(bytes);
     let reader = obc_weather::WeatherReader::open(&source).ok()?;
     let header = reader.header();
-    Some(Held {
-        identity: BundleIdentity { generation: header.generation, generated_at: header.generated_at },
-        crc32: header.crc32,
-    })
+    Some(RequestContextBundle { generation: header.generation, generated_at: header.generated_at, crc32: header.crc32 })
 }
 
-/// The §11.4 context fill, flags-not-sentinels: a field is present only when it is *true*, and
-/// the validity bit is what says so. This mirrors the board's `build_context`, `refresh_raw`
-/// included — the board hands the stored byte through untouched (§11.8).
-fn build_context(
+fn request_context_facts(
     snapshot: &obc_app::ble::WeatherSnapshot,
-    refresh_raw: u8,
-    raise: &Raise,
-    bundle: Option<Held>,
-) -> WeatherRequestContext {
-    let mut context = WeatherRequestContext {
-        request_id: raise.request_id,
-        reason: raise.reason,
-        refresh_raw,
-        ..WeatherRequestContext::EMPTY
-    };
-    if let Some(fix) = snapshot.position {
-        context.validity |= VALID_POSITION;
-        context.lat_udeg = fix.lat_udeg;
-        context.lon_udeg = fix.lon_udeg;
-        context.fix_utc = fix.fix_utc;
+    bundle: Option<RequestContextBundle>,
+) -> RequestContextFacts {
+    RequestContextFacts {
+        fix: snapshot.position.map(|fix| RequestContextFix {
+            lat_udeg: fix.lat_udeg,
+            lon_udeg: fix.lon_udeg,
+            fix_utc: fix.fix_utc,
+        }),
+        bearing_deg: snapshot.bearing_deg,
+        speed_deci_ms: snapshot.speed_deci_ms,
+        route_id: snapshot.route_id,
+        bundle,
     }
-    if let Some(bearing) = snapshot.bearing_deg {
-        context.validity |= VALID_BEARING;
-        context.bearing_deg = bearing;
-    }
-    if let Some(speed) = snapshot.speed_deci_ms {
-        context.validity |= VALID_SPEED;
-        context.speed_deci_ms = speed;
-    }
-    if let Some(route) = snapshot.route_id {
-        context.validity |= VALID_ROUTE;
-        context.route_id = route;
-    }
-    if let Some(bundle) = bundle {
-        context.validity |= VALID_BUNDLE;
-        context.bundle_generation = bundle.identity.generation;
-        context.bundle_generated_at = bundle.identity.generated_at;
-        // The last v1 field, and the one the phone uses to tell "the bundle I already built" from
-        // "a different bundle with the same generation" — a zero here would be a claim about the
-        // held bundle that is simply false.
-        context.bundle_crc32 = bundle.crc32;
-    }
-    context
+}
+
+fn bundle_identity(bundle: RequestContextBundle) -> BundleIdentity {
+    BundleIdentity { generation: bundle.generation, generated_at: bundle.generated_at }
 }
 
 #[cfg(test)]
@@ -313,9 +276,9 @@ mod tests {
     /// rider's own setting carried verbatim — including a byte this build cannot name.
     #[test]
     fn the_context_carries_the_bundle_crc_and_the_raw_refresh_byte() {
-        let held = Held { identity: BundleIdentity { generation: 7, generated_at: 1_799_000 }, crc32: 0xDEAD_BEEF };
-        let raise = Raise { request_id: 3, reason: REASON_SCHEDULED };
-        let context = build_context(&riding(), 9, &raise, Some(held));
+        let held = RequestContextBundle { generation: 7, generated_at: 1_799_000, crc32: 0xDEAD_BEEF };
+        let raise = obc_ble::Raise { request_id: 3, reason: REASON_SCHEDULED };
+        let context = WeatherRequestContext::raised(9, raise, request_context_facts(&riding(), Some(held)));
         assert_eq!(context.refresh_raw, 9, "an unknown cadence byte rides through untouched (§11.8)");
         assert!(WeatherRefresh::from_u8(9).is_err(), "…and this build genuinely cannot name it");
         assert!(context.has(VALID_BUNDLE));
