@@ -922,8 +922,8 @@ fn feed(app: &mut App, now: u32, events: Vec<InputEvent>) {
 /// script can `p` into a POI *and then* `f p` to open its detail. Without an `f` the whole script
 /// runs before the single final render, so lazy state never fills mid-script.
 /// [`ScriptHook::Tick`] runs one **route-aware tick** (the `T` token): the GUI ticks every frame,
-/// but the headless script path never does — so route-derived `Activity` state (`route_total_m`,
-/// the climbs/waypoints caches) stays unbuilt without it. A mid-ride flow that *reads* that state
+/// but the headless script path never does — so Navigator's route total and derived
+/// climbs/waypoints caches stay unbuilt without it. A mid-ride flow that *reads* that state
 /// (the Detour chooser, #882) scripts a `T` after starting the ride.
 fn apply_script(app: &mut App, script: &str, start_ms: u32, hook: &mut dyn FnMut(&mut App, ScriptHook, u32)) -> u32 {
     let down = |b| InputEvent::Button(ButtonEvent::Down(b));

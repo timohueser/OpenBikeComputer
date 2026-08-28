@@ -5,9 +5,9 @@
 //!
 //! **The ride's own numbers are not here.** Distance, moving time, climb, the live sensor values
 //! and the per-ride summary belong to [`RecorderMachine`](crate::recorder::RecorderMachine), which
-//! is what decides when a ride starts and what closes it (#1398 R1). Kept separate from
-//! [`AppState`](crate::AppState) (the camera) because the mode and the route model outlive any one
-//! screen and several screens read them.
+//! is what decides when a ride starts and what closes it (#1398 R1).
+//! [`Activity`] stays separate from [`AppState`](crate::AppState) (the camera) because the operating
+//! mode outlives any one screen and several screens read it.
 //!
 //! ## Why [`Mode`] stays here
 //!
@@ -36,9 +36,9 @@ pub enum Mode {
 /// (`position_at(target_m)`) — it owns the active `RouteReader`; the screen deliberately carries
 /// only distances, keeping the request tiny and `Copy`.
 ///
-/// Lives with [`NavigatorMachine`](crate::navigator::NavigatorMachine), which is where the rider's
-/// request waits until an executor takes it. The type stays here because [`Activity`] is the ride
-/// model the chooser measures it against.
+/// [`NavigatorMachine`](crate::navigator::NavigatorMachine) holds the rider's request until an
+/// executor takes it. The chooser derives its distances from Navigator's
+/// [`RouteState`](crate::navigator::RouteState); [`Activity`] does not own the route model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DetourRequest {
     /// The active catalog slot the request is keyed to (durable-remapped across rescans).
