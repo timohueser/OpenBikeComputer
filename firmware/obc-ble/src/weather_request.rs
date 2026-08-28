@@ -640,6 +640,11 @@ impl DueScheduler {
         self.urgent_queued = true;
     }
 
+    /// Whether an urgent request is queued or any request is pending.
+    pub fn has_request(&self) -> bool {
+        self.urgent_queued || self.pending.is_some()
+    }
+
     /// A weather upload was **accepted** — fresh (`commit`), duplicate, or stale, all of which the
     /// wire answers `committed` (§11.6): clear the pending request and anchor the next scheduled
     /// interval here. The duplicate/stale rows count deliberately (#1221 F3): they are the phone's

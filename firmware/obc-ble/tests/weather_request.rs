@@ -747,6 +747,21 @@ fn success_clears_the_request_and_schedules_from_the_commit() {
 }
 
 #[test]
+fn request_presence_covers_queued_and_pending_states() {
+    let mut s = DueScheduler::new();
+    assert!(!s.has_request());
+
+    s.open_weather();
+    assert!(s.has_request(), "the urgent edge remains visible until it is polled");
+
+    s.poll(0, WeatherRefresh::Off, false, true, BundleFacts::NONE).expect("urgent request");
+    assert!(s.has_request(), "the raised request remains visible while it is pending");
+
+    s.commit_succeeded(1);
+    assert!(!s.has_request());
+}
+
+#[test]
 fn opening_weather_reuses_a_current_local_bundle_without_raising() {
     let mut s = DueScheduler::new();
     let local_current =
