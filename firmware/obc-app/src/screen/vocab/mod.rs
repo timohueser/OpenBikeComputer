@@ -2,6 +2,7 @@
 //! one module per concept:
 //!
 //! - [`band`] — the elevation silhouette, its connected top stroke, and the peak label.
+//! - [`card`] — selection, guarded activation, dismissal, and drawing for card action rows.
 //! - [`chrome`] — the framed page header, the card glyphs, and the shared text/stroke helpers.
 //! - [`fmt`] — every quantity readout: distance, speed, elevation, duration, date, temperature.
 //! - [`list`] — the windowed scrolling-list widget and its wrapping cursor.
@@ -15,6 +16,7 @@
 //! at the [`screen`](crate::screen) root: which concept a helper belongs to is part of reading it.
 
 pub(crate) mod band;
+pub(crate) mod card;
 pub(crate) mod chrome;
 pub(crate) mod fmt;
 pub(crate) mod list;
