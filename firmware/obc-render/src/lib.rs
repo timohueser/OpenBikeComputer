@@ -1055,3 +1055,5 @@ mod width_ramp_tests {
         }
     }
 }
+
+// gate measurement probe.
