@@ -11,12 +11,14 @@ The UI is a `no_std`, allocation-free system for a 240×320-pixel display. It us
 
 Each screen is one `Screen` enum variant. The variant owns its state by value.
 
-A `screens!` table defines each variant and its `Caps`. The table generates input, drawing, and preparation dispatch.
+A `screens!` table defines each variant and its `Caps`. The table generates the enum, normal input
+and drawing dispatch, and capability metadata. A small manual `prepare` match delegates only the
+four reader-backed screens that need a one-shot operation before drawing.
 
 `Caps` declares cross-cutting behavior. It covers base content, overlays, timers, holds, reader access, idle return, rain, catalog remapping, and the render key.
 
 <figure class="fig">
-<svg viewBox="0 0 720 322" role="img" aria-label="On the left, the Screen enum lists representative variants: Home, Map, Statistics, RideControl, Menu, RideMenu, RouteMenu, RouteOverview, and RouteSwap. The Map variant points to its module on the right, which holds typed state, a handle method returning a Transition, and a draw method emitting pixels. A tag notes static match dispatch, no dyn and no allocation.">
+<svg viewBox="0 0 720 322" role="img" aria-label="On the left, the Screen enum lists representative variants: Home, Map, Statistics, RideControl, Menu, ContextDrawer, RouteMenu, RouteOverview, and RouteSwap. The Map variant points to its module on the right, which holds typed state, a handle method returning a Transition, and a draw method emitting pixels. A tag notes static match dispatch, no dyn and no allocation.">
   <defs>
     <marker id="aU1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
@@ -31,7 +33,7 @@ A `screens!` table defines each variant and its `Caps`. The table generates inpu
     <rect x="52" y="126" width="178" height="20" rx="5" class="d-muted" /><text class="d-sub" x="62" y="140">Statistics(…)</text>
     <rect x="52" y="148" width="178" height="20" rx="5" class="d-muted" /><text class="d-sub" x="62" y="162">RideControl(…)</text>
     <rect x="52" y="170" width="178" height="20" rx="5" class="d-muted" /><text class="d-sub" x="62" y="184">Menu(…)</text>
-    <rect x="52" y="192" width="178" height="20" rx="5" class="d-muted" /><text class="d-sub" x="62" y="206">RideMenu(…)</text>
+    <rect x="52" y="192" width="178" height="20" rx="5" class="d-muted" /><text class="d-sub" x="62" y="206">ContextDrawer(…)</text>
     <rect x="52" y="214" width="178" height="20" rx="5" class="d-muted" /><text class="d-sub" x="62" y="228">RouteMenu(…)</text>
     <rect x="52" y="236" width="178" height="20" rx="5" class="d-muted" /><text class="d-sub" x="62" y="250">RouteOverview(…)</text>
     <rect x="52" y="258" width="178" height="20" rx="5" class="d-muted" /><text class="d-sub" x="62" y="272">RouteSwap(…)</text>
@@ -65,7 +67,9 @@ A normal screen implements these operations:
 
 - `handle` reads one `Gesture` and returns a `Transition`.
 - `draw` writes the current frame.
-- `prepare` performs a required one-shot reader operation.
+
+Four reader-backed screens also implement `prepare` for a required one-shot reader operation. The
+manual dispatch is partial because other screens do not need this operation.
 
 The `Ctx` input context contains mutable application state. The `Render` context contains read-only state and borrowed rendering resources.
 
@@ -74,7 +78,7 @@ The `Ctx` input context contains mutable application state. The `Render` context
 The screen stack is a `heapless::Vec<Screen, 10>`. Home is always the first item.
 
 <figure class="fig">
-<svg viewBox="0 0 720 330" role="img" aria-label="A pipeline across the top: a gesture goes into the top screen's handle method, which returns a Transition, which apply runs against the stack. Below, the screen stack with Home locked at the bottom, then Map, then Up ahead on top. To the right, the six transitions are listed as stack operations: None stays, Push grows, Pop shrinks, Replace swaps the top, Root truncates to Home then pushes, and Home truncates to the root.">
+<svg viewBox="0 0 720 330" role="img" aria-label="A pipeline across the top: a gesture goes into the top screen's handle method, which returns a Transition, which apply runs against the stack. Below, the screen stack with Home locked at the bottom, then Map, then Up ahead on top. Home stays at the root, and Back-hold opens the main menu globally. To the right, the six transitions are listed as stack operations: None stays, Push grows, Pop shrinks, Replace swaps the top, Root truncates to Home then pushes, and Home truncates to the root.">
   <defs>
     <marker id="aU2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3c6b39" /></marker>
   </defs>
@@ -100,7 +104,7 @@ The screen stack is a `heapless::Vec<Screen, 10>`. Home is always the first item
     <rect x="40" y="132" width="150" height="34" rx="6" class="d-muted" /><text class="d-label" x="115" y="154" text-anchor="middle">Home</text>
     <text class="d-sub" x="200" y="153" style="font-size:9px">← root · never popped</text>
   </g>
-  <text class="d-sub" x="40" y="256" style="font-size:10px">back from the root is the guaranteed escape</text>
+  <text class="d-sub" x="40" y="256" style="font-size:10px">Home stays at root · back-hold opens the main menu globally</text>
 
   <!-- transition legend -->
   <g font-family="var(--mono)">
@@ -125,6 +129,10 @@ The screen stack is a `heapless::Vec<Screen, 10>`. Home is always the first item
 | `Home` | Remove all screens above Home. |
 
 A stack change cancels all incomplete holds. This rule prevents a hold from completing on a new screen.
+
+Each screen owns its ordinary `Back` policy in its typed `handle` method. Back can pop a screen,
+leave an editor, cancel domain work, or move to a sibling view. Back-hold and button chords are
+handled above screen dispatch.
 
 ### Detour flow
 
@@ -1106,6 +1114,21 @@ Idle return removes abandoned chrome. It returns to Home when idle and to Map du
 ## Visual vocabulary
 
 Screens use shared primitives for titles, lists, rows, bands, tiles, text, and status indicators.
+
+The `chrome`, `rows`, `list`, and `tiles` modules contain composable drawing parts. The `band`,
+`spinner`, and `pager` modules each own one shared mechanism. The `fmt` module owns shared quantity
+formatting.
+
+`ActionRows` owns card-row selection, wrapping, Back dismissal, Press or Hold activation, guard
+state, and row drawing. A card screen maps `CardEvent` to typed domain work and owns its body
+layout. Cards compose the existing `chrome` helpers. There is no universal card-body or frame
+abstraction.
+
+`draw_rows` is for selected, actionable lists. A read-only timeline can compose `list_frame` and
+`scrollbar` without inventing a selection. Weather Hourly uses this composition.
+
+Overlays and screen-specific drawing layers stay local. The Climb grade renderer is different from
+the shared elevation band.
 
 <figure class="fig">
 <svg viewBox="0 0 720 200" role="img" aria-label="A palette swatch strip showing the device-64 colours: parchment white, wood brown, ink black, amber, warning orange, route magenta, and breadcrumb navy. Beside it, a small framed-screen mock with a wood title bar, a parchment body, and an amber-highlighted list row with a pointer bullet.">

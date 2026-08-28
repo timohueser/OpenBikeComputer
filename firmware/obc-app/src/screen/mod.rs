@@ -962,9 +962,9 @@ impl Caps {
 }
 
 /// The one screen table. Each row is `Variant(StateType) => Caps`; the macro expands it into the
-/// [`Screen`] enum, the `handle`/`draw`/`prepare` delegation matches, and the per-screen
-/// [`Caps`](Screen::caps) (from which [`kind`](Screen::kind) and every cross-cutting policy
-/// derives). **Adding a normal screen = adding one row here** (plus its own module, and a
+/// [`Screen`] enum, the `handle`/`draw` delegation matches, and the per-screen capability metadata.
+/// [`prepare`](Screen::prepare) stays a small manual, partial match for the reader-backed screens.
+/// **Adding a normal screen = adding one row here** (plus its own module, and a
 /// [`tick_timers`](Screen::tick_timers) arm only if the row declares `.timed()`) — there is no
 /// second list to keep in sync, and a cross-cutting policy addition is an explicit capability on the
 /// row, not a forgotten `matches!` elsewhere. Deliberately a dumb token-pasting table, not a
@@ -1304,6 +1304,8 @@ impl Screen {
         }
     }
 
+    /// Run the one-shot preparation for the four reader-backed screens that need it before drawing.
+    /// This match is intentionally manual and partial because other screens have no preparation.
     pub(crate) fn prepare(&mut self, px: &mut Prepare) {
         match self {
             Screen::PoiList(s) => s.prepare(px),
