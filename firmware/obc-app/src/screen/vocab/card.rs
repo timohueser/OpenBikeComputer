@@ -25,8 +25,8 @@ pub(crate) struct ActionRows {
 }
 
 impl ActionRows {
-    pub(crate) const fn new() -> Self {
-        ActionRows { selected: 0 }
+    pub(crate) const fn new(initial_selected: usize) -> Self {
+        ActionRows { selected: initial_selected }
     }
 
     /// Apply one gesture against the caller's guard declaration.
@@ -74,7 +74,7 @@ mod tests {
 
     #[test]
     fn forward_and_backward_steps_wrap() {
-        let mut rows = ActionRows::new();
+        let mut rows = ActionRows::new(0);
         assert_eq!(rows.handle(Gesture::Step(-1), &OPEN), CardEvent::None);
         assert_eq!(rows.handle(Gesture::Press, &OPEN), CardEvent::Activate(2));
         assert_eq!(rows.handle(Gesture::Step(1), &OPEN), CardEvent::None);
@@ -83,24 +83,29 @@ mod tests {
 
     #[test]
     fn back_dismisses() {
-        assert_eq!(ActionRows::new().handle(Gesture::Back, &OPEN), CardEvent::Dismiss);
+        assert_eq!(ActionRows::new(0).handle(Gesture::Back, &OPEN), CardEvent::Dismiss);
     }
 
     #[test]
     fn press_activates_an_unguarded_row() {
-        assert_eq!(ActionRows::new().handle(Gesture::Press, &GUARDED), CardEvent::Activate(0));
+        assert_eq!(ActionRows::new(0).handle(Gesture::Press, &GUARDED), CardEvent::Activate(0));
+    }
+
+    #[test]
+    fn initial_selection_is_used() {
+        assert_eq!(ActionRows::new(2).handle(Gesture::Press, &OPEN), CardEvent::Activate(2));
     }
 
     #[test]
     fn press_refuses_a_guarded_row() {
-        let mut rows = ActionRows::new();
+        let mut rows = ActionRows::new(0);
         rows.handle(Gesture::Step(1), &GUARDED);
         assert_eq!(rows.handle(Gesture::Press, &GUARDED), CardEvent::None);
     }
 
     #[test]
     fn hold_activates_only_a_guarded_row() {
-        let mut rows = ActionRows::new();
+        let mut rows = ActionRows::new(0);
         assert_eq!(rows.handle(Gesture::Hold, &GUARDED), CardEvent::None);
         rows.handle(Gesture::Step(1), &GUARDED);
         assert_eq!(rows.handle(Gesture::Hold, &GUARDED), CardEvent::Activate(1));
@@ -108,7 +113,7 @@ mod tests {
 
     #[test]
     fn guarded_selection_is_reported() {
-        let mut rows = ActionRows::new();
+        let mut rows = ActionRows::new(0);
         assert!(!rows.selection_is_guarded(&GUARDED));
         rows.handle(Gesture::Step(1), &GUARDED);
         assert!(rows.selection_is_guarded(&GUARDED));

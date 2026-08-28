@@ -75,7 +75,7 @@ impl NavConfirmScreen {
                 break;
             }
         }
-        NavConfirmScreen { to, name: nm, category, actions: ActionRows::new() }
+        NavConfirmScreen { to, name: nm, category, actions: ActionRows::new(0) }
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {

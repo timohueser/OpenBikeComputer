@@ -51,14 +51,14 @@ pub struct RouteSwapScreen {
 impl RouteSwapScreen {
     /// The manual prompt — the rider picked `pending` from the Route menu mid-ride.
     pub fn new(pending: usize) -> Self {
-        RouteSwapScreen { pending: Some(pending), actions: ActionRows::new(), received_ms: None }
+        RouteSwapScreen { pending: Some(pending), actions: ActionRows::new(0), received_ms: None }
     }
 
     /// The host-pushed variant for a route **received over BLE** mid-ride (P4), opened at
     /// `now_ms` (the auto-close anchor). Same options, same semantics — only the framing and the
     /// timeout differ.
     pub fn received(pending: usize, now_ms: u32) -> Self {
-        RouteSwapScreen { pending: Some(pending), actions: ActionRows::new(), received_ms: Some(now_ms) }
+        RouteSwapScreen { pending: Some(pending), actions: ActionRows::new(0), received_ms: Some(now_ms) }
     }
 
     /// Whether this is the host-pushed received-route popup (vs. the manual menu prompt) — the
