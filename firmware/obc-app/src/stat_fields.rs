@@ -738,9 +738,11 @@ mod tests {
     /// A `static` (not a `&` temporary) so it outlives the borrowed `Readout`.
     static EMPTY_CACHE: &crate::next_ahead::NextAhead = &crate::next_ahead::NextAhead::EMPTY;
 
-    /// A ride that has recorded nothing — leaked, so the borrowed `Readout` outlives the call.
+    /// A ride that has recorded nothing. A `static`, like the empty caches beside it, so the
+    /// borrowed `Readout` outlives the call without a leak per test.
     fn idle_recorder() -> &'static RecorderMachine {
-        Box::leak(Box::new(RecorderMachine::new()))
+        static IDLE: std::sync::LazyLock<RecorderMachine> = std::sync::LazyLock::new(RecorderMachine::new);
+        &IDLE
     }
 
     fn readout<'a>(

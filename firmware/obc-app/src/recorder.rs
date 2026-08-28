@@ -613,6 +613,15 @@ impl RecorderMachine {
         }
         self.ops.invalidate(); // terminal: a repeat of this outcome is no longer current
         let was = self.inflight.take();
+        // **A close carries the staged samples with it.** The executor writes them into the ride
+        // object before the footer, so from the moment it has served the close they are the store's
+        // — whether or not the close then committed, because both stores keep what they were handed
+        // (the board in its bounded tail, a host in its open object). Re-offering them would write
+        // them a second time on the retry. A [`Cancelled`](RecorderOutcome::Cancelled) close was
+        // abandoned without being performed, so those samples are still owed.
+        if was == Some(InFlight::Close) && !matches!(outcome, RecorderOutcome::Cancelled { .. }) {
+            self.samples.clear();
+        }
         match outcome {
             RecorderOutcome::Finalized { ride, .. } => {
                 self.close();
@@ -1134,6 +1143,11 @@ impl RecorderMachine {
         assert_eq!((self.avg_hr(), self.max_hr()), (None, None), "no heart-rate summary");
         assert_eq!((self.avg_power(), self.max_power()), (None, None), "no power summary");
         assert_eq!(self.avg_cadence(), None, "no cadence summary");
+        // The integration anchors, which no accessor above reads: a fresh ride that kept them would
+        // credit itself with the step from the previous ride's last fix, and its first sample would
+        // continue that ride's segment rather than opening its own.
+        assert!(self.last_fix.is_none() && self.last_ms.is_none(), "no anchor to integrate against");
+        assert!(!self.segment_break, "and no hole for the next sample to break a segment across");
     }
 }
 
@@ -1550,6 +1564,58 @@ mod tests {
         assert!(rec.staged().is_empty(), "and the old ride's unwritten samples go with it");
         assert!(rec.breadcrumb.is_empty(), "…as does its trail");
         assert_eq!(rec.baro_elevation_m(), None, "ride two re-anchors its own altitude");
+    }
+
+    /// **A close takes the staged tail with it.** The executor writes those samples into the ride
+    /// object ahead of the footer, so re-offering them would put them in twice — and a close that
+    /// *failed* changes nothing about that: the store kept what it was handed, and only the footer
+    /// is owed again.
+    #[test]
+    fn a_close_takes_the_staged_samples_with_it() {
+        for (name, outcome) in [
+            ("a committed close", |t| RecorderOutcome::Finalized { token: t, ride: 3 }),
+            ("a failed close", |t| RecorderOutcome::Failed { token: t, error: RecorderError::Write }),
+        ] as [(&str, fn(_) -> RecorderOutcome); 2]
+        {
+            let mut rec = ridden(3);
+            rec.request(RecorderIntent::Save);
+            let effect = rec.next_effect(CAN_RECORD, at(3_000)).expect("the close");
+            assert_eq!(rec.staged().len(), 3, "{name} is served the tail");
+            rec.apply_outcome(outcome(effect.token()));
+            assert!(rec.staged().is_empty(), "{name} took it, so the retry cannot write it twice");
+        }
+
+        // …but a close the executor abandoned without performing wrote nothing, so the samples are
+        // still owed and leave with the next one.
+        let mut rec = ridden(3);
+        rec.request(RecorderIntent::Save);
+        let effect = rec.next_effect(CAN_RECORD, at(3_000)).expect("the close");
+        rec.apply_outcome(RecorderOutcome::Cancelled { token: effect.token() });
+        assert_eq!(rec.staged().len(), 3, "an abandoned close performed nothing");
+    }
+
+    /// **"Save & start new" must not credit ride two with ride one's last fix.** The two halves run
+    /// in one pass, so without the integration anchors going with the totals the new ride would
+    /// book the step between the rides as its own — and its first sample would continue the old
+    /// ride's segment instead of opening one.
+    #[test]
+    fn save_and_restart_does_not_carry_the_old_rides_anchor_into_the_new_one() {
+        let mut rec = ridden(3);
+        rec.save_and_restart();
+        let effect = rec.next_effect(CAN_RECORD, at(2_000)).expect("the close goes first");
+        rec.apply_outcome(RecorderOutcome::Finalized { token: effect.token(), ride: 1 });
+        // The pass's two session edges, in the order it runs them.
+        rec.reset_totals();
+        rec.restart_buffers();
+        assert_eq!(rec.advance(CAN_RECORD), RecorderAdvance::Opened(SessionStart::Fresh));
+        rec.reset_totals();
+        rec.restart_buffers();
+
+        // Ride two's first fix: one second later and ~5 m on from where ride one ended.
+        rec.record_fix(Fix::at(BASE_LAT + 3 * STEP_UD, LON), 3_000, true);
+        assert_eq!(rec.ridden_m(), 0.0, "the step between the two rides belongs to neither");
+        assert_eq!(rec.moving_s(), 0.0, "and it books no moving time either");
+        assert!(rec.staged()[0].segment_start, "ride two's first sample opens ride two's segment");
     }
 
     // ══ The integration gates ══════════════════════════════════════════════════════════════════

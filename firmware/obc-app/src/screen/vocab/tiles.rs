@@ -257,9 +257,12 @@ mod tests {
     /// An empty per-category cache (U5): the panel drawer never reads it, but `Readout` carries it.
     static EMPTY_CACHE: &crate::next_ahead::NextAhead = &crate::next_ahead::NextAhead::EMPTY;
 
-    /// A ride that has recorded nothing — leaked, so the borrowed `Readout` outlives the call.
+    /// A ride that has recorded nothing. A `static`, like the empty caches beside it, so the
+    /// borrowed `Readout` outlives the call without a leak per test.
     fn idle_recorder() -> &'static crate::recorder::RecorderMachine {
-        Box::leak(Box::new(crate::recorder::RecorderMachine::new()))
+        static IDLE: std::sync::LazyLock<crate::recorder::RecorderMachine> =
+            std::sync::LazyLock::new(crate::recorder::RecorderMachine::new);
+        &IDLE
     }
 
     fn readout<'a>(
