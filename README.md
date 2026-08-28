@@ -22,10 +22,6 @@
 > generated will be replaced once we get closer to releasing this project. The goal is that all
 > user-facing text is 100% human-generated!
 
-OpenBikeComputer is built for long rides away from mobile service and power sockets. It combines
-offline vector maps, route navigation, ride recording, and weather updates with a sunlight-readable
-reflective display.
-
 OpenBikeComputer is a fully open source bikepacking focused GPS cycling computer.
 The main features and capabilities we are aiming for are the following (roughly in order of importance):
 - Reliable and simple map based tracking and navigation
