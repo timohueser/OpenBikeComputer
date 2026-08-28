@@ -38,11 +38,11 @@ fn continue_preserves_restored_totals_through_the_first_tick() {
     assert!(matches!(app.top_screen(), Screen::Map(_)));
     assert_eq!(app.mode(), Mode::Riding);
     assert!(app.recording());
-    assert_eq!(app.activity.ride_continuation(), expected, "the choice itself preserves every accumulator");
+    assert_eq!(app.recorder.continuation(), expected, "the choice itself preserves every accumulator");
 
     app.tick(RideClock(0), Sensors::new(&mut NoFix), None);
     assert_eq!(
-        app.activity.ride_continuation(),
+        app.recorder.continuation(),
         expected,
         "RideEngine must consume the continuation edge instead of applying the fresh-session reset"
     );

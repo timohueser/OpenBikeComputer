@@ -11,18 +11,17 @@
 use std::path::PathBuf;
 
 use obc_app::recorder::RideClose;
-use obc_ports::{TrackPoint, TrackSink};
+use obc_ports::TrackPoint;
 use {
     obc_formats::{io::SliceSource, track::encode_record},
     obc_host_core::VecSink,
-    obc_ports::TrackError,
     obc_route::{encode_summary_footer, track_to_gpx, RideStats},
     std::fs::{self, File, OpenOptions},
-    std::io::Write,
+    std::io::{Seek, SeekFrom, Write},
 };
 
 /// An open ride object: the save name (frozen at begin), its private `.obcr.part` path, and the
-/// append handle. Implements [`TrackSink`], so a recorded fix lands in it.
+/// append handle the staged samples land in.
 struct OpenRide {
     name: String,
     temp: PathBuf,
@@ -35,15 +34,33 @@ struct OpenRide {
     footer_written: bool,
 }
 
-impl TrackSink for OpenRide {
-    fn record(&mut self, p: TrackPoint) -> Result<(), TrackError> {
-        // Append the fixed record; a write error surfaces as `Err` so the app raises the
-        // recording-error indicator (issue #11) — the ride keeps going regardless.
-        self.file.write_all(&encode_record(&p)).map_err(|_| TrackError)?;
+impl OpenRide {
+    /// Append one staged sample. `false` on a write error, which keeps it staged and raises the
+    /// recording-error indicator (issue #11) — the ride keeps going regardless.
+    fn append(&mut self, p: TrackPoint) -> bool {
+        if !write_whole(&mut self.file, &encode_record(&p)) {
+            return false;
+        }
         self.first_t_ms.get_or_insert(p.t_ms);
         self.point_count = self.point_count.saturating_add(1);
-        Ok(())
+        true
     }
+}
+
+/// Write `bytes` whole, or leave the file exactly as long as it was.
+///
+/// [`Write::write_all`] can write a prefix and *then* fail, and Recorder re-offers what did not
+/// reach the medium — so a torn prefix left behind would become a second record boundary on the
+/// retry rather than a point the log simply lost. Truncating back to the pre-write offset is what
+/// makes "the retry is the same write" true of the bytes as well as of the intent.
+fn write_whole(file: &mut File, bytes: &[u8]) -> bool {
+    let Ok(at) = file.stream_position() else { return false };
+    if file.write_all(bytes).and_then(|()| file.flush()).is_ok() {
+        return true;
+    }
+    let _ = file.set_len(at);
+    let _ = file.seek(SeekFrom::Start(at));
+    false
 }
 
 /// The simulator's recorded-ride store: a folder of saved `.gpx` files plus at most one in-progress
@@ -61,9 +78,11 @@ impl TrackStore {
         TrackStore { dir, open: None }
     }
 
-    /// The [`TrackSink`] for the open ride, or `None` when nothing is recording.
-    pub fn sink(&mut self) -> Option<&mut dyn TrackSink> {
-        self.open.as_mut().map(|o| o as &mut dyn TrackSink)
+    /// Whether a ride object is open. The protocol asks this by closing one; this is the retry
+    /// test's direct read of "the ride is still the store's".
+    #[cfg(test)]
+    fn is_recording(&self) -> bool {
+        self.open.is_some()
     }
 
     /// Open a fresh private `.obcr.part` object for session `id`, to be saved as `name`.
@@ -98,8 +117,8 @@ impl TrackStore {
         let Some(log) = self.open.as_mut() else { return RideClose::Nothing };
         if !log.footer_written {
             let footer = encode_summary_footer(&log.name, &stats, log.point_count, log.first_t_ms);
-            if let Err(e) = log.file.write_all(&footer).and_then(|()| log.file.flush()) {
-                eprintln!("track: cannot write the footer for {}: {e}", log.temp.display());
+            if !write_whole(&mut log.file, &footer) {
+                eprintln!("track: cannot write the footer for {}", log.temp.display());
                 return RideClose::Failed; // the samples are untouched; the retry writes it again
             }
             log.footer_written = true;
@@ -194,8 +213,8 @@ impl obc_host_core::TrackRepository for TrackStore {
         true
     }
 
-    fn sink(&mut self) -> Option<&mut dyn TrackSink> {
-        self.sink()
+    fn append(&mut self, point: TrackPoint) -> bool {
+        self.open.as_mut().is_some_and(|log| log.append(point))
     }
 }
 
@@ -227,20 +246,16 @@ mod tests {
         let dir = obcm_testkit::scratch::scratch_dir("obc-track-retry", "failed-finalize");
         let mut store = TrackStore::open(&dir);
         store.open(1, Some("Ride"));
-        store
-            .sink()
-            .expect("a folder store records")
-            .record(TrackPoint {
-                lon: 8_000_000,
-                lat: 46_000_000,
-                ele: 1000,
-                t_ms: 0,
-                segment_start: true,
-                hr: None,
-                cadence: None,
-                power: None,
-            })
-            .unwrap();
+        assert!(store.append(TrackPoint {
+            lon: 8_000_000,
+            lat: 46_000_000,
+            ele: 1000,
+            t_ms: 0,
+            segment_start: true,
+            hr: None,
+            cadence: None,
+            power: None,
+        }));
 
         // The object's own path is taken away: the footer still writes through the open handle, and
         // the rename that commits it cannot find its source.
@@ -248,10 +263,10 @@ mod tests {
         std::fs::remove_file(&temp).unwrap();
         let first = TrackRepository::finalize(&mut store, ride_stats());
         assert_eq!(first, RideClose::Failed, "the close did not commit");
-        assert!(store.sink().is_some(), "and the ride is still the store's to retry");
+        assert!(store.is_recording(), "and the ride is still the store's to retry");
         let again = TrackRepository::finalize(&mut store, ride_stats());
         assert_eq!(again, RideClose::Failed, "the retry is the same close, not a new failure mode");
-        assert!(store.sink().is_some(), "which leaves the ride exactly where it was");
+        assert!(store.is_recording(), "which leaves the ride exactly where it was");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -274,13 +289,13 @@ mod tests {
     }
 
     /// The **folder-backed** track store passes the shared `obc-host-core` track-lifecycle
-    /// conformance (a session opens a ride, Save/Discard closes it, a live session wins over a
-    /// drained action) — it exposes a real recording sink, so `has_sink = true`.
+    /// conformance: a session opens a ride, the log takes the samples it is handed, and either
+    /// close ends it.
     #[test]
     fn folder_track_store_passes_the_lifecycle_suite() {
         let dir = obcm_testkit::scratch::scratch_dir("obc-track-conf", "lifecycle");
         let mut store = TrackStore::open(&dir);
-        obc_host_core::conformance::track_lifecycle(&mut store, true);
+        obc_host_core::conformance::track_lifecycle(&mut store);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

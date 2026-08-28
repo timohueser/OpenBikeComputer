@@ -1,7 +1,7 @@
 use obc_ports::{
     AltimeterSource, Button, ButtonEvent, CadenceSource, ClockSource, CompassSource, DateTime, Fix, FuelGauge, GpsTime,
     HeartRateSource, InputEvent, InputSource, LocationSource, PowerSource, SettingsStore, TemperatureSource,
-    TrackError, TrackPoint, TrackSink,
+    TrackPoint,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,18 +92,8 @@ impl InputSource for FakeInput {
     }
 }
 
-#[derive(Default)]
-struct FakeTrack(Option<TrackPoint>);
-
-impl TrackSink for FakeTrack {
-    fn record(&mut self, point: TrackPoint) -> Result<(), TrackError> {
-        self.0 = Some(point);
-        Ok(())
-    }
-}
-
 #[test]
-fn independent_fakes_implement_sensor_input_and_track_ports() {
+fn independent_fakes_implement_the_sensor_and_input_ports() {
     let fix = Fix::at(47_000_000, 8_000_000);
     let mut location = FakeLocation(Some(fix));
     assert_eq!(location.poll(), Some(fix));
@@ -123,6 +113,8 @@ fn independent_fakes_implement_sensor_input_and_track_ports() {
     let mut input = FakeInput(Some(edge));
     assert_eq!(input.poll(), Some(edge));
 
+    // A recorded fix is plain data — the app stages it and an executor writes it, so this port has
+    // no trait of its own to fake.
     let point = TrackPoint {
         lon: 8_000_000,
         lat: 47_000_000,
@@ -133,9 +125,7 @@ fn independent_fakes_implement_sensor_input_and_track_ports() {
         cadence: Some(88),
         power: Some(240),
     };
-    let mut track = FakeTrack::default();
-    track.record(point).unwrap();
-    assert_eq!(track.0, Some(point));
+    assert_eq!(point, point.clone());
 }
 
 #[test]

@@ -184,10 +184,11 @@ fn rider_visible(mut state: VisibleState) -> VisibleState {
 
 // ==================== the DeviceCore harness ====================
 
-struct NoFix;
-impl LocationSource for NoFix {
+/// The pass's location source: at most one fix, taken once.
+struct ScriptedFix(Option<Fix>);
+impl LocationSource for ScriptedFix {
     fn poll(&mut self) -> Option<Fix> {
-        None
+        self.0.take()
     }
 }
 
@@ -270,7 +271,13 @@ impl CoreHarness {
         self.clock_ms += 1;
         let ride_preview = std::mem::take(&mut self.ride_preview);
         let nav_preview = std::mem::take(&mut self.nav_preview);
-        let mut location = NoFix;
+        // One scripted fix per pass while a scenario has queued any — what turns a ride into the
+        // samples an append carries. Every other pass polls nothing, as before.
+        let mut location = ScriptedFix(if self.state.pending_fixes.is_empty() {
+            None
+        } else {
+            Some(self.state.pending_fixes.remove(0))
+        });
         let clock = PassClock { ride: RideClock(self.clock_ms), ui: InputClock(self.clock_ms) };
         let state = &mut self.state;
         // A derived answer is spent whether it was accepted or was about something else. Outcomes
@@ -423,7 +430,14 @@ impl CoreHarness {
                 RecorderOutcome::Finalized { token, ride: SAVED_RIDE }
             }
             RecorderEffect::Discard { token } => RecorderOutcome::Discarded { token },
-            RecorderEffect::Append { token, samples } => RecorderOutcome::Appended { token, samples },
+            // The medium takes the whole batch, unless a scenario scripted a short write: Recorder
+            // then keeps the remainder staged and offers it again. The injection stays armed until
+            // a batch is worth shortening — a one-sample batch answered with zero would be a
+            // *rejection*, which every real executor reports as `Failed`, not as a short write.
+            RecorderEffect::Append { token, samples } => {
+                let short = samples > 1 && std::mem::take(&mut self.state.partial_append_once);
+                RecorderOutcome::Appended { token, samples: if short { samples - 1 } else { samples } }
+            }
         }
     }
 
@@ -2014,8 +2028,18 @@ fn the_conformance_replay_wake_profile_and_pass_cost() {
 /// `(passes, immediate, timed, sleep-until-event)` for the replay above. A ratchet, not a budget:
 /// the numbers move when the pass's wake decisions do.
 ///
-/// The two gating figures — 196 passes and 6 immediate wakes — are the claim that matters: nothing
+/// The two gating figures — 208 passes and 7 immediate wakes — are the claim that matters: nothing
 /// here polls.
+///
+/// #1553 moved `(196, 6, 130, 60)` to `(208, 7, 130, 71)`, and every cell of it is the one new
+/// scenario. `recorder.samples` is six actions, so the replay runs **+12 passes** for it
+/// (`actions.len() + SETTLE_PASSES`). **+1 immediate** is the store its `ride-the-road` mounts
+/// announcing itself to retention — the same deferred connection the other recorder scenarios pay
+/// once. The other **+11 are sleep-until-event**: the scenario's ride sits still, so no card ages
+/// and no animation runs, and a pass with nothing owed sleeps. **Timed does not move at all**, which
+/// is the figure worth reading: sample assembly costs no wake, because an append is bounded work
+/// inside a pass the ride was already running. Measured by isolation — the replay with that scenario
+/// removed reproduces `(196, 6, 130, 60)` exactly.
 ///
 /// #1552 moved `(194, 4, 130, 60)` to `(196, 6, 130, 60)`, and both moved cells are the same
 /// action. The two recorder scenarios each gained one `store-changed`, because a ride needs
@@ -2043,7 +2067,7 @@ fn the_conformance_replay_wake_profile_and_pass_cost() {
 /// Before #1541 the figures were exactly the typed executor's own contribution to the pre-S6c ones;
 /// what halved then was the runner count, not the work per pass.
 ///
-const WAKE_PROFILE: (u32, u32, u32, u32) = (196, 6, 130, 60);
+const WAKE_PROFILE: (u32, u32, u32, u32) = (208, 7, 130, 71);
 
 // ==================== the resource gate ====================
 

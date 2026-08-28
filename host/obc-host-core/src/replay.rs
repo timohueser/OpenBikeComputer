@@ -1,6 +1,6 @@
 //! One replay frame: advance the GPX playback and hand the pass its playback clock and sensor ports.
 
-use obc_ports::{CadenceSource, CompassSource, HeartRateSource, PowerSource, RideClock, Sensors, TrackSink};
+use obc_ports::{CadenceSource, CompassSource, HeartRateSource, PowerSource, RideClock, Sensors};
 use obc_replay::{BaroSensor, GpxPlayer};
 
 /// The starting camera for a freshly-opened map: centered on the bbox, zoomed so
@@ -32,15 +32,11 @@ pub struct ReplaySensors<'s> {
 /// `sensors` carries the optional synthetic HR/power/cadence sources (SE8); pass
 /// [`ReplaySensors::default()`] for a plain replay. A host feeds those sources on the same playback
 /// clock **before** calling this (so a sample is stamped onto the point the pass logs).
-// Each argument models a distinct sensor seam the pass binds together; bundling them further would
-// just relocate the same fan-out behind an opaque struct.
-#[allow(clippy::too_many_arguments)]
 pub fn replay_advance<'s>(
     player: &'s mut GpxPlayer,
     baro: &'s mut BaroSensor,
     compass: Option<&'s mut dyn CompassSource>,
     dt: f64,
-    track: Option<&'s mut dyn TrackSink>,
     sensors: ReplaySensors<'s>,
 ) -> (RideClock, Sensors<'s>) {
     // The sensor handles share one lifetime `'s` so the invariant `Sensors<'a>` can bind them
@@ -51,7 +47,6 @@ pub fn replay_advance<'s>(
     let sensors = Sensors {
         altimeter: Some(baro),
         compass,
-        track,
         hr: sensors.hr,
         power: sensors.power,
         cadence: sensors.cadence,

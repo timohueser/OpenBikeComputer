@@ -23,6 +23,8 @@
 //! containers, so the renderer's polyline scratch can never overrun.
 
 use heapless::{Deque, Vec};
+
+use crate::placement::define_placement_constructors;
 use obc_map_scene::{cos_lat, ground_dist_m};
 use obc_route::tri_area_m2_cl;
 
@@ -57,9 +59,20 @@ impl Default for Breadcrumb {
 }
 
 impl Breadcrumb {
-    pub const fn new() -> Self {
-        Breadcrumb { recent: Deque::new(), spine: Vec::new(), last_recent: None }
-    }
+    define_placement_constructors!(
+        /// An empty trail.
+        pub fn new();
+        /// Initialize `slot` **in place** to the empty trail. The spine alone is 8 KB, and a
+        /// by-value `Breadcrumb::new()` written through its owner is a constant that large: rustc
+        /// promotes the `const fn` this replaces, and the store then costs a zeroed stack temporary
+        /// plus a copy. Writing the two containers straight into the slot costs their two lengths.
+        pub unsafe fn init_in_place;
+        fields {
+            recent: Deque::new(),
+            spine: Vec::new(),
+            last_recent: None,
+        }
+    );
 
     /// Forget the whole trail — called when a tracking session begins (load from Idle, or
     /// "Save & start new"); a "Swap route only" keeps it.

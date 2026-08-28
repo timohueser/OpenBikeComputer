@@ -65,6 +65,11 @@ pub enum Requirement {
     RecorderFinalizeFailure,
     RecorderSessionReplacement,
     RecorderCheckpointCadence,
+    /// A ride's assembled samples leave as one [`Append`](obc_app::recorder::RecorderEffect) and are
+    /// retired by the answer, not by having been offered (#1553).
+    RecorderAppend,
+    /// An append the medium only partly took leaves the rest staged, and the next one carries them.
+    RecorderPartialAppend,
     SettingsDirtyRevision,
     SettingsSuccess,
     SettingsStaleResult,
@@ -167,6 +172,8 @@ pub const ALL_REQUIREMENTS: &[Requirement] = &[
     Requirement::RecorderFinalizeFailure,
     Requirement::RecorderSessionReplacement,
     Requirement::RecorderCheckpointCadence,
+    Requirement::RecorderAppend,
+    Requirement::RecorderPartialAppend,
     Requirement::SettingsDirtyRevision,
     Requirement::SettingsSuccess,
     Requirement::SettingsStaleResult,
@@ -216,6 +223,13 @@ pub enum Action {
     CommitDetour,
     RouteNoPath,
     StartRecorder,
+    /// Start a real ride on the road route, the way the rider does: the riding view, the mode and
+    /// the session. A sample needs all three, so the append scenario opens with it.
+    RideTheRoad,
+    /// Three more fixes along the road, one per pass — the samples the ride owes its log.
+    RideFixes,
+    /// The medium takes all but one of the next append's samples.
+    PartialAppend,
     SaveRecorder,
     DiscardRecorder,
     FailRecorderFinalize,
@@ -333,6 +347,11 @@ pub struct CorpusState {
     pub trip_present: bool,
     pub nav_generation: u16,
     pub fail_next_finalize: bool,
+    /// Fixes the harness's location source hands out, one per pass — what turns a ride into samples.
+    pub pending_fixes: Vec<Fix>,
+    /// The next append writes all but one of the samples it was offered. One shot, so the retry that
+    /// follows carries the remainder and the scenario has a difference between "kept" and "lost".
+    pub partial_append_once: bool,
     pub commit_success_pending: bool,
     pub pending_nav_plan: Option<Result<u64, NavError>>,
     pub pending_dfu_scan: Option<Result<DfuScanReport, DfuScanError>>,
@@ -390,6 +409,8 @@ impl CorpusState {
             trip_present: true,
             nav_generation: 0,
             fail_next_finalize: false,
+            pending_fixes: Vec::new(),
+            partial_append_once: false,
             commit_success_pending: false,
             pending_nav_plan: None,
             pending_dfu_scan: None,
@@ -627,6 +648,17 @@ impl CorpusState {
             // Every recorder action is the rider naming an intent to Recorder, exactly as a screen
             // does. Nothing here ends a session: the store's verdict is what closes a ride.
             Action::StartRecorder => self.app.recorder.request(RecorderIntent::Start),
+            Action::RideTheRoad => {
+                self.reset_to_riding_map();
+                // That helper leaves the rider on the Ride-control page, which is a *paused* ride.
+                // Back is Resume, and a ride that is not running records nothing.
+                self.app.apply_gesture(Gesture::Back);
+            }
+            // Three fixes from one spot: the corpus's clock moves a millisecond per pass, so a
+            // rider who *moved* between two of them would read as a teleport. A rider stopped at a
+            // light is the honest scripted ride here, and their log records every second of it.
+            Action::RideFixes => self.pending_fixes.extend([road_fix(0.31); 3]),
+            Action::PartialAppend => self.partial_append_once = true,
             Action::SaveRecorder => self.app.recorder.request(RecorderIntent::Save),
             Action::DiscardRecorder => self.app.recorder.request(RecorderIntent::Discard),
             Action::FailRecorderFinalize => {
@@ -1206,6 +1238,21 @@ pub const SCENARIOS: &[Scenario] = &[
         ],
     },
     Scenario {
+        name: "recorder.samples",
+        requirements: &[Requirement::RecorderAppend, Requirement::RecorderPartialAppend],
+        // The riding view first, and it is not scenery: a sample exists only inside a ride the
+        // rider actually started, so the scenario opens the one the append is about. `Settle` gives
+        // the kept Start the pass it needs to become a session before the fixes arrive.
+        actions: &[
+            Action::RideTheRoad,
+            Action::Settle,
+            Action::RideFixes,
+            Action::PartialAppend,
+            Action::RideFixes,
+            Action::Settle,
+        ],
+    },
+    Scenario {
         name: "recorder.failure-and-session-replacement",
         requirements: &[Requirement::RecorderFinalizeFailure, Requirement::RecorderSessionReplacement],
         actions: &[
@@ -1329,6 +1376,11 @@ pub fn clock_watermark(action: Action) -> u32 {
         // clock otherwise advances one millisecond per pass. The mark puts the ride's first pass
         // past it, so the scenario exercises one real checkpoint rather than none.
         Action::StartRecorder => 10_001,
+        // The same ten-second deadline, for the same reason and one more: the checkpoint it forces
+        // holds the one operation slot for a pass, so the fixes that land meanwhile pile up and the
+        // append that follows is a **batch**. A scenario whose every append carried one sample
+        // could not be shortened, and the partial-write row would never be reached.
+        Action::RideFixes => 10_001,
         Action::RetrySettingsPersist => 4_002,
         Action::RetryExpiredDelete => 5_002,
         Action::SleepPastDeleteBackoff => 9_002,
@@ -1358,6 +1410,9 @@ pub fn action_name(action: Action) -> &'static str {
         Action::CommitDetour => "commit-detour",
         Action::RouteNoPath => "route-no-path",
         Action::StartRecorder => "start-recorder",
+        Action::RideTheRoad => "ride-the-road",
+        Action::RideFixes => "ride-fixes",
+        Action::PartialAppend => "partial-append",
         Action::SaveRecorder => "save-recorder",
         Action::DiscardRecorder => "discard-recorder",
         Action::FailRecorderFinalize => "fail-recorder-finalize",

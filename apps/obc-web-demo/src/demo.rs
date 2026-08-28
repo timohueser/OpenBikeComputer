@@ -16,7 +16,7 @@ use obc_app::device_core::{PassClock, PassPlan, PlatformSupport, RouteUpload};
 use obc_app::{App, AppState, CameraMode, Gesture};
 use obc_host_core::{
     initial_camera, replay_advance, ActiveRouteSession, HostLoop, MemRideStore, MemRouteStore, MemTrackStore,
-    ReplaySensors, RgbaFrame, TrackRepository,
+    ReplaySensors, RgbaFrame,
 };
 use obc_ports::InputClock;
 use obc_reader::{rgb565_to_device64, MapCache, MapTables, Reader, SliceSource};
@@ -375,14 +375,7 @@ impl Demo {
             };
             // Advance the ride and hand the pass the playback clock (no compass on the web — the
             // replay's GPS course orients the heading-up map).
-            let (ride, sensors) = replay_advance(
-                &mut self.player,
-                &mut self.baro,
-                None,
-                dt,
-                self.tracks.sink(),
-                ReplaySensors::default(),
-            );
+            let (ride, sensors) = replay_advance(&mut self.player, &mut self.baro, None, dt, ReplaySensors::default());
             self.host.pass(
                 &mut self.app,
                 PassClock { ride, ui: InputClock(ui_ms) },
@@ -705,7 +698,7 @@ mod tests {
         d.tick(now);
 
         drive(&mut d, &mut now, "enter", "Map");
-        let stats = d.app.ride_stats();
+        let stats = d.app.recorder.ride_stats();
         assert!(stats.distance_m > 1_000, "the visible Finish flow should contain a real partial ride");
         assert!(stats.moving_time_s > 60);
         assert!(stats.climb_m > 50);

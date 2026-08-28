@@ -13,7 +13,7 @@ use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal}
 use heapless::Vec;
 use obc_crc::Crc32;
 use obc_formats::ride::{decode_footer, FOOTER_LEN, SAMPLE_LEN};
-use obc_ports::{TrackError, TrackPoint, TrackSink};
+use obc_ports::TrackPoint;
 use obc_storage::flat::{
     DisplayName, EntryFlags, EntryMeta, FlatStore, Mutation, ObjectId, ObjectKind, PutSource, Revision, RideCheckpoint,
     Store as _, StoreError, RIDE_RESUME_LEN,
@@ -236,13 +236,6 @@ impl Recorder {
         core::mem::take(&mut self.warning_pending)
     }
 
-    pub(crate) fn track_sink(&mut self, session: Option<u32>) -> Option<&mut dyn TrackSink> {
-        // While a ride session exists, absence of a writable recorder is itself a recording error.
-        // Returning this failing sink makes App surface REC_ERROR instead of silently dropping GPS
-        // fixes until a failed allocation/start happens to recover.
-        session.map(|_| self as &mut dyn TrackSink)
-    }
-
     /// Service a terminal state left over from a reset — a footer-bearing recovered object whose
     /// clearing commit was cut. Run once at boot, before the first UI pass.
     pub(crate) async fn settle(&mut self) {
@@ -328,6 +321,34 @@ impl Recorder {
         }
         self.service_terminal().await;
         matches!(self.state, State::Idle)
+    }
+
+    /// Append one staged sample to the bounded tail. `false` is a refusal, and Recorder keeps that
+    /// sample and everything behind it staged rather than losing them.
+    ///
+    /// A refusal is always transient and always cleared by the checkpoint Recorder ranks ahead of
+    /// the append: either the journal is blocked (storage needs the exact failed write replayed
+    /// before it takes anything else), or the delta window is full (a checkpoint empties it). The
+    /// fixed footer's space stays reserved through both, because accepting a sample that displaced
+    /// it would strand the durable `RECORDING` object after the ride was already closed.
+    pub(crate) fn append(&mut self, mut point: TrackPoint) -> bool {
+        let State::Live(mut live) = self.state else { return false };
+        if live.session.is_none() || live.journal_blocked || live.delta_len + SAMPLE_LEN + FOOTER_LEN > DELTA_BYTES {
+            return false;
+        }
+        if let Some(clock) = live.clock_rebase {
+            point.t_ms = clock.logical_anchor.wrapping_add(point.t_ms.wrapping_sub(clock.source_anchor));
+        }
+        let Some(points) = live.points.checked_add(1) else { return false };
+        let sample = obc_formats::track::encode_record(&point);
+        unsafe { delta_mut()[live.delta_len..live.delta_len + SAMPLE_LEN].copy_from_slice(&sample) };
+        live.delta_len += SAMPLE_LEN;
+        live.points = points;
+        live.first_t_ms.get_or_insert(point.t_ms);
+        live.last_t_ms = Some(point.t_ms);
+        live.crc.update(&sample);
+        self.state = State::Live(live);
+        true
     }
 
     /// Make the ride recoverable up to this point. `false` is a failed journal write; Recorder owes
@@ -598,30 +619,6 @@ impl Recorder {
             }
             _ => {}
         }
-    }
-}
-
-impl TrackSink for Recorder {
-    fn record(&mut self, mut point: TrackPoint) -> Result<(), TrackError> {
-        let State::Live(mut live) = self.state else { return Err(TrackError) };
-        // Keep the fixed footer's space reserved even through repeated checkpoint failures. Finish
-        // is a one-shot UI edge; accepting a sample that displaced the footer would strand the
-        // durable RECORDING object after the app had already ended its session.
-        if live.session.is_none() || live.journal_blocked || live.delta_len + SAMPLE_LEN + FOOTER_LEN > DELTA_BYTES {
-            return Err(TrackError);
-        }
-        if let Some(clock) = live.clock_rebase {
-            point.t_ms = clock.logical_anchor.wrapping_add(point.t_ms.wrapping_sub(clock.source_anchor));
-        }
-        let sample = obc_formats::track::encode_record(&point);
-        unsafe { delta_mut()[live.delta_len..live.delta_len + SAMPLE_LEN].copy_from_slice(&sample) };
-        live.delta_len += SAMPLE_LEN;
-        live.points = live.points.checked_add(1).ok_or(TrackError)?;
-        live.first_t_ms.get_or_insert(point.t_ms);
-        live.last_t_ms = Some(point.t_ms);
-        live.crc.update(&sample);
-        self.state = State::Live(live);
-        Ok(())
     }
 }
 

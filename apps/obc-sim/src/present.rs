@@ -862,8 +862,7 @@ mod tests {
                 (Some(idx), Some(s)) => Some(RouteReader::new(idx, s)),
                 _ => None,
             };
-            let (ride, sensors) =
-                obc_host_core::replay_advance(player, baro, None, 1.0 / 60.0, None, Default::default());
+            let (ride, sensors) = obc_host_core::replay_advance(player, baro, None, 1.0 / 60.0, Default::default());
             host.pass(
                 app,
                 obc_app::device_core::PassClock { ride, ui: obc_ports::InputClock(0) },
