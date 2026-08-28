@@ -36,16 +36,16 @@ use crate::input::Gesture;
 use crate::navigator::NavigatorIntent;
 use crate::Msg;
 
+use super::vocab::card::{ActionRows, CardEvent};
 use super::vocab::chrome::{card_triangle, title_frame, wrapped, TITLE_BAR_H};
 use super::vocab::fmt::write_distance_away;
-use super::vocab::list;
-use super::vocab::rows::{draw_guarded_rows, GuardedRowsGeometry, MenuItem};
+use super::vocab::rows::{GuardedRowsGeometry, MenuItem};
 use super::vocab::spinner::Spinner;
 use super::{palette, Ctx, Render, Screen, ScreenTick, Transition};
 
 /// The two confirm rows (Create route / Cancel), neither guarded — labels looked up per language at
 /// draw time (see [`NavConfirmScreen::draw`]).
-const N_ITEMS: usize = 2;
+const CONFIRM_GUARDS: [bool; 2] = [false; 2];
 
 const CREATE: usize = 0;
 
@@ -62,7 +62,7 @@ pub struct NavConfirmScreen {
     /// name (#685 §3) — `None` (an unmapped subtype; shouldn't happen for a queried POI) just
     /// leaves the slot empty.
     category: Option<PoiCategory>,
-    selected: usize,
+    actions: ActionRows,
 }
 
 impl NavConfirmScreen {
@@ -75,13 +75,12 @@ impl NavConfirmScreen {
                 break;
             }
         }
-        NavConfirmScreen { to, name: nm, category, selected: 0 }
+        NavConfirmScreen { to, name: nm, category, actions: ActionRows::new() }
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
-        match g {
-            Gesture::Step(n) => list::on_step(&mut self.selected, n, N_ITEMS),
-            Gesture::Press if self.selected == CREATE => {
+        match self.actions.handle(g, &CONFIRM_GUARDS) {
+            CardEvent::Activate(CREATE) => {
                 // The request's start is the rider's fix. No position at all (never a fix this
                 // session) can't be routed — degrade to the generic failure tier rather than
                 // sending the host a garbage start.
@@ -97,9 +96,8 @@ impl NavConfirmScreen {
                 // its passes and answers into it — the UI stays live (spinner + Back-to-cancel).
                 Transition::Replace(Screen::NavPlanning(NavPlanningScreen::new(&self.name)))
             }
-            Gesture::Press => Transition::Pop, // Cancel
-            Gesture::Back => Transition::Pop,  // Back = Cancel (return to the POI detail)
-            _ => Transition::None,
+            CardEvent::Activate(_) | CardEvent::Dismiss => Transition::Pop, // Cancel
+            CardEvent::None => Transition::None,
         }
     }
 
@@ -130,10 +128,10 @@ impl NavConfirmScreen {
 
         let geo = GuardedRowsGeometry::card(w, TITLE_BAR_H + 122);
         let items = [
-            MenuItem { label: rx.t(Msg::NavRouteCreateRoute), guard: false },
-            MenuItem { label: rx.t(Msg::NavRouteCancel), guard: false },
+            MenuItem { label: rx.t(Msg::NavRouteCreateRoute), guard: CONFIRM_GUARDS[0] },
+            MenuItem { label: rx.t(Msg::NavRouteCancel), guard: CONFIRM_GUARDS[1] },
         ];
-        draw_guarded_rows(cv, &items, self.selected, rx.hold_progress, AMBER, geo);
+        self.actions.draw(cv, &items, rx.hold_progress, AMBER, geo);
     }
 }
 

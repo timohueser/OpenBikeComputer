@@ -2,7 +2,7 @@
 //! the DFU armer. Reached from **Settings → System → "Install update from card"**
 //! ([`SystemScreen`](super::SystemScreen)); the scan/arm machinery runs board-side.
 //!
-//! Six static screens (no map plane), each a small typed state through the normal screen stack:
+//! Seven static screens (no map plane), each a small typed state through the normal screen stack:
 //!
 //! - [`DfuCheckScreen`] — the brief "Checking card..." wait (spinner) after the scan is posted; the
 //!   board's answer (the pass's fact stage) replaces
@@ -41,8 +41,9 @@ use crate::dfu::{DfuFailure, DfuInstallError, DfuScanError, DfuScanReport, Versi
 use crate::input::Gesture;
 use crate::Msg;
 
+use super::vocab::card::{ActionRows, CardEvent};
 use super::vocab::chrome::{self, card_check, card_triangle, title_frame, TITLE_BAR_H};
-use super::vocab::rows::{draw_guarded_rows, GuardedRowsGeometry, MenuItem};
+use super::vocab::rows::{GuardedRowsGeometry, MenuItem};
 use super::vocab::spinner::Spinner;
 use super::{palette, Ctx, Render, Screen, ScreenTick, Transition};
 
@@ -100,7 +101,7 @@ impl DfuCheckScreen {
 // ── DfuConfirm: installed → update, the warnings, and Install / Cancel ──
 
 /// The two confirm rows (Install / Cancel), neither guarded.
-const N_CONFIRM_ITEMS: usize = 2;
+const CONFIRM_GUARDS: [bool; 2] = [false; 2];
 const INSTALL: usize = 0;
 
 /// Side inset (px) the confirm card's version table and notes keep from the panel edges — a version
@@ -113,26 +114,24 @@ const INSET: i32 = 12;
 #[derive(Debug)]
 pub struct DfuConfirmScreen {
     report: DfuScanReport,
-    selected: usize,
+    actions: ActionRows,
 }
 
 impl DfuConfirmScreen {
     pub fn new(report: DfuScanReport) -> Self {
-        DfuConfirmScreen { report, selected: 0 }
+        DfuConfirmScreen { report, actions: ActionRows::new() }
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
-        match g {
-            Gesture::Step(n) => super::vocab::list::on_step(&mut self.selected, n, N_CONFIRM_ITEMS),
-            Gesture::Press if self.selected == INSTALL => {
+        match self.actions.handle(g, &CONFIRM_GUARDS) {
+            CardEvent::Activate(INSTALL) => {
                 // Arm: post the install one-shot (the board snapshots the rollback + arms + reboots)
                 // and swap to the progress spinner. The confirm was pushed over the System menu.
                 cx.dfu.admit_intent(crate::dfu::DfuIntent::InstallRequested);
                 Transition::Replace(Screen::DfuProgress(DfuProgressScreen::new()))
             }
-            Gesture::Press => Transition::Pop, // Cancel
-            Gesture::Back => Transition::Pop,  // Back = Cancel
-            _ => Transition::None,
+            CardEvent::Activate(_) | CardEvent::Dismiss => Transition::Pop, // Cancel
+            CardEvent::None => Transition::None,
         }
     }
 
@@ -172,10 +171,10 @@ impl DfuConfirmScreen {
             label_dy: 9,
         };
         let items = [
-            MenuItem { label: rx.t(Msg::DfuInstall), guard: false },
-            MenuItem { label: rx.t(Msg::DfuCancel), guard: false },
+            MenuItem { label: rx.t(Msg::DfuInstall), guard: CONFIRM_GUARDS[0] },
+            MenuItem { label: rx.t(Msg::DfuCancel), guard: CONFIRM_GUARDS[1] },
         ];
-        draw_guarded_rows(cv, &items, self.selected, rx.hold_progress, AMBER, geo);
+        self.actions.draw(cv, &items, rx.hold_progress, AMBER, geo);
     }
 }
 
