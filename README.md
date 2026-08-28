@@ -26,9 +26,19 @@ OpenBikeComputer is built for long rides away from mobile service and power sock
 offline vector maps, route navigation, ride recording, and weather updates with a sunlight-readable
 reflective display.
 
-The physical device, desktop simulator, and browser demo use the same Rust application and render
-path. The project is an active prototype, not a finished consumer product, but the software already
-runs both on a desktop and on the nRF54LM20 development platform.
+OpenBikeComputer is a fully open source bikepacking focused GPS cycling computer.
+The main features and capabilities we are aiming for are the following (roughly in order of importance):
+- Reliable and simple map based tracking and navigation
+- Uploading a route from the companion app should work everytime (no BLE connection issues, no unreasonably low limit on pointcount in GPX  files etc.)
+- No subscriptions or accounts required for any of the features of the device
+- Long battery life, ideally 4+ days between recharges, if you need to recharge it should work reliably with dynamo hubs that provide 5V
+- Helps you keep your phone in your pocket by providing all the info you frequently check on the bike:
+    - POIS (Shops, water sources, campsites etc.) near you and along the route (including opening hours), with the ability to create a route there on the fly
+    - Weather and rain radar (this is the only one that will use BLE to talk to the phone
+    - And a fun one: Mountain peaks around you (PeakFinder style) 
+
+This repository contains all the software and hardware files needed to build the OBC and the goal is to eventually provide kits that allow you to build the OBC yourself. The project currently is an active prototype, not a finished product and you can read about the progress of development in our [Blog](https://openbikecomputer.com/blog/)· Here are some peaks at the software and hardware designs:
+
 
 <table>
   <tr>
@@ -81,11 +91,7 @@ This is the current direction, not a release schedule.
 
 The hardware build uses the Nordic nRF54LM20 development kit and a Sharp LS021B7DD02 240 × 320
 reflective memory LCD. It reads maps and routes from microSD and connects to the companion software
-over BLE and USB. The custom PCB and enclosure are still under development.
-
-Board-specific wiring, build, flash, and on-device test instructions remain in the
-[`obc-fw-nrf54l` guide](firmware/obc-fw-nrf54l/README.md). They are not part of the newcomer setup
-because the current hardware is not generally available.
+over BLE and USB. The custom PCB and enclosure are still under development. KiCad sources can be found in the repository, CAD sources for the enclosure will be made available later.
 
 ## Repository layout
 
@@ -111,8 +117,7 @@ and the shared render path.
 
 ## Other open bike computers
 
-OpenBikeComputer is part of a small but inventive open-source hardware community. These projects
-take different approaches to many of the same problems:
+OpenBikeComputer is not the only open source bike computer project! Here is a (non-exhaustive) list of some other cool ones this project is inspired by:
 
 - [IceNav](https://github.com/jgauchia/IceNav-v3) — an ESP32-based GPS navigator with multi-GNSS
   support and both rendered and vector offline maps.
@@ -127,9 +132,7 @@ take different approaches to many of the same problems:
 
 ## Contributing
 
-Contributions are welcome. Start with [`CONTRIBUTING.md`](CONTRIBUTING.md), which explains the
-repository workflow and how to run focused checks. Large external test assets are managed through
-the fixture registry described in [`fixtures/README.md`](fixtures/README.md).
+Contributions are always welcome! This project is in the very early stages and many things are still a little chaotic and not well documented in many areas. Code is written almost exclusively using AI coding agents, but all the hardware design is fully human powered. Help on that front would be especially appreciated. Please just get in contact with 
 
 ## License
 
