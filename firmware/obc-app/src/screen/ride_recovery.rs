@@ -59,19 +59,19 @@ impl RideRecoveryScreen {
         match g {
             Gesture::Step(n) if self.can_continue => list::on_step(&mut self.selected, n, GUARDS.len()),
             Gesture::Press if self.can_continue && self.selected == CONTINUE => {
-                // The host's recovered recorder has no app session attached yet. Mint one through
-                // the continuation edge, which tells RideEngine not to run its fresh-session reset.
+                // Tell Recorder that the next Start continues the recovered session, so it keeps
+                // the restored accumulators instead of applying a fresh-session reset.
                 let (lon, lat) = cx.state.user_fix.map_or((cx.state.cam_lon, cx.state.cam_lat), |f| (f.lon, f.lat));
                 cx.state.enter_riding_view(lon, lat);
                 cx.activity.mode = crate::activity::Mode::Riding;
-                cx.activity.active_route = None;
+                cx.navigator.set_active_route(None);
                 cx.recorder.continue_recovered();
                 Transition::Root(Screen::Map(MapScreen::new()))
             }
             Gesture::Hold if self.selected == DISCARD => {
                 cx.recorder.request(RecorderIntent::Discard);
                 cx.activity.mode = crate::activity::Mode::Idle;
-                cx.activity.active_route = None;
+                cx.navigator.set_active_route(None);
                 Transition::Home
             }
             // Press on Discard is deliberately inert, and Back cannot bypass the decision.
@@ -148,35 +148,45 @@ mod tests {
         screen: &mut RideRecoveryScreen,
         activity: &mut Activity,
         rec: &mut crate::RecorderMachine,
+        navigator: &mut crate::navigator::NavigatorMachine,
         gesture: Gesture,
     ) -> Transition {
         let mut state = AppState::new(0, 0, 1.0);
         let mut settings = Settings::default();
-        screen.handle(gesture, &mut Ctx { recorder: rec, ..test_ctx(&mut state, activity, &mut settings) })
+        screen.handle(gesture, &mut Ctx { recorder: rec, navigator, ..test_ctx(&mut state, activity, &mut settings) })
     }
 
     #[test]
     fn continue_mints_a_session_and_uses_the_recovery_transition() {
         let mut rec = crate::RecorderMachine::new();
         let mut activity = Activity::new(Mode::Idle);
-        let transition = handle(&mut RideRecoveryScreen::new(), &mut activity, &mut rec, Gesture::Press);
+        let mut navigator = crate::navigator::NavigatorMachine::new();
+        let transition =
+            handle(&mut RideRecoveryScreen::new(), &mut activity, &mut rec, &mut navigator, Gesture::Press);
         assert!(matches!(transition, Transition::Root(Screen::Map(_))));
         assert_eq!(rec.test_take_intent(), Some(crate::RecorderIntent::Start), "Continue names a session");
         assert_eq!(activity.mode, Mode::Riding);
-        assert_eq!(activity.active_route, None);
+        assert_eq!(navigator.route_state().active_route, None);
     }
 
     #[test]
     fn discard_needs_a_hold_and_posts_the_existing_action() {
         let mut rec = crate::RecorderMachine::new();
         let mut activity = Activity::new(Mode::Idle);
+        let mut navigator = crate::navigator::NavigatorMachine::new();
         let mut screen = RideRecoveryScreen::new();
-        handle(&mut screen, &mut activity, &mut rec, Gesture::Step(1));
+        handle(&mut screen, &mut activity, &mut rec, &mut navigator, Gesture::Step(1));
         assert!(screen.selection_is_guarded());
-        assert!(matches!(handle(&mut screen, &mut activity, &mut rec, Gesture::Press), Transition::None));
+        assert!(matches!(
+            handle(&mut screen, &mut activity, &mut rec, &mut navigator, Gesture::Press),
+            Transition::None
+        ));
         assert_eq!(rec.test_take_intent(), None, "a tap cannot discard recovered bytes");
 
-        assert!(matches!(handle(&mut screen, &mut activity, &mut rec, Gesture::Hold), Transition::Home));
+        assert!(matches!(
+            handle(&mut screen, &mut activity, &mut rec, &mut navigator, Gesture::Hold),
+            Transition::Home
+        ));
         assert_eq!(rec.test_take_intent(), Some(crate::RecorderIntent::Discard));
         assert!(!rec.recording());
         assert_eq!(activity.mode, Mode::Idle);
@@ -186,8 +196,9 @@ mod tests {
     fn back_cannot_strand_the_recovered_recording() {
         let mut rec = crate::RecorderMachine::new();
         let mut activity = Activity::new(Mode::Idle);
+        let mut navigator = crate::navigator::NavigatorMachine::new();
         assert!(matches!(
-            handle(&mut RideRecoveryScreen::new(), &mut activity, &mut rec, Gesture::Back),
+            handle(&mut RideRecoveryScreen::new(), &mut activity, &mut rec, &mut navigator, Gesture::Back),
             Transition::None
         ));
     }
@@ -196,12 +207,19 @@ mod tests {
     fn damaged_recording_can_only_be_discarded() {
         let mut rec = crate::RecorderMachine::new();
         let mut activity = Activity::new(Mode::Idle);
+        let mut navigator = crate::navigator::NavigatorMachine::new();
         let mut screen = RideRecoveryScreen::damaged();
         assert!(screen.selection_is_guarded());
-        assert!(matches!(handle(&mut screen, &mut activity, &mut rec, Gesture::Press), Transition::None));
+        assert!(matches!(
+            handle(&mut screen, &mut activity, &mut rec, &mut navigator, Gesture::Press),
+            Transition::None
+        ));
         assert!(!rec.recording());
         assert_eq!(rec.test_take_intent(), None);
-        assert!(matches!(handle(&mut screen, &mut activity, &mut rec, Gesture::Hold), Transition::Home));
+        assert!(matches!(
+            handle(&mut screen, &mut activity, &mut rec, &mut navigator, Gesture::Hold),
+            Transition::Home
+        ));
         assert_eq!(rec.test_take_intent(), Some(crate::RecorderIntent::Discard));
     }
 }

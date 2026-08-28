@@ -9,7 +9,7 @@
 //! draws) stays host-owned and is streamed on demand through an
 //! [`obc_route::RouteReader`]; only the one active route is opened at a time.
 //!
-//! [`Activity::active_route`](crate::Activity::active_route) indexes into the catalog.
+//! Navigator's active route indexes into the catalog.
 
 use obc_render::{OverlayChunk, RouteOverlaySource};
 use obc_route::{RoutePoint, RouteReader, MAX_POINTS_PER_CHUNK};
@@ -23,7 +23,7 @@ pub use obc_route::RouteSummary;
 pub const MAX_ROUTES: usize = 64;
 
 /// The app's resident route catalog: the summaries the Route menu lists and
-/// [`Activity::active_route`](crate::Activity::active_route) indexes.
+/// Navigator's active route indexes.
 pub type Catalog = heapless::Vec<RouteSummary, MAX_ROUTES>;
 
 /// The route-overlay seam adapter (issue #332): presents a [`RouteReader`] to the renderer as

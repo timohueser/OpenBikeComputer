@@ -24,11 +24,12 @@ use obc_render::{
     Canvas, Surface, Viewport,
 };
 
-use crate::activity::{Activity, DetourRequest};
+use crate::activity::DetourRequest;
 use crate::app::{MAX_ZOOM, MIN_ZOOM, ZOOM_STEP};
 use crate::host::DetourPreview;
 use crate::input::Gesture;
 use crate::navigator::NavigatorIntent;
+use crate::navigator::RouteState;
 use crate::Msg;
 
 use super::map::{draw_map_scene, DetourMapOverlay};
@@ -88,16 +89,16 @@ pub struct DetourScreen {
 /// It exists because the [ride context](super::context_drawer) draws a Detour row that *opens* the
 /// chooser, and a row whose availability disagreed with its destination's would be an enabled door
 /// onto an inert screen. This is the half they share, in one place.
-pub(crate) fn reachable(activity: &Activity, recording: bool, has_nav_graph: bool) -> bool {
-    recording && has_nav_graph && activity.active_route.is_some() && !activity.off_route
+pub(crate) fn reachable(navigation: &RouteState, recording: bool, has_nav_graph: bool) -> bool {
+    recording && has_nav_graph && navigation.active_route.is_some() && !navigation.off_route
 }
 
 impl DetourScreen {
-    pub fn new(activity: &Activity) -> Self {
+    pub fn new(navigation: &RouteState) -> Self {
         DetourScreen {
-            route: activity.active_route,
-            start_m: activity.progress_m,
-            total_m: activity.route_total_m,
+            route: navigation.active_route,
+            start_m: navigation.progress_m,
+            total_m: navigation.route_total_m,
             steps: MIN_STEPS,
             inspect_level: 0,
             prepared: None,
@@ -142,28 +143,28 @@ impl DetourScreen {
     /// Whether *this* chooser can act: the shared entry conditions ([`reachable`]) plus the two
     /// facts only an open chooser has — that its own route slot is still the active one, and that a
     /// span has resolved.
-    fn available(&self, activity: &Activity, recording: bool, has_nav_graph: bool) -> bool {
-        reachable(activity, recording, has_nav_graph)
-            && activity.active_route == self.route
+    fn available(&self, navigation: &RouteState, recording: bool, has_nav_graph: bool) -> bool {
+        reachable(navigation, recording, has_nav_graph)
+            && navigation.active_route == self.route
             && self.actual_detour_m().is_some()
     }
 
     /// Move the selected stretch's start to the latest matched rider progress while preserving the
     /// requested step count. This keeps HUD distance, prepared ink and Press semantics aligned even
     /// when the rider keeps moving with the chooser open.
-    fn refresh_anchor(&mut self, activity: &Activity) {
-        if activity.active_route == self.route
-            && (activity.progress_m != self.start_m || activity.route_total_m != self.total_m)
+    fn refresh_anchor(&mut self, navigation: &RouteState) {
+        if navigation.active_route == self.route
+            && (navigation.progress_m != self.start_m || navigation.route_total_m != self.total_m)
         {
-            self.start_m = activity.progress_m;
-            self.total_m = activity.route_total_m;
+            self.start_m = navigation.progress_m;
+            self.total_m = navigation.route_total_m;
             self.prepared = None;
         }
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
-        self.refresh_anchor(cx.activity);
-        let available = self.available(cx.activity, cx.recorder.recording(), cx.state.has_nav_graph);
+        self.refresh_anchor(cx.navigator.route_state());
+        let available = self.available(cx.navigator.route_state(), cx.recorder.recording(), cx.state.has_nav_graph);
         match g {
             Gesture::Step(n) if available && self.inspecting() => {
                 let next = (self.inspect_level as i32).saturating_add(n).clamp(1, INSPECT_MAX_LEVEL as i32);
@@ -251,7 +252,7 @@ impl DetourScreen {
         F: Fn(u16) -> D::Color,
         S: obc_map_scene::MapScene,
     {
-        let selected = self.prepared.filter(|_| self.available(rx.activity, rx.recording, rx.state.has_nav_graph));
+        let selected = self.prepared.filter(|_| self.available(rx.navigation, rx.recording, rx.state.has_nav_graph));
         let vp = selected.map_or_else(
             || rx.state.viewport(rx.w as f32, rx.h as f32),
             |p| {
@@ -283,11 +284,11 @@ impl DetourScreen {
         let title = if self.inspecting() { rx.t(Msg::RideContextInspectRejoin) } else { rx.t(Msg::RideContextDetour) };
         cv.text(title, Point::new(rx.w / 2, y + 7), Font::Label, TextAlign::Center, INK);
 
-        let status = if self.route.is_none() || rx.activity.active_route != self.route {
+        let status = if self.route.is_none() || rx.navigation.active_route != self.route {
             Err(rx.t(Msg::RideContextNoRoute))
         } else if !rx.state.has_nav_graph {
             Err(rx.t(Msg::RideContextNoNav))
-        } else if rx.activity.off_route {
+        } else if rx.navigation.off_route {
             Err(rx.t(Msg::RideContextOffRoute))
         } else if let Some(m) = self.actual_detour_m() {
             Ok(distance_short(m, rx.settings.units))
@@ -385,15 +386,15 @@ impl DetourPreviewScreen {
     /// rejoin point, or went off-route. Checked on every gesture — the commit itself is safe
     /// under drift (the splice uses the frozen anchor and the matcher re-locks from the live
     /// fix), so staleness only gates *starting* one.
-    fn stale(&self, activity: &Activity) -> bool {
+    fn stale(&self, navigation: &RouteState) -> bool {
         self.route.is_none()
-            || activity.active_route != self.route
-            || activity.off_route
-            || activity.progress_m >= self.target_m
+            || navigation.active_route != self.route
+            || navigation.off_route
+            || navigation.progress_m >= self.target_m
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
-        if self.stale(cx.activity) {
+        if self.stale(cx.navigator.route_state()) {
             // Cancel out to the chooser, which re-anchors to live progress; the host drops the
             // held detour bytes.
             cx.navigator.admit_intent(NavigatorIntent::CancelDetour);
@@ -497,7 +498,7 @@ impl DetourPreviewScreen {
         let _ = line.push_str(dist.as_str());
         cv.text(line.as_str(), Point::new(x + inset, fy), Font::Display, TextAlign::Left, WARNING);
 
-        let delta = self.climb_delta_m(rx.profile, rx.activity.route_total_m);
+        let delta = self.climb_delta_m(rx.profile, rx.navigation.route_total_m);
         draw_climb_figure(cv, x + w - inset, fy, elevation_delta(delta, rx.settings.units).as_str());
     }
 
@@ -577,30 +578,36 @@ mod tests {
     use crate::device_core::core_mode::CoreMode;
     use crate::navigator::{NavigatorEffect, NavigatorMachine, PlanFamily, PlannerWork};
     use crate::screen::test_ctx;
-    use crate::{AppState, Settings};
+    use crate::{Activity, AppState, Settings};
     use obc_ports::Fix;
 
     fn with_ctx<T>(
-        activity: &mut Activity,
+        navigation: &mut RouteState,
         rec: &mut crate::RecorderMachine,
         nav: &mut NavigatorMachine,
         f: impl FnOnce(&mut Ctx) -> T,
     ) -> T {
-        with_state_ctx(activity, rec, nav, AppState::new(0, 0, 1.0), f)
+        with_state_ctx(navigation, rec, nav, AppState::new(0, 0, 1.0), f)
     }
 
     /// A `Ctx` whose `AppState` has a nav graph, a fix, and whatever the test staged — over the
     /// caller's own Navigator, so the test can read back the request the screen posted to it.
     fn with_state_ctx<T>(
-        activity: &mut Activity,
+        navigation: &mut RouteState,
         rec: &mut crate::RecorderMachine,
         nav: &mut NavigatorMachine,
         mut state: AppState,
         f: impl FnOnce(&mut Ctx) -> T,
     ) -> T {
         let mut settings = Settings::default();
-        let mut cx = Ctx { navigator: nav, recorder: rec, ..test_ctx(&mut state, activity, &mut settings) };
-        f(&mut cx)
+        let mut activity = Activity::new(crate::activity::Mode::Riding);
+        *nav.route_state_mut() = *navigation;
+        let answer = {
+            let mut cx = Ctx { navigator: nav, recorder: rec, ..test_ctx(&mut state, &mut activity, &mut settings) };
+            f(&mut cx)
+        };
+        *navigation = *nav.route_state();
+        answer
     }
 
     /// The detour-plan request Navigator holds, taken as an executor would. The search level rides
@@ -627,8 +634,8 @@ mod tests {
         s
     }
 
-    fn tracking_activity(progress: u32, total: u32) -> Activity {
-        let mut a = Activity::new(crate::activity::Mode::Riding);
+    fn tracking_activity(progress: u32, total: u32) -> RouteState {
+        let mut a = RouteState::new();
         a.active_route = Some(2);
         a.progress_m = progress;
         a.route_total_m = total;
@@ -666,7 +673,6 @@ mod tests {
         let mut nav_a = NavigatorMachine::new();
         let mut a = tracking_activity(1_000, 5_000);
         let session = rec.session();
-        let mode = a.mode;
         let mut s = DetourScreen::new(&a);
         with_state_ctx(&mut a, &mut rec, &mut nav_a, nav_state(), |cx| {
             assert!(matches!(s.handle(Gesture::Step(2), cx), Transition::None))
@@ -680,10 +686,9 @@ mod tests {
             "minimum six steps plus two, from the live anchor"
         );
         assert_eq!(req.from, (7_800_000, 48_000_000), "the rider's fix rides the request");
-        assert!(a.pending_seam().is_none(), "no floor/seam is installed at Press — only at commit");
+        assert!(!nav_a.pending_seam(), "no floor/seam is installed at Press — only at commit");
         assert_eq!(a.progress_m, 1_000, "progress untouched until the commit re-adopts");
         assert_eq!(rec.session(), session, "same tracking session");
-        assert_eq!(a.mode, mode, "Mode is preserved");
     }
 
     #[test]
@@ -719,7 +724,6 @@ mod tests {
         assert!(matches!(t, Transition::Pop));
         assert_eq!(a.progress_m, before.progress_m);
 
-        assert_eq!(a.mode, before.mode);
         assert!(drained_detour(&mut nav_a).is_none());
     }
 
@@ -823,11 +827,11 @@ mod tests {
 
     // ---- the preview screen ----
 
-    fn preview_for(a: &Activity) -> DetourPreviewScreen {
+    fn preview_for(a: &RouteState) -> DetourPreviewScreen {
         preview_with(a, DetourPreview { cost_delta_m: 4_200, total_distance_m: 5_000, rejoin_m: 0, ascent_m: None })
     }
 
-    fn preview_with(a: &Activity, preview: DetourPreview) -> DetourPreviewScreen {
+    fn preview_with(a: &RouteState, preview: DetourPreview) -> DetourPreviewScreen {
         DetourPreviewScreen::new(&DetourScreen::new(a), preview)
     }
 

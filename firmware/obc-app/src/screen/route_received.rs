@@ -131,7 +131,7 @@ impl RouteReceivedScreen {
             // backing out returns to whatever the card covered, not the card.
             Gesture::Press if self.selected == VIEW => match self.route.filter(|&i| i < cx.routes.len()) {
                 Some(i) => {
-                    let prev = cx.activity.active_route.replace(i);
+                    let prev = cx.navigator.replace_active_route(i);
                     Transition::Replace(Screen::RouteOverview(RouteOverviewScreen::new(i, prev)))
                 }
                 None => Transition::Pop,

@@ -13,8 +13,8 @@
 //!
 //! Routes come from the app's catalog ([`Render::routes`]/[`Ctx::routes`]); trips from the resolved
 //! [`Render::trips`]/[`Ctx::trips`] catalog (each carries its member routes' catalog indices, ride
-//! order, dangling refs already dropped — TR2). Picking a route sets
-//! [`Activity::active_route`](crate::Activity::active_route) and streams it open behind the overview,
+//! order, dangling refs already dropped — TR2). Picking a route sets Navigator's active route and
+//! streams it open behind the overview,
 //! identically whether the route was reached at the top level or from inside a folder.
 
 use core::fmt::Write;
@@ -248,12 +248,12 @@ impl RouteMenuScreen {
     /// streaming open behind it.
     fn press_route(&self, i: usize, cx: &mut Ctx) -> Transition {
         if cx.recorder.recording() {
-            if cx.activity.active_route == Some(i) {
+            if cx.navigator.route_state().active_route == Some(i) {
                 return Transition::Root(Screen::Map(MapScreen::new()));
             }
             return Transition::Push(Screen::RouteSwap(RouteSwapScreen::new(i)));
         }
-        let prev = cx.activity.active_route.replace(i);
+        let prev = cx.navigator.replace_active_route(i);
         Transition::Push(Screen::RouteOverview(RouteOverviewScreen::new(i, prev)))
     }
 
@@ -440,9 +440,22 @@ mod tests {
         trips: &[TripSummary],
         g: Gesture,
     ) -> Transition {
+        let mut navigator = crate::navigator::NavigatorMachine::new();
+        run_with_nav(scr, act, rec, &mut navigator, routes, trips, g)
+    }
+
+    fn run_with_nav(
+        scr: &mut RouteMenuScreen,
+        act: &mut Activity,
+        rec: &mut crate::RecorderMachine,
+        navigator: &mut crate::navigator::NavigatorMachine,
+        routes: &[RouteSummary],
+        trips: &[TripSummary],
+        g: Gesture,
+    ) -> Transition {
         let mut st = AppState::new(0, 0, 1.0);
         let mut settings = Settings::default();
-        let mut cx = Ctx { routes, trips, recorder: rec, ..test_ctx(&mut st, act, &mut settings) };
+        let mut cx = Ctx { routes, trips, recorder: rec, navigator, ..test_ctx(&mut st, act, &mut settings) };
         scr.handle(g, &mut cx)
     }
 
@@ -453,12 +466,13 @@ mod tests {
         let mut rec = crate::RecorderMachine::new();
         let routes = [summary("A"), summary("B")];
         let mut act = Activity::new(Mode::Riding);
+        let mut navigator = crate::navigator::NavigatorMachine::new();
         rec.test_open();
-        assert_eq!(act.active_route, None);
+        assert_eq!(navigator.route_state().active_route, None);
         let mut scr = RouteMenuScreen::new();
-        let t = run(&mut scr, &mut act, &mut rec, &routes, &[], Gesture::Press);
+        let t = run_with_nav(&mut scr, &mut act, &mut rec, &mut navigator, &routes, &[], Gesture::Press);
         assert!(matches!(t, Transition::Push(Screen::RouteSwap(_))), "the guarded swap card opens");
-        assert_eq!(act.active_route, None);
+        assert_eq!(navigator.route_state().active_route, None);
     }
 
     /// The top level lists folders first, then only the **unfiled** routes: with a trip grouping
@@ -481,9 +495,14 @@ mod tests {
         let mut scr = RouteMenuScreen::new();
         run(&mut scr, &mut Activity::new(Mode::Idle), &mut rec, &routes, &trips, Gesture::Step(1)); // → row 1
         let mut act = Activity::new(Mode::Idle);
-        let t = run(&mut scr, &mut act, &mut rec, &routes, &trips, Gesture::Press);
+        let mut navigator = crate::navigator::NavigatorMachine::new();
+        let t = run_with_nav(&mut scr, &mut act, &mut rec, &mut navigator, &routes, &trips, Gesture::Press);
         assert!(matches!(t, Transition::Push(Screen::RouteOverview(_))), "the loose route opens its overview");
-        assert_eq!(act.active_route, Some(2), "and it's the unfiled catalog route (index 2), not a filed one");
+        assert_eq!(
+            navigator.route_state().active_route,
+            Some(2),
+            "and it's the unfiled catalog route (index 2), not a filed one"
+        );
     }
 
     /// Long-pressing a folder opens the cascade-delete confirm carrying the trip's durable id.
@@ -516,9 +535,10 @@ mod tests {
         let trips = [trip(9, "Trip", &[1, 2], &routes)]; // members: catalog indices 1, 2
         let mut scr = RouteMenuScreen::trip(9);
         let mut act = Activity::new(Mode::Idle);
-        let t = run(&mut scr, &mut act, &mut rec, &routes, &trips, Gesture::Press); // row 0 → member 1
+        let mut navigator = crate::navigator::NavigatorMachine::new();
+        let t = run_with_nav(&mut scr, &mut act, &mut rec, &mut navigator, &routes, &trips, Gesture::Press); // row 0 → member 1
         assert!(matches!(t, Transition::Push(Screen::RouteOverview(_))));
-        assert_eq!(act.active_route, Some(1), "the first stage is catalog route 1");
+        assert_eq!(navigator.route_state().active_route, Some(1), "the first stage is catalog route 1");
     }
 
     /// An empty folder (all refs dangling) shows no rows; Back pops out and a press is inert.

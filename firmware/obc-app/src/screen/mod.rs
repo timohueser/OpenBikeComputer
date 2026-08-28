@@ -237,10 +237,6 @@ pub struct Ctx<'a> {
     /// the highlighted [`Poi`](obc_reader::Poi) out of it to hand to the detail screen — the one
     /// place `handle` reaches the draw-taken snapshot. Every other screen leaves it untouched.
     pub poi_scratch: &'a PoiScratch,
-    /// The active route's resident waypoint table, **read-only** here — the Up-ahead timeline walks
-    /// it (with [`corridor`](Ctx::corridor)) to resolve its cursor and the pressed row. Empty
-    /// without a route; every other screen leaves it untouched.
-    pub waypoints: &'a [obc_route::WptEntry],
     /// The App-owned **route-corridor POI snapshot** (epic #946, U2), **read-only** here — the
     /// other half of the Up-ahead merge, so `handle` sees exactly the rows `draw` drew. Empty until
     /// a snapshot lands; every other screen leaves it untouched.
@@ -278,7 +274,7 @@ impl Ctx<'_> {
     pub(crate) fn context_facts(&self) -> context_drawer::ContextFacts<'_> {
         context_drawer::ContextFacts {
             state: self.state,
-            activity: self.activity,
+            navigation: self.navigator.route_state(),
             settings: self.settings,
             recording: self.recorder.recording(),
         }
@@ -318,7 +314,6 @@ pub(crate) fn test_ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, 
         nav_profiles: &EMPTY_PROFILES,
         backlight: true,
         poi_scratch: &EMPTY_SCRATCH,
-        waypoints: &[],
         corridor: &[],
         sensor_scan_hits: &[],
         navigator: Box::leak(Box::new(crate::navigator::NavigatorMachine::new())),
@@ -331,8 +326,8 @@ pub(crate) fn test_ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, 
 }
 
 /// The currently-tracked climb, surfaced to the riding views (C3). Bundles the active
-/// [`ClimbSeg`] with its resident detail [`ClimbProfile`], both borrowed from the App-owned climb
-/// state — present exactly when [`Activity::active_climb`](crate::activity::Activity) is `Some`, so
+/// [`ClimbSeg`] with its resident detail [`ClimbProfile`], both borrowed from Navigator's climb
+/// state — present exactly when Navigator's `active_climb` is `Some`, so
 /// the two are always consistent and a screen never draws a stale buffer. The Climb screen (C4)
 /// reads `seg` for the base/top/gain/grade tiles and `profile` for the striped elevation panel +
 /// cursor; nothing draws it yet at C3.
@@ -372,6 +367,8 @@ pub struct Render<'a> {
     pub rain: Option<&'a mut dyn obc_render::RainOverlaySource>,
     pub state: &'a AppState,
     pub activity: &'a Activity,
+    /// The active route and live guidance facts, borrowed from Navigator without a copied mirror.
+    pub navigation: &'a crate::navigator::RouteState,
     /// The **Recorder** domain, read-only here (#1398 R1) — the ride's own numbers. Distance,
     /// moving time, climb, the live sensor values and the per-ride summary all come from the
     /// machine that owns the session they belong to; no screen keeps a copy of any of them.
@@ -412,12 +409,12 @@ pub struct Render<'a> {
     /// The climb the rider is currently on, or `None` between climbs (C3). Bundles the two things
     /// the Climb screen (C4) draws — the active [`ClimbSeg`] (base/top/gain/grade) and its resident
     /// detail [`ClimbProfile`] — behind one `Option` so a `Some` is exactly "a climb is being
-    /// tracked, both are valid". `None` whenever [`Activity::active_climb`](crate::activity::Activity)
+    /// tracked, both are valid". `None` whenever Navigator's active climb
     /// is `None` (no route, off any climb), so a screen never reads a stale detail buffer.
     pub climb: Option<ActiveClimb<'a>>,
-    /// The active route's resident named-waypoint table (App-owned), in route order — the riding
+    /// The active route's resident named-waypoint table (Navigator-owned), in route order — the riding
     /// views draw its diamonds / chip / ticks / stat fields (later in the epic) and index it with
-    /// [`Activity::next_waypoint`](crate::activity::Activity). Empty when no route is loaded, so a
+    /// Navigator's next-waypoint index. Empty when no route is loaded, so a
     /// screen iterates it unconditionally.
     pub waypoints: &'a Waypoints,
     /// The travelled-path breadcrumb (bounded RAM); the Map strokes it under the route. Empty when
@@ -539,7 +536,7 @@ impl Render<'_> {
     pub(crate) fn context_facts(&self) -> context_drawer::ContextFacts<'_> {
         context_drawer::ContextFacts {
             state: self.state,
-            activity: self.activity,
+            navigation: self.navigation,
             settings: self.settings,
             recording: self.recording,
         }
@@ -557,14 +554,14 @@ impl Render<'_> {
     pub fn readout(&self) -> crate::stat_fields::Readout<'_> {
         crate::stat_fields::Readout {
             fix: self.state.user_fix,
-            activity: self.activity,
+            navigation: self.navigation,
             recorder: self.recorder,
             units: self.settings.units,
             route: self.route,
             profile: self.profile,
             climb: self.climb,
             waypoints: self.waypoints,
-            next_waypoint: self.activity.next_waypoint,
+            next_waypoint: self.navigation.next_waypoint,
             now: self.now,
             now_ms: self.now_ms,
             bike_profile_idx: self.settings.bike_profile_idx,
@@ -1328,7 +1325,7 @@ impl Screen {
         &self,
         settings: &Settings,
         state: &crate::AppState,
-        activity: &Activity,
+        navigation: &crate::navigator::RouteState,
         recording: bool,
         routes: &[RouteSummary],
         rides: &[RideSummary],
@@ -1342,7 +1339,7 @@ impl Screen {
             Screen::Bluetooth(s) => s.selection_is_guarded(state.device.ble_paired),
             Screen::QuickDrawer(s) => s.selection_is_guarded(),
             Screen::Sensors(s) => s.selection_is_guarded(settings),
-            Screen::RouteOverview(s) => s.selection_is_guarded(activity, recording, routes),
+            Screen::RouteOverview(s) => s.selection_is_guarded(navigation, recording, routes),
             Screen::RideDetail(s) => s.selection_is_guarded(recording, rides.len()),
             Screen::TripDelete(s) => s.selection_is_guarded(),
             _ => false,
@@ -1470,7 +1467,7 @@ pub(crate) fn start_ride(cx: &mut Ctx, i: usize) -> Transition {
         return Transition::Pop;
     };
     let (lon, lat) = (route.start_lon, route.start_lat);
-    cx.activity.active_route = Some(i);
+    cx.navigator.set_active_route(Some(i));
     begin_riding_session(cx, lon, lat)
 }
 
@@ -1484,7 +1481,7 @@ pub(crate) fn start_ride_routeless(cx: &mut Ctx) -> Transition {
     // Seed the camera where the rider is (the last fix), falling back to the current camera so the
     // first frame is sensible before any fix. Follow mode recenters on each fix regardless.
     let (lon, lat) = cx.state.user_fix.map_or((cx.state.cam_lon, cx.state.cam_lat), |f| (f.lon, f.lat));
-    cx.activity.active_route = None;
+    cx.navigator.set_active_route(None);
     begin_riding_session(cx, lon, lat)
 }
 
