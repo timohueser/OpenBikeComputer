@@ -149,6 +149,46 @@ impl WeatherRefresh {
 
 // ============================ The request context ============================
 
+/// A trusted position group for one request context.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RequestContextFix {
+    /// WGS84 latitude in microdegrees.
+    pub lat_udeg: i32,
+    /// WGS84 longitude in microdegrees.
+    pub lon_udeg: i32,
+    /// UTC seconds of the fix.
+    pub fix_utc: i64,
+}
+
+/// The validated bundle identity carried by one request context.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RequestContextBundle {
+    /// Active bundle generation.
+    pub generation: u32,
+    /// Active bundle creation time in UTC seconds.
+    pub generated_at: i64,
+    /// Active bundle whole-object CRC-32.
+    pub crc32: u32,
+}
+
+/// The optional wire facts from which a raised request context is assembled.
+///
+/// Hosts derive only these transport-neutral values. Scheduling, storage, provider, and bundle
+/// reuse policy stay with the host that can prove them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RequestContextFacts {
+    /// A trusted position and its time.
+    pub fix: Option<RequestContextFix>,
+    /// A trustworthy travel bearing in whole degrees.
+    pub bearing_deg: Option<u16>,
+    /// A trustworthy ground speed in tenths of a metre per second.
+    pub speed_deci_ms: Option<u16>,
+    /// The active route object identifier.
+    pub route_id: Option<u16>,
+    /// A validated active bundle.
+    pub bundle: Option<RequestContextBundle>,
+}
+
 /// The one value the companion reads before it disconnects — 52 little-endian bytes describing the
 /// request and the rider.
 ///
@@ -247,6 +287,39 @@ impl WeatherRequestContext {
     /// persisted `Off` would misreport it from boot until the first raise (#1221 F2).
     pub const fn resting(refresh_raw: u8) -> Self {
         Self { refresh_raw, ..Self::EMPTY }
+    }
+
+    /// Assemble a raised request from the scheduler verdict and the host's available wire facts.
+    ///
+    /// Each optional group controls its own validity bit. An absent group keeps both its bit and
+    /// encoded fields zero.
+    pub fn raised(refresh_raw: u8, raise: Raise, facts: RequestContextFacts) -> Self {
+        let mut context = Self { refresh_raw, request_id: raise.request_id, reason: raise.reason, ..Self::EMPTY };
+        if let Some(fix) = facts.fix {
+            context.validity |= VALID_POSITION;
+            context.lat_udeg = fix.lat_udeg;
+            context.lon_udeg = fix.lon_udeg;
+            context.fix_utc = fix.fix_utc;
+        }
+        if let Some(bearing_deg) = facts.bearing_deg {
+            context.validity |= VALID_BEARING;
+            context.bearing_deg = bearing_deg;
+        }
+        if let Some(speed_deci_ms) = facts.speed_deci_ms {
+            context.validity |= VALID_SPEED;
+            context.speed_deci_ms = speed_deci_ms;
+        }
+        if let Some(route_id) = facts.route_id {
+            context.validity |= VALID_ROUTE;
+            context.route_id = route_id;
+        }
+        if let Some(bundle) = facts.bundle {
+            context.validity |= VALID_BUNDLE;
+            context.bundle_generation = bundle.generation;
+            context.bundle_generated_at = bundle.generated_at;
+            context.bundle_crc32 = bundle.crc32;
+        }
+        context
     }
 
     pub const fn has(&self, flag: u16) -> bool {
@@ -565,6 +638,11 @@ impl DueScheduler {
     /// pending the raise re-uses its id (one request, not parallel jobs) with a fresh fast ladder.
     pub fn open_weather(&mut self) {
         self.urgent_queued = true;
+    }
+
+    /// Whether an urgent request is queued or any request is pending.
+    pub fn has_request(&self) -> bool {
+        self.urgent_queued || self.pending.is_some()
     }
 
     /// A weather upload was **accepted** — fresh (`commit`), duplicate, or stale, all of which the
