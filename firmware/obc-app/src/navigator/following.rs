@@ -1,13 +1,32 @@
 //! Active-route state and route-following policy owned by [`NavigatorMachine`](super::NavigatorMachine).
 
+use core::num::NonZeroUsize;
+
 use obc_route::{Climbs, RouteReader, Waypoints};
 
 use super::NavigatorMachine;
 
+/// A route-catalog index stored as `index + 1`. Catalog indices are bounded by
+/// [`crate::MAX_ROUTES`], so the nonzero representation preserves every valid value and gives
+/// [`Option`] a compact empty state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RouteIndex(NonZeroUsize);
+
+impl RouteIndex {
+    fn new(index: usize) -> Self {
+        debug_assert!(index < crate::MAX_ROUTES);
+        RouteIndex(NonZeroUsize::new(index + 1).expect("a route-catalog index is bounded"))
+    }
+
+    const fn get(self) -> usize {
+        self.0.get() - 1
+    }
+}
+
 /// A seam re-anchor waiting for the next tick with matching route geometry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SeamRequest {
-    route: usize,
+    route: RouteIndex,
     anchor_m: u32,
 }
 
@@ -48,13 +67,14 @@ impl RouteState {
     }
 
     fn request_seam(&mut self, route: usize, anchor_m: u32) {
-        self.seam_request = Some(SeamRequest { route, anchor_m });
+        self.seam_request = Some(SeamRequest { route: RouteIndex::new(route), anchor_m });
     }
 
     fn remap_seam(&mut self, remap: &dyn Fn(usize) -> Option<usize>) {
-        self.seam_request = self
-            .seam_request
-            .and_then(|request| remap(request.route).map(|route| SeamRequest { route, anchor_m: request.anchor_m }));
+        self.seam_request = self.seam_request.and_then(|request| {
+            remap(request.route.get())
+                .map(|route| SeamRequest { route: RouteIndex::new(route), anchor_m: request.anchor_m })
+        });
     }
 
     #[cfg(test)]
@@ -359,7 +379,7 @@ impl NavigatorMachine {
     /// route-key mismatch drops it rather than applying the distance to different geometry.
     pub(crate) fn apply_pending_seam(&mut self, route: Option<&RouteReader>) -> bool {
         let Some(req) = self.following.seam_request else { return false };
-        if self.following.active_route != Some(req.route) {
+        if self.following.active_route != Some(req.route.get()) {
             self.following.seam_request = None;
             return false;
         }
