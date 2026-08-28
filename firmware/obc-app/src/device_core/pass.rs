@@ -1579,6 +1579,39 @@ mod tests {
         assert!(app.recorder.staged().is_empty(), "and owes no sample the previous ride never wrote");
     }
 
+    /// **"Save & start new" gives ride two nothing of ride one's**, and both halves of the gesture
+    /// run in one pass: the verdict lands at stage 1 and the fresh ride opens at stage 3. That is
+    /// the shape that makes the integration anchors part of the reset and not an afterthought — a
+    /// new ride that kept them would credit itself with the step from where the last one ended, and
+    /// its first sample would continue that ride's segment instead of opening its own.
+    #[test]
+    fn save_and_start_new_gives_the_second_ride_nothing_of_the_first() {
+        let mut app = App::new(AppState::new(0, 0, 1.0));
+        app.activity.mode = Mode::Riding;
+        app.test_start_ride();
+        app.recorder.record_fix(obc_ports::Fix::at(0, 0), 0, true);
+        app.recorder.record_fix(obc_ports::Fix::at(0, 100), 1_000, true);
+        assert!(app.recorder.ridden_m() > 0.0, "ride one covered ground");
+
+        // The gesture, exactly as the pass serves it.
+        app.recorder.save_and_restart();
+        let effect =
+            app.recorder.next_effect(app.pass.capabilities.recorder, app.footer_clock()).expect("the close goes first");
+        let verdict =
+            app.recorder.apply_outcome(crate::recorder::RecorderOutcome::Finalized { token: effect.token(), ride: 1 });
+        assert_eq!(verdict, crate::recorder::RecorderVerdict::Saved(1));
+        app.end_ride_session(); // stage 1
+        app.advance_recorder_session(); // stage 3
+        assert!(app.recording(), "the second half of the gesture opened the new ride");
+        app.recorder.assert_totals_are_zero();
+
+        // Ride two's first fix, a second later and ~11 m on from where ride one ended.
+        app.recorder.record_fix(obc_ports::Fix::at(0, 200), 2_000, true);
+        assert_eq!(app.recorder.ridden_m(), 0.0, "the step between the two rides belongs to neither");
+        assert_eq!(app.recorder.moving_s(), 0.0, "and it books no moving time either");
+        assert!(app.recorder.staged()[0].segment_start, "ride two's first sample opens ride two's segment");
+    }
+
     /// A recovered ride continues without resetting the totals the journal restored.
     #[test]
     fn a_recovered_ride_continues_without_resetting_its_totals() {

@@ -1494,6 +1494,16 @@ pub(crate) async fn run_app(
                         }
                     }
                     RecorderEffect::Finalize { token } => {
+                        // The samples this ride staged and no append has taken yet go into the
+                        // bounded tail **before** the footer: they belong to the ride being saved,
+                        // and the totals the footer carries already count the distance and the
+                        // moving time they cover. This is inside the close's own service, so it
+                        // orders nothing against the append rank.
+                        for point in app.recorder.staged() {
+                            if !ride_recorder.append(*point) {
+                                break; // the tail refused it; the footer is still the honest total
+                            }
+                        }
                         // The footer facts come from Recorder, which stamped its wall-clock anchor
                         // as it minted this close. The save name is not read at all: it was frozen
                         // when the ride opened.
