@@ -103,8 +103,8 @@ impl StatisticsScreen {
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
-        let live = stat_fields::live_frac(cx.activity);
-        let has_route = cx.activity.active_route.is_some();
+        let live = stat_fields::live_frac(cx.navigator.route_state());
+        let has_route = cx.navigator.route_state().active_route.is_some();
         match g {
             Gesture::Step(n) => {
                 if has_route {
@@ -133,7 +133,7 @@ impl StatisticsScreen {
                 // active and the Climb screen is enabled (Manual/Auto), else straight back to the
                 // Map (the collapsed Map↔Statistics 2-cycle when off-climb or Off).
                 Mode::Follow => {
-                    if cx.settings.climb_mode.is_on() && cx.activity.active_climb.is_some() {
+                    if cx.settings.climb_mode.is_on() && cx.navigator.route_state().active_climb.is_some() {
                         Transition::Replace(Screen::Climb(ClimbScreen::new()))
                     } else {
                         Transition::Replace(Screen::Map(MapScreen::new()))
@@ -259,13 +259,13 @@ impl StatisticsScreen {
         };
 
         let total = route.total_distance_m;
-        let off = rx.activity.off_route;
+        let off = rx.navigation.off_route;
         // Re-captions + re-scales every readout below; grade stays a bare percentage.
         let units = rx.settings.units;
 
         // Live position (matched progress) drives the traveled shading + progress bar; the cursor
         // may be a scrub ahead of / behind it, and in zoom mode it's the zoom centre.
-        let live_frac = if total > 0 { (rx.activity.progress_m as f32 / total as f32).clamp(0.0, 1.0) } else { 0.0 };
+        let live_frac = if total > 0 { (rx.navigation.progress_m as f32 / total as f32).clamp(0.0, 1.0) } else { 0.0 };
         let cursor_frac = self.effective_cursor(live_frac);
         let zoom = if self.mode.inspecting() { self.zoom } else { MIN_ZOOM };
         let scrubbing = (cursor_frac - live_frac).abs() > 1e-4;
@@ -287,7 +287,7 @@ impl StatisticsScreen {
         if rx.no_fix {
             let _ = readout.push_str(rx.t(Msg::StatsNoGps));
         } else if off {
-            write_distance_coarse(&mut readout, rx.t(Msg::StatsOff), rx.activity.dist_to_route_m, units);
+            write_distance_coarse(&mut readout, rx.t(Msg::StatsOff), rx.navigation.dist_to_route_m, units);
         } else {
             let _ = write!(readout, "{}{}%", rx.t(Msg::StatsGrade), stat_fields::grade_at(profile, total, cursor_frac));
         }
@@ -434,9 +434,10 @@ mod tests {
         let mut st = AppState::new(0, 0, 1.0);
         // Fully-qualified so the local `Mode` (Cursor/Zoom) enum isn't shadowed by the ride `Mode`.
         let mut act = Activity::new(crate::activity::Mode::Riding);
-        act.active_climb = active_climb;
+        let mut navigator = crate::navigator::NavigatorMachine::new();
+        navigator.route_state_mut().active_climb = active_climb;
         let mut s = Settings { climb_mode: mode, ..Settings::default() };
-        let mut cx = test_ctx(&mut st, &mut act, &mut s);
+        let mut cx = Ctx { navigator: &mut navigator, ..test_ctx(&mut st, &mut act, &mut s) };
         StatisticsScreen::new().handle(Gesture::Back, &mut cx)
     }
 
@@ -481,11 +482,12 @@ mod tests {
     fn profile_gesture(s: &mut StatisticsScreen, g: Gesture) -> Transition {
         let mut st = AppState::new(0, 0, 1.0);
         let mut act = Activity::new(crate::activity::Mode::Riding);
-        act.active_route = Some(0);
-        act.route_total_m = 1_000;
-        act.progress_m = 500;
+        let mut navigator = crate::navigator::NavigatorMachine::new();
+        navigator.route_state_mut().active_route = Some(0);
+        navigator.route_state_mut().route_total_m = 1_000;
+        navigator.route_state_mut().progress_m = 500;
         let mut settings = Settings::default();
-        let mut cx = test_ctx(&mut st, &mut act, &mut settings);
+        let mut cx = Ctx { navigator: &mut navigator, ..test_ctx(&mut st, &mut act, &mut settings) };
         s.handle(g, &mut cx)
     }
 

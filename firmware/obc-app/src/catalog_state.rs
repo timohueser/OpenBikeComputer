@@ -53,7 +53,7 @@ pub struct RideEntry<'a> {
 /// The snapshot of a catalog's ids **before** a replacement — what
 /// [`CatalogState::remap_route`] / [`CatalogState::remap_ride`] resolve an old index through to
 /// find its new home. Returned by the `replace_*` methods so `App` can re-point the screen stack
-/// and `Activity` keys with the exact mapping the component itself used.
+/// and Navigator keys with the exact mapping the component itself used.
 pub(crate) type OldRouteIds = heapless::Vec<CatalogObjectId, MAX_ROUTES>;
 /// The ride twin of [`OldRouteIds`].
 pub(crate) type OldRideIds = heapless::Vec<CatalogObjectId, UI_RIDES_CAP>;
@@ -61,7 +61,7 @@ pub(crate) type OldRideIds = heapless::Vec<CatalogObjectId, UI_RIDES_CAP>;
 /// The resident catalogs + identity-keyed view caches. See the module docs.
 pub(crate) struct CatalogState {
     /// The resident route catalog (summaries) — what the Route menu lists;
-    /// `Activity::active_route` indexes it.
+    /// Navigator's active route indexes it.
     routes: Catalog,
     /// Each route's **durable object id**, pairwise with [`routes`](CatalogState::routes) (#450) —
     /// only ever written in lock step with it (the component's whole point).

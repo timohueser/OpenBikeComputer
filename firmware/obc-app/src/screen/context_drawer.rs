@@ -31,8 +31,8 @@ use obc_render::{
     Surface,
 };
 
-use crate::activity::Activity;
 use crate::input::Gesture;
+use crate::navigator::RouteState;
 use crate::settings::UpAheadSource;
 use crate::{AppState, Msg, Settings};
 
@@ -111,7 +111,7 @@ const _: () = assert!(MAX_ROWS <= 8, "the render key carries row availability in
 /// of them.
 pub(crate) struct ContextFacts<'a> {
     pub state: &'a AppState,
-    pub activity: &'a Activity,
+    pub navigation: &'a RouteState,
     pub settings: &'a Settings,
     /// Whether a ride is open — the level [`RecorderMachine`](crate::RecorderMachine) reports, not
     /// a copy of it.
@@ -253,7 +253,7 @@ impl ContextAction {
             // #882: a detour needs a recorded ride to re-route, a route to leave, a graph to route
             // on, and a rider on the route (the corridor anchors on live progress, which off-route
             // freezes).
-            ContextAction::Detour => super::detour::reachable(f.activity, f.recording, f.state.has_nav_graph),
+            ContextAction::Detour => super::detour::reachable(f.navigation, f.recording, f.state.has_nav_graph),
             ContextAction::Edit(v) => v.accepts(f),
         }
     }
@@ -270,9 +270,9 @@ impl ContextAction {
                 // state, cleared on entry exactly as the rain map's step is, so a category the
                 // rider chose one ride never silently empties the list on the next.
                 cx.state.up_ahead_filter = PoiCategorySet::ALL;
-                Screen::UpAhead(UpAheadScreen::new(cx.activity.progress_m))
+                Screen::UpAhead(UpAheadScreen::new(cx.navigator.route_state().progress_m))
             }
-            ContextAction::Detour => Screen::Detour(DetourScreen::new(cx.activity)),
+            ContextAction::Detour => Screen::Detour(DetourScreen::new(cx.navigator.route_state())),
             ContextAction::Pois => Screen::PoiMenu(PoiMenuScreen::new()),
             ContextAction::Routes => Screen::RouteMenu(RouteMenuScreen::new()),
             ContextAction::Edit(_) => return None,
@@ -723,6 +723,7 @@ mod tests {
     struct World {
         state: AppState,
         activity: Activity,
+        navigator: crate::navigator::NavigatorMachine,
         settings: Settings,
         /// The ride the rider is on, so a row press can be held to leaving it alone (#1554 moved
         /// the session out of `Activity` and into this machine).
@@ -738,11 +739,12 @@ mod tests {
         fn riding() -> Self {
             let mut state = AppState::new(0, 0, 1.0);
             state.has_nav_graph = true;
-            let mut activity = Activity::new(Mode::Riding);
-            activity.active_route = Some(0);
+            let activity = Activity::new(Mode::Riding);
+            let mut navigator = crate::navigator::NavigatorMachine::new();
+            navigator.set_active_route(Some(0));
             let mut recorder = RecorderMachine::new();
             recorder.test_open();
-            World { state, activity, settings: Settings::default(), recorder, now_ms: 1_000 }
+            World { state, activity, navigator, settings: Settings::default(), recorder, now_ms: 1_000 }
         }
 
         fn press(&mut self, d: &mut ContextDrawerScreen, g: Gesture) -> Transition {
@@ -751,6 +753,7 @@ mod tests {
                 g,
                 &mut Ctx {
                     recorder: &mut self.recorder,
+                    navigator: &mut self.navigator,
                     now_ms,
                     ..test_ctx(&mut self.state, &mut self.activity, &mut self.settings)
                 },
@@ -763,7 +766,7 @@ mod tests {
         fn facts(&self) -> ContextFacts<'_> {
             ContextFacts {
                 state: &self.state,
-                activity: &self.activity,
+                navigation: self.navigator.route_state(),
                 settings: &self.settings,
                 recording: self.recorder.recording(),
             }
@@ -828,9 +831,9 @@ mod tests {
         assert_eq!(d.key(&w.facts()).4 & live_bit, live_bit, "on route, with a graph: live");
 
         for break_it in [
-            (|w: &mut World| w.activity.active_route = None) as fn(&mut World),
+            (|w: &mut World| w.navigator.set_active_route(None)) as fn(&mut World),
             |w: &mut World| w.state.has_nav_graph = false,
-            |w: &mut World| w.activity.off_route = true,
+            |w: &mut World| w.navigator.route_state_mut().off_route = true,
             // The fourth condition, and the one the row used to be missing: a *browse* map with a
             // route loaded and a graph under it still has nothing to re-route, because there is no
             // ride. Without this the row was an enabled door onto a chooser that opens inert.
@@ -856,7 +859,11 @@ mod tests {
     fn a_route_without_a_ride_leaves_the_detour_row_inert() {
         let mut w = World::riding();
         w.recorder.test_close(); // …a browse map: the route and the graph stay
-        assert!(w.activity.active_route.is_some() && w.state.has_nav_graph && !w.activity.off_route);
+        assert!(
+            w.navigator.route_state().active_route.is_some()
+                && w.state.has_nav_graph
+                && !w.navigator.route_state().off_route
+        );
 
         let mut d = drawer();
         w.press(&mut d, Gesture::Step(1)); // → the Detour row
@@ -865,10 +872,18 @@ mod tests {
 
         // The predicate the row read is the one the chooser reads: identical inputs, identical
         // answer, so the row cannot become an enabled door onto a screen that opens inert.
-        assert!(!super::super::detour::reachable(&w.activity, w.recorder.recording(), w.state.has_nav_graph));
+        assert!(!super::super::detour::reachable(
+            w.navigator.route_state(),
+            w.recorder.recording(),
+            w.state.has_nav_graph
+        ));
         assert!(
             ContextAction::Detour.available(&w.facts())
-                == super::super::detour::reachable(&w.activity, w.recorder.recording(), w.state.has_nav_graph),
+                == super::super::detour::reachable(
+                    w.navigator.route_state(),
+                    w.recorder.recording(),
+                    w.state.has_nav_graph
+                ),
             "the row's availability *is* the chooser's entry condition"
         );
     }
@@ -881,7 +896,7 @@ mod tests {
         let mut w = World::riding();
         w.recorder.test_open();
         w.activity.mode = Mode::Paused;
-        w.activity.progress_m = 4_200;
+        w.navigator.route_state_mut().progress_m = 4_200;
         // A category the rider left on from an earlier list must not survive into this one.
         w.state.up_ahead_filter = PoiCategorySet::only(PoiCategory::Water);
         let session = w.recorder.session();
@@ -1046,7 +1061,7 @@ mod tests {
     #[test]
     fn a_value_row_is_live_exactly_where_its_binding_accepts() {
         let mut w = World::riding();
-        w.activity.active_route = None;
+        w.navigator.set_active_route(None);
         w.state.has_nav_graph = false;
         w.recorder.test_close();
         let d = up_ahead_drawer();

@@ -94,7 +94,8 @@ The runtime uses these layers:
 | Foundation crates | Define formats, map-scene interfaces, elevation rules, and ports. |
 
 `App` is the composition root for the shared application.
-The [ride engine](src:firmware/obc-app/src/ride_engine.rs) owns ride-derived state.
+The [Navigator](src:firmware/obc-app/src/navigator.rs) owns the active route, route matching,
+guidance state, and route caches. `App` keeps only tick cadence and one-shot sensor sampling state.
 The [UI runtime](src:firmware/obc-app/src/ui_runtime.rs) owns screens, timers, and dirty regions.
 The [catalog state](src:firmware/obc-app/src/catalog_state.rs) owns durable object identifiers.
 The [host protocol](src:firmware/obc-app/src/host.rs) defines bounded commands and events.

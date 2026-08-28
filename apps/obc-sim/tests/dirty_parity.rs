@@ -651,10 +651,10 @@ fn replay() -> Vec<Step> {
     steps.push(Step { ports: Ports { fix: Some(fix_off_route(7)), ..Ports::default() }, ..step("off route", 17_000) });
     steps.push(
         Step { ports: Ports { fix: Some(fix_off_route(8)), ..Ports::default() }, ..step("still off route", 18_000) }
-            .probe(|app| assert!(app.activity.off_route(), "the excursion is genuinely off the corridor")),
+            .probe(|app| assert!(app.off_route(), "the excursion is genuinely off the corridor")),
     );
     steps.push(step("back on route", 19_000).fix(9).probe(|app| {
-        assert!(app.activity.progress_m() > 0, "the matcher is locked on — the progress segment is live");
+        assert!(app.progress_m() > 0, "the matcher is locked on — the progress segment is live");
     }));
     // Far enough along that the next waypoint and the active climb move on.
     for i in 10..16 {
@@ -708,7 +708,7 @@ fn replay() -> Vec<Step> {
     steps.push(step("the compass goes quiet", 76_000));
 
     // --- the Up-ahead timeline: live distances under a chrome base --------------------------------
-    // Its rows measure from `activity.progress_m`, and the row set never changes as the rider
+    // Its rows measure from `App::progress_m`, and the row set never changes as the rider
     // advances — so nothing about the *stack* moves and no fix-driven map key is even built. Before
     // this row declared its own key, the only thing that refreshed the figures was the next-waypoint
     // dirty site, which fired on a waypoint crossing rather than on the distances actually moving.
@@ -841,7 +841,7 @@ fn climb_replay() -> Vec<Step> {
             step("the cursor advances up the climb", 2_000 + i * 1_000)
                 .fix(i)
                 .expect("Climb")
-                .probe(|app| assert!(app.activity.progress_m() > 0, "the matcher is following the climb")),
+                .probe(|app| assert!(app.progress_m() > 0, "the matcher is following the climb")),
         );
     }
     steps.push(step("quiet at the top", 9_000).expect("Climb"));

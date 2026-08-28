@@ -46,20 +46,29 @@ fn leaked_settings() -> &'static mut Settings {
     Box::leak(Box::new(Settings::default()))
 }
 
-/// A handle [`Ctx`] over freshly-made state/activity. The Route-menu tests pass a catalog via
-/// [`route_ctx`].
+/// A handle [`Ctx`] over fresh camera, Activity, and Recorder state. Route-menu tests use
+/// [`route_ctx_with_nav`] when they also need Navigator and a route catalog.
 fn ctx<'a>(state: &'a mut AppState, activity: &'a mut Activity, recorder: &'a mut RecorderMachine) -> Ctx<'a> {
     Ctx { recorder, ..test_ctx(state, activity, leaked_settings()) }
 }
 
-/// A handle [`Ctx`] carrying a route catalog, for the Route-menu tests.
-fn route_ctx<'a>(
+fn ctx_with_nav<'a>(
     state: &'a mut AppState,
     activity: &'a mut Activity,
     recorder: &'a mut RecorderMachine,
+    navigator: &'a mut crate::navigator::NavigatorMachine,
+) -> Ctx<'a> {
+    Ctx { recorder, navigator, ..test_ctx(state, activity, leaked_settings()) }
+}
+
+fn route_ctx_with_nav<'a>(
+    state: &'a mut AppState,
+    activity: &'a mut Activity,
+    recorder: &'a mut RecorderMachine,
+    navigator: &'a mut crate::navigator::NavigatorMachine,
     routes: &'a [RouteSummary],
 ) -> Ctx<'a> {
-    Ctx { routes, ..ctx(state, activity, recorder) }
+    Ctx { routes, ..ctx_with_nav(state, activity, recorder, navigator) }
 }
 
 /// A small synthetic route catalog (names + totals + a unit bbox to center on).
@@ -166,7 +175,7 @@ fn exactly_the_riding_views_and_the_timeline_declare_a_context() {
     assert!(!declared(&Screen::RouteMenu(RouteMenuScreen::new())));
     assert!(!declared(&Screen::Settings(crate::screen::SettingsScreen::new())));
     assert!(!declared(&Screen::PoiMenu(crate::screen::PoiMenuScreen::new())));
-    assert!(!declared(&Screen::Detour(crate::screen::DetourScreen::new(&Activity::new(Mode::Riding)))));
+    assert!(!declared(&Screen::Detour(crate::screen::DetourScreen::new(&crate::navigator::RouteState::new(),))));
 }
 
 /// The chord opens the sheet over a riding view and does nothing anywhere else — the "unsupported
@@ -226,7 +235,7 @@ fn the_up_ahead_row_preserves_the_session_and_one_back_returns_to_the_map() {
     let mut app = App::new(AppState::new(0, 0, 1.0));
     app.test_mount_store();
     app.test_start_ride();
-    app.activity.progress_m = 1_500;
+    app.navigator.route_state_mut().progress_m = 1_500;
     let session = app.ride_session();
     assert_eq!(app.activity.mode, Mode::Riding);
     assert!(!app.corridor_snapshot_pending(), "nothing asks for a corridor query on the map");
@@ -268,7 +277,7 @@ fn the_up_ahead_source_setting_decides_whether_the_corridor_is_armed() {
         app.test_mount_store();
         app.set_settings(Settings { up_ahead_source: source, ..Settings::default() });
         app.test_start_ride();
-        app.activity.progress_m = 1_500;
+        app.navigator.route_state_mut().progress_m = 1_500;
         assert!(app.apply_chord(crate::input::Chord::Context)); // Map → the ride context sheet
         app.apply_gesture(Gesture::Press); // the first row = Up ahead
         assert!(matches!(app.top_screen(), Screen::UpAhead(_)), "{source:?} still opens the timeline");
@@ -406,11 +415,16 @@ fn route_menu_press_opens_the_overview_and_preloads_the_route() {
     let mut rec = RecorderMachine::new();
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Idle));
     let routes = test_routes();
+    let mut navigator = crate::navigator::NavigatorMachine::new();
     let mut rm = RouteMenuScreen::new();
-    rm.handle(Gesture::Step(1), &mut route_ctx(&mut st, &mut act, &mut rec, &routes)); // highlight route 1
-    let t = rm.handle(Gesture::Press, &mut route_ctx(&mut st, &mut act, &mut rec, &routes));
+    rm.handle(Gesture::Step(1), &mut route_ctx_with_nav(&mut st, &mut act, &mut rec, &mut navigator, &routes)); // highlight route 1
+    let t = rm.handle(Gesture::Press, &mut route_ctx_with_nav(&mut st, &mut act, &mut rec, &mut navigator, &routes));
     assert!(matches!(t, Transition::Push(Screen::RouteOverview(_))), "picking opens the overview");
-    assert_eq!(act.active_route, Some(1), "the pick preloads the route so the overview gets a profile");
+    assert_eq!(
+        navigator.route_state().active_route,
+        Some(1),
+        "the pick preloads the route so the overview gets a profile"
+    );
     assert_eq!(act.mode, Mode::Idle, "no riding yet — the overview's START does that");
     assert!(!rec.recording(), "and no session either");
 }
@@ -421,13 +435,14 @@ fn overview_start_begins_the_session_and_opens_the_map() {
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Idle));
     st.mode = CameraMode::Free; // the map-viewer default; starting must flip to Follow
     st.heading_up = false;
-    act.active_route = Some(1); // the Route menu preloaded the preview
+    let mut navigator = crate::navigator::NavigatorMachine::new();
+    navigator.set_active_route(Some(1)); // the Route menu preloaded the preview
     let routes = test_routes();
-    let t =
-        RouteOverviewScreen::new(1, None).handle(Gesture::Press, &mut route_ctx(&mut st, &mut act, &mut rec, &routes));
+    let t = RouteOverviewScreen::new(1, None)
+        .handle(Gesture::Press, &mut route_ctx_with_nav(&mut st, &mut act, &mut rec, &mut navigator, &routes));
     assert!(matches!(t, Transition::Root(Screen::Map(_))), "starting lands on a clean [Home, Map]");
     assert_eq!(act.mode, Mode::Riding, "START begins tracking");
-    assert_eq!(act.active_route, Some(1), "the previewed route is the active one");
+    assert_eq!(navigator.route_state().active_route, Some(1), "the previewed route is the active one");
     assert_eq!(rec.test_take_intent(), Some(RecorderIntent::Start), "START names the ride to Recorder");
     // Starting drops into the riding view: follow + heading-up, seeded at the start.
     assert_eq!(st.mode, CameraMode::Follow);
@@ -440,13 +455,14 @@ fn overview_start_begins_the_session_and_opens_the_map() {
 fn overview_back_cancels_and_restores_the_previous_route() {
     let mut rec = RecorderMachine::new();
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Idle));
-    act.active_route = Some(2); // the Route menu preloaded the preview…
+    let mut navigator = crate::navigator::NavigatorMachine::new();
+    navigator.set_active_route(Some(2)); // the Route menu preloaded the preview…
     let routes = test_routes();
     // …over a previously loaded route 0, which back must put back.
     let t = RouteOverviewScreen::new(2, Some(0))
-        .handle(Gesture::Back, &mut route_ctx(&mut st, &mut act, &mut rec, &routes));
+        .handle(Gesture::Back, &mut route_ctx_with_nav(&mut st, &mut act, &mut rec, &mut navigator, &routes));
     assert!(matches!(t, Transition::Pop), "back returns to the Route menu");
-    assert_eq!(act.active_route, Some(0), "the previous route is restored");
+    assert_eq!(navigator.route_state().active_route, Some(0), "the previous route is restored");
     assert!(!rec.recording(), "browsing started nothing");
 }
 
@@ -463,54 +479,61 @@ fn route_menu_with_no_routes_ignores_press() {
     // An empty catalog: press/step are no-ops, so a routeless device can't "load" one.
     let mut rec = RecorderMachine::new();
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Idle));
-    let t = RouteMenuScreen::new().handle(Gesture::Press, &mut ctx(&mut st, &mut act, &mut rec));
+    let mut navigator = crate::navigator::NavigatorMachine::new();
+    let t =
+        RouteMenuScreen::new().handle(Gesture::Press, &mut ctx_with_nav(&mut st, &mut act, &mut rec, &mut navigator));
     assert!(matches!(t, Transition::None));
-    assert_eq!(act.active_route, None);
+    assert_eq!(navigator.route_state().active_route, None);
 }
 
 // Loading a route mid-session: the swap / save prompt, Finish / Discard.
 
-/// An activity navigating route `r`, with `rec` already recording.
-fn tracking(r: usize, rec: &mut RecorderMachine) -> Activity {
-    let mut act = Activity::new(Mode::Riding);
-    act.active_route = Some(r);
+/// An Activity in Riding mode and a Navigator following route `r`, with `rec` already recording.
+fn tracking(r: usize, rec: &mut RecorderMachine) -> (Activity, crate::navigator::NavigatorMachine) {
+    let act = Activity::new(Mode::Riding);
+    let mut navigator = crate::navigator::NavigatorMachine::new();
+    navigator.set_active_route(Some(r));
     rec.test_open();
-    act
+    (act, navigator)
 }
 
 #[test]
 fn loading_a_different_route_mid_session_prompts() {
     let mut rec = RecorderMachine::new();
-    let (mut st, mut act) = (AppState::new(0, 0, 1.0), tracking(0, &mut rec));
+    let mut st = AppState::new(0, 0, 1.0);
+    let (mut act, mut navigator) = tracking(0, &mut rec);
     let routes = test_routes();
     let mut rm = RouteMenuScreen::new();
-    rm.handle(Gesture::Step(1), &mut route_ctx(&mut st, &mut act, &mut rec, &routes)); // highlight route 1
-    let t = rm.handle(Gesture::Press, &mut route_ctx(&mut st, &mut act, &mut rec, &routes));
+    rm.handle(Gesture::Step(1), &mut route_ctx_with_nav(&mut st, &mut act, &mut rec, &mut navigator, &routes)); // highlight route 1
+    let t = rm.handle(Gesture::Press, &mut route_ctx_with_nav(&mut st, &mut act, &mut rec, &mut navigator, &routes));
     assert!(matches!(t, Transition::Push(Screen::RouteSwap(_))), "a different route mid-ride asks");
-    assert_eq!(act.active_route, Some(0), "the prompt hasn't changed the route yet");
+    assert_eq!(navigator.route_state().active_route, Some(0), "the prompt hasn't changed the route yet");
 }
 
 #[test]
 fn reselecting_the_active_route_mid_session_returns_to_the_map() {
     let mut rec = RecorderMachine::new();
-    let (mut st, mut act) = (AppState::new(0, 0, 1.0), tracking(1, &mut rec));
+    let mut st = AppState::new(0, 0, 1.0);
+    let (mut act, mut navigator) = tracking(1, &mut rec);
     let routes = test_routes();
     let mut rm = RouteMenuScreen::new();
-    rm.handle(Gesture::Step(1), &mut route_ctx(&mut st, &mut act, &mut rec, &routes)); // highlight the active route 1
-    let t = rm.handle(Gesture::Press, &mut route_ctx(&mut st, &mut act, &mut rec, &routes));
+    rm.handle(Gesture::Step(1), &mut route_ctx_with_nav(&mut st, &mut act, &mut rec, &mut navigator, &routes)); // highlight the active route 1
+    let t = rm.handle(Gesture::Press, &mut route_ctx_with_nav(&mut st, &mut act, &mut rec, &mut navigator, &routes));
     assert!(matches!(t, Transition::Root(Screen::Map(_))), "re-picking the active route just rides it");
 }
 
 #[test]
 fn route_swap_swap_only_keeps_the_session() {
     let mut rec = RecorderMachine::new();
-    let (mut st, mut act) = (AppState::new(0, 0, 1.0), tracking(0, &mut rec));
+    let mut st = AppState::new(0, 0, 1.0);
+    let (mut act, mut navigator) = tracking(0, &mut rec);
     let before = rec.session();
     let routes = test_routes();
     // Default selection (0) is "Swap route".
-    let t = RouteSwapScreen::new(2).handle(Gesture::Press, &mut route_ctx(&mut st, &mut act, &mut rec, &routes));
+    let t = RouteSwapScreen::new(2)
+        .handle(Gesture::Press, &mut route_ctx_with_nav(&mut st, &mut act, &mut rec, &mut navigator, &routes));
     assert!(matches!(t, Transition::Root(Screen::Map(_))));
-    assert_eq!(act.active_route, Some(2), "navigation swapped to the picked route");
+    assert_eq!(navigator.route_state().active_route, Some(2), "navigation swapped to the picked route");
     assert_eq!(rec.session(), before, "the tracking session continues unchanged");
     assert!(rec.test_take_intent().is_none(), "swap-only saves nothing");
 }
@@ -518,20 +541,21 @@ fn route_swap_swap_only_keeps_the_session() {
 #[test]
 fn route_swap_save_and_new_saves_then_starts_a_fresh_session() {
     let mut rec = RecorderMachine::new();
-    let (mut st, mut act) = (AppState::new(0, 0, 1.0), tracking(0, &mut rec));
+    let mut st = AppState::new(0, 0, 1.0);
+    let (mut act, mut navigator) = tracking(0, &mut rec);
     let before = rec.session();
     let routes = test_routes();
     let mut rs = RouteSwapScreen::new(2);
-    rs.handle(Gesture::Step(1), &mut route_ctx(&mut st, &mut act, &mut rec, &routes)); // highlight "Save & new"
+    rs.handle(Gesture::Step(1), &mut route_ctx_with_nav(&mut st, &mut act, &mut rec, &mut navigator, &routes)); // highlight "Save & new"
     assert!(rs.selection_is_guarded());
     // A press must not commit the guarded option — only a completed hold.
-    let t = rs.handle(Gesture::Press, &mut route_ctx(&mut st, &mut act, &mut rec, &routes));
+    let t = rs.handle(Gesture::Press, &mut route_ctx_with_nav(&mut st, &mut act, &mut rec, &mut navigator, &routes));
     assert!(matches!(t, Transition::None), "a press can't confirm Save & new");
     assert!(rec.test_take_intent().is_none());
 
-    let t = rs.handle(Gesture::Hold, &mut route_ctx(&mut st, &mut act, &mut rec, &routes));
+    let t = rs.handle(Gesture::Hold, &mut route_ctx_with_nav(&mut st, &mut act, &mut rec, &mut navigator, &routes));
     assert!(matches!(t, Transition::Root(Screen::Map(_))));
-    assert_eq!(act.active_route, Some(2));
+    assert_eq!(navigator.route_state().active_route, Some(2));
     assert_eq!(rec.session(), before, "the old ride is still open until the store answers for it");
     assert_eq!(rec.test_take_intent(), Some(RecorderIntent::Save), "and the old ride is what is saved");
 }
@@ -540,24 +564,26 @@ fn route_swap_save_and_new_saves_then_starts_a_fresh_session() {
 fn ride_control_finish_saves_and_discard_discards() {
     // Finish (row 1) → save the ride.
     let mut rec = RecorderMachine::new();
-    let (mut st, mut act) = (AppState::new(0, 0, 1.0), tracking(0, &mut rec));
+    let mut st = AppState::new(0, 0, 1.0);
+    let (mut act, mut navigator) = tracking(0, &mut rec);
     act.mode = Mode::Paused;
     let mut rc = RideControl::new();
-    rc.handle(Gesture::Step(1), &mut ctx(&mut st, &mut act, &mut rec)); // → Finish
-    let t = rc.handle(Gesture::Hold, &mut ctx(&mut st, &mut act, &mut rec));
+    rc.handle(Gesture::Step(1), &mut ctx_with_nav(&mut st, &mut act, &mut rec, &mut navigator)); // → Finish
+    let t = rc.handle(Gesture::Hold, &mut ctx_with_nav(&mut st, &mut act, &mut rec, &mut navigator));
     assert!(matches!(t, Transition::Home));
     assert_eq!(act.mode, Mode::Idle);
-    assert_eq!(act.active_route, None);
+    assert_eq!(navigator.route_state().active_route, None);
     assert!(rec.recording(), "the ride is open until the store answers for the close");
     assert_eq!(rec.test_take_intent(), Some(RecorderIntent::Save), "Finish names the save to Recorder");
 
     // Discard (row 2) → throw the ride away.
     let mut rec = RecorderMachine::new();
-    let (mut st, mut act) = (AppState::new(0, 0, 1.0), tracking(0, &mut rec));
+    let mut st = AppState::new(0, 0, 1.0);
+    let (mut act, mut navigator) = tracking(0, &mut rec);
     act.mode = Mode::Paused;
     let mut rc = RideControl::new();
-    rc.handle(Gesture::Step(2), &mut ctx(&mut st, &mut act, &mut rec)); // → Discard
-    let t = rc.handle(Gesture::Hold, &mut ctx(&mut st, &mut act, &mut rec));
+    rc.handle(Gesture::Step(2), &mut ctx_with_nav(&mut st, &mut act, &mut rec, &mut navigator)); // → Discard
+    let t = rc.handle(Gesture::Hold, &mut ctx_with_nav(&mut st, &mut act, &mut rec, &mut navigator));
     assert!(matches!(t, Transition::Home));
     assert!(rec.recording(), "the ride is open until the store answers for the close");
     assert_eq!(rec.test_take_intent(), Some(RecorderIntent::Discard));
@@ -1017,34 +1043,35 @@ fn pan_press_toggles_move_and_zoom() {
 fn the_pan_ring_walks_route_move_free_move_and_zoom() {
     let mut rec = RecorderMachine::new();
     let (mut st, mut act) = (AppState::new(0, 0, 1.0), Activity::new(Mode::Riding));
-    act.active_route = Some(0);
-    act.progress_m = 500;
-    st.enter_pan(true, act.progress_m);
+    let mut navigator = crate::navigator::NavigatorMachine::new();
+    navigator.set_active_route(Some(0));
+    navigator.route_state_mut().progress_m = 500;
+    st.enter_pan(true, navigator.route_state().progress_m);
     let mode = |st: &AppState| (st.pan.unwrap().basis, st.pan.unwrap().tool);
     assert_eq!(mode(&st), (PanBasis::Route, PanTool::Move), "a routed pan opens on the route");
 
     // One lap of the ring.
-    MapScreen::new().handle(Gesture::Press, &mut ctx(&mut st, &mut act, &mut rec));
+    MapScreen::new().handle(Gesture::Press, &mut ctx_with_nav(&mut st, &mut act, &mut rec, &mut navigator));
     assert_eq!(mode(&st), (PanBasis::Vertical, PanTool::Move), "Route Move -> Free Move");
-    MapScreen::new().handle(Gesture::Press, &mut ctx(&mut st, &mut act, &mut rec));
+    MapScreen::new().handle(Gesture::Press, &mut ctx_with_nav(&mut st, &mut act, &mut rec, &mut navigator));
     assert_eq!(mode(&st), (PanBasis::Vertical, PanTool::Zoom), "Free Move -> Zoom");
     let zoom_state = st.pan.unwrap();
-    MapScreen::new().handle(Gesture::Hold, &mut ctx(&mut st, &mut act, &mut rec));
+    MapScreen::new().handle(Gesture::Hold, &mut ctx_with_nav(&mut st, &mut act, &mut rec, &mut navigator));
     assert_eq!(st.pan.unwrap(), zoom_state, "Select-hold is inert in Zoom");
-    MapScreen::new().handle(Gesture::Press, &mut ctx(&mut st, &mut act, &mut rec));
+    MapScreen::new().handle(Gesture::Press, &mut ctx_with_nav(&mut st, &mut act, &mut rec, &mut navigator));
     assert_eq!(mode(&st), (PanBasis::Route, PanTool::Move), "Zoom -> Route Move closes the lap");
 
     // The axis survives the lap: pick Horizontal in Free, go round, and come back to it.
-    MapScreen::new().handle(Gesture::Press, &mut ctx(&mut st, &mut act, &mut rec));
-    MapScreen::new().handle(Gesture::Hold, &mut ctx(&mut st, &mut act, &mut rec));
+    MapScreen::new().handle(Gesture::Press, &mut ctx_with_nav(&mut st, &mut act, &mut rec, &mut navigator));
+    MapScreen::new().handle(Gesture::Hold, &mut ctx_with_nav(&mut st, &mut act, &mut rec, &mut navigator));
     assert_eq!(mode(&st), (PanBasis::Horizontal, PanTool::Move), "Select-hold flips the Free axis");
     for _ in 0..3 {
-        MapScreen::new().handle(Gesture::Press, &mut ctx(&mut st, &mut act, &mut rec));
+        MapScreen::new().handle(Gesture::Press, &mut ctx_with_nav(&mut st, &mut act, &mut rec, &mut navigator));
     }
     assert_eq!(mode(&st), (PanBasis::Horizontal, PanTool::Move), "a lap returns to the axis in use");
 
     // Select-hold never leaves the Free family.
-    MapScreen::new().handle(Gesture::Hold, &mut ctx(&mut st, &mut act, &mut rec));
+    MapScreen::new().handle(Gesture::Hold, &mut ctx_with_nav(&mut st, &mut act, &mut rec, &mut navigator));
     assert_eq!(mode(&st), (PanBasis::Vertical, PanTool::Move));
 }
 
@@ -1073,16 +1100,17 @@ fn the_route_less_pan_ring_is_free_move_and_zoom() {
 fn pan_route_steps_move_and_clamp_progress() {
     let mut rec = RecorderMachine::new();
     let (mut st, mut act) = (AppState::new(0, 0, 4.0), Activity::new(Mode::Riding));
-    act.active_route = Some(0);
-    act.route_total_m = 1_000;
-    act.progress_m = 500;
-    st.enter_pan(true, act.progress_m);
+    let mut navigator = crate::navigator::NavigatorMachine::new();
+    navigator.set_active_route(Some(0));
+    navigator.route_state_mut().route_total_m = 1_000;
+    navigator.route_state_mut().progress_m = 500;
+    st.enter_pan(true, navigator.route_state().progress_m);
 
-    MapScreen::new().handle(Gesture::Step(1), &mut ctx(&mut st, &mut act, &mut rec));
+    MapScreen::new().handle(Gesture::Step(1), &mut ctx_with_nav(&mut st, &mut act, &mut rec, &mut navigator));
     assert!(st.pan.unwrap().route_progress_m > 500, "Down looks farther ahead on the route");
-    MapScreen::new().handle(Gesture::Step(-10_000), &mut ctx(&mut st, &mut act, &mut rec));
+    MapScreen::new().handle(Gesture::Step(-10_000), &mut ctx_with_nav(&mut st, &mut act, &mut rec, &mut navigator));
     assert_eq!(st.pan.unwrap().route_progress_m, 0, "route movement clamps at the start");
-    MapScreen::new().handle(Gesture::Step(10_000), &mut ctx(&mut st, &mut act, &mut rec));
+    MapScreen::new().handle(Gesture::Step(10_000), &mut ctx_with_nav(&mut st, &mut act, &mut rec, &mut navigator));
     assert_eq!(st.pan.unwrap().route_progress_m, 1_000, "route movement clamps at the end");
 }
 

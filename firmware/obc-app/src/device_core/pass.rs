@@ -727,7 +727,7 @@ impl App {
     fn admit_catalog_intent(&mut self, intent: CatalogIntent) -> Result<(), SlotFull<CatalogIntent>> {
         self.catalogs.admit_intent(intent)?;
         if let CatalogIntent::DeleteRoute { id } = intent {
-            if self.activity.active_route.and_then(|idx| self.catalogs.route_id_at(idx)) == Some(id) {
+            if self.navigator.route_state().active_route.and_then(|idx| self.catalogs.route_id_at(idx)) == Some(id) {
                 let _ = self.pass.connections.active_route_removed.try_put(ActiveRouteRemoved { route: id });
             }
         }
@@ -784,13 +784,12 @@ impl App {
     /// a fresh ride, never a recovered continuation — zero the accumulators and drop any detour in
     /// flight.
     ///
-    /// The rule is re-derived here rather than keyed off a mirrored session id, which is what
-    /// `RideEngine` used to hold. Recorder is the only thing that knows a session opened, and it is
-    /// the only thing that knows whether it continues a recovered one.
+    /// Recorder is the only thing that knows a session opened, and it is the only thing that knows
+    /// whether it continues a recovered one.
     fn begin_ride_session(&mut self, start: crate::recorder::SessionStart) {
-        self.ride.relock_matcher();
+        self.navigator.relock_matcher();
         if start == crate::recorder::SessionStart::Fresh {
-            self.activity.reset_ride();
+            self.navigator.reset_ride();
             self.recorder.reset_totals();
             self.navigator.reset_detour();
         }
@@ -806,8 +805,8 @@ impl App {
     /// new ride starts with an empty trail", which is also what a recovered continuation needs —
     /// it keeps the totals the journal restored and still opens on a clean trail.
     fn end_ride_session(&mut self) {
-        self.ride.relock_matcher();
-        self.activity.reset_ride();
+        self.navigator.relock_matcher();
+        self.navigator.reset_ride();
         self.recorder.reset_totals();
         self.navigator.reset_detour(); // the ride the detour was planned for is over
         self.recorder.restart_buffers();
@@ -827,13 +826,15 @@ impl App {
     fn stage_navigator(&mut self, effects: &mut EffectSlots) {
         self.pass.record(PassStage::Navigator);
         if let Some(removed) = self.pass.connections.active_route_removed.take() {
-            if self.activity.active_route.and_then(|idx| self.catalogs.route_id_at(idx)) == Some(removed.route) {
-                self.activity.active_route = None;
+            if self.navigator.route_state().active_route.and_then(|idx| self.catalogs.route_id_at(idx))
+                == Some(removed.route)
+            {
+                self.navigator.set_active_route(None);
                 self.drop_route_derived_state();
                 self.ui.map_dirty = true;
             }
         }
-        let active = self.activity.active_route.and_then(|idx| self.catalogs.route_id_at(idx));
+        let active = self.navigator.route_state().active_route.and_then(|idx| self.catalogs.route_id_at(idx));
         if active != self.pass.active_route {
             self.pass.active_route = active;
             if let Some(route) = active {
@@ -1004,7 +1005,10 @@ impl App {
             render,
             next_wake_ms,
             derived_needs: self.derived_needs(),
-            sources: SourceNeeds { map: self.base_needs_reader(), route: self.activity.active_route.is_some() },
+            sources: SourceNeeds {
+                map: self.base_needs_reader(),
+                route: self.navigator.route_state().active_route.is_some(),
+            },
             effects,
             immediate,
         }

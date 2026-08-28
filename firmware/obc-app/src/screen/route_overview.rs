@@ -19,8 +19,8 @@
 //! Route menu. With the Delete row hidden (in use / computed) there is nothing to toggle: press
 //! starts, hold is a no-op, and the lone START row keeps the amber selected face.
 //!
-//! Entering the overview sets [`Activity::active_route`](crate::Activity::active_route) — the
-//! hosts key geometry loading on it, so the route streams open and the profile builds while the
+//! Entering the overview sets Navigator's active route. Hosts key geometry loading on it, so the
+//! route streams open and the profile builds while the
 //! rider is still looking at the page — but starts **no** session; the previous `active_route`
 //! is remembered and restored on `back`, so browsing routes never clobbers a loaded one. The
 //! descent figure comes from the opened route (`--` for the frame or two before it streams in).
@@ -39,8 +39,8 @@ use super::vocab::chrome::{empty_state, stroke2, title_frame, LIST_TOP};
 use super::vocab::fmt::{duration_hms, expiry_short, write_distance_split};
 use super::vocab::pager::ContentPager;
 use super::vocab::rows::{draw_guarded_rows, ledger_row, GuardedRowsGeometry, MenuItem};
-use crate::activity::Activity;
 use crate::input::Gesture;
+use crate::navigator::RouteState;
 use crate::retention::{RouteRetentionMeta, DAY_SECS};
 use crate::route::RouteSummary;
 use crate::screen::ScreenTick;
@@ -127,15 +127,20 @@ impl RouteOverviewScreen {
     /// open geometry handle mid-ride would break navigation. Since owner review round 1 the row is
     /// **hidden entirely** while disallowed (no greyed face), and this guard keeps a hold a no-op
     /// regardless.
-    pub(crate) fn delete_enabled(&self, activity: &Activity, recording: bool, routes: &[RouteSummary]) -> bool {
-        !self.computed && self.route < routes.len() && !(recording && activity.active_route == Some(self.route))
+    pub(crate) fn delete_enabled(&self, navigation: &RouteState, recording: bool, routes: &[RouteSummary]) -> bool {
+        !self.computed && self.route < routes.len() && !(recording && navigation.active_route == Some(self.route))
     }
 
     /// True while a hold would charge the Delete row — it exists **and the cursor is on it**
     /// (owner review round 2: no more hold-anywhere) — the
     /// [`App::top_wants_hold_fill`](crate::App::top_wants_hold_fill) predicate for this screen.
-    pub(crate) fn selection_is_guarded(&self, activity: &Activity, recording: bool, routes: &[RouteSummary]) -> bool {
-        self.selected == DELETE && self.delete_enabled(activity, recording, routes)
+    pub(crate) fn selection_is_guarded(
+        &self,
+        navigation: &RouteState,
+        recording: bool,
+        routes: &[RouteSummary],
+    ) -> bool {
+        self.selected == DELETE && self.delete_enabled(navigation, recording, routes)
     }
 
     /// Content-paired pager tick: flip the two pages (track shape + DISTANCE / elevation band +
@@ -163,7 +168,11 @@ impl RouteOverviewScreen {
             // the cursor also clamps back to START first, in case the row vanished under it (the
             // route became the active ride's via the swap flow).
             Gesture::Step(n) => {
-                let len = if self.delete_enabled(cx.activity, cx.recorder.recording(), cx.routes) { 2 } else { 1 };
+                let len = if self.delete_enabled(cx.navigator.route_state(), cx.recorder.recording(), cx.routes) {
+                    2
+                } else {
+                    1
+                };
                 self.selected = self.selected.min(len - 1);
                 self.selected = super::vocab::list::step_selection(self.selected, n, len);
                 Transition::None
@@ -191,14 +200,16 @@ impl RouteOverviewScreen {
             // store-changed rescan re-feeds the catalog. Restore the pre-preview active route and
             // pop to the refreshed Routes list. A hold while the route is in use (row hidden)
             // never reaches here.
-            Gesture::Hold if self.selection_is_guarded(cx.activity, cx.recorder.recording(), cx.routes) => {
+            Gesture::Hold
+                if self.selection_is_guarded(cx.navigator.route_state(), cx.recorder.recording(), cx.routes) =>
+            {
                 cx.activity.request_route_delete(self.route);
-                cx.activity.active_route = self.prev_active;
+                cx.navigator.set_active_route(self.prev_active);
                 Transition::Pop
             }
             // Cancel: put back whatever route was loaded before the preview.
             Gesture::Back => {
-                cx.activity.active_route = self.prev_active;
+                cx.navigator.set_active_route(self.prev_active);
                 Transition::Pop
             }
             _ => Transition::None,
@@ -372,7 +383,7 @@ impl RouteOverviewScreen {
             MenuItem { label: rx.t(Msg::RouteOverviewStartRide), guard: false },
             MenuItem { label: rx.t(Msg::RouteOverviewDelete), guard: true },
         ];
-        let n = if self.delete_enabled(rx.activity, rx.recording, rx.routes) { 2 } else { 1 };
+        let n = if self.delete_enabled(rx.navigation, rx.recording, rx.routes) { 2 } else { 1 };
         draw_guarded_rows(cv, &items[..n], self.selected.min(n - 1), rx.hold_progress, WARNING, geo);
     }
 }
@@ -519,7 +530,7 @@ mod tests {
     use crate::route::RouteSummary;
     use crate::screen::test_ctx;
     use crate::settings::Settings;
-    use crate::AppState;
+    use crate::{Activity, AppState};
     use obc_map_scene::BBox;
 
     fn summary() -> RouteSummary {
@@ -536,14 +547,22 @@ mod tests {
     fn run(
         scr: &mut RouteOverviewScreen,
         act: &mut Activity,
+        navigation: &mut RouteState,
         rec: &mut crate::RecorderMachine,
         routes: &[RouteSummary],
         g: Gesture,
     ) -> Transition {
         let mut st = AppState::new(0, 0, 1.0);
         let mut settings = Settings::default();
-        let mut cx = Ctx { routes, recorder: rec, ..test_ctx(&mut st, act, &mut settings) };
-        scr.handle(g, &mut cx)
+        let mut navigator = crate::navigator::NavigatorMachine::new();
+        *navigator.route_state_mut() = *navigation;
+        let result = {
+            let mut cx =
+                Ctx { routes, recorder: rec, navigator: &mut navigator, ..test_ctx(&mut st, act, &mut settings) };
+            scr.handle(g, &mut cx)
+        };
+        *navigation = *navigator.route_state();
+        result
     }
 
     /// The action cursor (owner review round 2): entry selects START and a hold there does
@@ -555,20 +574,27 @@ mod tests {
         let mut rec = crate::RecorderMachine::new();
         let routes = [summary(), summary()];
         let mut act = Activity::new(Mode::Idle);
-        act.active_route = Some(1); // the menu preview
+        let mut navigation = RouteState::new();
+        navigation.active_route = Some(1); // the menu preview
         let mut scr = RouteOverviewScreen::new(1, Some(0)); // was previewing route 0 before
-        assert!(scr.delete_enabled(&act, rec.recording(), &routes), "an Idle preview is deletable");
-        assert!(!scr.selection_is_guarded(&act, rec.recording(), &routes), "entry selects START — nothing armed");
-        let t = run(&mut scr, &mut act, &mut rec, &routes, Gesture::Hold);
+        assert!(scr.delete_enabled(&navigation, rec.recording(), &routes), "an Idle preview is deletable");
+        assert!(
+            !scr.selection_is_guarded(&navigation, rec.recording(), &routes),
+            "entry selects START — nothing armed"
+        );
+        let t = run(&mut scr, &mut act, &mut navigation, &mut rec, &routes, Gesture::Hold);
         assert!(matches!(t, Transition::None), "a hold with START selected does not delete");
         assert_eq!(act.take_route_delete(), None);
 
-        run(&mut scr, &mut act, &mut rec, &routes, Gesture::Step(1)); // → the Delete row
-        assert!(scr.selection_is_guarded(&act, rec.recording(), &routes), "the hold fill is live on the Delete row");
-        let t = run(&mut scr, &mut act, &mut rec, &routes, Gesture::Hold);
+        run(&mut scr, &mut act, &mut navigation, &mut rec, &routes, Gesture::Step(1)); // → the Delete row
+        assert!(
+            scr.selection_is_guarded(&navigation, rec.recording(), &routes),
+            "the hold fill is live on the Delete row"
+        );
+        let t = run(&mut scr, &mut act, &mut navigation, &mut rec, &routes, Gesture::Hold);
         assert!(matches!(t, Transition::Pop), "the delete pops back to the Routes list");
         assert_eq!(act.take_route_delete(), Some(1), "records the previewed route's index");
-        assert_eq!(act.active_route, Some(0), "the pre-preview route is restored");
+        assert_eq!(navigation.active_route, Some(0), "the pre-preview route is restored");
     }
 
     /// A press fires the START action only from the START row — with the cursor on Delete a press
@@ -578,13 +604,14 @@ mod tests {
         let mut rec = crate::RecorderMachine::new();
         let routes = [summary()];
         let mut act = Activity::new(Mode::Idle);
+        let mut navigation = RouteState::new();
         let mut scr = RouteOverviewScreen::new(0, None);
-        run(&mut scr, &mut act, &mut rec, &routes, Gesture::Step(1)); // → Delete
-        let t = run(&mut scr, &mut act, &mut rec, &routes, Gesture::Press);
+        run(&mut scr, &mut act, &mut navigation, &mut rec, &routes, Gesture::Step(1)); // → Delete
+        let t = run(&mut scr, &mut act, &mut navigation, &mut rec, &routes, Gesture::Press);
         assert!(matches!(t, Transition::None), "press on the Delete row starts nothing");
         assert!(!rec.recording(), "no session began");
-        run(&mut scr, &mut act, &mut rec, &routes, Gesture::Step(1)); // wrap back → START
-        let t = run(&mut scr, &mut act, &mut rec, &routes, Gesture::Press);
+        run(&mut scr, &mut act, &mut navigation, &mut rec, &routes, Gesture::Step(1)); // wrap back → START
+        let t = run(&mut scr, &mut act, &mut navigation, &mut rec, &routes, Gesture::Press);
         assert!(!matches!(t, Transition::None), "press on START starts the ride");
     }
 
@@ -596,13 +623,14 @@ mod tests {
         let mut rec = crate::RecorderMachine::new();
         let routes = [summary(), summary()];
         let mut act = Activity::new(Mode::Riding);
+        let mut navigation = RouteState::new();
         rec.test_open(); // now tracking…
-        act.active_route = Some(0); // …route 0
+        navigation.active_route = Some(0); // …route 0
         let mut scr = RouteOverviewScreen::new(0, None);
-        assert!(!scr.delete_enabled(&act, rec.recording(), &routes), "the active ride's route can't be deleted");
-        run(&mut scr, &mut act, &mut rec, &routes, Gesture::Step(1));
+        assert!(!scr.delete_enabled(&navigation, rec.recording(), &routes), "the active ride's route can't be deleted");
+        run(&mut scr, &mut act, &mut navigation, &mut rec, &routes, Gesture::Step(1));
         assert_eq!(scr.selected, START, "with the Delete row hidden there is nothing to toggle");
-        let t = run(&mut scr, &mut act, &mut rec, &routes, Gesture::Hold);
+        let t = run(&mut scr, &mut act, &mut navigation, &mut rec, &routes, Gesture::Hold);
         assert!(matches!(t, Transition::None), "a hold over the in-use route does nothing");
         assert_eq!(act.take_route_delete(), None);
     }
@@ -614,11 +642,12 @@ mod tests {
         let mut rec = crate::RecorderMachine::new();
         let routes = [summary()];
         let mut act = Activity::new(Mode::Idle);
+        let mut navigation = RouteState::new();
         let mut scr = RouteOverviewScreen::computed(0, None);
-        assert!(!scr.delete_enabled(&act, rec.recording(), &routes));
-        run(&mut scr, &mut act, &mut rec, &routes, Gesture::Step(1));
+        assert!(!scr.delete_enabled(&navigation, rec.recording(), &routes));
+        run(&mut scr, &mut act, &mut navigation, &mut rec, &routes, Gesture::Step(1));
         assert_eq!(scr.selected, START, "no Delete row — the step is a no-op");
-        run(&mut scr, &mut act, &mut rec, &routes, Gesture::Hold);
+        run(&mut scr, &mut act, &mut navigation, &mut rec, &routes, Gesture::Hold);
         assert_eq!(act.take_route_delete(), None);
     }
 
