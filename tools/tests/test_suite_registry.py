@@ -195,6 +195,51 @@ class SuiteRegistryTests(unittest.TestCase):
         self.assertEqual(set(registry.workflow_jobs(self.root)), {"test", "board"})
 
 
+    def test_a_bare_assignment_is_shell_state_but_an_env_prefix_is_a_command(self) -> None:
+        """`VAR=value` alone sets shell state; `VAR=value cmd` still runs, and still routes.
+
+        Splitting `export VAR="$(cmd)"` into an assignment and an `export` is what shellcheck's
+        SC2155 asks for, so the command's exit status stops being swallowed. That split must not
+        turn the assignment half into a discovered execution unit needing a registry owner. The
+        line is the whole distinction: an assignment *is* the line, an env prefix has a command
+        after it.
+        """
+
+        workflow = self.root / ".github/workflows/ci.yml"
+        workflow.parent.mkdir(parents=True)
+        workflow.write_text(
+            "on:\n"
+            "  pull_request:\n"
+            "jobs:\n"
+            "  test:\n"
+            "    steps:\n"
+            "      - run: |\n"
+            '          OBC_FIXTURE_ROOT="$(python3 tools/fixtures.py root)"\n'
+            "          export OBC_FIXTURE_ROOT\n"
+            "          PLAIN=python3\n"
+            "          QUOTED='python3 tools/decoy.py'\n"
+            "          EMPTY=\n"
+            "          PYTHONPATH=. python3 -m pytest builder/tests/ -v\n"
+            "          OBC_LOG=trace cargo test -p demo --locked\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            {item.command for item in registry.scan_workflow(self.root)},
+            {
+                "PYTHONPATH=. python3 -m pytest builder/tests/ -v",
+                "OBC_LOG=trace cargo test -p demo --locked",
+            },
+        )
+        # …and the env-prefixed cargo line is a real invocation, so it still routes its package.
+        graph = registry.CargoGraph(
+            packages={
+                "demo": registry.CargoPackage("demo", "crates/demo", "crates/demo/Cargo.toml", frozenset())
+            },
+            reverse_dependencies={},
+        )
+        self.assertEqual(registry.cargo_job_coverage(self.root, graph), {"demo": {"test"}})
+
+
 class SuiteSelectionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()

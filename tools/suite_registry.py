@@ -337,6 +337,9 @@ def scan_workflow(root: Path) -> list[WorkflowStep]:
             continue
         if stripped.startswith("export "):
             continue
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|\S*)", stripped):
+            # A whole-line variable assignment is shell state, not a command to route.
+            continue
         if block_indent is not None:
             if stripped and indent <= block_indent:
                 block_indent = None
