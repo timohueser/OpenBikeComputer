@@ -120,6 +120,7 @@ pub(crate) const SIM_SUPPORT: PlatformSupport = PlatformSupport {
 struct SimPlatform<'a> {
     settings: &'a mut FileSettingsStore,
     panel: &'a mut PanelState,
+    companion: Option<&'a mut crate::weather_companion::SimCompanion>,
 }
 
 impl HostPlatform for SimPlatform<'_> {
@@ -145,6 +146,14 @@ impl HostPlatform for SimPlatform<'_> {
 
     fn forget_bond(&mut self) {
         self.panel.ble.paired = false;
+    }
+
+    fn request_weather_refresh(&mut self) -> bool {
+        let Some(companion) = self.companion.as_deref_mut() else {
+            return false;
+        };
+        companion.request_now();
+        true
     }
 }
 
@@ -623,6 +632,7 @@ impl SimGui {
             self.wx_sample += 1;
             self.host.facts().note_weather_sample(obc_app::device_core::Revision::new(self.wx_sample));
         }
+        self.host.facts().note_weather_refreshing(self.companion.refreshing());
     }
 
     fn render_to_texture(&mut self, ctx: &egui::Context) {
@@ -772,7 +782,8 @@ impl SimGui {
         // Rides menu). What only this host can do — the card-free stand-in, the Bluetooth Forget,
         // the RRAM stand-in file — is [`SimPlatform`]. Everything else lives in a domain.
         {
-            let mut platform = SimPlatform { settings: &mut self.settings_store, panel: &mut self.panel };
+            let companion = if self.live_weather.is_some() { Some(&mut self.companion) } else { None };
+            let mut platform = SimPlatform { settings: &mut self.settings_store, panel: &mut self.panel, companion };
             self.host.execute(
                 &mut self.app,
                 &mut plan,
@@ -1207,5 +1218,43 @@ impl eframe::App for SimGui {
 
         // Repaint continuously so control-panel / GPX changes show without a mouse event.
         ctx.request_repaint();
+    }
+}
+
+#[cfg(test)]
+mod sim_platform_tests {
+    use super::*;
+
+    fn panel() -> PanelState {
+        PanelState {
+            lat_deg: 0.0,
+            lon_deg: 0.0,
+            heading_deg: 0.0,
+            compass_deg: 0.0,
+            ble: obc_app::BleStatus::default(),
+            upload_sel: 0,
+            trip_sel: 0,
+            gps_time: false,
+            clock_offset_secs: 0,
+            retention_route_sel: 0,
+            retention_level: obc_app::Retention::default(),
+            synced_ride_sel: 0,
+        }
+    }
+
+    #[test]
+    fn typed_weather_request_reaches_only_a_live_companion() {
+        let mut settings = FileSettingsStore::open(std::env::temp_dir().join("obc-sim-unused-weather-settings"));
+        let mut panel = panel();
+        let mut unavailable = SimPlatform { settings: &mut settings, panel: &mut panel, companion: None };
+        assert!(
+            !unavailable.request_weather_refresh(),
+            "false is the HostLoop signal for WeatherOutcome::Failed {{ LinkLost }}"
+        );
+
+        let mut companion = crate::weather_companion::SimCompanion::new(true);
+        let mut available = SimPlatform { settings: &mut settings, panel: &mut panel, companion: Some(&mut companion) };
+        assert!(available.request_weather_refresh(), "a live companion accepts the typed effect");
+        assert!(companion.refreshing(), "the accepted request becomes the shared pending level");
     }
 }
