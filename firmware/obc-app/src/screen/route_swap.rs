@@ -21,9 +21,9 @@ use crate::input::Gesture;
 use crate::Msg;
 
 use super::route_received::{popup_expired, popup_tick};
+use super::vocab::card::{ActionRows, CardEvent};
 use super::vocab::chrome::{title_frame, TITLE_BAR_H};
-use super::vocab::list;
-use super::vocab::rows::{draw_guarded_rows, GuardedRowsGeometry, MenuItem};
+use super::vocab::rows::{GuardedRowsGeometry, MenuItem};
 use super::{palette, Ctx, MapScreen, Render, Screen, ScreenTick, Transition};
 
 /// Per-row guard flags (only *Finish & new* is destructive). The labels are looked up per language
@@ -40,7 +40,7 @@ const CANCEL: usize = 2;
 #[derive(Debug)]
 pub struct RouteSwapScreen {
     pending: Option<usize>,
-    selected: usize,
+    actions: ActionRows,
     /// `Some(opened_ms)` when this prompt was **host-pushed** for a route received over BLE
     /// (epic #447, P4): retitled and auto-closing after
     /// [`UPLOAD_POPUP_TIMEOUT_MS`](super::UPLOAD_POPUP_TIMEOUT_MS). `None` for the manual,
@@ -51,14 +51,14 @@ pub struct RouteSwapScreen {
 impl RouteSwapScreen {
     /// The manual prompt — the rider picked `pending` from the Route menu mid-ride.
     pub fn new(pending: usize) -> Self {
-        RouteSwapScreen { pending: Some(pending), selected: 0, received_ms: None }
+        RouteSwapScreen { pending: Some(pending), actions: ActionRows::new(), received_ms: None }
     }
 
     /// The host-pushed variant for a route **received over BLE** mid-ride (P4), opened at
     /// `now_ms` (the auto-close anchor). Same options, same semantics — only the framing and the
     /// timeout differ.
     pub fn received(pending: usize, now_ms: u32) -> Self {
-        RouteSwapScreen { pending: Some(pending), selected: 0, received_ms: Some(now_ms) }
+        RouteSwapScreen { pending: Some(pending), actions: ActionRows::new(), received_ms: Some(now_ms) }
     }
 
     /// Whether this is the host-pushed received-route popup (vs. the manual menu prompt) — the
@@ -91,19 +91,14 @@ impl RouteSwapScreen {
     /// `draw`, so [`App::top_wants_hold_fill`](crate::App::top_wants_hold_fill) reports a charging
     /// hold as worth repainting here.
     pub fn selection_is_guarded(&self) -> bool {
-        GUARDS[self.selected.min(GUARDS.len() - 1)]
+        self.actions.selection_is_guarded(&GUARDS)
     }
 
     pub fn handle(&mut self, g: Gesture, cx: &mut Ctx) -> Transition {
-        match g {
-            Gesture::Step(n) => list::on_step(&mut self.selected, n, GUARDS.len()),
-            Gesture::Press => match self.selected {
-                // Swap only: keep the session (nothing named to Recorder), just re-navigate.
-                SWAP => self.swap_route(cx),
-                CANCEL => Transition::Pop,
-                _ => Transition::None, // Finish & new is guarded — press does nothing
-            },
-            Gesture::Hold if self.selected == FINISH_NEW => {
+        match self.actions.handle(g, &GUARDS) {
+            // Swap only: keep the session (nothing named to Recorder), just re-navigate.
+            CardEvent::Activate(SWAP) => self.swap_route(cx),
+            CardEvent::Activate(FINISH_NEW) => {
                 // The picked route vanished under the prompt (rescan): cancel — don't finalise
                 // the ride for a swap that can no longer happen.
                 if self.pending.is_none() {
@@ -114,8 +109,8 @@ impl RouteSwapScreen {
                 cx.recorder.save_and_restart();
                 self.swap_route(cx)
             }
-            Gesture::Back => Transition::Pop, // back = Cancel (keep riding the current route)
-            _ => Transition::None,
+            CardEvent::Activate(CANCEL) | CardEvent::Dismiss => Transition::Pop,
+            CardEvent::Activate(_) | CardEvent::None => Transition::None,
         }
     }
 
@@ -174,6 +169,6 @@ impl RouteSwapScreen {
             MenuItem { label: rx.t(Msg::RouteSwapFinishNew), guard: GUARDS[1] },
             MenuItem { label: rx.t(Msg::RouteSwapCancel), guard: GUARDS[2] },
         ];
-        draw_guarded_rows(cv, &items, self.selected, rx.hold_progress, AMBER, geo);
+        self.actions.draw(cv, &items, rx.hold_progress, AMBER, geo);
     }
 }
