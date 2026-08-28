@@ -59,8 +59,6 @@ impl CompanionState {
 pub struct SimCompanion {
     scheduler: DueScheduler,
     pub state: CompanionState,
-    /// A typed urgent request or scheduler request is pending.
-    refreshing: bool,
     /// Whether the device has storage that could accept a bundle at all (`--no-card` clears it).
     /// §11.7's rule: no card ⇒ no requests, urgent included, because every upload would be
     /// answered `error` and the phone would burn its battery on the loop.
@@ -75,18 +73,17 @@ impl Default for SimCompanion {
 
 impl SimCompanion {
     pub fn new(store_ready: bool) -> Self {
-        Self { scheduler: DueScheduler::new(), state: CompanionState::default(), refreshing: false, store_ready }
+        Self { scheduler: DueScheduler::new(), state: CompanionState::default(), store_ready }
     }
 
     /// Queue the typed urgent request that the app asked the platform to raise.
     pub fn request_now(&mut self) {
         self.scheduler.open_weather();
-        self.refreshing = true;
     }
 
     /// Whether typed urgent or cadence work is queued or pending.
     pub fn refreshing(&self) -> bool {
-        self.refreshing
+        self.scheduler.has_request()
     }
 
     /// One pass of the whole lifecycle. Returns fresh bundle bytes when an upload committed.
@@ -140,7 +137,6 @@ impl SimCompanion {
         let raise = self.scheduler.poll(now_s, refresh, snapshot.ride_active, self.store_ready, facts);
         self.state.pending_request_id = self.scheduler.pending_request_id();
         self.state.next_wake_s = self.scheduler.next_wake_s(refresh, snapshot.ride_active, self.store_ready);
-        self.refreshing = self.state.pending_request_id.is_some();
         let raise = raise?;
         self.state.raises += 1;
         self.state.last_reason = raise.reason;
@@ -177,7 +173,6 @@ impl SimCompanion {
         // bundle would retry forever.
         self.scheduler.commit_succeeded(now_s);
         self.state.pending_request_id = None;
-        self.refreshing = false;
         match disposition {
             UploadDisposition::Commit => {
                 self.state.commits += 1;
